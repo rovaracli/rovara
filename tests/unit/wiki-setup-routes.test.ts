@@ -378,6 +378,10 @@ describe("Code's failures (M11, M13, M14)", () => {
       expect(asRefusal(res), `${String(status)} ${code}`).toEqual(refusal(key));
       expect(res.text).not.toContain(LEAK);
     }
+    const mapRefused = setUp((call) => (call.path.endsWith("/wiki-map") ? err(403, "FORBIDDEN", LEAK) : undefined));
+    const refusedMap = await mapRefused.send("POST", P("payments", "wiki-map"), await mapRefused.as("mia-token"), {});
+    expect({ status: refusedMap.status, message: error(refusedMap).message }).toEqual({ status: 403, message: WIKI_SETUP_CODE_WORDS.mapNotAllowed });
+    expect(refusedMap.text).not.toContain(LEAK);
     const noStarter = setUp((call) => (call.path.endsWith("/wiki-build") && call.method === "POST" ? err(404, "NOT_FOUND", "building the wiki is not set up in this deployment") : undefined));
     expect(asRefusal(await noStarter.send("POST", P("payments", "wiki-build"), await noStarter.as("mia-token"), { requestId: RID }))).toEqual(refusal("notSetUp"));
   });

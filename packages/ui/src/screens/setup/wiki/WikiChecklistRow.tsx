@@ -5,6 +5,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { WIKI_SETUP_CODE_WORDS } from "@agentx/contracts/web";
 import { fixedWikiSetupWords, useWikiSetupApi, wikiSetupAbsent, wikiSetupKey, type WikiSetupBuild, type WikiSetupMap, type WikiSetupMapView } from "../../../api/wiki-setup.js";
 import { ApiError } from "../../../api/errors.js";
 import { Button } from "../../../design/Button.js";
@@ -75,7 +76,7 @@ export function WikiChecklistRow({ project, companyAdmin, alone = false }: { pro
     return alone ? <ol className="rv-checklist-rows" data-testid="project-wiki-only">{row}</ol> : row;
   };
   if (build.isPending) return wrap("optional", <Skeleton label={T.LOADING} />);
-  if (build.isError || build.data === undefined) return wrap("optional", <><p role="alert" data-testid="wiki-setup-error"><VisibleText text={fixedWikiSetupWords(build.error, T.UNAVAILABLE)} /></p><Button onClick={() => { void build.refetch(); }}>{T.RETRY}</Button></>, true);
+  if (build.data === undefined) return wrap("optional", <><p role="alert" data-testid="wiki-setup-error"><VisibleText text={fixedWikiSetupWords(build.error, T.UNAVAILABLE)} /></p><Button onClick={() => { void build.refetch(); }}>{T.RETRY}</Button></>, true);
   const view: WikiSetupBuild = build.data, canManage = view.canManage;
   const mapView: WikiSetupMapView | undefined = map.data, ready = mapView?.status === "ready" ? mapView.map : undefined;
 
@@ -109,6 +110,7 @@ export function WikiChecklistRow({ project, companyAdmin, alone = false }: { pro
   const hasPages = view.wiki.pages > 0;
   const keyMissing = view.aiKey === "missing";
   const running = view.status === "running";
+  if (running && confirmDelete) setConfirmDelete(false);
   const head = <>
     <p className="rv-muted">{T.SUBTITLE}</p>
     {!canManage && <p data-testid="wiki-setup-read-only">{T.READ_ONLY}</p>}
@@ -130,7 +132,7 @@ export function WikiChecklistRow({ project, companyAdmin, alone = false }: { pro
         : map.isError ? <p role="status" data-testid="wiki-setup-map-error"><VisibleText text={wikiSetupAbsent(map.error) ? T.MAP_UNAVAILABLE : fixedWikiSetupWords(map.error, T.UNAVAILABLE)} /></p>
         : ready === undefined ? <><p>{canManage ? T.NO_MAP : T.NO_MAP_VIEWER}</p>{canManage && <Button variant="primary" busy={busy === "map"} data-testid="wiki-setup-map" onClick={mapFiles}>{T.MAP_FILES}</Button>}</>
         : <>
-          <Forecast map={ready} canManage={canManage} chipsOn={chipsOn} onChip={(id, on) => { setTouched((now) => ({ ...now, [id]: on })); }} notes={notes} onNotes={setNotes} disabled={busy !== undefined} />
+          <Forecast map={ready} canManage={canManage} chipsOn={chipsOn} onChip={(id, on) => { setTouched((now) => ({ ...now, [id]: on })); }} notes={notes} onNotes={(value) => { setNotes(value.replace(/(?!\n)[\p{Cc}\p{Cf}]/gu, "")); }} disabled={busy !== undefined} />
           {canManage && <div className="rv-wikis-actions">
             <Button variant="primary" busy={busy === "build"} disabled={keyMissing || ready.forecast.pages === 0} data-testid="wiki-setup-build" onClick={start}>{T.BUILD}</Button>
             <Button busy={busy === "map"} data-testid="wiki-setup-map" onClick={mapFiles}>{T.MAP_AGAIN}</Button>
@@ -145,8 +147,9 @@ export function WikiChecklistRow({ project, companyAdmin, alone = false }: { pro
     const folders = ready?.repositories.flatMap((repo) => repo.skippedFolders.map((folder) => `${repo.name}/${folder.replace(/^\/+/u, "")}`)) ?? [];
     main = <section aria-label="Build result" data-testid="wiki-setup-result" data-status={view.status}>
       {message !== undefined && <p role="status" className={view.status === "built" ? "rv-wikis-ok" : "rv-wikis-stopped"} data-testid="wiki-setup-message"><b><VisibleText text={message} /></b>{view.stoppedBy !== undefined && view.stop === "stopped_by_person" && <> <VisibleText text={T.STOPPED_BY(view.stoppedBy.name)} /></>}</p>}
-      {view.status === "stopped" && view.canContinue === true && canManage && <div className="rv-wikis-actions"><Button variant="primary" busy={busy === "continue"} data-testid="wiki-setup-continue" onClick={() => { post("continue", (id) => api.continue(project, id)); }}>{T.CONTINUE}</Button><span className="rv-muted">{T.CONTINUE_NOTE}</span></div>}
-      {view.status === "stopped" && keyMissing && canManage && <p data-testid="wiki-setup-connect-key"><VisibleText text={view.connectKey ?? T.CONNECT_KEY_LINK} /> {companyAdmin ? <Link to="/app/admin/ai-spending">{T.CONNECT_KEY_LINK}</Link> : T.CONNECT_KEY_ASK}</p>}
+      {view.status === "stopped" && view.canContinue === true && canManage && view.stop === "budget_used" && <p className="rv-muted" data-testid="wiki-setup-raise-cap"><VisibleText text={T.RAISE_CAP} /></p>}
+      {view.status === "stopped" && view.canContinue === true && canManage && view.stop !== "budget_used" && <div className="rv-wikis-actions"><Button variant="primary" busy={busy === "continue"} data-testid="wiki-setup-continue" onClick={() => { post("continue", (id) => api.continue(project, id)); }}>{T.CONTINUE}</Button><span className="rv-muted">{T.CONTINUE_NOTE}</span></div>}
+      {view.status === "stopped" && (keyMissing || view.stop === "needs_ai_key") && canManage && <p data-testid="wiki-setup-connect-key"><VisibleText text={view.connectKey ?? WIKI_SETUP_CODE_WORDS.connectKey} /> {companyAdmin ? <Link to="/app/admin/ai-spending">{T.CONNECT_KEY_LINK}</Link> : T.CONNECT_KEY_ASK}</p>}
       {view.summary !== undefined && <div data-testid="wiki-setup-report"><h3>{T.REPORT}</h3>
         <Facts items={[[T.PAGES_WRITTEN, view.summary.pagesWritten], ...(view.summary.pagesKeptFromEarlier > 0 ? [[T.PAGES_KEPT, view.summary.pagesKeptFromEarlier] as [string, number]] : []), [T.CLAIMS_KEPT, view.summary.claimsKept], [T.CLAIMS_DROPPED, view.summary.claimsDropped]]} />
         <p className="rv-muted">{T.DROPPED_NOTE}</p>

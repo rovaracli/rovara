@@ -111,7 +111,7 @@ test("nightly upkeep: one switch, off by default; the cap saves lower at once an
   await expect(panel.byId("wiki-setup-upkeep-state")).toContainText("Nightly upkeep is off.");
   await expect(panel.byId("wiki-setup-upkeep-limits")).toContainText("Setup and mock checks: no AI.");
   await expect(panel.byId("wiki-setup-upkeep-limits")).toContainText("held by the nightly upkeep cap below");
-  await expect(panel.byId("wiki-setup-cap")).toContainText("This is the company's default.");
+  await expect(panel.byId("wiki-setup-cap")).toContainText("This is the standard cap for nightly upkeep.");
   await expect(panel.byId("wiki-setup-cap").getByLabel("Monthly cap on nightly upkeep")).toHaveValue("25.00");
   await panel.upkeep.click();
   await expect(panel.upkeep).toBeChecked();

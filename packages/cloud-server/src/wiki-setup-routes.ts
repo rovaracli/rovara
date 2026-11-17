@@ -102,7 +102,7 @@ export function wikiSetupRefusal(kind: Kind, error: CodeError): RouteAnswer {
   if (message !== undefined && code !== undefined && PASS_WORDS.has(message) && PASS_CODES.has(code) && PASS_STATUSES.has(error.status)) return answer(error.status, code, message);
   if (error.status === 404) return A.notFound;
   if (error.status === 400) return A.invalid;
-  if (error.status === 403) return A.notAllowed;
+  if (error.status === 403) return kind === "map" ? answer(403, "FORBIDDEN", C.mapNotAllowed) : A.notAllowed;
   return A.unavailable;
 }
 

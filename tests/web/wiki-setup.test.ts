@@ -2,7 +2,7 @@
 // Lead 4 W6: the wiki row of the project's setup checklist (Code W0's file map, W4's build controls and the nightly upkeep seam, through Cloud). The row shows pages and never a dollar figure; every
 // control is Code's call (a person who may not manage sees where the wiki stands and nothing to press); a refusal shows only a fixed sentence; one request id per action until it succeeds.
 import { describe, expect, it } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { WIKI_SETUP_CODE_WORDS, WIKI_SETUP_WORDS } from "@agentx/contracts/web";
@@ -66,7 +66,7 @@ function mount(element: ReturnType<typeof h>, options: Options = {}) {
   });
   const query = createQueryClient();
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/web"], children: element }) }) }), { theme: "light" });
-  return { ...f, close() { ui.unmount(); query.clear(); } };
+  return { ...f, queryClient: query, close() { ui.unmount(); query.clear(); } };
 }
 const row = (admin = true) => h("ol", {}, h(WikiChecklistRow, { project: "web", companyAdmin: admin }));
 const calls = (f: ReturnType<typeof mount>, method: string, path: string) => f.request.mock.calls.map(([request]) => request).filter((request) => request.method === method && request.path === path);
@@ -195,10 +195,12 @@ describe("while and after a build", () => {
     expect((await screen.findByTestId("wiki-setup-message")).textContent).toBe(WORDS.budget_used);
     expect(screen.getByTestId("wiki-setup-result").textContent).not.toMatch(/\$/u);
     expect(li.textContent).toContain("reached its spending limit");
-    fireEvent.click(screen.getByTestId("wiki-setup-continue"));
-    expect((await screen.findByTestId("wiki-setup-action-error")).textContent).toBe(WORDS.raiseCap);
+    // Code refuses Continue after the build's limit was used (it asks to raise the limit) and this page cannot raise it: no button is drawn, and the page says so.
+    expect(screen.queryByTestId("wiki-setup-continue")).toBeNull();
+    expect(screen.getByTestId("wiki-setup-raise-cap").textContent).toContain("Raising it is not something this page can do yet");
     f.close();
-    const g = mount(row(), { build: () => ({ status: 200, body: stopped }), post: () => err(503, "RUNTIME_UNAVAILABLE", LEAK) });
+    const other = build({ status: "stopped", stop: "repo_unreadable", message: WORDS.repo_unreadable, canContinue: true, wiki: { pages: 12, refreshPages: 0 } });
+    const g = mount(row(), { build: () => ({ status: 200, body: other }), post: () => err(503, "RUNTIME_UNAVAILABLE", LEAK) });
     await open();
     fireEvent.click(await screen.findByTestId("wiki-setup-continue"));
     expect((await screen.findByTestId("wiki-setup-action-error")).textContent).toBe("That could not be done just now. Try again.");
@@ -292,6 +294,65 @@ describe("the wiki's switches", () => {
   });
 });
 
+describe("an AI key that Code cannot see (hosted: aiKey unknown)", () => {
+  it("Build is offered with no key warning; a run that ends 'needs an AI key' says so and links to connect one", async () => {
+    const f = mount(row(), { build: () => ({ status: 200, body: build({ aiKey: "unknown" }) }) });
+    await open();
+    expect(((await screen.findByTestId("wiki-setup-build")).hasAttribute("disabled"))).toBe(false);
+    expect(screen.queryByTestId("wiki-setup-connect-key")).toBeNull();
+    f.close();
+    const ended = build({ status: "stopped", stop: "needs_ai_key", message: WORDS.needs_ai_key, aiKey: "unknown", canContinue: true, wiki: { pages: 3, refreshPages: 0 }, summary: { pagesPlanned: 20, pagesWritten: 3, pagesKeptFromEarlier: 0, claimsKept: 9, claimsDropped: 0 } });
+    const g = mount(row(), { build: () => ({ status: 200, body: ended }) });
+    await open();
+    expect((await screen.findByTestId("wiki-setup-message")).textContent).toBe(WORDS.needs_ai_key);
+    const line = screen.getByTestId("wiki-setup-connect-key");
+    expect(within(line).getByRole("link", { name: "Connect an AI key" }).getAttribute("href")).toBe("/app/admin/ai-spending");
+    g.close();
+  });
+});
+
+describe("small behaviours the review asked for", () => {
+  it("an open Delete confirmation does not come back after a build has run", async () => {
+    let state = built();
+    const f = mount(row(), { build: () => ({ status: 200, body: state }) });
+    await open();
+    fireEvent.click(await screen.findByTestId("wiki-setup-delete"));
+    expect(screen.getByTestId("wiki-setup-delete-yes")).toBeTruthy();
+    state = built({ status: "running" });
+    await act(async () => { await f.queryClient.refetchQueries({ queryKey: ["wiki-setup", "web", "build"] }); });
+    await waitFor(() => expect(screen.getByTestId("checklist-row-wiki").getAttribute("data-state")).toBe("running"));
+    state = built();
+    await act(async () => { await f.queryClient.refetchQueries({ queryKey: ["wiki-setup", "web", "build"] }); });
+    await waitFor(() => expect(screen.getByTestId("checklist-row-wiki").getAttribute("data-state")).toBe("done"));
+    await screen.findByTestId("wiki-setup-delete");
+    expect(screen.queryByTestId("wiki-setup-delete-yes")).toBeNull();
+    f.close();
+  });
+
+  it("control characters typed or pasted into the notes are dropped (a tab would make the body unreadable); new lines stay", async () => {
+    const f = mount(row(), { post: () => ({ status: 200, body: build({ status: "running" }) }) });
+    await open();
+    const notes = await screen.findByLabelText("Notes for the wiki build");
+    fireEvent.change(notes, { target: { value: "a\tb\u200bc\nline two" } });
+    fireEvent.click(screen.getByTestId("wiki-setup-build"));
+    await screen.findByTestId("wiki-setup-running");
+    expect(calls(f, "POST", ROOT + "/wiki-build")[0]!.body).toMatchObject({ notes: "abc\nline two" });
+    f.close();
+  });
+
+  it("one failed poll during a running build keeps the progress on screen", async () => {
+    let fail = false;
+    const f = mount(row(), { build: () => (fail ? err(503, "RUNTIME_UNAVAILABLE", LEAK) : { status: 200, body: build({ status: "running", summary: { pagesPlanned: 40, pagesWritten: 12, pagesKeptFromEarlier: 0, claimsKept: 1, claimsDropped: 0 } }) }) });
+    await open();
+    await screen.findByTestId("wiki-setup-progress");
+    fail = true;
+    await act(async () => { await f.queryClient.refetchQueries({ queryKey: ["wiki-setup", "web", "build"] }).catch(() => undefined); });
+    expect(screen.getByTestId("wiki-setup-progress").textContent).toBe("12 of 40 pages");
+    expect(screen.queryByTestId("wiki-setup-error")).toBeNull();
+    f.close();
+  });
+});
+
 describe("nightly upkeep", () => {
   it("one switch, off by default; turning it on sends the request id and the choice; each part names its limit", async () => {
     const f = mount(row(), { put: (request) => ({ status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true } }) });
@@ -343,7 +404,7 @@ describe("nightly upkeep", () => {
     await open();
     const box = await screen.findByTestId("wiki-setup-cap");
     expect(within(box).getByLabelText("Monthly cap on nightly upkeep")).toHaveProperty("value", "25.00");
-    expect(box.textContent).toContain("This is the company's default.");
+    expect(box.textContent).toContain("This is the standard cap for nightly upkeep.");
     fireEvent.change(within(box).getByLabelText("Monthly cap on nightly upkeep"), { target: { value: "$12.50" } });
     fireEvent.click(screen.getByTestId("wiki-setup-cap-save"));
     await screen.findByTestId("wiki-setup-cap-saved");
