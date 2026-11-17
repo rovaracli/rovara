@@ -162,6 +162,8 @@ describe("per-project and per-person monthly overrides", () => {
       kinds: [
         { kind: "project_month", scope: "project", sortPrefix: "SPEND_LIMIT#PROJECT#", caps: "projectMonth" },
         { kind: "person_month", scope: "person", sortPrefix: "SPEND_LIMIT#PERSON#", caps: "personMonth" },
+        { kind: "upkeep_month", scope: "project", sortPrefix: "SPEND_LIMIT#UPKEEP#", caps: null },
+        { kind: "answers_month", scope: "company", sortPrefix: "SPEND_LIMIT#ANSWERS#", caps: null },
       ],
     });
   });

@@ -3,8 +3,10 @@ import http, { type IncomingMessage, type Server, type ServerResponse } from "no
 import type { AddressInfo } from "node:net";
 import { credentialsFromEnvironment, type CredentialSource } from "./aws.js";
 import type { CapsSource } from "./caps.js";
-import { CompanyBudgetCaps, CompanyLessonsSwitch } from "./company-caps.js";
+import { CompanyAnswersLimits, CompanyBudgetCaps, CompanyLessonsSwitch, CompanyUpkeepLimits } from "./company-caps.js";
+import type { UpkeepLimits } from "./upkeep-cap.js";
 import { createLearningRoutes, type LearningKeySource, type LearningRouteOptions } from "./learning-route.js";
+import { createAnswersRoutes, type AnswersLimits } from "./answers-route.js";
 import { createOpenAiTransport } from "./learning-openai.js";
 import { createChatCompletionsTransport } from "./agent-openai.js";
 import type { EndpointTarget } from "./endpoint-guard.js";
@@ -18,7 +20,7 @@ import { BedrockExternalIds, type MacGenerator } from "./bedrock-byo.js";
 import { BedrockSessions } from "./bedrock-byo-sessions.js";
 import { createBedrockTransport } from "./bedrock-transport.js";
 import { createBedrockProductTransport } from "./product-bedrock.js";
-import { GATEWAY_AGENT_KEY_MODES, GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_LOG_EVENTS, GATEWAY_MODES, GATEWAY_PRODUCT_ENV, type GatewayAgentKeyMode } from "./deploy.js";
+import { GATEWAY_AGENT_KEY_MODES, GATEWAY_ANSWERS_ENV, GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_LOG_EVENTS, GATEWAY_MODES, GATEWAY_PRODUCT_ENV, type GatewayAgentKeyMode } from "./deploy.js";
 import { DynamoEvalStageStore } from "./dynamo-eval-stages.js";
 import { DynamoProductKeyTable } from "./dynamo-product-keys.js";
 import { DynamoProductOverrunTasks } from "./dynamo-product-overrun.js";
@@ -60,7 +62,8 @@ export interface InstallConfig { issuer: string; jwksUrl: string; taskKids: stri
 export interface ProductConfig { keysTable: string; keysKeyArn: string; meter: string; ledger: string; markers: string; stages: string; vertexFederationRoleArn?: string; /** Cloud's Vertex connection test (service-call.ts), only with the Vertex role. */ macKeyArn?: string }
 /** The learning route's meter tables (GATEWAY_LEARNING_ENV): only with the product route, whose key store holds the company's account. */
 export interface LearningConfig { meter: string; ledger: string; markers: string }
-export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode; /** DEC 240, only with agentKeys "company". Absent: Rovara's AI is off. */ rovaraAi?: RovaraAiConfig; /** DEC 238, only with agentKeys "company" and the product MAC key. Absent: a company's own Bedrock is refused. */ bedrockByo?: BedrockByoConfig; /** DEC 254t, only with agentKeys "company": the switched-on company AI source kinds. Absent: none. */ aiSourceKinds?: ReadonlySet<string>; /** Models left off every company's offered list on Rovara's AI (offered-models.ts). Absent: the default list. */ agentModelsDisabled?: ReadonlySet<string> }
+/** The answers route's meter tables (GATEWAY_ANSWERS_ENV): only with the product route, whose key store holds the company's account. */
+export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; answers?: AnswersConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode; /** DEC 240, only with agentKeys "company". Absent: Rovara's AI is off. */ rovaraAi?: RovaraAiConfig; /** DEC 238, only with agentKeys "company" and the product MAC key. Absent: a company's own Bedrock is refused. */ bedrockByo?: BedrockByoConfig; /** DEC 254t, only with agentKeys "company": the switched-on company AI source kinds. Absent: none. */ aiSourceKinds?: ReadonlySet<string>; /** Models left off every company's offered list on Rovara's AI (offered-models.ts). Absent: the default list. */ agentModelsDisabled?: ReadonlySet<string> }
 /** Bring your own Bedrock (DEC 238): Rovara's broker role and the KMS HMAC key the companies' external ids come from. */
 export interface BedrockByoConfig { brokerRoleArn: string; externalIdKeyArn: string }
 /** Rovara's AI (DEC 240): the allow-list (agent model to Bedrock id, the gateway's own region's geography) and the exempt companies. */
@@ -122,6 +125,15 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
     if (product === undefined) throw new GatewayConfigError(GATEWAY_ENV.productKeysTable);
     learning = { meter: table(GATEWAY_ENV.learningMeterTable), ledger: table(GATEWAY_ENV.learningLedgerTable), markers: table(GATEWAY_ENV.learningMarkersTable) };
   }
+  const answersSet = GATEWAY_ANSWERS_ENV.filter((name) => env[name] !== undefined);
+  let answers: AnswersConfig | undefined;
+  if (answersSet.length > 0) {
+    const missing = GATEWAY_ANSWERS_ENV.find((name) => env[name] === undefined);
+    if (missing !== undefined) throw new GatewayConfigError(missing);
+    // Answers run on the company's own account, which lives in the product key store: no answers route without it.
+    if (product === undefined) throw new GatewayConfigError(GATEWAY_ENV.productKeysTable);
+    answers = { meter: table(GATEWAY_ENV.answersMeterTable), ledger: table(GATEWAY_ENV.answersLedgerTable), markers: table(GATEWAY_ENV.answersMarkersTable) };
+  }
   // DEC 236: whose key the agent route sends. "company" needs the product key store (the company's connected key lives there).
   let agentKeys: GatewayAgentKeyMode | undefined;
   if (env[GATEWAY_ENV.agentKeys] !== undefined) {
@@ -160,9 +172,9 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
     try { aiSourceKinds = parseAiSourceKinds(env[GATEWAY_ENV.aiSourceKinds]); } catch { throw new GatewayConfigError(GATEWAY_ENV.aiSourceKinds); }
   }
   // Every table distinct: no two meters, stores or the stage table may share rows.
-  const all = [tables.meter, tables.ledger, tables.markers, tables.prices, tables.companies, ...(product === undefined ? [] : [product.keysTable, product.meter, product.ledger, product.markers, product.stages]), ...(learning === undefined ? [] : [learning.meter, learning.ledger, learning.markers])];
-  if (new Set(all).size !== all.length) throw new GatewayConfigError(product === undefined ? GATEWAY_ENV.meterTable : learning === undefined ? GATEWAY_ENV.productMeterTable : GATEWAY_ENV.learningMeterTable);
-  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(agentKeys === undefined ? {} : { agentKeys }), ...(rovaraAi === undefined ? {} : { rovaraAi }), ...(bedrockByo === undefined ? {} : { bedrockByo }), ...(agentModelsDisabled === undefined ? {} : { agentModelsDisabled }), ...(aiSourceKinds === undefined ? {} : { aiSourceKinds }) };
+  const all = [tables.meter, tables.ledger, tables.markers, tables.prices, tables.companies, ...(product === undefined ? [] : [product.keysTable, product.meter, product.ledger, product.markers, product.stages]), ...(learning === undefined ? [] : [learning.meter, learning.ledger, learning.markers]), ...(answers === undefined ? [] : [answers.meter, answers.ledger, answers.markers])];
+  if (new Set(all).size !== all.length) throw new GatewayConfigError(product === undefined ? GATEWAY_ENV.meterTable : learning === undefined ? GATEWAY_ENV.productMeterTable : answers === undefined ? GATEWAY_ENV.learningMeterTable : GATEWAY_ENV.answersMeterTable);
+  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(answers === undefined ? {} : { answers }), ...(agentKeys === undefined ? {} : { agentKeys }), ...(rovaraAi === undefined ? {} : { rovaraAi }), ...(bedrockByo === undefined ? {} : { bedrockByo }), ...(agentModelsDisabled === undefined ? {} : { agentModelsDisabled }), ...(aiSourceKinds === undefined ? {} : { aiSourceKinds }) };
 }
 
 /** One JSON object per line on stdout, with an `event` field the alarms' metric filters count (deploy.ts GATEWAY_LOG_EVENTS). */
@@ -218,6 +230,14 @@ export interface ServeDependencies {
    */
   learning?: { keys: LearningKeySource; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; monthCeilingMicros?: number /** Only for a company whose settings carry no learning cap (an older row); a company's own cap replaces it. */; /** The other providers' transports (default: the fixed Gemini, Vertex and OpenAI ones). */ transports?: NonNullable<LearningRouteOptions["transports"]> };
   /**
+   * The answers route (L4-E, answers-route.ts): the company's OWN provider account (`keys`, the same source as learning's), its OWN meter combined with the agent
+   * meter's company row (DEC 228c) and the company's answers limit (the Companies table). Absent: the answers path is 404. Its holds, expiry and corrections run in the
+   * same maintenance pass.
+   */
+  answers?: { keys: LearningKeySource; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; monthDefaultMicros?: number; transports?: NonNullable<LearningRouteOptions["transports"]> };
+  /** Nightly upkeep's per-project limits and the company's answers limit (default: the Companies table, company-caps.ts). */
+  upkeepLimits?: UpkeepLimits; answersLimits?: AnswersLimits;
+  /**
    * DEC 236, with config.agentKeys "company": the company's OWN connected key for the agent route (default: the company source of the
    * product key store, the one the learning route reads). Never the install key (`keys`), which is then not read at all.
    */
@@ -241,9 +261,10 @@ function checkMeters(config: ServeConfig, deps: ServeDependencies): void {
   type TableView = { combinedTables?: () => { meter: string; markers: string } | undefined; ownTables?: () => { meter: string; ledger: string; markers: string } };
   if (deps.product !== undefined && deps.product.meter.combinedCompany !== true) throw new Error("product meter must combine the company cap with the agent meter");
   if (deps.learning !== undefined && deps.learning.meter.combinedCompany !== true) throw new Error("learning meter must combine the company cap with the agent meter");
+  if (deps.answers !== undefined && deps.answers.meter.combinedCompany !== true) throw new Error("answers meter must combine the company cap with the agent meter");
   // ...and the checks below need to SEE a meter's tables: a meter that cannot say which tables it combines with and owns (anything
   // but a DynamoMeter) would pass them unchecked, so a wired route's meter must expose both views (DEFERRED GATEWAY-LEARNING-FOLLOWUPS-2).
-  const views = (name: "product" | "learning", meter: unknown) => {
+  const views = (name: "product" | "learning" | "answers", meter: unknown) => {
     const view = meter as TableView;
     const combined = typeof view.combinedTables === "function" ? view.combinedTables() : undefined;
     const own = typeof view.ownTables === "function" ? view.ownTables() : undefined;
@@ -254,12 +275,17 @@ function checkMeters(config: ServeConfig, deps: ServeDependencies): void {
   };
   const productOwn = deps.product === undefined ? undefined : views("product", deps.product.meter);
   const learningOwn = deps.learning === undefined ? undefined : views("learning", deps.learning.meter);
+  const answersOwn = deps.answers === undefined ? undefined : views("answers", deps.answers.meter);
   // ...and on tables of its own: never the agent's, and never another route's rows, holds or ledger.
   const agentTables = new Set([config.tables.meter, config.tables.ledger, config.tables.markers]);
   if (productOwn !== undefined && [productOwn.meter, productOwn.ledger, productOwn.markers].some((table) => agentTables.has(table))) throw new Error("product meter must have tables of its own");
   if (learningOwn !== undefined) {
     const taken = new Set([...agentTables, ...(productOwn === undefined ? [] : [productOwn.meter, productOwn.ledger, productOwn.markers])]);
     if ([learningOwn.meter, learningOwn.ledger, learningOwn.markers].some((table) => taken.has(table))) throw new Error("learning meter must have tables of its own");
+  }
+  if (answersOwn !== undefined) {
+    const taken = new Set([...agentTables, ...(productOwn === undefined ? [] : [productOwn.meter, productOwn.ledger, productOwn.markers]), ...(learningOwn === undefined ? [] : [learningOwn.meter, learningOwn.ledger, learningOwn.markers])]);
+    if ([answersOwn.meter, answersOwn.ledger, answersOwn.markers].some((table) => taken.has(table))) throw new Error("answers meter must have tables of its own");
   }
 }
 
@@ -275,7 +301,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const caps = deps.caps ?? new CompanyBudgetCaps(db, config.tables.companies);
   // The deployed product and learning routes, from the configured tables (deps.product / deps.learning still win: tests).
   const built = deployedRoutes(config, deps, { db, credentials, now, prices, caps });
-  deps = { ...deps, ...(built.product === undefined ? {} : { product: built.product }), ...(built.learning === undefined ? {} : { learning: built.learning }), ...(built.agentKeys === undefined ? {} : { agentKeys: built.agentKeys }), ...(built.byo === undefined ? {} : { byoBedrock: built.byo.agent }) };
+  deps = { ...deps, ...(built.product === undefined ? {} : { product: built.product }), ...(built.learning === undefined ? {} : { learning: built.learning }), ...(built.answers === undefined ? {} : { answers: built.answers }), ...(built.agentKeys === undefined ? {} : { agentKeys: built.agentKeys }), ...(built.byo === undefined ? {} : { byoBedrock: built.byo.agent }) };
   // Company-key mode never starts without the company key source (no silent fallback to the install key).
   const companyKeys = config.agentKeys === "company" ? deps.agentKeys : undefined;
   if (config.agentKeys === "company" && companyKeys === undefined) throw new Error("company-key mode needs the company key store");
@@ -289,6 +315,13 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     modelLimits: { maxOutputTokens: (provider, model) => provider === "anthropic" ? modelLimits.maxOutputTokens(provider, model) : prices.maxOutputTokens(provider, model) },
     transports: deps.learning.transports ?? { gemini: createGeminiTransport(), vertex: createVertexTransport(), openai: createOpenAiTransport() },
     ...(deps.learning.monthCeilingMicros === undefined ? {} : { monthCeilingMicros: deps.learning.monthCeilingMicros }),
+  });
+  const upkeepLimits = deps.upkeepLimits ?? new CompanyUpkeepLimits(db, config.tables.companies);
+  const answers = deps.answers === undefined ? undefined : createAnswersRoutes({
+    keys: deps.answers.keys, meter: deps.answers.meter, companyCaps: caps, limits: deps.answersLimits ?? new CompanyAnswersLimits(db, config.tables.companies), transport,
+    modelLimits: { maxOutputTokens: (provider, model) => provider === "anthropic" ? modelLimits.maxOutputTokens(provider, model) : prices.maxOutputTokens(provider, model) },
+    transports: deps.answers.transports ?? { gemini: createGeminiTransport(), vertex: createVertexTransport(), openai: createOpenAiTransport() },
+    ...(deps.answers.monthDefaultMicros === undefined ? {} : { monthDefaultMicros: deps.answers.monthDefaultMicros }),
   });
   const handlerDeps: GatewayDependencies = {
     verifyToken: createTaskTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }),
@@ -317,6 +350,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     log: (event) => log({ ...event }),
     ...(deps.product === undefined ? {} : { product: deps.product.routes }),
     ...(learning === undefined ? {} : { learning }),
+    ...(answers === undefined ? {} : { answers }),
+    upkeep: upkeepLimits,
   };
   const handler = createGatewayHandler(handlerDeps);
   // Cloud's Vertex connection test (PRODUCT-VERTEX-CLOUD-CONNECT): only with Vertex, the MAC key and a KMS that can verify.
@@ -411,6 +446,16 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
             await runCorrections({ meter: m, prices, caps: learning.caps, now: now(), runId, log: (line) => log({ ...line, route: "learning" }) });
           } catch { log({ event: "maintenance_failed", route: "learning" }); }
         }
+        if (deps.answers !== undefined && answers !== undefined) {
+          // The answers meter: the same sweep, expiry and corrections, with the answers caps. A failure never stops the passes above.
+          try {
+            const m = deps.answers.meter;
+            const answersHolds = await m.sweepOpenHolds(now(), HOLD_SWEEP_PER_PASS);
+            if (answersHolds.swept + answersHolds.failed > 0) log({ event: "holds_swept", route: "answers", swept: answersHolds.swept, failed: answersHolds.failed, more: answersHolds.more });
+            await runExpirySweep({ meter: m, now: now(), runId, log: (line) => log({ ...line, route: "answers" }) });
+            await runCorrections({ meter: m, prices, caps: answers.caps, now: now(), runId, log: (line) => log({ ...line, route: "answers" }) });
+          } catch { log({ event: "maintenance_failed", route: "answers" }); }
+        }
         log({ event: "maintenance", corrected: corrections.corrected, skipped: corrections.skipped + expiry.skipped, expired: expiry.expired, unknown: corrections.unknown + expiry.unknown, more: corrections.more || expiry.more });
       } catch { log({ event: "maintenance_failed" }); }
       finally { maintaining = undefined; }
@@ -455,11 +500,11 @@ const READ_ONLY_FINGERPRINT: ProductKeyFingerprinter = async () => { throw new E
  * Gemini over HTTPS with media prices) and the learning route (the company's own account from the same key store, its own meter
  * combined the same way). Nothing is built for settings that are absent.
  */
-function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { db: Dynamo; credentials: CredentialSource; now: () => number; prices: SnapshotPriceSource; caps: CapsSource }): { product?: NonNullable<ServeDependencies["product"]>; learning?: NonNullable<ServeDependencies["learning"]>; vertex?: VertexTokens; verifier?: MacVerifier; agentKeys?: LearningKeySource; byo?: { agent: ByoBedrock; service?: ReturnType<typeof createBedrockServiceHandlers> } } {
+function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { db: Dynamo; credentials: CredentialSource; now: () => number; prices: SnapshotPriceSource; caps: CapsSource }): { product?: NonNullable<ServeDependencies["product"]>; learning?: NonNullable<ServeDependencies["learning"]>; answers?: NonNullable<ServeDependencies["answers"]>; vertex?: VertexTokens; verifier?: MacVerifier; agentKeys?: LearningKeySource; byo?: { agent: ByoBedrock; service?: ReturnType<typeof createBedrockServiceHandlers> } } {
   const p = config.product;
   const wantsAgentKeys = config.agentKeys === "company" && deps.agentKeys === undefined;
   const wantsByo = config.bedrockByo !== undefined && deps.byoBedrock === undefined;
-  if (p === undefined || (deps.product !== undefined && (config.learning === undefined || deps.learning !== undefined) && !wantsAgentKeys && !wantsByo)) return {};
+  if (p === undefined || (deps.product !== undefined && (config.learning === undefined || deps.learning !== undefined) && (config.answers === undefined || deps.answers !== undefined) && !wantsAgentKeys && !wantsByo)) return {};
   const { db, now, prices, caps } = shared;
   const kms: KmsLike & Partial<MacVerifier> & Partial<MacGenerator> = deps.kms ?? awsKms({ region: config.region, credentials: shared.credentials, now });
   const verifier: MacVerifier | undefined = typeof kms.verifyMac === "function" ? { verifyMac: (input) => kms.verifyMac!(input) } : undefined;
@@ -495,6 +540,11 @@ function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { 
     const l = config.learning;
     learning = { keys: storedLearningKeys(store), meter: new DynamoMeter({ db, tables: { meter: l.meter, ledger: l.ledger, markers: l.markers }, now, combinedCompany }) };
   }
+  let answers: NonNullable<ServeDependencies["answers"]> | undefined;
+  if (config.answers !== undefined && deps.answers === undefined) {
+    const a = config.answers;
+    answers = { keys: storedLearningKeys(store), meter: new DynamoMeter({ db, tables: { meter: a.meter, ledger: a.ledger, markers: a.markers }, now, combinedCompany }) };
+  }
   // DEC 236: the agent route's company key is the same company-level source the learning route reads (provider "anthropic").
   const agentKeys = wantsAgentKeys ? storedLearningKeys(store) : undefined;
   // DEC 238: the companies' own Bedrock: external ids from the gateway's own HMAC key, sessions through the broker role.
@@ -507,7 +557,7 @@ function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { 
     };
   }
   return {
-    ...(byo === undefined ? {} : { byo }), ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(vertexTokens === undefined ? {} : { vertex: vertexTokens }), ...(verifier === undefined ? {} : { verifier }), ...(agentKeys === undefined ? {} : { agentKeys }) };
+    ...(byo === undefined ? {} : { byo }), ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(answers === undefined ? {} : { answers }), ...(vertexTokens === undefined ? {} : { vertex: vertexTokens }), ...(verifier === undefined ? {} : { verifier }), ...(agentKeys === undefined ? {} : { agentKeys }) };
 }
 
 export interface PriceFetchDependencies { env?: GatewayEnv; log?: GatewayLog; credentials?: CredentialSource; db?: Dynamo; fetch?: typeof fetch; now?: () => number }

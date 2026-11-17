@@ -62,9 +62,21 @@ const NO_CAP = Number.MAX_SAFE_INTEGER;
 const UNAVAILABLE_CAPS = Object.freeze({}) as unknown as Caps;
 const unavailable: RouteRefusal = { ok: false, status: 503, code: "unavailable", message: "model access unavailable" };
 export const learningPaused = (reason: LearningPauseReason): RouteRefusal => ({ ok: false, status: STATUS[reason], code: "lessons_paused", message: LEARNING_PAUSE_MESSAGES[reason], headers: { [LEARNING_PAUSE_HEADER]: reason } });
-const PREFIX: Readonly<Record<MeterItem, string>> = {
-  task: LEARNING_PAUSE_MESSAGES.monthly_limit, person: LEARNING_PAUSE_MESSAGES.monthly_limit, project: LEARNING_PAUSE_MESSAGES.monthly_limit, company: LEARNING_PAUSE_MESSAGES.monthly_limit,
-};
+/**
+ * What one company-key purpose (learning, answers) differs in: its token purpose, its path prefix and its words. Everything else (the
+ * key, the meter, the combined cap, the providers, the guards) is the shared code below. The answers route is this same factory with
+ * its own flavor (answers-route.ts); no money code is copied.
+ */
+export interface CompanyKeyFlavor {
+  readonly purpose: "learning" | "answers";
+  /** Every path of the purpose starts with this (`/v1/learning/`). */
+  readonly pathPrefix: string;
+  /** The refusal for a pause reason (a fixed message and the reason in the purpose's own header). */
+  paused(reason: LearningPauseReason): RouteRefusal;
+}
+/** The default refusal words per meter row (unused in practice: `capRefusal` answers every permanent cap refusal). */
+const prefixOf = (text: string): Readonly<Record<MeterItem, string>> => ({ task: text, person: text, project: text, company: text, upkeep: text });
+export const LEARNING_FLAVOR: CompanyKeyFlavor = Object.freeze({ purpose: "learning", pathPrefix: LEARNING_PATH_PREFIX, paused: learningPaused });
 
 /** The company's lessons switch. `true` only when it is on; a read that fails throws (the call answers 503). */
 export interface LessonsSwitch { isOn(cid: string, signal?: AbortSignal): Promise<boolean> }
@@ -88,7 +100,15 @@ export interface LearningRouteOptions {
   meter: Meter;
   /** The company backend's budgets (CompanyBudgetCaps): a company with no monthly cap gets no learning calls. */
   companyCaps: CapsSource;
-  lessons: LessonsSwitch;
+  /** The company's lessons switch. Required for the learning flavor; the answers flavor has none (no gate beyond its own limit). */
+  lessons?: LessonsSwitch;
+  /** Which purpose this route set serves. Default: learning. */
+  flavor?: CompanyKeyFlavor;
+  /**
+   * The month row of this purpose for a company: micro-dollars (never above the company's monthly cap), or undefined when the company has
+   * no room for any call (unreadable limit, no company cap). Default: the learning cap rule (`Caps.learningMonth`, else `monthCeilingMicros`).
+   */
+  monthFor?: (company: Caps, scope: CapsScope, signal?: AbortSignal) => Promise<number | undefined>;
   modelLimits: ModelLimitsSource;
   /** The Anthropic transport; the key it sends is always the company's own (`ProviderRequest.key`). */
   transport: ProviderTransport;
@@ -101,11 +121,11 @@ export interface LearningRouteOptions {
 export interface LearningRouteFactory { route(path: string, query: string): GatewayRoute | undefined }
 
 /** Which provider a learning path belongs to, and (Gemini, Vertex) the product-shaped path its parser reads. Pure path parsing. */
-export function parseLearningPath(path: string, query: string): { provider: "anthropic" | "openai" } | { provider: "gemini" | "vertex"; productPath: string } | undefined {
-  if (path === LEARNING_PATH) return query === "" ? { provider: "anthropic" } : undefined;
-  if (path === LEARNING_OPENAI_PATH) return query === "" ? { provider: "openai" } : undefined;
+export function parseLearningPath(path: string, query: string, prefix: string = LEARNING_PATH_PREFIX): { provider: "anthropic" | "openai" } | { provider: "gemini" | "vertex"; productPath: string } | undefined {
+  if (path === `${prefix}messages`) return query === "" ? { provider: "anthropic" } : undefined;
+  if (path === `${prefix}openai/chat/completions`) return query === "" ? { provider: "openai" } : undefined;
   for (const provider of ["gemini", "vertex"] as const) {
-    const own = `${LEARNING_PATH_PREFIX}${provider}/`;
+    const own = `${prefix}${provider}/`;
     if (path.startsWith(own)) return { provider, productPath: `${PRODUCT_PREFIX_OF[provider]}${path.slice(own.length)}` };
   }
   return undefined;
@@ -121,11 +141,21 @@ const notAllowed = { ok: false as const, status: 400, code: "invalid_request", m
  * company cap: invalid caps.
  */
 export function createLearningCaps(companyCaps: CapsSource, ceiling: number = LEARNING_DEFAULT_MONTH_MICROS): CapsSource {
+  return createPurposeCaps(companyCaps, async (company) => company.learningMonth ?? ceiling);
+}
+/**
+ * The caps of a company-key purpose: no task, project or person cap of its own (accounting only), the purpose's month row as the
+ * company row (`monthFor`, never above the company's monthly cap) and the company's one monthly cap as the combined row.
+ * `monthFor` undefined: no room, invalid caps.
+ */
+export function createPurposeCaps(companyCaps: CapsSource, monthFor: (company: Caps, scope: CapsScope, signal?: AbortSignal) => Promise<number | undefined>): CapsSource {
   return {
     async capsFor(scope: CapsScope, signal?: AbortSignal): Promise<Caps> {
       const company = await companyCaps.capsFor(scope, signal);
       if (!validCaps(company) || company.companyMonth === undefined) return UNAVAILABLE_CAPS;
-      return { task: NO_CAP, projectMonth: NO_CAP, companyMonth: Math.min(company.learningMonth ?? ceiling, company.companyMonth), combinedCompanyMonth: company.companyMonth };
+      const month = await monthFor(company, scope, signal);
+      if (month === undefined || !Number.isSafeInteger(month) || month < 0) return UNAVAILABLE_CAPS;
+      return { task: NO_CAP, projectMonth: NO_CAP, companyMonth: Math.min(month, company.companyMonth), combinedCompanyMonth: company.companyMonth };
     },
   };
 }
@@ -133,11 +163,14 @@ export function createLearningCaps(companyCaps: CapsSource, ceiling: number = LE
 export function createLearningRoutes(options: LearningRouteOptions): LearningRouteFactory & { caps: CapsSource } {
   const ceiling = options.monthCeilingMicros ?? LEARNING_DEFAULT_MONTH_MICROS;
   if (!Number.isSafeInteger(ceiling) || ceiling < 1) throw new Error("invalid learning ceiling");
-  const learningCaps = createLearningCaps(options.companyCaps, ceiling);
+  const flavor = options.flavor ?? LEARNING_FLAVOR;
+  if (flavor.purpose === "learning" && options.lessons === undefined) throw new Error("the learning route needs the lessons switch");
+  const learningCaps = options.monthFor === undefined ? createLearningCaps(options.companyCaps, ceiling) : createPurposeCaps(options.companyCaps, options.monthFor);
+  const paused = (reason: LearningPauseReason): RouteRefusal => flavor.paused(reason);
   return {
     caps: learningCaps,
     route(path, query) {
-      const parsed = parseLearningPath(path, query);
+      const parsed = parseLearningPath(path, query, flavor.pathPrefix);
       if (parsed === undefined) return undefined;
       const provider = parsed.provider;
       const transport = provider === "anthropic" ? options.transport : options.transports?.[provider];
@@ -152,16 +185,16 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
       let target: VertexTarget | undefined;
       const route: GatewayRoute = {
         // The price rows' provider: Vertex is priced on the Gemini rows and the Vertex rows, at the dearer (alsoPricedAs).
-        provider: provider === "vertex" ? "gemini" : provider, product: false, purpose: "learning", stopsWithTask: false, meter: options.meter, prefix: PREFIX,
+        provider: provider === "vertex" ? "gemini" : provider, product: false, purpose: flavor.purpose, stopsWithTask: false, meter: options.meter, prefix: prefixOf(paused("monthly_limit").message),
         async admit(claims, signal) {
           try {
             // The switch first: while it is off nothing else is read, held or sent.
-            if ((await options.lessons.isOn(claims.cid, signal)) !== true) return learningPaused("lessons_off");
+            if (options.lessons !== undefined && (await options.lessons.isOn(claims.cid, signal)) !== true) return paused("lessons_off");
             // Connected FOR THIS provider: one account's key is never used on another provider's path.
-            if ((await options.keys.connected(claims.iss, claims.cid, provider, signal)) !== true) return learningPaused("no_provider");
+            if ((await options.keys.connected(claims.iss, claims.cid, provider, signal)) !== true) return paused("no_provider");
             if (provider === "vertex") {
               target = await options.keys.vertexTarget?.(claims.iss, claims.cid, signal);
-              if (target === undefined) return learningPaused("no_provider");
+              if (target === undefined) return paused("no_provider");
               // The path must name the CONNECTED project and location, whatever the token could reach.
               if (vertexPath!.project !== target.projectId || vertexPath!.location !== target.location) return { ok: false, status: 400, code: "not_allowed", message: "request not allowed" };
             }
@@ -184,31 +217,31 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
         async caps(scope, _claims, signal) {
           if (!admitted || options.meter.combinedCompany !== true) return unavailable;
           const caps = await learningCaps.capsFor(scope, signal);
-          return validCaps(caps) ? caps : learningPaused("no_budget");
+          return validCaps(caps) ? caps : paused("no_budget");
         },
         async capRefusal(refused, scope, caps, estimateMicros) {
           const month = caps.companyMonth ?? 0;
           // A learning cap of zero (the company switched learning spend off in its budgets) has no room for any call: not "too big".
-          if (month === 0) return learningPaused("no_budget");
-          if (estimateMicros > month) return learningPaused("cost_too_high");
-          if (refused.item !== "company") return learningPaused("monthly_limit");
+          if (month === 0) return paused("no_budget");
+          if (estimateMicros > month) return paused("cost_too_high");
+          if (refused.item !== "company") return paused("monthly_limit");
           // Which company row refused: the learning month row (this meter's own) or the combined company cap. Labelling only:
           // the refusal itself was atomic in the meter, and either way nothing is held or sent.
           try {
             const own = (await options.meter.read(scope)).find((row) => row.item === "company");
             // Spent money, not holds: a row blocked only by other calls' holds is never a permanent refusal (the meter says `held`).
-            if (own === undefined || (!own.overrun && own.spentMicros <= month - estimateMicros)) return learningPaused("no_budget");
+            if (own === undefined || (!own.overrun && own.spentMicros <= month - estimateMicros)) return paused("no_budget");
           } catch { /* Unreadable: say the learning month (still a pause, never a call). */ }
-          return learningPaused("monthly_limit");
+          return paused("monthly_limit");
         },
         // Only the company's own key. An empty answer is "not sent" in the core (the call cost nothing). The switch is read AGAIN
         // here, just before sending: an admin's "off" during the body upload or the hold stops the call at $0.
         async key(claims: TaskClaims, signal) {
           if (!admitted) return "";
-          try { if ((await options.lessons.isOn(claims.cid, signal)) !== true) { notSent = learningPaused("lessons_off"); return ""; } }
+          try { if (options.lessons !== undefined && (await options.lessons.isOn(claims.cid, signal)) !== true) { notSent = paused("lessons_off"); return ""; } }
           catch { notSent = unavailable; return ""; }
           const key = await options.keys.keyFor(claims.iss, claims.cid, provider, signal);
-          if (key === undefined) { notSent = learningPaused("no_provider"); return ""; }
+          if (key === undefined) { notSent = paused("no_provider"); return ""; }
           return key;
         },
         notSent: () => notSent,
@@ -219,7 +252,7 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
         providerFailure(status, body) {
           const refusedKey = () => {
             if (options.keys.refused !== undefined && who !== undefined) { try { void Promise.resolve(options.keys.refused(who.iss, who.cid, provider)).catch(() => undefined); } catch { /* Never changes the call. */ } }
-            return { charged: false, refusal: learningPaused("no_provider") };
+            return { charged: false, refusal: paused("no_provider") };
           };
           // The provider refused the company's key: an explicit rejection before generation, free; Code pauses for a provider.
           if (status === 401 || status === 403) return refusedKey();
