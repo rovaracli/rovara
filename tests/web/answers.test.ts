@@ -32,7 +32,7 @@ const answered = (extra: Record<string, unknown> = {}) => ({
   sources: [1, 2, 3, 4, 5].map((n) => ({ n, repo: "web", path: `src/refund${String(n)}.ts`, line: n, lineEnd: n + 8, commit: SHA })),
   action: { kind: "quick_task", label: "Start a Quick task", title: "Change the refund window" }, ...extra,
 });
-const NOT_RIGHT = (path: string) => /^\/v1\/app\/projects\/payments\/answers\/a1234567890\/not-right$/u.test(path);
+const NOT_RIGHT = (path: string) => /^\/v1\/app\/projects\/payments\/answers\/[A-Za-z0-9_-]+\/not-right$/u.test(path);
 const NOT_SET_UP = { threadId: "t-1234", outcome: "not_set_up", text: "", honesty: ANSWER_WORDS.notSetUp, unconfirmed: [], sources: [], wikiPages: [] };
 
 interface Options {
@@ -382,6 +382,22 @@ describe("Not right on an answer (lead 4 J5)", () => {
     fireEvent.click(within(answer).getByTestId("answer-not-right"));
     await within(answer).findByTestId("not-right-done");
     expect(f.posts("/not-right")).toHaveLength(2);
+    f.close();
+  });
+
+  it("a new answer in the same box has its own control: pressing on the first does not use up the second", async () => {
+    let n = 0;
+    const f = mount({ ask: () => json(200, answered({ answerId: `a${String(1000 + ++n)}x` })), notRight: () => json(200, { answerId: "a1001x", state: "queued", claims: 1 }) });
+    const first = await askAndGet();
+    fireEvent.click(within(first).getByTestId("answer-not-right"));
+    await within(first).findByTestId("not-right-done");
+    type("Ask a question", "And what about partial refunds?");
+    fireEvent.click(screen.getByTestId("ask-box-submit"));
+    await waitFor(() => expect(f.posts("/answers")).toHaveLength(2));
+    const second = await screen.findByTestId("answer-not-right");
+    fireEvent.click(second);
+    await waitFor(() => expect(f.posts("/not-right")).toHaveLength(2));
+    expect(f.posts("/not-right")[1]!.path).toBe("/v1/app/projects/payments/answers/a1002x/not-right");
     f.close();
   });
 

@@ -62,7 +62,7 @@ export function AnswerView({ project, answer, repositories, onStart, starting }:
         {answer.unconfirmed.length > 0 && <div><p className="rv-muted">{A.NOT_CONFIRMED_NOTE}</p><ul>{answer.unconfirmed.map((one, index) => <li key={index}><VisibleText text={one} /></li>)}</ul></div>}
       </details>}
       {onStart !== undefined && answer.action !== undefined && answer.outcome !== "not_set_up" && <Button variant="primary" busy={starting === true} onClick={onStart} data-testid="answer-start-task">{ANSWER_WORDS.taskButton}</Button>}
-      {answer.answerId !== undefined && answer.outcome !== "not_set_up" && <NotRight project={project} answerId={answer.answerId} />}
+      {answer.answerId !== undefined && answer.outcome !== "not_set_up" && <NotRight key={answer.answerId} project={project} answerId={answer.answerId} />}
     </div>
   );
 }
