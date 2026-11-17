@@ -269,10 +269,12 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
     expect(stale).toMatchObject({ Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", EvaluationPeriods: 3, DatapointsToAlarm: 3, TreatMissingData: "notBreaching" });
     const queries = stale.Metrics as Array<{ Id: string; Expression?: string; ReturnData?: boolean; MetricStat?: { Metric: { MetricName: string }; Period: number; Stat: string } }>;
     const expression = queries.find((query) => query.Expression !== undefined)!;
-    expect(expression.ReturnData).toBe(true);
+    expect(queries.filter((query) => query.ReturnData === true).map((query) => query.Id)).toEqual([expression.Id]);
     expect(expression.Expression).toBe("IF(alive > 0, 1, 0) * IF(FILL(fetched, 0) < 1, 1, 0)");
     const alive = queries.find((query) => query.Id === "alive")!;
     expect(alive.MetricStat).toMatchObject({ Metric: { MetricName: "HealthyHostCount" }, Period: 86400, Stat: "SampleCount" });
+    // Without both dimensions the metric would never have data and the alarm would stay silent.
+    expect((alive.MetricStat as unknown as { Metric: { Dimensions: Array<{ Name: string }> } }).Metric.Dimensions.map((each) => each.Name).sort()).toEqual(["LoadBalancer", "TargetGroup"]);
     const fetchedQuery = queries.find((query) => query.Id === "fetched")!;
     expect(fetchedQuery.MetricStat).toMatchObject({ Metric: { MetricName: "PricesFetched-staging" }, Period: 86400, Stat: "Sum" });
     expect(Object.values(resources).some((each) => each.Type === "AWS::CloudWatch::Alarm" && each.Properties.TreatMissingData === "breaching")).toBe(false);
@@ -289,7 +291,7 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
     expect(allow).toHaveLength(1);
     expect(allow[0]).toMatchObject({ Principal: { Service: "cloudwatch.amazonaws.com" }, Action: "sns:Publish", Resource: { Ref: topic } });
     expect(allow[0]!.Condition!.StringEquals).toEqual({ "aws:SourceAccount": { Ref: "AWS::AccountId" } });
-    expect(JSON.stringify(allow[0]!.Condition!.ArnLike)).toContain(":alarm:rovara-cloud-staging-gateway-*");
+    expect(allow[0]!.Condition!.ArnLike).toEqual({ "aws:SourceArn": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":cloudwatch:us-west-2:", { Ref: "AWS::AccountId" }, ":alarm:rovara-cloud-staging-gateway-*"]] } });
     // Every alarm's name begins with that prefix, so the allow covers each of them.
     for (const [, each] of ofType("AWS::CloudWatch::Alarm")) expect(String(each.Properties.AlarmName)).toMatch(/^rovara-cloud-staging-gateway-/);
   });

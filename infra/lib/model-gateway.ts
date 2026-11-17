@@ -699,7 +699,7 @@ export class ModelGatewayStack extends Stack {
     // Staleness: no saved fetch on any of the last three days. A new stack has no fetch log yet, and missing data counted as
     // breaching made this alarm fire about 30 minutes after every create. So missing data does not breach; the alarm counts a
     // day only when the gateway itself reported that day (healthy-host samples exist from the day the stack is made) and no
-    // fetch was saved. Silence from the fetch (rule off, task never starting) still counts as stale, once three days have passed.
+    // fetch was saved. Silence from the fetch (rule off, task never starting) still counts as stale, after about two to three days (the oldest day counts once the gateway has reported in it).
     const oneDay = Duration.days(1);
     new cloudwatch.Alarm(this, "PricesStale", {
       alarmName: `${alarmNamePrefix}PricesStale`,
