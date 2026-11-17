@@ -19,14 +19,16 @@ function rateField(field: string): { key: RateKey; aboveTokens?: number } | unde
   else return undefined;
   return { key, ...(aboveTokens === undefined ? {} : { aboveTokens }) };
 }
-const CACHE_TIER = /^(?:cache_read_input_token_cost|input_cost_per_token_cache_hit|cache_creation_input_token_cost(?:_above_1hr)?)_(?:batches|flex)$/u;
-/** A cheaper `_batches`/`_flex` cache price counts only beside a plain price for the same key and band, so it can never stand in
- *  for the standard rate that is actually billed (the token rates have the same guarantee: ratesOf requires the base rates). */
-function plainCacheRateFor(entry: Record<string, unknown>, field: string): boolean {
-  const tier = rateField(field); const base = field.replace(BAND_SUFFIX, "");
-  if (tier === undefined || !CACHE_TIER.test(base)) return true;
+/** Any cheaper `_batches`/`_flex` variant of a known rate (token or cache), in any band. */
+const TIER_VARIANT = /_(?:batches|flex)$/u;
+/** A cheaper `_batches`/`_flex` price counts only beside a plain price for the same key and band, so it can never stand in for the
+ *  standard rate that is actually billed: not for a cache rate, and not for a long-context token rate either (the base token rates
+ *  are required by ratesOf, but a band's are not). The dearest of the plain price and its variants is kept. */
+function plainRateFor(entry: Record<string, unknown>, field: string): boolean {
+  const tier = rateField(field);
+  if (tier === undefined || !TIER_VARIANT.test(field.replace(BAND_SUFFIX, ""))) return true;
   return Object.entries(entry).some(([other, value]) => {
-    if (other === field || CACHE_TIER.test(other.replace(BAND_SUFFIX, "")) || typeof value !== "number" || !Number.isFinite(value) || value < 0) return false;
+    if (other === field || TIER_VARIANT.test(other.replace(BAND_SUFFIX, "")) || typeof value !== "number" || !Number.isFinite(value) || value < 0) return false;
     const plain = rateField(other);
     return plain !== undefined && plain.key === tier.key && plain.aboveTokens === tier.aboveTokens;
   });
@@ -110,7 +112,7 @@ export function ratesOf(value: unknown, now: number): Price | string {
     if (disposition === undefined && /cost|price/iu.test(field)) return "unsupported price field";
     if (disposition !== "input" && disposition !== "output") continue;
     if (!finite(rate) || rate < 0) return "unsupported token rate";
-    if (!plainCacheRateFor(entry, field)) return "unsupported price field";
+    if (!plainRateFor(entry, field)) return "unsupported price field";
     if (rate > PRICE_MAX / RATE_SCALE) return "token rate exceeds maximum";
 
   }

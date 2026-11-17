@@ -55,6 +55,14 @@ describe("every long-context band LiteLLM uses", () => {
     }
     // Two bands in one row (LiteLLM's Qwen rows: 32k and 256k) stay two bands, in order.
     expect(ratesOf({ ...base, input_cost_per_token_above_256k_tokens: 5e-6, input_cost_per_token_above_32k_tokens: 3e-6 }, now)).toEqual({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, longContext: [{ aboveTokens: 32_000, inputMicrosPerMTok: 3_000_000 }, { aboveTokens: 256_000, inputMicrosPerMTok: 5_000_000 }] });
+    // A cheaper flex/batch token rate never stands in for a band's standard rate (Opus review M1): alone in a band it leaves the
+    // row unknown; beside the standard rate the dearer one is kept.
+    for (const k of [100, 200, 272]) for (const variant of ["flex", "batches"]) {
+      for (const dir of ["input", "output"]) expect([k, variant, dir, ratesOf({ ...base, [`${dir}_cost_per_token_${variant}_above_${k}k_tokens`]: 5e-7 }, now)]).toEqual([k, variant, dir, "unsupported price field"]);
+      expect(ratesOf({ ...base, [`input_cost_per_token_above_${k}k_tokens`]: 3e-6, [`input_cost_per_token_${variant}_above_${k}k_tokens`]: 5e-7 }, now)).toEqual({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, longContext: [{ aboveTokens: k * 1000, inputMicrosPerMTok: 3_000_000 }] });
+      // A standard rate in another band does not count.
+      expect(ratesOf({ ...base, input_cost_per_token_above_32k_tokens: 3e-6, [`input_cost_per_token_${variant}_above_${k}k_tokens`]: 5e-7 }, now)).toBe("unsupported price field");
+    }
     for (const k of [64, 300, 1000, 1100]) expect([k, ratesOf({ ...base, [`input_cost_per_token_above_${k}k_tokens`]: 3e-6 }, now)]).toEqual([k, "unsupported price field"]);
   });
 });
