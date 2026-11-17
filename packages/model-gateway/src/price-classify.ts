@@ -11,9 +11,11 @@ function rateField(field: string): { key: RateKey; aboveTokens?: number } | unde
   let key: RateKey;
   if (/^input_cost_per_(?:token)(?:_batches|_flex)?$/u.test(base)) key = "inputMicrosPerMTok";
   else if (/^output_cost_per_(?:token|reasoning_token)(?:_batches|_flex)?$/u.test(base)) key = "outputMicrosPerMTok";
-  else if (base === "cache_read_input_token_cost" || base === "input_cost_per_token_cache_hit") key = "cacheReadMicrosPerMTok";
-  else if (base === "cache_creation_input_token_cost") key = "cacheWrite5mMicrosPerMTok";
-  else if (base === "cache_creation_input_token_cost_above_1hr") key = "cacheWrite1hMicrosPerMTok";
+  // Cache tiers take the same cheaper `_batches`/`_flex` variants as the token rates (LiteLLM's Nova and Kimi Bedrock rows,
+  // 2026-11-17); the dearest of a key's variants is kept, so a cheaper tier never lowers a price.
+  else if (/^(?:cache_read_input_token_cost|input_cost_per_token_cache_hit)(?:_batches|_flex)?$/u.test(base)) key = "cacheReadMicrosPerMTok";
+  else if (/^cache_creation_input_token_cost(?:_batches|_flex)?$/u.test(base)) key = "cacheWrite5mMicrosPerMTok";
+  else if (/^cache_creation_input_token_cost_above_1hr(?:_batches|_flex)?$/u.test(base)) key = "cacheWrite1hMicrosPerMTok";
   else return undefined;
   return { key, ...(aboveTokens === undefined ? {} : { aboveTokens }) };
 }
@@ -22,6 +24,8 @@ export const UNSERVED_FEATURE_COST_FIELDS: Readonly<Record<string, { readonly fe
   search_context_cost_per_query: { feature: "web_search", reason: "Web search: provider server tools are rejected by guardRequest." },
   input_cost_per_token_priority: { feature: "priority_service", reason: "Priority service: the gateway does not expose a service-tier selector." },
   output_cost_per_token_priority: { feature: "priority_service", reason: "Priority service: the gateway does not expose a service-tier selector." },
+  cache_read_input_token_cost_priority: { feature: "priority_service", reason: "Priority service: the gateway does not expose a service-tier selector." },
+  cache_creation_input_token_cost_priority: { feature: "priority_service", reason: "Priority service: the gateway does not expose a service-tier selector." },
   input_cost_per_audio_token: { feature: "audio_tokens", reason: "Audio token billing: no audio-token provider route is exposed." },
   output_cost_per_audio_token: { feature: "audio_tokens", reason: "Audio token billing: no audio-token provider route is exposed." },
   input_cost_per_image_token: { feature: "image_tokens", reason: "Image token billing: no separate image-token provider route is exposed." },

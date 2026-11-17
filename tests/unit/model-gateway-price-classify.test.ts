@@ -38,3 +38,26 @@ it("unserved cost fields cannot exclude exposed gateway features", async () => {
     expect(GATEWAY_EXPOSED_FEATURES.has(feature), `${field} is listed as unserved but ${feature} is now exposed; remove the entry so the row is priced or marked uncertain`).toBe(false);
   }
 });
+// LiteLLM's real Bedrock rows for two offered models (raw.githubusercontent.com/BerriAI/litellm main, 2026-11-17). Before the fix
+// their priority cache prices and flex cache prices were "unsupported price field", so the staging price fetch (2026-11-17T02:24Z)
+// charged them the cautious estimate. Nova Pro and Kimi K3.1 carry the same fields.
+const NOVA_2_LITE_US = { litellm_provider: "bedrock_converse", mode: "chat", cache_read_input_token_cost: 8.25e-8, cache_read_input_token_cost_flex: 4.125e-8, cache_read_input_token_cost_priority: 1.44375e-7, input_cost_per_token: 3.3e-7, input_cost_per_token_batches: 1.65e-7, input_cost_per_token_flex: 1.65e-7, input_cost_per_token_priority: 5.775e-7, output_cost_per_token: 2.75e-6, output_cost_per_token_batches: 1.375e-6, output_cost_per_token_flex: 1.375e-6, output_cost_per_token_priority: 4.8125e-6 };
+const KIMI_K3_US = { litellm_provider: "bedrock_converse", mode: "chat", cache_creation_input_token_cost: 4.125e-6, cache_creation_input_token_cost_flex: 2.0625e-6, cache_creation_input_token_cost_priority: 7.21875e-6, cache_read_input_token_cost: 3.3e-7, cache_read_input_token_cost_flex: 1.65e-7, cache_read_input_token_cost_priority: 5.775e-7, input_cost_per_token: 3.3e-6, input_cost_per_token_flex: 1.65e-6, input_cost_per_token_priority: 5.775e-6, output_cost_per_token: 1.65e-5, output_cost_per_token_flex: 8.25e-6, output_cost_per_token_priority: 2.8875e-5 };
+it("priority cache prices are an unserved feature; flex and batch cache prices are cheaper tiers of known keys (real Nova/Kimi rows)", async () => {
+  const { ratesOf } = await import("../../packages/model-gateway/src/price-classify.js");
+  expect(ratesOf(NOVA_2_LITE_US, 0)).toEqual({ inputMicrosPerMTok: 330_000, outputMicrosPerMTok: 2_750_000, cacheReadMicrosPerMTok: 82_500 });
+  expect(ratesOf(KIMI_K3_US, 0)).toEqual({ inputMicrosPerMTok: 3_300_000, outputMicrosPerMTok: 16_500_000, cacheReadMicrosPerMTok: 330_000, cacheWrite5mMicrosPerMTok: 4_125_000 });
+  // Each field alone: priority cache prices are left out; every flex/batch cache price is its key's rate (the dearest is kept).
+  expect(ratesOf({ ...base, cache_read_input_token_cost_priority: 9e-6 }, 0)).toEqual({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 });
+  expect(ratesOf({ ...base, cache_creation_input_token_cost_priority: 9e-6 }, 0)).toEqual({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 });
+  for (const [field, key] of [["cache_read_input_token_cost_flex", "cacheReadMicrosPerMTok"], ["cache_read_input_token_cost_batches", "cacheReadMicrosPerMTok"], ["input_cost_per_token_cache_hit_flex", "cacheReadMicrosPerMTok"], ["cache_creation_input_token_cost_flex", "cacheWrite5mMicrosPerMTok"], ["cache_creation_input_token_cost_batches", "cacheWrite5mMicrosPerMTok"], ["cache_creation_input_token_cost_above_1hr_flex", "cacheWrite1hMicrosPerMTok"], ["cache_creation_input_token_cost_above_1hr_batches", "cacheWrite1hMicrosPerMTok"]] as const) {
+    expect([field, ratesOf({ ...base, [field]: 3e-6 }, 0)]).toEqual([field, { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, [key]: 3_000_000 }]);
+    // A dearer tier variant wins over the plain rate: a cheaper tier never lowers the key.
+    const plain = key === "cacheReadMicrosPerMTok" ? "cache_read_input_token_cost" : key === "cacheWrite5mMicrosPerMTok" ? "cache_creation_input_token_cost" : "cache_creation_input_token_cost_above_1hr";
+    expect([field, ratesOf({ ...base, [plain]: 2e-6, [field]: 3e-6 }, 0)]).toEqual([field, { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, [key]: 3_000_000 }]);
+  }
+  // Still unknown: other priority prices that are not reviewed, other suffixes, a priority long-context cache band.
+  for (const field of ["cache_read_input_audio_token_cost_priority", "cache_read_input_token_cost_above_200k_tokens_priority", "cache_read_input_token_cost_spot", "cache_creation_input_token_cost_above_12hr_priority", "cache_read_input_token_cost_above_100k_tokens"]) {
+    expect([field, ratesOf({ ...base, [field]: 1e-6 }, 0)]).toEqual([field, "unsupported price field"]);
+  }
+});
