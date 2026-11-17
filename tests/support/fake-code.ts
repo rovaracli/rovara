@@ -25,6 +25,9 @@ export const FAKE_COMPANY_NAME = "Example Co";
 export const FAKE_INVITE_CODE = "inv_fakecode0001";
 /** GitHub's `code` values the fake's GitHub claim understands (guided onboarding). */
 export const FAKE_GITHUB_CODES = { connected: "fakeghconnected", choose: "fakeghchoose" } as const;
+/** Slack's and Linear's `code` values the fake's install and connect understand (guided onboarding PR 11): `other` adds Rovara to a workspace other than the sign-in's. */
+export const FAKE_SLACK_CODES = { connected: "fakeslackok", other: "fakeslackother" } as const;
+export const FAKE_LINEAR_CODES = { connected: "fakelinearok" } as const;
 export const PRIYA: Person = { key: "priya", developerId: id64("priya"), name: "Priya", email: "priya@example.test", administrator: true };
 export const SAM: Person = { key: "sam", developerId: id64("sam"), name: "Sam", email: "sam@example.test", administrator: false };
 const PEOPLE: readonly Person[] = [PRIYA, SAM];
@@ -74,6 +77,8 @@ export interface FakeCodeOptions {
   port?: number;
   host?: string;
   now?: () => Date;
+  /** The Cloud callback Code's Linear app would name (Code reads it from the app's secret); default http://127.0.0.1:8787/api/connect/linear/callback. */
+  linearRedirectUri?: string;
 }
 
 export interface FakeCode {
@@ -108,6 +113,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const githubStates = new Map<string, { developerId: string; spent: boolean }>();
   const githubTickets = new Map<string, { developerId: string; spent: boolean }>();
   const githubBound = new Map<number, { accountLogin: string; connectedAt: string; by: Person }>();
+  // Guided onboarding PR 11 (Code PRs #836, #840, #838): single-use Slack and Linear states, the company's workspace, channel links and Linear team picks.
+  const connectStates = new Map<string, { developerId: string; spent: boolean; provider: "slack" | "linear" }>();
+  let slackWorkspace: { teamId: string; teamName: string; connectedAt: string; by: Person } | undefined;
+  const slackLinks = new Map<string, string>();
+  const slackChannels = [{ id: "CGENERAL1", name: "general", isPrivate: false }, { id: "CWEBDEV01", name: "web-dev", isPrivate: false }, { id: "GPRIVATE1", name: "private-team", isPrivate: true }];
+  let linearWorkspace: { id: string; name: string; urlKey: string; connectedAt: string; by: Person } | undefined;
+  const linearTeams = [{ id: "lin-team-web", key: "WEB", name: "Web team" }, { id: "lin-team-ops", key: "OPS", name: "Operations" }];
+  const linearPicks = new Map<string, string>();
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
@@ -122,6 +135,29 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     { name: "api", repositories: [{ name: "api", url: "https://github.com/example/api", defaultBranch: "main", fullName: "example/api" }], members: new Map([[PRIYA.developerId, "administrator"]]) },
   ];
   const project = (name: string) => projects.find((entry) => entry.name === name);
+  const linearRedirectUri = options.linearRedirectUri ?? "http://127.0.0.1:8787/api/connect/linear/callback";
+  const linkNotAllowed = "Only a company owner or admin, or this project's admin, can link or unlink its Slack channel.";
+  /** Link (or ask for the /invite: a private channel needs Check after /invite, which the fake takes as done). */
+  const fakeLink = (name: string, channelId: string, person: Person, check: boolean) => {
+    if (project(name) === undefined) return failure(404, "NOT_FOUND", "project not found");
+    if (!person.administrator) return failure(403, "FORBIDDEN", linkNotAllowed);
+    if (slackWorkspace === undefined) return failure(409, "SLACK_NOT_CONNECTED", "Add Rovara to Slack first: this company has no Slack workspace connected.");
+    const channel = slackChannels.find((one) => one.id === channelId);
+    if (channel === undefined) return failure(409, "SLACK_CHANNEL_REFUSED", "This channel is shared with another organization, so it can't be linked. Pick a channel only your workspace uses.");
+    const holder = slackLinks.get(channel.id);
+    if (holder !== undefined && holder !== name) return failure(409, "SLACK_CHANNEL_TAKEN", "This channel is already linked to another project. Unlink it there first.");
+    if (channel.isPrivate && !check) return { body: { status: "invite_needed" as const, workspace: { teamId: slackWorkspace.teamId }, channel: { id: channel.id }, message: "Type `/invite @Rovara` in the channel, then press Check." } };
+    const replaced = [...slackLinks].filter(([id, linked]) => linked === name && id !== channel.id).map(([id]) => id);
+    for (const id of replaced) slackLinks.delete(id);
+    slackLinks.set(channel.id, name);
+    return { body: { status: "linked" as const, workspace: { teamId: slackWorkspace.teamId }, channel, alreadyLinked: holder === name, replaced } };
+  };
+  const fakeTeamRefusal = (name: string, person: Person) => {
+    if (project(name) === undefined) return failure(404, "NOT_FOUND", "project not found");
+    if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin, or the project's admin, can choose its Linear team.");
+    if (linearWorkspace === undefined) return failure(409, "LINEAR_NOT_CONNECTED", "Linear isn't connected for this company. A company owner or admin can connect it in Company settings, Connections.");
+    return undefined;
+  };
   const roleIn = (person: Person, name: string) => project(name)?.members.get(person.developerId);
 
   const base = (taskId: string, owner: Person, patch: Partial<TaskView> & { title: string; project: string }): { owner: Person; task: TaskView } => ({
@@ -554,6 +590,105 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: { status: "connected", alreadyConnected: already, installation: { installationId: 5001, accountLogin: "example", accountType: "Organization" }, githubUser: { id: 4242, login: `${person.key}-gh` } } };
     },
     "company.github.status": () => ({ body: { installations: [...githubBound].map(([installationId, row]) => ({ installationId, accountLogin: row.accountLogin, connectedAt: row.connectedAt, connectedBy: { kind: "person" as const, personId: row.by.developerId, name: row.by.name } })) } }),
+    "company.slack.install": ({ body, person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can add Rovara to Slack.");
+      const state = randomBytes(32).toString("base64url");
+      connectStates.set(state, { developerId: person.developerId, spent: false, provider: "slack" });
+      const authorize = new URL("https://slack.com/oauth/v2/authorize");
+      for (const [key, value] of Object.entries({ client_id: "1111.2222", scope: "chat:write,commands", redirect_uri: body.redirectUri, state })) authorize.searchParams.set(key, value);
+      return { body: { state, expiresAt: new Date(now().getTime() + 600_000).toISOString(), authorizeUrl: authorize.toString(), signedInWorkspace: { teamId: "TFAKESIGN", teamName: "Example Slack" } } };
+    },
+    "company.slack.installComplete": ({ body, person }) => {
+      const kept = connectStates.get(body.state);
+      if (!person.administrator || kept === undefined || kept.spent || kept.developerId !== person.developerId || kept.provider !== "slack") return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      kept.spent = true;
+      if (body.error === "access_denied") return { body: { status: "cancelled" as const } };
+      if (body.code !== FAKE_SLACK_CODES.connected && body.code !== FAKE_SLACK_CODES.other) return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      const team = body.code === FAKE_SLACK_CODES.other ? { teamId: "TFAKEOTHER", teamName: "Side Project Slack" } : { teamId: "TFAKESIGN", teamName: "Example Slack" };
+      const already = slackWorkspace?.teamId === team.teamId;
+      slackWorkspace = { ...team, connectedAt: iso(), by: person };
+      return { body: { status: "connected" as const, alreadyConnected: already, workspace: team, signedInWorkspace: { teamId: "TFAKESIGN", teamName: "Example Slack" }, matchesSignIn: team.teamId === "TFAKESIGN" } };
+    },
+    "company.slack.get": () => ({ body: { workspace: slackWorkspace === undefined ? null : { teamId: slackWorkspace.teamId, teamName: slackWorkspace.teamName, state: "connected", connectedAt: slackWorkspace.connectedAt, connectedBy: { kind: "person", personId: slackWorkspace.by.developerId, name: slackWorkspace.by.name } } } }),
+    "company.slack.disconnect": ({ person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner can disconnect Slack.");
+      if (slackWorkspace === undefined) return failure(404, "NOT_FOUND", "This company has no Slack workspace connected.");
+      const workspace = { teamId: slackWorkspace.teamId, teamName: slackWorkspace.teamName };
+      slackWorkspace = undefined;
+      const lost = [...new Set(slackLinks.values())];
+      slackLinks.clear();
+      return { body: { status: "disconnected" as const, workspace, projectsLosingChannel: lost } };
+    },
+    "company.slack.channels": ({ query, person }) => {
+      if (project(query.get("project") ?? "") === undefined) return failure(404, "NOT_FOUND", "project not found");
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin, or this project's admin, can link or unlink its Slack channel.");
+      if (slackWorkspace === undefined) return failure(409, "SLACK_NOT_CONNECTED", "Add Rovara to Slack first: this company has no Slack workspace connected.");
+      return { body: { workspace: { teamId: slackWorkspace.teamId }, channels: slackChannels.map((c) => ({ ...c, ...(slackLinks.has(c.id) ? { linked: true as const, linkedProject: slackLinks.get(c.id)! } : {}) })) } };
+    },
+    "company.slack.channel.get": ({ params }) => {
+      const name = params["project"] ?? "";
+      if (project(name) === undefined) return failure(404, "NOT_FOUND", "project not found");
+      return { body: { workspace: slackWorkspace === undefined ? null : { teamId: slackWorkspace.teamId }, channels: [...slackLinks].filter(([, linked]) => linked === name).map(([channelId]) => ({ channelId })) } };
+    },
+    "company.slack.channel.link": ({ params, body, person }) => fakeLink(params["project"] ?? "", body.channelId, person, false),
+    "company.slack.channel.check": ({ params, body, person }) => fakeLink(params["project"] ?? "", body.channelId, person, true),
+    "company.slack.channel.unlink": ({ params, person }) => {
+      const name = params["project"] ?? "";
+      if (project(name) === undefined) return failure(404, "NOT_FOUND", "project not found");
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin, or this project's admin, can link or unlink its Slack channel.");
+      const mine = [...slackLinks].filter(([, linked]) => linked === name).map(([channelId]) => channelId);
+      if (mine.length === 0) return failure(404, "NOT_FOUND", "This project has no Slack channel linked.");
+      for (const id of mine) slackLinks.delete(id);
+      return { body: { status: "unlinked" as const, teamId: slackWorkspace?.teamId ?? "TFAKESIGN", channels: mine } };
+    },
+    "company.linear.connect": ({ person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can connect Linear.");
+      const state = randomBytes(32).toString("base64url");
+      connectStates.set(state, { developerId: person.developerId, spent: false, provider: "linear" });
+      const authorize = new URL("https://linear.app/oauth/authorize");
+      for (const [key, value] of Object.entries({ client_id: "fakelinearclient", redirect_uri: linearRedirectUri, response_type: "code", scope: "read,comments:create,issues:create", state, actor: "app", prompt: "consent", code_challenge: "c".repeat(43), code_challenge_method: "S256" })) authorize.searchParams.set(key, value);
+      return { body: { state, expiresAt: new Date(now().getTime() + 600_000).toISOString(), authorizeUrl: authorize.toString() } };
+    },
+    "company.linear.complete": ({ body, person }) => {
+      const kept = connectStates.get(body.state);
+      if (!person.administrator || kept === undefined || kept.spent || kept.developerId !== person.developerId || kept.provider !== "linear" || body.code !== FAKE_LINEAR_CODES.connected) return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      kept.spent = true;
+      const reconnected = linearWorkspace !== undefined;
+      linearWorkspace = { id: "lin-org-1", name: "Example Linear", urlKey: "example", connectedAt: iso(), by: person };
+      return { body: { status: "connected" as const, reconnected, workspace: { id: "lin-org-1", name: "Example Linear", urlKey: "example" } } };
+    },
+    "company.linear.get": () => ({ body: linearWorkspace === undefined ? { status: "disconnected" as const } : { status: "connected" as const, statusAt: linearWorkspace.connectedAt, workspace: { id: linearWorkspace.id, name: linearWorkspace.name, urlKey: linearWorkspace.urlKey }, connectedAt: linearWorkspace.connectedAt, connectedBy: { personId: linearWorkspace.by.developerId, name: linearWorkspace.by.name } } }),
+    "company.linear.disconnect": ({ person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner can disconnect Linear.");
+      if (linearWorkspace === undefined) return failure(409, "LINEAR_NOT_CONNECTED", "Linear isn't connected for this company. A company owner or admin can connect it in Company settings, Connections.");
+      const name = linearWorkspace.name;
+      linearWorkspace = undefined;
+      const projects = [...linearPicks.keys()];
+      linearPicks.clear();
+      return { body: { status: "disconnected" as const, workspaceName: name, projects } };
+    },
+    "company.linear.team.get": ({ params, person }) => {
+      const name = params["project"] ?? "";
+      const refused = fakeTeamRefusal(name, person);
+      if (refused !== undefined) return refused;
+      const pick = linearPicks.get(name);
+      return { body: { project: name, team: linearTeams.find((team) => team.id === pick) ?? null, teams: linearTeams } };
+    },
+    "company.linear.team.put": ({ params, body, person }) => {
+      const name = params["project"] ?? "";
+      const refused = fakeTeamRefusal(name, person);
+      if (refused !== undefined) return refused;
+      const team = linearTeams.find((one) => one.id === body.teamId);
+      if (team === undefined) return failure(404, "NOT_FOUND", "That Linear team was not found in the company's Linear workspace.");
+      linearPicks.set(name, team.id);
+      return { body: { project: name, team } };
+    },
+    "company.linear.team.clear": ({ params, person }) => {
+      const name = params["project"] ?? "";
+      if (project(name) === undefined) return failure(404, "NOT_FOUND", "project not found");
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin, or the project's admin, can choose its Linear team.");
+      return { body: { project: name, team: null, cleared: linearPicks.delete(name) } };
+    },
     "company.audit.records": ({ person }) => person.administrator
       ? { body: { records: [{ at: "2026-11-14T10:00:00.000Z", actor: { developerId: PRIYA.developerId, name: "Priya" }, action: "task.start", subject: TASK_IDS.running, outcome: "ok" }] } }
       : failure(403, "FORBIDDEN", "Only an administrator can read the audit."),

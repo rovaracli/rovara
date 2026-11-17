@@ -18,6 +18,7 @@ const fake = await startFakeCode({
   host: process.env.HOST ?? "127.0.0.1",
   ...(process.env.ROVARA_CLIENT_ID === undefined ? {} : { clientId: process.env.ROVARA_CLIENT_ID }),
   ...(process.env.ROVARA_CLIENT_SECRET === undefined ? {} : { clientSecret: process.env.ROVARA_CLIENT_SECRET }),
+  ...(process.env.FAKE_LINEAR_REDIRECT_URI === undefined ? {} : { linearRedirectUri: process.env.FAKE_LINEAR_REDIRECT_URI }),
 });
 console.log(`fake Rovara Code on ${fake.url} (signing in as ${person.name}; client ${process.env.ROVARA_CLIENT_ID ?? "rovara-cloud"}, secret ${process.env.ROVARA_CLIENT_SECRET === undefined ? "fake-secret" : "from ROVARA_CLIENT_SECRET"})`);
 console.log("canned data only; it forgets everything when it stops. Ctrl-C to stop.");

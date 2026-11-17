@@ -20,6 +20,9 @@ import { StoreConflict, companyScopedWork, type WorkSessionStore } from "./work-
 import { companyOf } from "./company-caller.js";
 import { JOIN_UNUSABLE, inviteTokenHash, linkToken, usableInvite } from "./onboarding-routes.js";
 import { GITHUB_APP_PATHS, GITHUB_CALLBACK_PATH, GITHUB_CONNECT_COOKIE, createGithubConnect, type GithubAnswer } from "./github-connect.js";
+import { connectCookieName } from "./connect-flow.js";
+import { SLACK_CALLBACK_PATH, createSlackConnect } from "./slack-connect.js";
+import { LINEAR_CALLBACK_PATH, createLinearConnect } from "./linear-connect.js";
 
 export interface CloudRequest {
   method: string;
@@ -116,6 +119,9 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
   const appOrigin = new URL(options.origin).origin;
   // Guided onboarding PR 2: Connect GitHub (github-connect.ts).
   const github = createGithubConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, ...(options.company === undefined ? {} : { companies: options.company.store }) });
+  // Guided onboarding PR 11: Add to Slack, the channel picker, Connect Linear and the team pick (slack-connect.ts, linear-connect.ts).
+  const slack = createSlackConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, origin: options.origin });
+  const linear = createLinearConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, origin: options.origin });
 
   /**
    * The join page's lookup (onboarding-routes.ts): same origin only (a page elsewhere can't start a join for someone), JSON, small. A usable
@@ -170,6 +176,14 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       const back = await github.callback(request.query, cookieNamed(request, GITHUB_CONNECT_COOKIE), sessionId(request));
       return text(302, "", { location: back.location, "set-cookie": back.setCookie });
     }
+    if (path === SLACK_CALLBACK_PATH && method === "GET") {
+      const back = await slack.callback(request.query, cookieNamed(request, connectCookieName("slack")), sessionId(request));
+      return text(302, "", { location: back.location, "set-cookie": back.setCookie });
+    }
+    if (path === LINEAR_CALLBACK_PATH && method === "GET") {
+      const back = await linear.callback(request.query, cookieNamed(request, connectCookieName("linear")), sessionId(request));
+      return text(302, "", { location: back.location, "set-cookie": back.setCookie });
+    }
     if (path === JOIN_PATH && method === "POST") return joinLookup(request);
     if (path === "/v1/auth/browser/authorize" && method === "GET" && request.query.get("join") === "1") return joinSignIn(request);
     if (path === "/v1/auth/browser/authorize" && method === "GET") {
@@ -181,8 +195,8 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     if (path === options.callbackPath && method === "GET") {
       const state = request.query.get("state") ?? "";
       // A join ticket is never a sign-in under way.
-      const pending = state.startsWith("join.") || state.startsWith("github.") ? undefined : await options.store.takePending(state);
-      if (pending === undefined || pending.joinTicket === true || pending.github !== undefined || now().getTime() - pending.at > SIGN_IN_TTL_MS) return text(400, "This sign-in expired. Go back to the app and sign in again.");
+      const pending = state.startsWith("join.") || state.startsWith("github.") || state.startsWith("connect.") ? undefined : await options.store.takePending(state);
+      if (pending === undefined || pending.joinTicket === true || pending.github !== undefined || pending.connect !== undefined || now().getTime() - pending.at > SIGN_IN_TTL_MS) return text(400, "This sign-in expired. Go back to the app and sign in again.");
       const refused = request.query.get("error");
       // A join Code refused (the email isn't the invited one, the invite was used or withdrawn): the one sentence, never Code's words.
       if (refused !== null && pending.invite !== undefined) return text(302, "", { location: JOIN_UNUSABLE_PAGE });
@@ -261,18 +275,21 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         : method === "POST" && apiPath === GITHUB_APP_PATHS.result ? () => github.result(session!, id)
           : method === "POST" && apiPath === GITHUB_APP_PATHS.choose ? () => github.choose(session!, id, parsedBody(request.body))
             : method === "GET" && apiPath === GITHUB_APP_PATHS.connections ? () => github.connections(session!) : undefined;
-    if (githubCall !== undefined) {
+    // Guided onboarding PR 11: Slack and Linear (the start and result routes need this sign-in's cookie, as GitHub's).
+    const connectRoute = githubCall === undefined ? slack.route(method, apiPath, request.query) ?? linear.route(method, apiPath) : undefined;
+    const connectCall = githubCall ?? (connectRoute === undefined ? undefined : () => connectRoute(session!, id, parsedBody(request.body)));
+    if (connectCall !== undefined) {
       try {
         let answer: GithubAnswer;
         try {
-          answer = await githubCall();
+          answer = await connectCall();
         } catch (error) {
           // Another server refreshed this sign-in first (its refresh token was used once): run once more on what the store holds, as the route loop does.
           if (!(error instanceof SignInEnded)) throw error;
           const stored = await options.store.get(id);
           if (stored === undefined || stored.refreshToken === session.refreshToken) throw error;
           session = stored;
-          answer = await githubCall();
+          answer = await connectCall();
         }
         if (session.changed === true) {
           delete session.changed;

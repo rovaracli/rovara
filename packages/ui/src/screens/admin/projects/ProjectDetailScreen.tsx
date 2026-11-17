@@ -1,4 +1,5 @@
 import { ProjectSlackLinks } from "./ProjectSlackLinks.js";
+import { ProjectIntegrations } from "../../connect/ProjectIntegrations.js";
 import { useEffect, useRef } from "react";
 import { AllowedWebsites } from "./AllowedWebsites.js";
 import { ContextSources } from "./ContextSources.js";
@@ -38,6 +39,7 @@ export function ProjectDetailScreen() {
  <h2>Allowed websites</h2>{p.settings.allowedDomains.length === 0 ? <p>No project websites returned.</p> : <ul>{p.settings.allowedDomains.map(d=><li key={d.domain}><VisibleText text={d.domain} /> · {d.status}</li>)}</ul>}<p>The website editor shows mandatory defaults and staff decisions. Pending websites require staff approval on Rovara Cloud.</p>
  <AllowedWebsites orgId={context.orgId} project={name} available={p.name === name && p.status === "active" && p.myRole === "maintainer" && !read.isFetching && !read.isError && !context.checking} />
  {p.name===name && p.status==="active" && p.myRole==="maintainer" && !read.isFetching && !read.isError && !context.checking && <ContextSources key={`sources:${context.orgId}:${name}`} project={name} />}
+ {p.name===name && p.status==="active" && <ProjectIntegrations key={`integrations:${context.orgId}:${name}`} project={name} canEdit={p.myRole === "maintainer" && !context.checking} />}
  <h2>Slack channels</h2><ProjectSlackLinks orgId={context.orgId} project={name} available={p.name === name && p.myRole === "maintainer" && !read.isFetching && !read.isError && !context.checking} />
  <p>Spending, AI source order, connector grants and code rules are not included in this read-only view.</p><ProjectPeople key={name} name={p.name} />
  </>}</ReadState></section>;
