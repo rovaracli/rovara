@@ -19,6 +19,7 @@ import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./p
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { WIKI_ROUTES } from "./wiki-routes.js";
+import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
@@ -823,4 +824,6 @@ export const ROUTES: Route[] = [
   ...SETUP_CHECKLIST_ROUTES,
   // The project Wiki tab's reads (lead 4 W5): Code decides who may read; Cloud passes the person's token, rebuilds each answer for that project only, and answers in fixed words.
   ...WIKI_ROUTES,
+  // The wiki panel on the setup page (lead 4 W6): the file map, the build controls and the nightly upkeep switch; Code decides who may, Cloud rebuilds bodies and answers (no dollar figure crosses).
+  ...WIKI_SETUP_ROUTES,
 ];

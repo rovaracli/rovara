@@ -15,6 +15,8 @@ import {
   type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 import { wikiIndex, wikiPage, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
+import { wikiMapOf, wikiSetupBuildView, type FakeWikiSetup } from "./wiki-setup-fixture.js";
+import { WIKI_SETUP_CODE_WORDS } from "../../packages/contracts/src/app-wiki-setup.js";
 
 export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
 
@@ -159,6 +161,53 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const id = decodeURIComponent(match[2]);
     const answered = match[3] === undefined ? wikiPage(name, id, set) : wikiSources(name, id, set);
     return answered === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "page not found" } } } : { status: 200, body: answered };
+  };
+  // Lead 4 W6 (Code W0's wiki-map, W4's wiki-build controls, and the nightly upkeep seam): each project's pretend wiki build, set by the specs through /__fake/wiki-setup. `off` makes Code answer its unknown-route 404.
+  const wikiSetups = new Map<string, FakeWikiSetup>();
+  const wikiSetupOf = (name: string): FakeWikiSetup => { let one = wikiSetups.get(name); if (one === undefined) { one = { status: "none", pages: 0, refreshPages: 0, agentsOn: false, aiKey: "connected", mapMade: false, planned: 0, written: 0, upkeepOn: false }; wikiSetups.set(name, one); } return one; };
+  const wikiSetupAnswer = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/(wiki-map|wiki-build(?:\/(?:continue|stop|refresh|agents|delete))?|upkeep)$/u.exec(path);
+    if (match === null) return undefined;
+    const name = decodeURIComponent(match[1]!), tail = match[2]!, one = wikiSetupOf(name), grant = roleIn(person, name);
+    if (tail === "upkeep" ? one.upkeepOff === true : one.off === true) return failure(404, "NOT_FOUND", "route not found");
+    const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
+    if (project(name) === undefined || companyless.has(person.developerId) || (!manage && grant === undefined) || !wikiReads(person, name)) return failure(404, "NOT_FOUND", "project not found");
+    const view = (): { status: number; body: unknown } => ({ status: 200, body: wikiSetupBuildView(one, manage) });
+    if (method === "GET") return tail === "wiki-map" ? { status: 200, body: one.mapMade ? { status: "ready", canManage: manage, map: wikiMapOf(name) } : { status: "none", canManage: manage } } : tail === "upkeep" ? { status: 200, body: { enabled: one.upkeepOn, canManage: manage } } : view();
+    if (!manage) return failure(403, "FORBIDDEN", tail === "wiki-map" ? WIKI_SETUP_CODE_WORDS.mapNotAllowed : WIKI_SETUP_CODE_WORDS.notAllowed);
+    const given = body as { requestId?: unknown; on?: unknown } | undefined;
+    if (tail === "wiki-map") { one.mapMade = true; return { status: 200, body: { status: "ready", canManage: true, map: wikiMapOf(name) } }; }
+    if (typeof given?.requestId !== "string") return failure(400, "CONFIG_INVALID", "the request is not valid");
+    if (tail === "upkeep") { one.upkeepOn = given.on === true; return { status: 200, body: { enabled: one.upkeepOn, canManage: true } }; }
+    if (tail === "wiki-build/agents") { one.agentsOn = given.on === true; return view(); }
+    if (tail === "wiki-build/delete") {
+      if (one.status === "running") return failure(409, "WORKSPACE_BUSY", WIKI_SETUP_CODE_WORDS.deleteWhileRunning);
+      Object.assign(one, { status: "none", pages: 0, refreshPages: 0, agentsOn: false, planned: 0, written: 0, mapMade: false });
+      delete one.stop;
+      return { status: 200, body: { deleted: true, message: WIKI_SETUP_CODE_WORDS.deleted, view: wikiSetupBuildView(one, true) } };
+    }
+    if (tail === "wiki-build/stop") {
+      if (one.status === "running") Object.assign(one, { status: "stopped", stop: "stopped_by_person" });
+      return { status: 202, body: wikiSetupBuildView(one, true) };
+    }
+    if (one.status === "running") return failure(409, "WORKSPACE_BUSY", WIKI_SETUP_CODE_WORDS.busy);
+    if (one.aiKey === "missing") return failure(503, "MODEL_PROXY_UNAVAILABLE", WIKI_SETUP_CODE_WORDS.connectKey);
+    if (tail === "wiki-build/continue") {
+      if (one.status !== "stopped") return failure(400, "CONFIG_INVALID", WIKI_SETUP_CODE_WORDS.nothingToContinue);
+      one.status = "running";
+      return { status: 202, body: wikiSetupBuildView(one, true) };
+    }
+    if (tail === "wiki-build/refresh") {
+      if (one.pages === 0) return failure(400, "CONFIG_INVALID", WIKI_SETUP_CODE_WORDS.buildFirst);
+      if (one.refreshPages === 0) return failure(400, "CONFIG_INVALID", WIKI_SETUP_CODE_WORDS.nothingToRefresh);
+      Object.assign(one, { status: "running", planned: one.refreshPages, written: 0 });
+      delete one.stop;
+      return { status: 202, body: wikiSetupBuildView(one, true) };
+    }
+    if (!one.mapMade) return failure(400, "CONFIG_INVALID", WIKI_SETUP_CODE_WORDS.noMap);
+    Object.assign(one, { status: "running", planned: 24, written: 6 });
+    delete one.stop;
+    return { status: 202, body: wikiSetupBuildView(one, true) };
   };
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
@@ -1132,6 +1181,22 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           wikis.set(given.project, { ...(given.state === undefined ? {} : { state: given.state as "ready" }), ...(given.off === true ? { off: true } : {}), ...(given.broken === true ? { broken: true } : {}) });
           return send(200, { project: given.project });
         }
+        if (method === "POST" && url.pathname === "/__fake/wiki-setup") {
+          const given = JSON.parse(await readBody(request)) as Record<string, unknown>;
+          if (typeof given["project"] !== "string" || project(given["project"]) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project" } });
+          wikiSetups.delete(given["project"]);
+          const one = wikiSetupOf(given["project"]);
+          const status = given["status"];
+          if (status === "built" || status === "stopped" || status === "running") { Object.assign(one, { status, pages: 24, refreshPages: 2, mapMade: true, planned: 24, written: status === "built" ? 24 : 12 }); if (status === "stopped") one.stop = (given["stop"] as FakeWikiSetup["stop"] | undefined) ?? "stopped_by_person"; }
+          if (given["aiKey"] === "missing" || given["aiKey"] === "unknown") one.aiKey = given["aiKey"];
+          if (given["mapMade"] === true) one.mapMade = true;
+          if (given["refreshPages"] === 0) one.refreshPages = 0;
+          if (given["agentsOn"] === true) one.agentsOn = true;
+          if (given["upkeepOn"] === true) one.upkeepOn = true;
+          if (given["off"] === true) one.off = true;
+          if (given["upkeepOff"] === true) one.upkeepOff = true;
+          return send(200, { project: given["project"] });
+        }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
           if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
@@ -1156,8 +1221,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
-          if (who === undefined && /\/wiki(?:\/|$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          if (who === undefined && /\/(?:wiki(?:[-/]|$)|upkeep$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (answer !== undefined) return send(answer.status, answer.body);
         }

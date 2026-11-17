@@ -17,6 +17,7 @@
   "packages/contracts/src/app-saved-env.ts",
   "packages/contracts/src/app-second-review.ts",
   "packages/contracts/src/app-service-status.ts",
+  "packages/contracts/src/app-wiki-setup.ts",
   "packages/contracts/src/app-wiki.ts",
   "packages/contracts/src/app-working-branches.ts",
   "packages/contracts/src/audit-search.ts",

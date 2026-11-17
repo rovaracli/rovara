@@ -1037,6 +1037,17 @@ PUT /v1/app/projects/{p}/setup-status/skips | k | later | client.projects.setupS
 GET /v1/app/projects/{p}/wiki | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId} | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki-map | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-map | k | later | | wiki-setup | T
+GET /v1/app/projects/{p}/wiki-build | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/continue | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/stop | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/refresh | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/agents | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/delete | k | later | | wiki-setup | T
+GET /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
+PUT /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/eval-confirm | k | later | | setup-agent | LT

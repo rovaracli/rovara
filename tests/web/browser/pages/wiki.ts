@@ -36,3 +36,32 @@ export class WikiPage {
   treeItem(name: RegExp | string): Locator { return this.nav.getByRole("button", { name }); }
   marker(text: RegExp): Locator { return this.article.getByRole("button", { name: text }); }
 }
+
+/** Sets a project's pretend wiki build on the pretend Code (W0's file map, W4's controls, the nightly upkeep seam). `status` also writes 24 pages; `aiKey` "missing" is a company with no AI key; `off` and `upkeepOff` make Code answer as one without the route. */
+export async function setWikiSetup(page: Page, project: string, options: { status?: "built" | "stopped" | "running"; stop?: string; aiKey?: "missing" | "unknown"; mapMade?: boolean; refreshPages?: 0; agentsOn?: boolean; upkeepOn?: boolean; off?: boolean; upkeepOff?: boolean } = {}): Promise<void> {
+  const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/wiki-setup`, { data: { project, ...options } });
+  expect(answer.status()).toBe(200);
+}
+
+/** The wiki row of the project's setup checklist (lead 4 W6): the forecast, Build, progress, the report, the switches and nightly upkeep. */
+export class WikiSetupPanel {
+  readonly page: Page;
+  readonly row: Locator;
+  constructor(page: Page) {
+    this.page = page;
+    this.row = page.getByTestId("checklist-row-wiki");
+  }
+  byId(id: string): Locator { return this.row.getByTestId(id); }
+  get map(): Locator { return this.byId("wiki-setup-map"); }
+  get build(): Locator { return this.byId("wiki-setup-build"); }
+  get stop(): Locator { return this.byId("wiki-setup-stop"); }
+  get continue(): Locator { return this.byId("wiki-setup-continue"); }
+  get refresh(): Locator { return this.byId("wiki-setup-refresh"); }
+  get agents(): Locator { return this.row.getByRole("switch", { name: "Give the wiki to agents" }); }
+  get upkeep(): Locator { return this.row.getByRole("switch", { name: "Nightly upkeep" }); }
+  async open(project: string): Promise<void> {
+    await this.page.goto(ROUTES.project(project));
+    await expect(this.row).toBeVisible();
+    if ((await this.row.locator("details").first().getAttribute("open")) === null) await this.row.locator("summary").first().click();
+  }
+}

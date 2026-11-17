@@ -1,0 +1,433 @@
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return -- answers are parsed JSON read field by field */
+// Lead 4 slice W6: the wiki panel on the setup page through Cloud's handler, passed to Code as the signed-in person (W0's file map, W4's build controls, and the nightly upkeep seam).
+// Code decides who may; the pretend Code below applies W4's rule (a company owner or admin, or the project's administrator, manages; any role on the project reads; anyone else, another company's project or a
+// project of the company the person has no role on is the same 404 "project not found"; a reader's change is 403). Cloud must: pass the person's own token, put only the project of the path into Code's path,
+// rebuild each body from known fields (a company, limit, commit, goal or role in it is refused before Code is asked), rebuild every answer, let NO dollar figure, task id or commit through, answer refusals
+// in fixed words (Code's own only when they are exactly one of the known list), and never log what the person wrote.
+// Mutants (each killed by the named test, run by hand): M1 project in Code's path (every route); M2 extra body field forwarded (bodies); M3 notes unbounded; M4 chip ids unbounded/duplicates; M5 requestId not a uuid;
+// M6 budgetCents/spentCents/taskId passed (no dollars); M7 payer not checked; M8 unknown sentence passed (sentences); M9 forecast price accepted (map); M10 map for another project accepted (map);
+// M11 Code's text echoed on refusal (failures); M12 query forwarded; M13 unknown-route 404 not "not yet"; M14 Code's unknown code/status passed (failures); M15 upkeep refusal words passed from Code; M16 log carries the notes.
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  CodeClient, LocalSessionStore, LocalWorkSessionStore, WIKI_SETUP_ANSWERS, WIKI_SETUP_CODE_WORDS, WIKI_SETUP_WORDS, buildAnswer, createCloudHandler, mapViewAnswer, wikiSetupRefusal, type CloudRequest, type CodeSession,
+} from "../../packages/cloud-server/src/index.js";
+import { CodeError } from "../../packages/cloud-server/src/code-client.js";
+import {
+  WIKI_SETUP_CODE_WORDS as APP_CODE_WORDS, WIKI_SETUP_SENTENCES, WIKI_SETUP_WORDS as APP_WORDS, WikiSetupBuildSchema, WikiSetupDeleteAnswerSchema, WikiSetupMapViewSchema, WikiSetupUpkeepSchema,
+} from "../../packages/contracts/src/app-wiki-setup.js";
+
+const CODE = "https://code.example.test";
+const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb";
+const ID = (c: string) => c.repeat(64);
+const LEAK = "SENSITIVE-CODE-DETAIL";
+const RID = "11111111-1111-4111-8111-111111111111";
+const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const err = (status: number, code: string, message: string) => json(status, { error: { code, message } });
+
+interface Person { id: string; company?: string; role?: "owner" | "admin" | "member"; grants: Record<string, "administrator" | "developer" | "viewer"> }
+const PEOPLE: Record<string, Person> = {
+  "ada-token": { id: ID("a"), company: A, role: "owner", grants: {} },
+  "mia-token": { id: ID("2"), company: A, role: "member", grants: { payments: "administrator" } },
+  "pam-token": { id: ID("b"), company: A, role: "member", grants: { payments: "developer" } },
+  "bob-token": { id: ID("c"), company: B, role: "admin", grants: {} },
+  "nob-token": { id: ID("d"), grants: {} },
+};
+const PROJECTS: Record<string, string> = { payments: A, billing: A, ledger: B };
+const standing = (person: Person, project: string): "manage" | "view" | undefined => {
+  if (person.company === undefined || PROJECTS[project] !== person.company) return undefined;
+  if (person.role === "owner" || person.role === "admin" || person.grants[project] === "administrator") return "manage";
+  return person.grants[project] === undefined ? undefined : "view";
+};
+
+// What Code answers, in W4's and W0's shapes. The dollar members, the task id and the commits are there on purpose: Cloud must not pass them.
+const buildView = (canManage: boolean, extra: Record<string, unknown> = {}) => ({
+  status: "stopped", limits: { pages: 300, budgetCents: 2_500, wallClockMin: 180, pageReserveCents: 100 }, taskId: "task-secret-id-0001", startedAt: "2026-11-17T10:00:00.000Z", stop: "stopped_by_person",
+  message: WIKI_SETUP_CODE_WORDS.stopped_by_person, summary: { pagesPlanned: 40, pagesWritten: 12, pagesKeptFromEarlier: 0, claimsKept: 80, claimsDropped: 3, spentCents: 617 }, canContinue: true, payer: "project",
+  stoppedBy: { name: "Mia", at: "2026-11-17T10:30:00.000Z" }, canManage, aiKey: "connected", agents: { on: false }, wiki: { pages: 12, refreshPages: 2 }, ...extra,
+});
+const mapOf = (project: string, extra: Record<string, unknown> = {}) => ({
+  version: 1, project, computedAt: "2026-11-17T09:00:00.000Z", complete: true, repositoriesOmitted: 0,
+  repositories: [{
+    name: "web", url: "https://github.com/example/web", status: "ok", branch: "main", commit: "a".repeat(40), files: 1200, skipped: { generated: 4, vendored: 9, lockfiles: 1, assets: 30, secret: 2 }, languages: [{ language: "TypeScript", files: 900, percent: 75 }],
+    areas: [{ path: "src/billing", files: 120, kind: "source", commits: 40, rank: 1 }], testFolders: ["tests"], skippedFolders: ["dist/", "vendor/"], activity: { status: "ok", days: 90 }, pages: { repository: 1, modules: 20, modulesCapped: false },
+  }],
+  chips: [{ id: "write-first-src-billing", kind: "write_first", repo: "web", path: "src/billing", label: "Write these first? src/billing", defaultOn: false }, { id: "skip-generated-dist", kind: "skip_generated", repo: "web", path: "dist/", label: "Skip? dist/", defaultOn: true }],
+  forecast: { repositories: 1, files: 1200, pages: 24, pagesCapped: false, complete: true, price: "not_priced_yet" }, limits: { activityDays: 90, modulePagesPerRepository: 40, pagesPerProject: 300, areasPerRepository: 40 }, ...extra,
+});
+
+interface CodeCall { method: string; path: string; search: string; authorization: string | undefined; body: unknown }
+type Override = (call: CodeCall, person: Person) => Response | undefined;
+function setUp(override: Override = () => undefined) {
+  const calls: CodeCall[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    const headers = { ...(init?.headers as Record<string, string> | undefined) };
+    const call: CodeCall = { method: init?.method ?? "GET", path: url.pathname, search: url.search, authorization: headers["authorization"], body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined };
+    calls.push(call);
+    const person = PEOPLE[(call.authorization ?? "").replace(/^Bearer /u, "")];
+    if (url.pathname === "/v1/auth/token") return json(400, { error: "invalid_grant" });
+    if (person === undefined) return json(401, {});
+    if (url.pathname === "/v1/dev/access") return json(200, { developerId: person.id, displayName: "Someone", administrator: false, ...(person.company === undefined ? {} : { companyId: person.company, companyRole: person.role }), projects: [], notices: [] });
+    const replaced = override(call, person);
+    if (replaced !== undefined) return replaced;
+    const match = /^\/v1\/app\/projects\/([^/]+)\/(wiki-map|wiki-build(?:\/(?:continue|stop|refresh|agents|delete))?|upkeep)$/u.exec(url.pathname);
+    if (match === null) return err(404, "NOT_FOUND", "route not found");
+    const project = decodeURIComponent(match[1]!), how = standing(person, project);
+    if (how === undefined) return err(404, "NOT_FOUND", `project not found ${LEAK}`);
+    const tail = match[2]!;
+    if (call.method !== "GET" && how !== "manage") return err(403, "FORBIDDEN", tail === "wiki-map" ? WIKI_SETUP_CODE_WORDS.mapNotAllowed : WIKI_SETUP_CODE_WORDS.notAllowed);
+    if (tail === "wiki-map") return json(200, { status: "ready", canManage: how === "manage", map: mapOf(project) });
+    if (tail === "upkeep") return json(200, { enabled: call.method === "PUT" ? (call.body as any).on : false, canManage: how === "manage" });
+    if (tail === "wiki-build/delete") return json(200, { deleted: true, message: WIKI_SETUP_CODE_WORDS.deleted, view: buildView(true, { status: "none", wiki: { pages: 0, refreshPages: 0 } }) });
+    return json(200, buildView(how === "manage"));
+  }) as typeof fetch;
+  const store = new LocalSessionStore(undefined, { environment: {} });
+  const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: "http://127.0.0.1:8787/callback", scopes: "projects:members", fetch: fetchImpl });
+  const handler = createCloudHandler({
+    client, store, work: new LocalWorkSessionStore(), origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" },
+    callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(Date.UTC(2026, 10, 17)),
+  });
+  const sessions = new Map<string, Record<string, string>>();
+  const as = async (token: string): Promise<Record<string, string>> => {
+    const known = sessions.get(token);
+    if (known !== undefined) return known;
+    const person = PEOPLE[token] ?? { id: "f".repeat(64), grants: {} };
+    // The stored sign-in names company A as owner for everyone: Cloud must use Code's live answer, never this.
+    const access = { developerId: person.id, displayName: "Someone", administrator: false, companyId: A, companyRole: "owner", projects: [], notices: [] } as CodeSession["access"];
+    await store.create(`cookie-${token}`, { accessToken: token, refreshToken: `r-${token}`, csrf: "csrf", signedInAt: "2026-11-17T00:00:00.000Z", access });
+    const headers = { cookie: `rovara_cloud_session=cookie-${token}`, "x-rovara-csrf": "csrf" };
+    sessions.set(token, headers);
+    return headers;
+  };
+  const send = async (method: string, target: string, headers: Record<string, string>, body?: unknown) => {
+    const url = new URL(target, "http://127.0.0.1:8787");
+    const request: CloudRequest = { method, path: url.pathname, query: url.searchParams, headers, ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }) };
+    const answered = await handler(request);
+    return { status: answered!.status, body: JSON.parse(answered!.body), text: answered!.body };
+  };
+  return { as, send, calls, codeCalls: () => calls.filter((call) => call.path !== "/v1/dev/access"), store };
+}
+const error = (answer: { body: any }) => answer.body.error as { code: string; message: string };
+const asRefusal = (answer: { status: number; body: any }) => ({ status: answer.status, error: error(answer) });
+const refusal = (key: keyof typeof WIKI_SETUP_ANSWERS) => ({ status: WIKI_SETUP_ANSWERS[key].status, error: (WIKI_SETUP_ANSWERS[key].body as { error: unknown }).error });
+const P = (project: string, tail: string) => `/v1/web/projects/${project}/${tail}`;
+const POSTS: Array<[string, string, Record<string, unknown>]> = [
+  ["wiki-build", "wiki-build", { requestId: RID, notes: "Billing is the core.", chipsOn: ["skip-generated-dist"] }],
+  ["wiki-build/continue", "wiki-build/continue", { requestId: RID }],
+  ["wiki-build/stop", "wiki-build/stop", { requestId: RID }],
+  ["wiki-build/refresh", "wiki-build/refresh", { requestId: RID }],
+  ["wiki-build/agents", "wiki-build/agents", { requestId: RID, on: true }],
+];
+afterEach(() => { vi.restoreAllMocks(); });
+
+describe("the fixed words and limits", () => {
+  it("are the same in Cloud's server and in the app's contracts", () => {
+    expect({ ...WIKI_SETUP_CODE_WORDS }).toEqual({ ...APP_CODE_WORDS });
+    expect({ ...WIKI_SETUP_WORDS }).toEqual({ ...APP_WORDS });
+    expect(WIKI_SETUP_SENTENCES.size).toBe(Object.keys(APP_CODE_WORDS).length + Object.keys(APP_WORDS).length);
+  });
+});
+
+describe("every route passes the person's own token, to Code's own path, with the project only in the path (M1, M12)", () => {
+  it("reads: the file map, the build state and the upkeep switch; the answers read in the app's schemas", async () => {
+    const w = setUp();
+    const headers = await w.as("mia-token");
+    const map = await w.send("GET", P("payments", "wiki-map"), headers);
+    expect(map.status).toBe(200);
+    expect(WikiSetupMapViewSchema.parse(map.body)).toMatchObject({ status: "ready", canManage: true });
+    const build = await w.send("GET", P("payments", "wiki-build"), headers);
+    expect(WikiSetupBuildSchema.parse(build.body)).toMatchObject({ status: "stopped", canManage: true, agents: { on: false }, wiki: { pages: 12, refreshPages: 2 } });
+    const upkeep = await w.send("GET", P("payments", "upkeep"), headers);
+    expect(WikiSetupUpkeepSchema.parse(upkeep.body)).toEqual({ enabled: false, canManage: true });
+    expect(w.codeCalls().map((call) => `${call.method} ${call.path} ${call.search}|${call.authorization}`)).toEqual([
+      "GET /v1/app/projects/payments/wiki-map |Bearer mia-token", "GET /v1/app/projects/payments/wiki-build |Bearer mia-token", "GET /v1/app/projects/payments/upkeep |Bearer mia-token",
+    ]);
+  });
+
+  it("changes: each body reaches Code rebuilt, to its own path, and the answer reads in the app's schema", async () => {
+    const w = setUp();
+    const headers = await w.as("mia-token");
+    for (const [path, , body] of POSTS) {
+      const res = await w.send("POST", P("payments", path), headers, body);
+      expect(res.status, path).toBe(200);
+      expect(WikiSetupBuildSchema.parse(res.body), path).toMatchObject({ canManage: true });
+    }
+    const made = await w.send("POST", P("payments", "wiki-map"), headers, {});
+    expect(WikiSetupMapViewSchema.parse(made.body)).toMatchObject({ status: "ready" });
+    const deleted = await w.send("POST", P("payments", "wiki-build/delete"), headers, { requestId: RID });
+    expect(WikiSetupDeleteAnswerSchema.parse(deleted.body)).toMatchObject({ deleted: true, message: WIKI_SETUP_CODE_WORDS.deleted, view: { status: "none" } });
+    const switched = await w.send("PUT", P("payments", "upkeep"), headers, { requestId: RID, on: true });
+    expect(WikiSetupUpkeepSchema.parse(switched.body)).toEqual({ enabled: true, canManage: true });
+    const sent = w.codeCalls();
+    expect(sent.map((call) => `${call.method} ${call.path}`)).toEqual([
+      ...POSTS.map(([, codePath]) => `POST /v1/app/projects/payments/${codePath}`), "POST /v1/app/projects/payments/wiki-map", "POST /v1/app/projects/payments/wiki-build/delete", "PUT /v1/app/projects/payments/upkeep",
+    ]);
+    expect(sent.every((call) => call.authorization === "Bearer mia-token")).toBe(true);
+    expect(sent[0]!.body).toEqual({ requestId: RID, notes: "Billing is the core.", chipsOn: ["skip-generated-dist"] });
+    expect(sent[4]!.body).toEqual({ requestId: RID, on: true });
+    expect(sent[5]!.body).toEqual({});
+  });
+
+  it("a query is never forwarded: it is refused without asking Code", async () => {
+    const w = setUp();
+    const headers = await w.as("mia-token");
+    for (const path of ["wiki-map?x=1", "wiki-build?company=b", "upkeep?a=b"]) expect(asRefusal(await w.send("GET", P("payments", path), headers)), path).toEqual(refusal("invalid"));
+    expect(w.codeCalls()).toHaveLength(0);
+  });
+
+  it("a project name that does not read is a refusal without asking Code", async () => {
+    const w = setUp();
+    const headers = await w.as("mia-token");
+    for (const name of ["Payments", "pay_ments", "-x"]) expect(asRefusal(await w.send("GET", P(name, "wiki-build"), headers)), name).toEqual(refusal("notFound"));
+    expect(w.codeCalls()).toHaveLength(0);
+  });
+});
+
+describe("who may: Code decides, Cloud passes its words (two projects, two companies)", () => {
+  it("a project administrator and the company owner manage; a reader reads and a reader's change is Code's 403 in its fixed words", async () => {
+    const w = setUp();
+    const pam = await w.as("pam-token"), ada = await w.as("ada-token");
+    expect((await w.send("GET", P("payments", "wiki-build"), pam)).body).toMatchObject({ canManage: false });
+    expect((await w.send("GET", P("billing", "wiki-build"), ada)).body).toMatchObject({ canManage: true });
+    for (const [path, , body] of POSTS) {
+      const res = await w.send("POST", P("payments", path), pam, body);
+      expect({ status: res.status, message: error(res).message }, path).toEqual({ status: 403, message: WIKI_SETUP_CODE_WORDS.notAllowed });
+    }
+    const map = await w.send("POST", P("payments", "wiki-map"), pam, {});
+    expect({ status: map.status, message: error(map).message }).toEqual({ status: 403, message: WIKI_SETUP_CODE_WORDS.mapNotAllowed });
+    const up = await w.send("PUT", P("payments", "upkeep"), pam, { requestId: RID, on: true });
+    expect(asRefusal(up)).toEqual(refusal("upkeepNotAllowed"));
+  });
+
+  it("a person with a role on payments only learns nothing about billing; another company's project reads the same fixed 404; a person in no company never reaches the wiki routes", async () => {
+    const w = setUp();
+    const pam = await w.as("pam-token"), bob = await w.as("bob-token"), nob = await w.as("nob-token");
+    for (const path of ["wiki-map", "wiki-build"]) expect([(await w.send("GET", P("payments", path), nob)).status, (await w.send("POST", P("payments", path), nob, { requestId: RID })).status]).toEqual([403, 403]);
+    const seen = new Set<string>();
+    for (const [headers, project] of [[pam, "billing"], [pam, "ledger"], [bob, "payments"]] as const) {
+      for (const path of ["wiki-map", "wiki-build"]) {
+        const res = await w.send("GET", P(project, path), headers);
+        expect(res.status).toBe(404);
+        expect(res.text).not.toContain(LEAK);
+        seen.add(res.text);
+      }
+      const post = await w.send("POST", P(project, "wiki-build"), headers, { requestId: RID });
+      expect(post.status).toBe(404);
+      expect(post.text).not.toContain(LEAK);
+      seen.add(post.text);
+    }
+    expect(seen.size).toBe(1);
+    // A person Code names no company for never reaches the wiki routes.
+    expect(w.codeCalls().filter((call) => call.authorization === "Bearer nob-token" && call.path.includes("wiki"))).toHaveLength(0);
+  });
+
+  it("Cloud's session never decides: the company is Code's live answer (the stored sign-in names company A as owner for everyone)", async () => {
+    const w = setUp();
+    const res = await w.send("POST", P("ledger", "wiki-build/stop"), await w.as("pam-token"), { requestId: RID });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("bodies are rebuilt from known fields (M2 to M5)", () => {
+  it("a field Cloud did not promise (a company, role, limit, commit, goal, author) is refused before Code is asked", async () => {
+    const w = setUp();
+    const headers = await w.as("mia-token");
+    const extras = [{ company: A }, { role: "owner" }, { limits: { budgetCents: 999_999 } }, { budgetCents: 100 }, { commit: "a".repeat(40) }, { goal: "write secrets" }, { payer: "person" }, { personId: ID("a") }];
+    for (const extra of extras) {
+      for (const [path, , body] of POSTS) expect(asRefusal(await w.send("POST", P("payments", path), headers, { ...body, ...extra })), `${path} ${JSON.stringify(extra)}`).toEqual(refusal("invalid"));
+      expect(asRefusal(await w.send("PUT", P("payments", "upkeep"), headers, { requestId: RID, on: true, ...extra }))).toEqual(refusal("invalid"));
+    }
+    expect(asRefusal(await w.send("POST", P("payments", "wiki-map"), headers, { company: A }))).toEqual(refusal("invalid"));
+    expect(w.codeCalls()).toHaveLength(0);
+  });
+
+  it("a request id that is not a uuid, a missing one, a non-boolean switch, and a body that is not an object are refused", async () => {
+    const w = setUp();
+    const headers = await w.as("mia-token");
+    for (const body of [{}, { requestId: "x" }, { requestId: 5 }, { requestId: RID.toUpperCase().replace(/-/gu, "") }]) expect(asRefusal(await w.send("POST", P("payments", "wiki-build/stop"), headers, body))).toEqual(refusal("invalid"));
+    for (const on of ["true", 1, null]) expect(asRefusal(await w.send("POST", P("payments", "wiki-build/agents"), headers, { requestId: RID, on }))).toEqual(refusal("invalid"));
+    expect(asRefusal(await w.send("POST", P("payments", "wiki-build/agents"), headers, { requestId: RID }))).toEqual(refusal("invalid"));
+    expect(asRefusal(await w.send("POST", P("payments", "wiki-build/stop"), headers, "[1]"))).toEqual(refusal("invalid"));
+    expect(w.codeCalls()).toHaveLength(0);
+  });
+
+  it("the start body's notes and chips are bounded: 2,000 characters, no control characters, at most 200 unique short chip ids; blank notes are dropped", async () => {
+    const w = setUp();
+    const headers = await w.as("mia-token");
+    const start = (body: Record<string, unknown>) => w.send("POST", P("payments", "wiki-build"), headers, { requestId: RID, ...body });
+    for (const bad of [{ notes: "x".repeat(2_001) }, { notes: "bad\u0007note" }, { notes: "zero​width" }, { notes: 5 }, { chipsOn: "all" }, { chipsOn: ["a", "a"] }, { chipsOn: ["x".repeat(81)] }, { chipsOn: Array.from({ length: 201 }, (_, i) => `c${String(i)}`) }, { chipsOn: [5] }, { chipsOn: ["bad\nid"] }]) {
+      expect(asRefusal(await start(bad)), JSON.stringify(bad).slice(0, 60)).toEqual(refusal("invalid"));
+    }
+    expect(w.codeCalls()).toHaveLength(0);
+    expect((await start({ notes: "x".repeat(2_000), chipsOn: Array.from({ length: 200 }, (_, i) => `c${String(i)}`) })).status).toBe(200);
+    expect((await start({ notes: "  \n " })).status).toBe(200);
+    expect((await start({ notes: "two\nlines" })).status).toBe(200);
+    const sent = w.codeCalls().map((call) => call.body as any);
+    expect(sent[1]).toEqual({ requestId: RID });
+    expect(sent[2].notes).toBe("two\nlines");
+  });
+});
+
+describe("no dollar figure, task id or commit reaches the app (M6, M7)", () => {
+  it("positive control: Code sent them; the answer carries none of them, on every route that answers the build state", async () => {
+    const w = setUp();
+    const headers = await w.as("mia-token");
+    const answers = [await w.send("GET", P("payments", "wiki-build"), headers), ...(await Promise.all(POSTS.map(([path, , body]) => w.send("POST", P("payments", path), headers, body))))];
+    const deleted = await w.send("POST", P("payments", "wiki-build/delete"), headers, { requestId: RID });
+    for (const answer of [...answers, deleted]) {
+      expect(answer.status).toBe(200);
+      for (const word of ["budgetCents", "spentCents", "pageReserveCents", "wallClockMin", "taskId", "task-secret-id", "payer", "617", "2500"]) expect(answer.text, word).not.toContain(word);
+      expect(answer.body.limits ?? answer.body.view?.limits).toEqual({ pages: 300 });
+    }
+    const raw = buildView(true);
+    expect(JSON.stringify(raw)).toContain("spentCents");
+  });
+
+  it("the file map carries pages and no price, commit, branch, address, language list or area list; a forecast that carries a price is refused", async () => {
+    const w = setUp();
+    const map = await w.send("GET", P("payments", "wiki-map"), await w.as("mia-token"));
+    for (const word of ["price", "commit", "branch", "https://", "languages", "areas", "testFolders", "limits"]) expect(map.text, word).not.toContain(word);
+    expect(map.body.map.forecast).toEqual({ repositories: 1, files: 1200, pages: 24, pagesCapped: false, complete: true });
+    const priced = setUp((call) => (call.path.endsWith("/wiki-map") ? json(200, { status: "ready", canManage: true, map: mapOf("payments", { forecast: { repositories: 1, files: 1200, pages: 24, pagesCapped: false, complete: true, price: "$4 to $9" } }) }) : undefined));
+    expect(asRefusal(await priced.send("GET", P("payments", "wiki-map"), await priced.as("ada-token")))).toEqual(refusal("unavailable"));
+  });
+});
+
+describe("an answer that does not read is not shown at all, whatever else it says (M7 to M10)", () => {
+  const bad: Array<[string, (view: Record<string, any>) => Record<string, any>]> = [
+    ["payer is a person", (v) => ({ ...v, payer: "person" })], ["no payer", (v) => { const { payer, ...rest } = v; void payer; return rest; }], ["unknown status", (v) => ({ ...v, status: "paused" })], ["unknown end word", (v) => ({ ...v, stop: "angry" })],
+    ["a sentence Code never fixed", (v) => ({ ...v, message: `Pay now ${LEAK}` })], ["a different connect-key sentence", (v) => ({ ...v, connectKey: "Send your key here" })], ["unknown ai key state", (v) => ({ ...v, aiKey: "maybe" })],
+    ["limits off", (v) => ({ ...v, limits: { ...v["limits"], pages: 301 } })], ["page counts negative", (v) => ({ ...v, wiki: { pages: -1, refreshPages: 0 } })], ["summary not whole", (v) => ({ ...v, summary: { ...v["summary"], claimsKept: 1.5 } })],
+    ["spend not a number", (v) => ({ ...v, summary: { ...v["summary"], spentCents: "free" } })], ["canManage missing", (v) => { const { canManage, ...rest } = v; void canManage; return rest; }], ["agents.on not boolean", (v) => ({ ...v, agents: { on: "yes" } })], ["startedAt not a time", (v) => ({ ...v, startedAt: "yesterday" })],
+    ["stoppedBy time is not a time", (v) => ({ ...v, stoppedBy: { name: "Mia", at: "soon" } })],
+    ["a control character in the stopper's name is display only: read as a former member", (v) => ({ ...v, stoppedBy: { name: "Mia\u0007", at: "2026-11-17T10:30:00.000Z" } })],
+  ];
+  it.each(bad)("the build state: %s", async (label, change) => {
+    const w = setUp((call) => (call.path.endsWith("/wiki-build") && call.method === "GET" ? json(200, change(buildView(true))) : undefined));
+    const res = await w.send("GET", P("payments", "wiki-build"), await w.as("mia-token"));
+    if (label.startsWith("a control character")) {
+      expect(res.body.stoppedBy.name).toBe("a former member");
+      return;
+    }
+    expect(asRefusal(res), label).toEqual(refusal("unavailable"));
+    expect(res.text).not.toContain(LEAK);
+  });
+
+  it("the file map: another project, a chip id twice, a partial repository without its words, a hostile path, a missing field", async () => {
+    const maps: Array<Record<string, any>> = [
+      mapOf("billing"), mapOf("payments", { chips: [mapOf("payments").chips[0], mapOf("payments").chips[0]] }),
+      mapOf("payments", { repositories: [{ ...mapOf("payments").repositories[0], status: "partial" }] }), mapOf("payments", { repositories: [{ ...mapOf("payments").repositories[0], skippedFolders: ["bad\nfolder"] }] }),
+      mapOf("payments", { repositories: [{ ...mapOf("payments").repositories[0], skipped: { generated: 1 } }] }), mapOf("payments", { computedAt: "now" }),
+      mapOf("payments", { chips: [{ ...mapOf("payments").chips[0], kind: "write_everything" }] }), mapOf("payments", { complete: "yes" }),
+    ];
+    for (const [index, map] of maps.entries()) {
+      const w = setUp((call) => (call.path.endsWith("/wiki-map") ? json(200, { status: "ready", canManage: true, map }) : undefined));
+      expect(asRefusal(await w.send("GET", P("payments", "wiki-map"), await w.as("ada-token"))), `map ${String(index)}`).toEqual(refusal("unavailable"));
+    }
+    const none = setUp((call) => (call.path.endsWith("/wiki-map") ? json(200, { status: "none", canManage: false }) : undefined));
+    expect((await none.send("GET", P("payments", "wiki-map"), await none.as("ada-token"))).body).toEqual({ status: "none", canManage: false });
+    const hidden = setUp((call) => (call.path.endsWith("/wiki-map") ? json(200, { status: "none", canManage: true, map: mapOf("payments") }) : undefined));
+    expect(asRefusal(await hidden.send("GET", P("payments", "wiki-map"), await hidden.as("ada-token")))).toEqual(refusal("unavailable"));
+  });
+
+  it("drops fields Code did not promise, at every level, and the delete answer must say its fixed sentence", async () => {
+    const w = setUp((call) => (call.path.endsWith("/wiki-build") ? json(200, buildView(true, { sneaky: LEAK, summary: { pagesPlanned: 1, pagesWritten: 1, pagesKeptFromEarlier: 0, claimsKept: 1, claimsDropped: 0, spentCents: 5, sneaky: LEAK }, agents: { on: true, sneaky: LEAK } })) : undefined));
+    const res = await w.send("GET", P("payments", "wiki-build"), await w.as("mia-token"));
+    expect(res.text).not.toContain(LEAK);
+    expect(WikiSetupBuildSchema.parse(res.body).agents.on).toBe(true);
+    const wrong = setUp((call) => (call.path.endsWith("/delete") ? json(200, { deleted: true, message: `Gone ${LEAK}`, view: buildView(true) }) : undefined));
+    expect(asRefusal(await wrong.send("POST", P("payments", "wiki-build/delete"), await wrong.as("mia-token"), { requestId: RID }))).toEqual(refusal("unavailable"));
+  });
+
+  it("the rebuild keeps a Code answer that reads, unchanged, for each status", () => {
+    for (const status of ["none", "running", "built", "stopped"]) {
+      const out = buildAnswer(buildView(true, { status }));
+      expect(WikiSetupBuildSchema.parse(out).status).toBe(status);
+    }
+    expect(mapViewAnswer({ status: "ready", canManage: false, map: mapOf("payments") }, "payments")).toMatchObject({ status: "ready", canManage: false });
+  });
+});
+
+describe("Code's failures (M11, M13, M14)", () => {
+  it("Code's unknown-route 404 reads 'not on this Rovara yet' on every route; the upkeep seam has its own words", async () => {
+    for (const [method, path, body] of [["GET", "wiki-map", undefined], ["POST", "wiki-map", {}], ["GET", "wiki-build", undefined], ...POSTS.map(([p, , b]) => ["POST", p, b] as const), ["POST", "wiki-build/delete", { requestId: RID }]] as const) {
+      const w = setUp((call) => (call.path.includes("/wiki-") ? err(404, "NOT_FOUND", "route not found") : undefined));
+      const res = await w.send(method, P("payments", path), await w.as("ada-token"), body);
+      expect(asRefusal(res), `${method} ${path}`).toEqual(refusal("notYet"));
+    }
+    for (const [method, body] of [["GET", undefined], ["PUT", { requestId: RID, on: true }]] as const) {
+      const w = setUp((call) => (call.path.endsWith("/upkeep") ? err(404, "NOT_FOUND", "route not found") : undefined));
+      expect(asRefusal(await w.send(method, P("payments", "upkeep"), await w.as("ada-token"), body))).toEqual(refusal("upkeepNotYet"));
+    }
+  });
+
+  it("Code's fixed sentences pass with their status and code; any other text, code or status reads Cloud's words and never Code's text", async () => {
+    for (const [status, code, key] of [[409, "WORKSPACE_BUSY", "busy"], [402, "BUDGET_EXCEEDED", "raiseCap"], [503, "MODEL_PROXY_UNAVAILABLE", "connectKey"], [400, "CONFIG_INVALID", "noMap"], [409, "WORKSPACE_BUSY", "deleteWhileRunning"], [503, "AUDIT_UNAVAILABLE", "auditUnavailable"], [400, "CONFIG_INVALID", "nothingToRefresh"]] as const) {
+      const w = setUp((call) => (call.path.includes("/wiki-build") ? err(status, code, WIKI_SETUP_CODE_WORDS[key]) : undefined));
+      const res = await w.send("POST", P("payments", "wiki-build"), await w.as("mia-token"), { requestId: RID });
+      expect({ status: res.status, code: error(res).code, message: error(res).message }, key).toEqual({ status, code, message: WIKI_SETUP_CODE_WORDS[key] });
+    }
+    const table: Array<[number, string, string, keyof typeof WIKI_SETUP_ANSWERS]> = [
+      [403, "FORBIDDEN", LEAK, "notAllowed"], [400, "CONFIG_INVALID", LEAK, "invalid"], [404, "NOT_FOUND", LEAK, "notFound"], [409, "WORKSPACE_BUSY", LEAK, "unavailable"], [500, "X", LEAK, "unavailable"], [503, "RUNTIME_UNAVAILABLE", LEAK, "unavailable"],
+      // A known sentence with a code or status Cloud does not pass is not passed either.
+      [500, "FORBIDDEN", WIKI_SETUP_CODE_WORDS.busy, "unavailable"], [403, "SECRET_CODE", WIKI_SETUP_CODE_WORDS.busy, "notAllowed"],
+    ];
+    for (const [status, code, message, key] of table) {
+      const w = setUp((call) => (call.path.includes("/wiki-build") ? err(status, code, message) : undefined));
+      const res = await w.send("POST", P("payments", "wiki-build"), await w.as("mia-token"), { requestId: RID });
+      expect(asRefusal(res), `${String(status)} ${code}`).toEqual(refusal(key));
+      expect(res.text).not.toContain(LEAK);
+    }
+    const noStarter = setUp((call) => (call.path.endsWith("/wiki-build") && call.method === "POST" ? err(404, "NOT_FOUND", "building the wiki is not set up in this deployment") : undefined));
+    expect(asRefusal(await noStarter.send("POST", P("payments", "wiki-build"), await noStarter.as("mia-token"), { requestId: RID }))).toEqual(refusal("notSetUp"));
+  });
+
+  it("the upkeep seam answers Cloud's own words for Code's refusals, never Code's text", async () => {
+    for (const [status, key] of [[403, "upkeepNotAllowed"], [404, "notFound"], [400, "invalid"], [500, "upkeepUnavailable"], [409, "upkeepUnavailable"]] as const) {
+      const w = setUp((call) => (call.path.endsWith("/upkeep") ? err(status, "X", LEAK) : undefined));
+      const res = await w.send("PUT", P("payments", "upkeep"), await w.as("mia-token"), { requestId: RID, on: true });
+      expect(asRefusal(res), String(status)).toEqual(refusal(key));
+      expect(res.text).not.toContain(LEAK);
+    }
+    const odd = setUp((call) => (call.path.endsWith("/upkeep") ? json(200, { enabled: "yes", canManage: true }) : undefined));
+    expect(asRefusal(await odd.send("GET", P("payments", "upkeep"), await odd.as("ada-token")))).toEqual(refusal("upkeepUnavailable"));
+  });
+
+  it("wikiSetupRefusal is a pure function of status and Code's fixed words", () => {
+    expect(wikiSetupRefusal("build", new CodeError(404, { error: { code: "NOT_FOUND", message: "route not found" } })).status).toBe(501);
+    expect(wikiSetupRefusal("build", new CodeError(500, "<html>" + LEAK)).status).toBe(503);
+  });
+
+  it("a Code body that is not JSON is 'couldn't be read', not a crash", async () => {
+    const w = setUp((call) => (call.path.endsWith("/wiki-build") ? new Response("<html>oops " + LEAK + "</html>", { status: 200, headers: { "content-type": "text/html" } }) : undefined));
+    const res = await w.send("GET", P("payments", "wiki-build"), await w.as("ada-token"));
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.text).not.toContain(LEAK);
+  });
+
+  it("signs the person out (401, the session deleted) when Code refuses the token and it can't be refreshed, on every route", async () => {
+    for (const [method, path, body] of [["GET", "wiki-map", undefined], ["POST", "wiki-build", { requestId: RID }], ["GET", "upkeep", undefined]] as const) {
+      const w = setUp((call) => (call.path.startsWith("/v1/app/projects/") ? json(401, { error: { code: "AUTH_REQUIRED", message: LEAK } }) : undefined));
+      const res = await w.send(method, P("payments", path), await w.as("ada-token"), body);
+      expect(res.status, path).toBe(401);
+      expect(res.text).not.toContain(LEAK);
+      expect(await w.store.get("cookie-ada-token"), path).toBeUndefined();
+    }
+  });
+});
+
+describe("the logs say what was done, never what the person wrote (M16)", () => {
+  it("one line per change: the action and the project; the notes, chips and request id are not in it", async () => {
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(" ")); });
+    const w = setUp();
+    const headers = await w.as("mia-token");
+    await w.send("POST", P("payments", "wiki-build"), headers, { requestId: RID, notes: "SECRET-NOTE-WORDS", chipsOn: ["skip-generated-dist"] });
+    await w.send("GET", P("payments", "wiki-build"), headers);
+    const mine = lines.filter((one) => one.includes("cloud.wiki_setup"));
+    expect(mine).toHaveLength(1);
+    expect(JSON.parse(mine[0]!)).toEqual({ event: "cloud.wiki_setup", action: "build", project: "payments" });
+    expect(lines.join("\n")).not.toContain("SECRET-NOTE-WORDS");
+    expect(lines.join("\n")).not.toContain(RID);
+  });
+});
