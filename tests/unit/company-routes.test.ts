@@ -3,10 +3,10 @@
 // routes checked against Code live, the fresh step-up on every settings change (refused when stale, missing, of a factor Code doesn't own,
 // or past the company's own window), a second admin for a loosening change, invites told to Code first (501 while Code lacks the route),
 // the app's reader schemas, and the policy hook answering from the same store with its install allow-list.
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import {
-  CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, PRE_APPROVED_EMAILS_PATH, POLICY_HOOK_PATH, StoreCompanyRules, StoreHookInstalls, createCloudHandler,
+  CodeClient, JOIN_PATH, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, PREAPPROVALS_PATH, POLICY_HOOK_PATH, preapprovalEmailHash, StoreCompanyRules, StoreHookInstalls, createCloudHandler,
   createPolicyHookRoute, defaultCompanySettings, type CloudRequest, type CompanySettings, type CompanyStore,
 } from "../../packages/cloud-server/src/index.js";
 import { AdminBudgetSettingsSchema } from "../../packages/contracts/src/admin-budget.js";
@@ -20,15 +20,22 @@ const A = "org_aaaaaaaaaaaaaaaaaaaa";
 const B = "org_bbbbbbbbbbbbbbbbbbbb";
 const START = Date.parse("2026-11-15T12:00:00.000Z");
 
-interface Person { developerId: string; name: string; administrator: boolean; companyId?: unknown }
+/** `administrator` is the company role admin here (and Code's install administrator flag, unless `installAdministrator` says otherwise); `companyRole` overrides the role. */
+interface Person { developerId: string; name: string; administrator: boolean; companyId?: unknown; companyRole?: unknown; companyName?: string; installAdministrator?: boolean }
 const PEOPLE: Record<string, Person> = {
   ada: { developerId: "a".repeat(64), name: "Ada", administrator: true, companyId: A },
   bea: { developerId: "b".repeat(64), name: "Bea", administrator: true, companyId: A },
   cal: { developerId: "c".repeat(64), name: "Cal", administrator: false, companyId: A },
-  dan: { developerId: "d".repeat(64), name: "Dan", administrator: true, companyId: B },
+  dan: { developerId: "d".repeat(64), name: "Dan", administrator: true, companyId: B, companyName: "Bee Co" },
   eve: { developerId: "e".repeat(64), name: "Eve", administrator: false, companyId: B },
   solo: { developerId: "f".repeat(64), name: "Solo", administrator: true },
   odd: { developerId: "9".repeat(64), name: "Odd", administrator: true, companyId: "acme" },
+  // Code's install administrator, but a plain member of company A: never a company admin here.
+  ian: { developerId: "8".repeat(64), name: "Ian", administrator: false, companyId: A, companyRole: "member", installAdministrator: true },
+  // Company A's owner, though not Code's install administrator.
+  oz: { developerId: "7".repeat(64), name: "Oz", administrator: false, companyId: A, companyRole: "owner" },
+  // Code names company A but no readable role.
+  nob: { developerId: "6".repeat(64), name: "Nob", administrator: true, companyId: A, companyRole: "superuser" },
 };
 
 /** An answer body as the tests read it: whichever of these the route sent. */
@@ -36,14 +43,22 @@ interface Answer { error: { code: string; message: string }; pending: { changeId
 const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 let tokens = 0;
 
-function world(options: { deploymentCompany?: string; codeHasPreApprovals?: boolean; audit?: LocalCloudAuditStore } = {}) {
+function world(options: { codeHasPreApprovals?: boolean; audit?: LocalCloudAuditStore } = {}) {
   let clock = START;
   const nowS = () => Math.floor(clock / 1000);
   const byToken = new Map<string, Person>();
-  const preApproved: Array<{ token: string; emails: string[] }> = [];
+  /** Code's live pre-approvals by the email's hash, and every call Cloud made to Code's pre-approval routes. */
+  const live = new Map<string, { email: string; companyId: unknown }>();
+  const preApproved: Array<{ method: string; token: string; path: string; body?: unknown }> = [];
   const demoted = new Set<string>();
   let codeHasPreApprovals = options.codeHasPreApprovals ?? true;
   let codeFails = false;
+  /** When set, Code's answer to a withdrawal (DELETE), whatever it holds. */
+  let deleteAnswer: { status: number; body: unknown } | undefined;
+  /** DEC 254h: what Code adds to a pre-approval's answer as `invite` (undefined: an older Code that mints no secret). */
+  let mint: (() => unknown) | undefined;
+  /** People whose sign-in Code says joined by an invite (`joinedByInvite`). */
+  const joined = new Set<string>();
   const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
@@ -51,14 +66,35 @@ function world(options: { deploymentCompany?: string; codeHasPreApprovals?: bool
     const person = byToken.get(auth.replace(/^Bearer /u, ""));
     if (person === undefined) return respond(401, { error: { code: "AUTH_REQUIRED" } });
     if (url.pathname === "/v1/dev/access") {
-      return respond(200, { developerId: person.developerId, displayName: person.name, administrator: person.administrator && !demoted.has(person.developerId), projects: [], notices: [], ...(person.companyId === undefined ? {} : { companyId: person.companyId }) });
+      const admin = person.administrator && !demoted.has(person.developerId);
+      return respond(200, {
+        developerId: person.developerId, displayName: person.name, administrator: person.installAdministrator ?? admin, projects: [], notices: [],
+        ...(person.companyId === undefined ? {} : { companyId: person.companyId, companyRole: person.companyRole ?? (admin ? "admin" : "member"), ...(person.companyName === undefined ? {} : { companyName: person.companyName }) }),
+        ...(joined.has(person.developerId) ? { joinedByInvite: true } : {}),
+      });
     }
-    if (url.pathname === PRE_APPROVED_EMAILS_PATH && init?.method === "PUT") {
-      if (!codeHasPreApprovals) return respond(404, { message: "Not Found" });
+    if (url.pathname === PREAPPROVALS_PATH || url.pathname.startsWith(`${PREAPPROVALS_PATH}/`)) {
+      // Code's routes (developer-routes.ts companyPreapprovalRoute): unknown before Code serves them; every refusal NOT_FOUND.
+      if (!codeHasPreApprovals) return respond(404, { error: { code: "NOT_FOUND", message: "route not found" } });
+      const method = init?.method ?? "GET";
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as { email?: string; role?: string; expiresInHours?: number } : undefined;
+      preApproved.push({ method, token: auth, path: url.pathname, ...(body === undefined ? {} : { body }) });
       if (codeFails) return respond(503, { error: { code: "RUNTIME_UNAVAILABLE", message: "Code is down" } });
-      const body = JSON.parse(init.body as string) as { requestId: string; emails: string[] };
-      preApproved.push({ token: auth, emails: body.emails });
-      return respond(200, { emails: body.emails, revision: preApproved.length });
+      const notFound = respond(404, { error: { code: "NOT_FOUND", message: "not found" } });
+      const role = person.companyRole ?? (person.administrator && !demoted.has(person.developerId) ? "admin" : "member");
+      if (role !== "admin" && role !== "owner") return notFound;
+      if (method === "POST" && url.pathname === PREAPPROVALS_PATH) {
+        if (body?.role !== "member" || typeof body.email !== "string" || typeof body.expiresInHours !== "number" || body.expiresInHours < 1 || body.expiresInHours > 720) return respond(400, { error: { code: "CONFIG_INVALID", message: "bad" } });
+        const hash = preapprovalEmailHash(body.email);
+        if (live.has(hash)) return notFound;
+        live.set(hash, { email: body.email, companyId: person.companyId });
+        const minted = mint?.();
+        return respond(200, { ok: true, ...(minted === undefined ? {} : { invite: minted }) });
+      }
+      if (method === "DELETE" && deleteAnswer !== undefined) return respond(deleteAnswer.status, deleteAnswer.body);
+      const hash = /^[a-f0-9]{64}$/u.exec(url.pathname.slice(PREAPPROVALS_PATH.length + 1))?.[0];
+      if (method === "DELETE" && hash !== undefined && live.get(hash)?.companyId === person.companyId) { live.delete(hash); return respond(200, { ok: true }); }
+      return notFound;
     }
     return respond(404, { error: { code: "NOT_FOUND" } });
   }) as typeof fetch;
@@ -68,7 +104,7 @@ function world(options: { deploymentCompany?: string; codeHasPreApprovals?: bool
   const log: Array<Record<string, unknown>> = [];
   const handler = createCloudHandler({
     client, store: sessions, org: { orgId: "rovara", name: "Rovara", plan: "cloud" }, callbackPath: "/callback", secureCookies: false, work: new LocalWorkSessionStore(), origin: ORIGIN,
-    company: { store, ...(options.deploymentCompany === undefined ? {} : { companyId: options.deploymentCompany }), log: (event) => { log.push(event); } },
+    company: { store, log: (event) => { log.push(event); } },
     now: () => new Date(clock), log: () => undefined, ...(options.audit === undefined ? {} : { audit: options.audit }),
   });
   /** Signs a person in. `stepUpAge` seconds ago they stepped up with `method`; undefined: no step-up in this sign-in. */
@@ -92,8 +128,10 @@ function world(options: { deploymentCompany?: string; codeHasPreApprovals?: bool
     return { status: answer!.status, body: JSON.parse(answer!.body) as Answer };
   };
   return {
-    handler, store, signIn, call, preApproved, demoted, log,
+    handler, store, signIn, call, preApproved, live, demoted, log, joined,
+    setMint: (value: (() => unknown) | undefined) => { mint = value; },
     advance: (ms: number) => { clock += ms; }, now: () => clock,
+    setDeleteAnswer: (answer: { status: number; body: unknown } | undefined) => { deleteAnswer = answer; },
     setCode: (state: { preApprovals?: boolean; fails?: boolean }) => { if (state.preApprovals !== undefined) codeHasPreApprovals = state.preApprovals; if (state.fails !== undefined) codeFails = state.fails; },
   };
 }
@@ -327,21 +365,37 @@ describe("Cloud's audit records", () => {
 });
 
 describe("which company", () => {
-  it("uses the deployment's one company only when Code names none, and never when Code names a company that does not read", async () => {
-    const single = world({ deploymentCompany: A });
-    const solo = await single.signIn("solo", 10);
-    expect((await single.call(solo, "GET", "/org/settings")).body.companyId).toBe(A);
-    const odd = await single.signIn("odd", 10);
-    expect((await single.call(odd, "GET", "/org/settings")).body.error.code).toBe("FORBIDDEN");
-    // Code names company B: B, whatever the deployment says.
-    const dan = await single.signIn("dan", 10);
-    expect((await single.call(dan, "GET", "/org/settings")).body.companyId).toBe(B);
-    const none = world();
-    const soloNone = await none.signIn("solo", 10);
-    expect((await none.call(soloNone, "GET", "/org/settings")).body).toEqual({ error: { code: "FORBIDDEN", message: "Your sign-in doesn't belong to a company Cloud knows." } });
-    const badDeployment = world({ deploymentCompany: "rovara" });
-    const soloBad = await badDeployment.signIn("solo", 10);
-    expect((await badDeployment.call(soloBad, "GET", "/org/settings")).status).toBe(403);
+  it("refuses every company route with fixed words when Code names no company, or a company or role that doesn't read: never a fallback", async () => {
+    const w = world();
+    const refusal = { error: { code: "NO_COMPANY", message: "You're not in a company yet." } };
+    for (const who of ["solo", "odd", "nob"]) {
+      const as = await w.signIn(who, 10);
+      for (const [method, path, body] of [
+        ["GET", "/org/settings"], ["PUT", "/org/settings", { expectedVersion: 0, settings: tightened() }], ["GET", "/org/budget-settings"], ["GET", "/org/profile"],
+        ["PATCH", "/org", { requestId: randomUUID(), name: "Mine" }], ["GET", "/org/invites"], ["POST", "/org/invites", { requestId: randomUUID(), role: "member", email: "x@example.com" }],
+        ["POST", "/org/invites/accept", { invite: "x".repeat(43) }],
+      ] as const) {
+        const answer = await w.call(as, method, path, body);
+        expect({ who, method, path, answer }).toEqual({ who, method, path, answer: { status: 403, body: refusal } });
+      }
+    }
+    expect(await w.store.settings(A)).toBeUndefined();
+    expect(await w.store.profile(A)).toBeUndefined();
+    expect(w.preApproved).toEqual([]);
+  });
+
+  it("a company admin is a company owner or admin from Code's answer, never Code's install administrator", async () => {
+    const w = world();
+    const ian = await w.signIn("ian", 10);
+    for (const [method, path, body] of [["GET", "/org/settings"], ["PUT", "/org/settings", { expectedVersion: 0, settings: tightened() }], ["GET", "/org/budget-settings"], ["PATCH", "/org", { requestId: randomUUID(), name: "Mine" }], ["GET", "/org/invites"]] as const) {
+      expect({ method, path, status: (await w.call(ian, method, path, body)).status }).toEqual({ method, path, status: 403 });
+    }
+    // A member still reads the company's profile, under Code's name for it.
+    expect((await w.call(ian, "GET", "/org/profile")).body).toMatchObject({ orgId: A });
+    const oz = await w.signIn("oz", 10);
+    expect((await w.call(oz, "GET", "/org/settings")).status).toBe(200);
+    expect((await w.call(oz, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() })).status).toBe(200);
+    expect((await w.store.settings(A))!.version).toBe(1);
   });
 
   it("leaves members, roles and removal on Code: those routes still answer 501", async () => {
@@ -436,7 +490,8 @@ describe("budgets and profile", () => {
   it("shows the profile to the company's people and lets an admin rename it", async () => {
     const w = world();
     const cal = await w.signIn("cal");
-    expect((await w.call(cal, "GET", "/org/profile")).body).toEqual({ orgId: A, name: "Rovara", plan: "cloud", version: 0 });
+    // Nothing stored yet: Code's name for the company, else "Your company"; never the deployment's name ("Rovara").
+    expect((await w.call(cal, "GET", "/org/profile")).body).toEqual({ orgId: A, name: "Your company", plan: "cloud", version: 0 });
     expect((await w.call(cal, "PATCH", "/org", { requestId: randomUUID(), name: "Acme" })).status).toBe(403);
     const ada = await w.signIn("ada");
     const renamed = await w.call(ada, "PATCH", "/org", { requestId: randomUUID(), name: "  Acme \t Corp " });
@@ -444,7 +499,7 @@ describe("budgets and profile", () => {
     expect(RenameOrganizationResponseSchema.parse(renamed.body)).toEqual({ org: { orgId: A, name: "Acme Corp", plan: "cloud" }, role: "owner" });
     expect((await w.call(cal, "GET", "/org/profile")).body).toMatchObject({ name: "Acme Corp", version: 1 });
     const dan = await w.signIn("dan");
-    expect((await w.call(dan, "GET", "/org/profile")).body.name).toBe("Rovara");
+    expect((await w.call(dan, "GET", "/org/profile")).body.name).toBe("Bee Co");
     expect((await w.call(ada, "PATCH", "/org", { requestId: randomUUID(), name: "‮evil" })).status).toBe(400);
     expect((await w.call(ada, "PATCH", "/org", { requestId: randomUUID(), name: "x".repeat(81) })).status).toBe(400);
   });
@@ -453,8 +508,9 @@ describe("budgets and profile", () => {
 describe("invites", () => {
   const create = (w: ReturnType<typeof world>, as: { cookie: string }, role: "admin" | "member", email: string, requestId = randomUUID()) =>
     w.call(as, "POST", "/org/invites/reviewed", { requestId, role, email });
+  const tokenOf = (made: { body: unknown }) => ReviewedInviteCreateResponseSchema.parse(made.body).inviteUrl!.split("#invite=")[1]!;
 
-  it("answers 501 while Code doesn't take pre-approved emails, and keeps nothing", async () => {
+  it("answers 501 while Code doesn't serve its pre-approval route, and keeps nothing", async () => {
     const w = world({ codeHasPreApprovals: false });
     const ada = await w.signIn("ada", 10);
     expect(await create(w, ada, "member", "new@example.com")).toEqual({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Company invites aren't connected to Rovara Code yet." } } });
@@ -462,7 +518,7 @@ describe("invites", () => {
     expect((await w.call(ada, "GET", "/org/invites")).body.invites).toEqual([]);
   });
 
-  it("tells Code first, as the admin, then shows the invite masked, only to its company", async () => {
+  it("pre-approves the member's email at Code first, as the admin with their own token, then shows the invite masked, only to its company", async () => {
     const w = world();
     const ada = await w.signIn("ada");
     const requestId = randomUUID();
@@ -471,8 +527,13 @@ describe("invites", () => {
     const parsed = ReviewedInviteCreateResponseSchema.parse(made.body);
     expect(parsed.receipt).toMatchObject({ orgId: A, requestId, role: "member" });
     expect(parsed.inviteUrl).toMatch(/^https:\/\/cloud\.example\.test\/app\/join#invite=[A-Za-z0-9_-]{43}$/u);
-    // Told as the inviting admin, with the admin's own token.
-    expect(w.preApproved).toEqual([{ token: `Bearer ${ada.token}`, emails: ["new.person@example.com"] }]);
+    // Code's real route, as the inviting admin, with the same seven days the invite has; the body names no company.
+    expect(w.preApproved).toEqual([{ method: "POST", token: `Bearer ${ada.token}`, path: PREAPPROVALS_PATH, body: { email: "new.person@example.com", role: "member", expiresInHours: 168 } }]);
+    // Cloud keeps the token's hash, never the token, with the company, the email and the expiry.
+    const stored = (await w.store.invites(A)).invites[0]!;
+    expect(stored).toMatchObject({ companyId: A, email: "new.person@example.com", state: "pending", companyName: "Your company" });
+    expect(stored.tokenHash).toBe(createHash("sha256").update(tokenOf(made)).digest("hex"));
+    expect(JSON.stringify(stored)).not.toContain(tokenOf(made));
     const list = AppOrgInvitesResponseSchema.parse((await w.call(ada, "GET", "/org/invites")).body);
     expect(list.invites).toHaveLength(1);
     expect(list.invites[0]).toMatchObject({ inviteId: parsed.receipt.inviteId, role: "member", destination: { kind: "email", label: "n***@example.com" } });
@@ -487,49 +548,82 @@ describe("invites", () => {
     expect((await w.call(dan, "GET", `/org/invites/${parsed.receipt.inviteId}`)).status).toBe(404);
     expect((await w.call(dan, "GET", `/org/invites/requests/${requestId}`)).status).toBe(404);
     expect((await w.call(dan, "POST", `/org/invites/${parsed.receipt.inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 0 })).status).toBe(404);
-    // A member can't invite or list.
+    // A member can't invite or list, and Code is never asked.
     const cal = await w.signIn("cal");
     expect((await create(w, cal, "member", "x@example.com")).status).toBe(403);
     expect((await w.call(cal, "GET", "/org/invites")).status).toBe(403);
+    expect(w.preApproved).toHaveLength(1);
   });
 
-  it("needs a fresh step-up to invite an admin, and an email for every invite", async () => {
+  it("gates inviting on the company role: Code's install administrator who is a member can't; the company's owner can", async () => {
     const w = world();
-    const stale = await w.signIn("ada", 900);
-    expect((await create(w, stale, "admin", "boss@example.com")).body.error.code).toBe("STEP_UP_REQUIRED");
+    expect((await create(w, await w.signIn("ian", 10), "member", "x@example.com")).status).toBe(403);
     expect(w.preApproved).toEqual([]);
-    expect((await create(w, stale, "member", "fine@example.com")).status).toBe(200);
-    const fresh = await w.signIn("ada", 10);
-    expect((await create(w, fresh, "admin", "boss@example.com")).status).toBe(200);
-    expect(w.preApproved.at(-1)!.emails).toEqual(["boss@example.com", "fine@example.com"]);
-    expect((await w.call(fresh, "POST", "/org/invites/reviewed", { requestId: randomUUID(), role: "member" })).status).toBe(400);
-    expect((await w.call(fresh, "POST", "/org/invites/reviewed", { requestId: randomUUID(), role: "member", email: "two@a.com,three@b.com" })).status).toBe(400);
-    expect(OrganizationInviteResponseSchema.parse((await w.call(fresh, "POST", "/org/invites", { requestId: randomUUID(), role: "member", email: "onboard@example.com" })).body).inviteUrl).toContain("#invite=");
+    expect((await create(w, await w.signIn("oz", 10), "member", "x@example.com")).status).toBe(200);
   });
 
-  it("is accepted once, by a person Code put in the invite's company", async () => {
+  it("invites members only (Code pre-approves members), one open invite per address, and needs an email", async () => {
+    const w = world();
+    const ada = await w.signIn("ada", 10);
+    expect(await create(w, ada, "admin", "boss@example.com")).toEqual({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "Invite them as a member. A company owner can make them an admin once they've joined." } } });
+    expect(w.preApproved).toEqual([]);
+    expect((await create(w, ada, "member", "fine@example.com")).status).toBe(200);
+    expect(await create(w, ada, "member", "FINE@example.com")).toEqual({ status: 409, body: { error: { code: "CONFLICT", message: "This person already has an open invite. Withdraw it first to send a new one." } } });
+    expect(w.preApproved).toHaveLength(1);
+    expect((await w.call(ada, "POST", "/org/invites/reviewed", { requestId: randomUUID(), role: "member" })).status).toBe(400);
+    expect((await w.call(ada, "POST", "/org/invites/reviewed", { requestId: randomUUID(), role: "member", email: "two@a.com,three@b.com" })).status).toBe(400);
+    expect(OrganizationInviteResponseSchema.parse((await w.call(ada, "POST", "/org/invites", { requestId: randomUUID(), role: "member", email: "onboard@example.com" })).body).inviteUrl).toContain("#invite=");
+  });
+
+  it("takes back an invite Code refused or couldn't take, in fixed words, so it is never shown or used", async () => {
     const w = world();
     const ada = await w.signIn("ada");
-    const url = ReviewedInviteCreateResponseSchema.parse((await create(w, ada, "member", "cal@example.com")).body).inviteUrl!;
-    const token = url.split("#invite=")[1]!;
+    // Code already holds a live pre-approval for the address (made elsewhere): Code refuses, Cloud keeps nothing.
+    w.live.set(preapprovalEmailHash("taken@example.com"), { email: "taken@example.com", companyId: A });
+    expect((await create(w, ada, "member", "taken@example.com")).body.error).toEqual({ code: "CONFLICT", message: "Rovara Code didn't take this invite. The address may already be invited, or your role may have changed." });
+    w.setCode({ fails: true });
+    expect((await create(w, ada, "member", "gone@example.com")).status).toBe(503);
+    w.setCode({ fails: false });
+    expect((await w.store.invites(A)).invites).toEqual([]);
+    expect((await create(w, ada, "member", "next@example.com")).status).toBe(200);
+  });
+
+  it("withdraws Code's pre-approval of a pre-approval Cloud could not mark usable", async () => {
+    const w = world();
+    const ada = await w.signIn("ada");
+    const store = w.store as LocalCompanyStore;
+    const real = store.updateInvite.bind(store);
+    store.updateInvite = async () => { throw new Error("store down"); };
+    await expect(create(w, ada, "member", "half@example.com")).rejects.toThrow();
+    store.updateInvite = real;
+    expect(w.live.size).toBe(0);
+    expect(w.preApproved.map((call) => call.method)).toEqual(["POST", "DELETE"]);
+    expect((await w.store.invites(A)).invites).toEqual([]);
+  });
+
+  it("is accepted once, by a person Code put in the invite's company by an invite (joinedByInvite)", async () => {
+    const w = world();
+    const ada = await w.signIn("ada");
+    const token = tokenOf(await create(w, ada, "member", "cal@example.com"));
+    w.joined.add(PEOPLE.eve!.developerId);
     const eve = await w.signIn("eve");
     expect((await w.call(eve, "POST", "/org/invites/accept", { invite: token })).status).toBe(404);
     const cal = await w.signIn("cal");
+    // In the invite's company, but Code doesn't say this sign-in joined by an invite.
+    expect((await w.call(cal, "POST", "/org/invites/accept", { invite: token })).status).toBe(404);
+    w.joined.add(PEOPLE.cal!.developerId);
     expect((await w.call(cal, "POST", "/org/invites/accept", { invite: "x".repeat(43) })).status).toBe(404);
     const accepted = await w.call(cal, "POST", "/org/invites/accept", { invite: token });
     expect(accepted).toMatchObject({ status: 200, body: { accepted: true, orgId: A } });
     expect((await w.call(cal, "POST", "/org/invites/accept", { invite: token })).status).toBe(404);
-    const inviteId = accepted.body.inviteId as string;
-    expect((await w.call(ada, "GET", `/org/invites/${inviteId}`)).body).toMatchObject({ status: "accepted" });
-    // The next update to Code leaves it out.
-    await create(w, ada, "member", "later@example.com");
-    expect(w.preApproved.at(-1)!.emails).toEqual(["later@example.com"]);
+    expect((await w.call(ada, "GET", `/org/invites/${accepted.body.inviteId as string}`)).body).toMatchObject({ status: "accepted" });
   });
 
   it("can't be accepted once expired", async () => {
     const w = world();
     const ada = await w.signIn("ada");
-    const token = ReviewedInviteCreateResponseSchema.parse((await create(w, ada, "member", "cal@example.com")).body).inviteUrl!.split("#invite=")[1]!;
+    const token = tokenOf(await create(w, ada, "member", "cal@example.com"));
+    w.joined.add(PEOPLE.cal!.developerId);
     w.advance(7 * 86_400_000);
     const cal = await w.signIn("cal");
     expect((await w.call(cal, "POST", "/org/invites/accept", { invite: token })).status).toBe(404);
@@ -537,7 +631,7 @@ describe("invites", () => {
     expect((await w.call(later, "GET", "/org/invites")).body.invites).toEqual([]);
   });
 
-  it("is withdrawn only after Code drops the pre-approval", async () => {
+  it("is withdrawn at Code first (by the email's hash), and marked only after Code answers", async () => {
     const w = world();
     const ada = await w.signIn("ada");
     const keep = ReviewedInviteCreateResponseSchema.parse((await create(w, ada, "member", "keep@example.com")).body).receipt;
@@ -552,12 +646,51 @@ describe("invites", () => {
     expect((await w.call(ada, "POST", `/org/invites/${drop.inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 5 })).status).toBe(409);
     const revoked = await w.call(ada, "POST", `/org/invites/${drop.inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 0 });
     expect(RevokeOrganizationInviteResponseSchema.parse(revoked.body)).toMatchObject({ inviteId: drop.inviteId, revision: 1 });
-    expect(w.preApproved.at(-1)!.emails).toEqual(["keep@example.com"]);
+    expect(w.preApproved.at(-1)).toEqual({ method: "DELETE", token: `Bearer ${ada.token}`, path: `${PREAPPROVALS_PATH}/${createHash("sha256").update("drop@example.com").digest("hex")}` });
+    expect([...w.live.values()].map((each) => each.email)).toEqual(["keep@example.com"]);
     expect(AppOrgInviteStatusSchema.parse((await w.call(ada, "GET", `/org/invites/${drop.inviteId}`)).body)).toMatchObject({ status: "revoked" });
     expect((await w.call(ada, "GET", "/org/invites")).body.invites.map((each) => each.inviteId)).toEqual([keep.inviteId]);
-    const cal = await w.signIn("cal");
-    // A withdrawn invite's link does nothing.
-    expect((await w.call(cal, "POST", "/org/invites/accept", { invite: "y".repeat(43) })).status).toBe(404);
+    // The address can be invited again once withdrawn.
+    expect((await create(w, ada, "member", "drop@example.com")).status).toBe(200);
+  });
+
+  it("keeps an invite pending when Code's withdrawal answer isn't its own refusal (a 403, a 400, an answer that doesn't read)", async () => {
+    for (const answer of [{ status: 403, body: { error: { code: "FORBIDDEN", message: "scope" } } }, { status: 400, body: { error: { code: "CONFIG_INVALID", message: "x" } } }, { status: 200, body: { done: true } }]) {
+      const w = world();
+      const ada = await w.signIn("ada");
+      const made = ReviewedInviteCreateResponseSchema.parse((await create(w, ada, "member", "keep@example.com")).body).receipt;
+      w.setDeleteAnswer(answer);
+      expect(await w.call(ada, "POST", `/org/invites/${made.inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 0 })).toEqual({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Couldn't withdraw it in Rovara Code. Try again." } } });
+      expect((await w.call(ada, "GET", `/org/invites/${made.inviteId}`)).body).toMatchObject({ status: "pending", revision: 0 });
+    }
+  });
+
+  it("keeps a pre-approval Cloud couldn't mark and Code couldn't withdraw as a listed invite being withdrawn, never a hidden one", async () => {
+    const w = world();
+    const ada = await w.signIn("ada");
+    const store = w.store as LocalCompanyStore;
+    const real = store.updateInvite.bind(store);
+    let fail = true;
+    store.updateInvite = async (invite, expected) => { if (fail && invite.state === "pending") throw new Error("store down"); return real(invite, expected); };
+    w.setDeleteAnswer({ status: 503, body: {} });
+    await expect(create(w, ada, "member", "half@example.com")).rejects.toThrow();
+    fail = false;
+    const kept = (await w.store.invites(A)).invites;
+    expect(kept.map((invite) => invite.state)).toEqual(["revoking"]);
+    expect(w.log).toContainEqual(expect.objectContaining({ event: "cloud.invite_orphaned", inviteId: kept[0]!.inviteId }));
+    // An admin's withdrawal tries Code again.
+    w.setDeleteAnswer(undefined);
+    expect((await w.call(ada, "POST", `/org/invites/${kept[0]!.inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 0 })).status).toBe(200);
+    expect(w.live.size).toBe(0);
+  });
+
+  it("marks an invite withdrawn when Code no longer holds its pre-approval (used, expired or withdrawn there)", async () => {
+    const w = world();
+    const ada = await w.signIn("ada");
+    const made = ReviewedInviteCreateResponseSchema.parse((await create(w, ada, "member", "used@example.com")).body).receipt;
+    w.live.clear();
+    expect((await w.call(ada, "POST", `/org/invites/${made.inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 0 })).status).toBe(200);
+    expect((await w.call(ada, "GET", `/org/invites/${made.inviteId}`)).body).toMatchObject({ status: "revoked" });
   });
 
   it("hides an invite Code hasn't confirmed: no status, no receipt", async () => {
@@ -572,28 +705,6 @@ describe("invites", () => {
     expect((await w.call(ada, "GET", `/org/invites/requests/${requestId}`)).status).toBe(404);
     expect((await w.call(ada, "POST", `/org/invites/${inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 0 })).status).toBe(404);
     expect((await w.call(ada, "GET", "/org/invites")).body.invites).toEqual([]);
-  });
-
-  it("never sends Code a list built from part of the invites", async () => {
-    const w = world();
-    const ada = await w.signIn("ada");
-    const store = w.store as LocalCompanyStore;
-    const real = store.invites.bind(store);
-    store.invites = async (companyId: string) => ({ ...(await real(companyId)), partial: true });
-    expect((await create(w, ada, "member", "x@example.com")).body.error.code).toBe("RUNTIME_UNAVAILABLE");
-    expect(w.preApproved).toEqual([]);
-    expect((await real(A)).invites).toEqual([]);
-  });
-
-  it("takes back an invite Code refused, so it is never shown or sent again", async () => {
-    const w = world();
-    const ada = await w.signIn("ada");
-    w.setCode({ fails: true });
-    expect((await create(w, ada, "member", "gone@example.com")).status).toBe(503);
-    w.setCode({ fails: false });
-    expect((await w.store.invites(A)).invites).toEqual([]);
-    await create(w, ada, "member", "next@example.com");
-    expect(w.preApproved.at(-1)!.emails).toEqual(["next@example.com"]);
   });
 });
 
@@ -636,5 +747,102 @@ describe("the policy hook on the same store", () => {
     expect(claims.a).toEqual({ locks: { extra_review: true, ci_fix_rounds: 1 } });
     // Company B is not this install's to ask about.
     expect((await ask(B)).status).toBe(401);
+  });
+});
+
+describe("invites carrying Code's invite secret (DEC 254h)", () => {
+  const secretOf = () => `rvi_${randomBytes(24).toString("base64url")}`;
+  const create = (w: ReturnType<typeof world>, as: { cookie: string }, email: string) => w.call(as, "POST", "/org/invites/reviewed", { requestId: randomUUID(), role: "member", email });
+  const linkOf = (made: { body: unknown }) => ReviewedInviteCreateResponseSchema.parse(made.body).inviteUrl!;
+  const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+  const lookUp = async (w: ReturnType<typeof world>, token: string) => w.handler({ method: "POST", path: JOIN_PATH, query: new URLSearchParams(), headers: { origin: ORIGIN, "content-type": "application/json" }, body: JSON.stringify({ invite: token }) });
+
+  it("puts Code's secret in the link and keeps only its hash, lapsing no later than Code's; never logs or audits it", async () => {
+    const audit = new LocalCloudAuditStore();
+    const w = world({ audit });
+    const printed: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => { printed.push(args.map(String).join(" ")); });
+    try {
+      const ada = await w.signIn("ada");
+      const secret = secretOf();
+      const codeExpiry = new Date(START + 3 * 86_400_000).toISOString();
+      w.setMint(() => ({ secret, expiresAt: codeExpiry }));
+      const made = await create(w, ada, "new@example.com");
+      expect(made.status).toBe(200);
+      expect(linkOf(made)).toBe(`${ORIGIN}/app/join#invite=${secret}`);
+      const stored = (await w.store.invites(A)).invites[0]!;
+      expect(stored).toMatchObject({ companyId: A, email: "new@example.com", state: "pending", tokenHash: sha(secret), codeSecret: true, expiresAt: codeExpiry });
+      expect(await w.store.inviteByToken(sha(secret))).toMatchObject({ inviteId: stored.inviteId });
+      // The token Cloud made before Code answered names nothing.
+      expect((await w.store.invites(A)).invites).toHaveLength(1);
+      const later = secretOf();
+      w.setMint(() => ({ secret: later, expiresAt: new Date(START + 30 * 86_400_000).toISOString() }));
+      expect((await create(w, ada, "later@example.com")).status).toBe(200);
+      expect(await w.store.inviteByToken(sha(later))).toMatchObject({ expiresAt: new Date(START + 7 * 86_400_000).toISOString() });
+      const everything = JSON.stringify({ stored: await w.store.invites(A), log: w.log, printed, audit: [...(audit as unknown as { rows: Map<string, unknown> }).rows.values()], list: (await w.call(ada, "GET", "/org/invites")).body });
+      expect((audit as unknown as { rows: Map<string, unknown> }).rows.size).toBeGreaterThan(0);
+      expect(w.log.length).toBeGreaterThan(0);
+      expect(everything).not.toContain(secret);
+      expect(everything).not.toContain(later);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("never uses an `invite` from Code that doesn't read: withdraws the pre-approval at Code and keeps nothing", async () => {
+    const good = secretOf();
+    const future = new Date(START + 86_400_000).toISOString();
+    for (const minted of [null, "x", [], {}, { secret: "short_123", expiresAt: future }, { secret: `${good}/`, expiresAt: future }, { secret: "a".repeat(129), expiresAt: future },
+      { secret: good }, { secret: good, expiresAt: "soon" }, { secret: good, expiresAt: new Date(START).toISOString() }, { secret: 42, expiresAt: future }]) {
+      const w = world();
+      const ada = await w.signIn("ada");
+      w.setMint(() => minted);
+      const made = await create(w, ada, "new@example.com");
+      expect({ minted, made }).toEqual({ minted, made: { status: 502, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara Code's answer to this invite couldn't be read. Try again." } } } });
+      expect(w.preApproved.map((call) => call.method)).toEqual(["POST", "DELETE"]);
+      expect(w.live.size).toBe(0);
+      expect((await w.store.invites(A)).invites).toEqual([]);
+    }
+  });
+
+  it("an older Code (no `invite`): Cloud's own token, as before", async () => {
+    const w = world();
+    const ada = await w.signIn("ada");
+    const link = linkOf(await create(w, ada, "new@example.com"));
+    expect(link).toMatch(/^https:\/\/cloud\.example\.test\/app\/join#invite=[A-Za-z0-9_-]{43}$/u);
+    expect((await w.store.invites(A)).invites[0]!.codeSecret).toBeUndefined();
+  });
+
+  it("withdrawal tells Code (which kills the secret) and only then marks it; the link is dead after", async () => {
+    const w = world();
+    const ada = await w.signIn("ada");
+    const secret = secretOf();
+    w.setMint(() => ({ secret, expiresAt: new Date(START + 86_400_000).toISOString() }));
+    const made = await create(w, ada, "drop@example.com");
+    const { inviteId } = ReviewedInviteCreateResponseSchema.parse(made.body).receipt;
+    expect((await lookUp(w, secret))!.status).toBe(200);
+    w.setCode({ fails: true });
+    expect((await w.call(ada, "POST", `/org/invites/${inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 0 })).status).toBe(503);
+    expect((await w.store.invite(A, inviteId))!.state).toBe("pending");
+    w.setCode({ fails: false });
+    expect((await w.call(ada, "POST", `/org/invites/${inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 0 })).status).toBe(200);
+    expect(w.preApproved.at(-1)).toMatchObject({ method: "DELETE", path: `${PREAPPROVALS_PATH}/${sha("drop@example.com")}` });
+    expect((await w.store.invite(A, inviteId))!.state).toBe("revoked");
+    expect((await lookUp(w, secret))!.status).toBe(404);
+  });
+
+  it("a secret invite is never accepted through the accept route (only by the join that spent it), whoever asks", async () => {
+    const w = world();
+    const secret = secretOf();
+    w.setMint(() => ({ secret, expiresAt: new Date(START + 86_400_000).toISOString() }));
+    expect((await create(w, await w.signIn("ada"), "cal@example.com")).status).toBe(200);
+    w.joined.add(PEOPLE.eve!.developerId);
+    expect((await w.call(await w.signIn("eve"), "POST", "/org/invites/accept", { invite: secret })).status).toBe(404);
+    const cal = await w.signIn("cal");
+    expect((await w.call(cal, "POST", "/org/invites/accept", { invite: secret })).status).toBe(404);
+    w.joined.add(PEOPLE.cal!.developerId);
+    // Joined by some invite this sign-in, in the invite's company: still not this route's to take.
+    expect((await w.call(cal, "POST", "/org/invites/accept", { invite: secret })).status).toBe(404);
+    expect((await lookUp(w, secret))!.status).toBe(200);
   });
 });

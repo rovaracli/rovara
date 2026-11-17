@@ -30,6 +30,11 @@ export const CreateProjectBodySchema = z.object({
 });
 export const CreateOrganizationInviteBodySchema = z.object({ requestId: z.string().uuid(), role: z.enum(["admin", "member"]), email: z.string().trim().email().max(254).optional() }).strict();
 export const OrganizationInviteResponseSchema = z.object({ inviteUrl: z.string() });
+/**
+ * The token an invite link carries (`/app/join#invite=<token>`, DEC 254h): Rovara Code's single-use invite secret (URL-safe, at least 128 bits,
+ * with Code's fixed prefix), or, from a Code that mints none, Cloud's own 43-character token. One pattern for the server, the app and the link check.
+ */
+export const INVITE_LINK_TOKEN = /^[A-Za-z0-9_-]{22,128}$/u;
 export const GithubConnectResponseSchema = z.object({ installUrl: z.string(), expiresAt: z.string(), orgName: z.string().optional(), ownerName: z.string().optional() });
 export const GithubInstallationsResponseSchema = z.object({ installations: z.array(z.object({ installationId: z.number().int().positive(), accountLogin: z.string(), accountType: z.enum(["User", "Organization"]), repositorySelection: z.enum(["all", "selected"]), status: z.enum(["active", "suspended", "removed"]) })) });
 export const GithubRepositoriesResponseSchema = z.object({ repositories: z.array(z.object({ fullName: z.string(), githubRepositoryId: z.number().int().positive(), private: z.boolean(), defaultBranch: z.string(), project: z.string().optional() })) });

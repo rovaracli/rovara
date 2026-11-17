@@ -41,6 +41,11 @@ export interface InviteRecord {
   email: string;
   /** sha256 (hex) of the bearer token in the invite link; the token itself is never stored. */
   tokenHash: string;
+  /**
+   * True when the link's token is Code's single-use invite secret (DEC 254h; `tokenHash` is its SHA-256): the join sends it to Code's sign-in.
+   * Absent: Cloud's own token, from a Code that mints no secret (the join sends only the company, and Code checks the email).
+   */
+  codeSecret?: true;
   createdBy: string;
   createdAt: string;
   expiresAt: string;
@@ -49,6 +54,8 @@ export interface InviteRecord {
   revokedAt?: string;
   acceptedAt?: string;
   acceptedBy?: string;
+  /** The company's name when the invite was made, for the join page ("Join <company> on Rovara"). An older invite has none. */
+  companyName?: string;
 }
 /** A Code install the policy hook answers: its pinned public keys (at most two, for rotation) and the companies it may ask about. */
 /**
@@ -62,6 +69,12 @@ export interface AgentAiChoice { companyId: string; source: AgentAiSource; versi
 export const validAgentAiSource = (value: unknown): value is AgentAiSource => typeof value === "string" && (AGENT_AI_SOURCES as readonly string[]).includes(value);
 
 export interface HookInstall { issuer: string; keys: PublicJwk[]; companyIds: string[]; updatedAt: string }
+
+/** confirmInvite's arguments: one unconfirmed invite and itself, pending, under its new token hash (nothing else may move). */
+export function sameInvite(unconfirmed: InviteRecord, confirmed: InviteRecord): void {
+  if (unconfirmed.state !== "unconfirmed" || confirmed.state !== "pending" || confirmed.companyId !== unconfirmed.companyId || confirmed.inviteId !== unconfirmed.inviteId
+    || confirmed.requestId !== unconfirmed.requestId || !/^[a-f0-9]{64}$/u.test(confirmed.tokenHash)) throw new Error("confirmInvite takes one unconfirmed invite and itself, pending");
+}
 
 export const PENDING_CHANGE_DAYS = 7;
 export const INVITE_DAYS = 7;
@@ -97,6 +110,12 @@ export interface CompanyStore {
   invites(companyId: string): Promise<{ invites: InviteRecord[]; partial: boolean }>;
   /** Writes `next` if the stored invite still has `expected` revision and state. Throws CompanyStoreConflict. */
   updateInvite(next: InviteRecord, expected: { revision: number; state: InviteState }): Promise<void>;
+  /**
+   * Makes an unconfirmed invite usable under the link token Code minted (DEC 254h), in one write: `confirmed` (the same invite, now pending, its
+   * `tokenHash` the new token's) replaces `unconfirmed` and the token row moves to the new hash. Throws CompanyStoreConflict when the stored
+   * invite isn't `unconfirmed` at its revision, or another invite holds the new hash.
+   */
+  confirmInvite(unconfirmed: InviteRecord, confirmed: InviteRecord): Promise<void>;
   /** Removes an unconfirmed invite (Code never took it), with its request id and token. */
   removeInvite(invite: InviteRecord): Promise<void>;
   /** The company's agent AI choice (DEC 240), or undefined when none was saved or the row does not read as this company's. */
@@ -254,6 +273,17 @@ export class LocalCompanyStore implements CompanyStore {
     const stored = company?.get(next.inviteId);
     if (company === undefined || stored === undefined || stored.revision !== expected.revision || stored.state !== expected.state) throw new CompanyStoreConflict("invite");
     company.set(next.inviteId, copy(next));
+  }
+
+  async confirmInvite(unconfirmed: InviteRecord, confirmed: InviteRecord) {
+    sameInvite(unconfirmed, confirmed);
+    const company = this.invitesOf.get(unconfirmed.companyId);
+    const stored = company?.get(unconfirmed.inviteId);
+    if (company === undefined || stored === undefined || stored.revision !== unconfirmed.revision || stored.state !== "unconfirmed" || stored.tokenHash !== unconfirmed.tokenHash) throw new CompanyStoreConflict("invite");
+    if (confirmed.tokenHash !== unconfirmed.tokenHash && this.tokens.has(confirmed.tokenHash)) throw new CompanyStoreConflict("invite token");
+    company.set(confirmed.inviteId, copy(confirmed));
+    this.tokens.delete(unconfirmed.tokenHash);
+    this.tokens.set(confirmed.tokenHash, { companyId: confirmed.companyId, inviteId: confirmed.inviteId });
   }
 
   async removeInvite(invite: InviteRecord) {

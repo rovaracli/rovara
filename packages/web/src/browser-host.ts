@@ -1,4 +1,4 @@
-import { AppMeResponseReaderSchema, RealtimeTokenResponseReaderSchema, SessionIdSchema } from "@agentx/contracts/web";
+import { AppMeResponseReaderSchema, INVITE_LINK_TOKEN, RealtimeTokenResponseReaderSchema, SessionIdSchema } from "@agentx/contracts/web";
 import type { ApiRequest, ApiResponse, AppHost, RealtimeSocket } from "@agentx/ui";
 import { ApiError, createApiClient, SIGN_IN_REPEAT_GUARD_MS } from "@agentx/ui";
 import { safeExternalUrl, isGithubInstallationUrl } from "../../ui/src/text/links.js";
@@ -8,7 +8,9 @@ export interface BrowserWindow {
  innerWidth?: number;
  addEventListener?: (type: "resize", listener: () => void) => void;
  removeEventListener?: (type: "resize", listener: () => void) => void;
- location: Pick<Location, "origin" | "pathname" | "search" | "assign">;
+ location: Pick<Location, "origin" | "pathname" | "search" | "assign"> & Partial<Pick<Location, "hash">>;
+ /** The join page drops the invite link's token from the address once read (DEC 253z). Optional: a host without it keeps the address. */
+ history?: Pick<History, "replaceState">;
  fetch: typeof fetch;localStorage: Pick<Storage, "getItem" | "setItem">;sessionStorage: Pick<Storage, "getItem" | "setItem">;
  document: Pick<Document, "createElement" | "body" | "title">;URL: Pick<typeof URL, "createObjectURL" | "revokeObjectURL">;WebSocket: typeof WebSocket;
  open(url: string, target: string, features: string): unknown;
@@ -35,6 +37,11 @@ export async function payloadHash(body: string | undefined): Promise<string | un
  const digest = new Uint8Array(await subtle.digest("SHA-256", new TextEncoder().encode(body ?? "")));
  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+/** DEC 253z: a person with no company yet gets /me's refusal with the sign-in's CSRF value, for the onboarding pages' one change. */
+function noCompanyCsrf(response: ApiResponse): string | undefined {
+ const body = response.body as { error?: { code?: unknown }; csrf?: unknown } | undefined;
+ return response.status === 403 && body?.error?.code === "NO_COMPANY" && typeof body.csrf === "string" && /^[A-Za-z0-9_-]{43}$/u.test(body.csrf) ? body.csrf : undefined;
+}
 export function createBrowserHost(win: BrowserWindow): AppHost {
  let csrf: string | undefined, refreshing: Promise<void> | undefined;
  async function fetchJson(path: string, init: RequestInit): Promise<ApiResponse> {
@@ -49,7 +56,7 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   return { status: response.status, body };
  }
  async function refresh(): Promise<void> {
-  refreshing ??= (async () => { const response = await fetchJson("/v1/web/me", { method: "GET", headers: { accept: "application/json" } });if (response.status !== 200) throw new ApiError(response.status, "AUTH_REQUIRED", "Sign in to continue.");const me = AppMeResponseReaderSchema.safeParse(response.body);if (!me.success || me.data.csrf === undefined) throw new ApiError(401, "AUTH_REQUIRED", "Sign in to continue.");csrf = me.data.csrf; })().finally(() => { refreshing = undefined; });
+  refreshing ??= (async () => { const response = await fetchJson("/v1/web/me", { method: "GET", headers: { accept: "application/json" } });const pending = noCompanyCsrf(response);if (pending !== undefined) { csrf = pending;return; }if (response.status !== 200) throw new ApiError(response.status, "AUTH_REQUIRED", "Sign in to continue.");const me = AppMeResponseReaderSchema.safeParse(response.body);if (!me.success || me.data.csrf === undefined) throw new ApiError(401, "AUTH_REQUIRED", "Sign in to continue.");csrf = me.data.csrf; })().finally(() => { refreshing = undefined; });
   return refreshing;
  }
  const transport = { async request(input: ApiRequest): Promise<ApiResponse> {
@@ -79,7 +86,17 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   signIn(path, options) {
    const destination = returnPath(path), key = "rovara.sign-in." + destination;
    try { const stored = win.sessionStorage.getItem(key);if (options?.automatic === true && stored !== null && Number.isFinite(Number(stored)) && Date.now() - Number(stored) < SIGN_IN_REPEAT_GUARD_MS) { win.location.assign("/app/signed-out?reason=failed");return; }win.sessionStorage.setItem(key, String(Date.now())); } catch { /* Blocked preference storage does not prevent a deliberate sign-in. */ }
-   win.location.assign("/v1/auth/browser/authorize?return_to=" + encodeURIComponent(destination) + (options?.stepUp === true ? "&step_up=1" : ""));
+   win.location.assign("/v1/auth/browser/authorize?return_to=" + encodeURIComponent(destination) + (options?.stepUp === true ? "&step_up=1" : "") + (options?.join === true ? "&join=1" : ""));
+  },
+  // DEC 253z: the invite link's token stays in the page's fragment (never sent as a URL); Cloud's server looks it up and keeps the join ticket.
+  async lookUpInvite() {
+   const token = /^#invite=(.*)$/su.exec(win.location.hash ?? "")?.[1];
+   if (token === undefined || !INVITE_LINK_TOKEN.test(token)) return undefined;
+   // Out of the address bar and the history once read: the token is a bearer secret until the invite is used.
+   try { win.history?.replaceState(null, "", win.location.pathname + win.location.search); } catch { /* the lookup still runs */ }
+   const response = await fetchJson("/v1/auth/browser/join", { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify({ invite: token }) });
+   const body = response.body as { companyName?: unknown } | undefined;
+   return response.status === 200 && typeof body?.companyName === "string" && body.companyName.length > 0 && body.companyName.length <= 200 ? { companyName: body.companyName } : undefined;
   },
   async signOut() {
    if (csrf === undefined) {

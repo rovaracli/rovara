@@ -25,6 +25,7 @@
 // app's signed-write path (CSRF in handler.ts, the body hash at CloudFront). The store is the gateway's write-only product key
 // store (scripts/cloud-lambda.ts wires ProductKeyStore over the gateway's product key table and KMS keys); it seals the key in
 // one transaction with its own receipt and audit row, and Cloud records its own audit record after the change is saved.
+import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import { COMPANY_ID } from "./company-store.js";
 import { BEDROCK_ANSWERS, BEDROCK_ROLE_ARN, BEDROCK_WORDS, choiceKeys, choiceOf, connectionKey, type BedrockBackend } from "./bedrock-byo-routes.js";
@@ -65,8 +66,6 @@ export interface ProductAiBackend {
   store: ProductAiStore;
   /** The Code install's token issuer (`<ROVARA_CODE_URL>/v1/auth`): the key rows are bound to it, as the gateway reads them. */
   issuer: string;
-  /** The deployment's one company, used only when Code's access check names none (as company-routes.ts). */
-  companyId?: string;
   /** The company's own Bedrock (bedrock-byo-routes.ts, DEC 238): absent when the gateway's set-up call or the template is not configured. */
   bedrock?: BedrockBackend;
 }
@@ -84,7 +83,6 @@ const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
 const WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "Product AI settings aren't set up on this Cloud."),
-  noCompany: refusal(403, "FORBIDDEN", "Your sign-in doesn't belong to a company Cloud knows."),
   notFound: refusal(404, "PROJECT_NOT_FOUND", "That project doesn't exist, or you can't use it."),
   forbidden: refusal(403, "FORBIDDEN", "Only the project's admin or a company admin can change its product AI settings."),
   stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
@@ -117,18 +115,15 @@ async function who(context: RouteContext, write: boolean): Promise<Who | RouteAn
   const project = context.params[0] ?? "";
   if (!/^[a-z][a-z0-9-]{0,62}$/u.test(project)) return WORDS.notFound;
   const checkedAt = context.now().getTime();
-  const access = await context.client.access(context.session);
-  const named = (access as { companyId?: unknown }).companyId;
-  let companyId: string;
-  if (named !== undefined) {
-    if (typeof named !== "string" || !COMPANY_ID.test(named)) return WORDS.noCompany;
-    companyId = named;
-  } else if (backend.companyId !== undefined && COMPANY_ID.test(backend.companyId)) companyId = backend.companyId;
-  else return WORDS.noCompany;
+  const caller = await companyCaller(context);
+  if (refused(caller)) return caller;
+  const { access, companyId } = caller;
   const mine = access.projects.find((each) => each.name === project);
-  const role = access.administrator === true ? "company_admin" : mine?.access === "administrator" ? "project_maintainer" : undefined;
+  // A company owner or admin (Code's company role, never its install administrator flag), else the project's maintainer.
+  const companyAdmin = isCompanyAdmin(caller.companyRole);
+  const role = companyAdmin ? "company_admin" : mine?.access === "administrator" ? "project_maintainer" : undefined;
   // A project the person can't see is not found; one they see but don't administer is refused.
-  if (mine === undefined && access.administrator !== true) return WORDS.notFound;
+  if (mine === undefined && !companyAdmin) return WORDS.notFound;
   if (role === undefined) return WORDS.forbidden;
   if (!/^[a-f0-9]{64}$/u.test(access.developerId)) return WORDS.forbidden;
   if (write && freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return WORDS.stepUp;
@@ -398,15 +393,13 @@ export async function withdrawForMember(context: RouteContext, personId: string,
   let companyId: string;
   if ("companyId" in scope) companyId = scope.companyId;
   else {
-    const access = await context.client.access(context.session);
-    const named = (access as { companyId?: unknown }).companyId;
-    if (named !== undefined) { if (typeof named !== "string" || !COMPANY_ID.test(named)) return WORDS.noCompany; companyId = named; }
-    else if (backend.companyId !== undefined && COMPANY_ID.test(backend.companyId)) companyId = backend.companyId;
-    // No company: no approval can be recorded for one (the settings routes refuse), so there is nothing to withdraw.
-    else return NOTHING_TO_WITHDRAW;
+    const caller = await companyCaller(context);
+    // No company: the member change is refused here rather than made without the withdrawal it needs.
+    if (refused(caller)) return caller;
+    companyId = caller.companyId;
     // Only someone who may change the project's members withdraws anyone's approvals (never a side effect of a refused change).
-    const mine = access.projects.find((each) => each.name === scope.project);
-    if (access.administrator !== true && mine?.access !== "administrator") return WORDS.memberForbidden;
+    const mine = caller.access.projects.find((each) => each.name === scope.project);
+    if (!isCompanyAdmin(caller.companyRole) && mine?.access !== "administrator") return WORDS.memberForbidden;
   }
   // Approvals name people by their 64-hex member id: a change naming anyone another way can't be matched, so it is not made.
   if (typeof personId !== "string" || !/^[a-f0-9]{64}$/u.test(personId)) return WORDS.memberId;

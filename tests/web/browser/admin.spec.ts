@@ -75,7 +75,7 @@ for (const screen of [
   });
 }
 
-// Company settings is served for real: Cloud's company backend runs in memory for the pretend Code's one company (CLOUD_COMPANY_ID in playwright.config.ts).
+// Company settings is served for real: Cloud's company backend runs in memory (CLOUD_COMPANY_DATA=memory in playwright.config.ts) for the company the pretend Code's access check names.
 test("Company settings reads Cloud's company backend and says the model gateway needs a monthly cap", async ({ page }) => {
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.settings);

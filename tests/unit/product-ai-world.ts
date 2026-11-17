@@ -12,13 +12,18 @@ export const A = "org_aaaaaaaaaaaaaaaaaaaa";
 export const B = "org_bbbbbbbbbbbbbbbbbbbb";
 export const START = Date.parse("2026-11-15T12:00:00.000Z");
 
-export interface Person { developerId: string; name: string; administrator: boolean; companyId: string; projects: Array<{ name: string; access: string }> }
+export interface Person { developerId: string; name: string; administrator: boolean; companyId: string; /** Code's company role; default admin when `administrator`, else member. */ companyRole?: string; /** Code says this sign-in joined the company by an invite (DEC 254h; the accept route needs it). */ joinedByInvite?: true; projects: Array<{ name: string; access: string }> }
 export const PEOPLE: Record<string, Person> = {
-  pam: { developerId: "a".repeat(64), name: "Pam", administrator: false, companyId: A, projects: [{ name: "web", access: "administrator" }] },
+  pam: { developerId: "a".repeat(64), name: "Pam", administrator: false, companyId: A, joinedByInvite: true, projects: [{ name: "web", access: "administrator" }] },
   cal: { developerId: "c".repeat(64), name: "Cal", administrator: false, companyId: A, projects: [{ name: "web", access: "developer" }] },
   ada: { developerId: "d".repeat(64), name: "Ada", administrator: true, companyId: A, projects: [] },
   bob: { developerId: "b".repeat(64), name: "Bob", administrator: false, companyId: B, projects: [{ name: "web", access: "administrator" }] },
   bea: { developerId: "e".repeat(64), name: "Bea", administrator: true, companyId: B, projects: [] },
+  // DEC 253z: Code's install administrator who is a plain member of company A, and company A's owner who isn't one.
+  ian: { developerId: "8".repeat(64), name: "Ian", administrator: true, companyId: A, companyRole: "member", projects: [] },
+  oz: { developerId: "7".repeat(64), name: "Oz", administrator: false, companyId: A, companyRole: "owner", projects: [] },
+  // Code names no company for this install administrator.
+  nob: { developerId: "6".repeat(64), name: "Nob", administrator: true, companyId: "", projects: [{ name: "web", access: "administrator" }] },
 };
 const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
 export type Body = Record<string, unknown> & { error?: { code: string; message: string } };
@@ -36,7 +41,7 @@ export function world(options: WorldOptions = {}) {
     const person = byToken.get(((init?.headers as Record<string, string> | undefined)?.authorization ?? "").replace(/^Bearer /u, ""));
     if (person === undefined) return new Response("{}", { status: 401 });
     if (url.pathname === "/v1/dev/access") clock.at += options.accessMs ?? 0;
-    if (url.pathname === "/v1/dev/access") return new Response(JSON.stringify({ developerId: person.developerId, displayName: person.name, administrator: person.administrator, companyId: person.companyId, projects: person.projects, notices: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    if (url.pathname === "/v1/dev/access") return new Response(JSON.stringify({ developerId: person.developerId, displayName: person.name, administrator: person.administrator, companyId: person.companyId, companyRole: person.companyRole ?? (person.administrator ? "admin" : "member"), ...(person.joinedByInvite === true ? { joinedByInvite: true } : {}), projects: person.projects, notices: [] }), { status: 200, headers: { "content-type": "application/json" } });
     const member = /^\/v1\/dev\/client\/projects\/([^/]+)\/members\/([^/]+)$/u.exec(url.pathname);
     if (member !== null) {
       codeCalls.push(`${init?.method ?? "GET"} ${url.pathname}`);

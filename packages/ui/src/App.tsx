@@ -10,6 +10,7 @@ import { Announcer } from "./design/Announcer.js";
 import { Skeleton } from "./design/Skeleton.js";
 import { PageError, ErrorBoundary } from "./shell/ErrorBoundary.js";
 import { createApiClient } from "./api/client.js";
+import { ApiError } from "./api/errors.js";
 import { createQueryClient } from "./api/query.js";
 import { appRoutes } from "./routes.js";
 import "./shell/shell.css";
@@ -18,13 +19,16 @@ export type AppRouterFactory = (routes: RouteObject[]) => Router;
 const EMPTY_FEATURES: AppNav["features"] = { localAgents: false, usage: false, admin: false, chains: false, notices: false, describe: false };
 function Startup({ createRouter }: { createRouter: AppRouterFactory }) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
- const standalone = /^\/app\/(?:signup|welcome|signed-out)\/?(?:\?|$)/u.test(host.currentPath());
+ const standalone = /^\/app\/(?:signup|welcome|signed-out|no-company|create-company|join)\/?(?:\?|$)/u.test(host.currentPath());
  const nav = useQuery({ queryKey: ["nav"], queryFn: () => api.get("/v1/app/nav", AppNavReaderSchema), enabled: !standalone });
  const features = nav.data?.features;
  const router = useMemo(() => standalone || features !== undefined ? createRouter(appRoutes(features ?? EMPTY_FEATURES)) : undefined, [createRouter, features, standalone]);
  useEffect(() => () => { router?.dispose(); }, [router]);
+ // DEC 253z: Code names no company for the person: the onboarding page, never the app.
+ const noCompany = nav.error instanceof ApiError && nav.error.code === "NO_COMPANY";
+ useEffect(() => { if (noCompany) host.navigate("/app/no-company"); }, [host, noCompany]);
  if (router !== undefined) return <RouterProvider router={router} />;
- if (nav.isPending) return <main className="rv-entry"><Skeleton label="Loading workspace" /></main>;
+ if (nav.isPending || noCompany) return <main className="rv-entry"><Skeleton label="Loading workspace" /></main>;
  return <PageError error={nav.error} reload={() => host.navigate(host.currentPath())} />;
 }
 export function App({ host, createRouter }: { host: AppHost; createRouter: AppRouterFactory }) {

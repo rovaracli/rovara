@@ -6,9 +6,10 @@ export {
 export { DynamoSessionTable, LocalSessionTable, type SessionRecord, type SessionTable, type WriteCondition } from "./session-table.js";
 export { EnvelopeSealer, KmsKeyService, SealedRecordRefused, localKeyService, type KeyService, type TokenSealer } from "./session-crypto.js";
 export { ClientSecretUnavailable, secretsManagerSecret, type SecretReader } from "./client-secret.js";
+export { COMPANY_NAME_FALLBACK, COMPANY_ROLES, NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, type CompanyCaller, type CompanyMembership, type CompanyRole } from "./company-caller.js";
 export { ROUTES, roleOf, type OrgView, type Route, type RouteAnswer, type RouteContext } from "./routes.js";
-export { CODE_TASK_PAGE, createCloudHandler, returnPath, type CloudHandlerOptions, type CloudRequest, type CloudResponse } from "./handler.js";
-export { LocalWorkSessionStore, StoreConflict, newSessionId, withoutComments, type SessionComment, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
+export { CODE_TASK_PAGE, JOIN_PATH, createCloudHandler, returnPath, type CloudHandlerOptions, type CloudRequest, type CloudResponse } from "./handler.js";
+export { LocalWorkSessionStore, SessionCompanyMissing, StoreConflict, companyScopedWork, newSessionId, withoutComments, type SessionComment, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
 export { approvalUrl, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 export { APPROVAL_PATH, approvalRoute } from "./approve.js";
 export { LocalPresenceBoard, PRESENCE_TTL_MS, PRESENCE_VIEWERS_MAX, currentViewers, type PresenceBoard, type Viewer } from "./presence.js";
@@ -37,7 +38,8 @@ export {
   type AgentAiChoice, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
 } from "./company-store.js";
 export { CLOSED_INVITE_DAYS, COMPANY_TABLE, DynamoCompanyStore } from "./company-dynamo.js";
-export { COMPANY_ROUTES, PRE_APPROVED_EMAILS_PATH, modelGatewayReadiness, type CompanyBackend } from "./company-routes.js";
+export { COMPANY_ROUTES, PREAPPROVALS_PATH, modelGatewayReadiness, preapprovalEmailHash, type CompanyBackend } from "./company-routes.js";
+export { COMPANY_CREATE_PATH, CREATE_WORDS, JOIN_UNUSABLE, ONBOARDING_ROUTES, inviteTokenHash, usableInvite } from "./onboarding-routes.js";
 export { PRODUCT_AI_APPROVER_PROVIDER, PRODUCT_AI_ROUTES, PRODUCT_AI_SOURCE_ID, PRODUCT_AI_VERTEX_SOURCE_ID, withdrawForMember, type ProductAiBackend, type ProductAiStore, type ProductAiView } from "./product-ai-routes.js";
 export { AGENT_AI_CHOOSABLE, AGENT_AI_ROUTES } from "./agent-ai-routes.js";
 export { BEDROCK_BYO_ROUTES, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";

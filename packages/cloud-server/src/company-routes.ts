@@ -2,42 +2,48 @@
 // rules (with a second admin for a loosening change), its budgets as the app's Budgets screen reads them, its profile, and invites. Members,
 // roles and removal stay on Code: those routes are not here, so they answer 501 NOT_ON_CODE_YET until Code serves them.
 //
-// Who and which company: every route asks Code's access check afresh (Code wins: a person Code no longer calls an administrator is not one
-// here), and takes the company from that answer. A Code that names no company is a single-company install; then, and only then, the
-// deployment's one company (CLOUD_COMPANY_ID) is used. Nothing a request carries ever names the company.
+// Who and which company: every route asks Code's access check afresh (company-caller.ts) and takes the company and the person's company role
+// from that answer (DEC 253z). A Code that names no company is refused ("You're not in a company yet."), never a fallback. A company admin is
+// a company owner or admin; Code's install `administrator` flag plays no part. Nothing a request carries ever names the company.
 //
-// Fresh step-up: changing settings, approving a change, and inviting an admin need the admin's step-up (step-up.ts) inside the company's
-// window. An invite tells Code first ("this email is pre-approved"), as the inviting admin; withdrawing one tells Code before it is marked.
+// Fresh step-up: changing settings and approving a change need the admin's step-up (step-up.ts) inside the company's window.
+//
+// Invites (DEC 253z): Code's own pre-approval routes, as the inviting admin with their own token: `POST /v1/dev/company/preapprovals`
+// { email, role: "member", expiresInHours } and, to withdraw, `DELETE /v1/dev/company/preapprovals/<sha256 of the normalised email>`. Code
+// checks the inviter's live company role itself. Cloud keeps the invite (the link token's hash, the company, the email, the expiry, the
+// state) and makes it usable only once Code took the pre-approval. Code pre-approves members only, so an admin invite is refused here.
+//
+// The link (DEC 254h): Code's answer to the pre-approval carries a single-use invite secret bound to the company and that pre-approval
+// (`invite: { secret, expiresAt }`), returned once. The link the admin copies carries that secret; Cloud keeps only its SHA-256 beside the
+// invite and never logs it. An older Code answers no `invite`: the link then carries Cloud's own token, as before, and the join relies on
+// Code's email check alone. An `invite` that doesn't read is never used: the pre-approval is withdrawn and the admin told.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { CodeError } from "./code-client.js";
+import { COMPANY_NAME_FALLBACK, companyCaller, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
 import { canonical, COMPANY_SETTINGS_LIMITS, loosens, plainObject, settingsDecision, validateCompanySettings } from "./company-settings.js";
 import {
-  COMPANY_ID, CompanyStoreConflict, INVITE_DAYS, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, companySettings,
+  CompanyStoreConflict, INVITE_DAYS, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, companySettings,
   type CompanyStore, type InviteRecord, type PendingSettingsChange,
 } from "./company-store.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { freshStepUp } from "./step-up.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import { withdrawForMember } from "./product-ai-routes.js";
+import { LINK_TOKEN } from "./onboarding-routes.js";
 
 export interface CompanyBackend {
   store: CompanyStore;
-  /** The deployment's one company, used only when Code's access check names none (a single-company Code). Absent: such a Code gets no company routes. */
-  companyId?: string;
   log?: (event: Record<string, unknown>) => void;
 }
 
-/** Code's route that takes the company's pre-approved emails (contract v0 `company.preApproved.put`). */
-export const PRE_APPROVED_EMAILS_PATH = "/v1/dev/client/company/pre-approved-emails";
-/** An unconfirmed invite this young is still being told to Code by its own request, so another admin's update keeps it in the list. */
-const IN_FLIGHT_MS = 60_000;
+/** Code's pre-approval routes (contract v0 `company.preapprovals.create` and `.withdraw`). */
+export const PREAPPROVALS_PATH = "/v1/dev/company/preapprovals";
 const DAY_MS = 24 * 60 * 60_000;
 
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
 const WORDS = Object.freeze({
   notAdmin: refusal(403, "FORBIDDEN", "Only a company admin can do this."),
-  noCompany: refusal(403, "FORBIDDEN", "Your sign-in doesn't belong to a company Cloud knows."),
   stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   ruled: refusal(403, "FORBIDDEN", "Your company's rules don't allow this change."),
   secondPerson: refusal(403, "SECOND_PERSON_REQUIRED", "A different admin must approve this change."),
@@ -50,41 +56,37 @@ const WORDS = Object.freeze({
   tooMany: refusal(409, "CONFLICT", "Your company has too many open invites. Withdraw some first."),
   notOnCode: refusal(501, "NOT_ON_CODE_YET", "Company invites aren't connected to Rovara Code yet."),
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
-  partial: refusal(503, "RUNTIME_UNAVAILABLE", "Your company has too many invite records to update Rovara Code safely. Ask an installation administrator."),
+  memberOnly: refusal(400, "CONFIG_INVALID", "Invite them as a member. A company owner can make them an admin once they've joined."),
+  alreadyInvited: refusal(409, "CONFLICT", "This person already has an open invite. Withdraw it first to send a new one."),
+  withdrawFailed: refusal(503, "RUNTIME_UNAVAILABLE", "Couldn't withdraw it in Rovara Code. Try again."),
+  codeRefused: refusal(409, "CONFLICT", "Rovara Code didn't take this invite. The address may already be invited, or your role may have changed."),
+  codeUnreadable: refusal(502, "RUNTIME_UNAVAILABLE", "Rovara Code's answer to this invite couldn't be read. Try again."),
 });
 const bad = (message: string) => refusal(400, "CONFIG_INVALID", message);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
-const TOKEN = /^[A-Za-z0-9_-]{43}$/u;
 const EMAIL = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u;
 const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 const newChangeId = () => `chg_${Array.from(randomBytes(20), (byte) => ALPHABET[byte % 36]).join("")}`;
 const keysAre = (value: Record<string, unknown>, allowed: readonly string[], required: readonly string[] = allowed) =>
   Object.keys(value).every((key) => allowed.includes(key)) && required.every((key) => Object.hasOwn(value, key));
 
-interface Caller { backend: CompanyBackend; companyId: string; developerId: string; name: string; administrator: boolean }
+interface Caller { backend: CompanyBackend; companyId: string; companyRole: CompanyRole; companyName?: string; developerId: string; name: string; joinedByInvite: boolean }
 
-/** The person and their company, from Code's access check made now. A RouteAnswer when Cloud can't name the company. */
+/** The person and their company, from Code's access check made now. A RouteAnswer when Cloud has no company data or Code names no company. */
 async function caller(context: RouteContext): Promise<Caller | RouteAnswer> {
   const backend = context.company;
   if (backend === undefined) return refusal(501, "NOT_ON_CODE_YET", "Company settings aren't set up on this Cloud.");
-  const access = await context.client.access(context.session);
-  const named = (access as { companyId?: unknown }).companyId;
-  let companyId: string;
-  if (named !== undefined) {
-    // Code names the company: only that one, and only when it reads. Never the deployment's.
-    if (typeof named !== "string" || !COMPANY_ID.test(named)) return WORDS.noCompany;
-    companyId = named;
-  } else if (backend.companyId !== undefined && COMPANY_ID.test(backend.companyId)) {
-    companyId = backend.companyId;
-  } else return WORDS.noCompany;
-  return { backend, companyId, developerId: access.developerId, name: access.displayName, administrator: access.administrator === true };
+  const who = await companyCaller(context);
+  if (refused(who)) return who;
+  return { backend, companyId: who.companyId, companyRole: who.companyRole, ...(who.companyName === undefined ? {} : { companyName: who.companyName }), developerId: who.developerId, name: who.name, joinedByInvite: who.access.joinedByInvite === true };
 }
 
+/** A company owner or admin (Code's company role, never its install administrator flag). */
 async function admin(context: RouteContext): Promise<Caller | RouteAnswer> {
   const who = await caller(context);
   if ("status" in who) return who;
-  return who.administrator ? who : WORDS.notAdmin;
+  return isCompanyAdmin(who.companyRole) ? who : WORDS.notAdmin;
 }
 
 /** The admin's step-up is inside `windowSeconds`. */
@@ -235,7 +237,7 @@ async function budgetSettings(context: RouteContext): Promise<RouteAnswer> {
 
 async function profileOf(context: RouteContext, who: Caller) {
   const stored = await who.backend.store.profile(who.companyId);
-  return stored ?? { companyId: who.companyId, name: context.org.name, plan: context.org.plan, version: 0 };
+  return stored ?? { companyId: who.companyId, name: who.companyName ?? COMPANY_NAME_FALLBACK, plan: context.org.plan, version: 0 };
 }
 
 async function readProfile(context: RouteContext): Promise<RouteAnswer> {
@@ -266,36 +268,55 @@ async function renameCompany(context: RouteContext): Promise<RouteAnswer> {
     throw error;
   }
   log(who, { event: "cloud.company_renamed" });
-  // The app's RenameOrganizationResponseSchema names the role "owner": only a company admin gets here.
+  // The app's RenameOrganizationResponseSchema names the role "owner" only: only a company owner or admin gets here.
   return ok({ org: { orgId: who.companyId, name, plan: current.plan }, role: "owner" });
 }
 
 // ---- Invites ----
 
 const tokenHash = (token: string) => createHash("sha256").update(token, "utf8").digest("hex");
+
+/**
+ * The invite secret in Code's answer to a pre-approval (DEC 254h): undefined when Code sent none (an older Code), "unreadable" when the
+ * `invite` it sent isn't a link token with a future expiry.
+ */
+function codeInvite(answer: Record<string, unknown> | undefined, nowMs: number): { secret: string; expiresAt: string } | "unreadable" | undefined {
+  const minted = answer?.["invite"];
+  if (minted === undefined) return undefined;
+  if (minted === null || typeof minted !== "object" || Array.isArray(minted)) return "unreadable";
+  const { secret, expiresAt } = minted as { secret?: unknown; expiresAt?: unknown };
+  if (typeof secret !== "string" || !LINK_TOKEN.test(secret) || typeof expiresAt !== "string" || expiresAt.length > 40 || !(Date.parse(expiresAt) > nowMs)) return "unreadable";
+  return { secret, expiresAt };
+}
 const expired = (invite: InviteRecord, nowMs: number) => Date.parse(invite.expiresAt) <= nowMs;
 /** An address as the app may show it: the first character and the domain. */
 const masked = (email: string) => { const at = email.lastIndexOf("@"); return `${email.slice(0, 1)}***${email.slice(at)}`.slice(0, 260); };
 const receipt = (invite: InviteRecord) => ({ orgId: invite.companyId, requestId: invite.requestId, inviteId: invite.inviteId, role: invite.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt });
 
+/** The email as Code keys a pre-approval: SHA-256 (hex) of the trimmed, lower-case address. */
+export const preapprovalEmailHash = (email: string) => createHash("sha256").update(email.trim().toLowerCase(), "utf8").digest("hex");
+
 /**
- * Tells Code the company's pre-approved emails, as the admin: every pending invite's address that has not expired, the invites this
- * request is adding, and others still being told by their own request. An invite being withdrawn is `revoking`, so it is left out.
- * "notOnCode" when Code does not serve the route yet.
+ * Code's answer to a pre-approval call: "told" (Code answered { ok: true }), "notOnCode" (Code doesn't serve the route yet: its fixed
+ * unknown-route answer, or 405/501), "notFound" (Code's one refusal of these routes: 404 NOT_FOUND) or "failed" (anything else: a 400, a
+ * 403, an answer that doesn't read). Code's outage or a dropped sign-in throws.
  */
-async function tellCode(context: RouteContext, who: Caller, adding: readonly InviteRecord[]): Promise<"told" | "notOnCode" | "partial"> {
-  const nowMs = context.now().getTime();
-  const { invites, partial } = await who.backend.store.invites(who.companyId);
-  // Code's list is replaced whole: never send one built from part of the invites, which would drop people still invited.
-  if (partial) return "partial";
-  const kept = invites.filter((invite) => !expired(invite, nowMs)
-    && (invite.state === "pending" || (invite.state === "unconfirmed" && nowMs - Date.parse(invite.createdAt) < IN_FLIGHT_MS)));
-  const emails = [...new Set([...kept, ...adding].map((invite) => invite.email))].sort();
+async function askCode(context: RouteContext, path: string, init: { method: string; body?: unknown }): Promise<"told" | "notOnCode" | "notFound" | "failed"> {
+  return (await askCodeFor(context, path, init)).told;
+}
+
+/** askCode, with Code's answer when it was "told" (the pre-approval's answer carries the invite secret). */
+async function askCodeFor(context: RouteContext, path: string, init: { method: string; body?: unknown }): Promise<{ told: "told" | "notOnCode" | "notFound" | "failed"; answer?: Record<string, unknown> }> {
   try {
-    await context.client.json(context.session, PRE_APPROVED_EMAILS_PATH, { method: "PUT", body: { requestId: randomUUID(), emails } });
-    return "told";
+    const answer = await context.client.json<Record<string, unknown> | null>(context.session, path, init);
+    return answer !== null && typeof answer === "object" && answer.ok === true ? { told: "told", answer } : { told: "failed" };
   } catch (error) {
-    if (error instanceof CodeError && (error.status === 404 || error.status === 405 || error.status === 501)) return "notOnCode";
+    if (!(error instanceof CodeError)) throw error;
+    const said = (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+    if (error.status === 405 || error.status === 501 || (error.status === 404 && said?.code === "NOT_FOUND" && said.message === "route not found")) return { told: "notOnCode" };
+    // Code words every refusal of these routes as NOT_FOUND (not an admin, already pre-approved, none to withdraw).
+    if (error.status === 404 && said?.code === "NOT_FOUND") return { told: "notFound" };
+    if (error.status >= 400 && error.status < 500) return { told: "failed" };
     throw error;
   }
 }
@@ -317,18 +338,21 @@ async function createInvite(context: RouteContext, withReceipt: boolean): Promis
   const input = readInviteBody(context.body);
   if ("status" in input) return input;
   const store = who.backend.store;
-  const current = await companySettings(store, who.companyId);
-  if (current === undefined) return WORDS.unreadable;
-  // Giving the admin role needs a fresh step-up (plan 2.4, step 2).
-  if (input.role === "admin" && !steppedUp(context, current.settings.freshSignInSeconds)) return WORDS.stepUp;
+  // Code pre-approves members only: an admin is made by role change once they've joined.
+  if (input.role !== "member") return WORDS.memberOnly;
   if ((await store.inviteByRequest(who.companyId, input.requestId)) !== undefined) return WORDS.conflict;
   const nowMs = context.now().getTime();
   const { invites } = await store.invites(who.companyId);
-  if (invites.filter((invite) => (invite.state === "pending" || invite.state === "unconfirmed" || invite.state === "revoking") && !expired(invite, nowMs)).length >= OPEN_INVITES_MAX) return WORDS.tooMany;
+  const open = invites.filter((invite) => (invite.state === "pending" || invite.state === "unconfirmed" || invite.state === "revoking") && !expired(invite, nowMs));
+  if (open.length >= OPEN_INVITES_MAX) return WORDS.tooMany;
+  // Code keeps one pre-approval per address: a second open invite to the same address could be withdrawn by the first's withdrawal.
+  if (open.some((invite) => invite.email === input.email)) return WORDS.alreadyInvited;
   const token = randomBytes(32).toString("base64url");
+  const profile = await profileOf(context, who);
   const invite: InviteRecord = {
-    companyId: who.companyId, inviteId: randomUUID(), requestId: input.requestId, role: input.role, email: input.email, tokenHash: tokenHash(token),
+    companyId: who.companyId, inviteId: randomUUID(), requestId: input.requestId, role: "member", email: input.email, tokenHash: tokenHash(token),
     createdBy: who.developerId, createdAt: new Date(nowMs).toISOString(), expiresAt: new Date(nowMs + INVITE_DAYS * DAY_MS).toISOString(), state: "unconfirmed", revision: 0,
+    companyName: profile.name,
   };
   try {
     await store.createInvite(invite);
@@ -336,19 +360,42 @@ async function createInvite(context: RouteContext, withReceipt: boolean): Promis
     if (error instanceof CompanyStoreConflict) return WORDS.conflict;
     throw error;
   }
-  let confirmed = false;
+  let confirmed = false, told: "told" | "notOnCode" | "notFound" | "failed" | undefined, link = token;
   try {
-    const told = await tellCode(context, who, [invite]);
-    if (told !== "told") return told === "notOnCode" ? WORDS.notOnCode : WORDS.partial;
-    await store.updateInvite({ ...invite, state: "pending" }, { revision: 0, state: "unconfirmed" });
+    // Kept first and usable only once Code took it: the invite's expiry and Code's are the same seven days.
+    const asked = await askCodeFor(context, PREAPPROVALS_PATH, { method: "POST", body: { email: input.email, role: "member", expiresInHours: INVITE_DAYS * 24 } });
+    told = asked.told;
+    if (told !== "told") return told === "notOnCode" ? WORDS.notOnCode : WORDS.codeRefused;
+    const minted = codeInvite(asked.answer, nowMs);
+    // An `invite` that doesn't read: never a link Code can't check, and never a fallback to the email-only link. Withdrawn below.
+    if (minted === "unreadable") return WORDS.codeUnreadable;
+    if (minted === undefined) {
+      // An older Code (no secret): Cloud's own token, as before.
+      await store.updateInvite({ ...invite, state: "pending" }, { revision: 0, state: "unconfirmed" });
+    } else {
+      // The link carries Code's secret; Cloud keeps only its hash, and the invite lapses no later than Code's.
+      const expiresAt = Date.parse(minted.expiresAt) < Date.parse(invite.expiresAt) ? new Date(Date.parse(minted.expiresAt)).toISOString() : invite.expiresAt;
+      await store.confirmInvite(invite, { ...invite, state: "pending", tokenHash: tokenHash(minted.secret), codeSecret: true, expiresAt });
+      link = minted.secret;
+    }
     confirmed = true;
   } finally {
-    // Code never took it (or it could not be marked): take it back, so it is never shown, accepted or sent again.
-    if (!confirmed) await store.removeInvite(invite).catch(() => undefined);
+    if (!confirmed) {
+      // Code never took it (or it could not be marked): take it back, so it is never shown, accepted or sent again. When Code did take it,
+      // withdraw it there too, so the address can be invited again; if that fails as well, the invite is kept as "revoking" (listed, so an
+      // admin's withdrawal tries Code again) rather than leave a pre-approval nobody can see.
+      let withdrawn = told !== "told";
+      if (!withdrawn) withdrawn = (await askCode(context, `${PREAPPROVALS_PATH}/${preapprovalEmailHash(invite.email)}`, { method: "DELETE" }).catch(() => "failed" as const)) === "told";
+      if (withdrawn) await store.removeInvite(invite).catch(() => undefined);
+      else {
+        await store.updateInvite({ ...invite, state: "revoking" }, { revision: 0, state: "unconfirmed" }).catch(() => undefined);
+        log(who, { event: "cloud.invite_orphaned", inviteId: invite.inviteId });
+      }
+    }
   }
   log(who, { event: "cloud.invite_created", inviteId: invite.inviteId, role: invite.role });
   await audited(context, who, "company.invite.created", `invite:${invite.inviteId}`);
-  const inviteUrl = `${context.origin}/app/join#invite=${token}`;
+  const inviteUrl = `${context.origin}/app/join#invite=${link}`;
   return ok(withReceipt ? { receipt: receipt(invite), inviteUrl } : { inviteUrl });
 }
 
@@ -417,18 +464,21 @@ async function revokeInvite(context: RouteContext): Promise<RouteAnswer> {
     if (error instanceof CompanyStoreConflict) return WORDS.conflict;
     throw error;
   }
-  let told: "told" | "notOnCode" | "partial";
+  let told: "told" | "notOnCode" | "notFound" | "failed";
   try {
-    told = await tellCode(context, who, []);
+    told = await askCode(context, `${PREAPPROVALS_PATH}/${preapprovalEmailHash(invite.email)}`, { method: "DELETE" });
   } catch (error) {
     // Code's answer is unknown: an invite that was pending goes back to pending (a retry tells Code again); one already stuck stays withdrawn from the list.
     if (invite.state === "pending") await store.updateInvite(invite, { revision: invite.revision, state: "revoking" }).catch(() => undefined);
     throw error;
   }
-  if (told !== "told") {
+  if (told === "notOnCode" || told === "failed") {
+    // Not withdrawn at Code (not served yet, or an answer that isn't Code's refusal): a pending invite goes back to pending, for a retry.
     if (invite.state === "pending") await store.updateInvite(invite, { revision: invite.revision, state: "revoking" }).catch(() => undefined);
-    return told === "notOnCode" ? WORDS.notOnCode : WORDS.partial;
+    return told === "notOnCode" ? WORDS.notOnCode : WORDS.withdrawFailed;
   }
+  // "notFound": Code holds no live pre-approval for the address any more (used, expired or already withdrawn; Code words them all as not
+  // found, as it does for a caller who isn't an admin, whose role Cloud checked with Code just now). The invite can't be used: withdrawn.
   const revokedAt = context.now().toISOString();
   const revision = invite.revision + 1;
   try {
@@ -443,18 +493,22 @@ async function revokeInvite(context: RouteContext): Promise<RouteAnswer> {
 }
 
 /**
- * The invited person, signed in through Code (which admitted them on the pre-approved email), records that they took the invite. The
- * invite must belong to the company Code put them in; a used, withdrawn, expired, unknown or other company's invite answers the same.
+ * The invited person, signed in through Code (which admitted them on the pre-approved email or the link's secret), records that they took the
+ * invite. The invite must belong to the company Code put them in, and Code must say this sign-in joined by an invite (`joinedByInvite`, DEC
+ * 254h); a used, withdrawn, expired, unknown or other company's invite, or a sign-in that didn't join by one, answers the same.
  */
 async function acceptInvite(context: RouteContext): Promise<RouteAnswer> {
   const who = await caller(context);
   if ("status" in who) return who;
   const body = context.body;
-  if (!plainObject(body) || !keysAre(body, ["invite"]) || typeof body["invite"] !== "string" || !TOKEN.test(body["invite"])) return bad("Send { invite } from the invite link.");
+  if (!plainObject(body) || !keysAre(body, ["invite"]) || typeof body["invite"] !== "string" || !LINK_TOKEN.test(body["invite"])) return bad("Send { invite } from the invite link.");
   const store = who.backend.store;
   const invite = await store.inviteByToken(tokenHash(body["invite"]));
   const nowMs = context.now().getTime();
-  if (invite === undefined || invite.companyId !== who.companyId || invite.state !== "pending" || expired(invite, nowMs)) return WORDS.unusable;
+  if (invite === undefined || invite.companyId !== who.companyId || invite.state !== "pending" || expired(invite, nowMs) || !who.joinedByInvite
+    // An invite whose link is Code's secret is accepted only by the join that spent that very secret (handler.ts finishJoin): `joinedByInvite`
+    // is per sign-in, not per invite, so this route can't tell which invite was spent.
+    || invite.codeSecret === true) return WORDS.unusable;
   // PRODUCT-EVAL-APPROVER-REREAD: accepting an invite sets the person's company role, so any eval approval they made stops counting first.
   const withdrawal = await withdrawForMember(context, who.developerId, { companyId: who.companyId });
   if ("status" in withdrawal) return withdrawal;

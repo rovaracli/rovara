@@ -53,8 +53,14 @@ export interface AccessResponse {
   displayName: string;
   /** True once the person chose their own name; an older Code leaves it out. */
   nameChosen?: boolean;
-  /** An administrator of the company (the isolation boundary, plan 2.4). */
+  /** Code's install administrator. Not the company role: Cloud reads `companyRole` for that (DEC 253z). */
   administrator: boolean;
+  /** The person's company from live membership (Code PR #820, DEC 253z). All three are absent when Code names no company; Cloud then refuses company routes. */
+  companyId?: string;
+  companyRole?: "owner" | "admin" | "member";
+  companyName?: string;
+  /** True only when this session's sign-in spent an invite secret or a pre-approval for the session's company (Code PR #826); absent otherwise. */
+  joinedByInvite?: boolean;
   projects: Array<{ name: string; access: string /* known: administrator, developer */ }>;
   notices: string[];
 }
@@ -356,6 +362,17 @@ export interface RemoveCompanyMemberRequest { requestId: string; successorId?: D
 /** The invite workflow is Cloud's (plan 2.2); Code only learns "this email is pre-approved for company C" (decision 17). */
 export interface PreApprovedEmailsRequest { requestId: string; emails: string[] }
 export interface PreApprovedEmailsResponse { emails: string[]; revision: number }
+/** Code's member pre-approval (DEC 253z): the inviting admin's own call; Code checks their live company role. Every refusal is NOT_FOUND. */
+export interface CompanyPreapprovalRequest { email: string; role: "member"; expiresInHours: number }
+export interface CompanyOkResponse { ok: true }
+/**
+ * Code's answer to a pre-approval (DEC 254h): also the single-use invite secret it minted for it, returned once (Code keeps only its SHA-256),
+ * expiring with the pre-approval. An older Code answers `{ ok: true }` alone.
+ */
+export interface CompanyPreapprovalResponse { ok: true; invite?: { secret: string; expiresAt: string } }
+/** A person with no company creates one with an operator's invite code (DEC 254a; Code PR 4) and becomes its owner. */
+export interface CreateCompanyRequest { name: string; inviteCode: string }
+export interface CreateCompanyResponse { companyId: string; companyName: string; companyRole: "owner" }
 /**
  * One engine action (Code's `GET /v1/dev/client/company/audit/records`, lane AU, Rovara PR #649). The optional fields are what Code adds: the record's id, the actor's kind and the caller the
  * action came through ("person via caller": `web`, `slack`, `cli`, `client:<id>`). An older Code leaves them out.
@@ -565,6 +582,9 @@ export interface CodeRouteTypes {
   "company.members.removalPreview": { request: void; response: RemovalPreview };
   "company.members.remove": { request: RemoveCompanyMemberRequest; response: { removed: boolean } };
   "company.preApproved.put": { request: PreApprovedEmailsRequest; response: PreApprovedEmailsResponse };
+  "company.preapprovals.create": { request: CompanyPreapprovalRequest; response: CompanyPreapprovalResponse };
+  "company.preapprovals.withdraw": { request: void; response: CompanyOkResponse };
+  "company.create": { request: CreateCompanyRequest; response: CreateCompanyResponse };
   "company.audit.records": { request: void; response: AuditRecordsResponse };
   "scriptTokens.list": { request: void; response: ScriptTokensResponse };
   "scriptTokens.create": { request: CreateScriptTokenRequest; response: CreateScriptTokenResponse };
@@ -702,6 +722,9 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.members.removalPreview", "GET", "/v1/dev/client/company/members/{developerId}/removal-preview", "What removing a person would hand over", "full", ["admin"], "no", false, "none"),
   spec("company.members.remove", "POST", "/v1/dev/client/company/members/{developerId}/removal", "Remove a person; hand their work to a successor", "full", ["admin"], "no", false, "none"),
   spec("company.preApproved.put", "PUT", "/v1/dev/client/company/pre-approved-emails", "Cloud's invite tells Code an email is pre-approved (written by the inviting admin's own call)", "full", ["admin"], "no", false, "none"),
+  spec("company.preapprovals.create", "POST", "/v1/dev/company/preapprovals", "Cloud's invite pre-approves a member's email in the inviter's company (the inviting admin's own call; Code checks the role)", "full", ["admin"], "yes", false, `${DEV}:1561`, true),
+  spec("company.preapprovals.withdraw", "DELETE", "/v1/dev/company/preapprovals/{emailHash}", "Withdraw a pre-approval by the SHA-256 of the email", "full", ["admin"], "yes", false, `${DEV}:1561`, true),
+  spec("company.create", "POST", "/v1/dev/company", "A person with no company creates one with an operator's invite code and becomes its owner (DEC 254a)", "full", ["shell"], "no", false, "none", true),
   spec("company.audit.records", "GET", "/v1/dev/client/company/audit/records", "Engine audit records, for a company administrator (lane AU)", "full", ["admin"], "no", false, "none"),
   // Settings: the person's script tokens
   spec("scriptTokens.list", "GET", "/v1/dev/script-tokens", "The person's script tokens", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:94")),
@@ -969,15 +992,15 @@ PUT /v1/app/org/members/{developerId}/role | k | admin | company.members.setRole
 GET /v1/app/org/members/{developerId}/removal-preview | k | admin | company.members.removalPreview | admin/RemoveMemberDialog |
 POST /v1/app/org/members/{developerId}/removal | k | admin | company.members.remove | admin/RemoveMemberDialog |
 POST /v1/app/org/members/lookup | k | session | company.members.list | session/ShareDialog |
-GET /v1/app/org/invites | c | admin | company.preApproved.put | admin/InvitesScreen |
-POST /v1/app/org/invites | c | admin | company.preApproved.put | onboarding |
-POST /v1/app/org/invites/reviewed | c | admin | company.preApproved.put | invite-admin |
+GET /v1/app/org/invites | c | admin | | admin/InvitesScreen |
+POST /v1/app/org/invites | c | admin | company.preapprovals.create | onboarding |
+POST /v1/app/org/invites/reviewed | c | admin | company.preapprovals.create | invite-admin |
 GET /v1/app/org/invites/requests/{requestId} | c | admin | | invite-admin |
-DELETE /v1/app/org/invites/{inviteId} | c | admin | company.preApproved.put | invite-admin |
+DELETE /v1/app/org/invites/{inviteId} | c | admin | company.preapprovals.withdraw | invite-admin |
 PATCH /v1/app/org | c | admin | | onboarding |
 POST /v1/app/org/leave | c | later | company.members.remove | shell/AccountMenu |
 GET /v1/app/companies | c | shell | | companies |
-POST /v1/app/companies | c | shell | | companies |
+POST /v1/app/companies | c | shell | company.create | onboarding/CreateCompany |
 GET /v1/app/org/audit/status | c | admin | | admin/audit/AuditScreen |
 GET /v1/app/org/audit/records | k | admin | company.audit.records | admin/audit/AuditScreen |
 GET /v1/app/company/audit | c | admin | company.audit.records | admin/audit/CompanyAudit | T
