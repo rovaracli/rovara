@@ -6,7 +6,11 @@
 //   GET  /api/connect/github/callback                                       where GitHub sends the person back (the GitHub App's callback URL)
 //   POST /v1/app/github/connect/result   (browser: /v1/web/…)               the callback's outcome, kept server-side for this sign-in
 //   POST /v1/app/github/choose           (browser: /v1/web/…)               bind one installation from the outcome's list (Code's choose)
-//   GET  /v1/app/github/connections      (browser: /v1/web/…)               the company's connected GitHub accounts (Code's read, any member)
+//   GET  /v1/app/github/connections      (browser: /v1/web/…)               the company's connected GitHub accounts (Code's read, any member), with
+//                                                                            #832's health (`status` active/suspended/uninstalled, `accountType`)
+//   DELETE /v1/app/github/connections/{installationId}                     guided onboarding PR 12b: disconnect (Code #832 DELETE /v1/dev/company/github/{id}).
+//                                                                            A company OWNER with a fresh step-up, checked here first and by Code again;
+//                                                                            refused while projects use its repos (Code names them; Cloud rebuilds the sentence)
 //
 // Rules:
 //   - The browser never names a company: Cloud sends Code `{}` at connect and only GitHub's own values at the claim, always with the person's own
@@ -24,6 +28,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { companyOf } from "./company-caller.js";
+import { PROJECT_NAME, STEP_UP_WORDS, codeRefusal, ownerWithFreshStepUp } from "./connect-flow.js";
 import { validGithubUserId, type CompanyStore } from "./company-store.js";
 import { sessionKey, type CodeSession, type SessionStore } from "./sessions.js";
 
@@ -45,7 +50,18 @@ export const GITHUB_WORDS = Object.freeze({
   connectionsUnavailable: "The company's GitHub connections could not be read just now; try again.",
   noDetails: "Connecting GitHub takes no details.",
   chooseListed: "Choose one of the GitHub accounts listed.",
+  // Guided onboarding PR 12b (Code #832's disconnect).
+  ownerOnly: "Only a company owner can disconnect GitHub.",
+  notConnected: "That GitHub account isn't connected to your company.",
+  disconnectUnavailable: "GitHub could not be disconnected just now; try again.",
+  inUseUnreadable: "Projects still use this GitHub connection. Remove its repositories from them first.",
 });
+/** Code's in-use refusal names the company's own projects; Cloud rebuilds it from the names it can read, else says it without them. */
+export const githubInUseWords = (projects: readonly string[]) => `Projects still use this GitHub connection: ${projects.join(", ")}. Remove its repositories from them first.`;
+const IN_USE = /^Projects still use this GitHub connection: ([a-z0-9, -]{1,4000})\. Remove its repositories from them first\.$/u;
+/** GitHub's own uninstall page for an installation (Code's githubUninstallUrl): an https github.com settings address and nothing else. */
+const UNINSTALL_URL = /^https:\/\/github\.com\/(?:settings\/installations\/[1-9][0-9]{0,15}|organizations\/[A-Za-z0-9-]{1,39}\/settings\/installations\/[1-9][0-9]{0,15})$/u;
+const INSTALLATION_IN_PATH = /^[1-9][0-9]{0,15}$/u;
 
 /** The one word the callback's landing URL carries: the outcome is kept server-side ("result"), or one of Code's refusals. */
 export const GITHUB_OUTCOMES = ["result", "start_again", "taken", "unavailable", "not_available"] as const;
@@ -383,10 +399,47 @@ export function createGithubConnect(deps: GithubConnectDeps) {
         }
         const by = row.connectedBy;
         const name = typeof by.name === "string" && by.name.length > 0 && by.name.length <= 200 && !/[\p{Cc}\p{Cf}]/u.test(by.name) ? by.name : undefined;
-        installations.push({ installationId: row.installationId, accountLogin: row.accountLogin, connectedAt: row.connectedAt, connectedBy: by.kind === "person" ? { kind: "person", ...(name === undefined ? {} : { name }) } : { kind: "operator" } });
+        // #832's health and account type, only when they read as one of Code's words (an older Code sends neither).
+        const health = row.status === "active" || row.status === "suspended" || row.status === "uninstalled" ? { status: row.status } : {};
+        installations.push({ installationId: row.installationId, accountLogin: row.accountLogin, ...health, ...(accountType(row.accountType) ? { accountType: row.accountType } : {}), connectedAt: row.connectedAt, connectedBy: by.kind === "person" ? { kind: "person", ...(name === undefined ? {} : { name }) } : { kind: "operator" } });
       }
       if (rows === undefined) return refusal(503, "RUNTIME_UNAVAILABLE", GITHUB_WORDS.connectionsUnavailable);
       return { status: 200, body: { installations } };
+    },
+
+    /**
+     * DELETE /v1/app/github/connections/{installationId} (guided onboarding PR 12b): a company owner with a fresh step-up (checked here first; Code checks both
+     * again, and that the installation is the company's own and not in use). The browser names only the installation; the company is Code's, read live.
+     */
+    async disconnect(session: CodeSession, rawId: string, body: unknown): Promise<GithubAnswer> {
+      if (body !== undefined && !(isObject(body) && Object.keys(body).length === 0)) return refusal(400, "CONFIG_INVALID", "Disconnecting GitHub takes no details.");
+      // Not an installation id: answered as Code answers an installation that isn't the company's, without asking Code.
+      if (!INSTALLATION_IN_PATH.test(rawId) || !Number.isSafeInteger(Number(rawId))) return refusal(404, "NOT_FOUND", GITHUB_WORDS.notConnected);
+      const wanted = Number(rawId);
+      const refused = await ownerWithFreshStepUp(deps.client, session, nowMs(), GITHUB_WORDS.ownerOnly);
+      if (refused !== undefined) return { status: refused.status, body: refused.body };
+      let answer: unknown;
+      try {
+        answer = await deps.client.json<unknown>(session, `${CODE_GITHUB}/${String(wanted)}`, { method: "DELETE" });
+      } catch (error) {
+        if (!(error instanceof CodeError)) throw error;
+        const { code, message } = codeRefusal(error.body);
+        if (error.status === 403) return code === "REAUTH_REQUIRED" ? refusal(403, "REAUTH_REQUIRED", STEP_UP_WORDS) : refusal(403, "FORBIDDEN", GITHUB_WORDS.ownerOnly);
+        if (error.status === 409 && code === "GITHUB_IN_USE") {
+          const named = typeof message === "string" ? IN_USE.exec(message)?.[1]?.split(", ") : undefined;
+          const projects = named !== undefined && named.length <= 100 && named.every((name) => PROJECT_NAME.test(name)) ? named : undefined;
+          return { status: 409, body: { error: { code: "GITHUB_IN_USE", message: projects === undefined ? GITHUB_WORDS.inUseUnreadable : githubInUseWords(projects) }, ...(projects === undefined ? {} : { projects }) } };
+        }
+        if (error.status === 404 && code === "NOT_FOUND" && message !== "route not found") return refusal(404, "NOT_FOUND", GITHUB_WORDS.notConnected);
+        if (error.status === 404 || error.status === 405 || error.status === 501) return refusal(501, "NOT_ON_CODE_YET", GITHUB_WORDS.notAvailable);
+        return refusal(503, "RUNTIME_UNAVAILABLE", GITHUB_WORDS.disconnectUnavailable);
+      }
+      if (!isObject(answer) || answer.status !== "disconnected" || answer.installationId !== wanted || !login(answer.accountLogin)
+        || (answer.uninstallUrl !== undefined && (typeof answer.uninstallUrl !== "string" || !UNINSTALL_URL.test(answer.uninstallUrl) || !answer.uninstallUrl.endsWith(`/${String(wanted)}`)))) {
+        return refusal(503, "RUNTIME_UNAVAILABLE", GITHUB_WORDS.disconnectUnavailable);
+      }
+      deps.log({ event: "cloud.github_disconnected", developerId: session.access.developerId, installationId: wanted });
+      return { status: 200, body: { status: "disconnected", installationId: wanted, accountLogin: answer.accountLogin, ...(typeof answer.uninstallUrl === "string" ? { uninstallUrl: answer.uninstallUrl } : {}) } };
     },
   };
 }
@@ -394,3 +447,5 @@ export function createGithubConnect(deps: GithubConnectDeps) {
 export type GithubConnect = ReturnType<typeof createGithubConnect>;
 /** The app's GitHub connect routes that need the sign-in's cookie (paths after /v1/web). */
 export const GITHUB_APP_PATHS = { start: "/github/connect", result: "/github/connect/result", choose: "/github/choose", connections: "/github/connections" } as const;
+/** DELETE /v1/web/github/connections/{installationId} (guided onboarding PR 12b). */
+export const GITHUB_DISCONNECT_PATH = /^\/github\/connections\/([^/]+)$/u;

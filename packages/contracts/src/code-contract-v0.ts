@@ -406,7 +406,9 @@ export type LinearConnectionRead = { status: "disconnected" } | { status: "conne
 export interface LinearDisconnected { status: "disconnected"; workspaceName: string; projects: string[] }
 export interface LinearTeam { id: string; key: string; name: string }
 export interface LinearProjectTeam { project: string; team: LinearTeam | null; teams?: LinearTeam[]; cleared?: boolean }
-export interface GithubConnectionsResponse { installations: Array<{ installationId: number; accountLogin: string; connectedAt: Iso; connectedBy: { kind: "person"; personId: string; name?: string } | { kind: "operator" } }> }
+export interface GithubConnectionsResponse { installations: Array<{ installationId: number; accountLogin: string; status?: "active" | "suspended" | "uninstalled"; accountType?: "User" | "Organization"; connectedAt: Iso; connectedBy: { kind: "person"; personId: string; name?: string } | { kind: "operator" } }> }
+/** Guided onboarding PR 12b (Code #832): a company owner with a fresh step-up disconnects one of the company's GitHub installations (refused while in use). */
+export interface GithubDisconnected { status: "disconnected"; installationId: number; accountLogin: string; uninstallUrl: string }
 /**
  * One engine action (Code's `GET /v1/dev/client/company/audit/records`, lane AU, Rovara PR #649). The optional fields are what Code adds: the record's id, the actor's kind and the caller the
  * action came through ("person via caller": `web`, `slack`, `cli`, `client:<id>`). An older Code leaves them out.
@@ -473,6 +475,11 @@ export interface PutCompanyEngineModelRequest { model: string | null }
 export interface ProjectSettingsView { preset: string | null; overrides: JsonObject; revision: number; updatedAt: Iso | null; updatedBy: string | null; resolved: JsonObject; values: JsonObject; clamped: JsonObject[] }
 /** A change names the revision read; a cost field (such as `model_budget_usd`, the per-task model budget) needs the person's fresh step-up at Code. */
 export interface PutProjectSettingsRequest { expectedRevision: number; preset?: "lightweight" | "balanced" | "careful"; overrides?: JsonObject }
+
+/** Guided onboarding PR 9 (Code #841): the project checklist read (contracts project-setup-status.ts ProjectSetupChecklistSchema has every field). */
+export type ProjectSetupStatusView = JsonObject & { project: string };
+export interface ProjectSetupSkipRequest { row: "slackChannel" | "linear" | "invites"; skipped: boolean }
+export interface ProjectSetupSkipView { project: string; row: ProjectSetupSkipRequest["row"]; skipped: boolean; skippedRows: Array<ProjectSetupSkipRequest["row"]> }
 
 // ---------------------------------------------------------------------------------------------------------------
 // Types: lessons (Code's lessons API, PrepLabsAI/Rovara#713, LM8 part 1; DEC 225, 226, 231). One project of the caller's own company: the
@@ -582,6 +589,8 @@ export interface CodeRouteTypes {
   "client.projects.archive": { request: ArchiveProjectRequest; response: ArchiveProjectResponse };
   "client.projects.restorePreview": { request: void; response: ProjectLifecyclePreview };
   "client.projects.restore": { request: ArchiveProjectRequest; response: ArchiveProjectResponse };
+  "client.projects.setupStatus": { request: void; response: ProjectSetupStatusView };
+  "client.projects.setupSkips": { request: ProjectSetupSkipRequest; response: ProjectSetupSkipView };
   "client.projects.codeSettings.get": { request: void; response: { settings: CodeSettings } };
   "client.projects.codeSettings.put": { request: PutCodeSettingsRequest; response: { settings: CodeSettings } };
   "client.repositories.list": { request: void; response: RepositoriesResponse };
@@ -643,6 +652,7 @@ export interface CodeRouteTypes {
   "company.github.claim": { request: GithubClaimRequest; response: GithubClaimResponse };
   "company.github.choose": { request: GithubChooseRequest; response: GithubConnected };
   "company.github.status": { request: void; response: GithubConnectionsResponse };
+  "company.github.disconnect": { request: void; response: GithubDisconnected };
   "company.slack.install": { request: { redirectUri: string }; response: SlackInstallStart };
   "company.slack.installComplete": { request: { state: string; code?: string; error?: string }; response: SlackInstallComplete };
   "company.slack.get": { request: void; response: SlackWorkspaceRead };
@@ -748,6 +758,9 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("client.projects.archive", "POST", `${CP}/archive`, "Archive a project (reviewed)", "full", ["later"], "no", false, "none", true),
   spec("client.projects.restorePreview", "GET", `${CP}/restore-preview`, "What restoring the project does, and whether the person may", "full", ["later"], "no", false, "none", true),
   spec("client.projects.restore", "POST", `${CP}/restore`, "Restore an archived project (reviewed)", "full", ["later"], "no", false, "none", true),
+  // Guided onboarding PR 9: the project checklist (Code #841) not on code/next yet. The hosted setup run (Code #844) is Code's laptop /v1/app path served on the deployed API, so it is an app row (LT) Cloud forwards as is, like eval-confirm.
+  spec("client.projects.setupStatus", "GET", `${CP}/setup-status`, "The project setup checklist, every row from Code's real state (any member of the company)", "full", ["later"], "no", false, "none", true),
+  spec("client.projects.setupSkips", "PUT", `${CP}/setup-status/skips`, "Set an optional checklist row aside, or undo it (company owner/admin or project admin)", "full", ["later"], "no", false, "none", true),
   spec("client.projects.codeSettings.get", "GET", `${CP}/code-settings`, "Merge rules for the project", "full", ["admin"], "no", false, "none"),
   spec("client.projects.codeSettings.put", "PUT", `${CP}/code-settings`, "Change the merge rules (revision-checked)", "full", ["admin"], "no", false, "none"),
   spec("client.repositories.list", "GET", "/v1/dev/client/repositories", "The repositories Code's GitHub App can reach", "projects:create", ["admin"], "no", true, `${MAIN}${DEV}:855`, true),
@@ -814,6 +827,7 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.github.claim", "POST", "/v1/dev/company/github/claim", "GitHub's return: spend the state, check the person controls the installation, bind it or list the ones they control", "full", ["admin"], "no", false, "none", true),
   spec("company.github.choose", "POST", "/v1/dev/company/github/choose", "Bind one installation from a claim's checked list, with its single-use ticket", "full", ["admin"], "no", false, "none", true),
   spec("company.github.status", "GET", "/v1/dev/company/github", "The company's connected GitHub installations, who connected each and when (any member)", "full", ["admin"], "no", false, "none", true),
+  spec("company.github.disconnect", "DELETE", "/v1/dev/company/github/{installationId}", "A company owner with a fresh step-up disconnects one GitHub installation (refused while projects use it)", "full", ["admin"], "no", false, "none", true),
   // Guided onboarding (Code PRs #836 pr/go-slack-install, #840 pr/go-slack-channel, #838 pr/go-linear-oauth): not on code/next yet.
   spec("company.slack.install", "POST", "/v1/dev/company/slack/install", "A company owner or admin starts Add to Slack: a single-use state and Slack's OAuth v2 address for Cloud's callback", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.installComplete", "POST", "/v1/dev/company/slack/install/complete", "Slack's return: spend the state, exchange the code, bind the workspace to the company", "full", ["admin"], "no", false, "none", true),
@@ -1014,10 +1028,12 @@ PUT /v1/app/projects/{p}/settings | k | later | | onboarding |
 POST /v1/app/projects/{p}/settings/undo | k | later | | onboarding |
 POST /v1/app/projects/{p}/setup-check | k | later | | onboarding |
 PUT /v1/app/projects/{p}/agents/{agentId} | k | later | | onboarding |
-GET /v1/app/projects/{p}/setup-agent | k | later | | setup-agent | L
-GET /v1/app/projects/{p}/setup-agent/journal | k | later | | setup-agent | L
-POST /v1/app/projects/{p}/setup-agent | k | later | | setup-agent | L
-POST /v1/app/projects/{p}/setup-agent/stop | k | later | | setup-agent | L
+GET /v1/app/projects/{p}/setup-agent | k | later | | setup-agent | LT
+GET /v1/app/projects/{p}/setup-agent/journal | k | later | | setup-agent | LT
+POST /v1/app/projects/{p}/setup-agent | k | later | | setup-agent | LT
+POST /v1/app/projects/{p}/setup-agent/stop | k | later | | setup-agent | LT
+GET /v1/app/projects/{p}/setup-status | k | later | client.projects.setupStatus | setup-status | T
+PUT /v1/app/projects/{p}/setup-status/skips | k | later | client.projects.setupSkips | setup-status | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/eval-confirm | k | later | | setup-agent | LT
@@ -1102,6 +1118,7 @@ POST /v1/app/github/connect | k | admin | company.github.connect | onboarding | 
 POST /v1/app/github/connect/result | c | admin | | onboarding | T
 POST /v1/app/github/choose | k | admin | company.github.choose | onboarding | T
 GET /v1/app/github/connections | k | admin | company.github.status | onboarding | T
+DELETE /v1/app/github/connections/{installationId} | k | admin | company.github.disconnect | admin/connections | T
 POST /v1/app/slack/install | k | admin | company.slack.install | onboarding | T
 POST /v1/app/slack/install/result | c | admin | | onboarding | T
 GET /v1/app/slack | k | admin | company.slack.get | onboarding | T
