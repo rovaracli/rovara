@@ -27,7 +27,7 @@ export class UnavailablePage {
   /** Within the expect timeout the screen stops loading and says plainly that Code does not offer this yet. */
   async expectNotAvailableYet(): Promise<void> {
     await expect(this.message).toBeVisible();
-    await expect(this.message).toContainText("isn't connected to Rovara Code yet");
+    await expect(this.message).toContainText("Not available yet.");
     await expect(this.loading).toHaveCount(0);
   }
 }

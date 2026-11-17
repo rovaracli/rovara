@@ -27,6 +27,12 @@ export function SectionError({ error, retry, label }: { error: unknown; retry: (
  return <div role="alert" className="rv-section-error" data-testid="section-error"><p><VisibleText text={error instanceof ApiError ? error.message : `Couldn't load ${label}. Try again.`} /></p><Button onClick={retry}>Try again</Button></div>;
 }
 
+/**
+ * Code has no proof index route yet (walkthrough 2026-11-17 item 3): Cloud forwards the read and Code answers its unknown-route 404 ("route not found"), or Cloud answers 501.
+ * Either means "nothing to show yet", never an error with the route's words. Any other 404 (a task the person can no longer read) stays SectionError's.
+ */
+const proofNotServed = (error: unknown): boolean => error instanceof ApiError && (error.status === 501 || (error.status === 404 && error.code === "NOT_FOUND" && error.message === "route not found"));
+
 /** The quiet card: a task that asks nothing of the person says why, in fixed words. */
 export function QuietCard({ row, decisionsError, wide = false }: { row: WorkRow; decisionsError: unknown; /** On the task's own page "the full page" is where the person already is. */ wide?: boolean }) {
  let title: string, body: ReactNode;
@@ -91,7 +97,7 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
  const openAnswers = (questionId: string, optionId: string) => answer(questionId, optionId);
  const retryPlan = () => { void plan.refetch(); };
  const planNote = plan.isError ? <SectionError error={plan.error} label="this task's plan" retry={retryPlan} /> : null;
- const proofBody = proof.isError ? <SectionError error={proof.error} label="the proof" retry={() => { void proof.refetch(); }} /> : null;
+ const proofBody = proof.isError ? (proofNotServed(proof.error) ? <p className="rv-muted" role="status" data-testid="proof-not-yet">Proof will appear here.</p> : <SectionError error={proof.error} label="the proof" retry={() => { void proof.refetch(); }} />) : null;
  const stageBody = (): ReactNode => {
   const pulls = row.task.pullRequests;
   // Only the spec and the task list need the plan: the proof and the activity are drawn from their own reads, so one failed read does not hide the others.

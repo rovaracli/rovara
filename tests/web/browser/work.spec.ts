@@ -88,7 +88,7 @@ test("an unserved task list says it is not connected yet, never a spinner", asyn
   await page.route("**/v1/web/sessions", (route) => route.fulfill({ status: 501, contentType: "application/json", body: JSON.stringify({ error: { code: "NOT_ON_CODE_YET", message: "/v1/app/sessions isn't connected to Rovara Code yet." } }) }));
   const work = new WorkPage(page);
   await work.open();
-  await expect(work.loadError).toContainText("isn't connected to Rovara Code yet");
+  await expect(work.loadError).toContainText("Not available yet.");
   await expect(page.getByRole("progressbar")).toHaveCount(0);
 });
 
