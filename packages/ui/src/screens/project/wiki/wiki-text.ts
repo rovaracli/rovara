@@ -39,6 +39,7 @@ export const T = {
   NOTE_APPROVED: "Pinned for people and agents. Kept through every refresh.",
   NOTE_FILE: "It points to",
   STALE: "May be stale.",
+  STALE_NOTE: "A file this paragraph cites changed since this page was written.",
   NOT_FOUND_NOTE: "A source was not found when this was last checked.",
   WRONG: "Marked wrong.",
   WRONG_AFTER: "Hidden from agents now. The next refresh rewrites it.",
@@ -50,7 +51,7 @@ export const T = {
 
 export const SOURCE_WORDS: Record<WikiSourceState, string> = {
   found: "Source found",
-  changed: "This file changed since the page was written. The claim may be out of date.",
+  changed: "A file this claim cites changed since the page was written. The claim may be out of date.",
   not_found: "The source was not found when this was last checked.",
 };
 

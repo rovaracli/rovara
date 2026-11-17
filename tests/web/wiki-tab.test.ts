@@ -58,7 +58,7 @@ describe("the page tree and a page", () => {
     for (const name of ["Product overview", "How the repos connect", "Glossary", "beacon-api", "billing", "beacon-agents", "beacon-legacy"]) expect(nav.getByRole("button", { name: new RegExp(`^${name}`) })).toBeTruthy();
     expect(nav.getByRole("button", { name: /^Product overview/ }).getAttribute("aria-current")).toBe("page");
     const meta = screen.getByTestId("wiki-meta");
-    expect(meta.textContent).toMatch(/^Written by Rovara from the code\|as of \w{7}, .*(ago|Just now)\d of \d cited claims may be out of date$|^Written by Rovara from the code\|as of 4 commits/u);
+    expect(meta.textContent).toMatch(/^Written by Rovara from the code\|as of 4 commits, one per repo, \d+d ago1 of 5 cited claims may be out of date$/u);
     expect(within(meta).getAllByText(/cited claims may be out of date|Up to date|Out of date/u)).toHaveLength(1);
     expect(screen.getByTestId("wiki-truth").textContent).toContain("Written by Rovara from the code. It can be wrong. The code is the truth.");
     expect(screen.queryByText(/verified/iu)).toBeNull();
@@ -135,7 +135,7 @@ describe("numbered sources", () => {
     fireEvent.click(a.getAllByRole("button", { name: /^Source 2: beacon-api\/src\/billing\/refund\.ts, lines 12-40$/u })[0]!);
     const pop = await screen.findByRole("dialog", { name: "Source 2" });
     expect(within(pop).queryByRole("link")).toBeNull();
-    expect(within(pop).getByText("This file changed since the page was written. The claim may be out of date.")).toBeTruthy();
+    expect(within(pop).getByText("A file this claim cites changed since the page was written. The claim may be out of date.")).toBeTruthy();
     f.close();
   });
 
@@ -179,6 +179,8 @@ describe("what needs a warning, and only there", () => {
     const f = mount({ initial: "/app/projects/payments?tab=wiki&page=beacon-api--billing" });
     const a = await article();
     expect(a.getAllByText("May be stale.")).toHaveLength(2);
+    expect(a.getByText("A file this paragraph cites changed since this page was written.")).toBeTruthy();
+    expect(a.getByRole("region", { name: "Pinned notes" })).toBeTruthy();
     expect(a.getByText("A source was not found when this was last checked.")).toBeTruthy();
     expect(a.getAllByText("Marked wrong.")).toHaveLength(1);
     const wrong = a.getByText("Refund amounts are rounded to the nearest 5 cents.").closest(".rv-wiki-para")!;
@@ -192,10 +194,10 @@ describe("what needs a warning, and only there", () => {
   it("shows pinned notes read only: a pending note says agents wait for a maintainer, an approved one says it is pinned for both; no write control exists", async () => {
     const f = mount({ initial: "/app/projects/payments?tab=wiki&page=beacon-api--billing" });
     const a = await article();
-    const pending = a.getByRole("complementary", { name: "Note from Priya" });
+    const pending = a.getByRole("group", { name: "Note from Priya" });
     expect(pending.textContent).toContain("Agents get it after a maintainer approves it.");
     expect(pending.textContent).toContain("Always run the refund tests before changing refund.ts.");
-    const approved = a.getByRole("complementary", { name: "Note from Sam" });
+    const approved = a.getByRole("group", { name: "Note from Sam" });
     expect(approved.textContent).toContain("Pinned for people and agents.");
     expect(approved.textContent).toContain("beacon-api/src/billing/webhooks.ts");
     for (const name of [/mark wrong/iu, /add a note/iu, /pin note/iu, /^ask/iu]) expect(screen.queryByRole("button", { name })).toBeNull();
@@ -237,9 +239,6 @@ describe("wiki text is untrusted", () => {
     expect(document.querySelectorAll("article a").length).toBe(0);
     expect(a.getByText("code <script>").tagName).toBe("CODE");
     f.close();
-    const g = mount({ page: () => json(200, { ...hostile, page: { ...hostile.page, title: "x", blocks: [{ kind: "paragraph", blockId: "p-glance-1", text: "ok", claimIds: [] }] }, notes: [] }) });
-    await article();
-    g.close();
   });
 
   it("draws a hidden or control character in a title as a visible mark, not as itself", async () => {
@@ -337,7 +336,52 @@ describe("empty and edge states", () => {
   it("an answer that does not read shows the unreadable-response words, not the answer", async () => {
     const f = mount({ page: () => json(200, { project: "payments", page: { title: "x" } }) });
     const alert = await screen.findByTestId("wiki-page-error");
-    expect(alert.textContent).not.toContain("x");
+    expect(alert.textContent).toBe(WORDS.unavailable);
+    f.close();
+  });
+});
+
+describe("review fixes", () => {
+  it("drops a cited file at a commit the page was not written from, and lists a file Code names twice twice without a key clash", async () => {
+    const good = wikiSources("payments", "beacon-api--billing")!;
+    const odd = { ...good, files: [{ ...good.files[0]!, commit: "f".repeat(40) }, good.files[1]!, good.files[1]!] };
+    const f = mount({ initial: "/app/projects/payments?tab=wiki&page=beacon-api--billing", sources: () => json(200, odd) });
+    await article();
+    const fold = screen.getByText("Relevant source files").closest("details")!;
+    fold.open = true;
+    fireEvent(fold, new Event("toggle"));
+    await within(fold).findAllByText(/src\/billing\/refund\.ts/u);
+    expect(within(fold).queryByText(/src\/billing\/charge\.ts/u)).toBeNull();
+    expect(fold.querySelectorAll("li")).toHaveLength(2);
+    f.close();
+  });
+
+  it("search finds the match on the original text, with regular-expression characters in the query taken literally, and announces the count", async () => {
+    const f = mount();
+    await article();
+    const box = screen.getByRole("searchbox", { name: "Search the wiki" });
+    fireEvent.change(box, { target: { value: "(" } });
+    expect((await screen.findByText("No page mentions that. The wiki does not guess. Try another word.")).textContent).toBeTruthy();
+    expect(within(screen.getByTestId("wiki-results")).getByRole("status").textContent).toBe("0 pages match");
+    fireEvent.change(box, { target: { value: "REFUND" } });
+    await waitFor(() => expect(within(screen.getByTestId("wiki-results")).getByRole("status").textContent).toMatch(/^\d+ pages? match(es)?$/u));
+    expect(within(screen.getByTestId("wiki-results")).getByRole("status").textContent).not.toBe("0 pages match");
+    f.close();
+  });
+
+  it("a deep link to the Wiki tab does not show Overview first", async () => {
+    const f = mount({}, "screen");
+    await screen.findByRole("heading", { name: "payments" });
+    expect(screen.queryByRole("heading", { name: "Running now" })).toBeNull();
+    expect(await screen.findByTestId("wiki")).toBeTruthy();
+    f.close();
+  });
+
+  it("shows a pinned note whose author name is not readable as 'a former member'", async () => {
+    const page = wikiPage("payments", "beacon-api--billing")!;
+    page.notes = [{ ...page.notes[0]!, author: "a former member" }];
+    const f = mount({ initial: "/app/projects/payments?tab=wiki&page=beacon-api--billing", page: () => json(200, page) });
+    expect((await article()).getByRole("group", { name: "Note from a former member" })).toBeTruthy();
     f.close();
   });
 });

@@ -4,7 +4,7 @@ import type { WikiBlock, WikiPageResponse, WikiShownClaim, WikiSourceState } fro
 import { safeExternalUrl } from "../../../text/links.js";
 
 export interface Cite { n: number; repo: string; path: string; commit: string; line: number; lineEnd?: number; source: WikiSourceState; claims: string[] }
-export interface BlockState { stale: { file: string } | undefined; notFound: boolean; flagged: boolean }
+export interface BlockState { stale: boolean; notFound: boolean; flagged: boolean }
 export interface PageModel { cites: Cite[]; markers(block: WikiBlock): Cite[]; state(block: WikiBlock): BlockState; outline: Array<{ blockId: string; text: string }> }
 
 const rank: Record<WikiSourceState, number> = { found: 0, changed: 1, not_found: 2 };
@@ -47,8 +47,7 @@ export function modelOf(res: WikiPageResponse): PageModel {
     markers: markersOf,
     state: (block) => {
       const own = claimIdsOf(block).flatMap((id) => { const claim = claims.get(id); return claim === undefined ? [] : [claim]; });
-      const changed = own.find((claim) => claim.source === "changed");
-      return { stale: changed === undefined ? undefined : { file: changed.citations[0]?.path ?? "" }, notFound: own.some((claim) => claim.source === "not_found"), flagged: own.some((claim) => claim.flagged) };
+      return { stale: own.some((claim) => claim.source === "changed"), notFound: own.some((claim) => claim.source === "not_found"), flagged: own.some((claim) => claim.flagged) };
     },
     outline: res.page.blocks.flatMap((block) => (block.kind === "heading" && block.level === 2 ? [{ blockId: block.blockId, text: block.text }] : [])),
   };

@@ -56,7 +56,7 @@ export function Block({ block, context }: { block: WikiBlock; context: BlockCont
         )}
       {block.kind === "diagram" && markers.length > 0 && <p className="rv-wiki-text">{markers.map((cite) => <Marker key={cite.n} cite={cite} link={context.link(cite)} />)}</p>}
       {state.flagged && <p className="rv-wiki-pnote rv-wiki-pnote-flag"><b>{T.WRONG}</b> {T.WRONG_AFTER}</p>}
-      {!state.flagged && state.stale !== undefined && <p className="rv-wiki-pnote rv-wiki-pnote-stale"><b>{T.STALE}</b> {state.stale.file === "" ? "A cited file" : <>The cited file <code><VisibleText text={state.stale.file} /></code></>} changed since this page was written.</p>}
+      {!state.flagged && state.stale && <p className="rv-wiki-pnote rv-wiki-pnote-stale"><b>{T.STALE}</b> {T.STALE_NOTE}</p>}
       {!state.flagged && state.notFound && <p className="rv-wiki-pnote rv-wiki-pnote-stale"><b>{T.STALE}</b> {T.NOT_FOUND_NOTE}</p>}
     </div>
   );

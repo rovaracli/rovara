@@ -55,7 +55,7 @@ const SOURCE_STATES = ["found", "changed", "not_found"] as const;
 const BUILD_KINDS = ["first", "refresh", "nightly"] as const;
 const BUILD_STATES = ["running", "done", "stopped", "failed"] as const;
 const STOP_REASONS = ["cap", "person", "repo_unreadable", "no_ai_key", "unpriced_model", "failed"] as const;
-const LIMITS = { pages: 300, blocks: 120, claims: 80, citations: 3, claimsPerBlock: 12, repos: 20, notes: 50, files: 300, ranges: 100 } as const;
+const LIMITS = { pages: 300, blocks: 120, claims: 80, citations: 3, claimsPerBlock: 12, repos: 20, notes: 50, files: 240, ranges: 240 } as const;
 
 type Plain = Record<string, unknown>;
 const plain = (value: unknown): value is Plain => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
@@ -161,7 +161,8 @@ export function pageAnswer(value: unknown, project: string, id: string): Plain {
     noteIds.add(n["noteId"] as string);
     const file = n["file"] === undefined ? undefined : rec(n["file"]);
     return {
-      noteId: n["noteId"], text: need(prose(n["text"], 2_000), n["text"]), author: need(text(n["author"], 100), n["author"]), createdAt: need(when(n["createdAt"]), n["createdAt"]),
+      noteId: n["noteId"], text: need(prose(n["text"], 2_000), n["text"]), // An author name is display only (W2 stores a bare string): one that does not read is shown as W2's own word, never a refusal of the page.
+      author: text(n["author"], 200) ? n["author"] : "a former member", createdAt: need(when(n["createdAt"]), n["createdAt"]),
       ...(file === undefined ? {} : { file: { repo: need(repoName(file["repo"]), file["repo"]), path: need(safePath(file["path"]), file["path"]) } }),
       approval: need(oneOf(n["approval"], ["pending", "approved"] as const), n["approval"]),
     };
@@ -198,6 +199,7 @@ type Kind = "index" | "page" | "sources";
 export function wikiRefusal(kind: Kind, error: CodeError): RouteAnswer {
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
   if (error.status === 404) return body?.["code"] === "NOT_FOUND" && body["message"] === "route not found" ? A.notYet : kind === "index" ? A.notFound : A.noPage;
+  // W2 answers 403 only to a script token, which Cloud never uses; a no-role caller on an existing project gets the same 404 as a missing one. If Code ever answers 403 for a no-role caller, this becomes an existence oracle: map it to the 404 then.
   if (error.status === 403) return A.forbidden;
   if (error.status === 400) return A.invalid;
   return A.unavailable;

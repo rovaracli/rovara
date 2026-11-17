@@ -21,19 +21,21 @@ function Chip({ res }: { res: WikiPageResponse }) {
   return <span className={`rv-wiki-chip rv-wiki-chip-${chip.tone}`}>{chip.short}</span>;
 }
 
-function Sources({ project, id, links }: { project: string; id: string; links: (cite: { repo: string; path: string; commit: string; line: number; lineEnd?: number }) => string | undefined }) {
+function Sources({ project, id, commits, links }: { project: string; id: string; commits: ReadonlyMap<string, string>; links: (cite: { repo: string; path: string; commit: string; line: number; lineEnd?: number }) => string | undefined }) {
   const [open, setOpen] = useState(false);
   const read = useWikiSources(project, id, open);
+  // A cited file at a commit the page was not written from is not shown (the sources answer cannot be checked against the page on the server).
+  const files = (read.data?.files ?? []).filter((file) => commits.get(file.repo) === file.commit);
   return (
     <details className="rv-wiki-srcs" onToggle={(event) => { setOpen(event.currentTarget.open); }}>
-      <summary>{T.SOURCES}{read.data !== undefined && <span className="rv-muted"> ({read.data.files.length})</span>}</summary>
+      <summary>{T.SOURCES}{read.data !== undefined && <span className="rv-muted"> ({files.length})</span>}</summary>
       {open && read.isPending && <Skeleton label={T.SOURCES_LOADING} />}
       {open && read.isError && <p role="alert" className="rv-wiki-pad"><VisibleText text={fixedWikiWords(read.error, T.SOURCES_FAILED)} /></p>}
       {read.data !== undefined && (
-        <ol>{read.data.files.map((file) => {
+        <ol>{files.map((file, at) => {
           const first = file.ranges[0], link = first === undefined ? undefined : links({ repo: file.repo, path: file.path, commit: file.commit, line: first.line, ...(first.lineEnd === undefined ? {} : { lineEnd: first.lineEnd }) });
           return (
-            <li key={`${file.repo}/${file.path}`}>
+            <li key={`${String(at)}/${file.repo}/${file.path}`}>
               <span className="rv-wiki-srcrow"><VisibleText text={`${file.repo}/${file.path}`} /> <i>{file.ranges.map((r) => linesWords(r.line, r.lineEnd)).join(", ")} at {shortSha(file.commit)}</i></span>
               {link !== undefined && <> <a href={link} target="_blank" rel="noopener noreferrer">{T.SOURCE_OPEN}</a></>}
             </li>
@@ -101,14 +103,14 @@ export function WikiPageView({ project, id, entry, pages, focusTitle }: { projec
         </p>
         {res.page.summary !== "" && <p className="rv-wiki-lede"><VisibleText text={res.page.summary} /></p>}
         {(entry.flagged || chip.tone === "bad") && <div className="rv-wiki-alerts">{entry.flagged ? <Banner title={T.FLAGGED_PAGE} tone="danger" /> : <Banner title={T.MOSTLY_OLD} tone="warning" />}</div>}
-        {res.notes.map((note) => (
-          <aside key={note.noteId} className="rv-wiki-tnote" aria-label={`${T.NOTE_FROM} ${note.author}`}>
+        {res.notes.length > 0 && <section aria-label="Pinned notes">{res.notes.map((note) => (
+          <div key={note.noteId} role="group" className="rv-wiki-tnote" aria-label={`${T.NOTE_FROM} ${note.author}`}>
             <span className="rv-wiki-who"><b>{T.NOTE_FROM} <VisibleText text={note.author} /></b>, <RelativeTime at={note.createdAt} />. {note.approval === "approved" ? T.NOTE_APPROVED : T.NOTE_PENDING}</span>
             <p className="rv-wiki-text"><VisibleText text={note.text} /></p>
             {note.file !== undefined && <p className="rv-wiki-who">{T.NOTE_FILE} <code><VisibleText text={`${note.file.repo}/${note.file.path}`} /></code></p>}
-          </aside>
-        ))}
-        {model.cites.length > 0 && <Sources project={project} id={id} links={link} />}
+          </div>
+        ))}</section>}
+        {model.cites.length > 0 && <Sources project={project} id={id} commits={new Map(res.page.repos.map((one) => [one.repo, one.commit]))} links={link} />}
         {res.page.blocks.map((block) => <Block key={block.blockId} block={block} context={context} />)}
         <p className="rv-wiki-truth" data-testid="wiki-truth">{res.trustLine} {T.TRUTH_EXTRA}</p>
       </article>

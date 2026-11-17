@@ -44,7 +44,7 @@ describe("code contract v0 tables", () => {
     // Plus the company's AI model and a project's per-task limit (guided onboarding PR 15): both reads and both changes, as the person.
     // Plus the project setup checklist and its skips, and the hosted setup run's read, start, stop and journal (guided onboarding PR 9).
     // Plus disconnecting a GitHub account on the Connections page (guided onboarding PR 12b).
-    // Plus the project wiki's page list, one page and search (lead 4 W5).
+    // Plus the project wiki's page list, one page and its cited files (lead 4 W5).
     expect(counts.appCloudServerToday).toBe(90);
   });
 

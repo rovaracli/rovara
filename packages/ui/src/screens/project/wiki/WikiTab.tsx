@@ -38,17 +38,19 @@ function Tree({ index, current, searching, open }: { index: WikiIndexResponse; c
 }
 
 function SearchResults({ index, q, open }: { index: WikiIndexResponse; q: string; open: (id: string) => void }) {
-  const needle = q.toLowerCase();
+  // The match is found on the original text (a case-insensitive pattern), so the highlight cannot drift when lowercasing changes a character's length.
+  const pattern = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "iu");
   const hits = index.pages.flatMap((page) => {
-    const inTitle = page.title.toLowerCase().indexOf(needle), inSummary = page.summary.toLowerCase().indexOf(needle);
-    if (inTitle < 0 && inSummary < 0) return [];
-    const text = inSummary >= 0 ? page.summary : page.title, at = inSummary >= 0 ? inSummary : inTitle;
-    return [{ page, before: text.slice(Math.max(0, at - 60), at), match: text.slice(at, at + needle.length), after: text.slice(at + needle.length, at + needle.length + 100) }];
+    const inSummary = pattern.exec(page.summary), found = inSummary ?? pattern.exec(page.title);
+    if (found === null) return [];
+    const text = inSummary === null ? page.title : page.summary, at = found.index, length = found[0].length;
+    return [{ page, before: text.slice(Math.max(0, at - 60), at), match: text.slice(at, at + length), after: text.slice(at + length, at + length + 100) }];
   });
   return (
     <section className="rv-wiki-art" aria-label="Search results" data-testid="wiki-results">
       <p className="rv-wiki-crumb">Search</p>
       <h2 className="rv-wiki-h1"><VisibleText text={q} /></h2>
+      <p role="status" className="rv-visually-hidden">{hits.length === 1 ? "1 page matches" : `${String(hits.length)} pages match`}</p>
       {hits.length === 0 ? <p className="rv-wiki-lede">{T.NO_RESULTS}</p> : (
         <ul className="rv-wiki-results">{hits.map((hit) => (
           <li key={hit.page.pageId}>

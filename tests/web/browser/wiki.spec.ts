@@ -9,12 +9,12 @@ import { PROJECT, WikiPage, setFakePerson, setWiki } from "./pages/index.js";
 test.afterEach(async ({ page }) => { await setWiki(page, PROJECT); await setFakePerson(page, "priya"); });
 
 const axeSource = readFileSync(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
-async function violations(page: Page): Promise<string[]> {
+async function violations(page: Page, contrast = false): Promise<string[]> {
   await page.evaluate(axeSource);
-  return page.evaluate(async () => {
-    const result = await (window as unknown as { axe: { run(context: string, options: unknown): Promise<{ violations: Array<{ id: string; nodes: Array<{ target: unknown }> }> }> } }).axe.run("main", { rules: { "color-contrast": { enabled: false } } });
+  return page.evaluate(async (enabled) => {
+    const result = await (window as unknown as { axe: { run(context: string, options: unknown): Promise<{ violations: Array<{ id: string; nodes: Array<{ target: unknown }> }> }> } }).axe.run("main", { rules: { "color-contrast": { enabled } } });
     return result.violations.map((violation) => `${violation.id}: ${JSON.stringify(violation.nodes.map((node) => node.target))}`);
-  });
+  }, contrast);
 }
 
 test("the Wiki tab opens a page with a tree, one meta line, numbered sources and a rail", async ({ page }, testInfo) => {
@@ -50,8 +50,8 @@ test("only the paragraph that needs it carries a note: stale, not found and mark
   await wiki.open(PROJECT, "beacon-api--billing");
   await expect(wiki.article.getByText("May be stale.")).toHaveCount(2);
   await expect(wiki.article.getByText("Marked wrong.")).toHaveCount(1);
-  await expect(wiki.article.getByRole("complementary", { name: "Note from Priya" })).toContainText("Agents get it after a maintainer approves it.");
-  await expect(wiki.article.getByRole("complementary", { name: "Note from Sam" })).toContainText("Pinned for people and agents.");
+  await expect(wiki.article.getByRole("group", { name: "Note from Priya" })).toContainText("Agents get it after a maintainer approves it.");
+  await expect(wiki.article.getByRole("group", { name: "Note from Sam" })).toContainText("Pinned for people and agents.");
   await expect(page.getByRole("button", { name: /mark wrong|add a note/iu })).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("wiki-billing-notes.png"), fullPage: true });
 });
@@ -141,4 +141,9 @@ test("dark mode keeps the page readable", async ({ page }, testInfo) => {
   await wiki.open(PROJECT, "beacon-api--billing");
   await expect(wiki.article).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("wiki-dark.png"), fullPage: true });
+  // Colour contrast of the chips, notes and status words, in both themes (the other checks leave contrast off).
+  expect(await violations(page, true)).toEqual([]);
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(wiki.article).toBeVisible();
+  expect(await violations(page, true)).toEqual([]);
 });

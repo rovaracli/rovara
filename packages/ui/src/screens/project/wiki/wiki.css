@@ -13,7 +13,7 @@
 .rv-wiki-mod button{padding-left:var(--rv-space-5)!important}
 .rv-wiki-small{font-size:var(--rv-font-xs);margin-top:var(--rv-space-3)}
 .rv-wiki-dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
-.rv-wiki-dot-warn{background:var(--rv-status-needs-you)}.rv-wiki-dot-bad{background:var(--rv-status-failed)}.rv-wiki-dot-mute{background:var(--rv-border-strong)}
+.rv-wiki-dot-warn{background:var(--rv-status-needs-you)}.rv-wiki-dot-bad{background:var(--rv-status-failed)}
 .rv-wiki-main{min-width:0}
 .rv-wiki-wrap{display:grid;grid-template-columns:minmax(0,46rem) 212px;gap:var(--rv-space-6);align-items:start}
 .rv-wiki-art{max-width:46rem;min-width:0;font-size:1.0625rem;line-height:1.7}
@@ -24,7 +24,7 @@
 .rv-wiki-sep{color:var(--rv-border-medium)}
 .rv-wiki-chip{display:inline-flex;align-items:center;font-size:var(--rv-font-xs);font-weight:600;padding:1px var(--rv-space-2);border-radius:999px;white-space:nowrap}
 .rv-wiki-chip-ok{background:var(--rv-status-done-bg);color:var(--rv-status-done)}.rv-wiki-chip-warn{background:var(--rv-status-needs-you-bg);color:var(--rv-status-needs-you)}
-.rv-wiki-chip-bad{background:var(--rv-status-failed-bg);color:var(--rv-status-failed)}.rv-wiki-chip-mute{background:var(--rv-bg-sunken);color:var(--rv-text-muted)}
+.rv-wiki-chip-bad{background:var(--rv-status-failed-bg);color:var(--rv-status-failed)}
 .rv-wiki-lede{font-size:1.2rem;line-height:1.55;color:var(--rv-text-muted);margin:var(--rv-space-4) 0 0}
 .rv-wiki-alerts{display:grid;gap:var(--rv-space-2);margin-top:var(--rv-space-4);font-size:var(--rv-font-md);line-height:1.5}
 .rv-wiki-h2{font-size:var(--rv-font-xl);line-height:1.25;margin:2.5rem 0 .7rem;scroll-margin-top:var(--rv-space-6)}
@@ -32,9 +32,9 @@
 .rv-wiki-art code{font-family:var(--rv-font-mono);font-size:.86em;background:var(--rv-bg-sunken);border-radius:4px;padding:1px 5px;overflow-wrap:anywhere}
 .rv-wiki-art ul,.rv-wiki-art ol{margin:0 0 1rem;padding-left:1.3rem;display:grid;gap:.35rem}
 .rv-wiki-struck>p:first-child{color:var(--rv-text-muted);text-decoration:line-through;text-decoration-color:var(--rv-border-strong)}
-.rv-wiki-cite{font:500 .66rem/1 var(--rv-font-mono);vertical-align:super;padding:2px 4px;min-width:1.2rem;border-radius:5px;border:1px solid var(--rv-border-medium);background:var(--rv-bg-raised);color:var(--rv-text-muted);cursor:pointer;margin-left:2px}
+.rv-wiki-cite{font:500 .66rem/1 var(--rv-font-mono);vertical-align:super;padding:2px 4px;min-width:1.2rem;border-radius:5px;border:1px solid var(--rv-border-medium);background:var(--rv-bg-raised);color:var(--rv-text-muted);cursor:pointer;margin-left:2px;position:relative;min-height:1.25rem}
+.rv-wiki-cite::after{content:"";position:absolute;inset:-6px -4px}
 .rv-wiki-cite:hover,.rv-wiki-cite[data-state="open"]{border-color:var(--rv-accent);color:var(--rv-accent-text);background:var(--rv-accent-soft)}
-.rv-wiki-link{border:0;background:none;padding:0;color:var(--rv-accent-text);cursor:pointer;text-decoration:underline;text-underline-offset:3px;text-align:left;font:inherit}
 .rv-wiki-pnote{font-size:var(--rv-font-md);line-height:1.5;margin:-.5rem 0 1rem!important;padding-left:var(--rv-space-3);border-left:2px solid var(--rv-border-medium);color:var(--rv-text-muted)}
 .rv-wiki-pnote-stale{border-left-color:var(--rv-status-needs-you)}.rv-wiki-pnote-stale b{color:var(--rv-status-needs-you)}
 .rv-wiki-pnote-flag{border-left-color:var(--rv-status-failed)}.rv-wiki-pnote-flag b{color:var(--rv-status-failed)}
@@ -44,9 +44,6 @@
 .rv-wiki-srcs summary{cursor:pointer;padding:var(--rv-space-2) var(--rv-space-3);font-weight:500;min-height:36px}
 .rv-wiki-srcs ol{margin:0!important;padding:0 var(--rv-space-3) var(--rv-space-3) 2.4rem!important;color:var(--rv-text-muted)}
 .rv-wiki-srcrow{font-family:var(--rv-font-mono);font-size:var(--rv-font-sm);overflow-wrap:anywhere;color:var(--rv-text)}.rv-wiki-srcrow i{font-style:normal;color:var(--rv-text-muted)}
-.rv-wiki-table{overflow-x:auto;margin:.4rem 0 1.2rem}.rv-wiki-table table{border-collapse:collapse;width:100%;font-size:var(--rv-font-md);line-height:1.5}
-.rv-wiki-table th,.rv-wiki-table td{text-align:left;padding:var(--rv-space-2) var(--rv-space-3) var(--rv-space-2) 0;border-bottom:1px solid var(--rv-border);vertical-align:top}
-.rv-wiki-table th{font-size:var(--rv-font-xs);text-transform:uppercase;letter-spacing:.06em;color:var(--rv-text-muted);font-weight:600}
 .rv-wiki-truth{margin-top:2.5rem!important;padding-top:var(--rv-space-3);border-top:1px solid var(--rv-border);font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
 .rv-wiki-rail{position:sticky;top:var(--rv-space-4);max-height:calc(100dvh - var(--rv-space-6));overflow-y:auto;font-size:var(--rv-font-md);min-width:0}
 .rv-wiki-outline ul{border-left:1px solid var(--rv-border)}

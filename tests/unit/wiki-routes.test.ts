@@ -2,7 +2,7 @@
 // Lead 4 slice W5: the project Wiki tab's three reads through Cloud's handler, answered from Code's wiki read routes (slice W2) as the signed-in person.
 // The pretend Code keeps two companies and three projects and applies Code's rule (a role on THAT project, in the project's own company; a company owner or admin
 // reads every project of their company): `billing` is a second project of company A that "pam" has no role on, and `ledger` belongs to company B.
-// Cloud must: pass the person's own token, put the project and page id only into Code's path and `q` only into Code's `q`, forward nothing else, rebuild Code's
+// Cloud must: pass the person's own token, put the project and page id only into Code's path, forward nothing else, rebuild Code's
 // answers field by field for THIS project and page, refuse an answer that does not read, and answer refusals in fixed words (no echo of input or of Code's text).
 import { describe, expect, it } from "vitest";
 import {
@@ -139,9 +139,12 @@ describe("the page list", () => {
     }
     expect(asRefusal(await w.send("GET", INDEX, await w.as("bob-token")))).toEqual(refusal("notFound"));
     const before = w.codeCalls().length;
-    const nobody = await w.send("GET", INDEX, await w.as("nob-token"));
-    expect(nobody.status).toBe(403);
-    expect(words(nobody).code).toBe("NO_COMPANY");
+    const nob = await w.as("nob-token");
+    for (const target of [INDEX, PAGE, SOURCES]) {
+      const nobody = await w.send("GET", target, nob);
+      expect(nobody.status, target).toBe(403);
+      expect(words(nobody).code).toBe("NO_COMPANY");
+    }
     expect(w.codeCalls()).toHaveLength(before);
   });
 
@@ -294,6 +297,22 @@ describe("one page", () => {
     }
   });
 
+  it("a note author's name is display only: an unreadable or very long name reads as 'a former member' or is kept (up to 200), and never refuses the page", async () => {
+    const page = clone(wikiPage("payments", "beacon-api--billing")!);
+    page.notes[0].author = "Zo\u200Dë";
+    page.notes[1].author = "n".repeat(150);
+    const w = setUp(onPage(() => page));
+    const res = await w.send("GET", PAGE, await w.as("ada-token"));
+    expect(res.status).toBe(200);
+    const notes = (res.body as { notes: Array<{ author: string }> }).notes;
+    expect(notes[0]!.author).toBe("a former member");
+    expect(notes[1]!.author).toBe("n".repeat(150));
+    expect(res.text).not.toContain("\u200D");
+    page.notes[1].author = "n".repeat(201);
+    const long = setUp(onPage(() => page));
+    expect(((await long.send("GET", PAGE, await long.as("ada-token"))).body as { notes: Array<{ author: string }> }).notes[1]!.author).toBe("a former member");
+  });
+
   it("drops fields Code did not promise, in a page (a quote included: no quote reaches the app)", async () => {
     const page = clone(wikiPage("payments", "overview")!);
     page.secret = LEAK;
@@ -316,6 +335,13 @@ describe("a page's cited files", () => {
     expect(w.codeCalls()).toEqual([expect.objectContaining({ path: "/v1/app/projects/payments/wiki/pages/beacon-api--billing/sources", search: "", authorization: "Bearer pam-token" })]);
   });
 
+  it("a heavily cited file (240 ranges, the most W2 allows) still reads", async () => {
+    const value = clone(wikiSources("payments", "beacon-api--billing")!);
+    value["files"][0].ranges = Array(240).fill({ line: 1 });
+    const w = setUp(onSources(() => value));
+    expect((await w.send("GET", SOURCES, await w.as("ada-token"))).status).toBe(200);
+  });
+
   it("another project or company is refused in fixed words", async () => {
     const w = setUp();
     for (const [token, project] of [["pam-token", "billing"], ["ada-token", "ledger"]] as const) {
@@ -331,7 +357,7 @@ describe("a page's cited files", () => {
     for (const answer of [
       wikiSources("ledger", "beacon-api--billing"), wikiSources("payments", "overview"),
       change((v) => { v["files"][0].path = "../x"; }), change((v) => { v["files"][0].commit = "abc"; }), change((v) => { v["files"][0].ranges = [{ line: 5, lineEnd: 1 }]; }),
-      change((v) => { v["files"][0].ranges = Array(101).fill({ line: 1 }); }), change((v) => { v["files"][0].claimIds = ["bad id"]; }), change((v) => { v["files"] = Array(301).fill(v["files"][0]); }),
+      change((v) => { v["files"][0].ranges = Array(241).fill({ line: 1 }); }), change((v) => { v["files"][0].claimIds = ["bad id"]; }), change((v) => { v["files"] = Array(241).fill(v["files"][0]); }),
     ]) {
       const w = setUp(onSources(() => answer));
       expect(asRefusal(await w.send("GET", SOURCES, await w.as("ada-token"))), JSON.stringify(answer).slice(0, 50)).toEqual(refusal("unavailable"));
