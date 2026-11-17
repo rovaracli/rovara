@@ -232,11 +232,11 @@ describe("answers class: money", () => {
     await nothingMoved(g);
   });
 
-  it("an answers limit that does not read refuses the call (nothing sent, nothing held); a failed read answers an error, never a call", async () => {
+  it("an answers limit that does not read is a fault, not a pause (nothing sent, nothing held); a failed read answers an error too, never a call", async () => {
     const g = answersGateway(); g.limits.byCompany.set(cidA, null);
     const sink = await ask(g.deps);
-    expect(sink.status).toBe(422);
-    expectPaused(sink, "no_budget");
+    expect(sink.status).toBeGreaterThanOrEqual(500);
+    expect(sink.headers[ANSWERS_PAUSE_HEADER]).toBeUndefined();
     await nothingMoved(g);
     const broken = answersGateway(); broken.limits.fail = true;
     const failed = await ask(broken.deps);

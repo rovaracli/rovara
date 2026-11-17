@@ -50,7 +50,7 @@ export const GATEWAY_ENV = {
   learningMeterTable: "GATEWAY_LEARNING_METER_TABLE",
   learningLedgerTable: "GATEWAY_LEARNING_LEDGER_TABLE",
   learningMarkersTable: "GATEWAY_LEARNING_MARKERS_TABLE",
-  /** The answers route (docs/model-gateway-answers.md): its meter's three tables, set together and only with the product route (its key store). */
+  /** The answers route (docs/model-gateway-learning.md ("The answers route")): its meter's three tables, set together and only with the product route (its key store). */
   answersMeterTable: "GATEWAY_ANSWERS_METER_TABLE",
   answersLedgerTable: "GATEWAY_ANSWERS_LEDGER_TABLE",
   answersMarkersTable: "GATEWAY_ANSWERS_MARKERS_TABLE",

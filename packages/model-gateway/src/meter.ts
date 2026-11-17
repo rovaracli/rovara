@@ -278,7 +278,8 @@ export class InMemoryMeter implements Meter {
       }
       const capFor = { task: input.caps.task, person: input.caps.personMonth, project: input.caps.projectMonth, upkeep: input.caps.upkeepMonth, company: input.caps.companyMonth };
       for (const target of ledger.targets) {
-        const row = this.#row(target, call); const spentMicros = row.spentMicros + deltaMicros; const cap = target.combined === true ? input.caps.combinedCompanyMonth : capFor[target.item];
+        const row = this.#row(target, call); const spentMicros = row.spentMicros + deltaMicros; // The upkeep row's cap is not in the corrections' caps (they carry no origin): the one stored with the hold applies.
+        const cap = target.combined === true ? input.caps.combinedCompanyMonth : target.item === "upkeep" ? capFor.upkeep ?? target.cap : capFor[target.item];
         if (deltaMicros > 0 && cap !== undefined && row.committed + deltaMicros > cap) capExceeded = true;
         this.#store(target).set(target.key, { ...row, spentMicros, committed: row.committed + deltaMicros, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: cap === undefined ? row.overrun : spentMicros > cap });
       }

@@ -68,6 +68,20 @@ for (const [name, build] of meters) {
       expect((await meter.read(scope(B, "web"), { upkeep: true })).find((r) => r.item === "upkeep")).toMatchObject({ committed: 30, spentMicros: 0 });
     });
 
+    it("a correction that brings an over-cap upkeep row back under its cap clears the overrun (the cap stored with the hold applies)", async () => {
+      const meter = build().make();
+      const held = await meter.reserve({ scope: scope(), caps: caps(50), estimateMicros: 40 });
+      expect(held.ok).toBe(true); if (!held.ok) return;
+      await meter.settle(held.reservation, 70, { provider: "anthropic", model: "claude-x", kind: "chat", usage, settledAt: T0 });
+      expect((await meter.read(scope(), { upkeep: true })).find((r) => r.item === "upkeep")).toMatchObject({ spentMicros: 70, overrun: true });
+      const call = (await meter.pendingFor((await meter.pendingKeys(10)).items[0]!, 10)).items[0]!;
+      // The corrections' caps carry no upkeep cap (no origin): the stored one is used.
+      const done = await meter.correct({ callKey: call.callKey, realMicros: 20, caps: caps(), priceVersion: 1, estimated: false, priceSource: { source: "litellm", fetchedAt: T0 }, runId: "r", now: T0 });
+      expect(done).toEqual({ status: "corrected", deltaMicros: -50 });
+      expect((await meter.read(scope(), { upkeep: true })).find((r) => r.item === "upkeep")).toMatchObject({ spentMicros: 20, overrun: false });
+      expect((await meter.reserve({ scope: scope(), caps: caps(50), estimateMicros: 10 })).ok).toBe(true);
+    });
+
     it("moves with a price correction like the other rows", async () => {
       const meter = build().make();
       const held = await meter.reserve({ scope: scope(), caps: caps(100), estimateMicros: 40 });

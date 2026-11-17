@@ -13,7 +13,7 @@
 //   Limit    the company's `answers_month` spend limit (Cloud SPEND_LIMIT_KINDS, scope company; read with readSpendLimit, strongly consistent), else
 //            ANSWERS_DEFAULT_MONTH_MICROS. $0 pauses answers. An item that does not read refuses the call.
 //   Pause    every refusal Code should turn into "answers are paused" is `answers_paused` with a fixed message and the reason in ANSWERS_PAUSE_HEADER.
-//            Faults (an unreadable limit or budget) are 503/502, never a pause.
+//            Faults (an unreadable limit or budget) are errors, never a pause.
 import type { Caps } from "./caps.js";
 import { createLearningRoutes, type CompanyKeyFlavor, type LearningPauseReason, type LearningRouteFactory, type LearningRouteOptions } from "./learning-route.js";
 import type { RouteRefusal } from "./server.js";
@@ -57,7 +57,9 @@ export function createAnswersRoutes(options: AnswersRouteOptions): LearningRoute
     ...rest, flavor: ANSWERS_FLAVOR,
     monthFor: async (company: Caps, scope, signal) => {
       const own = await limits.limitFor(scope.cid, signal);
-      return own === null ? undefined : own ?? fallback;
+      // An item that does not read is a fault (the call stops with an error), never an "answers are paused" the admin could mistake for a choice.
+      if (own === null) throw new Error("answers limit unreadable");
+      return own ?? fallback;
     },
   });
 }

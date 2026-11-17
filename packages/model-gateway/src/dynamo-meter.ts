@@ -469,7 +469,8 @@ export class DynamoMeter implements Meter {
         const capFor = { task: input.caps.task, person: input.caps.personMonth, project: input.caps.projectMonth, upkeep: input.caps.upkeepMonth, company: input.caps.companyMonth };
         capExceeded = false;
         const actions: TransactAction[] = targets.map((target, i): TransactAction => {
-          const row = rows[i]!; const spentMicros = row.spentMicros + deltaMicros; const cap = target.combined === true ? input.caps.combinedCompanyMonth : capFor[target.item];
+          const row = rows[i]!; const spentMicros = row.spentMicros + deltaMicros; // The upkeep row's cap is not in the corrections' caps (they carry no origin): the one stored with the hold applies.
+          const cap = target.combined === true ? input.caps.combinedCompanyMonth : target.item === "upkeep" ? capFor.upkeep ?? target.cap : capFor[target.item];
           if (deltaMicros > 0 && cap !== undefined && row.committed + deltaMicros > cap) capExceeded = true;
           return { kind: "Update", table: this.#table(target), key: { pk: where.pk, sk: target.sk },
             update: (e) => `SET ${e.name("spentMicros")} = ${e.name("spentMicros")} + ${e.value(deltaMicros)}, ${e.name("committed")} = ${e.name("committed")} + ${e.value(deltaMicros)}, ${e.name("estimatedMicros")} = ${e.name("estimatedMicros")} + ${e.value(estimatedDelta)}${cap === undefined ? "" : `, ${e.name("overrun")} = ${e.value(spentMicros > cap)}`}`,
