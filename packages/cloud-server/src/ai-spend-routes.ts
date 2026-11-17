@@ -101,7 +101,7 @@ export function engineModelView(value: unknown): EngineModelAnswer | undefined {
 
 const errorOf = (error: CodeError): Plain | undefined => (plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined);
 
-/** Code's refusal of the engine-model routes, in Cloud's fixed words. Only Code's exact unknown-route 404 (no gateway, or not on Code yet) means "not available yet". */
+/** Code's refusal of the engine-model routes, in Cloud's fixed words. Code answers this path's 404 only when it doesn't serve it (no gateway, or not on Code yet): "not available yet". */
 export function engineModelRefusal(error: CodeError): RouteAnswer {
   const said = errorOf(error);
   if (error.status === 404) return A.notYet;
@@ -202,7 +202,8 @@ async function readSpendLimits(context: RouteContext): Promise<RouteAnswer> {
   const got = await askCode(context, settingsPath(project), { method: "GET" }, projectSettingsRefusal);
   if ("refusal" in got) return got.refusal;
   const settings = projectSettingsOf(got.value);
-  return settings === undefined ? A.projectUnavailable : { status: 200, body: projectView(project, settings, companyAdmin(who) || projectAdmin(who, project)) };
+  // Code lets only the project's administrator change its settings today, so only they are offered the change.
+  return settings === undefined ? A.projectUnavailable : { status: 200, body: projectView(project, settings, projectAdmin(who, project)) };
 }
 
 async function changeSpendLimits(context: RouteContext): Promise<RouteAnswer> {
@@ -225,7 +226,8 @@ async function changeSpendLimits(context: RouteContext): Promise<RouteAnswer> {
   const overrides: Plain = { ...current.overrides };
   if (perTask === null) delete overrides[PER_TASK_FIELD];
   else overrides[PER_TASK_FIELD] = perTask;
-  if (current.perTaskUsd === (perTask === null ? undefined : perTask)) return { status: 200, body: projectView(project, current, true) };
+  // Nothing to change: answered without a write, but only to the project's administrator (anyone else goes to Code, which decides).
+  if (current.perTaskUsd === (perTask === null ? undefined : perTask) && projectAdmin(who, project)) return { status: 200, body: projectView(project, current, true) };
   const wrote = await askCode(context, settingsPath(project), { method: "PUT", body: { expectedRevision: current.revision, overrides } }, projectSettingsRefusal);
   if ("refusal" in wrote) return wrote.refusal;
   const after = projectSettingsOf(wrote.value);

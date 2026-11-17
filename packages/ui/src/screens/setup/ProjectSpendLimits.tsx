@@ -39,7 +39,7 @@ export function ProjectSpendLimits({ project, developerId }: { project: string; 
  const [notice, setNotice] = useState<{ ok: boolean; text: string }>();
  return <section aria-label={W.title} data-testid="project-spend-limits"><h2>{W.title}</h2>
   {notice !== undefined && <p role={notice.ok ? "status" : "alert"} data-testid={notice.ok ? "project-spend-saved" : "project-spend-error"}><VisibleText text={notice.text} /></p>}
-  {read.isPending ? <Skeleton label="Loading spending limits" /> : read.isError ? <><p role="alert"><VisibleText text={read.error instanceof ApiError ? read.error.message : "Couldn't load the spending limits. Try again."} /></p><Button onClick={() => { void read.refetch(); }}>Try again</Button></>
+  {read.isPending ? <Skeleton label="Loading spending limits" /> : read.isError ? <><p data-testid="project-spend-unread">{read.error instanceof ApiError && read.error.status === 404 ? "This project's spending limits aren't available here." : "Couldn't load the spending limits. Try again."}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></>
    : <Limits key={`${read.data.project}:${String(read.data.revision)}`} limits={read.data} developerId={developerId} setNotice={setNotice} reload={() => { void read.refetch(); }} />}
  </section>;
 }

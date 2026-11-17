@@ -221,6 +221,19 @@ describe("a project's AI and spend limit", () => {
    expect(sent[1]!.body).toEqual({ expectedRevision: 3, perTaskUsd: null });
   } finally { f.close(); }
  });
+ it("the project's admin gets no Save before the fresh sign-in; a read failure says fixed words, never the server's", async () => {
+  const f = mountAlone(h(ProjectSpendLimits, { project: "web", developerId: me }), () => ({ status: 200, body: limits({ sameAsCompany: true, usd: null }) }));
+  try {
+   await screen.findByTestId("project-spend-same");
+   expect(screen.getByTestId("fresh-sign-in")).toBeTruthy();
+   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  } finally { f.close(); }
+  const bad = mountAlone(h(ProjectSpendLimits, { project: "web", developerId: me }), () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "private canary" } } }));
+  try {
+   expect((await screen.findByTestId("project-spend-unread")).textContent).toBe("Couldn't load the spending limits. Try again.");
+   expect(document.body.textContent).not.toContain("private canary");
+  } finally { bad.close(); }
+ });
  it("someone who can't change it sees it read only; a refusal shows the server's sentence", async () => {
   const ro = mountAlone(h(ProjectSpendLimits, { project: "web", developerId: me }), () => ({ status: 200, body: limits({ sameAsCompany: false, usd: 7 }, false) }));
   try {

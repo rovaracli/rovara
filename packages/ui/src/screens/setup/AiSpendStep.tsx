@@ -65,7 +65,7 @@ export function AiSpendStep({ role, developerId, onSaved }: { role: CompanyRole;
  return <section className="rv-ai-spend" aria-label={W.title} data-testid="ai-spend-step">
   <h2>{W.title}</h2><p>{W.intro}</p>
   {notice !== undefined && <p role={notice.ok ? "status" : "alert"} data-testid={notice.ok ? "ai-spend-saved" : "ai-spend-error"}><VisibleText text={notice.text} /></p>}
-  {failed !== undefined ? <><p role="alert" data-testid="ai-spend-read-error"><VisibleText text={failed.error instanceof ApiError ? failed.error.message : "Couldn't load this. Try again."} /></p><Button onClick={() => { for (const read of reads) void read.refetch(); }}>Try again</Button></>
+  {failed !== undefined ? <><p role="alert" data-testid="ai-spend-read-error">{failed.error instanceof ApiError && failed.error.status === 501 ? "AI and spending isn't available on this Rovara yet." : "Couldn't load AI and spending. Try again."}</p><Button onClick={() => { for (const read of reads) void read.refetch(); }}>Try again</Button></>
    : reads.some(read => read.isPending) ? <Skeleton label="Loading AI and spending" />
    : admin && model.data !== undefined && source.data !== undefined && settings.data !== undefined
     ? <Form key={`${String(settings.data.version)}:${String(source.data.version)}:${model.data.model ?? ""}`} developerId={developerId} model={model.data} source={source.data} settings={settings.data} setNotice={setNotice} reload={reload} onSaved={() => { reload(); onSaved?.(); }} />

@@ -215,7 +215,18 @@ describe("Code's engine-model answer is checked", () => {
       { ...good, extra: 1 }, { ...good, source: "other" }, { ...good, offered: [] }, { ...good, offered: ["a", "a"] }, { ...good, offered: ["<b>"] },
       { ...good, preselect: "c" }, { ...good, preselect: "a" }, { model: "z", source: "install", offered: ["a", "b"], preselect: "b" }, { ...good, model: 3 },
       { ...good, offered: Array.from({ length: 201 }, (_, i) => `m${String(i)}`) }, null, [],
+      // Each passes the preselect rule, so only its own check refuses it.
+      { model: "a", source: "company", offered: ["a", "<x>"], preselect: "a" }, { model: "a", source: "company", offered: ["a", "a"], preselect: "a" },
+      { model: "a", source: "company", offered: ["a", ...Array.from({ length: 200 }, (_, i) => `m${String(i)}`)], preselect: "a" },
+      { model: "<x>", source: "company", offered: ["a"], preselect: "a" }, { model: null, source: "install", offered: [], preselect: "a" },
+      { model: null, source: "install", offered: ["a", 5], preselect: "a" },
     ]) expect(engineModelView(bad)).toBeUndefined();
+    expect(engineModelView({ model: "a", source: "company", offered: ["a", ...Array.from({ length: 199 }, (_, i) => `m${String(i)}`)], preselect: "a" })).toBeDefined();
+  });
+  it("leaves out an applied amount that doesn't read", () => {
+    for (const value of ["x", -1, Number.POSITIVE_INFINITY]) expect(projectSettingsOf({ revision: 1, overrides: {}, values: { model_budget_usd: { value } } })?.appliedUsd).toBeUndefined();
+    expect(projectSettingsOf({ revision: 1, overrides: {}, values: { model_budget_usd: { value: null } } })?.appliedUsd).toBeNull();
+    expect(projectSettingsOf({ revision: 1, overrides: {}, values: { model_budget_usd: { value: 4 } } })?.appliedUsd).toBe(4);
   });
   it("reads a project's per-task member strictly", () => {
     expect(projectSettingsOf({ revision: 1, overrides: {} })).toMatchObject({ revision: 1, perTaskUsd: undefined });
@@ -232,7 +243,8 @@ describe("a project's per-task limit", () => {
     const pam = await w.as("pam"), cal = await w.as("cal"), ada = await w.as("ada"), bea = await w.as("bea");
     expect((await w.send("GET", LIMITS("payments"), pam)).body).toEqual({ project: "payments", revision: 2, perTask: { sameAsCompany: true, usd: null }, appliedUsd: A_TASK_LIMIT_USD, canChange: true });
     expect((await w.send("GET", LIMITS("payments"), cal)).body).toMatchObject({ canChange: false });
-    expect((await w.send("GET", LIMITS("payments"), ada)).body).toMatchObject({ canChange: true });
+    // Code lets only the project's administrator change it, so a company owner who isn't one is not offered the change.
+    expect((await w.send("GET", LIMITS("payments"), ada)).body).toMatchObject({ canChange: false });
     const foreign = await w.send("GET", LIMITS("payments"), bea);
     expect(foreign).toMatchObject({ status: 404, body: AI_SPEND_ANSWERS.projectNotFound.body });
     expect(foreign.text).not.toContain(LEAK);
@@ -297,6 +309,46 @@ describe("a project's per-task limit", () => {
     }
     expect(w.codeCalls(CODE_SETTINGS)).toHaveLength(writes);
     expect(w.settings.get("payments")).toEqual({ overrides: { real_check: "their_ci_fix" }, revision: 2 });
+  });
+
+  it("someone Code names no company for, and a malformed project name, are refused before Code's settings route", async () => {
+    const w = setUp();
+    const nob = await w.as("nob", 10);
+    for (const method of ["GET", "PUT"]) expect((await w.send(method, LIMITS("payments"), nob, method === "PUT" ? { expectedRevision: 2, perTaskUsd: 5 } : undefined)).body).toMatchObject({ error: { code: "NO_COMPANY" } });
+    const pam = await w.as("pam", 10);
+    expect((await w.send("PUT", LIMITS("Payments"), pam, { expectedRevision: 2, perTaskUsd: 5 })).body).toEqual(AI_SPEND_ANSWERS.projectNotFound.body);
+    expect(w.codeCalls(CODE_SETTINGS)).toEqual([]);
+  });
+
+  it("being an administrator of another project doesn't count", async () => {
+    PEOPLE["kim"] = { id: "9".repeat(64), company: A, role: "member", grants: { other: "administrator", payments: "developer" } };
+    try {
+      const w = setUp();
+      const kim = await w.as("kim", 10);
+      expect((await w.send("GET", LIMITS("payments"), kim)).body).toMatchObject({ canChange: false });
+      const before = w.codeCalls(CODE_SETTINGS).length;
+      expect((await w.send("PUT", LIMITS("payments"), kim, { expectedRevision: 2, perTaskUsd: 5 })).body).toEqual(AI_SPEND_ANSWERS.projectNotAllowed.body);
+      expect(w.codeCalls(CODE_SETTINGS)).toHaveLength(before);
+    } finally { delete PEOPLE["kim"]; }
+  });
+
+  it("a change that lands at Code between Cloud's read and its write is 'changed since you opened them'; an unreadable write answer is 'couldn't be saved'", async () => {
+    const raced = setUp((call) => (call.path.startsWith(CODE_SETTINGS) && call.method === "PUT" ? json(409, { error: { code: "PROJECT_REVISION_MISMATCH", message: LEAK } }) : undefined));
+    const pam = await raced.as("pam", 10);
+    const r = await raced.send("PUT", LIMITS("payments"), pam, { expectedRevision: 2, perTaskUsd: 5 });
+    expect(r.body).toEqual(AI_SPEND_ANSWERS.projectStale.body);
+    expect(r.text).not.toContain(LEAK);
+    const odd = setUp((call) => (call.path.startsWith(CODE_SETTINGS) && call.method === "PUT" ? json(200, { revision: "three", overrides: {} }) : undefined));
+    const pam2 = await odd.as("pam", 10);
+    expect((await odd.send("PUT", LIMITS("payments"), pam2, { expectedRevision: 2, perTaskUsd: 5 })).body).toEqual(AI_SPEND_ANSWERS.projectUnavailable.body);
+  });
+
+  it("a company owner who isn't the project's admin asking for no change still goes to Code (no 'Saved' without Code's check)", async () => {
+    const w = setUp();
+    const ada = await w.as("ada", 10);
+    const r = await w.send("PUT", LIMITS("payments"), ada, { expectedRevision: 2, perTaskUsd: null });
+    expect(r.body).toEqual(AI_SPEND_ANSWERS.projectNotAllowed.body);
+    expect(w.codeCalls(CODE_SETTINGS, "PUT")).toHaveLength(1);
   });
 
   it("an unreadable Code answer and Code's failures are fixed sentences", async () => {
