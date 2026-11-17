@@ -13,12 +13,26 @@ const A = "org_aaaaaaaaaaaaaaaaaaaa";
 const B = "org_bbbbbbbbbbbbbbbbbbbb";
 const START = Date.parse("2026-11-17T12:00:00.000Z");
 const DEV = { ada: "d".repeat(64), ann: "f".repeat(64), pam: "a".repeat(64), bea: "e".repeat(64), zed: "9".repeat(64) } as const;
-interface Person { developerId: string; name: string; administrator: boolean; companyId: string }
+type Role = "owner" | "admin" | "member";
+/** `administrator` is Code's INSTALL administrator flag: it plays no part (a company's owners and admins are by company role). */
+interface Person { developerId: string; name: string; administrator: boolean; companyId: string; companyRole: Role }
 const PEOPLE: Record<string, Person> = {
-  ada: { developerId: DEV.ada, name: "Ada", administrator: true, companyId: A },
-  ann: { developerId: DEV.ann, name: "Ann", administrator: true, companyId: A },
-  pam: { developerId: DEV.pam, name: "Pam", administrator: false, companyId: A },
-  bea: { developerId: DEV.bea, name: "Bea", administrator: true, companyId: B },
+  ada: { developerId: DEV.ada, name: "Ada", administrator: false, companyId: A, companyRole: "owner" },
+  ann: { developerId: DEV.ann, name: "Ann", administrator: false, companyId: A, companyRole: "admin" },
+  pam: { developerId: DEV.pam, name: "Pam", administrator: false, companyId: A, companyRole: "member" },
+  ins: { developerId: "8".repeat(64), name: "Ines", administrator: true, companyId: A, companyRole: "member" },
+  bea: { developerId: DEV.bea, name: "Bea", administrator: false, companyId: B, companyRole: "owner" },
+  /** Code names no company that reads for this person. */
+  nomad: { developerId: "6".repeat(64), name: "Nomad", administrator: true, companyId: "not-a-company", companyRole: "owner" },
+};
+/** Everyone Code lists in each company: the signed-in people, DEV.zed (a member of A only), and one person removed from A. */
+const GONE = "7".repeat(64);
+const LISTED: Record<string, Array<Record<string, unknown>>> = {
+  [A]: [
+    ...["ada", "ann", "pam", "ins"].map((who) => ({ personId: PEOPLE[who]!.developerId, companyId: A, name: PEOPLE[who]!.name, role: PEOPLE[who]!.companyRole })),
+    { personId: DEV.zed, companyId: A, name: "Zed", role: "member" }, { personId: GONE, companyId: A, name: "Gone", role: "member", revokedAt: "2026-11-01T00:00:00.000Z" },
+  ],
+  [B]: [{ personId: DEV.bea, companyId: B, name: "Bea", role: "owner" }],
 };
 /** The projects Code knows in each company (both have "web"). */
 const PROJECTS: Record<string, string[]> = { [A]: ["web", "api"], [B]: ["web", "billing"] };
@@ -40,7 +54,7 @@ class Racing extends LocalCompanyStore {
   override async removeSpendLimit(companyId: string, kind: SpendLimitKind, id: string, basis: SpendLimitBasis) { if (this.breakWith !== undefined) throw new Error(this.breakWith); return super.removeSpendLimit(companyId, kind, id, basis); }
 }
 
-function world(options: { company?: boolean; codeProject?: "ok" | "outage" } = {}) {
+function world(options: { company?: boolean; codeProject?: "ok" | "outage"; members?: "ok" | "outage" | "pages" | "foreign" | "garbled"; pageSize?: number } = {}) {
   const clock = { at: START }; let tokens = 0;
   const nowS = () => Math.floor(clock.at / 1000);
   const byToken = new Map<string, Person>();
@@ -50,7 +64,17 @@ function world(options: { company?: boolean; codeProject?: "ok" | "outage" } = {
     const person = byToken.get(((init?.headers as Record<string, string> | undefined)?.authorization ?? "").replace(/^Bearer /u, ""));
     if (person === undefined) return new Response("{}", { status: 401 });
     const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (url.pathname === "/v1/dev/access") return reply(200, { developerId: person.developerId, displayName: person.name, administrator: person.administrator, companyId: person.companyId, projects: [], notices: [] });
+    if (url.pathname === "/v1/dev/access") return reply(200, { developerId: person.developerId, displayName: person.name, administrator: person.administrator, companyId: person.companyId, companyRole: person.companyRole, projects: [], notices: [] });
+    if (url.pathname === "/v1/dev/company/members") {
+      codeCalls.push(`GET ${url.pathname}`);
+      if (options.members === "outage") return reply(500, { error: { code: "X", message: "secret outage text" } });
+      if (options.members === "garbled") return reply(200, { members: "nope", more: false });
+      const all = options.members === "foreign" ? [{ ...LISTED[person.companyId]![0]!, companyId: person.companyId === A ? B : A }] : LISTED[person.companyId] ?? [];
+      const size = Math.min(options.pageSize ?? 100, Number(url.searchParams.get("limit") ?? "100"));
+      const from = Number(url.searchParams.get("cursor")?.replace(/^c/u, "") ?? "0");
+      const page = all.slice(from, from + size);
+      return reply(200, { members: page, more: from + size < all.length, ...(from + size < all.length ? { cursor: `c${String(from + size)}` } : {}) });
+    }
     const project = /^\/v1\/dev\/client\/projects\/([^/]+)$/u.exec(url.pathname);
     if (project !== null) {
       codeCalls.push(`${init?.method ?? "GET"} ${url.pathname}`);
@@ -124,11 +148,14 @@ describe("who may see and change spending limits", () => {
 
   it("a plain member sees nothing and changes nothing (reads too), and nothing is written", async () => {
     const w = await READY(); await w.seed(A, "project", "web", 5 * MICROS);
-    const pam = await w.signIn("pam", 30);
-    for (const [method, path, body] of [["GET", PATH, undefined], ["PUT", project("web"), put(1, 1)], ["PUT", project("api"), put(0, 1)], ["PUT", person(DEV.pam), put(0, 1)]] as const) {
-      const answer = await w.call(pam, method, path, body);
-      expect(answer.status, `${method} ${path}`).toBe(403);
-      expect(answer.body.error?.code).toBe("FORBIDDEN");
+    // A plain member, and a person who is Code's install administrator but only a member of the company: neither is a company admin.
+    for (const who of ["pam", "ins"]) {
+      const cookie = await w.signIn(who, 30);
+      for (const [method, path, body] of [["GET", PATH, undefined], ["PUT", project("web"), put(1, 1)], ["PUT", project("api"), put(0, 1)], ["PUT", person(DEV.pam), put(0, 1)]] as const) {
+        const answer = await w.call(cookie, method, path, body);
+        expect(answer.status, `${who} ${method} ${path}`).toBe(403);
+        expect(answer.body.error?.code).toBe("FORBIDDEN");
+      }
     }
     expect((await stored(w, "project", "web"))?.version).toBe(1);
     expect(await stored(w, "project", "api")).toBeUndefined();
@@ -152,6 +179,66 @@ describe("who may see and change spending limits", () => {
       expect((await w.call(ada, "PUT", path, put(0, 1))).status, path).toBe(501);
     }
     expect((await w.companies.spendLimits(A)).projects).toEqual([]);
+  });
+});
+
+describe("which company, and who is an admin", () => {
+  it("a company owner and a company admin both may; Code naming no company that reads is refused, and no deployment-wide company stands in", async () => {
+    const w = await READY();
+    for (const who of ["ada", "ann"]) expect((await w.call(await w.signIn(who, 30), "GET", PATH)).status, who).toBe(200);
+    const nomad = await w.signIn("nomad", 30);
+    for (const [method, path, body] of [["GET", PATH, undefined], ["PUT", project("web"), put(0, 1)]] as const) {
+      const answer = await w.call(nomad, method, path, body);
+      expect(answer.status).toBe(403);
+      expect(answer.body.error?.code).toBe("NO_COMPANY");
+    }
+    expect(await stored(w, "project", "web")).toBeUndefined();
+  });
+});
+
+describe("a person's limit names a member of the company", () => {
+  it("a person Code lists in the company may be given one; one it does not list, a removed one, and another company's person are refused (nothing written)", async () => {
+    const w = await READY(); const ada = await w.signIn("ada", 30);
+    expect((await w.call(ada, "PUT", person(DEV.zed), put(0, 1))).status).toBe(200);
+    for (const stranger of [GONE, DEV.bea, "5".repeat(64)]) {
+      const answer = await w.call(ada, "PUT", person(stranger), put(0, 1));
+      expect(answer.status, stranger).toBe(404);
+      expect(answer.body.error?.message).toBe("That person isn't in your company.");
+      expect(answer.raw).not.toContain(stranger);
+      expect(await stored(w, "person", stranger)).toBeUndefined();
+    }
+    // The same person id is a member of company B's list only when B's Code says so.
+    expect((await w.call(await w.signIn("bea", 30), "PUT", person(DEV.zed), put(0, 1))).status).toBe(404);
+  });
+
+  it("finds a person on a later page of Code's list, and stops asking once found", async () => {
+    const w = world({ members: "pages", pageSize: 2 }); await w.settings(A, {});
+    const ada = await w.signIn("ada", 30);
+    expect((await w.call(ada, "PUT", person(DEV.zed), put(0, 1))).status).toBe(200);
+    expect(w.codeCalls.filter((c) => c.endsWith("/members")).length).toBe(3);
+    const before = w.codeCalls.length;
+    expect((await w.call(ada, "PUT", person(DEV.ada), put(0, 1))).status).toBe(200);
+    expect(w.codeCalls.slice(before).filter((c) => c.endsWith("/members")).length).toBe(1);
+  });
+
+  it("a list that does not read, belongs to another company, or fails answers 503 in fixed words, not 'not a member', and writes nothing", async () => {
+    for (const members of ["outage", "garbled", "foreign"] as const) {
+      const w = world({ members }); await w.settings(A, {});
+      const answer = await w.call(await w.signIn("ada", 30), "PUT", person(DEV.zed), put(0, 1));
+      expect(answer.status, members).toBe(503);
+      expect(answer.raw).not.toContain("secret outage text");
+      expect(await stored(w, "person", DEV.zed)).toBeUndefined();
+    }
+  });
+
+  it("removing a person's limit does not ask Code (an ex-member's limit can still be cleaned up), and a lowering of one that is not listed is refused", async () => {
+    const w = await READY(); await w.seed(A, "person", GONE, 5 * MICROS);
+    const ada = await w.signIn("ada", 30);
+    const before = w.codeCalls.length;
+    expect((await w.call(ada, "PUT", person(GONE), put(1, null))).status).toBe(200);
+    expect(w.codeCalls.slice(before)).toEqual([]);
+    await w.seed(A, "person", GONE, 5 * MICROS);
+    expect((await w.call(ada, "PUT", person(GONE), put(1, 1))).status).toBe(404);
   });
 });
 
@@ -343,12 +430,11 @@ describe("fail closed, in fixed words", () => {
     expect(await stored(out, "project", "web")).toBeUndefined();
   });
 
-  it("removing a limit does not ask Code about the project (a deleted project's limit can still be cleaned up), and a person's is never checked", async () => {
+  it("removing a limit does not ask Code about the project (a deleted project's limit can still be cleaned up)", async () => {
     const w = await READY(); await w.seed(A, "project", "gone", 5 * MICROS);
     const ada = await w.signIn("ada", 30);
     const before = w.codeCalls.length;
     expect((await w.call(ada, "PUT", project("gone"), put(1, null))).status).toBe(200);
-    expect((await w.call(ada, "PUT", person(DEV.zed), put(0, 1))).status).toBe(200);
     expect(w.codeCalls.slice(before)).toEqual([]);
     expect(await stored(w, "project", "gone")).toBeUndefined();
   });
@@ -374,13 +460,13 @@ describe("fail closed, in fixed words", () => {
 
   it("at most SPEND_LIMITS_MAX overrides of a kind: the next new one is refused (existing ones still change), and the list says it is partial", async () => {
     const w = await READY(); const ada = await w.signIn("ada", 30);
-    for (let i = 0; i < SPEND_LIMITS_MAX.person; i++) await w.seed(A, "person", i.toString(16).padStart(64, "0"), MICROS);
+    for (let i = 1; i < SPEND_LIMITS_MAX.person; i++) await w.seed(A, "person", i.toString(16).padStart(64, "0"), MICROS);
+    await w.seed(A, "person", DEV.pam, MICROS);
     const refused = await w.call(ada, "PUT", person(DEV.zed), put(0, 1));
     expect(refused.status).toBe(409);
     expect(refused.body.error?.message).toBe("There are too many limits of this kind. Remove some first.");
     expect(await stored(w, "person", DEV.zed)).toBeUndefined();
-    const first = "0".repeat(64);
-    expect((await w.call(ada, "PUT", person(first), put(1, 0.5))).status).toBe(200);
+    expect((await w.call(ada, "PUT", person(DEV.pam), put(1, 0.5))).status).toBe(200);
     expect((await w.call(ada, "PUT", project("web"), put(0, 1))).status).toBe(200);
     // One more person row beyond the bound (as a race could leave): the list is bounded and partial.
     await w.seed(A, "person", DEV.zed, MICROS);

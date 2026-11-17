@@ -10,7 +10,7 @@ import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
-import { parseUsd, readSpendLimits } from "../../packages/ui/src/api/admin-spend-limits.js";
+import { parseUsd, readPeopleNames, readSpendLimits } from "../../packages/ui/src/api/admin-spend-limits.js";
 import { visibleAdminGroups } from "../../packages/ui/src/screens/admin/admin-nav.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -146,5 +146,33 @@ describe("Spending limits page", () => {
   } finally { refused.close(); }
   const off = mount("/app/admin/money/limits", () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } }));
   try { expect(await screen.findByTestId("not-connected")).toBeTruthy(); } finally { off.close(); }
+ });
+ it("names people from the Members list when it reads, picks a person by name, and falls back to the ID when it does not", async () => {
+  const OTHER = "2".repeat(64);
+  const sent: ApiRequest[] = [];
+  const members = { members: [{ developerId: PERSON, name: "Maya Chen" }, { developerId: OTHER, name: "Ravi Patel" }, { developerId: "x", name: "Bad row" }, { developerId: "3".repeat(64), name: "  " }] };
+  const f = mount("/app/admin/money/limits", r => (r.path === "/v1/app/org/members" ? { status: 200, body: members } : r.method === "PUT" ? (sent.push(r), { status: 200, body: body() }) : { status: 200, body: body() }));
+  try {
+   const table = within(await screen.findByTestId("spend-person-table"));
+   await waitFor(() => { expect(table.getByTitle(PERSON).textContent).toBe("Maya Chen"); });
+   const form = within(screen.getByRole("form", { name: "Add a person limit" }));
+   // Only people without a limit of their own can be picked.
+   const options = [...form.getByLabelText<HTMLSelectElement>("Person").options].map(option => option.textContent);
+   expect(options).toEqual(["Choose a person", "Ravi Patel"]);
+   fireEvent.change(form.getByLabelText("Person"), { target: { value: OTHER } });
+   fireEvent.change(form.getByLabelText(/Monthly limit for this person/u), { target: { value: "5" } });
+   fireEvent.click(form.getByRole("button", { name: "Add limit" }));
+   await waitFor(() => { expect(sent).toHaveLength(1); });
+   expect(sent[0]!.path).toBe(`/v1/app/org/spend-limits/people/${OTHER}`);
+   expect(sent[0]!.body).toEqual({ expectedVersion: 0, monthlyUsd: 5 });
+  } finally { f.close(); }
+  const plain = mount("/app/admin/money/limits", r => (r.path === "/v1/app/org/members" ? { status: 500, body: {} } : { status: 200, body: body() }));
+  try {
+   const table = within(await screen.findByTestId("spend-person-table"));
+   expect(table.getByTitle(PERSON).textContent).toBe(`${"1".repeat(12)}…`);
+   expect(within(screen.getByRole("form", { name: "Add a person limit" })).getByLabelText("Person ID")).toBeTruthy();
+  } finally { plain.close(); }
+  expect(readPeopleNames(members)).toEqual([{ developerId: PERSON, name: "Maya Chen" }, { developerId: OTHER, name: "Ravi Patel" }]);
+  expect(() => readPeopleNames({ members: "x" })).toThrow();
  });
 });

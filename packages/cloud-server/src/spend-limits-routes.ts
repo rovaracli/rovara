@@ -8,7 +8,9 @@
 // loosening one). An override is one item per project or person in the Companies table (company-store.ts SpendLimit); the model gateway
 // reads it on every call and holds the call to it (model-gateway company-caps.ts). The company's monthly cap stays the outer bound.
 //
-// Who: company admins only (Code's access check made now), reads included. Never a plain member.
+// Who: a company owner or admin (Code's company role from its access check made now, company-caller.ts; never Code's install `administrator` flag),
+// reads included. Never a plain member. The company is the one Code names for the person: nothing the browser sends and no deployment-wide
+// default ever names it.
 // Step-up: only when the change RAISES what the project or person may spend. Raising means the new effective limit (the override, or the
 // default when the override is removed; no limit counts as the highest) is above the current effective limit. Lowering needs none. The
 // decision is made on a fresh read, and the write is conditional on exactly what was read (the override's version and amount, and the
@@ -16,15 +18,18 @@
 // company's own rules: a company that forbids loosening (`setting.loosen` with allow false) cannot raise a limit here either, and its
 // sign-in window applies. (Its "second person" rule is NOT applied here: see the DONE note, question 2.)
 // Every change is audited (`company.budget.changed`, subject `spend_limit:<kind>:<id>`, a fixed-word detail).
-// Fail closed: a limit or settings row that does not read, a failed read or write, or a project Code does not know answers a fixed refusal.
+// Fail closed: a limit or settings row that does not read, a failed read or write, a project Code does not know, or a person Code does not list in
+// the company answers a fixed refusal.
 // No answer ever echoes what the browser sent or what a lower layer said.
 import { recordCloudAction } from "./audit-log.js";
 import { CodeError } from "./code-client.js";
+import { companyCaller, isCompanyAdmin, refused as notCaller } from "./company-caller.js";
 import { plainObject, settingsDecision } from "./company-settings.js";
 import {
-  COMPANY_ID, CompanyStoreConflict, SPEND_LIMITS_MAX, SPEND_LIMIT_ID, SPEND_LIMIT_MICROS_MAX, companySettings,
+  CompanyStoreConflict, SPEND_LIMITS_MAX, SPEND_LIMIT_ID, SPEND_LIMIT_MICROS_MAX, companySettings,
   type CompanyStore, type SpendLimit, type SpendLimitKind,
 } from "./company-store.js";
+import { CODE_MEMBERS_PATH, MEMBER_LIST_PAGES_MAX } from "./member-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { freshStepUp } from "./step-up.js";
 
@@ -33,13 +38,13 @@ const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => Object.freeze({ status, body: Object.freeze({ error: Object.freeze({ code, message }) }) });
 export const SPEND_LIMIT_WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "Spending limits aren't set up on this Cloud."),
-  noCompany: refusal(403, "FORBIDDEN", "Your sign-in doesn't belong to a company Cloud knows."),
   forbidden: refusal(403, "FORBIDDEN", "Only a company admin can see or change spending limits."),
   stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   ruled: refusal(403, "FORBIDDEN", "Your company's rules don't allow raising a limit."),
   invalid: refusal(400, "CONFIG_INVALID", "Send the amount in dollars, from 0 to 1,000,000 with at most two decimals, or null to remove the limit."),
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
   projectNotFound: refusal(404, "NOT_FOUND", "That project doesn't exist, or you can't use it."),
+  personNotFound: refusal(404, "NOT_FOUND", "That person isn't in your company."),
   stale: refusal(409, "CONFLICT", "This limit changed since you opened it. Refresh and try again."),
   tooMany: refusal(409, "CONFLICT", "There are too many limits of this kind. Remove some first."),
   unreadable: refusal(503, "RUNTIME_UNAVAILABLE", "The spending limits couldn't be read. Ask an installation administrator to check them."),
@@ -61,20 +66,14 @@ const usd = (micros: number | null) => (micros === null ? null : micros / 1_000_
 
 interface Admin { companyId: string; developerId: string; name: string; store: CompanyStore }
 
-/** A company admin of a company Cloud knows, from Code's access check made now. A RouteAnswer when refused. */
+/** A company owner or admin, from Code's access check made now. A RouteAnswer when refused (no company, a plain member, no company backend). */
 async function admin(context: RouteContext): Promise<Admin | RouteAnswer> {
   const backend = context.company;
   if (backend === undefined) return W.off;
-  const access = await context.client.access(context.session);
-  const said = (access as { companyId?: unknown }).companyId;
-  let companyId: string;
-  if (said !== undefined) {
-    if (typeof said !== "string" || !COMPANY_ID.test(said)) return W.noCompany;
-    companyId = said;
-  } else if (backend.companyId !== undefined && COMPANY_ID.test(backend.companyId)) companyId = backend.companyId;
-  else return W.noCompany;
-  if (access.administrator !== true || !/^[a-f0-9]{64}$/u.test(access.developerId)) return W.forbidden;
-  return { companyId, developerId: access.developerId, name: access.displayName, store: backend.store };
+  const who = await companyCaller(context);
+  if (notCaller(who)) return who;
+  if (!isCompanyAdmin(who.companyRole)) return W.forbidden;
+  return { companyId: who.companyId, developerId: who.developerId, name: who.name, store: backend.store };
 }
 const refused = (value: Admin | RouteAnswer): value is RouteAnswer => "status" in value;
 
@@ -111,6 +110,29 @@ async function projectKnown(context: RouteContext, project: string): Promise<boo
   }
 }
 
+/** Whether Code lists the person as a current member of the company (its own list, as this admin; Code scopes it to their company). undefined: it could not tell. */
+async function personKnown(context: RouteContext, companyId: string, personId: string): Promise<boolean | undefined> {
+  const plain = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+  let cursor: string | undefined;
+  for (let page = 0; page < MEMBER_LIST_PAGES_MAX; page += 1) {
+    let answer: unknown;
+    try {
+      const query = new URLSearchParams({ limit: "100", ...(cursor === undefined ? {} : { cursor }) });
+      answer = await context.client.json<unknown>(context.session, `${CODE_MEMBERS_PATH}?${query.toString()}`);
+    } catch { return undefined; }
+    if (!plain(answer) || !Array.isArray(answer["members"]) || answer["members"].length > 100 || typeof answer["more"] !== "boolean") return undefined;
+    for (const row of answer["members"] as unknown[]) {
+      if (!plain(row) || row["companyId"] !== companyId || typeof row["personId"] !== "string") return undefined;
+      if (row["personId"] === personId && row["revokedAt"] === undefined) return true;
+    }
+    if (!answer["more"]) return false;
+    const next = answer["cursor"];
+    if (typeof next !== "string" || !/^[A-Za-z0-9_-]{1,512}$/u.test(next) || next === cursor) return undefined;
+    cursor = next;
+  }
+  return undefined;
+}
+
 const INFINITY = Number.POSITIVE_INFINITY;
 
 async function change(context: RouteContext, kind: SpendLimitKind): Promise<RouteAnswer> {
@@ -123,12 +145,12 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
   if (!plainObject(body) || Object.keys(body).length !== 2 || !Object.hasOwn(body, "expectedVersion") || !Object.hasOwn(body, "monthlyUsd") || !whole(body["expectedVersion"])) return W.invalid;
   const asked = body["monthlyUsd"] === null ? null : dollarsToMicros(body["monthlyUsd"]);
   if (asked === undefined) return W.invalid;
-  // Setting a limit names a project Code knows (as this person, in their company). Removing one needs no such check: a project that is gone
-  // can still have its limit cleaned up.
-  if (kind === "project" && asked !== null) {
-    const known = await projectKnown(context, id);
+  // Setting a limit names a project Code knows (as this person, in their company) or a person Code lists in the company. Removing one needs no
+  // such check: a project or person that is gone can still have its limit cleaned up.
+  if (asked !== null) {
+    const known = kind === "project" ? await projectKnown(context, id) : await personKnown(context, who.companyId, id);
     if (known === undefined) return W.unavailable;
-    if (!known) return W.projectNotFound;
+    if (!known) return kind === "project" ? W.projectNotFound : W.personNotFound;
   }
   // A fresh read of everything the decision depends on.
   let settings, current: SpendLimit | undefined;

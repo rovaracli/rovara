@@ -42,3 +42,14 @@ export function parseUsd(text: string): number | undefined {
  const value = Number(cleaned);
  return value >= 0 && value <= 1_000_000 ? value : undefined;
 }
+
+/** The company's people as the Members page reads them (`GET /v1/app/org/members`), only as much as naming a person needs. Rows that do not read are left out. */
+export const MEMBERS_PATH = "/v1/app/org/members";
+export interface PersonName { developerId: string; name: string }
+export function readPeopleNames(body: unknown): PersonName[] {
+ if (!isRecord(body) || !Array.isArray(body["members"])) throw new Error("not members");
+ return body["members"].flatMap(row => {
+  if (!isRecord(row) || typeof row["developerId"] !== "string" || !PERSON_ID.test(row["developerId"]) || typeof row["name"] !== "string" || row["name"].trim() === "" || row["name"].length > 200) return [];
+  return [{ developerId: row["developerId"], name: row["name"].trim() }];
+ });
+}

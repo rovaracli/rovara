@@ -140,4 +140,16 @@ describe("DynamoCompanyStore: what it writes", () => {
     const last = fake.transactions().at(-1)!;
     expect(last.map((entry) => Object.keys(entry)[0]).sort()).toEqual(["ConditionCheck", "Put"]);
   });
+
+  it("reads each kind's list with one bounded, strongly consistent query (the bound plus one), never a scan", async () => {
+    const fake = new FakeDynamoDb();
+    const sent: Array<{ name: string; input: Record<string, unknown> }> = [];
+    const spy = { send: (command: { constructor: { name: string }; input: Record<string, unknown> }) => { sent.push({ name: command.constructor.name, input: command.input }); return fake.send(command); } };
+    const store = new DynamoCompanyStore(spy as never, "cloud-companies");
+    await store.spendLimits(A);
+    expect(sent.map((c) => c.name)).toEqual(["QueryCommand", "QueryCommand"]);
+    expect(sent.map((c) => [c.input.Limit, c.input.ConsistentRead, (c.input.ExpressionAttributeValues as Record<string, string>)[":prefix"]])).toEqual([
+      [SPEND_LIMITS_MAX.project + 1, true, "SPEND_LIMIT#PROJECT#"], [SPEND_LIMITS_MAX.person + 1, true, "SPEND_LIMIT#PERSON#"],
+    ]);
+  });
 });
