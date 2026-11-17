@@ -57,6 +57,7 @@ const CONTROL = /[\p{Cc}\p{Cf}]/u;
 const ROW_STATES = ["done", "needs_you", "running", "optional", "skipped", "failed"] as const;
 const ROWS = ["repos", "setupRun", "evalConfirm", "aiAndSpend", "slackChannel", "linear", "invites", "firstTask"] as const;
 const SKIPPABLE = ["slackChannel", "linear", "invites"] as const;
+const REPOSITORY_ACCESS = ["transferred", "removed"] as const;
 const RUN_STATUSES = ["none", "running", "ready", "failed"] as const;
 
 type Plain = Record<string, unknown>;
@@ -103,7 +104,7 @@ export function checklistAnswer(value: unknown, project: string): Plain {
   need(plain(progress) && whole(progress["done"]) && whole(progress["total"], 1, ROWS.length) && whole(progress["done"], 0, progress["total"]) && whole(progress["percent"], 0, 100)
     && (progress["nextRequired"] === null || oneOf(progress["nextRequired"], ROWS)), undefined);
   const repos = rows.repos, evalRow = rows.evalConfirm, ai = rows.aiAndSpend, slack = rows.slackChannel, linear = rows.linear, first = rows.firstTask;
-  need(whole(repos["count"], 0, 32) && Array.isArray(repos["items"]) && repos["items"].length <= 32 && repos["items"].every((item) => plain(item) && text(item["name"], 128) && text(item["defaultBranch"], 256) && (item["fullName"] === undefined || text(item["fullName"], 256))), undefined);
+  need(whole(repos["count"], 0, 32) && Array.isArray(repos["items"]) && repos["items"].length <= 32 && repos["items"].every((item) => plain(item) && text(item["name"], 128) && text(item["defaultBranch"], 256) && (item["fullName"] === undefined || text(item["fullName"], 256)) && (item["access"] === undefined || oneOf(item["access"], REPOSITORY_ACCESS))), undefined);
   need(oneOf(evalRow["report"], ["none", "reported", "confirmed"]) && (evalRow["blockedBy"] === undefined || evalRow["blockedBy"] === "setupRun")
     && (evalRow["suites"] === undefined || (Array.isArray(evalRow["suites"]) && evalRow["suites"].length <= 4 && evalRow["suites"].every((suite) => plain(suite) && text(suite["selection"], 512) && whole(suite["questions"]))))
     && (evalRow["confirmedSelection"] === undefined || text(evalRow["confirmedSelection"], 512)), undefined);
@@ -116,7 +117,7 @@ export function checklistAnswer(value: unknown, project: string): Plain {
     project,
     viewer: { companyRole: viewer["companyRole"], projectAdmin: viewer["projectAdmin"], canSkip: viewer["canSkip"] },
     progress: { done: progress["done"], total: progress["total"], percent: progress["percent"], nextRequired: progress["nextRequired"] },
-    repos: { state: repos["state"], count: repos["count"], items: (repos["items"] as Plain[]).map((item) => ({ name: item["name"], ...(item["fullName"] === undefined ? {} : { fullName: item["fullName"] }), defaultBranch: item["defaultBranch"] })) },
+    repos: { state: repos["state"], count: repos["count"], items: (repos["items"] as Plain[]).map((item) => ({ name: item["name"], ...(item["fullName"] === undefined ? {} : { fullName: item["fullName"] }), defaultBranch: item["defaultBranch"], ...(item["access"] === undefined ? {} : { access: item["access"] }) })) },
     setupRun: setupRunRow(rows.setupRun),
     evalConfirm: {
       state: evalRow["state"], report: evalRow["report"], ...(evalRow["blockedBy"] === undefined ? {} : { blockedBy: "setupRun" }),

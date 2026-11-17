@@ -7,6 +7,7 @@ import { STEP_UP_ACR } from "./step-up.js";
 import type { CodeSession, RefreshGuard } from "./sessions.js";
 import type { GithubPending } from "./github-connect.js";
 import type { ConnectPending } from "./connect-flow.js";
+import type { LinkPending } from "./sign-in-links.js";
 
 export interface CodeClientOptions {
   /** The Code install's API, such as https://abc.execute-api.us-east-1.amazonaws.com. */
@@ -72,6 +73,8 @@ export interface PendingSignIn {
   github?: GithubPending;
   /** Guided onboarding PR 11 (connect-flow.ts): a Slack or Linear connect's cookie binding or its result, never a sign-in; the sign-in callback refuses it. */
   connect?: ConnectPending;
+  /** DEC 254w (sign-in-links.ts): a connected sign-in's pending link, kept under a key derived from the browser's sign-in cookie; never a sign-in under way, the callback refuses it. */
+  link?: LinkPending;
 }
 
 /** How long a call to Code's token or revoke endpoint may take: well inside a refresh's hold on the session. */
@@ -115,6 +118,11 @@ export class CodeClient {
   private async basic(): Promise<string> {
     const secret = typeof this.options.clientSecret === "string" ? this.options.clientSecret : await this.options.clientSecret();
     return `Basic ${Buffer.from(`${this.options.clientId}:${secret}`).toString("base64")}`;
+  }
+
+  /** The registered redirect URL Code sends the browser back to (a sign-in's, and a connected sign-in's `returnTo`). */
+  get redirectUri(): string {
+    return this.options.redirectUri;
   }
 
   /** Code's API address, with no trailing slash: where its own pages live, such as a task's page. */

@@ -164,3 +164,5 @@ export { AskStatusReaderSchema, type AskStatus } from "./live-ask.js";
 export { DiagnosisStatusReaderSchema, DIAGNOSIS_ANSWER_LABEL, DIAGNOSIS_NO_PROVIDER_MESSAGE, DiagnosisIdSchema } from "./live-diagnosis.js";
 
 export * from "./task-stop-start-preview.js";
+
+export { PEOPLE_NOT_AVAILABLE_TEXT, SESSION_PEOPLE_CANDIDATES_MAX, SESSION_PEOPLE_METHOD_LABELS, SessionPeopleRoleSchema, SessionPeopleAddRoleSchema, SessionPeopleEntrySchema, SessionPeopleViewSchema, type SessionPeopleView, SessionPeopleResponseSchema, SessionPeopleResponseReaderSchema, SessionPeopleRoleBodySchema, type SessionPeopleRoleBody, SessionPeopleAddBodySchema, type SessionPeopleAddBody, SessionPeopleOwnershipBodySchema, type SessionPeopleOwnershipBody, SessionPeopleCandidatesResponseSchema, SessionPeopleCandidatesResponseReaderSchema, SessionPeopleChangeResponseSchema, SessionPeopleChangeResponseReaderSchema, type SessionPeopleChangeResponse } from "./app-session-people.js";

@@ -98,7 +98,7 @@ export interface FakeCode {
   /** Lessons on or off (off: every lessons route answers 404 LESSONS_SWITCHED_OFF "Lessons are off.", as Code does while its switch is off). */
   setLessons(on: boolean): void;
   /** Every request received, newest last (method, path, status). */
-  log: Array<{ method: string; path: string; status: number }>;
+  log: Array<{ method: string; path: string; query: string; status: number }>;
 }
 
 interface Answer<K extends CodeRouteId> { status?: number; body?: CodeResponse<K> | ErrorBody; headers?: Record<string, string> }
@@ -305,6 +305,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     }) })],
   ]);
   const readers = new Map<string, Map<string, TaskReader>>();
+  /**
+   * Web task channel K4: the tasks a person was ADDED to (Code's involved index), by task id. `involvedMode` is how this Code answers `GET /v1/dev/tasks?involved=1`: `on` lists the
+   * current person's involved tasks (`{ involved: true, tasks }`); `old` is a Code from before the route, which ignores the query and answers the ordinary list; the others refuse.
+   */
+  const involved = new Map<string, Set<string>>();
+  /** The tasks `/__fake/involved` made, so a spec can take them away again (`reset`). */
+  const involvedMade = new Set<string>();
+  let involvedMode: "on" | "old" | "400" | "404" | "501" | "500" = "on";
   const startedByRequest = new Map<string, string>();
   const messages = new Map<string, TaskMessage[]>();
   const comments = new Map<string, PlanComment[]>();
@@ -318,7 +326,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const mayRead = (person: Person, taskId: string): { owner: Person; task: TaskView } | undefined => {
     const entry = tasks.get(taskId);
     if (entry === undefined) return undefined;
-    return entry.owner.developerId === person.developerId || readers.get(taskId)?.has(person.developerId) === true ? entry : undefined;
+    return entry.owner.developerId === person.developerId || readers.get(taskId)?.has(person.developerId) === true || involved.get(taskId)?.has(person.developerId) === true ? entry : undefined;
   };
   const touch = (task: TaskView, patch: Partial<TaskView>) => { Object.assign(task, patch, { updatedAt: iso() }); };
   const taskOr404 = <K extends CodeRouteId>(context: Context<K>, then: (entry: { owner: Person; task: TaskView }) => Answer<K>): Answer<K> => {
@@ -329,6 +337,28 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const entry = mayRead(context.person, context.params["taskId"] ?? "");
     if (entry === undefined) return notFound("task");
     return entry.owner.developerId === context.person.developerId ? then(entry) : failure(403, "FORBIDDEN", `Only ${entry.owner.name} can do that.`);
+  };
+  // --- task People (the planned Code shapes): roles per task person, a revision, and changes that commit at once or wait for the confirm page
+  const personIdOf = (person: Person) => { const hex = person.developerId; return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`; };
+  const peopleStates = new Map<string, { revision: number; roles: Map<string, string>; listed: Set<string> }>();
+  const peopleOf = (taskId: string) => { let state = peopleStates.get(taskId); if (state === undefined) { state = { revision: 3, roles: new Map(), listed: new Set() }; peopleStates.set(taskId, state); } return state; };
+  const peopleListed = (entry: { owner: Person; task: TaskView }) => PEOPLE.filter((one) => one.developerId === entry.owner.developerId || peopleOf(entry.task.taskId).listed.has(one.developerId) || readers.get(entry.task.taskId)?.has(one.developerId) === true);
+  const peopleView = (entry: { owner: Person; task: TaskView }, person: Person) => {
+    const state = peopleOf(entry.task.taskId), mine = entry.owner.developerId === person.developerId;
+    return {
+      revision: state.revision, orphaned: false, canManage: mine, canTakeOwnership: !mine,
+      people: peopleListed(entry).map((one) => {
+        const role = one.developerId === entry.owner.developerId ? "owner" : state.roles.get(personIdOf(one)) ?? "viewer";
+        return { personId: personIdOf(one), name: one.name, role, you: one.developerId === person.developerId, effectiveRole: role === "denied" ? null : role, method: one.key === "sam" ? "slack" : "github" };
+      }),
+    };
+  };
+  const pendingPeople = new Map<string, () => void>();
+  const proposePeople = (entry: { owner: Person; task: TaskView }, person: Person, requestId: string, apply: () => void, needsConfirm: boolean) => {
+    const commit = () => { apply(); peopleOf(entry.task.taskId).revision += 1; };
+    if (!needsConfirm) { commit(); return { body: { change: { status: "COMMITTED", view: peopleView(entry, person) } } }; }
+    pendingPeople.set(requestId, commit);
+    return { body: { change: { status: "PENDING", requestId, confirmationUrl: `https://fake-code.invalid/review/${entry.task.taskId}/task/people/confirm/${requestId}`, expiresAt: new Date(now().getTime() + 600_000).toISOString() } } };
   };
   const planOf = (task: TaskView): PlanView => ({
     taskId: task.taskId, document: "plan", version: 1, sha256: PLAN_DIGEST, approved: task.workflow?.stage !== "PLAN_REVIEW", current: true, versions: [1],
@@ -604,7 +634,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       startedByRequest.set(body.requestId, taskId);
       return { status: 201, body: { task: entry.task } };
     },
-    "tasks.list": ({ person }) => ({ body: { tasks: [...tasks.values()].filter((entry) => mayRead(person, entry.task.taskId) !== undefined).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } }),
+    "tasks.list": ({ person, query }) => {
+      const ordinary = () => ({ body: { tasks: [...tasks.values()].filter((entry) => entry.owner.developerId === person.developerId || readers.get(entry.task.taskId)?.has(person.developerId) === true).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } });
+      if (query.get("involved") !== "1" || involvedMode === "old") return ordinary();
+      if (involvedMode !== "on") return failure(Number(involvedMode), involvedMode === "500" ? "RUNTIME_UNAVAILABLE" : involvedMode === "400" ? "CONFIG_INVALID" : "NOT_FOUND", "involved is not served here");
+      return { body: { involved: true, tasks: [...tasks.values()].filter((entry) => involved.get(entry.task.taskId)?.has(person.developerId) === true && entry.owner.developerId !== person.developerId).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } as never };
+    },
     "tasks.get": (context) => taskOr404(context, ({ task }) => ({ body: { task } })),
     "tasks.events": (context) => taskOr404(context, ({ task }) => ({ body: { events: [{ seq: 1, at: task.createdAt, kind: "status", text: "Task started" }, { seq: 2, at: task.updatedAt, kind: "progress", text: `Now at ${task.workflow?.stage ?? "start"}`, taskItemId: "T2", attempt: 1 }] } })),
     "tasks.plan": (context) => taskOr404(context, ({ task }) => ({ body: planOf(task) })),
@@ -613,12 +648,26 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "tasks.continue": (context) => ownerTask(context, ({ task }) => ({ body: { task } })),
     "tasks.pullRequests.open": (context) => ownerTask(context, ({ task }) => { touch(task, { pullRequests: [{ repository: "example/web", number: 43, url: "https://github.com/example/web/pull/43", state: "open" }] }); return { body: { task } }; }),
     "tasks.share": (context) => ownerTask(context, ({ task }) => ({ body: { task } })),
-    "tasks.people.get": (context) => taskOr404(context, ({ owner }) => ({ body: { view: { revision: 3, owner: { developerId: owner.developerId, name: owner.name }, people: PEOPLE.map((one) => ({ developerId: one.developerId, name: one.name, role: one.developerId === owner.developerId ? "owner" : "viewer" })) } } })),
-    "tasks.people.role": (context) => ownerTask(context, () => ({ body: { change: { requestId: context.body.requestId, status: "COMMITTED" } } })),
+    "tasks.people.get": (context) => taskOr404(context, (entry) => ({ body: { view: peopleView(entry, context.person) } })),
+    "tasks.people.role": (context) => ownerTask(context, (entry) => {
+      const state = peopleOf(entry.task.taskId);
+      if (context.body.expectedPeopleRevision !== state.revision) return failure(409, "CHANGE_STALE", "Task access changed before the role could be saved");
+      return proposePeople(entry, context.person, context.body.requestId, () => { state.roles.set(context.body.personId, context.body.role); }, context.body.role === "owner");
+    }),
     "tasks.people.takeOwnership": (context) => taskOr404(context, (entry) => {
       if (entry.owner.developerId === context.person.developerId) return failure(409, "CONFLICT", "You already own this task.");
-      entry.owner = context.person;
-      return { body: { change: { requestId: context.body.requestId, status: "COMMITTED" } } };
+      const state = peopleOf(entry.task.taskId);
+      if (context.body.expectedPeopleRevision !== state.revision) return failure(409, "CHANGE_STALE", "Task access changed before the role could be saved");
+      return proposePeople(entry, context.person, context.body.requestId, () => { entry.owner = context.person; }, false);
+    }),
+    // The planned C4 routes: the owner's candidates are the project's people not yet on the task; an add of an owner waits for the confirm step.
+    "tasks.people.candidates": (context) => ownerTask(context, (entry) => ({ body: { candidates: { candidates: PEOPLE.filter((one) => roleIn(one, entry.task.project) !== undefined && !peopleListed(entry).some((listed) => listed.developerId === one.developerId)).map((one) => ({ developerId: one.developerId, name: one.name })), complete: true } } })),
+    "tasks.people.add": (context) => ownerTask(context, (entry) => {
+      const who = PEOPLE.find((one) => one.developerId === context.body.developerId);
+      if (who === undefined || roleIn(who, entry.task.project) === undefined) return failure(403, "TASK_ACCESS_DENIED", "That person can't be added to this task");
+      const state = peopleOf(entry.task.taskId);
+      if (context.body.expectedPeopleRevision !== state.revision) return failure(409, "CHANGE_STALE", "Task access changed before the role could be saved");
+      return proposePeople(entry, context.person, context.body.requestId, () => { state.roles.set(personIdOf(who), context.body.role); state.listed.add(who.developerId); }, context.body.role === "owner");
     }),
     "tasks.people.request": (context) => taskOr404(context, () => ({ body: { change: { requestId: context.params["requestId"] ?? "", status: "COMMITTED" } } })),
     "tasks.readers.list": (context) => ownerTask(context, ({ task }) => ({ body: { readers: [...(readers.get(task.taskId)?.values() ?? [])] } })),
@@ -1079,7 +1128,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       const url = new URL(request.url ?? "/", "http://fake-code.invalid");
       const method = request.method ?? "GET";
       const send = (status: number, body: unknown, headers: Record<string, string> = {}) => {
-        log.push({ method, path: url.pathname, status });
+        log.push({ method, path: url.pathname, query: url.search, status });
         response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", ...headers });
         response.end(body === undefined ? "" : JSON.stringify(body));
       };
@@ -1090,6 +1139,15 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (who === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "person is priya, sam or zed" } });
           current = who;
           return send(200, { person: who.key });
+        }
+        // The person confirms a waiting People change on Code's own page (a test stands in for that page).
+        if (method === "POST" && url.pathname === "/__fake/people-confirm") {
+          const requestId = (JSON.parse(await readBody(request)) as { requestId?: string }).requestId;
+          // No request id: every waiting change is confirmed.
+          const waiting = requestId === undefined ? [...pendingPeople.keys()] : pendingPeople.has(requestId) ? [requestId] : [];
+          if (waiting.length === 0) return send(404, { error: { code: "NOT_FOUND", message: "no waiting change" } });
+          for (const id of waiting) { pendingPeople.get(id)?.(); pendingPeople.delete(id); }
+          return send(200, { confirmed: waiting.length });
         }
         if (method === "POST" && url.pathname === "/__fake/no-company") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
@@ -1102,6 +1160,26 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const keep = new Set(["web", "api", "secret-ledger"]);
           for (let index = projects.length - 1; index >= 0; index -= 1) if (!keep.has(projects[index]!.name)) projects.splice(index, 1);
           return send(200, { projects: projects.length });
+        }
+        // Web task channel K4: say how Code answers the involved list (`reset` puts it back as it was), and add a person (`as`: priya or sam, default the one signed in last) to a task of someone else (`involve`: true makes a new task owned by the other of the two; or the id of an existing one).
+        if (method === "POST" && url.pathname === "/__fake/involved") {
+          const input = JSON.parse(await readBody(request)) as { reset?: unknown; mode?: unknown; involve?: unknown; as?: unknown; title?: unknown; updatedAt?: unknown };
+          // The person added (default: whoever signed in last) and the owner of the new task (the other of the two).
+          const added = PEOPLE.find((one) => one.key === input.as) ?? current, owner = added.developerId === SAM.developerId ? PRIYA : SAM;
+          if (input.reset === true) { for (const made of involvedMade) tasks.delete(made);involvedMade.clear();involved.clear();involvedMode = "on"; }
+          if (input.mode !== undefined) {
+            if (typeof input.mode !== "string" || !["on", "old", "400", "404", "501", "500"].includes(input.mode)) return send(400, { error: { code: "CONFIG_INVALID", message: "mode is on, old, 400, 404, 501 or 500" } });
+            involvedMode = input.mode as typeof involvedMode;
+          }
+          let taskId: string | undefined;
+          if (input.involve === true) {
+            taskId = randomUUID();
+            involvedMade.add(taskId);
+            const updatedAt = typeof input.updatedAt === "string" ? input.updatedAt : iso();
+            tasks.set(taskId, base(taskId, owner, { title: typeof input.title === "string" ? input.title : "Migrate the invoices table", project: "api", createdAt: updatedAt, updatedAt, workflow: workflowOf(taskId, owner, { stage: "IMPLEMENT", state: "RUNNING", revision: 3 }, { createdAt: updatedAt, updatedAt }) }));
+          } else if (typeof input.involve === "string" && tasks.has(input.involve)) taskId = input.involve;
+          if (taskId !== undefined) involved.set(taskId, new Set([...(involved.get(taskId) ?? []), added.developerId]));
+          return send(200, { mode: involvedMode, ...(taskId === undefined ? {} : { taskId }) });
         }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
