@@ -2,7 +2,7 @@
 // reads. Every refusal is shown in Cloud's fixed words (fixedAnswerWords), never other text. The answer text is the model's: every answer is read with a strict, bounded schema and drawn as plain text.
 // Sent once from the browser (`retry: "never"`): the same requestId is the same question, so a retried press never asks twice.
 import { useMemo } from "react";
-import { ANSWERS_SENTENCES, AnswerResponseSchema, ProjectOverviewProjectSchema, StartSuggestResponseSchema, type AnswerAskBody, type AnswerResponse, type StartSuggestBody, type StartSuggestResponse } from "@agentx/contracts/web";
+import { ANSWERS_SENTENCES, AnswerResponseSchema, NotRightResponseSchema, ProjectOverviewProjectSchema, StartSuggestResponseSchema, type AnswerAskBody, type AnswerResponse, type NotRightResponse, type StartSuggestBody, type StartSuggestResponse } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { useNav } from "../screens/account/use-nav.js";
 import { createApiClient } from "./client.js";
@@ -17,6 +17,8 @@ export function createAnswersApi(host: AppHost) {
  const api = createApiClient(host);
  return {
   ask: (project: string, body: AnswerAskBody): Promise<AnswerResponse> => api.sendAnswer("POST", base(project) + "/answers", body, AnswerResponseSchema, NEVER),
+  /** "Not right" on an answer (lead 4 J5): the asker's own press, an empty body, sent once. */
+  notRight: (project: string, answerId: string): Promise<NotRightResponse> => api.sendAnswer("POST", base(project) + "/answers/" + encodeURIComponent(AnswerResponseSchema.shape.answerId.unwrap().parse(answerId)) + "/not-right", {}, NotRightResponseSchema, NEVER),
   suggest: (project: string, body: StartSuggestBody): Promise<StartSuggestResponse> => api.sendAnswer("POST", base(project) + "/code/suggest", body, StartSuggestResponseSchema, NEVER),
  };
 }

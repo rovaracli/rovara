@@ -126,6 +126,22 @@ export const START_SUGGEST_WORDS = {
   badRequest: "A suggestion needs a request ID and 1 to 4,000 characters of text.",
 } as const;
 
+// ---- "Not right" (lead 4 J5; Code's `answer-feedback.ts`, local branch `pr/l4-answers-feed-wiki`) ------------------------------------------------------------------------------------------------------
+
+/**
+ * POST /v1/app/projects/{project}/answers/{answerId}/not-right -> Code POST of the same path, as the signed-in person (the asker). The body is empty. `queued`: wiki claims the answer rested on were marked for
+ * the next refresh (they are not hidden); `noted`: the answer rested on no wiki claim; `already`: pressed before.
+ */
+export const NotRightResponseSchema = z.object({ answerId: z.string().regex(ANSWER_ID_PATTERN), state: z.enum(["queued", "noted", "already"]), claims: z.number().int().min(0).max(100) }).strict();
+export type NotRightResponse = z.infer<typeof NotRightResponseSchema>;
+/** The words around the one small control on an answer (fixed here; nothing from Code or the model). */
+export const NOT_RIGHT_WORDS = {
+  button: "Not right",
+  queued: "Thanks. Rovara will check the wiki pages behind this answer at the next refresh.",
+  noted: "Thanks. This is noted.",
+  failed: "Couldn't save that just now. Try again.",
+} as const;
+
 /** Cloud's own words for the two routes. */
 export const ANSWERS_WORDS = Object.freeze({
   notFound: ANSWER_WORDS.projectNotFound,
@@ -138,5 +154,7 @@ export const ANSWERS_WORDS = Object.freeze({
   limitReached: ANSWER_WORDS.limitReached,
   suggestUnavailable: START_SUGGEST_WORDS.unavailable,
   suggestRate: START_SUGGEST_WORDS.rate,
+  answerGone: "That answer is not there.",
+  notRightFailed: NOT_RIGHT_WORDS.failed,
 });
 export const ANSWERS_SENTENCES: ReadonlySet<string> = new Set(Object.values(ANSWERS_WORDS));
