@@ -58,10 +58,12 @@ export function effectivePrices(sources: PriceSnapshot["sources"], previous: rea
     for (const row of [...s.entries, ...(s.floors ?? []), ...(s.fallbacks ?? [])]) {
       const key = identityKey(row.provider, row.model);
       if ("reason" in row && row.reason === "deprecated price") {
-        const { reason: _reason, perRequest: _perRequest, ...rates } = row;
         // Only when no non-deprecated row names the identity is a fully known deprecated row its price; otherwise it is an alias.
         if (live.has(key)) add({ provider: row.provider, model: row.model, ...(row.kind === undefined ? {} : { kind: row.kind }), reason: "unpriced" }, name, s.fetchedAt);
-        else { usedDeprecated.add(key); add({ ...rates, kind: row.kind ?? "chat" }, name, s.fetchedAt); }
+        else {
+          usedDeprecated.add(key);
+          add({ provider: row.provider, model: row.model, kind: row.kind ?? "chat", ...copyRates(row) as Price, ...(row.longContext === undefined ? {} : { longContext: row.longContext }), ...(row.operatorReview ? { operatorReview: true } : {}) }, name, s.fetchedAt);
+        }
         continue;
       }
       add(name === "aws" ? awsBand(row, litellmBand.get(key)) : row, name, s.fetchedAt);
