@@ -272,6 +272,24 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     delete one.stop;
     return { status: 202, body: wikiSetupBuildView(one, true) };
   };
+  type HowWeWorkMode = "on" | "off" | "core-off" | "broken" | "501" | "403";
+  // Walkthrough 2026-11-17 item 4: Code's How we work read on its own /v1/app path (core host, read only), per project (set by the specs through /__fake/how-we-work).
+  // `off` is an older Code's unknown-route 404, `core-off` the core host's "not on the core engine" 404, `broken` an answer for another project.
+  const howWeWorkModes = new Map<string, HowWeWorkMode>();
+  const howWeWorkAnswer = (method: string, path: string, person: Person): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/how-we-work$/u.exec(path);
+    if (match === null || method !== "GET") return undefined;
+    const name = decodeURIComponent(match[1]!), mode = howWeWorkModes.get(name) ?? "on";
+    if (mode === "off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    if (mode === "core-off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "That is not on the core engine on this install yet." } } };
+    // Code's rule (canReadProject: the person's own grant row on the project, in the project's own company; no company-administrator shortcut); anyone else gets the one 404.
+    const entry = project(name);
+    if (entry === undefined || companyless.has(person.developerId) || (entry.companyId ?? FAKE_COMPANY_ID) !== companyOfPerson(person) || roleIn(person, name) === undefined) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    if (mode === "501") return { status: 501, body: { error: { code: "NOT_IMPLEMENTED", message: "not served" } } };
+    if (mode === "403") return { status: 403, body: { error: { code: "FORBIDDEN", message: "This sign-in can't read projects." } } };
+    if (mode === "broken") return { status: 200, body: { project: "elsewhere", playbookRevision: 1, process: { kind: "builtin", agentId: "rovara-standard" }, stages: [], rules: [], modelsEditable: false } };
+    return { status: 200, body: { project: name, playbookRevision: 3, process: { kind: "builtin", agentId: "rovara-standard" }, stages: [], rules: [], modelsEditable: false, requestId: "req-fake" } };
+  };
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
@@ -1396,6 +1414,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (given["upkeepOff"] === true) one.upkeepOff = true;
           return send(200, { project: given["project"] });
         }
+        if (method === "POST" && url.pathname === "/__fake/how-we-work") {
+          const given = JSON.parse(await readBody(request)) as { project?: unknown; mode?: unknown };
+          if (typeof given.project !== "string" || !["on", "off", "core-off", "broken", "501", "403"].includes(given.mode as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and mode" } });
+          howWeWorkModes.set(given.project, given.mode as HowWeWorkMode);
+          return send(200, { mode: given.mode });
+        }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
           if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
@@ -1461,7 +1485,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed) ?? howWeWorkAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          if (who === undefined && /\/how-we-work$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/(?:wiki(?:[-/]|$)|upkeep$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal|confirm|discard|decide))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (answer !== undefined) return send(answer.status, answer.body);

@@ -53,6 +53,7 @@ describe("code contract v0 tables", () => {
     // Plus the setup approval (L4-D2): confirm flips to answered here, discard and decide are added: 3.
     // Plus the wiki panel on the setup page: the file map, the build controls and the nightly upkeep switch (lead 4 W6): 11 rows.
     // Plus the Cost and time report (Feature A, slice A3): the report and a feature's page: 2 rows.
+    // Plus How we work (walkthrough 2026-11-17 item 4): forwarded to Code's own GET /v1/app/projects/{p}/how-we-work as the person (an existing row, now T).
     expect(counts.appCloudServerToday).toBe(126);
   });
 

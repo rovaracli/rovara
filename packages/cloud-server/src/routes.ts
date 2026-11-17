@@ -23,6 +23,7 @@ import { WIKI_ROUTES } from "./wiki-routes.js";
 import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
 import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
+import { HOW_WE_WORK_ROUTES } from "./how-we-work-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
 import { REPORT_ROUTES } from "./report-routes.js";
@@ -877,6 +878,7 @@ export const ROUTES: Route[] = [
   // The Work page's reads (the split inbox): the task list and, for one task, its plan, proof index, events and plan comments.
   ...WORK_READS,
   ...LESSONS_ROUTES,
+  ...HOW_WE_WORK_ROUTES,
   // Creating a company (DEC 254a), for a person with no company yet.
   ...ONBOARDING_ROUTES,
   ...MEMBER_ROUTES,
