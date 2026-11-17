@@ -31,3 +31,29 @@ export const PARTIAL_WORDS = {
   rule: "This is only what Rovara had so far. It is not proven and nothing was applied. To use a setup, run it again and let it finish.",
   none: "Rovara had no setup to show yet.",
 } as const;
+
+/** The approval card's fixed words (L4-D2, DEC 254z b). The server's own refusals are shown as they come (they are Cloud's fixed sentences). */
+export const APPROVAL_WORDS = {
+  heading: "Use this setup?",
+  risk: { low: "Low risk", medium: "Medium risk", high: "High risk" },
+  why: {
+    low: "It only changes the commands that set up and test the project.",
+    medium: "It changes test mocks, the stand-in services the tests use.",
+    highUnknown: "Rovara could not tell what it changes, so it is treated as high risk.",
+  },
+  area: { setup_commands: "setup commands", test_commands: "test commands", test_mocks: "test mocks", websites: "allowed websites", registries: "package registries", integrations: "integrations", dev_container: "the dev container", other: "something Rovara does not recognise" },
+  who: { maintainer: "A project maintainer, or a company owner or admin, approves this.", admin: "A company owner or admin approves high-risk changes." },
+  check: {
+    checking: "Rovara is checking it on a fresh workspace. This can take a few minutes.",
+    ready: "Passed on a fresh workspace.",
+    failed: "The check on a fresh workspace failed. Nothing was applied.",
+    stale: "The check has not run on this setup yet.",
+  },
+  stepUp: "Approving or rejecting asks you to confirm it's you first.",
+  stepUpDone: "You confirmed it's you. This stays open for a few minutes.",
+  stepUpOld: "Your last confirmation is too old. Confirm it's you again, then choose.",
+  approved: "Approved. The project now uses this setup.",
+  rejected: "Rejected. The project keeps its current setup.",
+  discarded: "Discarded. The project keeps its current setup.",
+  moved: "This setup changed or is no longer waiting.",
+} as const;

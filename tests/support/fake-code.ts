@@ -205,6 +205,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const answered = match[3] === undefined ? withCorrections(name, id, wikiPage(name, id, set)) : wikiSources(name, id, set);
     return answered === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "page not found" } } } : { status: 200, body: answered };
   };
+  // L4-D2 (Code #899): the candidate waiting for a decision on a project (set by the specs through /__fake/setup-apply), and what decide does with it.
+  type FakeApply = { check: "checking" | "ready" | "failed"; risk: "low" | "medium" | "high"; changes: Array<{ area: string; risk: string }>; canApprove: boolean; canReject: boolean; moved: boolean; failedStep?: string; revision: number };
+  const setupApplies = new Map<string, FakeApply>();
+  const APPLY_DIGEST = "ab12".repeat(16);
+  const applyView = (entry: FakeApply) => ({
+    candidateRevision: entry.revision, baseRevision: entry.revision - 1, setup: ["npm ci"], readiness: ["npm test", "npm run lint"],
+    check: { status: entry.check, ...(entry.failedStep === undefined ? {} : { failedStep: entry.failedStep }) }, risk: entry.risk, changes: entry.changes, approver: entry.risk === "high" ? "admin" as const : "maintainer" as const,
+    canApprove: entry.check === "ready" && entry.canApprove, canReject: entry.check === "ready" && entry.canReject,
+    ...(entry.check === "ready" ? { approval: { requestId: `setup-${APPLY_DIGEST.slice(0, 40)}-${String(entry.revision)}`, revision: entry.revision, artifactDigest: APPLY_DIGEST, kind: "setup" as const, risk: entry.risk } } : {}),
+  });
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
@@ -279,14 +289,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   };
   const setupRunView = (name: string, manage: boolean) => {
     const run = runOf(name);
-    return { status: run.status, basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, ...(run.taskId === undefined ? {} : { taskId: run.taskId }), ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }), ...(run.status === "failed" ? { failure: "A test command failed.", ...(run.stop === undefined ? {} : { stop: run.stop }) } : {}), canManage: manage };
+    return { status: run.status, basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, ...(run.taskId === undefined ? {} : { taskId: run.taskId }), ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }), ...(run.status === "failed" ? { failure: "A test command failed.", ...(run.stop === undefined ? {} : { stop: run.stop }) } : {}), canManage: manage, ...(setupApplies.has(name) ? { apply: applyView(setupApplies.get(name)!) } : {}) };
   };
   /** The hosted setup run's answer (Code #844 serves the laptop's /v1/app path), or undefined when the path is not one of its four. */
   const setupRunAnswer = (method: string, path: string, query: URLSearchParams, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
-    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal))?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide))?$/u.exec(path);
     if (match === null) return undefined;
     const tail = match[2];
-    if (!((method === "GET" && (tail === undefined || tail === "journal")) || (method === "POST" && (tail === undefined || tail === "stop")))) return undefined;
+    if (!((method === "GET" && (tail === undefined || tail === "journal")) || (method === "POST" && tail !== "journal"))) return undefined;
     const name = decodeURIComponent(match[1]!), entry = project(name), grant = roleIn(person, name);
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (entry === undefined || companyless.has(person.developerId) || (!manage && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
@@ -300,6 +310,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { status: 200, body: { status: run.status, entries: all.filter((one) => one.n > after), hostAsks: [] } };
     }
     if (!manage) return failure(403, "FORBIDDEN", "Only company owners and admins, or this project's admins, can run the project's setup.");
+    if (tail === "discard") { const had = setupApplies.delete(name); return { status: 200, body: { discarded: had } }; }
+    if (tail === "decide") {
+      const asked = body as { outcome?: string; seen?: { revision?: number; artifactDigest?: string } };
+      const waiting = setupApplies.get(name);
+      if (waiting === undefined || waiting.check !== "ready") return failure(409, "CHANGE_STALE", "There is no setup waiting for a decision. Open the project's setup again.");
+      if (waiting.moved || asked.seen?.artifactDigest !== APPLY_DIGEST || asked.seen?.revision !== waiting.revision) return failure(409, "CHANGE_STALE", "The setup moved.");
+      setupApplies.delete(name);
+      return { status: 200, body: { project: name, decision: asked.outcome === "approve" ? "approved" : "rejected", risk: waiting.risk, revision: waiting.revision, replayed: false } };
+    }
+    if (tail === "confirm") return failure(409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Decide it, or discard it, first.");
     const given = body as { requestId?: unknown };
     if (typeof given?.requestId !== "string" || Object.keys(given).length !== 1) return failure(400, "CONFIG_INVALID", "requestId: Required");
     const run = runOf(name);
@@ -1328,6 +1348,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           setupSkips.delete(given.project);
           return send(200, { status });
         }
+        if (method === "POST" && url.pathname === "/__fake/setup-apply") {
+          const given = JSON.parse(raw) as { project?: unknown; apply?: Partial<FakeApply> | null };
+          if (typeof given.project !== "string" || project(given.project) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project and apply" } });
+          if (given.apply === null || given.apply === undefined) setupApplies.delete(given.project);
+          else {
+            const risk = given.apply.risk ?? "low";
+            setupApplies.set(given.project, { check: given.apply.check ?? "ready", risk, changes: given.apply.changes ?? [{ area: "setup_commands", risk: "low" }, { area: "test_commands", risk: "low" }], canApprove: given.apply.canApprove ?? true, canReject: given.apply.canReject ?? true, moved: given.apply.moved ?? false, revision: 4, ...(given.apply.failedStep === undefined ? {} : { failedStep: given.apply.failedStep }) });
+          }
+          return send(200, { ok: true });
+        }
         if (url.pathname.startsWith("/v1/app/projects/")) {
           const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
           const who = bearer === undefined ? undefined : access.get(bearer);
@@ -1335,7 +1365,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
           const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
           if (who === undefined && /\/wiki(?:\/|$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
-          if (who === undefined && /\/setup-agent(?:\/(?:stop|journal))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (who === undefined && /\/setup-agent(?:\/(?:stop|journal|confirm|discard|decide))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (answer !== undefined) return send(answer.status, answer.body);
         }
         const matched = matchCodeRoute(method, url.pathname);

@@ -1068,7 +1068,9 @@ POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags/resolve | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/disputed | k | later | | wiki | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
-POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | L
+POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | LT
+POST /v1/app/projects/{p}/setup-agent/discard | k | later | | setup-agent | LT
+POST /v1/app/projects/{p}/setup-agent/decide | k | later | | setup-agent | T
 POST /v1/app/projects/{p}/setup-agent/eval-confirm | k | later | | setup-agent | LT
 GET /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 PUT /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |

@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import { HomePage } from "./home.js";
 import { FAKE_CODE_URL } from "./lessons.js";
 import { ROUTES } from "./routes.js";
 
@@ -39,5 +40,39 @@ export class SetupChecklistPage {
   async openSettings(project: string): Promise<void> {
     await this.page.goto(`${ROUTES.project(project)}?tab=settings`);
     await expect(this.settings).toBeVisible();
+  }
+}
+
+/** Sets the candidate setup waiting for a decision on a project of the pretend Code (L4-D2): null clears it. */
+export async function setSetupApply(page: Page, project: string, apply: { check?: "checking" | "ready" | "failed"; risk?: "low" | "medium" | "high"; changes?: Array<{ area: string; risk: string }>; canApprove?: boolean; canReject?: boolean; moved?: boolean; failedStep?: string } | null): Promise<void> {
+  const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/setup-apply`, { data: { project, apply } });
+  expect(answer.status()).toBe(200);
+}
+
+/** The setup approval card on the onboarding Setup step (L4-D2). */
+export class SetupApprovalPage {
+  readonly page: Page;
+  readonly card: Locator;
+  readonly approve: Locator;
+  readonly reject: Locator;
+  readonly discard: Locator;
+  readonly problem: Locator;
+  readonly decided: Locator;
+  constructor(page: Page) {
+    this.page = page;
+    this.card = page.getByTestId("setup-approval");
+    this.approve = this.card.getByTestId("setup-approve");
+    this.reject = this.card.getByTestId("setup-reject");
+    this.discard = this.card.getByTestId("setup-discard");
+    this.problem = this.card.getByTestId("setup-approval-problem");
+    this.decided = page.getByTestId("setup-decided");
+  }
+  /** Opens the Setup step. `confirmed` seeds the step-up nonce the way a return from Code's sign-in page does. */
+  async open(project: string, confirmed?: string): Promise<void> {
+    // The first address opened signs the person in through Code (a redirect chain), so settle on a page of the app before touching its storage.
+    await this.page.goto(ROUTES.home);
+    await new HomePage(this.page).expectLoaded();
+    if (confirmed !== undefined) await this.page.evaluate((nonce) => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce, at: Date.now() })), confirmed);
+    await this.page.goto(`${ROUTES.firstDay}?project=${encodeURIComponent(project)}&step=setup${confirmed === undefined ? "" : `&confirmed=${confirmed}`}`);
   }
 }

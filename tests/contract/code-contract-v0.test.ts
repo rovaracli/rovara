@@ -50,7 +50,8 @@ describe("code contract v0 tables", () => {
     // Plus the project wiki's page list, one page and its cited files (lead 4 W5).
     // Plus the project machine-size read and stored-choice write (machine-size screen).
     // Plus the wiki's corrections: the notes, marks, approvals and the disputed list (lead 4 C1): 8 rows.
-    expect(counts.appCloudServerToday).toBe(110);
+    // Plus the setup approval (L4-D2): confirm flips to answered here, discard and decide are added: 3.
+    expect(counts.appCloudServerToday).toBe(113);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
