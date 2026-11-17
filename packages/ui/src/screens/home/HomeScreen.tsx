@@ -11,13 +11,20 @@ import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { HomeCard } from "./HomeCard.js";
+import { useNav } from "../account/use-nav.js";
 // Decision cards load after the first paint: they bring the cards, the tabs and their contracts, which no other first-page view needs.
 const NeedsYou = lazy(async () => ({ default: (await import("./NeedsYou.js")).NeedsYou }));
 // The empty state is in the same lazy chunk: it must know whether decision cards wait, and reading them would bring their contracts into the first page.
 const NothingNeedsYou = lazy(async () => ({ default: (await import("./NeedsYou.js")).NothingNeedsYou }));
 // The tasks the person was added to load after the first paint too (web task channel K4).
 const InvolvedHome = lazy(async () => ({ default: (await import("./InvolvedHome.js")).InvolvedHome }));
+// Guided onboarding PR 9: "Finish setting up" cards and the no-project empty state, after the first paint.
+const FinishSetup = lazy(async () => ({ default: (await import("./FinishSetup.js")).FinishSetup }));
+// Guided onboarding PR 13: the teammate's welcome and the admins' "connection needs attention" cards, after the first paint.
+const TeammateWelcome = lazy(async () => ({ default: (await import("./TeammateWelcome.js")).TeammateWelcome }));
+const IntegrationNoticeCards = lazy(async () => ({ default: (await import("../connect/integration-notices.js")).IntegrationNoticeCards }));
 import "./home.css";
+function HomeNotices() { const nav = useNav(), host = useAppHost();return <IntegrationNoticeCards admin={host.kind === "web" && (nav?.me.orgRole === "owner" || nav?.me.orgRole === "admin")} />; }
 export function HomeScreen() {
  const host = useAppHost(), query = useQueryClient(), home = useHome(), announce = useAnnounce(), previous = useRef<Array<{ cardId: string; title: string }> | undefined>(undefined);
  const cards = home.isError ? undefined : home.data?.cards, total = home.data?.total ?? 0, ready = cards !== undefined;
@@ -28,6 +35,9 @@ export function HomeScreen() {
  previous.current = cards;
  }, [cards, announce]);
  return <section className="rv-home" data-testid="home"><PageHeader title="Home" {...(cards !== undefined && total > 0 ? { description: `${total} ${total === 1 ? "thing needs" : "things need"} you` } : {})} />
+ <Suspense fallback={null}><TeammateWelcome /></Suspense>
+ <Suspense fallback={null}><HomeNotices /></Suspense>
+ <Suspense fallback={null}><FinishSetup /></Suspense>
  <Suspense fallback={null}><NeedsYou /></Suspense>
  {home.isPending && <Skeleton label="Loading what needs you" />}
  {home.isError && <div className="rv-home-error" role="alert" data-testid="load-error"><p><VisibleText text={home.error instanceof ApiError ? home.error.message : "Couldn't load what needs you. Try again."} /></p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
