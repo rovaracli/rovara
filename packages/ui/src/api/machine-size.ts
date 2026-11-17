@@ -9,12 +9,18 @@ export interface MachineSizeView {
   suggestedSize: string | null;
   currentSize: string | null;
   storedOnlyLine: string;
-  choices: Array<{ id: string; label: string }>;
+  /** `costNote` is Code's fixed words for what the size costs compared with the standard size; absent from an older Code. */
+  choices: Array<{ id: string; label: string; costNote?: string }>;
 }
 const reader = { parse(value: unknown): MachineSizeView {
   if (value === null || typeof value !== "object") throw new Error("invalid");
   const v = value as Record<string, unknown>;
   if (!(v["measuredPeakMemoryMiB"] === null || typeof v["measuredPeakMemoryMiB"] === "number") || !(v["testTimeMs"] === null || typeof v["testTimeMs"] === "number") || !(v["suggestedSize"] === null || typeof v["suggestedSize"] === "string") || !(v["currentSize"] === null || typeof v["currentSize"] === "string") || typeof v["storedOnlyLine"] !== "string" || !Array.isArray(v["choices"])) throw new Error("invalid");
+  for (const choice of v["choices"] as unknown[]) {
+    if (choice === null || typeof choice !== "object") throw new Error("invalid");
+    const c = choice as Record<string, unknown>;
+    if (typeof c["id"] !== "string" || typeof c["label"] !== "string" || !(c["costNote"] === undefined || typeof c["costNote"] === "string" && c["costNote"].length <= 200)) throw new Error("invalid");
+  }
   return v as unknown as MachineSizeView;
 } };
 export function createMachineSizeApi(host: ReturnType<typeof useAppHost>) {

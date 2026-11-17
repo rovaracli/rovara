@@ -19,6 +19,7 @@ export function MachineSizeCard({ project, canEdit }: { project: string; canEdit
   if (query.isError || query.data === undefined) return <section className="rv-proposal-card" aria-label="Machine size"><h3>Machine size</h3><p role="alert">Couldn't load machine measurements. Try again.</p><Button onClick={() => { void query.refetch(); }}>Try again</Button></section>;
   const view = query.data;
   const value = selected ?? view.currentSize ?? view.suggestedSize ?? view.choices[0]?.id ?? "";
+  const noteOf = (id: string | null) => view.choices.find((choice) => choice.id === id)?.costNote;
   async function save() {
     setBusy(true); setError(undefined); setNeedsStepUp(false);
     try { cache.setQueryData(["project", project, "machine-size"], await api.set(project, value)); setSelected(undefined); }
@@ -32,8 +33,9 @@ export function MachineSizeCard({ project, canEdit }: { project: string; canEdit
   }
   return <section className="rv-proposal-card" aria-label="Machine size"><h3>Machine size</h3>
     <p>{view.measuredPeakMemoryMiB === null ? "Peak memory: not measured yet." : `Measured peak memory: ${Math.ceil(view.measuredPeakMemoryMiB)} MiB.`}{view.testTimeMs === null ? " Test time: not measured yet." : ` Test time: ${Math.ceil(view.testTimeMs / 60000)} min.`}</p>
-    <p>{view.suggestedSize === null ? "Suggested size: not available yet." : `Suggested size: ${view.choices.find((choice) => choice.id === view.suggestedSize)?.label ?? "not available"}.`}</p>
+    <p>{view.suggestedSize === null ? "Suggested size: not available yet." : `Suggested size: ${view.choices.find((choice) => choice.id === view.suggestedSize)?.label ?? "not available"}.`}{noteOf(view.suggestedSize) !== undefined && <> <VisibleText text={noteOf(view.suggestedSize)!} /></>}</p>
     <label>Stored choice <select value={value} disabled={!canEdit || busy} onChange={(event) => setSelected(event.target.value)}>{view.choices.map((choice) => <option key={choice.id} value={choice.id}>{choice.label}</option>)}</select></label>
+    {noteOf(value) !== undefined && <p aria-label="Cost of the selected size">Cost of this size: <VisibleText text={noteOf(value)!} /></p>}
     {canEdit && <Button variant="primary" busy={busy} onClick={() => { void save(); }}>Save machine size</Button>}
     {error && <p role="alert"><VisibleText text={error} /> {needsStepUp && <Button onClick={() => host.signIn(host.currentPath(), { stepUp: true })}>Confirm it's you</Button>}</p>}
     <p>{view.storedOnlyLine} Today's runs don't use this size yet.</p>
