@@ -155,8 +155,9 @@ describe("Rovara Cloud on CloudFront, Lambda and DynamoDB (Rovara-cloud#11)", ()
     });
     const variables = (server().Environment as { Variables: Record<string, unknown> }).Variables;
     expect(variables.COMPANY_TABLE).toEqual({ Ref: companies });
-    expect(variables.CLOUD_COMPANY_ID).toEqual({ Ref: "CompanyId" });
-    expect((template.toJSON() as { Parameters: Record<string, unknown> }).Parameters["CompanyId"]).toMatchObject({ Type: "String", Default: "", AllowedPattern: "^(org_[0-9a-z]{20})?$" });
+    // DEC 253z: the company comes only from Code's access check. No deployment-wide company setting, and no parameter to pass one.
+    expect(Object.keys(variables)).not.toContain("CLOUD_COMPANY_ID");
+    expect(Object.keys((template.toJSON() as { Parameters: Record<string, unknown> }).Parameters)).not.toContain("CompanyId");
     // Every statement naming the company table: exactly the store's four item actions, nothing wider.
     const statements = Object.values(template.findResources("AWS::IAM::Policy")).flatMap((policy) => (policy.Properties as { PolicyDocument: { Statement: Array<{ Action: string | string[]; Resource: unknown }> } }).PolicyDocument.Statement);
     const onCompanies = statements.filter((statement) => JSON.stringify(statement.Resource).includes(companies));

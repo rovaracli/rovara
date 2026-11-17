@@ -24,7 +24,9 @@ export interface AppHost {
  copyText?(text: string): Promise<void>;
  openSocket(url: string, protocols: string[]): RealtimeSocket;
  openExternal(this: void, url: string): void;navigate(url: string): void;saveFile(name: string, data: Blob): void;
- signIn(this: void, returnPath: string, options?: { automatic?: boolean; /** Ask Code for a fresh sign-in (its step-up page: a passkey or an emailed code) before coming back. */ stepUp?: boolean }): void;signOut(this: void): Promise<void>;
+ signIn(this: void, returnPath: string, options?: { automatic?: boolean; /** Ask Code for a fresh sign-in (its step-up page: a passkey or an emailed code) before coming back. */ stepUp?: boolean; /** "Sign in to join": the invite the join page looked up (lookUpInvite) picks the company, on Cloud's server. */ join?: boolean }): void;signOut(this: void): Promise<void>;
+ /** The join page (DEC 253z): looks up the invite link this page was opened with, on Cloud's server. Undefined when the link can't be used. Absent on a host without invite links. */
+ lookUpInvite?(this: void): Promise<{ companyName: string } | undefined>;
  storage: { get(key: string): string | undefined;set(key: string, value: string): void };
  features: { admin: boolean };
 }

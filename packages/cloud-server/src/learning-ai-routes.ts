@@ -10,8 +10,9 @@
 // Who: company admins only (Code's access check made now), reads included. Every write needs a fresh step-up and goes through the
 // app's signed-write path (CSRF in handler.ts, the body hash at CloudFront). Write-only: the key is never answered, logged or
 // audited. Cloud records its own audit record after the change is saved; the store keeps its own audit row in the same transaction.
+import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
-import { companySettings, COMPANY_ID } from "./company-store.js";
+import { companySettings } from "./company-store.js";
 import type { ProductAiErrorCode, ProductAiView } from "./product-ai-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
@@ -39,7 +40,6 @@ const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
 const WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "Learning AI keys aren't set up on this Cloud."),
-  noCompany: refusal(403, "FORBIDDEN", "Your sign-in doesn't belong to a company Cloud knows."),
   forbidden: refusal(403, "FORBIDDEN", "Only a company admin can see or change the company's learning AI key."),
   stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   invalid: refusal(400, "CONFIG_INVALID", "This learning AI key is not valid."),
@@ -65,17 +65,12 @@ interface Admin { companyId: string; developerId: string; name: string }
 async function admin(context: RouteContext, write: boolean): Promise<Admin | RouteAnswer> {
   const backend = context.productAi;
   if (backend === undefined) return WORDS.off;
-  const access = await context.client.access(context.session);
-  const said = (access as { companyId?: unknown }).companyId;
-  let companyId: string;
-  if (said !== undefined) {
-    if (typeof said !== "string" || !COMPANY_ID.test(said)) return WORDS.noCompany;
-    companyId = said;
-  } else if (backend.companyId !== undefined && COMPANY_ID.test(backend.companyId)) companyId = backend.companyId;
-  else return WORDS.noCompany;
-  if (access.administrator !== true || !/^[a-f0-9]{64}$/u.test(access.developerId)) return WORDS.forbidden;
+  const who = await companyCaller(context);
+  if (refused(who)) return who;
+  // A company owner or admin (Code's company role, never its install administrator flag).
+  if (!isCompanyAdmin(who.companyRole)) return WORDS.forbidden;
   if (write && freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return WORDS.stepUp;
-  return { companyId, developerId: access.developerId, name: access.displayName };
+  return { companyId: who.companyId, developerId: who.developerId, name: who.name };
 }
 
 async function guarded<T>(run: () => Promise<T>): Promise<T | RouteAnswer> {

@@ -171,3 +171,57 @@ it("sends each write's body SHA-256 in x-amz-content-sha256, as CloudFront's sig
   { path: "/v1/auth/browser/sign-out", method: "POST", hash: sha(""), csrf: CSRF },
  ]);
 });
+describe("onboarding in the browser host (DEC 253z)", () => {
+ const withHash = (b: ReturnType<typeof browser>, hash: string) => { (b.win.location as { hash?: string }).hash = hash;return b; };
+ it("looks up the invite link's token on Cloud's server as JSON, same origin, and never puts it in a URL", async () => {
+  const token = "T".repeat(43);
+  const b = withHash(browser(async () => json({ companyName: "Acme" })), `#invite=${token}`);
+  expect(await createBrowserHost(b.win).lookUpInvite!()).toEqual({ companyName: "Acme" });
+  expect(b.fetch).toHaveBeenCalledTimes(1);
+  const [path, init] = b.fetch.mock.calls[0]!;
+  expect(path).toBe("/v1/auth/browser/join");
+  expect(init).toMatchObject({ method: "POST", body: JSON.stringify({ invite: token }), credentials: "same-origin", redirect: "error" });
+  expect(new Headers(init!.headers).get("content-type")).toBe("application/json");
+  expect(JSON.stringify(b.fetch.mock.calls[0]![0])).not.toContain(token);
+ });
+ it("takes Code's invite secret (its prefix, any length the link pattern allows) the same way (DEC 254h)", async () => {
+  for (const secret of [`rvi_${"S".repeat(32)}`, "s".repeat(22), "s".repeat(128)]) {
+   const b = withHash(browser(async () => json({ companyName: "Acme" })), `#invite=${secret}`);
+   expect(await createBrowserHost(b.win).lookUpInvite!()).toEqual({ companyName: "Acme" });
+   expect(b.fetch.mock.calls[0]![1]).toMatchObject({ body: JSON.stringify({ invite: secret }) });
+  }
+ });
+ it("drops the token from the address once read", async () => {
+  const b = withHash(browser(async () => json({ companyName: "Acme" })), `#invite=${"T".repeat(43)}`);
+  const replaceState = vi.fn();
+  (b.win as { history?: unknown }).history = { replaceState };
+  (b.win.location as { pathname: string }).pathname = "/app/join";
+  await createBrowserHost(b.win).lookUpInvite!();
+  expect(replaceState).toHaveBeenCalledWith(null, "", "/app/join");
+ });
+ it("asks nothing for a link without a well-formed token, and reads any refusal or odd answer as unusable", async () => {
+  for (const hash of ["", "#invite=short", `#invite=${"T".repeat(43)}&x=1`, `#other=${"T".repeat(43)}`, `#invite=${"T".repeat(129)}`, `#invite=rvi_${"T".repeat(30)}.x`, `#invite=${"T".repeat(43)}\n`]) {
+   const b = withHash(browser(async () => json({ companyName: "Acme" })), hash);
+   expect(await createBrowserHost(b.win).lookUpInvite!()).toBeUndefined();
+   expect(b.fetch).not.toHaveBeenCalled();
+  }
+  for (const answer of [json({ error: { code: "INVITE_UNUSABLE", message: "x" } }, 404), json({ companyName: "" }), json({ companyName: 5 }), json({ companyName: "x".repeat(201) })]) {
+   const b = withHash(browser(async () => answer), `#invite=${"T".repeat(43)}`);
+   expect(await createBrowserHost(b.win).lookUpInvite!()).toBeUndefined();
+  }
+ });
+ it("signs in to join through Cloud's own address, with no company in it", () => {
+  const b = browser(async () => json({}));
+  createBrowserHost(b.win).signIn("/app", { join: true });
+  expect(b.assign.mock.lastCall?.[0]).toBe("/v1/auth/browser/authorize?return_to=%2Fapp&join=1");
+ });
+ it("takes the CSRF value from /me's no-company refusal, so a person with no company can create one", async () => {
+  const b = browser(async (path) => path.endsWith("/me") ? json({ error: { code: "NO_COMPANY", message: "You're not in a company yet." }, csrf: CSRF }, 403) : json({ companyId: "org_bbbbbbbbbbbbbbbbbbbb", signInAgain: true }, 201));
+  const host = createBrowserHost(b.win);
+  expect((await host.transport.request({ method: "POST", path: "/v1/app/companies", body: { name: "Co", inviteCode: "inv_abcdefgh" } })).status).toBe(201);
+  expect(new Headers(b.fetch.mock.calls.at(-1)![1]!.headers).get("x-rovara-csrf")).toBe(CSRF);
+  // Any other refusal of /me still means "sign in".
+  const other = browser(async (path) => path.endsWith("/me") ? json({ error: { code: "FORBIDDEN", message: "x" }, csrf: CSRF }, 403) : json({}));
+  await expect(createBrowserHost(other.win).transport.request({ method: "POST", path: "/v1/app/companies", body: {} })).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+ });
+});

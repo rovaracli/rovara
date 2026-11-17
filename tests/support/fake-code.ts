@@ -15,12 +15,30 @@ import {
   type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 
-export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean }
+export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
 
 const id64 = (name: string) => createHash("sha256").update(`fake-code:${name}`).digest("hex");
+/** The pretend Code's one company (DEC 253z: Code names it in the access check). */
+export const FAKE_COMPANY_ID = "org_aaaaaaaaaaaaaaaaaaaa";
+export const FAKE_COMPANY_NAME = "Example Co";
+/** The one operator invite code the pretend Code takes for creating a company. */
+export const FAKE_INVITE_CODE = "inv_fakecode0001";
+/** GitHub's `code` values the fake's GitHub claim understands (guided onboarding). */
+export const FAKE_GITHUB_CODES = { connected: "fakeghconnected", choose: "fakeghchoose" } as const;
+/** Slack's and Linear's `code` values the fake's install and connect understand (guided onboarding PR 11): `other` adds Rovara to a workspace other than the sign-in's. */
+export const FAKE_SLACK_CODES = { connected: "fakeslackok", other: "fakeslackother" } as const;
+export const FAKE_LINEAR_CODES = { connected: "fakelinearok" } as const;
 export const PRIYA: Person = { key: "priya", developerId: id64("priya"), name: "Priya", email: "priya@example.test", administrator: true };
 export const SAM: Person = { key: "sam", developerId: id64("sam"), name: "Sam", email: "sam@example.test", administrator: false };
 const PEOPLE: readonly Person[] = [PRIYA, SAM];
+/** The pretend Code's second company, with its own GitHub account and repositories (guided onboarding PR 10): its owner is not in PEOPLE, so the first company's lists never show them. */
+export const OTHER_COMPANY_ID = "org_bbbbbbbbbbbbbbbbbbbb";
+export const ZED: Person = { key: "zed", developerId: id64("zed"), name: "Zed", email: "zed@other.test", administrator: true, company: { id: OTHER_COMPANY_ID, name: "Other Co" } };
+/** The repositories each company's GitHub accounts reach (`client.repositories.available`), by company. */
+export const FAKE_AVAILABLE_REPOSITORIES: Readonly<Record<string, ReadonlyArray<{ installationId: number; accountLogin: string; fullName: string }>>> = {
+  [FAKE_COMPANY_ID]: ["web", "api", "docs", "billing", "mobile", "search", "infra", "design", "payments", "auth", "notifier", "reports"].map((name) => ({ installationId: 1001, accountLogin: "example", fullName: `example/${name}` })),
+  [OTHER_COMPANY_ID]: [{ installationId: 2002, accountLogin: "other-co", fullName: "other-co/secret-ledger" }, { installationId: 2002, accountLogin: "other-co", fullName: "other-co/web" }],
+};
 
 /** Fixed task ids, so a screen under construction can open them by address. */
 export const TASK_IDS = {
@@ -67,6 +85,8 @@ export interface FakeCodeOptions {
   port?: number;
   host?: string;
   now?: () => Date;
+  /** The Cloud callback Code's Linear app would name (Code reads it from the app's secret); default http://127.0.0.1:8787/api/connect/linear/callback. */
+  linearRedirectUri?: string;
 }
 
 export interface FakeCode {
@@ -82,7 +102,7 @@ export interface FakeCode {
 }
 
 interface Answer<K extends CodeRouteId> { status?: number; body?: CodeResponse<K> | ErrorBody; headers?: Record<string, string> }
-interface Context<K extends CodeRouteId> { body: CodeRequest<K>; params: Record<string, string>; query: URLSearchParams; person: Person }
+interface Context<K extends CodeRouteId> { body: CodeRequest<K>; params: Record<string, string>; query: URLSearchParams; person: Person; token?: string }
 type Handler<K extends CodeRouteId> = (context: Context<K>) => Answer<K> | Promise<Answer<K>>;
 type Handlers = { [K in CodeRouteId]: Handler<K> };
 
@@ -94,21 +114,110 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const clientSecret = options.clientSecret ?? "fake-secret";
   const now = options.now ?? (() => new Date());
   let current = options.person ?? PRIYA;
+  /** People Code names no company for (DEC 253z), and Code's live member pre-approvals by the email's SHA-256. */
+  const companyless = new Set<string>();
+  const preapprovals = new Map<string, string>();
+  /** DEC 254h: Code's single-use invite secrets by their SHA-256 (Code keeps only the hash), each bound to the company and its pre-approval. */
+  const inviteSecrets = new Map<string, { companyId: string; emailHash: string; expiresAt: number; used: boolean }>();
+  /** Access tokens whose sign-in spent an invite secret (the access answer's `joinedByInvite`). */
+  const joinedTokens = new Set<string>();
+  // Guided onboarding (Code PR #830): single-use GitHub connect states and choose tickets, each for the person who got it; the company's bound installations.
+  const githubStates = new Map<string, { developerId: string; spent: boolean }>();
+  const githubTickets = new Map<string, { developerId: string; spent: boolean }>();
+  const githubBound = new Map<number, { accountLogin: string; connectedAt: string; by: Person }>();
+  // Guided onboarding PR 11 (Code PRs #836, #840, #838): single-use Slack and Linear states, the company's workspace, channel links and Linear team picks.
+  const connectStates = new Map<string, { developerId: string; spent: boolean; provider: "slack" | "linear" }>();
+  let slackWorkspace: { teamId: string; teamName: string; connectedAt: string; by: Person } | undefined;
+  const slackLinks = new Map<string, string>();
+  const slackChannels = [{ id: "CGENERAL1", name: "general", isPrivate: false }, { id: "CWEBDEV01", name: "web-dev", isPrivate: false }, { id: "GPRIVATE1", name: "private-team", isPrivate: true }];
+  let linearWorkspace: { id: string; name: string; urlKey: string; connectedAt: string; by: Person } | undefined;
+  const linearTeams = [{ id: "lin-team-web", key: "WEB", name: "Web team" }, { id: "lin-team-ops", key: "OPS", name: "Operations" }];
+  const linearPicks = new Map<string, string>();
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
   // --- sign-in state
-  const codes = new Map<string, { person: Person; challenge: string; redirectUri: string }>();
+  const codes = new Map<string, { person: Person; challenge: string; redirectUri: string; joined?: true }>();
   const access = new Map<string, Person>();
   const refresh = new Map<string, Person>();
 
   // --- data
-  const projects: Array<{ name: string; repositories: Array<{ name: string; url: string; defaultBranch: string; fullName: string }>; members: Map<string, "administrator" | "developer"> }> = [
+  const projects: Array<{ companyId?: string; name: string; repositories: Array<{ name: string; url: string; defaultBranch: string; fullName: string }>; members: Map<string, "administrator" | "developer"> }> = [
     { name: "web", repositories: [{ name: "web", url: "https://github.com/example/web", defaultBranch: "main", fullName: "example/web" }], members: new Map([[PRIYA.developerId, "administrator"], [SAM.developerId, "developer"]]) },
     { name: "api", repositories: [{ name: "api", url: "https://github.com/example/api", defaultBranch: "main", fullName: "example/api" }], members: new Map([[PRIYA.developerId, "administrator"]]) },
+    { companyId: OTHER_COMPANY_ID, name: "secret-ledger", repositories: [{ name: "secret-ledger", url: "https://github.com/other-co/secret-ledger", defaultBranch: "main", fullName: "other-co/secret-ledger" }], members: new Map([[ZED.developerId, "administrator"]]) },
   ];
+  const companyOfPerson = (person: Person) => person.company?.id ?? FAKE_COMPANY_ID;
   const project = (name: string) => projects.find((entry) => entry.name === name);
+  const linearRedirectUri = options.linearRedirectUri ?? "http://127.0.0.1:8787/api/connect/linear/callback";
+  const linkNotAllowed = "Only a company owner or admin, or this project's admin, can link or unlink its Slack channel.";
+  /** Link (or ask for the /invite: a private channel needs Check after /invite, which the fake takes as done). */
+  const fakeLink = (name: string, channelId: string, person: Person, check: boolean) => {
+    if (project(name) === undefined) return failure(404, "NOT_FOUND", "project not found");
+    if (!person.administrator) return failure(403, "FORBIDDEN", linkNotAllowed);
+    if (slackWorkspace === undefined) return failure(409, "SLACK_NOT_CONNECTED", "Add Rovara to Slack first: this company has no Slack workspace connected.");
+    const channel = slackChannels.find((one) => one.id === channelId);
+    if (channel === undefined) return failure(409, "SLACK_CHANNEL_REFUSED", "This channel is shared with another organization, so it can't be linked. Pick a channel only your workspace uses.");
+    const holder = slackLinks.get(channel.id);
+    if (holder !== undefined && holder !== name) return failure(409, "SLACK_CHANNEL_TAKEN", "This channel is already linked to another project. Unlink it there first.");
+    if (channel.isPrivate && !check) return { body: { status: "invite_needed" as const, workspace: { teamId: slackWorkspace.teamId }, channel: { id: channel.id }, message: "Type `/invite @Rovara` in the channel, then press Check." } };
+    const replaced = [...slackLinks].filter(([id, linked]) => linked === name && id !== channel.id).map(([id]) => id);
+    for (const id of replaced) slackLinks.delete(id);
+    slackLinks.set(channel.id, name);
+    return { body: { status: "linked" as const, workspace: { teamId: slackWorkspace.teamId }, channel, alreadyLinked: holder === name, replaced } };
+  };
+  const fakeTeamRefusal = (name: string, person: Person) => {
+    if (project(name) === undefined) return failure(404, "NOT_FOUND", "project not found");
+    if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin, or the project's admin, can choose its Linear team.");
+    if (linearWorkspace === undefined) return failure(409, "LINEAR_NOT_CONNECTED", "Linear isn't connected for this company. A company owner or admin can connect it in Company settings, Connections.");
+    return undefined;
+  };
   const roleIn = (person: Person, name: string) => project(name)?.members.get(person.developerId);
+  // Guided onboarding PR 16/17: each project's archive state (Code #839's rule, small).
+  const lifecycle = new Map<string, { status: "active" | "archived"; revision: number; receipts: Map<string, { personId: string; outcome: ArchiveOutcome }> }>();
+  type ArchiveOutcome = CodeResponse<"client.projects.archive">;
+  const lifecycleOf = (name: string) => { let entry = lifecycle.get(name); if (entry === undefined) { entry = { status: "active", revision: 0, receipts: new Map() }; lifecycle.set(name, entry); } return entry; };
+  const lifecycleOr404 = <T,>(person: Person, name: string, then: (name: string, manage: boolean) => T) => {
+    const grant = roleIn(person, name);
+    const owner = !companyless.has(person.developerId) && person.administrator;
+    if (project(name) === undefined || companyless.has(person.developerId) || (!owner && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
+    return then(name, owner || grant === "administrator");
+  };
+  const lifecyclePreview = (kind: "archive" | "restore", name: string, manage: boolean) => {
+    const entry = lifecycleOf(name);
+    return {
+      orgId: FAKE_COMPANY_ID, project: name, status: entry.status, expectedRevision: entry.revision, expectedProjectRevision: 3, checkedAt: iso(),
+      ...(kind === "restore" ? { prerequisites: "not_required" as const } : {}),
+      access: { actions: manage && entry.status === (kind === "archive" ? "active" : "archived") ? [kind] : [] },
+      impact: kind === "archive" ? { stopsNewWork: true, stopsRunningTasksAtNextStep: true, linkedSlackChannels: 1, slackChannelsStayLinked: true, deletesNothing: true } : { allowsNewWork: true, linkedSlackChannels: 1 },
+    };
+  };
+  const lifecycleChange = (kind: "archive" | "restore", name: string, manage: boolean, person: Person, body: CodeRequest<"client.projects.archive">) => {
+    const ack = kind === "archive" ? body.acknowledgeNewWorkStops : body.acknowledgeNewWorkAllowed;
+    if (ack !== true || typeof body.requestId !== "string") return failure(400, "CONFIG_INVALID", "the request is not valid");
+    if (!manage) return failure(403, "FORBIDDEN", "Only company owners and admins, or this project's admins, can archive or restore it.");
+    const entry = lifecycleOf(name);
+    const earlier = entry.receipts.get(body.requestId);
+    if (earlier !== undefined && earlier.personId === person.developerId) return { body: { ...earlier.outcome, replayed: true } };
+    if ((body.expectedOrgId !== undefined && body.expectedOrgId !== FAKE_COMPANY_ID) || body.expectedRevision !== entry.revision || body.expectedProjectRevision !== 3 || entry.status !== (kind === "archive" ? "active" : "archived")) {
+      return failure(409, "CHANGE_STALE", "The project changed. Review it again before you archive or restore it.");
+    }
+    entry.status = kind === "archive" ? "archived" : "active"; entry.revision += 1;
+    const receipt = { project: name, status: entry.status, revision: entry.revision, projectRevision: 3, [kind === "archive" ? "archivedAt" : "restoredAt"]: iso(), egressReconciliation: "pending" };
+    const outcome: ArchiveOutcome = { receipt, replayed: false, current: lifecyclePreview(kind, name, manage), effects: kind === "archive" ? { egress: "not_attempted", archiveHook: "not_configured" } : { egress: "not_attempted" } };
+    entry.receipts.set(body.requestId, { personId: person.developerId, outcome });
+    return { body: outcome };
+  };
+  // Guided onboarding PR 15: the company's engine model (Code #835) and each project's cost settings (Code's M4a), small.
+  const OFFERED_MODELS = ["zai.glm-4.7", "claude-sonnet-4-5", "zai.glm-4.6"];
+  let companyModel: string | undefined;
+  const engineView = () => { const model = companyModel ?? "zai.glm-4.6"; return { model, source: companyModel === undefined ? "install" as const : "company" as const, offered: [...OFFERED_MODELS], preselect: OFFERED_MODELS.includes(model) ? model : OFFERED_MODELS[0]! }; };
+  const projectSettings = new Map<string, { overrides: Record<string, unknown>; revision: number }>();
+  const settingsView = (name: string) => {
+    const entry = projectSettings.get(name) ?? { overrides: {}, revision: 0 };
+    const own = entry.overrides["model_budget_usd"];
+    return { preset: null, overrides: { ...entry.overrides }, revision: entry.revision, updatedAt: null, updatedBy: null, resolved: {}, values: { model_budget_usd: { value: own === undefined ? null : own, origin: own === undefined ? "preset" : "project" } }, clamped: [] };
+  };
 
   const base = (taskId: string, owner: Person, patch: Partial<TaskView> & { title: string; project: string }): { owner: Person; task: TaskView } => ({
     owner,
@@ -273,9 +382,25 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "auth.authorize": ({ query }) => {
       const redirectUri = query.get("redirect_uri") ?? "";
       if (query.get("client_id") !== clientId || redirectUri === "" || query.get("code_challenge_method") !== "S256") return failure(400, "invalid_request", "bad authorize request");
-      const code = randomBytes(12).toString("hex");
-      codes.set(code, { person: current, challenge: query.get("code_challenge") ?? "", redirectUri });
       const back = new URL(redirectUri);
+      // DEC 254h: a join with Code's invite secret. The secret must be live, unspent, bound to `company`, and its pre-approval still live; a
+      // person Code names another company for is refused. Spent with the membership. Any failure: the one "not invited" refusal.
+      const secret = query.get("invite");
+      let joined = false;
+      if (secret !== null) {
+        const held = inviteSecrets.get(createHash("sha256").update(secret).digest("hex"));
+        if (held === undefined || held.used || held.expiresAt <= now().getTime() || held.companyId !== query.get("company") || !preapprovals.has(held.emailHash)) {
+          back.searchParams.set("error", "access_denied");
+          back.searchParams.set("state", query.get("state") ?? "");
+          return { status: 302, headers: { location: back.toString() } };
+        }
+        held.used = true;
+        preapprovals.delete(held.emailHash);
+        companyless.delete(current.developerId);
+        joined = true;
+      }
+      const code = randomBytes(12).toString("hex");
+      codes.set(code, { person: current, challenge: query.get("code_challenge") ?? "", redirectUri, ...(joined ? { joined: true as const } : {}) });
       back.searchParams.set("code", code);
       back.searchParams.set("state", query.get("state") ?? "");
       return { status: 302, headers: { location: back.toString() } };
@@ -288,10 +413,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: {} };
     },
     "auth.jwks": () => ({ body: { keys: [] } }),
-    "access.check": ({ person }) => {
+    "access.check": ({ person, token }) => {
       const body: AccessResponse = {
         developerId: person.developerId, displayName: person.name, nameChosen: true, administrator: person.administrator,
+        // DEC 253z: the person's company and role, as Code PR #820 names them (the same role the company members list shows); none for a person
+        // the test made companyless (POST /__fake/no-company).
+        ...(companyless.has(person.developerId) ? {} : { companyId: companyOfPerson(person), companyRole: person.administrator ? "owner" as const : "member" as const, companyName: person.company?.name ?? FAKE_COMPANY_NAME }),
         projects: projects.filter((entry) => entry.members.has(person.developerId)).map((entry) => ({ name: entry.name, access: entry.members.get(person.developerId) ?? "developer" })), notices: [],
+        ...(token !== undefined && joinedTokens.has(token) && !companyless.has(person.developerId) ? { joinedByInvite: true } : {}),
       };
       return { body };
     },
@@ -306,24 +435,60 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "channelLinks.remove": () => ({ body: { removed: true } }),
     "projects.list": ({ person }) => ({ body: { projects: projects.filter((entry) => entry.members.has(person.developerId)).map((entry) => ({ name: entry.name, access: entry.members.get(person.developerId) ?? "developer" })) } }),
     "client.projects.create": ({ body, person }) => {
-      if (typeof body.repository !== "string" || body.repository === "") return failure(400, "CONFIG_INVALID", "repository: name a repository.");
-      const name = body.name ?? body.repository.split("/").pop() ?? "project";
-      if (project(name) !== undefined) return failure(409, "CONFLICT", "A project with that name exists.");
-      projects.push({ name, repositories: [{ name, url: `https://github.com/${body.repository}`, defaultBranch: "main", fullName: body.repository }], members: new Map([[person.developerId, "administrator"]]) });
+      // Guided onboarding PR 10 (Code PR #837 and 19): `repositories` makes ONE project holding them all, every repository on the caller's company's GitHub accounts; only a company owner or admin (here: the administrator flag) may create.
+      if (!person.administrator) return failure(403, "FORBIDDEN", "only a Rovara administrator can create a project");
+      const asked: unknown = "repositories" in body ? body.repositories : body.repository;
+      const list = Array.isArray(asked) ? asked : [asked];
+      if (list.length < 1 || list.some((entry) => typeof entry !== "string" || entry === "")) return failure(400, "CONFIG_INVALID", "repository: name a repository.");
+      const mine = new Set((FAKE_AVAILABLE_REPOSITORIES[companyOfPerson(person)] ?? []).map((entry) => entry.fullName.toLowerCase()));
+      if ("repositories" in body && list.some((entry) => !mine.has(String(entry).toLowerCase()))) return failure(400, "CONFIG_INVALID", "one or more of these repositories is not available through your company's GitHub connection; nothing was created");
+      const first = String(list[0]);
+      const name = body.name ?? first.split("/").pop() ?? "project";
+      if (project(name) !== undefined) return "repositories" in body ? failure(400, "CONFIG_INVALID", `a project named ${name} already exists; choose another name`) : failure(409, "CONFLICT", "A project with that name exists.");
+      projects.push({ companyId: companyOfPerson(person), name, repositories: list.map((entry) => ({ name: String(entry).split("/").pop() ?? name, url: `https://github.com/${String(entry)}`, defaultBranch: "main", fullName: String(entry) })), members: new Map([[person.developerId, "administrator"]]) });
       return { status: 201, body: { name } };
+    },
+    "client.projects.bulk": ({ body, person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "only a Rovara administrator can create a project");
+      if (!Array.isArray(body.repositories) || body.repositories.length < 1) return failure(400, "CONFIG_INVALID", "repositories: name at least one repository.");
+      const mine = new Set((FAKE_AVAILABLE_REPOSITORIES[companyOfPerson(person)] ?? []).map((entry) => entry.fullName.toLowerCase()));
+      return {
+        body: {
+          results: body.repositories.map((repository) => {
+            if (!mine.has(repository.toLowerCase())) return { repository, outcome: "refused" as const, reason: "not_available" as const };
+            const name = repository.split("/").pop() ?? "project";
+            if (project(name) !== undefined) return { repository, outcome: "refused" as const, reason: "name_taken" as const };
+            projects.push({ companyId: companyOfPerson(person), name, repositories: [{ name, url: `https://github.com/${repository}`, defaultBranch: "main", fullName: repository }], members: new Map([[person.developerId, "administrator"]]) });
+            return { repository, outcome: "created" as const, project: name };
+          }),
+        },
+      };
     },
     "client.projects.get": ({ params, person }) => {
       const entry = project(params["project"] ?? "");
       if (entry === undefined || !entry.members.has(person.developerId)) return notFound("project");
       return { body: { name: entry.name, latestRevision: 3, access: entry.members.get(person.developerId) ?? "developer", repositories: entry.repositories } };
     },
-    "client.projects.archive": ({ params }) => ({ body: { name: params["project"] ?? "", status: "archived" } }),
-    "client.projects.restore": ({ params }) => ({ body: { name: params["project"] ?? "", status: "active" } }),
+    // Guided onboarding PR 16 (Code #839): preview first; the company owner or the project's admin changes, a project user sees no action, anyone else "project not found".
+    "client.projects.archivePreview": ({ params, person }) => lifecycleOr404(person, params["project"] ?? "", (name, manage) => ({ body: lifecyclePreview("archive", name, manage) })),
+    "client.projects.restorePreview": ({ params, person }) => lifecycleOr404(person, params["project"] ?? "", (name, manage) => ({ body: lifecyclePreview("restore", name, manage) })),
+    "client.projects.archive": ({ params, person, body }) => lifecycleOr404(person, params["project"] ?? "", (name, manage) => lifecycleChange("archive", name, manage, person, body)),
+    "client.projects.restore": ({ params, person, body }) => lifecycleOr404(person, params["project"] ?? "", (name, manage) => lifecycleChange("restore", name, manage, person, body)),
     "client.projects.codeSettings.get": () => ({ body: { settings: { requireSecondReviewer: true, mergeRule: "maintainer", protectedPaths: ["infra/"], revision: 2 } } }),
     "client.projects.codeSettings.put": ({ body }) => ({ body: { settings: { ...body.settings, revision: body.expectedRevision + 1 } } }),
     "client.repositories.list": () => ({
       body: { installations: [{ installationId: 1001, accountLogin: "example", accountType: "Organization", repositorySelection: "selected", status: "active", repositories: [{ fullName: "example/web", githubRepositoryId: 1, private: true, defaultBranch: "main" }, { fullName: "example/api", githubRepositoryId: 2, private: true, defaultBranch: "main" }, { fullName: "example/docs", githubRepositoryId: 3, private: false, defaultBranch: "main" }] }] },
     }),
+    "client.repositories.available": ({ person, query }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "only a Rovara administrator can create a project");
+      const company = companyOfPerson(person);
+      const q = (query.get("q") ?? "").toLowerCase(), after = query.get("after"), limit = Number(query.get("limit") ?? 50);
+      const heldBy = (fullName: string) => projects.filter((entry) => (entry.companyId ?? FAKE_COMPANY_ID) === company && entry.repositories.some((repository) => repository.fullName.toLowerCase() === fullName.toLowerCase())).map((entry) => entry.name);
+      const sorted = [...(FAKE_AVAILABLE_REPOSITORIES[company] ?? [])].sort((a, b) => a.fullName.localeCompare(b.fullName)).filter((entry) => entry.fullName.toLowerCase().includes(q) && (after === null || entry.fullName.localeCompare(after) > 0));
+      const page = sorted.slice(0, limit);
+      const all = [...(FAKE_AVAILABLE_REPOSITORIES[company] ?? [])].sort((a, b) => a.fullName.localeCompare(b.fullName));
+      return { body: { repositories: page.map((entry) => ({ ...entry, githubRepositoryId: 100 + all.findIndex((one) => one.fullName === entry.fullName), private: true, defaultBranch: "main", projects: heldBy(entry.fullName) })), ...(sorted.length > limit ? { next: page.at(-1)!.fullName } : {}), incomplete: false } };
+    },
     "client.members.list": ({ params, person }) => {
       const entry = project(params["project"] ?? "");
       if (entry === undefined || !entry.members.has(person.developerId)) return notFound("project");
@@ -483,6 +648,165 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       preApprovedRevision += 1;
       return { body: { emails: preApproved, revision: preApprovedRevision } };
     },
+    // DEC 253z: Code's member pre-approvals (every refusal NOT_FOUND) and a person creating a company with an operator's invite code.
+    "company.preapprovals.create": ({ body, person }) => {
+      if (!person.administrator || companyless.has(person.developerId) || typeof body.email !== "string") return failure(404, "NOT_FOUND", "not found");
+      const key = createHash("sha256").update(body.email.trim().toLowerCase()).digest("hex");
+      if (preapprovals.has(key) || body.role !== "member") return failure(404, "NOT_FOUND", "not found");
+      preapprovals.set(key, body.email.trim().toLowerCase());
+      // DEC 254h: a single-use invite secret for this pre-approval, returned once; the fake keeps only its hash.
+      const secret = `rvi_${randomBytes(24).toString("base64url")}`;
+      const expiresAt = now().getTime() + body.expiresInHours * 3_600_000;
+      inviteSecrets.set(createHash("sha256").update(secret).digest("hex"), { companyId: FAKE_COMPANY_ID, emailHash: key, expiresAt, used: false });
+      return { body: { ok: true, invite: { secret, expiresAt: new Date(expiresAt).toISOString() } } };
+    },
+    "company.preapprovals.withdraw": ({ params, person }) => {
+      if (!person.administrator || !preapprovals.delete(params["emailHash"] ?? "")) return failure(404, "NOT_FOUND", "not found");
+      // Withdrawing the pre-approval kills its secret too.
+      for (const [hash, held] of inviteSecrets) if (held.emailHash === params["emailHash"]) inviteSecrets.delete(hash);
+      return { body: { ok: true } };
+    },
+    "company.create": ({ body, person }) => {
+      if (!companyless.has(person.developerId)) return failure(409, "CONFLICT", "You're already in a company.");
+      if (body.inviteCode !== FAKE_INVITE_CODE || typeof body.name !== "string") return failure(403, "FORBIDDEN", "This invite code can't be used. Ask the Rovara team for a new one.");
+      companyless.delete(person.developerId);
+      return { status: 201, body: { companyId: FAKE_COMPANY_ID, companyName: body.name, companyRole: "owner" } };
+    },
+    // Guided onboarding (Code PR #830). GitHub's `code` picks the outcome: FAKE_GITHUB_CODES.connected binds the installation id GitHub sent,
+    // FAKE_GITHUB_CODES.choose lists two installations (one another company's); setup_action=request answers "requested". Anything else: Code's one refusal.
+    "company.github.connect": ({ person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can connect GitHub.");
+      const state = randomBytes(32).toString("base64url");
+      githubStates.set(state, { developerId: person.developerId, spent: false });
+      return { body: { state, expiresAt: new Date(now().getTime() + 600_000).toISOString(), installUrl: `https://github.com/apps/rovara-fake/installations/new?state=${state}`, authorizeUrl: `https://github.com/login/oauth/authorize?client_id=Iv1.fake&state=${state}` } };
+    },
+    "company.github.claim": ({ body, person }) => {
+      const kept = githubStates.get(body.state);
+      if (!person.administrator || kept === undefined || kept.spent || kept.developerId !== person.developerId) return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      kept.spent = true;
+      const githubUser = { id: 4242, login: `${person.key}-gh` };
+      if (body.setupAction === "request") return { body: { status: "requested" } };
+      if (body.code === FAKE_GITHUB_CODES.choose) {
+        const ticket = randomBytes(32).toString("base64url");
+        githubTickets.set(ticket, { developerId: person.developerId, spent: false });
+        return { body: { status: "choose", ticket, expiresAt: new Date(now().getTime() + 600_000).toISOString(), githubUser, installations: [
+          { installationId: 5001, accountLogin: "example", accountType: "Organization", suspended: false, connection: githubBound.has(5001) ? "this_company" : "unbound" },
+          { installationId: 5002, accountLogin: "other-co", accountType: "Organization", suspended: false, connection: "another_company" },
+        ] } };
+      }
+      if (body.code !== FAKE_GITHUB_CODES.connected || body.installationId === undefined) return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      const already = githubBound.has(body.installationId);
+      githubBound.set(body.installationId, { accountLogin: "example", connectedAt: iso(), by: person });
+      return { body: { status: "connected", alreadyConnected: already, installation: { installationId: body.installationId, accountLogin: "example", accountType: "Organization" }, githubUser } };
+    },
+    "company.github.choose": ({ body, person }) => {
+      const kept = githubTickets.get(body.ticket);
+      if (!person.administrator || kept === undefined || kept.spent || kept.developerId !== person.developerId || body.installationId !== 5001) return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      kept.spent = true;
+      const already = githubBound.has(5001);
+      githubBound.set(5001, { accountLogin: "example", connectedAt: iso(), by: person });
+      return { body: { status: "connected", alreadyConnected: already, installation: { installationId: 5001, accountLogin: "example", accountType: "Organization" }, githubUser: { id: 4242, login: `${person.key}-gh` } } };
+    },
+    "company.github.status": () => ({ body: { installations: [...githubBound].map(([installationId, row]) => ({ installationId, accountLogin: row.accountLogin, connectedAt: row.connectedAt, connectedBy: { kind: "person" as const, personId: row.by.developerId, name: row.by.name } })) } }),
+    "company.slack.install": ({ body, person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can add Rovara to Slack.");
+      const state = randomBytes(32).toString("base64url");
+      connectStates.set(state, { developerId: person.developerId, spent: false, provider: "slack" });
+      const authorize = new URL("https://slack.com/oauth/v2/authorize");
+      for (const [key, value] of Object.entries({ client_id: "1111.2222", scope: "chat:write,commands", redirect_uri: body.redirectUri, state })) authorize.searchParams.set(key, value);
+      return { body: { state, expiresAt: new Date(now().getTime() + 600_000).toISOString(), authorizeUrl: authorize.toString(), signedInWorkspace: { teamId: "TFAKESIGN", teamName: "Example Slack" } } };
+    },
+    "company.slack.installComplete": ({ body, person }) => {
+      const kept = connectStates.get(body.state);
+      if (!person.administrator || kept === undefined || kept.spent || kept.developerId !== person.developerId || kept.provider !== "slack") return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      kept.spent = true;
+      if (body.error === "access_denied") return { body: { status: "cancelled" as const } };
+      if (body.code !== FAKE_SLACK_CODES.connected && body.code !== FAKE_SLACK_CODES.other) return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      const team = body.code === FAKE_SLACK_CODES.other ? { teamId: "TFAKEOTHER", teamName: "Side Project Slack" } : { teamId: "TFAKESIGN", teamName: "Example Slack" };
+      const already = slackWorkspace?.teamId === team.teamId;
+      slackWorkspace = { ...team, connectedAt: iso(), by: person };
+      return { body: { status: "connected" as const, alreadyConnected: already, workspace: team, signedInWorkspace: { teamId: "TFAKESIGN", teamName: "Example Slack" }, matchesSignIn: team.teamId === "TFAKESIGN" } };
+    },
+    "company.slack.get": () => ({ body: { workspace: slackWorkspace === undefined ? null : { teamId: slackWorkspace.teamId, teamName: slackWorkspace.teamName, state: "connected", connectedAt: slackWorkspace.connectedAt, connectedBy: { kind: "person", personId: slackWorkspace.by.developerId, name: slackWorkspace.by.name } } } }),
+    "company.slack.disconnect": ({ person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner can disconnect Slack.");
+      if (slackWorkspace === undefined) return failure(404, "NOT_FOUND", "This company has no Slack workspace connected.");
+      const workspace = { teamId: slackWorkspace.teamId, teamName: slackWorkspace.teamName };
+      slackWorkspace = undefined;
+      const lost = [...new Set(slackLinks.values())];
+      slackLinks.clear();
+      return { body: { status: "disconnected" as const, workspace, projectsLosingChannel: lost } };
+    },
+    "company.slack.channels": ({ query, person }) => {
+      if (project(query.get("project") ?? "") === undefined) return failure(404, "NOT_FOUND", "project not found");
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin, or this project's admin, can link or unlink its Slack channel.");
+      if (slackWorkspace === undefined) return failure(409, "SLACK_NOT_CONNECTED", "Add Rovara to Slack first: this company has no Slack workspace connected.");
+      return { body: { workspace: { teamId: slackWorkspace.teamId }, channels: slackChannels.map((c) => ({ ...c, ...(slackLinks.has(c.id) ? { linked: true as const, linkedProject: slackLinks.get(c.id)! } : {}) })) } };
+    },
+    "company.slack.channel.get": ({ params }) => {
+      const name = params["project"] ?? "";
+      if (project(name) === undefined) return failure(404, "NOT_FOUND", "project not found");
+      return { body: { workspace: slackWorkspace === undefined ? null : { teamId: slackWorkspace.teamId }, channels: [...slackLinks].filter(([, linked]) => linked === name).map(([channelId]) => ({ channelId })) } };
+    },
+    "company.slack.channel.link": ({ params, body, person }) => fakeLink(params["project"] ?? "", body.channelId, person, false),
+    "company.slack.channel.check": ({ params, body, person }) => fakeLink(params["project"] ?? "", body.channelId, person, true),
+    "company.slack.channel.unlink": ({ params, person }) => {
+      const name = params["project"] ?? "";
+      if (project(name) === undefined) return failure(404, "NOT_FOUND", "project not found");
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin, or this project's admin, can link or unlink its Slack channel.");
+      const mine = [...slackLinks].filter(([, linked]) => linked === name).map(([channelId]) => channelId);
+      if (mine.length === 0) return failure(404, "NOT_FOUND", "This project has no Slack channel linked.");
+      for (const id of mine) slackLinks.delete(id);
+      return { body: { status: "unlinked" as const, teamId: slackWorkspace?.teamId ?? "TFAKESIGN", channels: mine } };
+    },
+    "company.linear.connect": ({ person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can connect Linear.");
+      const state = randomBytes(32).toString("base64url");
+      connectStates.set(state, { developerId: person.developerId, spent: false, provider: "linear" });
+      const authorize = new URL("https://linear.app/oauth/authorize");
+      for (const [key, value] of Object.entries({ client_id: "fakelinearclient", redirect_uri: linearRedirectUri, response_type: "code", scope: "read,comments:create,issues:create", state, actor: "app", prompt: "consent", code_challenge: "c".repeat(43), code_challenge_method: "S256" })) authorize.searchParams.set(key, value);
+      return { body: { state, expiresAt: new Date(now().getTime() + 600_000).toISOString(), authorizeUrl: authorize.toString() } };
+    },
+    "company.linear.complete": ({ body, person }) => {
+      const kept = connectStates.get(body.state);
+      if (!person.administrator || kept === undefined || kept.spent || kept.developerId !== person.developerId || kept.provider !== "linear" || body.code !== FAKE_LINEAR_CODES.connected) return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      kept.spent = true;
+      const reconnected = linearWorkspace !== undefined;
+      linearWorkspace = { id: "lin-org-1", name: "Example Linear", urlKey: "example", connectedAt: iso(), by: person };
+      return { body: { status: "connected" as const, reconnected, workspace: { id: "lin-org-1", name: "Example Linear", urlKey: "example" } } };
+    },
+    "company.linear.get": () => ({ body: linearWorkspace === undefined ? { status: "disconnected" as const } : { status: "connected" as const, statusAt: linearWorkspace.connectedAt, workspace: { id: linearWorkspace.id, name: linearWorkspace.name, urlKey: linearWorkspace.urlKey }, connectedAt: linearWorkspace.connectedAt, connectedBy: { personId: linearWorkspace.by.developerId, name: linearWorkspace.by.name } } }),
+    "company.linear.disconnect": ({ person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner can disconnect Linear.");
+      if (linearWorkspace === undefined) return failure(409, "LINEAR_NOT_CONNECTED", "Linear isn't connected for this company. A company owner or admin can connect it in Company settings, Connections.");
+      const name = linearWorkspace.name;
+      linearWorkspace = undefined;
+      const projects = [...linearPicks.keys()];
+      linearPicks.clear();
+      return { body: { status: "disconnected" as const, workspaceName: name, projects } };
+    },
+    "company.linear.team.get": ({ params, person }) => {
+      const name = params["project"] ?? "";
+      const refused = fakeTeamRefusal(name, person);
+      if (refused !== undefined) return refused;
+      const pick = linearPicks.get(name);
+      return { body: { project: name, team: linearTeams.find((team) => team.id === pick) ?? null, teams: linearTeams } };
+    },
+    "company.linear.team.put": ({ params, body, person }) => {
+      const name = params["project"] ?? "";
+      const refused = fakeTeamRefusal(name, person);
+      if (refused !== undefined) return refused;
+      const team = linearTeams.find((one) => one.id === body.teamId);
+      if (team === undefined) return failure(404, "NOT_FOUND", "That Linear team was not found in the company's Linear workspace.");
+      linearPicks.set(name, team.id);
+      return { body: { project: name, team } };
+    },
+    "company.linear.team.clear": ({ params, person }) => {
+      const name = params["project"] ?? "";
+      if (project(name) === undefined) return failure(404, "NOT_FOUND", "project not found");
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin, or the project's admin, can choose its Linear team.");
+      return { body: { project: name, team: null, cleared: linearPicks.delete(name) } };
+    },
     "company.audit.records": ({ person }) => person.administrator
       ? { body: { records: [{ at: "2026-11-14T10:00:00.000Z", actor: { developerId: PRIYA.developerId, name: "Priya" }, action: "task.start", subject: TASK_IDS.running, outcome: "ok" }] } }
       : failure(403, "FORBIDDEN", "Only an administrator can read the audit."),
@@ -586,6 +910,27 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       lessonMode = context.body.mode;
       return { body: { project: found.name, mode: lessonMode, effective: lessonMode, lockedByCompany: false, canChange: true } };
     },
+    // Any member reads; an owner or admin sets a model from the offered list.
+    "company.engineModel.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : { body: engineView() }),
+    "company.engineModel.put": ({ person, body }) => {
+      if (companyless.has(person.developerId)) return failure(401, "AUTH_REQUIRED", "sign in again");
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can change the company's AI model.");
+      if (body.model !== null && !OFFERED_MODELS.includes(body.model)) return failure(400, "CONFIG_INVALID", "That model isn't offered to this company now. Pick one from the list.");
+      companyModel = body.model ?? undefined;
+      return { body: engineView() };
+    },
+    // Members of the project read; its administrator changes (revision-checked). The pretend Code sets no step-up, so it checks none here.
+    "projects.settings.get": ({ params, person }) => (roleIn(person, params["project"] ?? "") === undefined ? notFound("project") : { body: settingsView(params["project"] ?? "") }),
+    "projects.settings.put": ({ params, person, body }) => {
+      const name = params["project"] ?? "";
+      const grant = roleIn(person, name);
+      if (grant === undefined) return notFound("project");
+      if (grant !== "administrator") return failure(403, "FORBIDDEN", "project administrator required");
+      const entry = projectSettings.get(name) ?? { overrides: {}, revision: 0 };
+      if (body.expectedRevision !== entry.revision) return failure(409, "PROJECT_REVISION_MISMATCH", "settings revision conflict");
+      projectSettings.set(name, { overrides: { ...(body.overrides ?? entry.overrides) }, revision: entry.revision + 1 });
+      return { body: settingsView(name) };
+    },
     "scriptTokens.revoke": ({ params, person }) => {
       const list = scriptTokens.get(person.developerId) ?? [];
       const next = list.filter((entry) => entry.tokenId !== params["tokenId"]);
@@ -606,8 +951,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return Buffer.concat(chunks).toString("utf8");
   }
 
-  function issue(person: Person): { access_token: string; refresh_token: string; token_type: "Bearer" } {
+  function issue(person: Person, joined = false): { access_token: string; refresh_token: string; token_type: "Bearer" } {
     const accessToken = `fake-access-${randomBytes(12).toString("hex")}`;
+    if (joined) joinedTokens.add(accessToken);
     const refreshToken = `fake-refresh-${randomBytes(12).toString("hex")}`;
     access.set(accessToken, person);
     refresh.set(refreshToken, person);
@@ -621,7 +967,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       codes.delete(form.get("code") ?? "");
       const verifier = form.get("code_verifier") ?? "";
       if (code === undefined || form.get("redirect_uri") !== code.redirectUri || createHash("sha256").update(verifier).digest("base64url") !== code.challenge) return { status: 400, body: { error: "invalid_grant" } };
-      return { status: 200, body: issue(code.person) };
+      return { status: 200, body: issue(code.person, code.joined === true) };
     }
     if (form.get("grant_type") === "refresh_token") {
       const token = form.get("refresh_token") ?? "";
@@ -644,10 +990,22 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       try {
         if (method === "POST" && url.pathname === "/__fake/person") {
           const wanted = (JSON.parse(await readBody(request)) as { person?: string }).person;
-          const who = PEOPLE.find((one) => one.key === wanted);
-          if (who === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "person is priya or sam" } });
+          const who = [...PEOPLE, ZED].find((one) => one.key === wanted);
+          if (who === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "person is priya, sam or zed" } });
           current = who;
           return send(200, { person: who.key });
+        }
+        if (method === "POST" && url.pathname === "/__fake/no-company") {
+          const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
+          if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
+          if (on) companyless.add(current.developerId); else companyless.delete(current.developerId);
+          return send(200, { on });
+        }
+        // Guided onboarding PR 10: forget the projects a spec made through the picker (the two the pretend Code starts with stay), so later specs see the people and projects they expect.
+        if (method === "POST" && url.pathname === "/__fake/reset-created-projects") {
+          const keep = new Set(["web", "api", "secret-ledger"]);
+          for (let index = projects.length - 1; index >= 0; index -= 1) if (!keep.has(projects[index]!.name)) projects.splice(index, 1);
+          return send(200, { projects: projects.length });
         }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
@@ -664,8 +1022,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
         if (matched === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
         const id = matched.route.id;
         let person: Person | undefined = current;
+        let bearer: string | undefined;
         if (matched.route.scope !== "none" || id === "access.check" || id === "auth.revoke") {
-          const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
+          bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
           person = bearer === undefined ? undefined : access.get(bearer);
           if (person === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
         }
@@ -674,7 +1033,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           try { body = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); }
         }
         const handler = handlers[id] as Handler<CodeRouteId>;
-        const answer = await handler({ body: body as never, params: matched.params, query: url.searchParams, person });
+        const answer = await handler({ body: body as never, params: matched.params, query: url.searchParams, person, ...(bearer === undefined ? {} : { token: bearer }) });
         const status = answer.status ?? 200;
         return send(status, status === 302 ? undefined : answer.body ?? {}, answer.headers);
       } catch (error) {

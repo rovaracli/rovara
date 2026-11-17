@@ -5,8 +5,8 @@
 // Environment: ROVARA_CODE_URL, ROVARA_CLIENT_ID (rovara-cloud), ROVARA_SCOPES, CLOUD_TABLE, CLOUD_ORIGIN_PARAMETER (the SSM parameter
 // holding Cloud's https address), CLOUD_CLIENT_SECRET_ID (the secret holding Cloud's client secret), CLOUD_SESSIONS_KEY_ID (the KMS key
 // that seals sign-ins), CLOUD_ORG_NAME, CLOUD_APP_DIRECTORY (the page shell, index.html); COMPANY_TABLE (Cloud's company data:
-// settings and rules, invites, profile, the policy hook's install allow-list; absent, the company routes answer 501) and CLOUD_COMPANY_ID
-// (the one company of a single-company Code, used only when Code's access check names none); CLOUD_PRODUCT_KEYS_TABLE,
+// settings and rules, invites, profile, the policy hook's install allow-list; absent, the company routes answer 501; the company is always
+// the one Code's access check names, DEC 253z); CLOUD_PRODUCT_KEYS_TABLE,
 // CLOUD_PRODUCT_KEYS_KEY and CLOUD_PRODUCT_KEYS_MAC_KEY (the model gateway's product key table and KMS keys: the project product AI
 // settings, all three or none; absent, those routes answer 501); CLOUD_MODEL_GATEWAY_URL (the model gateway's https address, for the
 // Vertex AI connection test it runs for Cloud; empty or absent, a Vertex connect answers unavailable); CLOUD_BEDROCK_TEMPLATE_URL (the
@@ -134,11 +134,10 @@ function build() {
   const kms = new KMSClient({ maxAttempts: 2, requestHandler: { connectionTimeout: 2_000, requestTimeout: 4_000 } });
   const store = new DynamoSessionStore(db, table, new EnvelopeSealer(new KmsKeyService(kms, required("CLOUD_SESSIONS_KEY_ID")))), work = new DynamoWorkSessionStore(db, table), presence = new DynamoPresenceBoard(db, table), audit = new DynamoCloudAuditStore(db, table);
   const companyTable = process.env.COMPANY_TABLE;
-  const companyId = process.env.CLOUD_COMPANY_ID;
-  const company = companyTable ? { store: new DynamoCompanyStore(db, companyTable), ...(companyId ? { companyId } : {}) } : undefined;
+  const company = companyTable ? { store: new DynamoCompanyStore(db, companyTable) } : undefined;
   const productStore = productAiStore(process.env);
   const bedrock = productStore === undefined ? undefined : bedrockBackend(process.env);
-  const productAi = productStore === undefined ? undefined : { store: productStore, issuer: `${required("ROVARA_CODE_URL")}/v1/auth`, ...(companyId ? { companyId } : {}), ...(bedrock === undefined ? {} : { bedrock }) };
+  const productAi = productStore === undefined ? undefined : { store: productStore, issuer: `${required("ROVARA_CODE_URL")}/v1/auth`, ...(bedrock === undefined ? {} : { bedrock }) };
   const app = createAppHandler({ appDirectory: required("CLOUD_APP_DIRECTORY"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
   // One Cloud handler per address and secret: a new pair (a rotated secret) gets a new client.
   let current: { key: string; handle: ReturnType<typeof createCloudHandler> } | undefined;

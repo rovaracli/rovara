@@ -11,8 +11,9 @@
 // Who: company admins only (Code's access check made now), reads included. A write needs a fresh step-up and goes through the
 // app's signed-write path (CSRF in handler.ts). Each saved change is audited. There is never an automatic switch between sources:
 // the gateway uses only the saved one.
+import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction } from "./audit-log.js";
-import { AGENT_AI_SOURCES, COMPANY_ID, CompanyStoreConflict, type AgentAiSource } from "./company-store.js";
+import { AGENT_AI_SOURCES, CompanyStoreConflict, type AgentAiSource } from "./company-store.js";
 import { bedrockConnected } from "./bedrock-byo-routes.js";
 import { LEARNING_AI_OWNER } from "./learning-ai-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
@@ -25,7 +26,6 @@ const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
 const WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "AI for your agents isn't set up on this Cloud."),
-  noCompany: refusal(403, "FORBIDDEN", "Your sign-in doesn't belong to a company Cloud knows."),
   forbidden: refusal(403, "FORBIDDEN", "Only a company admin can see or change the AI the company's agents use."),
   stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   invalid: refusal(400, "CONFIG_INVALID", "Choose Rovara's AI, your own Anthropic key or your own Bedrock."),
@@ -43,17 +43,12 @@ interface Admin { companyId: string; developerId: string; name: string }
 async function admin(context: RouteContext, write: boolean): Promise<Admin | RouteAnswer> {
   const backend = context.company;
   if (backend === undefined) return WORDS.off;
-  const access = await context.client.access(context.session);
-  const said = (access as { companyId?: unknown }).companyId;
-  let companyId: string;
-  if (said !== undefined) {
-    if (typeof said !== "string" || !COMPANY_ID.test(said)) return WORDS.noCompany;
-    companyId = said;
-  } else if (backend.companyId !== undefined && COMPANY_ID.test(backend.companyId)) companyId = backend.companyId;
-  else return WORDS.noCompany;
-  if (access.administrator !== true || !/^[a-f0-9]{64}$/u.test(access.developerId)) return WORDS.forbidden;
+  const who = await companyCaller(context);
+  if (refused(who)) return who;
+  // A company owner or admin (Code's company role, never its install administrator flag).
+  if (!isCompanyAdmin(who.companyRole)) return WORDS.forbidden;
   if (write && freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return WORDS.stepUp;
-  return { companyId, developerId: access.developerId, name: access.displayName };
+  return { companyId: who.companyId, developerId: who.developerId, name: who.name };
 }
 
 /** Whether the company's own Anthropic key is connected (the learning document of the product key store), or null when this Cloud can't tell. */

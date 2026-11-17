@@ -17,7 +17,7 @@ const B = "org_bbbbbbbbbbbbbbbbbbbb";
 const START = Date.parse("2026-11-15T12:00:00.000Z");
 const aiKey = () => ["AI", "za"].join("") + randomBytes(24).toString("base64url").slice(0, 35);
 
-interface Person { developerId: string; name: string; administrator: boolean; companyId: string; projects: Array<{ name: string; access: string }> }
+interface Person { developerId: string; name: string; administrator: boolean; companyId: string; /** Code's company role; default admin when `administrator`, else member. */ companyRole?: string; projects: Array<{ name: string; access: string }> }
 const PEOPLE: Record<string, Person> = {
   pam: { developerId: "a".repeat(64), name: "Pam", administrator: false, companyId: A, projects: [{ name: "web", access: "administrator" }] },
   cal: { developerId: "c".repeat(64), name: "Cal", administrator: false, companyId: A, projects: [{ name: "web", access: "developer" }] },
@@ -35,7 +35,7 @@ function world() {
     const url = new URL(input instanceof Request ? input.url : input);
     const person = byToken.get(((init?.headers as Record<string, string> | undefined)?.authorization ?? "").replace(/^Bearer /u, ""));
     if (person === undefined) return new Response("{}", { status: 401 });
-    if (url.pathname === "/v1/dev/access") return new Response(JSON.stringify({ developerId: person.developerId, displayName: person.name, administrator: person.administrator, companyId: person.companyId, projects: person.projects, notices: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    if (url.pathname === "/v1/dev/access") return new Response(JSON.stringify({ developerId: person.developerId, displayName: person.name, administrator: person.administrator, companyId: person.companyId, companyRole: person.companyRole ?? (person.administrator ? "admin" : "member"), projects: person.projects, notices: [] }), { status: 200, headers: { "content-type": "application/json" } });
     return new Response("{}", { status: 404 });
   }) as typeof fetch;
   const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: `${ORIGIN}/callback`, scopes: "", fetch: fetchImpl });

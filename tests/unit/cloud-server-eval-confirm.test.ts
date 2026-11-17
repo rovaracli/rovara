@@ -46,9 +46,10 @@ function setUp(answer: (call: CodeCall) => Response = () => json(200, { confirme
   const forwarded = () => calls.filter((call) => call.path === PATH);
   return { signIn, post, calls, forwarded };
 }
-const admin = (w: ReturnType<typeof setUp>) => w.signIn("ada-token", { developerId: ADA, displayName: "Ada", administrator: true, projects: [], notices: [] });
-const maintainer = (w: ReturnType<typeof setUp>) => w.signIn("pam-token", { developerId: PAM, displayName: "Pam", administrator: false, projects: [{ name: "payments", access: "administrator" }], notices: [] });
-const member = (w: ReturnType<typeof setUp>) => w.signIn("dev-token", { developerId: DEV, displayName: "Dev", administrator: false, projects: [{ name: "payments", access: "developer" }, { name: "other", access: "administrator" }], notices: [] });
+const COMPANY = "org_aaaaaaaaaaaaaaaaaaaa";
+const admin = (w: ReturnType<typeof setUp>) => w.signIn("ada-token", { developerId: ADA, displayName: "Ada", administrator: false, companyId: COMPANY, companyRole: "admin", projects: [], notices: [] });
+const maintainer = (w: ReturnType<typeof setUp>) => w.signIn("pam-token", { developerId: PAM, displayName: "Pam", administrator: false, companyId: COMPANY, companyRole: "member", projects: [{ name: "payments", access: "administrator" }], notices: [] });
+const member = (w: ReturnType<typeof setUp>) => w.signIn("dev-token", { developerId: DEV, displayName: "Dev", administrator: false, companyId: COMPANY, companyRole: "member", projects: [{ name: "payments", access: "developer" }, { name: "other", access: "administrator" }], notices: [] });
 const as = (cookie: string) => ({ cookie, "x-rovara-csrf": "csrf" });
 
 describe("who is forwarded", () => {
@@ -69,9 +70,26 @@ describe("who is forwarded", () => {
     expect(res).toEqual({ status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer confirms the eval." } } });
     expect(w.calls).toHaveLength(0);
   });
+  it("a company owner, though not Code's install administrator", async () => {
+    const w = setUp();
+    const cookie = await w.signIn("own-token", { developerId: ADA, displayName: "Own", administrator: false, companyId: COMPANY, companyRole: "owner", projects: [], notices: [] });
+    expect((await w.post(WEB, confirm, as(cookie))).status).toBe(200);
+  });
+  it("Code's install administrator who is a plain member of the company is refused, and Code is never called", async () => {
+    const w = setUp();
+    const cookie = await w.signIn("inst-token", { developerId: DEV, displayName: "Inst", administrator: true, companyId: COMPANY, companyRole: "member", projects: [], notices: [] });
+    expect((await w.post(WEB, confirm, as(cookie))).status).toBe(403);
+    expect(w.calls).toHaveLength(0);
+  });
+  it("a person Code names no company for is refused with the fixed words, even as install administrator", async () => {
+    const w = setUp();
+    const cookie = await w.signIn("none-token", { developerId: DEV, displayName: "None", administrator: true, projects: [{ name: "payments", access: "administrator" }], notices: [] });
+    expect(await w.post(WEB, confirm, as(cookie))).toEqual({ status: 403, body: { error: { code: "NO_COMPANY", message: "You're not in a company yet." } } });
+    expect(w.calls).toHaveLength(0);
+  });
   it("a person with no entry for the project is refused", async () => {
     const w = setUp();
-    const cookie = await w.signIn("x-token", { developerId: DEV, displayName: "X", administrator: false, projects: [], notices: [] });
+    const cookie = await w.signIn("x-token", { developerId: DEV, displayName: "X", administrator: false, companyId: COMPANY, companyRole: "member", projects: [], notices: [] });
     expect((await w.post(WEB, confirm, as(cookie))).status).toBe(403);
     expect(w.calls).toHaveLength(0);
   });

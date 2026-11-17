@@ -12,13 +12,14 @@
 //   COMPANY#<org_…>             INVITEREQUEST#<request id>  the invite a create request made, so a replay is refused
 //   INVITETOKEN#<sha256 hex>    INVITE                      the company and invite a link's token names (never the token)
 //   HOOKINSTALL#<sha256 hex>    INSTALL                     a Code install the policy hook answers, by a hash of its issuer
+//   GITHUBTRIAL#<GitHub user id> TRIAL                      the company holding that GitHub account's one trial (first writer wins, never overwritten)
 //
 // Every item carries `companyId` (an install carries its own issuer), and every read checks it against the key it asked for.
 import { createHash } from "node:crypto";
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
-  CompanyStoreConflict, INVITES_READ_MAX, validAgentAiSource, validHookInstall,
+  COMPANY_ID, CompanyStoreConflict, INVITES_READ_MAX, sameInvite, validAgentAiSource, validGithubUserId, validHookInstall, type GithubTrialClaim,
   type AgentAiChoice, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
 } from "./company-store.js";
 import type { CompanySettings } from "./company-settings.js";
@@ -222,6 +223,29 @@ export class DynamoCompanyStore implements CompanyStore {
     })));
   }
 
+  async confirmInvite(unconfirmed: InviteRecord, confirmed: InviteRecord): Promise<void> {
+    sameInvite(unconfirmed, confirmed);
+    const invite = {
+      Put: {
+        TableName: this.table, Item: this.inviteItem(confirmed),
+        ConditionExpression: "companyId = :company AND revision = :revision AND inviteState = :state",
+        ExpressionAttributeValues: { ":company": unconfirmed.companyId, ":revision": unconfirmed.revision, ":state": "unconfirmed" },
+      },
+    };
+    if (confirmed.tokenHash === unconfirmed.tokenHash) {
+      await guarded("invite", () => this.db.send(new TransactWriteCommand({ TransactItems: [invite] })));
+      return;
+    }
+    // The token row moves to the new hash in the same write: the old hash names nothing, and no other invite may hold the new one.
+    await guarded("invite", () => this.db.send(new TransactWriteCommand({
+      TransactItems: [
+        invite,
+        { Delete: { TableName: this.table, Key: { pk: `INVITETOKEN#${unconfirmed.tokenHash}`, sk: "INVITE" }, ConditionExpression: "inviteId = :invite", ExpressionAttributeValues: { ":invite": unconfirmed.inviteId } } },
+        { Put: { TableName: this.table, Item: { pk: `INVITETOKEN#${confirmed.tokenHash}`, sk: "INVITE", companyId: confirmed.companyId, inviteId: confirmed.inviteId, expiresAt: inviteTtl(confirmed) }, ConditionExpression: "attribute_not_exists(pk)" } },
+      ],
+    })));
+  }
+
   async removeInvite(invite: InviteRecord): Promise<void> {
     try {
       await guarded("invite", () => this.db.send(new TransactWriteCommand({
@@ -249,5 +273,19 @@ export class DynamoCompanyStore implements CompanyStore {
 
   async removeHookInstall(issuer: string): Promise<void> {
     await this.db.send(new DeleteCommand({ TableName: this.table, Key: { pk: issuerKey(issuer), sk: "INSTALL" } }));
+  }
+
+  async claimGithubTrial(githubUserId: number, companyId: string, at: string): Promise<GithubTrialClaim> {
+    if (!validGithubUserId(githubUserId) || !COMPANY_ID.test(companyId)) throw new Error("the GitHub trial claim does not read");
+    const key = { pk: `GITHUBTRIAL#${String(githubUserId)}`, sk: "TRIAL" };
+    try {
+      await this.db.send(new PutCommand({ TableName: this.table, Item: { ...key, companyId, githubUserId, claimedAt: at }, ConditionExpression: "attribute_not_exists(pk)" }));
+      return "claimed";
+    } catch (error) {
+      if (!conflicted(error)) throw error;
+    }
+    // Held already: by this company or another. A row that does not read is another's (never a free trial).
+    const holder = await this.get(key.pk, key.sk);
+    return holder?.companyId === companyId && holder.githubUserId === githubUserId ? "held" : "other";
   }
 }
