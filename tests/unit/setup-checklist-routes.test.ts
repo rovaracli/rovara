@@ -96,7 +96,7 @@ function setUp(override: Override = () => undefined) {
     callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(Date.UTC(2026, 10, 17)),
   });
   const as = async (token: string) => {
-    const person = PEOPLE[token]!;
+    const person = PEOPLE[token] ?? { id: "f".repeat(64), grants: {} };
     // The stored sign-in names company A as owner for everyone: Cloud must use Code's live answer, never this.
     const access = { developerId: person.id, displayName: "Someone", administrator: false, companyId: A, companyRole: "owner", projects: [], notices: [] } as CodeSession["access"];
     await store.create(`cookie-${token}`, { accessToken: token, refreshToken: `r-${token}`, csrf: "csrf", signedInAt: "2026-11-17T00:00:00.000Z", access });
@@ -109,7 +109,7 @@ function setUp(override: Override = () => undefined) {
     return { status: answered!.status, body: JSON.parse(answered!.body) as unknown, text: answered!.body };
   };
   const codeCalls = () => calls.filter((call) => call.path !== "/v1/dev/access");
-  return { as, send, calls, codeCalls, runs };
+  return { as, send, calls, codeCalls, runs, store };
 }
 const words = (answer: { body: unknown }) => (answer.body as { error: { code: string; message: string } }).error;
 const refusal = (key: keyof typeof SETUP_CHECKLIST_ANSWERS) => ({ status: SETUP_CHECKLIST_ANSWERS[key].status, error: (SETUP_CHECKLIST_ANSWERS[key].body as { error: unknown }).error });
@@ -186,6 +186,27 @@ describe("the checklist read", () => {
   });
 });
 
+describe("an ended sign-in", () => {
+  it("signs the person out (401, the session deleted) when Code refuses the token and it can't be refreshed, on every route", async () => {
+    for (const [method, path, body] of [["GET", "/v1/web/projects/payments/setup-status"], ["GET", "/v1/web/projects/payments/setup-agent"], ["GET", "/v1/web/projects/payments/setup-agent/journal"], ["POST", "/v1/web/projects/payments/setup-agent", { requestId: REQUEST_ID }]] as const) {
+      // Code's project route refuses the token (the access check still answers).
+      const w = setUp((call) => call.path.startsWith("/v1/dev/client/projects/") || call.path.startsWith("/v1/app/projects/") ? json(401, { error: { code: "AUTH_REQUIRED", message: LEAK } }) : undefined);
+      const res = await w.send(method, path, await w.as("ada-token"), body);
+      expect(res.status, path).toBe(401);
+      expect(res.text).not.toContain(LEAK);
+      expect(await w.store.get("cookie-ada-token"), path).toBeUndefined();
+    }
+  });
+
+  it("signs the person out when Code's access check itself refuses the token", async () => {
+    const w = setUp();
+    const res = await w.send("GET", "/v1/web/projects/payments/setup-status", await w.as("dead-token"));
+    expect(res.status).toBe(401);
+    expect(await w.store.get("cookie-dead-token")).toBeUndefined();
+    expect(w.codeCalls().filter((call) => call.path.includes("/setup-status"))).toHaveLength(0);
+  });
+});
+
 describe("Set up later", () => {
   it("a company owner and the project's admin set a row aside; Code gets exactly {row, skipped}", async () => {
     const w = setUp();
@@ -212,6 +233,15 @@ describe("Set up later", () => {
       expect(asRefusal(await w.send("PUT", "/v1/web/projects/payments/setup-status/skips", headers, body))).toEqual(refusal("invalid"));
     }
     expect(w.codeCalls()).toHaveLength(0);
+  });
+
+  it("Code's 400 reads 'not valid', and any 409 reads 'changed' (only a run is ever 'busy')", async () => {
+    const bad = setUp((call) => call.path.endsWith("/skips") ? json(400, { error: { code: "CONFIG_INVALID", message: LEAK } }) : undefined);
+    expect(asRefusal(await bad.send("PUT", "/v1/web/projects/payments/setup-status/skips", await bad.as("ada-token"), { row: "linear", skipped: true }))).toEqual(refusal("invalid"));
+    for (const code of ["CHANGE_STALE", "WORKSPACE_BUSY"]) {
+      const w = setUp((call) => call.path.endsWith("/skips") ? json(409, { error: { code, message: LEAK } }) : undefined);
+      expect(asRefusal(await w.send("PUT", "/v1/web/projects/payments/setup-status/skips", await w.as("ada-token"), { row: "linear", skipped: true }))).toEqual(refusal("stale"));
+    }
   });
 
   it("an answer that doesn't confirm this change is not confirmed", async () => {
@@ -283,6 +313,13 @@ describe("the hosted setup run", () => {
     for (const answer of [{ status: "exploded" }, { status: "running", canManage: "yes" }, ["running"]]) {
       const w = setUp((call) => call.path.endsWith("/setup-agent") ? json(200, answer) : undefined);
       expect(asRefusal(await w.send("GET", "/v1/web/projects/payments/setup-agent", await w.as("ada-token")))).toEqual(refusal("unavailable"));
+    }
+  });
+
+  it("a journal answer that doesn't read (unknown status, too many entries, no host asks) is not passed on", async () => {
+    for (const answer of [{ status: "exploded", entries: [], hostAsks: [] }, { status: "running", entries: Array(401).fill({}), hostAsks: [] }, { status: "running", entries: [] }, { status: "running", entries: [], hostAsks: Array(51).fill({}) }]) {
+      const w = setUp((call) => call.path.endsWith("/journal") ? json(200, answer) : undefined);
+      expect(asRefusal(await w.send("GET", "/v1/web/projects/payments/setup-agent/journal", await w.as("ada-token")))).toEqual(refusal("unavailable"));
     }
   });
 

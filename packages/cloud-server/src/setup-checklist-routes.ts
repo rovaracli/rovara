@@ -13,7 +13,8 @@
 //     a person Code names no company for gets NOT_IN_COMPANY, a malformed project name "project not found", a malformed body or query 400, without asking Code.
 //   - The browser never names a company. The project name goes only into Code's path; a body is rebuilt from its checked fields only (strict).
 //   - Code's checklist answer is rebuilt field by field (bounded strings, known words, this project only); anything else is "couldn't be read". Code's setup-run answers
-//     are passed on only as a plain object whose status is a known word (the app reads them with its strict SetupAgentView reader).
+//     (Code's core SetupAgentView and journal, for a person Code allowed) are passed on whole, only as a plain object whose status is a known word, `canManage` a
+//     boolean and the journal's lists within Code's bounds; the app reads every field it uses with its own SetupAgentView/SetupJournalReply readers.
 //   - Code's refusals reach the app as Cloud's fixed sentences (SETUP_CHECKLIST_WORDS, the same as @agentx/contracts), never Code's or the browser's text. Until Code
 //     serves a route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
 // cloud-server takes no package dependency, so the shapes are checked here by hand against Code's contract (project-setup-status.ts on #841, setup-run-routes.ts on #844).

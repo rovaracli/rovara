@@ -6,4 +6,8 @@ import { useOutletContext } from "react-router";
 
 export interface AdminContext { orgId: string; company: string; developerId: string; role: "owner" | "admin" | "member"; checking: boolean }
 export const ProjectScopeContext = createContext<AdminContext | undefined>(undefined);
-export function useAdminContext(): AdminContext { const scoped = useContext(ProjectScopeContext), outlet = useOutletContext<AdminContext | undefined>();return (scoped ?? outlet)!; }
+export function useAdminContext(): AdminContext {
+ const scoped = useContext(ProjectScopeContext), outlet = useOutletContext<AdminContext | undefined>(), scope = scoped ?? outlet;
+ if (scope === undefined) throw new Error("An admin-area control was used outside the admin area and outside Project settings.");
+ return scope;
+}
