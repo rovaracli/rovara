@@ -883,6 +883,9 @@ export interface AppRouteSpec {
 const APP_ROUTE_ROWS = `
 GET /v1/app/me | c | shell | access.check | onboarding | T
 PUT /v1/app/me/name | k | shell | me.setName | shell/NameForm | T
+GET /v1/app/me/sign-ins | k | later | | sign-ins | T
+POST /v1/app/me/sign-ins/link | k | later | | sign-ins | T
+DELETE /v1/app/me/sign-ins/{method} | k | later | | sign-ins | T
 GET /v1/app/nav | c | shell | access.check,tasks.list,decisions.list | nav | T
 GET /v1/app/home | c | home | tasks.list,tasks.get,decisions.list | home | T
 POST /v1/app/home/cards/{card}/dismiss | c | home | | work-list |

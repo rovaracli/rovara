@@ -42,7 +42,8 @@ describe("code contract v0 tables", () => {
     // Plus a project's archive and restore (guided onboarding PR 17): the two previews, the two reviewed changes and the lifecycle read, as the person.
     // Plus the repository picker (guided onboarding PR 10).
     // Plus the company's AI model and a project's per-task limit (guided onboarding PR 15): both reads and both changes, as the person.
-    expect(counts.appCloudServerToday).toBe(80);
+    // Plus Connected sign-ins (DEC 254w, approved DEC 254zf): the list, Connect and Unlink, passed to Code's /v1/dev/me/sign-ins routes as the person.
+    expect(counts.appCloudServerToday).toBe(83);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
