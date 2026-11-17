@@ -42,8 +42,8 @@ export function WorkScreen() {
  useEffect(() => { heading.current?.focus(); }, []);
  useEffect(() => { rowsRef.current = rows; }, [rows]);
  // A task started in Cloud opens by its session's address (the one people share); any other by its task id.
- // A task the person was only added to has no full page yet: the task page finds a task only in the person's own list until Cloud opens a task by its id (K2), so no link is drawn for it.
- const fullPage = (row: { id: string; group: string; task: { sessionId: string | undefined } }) => (row.group === "involved" ? undefined : paths.session(row.task.sessionId ?? row.id));
+ // A task the person was only added to opens by its task id: `/t/<taskId>` goes on to the task's page once Cloud has made one for them (K2, Cloud #112: POST /v1/app/tasks/{taskId}/open). Until #112 is deployed that address finds nothing.
+ const fullPage = (row: { id: string; group: string; task: { sessionId: string | undefined } }) => (row.group === "involved" ? "/t/" + encodeURIComponent(row.id) : paths.session(row.task.sessionId ?? row.id));
  const select = (id: string) => { const next = new URLSearchParams(params);next.set("task", id);setParams(next, { replace: true }); };
  function onDecided(taskId: string) {
   const next = nextNeedsYou(rowsRef.current, taskId), row = rowsRef.current.find(entry => entry.id === next);

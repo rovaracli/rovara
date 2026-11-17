@@ -353,8 +353,8 @@ it("lists involved tasks under their own Involved group at the end, and opens on
   await waitFor(() => expect(paneTitle()).toBe("Fix the README typo"));
   fireEvent.click(rowOf(INVOLVED_ID));
   await waitFor(() => expect(paneTitle()).toBe("Migrate the invoices table"));
-  // No link to a full page: it cannot open a task the person did not start yet.
-  expect(screen.queryByRole("link", { name: /Open the full page/u })).toBeNull();
+  // Its full page is the task's own address, which K2 (Cloud #112) turns into the person's page for it.
+  expect(screen.getByRole("link", { name: /Open the full page/u }).getAttribute("href")).toBe("/t/" + INVOLVED_ID);
   expect(screen.getByTestId("decision-quiet").textContent).toContain("You're involved in this task");
   expect(screen.getByTestId("decision-quiet").textContent).toContain("Its owner answers the agent's questions and decides");
   expect(f.where.current).toContain("task=" + INVOLVED_ID);
