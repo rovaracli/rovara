@@ -9,7 +9,7 @@ import type { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { defaultBoundaryStatements, serviceRoleStatements, type PolicyStatementJson } from "../../packages/contracts/src/access-policies.js";
-import { GATEWAY_ENV, GATEWAY_EVAL_STAGE_INDEXES, GATEWAY_LEARNING_ENV, GATEWAY_PRODUCT_ENV, GATEWAY_PRODUCT_TTL_ATTRIBUTE, PRODUCT_KEY_PURPOSE as GATEWAY_PURPOSE, PRODUCT_KEYS_TTL_ATTRIBUTE, productKeyContext } from "../../packages/model-gateway/src/index.js";
+import { GATEWAY_ANSWERS_ENV, GATEWAY_ENV, GATEWAY_EVAL_STAGE_INDEXES, GATEWAY_LEARNING_ENV, GATEWAY_PRODUCT_ENV, GATEWAY_PRODUCT_TTL_ATTRIBUTE, PRODUCT_KEY_PURPOSE as GATEWAY_PURPOSE, PRODUCT_KEYS_TTL_ATTRIBUTE, productKeyContext } from "../../packages/model-gateway/src/index.js";
 import { iamWildcardMatches } from "../../packages/model-gateway/src/product-policy.js";
 import { buildAgentXApp, productAiOn } from "../../infra/lib/app.js";
 import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_EVAL_STAGE_INDEXES, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, PRODUCT_KEY_CONTEXT_KEYS, PRODUCT_KEY_PURPOSE } from "../../infra/lib/model-gateway.js";
@@ -51,14 +51,14 @@ describe("off unless configured", () => {
 });
 
 describe("on: tables", () => {
-  it("adds eight tables, all retained, deletion-protected and recoverable, with company keys; TTL only where rows expire", () => {
+  it("adds eleven tables, all retained, deletion-protected and recoverable, with company keys; TTL only where rows expire", () => {
     const added = ofType(on, "AWS::DynamoDB::GlobalTable").map(([id]) => id.replace(/[0-9A-F]{8}$/u, "")).filter((id) => !["Ledger", "Markers", "Meter", "Prices"].includes(id)).sort();
-    expect(added).toEqual(["EvalStages", "LearningLedger", "LearningMarkers", "LearningMeter", "ProductKeys", "ProductLedger", "ProductMarkers", "ProductMeter"]);
+    expect(added).toEqual(["AnswersLedger", "AnswersMarkers", "AnswersMeter", "EvalStages", "LearningLedger", "LearningMarkers", "LearningMeter", "ProductKeys", "ProductLedger", "ProductMarkers", "ProductMeter"]);
     for (const name of added) {
       const r = on.Resources[table(name)]!;
       expect(r.DeletionPolicy).toBe("Retain");
       expect(r.Properties.Replicas).toEqual([expect.objectContaining({ DeletionProtectionEnabled: true, PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true } })]);
-      const ttl = ["EvalStages", "LearningMarkers", "ProductKeys", "ProductMarkers"].includes(name);
+      const ttl = ["AnswersMarkers", "EvalStages", "LearningMarkers", "ProductKeys", "ProductMarkers"].includes(name);
       expect(r.Properties.TimeToLiveSpecification).toEqual(ttl ? { AttributeName: GATEWAY_PRODUCT_TTL_ATTRIBUTE, Enabled: true } : undefined);
     }
     const indexes = (name: string) => ((on.Resources[table(name)]!.Properties.GlobalSecondaryIndexes ?? []) as Array<{ IndexName: string }>).map((i) => i.IndexName).sort();
@@ -101,13 +101,13 @@ describe("on: the serving role's grants (exact)", () => {
   it("pins every new statement: tables, indexes, key and federation role, company keys on every item grant", () => {
     const s = bySid();
     expect(s.ProductKeysCompanyKeys).toEqual({ Sid: "ProductKeysCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Resource: arnOf(table("ProductKeys")), Condition: companyKeysOnly });
-    expect(s.ProductAndLearningMeterCompanyKeys).toEqual({ Sid: "ProductAndLearningMeterCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"], Resource: ["ProductMeter", "ProductLedger", "LearningMeter", "LearningLedger"].map((n) => arnOf(table(n))), Condition: companyKeysOnly });
-    expect(s.ProductAndLearningMarkersCompanyKeys).toEqual({ Sid: "ProductAndLearningMarkersCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:DeleteItem"], Resource: ["ProductMarkers", "LearningMarkers"].map((n) => arnOf(table(n))), Condition: companyKeysOnly });
+    expect(s.ProductAndLearningMeterCompanyKeys).toEqual({ Sid: "ProductAndLearningMeterCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"], Resource: ["ProductMeter", "ProductLedger", "LearningMeter", "LearningLedger", "AnswersMeter", "AnswersLedger"].map((n) => arnOf(table(n))), Condition: companyKeysOnly });
+    expect(s.ProductAndLearningMarkersCompanyKeys).toEqual({ Sid: "ProductAndLearningMarkersCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:DeleteItem"], Resource: ["ProductMarkers", "LearningMarkers", "AnswersMarkers"].map((n) => arnOf(table(n))), Condition: companyKeysOnly });
     expect(s.EvalStagesCompanyKeys).toEqual({ Sid: "EvalStagesCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Resource: arnOf(table("EvalStages")), Condition: companyKeysOnly });
     const index = (name: string, idx: string) => ({ "Fn::Join": ["", [arnOf(table(name)), `/index/${idx}`]] });
     expect(s.QueryProductIndexes).toEqual({ Sid: "QueryProductIndexes", Effect: "Allow", Action: "dynamodb:Query", Resource: [
-      index("ProductLedger", "pending-by-key"), index("ProductLedger", "pending-by-age"), index("LearningLedger", "pending-by-key"), index("LearningLedger", "pending-by-age"),
-      index("ProductMeter", "open-holds"), index("LearningMeter", "open-holds"), index("EvalStages", "due-stages"),
+      index("ProductLedger", "pending-by-key"), index("ProductLedger", "pending-by-age"), index("LearningLedger", "pending-by-key"), index("LearningLedger", "pending-by-age"), index("AnswersLedger", "pending-by-key"), index("AnswersLedger", "pending-by-age"),
+      index("ProductMeter", "open-holds"), index("LearningMeter", "open-holds"), index("AnswersMeter", "open-holds"), index("EvalStages", "due-stages"),
     ] });
     expect(s.OpenProductKeys).toEqual({ Sid: "OpenProductKeys", Effect: "Allow", Action: "kms:Decrypt", Resource: arnOf(idStarting("AWS::KMS::Key", "ProductKeysKey")), Condition: { StringEquals: { "kms:EncryptionContext:purpose": "rovara-product-ai-key", "kms:EncryptionContext:install": issuer } } });
     expect(s.VerifyCloudCalls).toEqual({ Sid: "VerifyCloudCalls", Effect: "Allow", Action: "kms:VerifyMac", Resource: arnOf(idStarting("AWS::KMS::Key", "ProductKeysMacKey")) });
@@ -131,7 +131,7 @@ describe("on: the serving role's grants (exact)", () => {
   it("gives the serving task every product and learning setting, and the price job none", () => {
     const env = (task: string) => Object.fromEntries(((on.Resources[idStarting("AWS::ECS::TaskDefinition", task)]!.Properties.ContainerDefinitions as Array<{ Environment: Array<{ Name: string; Value: unknown }> }>)[0]!.Environment).map((e) => [e.Name, e.Value]));
     const serve = env("ServeTask");
-    for (const name of [...GATEWAY_PRODUCT_ENV, ...GATEWAY_LEARNING_ENV, GATEWAY_ENV.vertexFederationRole]) expect(serve[name]).toBeDefined();
+    for (const name of [...GATEWAY_PRODUCT_ENV, ...GATEWAY_LEARNING_ENV, ...GATEWAY_ANSWERS_ENV, GATEWAY_ENV.vertexFederationRole]) expect(serve[name]).toBeDefined();
     expect(serve[GATEWAY_ENV.productKeysKey]).toEqual(arnOf(idStarting("AWS::KMS::Key", "ProductKeysKey")));
     expect(serve[GATEWAY_ENV.vertexFederationRole]).toEqual(arnOf(idStarting("AWS::IAM::Role", "VertexFederationRole")));
     expect(serve[GATEWAY_ENV.productMacKey]).toEqual(arnOf(idStarting("AWS::KMS::Key", "ProductKeysMacKey")));

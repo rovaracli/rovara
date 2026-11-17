@@ -150,7 +150,8 @@ export const LoadedLessonRowSchema = z.object({
   visible: z.boolean(), title: z.string().max(80).optional(), type: LessonTypeSchema.optional(), helpful: z.number().int().min(0).optional(), harmful: z.number().int().min(0).optional(),
   canMark: z.boolean(),
 }).strict();
-export const LoadedLessonsSchema = z.object({ lessons: z.array(LoadedLessonRowSchema).max(500) }).strict();
+export const LoadedWikiUseSchema = z.object({ given: z.array(z.string().min(1).max(120)).max(80), read: z.array(z.string().min(1).max(120)).max(80) }).strict();
+export const LoadedLessonsSchema = z.object({ lessons: z.array(LoadedLessonRowSchema).max(500), wikiUse: LoadedWikiUseSchema.optional() }).strict();
 export const LoadedLessonsReaderSchema = forwardReader(LoadedLessonsSchema);
 
 // ---- request bodies

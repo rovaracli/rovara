@@ -116,12 +116,12 @@ export function productLimitKind(body: Uint8Array | undefined): "overloaded" | "
   return "rate_limit";
 }
 /** Eval stage calls' prefix: every item reads as the stage's own held budget being used up. */
-const STAGE_PREFIX: Readonly<Record<MeterItem, string>> = { task: EVAL_STAGE_SPENT, person: EVAL_STAGE_SPENT, project: EVAL_STAGE_SPENT, company: EVAL_STAGE_SPENT };
+const STAGE_PREFIX: Readonly<Record<MeterItem, string>> = { task: EVAL_STAGE_SPENT, person: EVAL_STAGE_SPENT, project: EVAL_STAGE_SPENT, company: EVAL_STAGE_SPENT, upkeep: EVAL_STAGE_SPENT };
 /** A stage call reserves nothing on the real meter; these caps only satisfy the core's shape check. */
 const STAGE_CAPS: Caps = Object.freeze({ task: 0, projectMonth: 0 });
 export const PRODUCT_PREFIX: Readonly<Record<MeterItem, string>> = {
   task: "Product AI budget has been exceeded! Key=task", person: "Product AI budget has been exceeded! User=person",
-  project: "Product AI budget has been exceeded! Project=project", company: "Product AI budget has been exceeded! Team=company",
+  project: "Product AI budget has been exceeded! Project=project", company: "Product AI budget has been exceeded! Team=company", upkeep: "Product AI budget has been exceeded! Upkeep=project",
 };
 const unavailable: RouteRefusal = { ok: false, status: 503, code: "unavailable", message: "model access unavailable" };
 const unavailableGuard = { ok: false as const, status: 503, code: "unavailable", message: "model access unavailable" };

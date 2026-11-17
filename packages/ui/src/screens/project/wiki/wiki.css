@@ -77,3 +77,15 @@
 }
 @media (prefers-reduced-motion:reduce){.rv-wiki *{scroll-behavior:auto!important}}
 .rv-wiki-about .rv-wiki-chip{white-space:normal}
+
+.rv-wiki-mark{border:0;background:none;padding:0 0 0 .5rem;font:inherit;font-size:var(--rv-font-sm);color:var(--rv-text-muted);cursor:pointer;opacity:0;text-decoration:underline;text-underline-offset:2px;white-space:nowrap;min-height:24px}
+.rv-wiki-para:hover .rv-wiki-mark,.rv-wiki-para:focus-within .rv-wiki-mark,.rv-wiki-mark:focus-visible{opacity:1}
+.rv-wiki-mark:hover{color:var(--rv-status-failed)}
+@media (hover:none){.rv-wiki-mark{opacity:.8}}
+.rv-wiki-form{display:grid;gap:var(--rv-space-3);margin:var(--rv-space-3) 0;padding:var(--rv-space-3) var(--rv-space-4);border:1px solid var(--rv-border-medium);border-radius:var(--rv-radius-md)}
+.rv-wiki-row{display:flex;flex-wrap:wrap;gap:var(--rv-space-2);align-items:center;margin:var(--rv-space-2) 0}
+.rv-wiki-offer{display:grid;gap:var(--rv-space-2);padding:var(--rv-space-2) var(--rv-space-3);border-left:2px solid var(--rv-border-medium);font-size:var(--rv-font-md)}
+.rv-wiki-pageact{margin:var(--rv-space-2) 0}
+.rv-wiki-disputed-link{border:0;background:none;padding:var(--rv-space-1) 0;font:inherit;color:inherit;text-decoration:underline;cursor:pointer;min-height:24px}
+.rv-wiki-disputed-link[aria-current="page"]{font-weight:600}
+.rv-wiki-offer button{justify-self:start}

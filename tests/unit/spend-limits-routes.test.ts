@@ -607,7 +607,7 @@ describe("the company default is still PUT /org/settings", () => {
 
 // A new kind is an entry in SPEND_LIMIT_KINDS; this walks every entry through the routes the same way (the ids come from the kind's scope).
 describe("every kind in the table, through the routes", () => {
-  const ID = { project: "api", person: DEV.zed } as const;
+  const ID = { project: "api", person: DEV.zed, company: A } as const;
   for (const def of SPEND_LIMIT_KINDS) {
     const id = ID[def.scope];
     const path = `${PATH}/${def.segment}/${id}`;
@@ -660,4 +660,46 @@ describe("every kind in the table, through the routes", () => {
       });
     });
   }
+});
+
+// Lead 4 L4-E: the two gateway-enforced kinds (nightly upkeep per project, answers per company).
+describe("the upkeep and answers limits", () => {
+  const upkeep = (id: string) => `${PATH}/upkeep/${id}`;
+  const answers = (id: string) => `${PATH}/answers/${id}`;
+  it("the answer names each default (upkeep $25, answers $20) beside the company's budgets, and the company's own id", async () => {
+    const w = await READY();
+    const body = (await w.call(await w.signIn("ada", 30), "GET", PATH)).body as { companyId: string; defaults: Record<string, number | null>; max: Record<string, number> };
+    expect(body.companyId).toBe(A);
+    expect(body.defaults).toMatchObject({ upkeepMonthlyUsd: 25, answersMonthlyUsd: 20 });
+    expect(body.max).toMatchObject({ upkeep: 200, answers: 1 });
+  });
+  it("an answers limit is the caller's own company's: another company's id (or any id) in the path is 404 and writes nothing, set or removed", async () => {
+    const w = await READY(); const ada = await w.signIn("ada", 30);
+    expect((await w.call(ada, "PUT", answers(B), put(0, 1))).status).toBe(404);
+    expect((await w.call(ada, "PUT", answers(B), put(0, null))).status).toBe(404);
+    expect(await w.companies.spendLimit(B, "answers_month", B)).toBeUndefined();
+    expect(await w.companies.spendLimit(A, "answers_month", B)).toBeUndefined();
+    expect((await w.call(ada, "PUT", answers(A), put(0, 5))).status).toBe(200);
+    expect((await w.companies.spendLimit(A, "answers_month", A))?.monthlyUsdMicros).toBe(5 * MICROS);
+    // A second one cannot be added under another id (the bound is one), and company B sees none of A's.
+    expect((await w.call(await w.signIn("bea", 30), "GET", PATH)).body.answers).toEqual([]);
+  });
+  it("$0 is allowed for both (no upkeep spend, no answers), lowering needs no step-up, and removing returns to the default", async () => {
+    const w = await READY(); const bare = await w.signIn("ada");
+    expect((await w.call(bare, "PUT", upkeep("api"), put(0, 0))).status).toBe(200);
+    expect((await w.call(bare, "PUT", answers(A), put(0, 0))).status).toBe(200);
+    expect((await w.companies.spendLimit(A, "upkeep_month", "api"))?.monthlyUsdMicros).toBe(0);
+    // Raising back above the default needs the fresh step-up; removing (back to the default, $25) is a raise from $0, so it needs it too.
+    expect((await w.call(bare, "PUT", upkeep("api"), put(1, null))).body.error?.code).toBe("STEP_UP_REQUIRED");
+    expect((await w.call(await w.signIn("ada", 30), "PUT", upkeep("api"), put(1, null))).status).toBe(200);
+    expect(await w.companies.spendLimit(A, "upkeep_month", "api")).toBeUndefined();
+  });
+  it("an upkeep limit names a project Code knows, and a project's upkeep and project limits are separate items", async () => {
+    const w = await READY(); const ada = await w.signIn("ada", 30);
+    expect((await w.call(ada, "PUT", upkeep("nosuchproject"), put(0, 1))).status).toBe(404);
+    expect((await w.call(ada, "PUT", upkeep("api"), put(0, 7))).status).toBe(200);
+    expect((await w.call(ada, "PUT", project("api"), put(0, 3))).status).toBe(200);
+    expect((await w.companies.spendLimit(A, "upkeep_month", "api"))?.monthlyUsdMicros).toBe(7 * MICROS);
+    expect((await w.companies.spendLimit(A, "project_month", "api"))?.monthlyUsdMicros).toBe(3 * MICROS);
+  });
 });

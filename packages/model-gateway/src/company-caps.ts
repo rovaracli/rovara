@@ -3,6 +3,8 @@ import { GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMP
 import type { Dynamo, Item } from "./dynamo.js";
 import type { LessonsSwitch } from "./learning-route.js";
 import { COMPANY, PERSON, PROJECT, record, whole } from "./model-gateway-token.js";
+import type { AnswersLimits } from "./answers-route.js";
+import type { UpkeepLimits } from "./upkeep-cap.js";
 
 /**
  * The caps a call is held to, read from the Cloud company backend's budgets (deploy.ts GATEWAY_COMPANY_SETTINGS): the company's
@@ -27,12 +29,14 @@ export const NO_CAP = Number.MAX_SAFE_INTEGER;
 /** What `validCaps` refuses: the server answers 503 and sends nothing. */
 const UNAVAILABLE = Object.freeze({}) as unknown as Caps;
 
-type SpendLimitDef = { kind: string; scope: "project" | "person"; sortPrefix: string; caps: "projectMonth" | "personMonth" | null };
+type SpendLimitDef = { kind: string; scope: "project" | "person" | "company"; sortPrefix: string; caps: "projectMonth" | "personMonth" | null };
 const SPEND_LIMIT_DEFS: readonly SpendLimitDef[] = GATEWAY_COMPANY_SPEND_LIMITS.kinds;
 /** The id of a call that a scope's limits are about, and the format it must have; undefined when the call names none (a person limit of a call with no person). */
 const SCOPE_ID: Record<SpendLimitDef["scope"], { of(scope: CapsScope): string | undefined; format: RegExp }> = {
   project: { of: (scope) => scope.pid, format: PROJECT },
   person: { of: (scope) => scope.per, format: PERSON },
+  // A company-wide limit is about the company itself: its id is the company's own.
+  company: { of: (scope) => scope.cid, format: COMPANY },
 };
 
 /** The override's amount: undefined for "no override item", null when an item is there but does not read, else micro-dollars. */
@@ -55,6 +59,20 @@ export async function readSpendLimit(db: Dynamo, table: string, kind: string, ci
   if (def === undefined || !COMPANY.test(cid) || !SCOPE_ID[def.scope].format.test(id)) return null;
   const item = await db.get(table, { pk: `${GATEWAY_COMPANY_SPEND_LIMITS.partitionPrefix}${cid}`, sk: `${def.sortPrefix}${id}` }, { consistent: true, ...(signal === undefined ? {} : { signal }) });
   return overrideAmount(item, cid, kind, id);
+}
+
+/**
+ * The limits of the kinds whose own caller enforces them (the table's `caps: null`): a project's nightly upkeep cap (upkeep-cap.ts) and the company's
+ * answers limit (answers-route.ts). Each is the strongly consistent, fail-closed `readSpendLimit`: undefined (no item: the caller's default), null (the item
+ * does not read: the caller refuses), a throw (the read failed: the call stops).
+ */
+export class CompanyUpkeepLimits implements UpkeepLimits {
+  constructor(private readonly db: Dynamo, private readonly table: string) {}
+  limitFor(cid: string, pid: string, signal?: AbortSignal): Promise<number | null | undefined> { return readSpendLimit(this.db, this.table, "upkeep_month", cid, pid, signal); }
+}
+export class CompanyAnswersLimits implements AnswersLimits {
+  constructor(private readonly db: Dynamo, private readonly table: string) {}
+  limitFor(cid: string, signal?: AbortSignal): Promise<number | null | undefined> { return readSpendLimit(this.db, this.table, "answers_month", cid, cid, signal); }
 }
 
 export class CompanyBudgetCaps implements CapsSource {

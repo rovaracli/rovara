@@ -29,6 +29,8 @@ export * from "./product-eval.js";
 export * from "./product-bridge.js";
 export * from "./product-policy.js";
 export * from "./learning-route.js";
+export * from "./answers-route.js";
+export * from "./upkeep-cap.js";
 export * from "./deploy.js";
 export * from "./aws.js";
 export * from "./dynamo.js";

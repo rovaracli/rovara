@@ -104,9 +104,14 @@ export function agentSourceSwitchedOn(source: string, switchedOn: ReadonlySet<st
  * What a limit can be about (`scope`): the id's format, which the routes check against Code (a project Code knows, a person it lists in the company)
  * and the gateway checks against its token's own formats. `idSource` is the pattern without anchors (the route paths are built from it).
  */
+/** What the two gateway-enforced kinds allow without an override, in micro-dollars (model-gateway upkeep-cap.ts and answers-route.ts hold the same numbers; a contract test keeps them equal). */
+export const UPKEEP_DEFAULT_MONTH_MICROS = 25_000_000;
+export const ANSWERS_DEFAULT_MONTH_MICROS = 20_000_000;
 export const SPEND_LIMIT_SCOPES = {
   project: { idSource: "[a-z][a-z0-9-]{0,62}", id: /^[a-z][a-z0-9-]{0,62}$/u },
   person: { idSource: "[a-f0-9]{64}", id: /^[a-f0-9]{64}$/u },
+  // A limit about the company itself (L4-E: the answers limit): its id is the company's own, and the routes accept no other.
+  company: { idSource: "org_[0-9a-z]{20}", id: /^org_[0-9a-z]{20}$/u },
 } as const;
 export type SpendLimitScope = keyof typeof SPEND_LIMIT_SCOPES;
 
@@ -133,6 +138,10 @@ export interface SpendLimitKindDef {
 export const SPEND_LIMIT_KINDS = [
   { kind: "project_month", scope: "project", sortPrefix: "SPEND_LIMIT#PROJECT#", listKey: "projects", segment: "projects", max: 200, defaultOf: (budgets) => budgets.projectMonthlyUsdMicros },
   { kind: "person_month", scope: "person", sortPrefix: "SPEND_LIMIT#PERSON#", listKey: "people", segment: "people", max: 200, defaultOf: (budgets) => budgets.memberMonthlyUsdMicros },
+  // Lead 4 L4-E (DEC 254z(2)): a project's monthly cap on nightly upkeep AI, default $25. $0 = no upkeep spend. Enforced by the gateway (upkeep-cap.ts), which can only tighten the project and company caps.
+  { kind: "upkeep_month", scope: "project", sortPrefix: "SPEND_LIMIT#UPKEEP#", listKey: "upkeep", segment: "upkeep", max: 200, defaultOf: () => UPKEEP_DEFAULT_MONTH_MICROS },
+  // Lead 4 L4-E (DEC 254z-amend2): the company's monthly limit on answers (hosted Ask, smart Just answer) on its own AI key, default $20 (a placeholder). One item per company. Enforced by the gateway's answers route.
+  { kind: "answers_month", scope: "company", sortPrefix: "SPEND_LIMIT#ANSWERS#", listKey: "answers", segment: "answers", max: 1, defaultOf: () => ANSWERS_DEFAULT_MONTH_MICROS },
 ] as const satisfies readonly SpendLimitKindDef[];
 export type SpendLimitKind = (typeof SPEND_LIMIT_KINDS)[number]["kind"];
 const KIND_DEFS: readonly SpendLimitKindDef[] = SPEND_LIMIT_KINDS;

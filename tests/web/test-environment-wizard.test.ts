@@ -41,6 +41,7 @@ function setup(options: Options = {}) {
   let current = options.read ?? { status: 200, body: state() };
   const f = fakeHost(async (request) => {
     if (request.path === "/v1/app/me") return { status: 200, body: me };
+    if (request.path === "/v1/app/projects/web/machine-size") return { status: 501, body: { status: "not_set_up", message: "Machine size suggestions are not set up on Rovara Code yet." } };
     if (request.path === "/v1/app/github/installations") return { status: 200, body: { installations: [{ installationId: 55, accountLogin: "acme", accountType: "Organization", repositorySelection: "selected", status: "active" }] } };
     if (request.path === "/v1/app/projects/web") return { status: 200, body: project(options.setupStatus ?? "unchecked", 2, options.role) };
     if (request.path === "/v1/app/projects/web/setup-recipe") return options.share ?? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };

@@ -11,7 +11,11 @@ import { COMPANY, PERSON, PROJECT, TASK, TASK_TOKEN_SECONDS, record, whole } fro
 /** The furthest ahead a hold may ask the sweep to wait (ReserveInput.sweepAfter). */
 export const SWEEP_AFTER_MAX_MS = 24 * 60 * 60_000;
 export interface MeterScope { iss: string; cid: string; pid: string; tid: string; per?: string }
-export type MeterItem = "task" | "person" | "project" | "company";
+/**
+ * `upkeep` (lead 4 L4-E, DEC 254z(2)): the project's monthly row for AI spend whose origin is nightly upkeep. It is an ADDITIONAL row of such a
+ * call (the task, person, project and company rows still count it), present only when the call's caps carry `upkeepMonth`, so it can only tighten.
+ */
+export type MeterItem = "task" | "person" | "project" | "company" | "upkeep";
 export interface MeterRow { item: MeterItem; company: string; spentMicros: number; estimatedMicros: number; reservedMicros: number; committed: number; overrun: boolean }
 export interface Reservation { readonly id: string; readonly appliedMaxOutputTokens?: number }
 export type ReserveResult = { ok: true; reservation: Reservation } | { ok: false; reason: "cap" | "overrun"; item: MeterItem; held: boolean } | { ok: false; reason: "busy"; overrunInFlight?: true };
@@ -58,7 +62,8 @@ export interface Meter {
   /** Complete or fail within signal's remaining time (and at most CORRECTION_RUN_MS).
    * Never acknowledge an unconfirmed transaction as success: return unknown; retries use status=pending. */
   correct(input: CorrectionInput): Promise<CorrectionResult>;
-  read(scope: MeterScope): Promise<readonly MeterRow[]>;
+  /** The rows this call's scope counts on, this month. `upkeep: true` adds the project's upkeep row (zero when it has none yet). */
+  read(scope: MeterScope, options?: { upkeep?: true }): Promise<readonly MeterRow[]>;
 }
 export interface EstimatedSettlement { provider: string; model: string; kind: PriceKind; usage?: TokenUsage; settledAt: number; priceVersion?: number }
 export interface EstimatedCall extends MeterScope {
@@ -85,6 +90,7 @@ function targets(scope: MeterScope, caps: Caps, month: string, combined = false)
     { key: key("task", scope.tid), item: "task", cap: caps.task },
     ...(scope.per === undefined ? [] : [{ key: key("person", scope.per, month), item: "person" as const, cap: caps.personMonth }]),
     { key: key("project", scope.pid, month), item: "project", cap: caps.projectMonth },
+    ...(caps.upkeepMonth === undefined ? [] : [{ key: key("upkeep", scope.pid, month), item: "upkeep" as const, cap: caps.upkeepMonth }]),
     { key: key("company", month), item: "company", cap: caps.companyMonth },
     // The same key as the partner's own company row: the partner's map holds it.
     ...(combined ? [{ key: key("company", month), item: "company" as const, cap: caps.combinedCompanyMonth, combined: true as const }] : []),
@@ -270,9 +276,10 @@ export class InMemoryMeter implements Meter {
         const row = this.#row(target, call);
         if (row.company !== call.cid || ![row.spentMicros + deltaMicros, row.committed + deltaMicros, row.estimatedMicros + estimatedDelta].every((value) => whole(value) && value < Number.MAX_SAFE_INTEGER) || row.estimatedMicros + estimatedDelta > row.spentMicros + deltaMicros) return { status: "busy" };
       }
-      const capFor = { task: input.caps.task, person: input.caps.personMonth, project: input.caps.projectMonth, company: input.caps.companyMonth };
+      const capFor = { task: input.caps.task, person: input.caps.personMonth, project: input.caps.projectMonth, upkeep: input.caps.upkeepMonth, company: input.caps.companyMonth };
       for (const target of ledger.targets) {
-        const row = this.#row(target, call); const spentMicros = row.spentMicros + deltaMicros; const cap = target.combined === true ? input.caps.combinedCompanyMonth : capFor[target.item];
+        const row = this.#row(target, call); const spentMicros = row.spentMicros + deltaMicros; // The upkeep row's cap is not in the corrections' caps (they carry no origin): the one stored with the hold applies.
+        const cap = target.combined === true ? input.caps.combinedCompanyMonth : target.item === "upkeep" ? capFor.upkeep ?? target.cap : capFor[target.item];
         if (deltaMicros > 0 && cap !== undefined && row.committed + deltaMicros > cap) capExceeded = true;
         this.#store(target).set(target.key, { ...row, spentMicros, committed: row.committed + deltaMicros, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: cap === undefined ? row.overrun : spentMicros > cap });
       }
@@ -283,9 +290,9 @@ export class InMemoryMeter implements Meter {
   }
   /** The billable lines of this company's settled calls (DEC 240b), oldest first. */
   billedCalls(iss: string, cid: string): BilledCall[] { return [...this.#billed.values()].filter((c) => c.iss === iss && c.cid === cid).map((c) => structuredClone(c)); }
-  async read(scope: MeterScope): Promise<readonly MeterRow[]> {
+  async read(scope: MeterScope, options?: { upkeep?: true }): Promise<readonly MeterRow[]> {
     if (!validScope(scope)) throw new Error("meter unavailable");
-    return targets(scope, { task: 0, projectMonth: 0 }, this.#month()).map((t) => ({ ...this.#row(t, scope) }));
+    return targets(scope, { task: 0, projectMonth: 0, ...(options?.upkeep === true ? { upkeepMonth: 0 } : {}) }, this.#month()).map((t) => ({ ...this.#row(t, scope) }));
   }
 }
 /** Adapter-neutral executable contract. No test runner dependency; adapters must also run conflict-injection proofs. */
