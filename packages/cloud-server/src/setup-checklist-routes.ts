@@ -7,6 +7,10 @@
 //   POST /v1/app/projects/{p}/setup-agent   {requestId} -> Code POST /v1/app/projects/{p}/setup-agent                  (start, or Re-run setup: a re-run only proposes)
 //   POST /v1/app/projects/{p}/setup-agent/stop {requestId} -> Code POST .../setup-agent/stop
 //   GET  /v1/app/projects/{p}/setup-agent/journal?after=n  -> Code GET .../setup-agent/journal?after=n
+//   POST /v1/app/projects/{p}/setup-agent/confirm {requestId, expectedRevision, itemIds?} -> Code POST .../setup-agent/confirm  ("Use this setup": a candidate and its check; L4-D, Code #899)
+//   POST /v1/app/projects/{p}/setup-agent/discard {requestId}                              -> Code POST .../setup-agent/discard  (drop the waiting candidate)
+//   POST /v1/app/projects/{p}/setup-agent/decide {requestId, outcome, seen, reason?}       -> Code POST .../setup-agent/decide   (approve or reject: a fresh step-up, then Code's risk-based approver rule)
+//   The setup-run read also carries Code's `apply` (the waiting candidate: risk, changes, who approves, the check, the approval binding), rebuilt field by field (L4-D2).
 //
 // Rules:
 //   - Code decides who may read and change (its live company role and project grant). Cloud adds no rule that could widen that; it only refuses earlier:
@@ -188,6 +192,118 @@ const runPath = (project: string, tail = "") => `/v1/app/projects/${encodeURICom
 const runAnswerOk = (value: unknown): boolean => plain(value) && oneOf(value["status"], RUN_STATUSES) && (value["canManage"] === undefined || typeof value["canManage"] === "boolean");
 const journalOk = (value: unknown): boolean => plain(value) && oneOf(value["status"], RUN_STATUSES) && Array.isArray(value["entries"]) && value["entries"].length <= 400 && Array.isArray(value["hostAsks"]) && value["hostAsks"].length <= 50;
 
+// ---- L4-D2: the setup approval (confirm, discard, decide) and the `apply` card the run's read carries -------------------------------------------------------------------------------------------------
+
+/** The sentences Code says for a setup approval's fixed refusals (core/setup-agent/apply.ts, core-host/setup-approval.ts, setup-run-routes.ts). A Code message is passed on ONLY when it is exactly one of these: what the app reads is this file's copy, never the text Code sent. */
+export const SETUP_APPROVAL_CODE_WORDS: readonly string[] = Object.freeze([
+  "There is no setup from Rovara to use. Ask Rovara to set the project up first.",
+  "Rovara found this setup for an earlier version of the project's settings. Set the project up again.",
+  "Rovara could not finish checking where each suggestion came from. Try again in a minute.",
+  "None of the suggestions can be used: each one failed its check, or is a command Rovara does not carry into a project's setup.",
+  "That suggestion is not part of this setup.",
+  "The setup has no test command to prove, so there is nothing to use yet.",
+  "The commands could not be made into the project's setup.",
+  "Another setup is waiting for your approval. Decide it, or discard it, first.",
+  "A command in this setup is too long to show whole, so it cannot be approved.",
+  "There is no setup waiting for a decision. Open the project's setup again.",
+  "This setup change reaches outside the project's commands (a website, a secret, a registry, an integration or something Rovara does not recognise), so a company owner or admin must approve it.",
+  "Only the project's maintainers, or a company owner or admin, can decide this setup.",
+  "Your approval could not be proved just now, so nothing was decided. Try again.",
+]);
+export const SETUP_APPROVAL_WORDS = Object.freeze({
+  stale: "This setup changed or is no longer waiting for a decision. Refresh to see where it stands.",
+  conflict: "This decision was already sent. Refresh to see where the setup stands.",
+  stepUp: "Confirm it's you again, then try once more.",
+  cannotDecide: "Only the project's maintainers, or a company owner or admin, can decide this setup.",
+  approvalNotYet: "Approving a setup isn't available on this Rovara yet.",
+  audit: "The record of this change could not be written, so nothing was done. Try again.",
+});
+const AW = SETUP_APPROVAL_WORDS;
+
+const RISKS = ["low", "medium", "high"] as const;
+const AREAS = ["setup_commands", "test_commands", "test_mocks", "websites", "registries", "integrations", "dev_container", "other"] as const;
+const CHECK_STATES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
+const APPROVERS = ["maintainer", "admin"] as const;
+const LEFT_OUT = ["unverified", "refused_command", "not_a_command_item", "too_many", "invalid_command"] as const;
+const HEX64 = /^[0-9a-f]{64}$/u;
+const DECISION_ID = /^setup-[A-Za-z0-9_-]{2,122}$/u;
+/** One command line as Code shows it: a bounded string (a command may hold any character; the app shows it through its visible-text reader). */
+const line = (value: unknown): value is string => typeof value === "string" && value.length >= 1 && value.length <= 2_000;
+const lines = (value: unknown, max: number): value is string[] => Array.isArray(value) && value.length <= max && value.every(line);
+
+/** Code's waiting candidate (`apply` on the setup-run read), rebuilt from known fields only; throws Unreadable on anything off. */
+export function applyAnswer(value: unknown): Plain {
+  need(plain(value), undefined);
+  const v = value as Plain, check = v["check"], approval = v["approval"], changes = v["changes"];
+  need(whole(v["candidateRevision"], 1) && whole(v["baseRevision"], 0) && lines(v["setup"], 40) && lines(v["readiness"], 40), undefined);
+  need(plain(check) && oneOf(check["status"], CHECK_STATES) && (check["failedStep"] === undefined || text(check["failedStep"], 1_000)), undefined);
+  need(oneOf(v["risk"], RISKS) && oneOf(v["approver"], APPROVERS) && typeof v["canApprove"] === "boolean" && typeof v["canReject"] === "boolean", undefined);
+  need(Array.isArray(changes) && changes.length <= 16 && changes.every((one) => plain(one) && oneOf(one["area"], AREAS) && oneOf(one["risk"], RISKS)), undefined);
+  need(approval === undefined || (plain(approval) && typeof approval["requestId"] === "string" && DECISION_ID.test(approval["requestId"]) && whole(approval["revision"], 1) && typeof approval["artifactDigest"] === "string" && HEX64.test(approval["artifactDigest"])
+    && approval["kind"] === "setup" && oneOf(approval["risk"], RISKS)), undefined);
+  const c = check as Plain, a = approval as Plain | undefined;
+  return {
+    candidateRevision: v["candidateRevision"], baseRevision: v["baseRevision"], setup: [...(v["setup"] as string[])], readiness: [...(v["readiness"] as string[])],
+    check: { status: c["status"], ...(c["failedStep"] === undefined ? {} : { failedStep: c["failedStep"] }) },
+    risk: v["risk"], changes: (changes as Plain[]).map((one) => ({ area: one["area"], risk: one["risk"] })), approver: v["approver"], canApprove: v["canApprove"], canReject: v["canReject"],
+    ...(a === undefined ? {} : { approval: { requestId: a["requestId"], revision: a["revision"], artifactDigest: a["artifactDigest"], kind: "setup", risk: a["risk"] } }),
+  };
+}
+
+/** The browser's "Use this setup", strictly: `{requestId, expectedRevision, itemIds?}` and nothing else. */
+export function confirmBody(value: unknown): { requestId: string; expectedRevision: number; itemIds?: string[] } | undefined {
+  if (!plain(value) || Object.keys(value).some((key) => key !== "requestId" && key !== "expectedRevision" && key !== "itemIds")) return undefined;
+  const ids = value["itemIds"];
+  if (typeof value["requestId"] !== "string" || !UUID.test(value["requestId"]) || !whole(value["expectedRevision"], 0, 1_000_000_000)) return undefined;
+  if (ids !== undefined && !(Array.isArray(ids) && ids.length <= 64 && ids.every((id) => text(id, 100)))) return undefined;
+  return { requestId: value["requestId"], expectedRevision: value["expectedRevision"], ...(ids === undefined ? {} : { itemIds: [...ids] }) };
+}
+
+export interface DecideBody { requestId: string; outcome: "approve" | "reject"; seen: { revision: number; artifactDigest: string }; reason?: string }
+/** The browser's decision, strictly: the id Code offered, the answer, the revision and digest the person saw, and an optional reason. Nothing else. */
+export function decideBody(value: unknown): DecideBody | undefined {
+  if (!plain(value) || Object.keys(value).some((key) => key !== "requestId" && key !== "outcome" && key !== "seen" && key !== "reason")) return undefined;
+  const seen = value["seen"], reason = value["reason"];
+  if (typeof value["requestId"] !== "string" || !DECISION_ID.test(value["requestId"]) || !oneOf(value["outcome"], ["approve", "reject"] as const)) return undefined;
+  if (!plain(seen) || Object.keys(seen).length !== 2 || !whole(seen["revision"], 1) || typeof seen["artifactDigest"] !== "string" || !HEX64.test(seen["artifactDigest"])) return undefined;
+  if (reason !== undefined && !(typeof reason === "string" && reason.length <= 500 && !CONTROL.test(reason))) return undefined;
+  return { requestId: value["requestId"], outcome: value["outcome"], seen: { revision: seen["revision"], artifactDigest: seen["artifactDigest"] }, ...(reason === undefined ? {} : { reason }) };
+}
+
+/** Code's answer to "Use this setup", rebuilt from known fields; throws Unreadable on anything off. */
+function confirmAnswer(value: unknown): Plain {
+  need(plain(value), undefined);
+  const v = value as Plain, left = v["left"];
+  need(HEX64.test(typeof v["digest"] === "string" ? v["digest"] : "") && Array.isArray(v["used"]) && v["used"].length <= 64 && v["used"].every((id) => text(id, 100)) && Array.isArray(v["unchecked"]) && v["unchecked"].length <= 64 && v["unchecked"].every((id) => text(id, 100)), undefined);
+  need(Array.isArray(left) && left.length <= 200 && left.every((one) => plain(one) && text(one["id"], 100) && oneOf(one["reason"], LEFT_OUT)) && typeof v["proved"] === "boolean" && v["next"] === "check" && (v["candidateRevision"] === undefined || whole(v["candidateRevision"], 1)), undefined);
+  return {
+    digest: v["digest"], used: [...(v["used"] as string[])], unchecked: [...(v["unchecked"] as string[])], left: (left as Plain[]).map((one) => ({ id: one["id"], reason: one["reason"] })),
+    ...(v["candidateRevision"] === undefined ? {} : { candidateRevision: v["candidateRevision"] }), proved: v["proved"], next: "check",
+  };
+}
+
+type ApprovalKind = "confirm" | "discard" | "decide";
+/** Code's refusal of a setup approval act in Cloud's fixed words. Only a message that is exactly one of Code's fixed sentences is said (as this file's copy of it); anything else is by code and status. */
+export function approvalRefusal(kind: ApprovalKind, error: CodeError): RouteAnswer {
+  const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
+  const code = body?.["code"], said = typeof body?.["message"] === "string" ? SETUP_APPROVAL_CODE_WORDS.find((words) => words === body["message"]) : undefined;
+  if (error.status === 404) {
+    if (code === "NOT_FOUND" && body?.["message"] === "route not found") return A.runNotYet;
+    if (code === "NOT_FOUND" && body?.["message"] === "Approving a project's setup isn't available on this install yet.") return answer(501, "NOT_ON_CODE_YET", AW.approvalNotYet);
+    return A.notFound;
+  }
+  if (code === "REAUTH_REQUIRED") return answer(403, "REAUTH_REQUIRED", AW.stepUp);
+  if (error.status === 403) return said !== undefined ? answer(403, "FORBIDDEN", said) : kind === "decide" ? answer(403, "FORBIDDEN", AW.cannotDecide) : A.runNotAllowed;
+  if (error.status === 400) return said !== undefined ? answer(400, "CONFIG_INVALID", said) : A.invalid;
+  if (error.status === 409) {
+    if (code === "IDEMPOTENCY_CONFLICT") return answer(409, "IDEMPOTENCY_CONFLICT", AW.conflict);
+    if (code === "WORKSPACE_BUSY") return said !== undefined ? answer(409, "WORKSPACE_BUSY", said) : A.busy;
+    if (said !== undefined) return answer(409, code === "PROJECT_REVISION_MISMATCH" ? "PROJECT_REVISION_MISMATCH" : "CHANGE_STALE", said);
+    return kind === "decide" ? answer(409, "CHANGE_STALE", AW.stale) : A.stale;
+  }
+  if (error.status === 503 && code === "AUDIT_UNAVAILABLE") return answer(503, "AUDIT_UNAVAILABLE", AW.audit);
+  return A.unavailable;
+}
 const statusRoute: Route = {
   method: "GET", path: /^\/projects\/([^/]+)\/setup-status$/u,
   answer: async (context) => {
@@ -222,9 +338,47 @@ const runReadRoute: Route = {
     if ("refusal" in at) return at.refusal;
     const got = await fromCode(context, "run", runPath(at.project));
     if ("refusal" in got) return got.refusal;
-    return runAnswerOk(got.value) ? { status: 200, body: got.value } : A.unavailable;
+    if (!runAnswerOk(got.value)) return A.unavailable;
+    // The waiting candidate (L4-D2) is rebuilt from its known fields; an unreadable one is no answer at all (never a card with a guessed risk or approver).
+    const read = got.value as Plain;
+    if (read["apply"] === undefined) return { status: 200, body: read };
+    try { return { status: 200, body: { ...read, apply: applyAnswer(read["apply"]) } }; } catch (error) { if (error instanceof Unreadable) return A.unavailable; throw error; }
   },
 };
+
+/** One approval act (confirm, discard or decide): the checked body goes to Code as the person; Code's answer is rebuilt and its refusals are Cloud's fixed words. */
+function approvalRoute<B>(tail: ApprovalKind, check: (body: unknown) => B | undefined, rebuild: (value: unknown, project: string, sent: B) => Plain, event: string, describe: (sent: B) => Record<string, string>): Route {
+  return {
+    method: "POST", path: new RegExp(`^/projects/([^/]+)/setup-agent/${tail}$`, "u"),
+    answer: async (context) => {
+      const at = await scope(context);
+      if ("refusal" in at) return at.refusal;
+      const given = check(context.body);
+      if (given === undefined) return A.invalid;
+      let value: unknown;
+      try {
+        value = await context.client.json<unknown>(context.session, runPath(at.project, `/${tail}`), { method: "POST", body: given });
+      } catch (error) {
+        // An ended sign-in is not a CodeError: it reaches the handler, which signs the person out.
+        if (error instanceof CodeError) return approvalRefusal(tail, error);
+        throw error;
+      }
+      let rebuilt: Plain;
+      try { rebuilt = rebuild(value, at.project, given); } catch (error) { if (error instanceof Unreadable) return A.unavailable; throw error; }
+      console.log(JSON.stringify({ event, project: at.project, ...describe(given) }));
+      return { status: 200, body: rebuilt };
+    },
+  };
+}
+
+const confirmRoute = approvalRoute("confirm", confirmBody, (value) => confirmAnswer(value), "cloud.setup_confirm", () => ({}));
+const discardRoute = approvalRoute("discard", runBody, (value) => { need(plain(value) && typeof value["discarded"] === "boolean", undefined); return { discarded: (value as Plain)["discarded"] }; }, "cloud.setup_discard", () => ({}));
+const decideRoute = approvalRoute("decide", decideBody, (value, project, sent) => {
+  need(plain(value) && value["project"] === project && oneOf(value["decision"], ["approved", "rejected"] as const) && value["decision"] === (sent.outcome === "approve" ? "approved" : "rejected")
+    && oneOf(value["risk"], RISKS) && whole(value["revision"], 1) && typeof value["replayed"] === "boolean", undefined);
+  const v = value as Plain;
+  return { project, decision: v["decision"], risk: v["risk"], revision: v["revision"], replayed: v["replayed"] };
+}, "cloud.setup_decide", (sent) => ({ outcome: sent.outcome }));
 
 function runChangeRoute(tail: "" | "/stop"): Route {
   return {
@@ -258,4 +412,4 @@ const journalRoute: Route = {
   },
 };
 
-export const SETUP_CHECKLIST_ROUTES: Route[] = [statusRoute, skipRoute, runReadRoute, runChangeRoute(""), runChangeRoute("/stop"), journalRoute];
+export const SETUP_CHECKLIST_ROUTES: Route[] = [statusRoute, skipRoute, runReadRoute, runChangeRoute(""), runChangeRoute("/stop"), journalRoute, confirmRoute, discardRoute, decideRoute];

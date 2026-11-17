@@ -1,0 +1,101 @@
+import { useRef, useState } from "react";
+import type { SetupApplyView, SetupDecideReply } from "@agentx/contracts/web";
+import { useSetupAgentApi } from "../../api/setup-agent.js";
+import { ApiError } from "../../api/errors.js";
+import { useAppHost } from "../../host.js";
+import { Button } from "../../design/Button.js";
+import { VisibleText } from "../../design/VisibleText.js";
+import { useNav } from "../account/use-nav.js";
+import { confirmedReturn, forgetConfirmed, startStepUpNonce, useJustConfirmed } from "../admin/parts.js";
+import { APPROVAL_WORDS as T } from "./words.js";
+import "./approval-card.css";
+
+/** The most change lines the card shows at first; the rest are one click away. */
+const SHOWN_CHANGES = 5;
+const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** Why the risk is what it is, in plain words (from the changed areas the server read; never from model text). */
+export function riskReason(apply: Pick<SetupApplyView, "risk" | "changes">): string {
+  if (apply.risk === "low") return T.why.low;
+  if (apply.risk === "medium") return T.why.medium;
+  const high = apply.changes.filter(change => change.risk === "high").map(change => T.area[change.area]);
+  return high.length === 0 ? T.why.highUnknown : `It changes ${high.join(", ")}.`;
+}
+
+function changeLines(apply: SetupApplyView): string[] {
+  return apply.changes.map(change => {
+    if (change.area === "setup_commands") return `Setup commands: ${String(apply.setup.length)} to run`;
+    if (change.area === "test_commands") return `Test commands: ${String(apply.readiness.length)} to run`;
+    return `${sentence(T.area[change.area])} changed`;
+  });
+}
+
+/**
+ * "Use this setup" approval (L4-D2, DEC 254z b): the candidate Rovara made, its risk in plain words, what changed, who may approve, and how its check on a fresh workspace went. Approve and Reject show only for a person Code says
+ * may give that answer (no dead buttons); anyone else reads one line about who approves. A decision always needs a fresh sign-in: the button sends the person to confirm it's them, then the next press decides, bound to exactly the
+ * revision and digest the read offered (never shown). A candidate that moved shows Cloud's fixed refusal and a Refresh. The server decides everything; this card only asks.
+ */
+export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefresh }: { project: string; apply: SetupApplyView; canManage: boolean; onDecided: (reply: SetupDecideReply | "discarded") => void; onRefresh: () => void }) {
+  const api = useSetupAgentApi();
+  const host = useAppHost();
+  const who = useNav()?.me.developerId;
+  const confirmed = useJustConfirmed(who);
+  const [stale, setStale] = useState(false), [busy, setBusy] = useState<"approve" | "reject" | "discard">(), [problem, setProblem] = useState<{ message: string; moved: boolean }>();
+  const sending = useRef(false);
+  const lines = changeLines(apply), more = lines.length - SHOWN_CHANGES;
+  const ready = apply.check.status === "ready", failed = apply.check.status === "failed";
+  const fresh = confirmed && !stale;
+  const approval = apply.approval;
+
+  function confirmItsYou() { host.signIn(confirmedReturn(host.currentPath(), startStepUpNonce(host.storage)), { stepUp: true }); }
+  async function decide(outcome: "approve" | "reject") {
+    if (approval === undefined || sending.current) return;
+    sending.current = true; setBusy(outcome); setProblem(undefined);
+    try {
+      onDecided(await api.decide(project, { requestId: approval.requestId, outcome, seen: { revision: approval.revision, artifactDigest: approval.artifactDigest } }));
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.code === "REAUTH_REQUIRED") { if (who !== undefined) forgetConfirmed(host.storage, who); setStale(true); }
+      else if (caught instanceof ApiError) setProblem({ message: caught.message, moved: caught.code === "CHANGE_STALE" || caught.code === "IDEMPOTENCY_CONFLICT" || caught.code === "PROJECT_REVISION_MISMATCH" });
+      else setProblem({ message: "Couldn't send that. Try again.", moved: false });
+    } finally { sending.current = false; setBusy(undefined); }
+  }
+  async function discard() {
+    if (sending.current) return;
+    sending.current = true; setBusy("discard"); setProblem(undefined);
+    try { await api.discard(project, crypto.randomUUID()); onDecided("discarded"); }
+    catch (caught) { setProblem({ message: caught instanceof ApiError ? caught.message : "Couldn't discard it. Try again.", moved: caught instanceof ApiError && caught.code === "CHANGE_STALE" }); }
+    finally { sending.current = false; setBusy(undefined); }
+  }
+  const allowed = ready && approval !== undefined && (apply.canApprove || apply.canReject);
+
+  return <section aria-label={T.heading} className="rv-approval" data-testid="setup-approval" data-risk={apply.risk} data-check={apply.check.status}>
+    <h4>{T.heading}</h4>
+    <p className="rv-approval-risk" data-testid="setup-approval-risk"><strong className={`rv-approval-chip rv-approval-${apply.risk}`}>{T.risk[apply.risk]}</strong> <span>{riskReason(apply)}</span></p>
+    <h5>What changed</h5>
+    <ul aria-label="What changed" className="rv-approval-changes">
+      {lines.slice(0, SHOWN_CHANGES).map((text, index) => <li key={index}>{text}</li>)}
+    </ul>
+    <p className="rv-approval-check" data-testid="setup-approval-check">
+      {apply.check.status === "checking" && <span role="status">{T.check.checking}</span>}
+      {ready && <span role="status">{T.check.ready}</span>}
+      {failed && <span role="alert">{T.check.failed}{apply.check.failedStep !== undefined && <> Failed at <code><VisibleText text={apply.check.failedStep} /></code>.</>}</span>}
+      {(apply.check.status === "unchecked" || apply.check.status === "outdated") && <span role="status">{T.check.stale}</span>}
+    </p>
+    <p className="rv-muted" data-testid="setup-approval-who">{T.who[apply.approver]}</p>
+    <details className="rv-approval-details">
+      <summary>Details</summary>
+      {more > 0 && <ul aria-label="More changes">{lines.slice(SHOWN_CHANGES).map((text, index) => <li key={index}>{text}</li>)}</ul>}
+      <p className="rv-proposal-meta">Setup commands</p>
+      {apply.setup.length === 0 ? <p>None.</p> : <ul aria-label="Setup commands">{apply.setup.map((command, index) => <li key={index}><code><VisibleText text={command} /></code></li>)}</ul>}
+      <p className="rv-proposal-meta">Test commands</p>
+      {apply.readiness.length === 0 ? <p>None.</p> : <ul aria-label="Test commands">{apply.readiness.map((command, index) => <li key={index}><code><VisibleText text={command} /></code></li>)}</ul>}
+    </details>
+    {allowed && <p className="rv-muted" data-testid="setup-approval-fresh" role="status">{stale ? T.stepUpOld : fresh ? T.stepUpDone : T.stepUp}</p>}
+    <div className="rv-connect-actions rv-approval-actions">
+      {allowed && apply.canApprove && <Button variant="primary" busy={busy === "approve"} disabled={busy !== undefined} data-testid="setup-approve" onClick={() => { if (fresh) void decide("approve"); else confirmItsYou(); }}>Approve</Button>}
+      {allowed && apply.canReject && <Button variant="danger" busy={busy === "reject"} disabled={busy !== undefined} data-testid="setup-reject" onClick={() => { if (fresh) void decide("reject"); else confirmItsYou(); }}>Reject</Button>}
+      {canManage && !ready && <Button busy={busy === "discard"} disabled={busy !== undefined} data-testid="setup-discard" onClick={() => { void discard(); }}>Discard this setup</Button>}
+    </div>
+    {problem !== undefined && <div role="alert" data-testid="setup-approval-problem"><p><VisibleText text={problem.message} /></p>{problem.moved && <Button data-testid="setup-approval-refresh" onClick={onRefresh}>Refresh</Button>}</div>}
+  </section>;
+}

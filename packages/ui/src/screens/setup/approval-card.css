@@ -1,0 +1,17 @@
+/* L4-D2: the setup approval card. Colors are the app's tokens only (light and dark come with them); a risk is always a word, never color alone. */
+.rv-approval { border: 1px solid var(--rv-border); border-radius: var(--rv-radius-md); background: var(--rv-bg-raised); padding: var(--rv-space-3) var(--rv-space-4); margin-block: var(--rv-space-3); max-width: 44rem; }
+.rv-approval h4 { margin: 0 0 var(--rv-space-2); }
+.rv-approval h5 { margin: var(--rv-space-3) 0 var(--rv-space-1); font-size: var(--rv-font-sm, .875rem); color: var(--rv-text-muted); font-weight: 600; }
+.rv-approval-risk { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--rv-space-2); margin: 0; }
+.rv-approval-chip { border: 1px solid; border-radius: 999px; padding: 0 var(--rv-space-2); font-size: .875rem; }
+.rv-approval-low { color: var(--rv-status-done); background: var(--rv-status-done-bg); border-color: var(--rv-status-done-border); }
+.rv-approval-medium { color: var(--rv-status-needs-you); background: var(--rv-status-needs-you-bg); border-color: var(--rv-status-needs-you-border); }
+.rv-approval-high { color: var(--rv-status-failed); background: var(--rv-status-failed-bg); border-color: var(--rv-status-failed-border); }
+.rv-approval-changes { margin: 0; padding-inline-start: 1.25rem; }
+.rv-approval-check { margin: var(--rv-space-3) 0 var(--rv-space-1); }
+.rv-approval-details { margin-block: var(--rv-space-2); }
+.rv-approval-details summary { cursor: pointer; }
+.rv-approval-details ul { margin: 0; padding-inline-start: 1.25rem; }
+.rv-approval-details code, .rv-approval code { overflow-wrap: anywhere; white-space: pre-wrap; }
+.rv-approval-actions { display: flex; flex-wrap: wrap; gap: var(--rv-space-2); margin-top: var(--rv-space-3); }
+@media (max-width: 480px) { .rv-approval { padding: var(--rv-space-3); } .rv-approval-actions > * { flex: 1 1 100%; } }

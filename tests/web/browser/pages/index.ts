@@ -8,7 +8,7 @@ export { ProjectPage } from "./project.js";
 export { RepoPickerPage, resetCreatedProjects } from "./repo-picker.js";
 export { PERSON, PROJECT, ROUTES, UNSERVED_SCREENS } from "./routes.js";
 export { PeoplePanel, SessionPage } from "./session.js";
-export { SetupChecklistPage, setSetupRun } from "./setup.js";
+export { SetupApprovalPage, SetupChecklistPage, setSetupApply, setSetupRun } from "./setup.js";
 export { ShellPage, UnavailablePage } from "./shell.js";
 export { SignedOutPage } from "./sign-in.js";
 export { WorkPage } from "./work.js";

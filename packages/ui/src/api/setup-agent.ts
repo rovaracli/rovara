@@ -2,7 +2,7 @@
 // command needs a fresh browser sign-in) and decides everything, so this client only asks. The gateway puts its own `requestId` in every answer and the contracts are strict, so it is set aside first.
 import { useMemo } from "react";
 import {
-  ProjectOverviewProjectSchema, SetupAgentCommandReplySchema, SetupAgentCommandRequestSchema, SetupAgentRequestBodySchema, SetupAgentViewSchema, SetupConfirmReplySchema, SetupConfirmRequestSchema, SetupJournalReplySchema,
+  ProjectOverviewProjectSchema, SetupAgentCommandReplySchema, SetupAgentCommandRequestSchema, SetupAgentRequestBodySchema, SetupAgentViewSchema, SetupConfirmReplySchema, SetupConfirmRequestSchema, SetupDecideReplySchema, SetupDecideRequestSchema, SetupDiscardReplySchema, SetupDiscardRequestSchema, SetupJournalReplySchema,
 } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
@@ -22,6 +22,10 @@ export function createSetupAgentApi(host: AppHost) {
     stop: (name: string, requestId: string) => api.sendAnswer("POST", base(name) + "/stop", SetupAgentRequestBodySchema.parse({ requestId }), view),
     command: (name: string, requestId: string, command: string) => api.sendAnswer("POST", base(name) + "/command", SetupAgentCommandRequestSchema.parse({ requestId, command }), exactAnswer(SetupAgentCommandReplySchema)),
     confirm: (name: string, body: ReturnType<typeof SetupConfirmRequestSchema.parse>) => api.sendAnswer("POST", base(name) + "/confirm", SetupConfirmRequestSchema.parse(body), exactAnswer(SetupConfirmReplySchema)),
+    /** L4-D2: drop the waiting candidate. */
+    discard: (name: string, requestId: string) => api.sendAnswer("POST", base(name) + "/discard", SetupDiscardRequestSchema.parse({ requestId }), exactAnswer(SetupDiscardReplySchema)),
+    /** L4-D2: approve or reject the waiting candidate, bound to the id, revision and digest the read offered. Code asks for a fresh step-up first; never sent twice by the client. */
+    decide: (name: string, body: ReturnType<typeof SetupDecideRequestSchema.parse>) => api.sendAnswer("POST", base(name) + "/decide", SetupDecideRequestSchema.parse(body), exactAnswer(SetupDecideReplySchema), { retry: "never" }),
   };
 }
 

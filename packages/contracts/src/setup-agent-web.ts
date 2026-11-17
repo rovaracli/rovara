@@ -7,6 +7,46 @@ import { SetupAgentLimitsSchema, SetupHostSchema, SetupJournalEntrySchema, Setup
 
 export const SETUP_AGENT_VIEW_STATUSES = ["none", "running", "ready", "failed"] as const;
 
+// L4-D (Code #899, DEC 254z b): the candidate setup waiting for a decision, as the run's read carries it once "Use this setup" was pressed (hosted Code only; the laptop decides on its own cards).
+export const SETUP_RISKS = ["low", "medium", "high"] as const;
+export const SETUP_CHANGE_AREAS = ["setup_commands", "test_commands", "test_mocks", "websites", "registries", "integrations", "dev_container", "other"] as const;
+export const SETUP_CHECK_STATES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
+export const SetupApplyViewSchema = z.object({
+  candidateRevision: z.number().int().min(1),
+  baseRevision: z.number().int().min(0),
+  /** The candidate's commands as a person would type them, whole. */
+  setup: z.array(z.string().min(1).max(2_000)).max(40),
+  readiness: z.array(z.string().min(1).max(2_000)).max(40),
+  /** Where the candidate's check on a fresh workspace stands; a decision is offered only once it is `ready`. */
+  check: z.object({ status: z.enum(SETUP_CHECK_STATES), failedStep: z.string().min(1).max(1_000).optional() }).passthrough(),
+  risk: z.enum(SETUP_RISKS),
+  changes: z.array(z.object({ area: z.enum(SETUP_CHANGE_AREAS), risk: z.enum(SETUP_RISKS) }).passthrough()).max(16),
+  /** Who must approve at this risk: a project maintainer (or a company owner or admin), or a company owner or admin. */
+  approver: z.enum(["maintainer", "admin"]),
+  canApprove: z.boolean(),
+  canReject: z.boolean(),
+  /** What a decision is bound to: the id Code offered and the revision and digest the person saw. Sent back as it is; never shown. */
+  approval: z.object({ requestId: z.string().regex(/^setup-[A-Za-z0-9_-]{2,122}$/u), revision: z.number().int().min(1), artifactDigest: z.string().regex(/^[0-9a-f]{64}$/u), kind: z.literal("setup"), risk: z.enum(SETUP_RISKS) }).passthrough().optional(),
+}).passthrough();
+export type SetupApplyView = z.infer<typeof SetupApplyViewSchema>;
+
+export const SetupDecideRequestSchema = z.object({
+  requestId: z.string().regex(/^setup-[A-Za-z0-9_-]{2,122}$/u),
+  outcome: z.enum(["approve", "reject"]),
+  seen: z.object({ revision: z.number().int().min(1), artifactDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).strict(),
+  reason: z.string().max(500).optional(),
+}).strict();
+export const SetupDecideReplySchema = z.object({
+  project: z.string().min(1).max(100),
+  decision: z.enum(["approved", "rejected"]),
+  risk: z.enum(SETUP_RISKS),
+  revision: z.number().int().min(1),
+  replayed: z.boolean(),
+}).passthrough();
+export type SetupDecideReply = z.infer<typeof SetupDecideReplySchema>;
+export const SetupDiscardRequestSchema = z.object({ requestId: z.string().uuid() }).strict();
+export const SetupDiscardReplySchema = z.object({ discarded: z.boolean() }).passthrough();
+
 export const SetupAgentViewSchema = z.object({
   status: z.enum(SETUP_AGENT_VIEW_STATUSES),
   basedOnRevision: z.number().int().min(0),
@@ -25,6 +65,8 @@ export const SetupAgentViewSchema = z.object({
   companySetupOff: z.literal(true).optional(),
   /** The company's locks row does not read: runs are held until an admin repairs it. */
   companyLocksUnreadable: z.literal(true).optional(),
+  /** The candidate waiting for a decision (hosted Code, after "Use this setup"). */
+  apply: SetupApplyViewSchema.optional(),
   /** A run a person stopped: who (a name, one plain line) and when. Its proposal, if it has one, is what the run had so far: unproven and never applied. */
   stoppedBy: z.object({ name: z.string().min(1).max(100), at: z.string().datetime() }).strict().optional(),
 }).passthrough();
@@ -60,6 +102,8 @@ export const SetupConfirmReplySchema = z.object({
   used: z.array(z.string().min(1).max(100)).max(64),
   unchecked: z.array(z.string().min(1).max(100)).max(64),
   left: z.array(z.object({ id: z.string().min(1).max(100), reason: z.enum(SETUP_CONFIRM_LEFT_OUT) }).strict()).max(200),
+  /** Hosted Code (L4-D): the revision the candidate was made at; the card that follows reads the candidate from the run's read. */
+  candidateRevision: z.number().int().min(1).optional(),
   /** Always false here: the Prove is the wizard's, on the project's setup check. */
   proved: z.boolean(),
   next: z.literal("check"),
