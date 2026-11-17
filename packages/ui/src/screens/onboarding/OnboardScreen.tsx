@@ -8,6 +8,10 @@ import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { Button } from "../../design/Button.js";
 import { ConnectGithubStep } from "./steps/ConnectGithubStep.js";
+import { GithubConnectResult, TRIAL_USED } from "./steps/GithubConnectResult.js";
+import { AddToSlackStep, SlackConnectResult } from "../connect/SlackConnect.js";
+import { LinearConnectResult } from "../connect/LinearConnect.js";
+import { useAppHost } from "../../host.js";
 import { RepositoriesStep } from "./steps/RepositoriesStep.js";
 import { SetupStep } from "./steps/SetupStep.js";
 import { AgentsStep } from "./steps/AgentsStep.js";
@@ -16,19 +20,29 @@ import { FirstSessionStep } from "./steps/FirstSessionStep.js";
 import "./onboarding.css";
 const steps=["Connect GitHub","Choose repositories","Setup","Agents","Invite teammates","First session"];
 const keys=["github","repositories","setup","agents","invite","first"];
+/** "Set up later" for the optional Add to Slack step (DEC 254k): this browser's choice only; it never blocks, and Slack connected always shows as done. */
+const SLACK_LATER_KEY="rovara.onboard.slack-later";
+function useSlackLater(){
+ const host=useAppHost(),[later,setLater]=useState(()=>{try{return host.storage.get(SLACK_LATER_KEY)==="1";}catch{return false;}});
+ const set=(value:boolean)=>{setLater(value);try{host.storage.set(SLACK_LATER_KEY,value?"1":"");}catch{/* Blocked storage: the step shows again next time. */}};
+ return [later,set] as const;
+}
 export function OnboardScreen(){
+ const [slackLater,setSlackLater]=useSlackLater();
  const api=useOnboardingApi(),query=useQueryClient(),[params,setParams]=useSearchParams(),me=useQuery({queryKey:["me"],queryFn:api.me}),canAdd=me.data?.developer.orgRole==="owner"||me.data?.developer.orgRole==="admin";
  const members=useQuery({queryKey:["org","members"],enabled:me.data!==undefined&&!canAdd,queryFn:api.members});
  const installations=useQuery({queryKey:["github","installations"],enabled:canAdd,queryFn:api.installations}),active=installations.data?.installations.filter(item=>item.status==="active")??[];
+ // Guided onboarding PR 2: the company's connected GitHub accounts (Code's read): the step is Done from real state, not a saved position.
+ const connections=useQuery({queryKey:["github","connections"],enabled:canAdd,queryFn:api.githubConnections,retry:false}),githubDone=(connections.data?.installations.length??0)>0||active.length>0,githubOutcome=params.get("github")??"";
  const rawProject=params.get("project"),valid=ProjectOverviewProjectSchema.shape.name.safeParse(rawProject),projectName=valid.success?valid.data:undefined;
  const project=useQuery({queryKey:["onboard","project",projectName],enabled:canAdd&&projectName!==undefined,queryFn:()=>api.project(projectName!)}),[polls,setPolls]=useState(0);
  const setupStatus=project.data?.setup.status,polledAt=project.dataUpdatedAt,pollProject=project.refetch;
  useEffect(()=>{if(setupStatus!=="checking"||polls>=30)return;const timer=setTimeout(()=>{setPolls(value=>value+1);void pollProject();},2000);return()=>clearTimeout(timer);},[setupStatus,polledAt,polls,pollProject]);
- const requested=keys.indexOf(params.get("step")??""),step=projectName!==undefined?Math.max(2,requested<0?(project.data?.setup.status==="ready"?3:2):requested):active.length>0?1:0;
+ const requested=keys.indexOf(params.get("step")??""),step=projectName!==undefined?Math.max(2,requested<0?(project.data?.setup.status==="ready"?3:2):requested):active.length>0&&requested!==0?1:0;
  function go(index:number,name=projectName){const next=new URLSearchParams();if(name)next.set("project",name);next.set("step",keys[index]!);setParams(next);}
  function update(value:AppProjectDetail){query.setQueryData(["onboard","project",value.name],value);setPolls(0);}
  if(me.isPending)return <Skeleton label="Loading onboarding"/>;
  if(me.isError)return <section><PageHeader title="Couldn't load your account"/><Button onClick={()=>{void me.refetch();}}>Try again</Button></section>;
  if(!canAdd)return <section><PageHeader title="Onboard a project" focusOnMount/>{members.isPending?<Skeleton label="Loading your admins"/>:members.isError?<><p role="alert">Couldn't load your organization's admins.</p><Button onClick={()=>{void members.refetch();}}>Try again</Button></>:<p>Only owners and admins can add projects. Ask <VisibleText text={members.data.members.filter(member=>member.role==="owner"||member.role==="admin").map(member=>member.name).join(", ")||"your organization owner"}/> to add one.</p>}</section>;
- return <section className="rv-onboarding"><PageHeader title="Onboard a project" description="A reproducible setup. Shared workflows. One place to work together." focusOnMount/>{params.get("github")==="trial_used"&&<aside className="rv-trial-banner"><p>This GitHub account already started a free trial for another organization. Connect a different GitHub account, or ask us about a plan.</p></aside>}<nav aria-label="Onboarding progress"><p className="rv-onboarding-count">Step {step+1} of 6</p><ol>{steps.map((label,index)=><li key={label} aria-current={index===step?"step":undefined}><span>{index+1}</span>{label}</li>)}</ol></nav><div className="rv-onboarding-workspace" key={projectName??"new"}>{installations.isPending?<Skeleton label="Checking your GitHub connection"/>:installations.isError?<><p role="alert">Couldn't check your GitHub connection.</p><Button onClick={()=>{void installations.refetch();}}>Try again</Button></>:projectName&&project.isPending?<Skeleton label="Loading your project"/>:projectName&&project.isError?<><p role="alert">Couldn't load this project.</p><Button onClick={()=>{void project.refetch();}}>Try again</Button></>:step===0?<ConnectGithubStep requested={params.get("github")==="requested"} refresh={()=>{void installations.refetch();}}/>:step===1?<RepositoriesStep installations={active} onCreated={name=>go(2,name)}/>:step===2&&project.data?<SetupStep key={projectName} project={project.data} onProject={update} refresh={()=>{setPolls(0);void project.refetch();}} onNext={()=>go(3)}/>:step===3&&projectName?<AgentsStep project={projectName} onNext={()=>go(4)}/>:step===4?<InviteStep onNext={()=>go(5)}/>:projectName?<FirstSessionStep project={projectName} ready={project.data?.setup.status==="ready"}/>:null}</div></section>;
+ return <section className="rv-onboarding"><PageHeader title="Onboard a project" description="A reproducible setup. Shared workflows. One place to work together." focusOnMount/>{githubOutcome==="trial_used"&&<aside className="rv-trial-banner"><p>{TRIAL_USED}</p></aside>}<GithubConnectResult outcome={githubOutcome}/><SlackConnectResult outcome={params.get("slack")??""}/><LinearConnectResult outcome={params.get("linear")??""}/><nav aria-label="Onboarding progress"><p className="rv-onboarding-count">Step {step+1} of 6</p><ol>{steps.map((label,index)=><li key={label} aria-current={index===step?"step":undefined} data-testid={index===0?"onboard-step-github":undefined}><span>{index+1}</span>{label}{index===0&&githubDone&&<em className="rv-step-done"> Done</em>}</li>)}</ol></nav><div className="rv-onboarding-workspace" key={projectName??"new"}>{installations.isPending?<Skeleton label="Checking your GitHub connection"/>:installations.isError?<><p role="alert">Couldn't check your GitHub connection.</p><Button onClick={()=>{void installations.refetch();}}>Try again</Button></>:projectName&&project.isPending?<Skeleton label="Loading your project"/>:projectName&&project.isError?<><p role="alert">Couldn't load this project.</p><Button onClick={()=>{void project.refetch();}}>Try again</Button></>:step===0?<ConnectGithubStep requested={githubOutcome==="requested"} done={githubDone} refresh={()=>{void installations.refetch();void connections.refetch();}}/>:step===1?<><AddToSlackStep skipped={slackLater} onSkip={()=>setSlackLater(true)} onUndoSkip={()=>setSlackLater(false)}/><RepositoriesStep installations={active} onCreated={name=>go(2,name)}/></>:step===2&&project.data?<SetupStep key={projectName} project={project.data} onProject={update} refresh={()=>{setPolls(0);void project.refetch();}} onNext={()=>go(3)}/>:step===3&&projectName?<AgentsStep project={projectName} onNext={()=>go(4)}/>:step===4?<InviteStep onNext={()=>go(5)}/>:projectName?<FirstSessionStep project={projectName} ready={project.data?.setup.status==="ready"}/>:null}</div></section>;
 }

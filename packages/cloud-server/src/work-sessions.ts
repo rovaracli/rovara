@@ -19,6 +19,11 @@ export interface WorkSession {
   /** Who owns it now: the starter, until someone takes it over. */
   owner: { developerId: string; name: string };
   createdAt: string;
+  /**
+   * The company the session was started in (DEC 253z), from Code's access check of its starter. Every read through a company's view
+   * (companyScopedWork) checks it. A session written before companies were stamped has none (see companyScopedWork).
+   */
+  companyId?: string;
   /** What a change to the session (a take-over) is asked against; it goes up with each change Cloud makes. */
   revision: number;
   /** People who follow the session (phase 2c); the owner always follows and is never listed. */
@@ -29,6 +34,13 @@ export interface WorkSession {
   messageRequests?: Record<string, string>;
   /** The store's version of this session as it was read; the store keeps it. A session without one is new. */
   storeVersion?: number;
+}
+
+/** A new session for a person Code names no company for: never written (companyScopedWork). */
+export class SessionCompanyMissing extends Error {
+  constructor() {
+    super("a new session needs the person's company");
+  }
 }
 
 /** The session changed since it was read (or a new one already exists): run the request again on the fresh session. */
@@ -143,4 +155,39 @@ export class LocalWorkSessionStore implements WorkSessionStore {
     });
     return { sessions, requests: { ...this.data.requests } };
   }
+}
+
+/**
+ * One company's view of the sessions (DEC 253z: Cloud's own records keyed by person carry the company and are checked on every read). The
+ * company is read from `companyOf()` at each call, so a route that refreshed the person's access check uses the fresh answer.
+ * - A stamped session of another company (or any stamped session, when the person has no company) reads as absent: the same answer as
+ *   a session that doesn't exist.
+ * - A new session is stamped with the company.
+ * - A new session is never written without a company: the write throws SessionCompanyMissing (the route that starts work refuses a person
+ *   with no company before that, so this only backs it up).
+ * - A session written before stamping (no `companyId`) stays readable, as before: every route that shows or changes one asks Code for its
+ *   task first, and Code's own company check refuses another company's task. All of them were written in the founders' company (DEC 254).
+ */
+export function companyScopedWork(store: WorkSessionStore, companyOf: () => string | undefined): WorkSessionStore {
+  const visible = (session: WorkSession | undefined): WorkSession | undefined => {
+    if (session === undefined) return undefined;
+    if (session.companyId === undefined) return session;
+    const companyId = companyOf();
+    return companyId !== undefined && session.companyId === companyId ? session : undefined;
+  };
+  return {
+    get: async (sessionId) => visible(await store.get(sessionId)),
+    byRequest: async (requestId) => visible(await store.byRequest(requestId)),
+    put: async (session, requestId) => {
+      const companyId = companyOf();
+      if (session.companyId !== undefined && session.companyId !== companyId) throw new StoreConflict(session.sessionId);
+      let stamped = session;
+      if (session.storeVersion === undefined && session.companyId === undefined) {
+        if (companyId === undefined) throw new SessionCompanyMissing();
+        stamped = { ...session, companyId };
+      }
+      await store.put(stamped, requestId);
+    },
+    startedBy: async (developerId) => (await store.startedBy(developerId)).filter((session) => visible(session) !== undefined),
+  };
 }

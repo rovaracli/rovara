@@ -12,12 +12,18 @@ import { CodeError, SignInEnded } from "./code-client.js";
 import type { CloudAuditStore } from "./audit-log.js";
 import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, parseCompanyAuditQuery } from "./company-audit.js";
 import { WORK_READS } from "./work-reads.js";
+import { ONBOARDING_ROUTES } from "./onboarding-routes.js";
+import { MEMBER_ROUTES } from "./member-routes.js";
+import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
+import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./project-create-routes.js";
+import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
+import { NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
 
-/** The company this Cloud shows, until companies are Cloud's own (phase 4). */
+/** The deployment's plan words. The company itself (its id and name) is never the deployment's: it comes from Code's access check (company-caller.ts). */
 export interface OrgView { orgId: string; name: string; plan: string }
 
 export interface RouteContext {
@@ -106,9 +112,9 @@ const PROJECT_IN_PATH = "([A-Za-z0-9][A-Za-z0-9._-]{0,99})";
 export const EVAL_CONFIRM_KEYS = ["taskId", "reportDigest", "selection", "paths"] as const;
 const evalConfirmNotOnCode = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Confirming an eval isn't connected to Rovara Code yet." } } };
 const evalConfirmRefused: RouteAnswer = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer confirms the eval." } } };
-/** A company administrator, or the project's maintainer (its "administrator" access, roleOf). Code re-checks the role live. */
-function confirmsEval(access: CodeAccess, project: string): boolean {
-  if (access.administrator === true) return true;
+/** A company owner or admin (Code's company role), or the project's maintainer (its "administrator" access, roleOf). Code re-checks the role live. */
+function confirmsEval(access: CodeAccess, companyRole: CompanyRole, project: string): boolean {
+  if (isCompanyAdmin(companyRole)) return true;
   const entry = mine(access, project);
   return entry !== undefined && roleOf(entry.access) === "maintainer";
 }
@@ -253,15 +259,21 @@ async function homeCards(context: RouteContext): Promise<{ cards: HomeCard[]; to
 
 export const ROUTES: Route[] = [
   {
-    // GET /v1/app/me (AppMeResponseSchema): the person from Code's access check, in the one company this Cloud shows.
+    // GET /v1/app/me (AppMeResponseSchema): the person and their company from Code's access check made now. No company: NOT_IN_COMPANY.
     method: "GET", path: /^\/me$/u,
-    answer: async ({ session, org }) => ok({
-      csrf: session.csrf,
-      // Not chosen only when Code says so; the app then asks once what teammates should call the person.
-      developer: { id: session.access.developerId, name: session.access.displayName, orgRole: session.access.administrator ? "owner" : "member", nameChosen: session.access.nameChosen !== false },
-      org,
-      identities: [{ provider: "oidc", linkedAt: session.signedInAt, lastSignInAt: session.signedInAt }],
-    }),
+    answer: async (context) => {
+      const who = await companyCaller(context);
+      // No company yet: still the sign-in's CSRF value, so the onboarding pages (creating a company) can send their one change.
+      if (refused(who)) return who === NOT_IN_COMPANY ? { status: who.status, body: { ...(who.body as object), csrf: context.session.csrf } } : who;
+      const { session, org } = context;
+      return ok({
+        csrf: session.csrf,
+        // Not chosen only when Code says so; the app then asks once what teammates should call the person.
+        developer: { id: who.developerId, name: who.name, orgRole: who.companyRole, nameChosen: who.access.nameChosen !== false },
+        org: { orgId: who.companyId, name: companyNameOf(who), plan: org.plan },
+        identities: [{ provider: "oidc", linkedAt: session.signedInAt, lastSignInAt: session.signedInAt }],
+      });
+    },
   },
   {
     // PUT /v1/app/me/name (SetMyNameBodySchema): the person's own name, stored in Code (PrepLabsAI/Rovara#634), which checks it. Only the name is passed on.
@@ -282,16 +294,18 @@ export const ROUTES: Route[] = [
     // GET /v1/app/nav (AppNavSchema): projects come from Code on every load, so a grant or revoke shows at once.
     method: "GET", path: /^\/nav$/u,
     answer: async (context) => {
-      const { client, session, org } = context;
-      const [access, home] = await Promise.all([client.access(session), homeCards(context)]);
+      const who = await companyCaller(context);
+      if (refused(who)) return who;
+      const { access } = who;
+      const home = await homeCards(context);
       return ok({
-        me: { developerId: access.developerId, name: access.displayName, orgRole: access.administrator ? "owner" : "member", nameChosen: access.nameChosen !== false },
-        org: { name: org.name },
+        me: { developerId: who.developerId, name: who.name, orgRole: who.companyRole, nameChosen: access.nameChosen !== false },
+        org: { name: companyNameOf(who) },
         homeCount: home.total,
         projects: access.projects.slice(0, 50).map((project) => ({ name: project.name, agents: [] })),
         shared: { agents: [], sessions: [] },
-        // Each turns on as its routes move to Code (phase 2 onwards).
-        features: { localAgents: false, usage: false, admin: access.administrator, chains: false, notices: false, describe: false },
+        // Each turns on as its routes move to Code (phase 2 onwards). Admin: a company owner or admin, never the install administrator.
+        features: { localAgents: false, usage: false, admin: isCompanyAdmin(who.companyRole), chains: false, notices: false, describe: false },
       });
     },
   },
@@ -310,7 +324,10 @@ export const ROUTES: Route[] = [
   {
     // POST /v1/app/projects (CreateProjectBodySchema): Code's client project create (spec 065b). A retried requestId answers the same project.
     method: "POST", path: /^\/projects$/u,
-    answer: async ({ client, session, body, now }) => {
+    answer: async (context) => {
+      // Guided onboarding PR 10: several repositories (one project, or one each) are project-create-routes.ts; the one-repository body below is unchanged.
+      if (isCreateProjectsBody(context.body)) return createProjects(context);
+      const { client, session, body, now } = context;
       const input = (body ?? {}) as { requestId?: string; repository?: string; name?: string; setupCommand?: string; testCommand?: string; setupCommands?: string[]; testCommands?: string[] };
       const earlier = input.requestId === undefined ? undefined : session.created?.[input.requestId];
       if (earlier !== undefined) return ok({ duplicate: true, project: { definition: { name: earlier.name }, registeredAt: earlier.at } });
@@ -418,7 +435,10 @@ export const ROUTES: Route[] = [
     method: "POST", path: new RegExp(`^/projects/${PROJECT_IN_PATH}/setup-agent/eval-confirm$`, "u"),
     answer: async ({ client, session, params, body }) => {
       const project = params[0]!;
-      if (!confirmsEval(session.access, project)) return evalConfirmRefused;
+      // The sign-in's latest access answer: Code re-checks the role live on its own route, so this only spares Code a call it would refuse.
+      const membership = companyOf(session.access);
+      if (membership === undefined) return NOT_IN_COMPANY;
+      if (!confirmsEval(session.access, membership.companyRole, project)) return evalConfirmRefused;
       if (body === null || typeof body !== "object" || Array.isArray(body)) return badRequest("Send the eval confirmation as a JSON object.");
       const given = body as Record<string, unknown>;
       const forwarded: Record<string, unknown> = {};
@@ -493,6 +513,9 @@ export const ROUTES: Route[] = [
       if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
       const text = typeof input.input?.text === "string" ? input.input.text.trim() : "";
       if (text === "") return badRequest("Say what the work is.");
+      // The person's company now (DEC 253z): no company, no work; the answer also refreshes the company the new session is stamped with.
+      const who = await companyCaller(context);
+      if (refused(who)) return who;
       const earlier = await context.work.byRequest(input.requestId);
       const project = context.params[0]!;
       if (earlier !== undefined) {
@@ -765,16 +788,17 @@ export const ROUTES: Route[] = [
     },
   },
   {
-    // GET /v1/app/company/audit (plan v3.2 7.5): Cloud's own audit records and Code's engine records as one list, newest first, for a company administrator of this company.
-    // Who: Code's access check now (not the sign-in's copy of it), and Code checks again on its own route. Which company: this Cloud's, never a parameter.
+    // GET /v1/app/company/audit (plan v3.2 7.5): Cloud's own audit records and Code's engine records as one list, newest first, for a company owner or admin.
+    // Who and which company: Code's access check now (company-caller.ts), never a parameter; Code checks again on its own route.
     method: "GET", path: /^\/company\/audit$/u,
     answer: async (context) => {
-      const access = await context.client.access(context.session);
-      if (access.administrator !== true) return { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company administrator can read the audit." } } };
+      const who = await companyCaller(context);
+      if (refused(who)) return who;
+      if (!isCompanyAdmin(who.companyRole)) return { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company administrator can read the audit." } } };
       if (context.audit === undefined) return auditUnavailable;
       try {
         const query = parseCompanyAuditQuery(context.query);
-        return ok(await listCompanyAudit({ store: context.audit, engine: codeEngineAuditSource(context.client, context.session), now: context.now }, context.org.orgId, query));
+        return ok(await listCompanyAudit({ store: context.audit, engine: codeEngineAuditSource(context.client, context.session), now: context.now }, who.companyId, query));
       } catch (error) {
         if (error instanceof CompanyAuditQueryRefused) return badRequest(error.message);
         // Code's own refusal and an ended sign-in are the handler's; anything else (the store) is "unavailable", with no cause.
@@ -786,5 +810,13 @@ export const ROUTES: Route[] = [
   // The Work page's reads (the split inbox): the task list and, for one task, its plan, proof index, events and plan comments.
   ...WORK_READS,
   ...LESSONS_ROUTES,
+  // Creating a company (DEC 254a), for a person with no company yet.
+  ...ONBOARDING_ROUTES,
+  ...MEMBER_ROUTES,
+  // A project's archive and restore, preview first (DEC 254n item 3): Code decides who may; Cloud passes the person's token and fixed words.
+  ...PROJECT_LIFECYCLE_ROUTES,
+  ...PROJECT_CREATE_ROUTES,
+  // The "AI and spending" step (guided onboarding PR 15): the company's AI model and a project's per-task limit, answered by Code as the person.
+  ...AI_SPEND_ROUTES,
   ...PEOPLE_ROUTES,
 ];

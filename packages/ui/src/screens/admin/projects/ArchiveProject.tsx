@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ReviewedProjectArchivePreviewReaderSchema, ReviewedProjectArchiveOutcomeReaderSchema, type ReviewedProjectArchivePreview, type ReviewedProjectArchiveOutcome } from "@agentx/contracts/web";
+import { PROJECT_LIFECYCLE_SENTENCES, ReviewedProjectArchivePreviewReaderSchema, ReviewedProjectArchiveOutcomeReaderSchema, type ReviewedProjectArchivePreview, type ReviewedProjectArchiveOutcome } from "@agentx/contracts/web";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";
@@ -10,7 +10,16 @@ import { VisibleText } from "../../../design/VisibleText.js";
 import { useAdminContext } from "../AdminLayout.js";
 // Only recognized application refusals are definitive; an unknown proxy response stays unknown.
 const refusalCodes = new Set(["AUTH_REQUIRED", "FORBIDDEN", "CSRF_STALE", "REAUTH_REQUIRED", "NOT_FOUND", "CONFIG_INVALID", "TOO_MANY_REQUESTS"]);
-const definiteRefusal = (error: unknown) => error instanceof ApiError && error.status >= 400 && error.status < 500 && refusalCodes.has(error.code);
+// Guided onboarding PR 17: Cloud's fixed "not on Code yet" and "not on the engine" refusals also record nothing.
+const notServed = new Set(["NOT_ON_CODE_YET", "ARCHIVE_NOT_AVAILABLE"]);
+const definiteRefusal = (error: unknown) => error instanceof ApiError && ((error.status >= 400 && error.status < 500 && refusalCodes.has(error.code)) || ((error.status === 501 || error.status === 503) && notServed.has(error.code)));
+/** Cloud's fixed lifecycle sentence on a refusal (PROJECT_LIFECYCLE_WORDS), never any other text the answer carried. */
+const fixedWords = (error: unknown) => error instanceof ApiError && PROJECT_LIFECYCLE_SENTENCES.has(error.message) ? error.message : "";
+/** Code's impact, in plain words. */
+function ArchiveImpact({ impact }: { impact: NonNullable<ReviewedProjectArchivePreview["impact"]> }) {
+ const channels = impact.linkedSlackChannels;
+ return <><p>New work stops: nobody can start a task in this project.</p><p>A task that is running now stops at its next step.</p><p>{channels === 0 ? "No Slack channel is linked to it." : `Its ${channels} linked Slack ${channels === 1 ? "channel stays" : "channels stay"} linked, but ${channels === 1 ? "starts" : "start"} nothing.`}</p><p>Nothing is deleted. You can restore the project later.</p></>;
+}
 type Attempt = { requestId: string; expectedOrgId: string; expectedRevision: number; expectedProjectRevision: number; acknowledgeNewWorkStops: true };
 // A timeout discards the late result; it does not cancel or repeat a write.
 async function bounded<T>(promise: Promise<T>): Promise<T> {
@@ -24,7 +33,7 @@ export function ArchiveProject({ name, available, observedStatus }: { name: stri
  const [preview, setPreview] = useState<ReviewedProjectArchivePreview>(), [checkedCurrent, setCurrent] = useState<ReviewedProjectArchivePreview>();
  // Shared checked detail may supersede this snapshot; keep its receipt/history separate.
  const current = checkedCurrent !== undefined && (observedStatus === undefined || checkedCurrent.status === observedStatus) ? checkedCurrent : undefined;
- const [receipt, setReceipt] = useState<ReviewedProjectArchiveOutcome>(), [message, setMessage] = useState(""), [uncertain, setUncertain] = useState(false), [stale, setStale] = useState(false);
+ const [receipt, setReceipt] = useState<ReviewedProjectArchiveOutcome>(), [message, setMessage] = useState(""), [uncertain, setUncertain] = useState(false), [stale, setStale] = useState(false), [said, setSaid] = useState("");
  const [attempt, setAttempt] = useState<Attempt>(), [isWriting, setIsWriting] = useState(false);
  // Fresh review is a new intent, not confirmation of an earlier request. Keep their IDs scoped here.
  const [unconfirmed, setUnconfirmed] = useState<string[]>([]);
@@ -43,6 +52,8 @@ export function ArchiveProject({ name, available, observedStatus }: { name: stri
   query.setQueryData(key, (old: Record<string, unknown> | undefined) => old === undefined ? old : { ...old, status: value.status });
   if (previous !== undefined && previous.latestRevision !== value.expectedProjectRevision) void query.invalidateQueries({ queryKey: key, exact: true });
   void query.invalidateQueries({ queryKey: ["admin", "projects", context.orgId, context.developerId] });
+  // The page's archive state and offered action follow the checked state.
+  void query.invalidateQueries({ queryKey: ["admin", "project-lifecycle", context.orgId, context.developerId, name], exact: true });
  }
  function deny(error: unknown) {
   if (error instanceof ApiError && [401, 403].includes(error.status)) void query.invalidateQueries({ queryKey: ["admin", "identity"] });
@@ -53,16 +64,16 @@ export function ArchiveProject({ name, available, observedStatus }: { name: stri
   try {
    const value = scoped(await bounded(api.get(`/v1/app/projects/${encodeURIComponent(name)}/archive-preview`, ReviewedProjectArchivePreviewReaderSchema)));
    if (!valid(token)) return;
-   publish(value);setPreview(value);setMessage("");
+   publish(value);setPreview(value);setMessage("");setSaid("");
    if (fresh) { setAttempt(undefined);setReceipt(undefined);setUncertain(false);setStale(false); }
-  } catch (error) { if (valid(token)) { setPreview(undefined);setCurrent(undefined);setMessage("Couldn't check this project. Refresh and review before archiving.");deny(error); } }
+  } catch (error) { if (valid(token)) { setPreview(undefined);setCurrent(undefined);setMessage("Couldn't check this project. Refresh and review before archiving.");setSaid(fixedWords(error));deny(error); } }
   finally { if (valid(token)) { sending.current = false;setBusy(false); } }
  }
  const samePins = preview !== undefined && (attempt === undefined || (preview.expectedRevision === attempt.expectedRevision && preview.expectedProjectRevision === attempt.expectedProjectRevision));
  const canWrite = !busy && !context.checking && available && !stale && ack && preview?.status === "active" && preview.access.actions.includes("archive") && samePins && receipt === undefined;
  async function commit() {
   if (sending.current || !canWrite || preview === undefined) return;
-  sending.current = true;writing.current = true;setIsWriting(true);setBusy(true);setAck(false);setCurrent(undefined);setMessage("");const token = ++epoch.current;
+  sending.current = true;writing.current = true;setIsWriting(true);setBusy(true);setAck(false);setCurrent(undefined);setMessage("");setSaid("");const token = ++epoch.current;
   const change: Attempt = attempt ?? { requestId: crypto.randomUUID(), expectedOrgId: context.orgId, expectedRevision: preview.expectedRevision, expectedProjectRevision: preview.expectedProjectRevision, acknowledgeNewWorkStops: true };
   setAttempt(change);
   let recorded = false;
@@ -78,9 +89,10 @@ export function ArchiveProject({ name, available, observedStatus }: { name: stri
   } catch (error) {
    if (!valid(token)) return;
    setPreview(undefined);setCurrent(undefined);
-   if (!recorded && error instanceof ApiError && error.status === 409 && error.code === "CHANGE_STALE") { setStale(true);setMessage("The project changed. Review the latest state before a new archive request."); }
+   if (!recorded && error instanceof ApiError && error.status === 409 && error.code === "CHANGE_STALE") { setStale(true);setMessage(fixedWords(error) || "The project changed. Review the latest state before a new archive request."); }
    else if (!recorded && definiteRefusal(error)) {
     const previouslyUnknown = unconfirmed.includes(change.requestId);
+    setSaid(fixedWords(error));
     setStale(true);setUncertain(previouslyUnknown);
     setMessage("This submission was refused. No new archive was recorded by this submission." + (previouslyUnknown ? " The earlier outcome for this request is still unconfirmed." : ""));
    } else {
@@ -103,16 +115,18 @@ export function ArchiveProject({ name, available, observedStatus }: { name: stri
   <p ref={status} tabIndex={-1} role="status">{!open && current ? `Current project status: ${current.status === "archived" ? "Archived" : "Active"}.` : !open && receipt ? "Current project status is unconfirmed." : !open && uncertain ? "Archive request outcome is unconfirmed. Reopen the review to check current state." : !open && earlierUnknown ? "An earlier archive request remains unconfirmed. Reopen the review to check current state." : ""}{!open && current && uncertain ? " Archive request outcome is unconfirmed." : !open && current && earlierUnknown ? " An earlier archive request remains unconfirmed." : ""}</p>
   <Dialog className="rv-admin-archive-review" title="Archive project" open={open} onOpenChange={changeOpen} onCloseAutoFocus={event => { event.preventDefault();if (current?.status === "archived" || !trigger.current) status.current?.focus();else trigger.current.focus(); }}>
    <p>Company: <VisibleText text={context.company} />. Project: <VisibleText text={name} />.</p>
-   <p>New work will stop. Existing work continues. Nothing is deleted.</p>
+   {preview?.impact ? <ArchiveImpact impact={preview.impact} /> : <p>New work will stop. Existing work continues. Nothing is deleted.</p>}
    <p ref={pendingStatus} role="status" aria-label="Archive request progress" tabIndex={-1} hidden={!busy && !message && receipt === undefined}>{busy ? "Checking the archive request…" : receipt ? "Archive receipt received. Current state is shown separately below." : message ? "Check finished. See the result below." : ""}</p>
+   {said && <p role="alert" className="rv-admin-lifecycle-said">{said}</p>}
    {(message || uncertain) && <p role="alert">{message || "Your archive request's outcome is unconfirmed. The checked current state does not confirm who changed it."}</p>}
    {earlierUnknown && <p role="alert">An earlier archive request remains unconfirmed. Reviewing new state does not confirm its outcome.</p>}
    {receipt && <><p>Original archive recorded at {receipt.receipt.archivedAt}. This receipt describes the original action.</p><p>Website synchronization: {receipt.effects.egress === "pending" ? "Unconfirmed; scheduled reconciliation remains available." : receipt.effects.egress === "not_attempted" ? "Not repeated for this receipt." : "This synchronization attempt completed."}</p>{receipt.effects.archiveHook === "pending" && <p>Archive notification is unconfirmed; no retry is queued.</p>}{receipt.effects.evidenceClean === "pending" && <p>This project's stored proof evidence is still being removed. It finishes on its own within a few minutes; nothing needs to be done.</p>}</>}
    {current && <p role="status">Current project status: {current.status === "archived" ? "Archived" : "Active"}.</p>}
    {preview && <p>Project revision: {preview.expectedProjectRevision}.</p>}
    {current && <p>Checked at {current.checkedAt}. Current state is separate from the original receipt.</p>}
-   {preview?.status === "active" && receipt === undefined && samePins && !stale && <label><input type="checkbox" checked={ack} disabled={busy || context.checking} onChange={event => setAck(event.target.checked)} /> I understand that new work stops and existing work continues.</label>}
-   {receipt === undefined && !stale && samePins && <Button variant="danger" disabled={!canWrite} onClick={() => void commit()}>{uncertain ? "Retry same archive request" : "Archive project"}</Button>}
+   {preview?.status === "active" && !preview.access.actions.includes("archive") && <p role="alert">Archiving isn't available to you for this project right now.</p>}
+   {preview?.status === "active" && preview.access.actions.includes("archive") && receipt === undefined && samePins && !stale && <label><input type="checkbox" checked={ack} disabled={busy || context.checking} onChange={event => setAck(event.target.checked)} /> {preview.impact ? "I understand that new work stops and a running task stops at its next step." : "I understand that new work stops and existing work continues."}</label>}
+   {receipt === undefined && !stale && samePins && preview?.access.actions.includes("archive") === true && <Button variant="danger" disabled={!canWrite} onClick={() => void commit()}>{uncertain ? "Retry same archive request" : "Archive project"}</Button>}
    {(uncertain || earlierUnknown || receipt !== undefined || message) && <Button disabled={busy || context.checking} onClick={() => void check()}>Check current state</Button>}
    {mayFreshReview && <Button disabled={busy || context.checking} onClick={() => void check(true)}>Review latest state</Button>}
    <Button disabled={isWriting} onClick={() => changeOpen(false)}>{attempt ? "Close" : "Cancel"}</Button>

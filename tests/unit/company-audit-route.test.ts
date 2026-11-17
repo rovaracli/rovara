@@ -7,6 +7,9 @@ import type { CompanyAuditPage } from "../../packages/contracts/src/code-contrac
 const CODE = "https://code.example.test";
 const ADA = "a".repeat(64);
 const GRACE = "f".repeat(64);
+/** Companies as Code names them (DEC 253z). */
+const ACME = "org_acme0000000000000000";
+const GLOBEX = "org_globex00000000000000";
 const BASE = Date.UTC(2026, 10, 14, 12, 0, 0);
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -31,7 +34,12 @@ function setUp(options: { audit?: CloudAuditStore | null; behavior?: AuditBehavi
     if (url.pathname === "/v1/dev/access") {
       // Ada is an administrator in Code; Grace is not; "stale" is Ada's sign-in after Code removed her administrator role.
       const who = authorization === "Bearer ada-token" ? { developerId: ADA, displayName: "Ada", administrator: true } : authorization === "Bearer grace-token" ? { developerId: GRACE, displayName: "Grace", administrator: false } : { developerId: ADA, displayName: "Ada", administrator: false };
-      return json(200, { ...who, projects: [], notices: [] });
+      // DEC 253z: the company and the company role decide; Ada's stale sign-in is a plain member now.
+      // "install-token": Code's install administrator, a plain member of the company; "owner-token": the company's owner, not an install administrator.
+      const role = authorization === "Bearer install-token" ? "member" : authorization === "Bearer owner-token" ? "owner" : who.administrator ? "admin" : "member";
+      if (authorization === "Bearer install-token") who.administrator = true;
+      const company = { companyId: options.org ?? ACME, companyRole: role };
+      return json(200, { ...who, ...company, projects: [], notices: [] });
     }
     // A sign-in Code has ended: its refresh is refused too.
     if (url.pathname === "/v1/auth/token") return json(400, { error: "invalid_grant" });
@@ -47,7 +55,7 @@ function setUp(options: { audit?: CloudAuditStore | null; behavior?: AuditBehavi
   const audit = options.audit === undefined ? new LocalCloudAuditStore() : options.audit ?? undefined;
   const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: "http://127.0.0.1:8787/callback", scopes: "projects:members", fetch: fetchImpl });
   const handler = createCloudHandler({
-    client, store, work: new LocalWorkSessionStore(), origin: "https://cloud.example.test", org: { orgId: options.org ?? "acme", name: "Acme", plan: "test" },
+    client, store, work: new LocalWorkSessionStore(), origin: "https://cloud.example.test", org: { orgId: "rovara", name: "Rovara", plan: "test" },
     callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(BASE + 86_400_000), ...(audit === undefined ? {} : { audit }),
   });
   const cookies = new Map<string, string>();
@@ -86,6 +94,13 @@ describe("who may read the company audit", () => {
     expect(world.calls).toHaveLength(0);
   });
 
+  it("a company admin is the company owner or admin, never Code's install administrator", async () => {
+    const world = setUp({ behavior: () => json(200, { records: [] }) });
+    expect((await world.get("/v1/web/company/audit", await world.signIn("install-token", true))).status).toBe(403);
+    expect(world.calls).toHaveLength(0);
+    expect((await world.get("/v1/web/company/audit", await world.signIn("owner-token", false))).status).toBe(200);
+  });
+
   it("asks Code now: a sign-in that still says administrator is refused once Code says otherwise", async () => {
     const world = setUp({ behavior: () => json(200, { records: [] }) });
     const stale = await world.signIn("stale-token", true);
@@ -121,8 +136,8 @@ describe("the merged list", () => {
     const world = setUp({
       behavior: () => json(200, { records: [engineJson(BASE + 1000, 1), engineJson(BASE + 3000, 2)], skipped: 0 }),
     });
-    const mine = [cloudRow("acme", BASE + 2000), cloudRow("acme", BASE + 4000, { action: "hook.start.answered", project: "payments", subject: "task:t9", detail: "over_estimate_limit", outcome: "refused", via: "policy-hook" })];
-    await world.audit.append(cloudRow("globex", BASE + 2500));
+    const mine = [cloudRow(ACME, BASE + 2000), cloudRow(ACME, BASE + 4000, { action: "hook.start.answered", project: "payments", subject: "task:t9", detail: "over_estimate_limit", outcome: "refused", via: "policy-hook" })];
+    await world.audit.append(cloudRow(GLOBEX, BASE + 2500));
     for (const row of mine) await world.audit.append(row);
     const answer = await world.get("/v1/web/company/audit", await admin(world));
     expect(answer.status).toBe(200);
@@ -141,8 +156,8 @@ describe("the merged list", () => {
 
   it("passes the filters on to Code and applies them to Cloud's records", async () => {
     const world = setUp({ behavior: () => json(200, { records: [] }) });
-    await world.audit.append(cloudRow("acme", BASE + 1000, { project: "payments" }));
-    await world.audit.append(cloudRow("acme", BASE + 2000, { project: "web" }));
+    await world.audit.append(cloudRow(ACME, BASE + 1000, { project: "payments" }));
+    await world.audit.append(cloudRow(ACME, BASE + 2000, { project: "web" }));
     const from = iso(BASE), to = iso(BASE + 5000);
     const answer = await world.get(`/v1/web/company/audit?from=${from}&to=${to}&person=${ADA}&project=payments&action=company.*`, await admin(world));
     expect(answer.body.records).toHaveLength(1);
@@ -153,7 +168,7 @@ describe("the merged list", () => {
   it("pages through the list with the cursor it hands back, across both sources", async () => {
     const engineRows = [engineJson(BASE + 1500, 1), engineJson(BASE + 2500, 2)];
     const world = setUp({ behavior: (call) => json(200, { records: engineRows.filter((row) => call.search.get("to") === null || Date.parse(row.at) <= Date.parse(call.search.get("to")!)) }) });
-    const rows = [cloudRow("acme", BASE + 1000), cloudRow("acme", BASE + 2000), cloudRow("acme", BASE + 3000)];
+    const rows = [cloudRow(ACME, BASE + 1000), cloudRow(ACME, BASE + 2000), cloudRow(ACME, BASE + 3000)];
     for (const row of rows) await world.audit.append(row);
     const cookie = await admin(world);
     const first = await world.get("/v1/web/company/audit?limit=2", cookie);
@@ -169,9 +184,9 @@ describe("the merged list", () => {
 });
 
 describe("one company", () => {
-  it("shows each company only its own records, and the company is Cloud's, never the query's", async () => {
+  it("shows each company only its own records, and the company is Code's answer, never the query's", async () => {
     const acme = setUp({ behavior: () => json(200, { records: [] }) });
-    const mine = cloudRow("acme", BASE + 1000), theirs = cloudRow("globex", BASE + 2000);
+    const mine = cloudRow(ACME, BASE + 1000), theirs = cloudRow(GLOBEX, BASE + 2000);
     await acme.audit.append(mine);
     await acme.audit.append(theirs);
     const answer = await acme.get("/v1/web/company/audit", await admin(acme));
@@ -184,19 +199,19 @@ describe("one company", () => {
     expect(acme.calls).toHaveLength(1);
   });
 
-  it("reads under the company of this Cloud: the same store read as another company shows that company's records", async () => {
+  it("reads under the company Code names for the person: the same store read as another company shows that company's records", async () => {
     const shared = new LocalCloudAuditStore();
-    const row = cloudRow("globex", BASE);
+    const row = cloudRow(GLOBEX, BASE);
     await shared.append(row);
-    await shared.append(cloudRow("acme", BASE + 1));
-    const globex = setUp({ audit: shared, org: "globex", behavior: () => json(200, { records: [] }) });
+    await shared.append(cloudRow(ACME, BASE + 1));
+    const globex = setUp({ audit: shared, org: GLOBEX, behavior: () => json(200, { records: [] }) });
     const answer = await globex.get("/v1/web/company/audit", await admin(globex));
     expect(answer.body.records.map((entry) => entry.id)).toEqual([`cloud:${row.id}`]);
   });
 
   it("refuses a company id that is not valid, rather than reading a partition for it", async () => {
     const world = setUp({ org: "a#b", behavior: () => json(200, { records: [] }) });
-    expect((await world.get("/v1/web/company/audit", await admin(world))).status).toBe(503);
+    expect((await world.get("/v1/web/company/audit", await admin(world))).body).toEqual({ error: { code: "NO_COMPANY", message: "You're not in a company yet." } });
     expect(world.calls).toHaveLength(0);
   });
 });
@@ -215,7 +230,7 @@ describe("when Code does not serve the engine records", () => {
   ];
   it.each(states)("shows Cloud's own records and the marker after %s", async (_name, behavior, state) => {
     const world = setUp({ behavior });
-    const row = cloudRow("acme", BASE);
+    const row = cloudRow(ACME, BASE);
     await world.audit.append(row);
     const answer = await world.get("/v1/web/company/audit", await admin(world));
     expect(answer.status).toBe(200);

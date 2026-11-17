@@ -88,8 +88,9 @@ const cloud = createCloudHandler({
   org: { orgId: "rovara", name: process.env.CLOUD_ORG_NAME ?? "Rovara", plan: "local" },
   callbackPath: "/callback", secureCookies: secure,
   work: new LocalWorkSessionStore(process.env.CLOUD_WORK_SESSIONS_FILE), origin,
-  // CLOUD_COMPANY_ID: company settings, invites and profile in this server's memory, for the one company of a single-company Code.
-  ...(process.env.CLOUD_COMPANY_ID ? { company: { store: new LocalCompanyStore(), companyId: process.env.CLOUD_COMPANY_ID } } : {}),
+  // CLOUD_COMPANY_DATA=memory: company settings, invites and profile in this server's memory. The company is always the one Code's access
+  // check names (DEC 253z); this only says where Cloud keeps its own company data.
+  ...(process.env.CLOUD_COMPANY_DATA === "memory" ? { company: { store: new LocalCompanyStore() } } : {}),
 });
 const appDirectory = process.env.CLOUD_APP_DIRECTORY ?? join(resolve(process.cwd(), "packages/web/dist"), "app");
 const app = createAppHandler({ appDirectory, assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });

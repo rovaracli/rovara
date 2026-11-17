@@ -205,6 +205,41 @@ function contract(name: string, make: () => CompanyStore) {
       await store.createInvite({ ...invite(A), requestId: two.requestId });
     });
 
+    it("confirms an unconfirmed invite under Code's token hash in one write: the old hash names nothing, the new one names it (DEC 254h)", async () => {
+      const store = make();
+      const one = invite(A);
+      await store.createInvite(one);
+      const next = randomBytes(32).toString("hex");
+      const confirmed: InviteRecord = { ...one, state: "pending", tokenHash: next, codeSecret: true };
+      // Only from unconfirmed at its revision.
+      await expect(store.confirmInvite({ ...one, revision: 1 }, { ...confirmed, revision: 1 })).rejects.toBeInstanceOf(CompanyStoreConflict);
+      // Never another invite, another company, or a state other than pending.
+      await expect(store.confirmInvite(one, { ...confirmed, inviteId: invite(A).inviteId })).rejects.toThrow();
+      await expect(store.confirmInvite(one, { ...confirmed, companyId: B })).rejects.toThrow();
+      await expect(store.confirmInvite(one, { ...confirmed, state: "accepted" })).rejects.toThrow();
+      await expect(store.confirmInvite(one, { ...confirmed, requestId: invite(A).requestId })).rejects.toThrow();
+      // Another invite already holds the new hash.
+      const other = invite(A);
+      await store.createInvite(other);
+      await expect(store.confirmInvite(one, { ...confirmed, tokenHash: other.tokenHash })).rejects.toBeInstanceOf(CompanyStoreConflict);
+      expect(await store.invite(A, one.inviteId)).toEqual(one);
+      await store.confirmInvite(one, confirmed);
+      expect(await store.invite(A, one.inviteId)).toEqual(confirmed);
+      expect(await store.inviteByToken(next)).toEqual(confirmed);
+      expect(await store.inviteByToken(one.tokenHash)).toBeUndefined();
+      // Once: it isn't unconfirmed any more.
+      await expect(store.confirmInvite(one, { ...confirmed, tokenHash: randomBytes(32).toString("hex") })).rejects.toBeInstanceOf(CompanyStoreConflict);
+      expect(await store.inviteByToken(next)).toEqual(confirmed);
+      // An invite already made pending (under its own token) is never re-keyed.
+      const own = invite(A);
+      await store.createInvite(own);
+      await store.updateInvite({ ...own, state: "pending" }, { revision: 0, state: "unconfirmed" });
+      await expect(store.confirmInvite(own, { ...own, state: "pending", tokenHash: randomBytes(32).toString("hex") })).rejects.toBeInstanceOf(CompanyStoreConflict);
+      expect(await store.inviteByToken(own.tokenHash)).toMatchObject({ inviteId: own.inviteId, state: "pending" });
+      // The other company's invite is untouched.
+      expect(await store.inviteByToken(other.tokenHash)).toEqual(other);
+    });
+
     it("keeps the hook's install allow-list, refusing an install that does not read", async () => {
       const store = make();
       expect(await store.hookInstall(install().issuer)).toBeUndefined();
@@ -214,6 +249,19 @@ function contract(name: string, make: () => CompanyStore) {
       await expect(store.putHookInstall(install({ companyIds: ["acme"] }))).rejects.toThrow();
       await store.removeHookInstall(install().issuer);
       expect(await store.hookInstall(install().issuer)).toBeUndefined();
+    });
+
+    it("gives a GitHub account's one trial to the first company that connects it, and never moves it (guided onboarding PR 2)", async () => {
+      const store = make();
+      expect(await store.claimGithubTrial(4242, A, iso(NOW))).toBe("claimed");
+      expect(await store.claimGithubTrial(4242, A, iso(NOW + 1))).toBe("held");
+      expect(await store.claimGithubTrial(4242, B, iso(NOW + 2))).toBe("other");
+      // Still A's after B asked.
+      expect(await store.claimGithubTrial(4242, A, iso(NOW + 3))).toBe("held");
+      expect(await store.claimGithubTrial(7, B, iso(NOW))).toBe("claimed");
+      await expect(store.claimGithubTrial(0, A, iso(NOW))).rejects.toThrow();
+      await expect(store.claimGithubTrial(1.5, A, iso(NOW))).rejects.toThrow();
+      await expect(store.claimGithubTrial(9, "acme", iso(NOW))).rejects.toThrow();
     });
 
     it("answers the hook from the store: defaults, saved settings, and nothing for a row that does not read", async () => {

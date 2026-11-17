@@ -5,6 +5,8 @@ import { createHash, randomBytes } from "node:crypto";
 import type { SecretReader } from "./client-secret.js";
 import { STEP_UP_ACR } from "./step-up.js";
 import type { CodeSession, RefreshGuard } from "./sessions.js";
+import type { GithubPending } from "./github-connect.js";
+import type { ConnectPending } from "./connect-flow.js";
 
 export interface CodeClientOptions {
   /** The Code install's API, such as https://abc.execute-api.us-east-1.amazonaws.com. */
@@ -25,9 +27,16 @@ export interface CodeAccess {
   displayName: string;
   /** True once the person chose their own name in Code (PrepLabsAI/Rovara#634). An older Code leaves it out. */
   nameChosen?: boolean;
+  /** Install administrator (Code's own meaning). Never the company role: company-caller.ts reads `companyRole` for that. */
   administrator: boolean;
-  /** The person's company (the isolation boundary, plan 2.4), once Code names it (lane T). A single-company Code leaves it out. */
+  /** The person's company (the isolation boundary, plan 2.4), from live membership (Code PR #820). Absent: Code names no company, and Cloud refuses company routes. */
   companyId?: string;
+  /** The person's role in that company (Code PR #820). */
+  companyRole?: string;
+  /** The company's own name, when Code keeps one. */
+  companyName?: string;
+  /** True only when this session's sign-in spent an invite secret or a pre-approval for the session's company (Code PR #826). */
+  joinedByInvite?: boolean;
   projects: Array<{ name: string; access: string }>;
   notices: string[];
 }
@@ -46,7 +55,24 @@ export class SignInEnded extends Error {
   }
 }
 
-export interface PendingSignIn { verifier: string; returnTo: string; at: number }
+export interface PendingSignIn {
+  verifier: string;
+  returnTo: string;
+  at: number;
+  /** A join from an invite link (onboarding-routes.ts): the invite's token hash. On a join ticket, and on the sign-in it starts. */
+  invite?: string;
+  /** True on a join ticket (kept by the join page's lookup), never on a sign-in under way: the callback refuses a ticket. */
+  joinTicket?: true;
+  /**
+   * On a join ticket for an invite whose link carries Code's invite secret (DEC 254h): that secret, sealed (AES-256-GCM) under a key only the
+   * ticket's cookie holds, so no store ever keeps it readable. Never on a sign-in under way.
+   */
+  sealedSecret?: string;
+  /** Guided onboarding PR 2 (github-connect.ts): a GitHub connect's cookie binding or its result, never a sign-in; the sign-in callback refuses it. */
+  github?: GithubPending;
+  /** Guided onboarding PR 11 (connect-flow.ts): a Slack or Linear connect's cookie binding or its result, never a sign-in; the sign-in callback refuses it. */
+  connect?: ConnectPending;
+}
 
 /** How long a call to Code's token or revoke endpoint may take: well inside a refresh's hold on the session. */
 const TOKEN_CALL_MS = 10_000;
@@ -100,7 +126,7 @@ export class CodeClient {
    * Step 1 of sign-in: the URL to send the browser to, and what to keep until it comes back. `stepUp` asks Code for a fresh step-up with
    * a factor Code owns (`acr_values=step-up`), which a sensitive change in Cloud needs.
    */
-  startSignIn(returnTo: string, now: number, options: { stepUp?: boolean } = {}): { url: string; state: string; pending: PendingSignIn } {
+  startSignIn(returnTo: string, now: number, options: { stepUp?: boolean; company?: string; invite?: string; inviteSecret?: string } = {}): { url: string; state: string; pending: PendingSignIn } {
     const verifier = randomBytes(32).toString("base64url");
     const state = randomBytes(24).toString("base64url");
     const url = new URL(`${this.base}/v1/auth/authorize`);
@@ -108,8 +134,13 @@ export class CodeClient {
       response_type: "code", client_id: this.options.clientId, redirect_uri: this.options.redirectUri, state, scope: this.options.scopes,
       code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256",
       ...(options.stepUp === true ? { acr_values: STEP_UP_ACR } : {}),
+      // A join: the company the invite names, chosen by Cloud's server (never the browser). Code still checks the email's pre-approval.
+      ...(options.company === undefined ? {} : { company: options.company }),
+      // DEC 254h: Code's single-use invite secret, from Cloud's server (the join ticket), with the invite's company. Code checks it is live,
+      // bound to that company and unspent, and spends it with the membership. Only on Code's own authorize URL; never kept on the sign-in.
+      ...(options.company === undefined || options.inviteSecret === undefined ? {} : { invite: options.inviteSecret }),
     }).toString();
-    return { url: url.toString(), state, pending: { verifier, returnTo, at: now } };
+    return { url: url.toString(), state, pending: { verifier, returnTo, at: now, ...(options.invite === undefined ? {} : { invite: options.invite }) } };
   }
 
   /** Step 2: the code Code sent back, exchanged for the person's tokens, and who they are. */
@@ -124,6 +155,9 @@ export class CodeClient {
   /** The access check as the person; refreshes the session's token when it has expired. */
   async access(session: CodeSession): Promise<CodeAccess> {
     const access = await this.json<CodeAccess>(session, "/v1/dev/access", { method: "POST", body: {} });
+    const before = session.access as CodeAccess | undefined;
+    // The stored sign-in keeps the company Code names now (company-caller.ts reads it for Cloud's own session records), so it is saved when it moved.
+    if (before?.companyId !== access.companyId || before?.companyRole !== access.companyRole) session.changed = true;
     session.access = access;
     return access;
   }
