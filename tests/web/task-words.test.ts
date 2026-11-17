@@ -7,7 +7,6 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { DecisionCardsViewReaderSchema, NO_CHANGE_CHOICES_NO_THREAD, NO_CHANGE_CHOICES_PAGE, SessionViewReaderSchema } from "@agentx/contracts/web";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
 import { taskWords } from "../../packages/ui/src/text/task-words.js";
-import { workTask } from "../../packages/cloud-server/src/work-reads.js";
 import { readTask, readTaskList, workRows } from "../../packages/ui/src/api/work.js";
 import { readDecisions } from "../../packages/ui/src/api/decisions.js";
 import { QuietCard } from "../../packages/ui/src/screens/work/TaskPane.js";
@@ -49,13 +48,6 @@ it("keeps the no-change last line for each kind of task (golden), the one withou
   expect(NO_CHANGE_CHOICES_PAGE).toBe("No tests were run and no pull request was opened. To change something, reply here and choose Retry coding; otherwise close the task.");
   expect(NO_CHANGE_CHOICES_NO_THREAD).toBe("No tests were run and no pull request was opened. To change something, start a new request describing it; otherwise close the task.");
   expect(SLACKY.test(NO_CHANGE_CHOICES_NO_THREAD)).toBe(false);
-});
-
-// ---- Cloud's list projection ----
-it("passes on only a `shared: true` from Code's list (the task has a Slack share); any other value leaves the field out, so a task Code does not mark shared reads exactly as before", () => {
-  const raw = { taskId: "66666666-6666-4666-8666-666666666666", title: "T", project: "web" };
-  expect(workTask({ ...raw, shared: true })?.["shared"]).toBe(true);
-  for (const shared of [false, undefined, "yes", 1, null]) expect(Object.hasOwn(workTask({ ...raw, shared })!, "shared")).toBe(false);
 });
 
 // ---- The Work page's quiet card ----

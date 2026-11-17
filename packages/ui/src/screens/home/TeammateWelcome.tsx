@@ -26,11 +26,13 @@ export function TeammateWelcome() {
  const projects = show ? nav.projects.slice(0, WELCOME_PROJECTS).map(project => project.name) : [];
  // Each project's channel is asked only when the welcome shows.
  const reads = useQueries({ queries: projects.map(project => ({ queryKey: setupChecklistKey(project), queryFn: () => api.status(project), retry: false })) });
+// "Or in its Slack channel" is said only when a project shown here really has a linked channel (a person who signs in with GitHub or Cloud may join a project with none).
+ const hasChannel = reads.some(read => (read.data?.slackChannel.channels.length ?? 0) > 0);
  if (!show || nav === undefined || developerId === undefined) return null;
  function dismiss() { setSeen(true); try { host.storage.set(seenKey(developerId!), "1"); } catch { /* Blocked storage: it shows again next time. */ } }
  return <section className="rv-welcome" aria-labelledby="rv-welcome-heading" data-testid="teammate-welcome">
   <h2 id="rv-welcome-heading">Welcome to <VisibleText text={nav.org.name} /></h2>
-  <p>You're in {projects.length === 1 ? "this project" : "these projects"}. Start a task here, or in its Slack channel.</p>
+  <p>You're in {projects.length === 1 ? "this project" : "these projects"}. Start a task here{hasChannel ? ", or in its Slack channel" : ""}.</p>
   <ul className="rv-welcome-projects">{projects.map((project, index) => {
    const channels = reads[index]?.data?.slackChannel.channels ?? [];
    return <li key={project} data-testid="welcome-project">
