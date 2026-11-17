@@ -88,7 +88,7 @@ describe("the cap: min(company monthly cap, project monthly cap)", () => {
     await w.seed(A, budgets(9, 4));
     const answer = await call(w.opts, ask());
     expect(Object.keys(answer.body as object).sort()).toEqual(["company", "monthlyCapMicros", "project"]);
-    expect(w.wire.calls.filter((c) => c.operation === "GetItem").map((c) => c.keys)).toEqual([[{ pk: `COMPANY#${A}`, sk: "SETTINGS" }]]);
+    expect(w.wire.calls.filter((c) => c.operation === "GetItem").map((c) => c.keys)).toEqual([[{ pk: `COMPANY#${A}`, sk: "SETTINGS" }], [{ pk: `COMPANY#${A}`, sk: `SPEND_LIMIT#PROJECT#${PROJECT}` }]]);
   });
 });
 
