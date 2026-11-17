@@ -12,6 +12,7 @@ import { CodeError, SignInEnded } from "./code-client.js";
 import type { CloudAuditStore } from "./audit-log.js";
 import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, parseCompanyAuditQuery } from "./company-audit.js";
 import { WORK_READS } from "./work-reads.js";
+import { ONBOARDING_ROUTES } from "./onboarding-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
@@ -257,7 +258,8 @@ export const ROUTES: Route[] = [
     method: "GET", path: /^\/me$/u,
     answer: async (context) => {
       const who = await companyCaller(context);
-      if (refused(who)) return who;
+      // No company yet: still the sign-in's CSRF value, so the onboarding pages (creating a company) can send their one change.
+      if (refused(who)) return who === NOT_IN_COMPANY ? { status: who.status, body: { ...(who.body as object), csrf: context.session.csrf } } : who;
       const { session, org } = context;
       return ok({
         csrf: session.csrf,
@@ -800,4 +802,6 @@ export const ROUTES: Route[] = [
   // The Work page's reads (the split inbox): the task list and, for one task, its plan, proof index, events and plan comments.
   ...WORK_READS,
   ...LESSONS_ROUTES,
+  // Creating a company (DEC 254a), for a person with no company yet.
+  ...ONBOARDING_ROUTES,
 ];

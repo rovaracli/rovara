@@ -18,6 +18,7 @@ import { ROUTES, type OrgView, type Route, type RouteAnswer } from "./routes.js"
 import type { SessionStore } from "./sessions.js";
 import { StoreConflict, companyScopedWork, type WorkSessionStore } from "./work-sessions.js";
 import { companyOf } from "./company-caller.js";
+import { JOIN_UNUSABLE, inviteTokenHash, linkToken, usableInvite } from "./onboarding-routes.js";
 
 export interface CloudRequest {
   method: string;
@@ -58,6 +59,13 @@ export interface CloudHandlerOptions {
 }
 
 const COOKIE = "rovara_cloud_session";
+/** The join ticket's cookie (onboarding-routes.ts): opaque, single use, ten minutes, only for Cloud's sign-in paths. */
+const JOIN_COOKIE = "rovara_cloud_join";
+const JOIN_TICKET = /^[A-Za-z0-9_-]{43}$/u;
+/** Where a join that can't go on lands: the join page's one sentence. */
+const JOIN_UNUSABLE_PAGE = "/app/join?unusable=1";
+/** The join page's lookup: the invite link's token in, the company's name and a join ticket out. */
+export const JOIN_PATH = "/v1/auth/browser/join";
 const SIGN_IN_TTL_MS = 10 * 60_000;
 
 /** Only an app path may be returned to after sign-in, as the app's own returnPath allows. */
@@ -94,9 +102,64 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
   const sessionId = (request: CloudRequest) =>
     (request.headers.cookie ?? "").split(";").map((part) => part.trim().split("=")).find(([name]) => name === COOKIE)?.[1];
 
+  const joinCookie = (value: string, maxAge: number) =>
+    `${JOIN_COOKIE}=${value}; HttpOnly; SameSite=Lax; Path=/v1/auth/browser${options.secureCookies ? "; Secure" : ""}; Max-Age=${String(maxAge)}`;
+  const cookieNamed = (request: CloudRequest, name: string) =>
+    (request.headers.cookie ?? "").split(";").map((part) => part.trim().split("=")).find(([key]) => key === name)?.[1];
+  const unusable = (status = 404) => json(status, { error: { code: "INVITE_UNUSABLE", message: JOIN_UNUSABLE } });
+  const appOrigin = new URL(options.origin).origin;
+
+  /**
+   * The join page's lookup (onboarding-routes.ts): same origin only (a page elsewhere can't start a join for someone), JSON, small. A usable
+   * invite answers the company's name and keeps a single-use join ticket, in an HttpOnly cookie, for "Sign in to join".
+   */
+  async function joinLookup(request: CloudRequest): Promise<CloudResponse> {
+    if (request.headers.origin !== appOrigin || !(request.headers["content-type"] ?? "").startsWith("application/json") || (request.body ?? "").length > 256) return unusable(403);
+    let body: unknown;
+    try { body = JSON.parse(request.body ?? ""); } catch { return unusable(); }
+    const token = body !== null && typeof body === "object" && !Array.isArray(body) && Object.keys(body).length === 1 ? linkToken((body as { invite?: unknown }).invite) : undefined;
+    const invite = token === undefined ? undefined : await usableInvite(options.company?.store, inviteTokenHash(token), now().getTime());
+    if (invite === undefined) return unusable();
+    const ticket = randomBytes(32).toString("base64url");
+    await options.store.putPending(`join.${ticket}`, { verifier: "", returnTo: "/app", at: now().getTime(), invite: invite.tokenHash, joinTicket: true });
+    return json(200, { companyName: invite.companyName ?? "your company" }, { "set-cookie": joinCookie(ticket, SIGN_IN_TTL_MS / 1000) });
+  }
+
+  /** "Sign in to join": the ticket from the cookie, the invite checked again, and Code's sign-in with the invite's company. */
+  async function joinSignIn(request: CloudRequest): Promise<CloudResponse> {
+    const ticket = cookieNamed(request, JOIN_COOKIE);
+    const clear = joinCookie("", 0);
+    const kept = ticket !== undefined && JOIN_TICKET.test(ticket) ? await options.store.takePending(`join.${ticket}`) : undefined;
+    const fresh = kept !== undefined && kept.joinTicket === true && kept.invite !== undefined && now().getTime() - kept.at <= SIGN_IN_TTL_MS;
+    const invite = fresh ? await usableInvite(options.company?.store, kept.invite!, now().getTime()) : undefined;
+    if (invite === undefined) return text(302, "", { location: JOIN_UNUSABLE_PAGE, "set-cookie": clear });
+    const { url, state, pending } = options.client.startSignIn("/app", now().getTime(), { company: invite.companyId, invite: invite.tokenHash });
+    await options.store.putPending(state, pending);
+    return text(302, "", { location: url, "set-cookie": clear });
+  }
+
+  /** After a join's sign-in: the invite is marked taken when Code put the person in the invite's company. Where the person lands. */
+  async function finishJoin(inviteHash: string, access: Parameters<typeof companyOf>[0], developerId: string): Promise<string> {
+    const invite = await usableInvite(options.company?.store, inviteHash, now().getTime());
+    if (invite === undefined || companyOf(access)?.companyId !== invite.companyId) {
+      log({ event: "cloud.invite_join_refused", developerId });
+      return JOIN_UNUSABLE_PAGE;
+    }
+    try {
+      await options.company!.store.updateInvite({ ...invite, state: "accepted", revision: invite.revision + 1, acceptedAt: now().toISOString(), acceptedBy: developerId }, { revision: invite.revision, state: "pending" });
+      log({ event: "cloud.invite_accepted", inviteId: invite.inviteId, companyId: invite.companyId, developerId });
+    } catch {
+      // Code already admitted the person; the invite stays pending until it expires. Fixed words only.
+      log({ event: "cloud.invite_accept_failed", inviteId: invite.inviteId });
+    }
+    return "/app?joined=1";
+  }
+
   return async (request) => {
     const { method, path } = request;
     if (path === POLICY_HOOK_PATH && options.policyHook !== undefined) return options.policyHook(request);
+    if (path === JOIN_PATH && method === "POST") return joinLookup(request);
+    if (path === "/v1/auth/browser/authorize" && method === "GET" && request.query.get("join") === "1") return joinSignIn(request);
     if (path === "/v1/auth/browser/authorize" && method === "GET") {
       // `step_up=1`: the app asks for a fresh step-up before a sensitive change (company settings, inviting an admin).
       const { url, state, pending } = options.client.startSignIn(returnPath(request.query.get("return_to")), now().getTime(), { stepUp: request.query.get("step_up") === "1" });
@@ -104,9 +167,13 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       return text(302, "", { location: url });
     }
     if (path === options.callbackPath && method === "GET") {
-      const pending = await options.store.takePending(request.query.get("state") ?? "");
-      if (pending === undefined || now().getTime() - pending.at > SIGN_IN_TTL_MS) return text(400, "This sign-in expired. Go back to the app and sign in again.");
+      const state = request.query.get("state") ?? "";
+      // A join ticket is never a sign-in under way.
+      const pending = state.startsWith("join.") ? undefined : await options.store.takePending(state);
+      if (pending === undefined || pending.joinTicket === true || now().getTime() - pending.at > SIGN_IN_TTL_MS) return text(400, "This sign-in expired. Go back to the app and sign in again.");
       const refused = request.query.get("error");
+      // A join Code refused (the email isn't the invited one, the invite was used or withdrawn): the one sentence, never Code's words.
+      if (refused !== null && pending.invite !== undefined) return text(302, "", { location: JOIN_UNUSABLE_PAGE });
       if (refused !== null) return text(400, `Rovara Code refused the sign-in: ${refused}`);
       try {
         const signedIn = await options.client.finishSignIn(request.query.get("code") ?? "", pending);
@@ -123,7 +190,8 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         } catch (error) {
           log({ event: "cloud.sessions_rename_failed", developerId: signedIn.access.developerId, error: error instanceof Error ? error.name : "unknown" });
         }
-        return text(302, "", { location: pending.returnTo, "set-cookie": cookie(id) });
+        const landing = pending.invite === undefined ? pending.returnTo : await finishJoin(pending.invite, signedIn.access, signedIn.access.developerId);
+        return text(302, "", { location: landing, "set-cookie": cookie(id) });
       } catch (error) {
         if (error instanceof CodeError) return text(502, "Rovara Code didn't complete the sign-in. Go back to the app and try again.");
         throw error;

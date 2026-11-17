@@ -21,6 +21,8 @@ const id64 = (name: string) => createHash("sha256").update(`fake-code:${name}`).
 /** The pretend Code's one company (DEC 253z: Code names it in the access check). */
 export const FAKE_COMPANY_ID = "org_aaaaaaaaaaaaaaaaaaaa";
 export const FAKE_COMPANY_NAME = "Example Co";
+/** The one operator invite code the pretend Code takes for creating a company. */
+export const FAKE_INVITE_CODE = "inv_fakecode0001";
 export const PRIYA: Person = { key: "priya", developerId: id64("priya"), name: "Priya", email: "priya@example.test", administrator: true };
 export const SAM: Person = { key: "sam", developerId: id64("sam"), name: "Sam", email: "sam@example.test", administrator: false };
 const PEOPLE: readonly Person[] = [PRIYA, SAM];
@@ -97,6 +99,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const clientSecret = options.clientSecret ?? "fake-secret";
   const now = options.now ?? (() => new Date());
   let current = options.person ?? PRIYA;
+  /** People Code names no company for (DEC 253z), and Code's live member pre-approvals by the email's SHA-256. */
+  const companyless = new Set<string>();
+  const preapprovals = new Map<string, string>();
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
@@ -294,8 +299,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "access.check": ({ person }) => {
       const body: AccessResponse = {
         developerId: person.developerId, displayName: person.name, nameChosen: true, administrator: person.administrator,
-        // DEC 253z: the person's company and role, as Code PR #820 names them (the same role the company members list shows).
-        companyId: FAKE_COMPANY_ID, companyRole: person.administrator ? "owner" : "member", companyName: FAKE_COMPANY_NAME,
+        // DEC 253z: the person's company and role, as Code PR #820 names them (the same role the company members list shows); none for a person
+        // the test made companyless (POST /__fake/no-company).
+        ...(companyless.has(person.developerId) ? {} : { companyId: FAKE_COMPANY_ID, companyRole: person.administrator ? "owner" as const : "member" as const, companyName: FAKE_COMPANY_NAME }),
         projects: projects.filter((entry) => entry.members.has(person.developerId)).map((entry) => ({ name: entry.name, access: entry.members.get(person.developerId) ?? "developer" })), notices: [],
       };
       return { body };
@@ -488,6 +494,24 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       preApprovedRevision += 1;
       return { body: { emails: preApproved, revision: preApprovedRevision } };
     },
+    // DEC 253z: Code's member pre-approvals (every refusal NOT_FOUND) and a person creating a company with an operator's invite code.
+    "company.preapprovals.create": ({ body, person }) => {
+      if (!person.administrator || companyless.has(person.developerId) || typeof body.email !== "string") return failure(404, "NOT_FOUND", "not found");
+      const key = createHash("sha256").update(body.email.trim().toLowerCase()).digest("hex");
+      if (preapprovals.has(key) || body.role !== "member") return failure(404, "NOT_FOUND", "not found");
+      preapprovals.set(key, body.email.trim().toLowerCase());
+      return { body: { ok: true } };
+    },
+    "company.preapprovals.withdraw": ({ params, person }) => {
+      if (!person.administrator || !preapprovals.delete(params["emailHash"] ?? "")) return failure(404, "NOT_FOUND", "not found");
+      return { body: { ok: true } };
+    },
+    "company.create": ({ body, person }) => {
+      if (!companyless.has(person.developerId)) return failure(409, "CONFLICT", "You're already in a company.");
+      if (body.inviteCode !== FAKE_INVITE_CODE || typeof body.name !== "string") return failure(403, "FORBIDDEN", "This invite code can't be used. Ask the Rovara team for a new one.");
+      companyless.delete(person.developerId);
+      return { status: 201, body: { companyId: FAKE_COMPANY_ID, companyName: body.name, companyRole: "owner" } };
+    },
     "company.audit.records": ({ person }) => person.administrator
       ? { body: { records: [{ at: "2026-11-14T10:00:00.000Z", actor: { developerId: PRIYA.developerId, name: "Priya" }, action: "task.start", subject: TASK_IDS.running, outcome: "ok" }] } }
       : failure(403, "FORBIDDEN", "Only an administrator can read the audit."),
@@ -653,6 +677,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (who === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "person is priya or sam" } });
           current = who;
           return send(200, { person: who.key });
+        }
+        if (method === "POST" && url.pathname === "/__fake/no-company") {
+          const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
+          if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
+          if (on) companyless.add(current.developerId); else companyless.delete(current.developerId);
+          return send(200, { on });
         }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;

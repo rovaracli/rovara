@@ -2,6 +2,7 @@
 export { AccountPage, AdminPage } from "./admin.js";
 export { HomePage } from "./home.js";
 export { FAKE_CODE_URL, LessonsPage, setLessons } from "./lessons.js";
+export { CompanyOnboardingPage, FAKE_INVITE_CODE, setNoCompany } from "./onboarding.js";
 export { ProjectPage } from "./project.js";
 export { PERSON, PROJECT, ROUTES, UNSERVED_SCREENS } from "./routes.js";
 export { SessionPage } from "./session.js";

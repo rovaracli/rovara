@@ -49,6 +49,8 @@ export interface InviteRecord {
   revokedAt?: string;
   acceptedAt?: string;
   acceptedBy?: string;
+  /** The company's name when the invite was made, for the join page ("Join <company> on Rovara"). An older invite has none. */
+  companyName?: string;
 }
 /** A Code install the policy hook answers: its pinned public keys (at most two, for rotation) and the companies it may ask about. */
 /**

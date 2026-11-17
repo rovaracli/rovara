@@ -6,8 +6,12 @@
 // from that answer (DEC 253z). A Code that names no company is refused ("You're not in a company yet."), never a fallback. A company admin is
 // a company owner or admin; Code's install `administrator` flag plays no part. Nothing a request carries ever names the company.
 //
-// Fresh step-up: changing settings, approving a change, and inviting an admin need the admin's step-up (step-up.ts) inside the company's
-// window. An invite tells Code first ("this email is pre-approved"), as the inviting admin; withdrawing one tells Code before it is marked.
+// Fresh step-up: changing settings and approving a change need the admin's step-up (step-up.ts) inside the company's window.
+//
+// Invites (DEC 253z): Code's own pre-approval routes, as the inviting admin with their own token: `POST /v1/dev/company/preapprovals`
+// { email, role: "member", expiresInHours } and, to withdraw, `DELETE /v1/dev/company/preapprovals/<sha256 of the normalised email>`. Code
+// checks the inviter's live company role itself. Cloud keeps the invite (the link token's hash, the company, the email, the expiry, the
+// state) and makes it usable only once Code took the pre-approval. Code pre-approves members only, so an admin invite is refused here.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { CodeError } from "./code-client.js";
 import { COMPANY_NAME_FALLBACK, companyCaller, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
@@ -26,10 +30,8 @@ export interface CompanyBackend {
   log?: (event: Record<string, unknown>) => void;
 }
 
-/** Code's route that takes the company's pre-approved emails (contract v0 `company.preApproved.put`). */
-export const PRE_APPROVED_EMAILS_PATH = "/v1/dev/client/company/pre-approved-emails";
-/** An unconfirmed invite this young is still being told to Code by its own request, so another admin's update keeps it in the list. */
-const IN_FLIGHT_MS = 60_000;
+/** Code's pre-approval routes (contract v0 `company.preapprovals.create` and `.withdraw`). */
+export const PREAPPROVALS_PATH = "/v1/dev/company/preapprovals";
 const DAY_MS = 24 * 60 * 60_000;
 
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
@@ -48,7 +50,10 @@ const WORDS = Object.freeze({
   tooMany: refusal(409, "CONFLICT", "Your company has too many open invites. Withdraw some first."),
   notOnCode: refusal(501, "NOT_ON_CODE_YET", "Company invites aren't connected to Rovara Code yet."),
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
-  partial: refusal(503, "RUNTIME_UNAVAILABLE", "Your company has too many invite records to update Rovara Code safely. Ask an installation administrator."),
+  memberOnly: refusal(400, "CONFIG_INVALID", "Invite them as a member. A company owner can make them an admin once they've joined."),
+  alreadyInvited: refusal(409, "CONFLICT", "This person already has an open invite. Withdraw it first to send a new one."),
+  withdrawFailed: refusal(503, "RUNTIME_UNAVAILABLE", "Couldn't withdraw it in Rovara Code. Try again."),
+  codeRefused: refusal(409, "CONFLICT", "Rovara Code didn't take this invite. The address may already be invited, or your role may have changed."),
 });
 const bad = (message: string) => refusal(400, "CONFIG_INVALID", message);
 
@@ -269,24 +274,25 @@ const expired = (invite: InviteRecord, nowMs: number) => Date.parse(invite.expir
 const masked = (email: string) => { const at = email.lastIndexOf("@"); return `${email.slice(0, 1)}***${email.slice(at)}`.slice(0, 260); };
 const receipt = (invite: InviteRecord) => ({ orgId: invite.companyId, requestId: invite.requestId, inviteId: invite.inviteId, role: invite.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt });
 
+/** The email as Code keys a pre-approval: SHA-256 (hex) of the trimmed, lower-case address. */
+export const preapprovalEmailHash = (email: string) => createHash("sha256").update(email.trim().toLowerCase(), "utf8").digest("hex");
+
 /**
- * Tells Code the company's pre-approved emails, as the admin: every pending invite's address that has not expired, the invites this
- * request is adding, and others still being told by their own request. An invite being withdrawn is `revoking`, so it is left out.
- * "notOnCode" when Code does not serve the route yet.
+ * Code's answer to a pre-approval call: "told" (Code answered { ok: true }), "notOnCode" (Code doesn't serve the route yet: its fixed
+ * unknown-route answer, or 405/501), "notFound" (Code's one refusal of these routes: 404 NOT_FOUND) or "failed" (anything else: a 400, a
+ * 403, an answer that doesn't read). Code's outage or a dropped sign-in throws.
  */
-async function tellCode(context: RouteContext, who: Caller, adding: readonly InviteRecord[]): Promise<"told" | "notOnCode" | "partial"> {
-  const nowMs = context.now().getTime();
-  const { invites, partial } = await who.backend.store.invites(who.companyId);
-  // Code's list is replaced whole: never send one built from part of the invites, which would drop people still invited.
-  if (partial) return "partial";
-  const kept = invites.filter((invite) => !expired(invite, nowMs)
-    && (invite.state === "pending" || (invite.state === "unconfirmed" && nowMs - Date.parse(invite.createdAt) < IN_FLIGHT_MS)));
-  const emails = [...new Set([...kept, ...adding].map((invite) => invite.email))].sort();
+async function askCode(context: RouteContext, path: string, init: { method: string; body?: unknown }): Promise<"told" | "notOnCode" | "notFound" | "failed"> {
   try {
-    await context.client.json(context.session, PRE_APPROVED_EMAILS_PATH, { method: "PUT", body: { requestId: randomUUID(), emails } });
-    return "told";
+    const answer = await context.client.json<{ ok?: unknown }>(context.session, path, init);
+    return answer?.ok === true ? "told" : "failed";
   } catch (error) {
-    if (error instanceof CodeError && (error.status === 404 || error.status === 405 || error.status === 501)) return "notOnCode";
+    if (!(error instanceof CodeError)) throw error;
+    const said = (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+    if (error.status === 405 || error.status === 501 || (error.status === 404 && said?.code === "NOT_FOUND" && said.message === "route not found")) return "notOnCode";
+    // Code words every refusal of these routes as NOT_FOUND (not an admin, already pre-approved, none to withdraw).
+    if (error.status === 404 && said?.code === "NOT_FOUND") return "notFound";
+    if (error.status >= 400 && error.status < 500) return "failed";
     throw error;
   }
 }
@@ -308,18 +314,21 @@ async function createInvite(context: RouteContext, withReceipt: boolean): Promis
   const input = readInviteBody(context.body);
   if ("status" in input) return input;
   const store = who.backend.store;
-  const current = await companySettings(store, who.companyId);
-  if (current === undefined) return WORDS.unreadable;
-  // Giving the admin role needs a fresh step-up (plan 2.4, step 2).
-  if (input.role === "admin" && !steppedUp(context, current.settings.freshSignInSeconds)) return WORDS.stepUp;
+  // Code pre-approves members only: an admin is made by role change once they've joined.
+  if (input.role !== "member") return WORDS.memberOnly;
   if ((await store.inviteByRequest(who.companyId, input.requestId)) !== undefined) return WORDS.conflict;
   const nowMs = context.now().getTime();
   const { invites } = await store.invites(who.companyId);
-  if (invites.filter((invite) => (invite.state === "pending" || invite.state === "unconfirmed" || invite.state === "revoking") && !expired(invite, nowMs)).length >= OPEN_INVITES_MAX) return WORDS.tooMany;
+  const open = invites.filter((invite) => (invite.state === "pending" || invite.state === "unconfirmed" || invite.state === "revoking") && !expired(invite, nowMs));
+  if (open.length >= OPEN_INVITES_MAX) return WORDS.tooMany;
+  // Code keeps one pre-approval per address: a second open invite to the same address could be withdrawn by the first's withdrawal.
+  if (open.some((invite) => invite.email === input.email)) return WORDS.alreadyInvited;
   const token = randomBytes(32).toString("base64url");
+  const profile = await profileOf(context, who);
   const invite: InviteRecord = {
-    companyId: who.companyId, inviteId: randomUUID(), requestId: input.requestId, role: input.role, email: input.email, tokenHash: tokenHash(token),
+    companyId: who.companyId, inviteId: randomUUID(), requestId: input.requestId, role: "member", email: input.email, tokenHash: tokenHash(token),
     createdBy: who.developerId, createdAt: new Date(nowMs).toISOString(), expiresAt: new Date(nowMs + INVITE_DAYS * DAY_MS).toISOString(), state: "unconfirmed", revision: 0,
+    companyName: profile.name,
   };
   try {
     await store.createInvite(invite);
@@ -327,15 +336,26 @@ async function createInvite(context: RouteContext, withReceipt: boolean): Promis
     if (error instanceof CompanyStoreConflict) return WORDS.conflict;
     throw error;
   }
-  let confirmed = false;
+  let confirmed = false, told: "told" | "notOnCode" | "notFound" | "failed" | undefined;
   try {
-    const told = await tellCode(context, who, [invite]);
-    if (told !== "told") return told === "notOnCode" ? WORDS.notOnCode : WORDS.partial;
+    // Kept first and usable only once Code took it: the invite's expiry and Code's are the same seven days.
+    told = await askCode(context, PREAPPROVALS_PATH, { method: "POST", body: { email: input.email, role: "member", expiresInHours: INVITE_DAYS * 24 } });
+    if (told !== "told") return told === "notOnCode" ? WORDS.notOnCode : WORDS.codeRefused;
     await store.updateInvite({ ...invite, state: "pending" }, { revision: 0, state: "unconfirmed" });
     confirmed = true;
   } finally {
-    // Code never took it (or it could not be marked): take it back, so it is never shown, accepted or sent again.
-    if (!confirmed) await store.removeInvite(invite).catch(() => undefined);
+    if (!confirmed) {
+      // Code never took it (or it could not be marked): take it back, so it is never shown, accepted or sent again. When Code did take it,
+      // withdraw it there too, so the address can be invited again; if that fails as well, the invite is kept as "revoking" (listed, so an
+      // admin's withdrawal tries Code again) rather than leave a pre-approval nobody can see.
+      let withdrawn = told !== "told";
+      if (!withdrawn) withdrawn = (await askCode(context, `${PREAPPROVALS_PATH}/${preapprovalEmailHash(invite.email)}`, { method: "DELETE" }).catch(() => "failed" as const)) === "told";
+      if (withdrawn) await store.removeInvite(invite).catch(() => undefined);
+      else {
+        await store.updateInvite({ ...invite, state: "revoking" }, { revision: 0, state: "unconfirmed" }).catch(() => undefined);
+        log(who, { event: "cloud.invite_orphaned", inviteId: invite.inviteId });
+      }
+    }
   }
   log(who, { event: "cloud.invite_created", inviteId: invite.inviteId, role: invite.role });
   await audited(context, who, "company.invite.created", `invite:${invite.inviteId}`);
@@ -408,18 +428,21 @@ async function revokeInvite(context: RouteContext): Promise<RouteAnswer> {
     if (error instanceof CompanyStoreConflict) return WORDS.conflict;
     throw error;
   }
-  let told: "told" | "notOnCode" | "partial";
+  let told: "told" | "notOnCode" | "notFound" | "failed";
   try {
-    told = await tellCode(context, who, []);
+    told = await askCode(context, `${PREAPPROVALS_PATH}/${preapprovalEmailHash(invite.email)}`, { method: "DELETE" });
   } catch (error) {
     // Code's answer is unknown: an invite that was pending goes back to pending (a retry tells Code again); one already stuck stays withdrawn from the list.
     if (invite.state === "pending") await store.updateInvite(invite, { revision: invite.revision, state: "revoking" }).catch(() => undefined);
     throw error;
   }
-  if (told !== "told") {
+  if (told === "notOnCode" || told === "failed") {
+    // Not withdrawn at Code (not served yet, or an answer that isn't Code's refusal): a pending invite goes back to pending, for a retry.
     if (invite.state === "pending") await store.updateInvite(invite, { revision: invite.revision, state: "revoking" }).catch(() => undefined);
-    return told === "notOnCode" ? WORDS.notOnCode : WORDS.partial;
+    return told === "notOnCode" ? WORDS.notOnCode : WORDS.withdrawFailed;
   }
+  // "notFound": Code holds no live pre-approval for the address any more (used, expired or already withdrawn; Code words them all as not
+  // found, as it does for a caller who isn't an admin, whose role Cloud checked with Code just now). The invite can't be used: withdrawn.
   const revokedAt = context.now().toISOString();
   const revision = invite.revision + 1;
   try {

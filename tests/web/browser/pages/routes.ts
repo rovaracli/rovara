@@ -4,6 +4,8 @@ export const ROUTES = {
   /** Work, the split inbox (the route is still /app/live). */
   work: "/app/live",
   signedOut: "/app/signed-out",
+  /** DEC 253z onboarding: no company yet, creating one, and the invite link's join page. */
+  noCompany: "/app/no-company", createCompany: "/app/create-company", join: "/app/join", firstDay: "/app/onboard",
   /** Your account: name, appearance, confirmation email and passkeys. */
   account: "/app/account",
   /** The admin area (Hybrid 1, DEC 223): five groups in a sidebar. */

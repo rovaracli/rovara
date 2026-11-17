@@ -275,7 +275,10 @@ describe("the app's API, answered from Code as the person", () => {
       code.setCompany(ADA, company);
       for (const path of ["/v1/web/me", "/v1/web/nav", "/v1/web/company/audit"]) {
         const answer = await call("GET", path, { cookie, headers: { "x-rovara-company": ACME, cookie: `${cookie}; company=${ACME}` } });
-        expect({ path, company, status: answer!.status, body: JSON.parse(answer!.body) as unknown }).toEqual({ path, company, status: 403, body: refused });
+        // /me keeps the sign-in's CSRF value in its refusal (the onboarding pages send one change); nothing else.
+        const csrf = (JSON.parse((await call("GET", "/v1/web/me", { cookie }))!.body) as { csrf?: string }).csrf;
+        expect({ path, company, status: answer!.status, body: JSON.parse(answer!.body) as unknown }).toEqual({ path, company, status: 403, body: path === "/v1/web/me" ? { ...refused, csrf } : refused });
+        expect(csrf).toMatch(/^[\w-]{43}$/u);
       }
       expect((await call("GET", `/v1/web/nav?companyId=${ACME}`, { cookie }))!.status).toBe(403);
     }

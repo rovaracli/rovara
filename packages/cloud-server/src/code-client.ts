@@ -51,7 +51,15 @@ export class SignInEnded extends Error {
   }
 }
 
-export interface PendingSignIn { verifier: string; returnTo: string; at: number }
+export interface PendingSignIn {
+  verifier: string;
+  returnTo: string;
+  at: number;
+  /** A join from an invite link (onboarding-routes.ts): the invite's token hash. On a join ticket, and on the sign-in it starts. */
+  invite?: string;
+  /** True on a join ticket (kept by the join page's lookup), never on a sign-in under way: the callback refuses a ticket. */
+  joinTicket?: true;
+}
 
 /** How long a call to Code's token or revoke endpoint may take: well inside a refresh's hold on the session. */
 const TOKEN_CALL_MS = 10_000;
@@ -105,7 +113,7 @@ export class CodeClient {
    * Step 1 of sign-in: the URL to send the browser to, and what to keep until it comes back. `stepUp` asks Code for a fresh step-up with
    * a factor Code owns (`acr_values=step-up`), which a sensitive change in Cloud needs.
    */
-  startSignIn(returnTo: string, now: number, options: { stepUp?: boolean } = {}): { url: string; state: string; pending: PendingSignIn } {
+  startSignIn(returnTo: string, now: number, options: { stepUp?: boolean; company?: string; invite?: string } = {}): { url: string; state: string; pending: PendingSignIn } {
     const verifier = randomBytes(32).toString("base64url");
     const state = randomBytes(24).toString("base64url");
     const url = new URL(`${this.base}/v1/auth/authorize`);
@@ -113,8 +121,10 @@ export class CodeClient {
       response_type: "code", client_id: this.options.clientId, redirect_uri: this.options.redirectUri, state, scope: this.options.scopes,
       code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256",
       ...(options.stepUp === true ? { acr_values: STEP_UP_ACR } : {}),
+      // A join: the company the invite names, chosen by Cloud's server (never the browser). Code still checks the email's pre-approval.
+      ...(options.company === undefined ? {} : { company: options.company }),
     }).toString();
-    return { url: url.toString(), state, pending: { verifier, returnTo, at: now } };
+    return { url: url.toString(), state, pending: { verifier, returnTo, at: now, ...(options.invite === undefined ? {} : { invite: options.invite }) } };
   }
 
   /** Step 2: the code Code sent back, exchanged for the person's tokens, and who they are. */
