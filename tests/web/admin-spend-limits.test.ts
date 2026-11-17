@@ -55,6 +55,15 @@ describe("Spending limits page", () => {
   expect(["", "-1", "1.234", "1e3", "abc", "1000001", "5 dollars", "NaN", "0x10", "1,2,3.456"].map(parseUsd)).toEqual(Array(10).fill(undefined));
  });
 
+ it("says these limits are about the agents' AI spending, not product AI or learning", async () => {
+  const f = mount("/app/admin/money/limits", () => ({ status: 200, body: body() }));
+  try {
+   await screen.findByTestId("spend-defaults");
+   expect(document.body.textContent).toMatch(/limit on the agents' AI spending/u);
+   expect(document.body.textContent).toMatch(/do not apply to a project's product AI or to lessons' learning/u);
+  } finally { f.close(); }
+  expect(visibleAdminGroups("owner", false).find(group => group.id === "money")!.links.find(link => link.label === "Spending limits")!.blurb).toMatch(/agents' AI spending/u);
+ });
  it("shows the defaults read-only with the per-task default and a link to the project pages, and the two tables", async () => {
   const f = mount("/app/admin/money/limits", () => ({ status: 200, body: body() }));
   try {

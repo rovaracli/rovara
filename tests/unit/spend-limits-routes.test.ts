@@ -109,6 +109,8 @@ function world(options: { company?: boolean; codeProject?: "ok" | "outage"; memb
   /** Saves the company's settings with these budgets (and any other change), as an admin would have. */
   const settings = async (companyId: string, budgets: { company?: number | null; member?: number | null; project?: number | null; task?: number | null }, more: (s: ReturnType<typeof defaultCompanySettings>) => void = () => undefined) => {
     const s = defaultCompanySettings();
+    // These tests are about the limits themselves, so by default one admin may loosen (the company's default rules, which ask for a second admin, have their own tests).
+    s.decisions = [];
     s.budgets = { companyMonthlyUsdMicros: budgets.company === undefined ? 100 * MICROS : budgets.company, memberMonthlyUsdMicros: budgets.member === undefined ? 20 * MICROS : budgets.member, projectMonthlyUsdMicros: budgets.project === undefined ? 30 * MICROS : budgets.project, taskUsdMicros: budgets.task === undefined ? 2 * MICROS : budgets.task, learningMonthlyUsdMicros: 1 };
     more(s);
     const current = await companies.settings(companyId);
@@ -322,6 +324,70 @@ describe("step-up: only when a limit goes up", () => {
   });
 });
 
+describe("a raise follows the company's rules for a loosening", () => {
+  const SECOND_PERSON = "Raising this limit needs a second admin under your company's rules. Ask an owner to change the rules, or raise the company default in Company settings.";
+  const withRules = async (decisions: Array<Record<string, unknown>>) => {
+    const w = world(); await w.settings(A, {}, (s) => { s.decisions = decisions as never; });
+    await w.seed(A, "project_month", "web", 10 * MICROS); await w.seed(A, "person_month", DEV.pam, 5 * MICROS);
+    return w;
+  };
+  const mustRefuse = async (w: Awaited<ReturnType<typeof withRules>>, cookie: string) => {
+    for (const [path, version] of [[project("web"), 1], [person(DEV.pam), 1]] as const) {
+      const answer = await w.call(cookie, "PUT", path, put(version, 500));
+      expect(answer.status, path).toBe(403);
+      expect(answer.body.error?.code).toBe("SECOND_PERSON_REQUIRED");
+      expect(answer.body.error?.message).toBe(SECOND_PERSON);
+    }
+    expect((await stored(w, "project_month", "web"))?.monthlyUsdMicros).toBe(10 * MICROS);
+    expect((await stored(w, "person_month", DEV.pam))?.monthlyUsdMicros).toBe(5 * MICROS);
+    expect(await w.auditRows(A)).toEqual([]);
+  };
+
+  it("the company's DEFAULT rules (a second person for a loosening) refuse a raise here, with a fresh step-up, and a removal that raises; lowering still works", async () => {
+    const w = world(); await w.signIn("ada"); // the stock defaults, not the test helper's
+    const settings = defaultCompanySettings();
+    settings.budgets = { ...settings.budgets, companyMonthlyUsdMicros: 100 * MICROS, memberMonthlyUsdMicros: 20 * MICROS, projectMonthlyUsdMicros: 30 * MICROS };
+    await w.companies.putSettings(A, settings, 0, DEV.ada, "2026-11-17T12:00:00.000Z");
+    expect(settings.decisions).toEqual([{ what: "setting.loosen", secondPerson: true }]);
+    await w.seed(A, "project_month", "web", 10 * MICROS); await w.seed(A, "person_month", DEV.pam, 5 * MICROS);
+    const fresh = await w.signIn("ada", 5);
+    await mustRefuse(w, fresh);
+    // Removing the override raises it to the $30 default: refused too. Lowering is not a loosening.
+    expect((await w.call(fresh, "PUT", project("web"), put(1, null))).body.error?.code).toBe("SECOND_PERSON_REQUIRED");
+    expect((await w.call(fresh, "PUT", project("web"), put(1, 4))).status).toBe(200);
+    expect((await w.call(await w.signIn("ada"), "PUT", person(DEV.pam), put(1, 1))).status).toBe(200);
+  });
+
+  it("two approvals (minApprovers 2) refuse a raise here too", async () => {
+    const w = await withRules([{ what: "setting.loosen", minApprovers: 2 }]);
+    await mustRefuse(w, await w.signIn("ada", 5));
+  });
+
+  it("rules that let a single admin loosen allow the raise (with the step-up), so the refusal is the rule's and nothing else's", async () => {
+    for (const decisions of [[], [{ what: "setting.loosen" }], [{ what: "setting.loosen", secondPerson: false }], [{ what: "setting.loosen", minApprovers: 1 }]]) {
+      const w = await withRules(decisions);
+      expect((await w.call(await w.signIn("ann"), "PUT", project("web"), put(1, 500))).body.error?.code, JSON.stringify(decisions)).toBe("STEP_UP_REQUIRED");
+      expect((await w.call(await w.signIn("ann", 5), "PUT", project("web"), put(1, 500))).status, JSON.stringify(decisions)).toBe(200);
+      expect((await w.call(await w.signIn("ann", 5), "PUT", person(DEV.pam), put(1, 500))).status, JSON.stringify(decisions)).toBe(200);
+    }
+  });
+
+  it("a rule that names deciders is enforced: an admin who is not a decider is refused, a decider may raise", async () => {
+    const w = await withRules([{ what: "setting.loosen", deciders: [DEV.ada] }]);
+    const ann = await w.signIn("ann", 5);
+    for (const [path, version] of [[project("web"), 1], [person(DEV.pam), 1]] as const) {
+      const answer = await w.call(ann, "PUT", path, put(version, 500));
+      expect(answer.status, path).toBe(403);
+      expect(answer.body.error?.message).toBe("Your company's rules don't allow raising a limit.");
+    }
+    expect((await stored(w, "project_month", "web"))?.monthlyUsdMicros).toBe(10 * MICROS);
+    // The decider, with a fresh step-up, may; and lowering needs no decider.
+    const ada = await w.signIn("ada", 5);
+    expect((await w.call(ada, "PUT", project("web"), put(1, 500))).status).toBe(200);
+    expect((await w.call(ann, "PUT", project("web"), put(2, 1))).status).toBe(200);
+  });
+});
+
 describe("a write is decided on a fresh read and conditional on it", () => {
   it("a stale expectedVersion conflicts (409), for a new override too, and changes nothing", async () => {
     const w = await READY(); await w.seed(A, "project_month", "web", 10 * MICROS);
@@ -486,12 +552,29 @@ describe("every change is audited", () => {
     await w.call(ada, "PUT", person(DEV.pam), put(0, 2));
     const rows = await w.auditRows(A);
     expect(rows.map((r) => [r.subject, r.detail, r.outcome, r.actor.developerId, r.via, r.project]).sort()).toEqual([
-      [`spend_limit:person_month:${DEV.pam}`, "lowered", "ok", DEV.ada, "web", undefined],
-      ["spend_limit:project_month:web", "lowered", "ok", DEV.ada, "web", "web"],
-      ["spend_limit:project_month:web", "raised", "ok", DEV.ada, "web", "web"],
-      ["spend_limit:project_month:web", "removed", "ok", DEV.ada, "web", "web"],
+      [`spend_limit:person_month:${DEV.pam}`, "lowered from=20000000 to=2000000", "ok", DEV.ada, "web", undefined],
+      ["spend_limit:project_month:web", "lowered from=25000000 to=5000000", "ok", DEV.ada, "web", "web"],
+      ["spend_limit:project_month:web", "raised from=10000000 to=25000000", "ok", DEV.ada, "web", "web"],
+      // The override was $5 and the default is $30: removing it RAISED the limit, and the record says so.
+      ["spend_limit:project_month:web", "removed_raised from=5000000 to=30000000", "ok", DEV.ada, "web", "web"],
     ].sort());
     expect(await w.auditRows(B)).toEqual([]);
+  });
+
+  it("says whether a removal raised or lowered the limit, and writes 'none' for no limit", async () => {
+    const w = await READY(); // project default $30
+    await w.seed(A, "project_month", "web", 50 * MICROS); await w.seed(A, "project_month", "api", 10 * MICROS);
+    const ada = await w.signIn("ada", 30);
+    await w.call(ada, "PUT", project("web"), put(1, null));
+    await w.call(ada, "PUT", project("api"), put(1, null));
+    const open = await READY(); await open.settings(A, { project: null });
+    await open.seed(A, "project_month", "web", 7 * MICROS);
+    await open.call(await open.signIn("ada", 30), "PUT", project("web"), put(1, null));
+    expect((await w.auditRows(A)).map((r) => [r.subject, r.detail]).sort()).toEqual([
+      ["spend_limit:project_month:api", "removed_raised from=10000000 to=30000000"],
+      ["spend_limit:project_month:web", "removed_lowered from=50000000 to=30000000"],
+    ]);
+    expect((await open.auditRows(A)).map((r) => r.detail)).toEqual(["removed_raised from=7000000 to=none"]);
   });
 
   it("a refused change leaves no record, and a failed audit write does not undo the change", async () => {

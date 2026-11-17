@@ -16,9 +16,11 @@
 // default when the override is removed; no limit counts as the highest) is above the current effective limit. Lowering needs none. The
 // decision is made on a fresh read, and the write is conditional on exactly what was read (the override's version and amount, and the
 // settings version the default came from), so a change that races is refused, never decided on stale data. A raise also honours the
-// company's own rules: a company that forbids loosening (`setting.loosen` with allow false) cannot raise a limit here either, and its
-// sign-in window applies. (Its "second person" rule is NOT applied here: see the DONE note, question 2.)
-// Every change is audited (`company.budget.changed`, subject `spend_limit:<kind>:<id>`, a fixed-word detail).
+// company's own rules for a loosening, asked as PUT /org/settings asks them: a company that forbids it (`setting.loosen` with allow false) cannot raise
+// a limit here either; one that needs a second person or two approvals (the DEFAULT rules do) cannot raise one here, so the raise is refused in fixed words
+// (raise the company default in Company settings, which has the second-admin flow; lowering stays free); its `deciders` are enforced (the verdict stage);
+// its sign-in window applies.
+// Every change is audited (`company.budget.changed`, subject `spend_limit:<kind>:<id>`, a fixed-word detail with the effective limit before and after).
 // Fail closed: a limit or settings row that does not read, a failed read or write, a project Code does not know, or a person Code does not list in
 // the company answers a fixed refusal.
 // No answer ever echoes what the browser sent or what a lower layer said.
@@ -42,6 +44,7 @@ export const SPEND_LIMIT_WORDS = Object.freeze({
   forbidden: refusal(403, "FORBIDDEN", "Only a company admin can see or change spending limits."),
   stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   ruled: refusal(403, "FORBIDDEN", "Your company's rules don't allow raising a limit."),
+  secondPerson: refusal(403, "SECOND_PERSON_REQUIRED", "Raising this limit needs a second admin under your company's rules. Ask an owner to change the rules, or raise the company default in Company settings."),
   invalid: refusal(400, "CONFIG_INVALID", "Send the amount in dollars, from 0 to 1,000,000 with at most two decimals, or null to remove the limit."),
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
   projectNotFound: refusal(404, "NOT_FOUND", "That project doesn't exist, or you can't use it."),
@@ -52,8 +55,9 @@ export const SPEND_LIMIT_WORDS = Object.freeze({
   unavailable: refusal(503, "RUNTIME_UNAVAILABLE", "Spending limits are unavailable right now. Try again."),
 });
 const W = SPEND_LIMIT_WORDS;
-/** The audit record's detail: fixed words. */
-const AUDIT_DETAIL = Object.freeze({ raised: "raised", lowered: "lowered", removed: "removed" });
+/** The audit record's detail: fixed words (which way the effective limit went, and whether the change removed the override), then the effective limit before and after in micro-dollars ("none": no limit). */
+const AUDIT_WORD = Object.freeze({ raised: "raised", lowered: "lowered", removedRaised: "removed_raised", removedLowered: "removed_lowered" });
+const micros = (value: number) => (Number.isFinite(value) ? String(value) : "none");
 
 const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 /** Dollars (a number with at most two decimals, 0 to 1,000,000) as whole micro-dollars; undefined for anything else. */
@@ -180,9 +184,15 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
   // Nothing changes (same effective limit, same override or none): answered without a write.
   if (after === before && (current !== undefined) === (asked !== null)) return view(who);
   if (raises) {
-    // The company's own rules: a company that forbids loosening can't raise a limit; its sign-in window applies.
-    const decision = settingsDecision(settings.settings, true, "requirement", who.developerId);
+    // The company's own rules for a loosening, asked as PUT /org/settings asks them (company-routes.ts changeSettings): a company that forbids it can't
+    // have a limit raised; one that needs a second person (or two approvals) can't have it raised here (a raise waits for a second admin only through
+    // the company default in Company settings); the `deciders` are enforced by asking for the verdict; and its sign-in window applies.
+    const required = settingsDecision(settings.settings, true, "requirement", who.developerId);
+    if (!required.allow) return W.ruled;
+    if (required.secondPerson) return W.secondPerson;
+    const decision = settingsDecision(settings.settings, true, "verdict", who.developerId);
     if (!decision.allow) return W.ruled;
+    if (decision.secondPerson) return W.secondPerson;
     if (freshStepUp(context.session.accessToken, context.now().getTime(), decision.signInMaxAgeSeconds) === undefined) return W.stepUp;
   }
   if (current === undefined) {
@@ -201,7 +211,7 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
       await recordCloudAction(context.audit, {
         companyId: who.companyId, actor: { developerId: who.developerId, name: who.name, type: "person" }, action: "company.budget.changed", via: "web",
         subject: `spend_limit:${kind}:${id}`, ...(def.scope === "project" ? { project: id } : {}),
-        detail: asked === null ? AUDIT_DETAIL.removed : raises ? AUDIT_DETAIL.raised : AUDIT_DETAIL.lowered,
+        detail: `${asked === null ? (raises ? AUDIT_WORD.removedRaised : AUDIT_WORD.removedLowered) : raises ? AUDIT_WORD.raised : AUDIT_WORD.lowered} from=${micros(before)} to=${micros(after)}`,
       }, context.now);
     } catch { console.log(JSON.stringify({ event: "cloud.audit_failed", action: "company.budget.changed", companyId: who.companyId })); }
   }

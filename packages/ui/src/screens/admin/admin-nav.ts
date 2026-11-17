@@ -11,7 +11,7 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
  ] },
  { id: "money", title: "Money", links: [
   { to: "/app/admin/money/budgets", label: "Spending", blurb: "Spent this month, what is left, by project and by person." },
-  { to: "/app/admin/money/limits", label: "Spending limits", blurb: "A monthly limit for one project or one person, over the company default." },
+  { to: "/app/admin/money/limits", label: "Spending limits", blurb: "A monthly limit on agents' AI spending for one project or one person, over the company default." },
  ] },
  { id: "work", title: "Work and rules", links: [
   { to: "/app/admin/projects", label: "Projects", blurb: "Project setup, working branches and archiving." },

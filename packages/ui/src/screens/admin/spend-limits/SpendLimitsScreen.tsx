@@ -33,7 +33,7 @@ const shortId = (scope: SpendLimitScope, id: string) => (scope === "person" ? `$
 
 export function SpendLimitsScreen() {
  const read = useAdminRead("spend-limits", SPEND_LIMITS_PATH, reader, { stable: true });
- return <section><PageHeader focusOnMount title="Spending limits" description="A monthly limit for one project or one person, over the company's default. The company's monthly limit always stays the outer bound." />
+ return <section><PageHeader focusOnMount title="Spending limits" description="A monthly limit on the agents' AI spending for one project or one person, over the company's default. The company's monthly limit always stays the outer bound. These limits do not apply to a project's product AI or to lessons' learning." />
   {read.isError && isNotConnected(read.error) && read.error instanceof ApiError && read.error.status === 501 ? <AdminSection title="Spending limits"><NotConnected what="Spending limits" /></AdminSection>
    : <ReadSection read={read} label="Spending limits">{limits => <Limits limits={limits} reload={() => { void read.refetch(); }} />}</ReadSection>}
  </section>;

@@ -109,6 +109,9 @@ describe("per-project and per-person monthly overrides", () => {
       ["an amount past the backend's ceiling", "project_month", (s) => s.override("project_month", "web", GATEWAY_COMPANY_BUDGET_MAX + 1)],
       ["a missing version", "person_month", (s) => { const i = s.override("person_month", PERSON_1, 5); delete (i as Record<string, unknown>).version; return i; }],
       ["a zero version", "project_month", (s) => s.override("project_month", "web", 5, { version: 0 })],
+      // Cloud's store requires the author and time it writes (validSpendLimit), so the gateway does too: the two never disagree about whether an item reads.
+      ["no author", "project_month", (s) => { const i = s.override("project_month", "web", 5); delete (i as Record<string, unknown>).updatedBy; return i; }],
+      ["no time", "person_month", (s) => { const i = s.override("person_month", PERSON_1, 5); delete (i as Record<string, unknown>).updatedAt; return i; }],
     ];
     for (const [name, kind, make] of cases) {
       it(name, async () => {

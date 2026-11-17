@@ -102,7 +102,7 @@ export interface SpendLimitKindDef {
 }
 /**
  * THE table of limit kinds. The key builder, the validation, the store, the routes and the page's rows all come from it. To add a kind: one entry here, one in the
- * gateway's table (deploy.ts), and the point that enforces it (see docs/model-gateway-spend-limits.md, "Adding a kind"). tests/unit/spend-limit-kinds.test.ts and
+ * gateway's table (deploy.ts), and the point that enforces it (see docs/model-gateway-spend-limits.md, "Adding a kind"). tests/unit/spend-limits-routes.test.ts and
  * tests/contract/model-gateway-spend-limits.test.ts walk every entry.
  */
 export const SPEND_LIMIT_KINDS = [

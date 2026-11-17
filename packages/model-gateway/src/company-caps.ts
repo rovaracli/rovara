@@ -40,7 +40,8 @@ function overrideAmount(item: Item | undefined, cid: string, kind: string, id: s
   if (item === undefined) return undefined;
   if (item.companyId !== cid || item.kind !== kind || item.id !== id) return null;
   const amount = item.monthlyUsdMicros;
-  if (!whole(amount) || amount > GATEWAY_COMPANY_BUDGET_MAX || !whole(item.version) || item.version < 1) return null;
+  // The same fields Cloud's store requires of a readable item (company-store.ts validSpendLimit), so the two never disagree about whether an override reads.
+  if (!whole(amount) || amount > GATEWAY_COMPANY_BUDGET_MAX || !whole(item.version) || item.version < 1 || typeof item.updatedAt !== "string" || typeof item.updatedBy !== "string") return null;
   return amount;
 }
 

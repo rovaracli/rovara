@@ -13,6 +13,7 @@ import { GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_SPEND_LIMITS } from "../../
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { PERSON, PROJECT } from "../../packages/model-gateway/src/model-gateway-token.js";
 import { SPEND_LIMIT_TABLES } from "../../packages/ui/src/api/admin-spend-limits.js";
+import { existsSync, readFileSync } from "node:fs";
 import { WireDynamo } from "../unit/model-gateway-wire-dynamo.js";
 
 const TABLE = "cloud-companies";
@@ -94,6 +95,19 @@ describe("the tables of limit kinds", () => {
     }
   });
 
+  it("name each meter cap at most once, so one kind's amount can never replace another's (a kind with caps null has none)", () => {
+    const caps = GATEWAY_KINDS.map((def) => def.caps).filter((cap) => cap !== null);
+    expect(new Set(caps).size).toBe(caps.length);
+  });
+
+  it("have their how-to-add doc committed (a file CI sees), naming every kind and the three tables", () => {
+    expect(existsSync("docs/model-gateway-spend-limits.md")).toBe(true);
+    const doc = readFileSync("docs/model-gateway-spend-limits.md", "utf8");
+    expect(doc).toContain("Adding a kind");
+    for (const table of ["SPEND_LIMIT_KINDS", "GATEWAY_COMPANY_SPEND_LIMITS", "SPEND_LIMIT_TABLES", "readSpendLimit"]) expect(doc, table).toContain(table);
+    expect(readFileSync(".gitignore", "utf8")).toContain("!docs/model-gateway-spend-limits.md");
+  });
+
   it("are drawn by the page's table: one entry for each kind, with the same list member, path segment and scope", () => {
     expect(SPEND_LIMIT_TABLES.map(({ listKey, segment, scope }) => ({ listKey, segment, scope }))).toEqual(DEFS.map(({ listKey, segment, scope }) => ({ listKey, segment, scope })));
   });
@@ -129,6 +143,8 @@ describe("the tables of limit kinds", () => {
           ["another company's attribute", { companyId: B }], ["another kind", { kind: otherKind }], ["no kind", { kind: undefined }], ["another id", { id: id === "web" ? "api" : "2".repeat(64) }],
           ["no id", { id: undefined }], ["a negative amount", { monthlyUsdMicros: -1 }], ["a fraction", { monthlyUsdMicros: 1.5 }], ["a text amount", { monthlyUsdMicros: "5" }], ["no amount", { monthlyUsdMicros: undefined }],
           ["an amount past the ceiling", { monthlyUsdMicros: GATEWAY_COMPANY_BUDGET_MAX + 1 }], ["no version", { version: undefined }], ["version 0", { version: 0 }],
+          // Cloud's store and the gateway agree on what reads: the author and time Cloud writes are required by both.
+          ["no author", { updatedBy: undefined }], ["no time", { updatedAt: undefined }], ["a numeric author", { updatedBy: 7 }],
         ];
         for (const [label, change] of damages) {
           const { wire, store } = both();
