@@ -35,7 +35,7 @@ export {
 export {
   AGENT_AI_SOURCES, COMPANY_ID, CompanyStoreConflict, HOOK_INSTALL_COMPANIES_MAX, INVITES_READ_MAX, INVITE_DAYS, LocalCompanyStore, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, StoreCompanyRules, StoreHookInstalls,
   companySettings, validGithubUserId, validHookInstall,
-  type AgentAiChoice, type GithubTrialClaim, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
+  type AgentAiChoice, type CompanyTrial, type TrialUnlock, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
 } from "./company-store.js";
 export { CLOSED_INVITE_DAYS, COMPANY_TABLE, DynamoCompanyStore } from "./company-dynamo.js";
 export { COMPANY_ROUTES, PREAPPROVALS_PATH, modelGatewayReadiness, preapprovalEmailHash, type CompanyBackend } from "./company-routes.js";

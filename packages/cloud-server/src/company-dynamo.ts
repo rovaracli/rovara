@@ -12,14 +12,16 @@
 //   COMPANY#<org_…>             INVITEREQUEST#<request id>  the invite a create request made, so a replay is refused
 //   INVITETOKEN#<sha256 hex>    INVITE                      the company and invite a link's token names (never the token)
 //   HOOKINSTALL#<sha256 hex>    INSTALL                     a Code install the policy hook answers, by a hash of its issuer
+//   COMPANY#<org_…>             TRIAL                       the company's unlocked trial and the GitHub account that unlocked it (written once, never overwritten)
 //   GITHUBTRIAL#<GitHub user id> TRIAL                      the company holding that GitHub account's one trial (first writer wins, never overwritten)
+//                                                           (these two are written together, in one transaction, or not at all: L2-8)
 //
 // Every item carries `companyId` (an install carries its own issuer), and every read checks it against the key it asked for.
 import { createHash } from "node:crypto";
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
-  COMPANY_ID, CompanyStoreConflict, INVITES_READ_MAX, validAgentAiSource, validGithubUserId, validHookInstall, type GithubTrialClaim,
+  COMPANY_ID, CompanyStoreConflict, INVITES_READ_MAX, validAgentAiSource, validGithubUserId, validHookInstall, type CompanyTrial, type TrialUnlock,
   type AgentAiChoice, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
 } from "./company-store.js";
 import type { CompanySettings } from "./company-settings.js";
@@ -252,17 +254,35 @@ export class DynamoCompanyStore implements CompanyStore {
     await this.db.send(new DeleteCommand({ TableName: this.table, Key: { pk: issuerKey(issuer), sk: "INSTALL" } }));
   }
 
-  async claimGithubTrial(githubUserId: number, companyId: string, at: string): Promise<GithubTrialClaim> {
-    if (!validGithubUserId(githubUserId) || !COMPANY_ID.test(companyId)) throw new Error("the GitHub trial claim does not read");
-    const key = { pk: `GITHUBTRIAL#${String(githubUserId)}`, sk: "TRIAL" };
+  async trial(companyId: string): Promise<CompanyTrial | undefined> {
+    if (!COMPANY_ID.test(companyId)) throw new Error("the company id does not read");
+    const item = await this.get(company(companyId), "TRIAL");
+    return item !== undefined && item.companyId === companyId && validGithubUserId(item.githubUserId) && typeof item.unlockedAt === "string"
+      ? { companyId, githubUserId: item.githubUserId, unlockedAt: item.unlockedAt } : undefined;
+  }
+
+  async unlockTrial(githubUserId: number, companyId: string, at: string): Promise<TrialUnlock> {
+    if (!validGithubUserId(githubUserId) || !COMPANY_ID.test(companyId)) throw new Error("the GitHub trial unlock does not read");
+    const settled = async (): Promise<TrialUnlock | undefined> => {
+      const own = await this.trial(companyId);
+      return own === undefined ? undefined : own.githubUserId === githubUserId ? "held" : "already";
+    };
+    const earlier = await settled();
+    if (earlier !== undefined) return earlier;
     try {
-      await this.db.send(new PutCommand({ TableName: this.table, Item: { ...key, companyId, githubUserId, claimedAt: at }, ConditionExpression: "attribute_not_exists(pk)" }));
-      return "claimed";
+      await this.db.send(new TransactWriteCommand({
+        TransactItems: [
+          // The account's claim: free, or this company's own (the first #92 build wrote only this row, and a retry is not a second claim).
+          { Put: { TableName: this.table, Item: { pk: `GITHUBTRIAL#${String(githubUserId)}`, sk: "TRIAL", companyId, githubUserId, claimedAt: at }, ConditionExpression: "attribute_not_exists(pk) OR companyId = :company", ExpressionAttributeValues: { ":company": companyId } } },
+          // The company's trial: once. Together with the claim above, or not at all.
+          { Put: { TableName: this.table, Item: { pk: company(companyId), sk: "TRIAL", companyId, githubUserId, unlockedAt: at }, ConditionExpression: "attribute_not_exists(pk)" } },
+        ],
+      }));
+      return "unlocked";
     } catch (error) {
       if (!conflicted(error)) throw error;
     }
-    // Held already: by this company or another. A row that does not read is another's (never a free trial).
-    const holder = await this.get(key.pk, key.sk);
-    return holder?.companyId === companyId && holder.githubUserId === githubUserId ? "held" : "other";
+    // Lost: to this company's own trial (another call of its own won), or to another company holding the account. A row that does not read is never a free trial.
+    return await settled() ?? "used";
   }
 }

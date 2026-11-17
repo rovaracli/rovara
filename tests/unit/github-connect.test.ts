@@ -451,7 +451,8 @@ describe("one trial per GitHub account (github=trial_used)", () => {
     const nova = await w.signIn(NOVA);
     expect(await connectAs(w, nova, "77")).not.toHaveProperty("trialUsed");
     expect(await connectAs(w, nova, "78")).not.toHaveProperty("trialUsed");
-    expect(await w.companies.claimGithubTrial(NOVA.githubUserId, B, new Date(START).toISOString())).toBe("other");
+    expect(await w.companies.unlockTrial(NOVA.githubUserId, B, new Date(START).toISOString())).toBe("used");
+    expect(await w.companies.trial(B)).toBeUndefined();
     // Bob's company, but Nova's GitHub account (Code's answer names githubUser 1001).
     const bob = await w.signIn(BOB);
     w.overrides.set(`POST ${CLAIM}`, () => respond(200, { status: "connected", alreadyConnected: false, installation: { installationId: 90, accountLogin: "bee", accountType: "Organization" }, githubUser: { id: NOVA.githubUserId, login: "nova-gh" } }));
@@ -460,17 +461,51 @@ describe("one trial per GitHub account (github=trial_used)", () => {
     // Bob's own GitHub account gives Bob's company its trial.
     w.overrides.clear();
     expect(await connectAs(w, bob, "91")).not.toHaveProperty("trialUsed");
-    expect(await w.companies.claimGithubTrial(BOB.githubUserId, B, new Date(START).toISOString())).toBe("held");
+    expect(await w.companies.unlockTrial(BOB.githubUserId, B, new Date(START).toISOString())).toBe("held");
+    expect((await w.companies.trial(B))?.githubUserId).toBe(BOB.githubUserId);
+  });
+
+  it("unlocks the connecting company's trial once, refuses a second company's with the same GitHub account, and echoes nothing (L2-8)", async () => {
+    const w = world();
+    const nova = await w.signIn(NOVA), bob = await w.signIn(BOB);
+    expect(await connectAs(w, nova, "77")).not.toHaveProperty("trialUsed");
+    expect((await w.companies.trial(A))?.githubUserId).toBe(NOVA.githubUserId);
+    expect(w.logs.filter((line) => line.event === "cloud.github_trial_unlocked")).toEqual([{ event: "cloud.github_trial_unlocked", companyId: A, developerId: NOVA.developerId }]);
+    // The second company, same GitHub account (Code names githubUser 1001): connected, but no trial, and only the fixed flag says so.
+    w.overrides.set(`POST ${CLAIM}`, () => respond(200, { status: "connected", alreadyConnected: false, installation: { installationId: 90, accountLogin: "bee", accountType: "Organization" }, githubUser: { id: NOVA.githubUserId, login: "nova-gh" } }));
+    const refused = await connectAs(w, bob, "90");
+    expect(refused).toEqual({ status: "connected", alreadyConnected: false, accountLogin: "bee", accountType: "Organization", trialUsed: true });
+    expect(await w.companies.trial(B)).toBeUndefined();
+    expect((await w.companies.trial(A))?.githubUserId).toBe(NOVA.githubUserId);
+    const text = JSON.stringify([refused, w.logs]);
+    expect(text).not.toContain("nova-gh");
+    expect(text).not.toContain(`"githubUserId"`);
+    expect(w.logs.filter((line) => line.event === "cloud.github_trial_unlocked")).toHaveLength(1);
+  });
+
+  it("lets two companies racing on one GitHub account through the callback unlock only one trial (L2-8)", async () => {
+    const w = world();
+    const nova = await w.signIn(NOVA), bob = await w.signIn(BOB);
+    w.overrides.set(`POST ${CLAIM}`, () => respond(200, { status: "connected", alreadyConnected: false, installation: { installationId: 90, accountLogin: "bee", accountType: "Organization" }, githubUser: { id: NOVA.githubUserId, login: "nova-gh" } }));
+    const [one, two] = await Promise.all([w.connect(nova), w.connect(bob)]);
+    await Promise.all([
+      w.callback({ state: one.state, code: CODES.connected, installation_id: "90" }, { session: nova.cookie, binder: one.binder }),
+      w.callback({ state: two.state, code: CODES.connected, installation_id: "90" }, { session: bob.cookie, binder: two.binder }),
+    ]);
+    const answers = await Promise.all([w.api(nova, "POST", "/github/connect/result", {}), w.api(bob, "POST", "/github/connect/result", {})]);
+    expect(answers.filter((answer) => (answer.body as { trialUsed?: boolean }).trialUsed === true)).toHaveLength(1);
+    const holders = (await Promise.all([A, B].map((company) => w.companies.trial(company)))).filter((trial) => trial !== undefined);
+    expect(holders).toHaveLength(1);
   });
 
   it("applies to a choice too, and never fails a connection when the record can't be written", async () => {
     const w = world();
-    await w.companies.claimGithubTrial(NOVA.githubUserId, B, new Date(START).toISOString());
+    await w.companies.unlockTrial(NOVA.githubUserId, B, new Date(START).toISOString());
     const nova = await w.signIn(NOVA);
     const { binder, state } = await w.connect(nova);
     await w.callback({ state, code: CODES.choose }, { session: nova.cookie, binder });
     expect((await w.api(nova, "POST", "/github/choose", { installationId: 11 })).body).toMatchObject({ status: "connected", trialUsed: true });
-    w.companies.claimGithubTrial = async () => { throw new Error("table down"); };
+    w.companies.unlockTrial = async () => { throw new Error("table down"); };
     const again = await w.connect(nova);
     await w.callback({ state: again.state, code: CODES.connected, installation_id: "5" }, { session: nova.cookie, binder: again.binder });
     expect((await w.api(nova, "POST", "/github/connect/result", {})).body).toEqual({ status: "connected", alreadyConnected: false, accountLogin: "acme", accountType: "Organization" });

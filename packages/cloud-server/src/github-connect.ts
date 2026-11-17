@@ -20,7 +20,9 @@
 //     landing URL carries only one fixed word (GITHUB_OUTCOMES). No query value is echoed into a page, a URL or a log.
 //   - Refusals are Code's fixed sentences (GITHUB_WORDS), matched by status, never Code's or GitHub's text passed through.
 //   - The one-trial-per-GitHub-account rule (`github=trial_used`) is applied on every connected answer with Code's checked githubUser.id
-//     (company-store.ts claimGithubTrial).
+//     (company-store.ts unlockTrial, L2-8): the company's trial is unlocked and the GitHub account claimed in one write, so two companies
+//     racing for one GitHub account cannot both get a trial. The company that loses is still connected (Code bound the installation as the
+//     person before Cloud is told), is told only the fixed flag `trialUsed`, and gets no trial.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { companyOf } from "./company-caller.js";
@@ -195,14 +197,15 @@ export function createGithubConnect(deps: GithubConnectDeps) {
     return companyOf(await deps.client.access(session))?.companyId;
   }
 
-  /** The trial rule on a connected answer: the first company to connect a GitHub account holds its trial. Never fails the connection. */
+  /** The trial rule on a connected answer: the first company to connect a GitHub account unlocks its trial; no other company does. Never fails the connection. */
   async function applyTrial(session: CodeSession, result: GithubResult, githubUserId: number | undefined): Promise<GithubResult> {
     if (result.status !== "connected" || githubUserId === undefined || deps.companies === undefined) return result;
     try {
       const companyId = await liveCompany(session);
       if (companyId === undefined) return result;
-      const claim = await deps.companies.claimGithubTrial(githubUserId, companyId, deps.now().toISOString());
-      if (claim !== "other") return result;
+      const unlock = await deps.companies.unlockTrial(githubUserId, companyId, deps.now().toISOString());
+      if (unlock === "unlocked") deps.log({ event: "cloud.github_trial_unlocked", companyId, developerId: session.access.developerId });
+      if (unlock !== "used") return result;
       deps.log({ event: "cloud.github_trial_used", companyId, developerId: session.access.developerId });
       return { ...result, trialUsed: true };
     } catch (error) {
