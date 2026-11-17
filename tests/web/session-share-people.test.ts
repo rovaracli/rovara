@@ -102,4 +102,20 @@ describe("Share and the People panel", () => {
     await screen.findAllByTestId("people-row");
     expect(screen.queryByRole("button", { name: "Remove Dan" })).toBeNull();
   });
+
+  it("keeps the shared viewers listed after a change commits (the answer to a change carries only the People list)", async () => {
+    const shared = [{ developerId: DAN, name: "Dan", role: "viewer" }];
+    mount(request => {
+      if (request.method === "POST") return { status: 200, body: { status: "COMMITTED", people: { ...view, revision: 4, people: [...view.people, { personId: "11111111-1111-4111-8111-111111111111", name: "Eve", role: "viewer", you: false, effectiveRole: "viewer" }] } } };
+      if (request.path.endsWith("/candidates")) return { status: 200, body: { candidates: [{ developerId: EVE, name: "Eve" }], complete: true } };
+      return { status: 200, body: { people: view, sharedWith: shared } };
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    fireEvent.change(await screen.findByRole("combobox", { name: "Person" }), { target: { value: EVE } });
+    fireEvent.click(screen.getByRole("button", { name: "Add person" }));
+    await screen.findByTestId("people-message");
+    const names = screen.getAllByTestId("people-row").map(row => row.textContent);
+    expect(names.some(text => text?.startsWith("Dan"))).toBe(true);
+    expect(names.some(text => text?.startsWith("Eve"))).toBe(true);
+  });
 });

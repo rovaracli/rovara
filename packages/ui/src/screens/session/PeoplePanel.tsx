@@ -56,7 +56,7 @@ export function PeoplePanel({ id, shareRequest = 0 }: { id: string; /** D8: goes
   inFlight.current = true;setBusy(true);setError(undefined);setMessage(undefined);
   try {
    const answer = await ask();
-   if (answer.status === "COMMITTED") { query.setQueryData(key, { people: answer.people });setMessage("Done");void query.invalidateQueries({ queryKey: ["session", id], exact: true });void query.invalidateQueries({ queryKey: [...key, "candidates"] }); }
+   if (answer.status === "COMMITTED") { query.setQueryData<NonNullable<typeof list.data>>(key, old => ({ ...old, people: answer.people }));setMessage("Done");void query.invalidateQueries({ queryKey: ["session", id], exact: true });void query.invalidateQueries({ queryKey: [...key, "candidates"] }); }
    else if (answer.status === "PENDING") setWaiting({ confirmUrl: answer.confirmUrl, expiresAt: answer.expiresAt, revision: view.revision });
   } catch (failure) {
    setError(failureText(failure, "Couldn't change who is on this task. Try again."));
