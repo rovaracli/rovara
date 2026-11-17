@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
 import { WORK_READS, WORK_TASKS_MAX, workPlan, workTask } from "../../packages/cloud-server/src/work-reads.js";
 import type { RouteContext } from "../../packages/cloud-server/src/routes.js";
-import { TASK_IDS, startFakeCode, type FakeCode } from "../support/fake-code.js";
+import { PRIYA, SAM, TASK_IDS, startFakeCode, type FakeCode, type Person } from "../support/fake-code.js";
 
 let fake: FakeCode;
 interface Answer<T> { status: number; body: T }
@@ -13,6 +13,9 @@ interface PlanBody { requirements: Array<{ criteria: Array<{ id: string }> }>; t
 interface ProofBody { items: Array<Record<string, unknown>> }
 interface EventsBody { events: Array<Record<string, unknown>> }
 let call: <T>(target: string) => Promise<Answer<T>>;
+/** Signs in as `person` (the fake Code has no login page) and answers a caller bound to that person's own session. */
+let signInAs: (person: Person) => Promise<<T>(target: string) => Promise<Answer<T>>>;
+const control = async (body: Record<string, unknown>): Promise<{ taskId?: string }> => await (await fetch(`${fake.url}/__fake/involved`, { method: "POST", body: JSON.stringify(body) })).json() as { taskId?: string };
 beforeAll(async () => {
   fake = await startFakeCode();
   const client = new CodeClient({ baseUrl: fake.url, clientId: "rovara-cloud", clientSecret: "fake-secret", redirectUri: "http://127.0.0.1:8787/callback", scopes: "projects:members projects:create" });
@@ -23,12 +26,16 @@ beforeAll(async () => {
     const answer = await handler(request);
     return { status: answer!.status, headers: answer!.headers, body: answer!.body === "" ? undefined : JSON.parse(answer!.body) as unknown };
   };
-  const start = await send("GET", "/v1/auth/browser/authorize?return_to=/app");
-  const toCode = await fetch(start.headers["location"]!, { redirect: "manual" });
-  const back = new URL(toCode.headers.get("location")!);
-  const finished = await send("GET", `${back.pathname}${back.search}`);
-  const cookie = finished.headers["set-cookie"]!.split(";")[0]!;
-  call = async <T>(target: string) => { const answer = await send("GET", `/v1/web${target}`, cookie);return { status: answer.status, body: answer.body as T }; };
+  signInAs = async (person) => {
+    fake.setPerson(person);
+    const start = await send("GET", "/v1/auth/browser/authorize?return_to=/app");
+    const toCode = await fetch(start.headers["location"]!, { redirect: "manual" });
+    const back = new URL(toCode.headers.get("location")!);
+    const finished = await send("GET", `${back.pathname}${back.search}`);
+    const cookie = finished.headers["set-cookie"]!.split(";")[0]!;
+    return async <T>(target: string) => { const answer = await send("GET", `/v1/web${target}`, cookie);return { status: answer.status, body: answer.body as T }; };
+  };
+  call = await signInAs(PRIYA);
 });
 afterAll(async () => { await fake.close(); });
 
@@ -106,5 +113,78 @@ describe("the task list and Cloud's sessions", () => {
     expect(answer.status).toBe(200);
     expect((answer.body as { tasks: unknown[] }).tasks).toHaveLength(1);
     expect(JSON.stringify(answer.body)).not.toContain("sessionId");
+  });
+});
+
+describe("the Work page's involved tasks (web task channel K4)", () => {
+  interface Involved { tasks: Array<{ taskId: string; title: string; project: string }> }
+  const involvedCalls = () => fake.log.filter((entry) => entry.path === "/v1/dev/tasks" && entry.query.includes("involved")).map((entry) => entry.path + entry.query);
+
+  it("lists the tasks Code says the person was added to, in the Work list's fields, from one call that carries nothing the browser sent", async () => {
+    await control({ mode: "on" });
+    const added = await control({ involve: true, as: "priya", title: "Migrate the invoices table" });
+    const before = involvedCalls().length;
+    const { status, body } = await call<Involved>(`/involved?company=other&taskId=${TASK_IDS.running}&limit=9999&cursor=x`);
+    expect(status).toBe(200);
+    expect(body.tasks.map((task) => task.taskId)).toEqual([added.taskId]);
+    expect(body.tasks[0]).toMatchObject({ title: "Migrate the invoices table", project: "api" });
+    // Exactly one call to Code, with Cloud's own fixed query: nothing of the browser's query reaches Code.
+    expect(involvedCalls().slice(before)).toEqual(["/v1/dev/tasks?involved=1&limit=50"]);
+    // The ordinary list does not carry it (it is not the person's own).
+    const ordinary = await call<{ tasks: Array<{ taskId: string }> }>("/sessions");
+    expect(ordinary.body.tasks.map((task) => task.taskId)).not.toContain(added.taskId);
+  });
+
+  it("keeps only the fields the page draws and drops what is not a task", async () => {
+    await control({ mode: "on" });
+    await control({ involve: true, as: "priya", title: "Fields only" });
+    const { body } = await call<Involved>("/involved");
+    expect(body.tasks.length).toBeGreaterThan(0);
+    for (const task of body.tasks) expect(Object.keys(task).sort()).toEqual(["createdAt", "pullRequests", "project", "status", "taskId", "title", "updatedAt", "workflow"].sort());
+  });
+
+  it("shows each person only what Code lists for them: the person added sees it, the task's owner and a person nobody added see nothing of it", async () => {
+    await control({ mode: "on" });
+    const sam = await signInAs(SAM);
+    const priya = await signInAs(PRIYA);
+    // Sam is added to a task Priya owns.
+    const added = await control({ involve: true, as: "sam", title: "Only for Sam" });
+    expect(added.taskId).toBeDefined();
+    expect((await sam<Involved>("/involved")).body.tasks.map((task) => task.taskId)).toEqual([added.taskId]);
+    expect((await priya<Involved>("/involved")).body.tasks.map((task) => task.title)).not.toContain("Only for Sam");
+    // Cloud forwards Code's per-person answer; Sam's list in the ordinary route stays Sam's own.
+    expect((await sam<{ tasks: Array<{ taskId: string }> }>("/sessions")).body.tasks.map((task) => task.taskId)).not.toContain(added.taskId);
+  });
+
+  it.each([400, 404, 501])("shows nothing extra and no error when Code is not deployed yet and answers %i", async (code) => {
+    await control({ mode: String(code) });
+    const answer = await call<Involved>("/involved");
+    expect(answer).toEqual({ status: 200, body: { tasks: [] } });
+    await control({ mode: "on" });
+  });
+
+  it("never shows the person's own tasks as involved when an older Code answers the ordinary list to the involved query", async () => {
+    await control({ mode: "old" });
+    const answer = await call<Involved>("/involved");
+    expect(answer).toEqual({ status: 200, body: { tasks: [] } });
+    // The older Code did answer the ordinary list to that very call (the person's own five tasks were in it): Cloud asked, and showed none of it.
+    const before = involvedCalls().length;
+    await call<Involved>("/involved");
+    expect(involvedCalls().length).toBe(before + 1);
+    const ordinary = await call<{ tasks: unknown[] }>("/sessions");
+    expect(ordinary.body.tasks.length).toBeGreaterThan(0);
+    await control({ mode: "on" });
+  });
+
+  it("passes any other refusal of Code on as Code worded it (never an empty list that hides an outage)", async () => {
+    await control({ mode: "500" });
+    const answer = await call<unknown>("/involved");
+    expect(answer.status).toBe(500);
+    await control({ mode: "on" });
+  });
+
+  it("bounds the list to WORK_TASKS_MAX and keeps nothing from a body that is not the involved list or a task", () => {
+    expect(WORK_TASKS_MAX).toBe(100);
+    expect(workTask({ title: "no id", project: "api" })).toBeUndefined();
   });
 });

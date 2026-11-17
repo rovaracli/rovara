@@ -21,6 +21,8 @@ const FinishSetup = lazy(async () => ({ default: (await import("./FinishSetup.js
 // Guided onboarding PR 13: the teammate's welcome and the admins' "connection needs attention" cards, after the first paint.
 const TeammateWelcome = lazy(async () => ({ default: (await import("./TeammateWelcome.js")).TeammateWelcome }));
 const IntegrationNoticeCards = lazy(async () => ({ default: (await import("../connect/integration-notices.js")).IntegrationNoticeCards }));
+// The tasks the person was added to load after the first paint too (web task channel K4).
+const InvolvedHome = lazy(async () => ({ default: (await import("./InvolvedHome.js")).InvolvedHome }));
 import "./home.css";
 function HomeNotices() { const nav = useNav(), host = useAppHost();return <IntegrationNoticeCards admin={host.kind === "web" && (nav?.me.orgRole === "owner" || nav?.me.orgRole === "admin")} />; }
 export function HomeScreen() {
@@ -43,5 +45,6 @@ export function HomeScreen() {
  {cards !== undefined && cards.length === 0 && total > 0 && <div><p>Items are temporarily unavailable.</p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
  {cards !== undefined && total > cards.length && <p className="rv-muted">Showing {cards.length} of {total}</p>}
  {cards !== undefined && cards.length > 0 && <ol className="rv-attention-list" aria-label="What needs you">{cards.map(card => <HomeCard key={card.cardId} card={card} />)}</ol>}
+ {ready && <Suspense fallback={null}><InvolvedHome /></Suspense>}
  </section>;
 }
