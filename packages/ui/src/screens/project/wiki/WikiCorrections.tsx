@@ -51,7 +51,7 @@ function NoteForm({ project, id, files, onDone }: { project: string; id: string;
   };
   return (
     <form className="rv-wiki-form" data-testid="wiki-note-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-      <TextArea label={T.NOTE_FORM_LABEL} hint={T.NOTE_FORM_HINT} value={text} maxLength={2000} rows={4} onChange={(event) => { setText(event.target.value); }} />
+      <TextArea autoFocus label={T.NOTE_FORM_LABEL} hint={T.NOTE_FORM_HINT} value={text} maxLength={2000} rows={4} onChange={(event) => { setText(event.target.value); }} />
       {files.length > 0 && <Select label={T.NOTE_FILE_LABEL} value={file} onValueChange={setFile} placeholder={T.NOTE_NO_FILE} options={[{ value: "", label: T.NOTE_NO_FILE }, ...files.map((one) => ({ value: `${one.repo}/${one.path}`, label: `${one.repo}/${one.path}` }))]} />}
       <Failed error={act.error} />
       <div className="rv-wiki-row"><Button variant="primary" type="submit" busy={act.busy} disabled={text.trim() === ""}>{T.NOTE_PIN}</Button><Button onClick={onDone}>{T.CANCEL}</Button></div>
@@ -61,7 +61,8 @@ function NoteForm({ project, id, files, onDone }: { project: string; id: string;
 
 function NoteCard({ project, id, note, state }: { project: string; id: string; note: WikiShownNote; state: WikiNoteState | undefined }) {
   const api = useWikiApi(), refresh = useWikiRefresh(project);
-  const approve = useAct(async () => { await refresh(); }), remove = useAct(async () => { await refresh(); }), lesson = useAct(async () => { await refresh(); });
+  // One action at a time per card, with one alert: a new action clears the old error.
+  const act = useAct(async () => { await refresh(); });
   const [sent, setSent] = useState(false);
   const rule = state?.canSuggestLesson === true && wikiNoteLooksLikeRule(note.text);
   return (
@@ -70,13 +71,13 @@ function NoteCard({ project, id, note, state }: { project: string; id: string; n
       <p className="rv-wiki-text"><VisibleText text={note.text} /></p>
       {note.file !== undefined && <p className="rv-wiki-who">{T.NOTE_FILE} <code><VisibleText text={`${note.file.repo}/${note.file.path}`} /></code></p>}
       {state?.mayBeOutOfDate === true && <p className="rv-wiki-pnote rv-wiki-pnote-stale" data-testid="wiki-note-stale"><b>{T.STALE}</b> {T.NOTE_OUT_OF_DATE} {T.NOTE_OUT_OF_DATE_ASK}</p>}
-      {rule && !sent && <div className="rv-wiki-offer" data-testid="wiki-lesson-offer"><span>{T.LESSON_OFFER}</span><Button busy={lesson.busy} onClick={() => { void lesson.run(async () => { await api.suggestLesson(project, id, note.noteId); setSent(true); }); }}>{T.LESSON_SUGGEST}</Button></div>}
+      {rule && !sent && <div className="rv-wiki-offer" data-testid="wiki-lesson-offer"><span>{T.LESSON_OFFER}</span><Button busy={act.busy} onClick={() => { void act.run(async () => { await api.suggestLesson(project, id, note.noteId); setSent(true); }); }}>{T.LESSON_SUGGEST}</Button></div>}
       {sent && <p role="status" className="rv-wiki-who">{T.LESSON_SENT}</p>}
-      <Failed error={lesson.error ?? approve.error ?? remove.error} />
+      <Failed error={act.error} />
       {(state?.canApprove === true || state?.canDelete === true) && (
         <div className="rv-wiki-row">
-          {state.canApprove && <Button variant="primary" busy={approve.busy} onClick={() => { void approve.run(async () => { await api.approveNote(project, id, note.noteId); }); }}>{T.NOTE_APPROVE}</Button>}
-          {state.canDelete && <Button variant="quiet" busy={remove.busy} aria-label={`${T.NOTE_REMOVE}: ${note.text.slice(0, 40)}`} onClick={() => { void remove.run(async () => { await api.deleteNote(project, id, note.noteId); }); }}>{T.NOTE_REMOVE}</Button>}
+          {state.canApprove && <Button variant="primary" busy={act.busy} onClick={() => { void act.run(async () => { await api.approveNote(project, id, note.noteId); }); }}>{T.NOTE_APPROVE}</Button>}
+          {state.canDelete && <Button variant="quiet" busy={act.busy} aria-label={`${T.NOTE_REMOVE}: ${[...note.text.replace(/\s+/gu, " ")].slice(0, 40).join("")}`} onClick={() => { void act.run(async () => { await api.deleteNote(project, id, note.noteId); }); }}>{T.NOTE_REMOVE}</Button>}
         </div>
       )}
     </div>
@@ -87,6 +88,7 @@ function NoteCard({ project, id, note, state }: { project: string; id: string; n
 export function PageNotes({ project, res, view }: { project: string; res: WikiPageResponse; view: CorrectionsView | undefined }) {
   const [open, setOpen] = useState(false);
   const id = res.page.pageId;
+  if (view === undefined && res.notes.length === 0) return null;
   return (
     <section aria-label="Pinned notes">
       {view?.you.addNote === true && !open && <div className="rv-wiki-row"><Button data-testid="wiki-add-note" onClick={() => { setOpen(true); }}>{T.ADD_NOTE}</Button></div>}
@@ -110,7 +112,7 @@ export function MarkForm({ project, id, claimIds, onDone }: { project: string; i
   };
   return (
     <form className="rv-wiki-form" data-testid="wiki-mark-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-      <TextField id={field} label={T.MARK_LABEL} value={reason} maxLength={500} placeholder={T.MARK_PLACEHOLDER} onChange={(event) => { setReason(event.target.value); }} />
+      <TextField autoFocus id={field} label={T.MARK_LABEL} value={reason} maxLength={500} placeholder={T.MARK_PLACEHOLDER} onChange={(event) => { setReason(event.target.value); }} />
       <Failed error={act.error} />
       <div className="rv-wiki-row"><Button variant="primary" type="submit" busy={act.busy}>{T.MARK_WRONG}</Button><Button onClick={onDone}>{T.CANCEL}</Button></div>
     </form>
@@ -118,9 +120,9 @@ export function MarkForm({ project, id, claimIds, onDone }: { project: string; i
 }
 
 /** The "Mark this page wrong" control under the page's meta line (for people who may mark). */
-export function PageMark({ project, res, view }: { project: string; res: WikiPageResponse; view: CorrectionsView | undefined }): ReactNode {
+export function PageMark({ project, res, view, marked }: { project: string; res: WikiPageResponse; view: CorrectionsView | undefined; marked: boolean }): ReactNode {
   const [open, setOpen] = useState(false);
-  if (view?.you.markWrong !== true) return null;
+  if (view?.you.markWrong !== true || marked) return null;
   return (
     <div className="rv-wiki-pageact">
       {!open && <Button variant="quiet" data-testid="wiki-mark-page" onClick={() => { setOpen(true); }}>{T.MARK_PAGE_WRONG}</Button>}

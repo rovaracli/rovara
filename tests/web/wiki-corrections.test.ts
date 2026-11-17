@@ -138,6 +138,14 @@ describe("what each role is offered (no dead buttons)", () => {
     f.close();
   });
 
+  it("a page already marked wrong is not offered Mark this page wrong again", async () => {
+    const f = mount({ initial: "/app/projects/payments?tab=wiki&page=repo-beacon-agents" });
+    const a = await article();
+    await screen.findByTestId("wiki-add-note");
+    expect(a.queryByRole("button", { name: "Mark this page wrong" })).toBeNull();
+    f.close();
+  });
+
   it("a note whose file changed says so, for those Code names", async () => {
     const f = mount({ stale: true });
     await article();

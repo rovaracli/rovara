@@ -111,7 +111,7 @@ export function WikiPageView({ project, id, entry, pages, focusTitle }: { projec
         </p>
         {res.page.summary !== "" && <p className="rv-wiki-lede"><VisibleText text={res.page.summary} /></p>}
         {(entry.flagged || chip.tone === "bad") && <div className="rv-wiki-alerts">{entry.flagged ? <Banner title={T.FLAGGED_PAGE} tone="danger" /> : <Banner title={T.MOSTLY_OLD} tone="warning" />}</div>}
-        <PageMark project={project} res={res} view={view} />
+        <PageMark project={project} res={res} view={view} marked={entry.flagged} />
         <PageNotes project={project} res={res} view={view} />
         {model.cites.length > 0 && <Sources project={project} id={id} commits={new Map(res.page.repos.map((one) => [one.repo, one.commit]))} links={link} />}
         {res.page.blocks.map((block) => <Block key={block.blockId} block={block} context={context} />)}
