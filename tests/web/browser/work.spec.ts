@@ -54,8 +54,8 @@ test("the spec shows its criteria with ids, asks its question in place, and says
   await expect(spec).toContainText("R1.1");
   await expect(spec).toContainText("Question for you.");
   await spec.getByRole("button", { name: /Yes, behind a flag/u }).click();
-  // Code does not serve the answers route yet: the question says so, plainly.
-  await expect(page.getByTestId("answer-error").first()).toContainText("isn't connected to Rovara Code yet");
+  // This task has no Cloud session yet (K0b): nothing is sent, and the question says where to answer, plainly.
+  await expect(page.getByTestId("answer-error").first()).toContainText("Answer this question on the task's session page.");
   await expect(page.getByRole("progressbar")).toHaveCount(0);
 });
 
