@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useDecisions } from "../../api/decisions.js";
-import { ApiError } from "../../api/errors.js";
+import { ApiError, NOT_AVAILABLE_YET } from "../../api/errors.js";
 import { involvedRows, nextNeedsYou, useInvolvedTasks, useOrgSpend, useWorkTasks, workRows } from "../../api/work.js";
 import { useAppHost } from "../../host.js";
 import { paths } from "../../paths.js";
@@ -52,7 +52,7 @@ export function WorkScreen() {
  }
  const error = tasks.isError ? tasks.error : undefined, isAdmin = host.kind === "web" && host.features.admin;
  const listBody = tasks.isPending || (decisions.isPending && !tasks.isError) ? <Skeleton label="Loading your work" />
-  : error !== undefined ? <div className="rv-work-error" role="alert" data-testid="load-error"><div className="rv-banner rv-banner-danger"><span><b>{error instanceof ApiError && error.status === 501 ? "Work isn't available yet." : "Couldn't load your work."}</b> <VisibleText text={error instanceof ApiError ? error.message : "Nothing is lost. Running tasks keep going, and chat messages still arrive."} /></span><Button onClick={() => { void tasks.refetch(); }}>Try again</Button></div></div>
+  : error !== undefined ? <div className="rv-work-error" role="alert" data-testid="load-error"><div className="rv-banner rv-banner-danger"><span><b>{error instanceof ApiError && error.status === 501 ? "Work isn't available yet." : "Couldn't load your work."}</b> <VisibleText text={error instanceof ApiError ? (error.status === 501 && error.message === NOT_AVAILABLE_YET ? "" : error.message) : "Nothing is lost. Running tasks keep going, and chat messages still arrive."} /></span><Button onClick={() => { void tasks.refetch(); }}>Try again</Button></div></div>
   : rows.length === 0 && batches.length === 0 ? <EmptyState testId="work-empty" title="No work yet" description="Start a task from a project. It appears here, and a card appears when it needs a decision." />
   : <WorkList rows={rows} selectedId={shownBatch !== undefined ? batchId(shownBatch.project) : selected?.id} onSelect={select} onOpen={id => { const row = rows.find(entry => entry.id === id), page = row === undefined ? undefined : fullPage(row);if (page !== undefined) void navigate(page); }} decisionsFailed={decisions.isError} lessonBatches={batches} />;
  return <section className="rv-work" data-testid="work">

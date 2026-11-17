@@ -215,7 +215,7 @@ it("says a task is not found for an address nobody has, an unlisted task id, or 
 });
 it("says plainly when the task list is not connected, never a spinner, and offers another try", async () => {
   const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasksResponse: { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/sessions isn't connected to Rovara Code yet." } } } });
-  expect((await screen.findByTestId("load-error")).textContent).toContain("isn't connected to Rovara Code yet");expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();expect(screen.queryByRole("progressbar")).toBeNull();
+  expect((await screen.findByTestId("load-error")).textContent).toContain("Not available yet.");expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();expect(screen.queryByRole("progressbar")).toBeNull();
   f.close();
 });
 it("says Continue in my tool is not connected yet when Code does not serve it, and Cloud's words for a refused comment", async () => {

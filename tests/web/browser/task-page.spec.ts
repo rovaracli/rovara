@@ -124,7 +124,7 @@ test("a task nobody has says it was not found, and an unserved list says not con
   await expect(new SessionPage(page).notFound).toBeVisible();
   await page.route("**/v1/web/sessions", (route) => route.fulfill({ status: 501, contentType: "application/json", body: JSON.stringify({ error: { code: "NOT_ON_CODE_YET", message: "/v1/app/sessions isn't connected to Rovara Code yet." } }) }));
   await page.goto("/app/sessions/11111111-1111-4111-8111-111111111111");
-  await expect(new SessionPage(page).loadError).toContainText("isn't connected to Rovara Code yet");
+  await expect(new SessionPage(page).loadError).toContainText("Not available yet.");
   await expect(page.getByRole("progressbar")).toHaveCount(0);
 });
 
