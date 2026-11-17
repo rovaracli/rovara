@@ -7,12 +7,15 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import type https from "node:https";
+import { createChatCompletionsTransport } from "../../packages/model-gateway/src/agent-openai.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { AwsCredentials } from "../../packages/model-gateway/src/aws.js";
 import type { ProviderRequest, ProviderTransport } from "../../packages/model-gateway/src/provider.js";
 import {
-  anthropicModel, bedrockSettings, CHECK_KINDS, CHECK_MAX_TOKENS, CHECK_TOKEN_CEILING, checkRequest, DEFAULT_BEDROCK_MODEL_US, formatResult, keyProblem, parseCliCredentials,
-  parseKind, promptHidden, readAgentStream, runCheck, WORDS, type CheckTarget,
+  anthropicModel, bedrockSettings, chatModel, CHECK_KINDS, CHECK_MAX_TOKENS, CHECK_TOKEN_CEILING, checkRequest, DEFAULT_BEDROCK_MODEL_US, formatResult, keyProblem, parseCliCredentials,
+  judge, parseKind, promptHidden, readAgentStream, runCheck, WORDS, type CheckTarget,
 } from "../../scripts/real-key-check-lib.js";
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -64,7 +67,7 @@ describe("the entry script is owner-run only", () => {
       catch (error) { const e = error as { status: number; stdout: string; stderr: string }; return { status: e.status, out: `${e.stdout}${e.stderr}` }; }
     };
     expect(run(["anthropic"], {})).toEqual({ status: 2, out: `${WORDS.consent}\n` });
-    expect(run(["openai"], { ROVARA_REAL_KEY_CHECK: "1" })).toEqual({ status: 2, out: `${WORDS.notBuilt}\n` });
+    expect(run(["endpoint"], { ROVARA_REAL_KEY_CHECK: "1" })).toEqual({ status: 2, out: `${WORDS.notBuilt}\n` });
     const pasted = run(["anthropic", KEY], { ROVARA_REAL_KEY_CHECK: "1" });
     expect(pasted).toEqual({ status: 2, out: `${WORDS.usage}\n` });
     expect(pasted.out).not.toContain(KEY);
@@ -145,6 +148,86 @@ describe("the one check, through the gateway's own agent route (fake transport)"
     const result = await runCheck({ kind: "bedrock", region: "us-west-2", agentModel: "claude-haiku-4-5", bedrockModel: DEFAULT_BEDROCK_MODEL_US, credentials, transport: () => async () => ({ status: 403, body: (async function* () { yield Buffer.from(`denied ${credentials.secretAccessKey}`); })() }) });
     expect(result.pass).toBe(false);
     expect(all(formatResult("bedrock", result))).not.toContain(credentials.secretAccessKey);
+  });
+});
+
+// OpenAI / OpenRouter (A2): the check runs the REAL Chat Completions transport over a fake https.request, so the translation both ways
+// and OpenRouter's reported cost are what the owner's real call will exercise.
+function chatHttps(status: number, parts: Buffer[]) {
+  const seen: Array<{ options: Record<string, unknown>; body: string }> = [];
+  const request = ((options: Record<string, unknown>, onResponse: (response: PassThrough & { statusCode: number }) => void) => {
+    const req = new EventEmitter() as EventEmitter & { end(body: Buffer): void; destroy(): void };
+    req.destroy = () => { req.emit("close"); };
+    req.end = (body: Buffer) => {
+      seen.push({ options, body: Buffer.from(body).toString("utf8") });
+      const socket = new EventEmitter(); req.emit("socket", socket); socket.emit("secureConnect");
+      const response = Object.assign(new PassThrough(), { statusCode: status });
+      onResponse(response);
+      for (const part of parts) response.write(part);
+      response.end();
+    };
+    return req;
+  }) as unknown as typeof https.request;
+  return { request, seen };
+}
+const chatChunk = (value: unknown) => Buffer.from(`data: ${typeof value === "string" ? value : JSON.stringify(value)}\n\n`);
+const chatToolStream = (cost?: number) => [
+  chatChunk({ choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "ping", arguments: "{}" } }] }, finish_reason: null }] }),
+  chatChunk({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }),
+  chatChunk({ choices: [], usage: { prompt_tokens: 50, completion_tokens: 7, ...(cost === undefined ? {} : { cost }) } }),
+  chatChunk("[DONE]"),
+];
+
+describe("the one check on an OpenAI or OpenRouter key (real transport, fake network)", () => {
+  it("OpenAI: PASS through the translation both ways; the key only in the bearer header", async () => {
+    const fake = chatHttps(200, chatToolStream());
+    const result = await runCheck({ kind: "openai", key: KEY, model: "gpt-5-mini", transport: createChatCompletionsTransport("openai", fake.request) });
+    expect(result.pass).toBe(true);
+    expect(fake.seen[0]!.options).toMatchObject({ hostname: "api.openai.com", path: "/v1/chat/completions" });
+    expect((fake.seen[0]!.options.headers as Record<string, string>).authorization).toBe(`Bearer ${KEY}`);
+    expect(JSON.parse(fake.seen[0]!.body)).toMatchObject({ model: "gpt-5-mini", max_completion_tokens: CHECK_MAX_TOKENS, tool_choice: { type: "function", function: { name: "ping" } } });
+    expect(all(formatResult("openai", result))).not.toContain(KEY);
+  });
+
+  it("OpenRouter: PASS only when the reported cost arrives and is what is settled", async () => {
+    const fake = chatHttps(200, chatToolStream(0.00042));
+    const result = await runCheck({ kind: "openrouter", key: KEY, model: "openai/gpt-5-mini", transport: createChatCompletionsTransport("openrouter", fake.request) });
+    expect(result.lines.map((line) => [line.name, line.ok])).toEqual([
+      ["HTTP ok", true], ["answer streamed to completion", true], ["a tool call came back in the agent's (Anthropic) shape", true], ["usage read", true],
+      ["settled above $0", true], ["OpenRouter reported cost read", true], ["unknown price settled at the reported cost (settleAmount's rule), never $0", true],
+    ]);
+    expect(fake.seen[0]!.options).toMatchObject({ hostname: "openrouter.ai", path: "/api/v1/chat/completions" });
+    expect(JSON.parse(fake.seen[0]!.body)).toMatchObject({ usage: { include: true } });
+    const missing = await runCheck({ kind: "openrouter", key: KEY, model: "openai/gpt-5-mini", transport: createChatCompletionsTransport("openrouter", chatHttps(200, chatToolStream()).request) });
+    expect(missing.pass).toBe(false);
+    expect(missing.lines.find((line) => line.name === "OpenRouter reported cost read")?.ok).toBe(false);
+  });
+
+  it("OpenRouter: a settle that ignored the reported cost is a FAIL even when every other line passes", async () => {
+    const sse: Buffer[] = []; for await (const part of anthropicAnswer()) sse.push(Buffer.from(part));
+    const sink = { status: 200, ended: true, destroyed: false, bytes: sse };
+    expect(judge("openrouter", sink, { micros: 420, estimated: false }, 420).pass).toBe(true);
+    // REVIEW-1 L2: the right amount but still flagged as an estimate is not settleAmount's reported-cost rule either.
+    const flagged = judge("openrouter", sink, { micros: 420, estimated: true, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }, 420);
+    expect(flagged.pass).toBe(false);
+    expect(flagged.lines.find((line) => line.name.startsWith("unknown price settled at the reported cost"))?.ok).toBe(false);
+    const ignored = judge("openrouter", sink, { micros: 9_999, estimated: true, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }, 420);
+    expect(ignored.pass).toBe(false);
+    expect(ignored.lines.find((line) => line.name.startsWith("unknown price settled at the reported cost"))?.ok).toBe(false);
+  });
+
+  it("a refused key or a broken stream is a FAIL that never carries the key", async () => {
+    for (const fake of [chatHttps(401, [Buffer.from(`{"error":"${KEY}"}`)]), chatHttps(200, [chatChunk({ choices: [{ index: 0, delta: { content: KEY } }] })])]) {
+      const result = await runCheck({ kind: "openai", key: KEY, model: "gpt-5-mini", transport: createChatCompletionsTransport("openai", fake.request) });
+      expect(result.pass).toBe(false);
+      expect(all(formatResult("openai", result))).not.toContain(KEY);
+    }
+  });
+
+  it("models: checked, cheap defaults", () => {
+    expect(chatModel("openai", {})).toBe("gpt-5-mini");
+    expect(chatModel("openrouter", {})).toBe("openai/gpt-5-mini");
+    expect(chatModel("openai", { ROVARA_CHECK_OPENAI_MODEL: "../etc" })).toBeUndefined();
   });
 });
 

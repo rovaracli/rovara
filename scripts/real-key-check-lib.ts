@@ -9,7 +9,8 @@
 // Nothing here prints, logs, stores or returns a key: the result holds only fixed words and numbers, every failure path answers with
 // fixed words, and the gateway's own scanner stops an answer that carries the key.
 import { randomBytes, randomUUID } from "node:crypto";
-import type { AgentAiSource, ByoBedrock } from "../packages/model-gateway/src/agent-ai.js";
+import type { AgentAiSource, ByoBedrock, CompanyChatAi } from "../packages/model-gateway/src/agent-ai.js";
+import { OPENAI_AGENT_MODEL } from "../packages/model-gateway/src/agent-openai.js";
 import type { AwsCredentials } from "../packages/model-gateway/src/aws.js";
 import { allowedBedrockModel, BEDROCK_BYO_REGION } from "../packages/model-gateway/src/bedrock-byo.js";
 import { BEDROCK_CLAUDE_ID } from "../packages/model-gateway/src/bedrock-transport.js";
@@ -19,14 +20,14 @@ import type { LearningKeySource } from "../packages/model-gateway/src/learning-r
 import { InMemoryMeter, type EstimatedSettlement, type Reservation } from "../packages/model-gateway/src/meter.js";
 import type { TaskClaims } from "../packages/model-gateway/src/model-gateway-token.js";
 import { UnknownPriceSource } from "../packages/model-gateway/src/price.js";
-import type { ProviderTransport } from "../packages/model-gateway/src/provider.js";
+import type { ProviderResponse, ProviderTransport } from "../packages/model-gateway/src/provider.js";
 import { handleGateway, type GatewayDependencies, type GatewaySink } from "../packages/model-gateway/src/server.js";
 import { UsageCollector, type TokenUsage } from "../packages/model-gateway/src/usage.js";
 
 export const CHECK_KINDS = ["anthropic", "openai", "openrouter", "bedrock", "endpoint"] as const;
 export type CheckKind = typeof CHECK_KINDS[number];
 /** The kinds whose transport exists in this build. The others answer "not built yet" before any key is read. */
-export const CHECK_KINDS_BUILT: readonly CheckKind[] = ["anthropic", "bedrock"];
+export const CHECK_KINDS_BUILT: readonly CheckKind[] = ["anthropic", "bedrock", "openai", "openrouter"];
 /** The consent switch: the check refuses without exactly this. */
 export const CONSENT_VARIABLE = "ROVARA_REAL_KEY_CHECK";
 /** Where a key may come from besides the hidden prompt. Never argv, a file or chat. */
@@ -41,6 +42,8 @@ export const CHECK_TOKEN_CEILING = 256;
 export const CHECK_TIMEOUT_MS = 90_000;
 export const CHECK_TOOL = Object.freeze({ name: "ping", description: "Answer the check. Call it with no arguments.", input_schema: { type: "object", properties: {} } });
 export const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
+export const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
+export const DEFAULT_OPENROUTER_MODEL = "openai/gpt-5-mini";
 export const DEFAULT_BEDROCK_AGENT_MODEL = "claude-haiku-4-5";
 export const DEFAULT_BEDROCK_MODEL_US = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 /** The staging guard's profile (staging-aws.sh): the Bedrock check is the owner's OWN account, never Rovara's staging account. */
@@ -121,19 +124,21 @@ class CollectingSink implements GatewaySink {
 
 /** How a check reaches the provider: the kind's agent source and what that source needs. Built by the entry script (real) or a test (fake). */
 export type CheckTarget =
-  | { kind: "anthropic"; key: string; model: string; transport: ProviderTransport }
+  | { kind: "anthropic" | "openai" | "openrouter"; key: string; model: string; transport: ProviderTransport }
   | { kind: "bedrock"; region: string; agentModel: string; bedrockModel: string; credentials: AwsCredentials; transport: (region: string, credentials: () => Promise<AwsCredentials>) => ProviderTransport };
 
 const COMPANY = `org_${"c".repeat(20)}`;
 const ISSUER = "https://real-key-check.invalid/v1/auth";
 
 /** The stored company choice and key, in memory: exactly what the agent route reads for that source. */
-function sourceFor(target: CheckTarget): { source: AgentAiSource; keys: LearningKeySource; byo?: ByoBedrock; model: string } {
-  if (target.kind === "anthropic") {
-    const key = target.key;
+function sourceFor(target: CheckTarget): { source: AgentAiSource; keys: LearningKeySource; byo?: ByoBedrock; chat?: CompanyChatAi; model: string } {
+  if (target.kind !== "bedrock") {
+    const key = target.key; const provider = target.kind;
+    const source: AgentAiSource = provider === "anthropic" ? "anthropic_key" : provider === "openai" ? "openai_key" : "openrouter_key";
     return {
-      source: "anthropic_key", model: target.model,
-      keys: { connected: async (_iss, cid, provider) => cid === COMPANY && provider === "anthropic", keyFor: async (_iss, cid, provider) => cid === COMPANY && provider === "anthropic" ? key : undefined },
+      source, model: target.model,
+      keys: { connected: async (_iss, cid, asked) => cid === COMPANY && asked === provider, keyFor: async (_iss, cid, asked) => cid === COMPANY && asked === provider ? key : undefined },
+      ...(provider === "anthropic" ? {} : { chat: { transport: target.transport } }),
     };
   }
   const row = { iss: ISSUER, cid: COMPANY, owner: "company", sourceId: "real-key-check", versionId: "1" };
@@ -158,7 +163,10 @@ function sourceFor(target: CheckTarget): { source: AgentAiSource; keys: Learning
  */
 export async function runCheck(target: CheckTarget, now: () => number = Date.now): Promise<CheckResult> {
   try {
-    const { source, keys, byo, model } = sourceFor(target);
+    const { source, keys, byo, chat, model } = sourceFor(target);
+    // OpenRouter's reported cost, as the transport handed it to the money core (read after the call).
+    let reported: (() => number | undefined) | undefined;
+    const watched = chat === undefined ? undefined : { ...chat, transport: async (request: Parameters<ProviderTransport>[0]): Promise<ProviderResponse> => { const response = await chat.transport(request); reported = response.reportedCostMicros; return response; } };
     const token = `check-${randomBytes(24).toString("hex")}`;
     const at = Math.floor(now() / 1000);
     const claims: TaskClaims = { iss: ISSUER, aud: "rovara-model-gateway", jti: randomUUID(), iat: at, nbf: at - 30, exp: at + 900, cid: COMPANY, pid: "real-key-check", pay: { kind: "project", project: "real-key-check" }, tid: `check-${randomUUID()}`, ws: randomUUID(), op: randomUUID(), stp: "build", mdl: [model] };
@@ -176,14 +184,21 @@ export async function runCheck(target: CheckTarget, now: () => number = Date.now
       keys: { keyFor: async () => { throw new Error("install key never read"); } },
       transport: target.kind === "anthropic" ? target.transport : async () => { throw new Error("not this route"); },
       agentKeys: keys,
-      agentAi: { sources: { sourceFor: async (cid) => cid === COMPANY ? source : undefined }, ...(byo === undefined ? {} : { byo }) },
+      agentAi: {
+        sources: { sourceFor: async (cid) => cid === COMPANY ? source : undefined }, ...(byo === undefined ? {} : { byo }),
+        // The check is the owner's own, before the switch: this one kind is on for it.
+        switchedOn: new Set([target.kind]),
+        ...(watched === undefined ? {} : target.kind === "openai" ? { openai: watched } : { openrouter: watched }),
+      },
       timeoutMs: CHECK_TIMEOUT_MS,
       log: (event) => { if (event.event === "settled") settledLog.push({ costMicros: event.costMicros, estimated: event.estimated }); },
     };
     const sink = new CollectingSink();
     const body = Buffer.from(JSON.stringify(checkRequest(model)));
     await handleGateway(deps, { method: "POST", url: "/v1/messages", headers: { "content-type": "application/json", "x-api-key": token }, body: (async function* () { yield body; })() }, sink);
-    return judge(sink, meter.settled);
+    let reportedMicros: number | undefined;
+    try { reportedMicros = reported?.(); } catch { reportedMicros = undefined; }
+    return judge(target.kind, sink, meter.settled, reportedMicros);
   } catch {
     return { lines: [{ name: "check ran", ok: false, detail: WORDS.stopped }], pass: false };
   }
@@ -192,7 +207,8 @@ export async function runCheck(target: CheckTarget, now: () => number = Date.now
 const usd = (micros: number) => `$${(micros / 1_000_000).toFixed(6)}`;
 const REFUSAL_CODE = /^[a-z_]{1,40}$/u;
 
-function judge(sink: CollectingSink, settled: Settled | undefined): CheckResult {
+/** Judges one finished call from what the agent saw (`sink`), what the meter settled and OpenRouter's reported cost. Exported for tests. */
+export function judge(kind: CheckKind, sink: Pick<CollectingSink, "status" | "ended" | "destroyed" | "bytes">, settled: Settled | undefined, reported: number | undefined): CheckResult {
   const bytes = Buffer.concat(sink.bytes);
   const lines: CheckLine[] = [];
   const httpOk = sink.status === 200;
@@ -209,8 +225,14 @@ function judge(sink: CollectingSink, settled: Settled | undefined): CheckResult 
   const usageOk = usage !== undefined && usage.input > 0 && usage.output > 0;
   lines.push({ name: "usage read", ok: usageOk, ...(usage === undefined ? {} : { detail: `${String(usage.input)} input, ${String(usage.output)} output, ${String(usage.cacheRead)} cache read, ${String(usage.cacheWrite)} cache write tokens` }) });
   lines.push({ name: "settled above $0", ok: settled !== undefined && settled.micros > 0, ...(settled === undefined ? {} : { detail: usd(settled.micros) }) });
-  // No price rows in the check: the settle must be the cautious estimate, flagged estimated (so a correction row is written), never $0.
-  lines.push({ name: "unknown price settled as a flagged estimate, never $0", ok: settled !== undefined && settled.micros > 0 && settled.estimated && settled.usage !== undefined });
+  if (kind === "openrouter") {
+    // OpenRouter reports the call's cost; with no price row, settleAmount uses it as the actual amount (not an estimate).
+    lines.push({ name: "OpenRouter reported cost read", ok: reported !== undefined && reported > 0, ...(reported === undefined ? {} : { detail: usd(reported) }) });
+    lines.push({ name: "unknown price settled at the reported cost (settleAmount's rule), never $0", ok: settled !== undefined && reported !== undefined && settled.micros === reported && !settled.estimated });
+  } else {
+    // No price rows in the check: the settle must be the cautious estimate, flagged estimated (so a correction row is written), never $0.
+    lines.push({ name: "unknown price settled as a flagged estimate, never $0", ok: settled !== undefined && settled.micros > 0 && settled.estimated && settled.usage !== undefined });
+  }
   return { lines, pass: lines.every((line) => line.ok) };
 }
 
@@ -227,6 +249,12 @@ export function parseKind(argv: readonly string[]): CheckKind | undefined {
 
 export function keyProblem(key: string): string | undefined {
   return key.length < MIN_KEY || key.length > MAX_KEY || /[\r\n\0]/u.test(key) ? WORDS.badKey : undefined;
+}
+
+/** The OpenAI or OpenRouter model to call: ROVARA_CHECK_OPENAI_MODEL / ROVARA_CHECK_OPENROUTER_MODEL or the cheap default. */
+export function chatModel(kind: "openai" | "openrouter", env: Readonly<Record<string, string | undefined>>): string | undefined {
+  const model = (kind === "openai" ? env.ROVARA_CHECK_OPENAI_MODEL : env.ROVARA_CHECK_OPENROUTER_MODEL) ?? (kind === "openai" ? DEFAULT_OPENAI_MODEL : DEFAULT_OPENROUTER_MODEL);
+  return OPENAI_AGENT_MODEL.test(model) ? model : undefined;
 }
 
 /** The Anthropic model to call: ROVARA_CHECK_ANTHROPIC_MODEL or the cheap default. */

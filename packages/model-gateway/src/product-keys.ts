@@ -21,13 +21,16 @@ export const PRODUCT_COMPANY_OWNER = "_company";
  * call. Company admins only; one source per provider.
  */
 export const LEARNING_OWNER = "_learning";
-/** The providers a learning account may be (learning-route.ts paths; Vertex learning is not connectable here). */
-export const LEARNING_KEY_PROVIDERS = ["anthropic", "openai", "gemini"] as const;
+/**
+ * The providers a company account in the learning document may be (learning-route.ts paths; Vertex learning is not connectable here).
+ * "openrouter" (DEC 254t) is used only by the agent route (`openrouter_key`); the learning route has no OpenRouter path.
+ */
+export const LEARNING_KEY_PROVIDERS = ["anthropic", "openai", "gemini", "openrouter"] as const;
 export type LearningKeyProvider = typeof LEARNING_KEY_PROVIDERS[number];
-/** "anthropic" and "openai" are learning accounts only (LEARNING_OWNER); "gemini" is both a product key and a learning account. */
-export const PRODUCT_PROVIDERS = ["gemini", "vertex", "anthropic", "openai", "bedrock"] as const;
+/** "anthropic", "openai" and "openrouter" are company accounts only (LEARNING_OWNER); "gemini" is both a product key and a learning account. */
+export const PRODUCT_PROVIDERS = ["gemini", "vertex", "anthropic", "openai", "bedrock", "openrouter"] as const;
 export type ProductProvider = typeof PRODUCT_PROVIDERS[number];
-const LEARNING_ONLY: ReadonlySet<ProductProvider> = new Set(["anthropic", "openai"]);
+const LEARNING_ONLY: ReadonlySet<ProductProvider> = new Set(["anthropic", "openai", "openrouter"]);
 /**
  * DEC 238: the company document holds at most ONE Bedrock source (its agents' AI). Slice 2 (the product route): a project may also
  * connect its OWN role (for example a separate test account) or link to the company's; a project holds one source per provider, as
@@ -520,7 +523,7 @@ export class ProductKeyStore {
   /** The text to seal: a Gemini key as given, a Vertex credential in its canonical form (only the fields the token flow needs). */
   #secretOf(provider: ProductProvider, key: unknown): { text: string; vertex?: VertexCredential; bedrock?: BedrockConnection } {
     // Gemini (AI Studio), Anthropic and OpenAI (learning accounts) keys are one printable token.
-    if (provider === "gemini" || provider === "anthropic" || provider === "openai") { if (!validGeminiKey(key)) throw new ProductKeyError("invalid"); return { text: key }; }
+    if (provider === "gemini" || provider === "anthropic" || provider === "openai" || provider === "openrouter") { if (!validGeminiKey(key)) throw new ProductKeyError("invalid"); return { text: key }; }
     if (provider === "bedrock") {
       const bedrock = typeof key === "string" ? parseBedrockConnect(key) : undefined;
       if (bedrock === undefined) throw new ProductKeyError("invalid");

@@ -6,6 +6,7 @@ import type { CapsSource } from "./caps.js";
 import { CompanyBudgetCaps, CompanyLessonsSwitch } from "./company-caps.js";
 import { createLearningRoutes, type LearningKeySource, type LearningRouteOptions } from "./learning-route.js";
 import { createOpenAiTransport } from "./learning-openai.js";
+import { createChatCompletionsTransport } from "./agent-openai.js";
 import { createGeminiTransport } from "./product-gemini.js";
 import { createVertexTransport } from "./product-vertex.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
@@ -221,6 +222,8 @@ export interface ServeDependencies {
   agentKeys?: LearningKeySource;
   /** DEC 240 in company-key mode: the companies' agent AI choices (default: Cloud's Companies table) and Bedrock (default: the fixed transport on the task role). */
   agentAiSources?: AgentAiSourceReader; bedrockTransport?: ProviderTransport;
+  /** DEC 254t (A2): the own-key Chat Completions transports (default: agent-openai.ts createChatCompletionsTransport, fixed hosts). */
+  openaiAgentTransport?: ProviderTransport; openrouterAgentTransport?: ProviderTransport;
   now?: () => number; host?: string; port?: number; /** false: no listener (tests drive the server's request event). */ listen?: boolean; drainMs?: number; maintenanceMs?: number;
 }
 export interface RunningGateway { server: Server; port: number; draining(): boolean; drain(): Promise<void>; maintain(): Promise<void> }
@@ -300,6 +303,9 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
       ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }),
       // DEC 254t: the kinds the owner switched on (none when unset).
       switchedOn: config.aiSourceKinds ?? new Set<string>(),
+      // DEC 254t (A2): the company's own OpenAI and OpenRouter keys (fixed hosts), each held to its price row's output limit.
+      openai: { transport: deps.openaiAgentTransport ?? createChatCompletionsTransport("openai"), maxOutputTokens: (model: string) => prices.maxOutputTokens("openai", model) },
+      openrouter: { transport: deps.openrouterAgentTransport ?? createChatCompletionsTransport("openrouter"), maxOutputTokens: (model: string) => prices.maxOutputTokens("openrouter", model) },
     } }),
     transport,
     log: (event) => log({ ...event }),
@@ -318,6 +324,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     sources: handlerDeps.agentAi.sources, disabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined),
     ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models } }),
     ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }), now,
+    switchedOn: config.aiSourceKinds ?? new Set<string>(), chat: { openai: true, openrouter: true },
   });
   // DEC 253k: Code's eval spend authority (eval-authority.ts), answered from the product route's eval stages (the stored approval,
   // the approver's role and the project's own key connection), signed by the install's broker with its task key. Only where the

@@ -4,7 +4,7 @@
 // switches to another one by itself.
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AGENT_AI_PATH, AGENT_AI_SOURCES, readAgentAi, type AgentAiRead, type AgentAiSource } from "../../../api/admin-agent-ai.js";
+import { AGENT_AI_PATH, readAgentAi, type AgentAiRead, type AgentAiSource } from "../../../api/admin-agent-ai.js";
 import { isNotConnected, needsStepUp } from "../../../api/admin-company.js";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
@@ -21,6 +21,8 @@ const CHOICE: Readonly<Record<AgentAiSource, { label: string; text: string }>> =
  rovara: { label: "Rovara's AI", text: "Claude, run by Rovara. Nothing to paste. Charged per use on the company's bill, inside the company's monthly budget." },
  anthropic_key: { label: "Your own Anthropic key", text: "Agents use the company's own Anthropic account. Anthropic bills you directly. Connect the key on the Learning AI key page." },
  bedrock_byo: { label: "Your own Bedrock", text: "Agents use Claude in your company's own AWS account. Coming soon." },
+ openai_key: { label: "Your own OpenAI key", text: "Agents use the company's own OpenAI account. OpenAI bills you directly. Connect the key on the Learning AI key page." },
+ openrouter_key: { label: "Your own OpenRouter key", text: "Agents use the company's own OpenRouter account. OpenRouter bills you directly. Connect the key on the Learning AI key page." },
 });
 
 export function AgentAiScreen() {
@@ -55,10 +57,12 @@ function Choice({ settings, reload }: { settings: AgentAiRead; reload: () => voi
   <AdminSection title="AI for your agents" note={current}>
    {settings.source === null && <p data-testid="agent-ai-unset">No choice is saved yet, so agents use the company's own Anthropic key when one is connected.</p>}
    <fieldset aria-label="AI for your agents" disabled={!ready || busy}><legend>Choose one</legend>
-    {AGENT_AI_SOURCES.map(source => <label key={source} data-testid={`agent-ai-${source}`}>
+    {settings.listed.map(source => <label key={source} data-testid={`agent-ai-${source}`}>
      <input type="radio" name="agent-ai" value={source} checked={picked === source} disabled={!settings.available[source]} onChange={() => setPicked(source)} />
      <b>{CHOICE[source].label}</b>{!settings.available[source] && " (coming soon)"}: {CHOICE[source].text}
      {source === "anthropic_key" && settings.anthropicKeyConnected === false && <> <span data-testid="agent-ai-no-key">No Anthropic key is connected yet.</span></>}
+     {source === "openai_key" && settings.openaiKeyConnected === false && <> <span data-testid="agent-ai-no-openai-key">No OpenAI key is connected yet.</span></>}
+     {source === "openrouter_key" && settings.openrouterKeyConnected === false && <> <span data-testid="agent-ai-no-openrouter-key">No OpenRouter key is connected yet.</span></>}
     </label>)}
    </fieldset>
    {ready && <p><Button variant="primary" busy={busy} disabled={picked === undefined || picked === settings.source || !settings.available[picked]} onClick={() => { if (picked !== undefined) void save(picked); }}>Save</Button></p>}

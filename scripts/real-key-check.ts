@@ -11,6 +11,9 @@
 //     `aws configure export-credentials` and kept in memory. Never through staging-aws.sh (refused). Optional: ROVARA_CHECK_BEDROCK_MODEL
 //     (default us.anthropic.claude-haiku-4-5-20251001-v1:0 in a US Region; required elsewhere), ROVARA_CHECK_BEDROCK_AGENT_MODEL (default
 //     claude-haiku-4-5).
+//   cd <this worktree> && ROVARA_REAL_KEY_CHECK=1 node_modules/.bin/tsx scripts/real-key-check.ts openai       (ROVARA_CHECK_OPENAI_KEY; optional ROVARA_CHECK_OPENAI_MODEL, default gpt-5-mini)
+//   cd <this worktree> && ROVARA_REAL_KEY_CHECK=1 node_modules/.bin/tsx scripts/real-key-check.ts openrouter   (ROVARA_CHECK_OPENROUTER_KEY; optional ROVARA_CHECK_OPENROUTER_MODEL, default openai/gpt-5-mini)
+//     Both go through the gateway's own Messages -> Chat Completions translation and back; OpenRouter also proves its reported cost.
 //
 // Cost: one call, one forced tool call, max_tokens 64 (the gateway's guard refuses anything above 256), a prompt under 1 KB: well under
 // one cent on any of these models. Prints one line per check and a final PASS or FAIL; exit 0 on PASS, 1 otherwise, 2 when refused.
@@ -18,8 +21,9 @@
 import { execFileSync } from "node:child_process";
 import { createAnthropicTransport } from "../packages/model-gateway/src/provider.js";
 import { createBedrockTransport } from "../packages/model-gateway/src/bedrock-transport.js";
+import { createChatCompletionsTransport } from "../packages/model-gateway/src/agent-openai.js";
 import {
-  anthropicModel, bedrockSettings, CHECK_KINDS_BUILT, CONSENT_VARIABLE, formatResult, KEY_VARIABLE, keyProblem, parseCliCredentials, parseKind,
+  anthropicModel, bedrockSettings, chatModel, CHECK_KINDS_BUILT, CONSENT_VARIABLE, formatResult, KEY_VARIABLE, keyProblem, parseCliCredentials, parseKind,
   promptHidden, runCheck, WORDS, type CheckKind, type CheckTarget,
 } from "./real-key-check-lib.js";
 
@@ -45,6 +49,11 @@ async function target(kind: CheckKind): Promise<CheckTarget> {
     const model = anthropicModel(process.env);
     if (model === undefined) return refuse(WORDS.badModel);
     return { kind, key: await key(kind), model, transport: createAnthropicTransport() };
+  }
+  if (kind === "openai" || kind === "openrouter") {
+    const model = chatModel(kind, process.env);
+    if (model === undefined) return refuse(WORDS.badModel);
+    return { kind, key: await key(kind), model, transport: createChatCompletionsTransport(kind) };
   }
   if (kind === "bedrock") {
     const settings = bedrockSettings(process.env);

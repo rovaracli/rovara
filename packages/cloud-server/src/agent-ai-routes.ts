@@ -20,7 +20,11 @@ import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
 /** The sources an admin may save. `bedrock_byo` (DEC 238) only once the company's Bedrock is connected on this Cloud. */
-export const AGENT_AI_CHOOSABLE: readonly AgentAiSource[] = ["rovara", "anthropic_key", "bedrock_byo"];
+export const AGENT_AI_CHOOSABLE: readonly AgentAiSource[] = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key"];
+/** The sources every Cloud lists; the others (DEC 254t) are listed only where their kind is switched on, so this answer is unchanged elsewhere. */
+const ALWAYS_LISTED: readonly AgentAiSource[] = ["rovara", "anthropic_key", "bedrock_byo"];
+/** The company account each own-key source (DEC 254t) needs before it can be chosen (the learning document's provider). */
+const KEY_OF: Readonly<Partial<Record<AgentAiSource, "openai" | "openrouter">>> = Object.freeze({ openai_key: "openai", openrouter_key: "openrouter" });
 const BODY_BYTES_MAX = 1_024;
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
@@ -30,6 +34,7 @@ const WORDS = Object.freeze({
   stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   invalid: refusal(400, "CONFIG_INVALID", "Choose Rovara's AI, your own Anthropic key or your own Bedrock."),
   bedrockFirst: refusal(400, "CONFIG_INVALID", "Connect your own Bedrock first (Settings, Your own Bedrock), then choose it here."),
+  keyFirst: refusal(400, "CONFIG_INVALID", "Connect that provider's key first (Settings, AI keys), then choose it here."),
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
   switchedOff: refusal(400, "CONFIG_INVALID", "This AI source isn't switched on for this Cloud yet."),
   stale: refusal(409, "CONFLICT", "The AI for your agents changed. Refresh and try again."),
@@ -56,27 +61,35 @@ async function admin(context: RouteContext, write: boolean): Promise<Admin | Rou
   return { companyId: who.companyId, developerId: who.developerId, name: who.name };
 }
 
-/** Whether the company's own Anthropic key is connected (the learning document of the product key store), or null when this Cloud can't tell. */
-async function anthropicKeyConnected(context: RouteContext, companyId: string): Promise<boolean | null> {
+/** Whether the company's own key of `provider` is connected (the learning document of the product key store), or null when this Cloud can't tell. */
+async function keyConnected(context: RouteContext, companyId: string, provider: "anthropic" | "openai" | "openrouter"): Promise<boolean | null> {
   const productAi = context.productAi;
   if (productAi === undefined) return null;
   try {
     const view = await productAi.store.view(productAi.issuer, companyId, LEARNING_AI_OWNER);
-    return view.sources.some((s) => s.provider === "anthropic" && s.hasKey && s.available);
+    return view.sources.some((s) => s.provider === provider && s.hasKey && s.available);
   } catch { return null; }
 }
+const anthropicKeyConnected = (context: RouteContext, companyId: string) => keyConnected(context, companyId, "anthropic");
 
 async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
   let saved;
   try { saved = await context.company!.store.agentAi(who.companyId); } catch { return WORDS.unavailable; }
   const bedrock = await bedrockConnected(context, who.companyId);
+  // DEC 254t: an own-key source is listed only where its kind is switched on (elsewhere this answer is exactly as before), and
+  // available only once its key is connected (the gateway would refuse every call otherwise).
+  const listed = AGENT_AI_SOURCES.filter((source) => ALWAYS_LISTED.includes(source) || switchedOn(context, source));
+  const keys: Partial<Record<AgentAiSource, boolean | null>> = {};
+  for (const source of listed) { const provider = KEY_OF[source]; if (provider !== undefined) keys[source] = await keyConnected(context, who.companyId, provider); }
   return ok({
     source: saved?.source ?? null,
     version: saved?.version ?? 0,
     canChange: true,
-    choices: AGENT_AI_SOURCES.map((source) => ({ source, available: AGENT_AI_CHOOSABLE.includes(source) && switchedOn(context, source) && (source !== "bedrock_byo" || bedrock === true) })),
+    choices: listed.map((source) => ({ source, available: AGENT_AI_CHOOSABLE.includes(source) && switchedOn(context, source) && (source !== "bedrock_byo" || bedrock === true) && (KEY_OF[source] === undefined || keys[source] === true) })),
     anthropicKeyConnected: await anthropicKeyConnected(context, who.companyId),
     bedrockConnected: bedrock,
+    ...(keys.openai_key === undefined ? {} : { openaiKeyConnected: keys.openai_key }),
+    ...(keys.openrouter_key === undefined ? {} : { openrouterKeyConnected: keys.openrouter_key }),
   });
 }
 
@@ -97,6 +110,9 @@ async function putAgentAi(context: RouteContext): Promise<RouteAnswer> {
   if (!switchedOn(context, source)) return WORDS.switchedOff;
   // Only a connected Bedrock can be chosen (the gateway would refuse every call otherwise). Can't tell: refused, never guessed.
   if (source === "bedrock_byo" && (await bedrockConnected(context, who.companyId)) !== true) return WORDS.bedrockFirst;
+  // DEC 254t: an own-key source only once that provider's key is connected. Can't tell: refused, never guessed.
+  const provider = KEY_OF[source];
+  if (provider !== undefined && (await keyConnected(context, who.companyId, provider)) !== true) return WORDS.keyFirst;
   const store = context.company!.store;
   try {
     await store.putAgentAi({ companyId: who.companyId, source, updatedAt: context.now().toISOString(), updatedBy: who.developerId }, body.expectedVersion);

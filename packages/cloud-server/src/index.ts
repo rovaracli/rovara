@@ -46,7 +46,7 @@ export { PRODUCT_AI_APPROVER_PROVIDER, PRODUCT_AI_ROUTES, PRODUCT_AI_SOURCE_ID, 
 export { AGENT_AI_CHOOSABLE, AGENT_AI_ROUTES } from "./agent-ai-routes.js";
 export { AI_SPEND_ANSWERS, AI_SPEND_ROUTES, AI_SPEND_WORDS, ENGINE_MODEL_CODE_PATH, PER_TASK_FIELD, PER_TASK_USD_MAX, engineModelRefusal, engineModelView, projectSettingsOf, projectSettingsRefusal } from "./ai-spend-routes.js";
 export { BEDROCK_BYO_ROUTES, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";
-export { LEARNING_AI_OWNER, LEARNING_AI_PROVIDERS, LEARNING_AI_ROUTES, LEARNING_PAUSE_WORDS, learningSourceId } from "./learning-ai-routes.js";
+export { COMPANY_KEY_PROVIDERS, LEARNING_AI_OWNER, LEARNING_AI_PROVIDERS, LEARNING_AI_ROUTES, LEARNING_PAUSE_WORDS, learningSourceId } from "./learning-ai-routes.js";
 export { STEP_UP_ACR, STEP_UP_METHODS, STEP_UP_SKEW_SECONDS, STEP_UP_WINDOW_SECONDS, freshStepUp, stepUpClaim, type StepUp, type StepUpMethod } from "./step-up.js";
 export {
   GITHUB_CALLBACK_PATH, GITHUB_CONNECT_COOKIE, GITHUB_CONNECT_TTL_MS, GITHUB_OUTCOMES, GITHUB_WORDS, githubInUseWords, githubResultKey, githubStateKey,

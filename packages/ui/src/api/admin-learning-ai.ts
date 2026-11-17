@@ -2,13 +2,17 @@
 // write-only: the page sends it once and never reads it back (Cloud answers only "connected" and when). Readers are total over untrusted data:
 // a field that is not the shape is absent, and a body that is not an object is unreadable.
 export const LEARNING_AI_PATH = "/v1/app/org/learning-ai";
-export const LEARNING_PROVIDERS = ["anthropic", "openai", "gemini"] as const;
+export const LEARNING_PROVIDERS = ["anthropic", "openai", "gemini", "openrouter"] as const;
 export type LearningProvider = typeof LEARNING_PROVIDERS[number];
-export const LEARNING_PROVIDER_LABELS: Readonly<Record<LearningProvider, string>> = Object.freeze({ anthropic: "Anthropic", openai: "OpenAI", gemini: "Google AI Studio (Gemini)" });
+/** DEC 254t: OpenRouter is for the agents only, and listed only when Cloud lists it (its kind is switched on). */
+const ALWAYS_LISTED: readonly LearningProvider[] = ["anthropic", "openai", "gemini"];
+export const LEARNING_PROVIDER_LABELS: Readonly<Record<LearningProvider, string>> = Object.freeze({ anthropic: "Anthropic", openai: "OpenAI", gemini: "Google AI Studio (Gemini)", openrouter: "OpenRouter (agents only)" });
 export interface LearningAccount { connected: boolean; connectedAt?: number; updatedAt?: number; refusedAt?: number }
 export interface LearningAiRead {
   revision: number;
   accounts: Record<LearningProvider, LearningAccount>;
+  /** The providers Cloud lists (OpenRouter only where it is switched on). */
+  listed: readonly LearningProvider[];
   removed: Array<{ provider: LearningProvider; recoverUntil: number }>;
   learningCap?: { monthlyUsdMicros: number; companyMonthlyUsdMicros?: number };
   lessonsOn?: boolean;
@@ -29,7 +33,8 @@ export function readLearningAi(body: unknown): LearningAiRead {
   const accounts = body["accounts"], cap = isRecord(body["learningCap"]) ? body["learningCap"] : undefined;
   return {
     revision: body["revision"],
-    accounts: { anthropic: account(accounts["anthropic"]), openai: account(accounts["openai"]), gemini: account(accounts["gemini"]) },
+    accounts: { anthropic: account(accounts["anthropic"]), openai: account(accounts["openai"]), gemini: account(accounts["gemini"]), openrouter: account(accounts["openrouter"]) },
+    listed: LEARNING_PROVIDERS.filter(p => ALWAYS_LISTED.includes(p) || isRecord(accounts[p])),
     removed: (Array.isArray(body["removed"]) ? body["removed"] : []).filter(isRecord).filter(r => named(r["provider"]) && whole(r["recoverUntil"])).map(r => ({ provider: r["provider"] as LearningProvider, recoverUntil: r["recoverUntil"] as number })),
     ...opt("learningCap", cap !== undefined && whole(cap["monthlyUsdMicros"]) ? { monthlyUsdMicros: cap["monthlyUsdMicros"], ...opt("companyMonthlyUsdMicros", whole(cap["companyMonthlyUsdMicros"]) ? cap["companyMonthlyUsdMicros"] : undefined) } : undefined),
     ...opt("lessonsOn", typeof body["lessonsOn"] === "boolean" ? body["lessonsOn"] : undefined),

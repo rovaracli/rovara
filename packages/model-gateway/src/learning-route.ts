@@ -40,6 +40,8 @@ export const LEARNING_PATH_PREFIX = "/v1/learning/";
 /** The provider accounts a company may connect for learning calls; each has its own path under LEARNING_PATH_PREFIX. */
 export const LEARNING_PROVIDERS = ["anthropic", "gemini", "vertex", "openai"] as const;
 export type LearningProvider = typeof LEARNING_PROVIDERS[number];
+/** A company account the key source may hold: the learning providers, and OpenRouter, which only the agent route uses (DEC 254t, agent-openai.ts). */
+export type CompanyKeyProvider = LearningProvider | "openrouter";
 export const LEARNING_OPENAI_PATH = "/v1/learning/openai/chat/completions";
 /** The product route's Gemini and Vertex paths, which parseGeminiPath and parseVertexPath read: a learning path is the same with this prefix. */
 const PRODUCT_PREFIX_OF: Readonly<Record<"gemini" | "vertex", string>> = { gemini: "/v1/product/gemini/", vertex: "/v1/product/vertex/" };
@@ -72,13 +74,13 @@ export interface LessonsSwitch { isOn(cid: string, signal?: AbortSignal): Promis
  */
 export interface LearningKeySource {
   /** Whether the company has this provider connected. `provider` is the route's: a company with only Gemini connected is not connected for OpenAI. */
-  connected(iss: string, cid: string, provider: LearningProvider, signal?: AbortSignal): Promise<boolean>;
+  connected(iss: string, cid: string, provider: CompanyKeyProvider, signal?: AbortSignal): Promise<boolean>;
   /** The secret to send: the API key, or for Vertex the short-lived Google bearer token the adapter minted for this company. */
-  keyFor(iss: string, cid: string, provider: LearningProvider, signal?: AbortSignal): Promise<string | undefined>;
+  keyFor(iss: string, cid: string, provider: CompanyKeyProvider, signal?: AbortSignal): Promise<string | undefined>;
   /** Vertex only: the company's connected Google Cloud project and location (a call naming another one is refused). Absent or undefined: Vertex is not usable. */
   vertexTarget?(iss: string, cid: string, signal?: AbortSignal): Promise<VertexTarget | undefined>;
   /** The provider refused the company's credential (401/403): the adapter may mark it or drop a cached token. Never changes the call. */
-  refused?(iss: string, cid: string, provider: LearningProvider): Promise<void> | void;
+  refused?(iss: string, cid: string, provider: CompanyKeyProvider): Promise<void> | void;
 }
 export interface LearningRouteOptions {
   keys: LearningKeySource;

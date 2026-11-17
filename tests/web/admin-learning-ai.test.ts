@@ -44,6 +44,9 @@ describe("learning AI key page", () => {
   expect(readLearningAi({ ...view(true), accounts: { anthropic: { connected: true, updatedAt: "x" }, mistral: { connected: true } }, pausedNow: ["<b>", "no_provider"], removed: [{ provider: "mistral", recoverUntil: 1 }] }))
    .toMatchObject({ accounts: { anthropic: { connected: true }, openai: { connected: false } }, pausedNow: ["no_provider"], removed: [] });
   expect(() => readLearningAi({ accounts: {} })).toThrow();
+  // DEC 254t: OpenRouter is listed only when Cloud lists it (its kind is switched on).
+  expect(readLearningAi(view(true)).listed).toEqual(["anthropic", "openai", "gemini"]);
+  expect(readLearningAi({ ...view(true), accounts: { ...view(true).accounts, openrouter: { connected: true } } }).listed).toEqual(["anthropic", "openai", "gemini", "openrouter"]);
  });
  it("shows the cap and why lessons are paused; asks for the fresh sign-in before any key field", async () => {
   const f = mount("/app/admin/learning-ai", () => ({ status: 200, body: view(false) }));
