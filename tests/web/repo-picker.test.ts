@@ -37,7 +37,7 @@ function setup(options: Options = {}) {
     return { status: 200, body: { project, warnings: [] } };
   });
   const query = createQueryClient();
-  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/onboard?github=connected"], children: h(OnboardScreen) }) }) }));
+  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/onboard?github=connected&step=repositories"], children: h(OnboardScreen) }) }) }));
   return { ...f, query, close() { ui.unmount(); query.clear(); } };
 }
 const posts = (f: ReturnType<typeof setup>) => f.request.mock.calls.map(([r]) => r).filter((r) => r.method === "POST" && r.path === "/v1/app/projects");
