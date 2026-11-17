@@ -1,7 +1,7 @@
 import { LearningViewAnswerSchema } from "@agentx/contracts/web";
 import type { ApiRequest, ApiResponse } from "../../../packages/ui/src/host.js";
 import { agentProfile } from "./agent-fixture.js";
-import { meFixture } from "./fixtures.js";
+import { meFixture, FIXTURE_DEVELOPER } from "./fixtures.js";
 import { fakeHost } from "./fake-host.js";
 import { projectFixture } from "./project-fixture.js";
 import { LAYER, diffBody, draftBody, howWeWorkView } from "./how-we-work-view.js";
@@ -13,7 +13,7 @@ export function howWeWorkHost(options: { view?: unknown; canEdit?: boolean; over
  const fake = fakeHost(async request => {
   const url = new URL(request.path, "https://cell.example"), custom = await options.handle?.(request, url);
   if (custom !== undefined) return custom;
-  if (url.pathname === "/v1/app/me") return { status: 200, body: meFixture() };
+  if (url.pathname === "/v1/app/me") return { status: 200, body: meFixture({ developer: { id: FIXTURE_DEVELOPER, name: "Priya", orgRole: "owner" } }) };
   if (url.pathname === "/v1/app/changes") return { status: 200, body: { notices: [], next: "settled" } };
   if (url.pathname === "/v1/app/projects/payments/overview") return { status: 200, body: projectFixture({ you: { role: options.canEdit === false ? "viewer" : "maintainer", canStartWork: options.canEdit !== false, canEditSettings: options.canEdit !== false, canViewSpend: false } }) };
   if (url.pathname === "/v1/app/projects/payments/how-we-work") return { status: 200, body: state.view };

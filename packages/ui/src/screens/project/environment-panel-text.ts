@@ -11,6 +11,7 @@ export const ENV = {
  RESET_FAILED: "Couldn't start the rebuild. Try again.", RESET_REFUSED: "Only a maintainer of this project can reset the saved environment.",
  ONLY_MAINTAINER: "Only a maintainer of this project can reset it.",
  NO_IMAGE: "No saved copy yet.",
+ NOT_AVAILABLE: "Saved environments aren't available yet.",
 } as const;
 
 const HEALTH: Record<string, string> = {

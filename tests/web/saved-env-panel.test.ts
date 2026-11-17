@@ -144,6 +144,13 @@ it("shows nothing at all where saved environments are off (404) or the person ma
  }
 });
 
+it("where Cloud answers 501 NOT_ON_CODE_YET the panel is one plain muted line: no error text, no alert, no Try again", async () => {
+ setup({ page: true, read: { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/projects/payments/environment-image isn't connected to Rovara Code yet." } } } });
+ expect((await screen.findByText("Saved environments aren't available yet.")).className).toContain("rv-muted");
+ expect(screen.queryByText(/Couldn't load the saved environment/)).toBeNull();expect(screen.queryByRole("alert")).toBeNull();expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+ expect(screen.queryByText(/isn't connected to Rovara Code yet/)).toBeNull();
+});
+
 it("a read that fails says so and can be tried again", async () => {
  setup({ read: { status: 400, body: { error: { code: "CONFIG_INVALID", message: "boom" } } } });
  expect(await screen.findByText("Couldn't load the saved environment. Try again.")).toBeTruthy();

@@ -1,6 +1,6 @@
 // Your account (Hybrid 1, DEC 223): your name, how the app looks, and the two things a fresh sign-in uses: your confirmation email and your passkeys.
 // The email is set by a company admin (Sign-in factors); a passkey is yours to list and remove. Removing one is sensitive, so it shows the fresh sign-in step first.
-// Cloud passes these reads through once Code's sign-in service serves them; until then each part says "not connected yet" (proposed routes in api/admin-company.ts).
+// Cloud passes these reads through once Code's sign-in service serves them; until then (the read answers 501 or 404) the email and passkeys sections are not shown (proposed routes in api/admin-company.ts).
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -40,12 +40,15 @@ export function AccountScreen() {
   } finally { setBusy(false); }
  }
  const ready = confirmed && !stale;
+ // Cloud answers 501 NOT_ON_CODE_YET (a Code without the route answers 404) while sign-in factors are not served: the two sections are not shown at all, instead of two "not connected" notes.
+ const factorsOffered = !(factors.isError && isNotConnected(factors.error));
  return <section aria-label="Your account" className="rv-account">
   <PageHeader focusOnMount title="Your account" {...(nav === undefined ? {} : { description: `${nav.me.name} · ${nav.org.name}` })} />
   <AdminSection title="You">
    {nav !== undefined && <NameForm key={nav.me.name} label="Your name" initial={isPlaceholderDisplayName(nav.me.name) ? "" : nav.me.name} submit="Save name" />}
    <fieldset className="rv-theme-options"><legend>Appearance</legend>{(["system", "light", "dark"] as const).map((value: ThemePreference) => <label key={value}><input type="radio" name="appearance" value={value} checked={theme.preference === value} onChange={() => theme.setPreference(value)} />{value === "system" ? "System" : value === "light" ? "Light" : "Dark"}</label>)}</fieldset>
   </AdminSection>
+  {factorsOffered && <>
   <AdminSection title="Confirmation email" note="Where your sign-in codes go">
    {factors.isPending ? <Skeleton label="Loading your sign-in factors" /> : factors.isError ? (isNotConnected(factors.error) ? <NotConnected what="Your confirmation email and passkeys" /> : <div role="alert" className="rv-banner rv-banner-danger"><span><b>Couldn't load your sign-in factors.</b></span><Button disabled={factors.isFetching} onClick={() => { void factors.refetch(); }}>Try again</Button></div>)
     : factors.data.factorEmail === undefined ? <p>No confirmation email is set. A fresh sign-in needs a passkey or a code sent to one. Ask a company admin to set it.</p>
@@ -57,7 +60,7 @@ export function AccountScreen() {
    {factors.isPending ? <Skeleton label="Loading your passkeys" /> : factors.data === undefined ? (isNotConnected(factors.error) ? <NotConnected what="Passkeys" /> : <p className="rv-muted">Passkeys are unavailable until your sign-in factors load.</p>)
     : factors.data.passkeys.length === 0 ? <p>You have no passkeys. After a fresh sign-in with an emailed code, Rovara offers to add one.</p>
     : <ul className="rv-passkeys" aria-label="Your passkeys">{factors.data.passkeys.map(key => <li key={key.credentialId}><span>Passkey added {when(key.createdAt)}<small>{key.lastUsedAt === undefined ? "Not used yet" : `Last used ${when(key.lastUsedAt)}`}</small></span><Button aria-label={`Remove the passkey added ${when(key.createdAt)}`} onClick={() => { setResult(undefined); setRemoved(false); setParams({ remove: key.credentialId }, { replace: true }); }}>Remove</Button></li>)}</ul>}
-  </AdminSection>
+  </AdminSection></>}
   <ConnectedSignIns confirmed={confirmed} who={nav?.me.developerId} />
   <Dialog title="Remove this passkey?" description="You can still confirm with a code sent to your confirmation email." open={target !== undefined} onOpenChange={next => { if (!next) { setResult(undefined); setParams({}, { replace: true }); } }}>
    {!ready ? <FreshSignIn action="remove a passkey" refused={stale} /> : <><FreshSignIn action="remove a passkey" done /><Button variant="danger" busy={busy} onClick={() => { void remove(); }}>Remove passkey</Button></>}
