@@ -4,6 +4,7 @@ export { HomePage } from "./home.js";
 export { FAKE_CODE_URL, LessonsPage, setLessons } from "./lessons.js";
 export { CompanyOnboardingPage, FAKE_INVITE_CODE, setNoCompany } from "./onboarding.js";
 export { ProjectPage } from "./project.js";
+export { RepoPickerPage, resetCreatedProjects } from "./repo-picker.js";
 export { PERSON, PROJECT, ROUTES, UNSERVED_SCREENS } from "./routes.js";
 export { SessionPage } from "./session.js";
 export { ShellPage, UnavailablePage } from "./shell.js";

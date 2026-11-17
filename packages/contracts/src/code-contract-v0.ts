@@ -74,7 +74,18 @@ export interface ChannelLink { channel: string; workspace: string; account: stri
 export interface ProjectRepository { name: string; url: string; defaultBranch: string; fullName?: string }
 export interface ProjectView { name: string; latestRevision: number; access: string /* known: administrator, developer */; repositories: ProjectRepository[] }
 export interface CreateProjectRequest { repository: string; name?: string; setupCommands?: string[]; testCommands?: string[] }
+/** Guided onboarding PR 10 (Code PR #837): the same route with `repositories` (1 to 32) instead of `repository` makes ONE project holding them all. */
+export interface CreateProjectsRequest { repositories: string[]; name?: string; setupCommands?: string[]; testCommands?: string[] }
 export interface CreateProjectResponse { name: string }
+/** `POST /v1/dev/client/projects/bulk`: one project per repository; a repository that made none says why, in Code's four fixed words. */
+export interface BulkCreateProjectsRequest { repositories: string[] }
+export interface BulkCreateProjectsResponse { results: Array<{ repository: string; outcome: "created"; project: string } | { repository: string; outcome: "refused"; reason: "not_available" | "name_taken" | "unavailable" | "not_started" }> }
+/** `GET /v1/dev/client/repositories/available?q=&limit=&after=`: the repositories the caller's company's connected GitHub accounts reach, with the company's own projects that hold each. */
+export interface RepositoryChoicesResponse {
+  repositories: Array<{ installationId: number; accountLogin: string; fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string; projects: string[] }>;
+  next?: string;
+  incomplete: boolean;
+}
 export interface GithubInstallation {
   installationId: number; accountLogin: string; accountType: string; repositorySelection: string; status: string;
   repositories: Array<{ fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string }>;
@@ -518,13 +529,15 @@ export interface CodeRouteTypes {
   "channelLinks.list": { request: void; response: { links: ChannelLink[] } };
   "channelLinks.remove": { request: void; response: { removed: boolean } };
   "projects.list": { request: void; response: { projects: Array<{ name: string; access: string }> } };
-  "client.projects.create": { request: CreateProjectRequest; response: CreateProjectResponse };
+  "client.projects.create": { request: CreateProjectRequest | CreateProjectsRequest; response: CreateProjectResponse };
+  "client.projects.bulk": { request: BulkCreateProjectsRequest; response: BulkCreateProjectsResponse };
   "client.projects.get": { request: void; response: ProjectView };
   "client.projects.archive": { request: ArchiveProjectRequest; response: ArchiveProjectResponse };
   "client.projects.restore": { request: ArchiveProjectRequest; response: ArchiveProjectResponse };
   "client.projects.codeSettings.get": { request: void; response: { settings: CodeSettings } };
   "client.projects.codeSettings.put": { request: PutCodeSettingsRequest; response: { settings: CodeSettings } };
   "client.repositories.list": { request: void; response: RepositoriesResponse };
+  "client.repositories.available": { request: void; response: RepositoryChoicesResponse };
   "client.members.list": { request: void; response: MembersResponse };
   "client.members.put": { request: void; response: PutMemberResponse };
   "client.members.remove": { request: void; response: RemoveMemberResponse };
@@ -655,12 +668,15 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   // Projects and project members
   spec("projects.list", "GET", "/v1/dev/projects", "Projects the person may use", "full", ["admin"], "yes", true, `${DEV}:1056`),
   spec("client.projects.create", "POST", "/v1/dev/client/projects", "Create a project from a repository", "projects:create", ["admin"], "no", true, `${MAIN}${DEV}:854`, true),
+  // Guided onboarding PR 10 (Code PR #837, pr/go-multi-repo): not on code/next yet. A company owner or admin may call them once Code PR 19 lands; until then Code answers 403 "only a Rovara administrator can create a project".
+  spec("client.projects.bulk", "POST", "/v1/dev/client/projects/bulk", "One project per repository, each named after it; each repository answers created or one fixed refusal", "projects:create", ["admin"], "no", false, "none", true),
   spec("client.projects.get", "GET", CP, "One project: revision, access, repositories", "none", ["admin", "request"], "no", true, `${MAIN}${DEV}:870`, true),
   spec("client.projects.archive", "POST", `${CP}/archive`, "Archive a project (reviewed)", "full", ["later"], "no", false, "none"),
   spec("client.projects.restore", "POST", `${CP}/restore`, "Restore an archived project (reviewed)", "full", ["later"], "no", false, "none"),
   spec("client.projects.codeSettings.get", "GET", `${CP}/code-settings`, "Merge rules for the project", "full", ["admin"], "no", false, "none"),
   spec("client.projects.codeSettings.put", "PUT", `${CP}/code-settings`, "Change the merge rules (revision-checked)", "full", ["admin"], "no", false, "none"),
   spec("client.repositories.list", "GET", "/v1/dev/client/repositories", "The repositories Code's GitHub App can reach", "projects:create", ["admin"], "no", true, `${MAIN}${DEV}:855`, true),
+  spec("client.repositories.available", "GET", "/v1/dev/client/repositories/available", "The repositories the company's connected GitHub accounts reach, paged, with the company's projects that hold each", "projects:create", ["admin"], "no", false, "none", true),
   spec("client.members.list", "GET", `${CP}/members`, "The project's members", "projects:members", ["admin"], "no", true, `${MAIN}${DEV}:895`, true),
   spec("client.members.put", "PUT", `${CP}/members/{developerId}`, "Grant a person contributor access", "projects:members", ["admin"], "no", true, `${MAIN}${DEV}:902`, true),
   spec("client.members.remove", "DELETE", `${CP}/members/{developerId}`, "Revoke a person's access", "projects:members", ["admin"], "no", true, `${MAIN}${DEV}:877`, true),
@@ -845,7 +861,7 @@ POST /v1/app/projects/{p}/code | k | request | tasks.start | code | T
 POST /v1/app/projects/{p}/code/suggest | k | request | | code |
 POST /v1/app/projects/{p}/start-preview | k | later | | code |
 GET /v1/app/projects | k | admin | access.check,client.projects.get | projects | T
-POST /v1/app/projects | k | admin | client.projects.create | onboarding | T
+POST /v1/app/projects | k | admin | client.projects.create,client.projects.bulk | onboarding | T
 GET /v1/app/projects/{p} | k | admin | access.check,client.projects.get | onboarding | T
 GET /v1/app/projects/{p}/overview | c | shell | client.projects.get,tasks.list | projects | T
 GET /v1/app/projects/{p}/members | k | admin | client.members.list | review-groups | T
@@ -978,6 +994,7 @@ POST /v1/app/projects/{p}/context-sources/changes/{changeId}/reject | k | later 
 GET /v1/app/projects/{p}/automations | k | later | | automations |
 GET /v1/app/github/installations | k | admin | client.repositories.list | onboarding | T
 GET /v1/app/github/repositories | k | admin | client.repositories.list | onboarding | T
+GET /v1/app/github/repository-choices | k | admin | client.repositories.available | onboarding | T
 POST /v1/app/github/connect | k | admin | | onboarding |
 GET /v1/app/github/requests | k | admin | | readiness |
 GET /v1/app/org/members | k | admin | company.members.list | project-people |

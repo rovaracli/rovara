@@ -13,6 +13,7 @@ import type { CloudAuditStore } from "./audit-log.js";
 import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, parseCompanyAuditQuery } from "./company-audit.js";
 import { WORK_READS } from "./work-reads.js";
 import { ONBOARDING_ROUTES } from "./onboarding-routes.js";
+import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./project-create-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
@@ -319,7 +320,10 @@ export const ROUTES: Route[] = [
   {
     // POST /v1/app/projects (CreateProjectBodySchema): Code's client project create (spec 065b). A retried requestId answers the same project.
     method: "POST", path: /^\/projects$/u,
-    answer: async ({ client, session, body, now }) => {
+    answer: async (context) => {
+      // Guided onboarding PR 10: several repositories (one project, or one each) are project-create-routes.ts; the one-repository body below is unchanged.
+      if (isCreateProjectsBody(context.body)) return createProjects(context);
+      const { client, session, body, now } = context;
       const input = (body ?? {}) as { requestId?: string; repository?: string; name?: string; setupCommand?: string; testCommand?: string; setupCommands?: string[]; testCommands?: string[] };
       const earlier = input.requestId === undefined ? undefined : session.created?.[input.requestId];
       if (earlier !== undefined) return ok({ duplicate: true, project: { definition: { name: earlier.name }, registeredAt: earlier.at } });
@@ -804,4 +808,5 @@ export const ROUTES: Route[] = [
   ...LESSONS_ROUTES,
   // Creating a company (DEC 254a), for a person with no company yet.
   ...ONBOARDING_ROUTES,
+  ...PROJECT_CREATE_ROUTES,
 ];
