@@ -398,12 +398,10 @@ describe("which company", () => {
     expect((await w.store.settings(A))!.version).toBe(1);
   });
 
-  it("leaves members, roles and removal on Code: those routes still answer 501", async () => {
+  it("leaves removal on Code: that route still answers 501 (members and roles: member-role-routes.test.ts)", async () => {
     const w = world();
     const ada = await w.signIn("ada", 10);
-    for (const [method, path] of [["GET", "/org/members"], ["PUT", `/org/members/${"b".repeat(64)}/role`], ["POST", `/org/members/${"b".repeat(64)}/removal`]] as const) {
-      expect((await w.call(ada, method, path, method === "GET" ? undefined : {})).body.error.code).toBe("NOT_ON_CODE_YET");
-    }
+    expect((await w.call(ada, "POST", `/org/members/${"b".repeat(64)}/removal`, {})).body.error.code).toBe("NOT_ON_CODE_YET");
   });
 
   it("serves no company routes on a Cloud without company data", async () => {
