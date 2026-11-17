@@ -11,6 +11,7 @@ docs/*
 !docs/model-gateway-product-ai.md
 !docs/model-gateway-learning.md
 !docs/model-gateway-bedrock-byo.md
+!docs/model-gateway-spend-limits.md
 !docs/bedrock/
 !docs/npm-package.md
 !docs/ordered-work.md

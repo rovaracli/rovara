@@ -163,6 +163,24 @@ export const GATEWAY_COMPANY_SETTINGS = { partitionPrefix: "COMPANY#", sortKey: 
  * Cloud's store and reads back through the gateway's reader.
  */
 export const GATEWAY_COMPANY_AGENT_AI = { partitionPrefix: "COMPANY#", sortKey: "AGENT_AI" } as const;
+/**
+ * The company's spending-limit OVERRIDES (lead 3 row B1, DEC 254t b) in the same Companies table: one item per override, `COMPANY#<org_…>` /
+ * `<sortPrefix><id>`, each `{ companyId, kind, id, monthlyUsdMicros, version, updatedAt, updatedBy }`. Written by Cloud's spend-limits-routes.ts
+ * (company admins, step-up when a limit goes up, audited), read by the gateway (company-caps.ts): no item is the company default (`settings.budgets`);
+ * an item that does not read as exactly this company's, this kind's and this id's refuses the call.
+ *
+ * THIS IS THE TABLE OF KINDS on the gateway's side; Cloud's is SPEND_LIMIT_KINDS in cloud-server company-store.ts, and a contract test walks both
+ * (tests/contract/model-gateway-spend-limits.test.ts). `scope` says which id of the call the limit is about (a project: the token's `pid`; a person:
+ * its `per`). `caps` names the meter cap the limit replaces for a call (`projectMonth`, `personMonth`); null: no meter cap, the kind is enforced by its
+ * own caller through `readSpendLimit` (company-caps.ts). A new kind is one entry here and one in Cloud's table.
+ */
+export const GATEWAY_COMPANY_SPEND_LIMITS = {
+  partitionPrefix: "COMPANY#",
+  kinds: [
+    { kind: "project_month", scope: "project", sortPrefix: "SPEND_LIMIT#PROJECT#", caps: "projectMonth" },
+    { kind: "person_month", scope: "person", sortPrefix: "SPEND_LIMIT#PERSON#", caps: "personMonth" },
+  ],
+} as const satisfies { partitionPrefix: string; kinds: readonly { kind: string; scope: "project" | "person"; sortPrefix: string; caps: "projectMonth" | "personMonth" | null }[] };
 export const GATEWAY_COMPANY_BUDGET_FIELDS = ["companyMonthlyUsdMicros", "memberMonthlyUsdMicros", "projectMonthlyUsdMicros", "taskUsdMicros"] as const;
 /** The backend's own ceiling for one budget: $1,000,000 in micro-dollars. */
 export const GATEWAY_COMPANY_BUDGET_MAX = 1_000_000_000_000;
