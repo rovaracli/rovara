@@ -12,9 +12,9 @@ export const A = "org_aaaaaaaaaaaaaaaaaaaa";
 export const B = "org_bbbbbbbbbbbbbbbbbbbb";
 export const START = Date.parse("2026-11-15T12:00:00.000Z");
 
-export interface Person { developerId: string; name: string; administrator: boolean; companyId: string; /** Code's company role; default admin when `administrator`, else member. */ companyRole?: string; projects: Array<{ name: string; access: string }> }
+export interface Person { developerId: string; name: string; administrator: boolean; companyId: string; /** Code's company role; default admin when `administrator`, else member. */ companyRole?: string; /** Code says this sign-in joined the company by an invite (DEC 254h; the accept route needs it). */ joinedByInvite?: true; projects: Array<{ name: string; access: string }> }
 export const PEOPLE: Record<string, Person> = {
-  pam: { developerId: "a".repeat(64), name: "Pam", administrator: false, companyId: A, projects: [{ name: "web", access: "administrator" }] },
+  pam: { developerId: "a".repeat(64), name: "Pam", administrator: false, companyId: A, joinedByInvite: true, projects: [{ name: "web", access: "administrator" }] },
   cal: { developerId: "c".repeat(64), name: "Cal", administrator: false, companyId: A, projects: [{ name: "web", access: "developer" }] },
   ada: { developerId: "d".repeat(64), name: "Ada", administrator: true, companyId: A, projects: [] },
   bob: { developerId: "b".repeat(64), name: "Bob", administrator: false, companyId: B, projects: [{ name: "web", access: "administrator" }] },
@@ -41,7 +41,7 @@ export function world(options: WorldOptions = {}) {
     const person = byToken.get(((init?.headers as Record<string, string> | undefined)?.authorization ?? "").replace(/^Bearer /u, ""));
     if (person === undefined) return new Response("{}", { status: 401 });
     if (url.pathname === "/v1/dev/access") clock.at += options.accessMs ?? 0;
-    if (url.pathname === "/v1/dev/access") return new Response(JSON.stringify({ developerId: person.developerId, displayName: person.name, administrator: person.administrator, companyId: person.companyId, companyRole: person.companyRole ?? (person.administrator ? "admin" : "member"), projects: person.projects, notices: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    if (url.pathname === "/v1/dev/access") return new Response(JSON.stringify({ developerId: person.developerId, displayName: person.name, administrator: person.administrator, companyId: person.companyId, companyRole: person.companyRole ?? (person.administrator ? "admin" : "member"), ...(person.joinedByInvite === true ? { joinedByInvite: true } : {}), projects: person.projects, notices: [] }), { status: 200, headers: { "content-type": "application/json" } });
     const member = /^\/v1\/dev\/client\/projects\/([^/]+)\/members\/([^/]+)$/u.exec(url.pathname);
     if (member !== null) {
       codeCalls.push(`${init?.method ?? "GET"} ${url.pathname}`);
