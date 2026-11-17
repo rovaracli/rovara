@@ -481,6 +481,11 @@ describe("one trial per GitHub account (github=trial_used)", () => {
     expect(text).not.toContain("nova-gh");
     expect(text).not.toContain(`"githubUserId"`);
     expect(w.logs.filter((line) => line.event === "cloud.github_trial_unlocked")).toHaveLength(1);
+    // A company that already has its trial connecting a second GitHub account is not told "used", and claims nothing: Bob's company can still unlock with that account.
+    w.overrides.set(`POST ${CLAIM}`, () => respond(200, { status: "connected", alreadyConnected: false, installation: { installationId: 91, accountLogin: "acme2", accountType: "Organization" }, githubUser: { id: 5555, login: "second-gh" } }));
+    expect(await connectAs(w, nova, "91")).not.toHaveProperty("trialUsed");
+    expect((await w.companies.trial(A))?.githubUserId).toBe(NOVA.githubUserId);
+    expect(await w.companies.unlockTrial(5555, B, new Date(START).toISOString())).toBe("unlocked");
   });
 
   it("lets two companies racing on one GitHub account through the callback unlock only one trial (L2-8)", async () => {

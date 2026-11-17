@@ -55,6 +55,16 @@ function conflicted(error: unknown): boolean {
   return named === "TransactionCanceledException" && (reasons ?? []).some((reason) => reason.Code === "ConditionalCheckFailed");
 }
 
+/** A transaction cancelled only because another transaction was touching the same items right then (nothing was decided: ask again). */
+function transactionBusy(error: unknown): boolean {
+  const named = (error as { name?: unknown }).name;
+  if (named === "TransactionConflictException") return true;
+  const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+  return named === "TransactionCanceledException" && (reasons ?? []).some((reason) => reason.Code === "TransactionConflict") && !conflicted(error);
+}
+/** How many times an unlock asks again when another transaction was in the way. */
+const UNLOCK_ATTEMPTS = 4;
+
 async function guarded<T>(what: string, write: () => Promise<T>): Promise<T> {
   try {
     return await write();
@@ -269,18 +279,23 @@ export class DynamoCompanyStore implements CompanyStore {
     };
     const earlier = await settled();
     if (earlier !== undefined) return earlier;
-    try {
-      await this.db.send(new TransactWriteCommand({
-        TransactItems: [
-          // The account's claim: free, or this company's own (the first #92 build wrote only this row, and a retry is not a second claim).
-          { Put: { TableName: this.table, Item: { pk: `GITHUBTRIAL#${String(githubUserId)}`, sk: "TRIAL", companyId, githubUserId, claimedAt: at }, ConditionExpression: "attribute_not_exists(pk) OR companyId = :company", ExpressionAttributeValues: { ":company": companyId } } },
-          // The company's trial: once. Together with the claim above, or not at all.
-          { Put: { TableName: this.table, Item: { pk: company(companyId), sk: "TRIAL", companyId, githubUserId, unlockedAt: at }, ConditionExpression: "attribute_not_exists(pk)" } },
-        ],
-      }));
-      return "unlocked";
-    } catch (error) {
-      if (!conflicted(error)) throw error;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await this.db.send(new TransactWriteCommand({
+          TransactItems: [
+            // The account's claim: free, or this company's own (the first #92 build wrote only this row, and a retry is not a second claim).
+            { Put: { TableName: this.table, Item: { pk: `GITHUBTRIAL#${String(githubUserId)}`, sk: "TRIAL", companyId, githubUserId, claimedAt: at }, ConditionExpression: "attribute_not_exists(pk) OR companyId = :company", ExpressionAttributeValues: { ":company": companyId } } },
+            // The company's trial: once. Together with the claim above, or not at all.
+            { Put: { TableName: this.table, Item: { pk: company(companyId), sk: "TRIAL", companyId, githubUserId, unlockedAt: at }, ConditionExpression: "attribute_not_exists(pk)" } },
+          ],
+        }));
+        return "unlocked";
+      } catch (error) {
+        // Another transaction was on the same rows right then: nothing was decided, so ask again (then give up with the error: no answer, no trial).
+        if (transactionBusy(error) && attempt < UNLOCK_ATTEMPTS) { const answered = await settled(); if (answered !== undefined) return answered; continue; }
+        if (!conflicted(error)) throw error;
+        break;
+      }
     }
     // Lost: to this company's own trial (another call of its own won), or to another company holding the account. A row that does not read is never a free trial.
     return await settled() ?? "used";

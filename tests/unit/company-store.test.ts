@@ -362,6 +362,28 @@ describe("DynamoCompanyStore: a row's company is checked on every read", () => {
     expect(await store.trial(fresh)).toBeUndefined();
   });
 
+  it("asks again when another transaction was on the same rows, never answering \"used\" for a race nobody decided (L2-8)", async () => {
+    const table = memoryTable();
+    const db = table as never as { send: (command: unknown) => Promise<unknown> };
+    const busy = (times: number) => {
+      let left = times;
+      return new DynamoCompanyStore({ send: async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === "TransactWriteCommand" && left > 0) {
+          left -= 1;
+          throw Object.assign(new Error("Transaction cancelled"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "TransactionConflict" }, { Code: "TransactionConflict" }] });
+        }
+        return db.send(command);
+      } } as never, "companies");
+    };
+    expect(await busy(2).unlockTrial(77, A, iso(NOW))).toBe("unlocked");
+    expect(await busy(2).unlockTrial(77, B, iso(NOW))).toBe("used");
+    expect(await busy(2).unlockTrial(78, A, iso(NOW))).toBe("already");
+    // Never decided in time: an error (the connect carries on with no trial), not a guessed answer, and nothing written.
+    const before = table.items.size;
+    await expect(busy(99).unlockTrial(79, B, iso(NOW))).rejects.toThrow();
+    expect(table.items.size).toBe(before);
+  });
+
   it("reads a company's trial only from a row that is its own and names a GitHub account (L2-8)", async () => {
     const table = memoryTable();
     const store = new DynamoCompanyStore(table as never, "companies");
