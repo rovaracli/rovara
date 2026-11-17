@@ -7,10 +7,12 @@
 //   bedrock_byo    the company's own Bedrock (DEC 238): its own invoke-only role, assumed as the company (ByoBedrock below).
 //   openai_key     the company's own OpenAI key (DEC 254t), through Chat Completions (agent-openai.ts); only when its kind is switched on.
 //   openrouter_key the company's own OpenRouter key (DEC 254t), the same way; its reported cost is used by settleAmount's rules.
+//   custom_endpoint the company's own OpenAI-compatible endpoint (DEC 254t), behind the SSRF guard (endpoint-guard.ts).
 //
 // No choice saved: company-key mode exactly as before (DEC 236). There is never an automatic fallback between sources.
 import { BEDROCK_CONVERSE_ID } from "./bedrock-converse.js";
 import type { CredentialSource } from "./aws.js";
+import type { EndpointTarget } from "./endpoint-guard.js";
 import { geographiesOf, parseBedrockConnect, type BedrockConnection } from "./bedrock-byo.js";
 import type { BedrockSessionSource } from "./bedrock-byo-sessions.js";
 import { BEDROCK_CLAUDE_ID, createBedrockTransport } from "./bedrock-transport.js";
@@ -21,7 +23,7 @@ import type { ProviderTransport } from "./provider.js";
 import { PRODUCT_DEFAULT_CAPS, type ProductKeyStore } from "./product-keys.js";
 import type { ProductKeyRow } from "./product-seal.js";
 
-export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key"] as const;
+export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key", "custom_endpoint"] as const;
 export type AgentAiSource = typeof AGENT_AI_SOURCES[number];
 
 /**
@@ -29,6 +31,13 @@ export type AgentAiSource = typeof AGENT_AI_SOURCES[number];
  * Completions and back). The key is the company's sealed account of that provider (the learning document, learning-keys.ts); the
  * transport has a fixed host. `maxOutputTokens` is the price snapshot's limit for the model (unknown: OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS).
  */
+/** DEC 254t (A3): the company's own OpenAI-compatible endpoint: a transport per checked target (endpoint-source.ts), and catalog limits. */
+export interface CompanyEndpointAi {
+  /** `onRefused` is told why a call was refused before sending ("address" or "busy"); `company` is the verified company (resolution limits). */
+  transport(target: EndpointTarget, onRefused: (reason: "address" | "busy") => void, company: string): ProviderTransport;
+  /** The catalog model's output limit (the price snapshot's row). Unknown: OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS. */
+  maxOutputTokens?(provider: string, model: string): number | undefined;
+}
 export interface CompanyChatAi {
   transport: ProviderTransport;
   maxOutputTokens?(model: string): number | undefined;

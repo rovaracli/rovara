@@ -13,7 +13,7 @@ describe("Cloud's product AI store", () => {
     for (const name of ["CLOUD_PRODUCT_KEYS_TABLE", "CLOUD_PRODUCT_KEYS_KEY", "CLOUD_PRODUCT_KEYS_MAC_KEY"]) expect(() => productAiStore({ ...ENV, [name]: undefined })).toThrow(/go together/u);
   });
   const vertex = JSON.stringify({ scheme: "federation", projectId: "acme-evals", location: "us-central1", audience: "//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/rovara-pool/providers/rovara-aws" });
-  const connect = (store: NonNullable<ReturnType<typeof productAiStore>>, provider: "vertex" | "anthropic" | "openai" | "openrouter", key: string, owner = "web") => store.connect({ iss: "https://code.example/v1/auth", cid: `org_${"a".repeat(20)}`, owner, requestId: "00000000-0000-4000-8000-000000000000", expectedRevision: 0, actor: { id: "a".repeat(64), role: "company_admin" }, sourceId: "src_vtx", provider, key });
+  const connect = (store: NonNullable<ReturnType<typeof productAiStore>>, provider: "vertex" | "anthropic" | "openai" | "openrouter" | "endpoint", key: string, owner = "web") => store.connect({ iss: "https://code.example/v1/auth", cid: `org_${"a".repeat(20)}`, owner, requestId: "00000000-0000-4000-8000-000000000000", expectedRevision: 0, actor: { id: "a".repeat(64), role: "company_admin" }, sourceId: "src_vtx", provider, key });
   it("without the gateway's address, refuses a Vertex connect as unavailable before any AWS call", async () => {
     for (const env of [ENV, { ...ENV, CLOUD_MODEL_GATEWAY_URL: "" }]) await expect(connect(productAiStore(env)!, "vertex", vertex)).rejects.toMatchObject({ code: "unavailable" });
   });
@@ -33,5 +33,13 @@ describe("Cloud's product AI store", () => {
     expect(outcome).not.toBe("saved");
     // A project never holds one.
     await expect(connect(productAiStore(ENV)!, "openrouter", ["sk", "or", "v1", "0123456789abcdef"].join("-"))).rejects.toMatchObject({ code: "invalid" });
+  });
+  // A3-REVIEW-1 M2: the same for the company's own endpoint (DEC 254t, A3): a valid sealed connection gets past the provider check.
+  it("takes a company endpoint connection in the learning document (past the provider check, up to the KMS call)", async () => {
+    const text = JSON.stringify({ scheme: "openai_compatible", baseUrl: "https://llm.example.com/v1", key: ["ep", "fake", "z".repeat(16)].join("-"), models: [{ name: "our-coder", catalog: { provider: "openai", modelId: "gpt-5-mini" } }] });
+    const outcome = await connect(productAiStore(ENV)!, "endpoint", text, "_learning").then(() => "saved", (error: unknown) => (error as { code?: unknown }).code ?? "not a store refusal");
+    expect(outcome).not.toBe("invalid");
+    expect(outcome).not.toBe("saved");
+    await expect(connect(productAiStore(ENV)!, "endpoint", text)).rejects.toMatchObject({ code: "invalid" });
   });
 });

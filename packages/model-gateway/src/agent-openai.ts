@@ -14,10 +14,12 @@ import { randomUUID } from "node:crypto";
 import https from "node:https";
 import type { ClientRequest } from "node:http";
 import { record, whole } from "./model-gateway-token.js";
-import { MAX_RESPONSE_BYTES, NotSentError, type ProviderTransport } from "./provider.js";
+import { MAX_RESPONSE_BYTES, NotSentError, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { parseReportedCost } from "./reported-cost.js";
 
 export type OpenAiAgentProvider = "openai" | "openrouter";
+/** The Chat Completions dialects: the two fixed providers and a company's own OpenAI-compatible endpoint (A3, endpoint-source.ts). */
+export type ChatDialect = OpenAiAgentProvider | "endpoint";
 /** Fixed upstreams. Nothing in a request can change the host or the path. */
 export const OPENAI_AGENT_UPSTREAM: Readonly<Record<OpenAiAgentProvider, { host: string; path: string }>> = Object.freeze({
   openai: { host: "api.openai.com", path: "/v1/chat/completions" },
@@ -86,7 +88,7 @@ function messagesOf(m: Json): Json[] | undefined {
  * not offered with (refused before any hold). `metadata` (a user id for Anthropic's abuse checks) and cache markers are dropped:
  * they carry no meaning for the answer. `thinking` is accepted only as disabled.
  */
-export function toChatCompletions(body: Json, model: string, maxTokens: number, provider: OpenAiAgentProvider): Json | undefined {
+export function toChatCompletions(body: Json, model: string, maxTokens: number, provider: ChatDialect): Json | undefined {
   if (!OPENAI_AGENT_MODEL.test(model) || !whole(maxTokens) || maxTokens < 1) return undefined;
   const allowed = new Set(["model", "messages", "max_tokens", "stream", "system", "temperature", "top_p", "stop_sequences", "metadata", "tools", "tool_choice", "thinking"]);
   if (Object.keys(body).some((k) => !allowed.has(k))) return undefined;
@@ -183,13 +185,13 @@ export const MAX_UPSTREAM_STREAM_BYTES = 2 * MAX_RESPONSE_BYTES;
  * OpenRouter's `usage.cost` in micro-dollars, read with parseReportedCost.
  */
 export class ChatStreamToSse {
-  readonly #provider: OpenAiAgentProvider; readonly #model: string; readonly #id: string;
+  readonly #provider: ChatDialect; readonly #model: string; readonly #id: string;
   #pending = ""; #data: string[] = []; #eventBytes = 0; #upstreamBytes = 0;
   #started = false; #done = false; #finish: string | undefined; #usage: Json | undefined; #cost: number | undefined;
   #open: { kind: "text" } | { kind: "tool"; index: number } | undefined; #next = 0;
   readonly #tools = new Map<number, number>();
   readonly #decoder = new TextDecoder("utf-8", { fatal: true });
-  constructor(provider: OpenAiAgentProvider, model: string, id: string) { this.#provider = provider; this.#model = model; this.#id = id; }
+  constructor(provider: ChatDialect, model: string, id: string) { this.#provider = provider; this.#model = model; this.#id = id; }
   get reportedCost(): number | undefined { return this.#cost; }
   push(bytes: Uint8Array): Buffer {
     const out: Buffer[] = [];
@@ -300,7 +302,7 @@ export class ChatStreamToSse {
 }
 
 /** A whole Chat Completions answer as an Anthropic message (and OpenRouter's reported cost). Anything unreadable throws. */
-export function fromChatCompletion(answer: unknown, provider: OpenAiAgentProvider, model: string, id: string): { message: Json; reportedCost?: number } {
+export function fromChatCompletion(answer: unknown, provider: ChatDialect, model: string, id: string): { message: Json; reportedCost?: number } {
   const a = record(answer);
   if (a === undefined || a.error !== undefined || !Array.isArray(a.choices) || a.choices.length !== 1) throw new Error("unreadable answer");
   const choice = record(a.choices[0]);
@@ -328,8 +330,36 @@ export function fromChatCompletion(answer: unknown, provider: OpenAiAgentProvide
   return { message: { id, type: "message", role: "assistant", model, content, stop_reason: anthropicStopOf(choice.finish_reason), stop_sequence: null, usage }, ...(cost === undefined ? {} : { reportedCost: cost }) };
 }
 
+/** A 2xx Chat Completions answer as the agent route reads it: Anthropic SSE (streamed) or an Anthropic message (whole), and the reported cost. */
+export function translatedAnswer(provider: ChatDialect, facts: { model: string; streaming: boolean }, status: number, raw: AsyncIterable<Uint8Array>, cancel: () => void): ProviderResponse {
+  const id = `msg_${randomUUID().replaceAll("-", "")}`;
+  if (facts.streaming) {
+    const converter = new ChatStreamToSse(provider, facts.model, id);
+    return {
+      status, cancel, reportedCostMicros: () => converter.reportedCost,
+      body: (async function* () {
+        for await (const chunk of raw) { const out = converter.push(chunk); if (out.length > 0) yield out; }
+        const last = converter.finish(); if (last.length > 0) yield last;
+      })(),
+    };
+  }
+  let cost: number | undefined;
+  return {
+    status, cancel, reportedCostMicros: () => cost,
+    body: (async function* () {
+      const parts: Buffer[] = []; let size = 0;
+      for await (const chunk of raw) { size += chunk.byteLength; if (size > MAX_WHOLE_ANSWER) throw new Error("unreadable answer"); parts.push(Buffer.from(chunk)); }
+      let parsed: unknown;
+      try { parsed = JSON.parse(Buffer.concat(parts).toString("utf8")) as unknown; } catch { throw new Error("unreadable answer"); }
+      const whole = fromChatCompletion(parsed, provider, facts.model, id);
+      cost = whole.reportedCost;
+      yield Buffer.from(JSON.stringify(whole.message));
+    })(),
+  };
+}
+
 /** The model a Chat Completions body names, and whether it streams (the body is the guard's own output). */
-function bodyFacts(body: Uint8Array): { model: string; streaming: boolean } {
+export function bodyFacts(body: Uint8Array): { model: string; streaming: boolean } {
   const parsed = record(JSON.parse(Buffer.from(body).toString("utf8")) as unknown);
   if (parsed === undefined || !text(parsed.model)) throw new NotSentError();
   return { model: parsed.model, streaming: parsed.stream === true };
@@ -359,31 +389,7 @@ export function createChatCompletionsTransport(provider: OpenAiAgentProvider, re
           const cancel = () => response.destroy();
           const raw = response as AsyncIterable<Uint8Array>;
           if (status < 200 || status >= 300) { resolve({ status, body: raw, cancel }); return; }
-          const id = `msg_${randomUUID().replaceAll("-", "")}`;
-          if (facts.streaming) {
-            const converter = new ChatStreamToSse(provider, facts.model, id);
-            resolve({
-              status, cancel, reportedCostMicros: () => converter.reportedCost,
-              body: (async function* () {
-                for await (const chunk of raw) { const out = converter.push(chunk); if (out.length > 0) yield out; }
-                const last = converter.finish(); if (last.length > 0) yield last;
-              })(),
-            });
-            return;
-          }
-          let cost: number | undefined;
-          resolve({
-            status, cancel, reportedCostMicros: () => cost,
-            body: (async function* () {
-              const parts: Buffer[] = []; let size = 0;
-              for await (const chunk of raw) { size += chunk.byteLength; if (size > MAX_WHOLE_ANSWER) throw new Error("unreadable answer"); parts.push(Buffer.from(chunk)); }
-              let parsed: unknown;
-              try { parsed = JSON.parse(Buffer.concat(parts).toString("utf8")) as unknown; } catch { throw new Error("unreadable answer"); }
-              const whole = fromChatCompletion(parsed, provider, facts.model, id);
-              cost = whole.reportedCost;
-              yield Buffer.from(JSON.stringify(whole.message));
-            })(),
-          });
+          resolve(translatedAnswer(provider, facts, status, raw, cancel));
         });
       } catch { reject(new NotSentError()); return; }
       const abort = () => { call.destroy(); fail(); };

@@ -64,7 +64,7 @@ export interface InviteRecord {
  * "openai_key" / "openrouter_key" its own OpenAI / OpenRouter key (DEC 254t, only where the kind is switched on). No saved choice: the
  * gateway's company-key mode as before.
  */
-export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key"] as const;
+export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key", "custom_endpoint"] as const;
 export type AgentAiSource = (typeof AGENT_AI_SOURCES)[number];
 export interface AgentAiChoice { companyId: string; source: AgentAiSource; version: number; updatedAt: string; updatedBy: string }
 export const validAgentAiSource = (value: unknown): value is AgentAiSource => typeof value === "string" && (AGENT_AI_SOURCES as readonly string[]).includes(value);

@@ -10,11 +10,12 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type https from "node:https";
 import { createChatCompletionsTransport } from "../../packages/model-gateway/src/agent-openai.js";
+import { createEndpointTransport } from "../../packages/model-gateway/src/endpoint-source.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { AwsCredentials } from "../../packages/model-gateway/src/aws.js";
 import type { ProviderRequest, ProviderTransport } from "../../packages/model-gateway/src/provider.js";
 import {
-  anthropicModel, bedrockSettings, chatModel, CHECK_KINDS, CHECK_MAX_TOKENS, CHECK_TOKEN_CEILING, checkRequest, DEFAULT_BEDROCK_MODEL_US, formatResult, keyProblem, parseCliCredentials,
+  anthropicModel, bedrockSettings, chatModel, CHECK_KINDS, endpointSettings, CHECK_MAX_TOKENS, CHECK_TOKEN_CEILING, checkRequest, DEFAULT_BEDROCK_MODEL_US, formatResult, keyProblem, parseCliCredentials,
   judge, parseKind, promptHidden, readAgentStream, runCheck, WORDS, type CheckTarget,
 } from "../../scripts/real-key-check-lib.js";
 
@@ -61,13 +62,15 @@ describe("the entry script is owner-run only", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("refuses without the consent switch, for a kind not built yet, and for anything but one kind (never echoing it), before any key is read", () => {
+  it("refuses without the consent switch, for a refused endpoint address, and for anything but one kind (never echoing it), before any key is read", () => {
     const run = (args: string[], env: Record<string, string>) => {
       try { execFileSync(join(ROOT, "node_modules/.bin/tsx"), [join(ROOT, "scripts/real-key-check.ts"), ...args], { cwd: ROOT, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env }, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 60_000 }); return { status: 0, out: "" }; }
       catch (error) { const e = error as { status: number; stdout: string; stderr: string }; return { status: e.status, out: `${e.stdout}${e.stderr}` }; }
     };
     expect(run(["anthropic"], {})).toEqual({ status: 2, out: `${WORDS.consent}\n` });
-    expect(run(["endpoint"], { ROVARA_REAL_KEY_CHECK: "1" })).toEqual({ status: 2, out: `${WORDS.notBuilt}\n` });
+    // A3: every kind is built; an endpoint with no (or a refused) address is refused before any key is read.
+    expect(run(["endpoint"], { ROVARA_REAL_KEY_CHECK: "1" })).toEqual({ status: 2, out: `${WORDS.badEndpoint}\n` });
+    expect(run(["endpoint"], { ROVARA_REAL_KEY_CHECK: "1", ROVARA_CHECK_ENDPOINT_URL: "https://169.254.169.254/latest", ROVARA_CHECK_ENDPOINT_MODEL: "m" })).toEqual({ status: 2, out: `${WORDS.badEndpoint}\n` });
     const pasted = run(["anthropic", KEY], { ROVARA_REAL_KEY_CHECK: "1" });
     expect(pasted).toEqual({ status: 2, out: `${WORDS.usage}\n` });
     expect(pasted.out).not.toContain(KEY);
@@ -228,6 +231,38 @@ describe("the one check on an OpenAI or OpenRouter key (real transport, fake net
     expect(chatModel("openai", {})).toBe("gpt-5-mini");
     expect(chatModel("openrouter", {})).toBe("openai/gpt-5-mini");
     expect(chatModel("openai", { ROVARA_CHECK_OPENAI_MODEL: "../etc" })).toBeUndefined();
+  });
+});
+
+describe("the one check on a company's own endpoint (real endpoint transport and SSRF guard, fake network)", () => {
+  const endpointTarget = (resolveTo: string, fake: ReturnType<typeof chatHttps>): CheckTarget => ({
+    kind: "endpoint", key: KEY, baseUrl: "https://llm.example.com/v1", model: "our-coder", catalog: { provider: "openai", modelId: "gpt-5-mini" },
+    transport: (target, onRefused) => createEndpointTransport(target, { resolve: async () => [{ address: resolveTo, family: 4 }], request: fake.request, onRefused }),
+  });
+
+  it("PASS through the guard: DNS checked, the served name upstream, an unknown catalog price settled as a flagged estimate", async () => {
+    const fake = chatHttps(200, chatToolStream());
+    const result = await runCheck(endpointTarget("93.184.216.34", fake));
+    expect(result.pass).toBe(true);
+    expect(fake.seen[0]!.options).toMatchObject({ hostname: "llm.example.com", servername: "llm.example.com", port: 443, path: "/v1/chat/completions" });
+    expect(JSON.parse(fake.seen[0]!.body)).toMatchObject({ model: "our-coder", max_tokens: CHECK_MAX_TOKENS });
+    expect(all(formatResult("endpoint", result))).not.toContain(KEY);
+  });
+
+  it("a name that resolves to a metadata address: FAIL with the guard's refusal, nothing sent", async () => {
+    const fake = chatHttps(200, chatToolStream());
+    const result = await runCheck(endpointTarget("169.254.169.254", fake));
+    expect(result.pass).toBe(false);
+    expect(result.lines[0]).toEqual({ name: "HTTP ok", ok: false, detail: "gateway answered 403 endpoint_refused" });
+    expect(fake.seen).toEqual([]);
+  });
+
+  it("settings: the guard's URL check, a served name, a catalog model", () => {
+    expect(endpointSettings({ ROVARA_CHECK_ENDPOINT_URL: "https://llm.example.com/v1", ROVARA_CHECK_ENDPOINT_MODEL: "our-coder" })).toEqual({ baseUrl: "https://llm.example.com/v1", model: "our-coder", catalog: { provider: "openai", modelId: "our-coder" } });
+    expect(endpointSettings({ ROVARA_CHECK_ENDPOINT_URL: "https://llm.example.com/v1", ROVARA_CHECK_ENDPOINT_MODEL: "m", ROVARA_CHECK_ENDPOINT_CATALOG: "anthropic/claude-haiku-4-5" })).toMatchObject({ catalog: { provider: "anthropic", modelId: "claude-haiku-4-5" } });
+    for (const url of [undefined, "http://llm.example.com", "https://10.0.0.1/", "https://llm.example.com:8443"]) expect(endpointSettings({ ...(url === undefined ? {} : { ROVARA_CHECK_ENDPOINT_URL: url }), ROVARA_CHECK_ENDPOINT_MODEL: "m" })).toBe(WORDS.badEndpoint);
+    expect(endpointSettings({ ROVARA_CHECK_ENDPOINT_URL: "https://llm.example.com" })).toBe(WORDS.badModel);
+    expect(endpointSettings({ ROVARA_CHECK_ENDPOINT_URL: "https://llm.example.com", ROVARA_CHECK_ENDPOINT_MODEL: "m", ROVARA_CHECK_ENDPOINT_CATALOG: "nocatalog" })).toBe(WORDS.badModel);
   });
 });
 

@@ -9,6 +9,7 @@
 //   answering for every linked project at once (F1-d M1), and nothing can be left half-written (F1-d M2 b): the seal
 //   happens before one all-or-nothing transaction, so a failure leaves no state and no pending marker.
 import { randomUUID } from "node:crypto";
+import { parseEndpointConnect, serializeEndpointConnection } from "./endpoint-source.js";
 import { COMPANY, PERSON, PROJECT, record, whole } from "./model-gateway-token.js";
 import type { ProductKeyFingerprinter, ProductKeySealer } from "./product-seal.js";
 import { parseVertexConnect, serializeVertexCredential, validVertexSummary, vertexSummary, type VertexCredential, type VertexSummary } from "./product-vertex-credential.js";
@@ -23,14 +24,14 @@ export const PRODUCT_COMPANY_OWNER = "_company";
 export const LEARNING_OWNER = "_learning";
 /**
  * The providers a company account in the learning document may be (learning-route.ts paths; Vertex learning is not connectable here).
- * "openrouter" (DEC 254t) is used only by the agent route (`openrouter_key`); the learning route has no OpenRouter path.
+ * "openrouter" and "endpoint" (DEC 254t) are used only by the agent route (`openrouter_key`, `custom_endpoint`); the learning route has no path for them.
  */
-export const LEARNING_KEY_PROVIDERS = ["anthropic", "openai", "gemini", "openrouter"] as const;
+export const LEARNING_KEY_PROVIDERS = ["anthropic", "openai", "gemini", "openrouter", "endpoint"] as const;
 export type LearningKeyProvider = typeof LEARNING_KEY_PROVIDERS[number];
 /** "anthropic", "openai" and "openrouter" are company accounts only (LEARNING_OWNER); "gemini" is both a product key and a learning account. */
-export const PRODUCT_PROVIDERS = ["gemini", "vertex", "anthropic", "openai", "bedrock", "openrouter"] as const;
+export const PRODUCT_PROVIDERS = ["gemini", "vertex", "anthropic", "openai", "bedrock", "openrouter", "endpoint"] as const;
 export type ProductProvider = typeof PRODUCT_PROVIDERS[number];
-const LEARNING_ONLY: ReadonlySet<ProductProvider> = new Set(["anthropic", "openai", "openrouter"]);
+const LEARNING_ONLY: ReadonlySet<ProductProvider> = new Set(["anthropic", "openai", "openrouter", "endpoint"]);
 /**
  * DEC 238: the company document holds at most ONE Bedrock source (its agents' AI). Slice 2 (the product route): a project may also
  * connect its OWN role (for example a separate test account) or link to the company's; a project holds one source per provider, as
@@ -524,6 +525,9 @@ export class ProductKeyStore {
   #secretOf(provider: ProductProvider, key: unknown): { text: string; vertex?: VertexCredential; bedrock?: BedrockConnection } {
     // Gemini (AI Studio), Anthropic and OpenAI (learning accounts) keys are one printable token.
     if (provider === "gemini" || provider === "anthropic" || provider === "openai" || provider === "openrouter") { if (!validGeminiKey(key)) throw new ProductKeyError("invalid"); return { text: key }; }
+    // DEC 254t (A3): a company's own endpoint, sealed whole (address, key and models): its address passes the SSRF guard's URL check here
+    // and again, with DNS, on every call (endpoint-source.ts).
+    if (provider === "endpoint") { const c = parseEndpointConnect(key); if (c === undefined) throw new ProductKeyError("invalid"); return { text: serializeEndpointConnection(c) }; }
     if (provider === "bedrock") {
       const bedrock = typeof key === "string" ? parseBedrockConnect(key) : undefined;
       if (bedrock === undefined) throw new ProductKeyError("invalid");

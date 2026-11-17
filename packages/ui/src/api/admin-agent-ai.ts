@@ -1,7 +1,9 @@
 // "AI for your agents" (DEC 240): Cloud's `/v1/app/org/agent-ai` routes. Company admins only. The reader is total over untrusted data: a
 // field that is not the shape is dropped, and a body that is not an object is unreadable.
 export const AGENT_AI_PATH = "/v1/app/org/agent-ai";
-export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key"] as const;
+export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key", "custom_endpoint"] as const;
+/** DEC 254t (A3): the company's own endpoint (connect or replace with PUT, remove with DELETE; the learning document's revision guards writes). */
+export const AGENT_AI_ENDPOINT_PATH = "/v1/app/org/agent-ai/endpoint";
 /** Listed on every Cloud; the own-key sources (DEC 254t) only when the server lists them (their kind is switched on). */
 const ALWAYS_LISTED: readonly AgentAiSource[] = ["rovara", "anthropic_key", "bedrock_byo"];
 export type AgentAiSource = typeof AGENT_AI_SOURCES[number];
@@ -18,6 +20,9 @@ export interface AgentAiRead {
  /** Whether the company's own OpenAI / OpenRouter key is connected; null when Cloud can't tell or does not list the source. */
  openaiKeyConnected: boolean | null;
  openrouterKeyConnected: boolean | null;
+ /** DEC 254t (A3): whether the company's own endpoint is connected, and the revision an endpoint write sends; null when not listed. */
+ endpointConnected: boolean | null;
+ keysRevision: number | null;
 }
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
@@ -29,5 +34,5 @@ export function readAgentAi(body: unknown): AgentAiRead {
  const said = choices.map(c => c["source"]).filter(named);
  const listed = AGENT_AI_SOURCES.filter(source => ALWAYS_LISTED.includes(source) || said.includes(source));
  const flag = (v: unknown) => typeof v === "boolean" ? v : null;
- return { source: body["source"], version: body["version"], available, anthropicKeyConnected: flag(body["anthropicKeyConnected"]), listed, openaiKeyConnected: flag(body["openaiKeyConnected"]), openrouterKeyConnected: flag(body["openrouterKeyConnected"]) };
+ return { source: body["source"], version: body["version"], available, anthropicKeyConnected: flag(body["anthropicKeyConnected"]), listed, openaiKeyConnected: flag(body["openaiKeyConnected"]), openrouterKeyConnected: flag(body["openrouterKeyConnected"]), endpointConnected: flag(body["endpointConnected"]), keysRevision: whole(body["keysRevision"]) ? body["keysRevision"] : null };
 }

@@ -7,6 +7,8 @@ import { CompanyBudgetCaps, CompanyLessonsSwitch } from "./company-caps.js";
 import { createLearningRoutes, type LearningKeySource, type LearningRouteOptions } from "./learning-route.js";
 import { createOpenAiTransport } from "./learning-openai.js";
 import { createChatCompletionsTransport } from "./agent-openai.js";
+import type { EndpointTarget } from "./endpoint-guard.js";
+import { createEndpointTransport, parseEndpointConnect } from "./endpoint-source.js";
 import { createGeminiTransport } from "./product-gemini.js";
 import { createVertexTransport } from "./product-vertex.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
@@ -224,6 +226,8 @@ export interface ServeDependencies {
   agentAiSources?: AgentAiSourceReader; bedrockTransport?: ProviderTransport;
   /** DEC 254t (A2): the own-key Chat Completions transports (default: agent-openai.ts createChatCompletionsTransport, fixed hosts). */
   openaiAgentTransport?: ProviderTransport; openrouterAgentTransport?: ProviderTransport;
+  /** DEC 254t (A3): the endpoint transport per checked target (default: endpoint-source.ts createEndpointTransport). */
+  endpointTransport?: (target: EndpointTarget, onRefused: (reason: "address" | "busy") => void, company: string) => ProviderTransport;
   now?: () => number; host?: string; port?: number; /** false: no listener (tests drive the server's request event). */ listen?: boolean; drainMs?: number; maintenanceMs?: number;
 }
 export interface RunningGateway { server: Server; port: number; draining(): boolean; drain(): Promise<void>; maintain(): Promise<void> }
@@ -306,6 +310,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
       // DEC 254t (A2): the company's own OpenAI and OpenRouter keys (fixed hosts), each held to its price row's output limit.
       openai: { transport: deps.openaiAgentTransport ?? createChatCompletionsTransport("openai"), maxOutputTokens: (model: string) => prices.maxOutputTokens("openai", model) },
       openrouter: { transport: deps.openrouterAgentTransport ?? createChatCompletionsTransport("openrouter"), maxOutputTokens: (model: string) => prices.maxOutputTokens("openrouter", model) },
+      // DEC 254t (A3): the company's own endpoint behind the SSRF guard (system DNS at call time, pinned connection).
+      endpoint: { transport: deps.endpointTransport ?? ((target, onRefused, company) => createEndpointTransport(target, { onRefused, company })), maxOutputTokens: (provider: string, model: string) => prices.maxOutputTokens(provider, model) },
     } }),
     transport,
     log: (event) => log({ ...event }),
@@ -325,6 +331,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models } }),
     ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }), now,
     switchedOn: config.aiSourceKinds ?? new Set<string>(), chat: { openai: true, openrouter: true },
+    // The endpoint's registered model names, from the company's sealed endpoint account (this company only).
+    endpointModels: async (iss: string, cid: string) => { const text = await companyKeys.keyFor(iss, cid, "endpoint"); const c = text === undefined ? undefined : parseEndpointConnect(text); return c?.models.map((m) => m.name); },
   });
   // DEC 253k: Code's eval spend authority (eval-authority.ts), answered from the product route's eval stages (the stored approval,
   // the approver's role and the project's own key connection), signed by the install's broker with its task key. Only where the

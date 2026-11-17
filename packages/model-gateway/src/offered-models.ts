@@ -101,6 +101,7 @@ export function offeredModelsFor(source: AgentAiSource | undefined, rovara: { mo
   // bedrock_byo is answered from the company's own connection (offeredByoModels), never here.
   if (source === "bedrock_byo") return OFFERED_BYO_OFF;
   if (source === "openrouter_key") return OFFERED_OPENROUTER_PENDING;
+  if (source === "custom_endpoint") return OFFERED_CHAT_OFF;
   if (source === "rovara") {
     if (rovara === undefined) return OFFERED_ROVARA_OFF;
     const seen = new Set<string>();
@@ -114,6 +115,16 @@ export function offeredModelsFor(source: AgentAiSource | undefined, rovara: { mo
   else names = [...ANTHROPIC_KEY_AGENT_MODELS];
   names = names.filter((name) => OFFERED_MODEL_NAME.test(name)).slice(0, OFFERED_MODELS_MAX);
   return names.length === 0 ? OFFERED_EMPTY : { ok: true, models: names };
+}
+
+export const OFFERED_ENDPOINT_NOT_CONNECTED = refusal(403, "no_ai_key", "Connect your endpoint: this company chose its own endpoint for its agents, and none is connected.");
+/** DEC 254t (A3): the company's own endpoint offers exactly the names it registered (those Code's name shape accepts). */
+export async function offeredEndpointModels(read: OfferedModelsHandlerOptions["endpointModels"], iss: string, cid: string): Promise<OfferedModelsOutcome> {
+  if (read === undefined) return OFFERED_CHAT_OFF;
+  const names = await read(iss, cid);
+  if (names === undefined) return OFFERED_ENDPOINT_NOT_CONNECTED;
+  const offered = names.filter((name) => OFFERED_MODEL_NAME.test(name)).slice(0, OFFERED_MODELS_MAX);
+  return offered.length === 0 ? OFFERED_EMPTY : { ok: true, models: offered };
 }
 
 /**
@@ -142,6 +153,8 @@ export interface OfferedModelsHandlerOptions {
   switchedOn?: ReadonlySet<string>;
   /** DEC 254t (A2): which own-key Chat Completions sources this gateway has built (as the agent route's `agentAi.openai` / `.openrouter`). */
   chat?: { openai?: boolean; openrouter?: boolean };
+  /** DEC 254t (A3): the names a company registered for its own endpoint (its sealed account; undefined when none). Absent: custom_endpoint is refused. */
+  endpointModels?: (iss: string, cid: string) => Promise<readonly string[] | undefined>;
   now?: () => number;
 }
 
@@ -169,6 +182,7 @@ export async function answerOfferedModels(options: OfferedModelsHandlerOptions, 
     // The same order as the agent route's admission: the switch first, then whether this gateway serves the source at all.
     if (source !== undefined && !agentSourceSwitchedOn(source, options.switchedOn ?? new Set())) outcome = OFFERED_SWITCHED_OFF;
     else if ((source === "openai_key" && options.chat?.openai !== true) || (source === "openrouter_key" && options.chat?.openrouter !== true)) outcome = OFFERED_CHAT_OFF;
+    else if (source === "custom_endpoint") outcome = await offeredEndpointModels(options.endpointModels, claims.iss, claims.cid);
     else outcome = source === "bedrock_byo" ? await offeredByoModels(options.byo, claims.iss, claims.cid) : offeredModelsFor(source, options.rovara, options.disabled);
   } catch { return ANSWERS.unavailable; }
   if (!outcome.ok) return { status: outcome.status, body: { error: { type: outcome.code, message: outcome.message } } };
