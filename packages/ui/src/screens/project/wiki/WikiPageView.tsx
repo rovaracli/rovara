@@ -1,7 +1,7 @@
 // One wiki page: title, one meta line (who wrote it, as of which commit, one freshness chip), the summary, pinned notes, the "Relevant source files" fold, the text with its
 // numbered sources, and one footer line. The right rail holds "On this page" and "About this page". Read only: Mark wrong and notes are C1's writes (not here until wired).
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fixedWikiWords, useWikiPage, useWikiSources, type WikiIndexEntry, type WikiPageResponse } from "../../../api/wiki.js";
+import { fixedWikiWords, useWikiCorrections, useWikiPage, useWikiSources, type WikiIndexEntry, type WikiPageResponse } from "../../../api/wiki.js";
 import { ApiError } from "../../../api/errors.js";
 import { useProject } from "../../../api/projects.js";
 import { Banner } from "../../../design/Banner.js";
@@ -9,7 +9,8 @@ import { Button } from "../../../design/Button.js";
 import { RelativeTime } from "../../../design/RelativeTime.js";
 import { Skeleton } from "../../../design/Skeleton.js";
 import { VisibleText } from "../../../design/VisibleText.js";
-import { Block } from "./WikiBlocks.js";
+import { Block, type BlockMarking } from "./WikiBlocks.js";
+import { MarkForm, PageMark, PageNotes, viewOf } from "./WikiCorrections.js";
 import { hostLink, modelOf, type PageModel } from "./wiki-model.js";
 import { T, chipOf, crumbOf, linesWords, shortSha } from "./wiki-text.js";
 
@@ -71,7 +72,7 @@ export function Rail({ res, model, onJump }: { res: WikiPageResponse; model: Pag
 
 /** `focusTitle`: the person just opened this page from the tree, a link or a search result, so its title takes focus (a page shown as the tab opens does not steal it). */
 export function WikiPageView({ project, id, entry, pages, focusTitle }: { project: string; id: string; entry: WikiIndexEntry; pages: readonly WikiIndexEntry[]; focusTitle: boolean }) {
-  const read = useWikiPage(project, id), overview = useProject(project);
+  const read = useWikiPage(project, id), overview = useProject(project), corrections = useWikiCorrections(project, id), [marking, setMarking] = useState<string | undefined>(undefined);
   const heading = useRef<HTMLHeadingElement>(null), focused = useRef(false);
   const res = read.data;
   useEffect(() => {
@@ -89,7 +90,14 @@ export function WikiPageView({ project, id, entry, pages, focusTitle }: { projec
   const link = (cite: Parameters<typeof hostLink>[1]) => hostLink(repositories, cite);
   const chip = chipOf(counts(res));
   const only = res.page.repos.length === 1 ? res.page.repos[0] : undefined;
-  const context = { model, link, headingId };
+  // Corrections: every control comes from what Code says this person may do. A read that failed (or is still running) shows the page with no controls, never a button that would be refused.
+  const view = viewOf(corrections.data), flaggedClaims = new Map(res.page.claims.map((claim) => [claim.claimId, claim.flagged] as const));
+  const toMark = (block: (typeof res.page.blocks)[number]) => (block.kind === "heading" ? [] : block.claimIds.filter((claimId) => flaggedClaims.get(claimId) === false));
+  const markingContext: BlockMarking | undefined = view?.you.markWrong === true ? {
+    markable: (block) => toMark(block).length > 0, open: marking, start: setMarking,
+    form: (block) => <MarkForm project={project} id={id} claimIds={toMark(block)} onDone={() => { setMarking(undefined); }} />,
+  } : undefined;
+  const context = { model, link, headingId, marking: markingContext };
   const jump = (blockId: string) => { document.getElementById(headingId(blockId))?.scrollIntoView({ behavior: "smooth", block: "start" }); };
   return (
     <div className="rv-wiki-wrap">
@@ -103,13 +111,8 @@ export function WikiPageView({ project, id, entry, pages, focusTitle }: { projec
         </p>
         {res.page.summary !== "" && <p className="rv-wiki-lede"><VisibleText text={res.page.summary} /></p>}
         {(entry.flagged || chip.tone === "bad") && <div className="rv-wiki-alerts">{entry.flagged ? <Banner title={T.FLAGGED_PAGE} tone="danger" /> : <Banner title={T.MOSTLY_OLD} tone="warning" />}</div>}
-        {res.notes.length > 0 && <section aria-label="Pinned notes">{res.notes.map((note) => (
-          <div key={note.noteId} role="group" className="rv-wiki-tnote" aria-label={`${T.NOTE_FROM} ${note.author}`}>
-            <span className="rv-wiki-who"><b>{T.NOTE_FROM} <VisibleText text={note.author} /></b>, <RelativeTime at={note.createdAt} />. {note.approval === "approved" ? T.NOTE_APPROVED : T.NOTE_PENDING}</span>
-            <p className="rv-wiki-text"><VisibleText text={note.text} /></p>
-            {note.file !== undefined && <p className="rv-wiki-who">{T.NOTE_FILE} <code><VisibleText text={`${note.file.repo}/${note.file.path}`} /></code></p>}
-          </div>
-        ))}</section>}
+        <PageMark project={project} res={res} view={view} />
+        <PageNotes project={project} res={res} view={view} />
         {model.cites.length > 0 && <Sources project={project} id={id} commits={new Map(res.page.repos.map((one) => [one.repo, one.commit]))} links={link} />}
         {res.page.blocks.map((block) => <Block key={block.blockId} block={block} context={context} />)}
         <p className="rv-wiki-truth" data-testid="wiki-truth">{res.trustLine} {T.TRUTH_EXTRA}</p>

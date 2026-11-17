@@ -146,8 +146,53 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (entry === undefined || companyless.has(person.developerId) || (entry.companyId ?? FAKE_COMPANY_ID) !== companyOfPerson(person)) return false;
     return person.administrator || roleIn(person, name) !== undefined;
   };
+  // Lead 4 C1: the pretend corrections, per project and page (reset whenever a spec sets the wiki): notes added and approved here, claims marked wrong, notes removed.
+  interface Corrections { added: Array<{ noteId: string; text: string; author: string; authorKey: string; createdAt: string; approval: "pending" | "approved"; file?: { repo: string; path: string } }>; approved: Set<string>; removed: Set<string>; marked: Set<string> }
+  const corrections = new Map<string, Corrections>();
+  const correctionsOf = (project: string, page: string): Corrections => { const key = `${project}/${page}`; const known = corrections.get(key) ?? { added: [], approved: new Set<string>(), removed: new Set<string>(), marked: new Set<string>() }; corrections.set(key, known); return known; };
+  const withCorrections = (project: string, page: string, answer: ReturnType<typeof wikiPage>): ReturnType<typeof wikiPage> => {
+    if (answer === undefined) return answer;
+    const mine = correctionsOf(project, page);
+    const notes = [...answer.notes, ...mine.added.map((note) => ({ noteId: note.noteId, text: note.text, author: note.author, createdAt: note.createdAt, approval: note.approval, ...(note.file === undefined ? {} : { file: note.file }) }))]
+      .filter((note) => !mine.removed.has(note.noteId)).map((note) => (mine.approved.has(note.noteId) ? { ...note, approval: "approved" as const } : note));
+    const claims = answer.page.claims.map((claim) => (mine.marked.has(claim.claimId) ? { ...claim, flagged: true } : claim));
+    return { ...answer, page: { ...answer.page, claims }, notes, openFlags: answer.openFlags + [...mine.marked].filter((id) => !answer.page.claims.find((claim) => claim.claimId === id)?.flagged).length };
+  };
+  const corrected = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki\/(?:pages\/([^/]+)\/(corrections|notes|flags)(?:\/([^/]+)\/(approve|delete|suggest-lesson)|\/(resolve))?|(disputed))$/u.exec(path);
+    if (match === null) return undefined;
+    const name = decodeURIComponent(match[1]!), set = wikis.get(name) ?? {};
+    if (set.off) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    if (!wikiReads(person, name)) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    const role = person.administrator ? "maintainer" : "contributor";
+    const deny = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a project maintainer, or an owner or admin of the company, can do that." } } };
+    if (match[7] !== undefined) return method === "GET" ? (role === "maintainer" ? { status: 200, body: { project: name, more: false, items: [] } } : deny) : undefined;
+    const page = decodeURIComponent(match[2]!), base = wikiPage(name, page, set);
+    if (base === undefined) return { status: 404, body: { error: { code: "NOT_FOUND", message: "That wiki page is not there." } } };
+    const mine = correctionsOf(name, page), input = (typeof body === "object" && body !== null ? body : {}) as { text?: string; claimId?: string; file?: { repo: string; path: string } };
+    if (match[3] === "corrections" && method === "GET") {
+      const shown = withCorrections(name, page, base)!;
+      return { status: 200, body: { project: name, pageId: page, you: { role, addNote: true, markWrong: true, approveNotes: role === "maintainer", resolveMarks: role === "maintainer", seeDisputed: role === "maintainer" },
+        notes: shown.notes.map((note) => ({ noteId: note.noteId, mine: mine.added.some((added) => added.noteId === note.noteId && added.authorKey === person.key), canDelete: role === "maintainer" || mine.added.some((added) => added.noteId === note.noteId && added.authorKey === person.key), canApprove: role === "maintainer" && note.approval === "pending", canSuggestLesson: /\b(always|never|must)\b/iu.test(note.text), mayBeOutOfDate: false })) } };
+    }
+    if (method !== "POST") return undefined;
+    if (match[3] === "notes" && match[4] === undefined) {
+      const note = { noteId: `note-${String(mine.added.length + 1).padStart(4, "0")}-new`, text: String(input.text ?? ""), author: person.name, authorKey: person.key, createdAt: iso(), approval: "pending" as const, ...(input.file === undefined ? {} : { file: input.file }) };
+      mine.added.push(note);
+      return { status: 200, body: { note: { noteId: note.noteId, text: note.text, author: note.author, createdAt: note.createdAt, approval: note.approval, ...(note.file === undefined ? {} : { file: note.file }) } } };
+    }
+    const noteId = match[4] === undefined ? undefined : decodeURIComponent(match[4]);
+    if (match[5] === "approve") { if (role !== "maintainer") return deny; mine.approved.add(noteId!); return { status: 200, body: { noteId, approval: "approved" } }; }
+    if (match[5] === "delete") { mine.removed.add(noteId!); return { status: 200, body: { deleted: true } }; }
+    if (match[5] === "suggest-lesson") return { status: 200, body: { state: "proposed", lessonId: "wn_fakelesson000000000001" } };
+    if (match[3] === "flags" && match[6] === "resolve") { if (role !== "maintainer") return deny; const n = mine.marked.size; mine.marked.clear(); return { status: 200, body: { resolved: n } }; }
+    if (match[3] === "flags") { if (input.claimId !== undefined) mine.marked.add(input.claimId); return { status: 200, body: { flagId: `flag-${String(mine.marked.size).padStart(4, "0")}-new`, pageId: page, ...(input.claimId === undefined ? {} : { claimId: input.claimId }) } }; }
+    return undefined;
+  };
   /** Code's wiki read routes (W2; `/v1/app/projects/{p}/wiki`, `.../pages/{id}`, `.../pages/{id}/sources`), as the person; every refusal is Code's one 404. */
-  const wikiAnswer = (method: string, path: string, person: Person): { status: number; body: unknown } | undefined => {
+  const wikiAnswer = (method: string, path: string, person: Person, body: unknown = {}): { status: number; body: unknown } | undefined => {
+    const done = corrected(method, path, person, body);
+    if (done !== undefined) return done;
     const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/pages\/([^/]+)(\/sources)?)?$/u.exec(path);
     if (match === null || method !== "GET") return undefined;
     const name = decodeURIComponent(match[1]!), set = wikis.get(name) ?? {};
@@ -157,7 +202,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (set.broken) return { status: 200, body: { project: "elsewhere" } };
     if (match[2] === undefined) return { status: 200, body: wikiIndex(name, set) };
     const id = decodeURIComponent(match[2]);
-    const answered = match[3] === undefined ? wikiPage(name, id, set) : wikiSources(name, id, set);
+    const answered = match[3] === undefined ? withCorrections(name, id, wikiPage(name, id, set)) : wikiSources(name, id, set);
     return answered === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "page not found" } } } : { status: 200, body: answered };
   };
   const log: FakeCode["log"] = [];
@@ -1129,6 +1174,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
         if (method === "POST" && url.pathname === "/__fake/wiki") {
           const given = JSON.parse(await readBody(request)) as { project?: unknown; state?: unknown; off?: unknown; broken?: unknown };
           if (typeof given.project !== "string" || project(given.project) === undefined || (given.state !== undefined && !["ready", "none", "building", "stopped"].includes(given.state as string))) return send(400, { error: { code: "CONFIG_INVALID", message: "project, and state ready, none, building or stopped" } });
+          for (const key of [...corrections.keys()]) if (key.startsWith(`${given.project}/`)) corrections.delete(key);
           wikis.set(given.project, { ...(given.state === undefined ? {} : { state: given.state as "ready" }), ...(given.off === true ? { off: true } : {}), ...(given.broken === true ? { broken: true } : {}) });
           return send(200, { project: given.project });
         }
@@ -1156,7 +1202,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
           if (who === undefined && /\/wiki(?:\/|$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (answer !== undefined) return send(answer.status, answer.body);
