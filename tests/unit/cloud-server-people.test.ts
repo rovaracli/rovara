@@ -10,6 +10,7 @@ const ADA = "a".repeat(64), CAL = "c".repeat(64), BEA = "b".repeat(64), DAN = "d
 const TASK_A = "6f9d0c1e-2b3a-4c5d-8e7f-001122334455", TASK_B = "7a9d0c1e-2b3a-4c5d-8e7f-001122334466";
 const PERSON_CAL = "11111111-1111-4111-8111-111111111111", PERSON_ADA = "22222222-2222-4222-8222-222222222222";
 const REQ = "33333333-3333-4333-8333-333333333333";
+const COMPANY_A = "org_aaaaaaaaaaaaaaaaaaaa", COMPANY_B = "org_bbbbbbbbbbbbbbbbbbbb";
 const SES_A = "ses_aaaaaaaaaaaaaaaaaaaa", SES_B = "ses_bbbbbbbbbbbbbbbbbbbb", SES_NONE = "ses_zzzzzzzzzzzzzzzzzzzz";
 
 interface Who { developerId: string; name: string; company: string; token: string }
@@ -48,7 +49,7 @@ function fakeCode() {
     }
     const me = Object.values(WHO).find((entry) => `Bearer ${entry.token}` === headers.authorization);
     if (me === undefined) return respond(401, { error: { code: "AUTH_REQUIRED" } });
-    if (url.pathname === "/v1/dev/access") return respond(200, { developerId: me.developerId, displayName: me.name, administrator: false, projects: [{ name: "payments", access: "developer" }], notices: [] });
+    if (url.pathname === "/v1/dev/access") return respond(200, { developerId: me.developerId, displayName: me.name, administrator: false, companyId: me.company === "A" ? COMPANY_A : COMPANY_B, companyRole: "member", projects: [{ name: "payments", access: "developer" }], notices: [] });
     calls.push({ method, path: url.pathname, token: me.token, ...(typeof init?.body === "string" ? { body: init.body } : {}) });
     const route = /^\/v1\/dev\/tasks\/([^/]+)\/people(?:\/([a-z-]+))?$/u.exec(url.pathname);
     if (route === null) return refuse(404, "NOT_FOUND", "route not found");
@@ -106,8 +107,8 @@ function setUp() {
     const me = JSON.parse((await call("GET", "/v1/web/me", { cookie })).body) as { csrf: string };
     return { cookie, csrf: me.csrf };
   };
-  const session = (sessionId: string, taskId: string, owner: { developerId: string; name: string }) =>
-    work.put({ sessionId, taskId, project: "payments", startedBy: owner, owner, createdAt: "2026-11-17T10:00:00.000Z", revision: 1 });
+  const session = (sessionId: string, taskId: string, owner: { developerId: string; name: string }, companyId?: string) =>
+    work.put({ sessionId, taskId, project: "payments", startedBy: owner, owner, createdAt: "2026-11-17T10:00:00.000Z", revision: 1, ...(companyId === undefined ? {} : { companyId }) });
   return { code, work, call, signIn, session };
 }
 
@@ -337,5 +338,25 @@ describe("People on a session: sign-in, CSRF and the company boundary", () => {
     // And B's own session works for B and is not Ada's.
     expect((await call("GET", path("", SES_B), bea)).status).toBe(200);
     expect((await call("GET", path("", SES_B), ada)).status).toBe(404);
+  });
+
+  it("keeps Cloud's own company check too: a session stamped with company A is not found by company B's person on any People route, and Code is never asked", async () => {
+    const context = setUp();
+    await context.session(SES_A, TASK_A, { developerId: ADA, name: "Ada" }, COMPANY_A);
+    const ada = await context.signIn("ada-code");
+    const bea = await context.signIn("bea-code");
+    const refused = { error: { code: "SESSION_NOT_FOUND", message: "That session doesn't exist, or you can't see it." } };
+    for (const [method, suffix, body] of [["GET", "", undefined], ["GET", "/candidates", undefined], ["POST", "/role", roleBody()], ["POST", "/add", addBody()], ["POST", "/take-ownership", ownBody()]] as const) {
+      const answer = await context.call(method, path(suffix), { ...bea, ...(body === undefined ? {} : { body }) });
+      expect(answer.status, `${method} ${suffix}`).toBe(404);
+      expect(json(answer)).toEqual(refused);
+    }
+    expect(context.code.peopleCalls()).toEqual([]);
+    // Positive control: the owner's company reads and writes the same session, and the take-over keeps the session's company.
+    expect((await context.call("GET", path(""), ada)).status).toBe(200);
+    expect(context.code.peopleCalls()).toHaveLength(1);
+    context.code.flags.commit = true;
+    expect((await context.call("POST", path("/take-ownership"), { ...ada, body: ownBody() })).status).toBe(200);
+    expect((await context.work.get(SES_A))?.companyId).toBe(COMPANY_A);
   });
 });

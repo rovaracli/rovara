@@ -14,7 +14,7 @@ const POLL_MS = 3000;
 const ROLE_WORDS = { owner: "Owner", commenter: "Can comment", viewer: "Can view", denied: "Removed" } as const;
 const ROLE_OPTIONS = [{ value: "owner", label: ROLE_WORDS.owner }, { value: "commenter", label: ROLE_WORDS.commenter }, { value: "viewer", label: ROLE_WORDS.viewer }] as const;
 /** Code answers 404 or 501 for a People route it does not serve on this install: the panel says so in fixed words and nothing else breaks. */
-const notServed = (error: unknown) => error instanceof ApiError && (error.status === 404 || error.status === 501);
+const notServed = (error: unknown) => error instanceof ApiError && (error.status === 501 || (error.status === 404 && error.code !== "SESSION_NOT_FOUND" && error.code !== "TASK_NOT_FOUND"));
 const failureText = (error: unknown, fallback: string) => (error instanceof ApiError ? error.message : fallback);
 interface Waiting { confirmUrl: string; expiresAt: string; revision: number }
 
@@ -67,12 +67,12 @@ export function PeoplePanel({ id }: { id: string }) {
    : <div role="alert"><p><VisibleText text={failureText(list.error, "Couldn't load who is on this task.")} /></p><Button onClick={() => { void list.refetch(); }}>Try again</Button></div>)}
   {view !== undefined && <>
    <ul className="rv-people-list" aria-label="People on this task">{view.people.map(person => {
-    const label = person.method !== undefined && person.method in SESSION_PEOPLE_METHOD_LABELS ? SESSION_PEOPLE_METHOD_LABELS[person.method as keyof typeof SESSION_PEOPLE_METHOD_LABELS] : undefined;
-    const roleWord = person.role in ROLE_WORDS ? ROLE_WORDS[person.role as keyof typeof ROLE_WORDS] : "Access unavailable";
+    const label = person.method !== undefined && Object.hasOwn(SESSION_PEOPLE_METHOD_LABELS, person.method) ? SESSION_PEOPLE_METHOD_LABELS[person.method as keyof typeof SESSION_PEOPLE_METHOD_LABELS] : undefined;
+    const roleWord = Object.hasOwn(ROLE_WORDS, person.role) ? ROLE_WORDS[person.role as keyof typeof ROLE_WORDS] : "Access unavailable";
     return <li key={person.personId} data-testid="people-row">
      <span className="rv-people-name"><VisibleText text={person.name} />{person.you && <span className="rv-muted"> (you)</span>}{label !== undefined && <span className="rv-muted"> · {label}</span>}</span>
      {canManage && person.role !== "denied"
-      ? <Select label={"Role for " + person.name} value={person.role in ROLE_WORDS ? person.role : ""} disabled={locked} options={ROLE_OPTIONS} onValueChange={value => { if (value !== person.role && (value === "owner" || value === "commenter" || value === "viewer")) change(person.personId, value); }} />
+      ? <Select label={"Role for " + person.name} value={Object.hasOwn(ROLE_WORDS, person.role) ? person.role : ""} disabled={locked} options={ROLE_OPTIONS} onValueChange={value => { if (value !== person.role && (value === "owner" || value === "commenter" || value === "viewer")) change(person.personId, value); }} />
       : <span className="rv-muted" data-testid="people-role">{roleWord}</span>}
      {canManage && person.role !== "denied" && <Button variant="quiet" disabled={locked} aria-label={"Remove " + person.name} onClick={() => { change(person.personId, "denied"); }}>Remove</Button>}
     </li>;

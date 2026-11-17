@@ -180,4 +180,11 @@ describe("People panel", () => {
     expect(rows[1]!.textContent).toBe("CalAccess unavailable");
     expect(screen.getByTestId("people-panel").textContent).not.toMatch(/slack|channel|invite/iu);
   });
+
+  it("shows Code's own words when the session or task is not found, not the not-available line", async () => {
+    const { open } = setup(() => refusal(404, "SESSION_NOT_FOUND", "That session doesn't exist, or you can't see it."));
+    await open();
+    expect((await screen.findByRole("alert")).textContent).toContain("That session doesn't exist, or you can't see it.");
+    expect(screen.queryByTestId("people-unavailable")).toBeNull();
+  });
 });
