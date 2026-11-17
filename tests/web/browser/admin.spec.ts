@@ -120,14 +120,17 @@ test("the settings write and a passkey removal carry the body hash like every ot
   page.on("request", request => { if (request.method() !== "GET" && request.url().includes("/v1/web/")) writes.push({ method: request.method(), url: request.url(), hash: request.headers()["x-amz-content-sha256"], body: request.postData() }); });
   await serve(page, "/me/sign-in-factors", { factorEmail: "p***@acme.test", passkeys: [{ credentialId: "key-one", createdAt: "2026-10-01T00:00:00Z" }] });
   await page.route("**/v1/web/me/passkeys/key-one", route => route.fulfill(json({})));
-  await page.goto(ROUTES.account);
+  // The first address opened signs the person in through Code (a redirect chain), so wait for the page itself before touching its storage: `goto` can resolve mid-chain.
+  const account = new AccountPage(page);
+  await account.open();
   await page.evaluate(() => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce: "e2e-sign", at: Date.now() })));
-  await page.goto(`${ROUTES.account}?remove=key-one&confirmed=e2e-sign`);
+  await account.open("?remove=key-one&confirmed=e2e-sign");
   await page.getByRole("button", { name: "Remove passkey" }).click();
   await expect.poll(() => writes.some(write => write.url.endsWith("/v1/web/me/passkeys/key-one"))).toBe(true);
-  await page.goto(`${ROUTES.admin.settings}`);
+  const admin = new AdminPage(page);
+  await admin.open(ROUTES.admin.settings);
   await page.evaluate(() => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce: "e2e-sign2", at: Date.now() })));
-  await page.goto(`${ROUTES.admin.settings}?confirmed=e2e-sign2`);
+  await admin.open(`${ROUTES.admin.settings}?confirmed=e2e-sign2`);
   await page.getByRole("button", { name: "Change rules" }).click();
   await page.getByLabel("Company monthly cap (USD)").fill("0");
   await expect(page.getByText("A $0 cap blocks all model gateway use.")).toBeVisible();

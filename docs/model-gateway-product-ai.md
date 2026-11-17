@@ -310,6 +310,25 @@ connected product key. Never Rovara-paid: the answer's `provider` is always `cus
 - Mounted by `startServe` only when the product route holds eval stages; otherwise the path is the gateway's 404. It moves no
   money: the hold is still `/v1/product/eval/hold` with the task token.
 
+## Eval monthly cap (DEC 253q c; `eval-cap.ts`)
+
+Code's `eval-reservation` adapter has an optional `monthlyCapMicros()`. It reads the cap here, from Cloud's company budget (the
+same `CompanyBudgetCaps.capsFor` read every agent call makes): the lower of the company's monthly cap and the project monthly
+cap. A project with no cap of its own is held to the company cap.
+
+| Request | Body | Answer |
+|---|---|---|
+| `POST /v1/product/eval/cap`, `authorization: Bearer <service token>` | exactly `{"company","project"}` | `200` exactly `{"company","project","monthlyCapMicros"}` (a whole number, 0 to `Number.MAX_SAFE_INTEGER`) |
+
+- **Token**: as the eval authority's, with `aud: "rovara-model-gateway-eval-cap"` (`EVAL_CAP_AUDIENCE`). Another audience (the
+  eval authority's included), a task token or an `x-api-key` header is `401`.
+- **No source is refused**: `404 not_found` (fixed) when the body's company is not the token's `cid`, the project is not a
+  project name, or the company has no budget source (no settings row, a company monthly cap of null, another company's row) or a
+  value that is not whole. `503` when the budget can't be read; `400`, `413`, `405` and `429` as on the eval authority.
+  Nothing from the request is echoed or logged.
+- **Advisory bound**: this is the cap Code holds an eval spend item to at confirm. The binding check is still the gateway's own eval hold (`/v1/product/eval/hold`, the product caps), which may be lower; a hold it refuses spends nothing.
+- Mounted by `startServe` always: the company budget source (`GATEWAY_COMPANY_TABLE`) is part of every serving gateway.
+
 ## Not built here
 
 Code's worker side of the bridge; a Code event that tells Cloud about member changes made in Code itself (until then the
