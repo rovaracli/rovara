@@ -4,3 +4,8 @@
 .rv-connect-note{color:var(--rv-text-muted);font-size:.875rem}
 .rv-connect-picker .rv-field{max-width:100%}
 .rv-connect-settings h3{margin-block:0 var(--rv-space-2)}
+/* Guided onboarding PR 13: the admins' connection banner and the teammate's welcome. */
+.rv-integration-banner { border: 1px solid var(--rv-warning, #b45309); border-radius: 6px; padding: 0.5rem 0.75rem; margin: 0.5rem 0; }
+.rv-integration-banner p { margin: 0; }
+.rv-welcome { border: 1px solid var(--rv-border, #d0d7de); border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; }
+.rv-welcome-projects { list-style: none; padding: 0; display: grid; gap: 0.75rem; }

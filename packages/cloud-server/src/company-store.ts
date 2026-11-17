@@ -127,14 +127,23 @@ export interface CompanyStore {
   putHookInstall(install: HookInstall): Promise<void>;
   removeHookInstall(issuer: string): Promise<void>;
   /**
-   * The one-trial-per-GitHub-account rule (`github=trial_used`; guided onboarding PR 2): the first company a GitHub account connects GitHub for
-   * holds that account's trial, written once and never overwritten. "claimed" (now), "held" (this company already held it), "other" (another
-   * company holds it). The GitHub user id is Code's checked answer (the claim's `githubUser.id`), never anything the browser sent.
+   * The company's trial (L2-8), or undefined when it has none. Throws for a company id that does not read; a row that is not this company's
+   * or does not name a GitHub account reads as none.
    */
-  claimGithubTrial(githubUserId: number, companyId: string, at: string): Promise<GithubTrialClaim>;
+  trial(companyId: string): Promise<CompanyTrial | undefined>;
+  /**
+   * The one-trial-per-GitHub-account rule (`github=trial_used`; guided onboarding PR 2, L2-8): unlocks the company's trial for the GitHub
+   * account, and claims that account for this company, in ONE write: both happen or neither. "unlocked" (now), "held" (this company already
+   * holds its trial from this account: nothing changes), "already" (this company's trial came from another account: the company claims
+   * nothing more), "used" (another company holds this account's trial, or the claim does not read: no trial, nothing written). The GitHub
+   * user id is Code's checked answer (the claim's `githubUser.id`), never anything the browser sent.
+   */
+  unlockTrial(githubUserId: number, companyId: string, at: string): Promise<TrialUnlock>;
 }
 
-export type GithubTrialClaim = "claimed" | "held" | "other";
+/** A company's trial: unlocked by one GitHub account (L2-8). */
+export interface CompanyTrial { companyId: string; githubUserId: number; unlockedAt: string }
+export type TrialUnlock = "unlocked" | "held" | "already" | "used";
 /** A GitHub user id as GitHub numbers them. */
 export const validGithubUserId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 
@@ -207,12 +216,24 @@ export class LocalCompanyStore implements CompanyStore {
   private readonly installs = new Map<string, HookInstall>();
   private readonly agentAiOf = new Map<string, AgentAiChoice>();
   private readonly githubTrials = new Map<number, string>();
+  private readonly trials = new Map<string, CompanyTrial>();
 
-  async claimGithubTrial(githubUserId: number, companyId: string): Promise<GithubTrialClaim> {
-    if (!validGithubUserId(githubUserId) || !COMPANY_ID.test(companyId)) throw new Error("the GitHub trial claim does not read");
+  async trial(companyId: string) {
+    if (!COMPANY_ID.test(companyId)) throw new Error("the company id does not read");
+    const trial = this.trials.get(companyId);
+    return trial === undefined ? undefined : copy(trial);
+  }
+
+  /** Both maps are checked and written with no await between, so this is one step: a racing call sees all of it or none of it. */
+  async unlockTrial(githubUserId: number, companyId: string, at: string): Promise<TrialUnlock> {
+    if (!validGithubUserId(githubUserId) || !COMPANY_ID.test(companyId)) throw new Error("the GitHub trial unlock does not read");
+    const own = this.trials.get(companyId);
+    if (own !== undefined) return own.githubUserId === githubUserId ? "held" : "already";
     const holder = this.githubTrials.get(githubUserId);
-    if (holder === undefined) { this.githubTrials.set(githubUserId, companyId); return "claimed"; }
-    return holder === companyId ? "held" : "other";
+    if (holder !== undefined && holder !== companyId) return "used";
+    this.githubTrials.set(githubUserId, companyId);
+    this.trials.set(companyId, { companyId, githubUserId, unlockedAt: at });
+    return "unlocked";
   }
 
   async agentAi(companyId: string) { const choice = this.agentAiOf.get(companyId); return choice === undefined ? undefined : copy(choice); }

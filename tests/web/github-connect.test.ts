@@ -135,7 +135,7 @@ it("marks the Connect GitHub step Done from the company's real connections", asy
 it("a crafted github= word (an Object.prototype member) shows nothing and never crashes the page", async () => {
  for (const word of ["toString", "constructor", "__proto__"]) {
   const f = setup(`/app/onboard?github=${word}`);
-  await screen.findByRole("heading", { name: "Onboard a project" });
+  await screen.findByRole("heading", { name: "Set up your company" });
   expect(screen.queryByTestId("github-refused")).toBeNull();
   f.close();
  }

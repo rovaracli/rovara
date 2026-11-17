@@ -91,7 +91,7 @@ export const GithubConnectResultSchema = z.discriminatedUnion("status", [
 export const GithubChooseBodySchema = z.object({ installationId: z.number().int().positive() }).strict();
 export const GithubChooseResponseSchema = GithubConnectedSchema;
 /** The company's connected GitHub accounts (GET /v1/app/github/connections, Code's GET /v1/dev/company/github; any member). */
-export const GithubConnectionsResponseSchema = z.object({ installations: z.array(z.object({ installationId: z.number().int().positive(), accountLogin: z.string(), connectedAt: z.string(), connectedBy: z.union([z.object({ kind: z.literal("person"), name: z.string().optional() }), z.object({ kind: z.literal("operator") })]) })) });
+export const GithubConnectionsResponseSchema = z.object({ installations: z.array(z.object({ installationId: z.number().int().positive(), accountLogin: z.string(), status: z.enum(["active", "suspended", "uninstalled"]).optional(), accountType: z.enum(["User", "Organization"]).optional(), connectedAt: z.string(), connectedBy: z.union([z.object({ kind: z.literal("person"), name: z.string().optional() }), z.object({ kind: z.literal("operator") })]) })) });
 /** Guided onboarding PR 11: Add to Slack, a project's Slack channel, Connect Linear and a project's Linear team (Cloud's server answers; names and flags only). */
 const ConnectStartSchema = z.object({ authorizeUrl: z.string(), expiresAt: z.string() });
 export const ConnectStartBodySchema = z.object({ back: z.string().regex(/^\/app(?:\/[A-Za-z0-9_~-][A-Za-z0-9._~-]{0,99}){0,4}$/).optional() }).strict();
@@ -131,6 +131,9 @@ export const GithubConnectResponseReaderSchema = forwardReader(GithubConnectResp
 export const GithubInstallationsResponseReaderSchema = forwardReader(GithubInstallationsResponseSchema);
 export const GithubConnectResultReaderSchema = forwardReader(GithubConnectResultSchema);
 export const GithubChooseResponseReaderSchema = forwardReader(GithubChooseResponseSchema);
+/** Guided onboarding PR 12b: one GitHub account disconnected (Code #832), with GitHub's own uninstall page to finish there. */
+export const GithubDisconnectResponseSchema = z.object({ status: z.literal("disconnected"), installationId: z.number().int().positive(), accountLogin: z.string(), uninstallUrl: z.string().optional() });
+export const GithubDisconnectResponseReaderSchema = forwardReader(GithubDisconnectResponseSchema);
 export const GithubConnectionsResponseReaderSchema = forwardReader(GithubConnectionsResponseSchema);
 export const SlackInstallStartResponseReaderSchema = forwardReader(SlackInstallStartResponseSchema);
 export const SlackInstallResultReaderSchema = forwardReader(SlackInstallResultSchema);

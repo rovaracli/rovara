@@ -1,0 +1,15 @@
+/* Guided onboarding PR 9: the project setup checklist. */
+.rv-checklist { border: 1px solid var(--rv-border, #d0d7de); border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; background: var(--rv-surface, transparent); }
+.rv-checklist-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.rv-checklist-head h2 { margin: 0; }
+.rv-checklist-progress { margin: 0; display: flex; align-items: center; gap: 0.5rem; }
+.rv-checklist-progress progress { width: 10rem; }
+.rv-checklist-company { margin: 0.5rem 0; }
+.rv-checklist-rows { list-style: none; padding: 0; margin: 0.75rem 0 0; display: grid; gap: 0.5rem; }
+.rv-checklist-row details { border: 1px solid var(--rv-border, #d0d7de); border-radius: 6px; padding: 0.5rem 0.75rem; }
+.rv-checklist-row summary { cursor: pointer; display: flex; align-items: center; gap: 0.5rem; justify-content: space-between; }
+.rv-checklist-title { font-weight: 600; }
+.rv-checklist-body { padding-top: 0.5rem; }
+.rv-checklist-chips { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; }
+.rv-checklist-chips li { border: 1px solid var(--rv-border, #d0d7de); border-radius: 999px; padding: 0 0.5rem; }
+.rv-checklist-failed pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12rem; overflow: auto; }
