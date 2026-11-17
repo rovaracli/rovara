@@ -124,3 +124,22 @@ is separate from Code's own `ROVARA_CORE_LESSONS`: a company needs both on.
 table with the agent meter or with each other, or cannot show its tables at all (a meter that exposes neither `combinedTables()`
 nor `ownTables()`, such as an in-memory one, would pass those checks unseen: only a `DynamoMeter`, or a meter that exposes both
 views, is accepted).
+
+## The answers route (lead 4 L4-E, DEC 254z-amend2)
+
+A fourth route on the same gateway for answers to people's questions (hosted "Ask about this task", smart Just answer). It is this route's code with a different flavor
+(`answers-route.ts`, `createAnswersRoutes` over `createLearningRoutes`); nothing of the money core, the key sources, the provider guards or the secret scanner is copied.
+
+| | Learning route | Answers route |
+|---|---|---|
+| Token | `stp` = `rovara-lessons-learning-call` | `stp` = `rovara-answers-call` (`ANSWERS_STEP`): accepted on its own paths only, and nothing else is accepted there (the fixed 401 both ways, a learning token included) |
+| Paths | `/v1/learning/...` | `/v1/answers/messages`, `/gemini/...`, `/vertex/...`, `/openai/chat/completions` |
+| Key | the company's OWN connected account | the same source, never Rovara's key |
+| Gate | the company's lessons switch | none besides the limit |
+| Meter | its own tables, combined with the agent meter's company row | its own three tables (`GATEWAY_ANSWERS_*_TABLE`, all or none, only with the product key store), combined the same way |
+| Month row | min(learning cap, company cap) | min(the company's `answers_month` limit, else $20; company cap) |
+| Refusals | `422/403 lessons_paused`, header `x-rovara-lessons-pause` | `422/403 answers_paused`, header `x-rovara-answers-pause` (`no_provider`, `monthly_limit`, `no_budget`, `cost_too_high`) |
+| After the task ended | still runs | still runs (a question about a finished task is answered) |
+
+The answers spend counts in the one combined company cap exactly as learning's does; there is no other company cap. The limit is read with `readSpendLimit` on every call
+(strongly consistent): an item that does not read pauses answers (`no_budget`), a failed read is an error and sends nothing. No caller is built here: Code mints the token and calls the paths later.

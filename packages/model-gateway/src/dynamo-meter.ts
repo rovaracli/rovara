@@ -72,6 +72,8 @@ function targetsFor(scope: MeterScope, caps: Caps, month: string, combined = fal
     withCap({ sk: sk("task", scope.tid), item: "task" }, caps.task),
     ...(scope.per === undefined ? [] : [withCap({ sk: sk("person", scope.per, month), item: "person" }, caps.personMonth)]),
     withCap({ sk: sk("project", scope.pid, month), item: "project" }, caps.projectMonth),
+    // Only a call of nightly-upkeep origin carries this cap (L4-E): its project row of upkeep spend, in addition to the rows above and below.
+    ...(caps.upkeepMonth === undefined ? [] : [withCap({ sk: sk("upkeep", scope.pid, month), item: "upkeep" }, caps.upkeepMonth)]),
     withCap({ sk: sk("company", month), item: "company" }, caps.companyMonth),
     // The agent meter's own company row key, in the agent meter table.
     ...(combined ? [withCap({ sk: sk("company", month), item: "company", combined: true }, caps.combinedCompanyMonth)] : []),
@@ -81,11 +83,11 @@ const scopeFields = (scope: MeterScope): Item => ({ iss: scope.iss, cid: scope.c
 const targetsPlain = (targets: readonly Target[]): Plain => targets.map((t) => ({ sk: t.sk, item: t.item, ...(t.cap === undefined ? {} : { cap: t.cap }), ...(t.combined === true ? { combined: true } : {}) }));
 /** `combined`: whether this meter combines; a stored combined target on a meter that does not is unreadable (fail closed). */
 function readTargets(value: unknown, combined = false): Target[] | undefined {
-  if (!Array.isArray(value) || value.length < 3 || value.length > (combined ? 5 : 4)) return undefined;
+  if (!Array.isArray(value) || value.length < 3 || value.length > (combined ? 6 : 5)) return undefined;
   const targets: Target[] = [];
   for (const entry of value) {
     const t = record(entry);
-    if (t === undefined || typeof t.sk !== "string" || !t.sk.startsWith("ROW#") || !["task", "person", "project", "company"].includes(t.item as string) || (t.cap !== undefined && !whole(t.cap))) return undefined;
+    if (t === undefined || typeof t.sk !== "string" || !t.sk.startsWith("ROW#") || !["task", "person", "project", "upkeep", "company"].includes(t.item as string) || (t.cap !== undefined && !whole(t.cap))) return undefined;
     if (t.combined !== undefined && (t.combined !== true || !combined || t.item !== "company")) return undefined;
     targets.push({ sk: t.sk, item: t.item as MeterItem, ...(t.cap === undefined ? {} : { cap: t.cap }), ...(t.combined === true ? { combined: true as const } : {}) });
   }
@@ -464,7 +466,7 @@ export class DynamoMeter implements Meter {
           if (stored[i] === undefined || row.company !== call.cid || ![row.spentMicros + deltaMicros, row.committed + deltaMicros, row.estimatedMicros + estimatedDelta].every((value) => whole(value) && value < MAX) || row.estimatedMicros + estimatedDelta > row.spentMicros + deltaMicros) return { status: "busy" };
           rows.push(row);
         }
-        const capFor = { task: input.caps.task, person: input.caps.personMonth, project: input.caps.projectMonth, company: input.caps.companyMonth };
+        const capFor = { task: input.caps.task, person: input.caps.personMonth, project: input.caps.projectMonth, upkeep: input.caps.upkeepMonth, company: input.caps.companyMonth };
         capExceeded = false;
         const actions: TransactAction[] = targets.map((target, i): TransactAction => {
           const row = rows[i]!; const spentMicros = row.spentMicros + deltaMicros; const cap = target.combined === true ? input.caps.combinedCompanyMonth : capFor[target.item];
@@ -554,10 +556,10 @@ export class DynamoMeter implements Meter {
     return { items, ...(calls.length > limit && last !== undefined ? { cursor: JSON.stringify(["expiry", last.settledAt, last.callKey]) } : {}) };
   }
 
-  async read(scope: MeterScope): Promise<readonly MeterRow[]> {
+  async read(scope: MeterScope, options?: { upkeep?: true }): Promise<readonly MeterRow[]> {
     if (!validScope(scope)) throw new Error("meter unavailable");
     const pk = companyPartition(scope.iss, scope.cid);
-    const targets = targetsFor(scope, { task: 0, projectMonth: 0 }, this.#month());
+    const targets = targetsFor(scope, { task: 0, projectMonth: 0, ...(options?.upkeep === true ? { upkeepMonth: 0 } : {}) }, this.#month());
     const stored = await this.#rows(pk, targets);
     return targets.map((target, i) => rowOf(stored[i], target, scope.cid));
   }

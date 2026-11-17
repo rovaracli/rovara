@@ -50,6 +50,10 @@ export const GATEWAY_ENV = {
   learningMeterTable: "GATEWAY_LEARNING_METER_TABLE",
   learningLedgerTable: "GATEWAY_LEARNING_LEDGER_TABLE",
   learningMarkersTable: "GATEWAY_LEARNING_MARKERS_TABLE",
+  /** The answers route (docs/model-gateway-answers.md): its meter's three tables, set together and only with the product route (its key store). */
+  answersMeterTable: "GATEWAY_ANSWERS_METER_TABLE",
+  answersLedgerTable: "GATEWAY_ANSWERS_LEDGER_TABLE",
+  answersMarkersTable: "GATEWAY_ANSWERS_MARKERS_TABLE",
   /**
    * Whose AI key the agent route sends (DEC 236): "company" (each company's own connected key from the product key store, only
    * with the product route; a company with none is refused, never sent on Rovara's key) or "install" (the install key above).
@@ -84,6 +88,8 @@ export type GatewayAgentKeyMode = typeof GATEWAY_AGENT_KEY_MODES[number];
 export const GATEWAY_PRODUCT_ENV = [GATEWAY_ENV.productKeysTable, GATEWAY_ENV.productKeysKey, GATEWAY_ENV.productMeterTable, GATEWAY_ENV.productLedgerTable, GATEWAY_ENV.productMarkersTable, GATEWAY_ENV.evalStagesTable] as const;
 /** The learning route's settings: all or none. */
 export const GATEWAY_LEARNING_ENV = [GATEWAY_ENV.learningMeterTable, GATEWAY_ENV.learningLedgerTable, GATEWAY_ENV.learningMarkersTable] as const;
+/** The answers route's settings: all or none. */
+export const GATEWAY_ANSWERS_ENV = [GATEWAY_ENV.answersMeterTable, GATEWAY_ENV.answersLedgerTable, GATEWAY_ENV.answersMarkersTable] as const;
 
 export const GATEWAY_MODES = ["serve", "price-fetch"] as const;
 export const GATEWAY_PORT = 8080;
@@ -173,8 +179,11 @@ export const GATEWAY_COMPANY_SPEND_LIMITS = {
   kinds: [
     { kind: "project_month", scope: "project", sortPrefix: "SPEND_LIMIT#PROJECT#", caps: "projectMonth" },
     { kind: "person_month", scope: "person", sortPrefix: "SPEND_LIMIT#PERSON#", caps: "personMonth" },
+    // Lead 4 L4-E: not meter caps; each is enforced by its own caller through readSpendLimit (upkeep-cap.ts, answers-route.ts).
+    { kind: "upkeep_month", scope: "project", sortPrefix: "SPEND_LIMIT#UPKEEP#", caps: null },
+    { kind: "answers_month", scope: "company", sortPrefix: "SPEND_LIMIT#ANSWERS#", caps: null },
   ],
-} as const satisfies { partitionPrefix: string; kinds: readonly { kind: string; scope: "project" | "person"; sortPrefix: string; caps: "projectMonth" | "personMonth" | null }[] };
+} as const satisfies { partitionPrefix: string; kinds: readonly { kind: string; scope: "project" | "person" | "company"; sortPrefix: string; caps: "projectMonth" | "personMonth" | null }[] };
 export const GATEWAY_COMPANY_BUDGET_FIELDS = ["companyMonthlyUsdMicros", "memberMonthlyUsdMicros", "projectMonthlyUsdMicros", "taskUsdMicros"] as const;
 /** The backend's own ceiling for one budget: $1,000,000 in micro-dollars. */
 export const GATEWAY_COMPANY_BUDGET_MAX = 1_000_000_000_000;

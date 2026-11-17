@@ -12,6 +12,8 @@ import type { MediaRates } from "./media-price.js";
 import { guardRequest, MAX_BODY_BYTES, tooLarge, type GuardFailure, type ModelLimitsSource } from "./guard.js";
 import type { BillLine, Meter, MeterItem, MeterScope, Reservation } from "./meter.js";
 import { LEARNING_PATH_PREFIX, LEARNING_STEP, type LearningKeySource, type LearningRouteFactory } from "./learning-route.js";
+import { ANSWERS_PATH_PREFIX, ANSWERS_STEP } from "./answers-route.js";
+import { isUpkeepCall, upkeepRefusal, withUpkeepCap, type UpkeepLimits } from "./upkeep-cap.js";
 import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceKind, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, type TaskClaims, type TaskTokenVerifier } from "./token.js";
@@ -22,7 +24,7 @@ import type { TokenUsage } from "./usage.js";
 import { UsageCollector } from "./usage.js";
 export interface GatewayRequest { method: string; url: string; headers: Readonly<Record<string, string | undefined>>; body: AsyncIterable<Uint8Array>; signal?: AbortSignal }
 export interface GatewaySink { head(status: number, headers: Readonly<Record<string, string>>): void; write(bytes: Uint8Array): Promise<void>; end(): void; destroy(): void }
-export type GatewayLogEvent = { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" } | { event: "overrun_busy"; company: string } | { event: "settle_failed" | "refused" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
+export type GatewayLogEvent = { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "settle_failed" | "refused" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
 export interface GatewayDependencies {
   verifyToken: TaskTokenVerifier; ended: EndedTasks; meter: Meter; caps: CapsSource; prices?: PriceSource;
   metrics: { overrunBusy(issuer: string, company: string): void };
@@ -33,6 +35,10 @@ export interface GatewayDependencies {
   product?: ProductRouteResolver;
   /** The learning route (DEC 226, learning-route.ts: lessons' calls on the company's own key). Absent: its path is 404. */
   learning?: LearningRouteFactory;
+  /** The answers route (answers-route.ts: hosted Ask and smart Just answer on the company's own key). Absent: its path is 404. */
+  answers?: LearningRouteFactory;
+  /** Nightly upkeep's per-project monthly cap (upkeep-cap.ts). Absent: an upkeep-origin call is paused with no_budget. */
+  upkeep?: UpkeepLimits;
   /**
    * DEC 236: the agent route on each company's OWN connected AI key (company-key mode), from the same sealed company-level store
    * the learning route reads. Set: `keys` (Rovara's install key) is never read for an agent call, a company with no usable key is
@@ -87,10 +93,11 @@ export interface GatewayRoute {
    */
   readonly events?: { sink(real: GatewaySink): GatewaySink & { finish(outcome: { completed: boolean; code?: string }): Promise<void> } };
   /**
-   * The token purpose this route serves. "learning": only learning tokens (`stp` = LEARNING_STEP); absent: only task tokens.
+   * The token purpose this route serves. "learning": only learning tokens (`stp` = LEARNING_STEP); "answers": only answers tokens (`stp` = ANSWERS_STEP);
+   * absent: only task tokens.
    * Either mismatch gets the fixed 401 before anything is read, held or sent.
    */
-  readonly purpose?: "learning";
+  readonly purpose?: "learning" | "answers";
   /** false: the task-ended record does not stop this route's calls (learning runs after its task ended). Absent: it does. */
   readonly stopsWithTask?: false;
   /** A permanent cap refusal from the meter, in the route's own words. Absent: 422 budget_exceeded with `prefix`. */
@@ -119,7 +126,7 @@ export const OVERRUN_BUSY_MESSAGE = "Another call for this company may exceed it
 export const OVERRUN_BUSY_RETRY_SECONDS = 2;
 export const ENDED_TASK_POLL_MS = 1000;
 const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" };
-const PREFIX: Record<MeterItem, string> = { task: "Budget has been exceeded! Key=task", person: "ExceededBudget: User=person", project: "Budget has been exceeded! Project=project", company: "Budget has been exceeded! Team=company" };
+const PREFIX: Record<MeterItem, string> = { task: "Budget has been exceeded! Key=task", person: "ExceededBudget: User=person", project: "Budget has been exceeded! Project=project", company: "Budget has been exceeded! Team=company", upkeep: "Budget has been exceeded! Upkeep=project" };
 export const PRODUCT_ROUTE_PREFIX = "/v1/product/";
 /** The agent route's refusal in company-key mode when the company has no usable AI key connected (DEC 236). Fixed words. */
 export const AGENT_KEY_MISSING: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect an AI key: this company has no AI provider key connected, so its agents cannot call AI." });
@@ -303,6 +310,8 @@ function invokeCall(checked: RouteCall, id: string): RouteCall {
   const body = { anthropic_version: BEDROCK_ANTHROPIC_VERSION, ...rest, ...(beta === undefined ? {} : { anthropic_beta: beta.split(",").map((flag) => flag.trim()) }) };
   return { ...checked, model: id, bytes: Buffer.from(JSON.stringify(body)), headers: { "content-type": "application/json" }, path: bedrockInvokePath(id, checked.streaming) };
 }
+/** The purpose a step reserves (learning, answers), or undefined for any task step. */
+const tokenPurpose = (step: string): "learning" | "answers" | undefined => step === LEARNING_STEP ? "learning" : step === ANSWERS_STEP ? "answers" : undefined;
 function routeFor(deps: GatewayDependencies, request: GatewayRequest): GatewayRoute | ProductControl | undefined {
   if (request.method !== "POST") return undefined;
   if (request.url === "/v1/messages") return agentRoute(deps);
@@ -310,6 +319,11 @@ function routeFor(deps: GatewayDependencies, request: GatewayRequest): GatewayRo
     if (request.url.length > 2048) return undefined;
     const at = request.url.indexOf("?");
     try { return deps.learning?.route(at < 0 ? request.url : request.url.slice(0, at), at < 0 ? "" : request.url.slice(at + 1)); } catch { return undefined; }
+  }
+  if (request.url.startsWith(ANSWERS_PATH_PREFIX)) {
+    if (request.url.length > 2048) return undefined;
+    const at = request.url.indexOf("?");
+    try { return deps.answers?.route(at < 0 ? request.url : request.url.slice(0, at), at < 0 ? "" : request.url.slice(at + 1)); } catch { return undefined; }
   }
   if (deps.product === undefined || !request.url.startsWith(PRODUCT_ROUTE_PREFIX) || request.url.length > 2048) return undefined;
   const at = request.url.indexOf("?");
@@ -380,8 +394,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const token = rawKey ?? bearer;
     const claims = (rawKey !== undefined && auth !== undefined && rawKey !== bearer) || (auth !== undefined && bearer === undefined) ? undefined : await wait(deps.verifyToken(token));
     if (claims === undefined) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
-    // A learning token only on the learning route, and only a learning token there (DEC 226).
-    if ((claims.stp === LEARNING_STEP) !== (route?.purpose === "learning")) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
+    // A learning token only on the learning route, an answers token only on the answers route, and only such a token there (DEC 226, DEC 254z-amend2).
+    if (tokenPurpose(claims.stp) !== route?.purpose) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
     callClaims = claims;
     const stopsWithTask = route?.stopsWithTask !== false;
     const taskEnded = async () => stopsWithTask && await wait(deps.ended.isEnded(claims.iss, claims.cid, claims.tid, controller.signal));
@@ -414,9 +428,16 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
     if (price.operatorReview) log({ event: "price_operator_review" });
     settlementPrice = price; settlementModel = guarded.model; settlementKind = guarded.priceKind ?? "chat";
-    const caps = await wait(route.caps(scope, claims, controller.signal));
+    let caps = await wait(route.caps(scope, claims, controller.signal));
     if ((caps as RouteRefusal).ok === false) { const refused = caps as RouteRefusal; await respond(refused.status, refused.code, refused.message, refused.headers); return; }
     if (!validCaps(caps)) { await respond(503, "unavailable", "model access unavailable"); return; }
+    // Nightly upkeep AI (L4-E): the project's upkeep cap joins the call's rows before the hold, so the call is checked BEFORE it is sent.
+    const upkeep = isUpkeepCall(route, claims);
+    if (upkeep) {
+      const withCap = await wait(withUpkeepCap(caps, deps.upkeep, claims, controller.signal));
+      if ("ok" in withCap) { await respond(withCap.status, withCap.code, withCap.message, withCap.headers); return; }
+      caps = withCap;
+    }
     let estimate: number;
     try { estimate = estimateCall(guarded.bytes.length - (guarded.media?.dataBytes ?? 0), guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, guarded.inputBounded, guarded.media); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
     if (estimate === Number.MAX_SAFE_INTEGER && !price.operatorReview) log({ event: "price_operator_review" });
@@ -437,6 +458,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       } else if (reserved.reason === "busy") await respond(503, "unavailable", "model access unavailable");
       else if (reserved.held) await respond(429, "budget_held", "budget is held by another call", { "retry-after": "2" });
       else if (route.capRefusal !== undefined) { const refused = await wait(route.capRefusal({ reason: reserved.reason, item: reserved.item }, scope, caps, estimate, controller.signal)); await respond(refused.status, refused.code, refused.message, refused.headers); }
+      else if (upkeep && reserved.item === "upkeep") { const refused = upkeepRefusal(caps, estimate); await respond(refused.status, refused.code, refused.message, refused.headers); }
       else await respond(422, "budget_exceeded", route.prefix[reserved.item]);
       return;
     }
@@ -509,7 +531,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
           cost = amount.actualMicros; estimated = amount.estimated;
           if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
         }
-        await route.meter.settle(reservation, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === "learning" ? { route: "learning" as const } : {}) });
+        await route.meter.settle(reservation, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === undefined ? {} : { route: route.purpose }) });
         if (route.overReservation !== undefined && callClaims !== undefined && cost > reservedMicros) {
           log({ event: "product_over_reservation" });
           try { await route.overReservation(callClaims); } catch { log({ event: "settle_failed" }); }
