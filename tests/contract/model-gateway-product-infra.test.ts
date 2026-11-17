@@ -11,7 +11,7 @@ import { defaultBoundaryStatements, serviceRoleStatements, type PolicyStatementJ
 import { GATEWAY_ENV, GATEWAY_EVAL_STAGE_INDEXES, GATEWAY_LEARNING_ENV, GATEWAY_PRODUCT_ENV, GATEWAY_PRODUCT_TTL_ATTRIBUTE, PRODUCT_KEY_PURPOSE as GATEWAY_PURPOSE, PRODUCT_KEYS_TTL_ATTRIBUTE, productKeyContext } from "../../packages/model-gateway/src/index.js";
 import { iamWildcardMatches } from "../../packages/model-gateway/src/product-policy.js";
 import { buildAgentXApp, productAiOn } from "../../infra/lib/app.js";
-import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_EVAL_STAGE_INDEXES, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, PRODUCT_KEY_CONTEXT_KEYS, PRODUCT_KEY_PURPOSE } from "../../infra/lib/model-gateway.js";
+import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_EVAL_STAGE_INDEXES, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, PRODUCT_KEY_CONTEXT_KEYS, PRODUCT_KEY_PURPOSE } from "../../infra/lib/model-gateway.js";
 
 type Resource = { Type: string; Properties: Record<string, unknown>; DeletionPolicy?: string };
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>>; Principal?: unknown };
@@ -19,7 +19,8 @@ type Statement = { Sid?: string; Effect: string; Action: string | string[]; Reso
 const synth = (context: Record<string, string>) => Template.fromStack(buildAgentXApp({ [MODEL_GATEWAY_CONTEXT_KEY]: "staging", agentxRegion: "us-west-2", ...context }).node.findChild("RovaraModelGateway") as Stack).toJSON() as { Resources: Record<string, Resource>; Parameters: Record<string, unknown>; Outputs: Record<string, unknown> };
 /** The gateway template (staging) at cloud/next d7d1edbb8, before this change (rule description reworded for EC2, 2026-11-16): SHA-256 of its JSON. */
 const BEFORE_SHA256 = "82fc411659fd6f86907541302bde328e9b217f2133854aefd7a1d371996baeaa";
-const off = synth({});
+// The pin is the fixed-name template (the one deployed before generated provider secret names became the default).
+const off = synth({ [MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY]: "fixed" });
 const on = synth({ [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" });
 const ofType = (t: { Resources: Record<string, Resource> }, type: string) => Object.entries(t.Resources).filter(([, r]) => r.Type === type);
 const idStarting = (type: string, prefix: string) => ofType(on, type).find(([id]) => id.startsWith(prefix))![0];
