@@ -44,6 +44,8 @@ export const MEMBER_WORDS = Object.freeze({
 /** Code's own fixed words for its two FORBIDDEN refusals (company-member-routes.ts OWN_MEMBERSHIP, company-member-contract.ts MEMBER_ONLY_OWNER). */
 const CODE_OWN_MEMBERSHIP = "you cannot change your own role or remove yourself here";
 const CODE_OWNER_ONLY = "only an owner can change or remove an owner";
+/** Code's 404 for a caller who is not (or no longer) a company owner or admin, as opposed to its "member not found". */
+const CODE_NOT_ADMIN = "not found";
 
 const PERSON_ID = /^[a-f0-9]{64}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
@@ -52,6 +54,7 @@ const ROLES = ["owner", "admin", "member"] as const;
 type Role = (typeof ROLES)[number];
 const LISTED_ROLES = new Set(["owner", "admin", "member", "auditor"]);
 const NAME_MAX = 200, EMAIL_MAX = 320;
+const NAME_UNSAFE = /[\p{Cc}\p{Cf}]/u;
 const isRole = (value: unknown): value is Role => typeof value === "string" && (ROLES as readonly string[]).includes(value);
 const plain = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 
@@ -67,6 +70,7 @@ function codeRefusal(error: CodeError): { code?: string; message?: string } {
 /** Code's refusal of a role change, as one of this module's fixed answers. */
 export function roleRefusal(error: CodeError): RouteAnswer {
   const { code, message } = codeRefusal(error);
+  if (error.status === 404 && message === CODE_NOT_ADMIN) return MEMBER_WORDS.notAdmin;
   if (error.status === 404) return MEMBER_WORDS.notFound;
   if (code === "REAUTH_REQUIRED") return MEMBER_WORDS.stepUp;
   if (code === "LAST_OWNER") return MEMBER_WORDS.lastOwner;
@@ -111,10 +115,11 @@ function listed(row: unknown, companyId: string): ListedMember | undefined | "re
   if (!plain(row) || row["companyId"] !== companyId || typeof row["personId"] !== "string" || !PERSON_ID.test(row["personId"])) return undefined;
   if (typeof row["role"] !== "string" || !LISTED_ROLES.has(row["role"])) return undefined;
   if (row["revokedAt"] !== undefined) return "revoked";
-  const name = typeof row["name"] === "string" && row["name"].trim() !== "" ? row["name"].trim().slice(0, NAME_MAX) : "Unnamed person";
+  const given = typeof row["name"] === "string" ? row["name"].trim() : "";
+  const name = given !== "" && Array.from(given).length <= NAME_MAX && !NAME_UNSAFE.test(given) ? given : "Unnamed person";
   return {
     developerId: row["personId"], name, role: row["role"],
-    ...(typeof row["email"] === "string" && row["email"].length <= EMAIL_MAX ? { email: row["email"] } : {}),
+    ...(typeof row["email"] === "string" && row["email"].length <= EMAIL_MAX && !NAME_UNSAFE.test(row["email"]) ? { email: row["email"] } : {}),
     ...(typeof row["joinedAt"] === "string" && Number.isFinite(Date.parse(row["joinedAt"])) ? { joinedAt: row["joinedAt"] } : {}),
   };
 }

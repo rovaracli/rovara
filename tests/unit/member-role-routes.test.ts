@@ -105,7 +105,7 @@ function world() {
   };
   const call = async (as: { cookie: string }, method: string, path: string, body?: unknown) => {
     const request: CloudRequest = {
-      method, path: `/v1/web${path}`, query: new URLSearchParams(),
+      method, path: `/v1/web${path.split("?")[0]!}`, query: new URLSearchParams(path.split("?")[1] ?? ""),
       headers: { cookie: `rovara_cloud_session=${as.cookie}`, "x-rovara-csrf": `csrf-${as.cookie}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     };
     const answer = await handler(request);
@@ -274,6 +274,8 @@ describe("role change: Code's route as the person", () => {
       [{ status: 403, body: { error: { code: "FORBIDDEN", message: "you cannot change your own role or remove yourself here" } } }, MEMBER_WORDS.self],
       [{ status: 403, body: { error: { code: "FORBIDDEN", message: "only an owner can change or remove an owner" } } }, MEMBER_WORDS.ownerOnly],
       [{ status: 400, body: { error: { code: "CONFIG_INVALID", message: SECRET } } }, MEMBER_WORDS.badBody],
+      // A caller demoted between Cloud's access check and Code's answer: Code's plain "not found" is the not-admin answer, not "not in your company".
+      [{ status: 404, body: { error: { code: "NOT_FOUND", message: "not found" } } }, MEMBER_WORDS.notAdmin],
       [{ status: 409, body: { error: { code: "CONFLICT", message: SECRET } } }, MEMBER_WORDS.unavailable],
       [{ status: 500, body: SECRET }, MEMBER_WORDS.unavailable],
       [{ status: 502, body: { error: SECRET } }, MEMBER_WORDS.unavailable],
@@ -346,6 +348,43 @@ describe("member list: Code's list as the person", () => {
       expect(words(answer)).toEqual(words(expected));
       expect(answer.raw).not.toContain(SECRET);
     }
+  });
+
+  it("checks every page Code sends: size, cursor, a repeated cursor, a missing more; duplicates once; unsafe or long names shown as a fixed name", async () => {
+    const row = (c: string, extra: Record<string, unknown> = {}) => ({ entityType: "COMPANY_MEMBERSHIP", personId: id(c), companyId: A, role: "member", joinedAt: "2026-11-01T00:00:00.000Z", name: `P${c}`, ...extra });
+    const w = world();
+    const ada = await w.signIn("ada");
+    const bad = [
+      { members: Array.from({ length: 101 }, () => row("9")), more: false },
+      { members: [row("9")], more: true, cursor: "bad cursor!" },
+      { members: [row("9")], more: true },
+      { members: [row("9")] },
+    ];
+    for (const body of bad) {
+      w.setListOverride({ status: 200, body });
+      const before = w.codeCalls.length;
+      expect(words(await w.call(ada, "GET", "/org/members")), JSON.stringify(body).slice(0, 80)).toEqual(words(MEMBER_WORDS.listUnavailable));
+      // Refused on the first page: nothing that page carried is sent back to Code.
+      expect(w.codeCalls.length - before).toBe(1);
+    }
+    // A cursor that repeats (Code loops) is refused, never followed forever.
+    w.setListOverride({ status: 200, body: { members: [row("9")], more: true, cursor: "c1" } });
+    expect(words(await w.call(ada, "GET", "/org/members"))).toEqual(words(MEMBER_WORDS.listUnavailable));
+    w.setListOverride({ status: 200, body: { members: [row("9"), row("9"), row("8", { name: "Eve\u202Elive" }), row("7", { name: "x".repeat(201), email: `${"e".repeat(330)}@x.test` })], more: false } });
+    const answer = await w.call(ada, "GET", "/org/members");
+    expect(answer.body.members).toEqual([
+      { developerId: id("9"), name: "P9", role: "member", joinedAt: "2026-11-01T00:00:00.000Z" },
+      { developerId: id("8"), name: "Unnamed person", role: "member", joinedAt: "2026-11-01T00:00:00.000Z" },
+      { developerId: id("7"), name: "Unnamed person", role: "member", joinedAt: "2026-11-01T00:00:00.000Z" },
+    ]);
+  });
+
+  it("the browser's query never reaches Code: Code's list call is always Cloud's own", async () => {
+    const w = world();
+    const ada = await w.signIn("ada");
+    const request = await w.call(ada, "GET", `/org/members?companyId=${B}&cursor=c1&limit=1`);
+    expect(request.status).toBe(200);
+    expect(w.codeCalls).toEqual([{ method: "GET", path: `${CODE_MEMBERS_PATH}?limit=100` }]);
   });
 
   it("a member is refused before Code is asked; Code's own 404 for a demoted admin is the same answer", async () => {
