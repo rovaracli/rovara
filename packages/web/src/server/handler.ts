@@ -5,6 +5,8 @@ import { SessionIdSchema } from "@agentx/contracts/web";
 import { HSTS, appHeaders, assetOrigin, type AppEnvironment } from "./headers.js";
 import { notFound, serveAsset, type AppResponse } from "./assets.js";
 import { renderShell } from "./shell.js";
+/** A task opened by its Code id (`/t/<taskId>`, K2): the page asks Cloud for the task's session and goes to it. */
+const TASK_PAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 export interface AppEvent { rawPath?: string; headers?: Record<string, string | undefined>; requestContext?: { http?: { method?: string } } }
 export interface AppHandlerOptions extends AppEnvironment { appDirectory: string }
 export function createAppHandler(options: AppHandlerOptions): (event: AppEvent) => Promise<AppResponse> {
@@ -17,7 +19,7 @@ export function createAppHandler(options: AppHandlerOptions): (event: AppEvent) 
    const headers = Object.fromEntries(Object.entries(event.headers ?? {}).map(([key, value]) => [key.toLowerCase(), value]));
    return serveAsset(env.appDirectory, path.slice("/app/assets/".length), headers["accept-encoding"] ?? "");
   }
-  const session = path.startsWith("/s/") && SessionIdSchema.safeParse(path.slice(3)).success;
+  const session = (path.startsWith("/s/") && SessionIdSchema.safeParse(path.slice(3)).success) || (path.startsWith("/t/") && TASK_PAGE_ID.test(path.slice(3)));
   if (!(path === "/app" || path.startsWith("/app/") || session)) return notFound();
   const nonce = randomBytes(18).toString("base64url");
   const headers = { ...appHeaders(env, nonce), "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
