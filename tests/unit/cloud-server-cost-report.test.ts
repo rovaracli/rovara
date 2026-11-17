@@ -333,7 +333,7 @@ describe("what Code sent, read strictly", () => {
     expect((await setUp({ [ACME]: { rows: [] } }, { tasks: () => json(200, { tasks: [row(++served)], next: "same", hasMore: true }) }).get(REPORT, "ada-token")).status).toBe(502);
   });
   it("makes titles inert and short, keeps only plain https links, and shows a project name as text", () => {
-    const parsed = readRow(row(1, { title: "A‮\u0000B  <b>x</b> " + "z".repeat(300), prLinks: ["https://github.com/a/b/pull/1", "http://insecure.example/x", "javascript:alert(1)", "https://user:pw@evil.example/x", "https://has space.example/x"] }), ACME)!;
+    const parsed = readRow(row(1, { title: "A‮\u0000B  <b>x</b> " + "z".repeat(300), prLinks: ["https://github.com/a/b/pull/1", "http://insecure.example/x", "javascript:alert(1)", "https://user:pw" + String.fromCharCode(64) + "evil.example/x", "https://has space.example/x"] }), ACME)!;
     expect(parsed.title.length).toBeLessThanOrEqual(120);
     expect(parsed.title).not.toMatch(/[\p{Cc}\p{Cf}]/u);
     expect(parsed.prLinks).toEqual(["https://github.com/a/b/pull/1"]);

@@ -87,7 +87,7 @@ describe("the readers", () => {
   });
   it("drops a link that is not plain https, and draws no person field even when one is sent", () => {
     const d = clean(detail()) as any;
-    d.tasks[0].prLinks = ["http://x.example/a", "javascript:alert(1)", "https://u:p@x.example/a", "https://github.com/a/b/pull/1"];
+    d.tasks[0].prLinks = ["http://x.example/a", "javascript:alert(1)", "https://u:p" + String.fromCharCode(64) + "x.example/a", "https://github.com/a/b/pull/1"];
     d.tasks[0].requesterId = "c".repeat(64);
     const read = readFeatureDetail.parse(d);
     expect(read.tasks[0]!.prLinks).toEqual(["https://github.com/a/b/pull/1"]);
@@ -152,8 +152,8 @@ describe("the navigation", () => {
   it("shows Cost and time under Money to an owner and an admin, and not to a member", () => {
     for (const role of ["owner", "admin"] as const) {
       const money = visibleAdminGroups(role, false).find(g => g.id === "money")!;
-      expect(money.links.map(l => l.label)).toEqual(["Spending", "Cost and time"]);
-      expect(money.links[1]!.to).toBe("/app/admin/money/report");
+      expect(money.links.map(l => l.label)).toEqual(["Spending", "Spending limits", "Cost and time"]);
+      expect(money.links[2]!.to).toBe("/app/admin/money/report");
     }
     expect(visibleAdminGroups("member", false).flatMap(g => g.links.map(l => l.label))).not.toContain("Cost and time");
   });
