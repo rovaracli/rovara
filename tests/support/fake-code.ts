@@ -342,7 +342,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const personIdOf = (person: Person) => { const hex = person.developerId; return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`; };
   const peopleStates = new Map<string, { revision: number; roles: Map<string, string>; listed: Set<string> }>();
   const peopleOf = (taskId: string) => { let state = peopleStates.get(taskId); if (state === undefined) { state = { revision: 3, roles: new Map(), listed: new Set() }; peopleStates.set(taskId, state); } return state; };
-  const peopleListed = (entry: { owner: Person; task: TaskView }) => PEOPLE.filter((one) => one.developerId === entry.owner.developerId || peopleOf(entry.task.taskId).listed.has(one.developerId) || readers.get(entry.task.taskId)?.has(one.developerId) === true);
+  const peopleListed = (entry: { owner: Person; task: TaskView }) => PEOPLE.filter((one) => one.developerId === entry.owner.developerId || peopleOf(entry.task.taskId).listed.has(one.developerId));
+  // (Readers a Share made are not on this list: Code lists them apart until it folds them into People, which Cloud shows beside it.)
   const peopleView = (entry: { owner: Person; task: TaskView }, person: Person) => {
     const state = peopleOf(entry.task.taskId), mine = entry.owner.developerId === person.developerId;
     return {

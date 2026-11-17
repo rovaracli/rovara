@@ -6,6 +6,7 @@
 //   - Code's answers are read against the shape Cloud expects and projected to the fields the app reads (nothing else is passed on);
 //   - the address of Code's confirm page is built here from Code's own base address, the task id and the proposal's id, never taken from Code's answer.
 // Every write is a non-GET under /v1/web, so the handler's CSRF check (the `x-rovara-csrf` header against the sign-in's token) covers it already.
+import { CodeError } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import type { WorkSession } from "./work-sessions.js";
 
@@ -90,6 +91,29 @@ async function change(context: RouteContext, record: WorkSession, suffix: string
   return { answer: unreadable, committed: false };
 }
 
+/**
+ * The task's readers (a Share made them, spec 067), as `{developerId, name, role}`. Only the owner may read them from Code, so this asks only when the People view says the
+ * person manages People. Any refusal or unreadable answer gives none: the list is still the People list (a reader is an addition to it, never a reason it fails). A sign-in
+ * that ended is not swallowed.
+ */
+async function sharedReaders(context: RouteContext, record: WorkSession): Promise<Obj[]> {
+  let raw: unknown;
+  try {
+    raw = await context.client.json<unknown>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/readers`);
+  } catch (error) {
+    if (error instanceof CodeError) return [];
+    throw error;
+  }
+  const list = isObj(raw) ? raw["readers"] : undefined;
+  if (!Array.isArray(list)) return [];
+  const readers: Obj[] = [];
+  for (const entry of list.slice(0, CANDIDATES_MAX) as unknown[]) {
+    if (!isObj(entry) || typeof entry["developerId"] !== "string" || !DEVELOPER_ID.test(entry["developerId"]) || !isName(entry["name"]) || !oneOf(ADD_ROLES, entry["role"])) continue;
+    readers.push({ developerId: entry["developerId"], name: entry["name"], role: entry["role"] });
+  }
+  return readers;
+}
+
 export const PEOPLE_ROUTES: Route[] = [
   {
     // GET /v1/app/sessions/{id}/people: who is on the task, their roles, and what this person may do (Code's People view).
@@ -99,7 +123,10 @@ export const PEOPLE_ROUTES: Route[] = [
       if (record === undefined) return sessionNotFound;
       const raw = await context.client.json<unknown>(context.session, peoplePath(record));
       const view = isObj(raw) ? projectView(raw["view"]) : undefined;
-      return view === undefined ? unreadable : { status: 200, body: { people: view } };
+      if (view === undefined) return unreadable;
+      // D8: the people a Share made readers (Code's task readers) join the owner's list as viewers: one list of who is on the task.
+      const sharedWith = view.canManage ? await sharedReaders(context, record) : [];
+      return { status: 200, body: { people: view, ...(sharedWith.length === 0 ? {} : { sharedWith }) } };
     },
   },
   {
