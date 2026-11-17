@@ -9,7 +9,9 @@ import type { Route, RouteAnswer } from "./routes.js";
 const TASK_VIEW = { "x-agentx-task-view": "2" };
 /** How many tasks the list answers, and how many events or comments one task answers. A bound on every read. */
 export const WORK_TASKS_MAX = 100;
-const EVENTS_MAX = 100;
+/** Code's own most events per read (DEVELOPER_EVENTS_MAX in packages/contracts/src/developer-tasks.ts; Code answers 400 to a larger limit). Code's events
+ * read has no cursor, so this is the newest page Code gives; tests pin it to the contract's value (cloud-server takes no dependency on contracts). */
+export const EVENTS_MAX = 50;
 const COMMENTS_MAX = 100;
 const TEXT_MAX = 2000;
 /** How many of the person's newest sessions the list matches to tasks (a bound on the store read, like Home's). */
