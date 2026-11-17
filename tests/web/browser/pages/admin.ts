@@ -90,5 +90,47 @@ export class ProjectLifecyclePage {
   }
   status(text: string): Locator {
     return this.page.getByText(text);
+
+/** Guided onboarding PR 15: the company's "AI and spending" (Company settings, and the setup step) and a project's "AI and spend limit". */
+export class AiSpendPage {
+  readonly page: Page;
+  readonly step: Locator;
+  readonly model: Locator;
+  readonly limit: Locator;
+  readonly rovara: Locator;
+  readonly own: Locator;
+  readonly save: Locator;
+  readonly saved: Locator;
+  readonly freshSignIn: Locator;
+  readonly projectLimits: Locator;
+  readonly projectSame: Locator;
+  readonly projectOwn: Locator;
+  readonly perTask: Locator;
+  readonly projectSaved: Locator;
+  constructor(page: Page) {
+    this.page = page;
+    this.step = page.getByTestId("ai-spend-step");
+    this.model = this.step.getByLabel("Model");
+    this.limit = this.step.getByLabel(/Company monthly limit/);
+    this.rovara = page.getByTestId("ai-spend-rovara").locator("input");
+    this.own = page.getByTestId("ai-spend-own").locator("input");
+    this.save = page.getByRole("button", { name: "Save" });
+    this.saved = page.getByTestId("ai-spend-saved");
+    this.freshSignIn = page.getByTestId("fresh-sign-in");
+    this.projectLimits = page.getByTestId("project-spend-limits");
+    this.projectSame = page.getByTestId("project-spend-same").locator("input");
+    this.projectOwn = page.getByTestId("project-spend-own").locator("input");
+    this.perTask = this.projectLimits.getByLabel(/Per-task limit \(USD\)/);
+    this.projectSaved = page.getByTestId("project-spend-saved");
+  }
+  /** Opens a page as if just back from Code's step-up page (the nonce this tab stored), or plainly. */
+  async open(path: string, confirmed = false): Promise<void> {
+    const nav = this.page.getByRole("navigation", { name: "Administration" });
+    await this.page.goto(path);
+    await expect(nav).toBeVisible();
+    if (!confirmed) return;
+    await this.page.evaluate(() => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce: "e2e-ai-spend", at: Date.now() })));
+    await this.page.goto(`${path}?confirmed=e2e-ai-spend`);
+    await expect(nav).toBeVisible();
   }
 }
