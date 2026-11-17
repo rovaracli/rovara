@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment -- answers are parsed JSON read field by field */
 // Lead 4 L4-CW item 1: the wiki build controls' "AI key" state on a hosted Rovara. Code's hosted wiki build cannot see the model gateway's per-company choice (it lives in Cloud's Companies table and the
 // product key store), so Code answers `aiKey: "unknown"`. Cloud knows, so Cloud's wiki setup pass-through puts a YES/NO fact in that one member of its own answer, and refuses a start it knows would die.
 // Rules proved here: the company is Code's LIVE answer (never the browser's, never the stored sign-in); only a person who manages the project is told (anyone else keeps "unknown" and costs no read);
@@ -12,6 +11,7 @@ import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentAiConnected } from "../../packages/cloud-server/src/agent-ai-presence.js";
 import { WIKI_SETUP_CODE_WORDS } from "../../packages/cloud-server/src/index.js";
+import type { RouteContext } from "../../packages/cloud-server/src/routes.js";
 import { A, B, world, write, type Person } from "./product-ai-world.js";
 
 const RID = "11111111-1111-4111-8111-111111111111";
@@ -51,8 +51,8 @@ const connectAnthropic = async (w: Awaited<ReturnType<typeof setUp>>["w"], cooki
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("the fact itself (agentAiConnected): yes, no, or cannot tell", () => {
-  type Source = string | undefined | "throws";
-  const context = (source: Source, extra: { anthropic?: boolean | "throws"; bedrock?: boolean | "throws"; noCompany?: boolean; noProductAi?: boolean; noBedrockBackend?: boolean } = {}) => {
+  type Ctx = Pick<RouteContext, "company" | "productAi">;
+  const context = (source: string | undefined, extra: { anthropic?: boolean | "throws"; bedrock?: boolean | "throws"; noCompany?: boolean; noProductAi?: boolean; noBedrockBackend?: boolean } = {}) => {
     const sources = (provider: string, ok: boolean | "throws") => { if (ok === "throws") throw new Error("down"); return { sources: ok ? [{ provider, hasKey: true, available: true }] : [{ provider, hasKey: true, available: false }] }; };
     return {
       ...(extra.noCompany === true ? {} : { company: { store: { agentAi: async () => { if (source === "throws") throw new Error("down"); return source === undefined ? undefined : { source }; } } } }),
@@ -62,9 +62,9 @@ describe("the fact itself (agentAiConnected): yes, no, or cannot tell", () => {
           store: { view: async (_iss: string, _cid: string, owner: string) => owner === "_learning" ? sources("anthropic", extra.anthropic ?? false) : sources("bedrock", extra.bedrock ?? false) },
         },
       }),
-    } as any;
+    } as unknown as Ctx;
   };
-  const ask = (c: any) => agentAiConnected(c, A);
+  const ask = (c: Ctx) => agentAiConnected(c, A);
 
   it("Rovara's AI is connected; a saved own key or own Bedrock is connected only while it is available; no choice means the company's own Anthropic key (M6)", async () => {
     expect(await ask(context("rovara"))).toBe(true);
@@ -92,7 +92,7 @@ describe("the fact itself (agentAiConnected): yes, no, or cannot tell", () => {
 
   it("asks only for the company it is given, and answers a boolean or null, nothing else", async () => {
     const seen: string[] = [];
-    const c = { company: { store: { agentAi: async (id: string) => { seen.push(id); return { source: "anthropic_key", apiKey: "sk-should-not-matter" }; } } }, productAi: { issuer: "iss", store: { view: async (_i: string, id: string) => { seen.push(id); return { sources: [{ provider: "anthropic", hasKey: true, available: true, secret: "x" }] }; } } } } as any;
+    const c = { company: { store: { agentAi: async (id: string) => { seen.push(id); return { source: "anthropic_key", apiKey: "ignored" }; } } }, productAi: { issuer: "iss", store: { view: async (_i: string, id: string) => { seen.push(id); return { sources: [{ provider: "anthropic", hasKey: true, available: true, secret: "x" }] }; } } } } as unknown as Ctx;
     expect(await agentAiConnected(c, B)).toBe(true);
     expect(seen).toEqual([B, B]);
   });

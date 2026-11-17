@@ -273,7 +273,8 @@ async function withAiKey(context: RouteContext, company: string, body: Record<st
   if (body["canManage"] !== true || body["aiKey"] !== "unknown") return body;
   const fact = await agentAiConnected(context, company);
   if (fact === null) return body;
-  const { connectKey: _dropped, ...rest } = body;
+  const rest = { ...body };
+  delete rest["connectKey"];
   return fact ? { ...rest, aiKey: "connected" } : { ...rest, aiKey: "missing", connectKey: C.connectKey };
 }
 async function withAiKeyAnswer(context: RouteContext, company: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
