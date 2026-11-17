@@ -70,7 +70,7 @@ export function NightlyUpkeep({ project, companyAdmin }: { project: string; comp
     setBusy(true); setError(undefined);
     const requestId = id.current ?? crypto.randomUUID();
     id.current = requestId;
-    try { query.setQueryData(wikiSetupKey(project, "upkeep"), await api.setUpkeep(project, requestId, on)); id.current = undefined; }
+    try { { const answer = await api.setUpkeep(project, requestId, on); query.setQueryData(wikiSetupKey(project, "upkeep"), { ...answer, available: answer.available ?? true }); } id.current = undefined; }
     catch (caught) { setError(fixedWikiSetupWords(caught, T.ACT_FAILED)); void query.invalidateQueries({ queryKey: wikiSetupKey(project, "upkeep") }); }
     finally { setBusy(false); }
   }

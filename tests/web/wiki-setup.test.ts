@@ -400,6 +400,16 @@ describe("nightly upkeep", () => {
     }
   });
 
+  it("a PUT answer that omits available keeps the switch and its state visible (the switch was only drawn because Code said it was available)", async () => {
+    const f = mount(row(), { put: (request) => ({ status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true } }) });
+    await open();
+    fireEvent.click(await screen.findByRole("switch", { name: "Nightly upkeep" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
+    expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is on.");
+    expect(screen.queryByTestId("wiki-setup-upkeep-absent")).toBeNull();
+    f.close();
+  });
+
   it("a refused switch shows fixed words only", async () => {
     const f = mount(row(), { put: () => err(403, "FORBIDDEN", LEAK) });
     await open();
