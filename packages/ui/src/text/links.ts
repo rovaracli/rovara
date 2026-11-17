@@ -17,6 +17,12 @@ export function isConfirmUrl(value: string, origin: string): boolean {
 }
 export function safeAppPath(value: string): boolean { return !UNSAFE_TEXT.test(value) && !/%2e|%2f|%5c/i.test(value) && !value.includes("//") && !value.split(/[?#]/, 1)[0]!.split("/").some(part => part === "." || part === "..") && (value.startsWith("/app/") || value.startsWith("/s/")); }
 
+/** GitHub's own authorization page for the App (the "already installed" path), with only its client id and Rovara's state. */
+export function isGithubAuthorizeUrl(value: string): boolean {
+ const safe = safeExternalUrl(value);if(safe===undefined||safe!==value||/[#%]/.test(value))return false;
+ const url=new URL(safe),entries=[...url.searchParams];
+ return url.origin==="https://github.com"&&url.pathname==="/login/oauth/authorize"&&entries.length===2&&entries[0]![0]==="client_id"&&/^[A-Za-z0-9.]{1,64}$/.test(entries[0]![1])&&entries[1]![0]==="state"&&/^[A-Za-z0-9_-]{1,200}$/.test(entries[1]![1]);
+}
 /** Same-tab GitHub installation handoff, never arbitrary external app navigation. */
 export function isGithubInstallationUrl(value: string): boolean {
  const safe = safeExternalUrl(value);if(safe===undefined||safe!==value||/[#%]/.test(value))return false;

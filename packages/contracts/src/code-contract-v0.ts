@@ -366,6 +366,14 @@ export interface CompanyOkResponse { ok: true }
 /** A person with no company creates one with an operator's invite code (DEC 254a; Code PR 4) and becomes its owner. */
 export interface CreateCompanyRequest { name: string; inviteCode: string }
 export interface CreateCompanyResponse { companyId: string; companyName: string; companyRole: "owner" }
+/** Guided onboarding (Code PR #830): a company owner or admin connects the company's GitHub App installation, proving control with a GitHub user authorization. */
+export interface GithubConnectStart { state: string; expiresAt: Iso; installUrl: string; authorizeUrl: string }
+export interface GithubClaimRequest { state: string; code?: string; installationId?: number; setupAction?: "install" | "update" | "request" }
+export interface GithubConnected { status: "connected"; alreadyConnected: boolean; installation: { installationId: number; accountLogin: string; accountType: string }; githubUser: { id: number; login: string } }
+export interface GithubChoice { installationId: number; accountLogin: string; accountType: string; suspended: boolean; connection: string /* known: this_company, another_company, unbound */ }
+export type GithubClaimResponse = GithubConnected | { status: "choose"; ticket: string; expiresAt: Iso; githubUser: { id: number; login: string }; installations: GithubChoice[] } | { status: "requested" };
+export interface GithubChooseRequest { ticket: string; installationId: number }
+export interface GithubConnectionsResponse { installations: Array<{ installationId: number; accountLogin: string; connectedAt: Iso; connectedBy: { kind: "person"; personId: string; name?: string } | { kind: "operator" } }> }
 /**
  * One engine action (Code's `GET /v1/dev/client/company/audit/records`, lane AU, Rovara PR #649). The optional fields are what Code adds: the record's id, the actor's kind and the caller the
  * action came through ("person via caller": `web`, `slack`, `cli`, `client:<id>`). An older Code leaves them out.
@@ -578,6 +586,10 @@ export interface CodeRouteTypes {
   "company.preapprovals.create": { request: CompanyPreapprovalRequest; response: CompanyOkResponse };
   "company.preapprovals.withdraw": { request: void; response: CompanyOkResponse };
   "company.create": { request: CreateCompanyRequest; response: CreateCompanyResponse };
+  "company.github.connect": { request: JsonObject; response: GithubConnectStart };
+  "company.github.claim": { request: GithubClaimRequest; response: GithubClaimResponse };
+  "company.github.choose": { request: GithubChooseRequest; response: GithubConnected };
+  "company.github.status": { request: void; response: GithubConnectionsResponse };
   "company.audit.records": { request: void; response: AuditRecordsResponse };
   "scriptTokens.list": { request: void; response: ScriptTokensResponse };
   "scriptTokens.create": { request: CreateScriptTokenRequest; response: CreateScriptTokenResponse };
@@ -718,6 +730,11 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.preapprovals.create", "POST", "/v1/dev/company/preapprovals", "Cloud's invite pre-approves a member's email in the inviter's company (the inviting admin's own call; Code checks the role)", "full", ["admin"], "yes", false, `${DEV}:1561`, true),
   spec("company.preapprovals.withdraw", "DELETE", "/v1/dev/company/preapprovals/{emailHash}", "Withdraw a pre-approval by the SHA-256 of the email", "full", ["admin"], "yes", false, `${DEV}:1561`, true),
   spec("company.create", "POST", "/v1/dev/company", "A person with no company creates one with an operator's invite code and becomes its owner (DEC 254a)", "full", ["shell"], "no", false, "none", true),
+  // Guided onboarding (Code PR #830, pr/go-github-claim): not on code/next yet; Code answers 404 while COMPANY_SIGNIN is off.
+  spec("company.github.connect", "POST", "/v1/dev/company/github/connect", "A company owner or admin starts connecting GitHub: a single-use state and GitHub's install and authorize addresses", "full", ["admin"], "no", false, "none", true),
+  spec("company.github.claim", "POST", "/v1/dev/company/github/claim", "GitHub's return: spend the state, check the person controls the installation, bind it or list the ones they control", "full", ["admin"], "no", false, "none", true),
+  spec("company.github.choose", "POST", "/v1/dev/company/github/choose", "Bind one installation from a claim's checked list, with its single-use ticket", "full", ["admin"], "no", false, "none", true),
+  spec("company.github.status", "GET", "/v1/dev/company/github", "The company's connected GitHub installations, who connected each and when (any member)", "full", ["admin"], "no", false, "none", true),
   spec("company.audit.records", "GET", "/v1/dev/client/company/audit/records", "Engine audit records, for a company administrator (lane AU)", "full", ["admin"], "no", false, "none"),
   // Settings: the person's script tokens
   spec("scriptTokens.list", "GET", "/v1/dev/script-tokens", "The person's script tokens", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:94")),
@@ -978,7 +995,10 @@ POST /v1/app/projects/{p}/context-sources/changes/{changeId}/reject | k | later 
 GET /v1/app/projects/{p}/automations | k | later | | automations |
 GET /v1/app/github/installations | k | admin | client.repositories.list | onboarding | T
 GET /v1/app/github/repositories | k | admin | client.repositories.list | onboarding | T
-POST /v1/app/github/connect | k | admin | | onboarding |
+POST /v1/app/github/connect | k | admin | company.github.connect | onboarding | T
+POST /v1/app/github/connect/result | c | admin | | onboarding | T
+POST /v1/app/github/choose | k | admin | company.github.choose | onboarding | T
+GET /v1/app/github/connections | k | admin | company.github.status | onboarding | T
 GET /v1/app/github/requests | k | admin | | readiness |
 GET /v1/app/org/members | k | admin | company.members.list | project-people |
 PUT /v1/app/org/members/{developerId}/role | k | admin | company.members.setRole | admin/RoleChangeDialog |

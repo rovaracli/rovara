@@ -5,6 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { SecretReader } from "./client-secret.js";
 import { STEP_UP_ACR } from "./step-up.js";
 import type { CodeSession, RefreshGuard } from "./sessions.js";
+import type { GithubPending } from "./github-connect.js";
 
 export interface CodeClientOptions {
   /** The Code install's API, such as https://abc.execute-api.us-east-1.amazonaws.com. */
@@ -59,6 +60,8 @@ export interface PendingSignIn {
   invite?: string;
   /** True on a join ticket (kept by the join page's lookup), never on a sign-in under way: the callback refuses a ticket. */
   joinTicket?: true;
+  /** Guided onboarding PR 2 (github-connect.ts): a GitHub connect's cookie binding or its result, never a sign-in; the sign-in callback refuses it. */
+  github?: GithubPending;
 }
 
 /** How long a call to Code's token or revoke endpoint may take: well inside a refresh's hold on the session. */

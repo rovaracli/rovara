@@ -23,6 +23,8 @@ export const FAKE_COMPANY_ID = "org_aaaaaaaaaaaaaaaaaaaa";
 export const FAKE_COMPANY_NAME = "Example Co";
 /** The one operator invite code the pretend Code takes for creating a company. */
 export const FAKE_INVITE_CODE = "inv_fakecode0001";
+/** GitHub's `code` values the fake's GitHub claim understands (guided onboarding). */
+export const FAKE_GITHUB_CODES = { connected: "fakeghconnected", choose: "fakeghchoose" } as const;
 export const PRIYA: Person = { key: "priya", developerId: id64("priya"), name: "Priya", email: "priya@example.test", administrator: true };
 export const SAM: Person = { key: "sam", developerId: id64("sam"), name: "Sam", email: "sam@example.test", administrator: false };
 const PEOPLE: readonly Person[] = [PRIYA, SAM];
@@ -102,6 +104,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   /** People Code names no company for (DEC 253z), and Code's live member pre-approvals by the email's SHA-256. */
   const companyless = new Set<string>();
   const preapprovals = new Map<string, string>();
+  // Guided onboarding (Code PR #830): single-use GitHub connect states and choose tickets, each for the person who got it; the company's bound installations.
+  const githubStates = new Map<string, { developerId: string; spent: boolean }>();
+  const githubTickets = new Map<string, { developerId: string; spent: boolean }>();
+  const githubBound = new Map<number, { accountLogin: string; connectedAt: string; by: Person }>();
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
@@ -512,6 +518,42 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       companyless.delete(person.developerId);
       return { status: 201, body: { companyId: FAKE_COMPANY_ID, companyName: body.name, companyRole: "owner" } };
     },
+    // Guided onboarding (Code PR #830). GitHub's `code` picks the outcome: FAKE_GITHUB_CODES.connected binds the installation id GitHub sent,
+    // FAKE_GITHUB_CODES.choose lists two installations (one another company's); setup_action=request answers "requested". Anything else: Code's one refusal.
+    "company.github.connect": ({ person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can connect GitHub.");
+      const state = randomBytes(32).toString("base64url");
+      githubStates.set(state, { developerId: person.developerId, spent: false });
+      return { body: { state, expiresAt: new Date(now().getTime() + 600_000).toISOString(), installUrl: `https://github.com/apps/rovara-fake/installations/new?state=${state}`, authorizeUrl: `https://github.com/login/oauth/authorize?client_id=Iv1.fake&state=${state}` } };
+    },
+    "company.github.claim": ({ body, person }) => {
+      const kept = githubStates.get(body.state);
+      if (!person.administrator || kept === undefined || kept.spent || kept.developerId !== person.developerId) return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      kept.spent = true;
+      const githubUser = { id: 4242, login: `${person.key}-gh` };
+      if (body.setupAction === "request") return { body: { status: "requested" } };
+      if (body.code === FAKE_GITHUB_CODES.choose) {
+        const ticket = randomBytes(32).toString("base64url");
+        githubTickets.set(ticket, { developerId: person.developerId, spent: false });
+        return { body: { status: "choose", ticket, expiresAt: new Date(now().getTime() + 600_000).toISOString(), githubUser, installations: [
+          { installationId: 5001, accountLogin: "example", accountType: "Organization", suspended: false, connection: githubBound.has(5001) ? "this_company" : "unbound" },
+          { installationId: 5002, accountLogin: "other-co", accountType: "Organization", suspended: false, connection: "another_company" },
+        ] } };
+      }
+      if (body.code !== FAKE_GITHUB_CODES.connected || body.installationId === undefined) return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      const already = githubBound.has(body.installationId);
+      githubBound.set(body.installationId, { accountLogin: "example", connectedAt: iso(), by: person });
+      return { body: { status: "connected", alreadyConnected: already, installation: { installationId: body.installationId, accountLogin: "example", accountType: "Organization" }, githubUser } };
+    },
+    "company.github.choose": ({ body, person }) => {
+      const kept = githubTickets.get(body.ticket);
+      if (!person.administrator || kept === undefined || kept.spent || kept.developerId !== person.developerId || body.installationId !== 5001) return failure(403, "FORBIDDEN", "Start again from Rovara.");
+      kept.spent = true;
+      const already = githubBound.has(5001);
+      githubBound.set(5001, { accountLogin: "example", connectedAt: iso(), by: person });
+      return { body: { status: "connected", alreadyConnected: already, installation: { installationId: 5001, accountLogin: "example", accountType: "Organization" }, githubUser: { id: 4242, login: `${person.key}-gh` } } };
+    },
+    "company.github.status": () => ({ body: { installations: [...githubBound].map(([installationId, row]) => ({ installationId, accountLogin: row.accountLogin, connectedAt: row.connectedAt, connectedBy: { kind: "person" as const, personId: row.by.developerId, name: row.by.name } })) } }),
     "company.audit.records": ({ person }) => person.administrator
       ? { body: { records: [{ at: "2026-11-14T10:00:00.000Z", actor: { developerId: PRIYA.developerId, name: "Priya" }, action: "task.start", subject: TASK_IDS.running, outcome: "ok" }] } }
       : failure(403, "FORBIDDEN", "Only an administrator can read the audit."),

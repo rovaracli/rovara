@@ -30,13 +30,29 @@ export const CreateProjectBodySchema = z.object({
 });
 export const CreateOrganizationInviteBodySchema = z.object({ requestId: z.string().uuid(), role: z.enum(["admin", "member"]), email: z.string().trim().email().max(254).optional() }).strict();
 export const OrganizationInviteResponseSchema = z.object({ inviteUrl: z.string() });
-export const GithubConnectResponseSchema = z.object({ installUrl: z.string(), expiresAt: z.string(), orgName: z.string().optional(), ownerName: z.string().optional() });
+export const GithubConnectResponseSchema = z.object({ installUrl: z.string(), authorizeUrl: z.string().optional(), expiresAt: z.string(), orgName: z.string().optional(), ownerName: z.string().optional() });
+/** Guided onboarding PR 2: the GitHub callback's outcome, kept server-side for this sign-in (POST /v1/app/github/connect/result) or a choice's answer (POST /v1/app/github/choose). Never a ticket. */
+const GithubLoginSchema = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/);
+const GithubConnectedSchema = z.object({ status: z.literal("connected"), alreadyConnected: z.boolean(), accountLogin: GithubLoginSchema, accountType: z.enum(["User", "Organization"]), trialUsed: z.literal(true).optional() });
+export const GithubConnectResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("none") }),
+  GithubConnectedSchema,
+  z.object({ status: z.literal("choose"), githubLogin: GithubLoginSchema, installations: z.array(z.object({ installationId: z.number().int().positive(), accountLogin: GithubLoginSchema, accountType: z.enum(["User", "Organization"]), suspended: z.boolean(), connection: z.enum(["this_company", "another_company", "unbound"]) })).max(100) }),
+  z.object({ status: z.literal("requested"), adminUrl: z.string().optional() }),
+]);
+export const GithubChooseBodySchema = z.object({ installationId: z.number().int().positive() }).strict();
+export const GithubChooseResponseSchema = GithubConnectedSchema;
+/** The company's connected GitHub accounts (GET /v1/app/github/connections, Code's GET /v1/dev/company/github; any member). */
+export const GithubConnectionsResponseSchema = z.object({ installations: z.array(z.object({ installationId: z.number().int().positive(), accountLogin: z.string(), connectedAt: z.string(), connectedBy: z.union([z.object({ kind: z.literal("person"), name: z.string().optional() }), z.object({ kind: z.literal("operator") })]) })) });
 export const GithubInstallationsResponseSchema = z.object({ installations: z.array(z.object({ installationId: z.number().int().positive(), accountLogin: z.string(), accountType: z.enum(["User", "Organization"]), repositorySelection: z.enum(["all", "selected"]), status: z.enum(["active", "suspended", "removed"]) })) });
 export const GithubRepositoriesResponseSchema = z.object({ repositories: z.array(z.object({ fullName: z.string(), githubRepositoryId: z.number().int().positive(), private: z.boolean(), defaultBranch: z.string(), project: z.string().optional() })) });
 export const CloudProjectCreatedResponseSchema = z.object({ duplicate: z.boolean(), project: z.object({ definition: z.object({ name: AgentXNameSchema }), registeredAt: z.string() }), warnings: z.array(z.string()).optional() });
 export const ProjectRosterAddedResponseSchema = z.object({ agent: z.object({ agentId: z.string(), name: z.string().optional() }) });
 export const GithubConnectResponseReaderSchema = forwardReader(GithubConnectResponseSchema);
 export const GithubInstallationsResponseReaderSchema = forwardReader(GithubInstallationsResponseSchema);
+export const GithubConnectResultReaderSchema = forwardReader(GithubConnectResultSchema);
+export const GithubChooseResponseReaderSchema = forwardReader(GithubChooseResponseSchema);
+export const GithubConnectionsResponseReaderSchema = forwardReader(GithubConnectionsResponseSchema);
 export const GithubRepositoriesResponseReaderSchema = forwardReader(GithubRepositoriesResponseSchema);
 export const CloudProjectCreatedResponseReaderSchema = forwardReader(CloudProjectCreatedResponseSchema);
 
