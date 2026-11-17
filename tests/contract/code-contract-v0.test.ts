@@ -52,7 +52,8 @@ describe("code contract v0 tables", () => {
     // Plus the wiki's corrections: the notes, marks, approvals and the disputed list (lead 4 C1): 8 rows.
     // Plus the setup approval (L4-D2): confirm flips to answered here, discard and decide are added: 3.
     // Plus the wiki panel on the setup page: the file map, the build controls and the nightly upkeep switch (lead 4 W6): 11 rows.
-    expect(counts.appCloudServerToday).toBe(124);
+    // Plus the Cost and time report (Feature A, slice A3): the report and a feature's page: 2 rows.
+    expect(counts.appCloudServerToday).toBe(126);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

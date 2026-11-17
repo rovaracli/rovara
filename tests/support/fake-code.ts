@@ -552,6 +552,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   // --- lessons (contract v0 `lessons.*`, Code's lessons API #713): project "web" has three proposed lessons (one from Priya's own correction, one that lapses within a
   // day), two approved and one retired; the pull-request task was given two. Priya (the project's administrator) decides; Sam reads and may ask to retire.
   let lessonsOn = true;
+  /** The Cost and time report's rows and features (set by the specs through /__fake/report); none: Code does not serve the report (404), as before the report lane merges. */
+  let reportData: { tasks: unknown[]; features: unknown[] } | undefined;
   const DAY = 864e5;
   const at = (days: number) => now().getTime() + days * DAY;
   const lessonOf = (id: string, patch: Partial<LessonItem> & { title: string }): LessonItem => ({
@@ -1390,6 +1392,28 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
           lessonsOn = on;
           return send(200, { on });
+        }
+        if (method === "POST" && url.pathname === "/__fake/report") {
+          const given = JSON.parse(await readBody(request)) as { reset?: unknown; tasks?: unknown; features?: unknown };
+          if (given.reset === true) { reportData = undefined; return send(200, { served: false }); }
+          if (!Array.isArray(given.tasks) || !Array.isArray(given.features)) return send(400, { error: { code: "CONFIG_INVALID", message: "tasks and features are lists, or reset is true" } });
+          reportData = { tasks: given.tasks, features: given.features };
+          return send(200, { served: true, tasks: given.tasks.length });
+        }
+        // The Cost and time report's two reads (design A5): company owners and admins only, rows oldest first, 200 a page by a numeric cursor, `next` always and `hasMore` (Code PR #913).
+        if (method === "GET" && (url.pathname === "/v1/app/org/report/tasks" || url.pathname === "/v1/app/org/report/features")) {
+          const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
+          const who = bearer === undefined ? undefined : access.get(bearer);
+          if (who === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (reportData === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
+          if (!who.administrator) return send(403, { error: { code: "FORBIDDEN", message: "only a company owner or admin" } });
+          if (url.pathname.endsWith("/features")) return send(200, { features: reportData.features });
+          // Code takes exactly one of `from` (a full instant with milliseconds) and `cursor`.
+          const from = url.searchParams.get("from"), cursor = url.searchParams.get("cursor");
+          if ((from === null) === (cursor === null) || (from !== null && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(from))) return send(400, { error: { code: "CONFIG_INVALID", message: "the report query is not valid" } });
+          const size = 200, start = Number(cursor ?? "0");
+          const more = start + size < reportData.tasks.length;
+          return send(200, { tasks: reportData.tasks.slice(start, start + size), next: String(more ? start + size : reportData.tasks.length), hasMore: more, skipped: 0, unreadable: 0 });
         }
         const raw = await readBody(request);
         if (method === "POST" && url.pathname === "/v1/auth/token") {
