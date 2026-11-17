@@ -90,6 +90,8 @@ export class ProjectLifecyclePage {
   }
   status(text: string): Locator {
     return this.page.getByText(text);
+  }
+}
 
 /** Guided onboarding PR 15: the company's "AI and spending" (Company settings, and the setup step) and a project's "AI and spend limit". */
 export class AiSpendPage {
