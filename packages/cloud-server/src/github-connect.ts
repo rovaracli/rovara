@@ -269,7 +269,7 @@ export function createGithubConnect(deps: GithubConnectDeps) {
       const kept = await deps.store.takePending(githubStateKey(cookieBinder));
       const binding = kept?.github;
       if (kept === undefined || binding?.kind !== "state" || nowMs() - kept.at > GITHUB_CONNECT_TTL_MS) return refuse("no_binding");
-      const session = sessionCookie === undefined ? undefined : await deps.store.get(sessionCookie);
+      let session = sessionCookie === undefined ? undefined : await deps.store.get(sessionCookie);
       if (session === undefined || sessionCookie === undefined || !sameDigest(binding.session, sessionBinding(sessionCookie)) || session.access.developerId !== binding.developerId) return refuse("session");
       const one = (name: string): string | undefined | null => {
         const all = query.getAll(name);
@@ -288,10 +288,17 @@ export function createGithubConnect(deps: GithubConnectDeps) {
       try {
         let answer: unknown;
         try {
-          answer = await deps.client.json<unknown>(session, `${CODE_GITHUB}/claim`, {
-            method: "POST",
-            body: { state, ...(code === undefined ? {} : { code }), ...(id === undefined ? {} : { installationId: id }), ...(setupAction === undefined ? {} : { setupAction }) },
-          });
+          const claim = { state, ...(code === undefined ? {} : { code }), ...(id === undefined ? {} : { installationId: id }), ...(setupAction === undefined ? {} : { setupAction }) };
+          try {
+            answer = await deps.client.json<unknown>(session, `${CODE_GITHUB}/claim`, { method: "POST", body: claim });
+          } catch (error) {
+            // Another server refreshed this sign-in first: Code answered 401 before reading the state, so asking once more as the stored sign-in is safe.
+            if (!(error instanceof SignInEnded)) throw error;
+            const stored = await deps.store.get(sessionCookie);
+            if (stored === undefined || stored.refreshToken === session.refreshToken || stored.access.developerId !== binding.developerId) throw error;
+            session = stored;
+            answer = await deps.client.json<unknown>(session, `${CODE_GITHUB}/claim`, { method: "POST", body: claim });
+          }
         } catch (error) {
           if (!(error instanceof CodeError)) throw error;
           const refused = claimOutcome(error.status);

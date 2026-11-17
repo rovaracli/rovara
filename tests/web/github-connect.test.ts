@@ -48,7 +48,7 @@ it("never opens an address that isn't GitHub's own page", async () => {
  const f = setup("/app/onboard", { connect: { installUrl: `https://evil.example/apps/rovara/installations/new?state=${STATE}`, authorizeUrl: `https://github.com/login/oauth/authorize?client_id=Iv1.abc&state=${STATE}&redirect_uri=https://evil.example`, expiresAt: "x" } });
  fireEvent.click(await screen.findByRole("button", { name: "Connect GitHub" }));
  await screen.findByText("Rovara returned an invalid GitHub link.");
- await waitFor(() => expect((screen.getByRole("button", { name: "Rovara is already on GitHub" }) as HTMLButtonElement).disabled).toBe(false));
+ await waitFor(() => expect(screen.getByRole("button", { name: "Rovara is already on GitHub" }).hasAttribute("disabled")).toBe(false));
  fireEvent.click(screen.getByRole("button", { name: "Rovara is already on GitHub" }));
  await waitFor(() => expect(calls(f, "/v1/app/github/connect")).toHaveLength(2));
  expect(f.navigate).not.toHaveBeenCalled();
@@ -92,7 +92,7 @@ it("shows a refused choice as its one sentence with Try again", async () => {
 it("shows a request sent, with the link to copy for the GitHub admin", async () => {
  const f = setup("/app/onboard?github=result", { result: { status: "requested", adminUrl: "https://github.com/apps/rovara/installations/new" } });
  await screen.findByText("Request sent. We'll show it here when your GitHub admin approves.");
- expect((screen.getByTestId("github-admin-link") as HTMLInputElement).value).toBe("https://github.com/apps/rovara/installations/new");
+ expect(screen.getByTestId("github-admin-link").getAttribute("value")).toBe("https://github.com/apps/rovara/installations/new");
  const copy = vi.fn(async () => {}); f.host.copyText = copy;
  fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
  await screen.findByRole("button", { name: "Link copied" });

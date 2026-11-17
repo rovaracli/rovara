@@ -191,7 +191,7 @@ export class LocalCompanyStore implements CompanyStore {
   private readonly agentAiOf = new Map<string, AgentAiChoice>();
   private readonly githubTrials = new Map<number, string>();
 
-  async claimGithubTrial(githubUserId: number, companyId: string, _at: string): Promise<GithubTrialClaim> {
+  async claimGithubTrial(githubUserId: number, companyId: string): Promise<GithubTrialClaim> {
     if (!validGithubUserId(githubUserId) || !COMPANY_ID.test(companyId)) throw new Error("the GitHub trial claim does not read");
     const holder = this.githubTrials.get(githubUserId);
     if (holder === undefined) { this.githubTrials.set(githubUserId, companyId); return "claimed"; }

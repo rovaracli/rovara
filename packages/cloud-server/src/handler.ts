@@ -263,7 +263,17 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
             : method === "GET" && apiPath === GITHUB_APP_PATHS.connections ? () => github.connections(session!) : undefined;
     if (githubCall !== undefined) {
       try {
-        const answer = await githubCall();
+        let answer: GithubAnswer;
+        try {
+          answer = await githubCall();
+        } catch (error) {
+          // Another server refreshed this sign-in first (its refresh token was used once): run once more on what the store holds, as the route loop does.
+          if (!(error instanceof SignInEnded)) throw error;
+          const stored = await options.store.get(id);
+          if (stored === undefined || stored.refreshToken === session.refreshToken) throw error;
+          session = stored;
+          answer = await githubCall();
+        }
         if (session.changed === true) {
           delete session.changed;
           await options.store.save(id, session);

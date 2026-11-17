@@ -132,7 +132,13 @@ function world() {
     return { status: answer.status, location: answer.headers.location, setCookie: answer.headers["set-cookie"], body: answer.body };
   };
   const codeCalls = (path: string) => calls.filter((call) => call.path === path);
-  return { raw, api, signIn, connect, callback, calls, codeCalls, logs, pendingWrites, companies, overrides, advance: (ms: number) => { clock += ms; } };
+  /** Rewrites a row Cloud wrote (as a tampered or confused store would hold it), under the same key. */
+  const rewrite = async (key: string, change: (row: PendingSignIn) => PendingSignIn) => {
+    const row = [...pendingWrites].reverse().find(([written]) => written === key)?.[1];
+    if (row === undefined) throw new Error("no such row");
+    await put(key, change(structuredClone(row)));
+  };
+  return { raw, api, signIn, connect, callback, calls, codeCalls, logs, pendingWrites, rewrite, companies, overrides, advance: (ms: number) => { clock += ms; } };
 }
 
 const CLAIM = "/v1/dev/company/github/claim";
@@ -341,6 +347,37 @@ describe("the GitHub callback (GET /api/connect/github/callback)", () => {
     expect((await w.callback({ state, setup_action: "request" }, { session: nova.cookie, binder })).location).toBe("/app/onboard?github=result");
     expect(w.codeCalls(CLAIM)[0]!.body).toEqual({ state, setupAction: "request" });
     expect((await w.api(nova, "POST", "/github/connect/result", {})).body).toEqual({ status: "requested", adminUrl: "https://github.com/apps/rovara-test/installations/new" });
+  });
+
+  it("checks every part of a binding row: another person's id, or another sign-in's hash, under the right key does nothing", async () => {
+    const w = world();
+    const nova = await w.signIn(NOVA);
+    const first = await w.connect(nova);
+    await w.rewrite(w.pendingWrites.at(-1)![0], (row) => ({ ...row, github: { ...row.github!, developerId: BOB.developerId } }));
+    expect((await w.callback({ state: first.state, code: CODES.connected, installation_id: "77" }, { session: nova.cookie, binder: first.binder })).location).toBe("/app/onboard?github=start_again");
+    const second = await w.connect(nova);
+    await w.rewrite(w.pendingWrites.at(-1)![0], (row) => ({ ...row, github: { ...row.github!, session: "0".repeat(64) } }));
+    expect((await w.callback({ state: second.state, code: CODES.connected, installation_id: "77" }, { session: nova.cookie, binder: second.binder })).location).toBe("/app/onboard?github=start_again");
+    const third = await w.connect(nova);
+    await w.rewrite(w.pendingWrites.at(-1)![0], (row) => ({ ...row, github: { ...row.github!, kind: "result" } }));
+    expect((await w.callback({ state: third.state, code: CODES.connected, installation_id: "77" }, { session: nova.cookie, binder: third.binder })).location).toBe("/app/onboard?github=start_again");
+    expect(w.codeCalls(CLAIM)).toEqual([]);
+  });
+
+  it("checks every part of a kept outcome: another person's id or another sign-in's hash under this sign-in's key reads as nothing", async () => {
+    const w = world();
+    const nova = await w.signIn(NOVA);
+    for (const change of [{ developerId: BOB.developerId }, { session: "0".repeat(64) }, { kind: "state" as const }]) {
+      const { binder, state } = await w.connect(nova);
+      expect((await w.callback({ state, code: CODES.choose }, { session: nova.cookie, binder })).location).toBe("/app/onboard?github=result");
+      await w.rewrite(w.pendingWrites.at(-1)![0], (row) => ({ ...row, github: { ...row.github!, ...change } }));
+      expect((await w.api(nova, "POST", "/github/connect/result", {})).body, JSON.stringify(change)).toEqual({ status: "none" });
+      const { binder: b2, state: s2 } = await w.connect(nova);
+      await w.callback({ state: s2, code: CODES.choose }, { session: nova.cookie, binder: b2 });
+      await w.rewrite(w.pendingWrites.at(-1)![0], (row) => ({ ...row, github: { ...row.github!, ...change } }));
+      expect((await w.api(nova, "POST", "/github/choose", { installationId: 11 })).body, JSON.stringify(change)).toEqual({ error: { code: "FORBIDDEN", message: GITHUB_WORDS.startAgain } });
+    }
+    expect(w.codeCalls("/v1/dev/company/github/choose")).toEqual([]);
   });
 
   it("is not a sign-in: the sign-in callback refuses a GitHub connect's rows", async () => {
