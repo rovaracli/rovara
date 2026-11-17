@@ -66,7 +66,7 @@ it("priority cache prices are an unserved feature; flex and batch cache prices a
     expect([field, ratesOf({ ...base, [sibling]: 2e-6, [field]: 3e-6 }, 0)]).toEqual([field, "unsupported price field"]);
   }
   // Still unknown: other priority prices that are not reviewed, other suffixes, a priority long-context cache band.
-  for (const field of ["cache_read_input_audio_token_cost_priority", "cache_read_input_token_cost_above_200k_tokens_priority", "cache_read_input_token_cost_spot", "cache_creation_input_token_cost_above_12hr_priority", "cache_read_input_token_cost_above_100k_tokens"]) {
+  for (const field of ["cache_read_input_audio_token_cost_priority", "cache_read_input_token_cost_above_200k_tokens_priority", "cache_read_input_token_cost_spot", "cache_creation_input_token_cost_above_12hr_priority", "cache_read_input_token_cost_above_300k_tokens", "input_cost_per_token_above_1100k_tokens", "input_cost_per_token_priority_above_300k_tokens"]) {
     expect([field, ratesOf({ ...base, [field]: 1e-6 }, 0)]).toEqual([field, "unsupported price field"]);
   }
 });

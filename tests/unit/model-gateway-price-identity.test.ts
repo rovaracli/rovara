@@ -204,11 +204,12 @@ describe("offered models with no AWS row, priced from their real LiteLLM rows", 
       expect([id, p.estimated, p.inputMicrosPerMTok, p.outputMicrosPerMTok]).toEqual([id, false, input, output]);
     }
   });
-  it("Haiku 5.5 (100k band) and Haiku 4.5 (a deprecated EU row in its identity) still get the cautious estimate: owner decision", async () => {
+  it("Haiku 5.5 (its AWS row, banded at LiteLLM's 100k) and Haiku 4.5 (its live US row; the deprecated EU row is only an alias) get their real price", async () => {
     const prices = await refreshed({ ...unrelated, ...LITELLM_REAL }, [["Claude Haiku 5.5", 0.11]]);
-    for (const [id, input] of [["us.anthropic.claude-haiku-5-5", 165_000], ["us.anthropic.claude-haiku-4-5-20251001-v1:0", 1_650_000]] as const) {
+    for (const [id, input, output] of [["us.anthropic.claude-haiku-5-5", 110_000, 550_000], ["us.anthropic.claude-haiku-4-5-20251001-v1:0", 1_100_000, 5_500_000]] as const) {
       const p = await resolvePrice(prices, "bedrock", id);
-      expect([id, p.estimated, p.inputMicrosPerMTok]).toEqual([id, true, input]);
+      expect([id, p.estimated, p.inputMicrosPerMTok, p.outputMicrosPerMTok]).toEqual([id, false, input, output]);
     }
+    expect((await resolvePrice(prices, "bedrock", "us.anthropic.claude-haiku-5-5")).longContext).toEqual([{ aboveTokens: 100_000, inputMicrosPerMTok: 550_000, outputMicrosPerMTok: 2_750_000, cacheReadMicrosPerMTok: 55_000, cacheWrite5mMicrosPerMTok: 687_500, cacheWrite1hMicrosPerMTok: 1_100_000 }]);
   });
 });

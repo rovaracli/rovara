@@ -1,13 +1,13 @@
 // Ported field patterns and rounding from parked cee95f6c0; DEC 216 changes refusal to unknown.
 import { record } from "./model-gateway-token.js";
 import { PRICE_MAX, RATE_SCALE, RATE_ROUNDING_TOLERANCE } from "./price-constants.js";
-import { CONTEXT_THRESHOLDS, type RateKey } from "./price-tiers.js";
+import { BAND_SUFFIX, CONTEXT_THRESHOLDS, type RateKey } from "./price-tiers.js";
 import type { Price, PriceKind, TokenRates } from "./price.js";
 /** Known billing dimensions stay separate; unsupported dimensions make the row uncertain. */
 function rateField(field: string): { key: RateKey; aboveTokens?: number } | undefined {
-  const long = /_above_(128|200)k_tokens/u.exec(field);
+  const long = BAND_SUFFIX.exec(field);
   const aboveTokens = long === null ? undefined : Number(long[1]) * 1000;
-  const base = field.replace(/_above_(128|200)k_tokens/u, "");
+  const base = field.replace(BAND_SUFFIX, "");
   let key: RateKey;
   if (/^input_cost_per_(?:token)(?:_batches|_flex)?$/u.test(base)) key = "inputMicrosPerMTok";
   else if (/^output_cost_per_(?:token|reasoning_token)(?:_batches|_flex)?$/u.test(base)) key = "outputMicrosPerMTok";
@@ -23,10 +23,10 @@ const CACHE_TIER = /^(?:cache_read_input_token_cost|input_cost_per_token_cache_h
 /** A cheaper `_batches`/`_flex` cache price counts only beside a plain price for the same key and band, so it can never stand in
  *  for the standard rate that is actually billed (the token rates have the same guarantee: ratesOf requires the base rates). */
 function plainCacheRateFor(entry: Record<string, unknown>, field: string): boolean {
-  const tier = rateField(field); const base = field.replace(/_above_(128|200)k_tokens/u, "");
+  const tier = rateField(field); const base = field.replace(BAND_SUFFIX, "");
   if (tier === undefined || !CACHE_TIER.test(base)) return true;
   return Object.entries(entry).some(([other, value]) => {
-    if (other === field || CACHE_TIER.test(other.replace(/_above_(128|200)k_tokens/u, "")) || typeof value !== "number" || !Number.isFinite(value) || value < 0) return false;
+    if (other === field || CACHE_TIER.test(other.replace(BAND_SUFFIX, "")) || typeof value !== "number" || !Number.isFinite(value) || value < 0) return false;
     const plain = rateField(other);
     return plain !== undefined && plain.key === tier.key && plain.aboveTokens === tier.aboveTokens;
   });
@@ -63,7 +63,7 @@ export const PRICE_IGNORABLE_FIELDS: Readonly<Record<string, string>> = {
 
 /** Same classification drives pricing and source completeness: unknown fields are NEVER silently dropped. */
 export function priceFieldDisposition(field: string): "input" | "output" | { readonly ignore: string } | undefined {
-  const feature = /^(?:input|output)_cost_per_(?:token_priority|audio_token|image_token)_above_(?:128|200)k_tokens$/u.test(field) ? field.replace(/_above_(128|200)k_tokens$/u, "") : field;
+  const feature = /^(?:input|output)_cost_per_(?:token_priority|audio_token|image_token)_above_\d+k_tokens$/u.test(field) ? field.replace(BAND_SUFFIX, "") : field;
   if (Object.hasOwn(UNSERVED_FEATURE_COST_FIELDS, feature)) return { ignore: UNSERVED_FEATURE_COST_FIELDS[feature]!.reason };
   const rate = rateField(field);
   if (rate !== undefined) return rate.key === "outputMicrosPerMTok" ? "output" : "input";
@@ -115,6 +115,17 @@ export function ratesOf(value: unknown, now: number): Price | string {
 
   }
   return collectRates(entry, false);
+}
+
+/**
+ * A row past its deprecation date whose every other field is known: its exact rates, as if it were not deprecated. Undefined for
+ * any other row. Pooling counts these rates as a clean price only when no non-deprecated row names the same identity.
+ */
+export function deprecatedRates(value: unknown, now: number): Price | undefined {
+  const entry = record(value);
+  if (entry === undefined || ratesOf(entry, now) !== "deprecated model") return undefined;
+  const rates = ratesOf({ ...entry, deprecation_date: undefined }, now);
+  return typeof rates === "string" ? undefined : rates;
 }
 
 /** Known token tiers survive classification failure; no arithmetic may discard an expensive model. */
