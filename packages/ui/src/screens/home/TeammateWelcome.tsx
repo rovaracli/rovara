@@ -1,6 +1,7 @@
 // Guided onboarding PR 13 (design section 4 "A teammate's first experience"): after the invite link, sign-in and their name, a short welcome on Home. The projects
 // they are in, each project's Slack channel to use, and "Start a task" or "See what's running". No setup screens. A person in no project is pointed to the
-// company's admins (Home's empty state says it). Shown on the first visit after joining (`?joined=1`) and to a company member, until the person dismisses it.
+// company's admins (Home's empty state says it). Shown only on the visit right after joining: Cloud's join lands on `/app?joined=1` (handler.ts), and "Got it" keeps it
+// away on a reload of that address.
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useQueries } from "@tanstack/react-query";
@@ -17,17 +18,15 @@ const seenKey = (developerId: string) => `rovara.welcome.seen.${developerId}`;
 
 export function TeammateWelcome() {
  const host = useAppHost(), nav = useNav(), api = useSetupChecklistApi(), [params] = useSearchParams();
- const developerId = nav?.me.developerId;
- const [seen, setSeen] = useState(() => { try { return developerId !== undefined && host.storage.get(seenKey(developerId)) === "1"; } catch { return false; } });
- const projects = (nav?.projects ?? []).slice(0, WELCOME_PROJECTS).map(project => project.name);
+ const developerId = nav?.me.developerId, joined = params.get("joined") === "1";
+ const [seen, setSeen] = useState(false);
+ let storedSeen = false;
+ try { storedSeen = developerId !== undefined && host.storage.get(seenKey(developerId)) === "1"; } catch { /* Blocked storage: shown until dismissed in this tab. */ }
+ const show = joined && !seen && !storedSeen && nav !== undefined && nav.projects.length > 0;
+ const projects = show ? nav.projects.slice(0, WELCOME_PROJECTS).map(project => project.name) : [];
+ // Each project's channel is asked only when the welcome shows.
  const reads = useQueries({ queries: projects.map(project => ({ queryKey: setupChecklistKey(project), queryFn: () => api.status(project), retry: false })) });
- if (nav === undefined || developerId === undefined) return null;
- const member = nav.me.orgRole !== "owner" && nav.me.orgRole !== "admin";
- const joined = params.get("joined") === "1";
- let storedSeen = seen;
- try { storedSeen = storedSeen || host.storage.get(seenKey(developerId)) === "1"; } catch { /* Blocked storage: shown until dismissed in this tab. */ }
- if (storedSeen || (!joined && !member)) return null;
- if (nav.projects.length === 0) return null;
+ if (!show || nav === undefined || developerId === undefined) return null;
  function dismiss() { setSeen(true); try { host.storage.set(seenKey(developerId!), "1"); } catch { /* Blocked storage: it shows again next time. */ } }
  return <section className="rv-welcome" aria-labelledby="rv-welcome-heading" data-testid="teammate-welcome">
   <h2 id="rv-welcome-heading">Welcome to <VisibleText text={nav.org.name} /></h2>

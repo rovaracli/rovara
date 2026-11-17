@@ -22,7 +22,7 @@ const FinishSetup = lazy(async () => ({ default: (await import("./FinishSetup.js
 const TeammateWelcome = lazy(async () => ({ default: (await import("./TeammateWelcome.js")).TeammateWelcome }));
 const IntegrationNoticeCards = lazy(async () => ({ default: (await import("../connect/integration-notices.js")).IntegrationNoticeCards }));
 import "./home.css";
-function HomeNotices() { const nav = useNav();return <IntegrationNoticeCards admin={nav?.me.orgRole === "owner" || nav?.me.orgRole === "admin"} />; }
+function HomeNotices() { const nav = useNav(), host = useAppHost();return <IntegrationNoticeCards admin={host.kind === "web" && (nav?.me.orgRole === "owner" || nav?.me.orgRole === "admin")} />; }
 export function HomeScreen() {
  const host = useAppHost(), query = useQueryClient(), home = useHome(), announce = useAnnounce(), previous = useRef<Array<{ cardId: string; title: string }> | undefined>(undefined);
  const cards = home.isError ? undefined : home.data?.cards, total = home.data?.total ?? 0, ready = cards !== undefined;

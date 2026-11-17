@@ -4,11 +4,13 @@
 // from Slack, Linear refusing the token). Nothing is asked about connections for a plain member.
 import { describe, expect, it } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, RouterProvider, createMemoryRouter } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { appRoutes } from "../../packages/ui/src/routes.js";
+import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { TeammateWelcome } from "../../packages/ui/src/screens/home/TeammateWelcome.js";
 import { IntegrationBanner, IntegrationNoticeCards } from "../../packages/ui/src/screens/connect/integration-notices.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -66,26 +68,77 @@ describe("a teammate's welcome", () => {
     g.close();
   });
 
-  it("is not shown to a company admin on an ordinary visit, nor to a person with no project (Home's empty state names the admins)", async () => {
-    const f = mount(h(TeammateWelcome, {}), { path: "/app", role: "admin" });
-    await waitFor(() => expect(asked(f, "/v1/app/nav")).toBe(true));
-    expect(screen.queryByTestId("teammate-welcome")).toBeNull();
-    f.close();
+  it("is shown only right after joining (not to an existing member on an ordinary visit, nor to a person with no project), and asks nothing when hidden", async () => {
+    for (const role of ["member", "admin"] as const) {
+      const f = mount(h(TeammateWelcome, {}), { path: "/app", role });
+      await waitFor(() => expect(asked(f, "/v1/app/nav")).toBe(true));
+      await new Promise((done) => setTimeout(done, 30));
+      expect(screen.queryByTestId("teammate-welcome")).toBeNull();
+      expect(asked(f, "/v1/app/projects/payments/setup-status")).toBe(false);
+      f.close();
+    }
     const g = mount(h(TeammateWelcome, {}), { projects: [] });
     await waitFor(() => expect(asked(g, "/v1/app/nav")).toBe(true));
     expect(screen.queryByTestId("teammate-welcome")).toBeNull();
     g.close();
   });
+
+  it("still shows when the browser's storage can't be read", async () => {
+    const f = mount(h(TeammateWelcome, {}));
+    f.host.storage.get = () => { throw new Error("blocked"); };
+    f.host.storage.set = () => { throw new Error("blocked"); };
+    expect(await screen.findByTestId("teammate-welcome")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("welcome-dismiss"));
+    expect(screen.queryByTestId("teammate-welcome")).toBeNull();
+    f.close();
+  });
+});
+
+describe("in the app", () => {
+  function app(role: "member" | "owner", path: string, broken = false) {
+    const nav = navFixture({ me: { developerId: "a".repeat(64), name: "Sam", orgRole: role }, projects: [{ name: "payments", agents: [] }] });
+    const f = fakeHost(async (request): Promise<ApiResponse> => {
+      if (request.path === "/v1/app/nav") return { status: 200, body: nav };
+      if (request.path === "/v1/app/home") return { status: 200, body: { cards: [], total: 0 } };
+      if (request.path === "/v1/app/projects/payments/setup-status") return { status: 200, body: checklistWith([]) };
+      if (request.path === "/v1/app/github/connections") return { status: 200, body: { installations: [] } };
+      if (request.path === "/v1/app/slack") return { status: 200, body: { workspace: broken ? { teamName: "Acme", state: "disconnected", connectedAt: AT, connectedBy: { kind: "person" } } : null } };
+      if (request.path === "/v1/app/linear") return { status: 200, body: { status: "disconnected" } };
+      return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    });
+    const query = createQueryClient();query.setQueryData(["nav"], nav);
+    const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [path] });
+    const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
+    return { ...f, close() { ui.unmount(); router.dispose(); query.clear(); } };
+  }
+
+  it("a new teammate gets the welcome on Home and no connection reads", async () => {
+    const f = app("member", "/app?joined=1", true);
+    expect(await screen.findByTestId("teammate-welcome")).toBeTruthy();
+    // The banner's chunk loads lazily: give it time to mount and (wrongly) ask.
+    await new Promise((done) => setTimeout(done, 400));
+    expect(["/v1/app/github/connections", "/v1/app/slack", "/v1/app/linear"].some((path) => asked(f as never, path))).toBe(false);
+    expect(screen.queryByTestId("integration-banner")).toBeNull();
+    f.close();
+  });
+
+  it("an owner with a broken connection gets the banner and the Home card", async () => {
+    const f = app("owner", "/app", true);
+    expect((await screen.findByTestId("integration-banner")).textContent).toContain("Rovara was removed from Acme.");
+    expect((await screen.findByTestId("integration-notice")).textContent).toContain("Rovara was removed from Acme.");
+    f.close();
+  });
 });
 
 describe("connection notices", () => {
-  const broken = { github: { installations: [{ installationId: 11, accountLogin: "acme", status: "uninstalled", connectedAt: AT, connectedBy: { kind: "operator" } }, { installationId: 12, accountLogin: "beta", status: "active", connectedAt: AT, connectedBy: { kind: "operator" } }] }, slack: { workspace: { teamName: "Acme", state: "disconnected", connectedAt: AT, connectedBy: { kind: "person" } } }, linear: { status: "needs_reconnect", workspace: { name: "Acme Linear", urlKey: "acme" } } };
+  const broken = { github: { installations: [{ installationId: 11, accountLogin: "acme", status: "uninstalled", connectedAt: AT, connectedBy: { kind: "operator" } }, { installationId: 13, accountLogin: "gamma", status: "suspended", connectedAt: AT, connectedBy: { kind: "operator" } }, { installationId: 12, accountLogin: "beta", status: "active", connectedAt: AT, connectedBy: { kind: "operator" } }] }, slack: { workspace: { teamName: "Acme", state: "disconnected", connectedAt: AT, connectedBy: { kind: "person" } } }, linear: { status: "needs_reconnect", workspace: { name: "Acme Linear", urlKey: "acme" } } };
 
   it("a company admin sees one Home card per broken connection, each pointing to Connections", async () => {
     const f = mount(h(IntegrationNoticeCards, { admin: true }), { ...broken });
-    await waitFor(() => expect(screen.getAllByTestId("integration-notice")).toHaveLength(3));
+    await waitFor(() => expect(screen.getAllByTestId("integration-notice")).toHaveLength(4));
     const text = screen.getAllByTestId("integration-notice").map((card) => card.textContent).join("\n");
     expect(text).toContain("GitHub disconnected: the Rovara app was removed from acme.");
+    expect(text).toContain("GitHub suspended the Rovara app on gamma.");
     expect(text).toContain("Rovara was removed from Acme.");
     expect(text).toContain("Linear refused Rovara's token for Acme Linear.");
     expect(text).not.toContain("beta");
@@ -96,7 +149,7 @@ describe("connection notices", () => {
   it("the banner counts them and names the first", async () => {
     const f = mount(h(IntegrationBanner, { admin: true }), { ...broken });
     const banner = await screen.findByTestId("integration-banner");
-    await waitFor(() => expect(banner.textContent).toContain("3 connections need attention."));
+    await waitFor(() => expect(banner.textContent).toContain("4 connections need attention."));
     expect(screen.getByRole("link", { name: "Company settings, Connections" }).getAttribute("href")).toBe("/app/admin/connections");
     f.close();
   });
