@@ -414,8 +414,12 @@ export interface CreateScriptTokenRequest { requestId: string; label: string; ex
 export interface CreateScriptTokenResponse { token: ScriptToken; secret: string }
 export interface RevokeScriptTokenResponse { revoked: boolean }
 
-export interface ArchiveProjectRequest { requestId: string }
-export interface ArchiveProjectResponse { name: string; status: "archived" | "active" }
+/** Guided onboarding PR 16/17 (Code #839): a reviewed archive or restore names the preview's revisions and acknowledges what it does (Code's ReviewedProject*Body). */
+export interface ArchiveProjectRequest { requestId: string; expectedOrgId?: string; expectedRevision: number; expectedProjectRevision: number; acknowledgeNewWorkStops?: true; acknowledgeNewWorkAllowed?: true }
+/** Code's ReviewedProject*Preview: the lifecycle state, the revisions a change must name, the one action the person may take, and what it does. */
+export interface ProjectLifecyclePreview { orgId: string; project: string; status: "archived" | "active"; expectedRevision: number; expectedProjectRevision: number; checkedAt: Iso; prerequisites?: "checked" | "not_required"; access: { actions: Array<"archive" | "restore"> }; impact?: JsonObject }
+/** Code's ReviewedProject*Outcome: the original receipt, whether this answer replays it, and the current state read afresh. */
+export interface ArchiveProjectResponse { receipt: JsonObject; replayed: boolean; current: ProjectLifecyclePreview; effects: JsonObject }
 
 // ---------------------------------------------------------------------------------------------------------------
 // Types: lessons (Code's lessons API, PrepLabsAI/Rovara#713, LM8 part 1; DEC 225, 226, 231). One project of the caller's own company: the
@@ -520,7 +524,9 @@ export interface CodeRouteTypes {
   "projects.list": { request: void; response: { projects: Array<{ name: string; access: string }> } };
   "client.projects.create": { request: CreateProjectRequest; response: CreateProjectResponse };
   "client.projects.get": { request: void; response: ProjectView };
+  "client.projects.archivePreview": { request: void; response: ProjectLifecyclePreview };
   "client.projects.archive": { request: ArchiveProjectRequest; response: ArchiveProjectResponse };
+  "client.projects.restorePreview": { request: void; response: ProjectLifecyclePreview };
   "client.projects.restore": { request: ArchiveProjectRequest; response: ArchiveProjectResponse };
   "client.projects.codeSettings.get": { request: void; response: { settings: CodeSettings } };
   "client.projects.codeSettings.put": { request: PutCodeSettingsRequest; response: { settings: CodeSettings } };
@@ -656,8 +662,11 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("projects.list", "GET", "/v1/dev/projects", "Projects the person may use", "full", ["admin"], "yes", true, `${DEV}:1056`),
   spec("client.projects.create", "POST", "/v1/dev/client/projects", "Create a project from a repository", "projects:create", ["admin"], "no", true, `${MAIN}${DEV}:854`, true),
   spec("client.projects.get", "GET", CP, "One project: revision, access, repositories", "none", ["admin", "request"], "no", true, `${MAIN}${DEV}:870`, true),
-  spec("client.projects.archive", "POST", `${CP}/archive`, "Archive a project (reviewed)", "full", ["later"], "no", false, "none"),
-  spec("client.projects.restore", "POST", `${CP}/restore`, "Restore an archived project (reviewed)", "full", ["later"], "no", false, "none"),
+  // Guided onboarding PR 16 (Code #839, not on code/next yet): preview first; a live company owner/admin or the project's admin changes, a project user only sees.
+  spec("client.projects.archivePreview", "GET", `${CP}/archive-preview`, "What archiving the project does, and whether the person may", "full", ["later"], "no", false, "none", true),
+  spec("client.projects.archive", "POST", `${CP}/archive`, "Archive a project (reviewed)", "full", ["later"], "no", false, "none", true),
+  spec("client.projects.restorePreview", "GET", `${CP}/restore-preview`, "What restoring the project does, and whether the person may", "full", ["later"], "no", false, "none", true),
+  spec("client.projects.restore", "POST", `${CP}/restore`, "Restore an archived project (reviewed)", "full", ["later"], "no", false, "none", true),
   spec("client.projects.codeSettings.get", "GET", `${CP}/code-settings`, "Merge rules for the project", "full", ["admin"], "no", false, "none"),
   spec("client.projects.codeSettings.put", "PUT", `${CP}/code-settings`, "Change the merge rules (revision-checked)", "full", ["admin"], "no", false, "none"),
   spec("client.repositories.list", "GET", "/v1/dev/client/repositories", "The repositories Code's GitHub App can reach", "projects:create", ["admin"], "no", true, `${MAIN}${DEV}:855`, true),
@@ -861,10 +870,11 @@ POST /v1/app/projects/{p}/playbook/process | k | how-we-work | playbook.process 
 GET /v1/app/projects/{p}/playbook | k | how-we-work | playbook.get | how-we-work | L
 PUT /v1/app/projects/{p}/playbook | k | how-we-work | playbook.put | how-we-work | L
 GET /v1/app/projects/{p}/spend | g | budgets | | spending |
-GET /v1/app/projects/{p}/archive-preview | k | later | client.projects.archive | admin/projects/ArchiveProject |
-POST /v1/app/projects/{p}/reviewed-archive | k | later | client.projects.archive | admin/projects/ArchiveProject |
-GET /v1/app/projects/{p}/restore-preview | k | later | client.projects.restore | admin/projects/RestoreProject |
-POST /v1/app/projects/{p}/reviewed-restore | k | later | client.projects.restore | admin/projects/RestoreProject |
+GET /v1/app/projects/{p}/archive-preview | k | later | client.projects.archivePreview | admin/projects/ArchiveProject | T
+POST /v1/app/projects/{p}/reviewed-archive | k | later | client.projects.archive | admin/projects/ArchiveProject | T
+GET /v1/app/projects/{p}/restore-preview | k | later | client.projects.restorePreview | admin/projects/RestoreProject | T
+POST /v1/app/projects/{p}/reviewed-restore | k | later | client.projects.restore | admin/projects/RestoreProject | T
+GET /v1/app/projects/{p}/lifecycle | k | later | client.projects.archivePreview,client.projects.restorePreview | admin/projects/ProjectDetailScreen | T
 GET /v1/app/projects/{p}/working-branches | k | later | | admin/projects/WorkingBranches |
 POST /v1/app/projects/{p}/working-branches | k | later | | admin/projects/SaveWorkingBranch |
 GET /v1/app/projects/{p}/working-branches/requests/{requestId} | k | later | | admin/projects/SaveWorkingBranch |

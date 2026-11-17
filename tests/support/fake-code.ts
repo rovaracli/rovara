@@ -117,6 +117,41 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   ];
   const project = (name: string) => projects.find((entry) => entry.name === name);
   const roleIn = (person: Person, name: string) => project(name)?.members.get(person.developerId);
+  // Guided onboarding PR 16/17: each project's archive state (Code #839's rule, small).
+  const lifecycle = new Map<string, { status: "active" | "archived"; revision: number; receipts: Map<string, { personId: string; outcome: ArchiveOutcome }> }>();
+  type ArchiveOutcome = CodeResponse<"client.projects.archive">;
+  const lifecycleOf = (name: string) => { let entry = lifecycle.get(name); if (entry === undefined) { entry = { status: "active", revision: 0, receipts: new Map() }; lifecycle.set(name, entry); } return entry; };
+  const lifecycleOr404 = <T,>(person: Person, name: string, then: (name: string, manage: boolean) => T) => {
+    const grant = roleIn(person, name);
+    const owner = !companyless.has(person.developerId) && person.administrator;
+    if (project(name) === undefined || companyless.has(person.developerId) || (!owner && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
+    return then(name, owner || grant === "administrator");
+  };
+  const lifecyclePreview = (kind: "archive" | "restore", name: string, manage: boolean) => {
+    const entry = lifecycleOf(name);
+    return {
+      orgId: FAKE_COMPANY_ID, project: name, status: entry.status, expectedRevision: entry.revision, expectedProjectRevision: 3, checkedAt: iso(),
+      ...(kind === "restore" ? { prerequisites: "not_required" as const } : {}),
+      access: { actions: manage && entry.status === (kind === "archive" ? "active" : "archived") ? [kind] : [] },
+      impact: kind === "archive" ? { stopsNewWork: true, stopsRunningTasksAtNextStep: true, linkedSlackChannels: 1, slackChannelsStayLinked: true, deletesNothing: true } : { allowsNewWork: true, linkedSlackChannels: 1 },
+    };
+  };
+  const lifecycleChange = (kind: "archive" | "restore", name: string, manage: boolean, person: Person, body: CodeRequest<"client.projects.archive">) => {
+    const ack = kind === "archive" ? body.acknowledgeNewWorkStops : body.acknowledgeNewWorkAllowed;
+    if (ack !== true || typeof body.requestId !== "string") return failure(400, "CONFIG_INVALID", "the request is not valid");
+    if (!manage) return failure(403, "FORBIDDEN", "Only company owners and admins, or this project's admins, can archive or restore it.");
+    const entry = lifecycleOf(name);
+    const earlier = entry.receipts.get(body.requestId);
+    if (earlier !== undefined && earlier.personId === person.developerId) return { body: { ...earlier.outcome, replayed: true } };
+    if ((body.expectedOrgId !== undefined && body.expectedOrgId !== FAKE_COMPANY_ID) || body.expectedRevision !== entry.revision || body.expectedProjectRevision !== 3 || entry.status !== (kind === "archive" ? "active" : "archived")) {
+      return failure(409, "CHANGE_STALE", "The project changed. Review it again before you archive or restore it.");
+    }
+    entry.status = kind === "archive" ? "archived" : "active"; entry.revision += 1;
+    const receipt = { project: name, status: entry.status, revision: entry.revision, projectRevision: 3, [kind === "archive" ? "archivedAt" : "restoredAt"]: iso(), egressReconciliation: "pending" };
+    const outcome: ArchiveOutcome = { receipt, replayed: false, current: lifecyclePreview(kind, name, manage), effects: kind === "archive" ? { egress: "not_attempted", archiveHook: "not_configured" } : { egress: "not_attempted" } };
+    entry.receipts.set(body.requestId, { personId: person.developerId, outcome });
+    return { body: outcome };
+  };
 
   const base = (taskId: string, owner: Person, patch: Partial<TaskView> & { title: string; project: string }): { owner: Person; task: TaskView } => ({
     owner,
@@ -328,8 +363,11 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       if (entry === undefined || !entry.members.has(person.developerId)) return notFound("project");
       return { body: { name: entry.name, latestRevision: 3, access: entry.members.get(person.developerId) ?? "developer", repositories: entry.repositories } };
     },
-    "client.projects.archive": ({ params }) => ({ body: { name: params["project"] ?? "", status: "archived" } }),
-    "client.projects.restore": ({ params }) => ({ body: { name: params["project"] ?? "", status: "active" } }),
+    // Guided onboarding PR 16 (Code #839): preview first; the company owner or the project's admin changes, a project user sees no action, anyone else "project not found".
+    "client.projects.archivePreview": ({ params, person }) => lifecycleOr404(person, params["project"] ?? "", (name, manage) => ({ body: lifecyclePreview("archive", name, manage) })),
+    "client.projects.restorePreview": ({ params, person }) => lifecycleOr404(person, params["project"] ?? "", (name, manage) => ({ body: lifecyclePreview("restore", name, manage) })),
+    "client.projects.archive": ({ params, person, body }) => lifecycleOr404(person, params["project"] ?? "", (name, manage) => lifecycleChange("archive", name, manage, person, body)),
+    "client.projects.restore": ({ params, person, body }) => lifecycleOr404(person, params["project"] ?? "", (name, manage) => lifecycleChange("restore", name, manage, person, body)),
     "client.projects.codeSettings.get": () => ({ body: { settings: { requireSecondReviewer: true, mergeRule: "maintainer", protectedPaths: ["infra/"], revision: 2 } } }),
     "client.projects.codeSettings.put": ({ body }) => ({ body: { settings: { ...body.settings, revision: body.expectedRevision + 1 } } }),
     "client.repositories.list": () => ({

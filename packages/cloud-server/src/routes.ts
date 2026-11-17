@@ -13,6 +13,7 @@ import type { CloudAuditStore } from "./audit-log.js";
 import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, parseCompanyAuditQuery } from "./company-audit.js";
 import { WORK_READS } from "./work-reads.js";
 import { ONBOARDING_ROUTES } from "./onboarding-routes.js";
+import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
@@ -804,4 +805,6 @@ export const ROUTES: Route[] = [
   ...LESSONS_ROUTES,
   // Creating a company (DEC 254a), for a person with no company yet.
   ...ONBOARDING_ROUTES,
+  // A project's archive and restore, preview first (DEC 254n item 3): Code decides who may; Cloud passes the person's token and fixed words.
+  ...PROJECT_LIFECYCLE_ROUTES,
 ];
