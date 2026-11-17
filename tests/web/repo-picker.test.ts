@@ -189,6 +189,18 @@ it("stops at 32 repositories: the 33rd box is disabled and says so", async () =>
   f.close();
 });
 
+it("after a create the picker's list is read again, so the new projects are marked", async () => {
+  const f = setup({ create: () => ({ status: 200, body: { duplicate: false, results: [{ repository: "acme/api", outcome: "created", project: "api" }, { repository: "acme/auth", outcome: "created", project: "auth" }] } }) });
+  await pick("api", "auth");
+  const reads = () => f.request.mock.calls.filter(([r]) => r.path.startsWith("/v1/app/github/repository-choices")).length;
+  const before = reads();
+  fireEvent.click(screen.getByRole("radio", { name: /No, separate projects/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Create 2 projects" }));
+  await screen.findByRole("table");
+  await waitFor(() => expect(reads()).toBeGreaterThan(before));
+  f.close();
+});
+
 it("a name already taken can be created on its own: the picker comes back with that repository and 'one project'", async () => {
   const f = setup({ create: () => ({ status: 200, body: { duplicate: false, results: [{ repository: "acme/api", outcome: "created", project: "api" }, { repository: "acme/auth", outcome: "refused", reason: "name_taken" }] } }) });
   await pick("api", "auth");
