@@ -27,7 +27,7 @@ test("the picker lists the company's repositories with 'In project X' marks, sea
   await expect(page.getByText("No repositories match that search.")).toBeVisible();
 });
 
-test("several repos ask the question, one project is preselected, and it creates one project that opens at Setup", async ({ page }, testInfo) => {
+test("several repos ask the question, one project is preselected, and it creates one project that opens its checklist", async ({ page }, testInfo) => {
   const picker = new RepoPickerPage(page);
   await picker.open();
   await picker.pick("billing");
@@ -39,8 +39,8 @@ test("several repos ask the question, one project is preselected, and it creates
   await picker.name.fill("shop");
   await page.screenshot({ path: testInfo.outputPath("question-one-project.png"), fullPage: true });
   await picker.button("Create project with 2 repos").click();
-  await page.waitForURL((url) => url.searchParams.get("project") === "shop" && url.searchParams.get("step") === "setup");
-  await expect(page.getByRole("heading", { name: "Setup", exact: true })).toBeVisible();
+  await page.waitForURL((url) => url.pathname === "/app/projects/shop");
+  await expect(page.getByRole("heading", { name: "shop", level: 1 })).toBeVisible();
 });
 
 test("above 8 repos 'separate' is preselected with the reason; the table shows what was created and why one was not", async ({ page }, testInfo) => {
