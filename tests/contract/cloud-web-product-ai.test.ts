@@ -21,7 +21,9 @@ const synth = (environmentName: string, productAi?: boolean) => Template.fromSta
   environmentName, env: { region: "us-east-1" }, appDirectory: built, code: Code.fromInline("export const handler = async () => ({});"), ...(productAi === undefined ? {} : { productAi }),
 })).toJSON() as { Resources: Record<string, { Type: string; Properties: Record<string, unknown> }>; Parameters: Record<string, unknown>; Outputs: Record<string, unknown> };
 /** The Cloud web templates at cloud/next d7d1edbb8, before this change (same stand-in app and code): SHA-256 of their JSON. */
-const BEFORE = { production: "f01b90f030e1bb81390cc84d2c0625cc48dae5f5ea57e474fc3093690eb85cc8", staging: "bfcde9467235f2f910ad3eef8fd68b5d7eca7a6d843b4f1b228d466688967737" };
+// 2026-11-17 (role boundary): the one other change is the BucketDeployment function's own log group (AppFilesLogs, cloud-web.ts):
+// with that line removed these were f01b90f0... (production) and bfcde946... (staging), the hashes from d7d1edbb8.
+const BEFORE = { production: "db67fcbbc888b0f1d83f7fa6f6fd9796c1dd0f0ab90452a75121897886898dbf", staging: "2520e7cd7500cad24785df29bfcb000c1a1839f9fbf9d75574dbab9b44cbed85" };
 // Less the role boundary (2026-11-17), which every template now carries (tests/contract/cloud-role-boundary.test.ts).
 const sha = (value: Parameters<typeof withoutRoleBoundary>[0]) => createHash("sha256").update(JSON.stringify(withoutRoleBoundary(value))).digest("hex");
 

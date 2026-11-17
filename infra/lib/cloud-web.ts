@@ -277,6 +277,9 @@ export class CloudWebStack extends Stack {
       prune: false,
       cacheControl: [s3deploy.CacheControl.fromString("public, max-age=31536000, immutable")],
       memoryLimit: 512,
+      // Its own log group (named from this stack), not /aws/lambda/<function>: CloudFormation shortens that generated function name,
+      // stack name included, so the role boundary (cloud-boundary.ts) can't name it.
+      logGroup: new logs.LogGroup(this, "AppFilesLogs", { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY }),
     });
 
     const origin = `https://${distribution.distributionDomainName}`;

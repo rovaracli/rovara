@@ -1,12 +1,13 @@
 /**
  * Does the boundary break anything Cloud needs? For every role in a set of synthesized Cloud templates, every (action, resource) its own
- * policies allow must be allowed by the role's permissions boundary and denied by none of the boundary's Deny statements. Pure: no CDK,
- * no AWS. The templates' intrinsics are resolved to the names CloudFormation would give (`<stack name>-<logical id>-<random>` for a
+ * policies allow must be allowed by the role's permissions boundary and denied by none of the boundary's Deny statements. No synth
+ * and no AWS: it reads synthesized templates. The templates' intrinsics are resolved to the names CloudFormation would give (`<stack name>-<logical id>-<random>` for a
  * generated name), with sample values for the parameters a policy names. Anything it can't resolve is an error, never a guess.
  *
  * Used by tests/contract/cloud-role-boundary.test.ts, and by infra/bin/cloud-boundary-cases.ts, which writes the same cases for the
  * controller's read-only `aws iam simulate-custom-policy` run against the real IAM evaluator.
  */
+import { BOUNDARY_LOGICAL_ID } from "./cloud-boundary.js";
 
 export interface CfnTemplate {
   readonly Resources: Record<string, { Type: string; Properties?: Record<string, unknown> }>;
@@ -37,10 +38,15 @@ function parameterSamples(s: CheckScope): Record<string, string> {
   };
 }
 
-const RANDOM = "SAMPLE0000AA";
+const RANDOM = "SAMPLE0000AAB";
+/**
+ * CloudFormation's generated name, `<stack name>-<logical id>-<random>`. Past the type's length limit CloudFormation shortens the stack
+ * name part as well (staging: `rovara-cloud-staging-gate-PriceFetchExecutionRole81-…`), so a name that long is returned as one that
+ * keeps nothing of the stack name: a boundary that relied on the prefix fails the check, as it would fail in AWS.
+ */
 function generatedName(stackName: string, logicalId: string, max = 64, lower = false): string {
-  const room = max - stackName.length - RANDOM.length - 2;
-  const name = `${stackName}-${logicalId.slice(0, Math.max(room, 1))}-${RANDOM}`;
+  const full = `${stackName}-${logicalId}-${RANDOM}`;
+  const name = full.length <= max ? full : `SHORTENED-${logicalId.slice(0, max - RANDOM.length - 12)}-${RANDOM}`;
   return lower ? name.toLowerCase() : name;
 }
 
@@ -79,7 +85,7 @@ class Resolver {
     const props = resource.Properties ?? {};
     switch (resource.Type) {
       case "AWS::IAM::Role": return typeof props.RoleName === "string" ? props.RoleName : generatedName(stack.stackName, id);
-      case "AWS::IAM::ManagedPolicy": return `arn:${p}:iam::${a}:policy${typeof props.Path === "string" ? props.Path : "/"}${String(props.ManagedPolicyName)}`;
+      case "AWS::IAM::ManagedPolicy": return `arn:${p}:iam::${a}:policy${typeof props.Path === "string" ? props.Path : "/"}${typeof props.ManagedPolicyName === "string" ? props.ManagedPolicyName : generatedName(stack.stackName, id, 128)}`;
       case "AWS::SecretsManager::Secret": return `arn:${p}:secretsmanager:${r}:${a}:secret:${typeof props.Name === "string" ? props.Name : generatedName(stack.stackName, id)}-AbCdEf`;
       case "AWS::ECS::TaskDefinition": return `arn:${p}:ecs:${r}:${a}:task-definition/${typeof props.Family === "string" ? props.Family : generatedName(stack.stackName, id)}:1`;
       case "AWS::CodeBuild::Project": return typeof props.Name === "string" ? props.Name : generatedName(stack.stackName, id, 255);
@@ -155,8 +161,35 @@ export function globMatch(pattern: string, text: string): boolean {
  */
 const covers = (outer: string, inner: string) => globMatch(outer.toLowerCase(), inner.toLowerCase());
 const coversResource = (outer: string, inner: string) => globMatch(outer, inner);
-/** Could the two patterns name a common action or resource? (A Deny is checked this way: any overlap counts.) */
-const overlaps = (a: string, b: string, lower: boolean) => (lower ? covers(a, b) || covers(b, a) : coversResource(a, b) || coversResource(b, a));
+/**
+ * Could the two IAM patterns name a common action or resource: is there a string both match? (A Deny counts on any overlap.) Two ARNs
+ * are compared part by part (partition, service, Region, account, resource), since a real ARN's parts never hold a colon.
+ */
+export function overlaps(x: string, y: string, lower: boolean): boolean {
+  if (!lower && x.startsWith("arn:") && y.startsWith("arn:")) {
+    const parts = (arn: string) => { const p = arn.split(":"); return [...p.slice(0, 5), p.slice(5).join(":")]; };
+    const [px, py] = [parts(x), parts(y)];
+    if (px.length === 6 && py.length === 6) return px.every((part, i) => globOverlap(part, py[i]!));
+  }
+  return globOverlap(lower ? x.toLowerCase() : x, lower ? y.toLowerCase() : y);
+}
+
+function globOverlap(a: string, b: string): boolean {
+  const memo = new Map<number, boolean>();
+  const at = (i: number, j: number): boolean => {
+    const key = i * (b.length + 1) + j;
+    const known = memo.get(key);
+    if (known !== undefined) return known;
+    let result: boolean;
+    if (i === a.length && j === b.length) result = true;
+    else if (i < a.length && a[i] === "*") result = at(i + 1, j) || (j < b.length && at(i, j + 1));
+    else if (j < b.length && b[j] === "*") result = at(i, j + 1) || (i < a.length && at(i + 1, j));
+    else result = i < a.length && j < b.length && (a[i] === b[j] || a[i] === "?" || b[j] === "?") && at(i + 1, j + 1);
+    memo.set(key, result);
+    return result;
+  };
+  return at(0, 0);
+}
 
 const list = (value: unknown): unknown[] => (value === undefined ? [] : Array.isArray(value) ? value : [value]);
 
@@ -172,7 +205,7 @@ function rolesOf(stack: StackTemplate, resolver: Resolver): RoleView[] {
   const resources = stack.template.Resources;
   const boundaries = new Map<string, Statement[]>();
   for (const [id, r] of Object.entries(resources)) {
-    if (r.Type === "AWS::IAM::ManagedPolicy" && r.Properties?.Roles === undefined && String(r.Properties?.ManagedPolicyName).endsWith("-boundary")) boundaries.set(id, statementsOf(r.Properties?.PolicyDocument, `${stack.stackName}/${id}`));
+    if (id === BOUNDARY_LOGICAL_ID && r.Type === "AWS::IAM::ManagedPolicy" && r.Properties?.Roles === undefined) boundaries.set(id, statementsOf(r.Properties?.PolicyDocument, `${stack.stackName}/${id}`));
   }
   const roles: RoleView[] = [];
   for (const [id, r] of Object.entries(resources)) {
@@ -261,7 +294,7 @@ export function resolvedBoundaries(stacks: readonly StackTemplate[], scope: Chec
   for (const stack of stacks) {
     for (const [id, r] of Object.entries(stack.template.Resources)) {
       // The boundary: a managed policy attached to nothing (CDK's overflow policies for a large role are attached to their role).
-      if (r.Type !== "AWS::IAM::ManagedPolicy" || r.Properties?.Roles !== undefined || !String(r.Properties?.ManagedPolicyName).endsWith("-boundary")) continue;
+      if (id !== BOUNDARY_LOGICAL_ID || r.Type !== "AWS::IAM::ManagedPolicy" || r.Properties?.Roles !== undefined) continue;
       if (out[stack.stackName] !== undefined) throw new Error(`${stack.stackName} has two boundary policies`);
       const statements = statementsOf(r.Properties?.PolicyDocument, `${stack.stackName}/${id}`);
       out[stack.stackName] = { Version: "2012-10-17", Statement: statements.map((s) => ({ ...s, Resource: list(s.Resource).map((x) => resolver.resolve(stack, x)) })) };

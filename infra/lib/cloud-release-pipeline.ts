@@ -14,7 +14,7 @@ import {
 import type { Construct } from "constructs";
 import { RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
 import { CLOUD_APP_CONTEXT_KEY } from "./cloud-app.js";
-import { CDK_BOOTSTRAP_ASSUMED_ROLES, applyCloudBoundary } from "./cloud-boundary.js";
+import { CDK_BOOTSTRAP_ASSUMED_ROLES, applyCloudBoundary, keepRoleAtRoot } from "./cloud-boundary.js";
 import { MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "./model-gateway.js";
 
 /**
@@ -138,7 +138,9 @@ export class CloudReleasePipelineStack extends Stack {
       resources: [connectionArn.valueAsString],
     });
 
-    const artifactBucket = new s3.Bucket(this, "Artifacts", {
+    // A short id: CloudFormation names the bucket <stack name>-<logical id>-<random>, and past S3's 63 characters it shortens the stack
+    // name too, which the role boundary (cloud-boundary.ts, by stack name) would then not match. "Art" keeps the longest one at 62.
+    const artifactBucket = new s3.Bucket(this, "Art", {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
@@ -251,6 +253,9 @@ export class CloudReleasePipelineStack extends Stack {
       }],
     });
     // Last, so the template keeps its section order; the aspect puts it on every role at synth (cloud-boundary.ts).
+    // CDK names a CodeBuild project's service role by name, which CodeBuild reads as a role at "/": those two stay there.
+    keepRoleAtRoot(deploy.role!);
+    keepRoleAtRoot(check.role!);
     applyCloudBoundary(this, env, "pipeline");
   }
 }

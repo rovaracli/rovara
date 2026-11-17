@@ -8,6 +8,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { BOUNDARY_LOGICAL_ID } from "../lib/cloud-boundary.js";
 import { boundaryViolations, resolvedBoundaries, roleCases, type CfnTemplate, type StackTemplate } from "../lib/cloud-boundary-check.js";
 
 const [env, account, region, ...dirs] = process.argv.slice(2);
@@ -29,7 +30,7 @@ const out = dirs.map((dir) => {
   return {
     dir,
     boundaries: resolvedBoundaries(stacks, scope),
-    stacksWithoutBoundary: stacks.filter((s) => !Object.values(s.template.Resources).some((r) => r.Type === "AWS::IAM::ManagedPolicy" && String(r.Properties?.ManagedPolicyName).endsWith("-boundary"))).map((s) => s.stackName),
+    stacksWithoutBoundary: stacks.filter((s) => s.template.Resources[BOUNDARY_LOGICAL_ID]?.Type !== "AWS::IAM::ManagedPolicy").map((s) => s.stackName),
     cases: roleCases(stacks, scope).map((c) => ({ stackName: c.stackName, role: c.role, action: c.action, resource: c.resource })),
     violations: boundaryViolations(stacks, scope),
   };
