@@ -362,7 +362,12 @@ describe("joining with Code's invite secret (DEC 254h)", () => {
       w.setCompany({ companyId: A, companyRole: "member", joinedByInvite: true });
       const state = new URL(begun.headers.location!).searchParams.get("state")!;
       const back = await w.raw("GET", `/callback?code=c1&state=${state}`);
-      const refusedJoin = await w.raw("GET", `/callback?error=access_denied&state=${state}`);
+      // A join Code refused, on a fresh ticket from a second secret invite.
+      const second = await secretInvite(w, A);
+      const begunAgain = await start(w, w.ticketOf(await w.lookUp(second.secret))!);
+      const refusedJoin = await w.raw("GET", `/callback?error=access_denied&state=${new URL(begunAgain.headers.location!).searchParams.get("state")!}`);
+      expect(refusedJoin.headers.location).toBe("/app/join?unusable=1");
+      expect(JSON.stringify({ ...begunAgain, headers: { ...begunAgain.headers, location: undefined } })).not.toContain(second.secret);
       const again = await w.lookUp(secret);
       const everything = JSON.stringify({ found, back, refusedJoin, again, logs: w.logs, printed, stored: await w.store.invite(A, record.inviteId), calls: w.calls });
       expect(everything).not.toContain(secret);

@@ -831,7 +831,7 @@ describe("invites carrying Code's invite secret (DEC 254h)", () => {
     expect((await lookUp(w, secret))!.status).toBe(404);
   });
 
-  it("two companies: A's secret is accepted only by a person Code put in A by an invite", async () => {
+  it("a secret invite is never accepted through the accept route (only by the join that spent it), whoever asks", async () => {
     const w = world();
     const secret = secretOf();
     w.setMint(() => ({ secret, expiresAt: new Date(START + 86_400_000).toISOString() }));
@@ -841,7 +841,8 @@ describe("invites carrying Code's invite secret (DEC 254h)", () => {
     const cal = await w.signIn("cal");
     expect((await w.call(cal, "POST", "/org/invites/accept", { invite: secret })).status).toBe(404);
     w.joined.add(PEOPLE.cal!.developerId);
-    expect(await w.call(cal, "POST", "/org/invites/accept", { invite: secret })).toMatchObject({ status: 200, body: { accepted: true, orgId: A } });
-    expect((await lookUp(w, secret))!.status).toBe(404);
+    // Joined by some invite this sign-in, in the invite's company: still not this route's to take.
+    expect((await w.call(cal, "POST", "/org/invites/accept", { invite: secret })).status).toBe(404);
+    expect((await lookUp(w, secret))!.status).toBe(200);
   });
 });

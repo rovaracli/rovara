@@ -505,7 +505,10 @@ async function acceptInvite(context: RouteContext): Promise<RouteAnswer> {
   const store = who.backend.store;
   const invite = await store.inviteByToken(tokenHash(body["invite"]));
   const nowMs = context.now().getTime();
-  if (invite === undefined || invite.companyId !== who.companyId || invite.state !== "pending" || expired(invite, nowMs) || !who.joinedByInvite) return WORDS.unusable;
+  if (invite === undefined || invite.companyId !== who.companyId || invite.state !== "pending" || expired(invite, nowMs) || !who.joinedByInvite
+    // An invite whose link is Code's secret is accepted only by the join that spent that very secret (handler.ts finishJoin): `joinedByInvite`
+    // is per sign-in, not per invite, so this route can't tell which invite was spent.
+    || invite.codeSecret === true) return WORDS.unusable;
   // PRODUCT-EVAL-APPROVER-REREAD: accepting an invite sets the person's company role, so any eval approval they made stops counting first.
   const withdrawal = await withdrawForMember(context, who.developerId, { companyId: who.companyId });
   if ("status" in withdrawal) return withdrawal;
