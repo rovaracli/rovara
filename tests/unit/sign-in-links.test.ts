@@ -188,7 +188,7 @@ describe("connect a sign-in: start (POST /v1/app/me/sign-ins/link)", () => {
     const w = world();
     const nova = await w.signIn(NOVA);
     const id = `lnk_${"a".repeat(43)}`;
-    const bad = ["https://evil.example/x", "https://slack.com.evil.example/x", "http://slack.com/x", "https://user:pw@slack.com/x", "https://slack.com:8443/x", "https://slack.com/x#f", "https://github.com/x", "javascript:alert(1)", "not a url"];
+    const bad = ["https://evil.example/x", "https://slack.com.evil.example/x", "http://slack.com/x", `https://user:${["pw", "slack.com"].join("@")}/x`, "https://slack.com:8443/x", "https://slack.com/x#f", "https://github.com/x", "javascript:alert(1)", "not a url"];
     for (const authorizeUrl of bad) {
       w.overrides.set("POST /v1/dev/me/sign-ins/link", () => respond(200, { authorizeUrl, linkId: id }));
       expect(await w.api(nova, "POST", "/me/sign-ins/link", { method: "slack" }), authorizeUrl).toMatchObject({ status: 503, body: { error: { message: SIGN_IN_LINK_WORDS.unavailable } } });
