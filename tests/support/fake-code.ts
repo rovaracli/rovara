@@ -98,7 +98,7 @@ export interface FakeCode {
   /** Lessons on or off (off: every lessons route answers 404 LESSONS_SWITCHED_OFF "Lessons are off.", as Code does while its switch is off). */
   setLessons(on: boolean): void;
   /** Every request received, newest last (method, path, status). */
-  log: Array<{ method: string; path: string; status: number }>;
+  log: Array<{ method: string; path: string; query: string; status: number }>;
 }
 
 interface Answer<K extends CodeRouteId> { status?: number; body?: CodeResponse<K> | ErrorBody; headers?: Record<string, string> }
@@ -305,6 +305,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     }) })],
   ]);
   const readers = new Map<string, Map<string, TaskReader>>();
+  /**
+   * Web task channel K4: the tasks a person was ADDED to (Code's involved index), by task id. `involvedMode` is how this Code answers `GET /v1/dev/tasks?involved=1`: `on` lists the
+   * current person's involved tasks (`{ involved: true, tasks }`); `old` is a Code from before the route, which ignores the query and answers the ordinary list; the others refuse.
+   */
+  const involved = new Map<string, Set<string>>();
+  /** The tasks `/__fake/involved` made, so a spec can take them away again (`reset`). */
+  const involvedMade = new Set<string>();
+  let involvedMode: "on" | "old" | "400" | "404" | "501" | "500" = "on";
   const startedByRequest = new Map<string, string>();
   const messages = new Map<string, TaskMessage[]>();
   const comments = new Map<string, PlanComment[]>();
@@ -318,7 +326,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const mayRead = (person: Person, taskId: string): { owner: Person; task: TaskView } | undefined => {
     const entry = tasks.get(taskId);
     if (entry === undefined) return undefined;
-    return entry.owner.developerId === person.developerId || readers.get(taskId)?.has(person.developerId) === true ? entry : undefined;
+    return entry.owner.developerId === person.developerId || readers.get(taskId)?.has(person.developerId) === true || involved.get(taskId)?.has(person.developerId) === true ? entry : undefined;
   };
   const touch = (task: TaskView, patch: Partial<TaskView>) => { Object.assign(task, patch, { updatedAt: iso() }); };
   const taskOr404 = <K extends CodeRouteId>(context: Context<K>, then: (entry: { owner: Person; task: TaskView }) => Answer<K>): Answer<K> => {
@@ -627,7 +635,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       startedByRequest.set(body.requestId, taskId);
       return { status: 201, body: { task: entry.task } };
     },
-    "tasks.list": ({ person }) => ({ body: { tasks: [...tasks.values()].filter((entry) => mayRead(person, entry.task.taskId) !== undefined).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } }),
+    "tasks.list": ({ person, query }) => {
+      const ordinary = () => ({ body: { tasks: [...tasks.values()].filter((entry) => entry.owner.developerId === person.developerId || readers.get(entry.task.taskId)?.has(person.developerId) === true).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } });
+      if (query.get("involved") !== "1" || involvedMode === "old") return ordinary();
+      if (involvedMode !== "on") return failure(Number(involvedMode), involvedMode === "500" ? "RUNTIME_UNAVAILABLE" : involvedMode === "400" ? "CONFIG_INVALID" : "NOT_FOUND", "involved is not served here");
+      return { body: { involved: true, tasks: [...tasks.values()].filter((entry) => involved.get(entry.task.taskId)?.has(person.developerId) === true && entry.owner.developerId !== person.developerId).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } as never };
+    },
     "tasks.get": (context) => taskOr404(context, ({ task }) => ({ body: { task } })),
     "tasks.events": (context) => taskOr404(context, ({ task }) => ({ body: { events: [{ seq: 1, at: task.createdAt, kind: "status", text: "Task started" }, { seq: 2, at: task.updatedAt, kind: "progress", text: `Now at ${task.workflow?.stage ?? "start"}`, taskItemId: "T2", attempt: 1 }] } })),
     "tasks.plan": (context) => taskOr404(context, ({ task }) => ({ body: planOf(task) })),
@@ -1116,7 +1129,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       const url = new URL(request.url ?? "/", "http://fake-code.invalid");
       const method = request.method ?? "GET";
       const send = (status: number, body: unknown, headers: Record<string, string> = {}) => {
-        log.push({ method, path: url.pathname, status });
+        log.push({ method, path: url.pathname, query: url.search, status });
         response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", ...headers });
         response.end(body === undefined ? "" : JSON.stringify(body));
       };
@@ -1148,6 +1161,26 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const keep = new Set(["web", "api", "secret-ledger"]);
           for (let index = projects.length - 1; index >= 0; index -= 1) if (!keep.has(projects[index]!.name)) projects.splice(index, 1);
           return send(200, { projects: projects.length });
+        }
+        // Web task channel K4: say how Code answers the involved list (`reset` puts it back as it was), and add a person (`as`: priya or sam, default the one signed in last) to a task of someone else (`involve`: true makes a new task owned by the other of the two; or the id of an existing one).
+        if (method === "POST" && url.pathname === "/__fake/involved") {
+          const input = JSON.parse(await readBody(request)) as { reset?: unknown; mode?: unknown; involve?: unknown; as?: unknown; title?: unknown; updatedAt?: unknown };
+          // The person added (default: whoever signed in last) and the owner of the new task (the other of the two).
+          const added = PEOPLE.find((one) => one.key === input.as) ?? current, owner = added.developerId === SAM.developerId ? PRIYA : SAM;
+          if (input.reset === true) { for (const made of involvedMade) tasks.delete(made);involvedMade.clear();involved.clear();involvedMode = "on"; }
+          if (input.mode !== undefined) {
+            if (typeof input.mode !== "string" || !["on", "old", "400", "404", "501", "500"].includes(input.mode)) return send(400, { error: { code: "CONFIG_INVALID", message: "mode is on, old, 400, 404, 501 or 500" } });
+            involvedMode = input.mode as typeof involvedMode;
+          }
+          let taskId: string | undefined;
+          if (input.involve === true) {
+            taskId = randomUUID();
+            involvedMade.add(taskId);
+            const updatedAt = typeof input.updatedAt === "string" ? input.updatedAt : iso();
+            tasks.set(taskId, base(taskId, owner, { title: typeof input.title === "string" ? input.title : "Migrate the invoices table", project: "api", createdAt: updatedAt, updatedAt, workflow: workflowOf(taskId, owner, { stage: "IMPLEMENT", state: "RUNNING", revision: 3 }, { createdAt: updatedAt, updatedAt }) }));
+          } else if (typeof input.involve === "string" && tasks.has(input.involve)) taskId = input.involve;
+          if (taskId !== undefined) involved.set(taskId, new Set([...(involved.get(taskId) ?? []), added.developerId]));
+          return send(200, { mode: involvedMode, ...(taskId === undefined ? {} : { taskId }) });
         }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;

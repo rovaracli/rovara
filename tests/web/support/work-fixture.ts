@@ -3,6 +3,8 @@ import type { DecisionCard, DecisionsResponse } from "../../../packages/contract
 
 export const NOW = new Date("2026-11-15T12:00:00.000Z");
 export const ID = { plan: "11111111-1111-4111-8111-111111111111", running: "22222222-2222-4222-8222-222222222222", merge: "44444444-4444-4444-8444-444444444444", question: "55555555-5555-4555-8555-555555555555", checks: "66666666-6666-4666-8666-666666666666", waiting: "77777777-7777-4777-8777-777777777777", merged: "88888888-8888-4888-8888-888888888888", stale: "99999999-9999-4999-8999-999999999999" } as const;
+/** Cloud's session for the question task (the answer goes to the session route, never the task id). */
+export const QUESTION_SESSION = "ses_qqqqqqqqqqqqqqqqqqqq";
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 6e4).toISOString();
 
 export function task(taskId: string, title: string, patch: Record<string, unknown> = {}, stage = "IMPLEMENT", state = "RUNNING", updatedMinutesAgo = 5) {
@@ -12,7 +14,7 @@ export const TASKS = [
   task(ID.plan, "Add a retry to the billing webhook", { workflow: { stage: "PLAN_REVIEW", state: "WAITING", revision: 4, path: "QUICK" } }, "PLAN_REVIEW", "WAITING", 2),
   task(ID.running, "Speed up the search index", {}, "IMPLEMENT", "RUNNING", 25),
   task(ID.merge, "Fix the README typo", { status: "SUCCEEDED", workflow: { stage: "WAIT_FOR_MERGE", state: "WAITING", revision: 12, path: "STANDARD" }, pullRequests: [{ repository: "example/web", number: 42, url: "https://github.com/example/web/pull/42", state: "open" }] }, "WAIT_FOR_MERGE", "WAITING", 40),
-  task(ID.question, "Add a toxicity eval to the release gate", { workflow: { stage: "UNDERSTAND", state: "WAITING", revision: 2, path: "STANDARD" } }, "UNDERSTAND", "WAITING", 60),
+  task(ID.question, "Add a toxicity eval to the release gate", { sessionId: QUESTION_SESSION, workflow: { stage: "UNDERSTAND", state: "WAITING", revision: 2, path: "STANDARD", round: 2 } }, "UNDERSTAND", "WAITING", 60),
   task(ID.checks, "Rate-limit the public API", { workflow: { stage: "VERIFY", state: "BLOCKED", revision: 9, path: "STANDARD" } }, "VERIFY", "BLOCKED", 90),
   task(ID.waiting, "Document the router fallbacks", { workflow: { stage: "WAIT_FOR_MERGE", state: "WAITING", revision: 8, path: "STANDARD" } }, "WAIT_FOR_MERGE", "WAITING", 180),
   task(ID.merged, "Add request IDs to eval logs", { status: "SUCCEEDED", workflow: { stage: "MERGED", state: "COMPLETE", revision: 20, path: "STANDARD", outcome: "MERGED" }, pullRequests: [{ repository: "example/web", number: 40, state: "merged" }] }, "MERGED", "COMPLETE", 2000),

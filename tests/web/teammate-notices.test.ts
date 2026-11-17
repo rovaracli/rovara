@@ -21,16 +21,16 @@ import { navFixture } from "./support/fixtures.js";
 import type { ReactElement } from "react";
 
 const AT = "2026-11-17T12:00:00.000Z";
-const checklistWith = (channels: unknown[]) => ({
+const checklistWith = (channels: unknown[], repoItems: unknown[] = []) => ({
   project: "payments", viewer: { companyRole: "member", projectAdmin: false, canSkip: false }, progress: { done: 8, total: 8, percent: 100, nextRequired: null },
-  repos: { state: "done", count: 1, items: [] }, setupRun: { state: "done", status: "ready" }, evalConfirm: { state: "done", report: "confirmed" }, aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
+  repos: { state: "done", count: 1, items: repoItems }, setupRun: { state: "done", status: "ready" }, evalConfirm: { state: "done", report: "confirmed" }, aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
   slackChannel: { state: channels.length > 0 ? "done" : "optional", channels }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: { state: "done", hasTask: true, canStart: true },
 });
-interface Options { path?: string; role?: "owner" | "admin" | "member"; projects?: string[]; github?: unknown; slack?: unknown; linear?: unknown; storage?: Record<string, string> }
+interface Options { repoItems?: unknown[]; path?: string; role?: "owner" | "admin" | "member"; projects?: string[]; github?: unknown; slack?: unknown; linear?: unknown; storage?: Record<string, string> }
 function mount(element: ReactElement, options: Options = {}) {
   const f = fakeHost(async (request): Promise<ApiResponse> => {
     if (request.path === "/v1/app/nav") return { status: 200, body: navFixture({ me: { developerId: "a".repeat(64), name: "Sam", orgRole: options.role ?? "member" }, projects: (options.projects ?? ["payments"]).map((name) => ({ name, agents: [] })) }) };
-    if (request.path === "/v1/app/projects/payments/setup-status") return { status: 200, body: checklistWith([{ channelId: "CPAY00001", name: "payments-dev" }]) };
+    if (request.path === "/v1/app/projects/payments/setup-status") return { status: 200, body: checklistWith([{ channelId: "CPAY00001", name: "payments-dev" }], options.repoItems) };
     if (request.path === "/v1/app/github/connections") return { status: 200, body: options.github ?? { installations: [] } };
     if (request.path === "/v1/app/slack") return { status: 200, body: options.slack ?? { workspace: null } };
     if (request.path === "/v1/app/linear") return { status: 200, body: options.linear ?? { status: "disconnected" } };
@@ -164,5 +164,51 @@ describe("connection notices", () => {
     expect(screen.queryByTestId("integration-notice")).toBeNull();
     expect(asked(g, "/v1/app/github/connections") || asked(g, "/v1/app/slack") || asked(g, "/v1/app/linear")).toBe(false);
     g.close();
+  });
+});
+
+describe("repository notices (DEC 254zc(1))", () => {
+  const moved = [{ name: "payments", fullName: "acme/payments", defaultBranch: "main", access: "transferred" }, { name: "ledger", fullName: "acme/ledger", defaultBranch: "main", access: "removed" }, { name: "docs", fullName: "acme/docs", defaultBranch: "main" }];
+
+  it("a company admin gets one fixed line per repository GitHub says is gone, by its access word, and none for an ordinary one", async () => {
+    const f = mount(h(IntegrationNoticeCards, { admin: true }), { repoItems: moved });
+    await waitFor(() => expect(screen.getAllByTestId("integration-notice")).toHaveLength(2));
+    const lines = screen.getAllByTestId("integration-notice").map((card) => card.querySelector(".rv-attention-reason")?.textContent);
+    expect(lines).toEqual([
+      "acme/payments in payments was moved to another GitHub owner. Tasks can't reach it until the project points at its new address.",
+      "acme/ledger in payments is no longer shared with the Rovara app on GitHub. Tasks can't reach it until it's added back.",
+    ]);
+    expect(screen.getAllByRole("link", { name: "Open Connections" })[0]!.getAttribute("href")).toBe("/app/admin/connections");
+    f.close();
+  });
+
+  it("the banner counts them with the other broken connections", async () => {
+    const f = mount(h(IntegrationBanner, { admin: true }), { repoItems: moved });
+    const banner = await screen.findByTestId("integration-banner");
+    await waitFor(() => expect(banner.textContent).toContain("2 connections need attention."));
+    expect(banner.textContent).toContain("acme/payments in payments was moved to another GitHub owner.");
+    f.close();
+  });
+
+  it("nothing is shown when no repository has an access word, and a plain member's page asks nothing about projects", async () => {
+    const f = mount(h(IntegrationNoticeCards, { admin: true }), { repoItems: [moved[2]] });
+    await waitFor(() => expect(asked(f, "/v1/app/projects/payments/setup-status")).toBe(true));
+    await new Promise((done) => setTimeout(done, 30));
+    expect(screen.queryByTestId("integration-notice")).toBeNull();
+    f.close();
+    const g = mount(h(IntegrationNoticeCards, { admin: false }), { repoItems: moved });
+    await new Promise((done) => setTimeout(done, 50));
+    expect(screen.queryByTestId("integration-notice")).toBeNull();
+    expect(asked(g, "/v1/app/projects/payments/setup-status")).toBe(false);
+    g.close();
+  });
+
+  it("asks about no more than twenty projects", async () => {
+    const names = Array.from({ length: 25 }, (_, index) => `p${String(index)}`);
+    const f = mount(h(IntegrationNoticeCards, { admin: true }), { projects: names });
+    await waitFor(() => expect(asked(f, "/v1/app/nav")).toBe(true));
+    await new Promise((done) => setTimeout(done, 50));
+    expect(f.request.mock.calls.filter(([request]) => String(request.path).endsWith("/setup-status")).length).toBe(20);
+    f.close();
   });
 });

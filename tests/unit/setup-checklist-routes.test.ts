@@ -139,6 +139,27 @@ describe("the checklist read", () => {
     expect((res.body as { repos: unknown }).repos).toEqual({ state: "done", count: 1, items: [{ name: "payments", defaultBranch: "main" }] });
   });
 
+  it("passes a repository's access word (DEC 254zc(1): transferred or removed) on, and nothing else about it", async () => {
+    const items = [{ name: "payments", fullName: "acme/payments", defaultBranch: "main", access: "transferred", why: LEAK }, { name: "ledger", fullName: "acme/ledger", defaultBranch: "main", access: "removed" }, { name: "docs", defaultBranch: "main" }];
+    const w = setUp((call) => call.path.endsWith("/setup-status") ? json(200, { ...checklist("payments"), repos: { state: "done", count: 3, items } }) : undefined);
+    const res = await w.send("GET", "/v1/web/projects/payments/setup-status", await w.as("ada-token"));
+    expect(res.status).toBe(200);
+    expect(res.text).not.toContain(LEAK);
+    expect((res.body as { repos: { items: unknown } }).repos.items).toEqual([
+      { name: "payments", fullName: "acme/payments", defaultBranch: "main", access: "transferred" }, { name: "ledger", fullName: "acme/ledger", defaultBranch: "main", access: "removed" }, { name: "docs", defaultBranch: "main" },
+    ]);
+    expect(ProjectSetupChecklistSchema.parse(res.body).repos.items[0]?.access).toBe("transferred");
+  });
+
+  it("a repository access word Code did not promise makes the whole checklist unreadable, and the words are never echoed", async () => {
+    for (const access of [LEAK, "gone", "", 1, null, ["removed"]]) {
+      const w = setUp((call) => call.path.endsWith("/setup-status") ? json(200, { ...checklist("payments"), repos: { state: "done", count: 1, items: [{ name: "payments", defaultBranch: "main", access }] } }) : undefined);
+      const res = await w.send("GET", "/v1/web/projects/payments/setup-status", await w.as("ada-token"));
+      expect(asRefusal(res)).toEqual(refusal("unavailable"));
+      expect(res.text).not.toContain(LEAK);
+    }
+  });
+
   it("another company's project, a project name that doesn't read, and a person in no company are refused in fixed words (the last two never reach Code's project routes)", async () => {
     const w = setUp();
     const ada = await w.as("ada-token");
