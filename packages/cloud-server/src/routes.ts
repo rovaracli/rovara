@@ -18,6 +18,7 @@ import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
 import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./project-create-routes.js";
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
+import { openTaskByCodeId } from "./open-task.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
@@ -531,6 +532,12 @@ export const ROUTES: Route[] = [
       await context.work.put(record, input.requestId);
       return { status: 201, body: { task: started.task, sessionId: record.sessionId, sessionUrl: `${context.origin.replace(/\/+$/u, "")}/s/${record.sessionId}` } };
     },
+  },
+  {
+    // POST /v1/app/tasks/{taskId}/open (K2): the Cloud session of a Code task, made on the first open by anyone Code lets read the task (open-task.ts).
+    // The answer is { sessionId, sessionUrl }; a refusal from Code, and a task Cloud cannot open, answer the same SESSION_NOT_FOUND 404.
+    method: "POST", path: /^\/tasks\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})\/open$/u,
+    answer: openTaskByCodeId,
   },
   {
     // GET /v1/app/sessions/{id}: Cloud's session around Code's task.

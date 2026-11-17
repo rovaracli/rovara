@@ -22,7 +22,7 @@ const event = (rawPath: string, method = "GET", headers: Record<string, string> 
 const app = (assetOrigin = CDN) => createAppHandler({ appDirectory: directory, assetOrigin, realtimeHttpHost: HTTP, realtimeWsHost: WS });
 describe("the cell app shell and its immutable files", () => {
  it("serves each app route and a real session link with the exact restrictive headers", async () => {
-  for (const path of ["/app", "/app/", "/app/live", "/app/projects/web/agents", "/s/ses_aaaaaaaaaaaaaaaaaaaa"]) {
+  for (const path of ["/app", "/app/", "/app/live", "/app/projects/web/agents", "/s/ses_aaaaaaaaaaaaaaaaaaaa", "/t/6f9d0c1e-2b3a-4c5d-8e7f-001122334455"]) {
    const response = await app()(event(path));expect(response.statusCode).toBe(200);expect(response.isBase64Encoded ?? false).toBe(false);
    const nonce = /<meta name="csp-nonce" content="([A-Za-z0-9_-]+)">/.exec(response.body)?.[1];expect(nonce).toBeTruthy();
    expect(response.headers).toEqual({ ...appHeaders({ assetOrigin: CDN, realtimeHttpHost: HTTP, realtimeWsHost: WS }, nonce!), "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
@@ -46,7 +46,7 @@ describe("the cell app shell and its immutable files", () => {
   expect(first.body).not.toBe(second.body);expect(first.headers["content-security-policy"]).not.toBe(second.headers["content-security-policy"]);
  });
  it("refuses malformed links, traversal and other methods", async () => {
-  for (const path of ["/s/not-an-id", "/s/ses_aaaaaaaaaaaaaaaaaaaa/extra", "/other", "/app/assets/../index.html", "/app/assets/%2e%2e/index.html", "/app/assets/a%2fb.js", "/app/assets/a%5cb.js", "/app/assets/a\\b.js", "/app/assets//main-fixture.js", "/app/assets/missing.js"]) expect((await app("")(event(path))).statusCode, path).toBe(404);
+  for (const path of ["/s/not-an-id", "/t/not-an-id", "/t/6f9d0c1e-2b3a-4c5d-8e7f-001122334455/extra", "/t/", "/s/ses_aaaaaaaaaaaaaaaaaaaa/extra", "/other", "/app/assets/../index.html", "/app/assets/%2e%2e/index.html", "/app/assets/a%2fb.js", "/app/assets/a%5cb.js", "/app/assets/a\\b.js", "/app/assets//main-fixture.js", "/app/assets/missing.js"]) expect((await app("")(event(path))).statusCode, path).toBe(404);
   const post = await app()(event("/app", "POST"));expect(post.statusCode).toBe(405);expect(post.headers.allow).toBe("GET");
  });
  it("leaves CloudFront files to the distribution", async () => { expect((await app()(event("/app/assets/main-fixture.js"))).statusCode).toBe(404); });

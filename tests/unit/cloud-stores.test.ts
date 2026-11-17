@@ -63,6 +63,23 @@ function contract(name: string, make: () => Stores) {
       expect(await work.get(fresh.sessionId)).toEqual({ ...fresh, followers: [GRACE], storeVersion: 1 });
     });
 
+    it("records each new session under its task, and `once` lets only the first new session of a task in, across servers (K2)", async () => {
+      const stores = make();
+      const first = session(), second = { ...session(), taskId: first.taskId }, plain = session();
+      expect(await stores.work.byTask(first.taskId)).toBeUndefined();
+      await stores.work.put(first, undefined, { once: true });
+      expect((await stores.work.byTask(first.taskId))?.sessionId).toBe(first.sessionId);
+      await expect(stores.second().work.put(second, undefined, { once: true })).rejects.toBeInstanceOf(StoreConflict);
+      expect(await stores.work.get(second.sessionId)).toBeUndefined();
+      expect((await stores.second().work.byTask(first.taskId))?.sessionId).toBe(first.sessionId);
+      // A put without `once` (the starter's) writes as before; a change to a session leaves its task's record alone.
+      await stores.work.put({ ...(await stores.work.get(first.sessionId))!, followers: [GRACE] });
+      expect((await stores.work.byTask(first.taskId))?.sessionId).toBe(first.sessionId);
+      await stores.work.put({ ...plain, taskId: "7a9d0c1e-2b3a-4c5d-8e7f-001122334466" }, "44444444-4444-4444-8444-444444444444");
+      expect((await stores.work.byTask("7a9d0c1e-2b3a-4c5d-8e7f-001122334466"))?.sessionId).toBe(plain.sessionId);
+      expect((await stores.work.byRequest("44444444-4444-4444-8444-444444444444"))?.sessionId).toBe(plain.sessionId);
+    });
+
     it("refuses a write on a session someone else wrote since it was read, and keeps their change", async () => {
       const stores = make();
       const fresh = session();

@@ -1,0 +1,113 @@
+// K2 (web task channel): opening a task by its Code id. Cloud's sessions exist only for the person who started the task, so a person Code lets
+// read a task (a People co-owner, commenter or viewer) had no way to open it in Cloud. `POST /v1/app/tasks/{taskId}/open` answers the task's Cloud
+// session, making it on the first open.
+//
+// The rules (web task channel plan 4.1):
+//   - Code decides who may read the task: Cloud reads GET /v1/dev/tasks/{taskId} as the signed-in person FIRST, before it looks at its own store, so a
+//     person Code refuses learns nothing from the answer (a session that exists answers the same as one that does not) and nothing is written.
+//   - The task id is the path's, and is checked as a UUID. The project, the owner and the company never come from the request: the project from Code's
+//     task, the owner from Code's People read of that task (below), the company from the signed-in session.
+//   - One session per task: a conditional write (`once`) makes two openers at the same moment get the same session.
+//   - Any refusal from Code (a 4xx from either read) answers the same fixed "no such session" words as a session Cloud does not hold. Code
+//     being down (5xx, no answer) is not a refusal and passes through unchanged.
+import { createHash } from "node:crypto";
+import { CodeError } from "./code-client.js";
+import { companyCaller, refused } from "./company-caller.js";
+import type { RouteAnswer, RouteContext } from "./routes.js";
+import { StoreConflict, newSessionId, type WorkSession } from "./work-sessions.js";
+
+const TASK_VIEW = { "x-agentx-task-view": "2" };
+const PEOPLE_MAX = 100;
+const NAME_MAX = 80;
+const PERSON_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+/** The words for a task Code refuses, a task Cloud has no session for, and every other reason nothing is opened (SESSION_NOT_FOUND, as the session routes say). */
+export const OPEN_REFUSED: RouteAnswer = { status: 404, body: { error: { code: "SESSION_NOT_FOUND", message: "That session doesn't exist, or you can't see it." } } };
+
+interface PeopleEntry { personId: string; name: string; you: boolean; effectiveRole: string | null }
+
+/** Code's People read of the task (`{ view: { people } }`), checked strictly: an answer that is not this shape reads as no answer. */
+function peopleOf(answer: unknown): PeopleEntry[] | undefined {
+  const people = (answer as { view?: { people?: unknown } } | undefined)?.view?.people;
+  if (!Array.isArray(people) || people.length > PEOPLE_MAX) return undefined;
+  const entries: PeopleEntry[] = [];
+  for (const raw of people) {
+    const entry = raw as Record<string, unknown> | null;
+    if (typeof entry !== "object" || entry === null) return undefined;
+    const { personId, name, you, effectiveRole } = entry;
+    if (typeof personId !== "string" || !PERSON_ID.test(personId) || typeof name !== "string" || name.trim() === "" || name.length > NAME_MAX || typeof you !== "boolean") return undefined;
+    if (effectiveRole !== null && effectiveRole !== "owner" && effectiveRole !== "commenter" && effectiveRole !== "viewer") return undefined;
+    entries.push({ personId, name, you, effectiveRole });
+  }
+  return entries;
+}
+
+/** A Code refusal (4xx) is "no": undefined. Anything else that went wrong (Code down, the sign-in ended) is not a refusal and passes on. */
+async function readOrRefused<T>(read: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof CodeError && error.status >= 400 && error.status < 500) return undefined;
+    throw error;
+  }
+}
+
+/** A stand-in id for an owner who has not opened the task in Cloud: 64 hex, from Code's person id, matching no sign-in's developer id. */
+const placeholderOwnerId = (personId: string): string => createHash("sha256").update(`cloud-task-owner\u0000${personId}`).digest("hex");
+
+const opened = (context: RouteContext, record: WorkSession): RouteAnswer => ({
+  status: 200, body: { sessionId: record.sessionId, sessionUrl: `${context.origin.replace(/\/+$/u, "")}/s/${record.sessionId}` },
+});
+
+export async function openTaskByCodeId(context: RouteContext): Promise<RouteAnswer> {
+  const taskId = context.params[0]!.toLowerCase();
+  // The person and their company are Code's access check made now (company-caller.ts), never the request's; a person Code names no company for opens nothing.
+  const caller = await companyCaller(context);
+  if (refused(caller)) return OPEN_REFUSED;
+  const me = { developerId: caller.developerId, name: caller.name };
+  const company = caller.companyId;
+  // 1. Code's own read, as this person, before anything else is looked at.
+  const read = await readOrRefused(() => context.client.json<{ task?: { taskId?: unknown; project?: unknown } }>(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}?events=0`, { headers: TASK_VIEW }));
+  const project = read?.task?.project;
+  if (read === undefined || read.task?.taskId !== taskId || typeof project !== "string" || project === "") return OPEN_REFUSED;
+  // 2. The session Cloud already holds for the task (the starter's, or one an earlier open made).
+  const existing = await context.work.byTask(taskId);
+  if (existing !== undefined) {
+    // A session another company's person opened is not this person's, even if a Code that mixed companies let them read the task.
+    if (existing.companyId !== undefined && existing.companyId !== company) return OPEN_REFUSED;
+    if (existing.ownerUnresolved === true) await healOwner(context, existing, me);
+    return opened(context, existing);
+  }
+  // 3. First open: who owns the task, from Code's People read of it (a refusal or an unreadable answer opens nothing).
+  const people = peopleOf(await readOrRefused(() => context.client.json<unknown>(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}/people`)));
+  const owners = people?.filter((entry) => entry.effectiveRole === "owner") ?? [];
+  const owner = owners.find((entry) => entry.you) ?? owners[0];
+  if (owner === undefined) return OPEN_REFUSED;
+  const person = owner.you ? me : { developerId: placeholderOwnerId(owner.personId), name: owner.name };
+  const record: WorkSession = {
+    sessionId: newSessionId(), taskId, project, startedBy: person, owner: person, createdAt: context.now().toISOString(), revision: 1,
+    companyId: company,
+    ...(owner.you ? {} : { ownerUnresolved: true as const }),
+  };
+  try {
+    await context.work.put(record, undefined, { once: true });
+  } catch (error) {
+    if (!(error instanceof StoreConflict)) throw error;
+    // Another opener made the session since step 2: this person gets that one. A session this company's view does not show (another company's) is no answer.
+    const winner = await context.work.byTask(taskId);
+    return winner === undefined ? OPEN_REFUSED : opened(context, winner);
+  }
+  return opened(context, record);
+}
+
+/** The owner opening a session someone else's open made: Code says they are an owner, so the record names them. Best effort; the open already succeeded. */
+async function healOwner(context: RouteContext, record: WorkSession, me: { developerId: string; name: string }): Promise<void> {
+  const people = peopleOf(await readOrRefused(() => context.client.json<unknown>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/people`)));
+  if (people?.some((entry) => entry.you && entry.effectiveRole === "owner") !== true) return;
+  const healed: WorkSession = { ...record, owner: me, revision: record.revision + 1 };
+  delete healed.ownerUnresolved;
+  try {
+    await context.work.put(healed);
+  } catch (error) {
+    if (!(error instanceof StoreConflict)) throw error;
+  }
+}

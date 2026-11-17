@@ -8,6 +8,7 @@
 //   SESSION#<ses_…>         META                            a Cloud session without its comments; `version` guards writes
 //   SESSION#<ses_…>         COMMENT#<createdAt>#<msg_…>     one comment, so a session's comments can outgrow an item
 //   REQUEST#<request id>    REQUEST                         the session a start request made
+//   REQUEST#task-<task id>  REQUEST                         the session of a Code task (written with every new session; `once` makes it conditional)
 //   PRESENCE#<ses_…>        VIEWER#<developer id>           a person's last heartbeat on a session (expires)
 //   AUDIT#<company>#<YYYY-MM>  <at>#<aud_…>                 one audit record of a company's month (no expiry; written once, never replaced: `DynamoCloudAuditStore`)
 //   AUDITID#<company>#<aud_…>  AUDITID                      the marker that keeps one record id to one record, written in the same transaction
@@ -21,7 +22,7 @@ import { PRESENCE_TTL_MS, currentViewers, type PresenceBoard, type Viewer } from
 import { SealedRecordRefused, type TokenSealer } from "./session-crypto.js";
 import { DynamoSessionTable } from "./session-table.js";
 import { SessionKeeper, type PendingSignIns } from "./sessions.js";
-import { StoreConflict, type SessionComment, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
+import { StoreConflict, taskRequestKey, type SessionComment, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
 
 /** The table's shape, which infra/lib (the table) and the tests (DynamoDB Local) create from. */
 export const CLOUD_TABLE = {
@@ -130,7 +131,11 @@ export class DynamoWorkSessionStore implements WorkSessionStore {
     return typeof Item?.sessionId === "string" ? this.get(Item.sessionId) : undefined;
   }
 
-  async put(session: WorkSession, requestId?: string): Promise<void> {
+  async byTask(taskId: string): Promise<WorkSession | undefined> {
+    return this.byRequest(taskRequestKey(taskId));
+  }
+
+  async put(session: WorkSession, requestId?: string, options?: { once?: boolean }): Promise<void> {
     const expected = session.storeVersion;
     const meta: NonNullable<TransactWriteCommandInput["TransactItems"]>[number] = {
       Put: {
@@ -144,7 +149,14 @@ export class DynamoWorkSessionStore implements WorkSessionStore {
     const changed = (session.messages ?? []).filter((comment) => !this.unchanged.has(comment));
     const writes: NonNullable<TransactWriteCommandInput["TransactItems"]> = [
       meta,
-      ...(requestId === undefined ? [] : [{ Put: { TableName: this.table, Item: { pk: `REQUEST#${requestId}`, sk: "REQUEST", sessionId: session.sessionId } } }]),
+      ...(requestId === undefined || requestId === taskRequestKey(session.taskId) ? [] : [{ Put: { TableName: this.table, Item: { pk: `REQUEST#${requestId}`, sk: "REQUEST", sessionId: session.sessionId } } }]),
+      // A new session also records its task (under the REQUEST# key space, which holds UUIDs and `task-<uuid>` and so never collides); `once` makes that write conditional.
+      ...(expected !== undefined ? [] : [{
+        Put: {
+          TableName: this.table, Item: { pk: `REQUEST#${taskRequestKey(session.taskId)}`, sk: "REQUEST", sessionId: session.sessionId },
+          ...(options?.once === true ? { ConditionExpression: "attribute_not_exists(pk)" } : {}),
+        },
+      }]),
       ...changed.map((comment) => ({ Put: { TableName: this.table, Item: { ...commentKey(session.sessionId, comment), comment } } })),
     ];
     // A request changes a comment or two; only a copy of a whole session (moving to this store) writes more than one transaction holds.
@@ -153,7 +165,7 @@ export class DynamoWorkSessionStore implements WorkSessionStore {
       await this.db.send(new TransactWriteCommand({ TransactItems: first }));
     } catch (error) {
       const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
-      if (error instanceof ConditionalCheckFailedException || reasons?.[0]?.Code === "ConditionalCheckFailed") throw new StoreConflict(session.sessionId);
+      if (error instanceof ConditionalCheckFailedException || reasons?.some((reason) => reason.Code === "ConditionalCheckFailed") === true) throw new StoreConflict(session.sessionId);
       throw error;
     }
     for (let at = 0; at < rest.length; at += TRANSACTION_MAX) await this.db.send(new TransactWriteCommand({ TransactItems: rest.slice(at, at + TRANSACTION_MAX) }));

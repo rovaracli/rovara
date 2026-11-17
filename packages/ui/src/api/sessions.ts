@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { z } from "zod";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { SessionMakeAgentBodySchema, SessionMakeAgentResponseReaderSchema, TaskResponseReaderSchema, DeveloperTaskViewSchema, SessionIdSchema, SessionMessageIdSchema, SessionResponseReaderSchema, SessionMessageReaderSchema, SessionMessagePageReaderSchema, SessionEventPageReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema, SessionSharesResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionShareDeleteResponseReaderSchema, type SessionAnchorInput, type AgentPrincipalSchema } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
@@ -6,6 +7,7 @@ import { createApiClient } from "./client.js";
 import type { ReadSession } from "../screens/session/SessionHeader.js";
 export type ReadMessage = ReturnType<typeof SessionMessageReaderSchema.parse>;
 type Principal = ReturnType<typeof AgentPrincipalSchema.parse>;
+const TASK_ID = z.string().uuid(), OpenedTaskSchema = z.object({ sessionId: SessionIdSchema, sessionUrl: z.string() });
 const sessionPath = (id: string) => "/v1/app/sessions/" + encodeURIComponent(SessionIdSchema.parse(id));
 export function acceptSessionRead(previous: ReadSession | undefined, next: ReadSession): ReadSession {
  if (previous !== undefined && (next.revision < previous.revision || Date.parse(next.updatedAt) < Date.parse(previous.updatedAt))) return previous;
@@ -20,6 +22,8 @@ export function createSessionApi(host: AppHost) {
  const api = createApiClient(host);
  return {
  makeAgent(id: string, input: { requestId: string; name?: string }) { return api.send("POST", sessionPath(id) + "/agent", SessionMakeAgentBodySchema.parse(input), SessionMakeAgentResponseReaderSchema); },
+ /** K2: the Cloud session of a Code task (made on the first open by anyone Code lets read it); a refusal reads as a missing session. */
+ async openTask(taskId: string) { const sent = await api.send("POST", "/v1/app/tasks/" + encodeURIComponent(TASK_ID.parse(taskId)) + "/open", undefined, { parse: (value: unknown) => OpenedTaskSchema.parse(value) }, { retry: "never" });return sent.kind === "done" ? sent.value.sessionId : undefined; },
  continueTask(taskId: string) { return api.send("POST", "/v1/app/tasks/" + encodeURIComponent(DeveloperTaskViewSchema.shape.taskId.parse(taskId)) + "/continue-as-task", { requestId: crypto.randomUUID() }, TaskResponseReaderSchema); },
  async read(id: string) { return (await api.get(sessionPath(id), SessionResponseReaderSchema, { "x-agentx-task-view": "2" })).session; },
  sendMessage(id: string, input: { kind: "comment" | "steer"; text: string; anchor?: SessionAnchorInput; threadId?: string }) { return api.send("POST", sessionPath(id) + "/messages", { ...input, requestId: crypto.randomUUID() }, SessionMessageReaderSchema); },
