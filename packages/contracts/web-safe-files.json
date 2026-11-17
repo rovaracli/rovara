@@ -73,6 +73,7 @@
   "packages/contracts/src/project-learning.ts",
   "packages/contracts/src/project-lifecycle.ts",
   "packages/contracts/src/project-playbook.ts",
+  "packages/contracts/src/project-setup-status.ts",
   "packages/contracts/src/project.ts",
   "packages/contracts/src/provenance.ts",
   "packages/contracts/src/public-suffix-rules.ts",

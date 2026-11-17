@@ -251,17 +251,54 @@ function contract(name: string, make: () => CompanyStore) {
       expect(await store.hookInstall(install().issuer)).toBeUndefined();
     });
 
-    it("gives a GitHub account's one trial to the first company that connects it, and never moves it (guided onboarding PR 2)", async () => {
+    it("unlocks a company's trial for the first company that connects a GitHub account, and never moves it (L2-8)", async () => {
       const store = make();
-      expect(await store.claimGithubTrial(4242, A, iso(NOW))).toBe("claimed");
-      expect(await store.claimGithubTrial(4242, A, iso(NOW + 1))).toBe("held");
-      expect(await store.claimGithubTrial(4242, B, iso(NOW + 2))).toBe("other");
-      // Still A's after B asked.
-      expect(await store.claimGithubTrial(4242, A, iso(NOW + 3))).toBe("held");
-      expect(await store.claimGithubTrial(7, B, iso(NOW))).toBe("claimed");
-      await expect(store.claimGithubTrial(0, A, iso(NOW))).rejects.toThrow();
-      await expect(store.claimGithubTrial(1.5, A, iso(NOW))).rejects.toThrow();
-      await expect(store.claimGithubTrial(9, "acme", iso(NOW))).rejects.toThrow();
+      expect(await store.trial(A)).toBeUndefined();
+      expect(await store.unlockTrial(4242, A, iso(NOW))).toBe("unlocked");
+      expect(await store.trial(A)).toEqual({ companyId: A, githubUserId: 4242, unlockedAt: iso(NOW) });
+      // A replay changes nothing (the first time stays).
+      expect(await store.unlockTrial(4242, A, iso(NOW + 1))).toBe("held");
+      expect(await store.trial(A)).toEqual({ companyId: A, githubUserId: 4242, unlockedAt: iso(NOW) });
+      // Another company with the same GitHub account gets no trial; nothing is written for it.
+      expect(await store.unlockTrial(4242, B, iso(NOW + 2))).toBe("used");
+      expect(await store.trial(B)).toBeUndefined();
+      expect(await store.unlockTrial(4242, A, iso(NOW + 3))).toBe("held");
+      // A different GitHub account for B still can.
+      expect(await store.unlockTrial(7, B, iso(NOW))).toBe("unlocked");
+      expect(await store.trial(B)).toEqual({ companyId: B, githubUserId: 7, unlockedAt: iso(NOW) });
+      await expect(store.unlockTrial(0, A, iso(NOW))).rejects.toThrow();
+      await expect(store.unlockTrial(1.5, A, iso(NOW))).rejects.toThrow();
+      await expect(store.unlockTrial(9, "acme", iso(NOW))).rejects.toThrow();
+      await expect(store.trial("acme")).rejects.toThrow();
+    });
+
+    it("gives a company one trial only: a second GitHub account of an unlocked company claims nothing (L2-8)", async () => {
+      const store = make();
+      expect(await store.unlockTrial(1, A, iso(NOW))).toBe("unlocked");
+      expect(await store.unlockTrial(2, A, iso(NOW + 1))).toBe("already");
+      expect((await store.trial(A))!.githubUserId).toBe(1);
+      // GitHub account 2 was not claimed by A's second try: B can still unlock with it.
+      expect(await store.unlockTrial(2, B, iso(NOW + 2))).toBe("unlocked");
+      // A held-by-another account and an unlocked company: the company's own trial is the answer, not "used".
+      expect(await store.unlockTrial(2, A, iso(NOW + 3))).toBe("already");
+    });
+
+    it("lets exactly one of many companies racing for one GitHub account unlock, and one GitHub account of one company win (L2-8)", async () => {
+      const store = make();
+      const companies = ["c", "d", "e", "f", "g", "h"].map((letter) => `org_${letter.repeat(20)}`);
+      const answers = await Promise.all(companies.map((company, index) => store.unlockTrial(555, company, iso(NOW + index))));
+      expect(answers.filter((answer) => answer === "unlocked")).toHaveLength(1);
+      expect(answers.filter((answer) => answer === "used")).toHaveLength(companies.length - 1);
+      const holders = (await Promise.all(companies.map((company) => store.trial(company)))).filter((trial) => trial !== undefined);
+      expect(holders).toHaveLength(1);
+      // One company, many GitHub accounts at once: one trial, and the losers' accounts stay free for others.
+      const accounts = [11, 12, 13, 14];
+      const mine = await Promise.all(accounts.map((account) => store.unlockTrial(account, A, iso(NOW))));
+      expect(mine.filter((answer) => answer === "unlocked")).toHaveLength(1);
+      expect(mine.filter((answer) => answer === "already")).toHaveLength(accounts.length - 1);
+      const won = (await store.trial(A))!.githubUserId;
+      const losers = accounts.filter((one) => one !== won);
+      expect(await store.unlockTrial(losers[0]!, B, iso(NOW))).toBe("unlocked");
     });
 
     it("answers the hook from the store: defaults, saved settings, and nothing for a row that does not read", async () => {
@@ -324,6 +361,75 @@ describe("DynamoCompanyStore: a row's company is checked on every read", () => {
     for (const sk of [`INVITEREQUEST#${open.requestId}`, "INVITE"]) expect([...table.items.values()].find((item) => item.sk === sk)!.expiresAt).toBe(Date.parse(open.expiresAt) / 1000 + 90 * 86_400);
     await store.updateInvite({ ...open, state: "revoked", revision: 1, revokedAt: iso(NOW) }, { revision: 0, state: "pending" });
     expect(row().expiresAt).toBe(NOW / 1000 + 90 * 86_400);
+  });
+
+  it("unlocks a trial in one transaction: the account's claim and the company's trial are written together or not at all (L2-8)", async () => {
+    const table = memoryTable();
+    const store = new DynamoCompanyStore(table as never, "companies");
+    const db = table as never as { send: (command: unknown) => Promise<unknown> };
+    expect(await store.unlockTrial(4242, A, iso(NOW))).toBe("unlocked");
+    expect([...table.items.values()].map((item) => `${String(item.pk)}|${String(item.sk)}`).sort()).toEqual([`COMPANY#${A}|TRIAL`, "GITHUBTRIAL#4242|TRIAL"]);
+    // B loses on the account: it leaves no trial row for B and no second claim.
+    expect(await store.unlockTrial(4242, B, iso(NOW + 1))).toBe("used");
+    expect(table.items.size).toBe(2);
+    // A second account of A loses on A's own trial: it claims nothing (account 9 stays free).
+    expect(await store.unlockTrial(9, A, iso(NOW + 2))).toBe("already");
+    expect(table.items.size).toBe(2);
+    expect(await store.unlockTrial(9, B, iso(NOW + 3))).toBe("unlocked");
+    // The first #92 build wrote only the account's claim: its company unlocks from it, any other company is still refused.
+    await db.send(new PutCommand({ TableName: "companies", Item: { pk: "GITHUBTRIAL#31", sk: "TRIAL", companyId: A, githubUserId: 31, claimedAt: iso(NOW) } }));
+    expect(await store.unlockTrial(31, B, iso(NOW))).toBe("already");
+    const fresh = "org_" + "d".repeat(20);
+    expect(await store.unlockTrial(31, fresh, iso(NOW))).toBe("used");
+    const stale = "org_" + "e".repeat(20);
+    await db.send(new PutCommand({ TableName: "companies", Item: { pk: "GITHUBTRIAL#33", sk: "TRIAL", companyId: stale, githubUserId: 33, claimedAt: iso(NOW) } }));
+    expect(await store.unlockTrial(33, stale, iso(NOW))).toBe("unlocked");
+    expect(await store.trial(stale)).toEqual({ companyId: stale, githubUserId: 33, unlockedAt: iso(NOW) });
+    // A replay of an unlocked company, or a second account of it, is answered from its own trial row and sends no write.
+    const sent: string[] = [];
+    const watched = new DynamoCompanyStore({ send: async (command: { constructor: { name: string } }) => { sent.push(command.constructor.name); return db.send(command); } } as never, "companies");
+    expect(await watched.unlockTrial(33, stale, iso(NOW + 5))).toBe("held");
+    expect(await watched.unlockTrial(34, stale, iso(NOW + 5))).toBe("already");
+    expect(sent).toEqual(["GetCommand", "GetCommand"]);
+    // A claim row that does not name a company is never a free trial.
+    await db.send(new PutCommand({ TableName: "companies", Item: { pk: "GITHUBTRIAL#32", sk: "TRIAL" } }));
+    expect(await store.unlockTrial(32, fresh, iso(NOW))).toBe("used");
+    expect(await store.trial(fresh)).toBeUndefined();
+  });
+
+  it("asks again when another transaction was on the same rows, never answering \"used\" for a race nobody decided (L2-8)", async () => {
+    const table = memoryTable();
+    const db = table as never as { send: (command: unknown) => Promise<unknown> };
+    const busy = (times: number) => {
+      let left = times;
+      return new DynamoCompanyStore({ send: async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === "TransactWriteCommand" && left > 0) {
+          left -= 1;
+          throw Object.assign(new Error("Transaction cancelled"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "TransactionConflict" }, { Code: "TransactionConflict" }] });
+        }
+        return db.send(command);
+      } } as never, "companies");
+    };
+    expect(await busy(2).unlockTrial(77, A, iso(NOW))).toBe("unlocked");
+    expect(await busy(2).unlockTrial(77, B, iso(NOW))).toBe("used");
+    expect(await busy(2).unlockTrial(78, A, iso(NOW))).toBe("already");
+    // Never decided in time: an error (the connect carries on with no trial), not a guessed answer, and nothing written.
+    const before = table.items.size;
+    await expect(busy(99).unlockTrial(79, B, iso(NOW))).rejects.toThrow();
+    expect(table.items.size).toBe(before);
+  });
+
+  it("reads a company's trial only from a row that is its own and names a GitHub account (L2-8)", async () => {
+    const table = memoryTable();
+    const store = new DynamoCompanyStore(table as never, "companies");
+    const db = table as never as { send: (command: unknown) => Promise<unknown> };
+    await db.send(new PutCommand({ TableName: "companies", Item: { pk: `COMPANY#${A}`, sk: "TRIAL", companyId: B, githubUserId: 5, unlockedAt: iso(NOW) } }));
+    expect(await store.trial(A)).toBeUndefined();
+    // A row that does not read leaves the company without a free trial: the unlock answers "used" and writes nothing.
+    expect(await store.unlockTrial(5, A, iso(NOW))).toBe("used");
+    expect(table.items.size).toBe(1);
+    await db.send(new PutCommand({ TableName: "companies", Item: { pk: `COMPANY#${B}`, sk: "TRIAL", companyId: B, githubUserId: "5", unlockedAt: iso(NOW) } }));
+    expect(await store.trial(B)).toBeUndefined();
   });
 
   it("reads an install by a hash of its issuer and checks the issuer it holds", async () => {
