@@ -339,6 +339,8 @@ it("makes involved rows a group of their own: newest first, nothing asked of the
   for (const row of rows) expect(row).toMatchObject({ group: "involved", need: undefined, decision: undefined, stale: false });
   // A stopped task reads as what it is, in its line, never as a request for the person.
   expect(rows[1]).toMatchObject({ line: "Stopped", tone: "bad" });
+  // A task at spec review is not a request the person can act on: its line says where it is.
+  expect(involvedRows(readTaskList({ tasks: [task(INVOLVED_ID, "At review", {}, "PLAN_REVIEW", "WAITING", 10)] }), NOW)[0]).toMatchObject({ group: "involved", need: undefined, line: "Spec ready for review" });
   expect(rows[0]).toMatchObject({ line: "Building", tone: "run" });
 });
 it("lists involved tasks under their own Involved group at the end, and opens one beside the list in fixed words", async () => {
@@ -351,9 +353,17 @@ it("lists involved tasks under their own Involved group at the end, and opens on
   await waitFor(() => expect(paneTitle()).toBe("Fix the README typo"));
   fireEvent.click(rowOf(INVOLVED_ID));
   await waitFor(() => expect(paneTitle()).toBe("Migrate the invoices table"));
+  // No link to a full page: it cannot open a task the person did not start yet.
+  expect(screen.queryByRole("link", { name: /Open the full page/u })).toBeNull();
   expect(screen.getByTestId("decision-quiet").textContent).toContain("You're involved in this task");
   expect(screen.getByTestId("decision-quiet").textContent).toContain("Its owner answers the agent's questions and decides");
   expect(f.where.current).toContain("task=" + INVOLVED_ID);
+  f.close();
+});
+it("opening an involved task by its address does not flash the first own task while the involved list loads", async () => {
+  const f = screenSetup({ path: `/app/live?task=${INVOLVED_ID}`, involved: { status: 200, body: { tasks: INVOLVED } } });
+  await screen.findByRole("heading", { name: /^Involved/u });
+  await waitFor(() => expect(paneTitle()).toBe("Migrate the invoices table"));
   f.close();
 });
 it("shows a task that is in both lists once, in the person's own groups", async () => {

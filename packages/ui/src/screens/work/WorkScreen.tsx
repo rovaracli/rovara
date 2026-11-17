@@ -34,7 +34,7 @@ export function WorkScreen() {
  // The lesson batches (DEC 231b): one row per project under "Needs you". Lessons that are off, or a Code without the lessons API, add no row; any other failure says so quietly.
  const batches = useMemo(() => (inbox.data?.state === "on" ? inbox.data.batches : []), [inbox.data]);
  const wanted = params.get("task"), selectedBatch = batches.find(batch => batchId(batch.project) === wanted);
- const selected = selectedBatch !== undefined ? undefined : rows.find(row => row.id === wanted) ?? rows[0];
+ const selected = selectedBatch !== undefined ? undefined : rows.find(row => row.id === wanted) ?? (wanted !== null && involved.isPending ? undefined : rows[0]);
  const shownBatch = selectedBatch ?? (selected === undefined && !tasks.isPending ? batches[0] : undefined);
  const inboxFailed = inbox.isError && !lessonsOff(inbox.error) && !notServed(inbox.error);
  const rowsRef = useRef(rows), heading = useRef<HTMLHeadingElement>(null);
@@ -42,7 +42,8 @@ export function WorkScreen() {
  useEffect(() => { heading.current?.focus(); }, []);
  useEffect(() => { rowsRef.current = rows; }, [rows]);
  // A task started in Cloud opens by its session's address (the one people share); any other by its task id.
- const fullPage = (row: { id: string; task: { sessionId: string | undefined } }) => paths.session(row.task.sessionId ?? row.id);
+ // A task the person was only added to has no full page yet: the task page finds a task only in the person's own list until Cloud opens a task by its id (K2), so no link is drawn for it.
+ const fullPage = (row: { id: string; group: string; task: { sessionId: string | undefined } }) => (row.group === "involved" ? undefined : paths.session(row.task.sessionId ?? row.id));
  const select = (id: string) => { const next = new URLSearchParams(params);next.set("task", id);setParams(next, { replace: true }); };
  function onDecided(taskId: string) {
   const next = nextNeedsYou(rowsRef.current, taskId), row = rowsRef.current.find(entry => entry.id === next);
@@ -53,7 +54,7 @@ export function WorkScreen() {
  const listBody = tasks.isPending || (decisions.isPending && !tasks.isError) ? <Skeleton label="Loading your work" />
   : error !== undefined ? <div className="rv-work-error" role="alert" data-testid="load-error"><div className="rv-banner rv-banner-danger"><span><b>{error instanceof ApiError && error.status === 501 ? "Work isn't available yet." : "Couldn't load your work."}</b> <VisibleText text={error instanceof ApiError ? error.message : "Nothing is lost. Running tasks keep going, and chat messages still arrive."} /></span><Button onClick={() => { void tasks.refetch(); }}>Try again</Button></div></div>
   : rows.length === 0 && batches.length === 0 ? <EmptyState testId="work-empty" title="No work yet" description="Start a task from a project. It appears here, and a card appears when it needs a decision." />
-  : <WorkList rows={rows} selectedId={shownBatch !== undefined ? batchId(shownBatch.project) : selected?.id} onSelect={select} onOpen={id => { const row = rows.find(entry => entry.id === id);if (row !== undefined) void navigate(fullPage(row)); }} decisionsFailed={decisions.isError} lessonBatches={batches} />;
+  : <WorkList rows={rows} selectedId={shownBatch !== undefined ? batchId(shownBatch.project) : selected?.id} onSelect={select} onOpen={id => { const row = rows.find(entry => entry.id === id), page = row === undefined ? undefined : fullPage(row);if (page !== undefined) void navigate(page); }} decisionsFailed={decisions.isError} lessonBatches={batches} />;
  return <section className="rv-work" data-testid="work">
   <section className="rv-work-list" aria-label="Work list">
    <div className="rv-work-head"><h1 ref={heading} tabIndex={-1} data-testid="work-title">Work</h1><span className="rv-muted rv-work-hint">With the list focused: <kbd>J</kbd> <kbd>K</kbd> move, <kbd>O</kbd> opens</span></div>

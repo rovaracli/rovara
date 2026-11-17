@@ -196,7 +196,7 @@ export function involvedRows(tasks: readonly ReadTask[], now: Date): WorkRow[] {
  return tasks.flatMap(task => {
   const row = workRow(task, undefined, now), idle = now.getTime() - Date.parse(row.updatedAt);
   if (idle >= STOPPED_DROPPED_DAYS * DAY_MS || (row.group === "done" && idle >= 7 * DAY_MS)) return [];
-  return [{ ...row, group: "involved" as const, need: undefined, stale: false, line: row.group === "you" ? row.need ?? row.line : row.line }];
+  return [{ ...row, group: "involved" as const, need: undefined, stale: false, line: row.group === "you" && row.tone === "bad" ? "Stopped" : row.line }];
  }).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
 }
 /** The row to select after a decision: the next one that needs you after this one, else the first, else nothing. */

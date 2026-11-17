@@ -133,7 +133,9 @@ describe("the Work page's involved tasks (web task channel K4)", () => {
 
   it("keeps only the fields the page draws and drops what is not a task", async () => {
     await control({ mode: "on" });
+    await control({ involve: true, as: "priya", title: "Fields only" });
     const { body } = await call<Involved>("/involved");
+    expect(body.tasks.length).toBeGreaterThan(0);
     for (const task of body.tasks) expect(Object.keys(task).sort()).toEqual(["createdAt", "pullRequests", "project", "status", "taskId", "title", "updatedAt", "workflow"].sort());
   });
 
@@ -161,8 +163,12 @@ describe("the Work page's involved tasks (web task channel K4)", () => {
     await control({ mode: "old" });
     const answer = await call<Involved>("/involved");
     expect(answer).toEqual({ status: 200, body: { tasks: [] } });
-    // The older Code did answer the ordinary list to that call: the person's own five tasks were in it.
-    expect(involvedCalls().length).toBeGreaterThan(0);
+    // The older Code did answer the ordinary list to that very call (the person's own five tasks were in it): Cloud asked, and showed none of it.
+    const before = involvedCalls().length;
+    await call<Involved>("/involved");
+    expect(involvedCalls().length).toBe(before + 1);
+    const ordinary = await call<{ tasks: unknown[] }>("/sessions");
+    expect(ordinary.body.tasks.length).toBeGreaterThan(0);
     await control({ mode: "on" });
   });
 
@@ -173,7 +179,8 @@ describe("the Work page's involved tasks (web task channel K4)", () => {
     await control({ mode: "on" });
   });
 
-  it("bounds the list and keeps nothing from a body that is not the involved list", () => {
+  it("bounds the list to WORK_TASKS_MAX and keeps nothing from a body that is not the involved list or a task", () => {
     expect(WORK_TASKS_MAX).toBe(100);
+    expect(workTask({ title: "no id", project: "api" })).toBeUndefined();
   });
 });
