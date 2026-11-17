@@ -235,6 +235,37 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     }) })],
   ]);
   const readers = new Map<string, Map<string, TaskReader>>();
+  // --- the in-app inbox (web task channel K5): Code's C7 shapes (core-host/inbox-routes.ts). Rows are kept per person and seeded by a spec (/__fake/inbox); `off` answers 404 like a Code with no inbox.
+  const sessionOfTask = (taskId: string) => `ses_${createHash("sha256").update(`task-session\n${taskId}`, "utf8").digest("hex").slice(0, 20)}`;
+  const inboxRows = new Map<string, Array<{ taskId: string; kind: string; atMs: number; read: boolean }>>();
+  let inboxOff = false;
+  const inboxAnswer = (method: string, pathname: string, query: URLSearchParams, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
+    const gone = { status: 404, body: { error: { code: "NOT_FOUND", message: "That is not on the core engine on this install yet." } } };
+    const session = /^\/v1\/app\/sessions\/(ses_[0-9a-z]{20})$/u.exec(pathname);
+    if (session !== null && method === "GET") {
+      const found = [...tasks.values()].find((entry) => sessionOfTask(entry.task.taskId) === session[1]);
+      return found === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "There is no such session." } } } : { status: 200, body: { session: { sessionId: session[1], body: { kind: "task", task: { taskId: found.task.taskId } } } } };
+    }
+    if (pathname !== "/v1/app/inbox" && pathname !== "/v1/app/inbox/read") return undefined;
+    if (inboxOff) return gone;
+    const own = [...(inboxRows.get(person.developerId) ?? [])].sort((a, b) => b.atMs - a.atMs);
+    const idOf = (row: { taskId: string; kind: string; atMs: number }) => `${sessionOfTask(row.taskId)}.${row.kind}.${String(row.atMs)}`;
+    if (pathname === "/v1/app/inbox/read" && method === "POST") {
+      const ids = (body as { ids?: unknown }).ids;
+      let marked = 0;
+      for (const row of own) if (Array.isArray(ids) && ids.includes(idOf(row)) && !row.read) { row.read = true; marked += 1; }
+      return { status: 200, body: { marked } };
+    }
+    if (pathname !== "/v1/app/inbox" || method !== "GET") return undefined;
+    const limit = Number(query.get("limit") ?? "20"), start = query.get("cursor") === null ? 0 : Number(Buffer.from(query.get("cursor")!, "base64url").toString("utf8"));
+    const shown = own.filter((row) => tasks.has(row.taskId));
+    const page = shown.slice(start, start + limit);
+    return { status: 200, body: {
+      items: page.map((row) => ({ id: idOf(row), sessionId: sessionOfTask(row.taskId), kind: row.kind, title: tasks.get(row.taskId)!.task.title, status: "Waiting for you.", link: `https://fake-code.invalid/app/sessions/${sessionOfTask(row.taskId)}`, at: new Date(row.atMs).toISOString(), read: row.read })),
+      ...(start + limit < shown.length ? { nextCursor: Buffer.from(String(start + limit), "utf8").toString("base64url") } : {}),
+      ...(start === 0 ? { unread: shown.filter((row) => !row.read).length } : {}),
+    } };
+  };
   const startedByRequest = new Map<string, string>();
   const messages = new Map<string, TaskMessage[]>();
   const comments = new Map<string, PlanComment[]>();
@@ -1001,6 +1032,18 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (on) companyless.add(current.developerId); else companyless.delete(current.developerId);
           return send(200, { on });
         }
+        // K5: seed the inbox. rows name a task by its title or id; `off` makes the inbox answer 404 (a Code with no inbox); `clear` forgets the rows.
+        if (method === "POST" && url.pathname === "/__fake/inbox") {
+          const wanted = JSON.parse(await readBody(request)) as { off?: boolean; clear?: boolean; rows?: Array<{ taskTitle?: string; taskId?: string; kind?: string; read?: boolean; atMs?: number }> };
+          if (wanted.off !== undefined) inboxOff = wanted.off;
+          if (wanted.clear === true) inboxRows.clear();
+          for (const row of wanted.rows ?? []) {
+            const entry = row.taskId !== undefined ? tasks.get(row.taskId) : [...tasks.values()].find((one) => one.task.title === row.taskTitle);
+            if (entry === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "no such task" } });
+            inboxRows.set(current.developerId, [...(inboxRows.get(current.developerId) ?? []), { taskId: entry.task.taskId, kind: row.kind ?? "needs_you", atMs: row.atMs ?? Date.now(), read: row.read === true }]);
+          }
+          return send(200, { off: inboxOff });
+        }
         // Guided onboarding PR 10: forget the projects a spec made through the picker (the two the pretend Code starts with stay), so later specs see the people and projects they expect.
         if (method === "POST" && url.pathname === "/__fake/reset-created-projects") {
           const keep = new Set(["web", "api", "secret-ledger"]);
@@ -1017,6 +1060,15 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
         if (method === "POST" && url.pathname === "/v1/auth/token") {
           const answer = tokenEndpoint(new URLSearchParams(raw), request.headers.authorization);
           return send(answer.status, answer.body);
+        }
+        // The inbox and the session read Cloud makes to place its rows (K5): paths under /v1/app that Code's core serves; the bearer names the person.
+        if (url.pathname.startsWith("/v1/app/")) {
+          const person = access.get(/^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1] ?? "");
+          if (person === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          let parsed: unknown = {};
+          try { parsed = raw === "" ? {} : JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); }
+          const answered = inboxAnswer(method, url.pathname, url.searchParams, person, parsed);
+          if (answered !== undefined) return send(answered.status, answered.body);
         }
         const matched = matchCodeRoute(method, url.pathname);
         if (matched === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });

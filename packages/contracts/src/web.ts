@@ -163,3 +163,5 @@ export { AskStatusReaderSchema, type AskStatus } from "./live-ask.js";
 export { DiagnosisStatusReaderSchema, DIAGNOSIS_ANSWER_LABEL, DIAGNOSIS_NO_PROVIDER_MESSAGE, DiagnosisIdSchema } from "./live-diagnosis.js";
 
 export * from "./task-stop-start-preview.js";
+
+export { INBOX_NOT_AVAILABLE_TEXT, INBOX_KINDS, INBOX_KIND_WORDS, INBOX_PAGE_MAX, INBOX_READ_IDS_MAX, INBOX_POLL_MS, InboxIdSchema, InboxOpenPathSchema, InboxItemSchema, type InboxItem, InboxPageSchema, InboxPageReaderSchema, InboxReadBodySchema, type InboxReadBody, InboxReadResponseSchema, InboxReadResponseReaderSchema } from "./app-inbox.js";

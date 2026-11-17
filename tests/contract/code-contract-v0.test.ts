@@ -42,7 +42,8 @@ describe("code contract v0 tables", () => {
     // Plus a project's archive and restore (guided onboarding PR 17): the two previews, the two reviewed changes and the lifecycle read, as the person.
     // Plus the repository picker (guided onboarding PR 10).
     // Plus the company's AI model and a project's per-task limit (guided onboarding PR 15): both reads and both changes, as the person.
-    expect(counts.appCloudServerToday).toBe(80);
+    // Plus the two inbox routes (web task channel K5): the person's own rows and marking them read; Cloud forwards them to Code's C7 inbox as the person (501 until Code serves it).
+    expect(counts.appCloudServerToday).toBe(82);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

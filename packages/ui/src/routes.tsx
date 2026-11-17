@@ -16,6 +16,7 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  const children: RouteObject[] = [
  { index: true, element: <HomeScreen /> }, // Work (the route stays /app/live): the split inbox. The shell lets it run edge to edge.
  { path: "live", handle: { bleed: true }, lazy: async () => ({ Component: (await import("./screens/work/WorkScreen.js")).WorkScreen }) },
+ { path: "inbox", lazy: async () => ({ Component: (await import("./screens/inbox/InboxScreen.js")).InboxScreen }) },
  { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/project/ProjectScreen.js")).ProjectScreen }) }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },
  { path: "agents/:id?", lazy: async () => ({ Component: (await import("./screens/agents/DirectoryScreen.js")).DirectoryScreen }) }, { path: "agents/new", lazy: async () => ({ Component: (await import("./screens/builder/NewAgentScreen.js")).NewAgentScreen }) },
  { path: "agents/:id/edit", lazy: async () => ({ Component: (await import("./screens/builder/BuilderScreen.js")).BuilderScreen }) },
