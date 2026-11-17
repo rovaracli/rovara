@@ -19,6 +19,18 @@ function rateField(field: string): { key: RateKey; aboveTokens?: number } | unde
   else return undefined;
   return { key, ...(aboveTokens === undefined ? {} : { aboveTokens }) };
 }
+const CACHE_TIER = /^(?:cache_read_input_token_cost|input_cost_per_token_cache_hit|cache_creation_input_token_cost(?:_above_1hr)?)_(?:batches|flex)$/u;
+/** A cheaper `_batches`/`_flex` cache price counts only beside a plain price for the same key and band, so it can never stand in
+ *  for the standard rate that is actually billed (the token rates have the same guarantee: ratesOf requires the base rates). */
+function plainCacheRateFor(entry: Record<string, unknown>, field: string): boolean {
+  const tier = rateField(field); const base = field.replace(/_above_(128|200)k_tokens/u, "");
+  if (tier === undefined || !CACHE_TIER.test(base)) return true;
+  return Object.entries(entry).some(([other, value]) => {
+    if (other === field || CACHE_TIER.test(other.replace(/_above_(128|200)k_tokens/u, "")) || typeof value !== "number" || !Number.isFinite(value) || value < 0) return false;
+    const plain = rateField(other);
+    return plain !== undefined && plain.key === tier.key && plain.aboveTokens === tier.aboveTokens;
+  });
+}
 /** Exact reviewed feature prices, not exposed by the plain-token gateway. Remove an entry before serving its feature. */
 export const UNSERVED_FEATURE_COST_FIELDS: Readonly<Record<string, { readonly feature: string; readonly reason: string }>> = {
   search_context_cost_per_query: { feature: "web_search", reason: "Web search: provider server tools are rejected by guardRequest." },
@@ -98,6 +110,7 @@ export function ratesOf(value: unknown, now: number): Price | string {
     if (disposition === undefined && /cost|price/iu.test(field)) return "unsupported price field";
     if (disposition !== "input" && disposition !== "output") continue;
     if (!finite(rate) || rate < 0) return "unsupported token rate";
+    if (!plainCacheRateFor(entry, field)) return "unsupported price field";
     if (rate > PRICE_MAX / RATE_SCALE) return "token rate exceeds maximum";
 
   }

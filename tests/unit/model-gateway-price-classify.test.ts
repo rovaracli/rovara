@@ -51,10 +51,19 @@ it("priority cache prices are an unserved feature; flex and batch cache prices a
   expect(ratesOf({ ...base, cache_read_input_token_cost_priority: 9e-6 }, 0)).toEqual({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 });
   expect(ratesOf({ ...base, cache_creation_input_token_cost_priority: 9e-6 }, 0)).toEqual({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 });
   for (const [field, key] of [["cache_read_input_token_cost_flex", "cacheReadMicrosPerMTok"], ["cache_read_input_token_cost_batches", "cacheReadMicrosPerMTok"], ["input_cost_per_token_cache_hit_flex", "cacheReadMicrosPerMTok"], ["cache_creation_input_token_cost_flex", "cacheWrite5mMicrosPerMTok"], ["cache_creation_input_token_cost_batches", "cacheWrite5mMicrosPerMTok"], ["cache_creation_input_token_cost_above_1hr_flex", "cacheWrite1hMicrosPerMTok"], ["cache_creation_input_token_cost_above_1hr_batches", "cacheWrite1hMicrosPerMTok"]] as const) {
-    expect([field, ratesOf({ ...base, [field]: 3e-6 }, 0)]).toEqual([field, { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, [key]: 3_000_000 }]);
-    // A dearer tier variant wins over the plain rate: a cheaper tier never lowers the key.
+    // Alone (no plain price for its key), a cheaper tier never stands in for the billed rate: the row stays unknown.
+    expect([field, ratesOf({ ...base, [field]: 3e-6 }, 0)]).toEqual([field, "unsupported price field"]);
     const plain = key === "cacheReadMicrosPerMTok" ? "cache_read_input_token_cost" : key === "cacheWrite5mMicrosPerMTok" ? "cache_creation_input_token_cost" : "cache_creation_input_token_cost_above_1hr";
+    expect([field, ratesOf({ ...base, [plain]: 2e-6, [field]: 1e-6 }, 0)]).toEqual([field, { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, [key]: 2_000_000 }]);
+    // A dearer tier variant wins over the plain rate: the dearest is kept.
     expect([field, ratesOf({ ...base, [plain]: 2e-6, [field]: 3e-6 }, 0)]).toEqual([field, { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, [key]: 3_000_000 }]);
+    // A plain price of another key or another band does not count.
+    const other = key === "cacheReadMicrosPerMTok" ? "cache_creation_input_token_cost" : "cache_read_input_token_cost";
+    expect([field, ratesOf({ ...base, [other]: 2e-6, [field]: 3e-6 }, 0)]).toEqual([field, "unsupported price field"]);
+    expect([field, ratesOf({ ...base, [`${plain}_above_200k_tokens`]: 2e-6, [field]: 3e-6 }, 0)]).toEqual([field, "unsupported price field"]);
+    // Another cheaper tier of the same key is not a plain price either.
+    const sibling = field.endsWith("_flex") ? field.replace(/_flex$/u, "_batches") : field.replace(/_batches$/u, "_flex");
+    expect([field, ratesOf({ ...base, [sibling]: 2e-6, [field]: 3e-6 }, 0)]).toEqual([field, "unsupported price field"]);
   }
   // Still unknown: other priority prices that are not reviewed, other suffixes, a priority long-context cache band.
   for (const field of ["cache_read_input_audio_token_cost_priority", "cache_read_input_token_cost_above_200k_tokens_priority", "cache_read_input_token_cost_spot", "cache_creation_input_token_cost_above_12hr_priority", "cache_read_input_token_cost_above_100k_tokens"]) {
