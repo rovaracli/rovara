@@ -18,7 +18,7 @@ const lostLink = "This invite was created, but its link cannot be recovered. Rev
 async function bounded<T>(work: Promise<T>): Promise<T> { let timer: ReturnType<typeof setTimeout> | undefined;try { return await Promise.race([work, new Promise<T>((_, reject) => { timer = setTimeout(() => { reject(new Error("Invite operation timed out.")); }, 30_000); })]); } finally { clearTimeout(timer); } }
 export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, checking, staleData, onClose, restoreFocus, onApplied, onDenied, onProgress, onRevoke, onRestart }: Props) {
  const host = useAppHost(), api = useMemo(() => ({ ...createInviteAdminApi(host, orgId), role, accessAllowed }), [host, orgId, role, accessAllowed]);
- const [destination, setDestination] = useState("email"), [email, setEmail] = useState(""), [proposed, setProposed] = useState("member"), [intent, setIntent] = useState<Intent>();
+ const [destination, setDestination] = useState("email"), [email, setEmail] = useState(""), [proposed] = useState<"member">("member"), [intent, setIntent] = useState<Intent>();
  const [sent, setSent] = useState(false), [working, setWorking] = useState(false), [copied, setCopied] = useState(false), [canCopy, setCanCopy] = useState(false), [terminal, setTerminal] = useState(false), [feedback, setFeedback] = useState<string>(), [receipt, setReceipt] = useState<InviteCreateReceipt>(), [current, setCurrent] = useState<InviteStatus>(), [proofClient, setProofClient] = useState<typeof api>(), [operationClient, setOperationClient] = useState<typeof api>();
  const [missingReceipt, setMissingReceipt] = useState(false), [restartReview, setRestartReview] = useState(false);
  const restartNotice = useRef<HTMLParagraphElement>(null);
@@ -91,7 +91,8 @@ export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, 
    {intent === undefined ? <>
     <Select label="Invite destination" value={destination} onValueChange={setDestination} options={[{ value: "email", label: "Colleague email" }, { value: "link", label: "Anyone with the link" }]} />
     {destination === "email" && <TextField label="Colleague email" type="email" autoComplete="off" value={email} onChange={event => { setEmail(event.target.value); }} />}
-    <Select label="Company role" value={proposed} onValueChange={setProposed} options={[{ value: "member", label: "Member" }, ...(role === "owner" ? [{ value: "admin", label: "Admin" }] : [])]} />
+    {/* DEC 254b (d): pilot invites are member-only (Code pre-approves members only). An owner makes someone an admin after they join. */}
+    <p>Company role: Member. A company owner can make them an admin once they've joined.</p>
     <Button variant="primary" aria-disabled={locked} onClick={review}>Review invite</Button>
    </> : <>
     {!sent && <h3 ref={reviewHeading} tabIndex={-1}>Review invite</h3>}
