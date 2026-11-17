@@ -52,7 +52,7 @@ async function admin(context: RouteContext, write: boolean): Promise<Admin | Rou
 }
 
 /** Whether the company's own Anthropic key is connected (the learning document of the product key store), or null when this Cloud can't tell. */
-async function anthropicKeyConnected(context: RouteContext, companyId: string): Promise<boolean | null> {
+export async function anthropicKeyConnected(context: RouteContext, companyId: string): Promise<boolean | null> {
   const productAi = context.productAi;
   if (productAi === undefined) return null;
   try {

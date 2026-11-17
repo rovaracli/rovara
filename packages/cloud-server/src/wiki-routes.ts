@@ -216,8 +216,8 @@ async function fromCode(context: RouteContext, kind: Kind, path: string): Promis
   }
 }
 
-/** The project in the path, after Code's access check names the person's company now; or the route's refusal. */
-export async function scope(context: RouteContext): Promise<{ project: string } | { refusal: RouteAnswer }> {
+/** The project in the path and the person's company, both from Code's access check made now (never the browser's); or the route's refusal. */
+export async function scope(context: RouteContext): Promise<{ project: string; company: string } | { refusal: RouteAnswer }> {
   const project = context.params[0];
   if (project === undefined || !PROJECT_NAME.test(project)) return { refusal: A.notFound };
   let who: Awaited<ReturnType<typeof companyCaller>>;
@@ -227,7 +227,7 @@ export async function scope(context: RouteContext): Promise<{ project: string } 
     if (error instanceof CodeError) return { refusal: A.unavailable };
     throw error;
   }
-  return refused(who) ? { refusal: who } : { project };
+  return refused(who) ? { refusal: who } : { project, company: who.companyId };
 }
 
 const wikiPath = (project: string, tail = "") => `/v1/app/projects/${encodeURIComponent(project)}/wiki${tail}`;
