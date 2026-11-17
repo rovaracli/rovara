@@ -15,11 +15,11 @@ import { h } from "./support/h.js";
 import { projectFixture } from "./support/project-fixture.js";
 import { taskFixture } from "./support/session-fixture.js";
 const id = "ses_bbbbbbbbbbbbbbbbbbbb";
-// 2026-11-04 (0.5.5 integration): StartWorkBox now asks POST .../start-preview when it opens (admin-v11-finish, a read in effect); a project page that is not testing the spending stop answers it "disabled" and does not count it as a start or a write.
-function setup(value = projectFixture(), options: { theme?: "light" | "dark"; send?: (request: ApiRequest) => Promise<ApiResponse> } = {}) {
+// StartWorkBox asks POST .../start-preview only after the person starts typing (never on load); a project page that is not testing the spending stop answers it "disabled" and does not count it as a start or a write.
+function setup(value = projectFixture(), options: { path?: string; theme?: "light" | "dark"; send?: (request: ApiRequest) => Promise<ApiResponse> } = {}) {
  let body: unknown = value, status = 200;
  const f = fakeHost(async request => request.path === "/v1/app/changes" ? { status: 200, body: { notices: [], next: "settled" } } : request.path.endsWith("/start-preview") ? { status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "disabled" } } : request.method === "GET" ? { status, body } : options.send ? options.send(request) : { status: 202, body: { task: taskFixture({ sessionId: id }) } });
- const query = createQueryClient(), ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
+ const query = createQueryClient(), ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [options.path ?? "/app/projects/payments"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
  return { ...f, ...ui, query, answer(next: unknown, code = 200) { body = next;status = code; }, close() { ui.unmount();query.clear(); } };
 }
 it("shows the actual project, workflows, budget, running work and exact visibility note", async () => {
@@ -89,4 +89,11 @@ it("offers company-pinned website settings to an own-project maintainer without 
 });
 it("holds website editing when an older overview has no company pin", async () => {
  const f = setup();await screen.findByRole("heading", { name: "payments" });expect(screen.queryByRole("button", { name: "Edit allowed websites" })).toBeNull();f.close();
+});
+it("does not offer the Sources tab (no route anywhere), and ?tab=sources opens the Overview", async () => {
+ const f = setup(undefined, { path: "/app/projects/payments?tab=sources" });
+ await screen.findByRole("heading", { name: "payments" });
+ expect(screen.queryByRole("tab", { name: "Sources" })).toBeNull();
+ expect(screen.getByRole("tab", { name: "Overview" }).getAttribute("aria-selected")).toBe("true");
+ expect(f.request.mock.calls.some(([request]) => request.path.includes("/record/sources"))).toBe(false);f.close();
 });

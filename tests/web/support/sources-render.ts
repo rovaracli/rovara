@@ -11,6 +11,6 @@ import { sourcesWorld } from "./sources-fixture.js";
 /** The project page on its Sources tab, in a cell that answers the lessons routes and the record's sources route. */
 export function openSources(options: Parameters<typeof sourcesWorld>[0] = {}, theme: "light" | "dark" = "light") {
  const cell = sourcesWorld(options), query = createQueryClient();
- const ui = renderUi(h(AppHostProvider, { host: cell.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments?tab=sources"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme });
+ const ui = renderUi(h(AppHostProvider, { host: cell.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments?tab=sources"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, { sourcesTabOffered: true }) }) }) }) }) }) }), { theme });
  return { ...cell, ...ui, query };
 }

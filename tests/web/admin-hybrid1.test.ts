@@ -459,9 +459,15 @@ describe("Sign-in factors rows", () => {
 
 describe("Your account", () => {
  const factors = { factorEmail: "p***@acme.test", passkeys: [{ credentialId: "key-one", createdAt: "2026-10-01T00:00:00Z", lastUsedAt: "2026-11-01T00:00:00Z" }] };
- it("says not connected yet for the email and passkeys", async () => {
+ it("hides the confirmation email and passkeys sections while Cloud answers 501 (no sign-in factors route yet), with no not-connected note", async () => {
   const f = mount("/app/account", r => (r.path === "/v1/app/me/sign-in-factors" ? NOT_ON_CODE : ok({})));
-  try { await screen.findByRole("heading", { name: "Your account" }); await waitFor(() => expect(screen.getAllByTestId("not-connected")).toHaveLength(2)); } finally { f.close(); }
+  try {
+   await screen.findByRole("heading", { name: "Your account" });await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/me/sign-in-factors")).toBe(true));
+   await waitFor(() => expect(screen.queryByLabelText("Loading your sign-in factors")).toBeNull());
+   expect(screen.queryByRole("heading", { name: "Confirmation email" })).toBeNull();expect(screen.queryByRole("heading", { name: "Passkeys" })).toBeNull();
+   expect(screen.queryByTestId("factor-email")).toBeNull();expect(screen.queryByText(/Your confirmation email and passkeys isn't connected/)).toBeNull();expect(screen.queryByText(/Passkeys isn't connected/)).toBeNull();
+   expect(screen.getByRole("heading", { name: "You" })).toBeTruthy();
+  } finally { f.close(); }
  });
  it("lists the email and the passkeys, and asks for the fresh sign-in before removing one", async () => {
   const f = mount("/app/account", r => (r.path === "/v1/app/me/sign-in-factors" ? ok(factors) : ok({})));
