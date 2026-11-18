@@ -23,6 +23,7 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { TextField } from "../../design/TextField.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { FreshSignIn, forgetConfirmed, useJustConfirmed } from "../admin/parts.js";
+import { StepModelsCard } from "./StepModelsCard.js";
 
 export type CompanyRole = "owner" | "admin" | "member";
 const MICROS = 1_000_000;
@@ -71,6 +72,7 @@ export function AiSpendStep({ role, developerId, onSaved }: { role: CompanyRole;
    : admin && model.data !== undefined && source.data !== undefined && settings.data !== undefined
     ? <Form key={`${String(settings.data.version)}:${String(source.data.version)}:${model.data.model ?? ""}`} developerId={developerId} model={model.data} source={source.data} settings={settings.data} setNotice={setNotice} reload={reload} onSaved={() => { reload(); onSaved?.(); }} />
     : model.data !== undefined && <ReadOnly model={model.data} />}
+  {failed === undefined && model.data !== undefined && <StepModelsCard key={model.data.model ?? ""} developerId={developerId} role={role} />}
  </section>;
 }
 
