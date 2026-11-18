@@ -58,6 +58,7 @@ export { GITHUB_LINK_LANDING, GITHUB_LINK_OUTCOMES, GITHUB_LINK_WORDS } from "./
 export { CONNECT_TTL_MS, connectBack, connectCallbackPath, connectCookieName, connectResultKey, connectStateKey, type ConnectPending, type ConnectProvider } from "./connect-flow.js";
 export { SLACK_CALLBACK_PATH, SLACK_OUTCOMES, SLACK_WORDS } from "./slack-connect.js";
 export { SIGN_IN_FACTOR_WORDS } from "./sign-in-factors.js";
+export { LESSONS_SLACK_WORDS } from "./lessons-slack-switch.js";
 export { LINK_FAILURES, LINK_LANDING, LINK_METHODS, LINK_TTL_MS, SIGN_IN_LINK_WORDS, linkPendingKey, type LinkPending } from "./sign-in-links.js";
 export { LINEAR_CALLBACK_PATH, LINEAR_OUTCOMES, LINEAR_WORDS } from "./linear-connect.js";
 export { SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_ANSWERS, SETUP_CHECKLIST_ROUTES, SETUP_CHECKLIST_WORDS, applyAnswer, approvalRefusal, checklistAnswer, confirmBody, decideBody, evalNoneBody, runBody, setupRefusal, skipBody } from "./setup-checklist-routes.js";

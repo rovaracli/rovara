@@ -950,6 +950,8 @@ GET /v1/app/me/sign-ins | k | later | | sign-ins | T
 POST /v1/app/me/sign-ins/link | k | later | | sign-ins | T
 DELETE /v1/app/me/sign-ins/{method} | k | later | | sign-ins | T
 GET /v1/app/me/sign-in-factors | k | later | | admin-company | T
+GET /v1/app/me/lessons-slack | k | later | | admin-company | T
+PUT /v1/app/me/lessons-slack | k | later | | admin-company | T
 GET /v1/app/me/github | k | later | | github-link | T
 POST /v1/app/me/github/link | k | later | | github-link | T
 DELETE /v1/app/me/github | k | later | | github-link | T
