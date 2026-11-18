@@ -5,7 +5,7 @@ import { denyNetwork } from "./model-gateway-no-network.js";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import type { ProviderRequest } from "../../packages/model-gateway/src/provider.js";
 import { PRODUCT_VERTEX_NOT_CONNECTED } from "../../packages/model-gateway/src/product-route.js";
-import { EVAL_VERTEX_PLACEHOLDER } from "../../packages/model-gateway/src/product-vertex.js";
+import { EVAL_VERTEX_PLACEHOLDER, parseVertexPath } from "../../packages/model-gateway/src/product-vertex.js";
 import { VertexTokens } from "../../packages/model-gateway/src/product-vertex-token.js";
 import { EVAL_HOLD_PATH, EVAL_RELEASE_PATH, EVAL_SCOPE_HEADER, ProductEvalStages } from "../../packages/model-gateway/src/product-eval.js";
 import { handleGateway, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
@@ -53,6 +53,17 @@ const stageCall = async (deps: GatewayDependencies, scope: string, path = placeh
   return { sink, settle: events.at(-1) as Event, words };
 };
 const projectRow = async (k: Awaited<ReturnType<typeof kit>>) => (await k.productMeter.read(productScope)).find((r) => r.item === "project")!;
+
+describe("the placeholder pair", () => {
+  it("is the one pair Code's eval worker gives its sandbox (Code's EVAL_VERTEX_PLACEHOLDER): a drift in either repo fails closed, and this pin names the words", () => {
+    expect(PH).toEqual({ projectId: "rovara-eval-project", location: "rovara-eval1" });
+    expect(Object.isFrozen(PH)).toBe(true);
+  });
+  it("passes the route's own path parser, so a call naming it reaches the admission check, and is not a real Google project or location", () => {
+    expect(parseVertexPath(placeholderPath({ stream: true }).replace("/v1beta1/", "/v1/").replace("?alt=sse", ""), "alt=sse")).toMatchObject({ project: PH.projectId, location: PH.location });
+    expect(PH.projectId).not.toBe("global"); expect(PH.location).not.toMatch(/^(?:us|europe|asia|me|africa|northamerica|southamerica|australia)-/u);
+  });
+});
 
 describe("a Vertex call under an eval stage's scope with Rovara's placeholder project and location", () => {
   it("is admitted as the connected pair: the upstream path and the company's token come from the key store, and the call settles at its priced cost", async () => {
