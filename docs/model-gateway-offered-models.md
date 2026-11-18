@@ -38,8 +38,12 @@ Second review and design review run as one model call each, made with a 120 seco
   unavailable. Absent, the answer is byte-identical to before.
 - **Same payer as the main AI**: the grant is served only by the agent route in company-key mode and goes through the same admission as the task's main
   call (the company's saved source, resolved by the token's company). There is no company payer variant. Any other route, and install-key mode, answer 401.
-- **Inside both limits**: the call is held at its exact priced worst case (an estimated price or unbounded input is refused) which must fit `ceilingUsd`,
-  through the ordinary reservation, so the task's cap and the company's cap both apply and a refusal spends nothing.
-- **Single use, durable**: after the hold and before any key is read, the grant's jti is claimed once with a conditional put in the markers table
-  (`CO#[iss,cid]` / `REVGRANT#<jti>`, `expiresAt` = exp + 300 s). A scope or model mismatch, a grant past its 120 seconds, a replay (also after a restart or on
-  another gateway task) or a store that does not answer gives the fixed 401 and the hold is given back; no new table, record kind or IAM.
+- **Inside both limits, held up front**: the first call of a review holds the grant's WHOLE `ceilingUsd` through the ordinary reservation, so the task's cap and the
+  company's cap both apply to the full ceiling before any provider call, and a refusal spends nothing. Each call is then held at its exact priced worst case,
+  which is debited from that held ceiling (an estimated price, unbounded input, an own-cost source or a derived tier is refused; a call is never recorded above its worst case).
+- **One grant, one review (session)**: the first use claims the grant's jti and opens a review session with one conditional put in the markers table
+  (`CO#[iss,cid]` / `REVGRANT#<jti>`: hold id, ceiling, room left, end time; `expiresAt` TTL; no new table, record kind or IAM). Later calls of the SAME review (same jti, same
+  company, project, task, workspace, operation, kind, slot and model, including a renewed token with the same jti) debit the session, never past the ceiling and for at most
+  600 seconds. What a call did not use is given back at once. When the session ends the gateway closes it: the hold settles at what the review really used and the rest of the
+  ceiling is released (an in-process timer; the hold sweep is only the backstop when a gateway task died). A mismatch, an exhausted ceiling, an ended or closed session, a
+  grant past its 120 seconds or a store that does not answer gives the fixed 401 and spends nothing.

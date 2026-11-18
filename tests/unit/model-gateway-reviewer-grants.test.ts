@@ -20,7 +20,7 @@ import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import { answerOfferedModels, reviewerProviderOf, SERVICE_TOKEN_AUDIENCE, SERVICE_TOKEN_KIND, SERVICE_TOKEN_SECONDS, SERVICE_TOKEN_TYPE, type OfferedModelsHandlerOptions } from "../../packages/model-gateway/src/offered-models.js";
 import type { ProviderRequest } from "../../packages/model-gateway/src/provider.js";
-import { companyRoomMicros, DynamoReviewerGrants, InMemoryReviewerGrants, REVIEWER_GRANT_KEEP_SECONDS, type ReviewerGrantStore } from "../../packages/model-gateway/src/reviewer-grants.js";
+import { closeReviewSession, companyRoomMicros, DynamoReviewerGrants, InMemoryReviewerGrants, REVIEW_SESSION_CLOSE_GRACE_MS, REVIEW_SESSION_SECONDS, REVIEWER_GRANT_KEEP_SECONDS, type NewReviewSession, type ReviewerGrantStore } from "../../packages/model-gateway/src/reviewer-grants.js";
 import { agentRoute, REVIEWER_CEILING_REFUSED, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
 import { createSignedTokenVerifier, createTaskTokenVerifier } from "../../packages/model-gateway/src/token.js";
 import { answer, call, claims, jwk, keys, kid, mint, MemorySink, now, requestBody, scope, setup } from "./model-gateway-fixture.js";
@@ -51,29 +51,44 @@ class Choices implements AgentAiSourceReader {
   readonly saved = new Map<string, AgentAiSource>();
   async sourceFor(cid: string): Promise<AgentAiSource | undefined> { return this.saved.get(cid); }
 }
-/** Records every claim the gateway attempts, then answers like the in-memory store. */
-function spyStore() { const inner = new InMemoryReviewerGrants(); const claimed: string[] = []; return { claimed, store: { claim: async (iss: string, cid: string, jti: string) => { claimed.push(jti); return inner.claim(iss, cid, jti); } } satisfies ReviewerGrantStore }; }
+/** Records every claim and debit the gateway attempts (`claimed`) and each opened session (`opened`), then answers like the in-memory store. */
+function spyStore() {
+  const inner = new InMemoryReviewerGrants(); const claimed: string[] = []; const opened: NewReviewSession[] = [];
+  const store: ReviewerGrantStore = {
+    read: (iss, cid, jti) => inner.read(iss, cid, jti),
+    open: async (session) => { claimed.push(session.jti); opened.push(session); return inner.open(session); },
+    debit: async (iss, cid, jti, bind, micros, at) => { claimed.push(jti); return inner.debit(iss, cid, jti, bind, micros, at); },
+    giveBack: (iss, cid, jti, micros) => inner.giveBack(iss, cid, jti, micros),
+    close: (iss, cid, jti) => inner.close(iss, cid, jti),
+  };
+  return { claimed, opened, inner, store };
+}
+/** An answer whose usage is far above any hold: a call settles at its whole hold (the clamp), so a review's debits are exact. */
+async function* heavyAnswer() {
+  yield Buffer.from(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 5_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } })}\n\n`);
+  yield Buffer.from(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", usage: { output_tokens: 10 } })}\n\n`);
+  yield Buffer.from(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+}
 const mutableCaps = (initial: Caps) => { const current = { ...initial }; return { current, source: { capsFor: async () => ({ ...current }) } }; };
 
-function gateway(options: { grants?: ReviewerGrantStore | false; caps?: Caps; overrides?: Partial<GatewayDependencies> } = {}) {
+function gateway(options: { grants?: ReviewerGrantStore | false; caps?: Caps; heavy?: boolean; overrides?: Partial<GatewayDependencies> } = {}) {
   const companyKeys = new CompanyKeys();
   const choices = new Choices();
   const keySent: ProviderRequest[] = [];
   const bedrockSent: ProviderRequest[] = [];
-  const rovara: RovaraAi = { models: new Map([[MODEL, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"]]), exempt: new Set(), transport: async (request) => { bedrockSent.push(request); return { status: 200, body: answer() }; } };
+  const rovara: RovaraAi = { models: new Map([[MODEL, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"]]), exempt: new Set(), transport: async (request) => { bedrockSent.push(request); return { status: 200, body: options.heavy === true ? heavyAnswer() : answer() }; } };
   const limits = mutableCaps(options.caps ?? { task: 1_000_000_000, personMonth: 1_000_000_000, projectMonth: 1_000_000_000, companyMonth: 1_000_000_000 });
   const grants = options.grants === false ? undefined : options.grants ?? new InMemoryReviewerGrants();
   const base = setup({
     agentKeys: companyKeys, agentAi: { sources: choices, rovara },
     caps: limits.source,
     keys: { keyFor: async () => "rovara-install-key" },
-    transport: async (request) => { keySent.push(request); return { status: 200, body: answer() }; },
+    transport: async (request) => { keySent.push(request); return { status: 200, body: options.heavy === true ? heavyAnswer() : answer() }; },
     ...(grants === undefined ? {} : { reviewerGrants: grants }),
     ...options.overrides,
   });
   return { ...base, companyKeys, choices, keySent, bedrockSent, limits, grants };
 }
-const refusal = (sink: MemorySink) => sink.text();
 const rows = async (meter: InMemoryMeter, cid = cidA) => (await meter.read({ ...scope, cid })).map((row) => ({ item: row.item, spent: row.spentMicros, committed: row.committed }));
 const committed = async (meter: InMemoryMeter, item: string, cid = cidA) => (await rows(meter, cid)).find((row) => row.item === item)!.committed;
 const nothingHeld = async (meter: InMemoryMeter, cid = cidA) => { for (const row of await rows(meter, cid)) expect([row.spent, row.committed]).toEqual([0, 0]); };
@@ -205,8 +220,16 @@ describe("(b) inside the task's dollar limit and the company's cap", () => {
     expect((await call(g.deps, requestBody, token)).status).toBe(422);
     Object.assign(g.limits.current, { task: 1e12 });
     expect((await call(g.deps, requestBody, token)).status).toBe(200);
-    expect((await call(g.deps, requestBody, token)).status).toBe(401);
     expect(g.keySent).toHaveLength(1);
+  });
+  it("the WHOLE ceiling must fit both limits when the review opens: a company cap below the ceiling refuses even though one call would fit", async () => {
+    const g = gateway({ caps: { task: 1e12, projectMonth: 1e12, companyMonth: 500_000 } });
+    expect((await call(g.deps, requestBody, grant({ reviewer: { kind: "second_review", slot: "second_review", ceilingUsd: 1 } }))).status).toBe(422);
+    const t = gateway({ caps: { task: 500_000, projectMonth: 1e12, companyMonth: 1e12 } });
+    expect((await call(t.deps, requestBody, grant({ reviewer: { kind: "second_review", slot: "second_review", ceilingUsd: 1 } }))).status).toBe(422);
+    expect([g.keySent, t.keySent]).toEqual([[], []]);
+    await nothingHeld(g.meter); await nothingHeld(t.meter);
+    expect((await call(g.deps, requestBody, grant({ reviewer: { kind: "second_review", slot: "second_review", ceilingUsd: 0.4 } }))).status).toBe(200);
   });
   it("refused before any hold when the call's worst case is above the grant's own ceiling", async () => {
     const spy = spyStore();
@@ -228,23 +251,105 @@ describe("(b) inside the task's dollar limit and the company's cap", () => {
 });
 
 describe("(c) short-lived, one task, one kind, single use", () => {
-  it("a replay is refused: the provider is called once", async () => {
-    const g = gateway();
-    const token = grant();
+  /** What one call of this review holds at worst, measured on a run of the same request (the session's first debit). */
+  const worstCase = async (): Promise<number> => { const spy = spyStore(); const g = gateway({ grants: spy.store }); expect((await call(g.deps, requestBody, grant())).status).toBe(200); return spy.opened[0]!.firstDebitMicros; };
+  const ceilingFor = (micros: number) => ({ reviewer: { kind: "second_review", slot: "second_review", ceilingUsd: micros / 1_000_000 } });
+  it("the first call opens the review: it holds the WHOLE ceiling once, and the grant's later calls hold nothing new", async () => {
+    const E = await worstCase(); const ceiling = 3 * E + Math.floor(E / 2);
+    const g = gateway({ heavy: true }); const token = grant(ceilingFor(ceiling));
     expect((await call(g.deps, requestBody, token)).status).toBe(200);
-    const again = await call(g.deps, requestBody, token);
-    expect(again.status).toBe(401);
-    expect(refusal(again)).toBe(AUTH);
+    expect(await committed(g.meter, "task")).toBe(ceiling); expect(await committed(g.meter, "company")).toBe(ceiling);
+    expect((await call(g.deps, requestBody, token)).status).toBe(200);
+    expect(await committed(g.meter, "task")).toBe(ceiling); expect(await committed(g.meter, "company")).toBe(ceiling);
+    expect(g.keySent).toHaveLength(2);
+  });
+  it("multi-turn: three calls inside the ceiling succeed and a fourth past it is refused, spending nothing", async () => {
+    const E = await worstCase(); const ceiling = 3 * E + Math.floor(E / 2);
+    const g = gateway({ heavy: true }); const token = grant(ceilingFor(ceiling));
+    for (let turn = 0; turn < 3; turn++) expect((await call(g.deps, requestBody, token)).status).toBe(200);
+    const fourth = await call(g.deps, requestBody, token);
+    expect(fourth.status).toBe(401); expect(fourth.text()).toBe(AUTH);
+    expect(g.keySent).toHaveLength(3);
+    expect(await committed(g.meter, "task")).toBe(ceiling);
+  });
+  it("closing the review settles what it used and gives the rest of the ceiling back to the task and the company, once", async () => {
+    const E = await worstCase(); const ceiling = 3 * E + Math.floor(E / 2);
+    const spy = spyStore(); const g = gateway({ heavy: true, grants: spy.store }); const token = grant(ceilingFor(ceiling));
+    const jti = (JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString()) as { jti: string }).jti;
+    await call(g.deps, requestBody, token); await call(g.deps, requestBody, token);
+    expect(await committed(g.meter, "company")).toBe(ceiling);
+    expect(await closeReviewSession(spy.store, g.meter, { iss: claims.iss, cid: cidA }, jti)).toBe(true);
+    const after = await rows(g.meter);
+    expect(after.find((r) => r.item === "task")).toMatchObject({ spent: 2 * E, committed: 2 * E });
+    expect(after.find((r) => r.item === "company")).toMatchObject({ spent: 2 * E, committed: 2 * E });
+    expect(await closeReviewSession(spy.store, g.meter, { iss: claims.iss, cid: cidA }, jti)).toBe(false);
+    expect((await call(g.deps, requestBody, token)).status).toBe(401);
+    expect(g.keySent).toHaveLength(2);
+    expect(await committed(g.meter, "company")).toBe(2 * E);
+  });
+  it("the gateway closes the review itself when its session ends (a timer set on the first call), releasing the unused ceiling", async () => {
+    const E = await worstCase(); const ceiling = 3 * E + Math.floor(E / 2);
+    const g = gateway({ heavy: true }); const timers: Array<{ fn: () => void; ms: number | undefined }> = [];
+    const real = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: () => void, ms?: number) => { timers.push({ fn, ms }); return real(fn, ms); }) as typeof setTimeout;
+    try { await call(g.deps, requestBody, grant(ceilingFor(ceiling))); } finally { globalThis.setTimeout = real; }
+    const closer = timers.find((t) => t.ms === (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS);
+    expect(closer).toBeDefined();
+    expect(await committed(g.meter, "company")).toBe(ceiling);
+    closer!.fn();
+    for (let i = 0; i < 20 && (await committed(g.meter, "company")) !== E; i++) await new Promise((resolve) => real(resolve, 5));
+    expect(await committed(g.meter, "company")).toBe(E);
+  });
+  it("a call that used less than its worst case gives the difference back to the review (the review is charged what it really used)", async () => {
+    const E = await worstCase(); const ceiling = 3 * E + Math.floor(E / 2);
+    const spy = spyStore(); const g = gateway({ grants: spy.store }); const token = grant(ceilingFor(ceiling));
+    for (let turn = 0; turn < 6; turn++) expect((await call(g.deps, requestBody, token)).status).toBe(200);
+    const session = [...spy.inner.sessions.values()][0]!;
+    expect(session.debitedMicros).toBeLessThan(3 * E); expect(session.debitedMicros).toBeGreaterThan(0); expect(session.roomMicros + session.debitedMicros).toBe(ceiling);
+  });
+  it("the same grant id is bound to its first task, kind, slot, model and company: any other use of it is refused, and another company's use is its own review", async () => {
+    const E = await worstCase();
+    const spy = spyStore(); const g = gateway({ grants: spy.store }); const jti = randomUUID();
+    expect((await call(g.deps, requestBody, grant({ jti }))).status).toBe(200);
+    expect((await call(g.deps, requestBody, grant({ jti, tid: "task_2" }))).status).toBe(401);
+    expect((await call(g.deps, requestBody, grant({ jti, ws: randomUUID() }))).status).toBe(401);
+    expect((await call(g.deps, requestBody, grant({ jti, op: randomUUID() }))).status).toBe(401);
+    expect((await call(g.deps, requestBody, grant({ jti, pid: "other" }))).status).toBe(401);
+    expect((await call(g.deps, requestBody, grant({ jti, stp: "design_review", reviewer: { kind: "design_review", slot: "design_a", ceilingUsd: 1 } }))).status).toBe(401);
+    expect(g.keySent).toHaveLength(1);
+    expect((await call(g.deps, requestBody, grant({ jti, cid: cidB }))).status).toBe(200);
+    expect(spy.inner.sessions.size).toBe(2);
+    expect(await committed(g.meter, "company", cidB)).toBeGreaterThan(0); void E;
+  });
+  it("a review ends at its session end: later calls are refused", async () => {
+    const spy = spyStore(); const g = gateway({ grants: spy.store }); const token = grant();
+    expect((await call(g.deps, requestBody, token)).status).toBe(200);
+    const session = [...spy.inner.sessions.values()][0]!;
+    expect(session.endsAt).toBe(secs + REVIEW_SESSION_SECONDS);
+    session.endsAt = secs;
+    expect((await call(g.deps, requestBody, token)).status).toBe(401);
     expect(g.keySent).toHaveLength(1);
   });
-  it("two simultaneous uses of one grant: exactly one is sent, the other holds and spends nothing", async () => {
-    const g = gateway();
-    const token = grant();
+  it("a renewed grant (same id, a later 120 seconds) continues the review it opened", async () => {
+    let clock = now;
+    const verify = createTaskTokenVerifier({ registry: new StaticInstallRegistry([{ issuer: claims.iss, jwksUrl: `${claims.iss}/.well-known/jwks.json`, taskKids: [kid] }]), readJwks: async () => [jwk], now: () => clock });
+    const g = gateway({ overrides: { verifyToken: verify, now: () => clock } }); const jti = randomUUID();
+    expect((await call(g.deps, requestBody, grant({ jti }))).status).toBe(200);
+    clock = now + 200_000;
+    const renewed = grant({ jti, iat: secs + 200, nbf: secs + 170, exp: secs + 200 + REVIEWER_GRANT_SECONDS });
+    expect((await call(g.deps, requestBody, renewed)).status).toBe(200);
+    expect(g.keySent).toHaveLength(2);
+    // The first token's own 120 seconds are over by then.
+    expect((await call(g.deps, requestBody, grant({ jti }))).status).toBe(401);
+  });
+  it("two simultaneous first calls of one grant: both are served by the one review, and the ceiling is held once", async () => {
+    const E = await worstCase(); const ceiling = 10 * E;
+    const g = gateway({ heavy: true }); const token = grant(ceilingFor(ceiling));
     const sinks = await Promise.all([call(g.deps, requestBody, token), call(g.deps, requestBody, token)]);
-    expect(sinks.map((s) => s.status).sort()).toEqual([200, 401]);
-    expect(g.keySent).toHaveLength(1);
+    expect(sinks.map((s) => s.status)).toEqual([200, 200]);
+    expect(await committed(g.meter, "company")).toBe(ceiling);
     const company = (await g.meter.read(scope)).find((r) => r.item === "company")!;
-    expect(company.reservedMicros).toBe(0);
+    expect(company.reservedMicros).toBe(ceiling);
   });
   it("a grant used just after its 120 seconds is refused even though the signature check still allows its 30 second skew", async () => {
     const late = (secs + REVIEWER_GRANT_SECONDS + 10) * 1000;
@@ -320,55 +425,117 @@ describe("(c) short-lived, one task, one kind, single use", () => {
     expect((await call(g.deps)).status).toBe(200);
     expect(g.keySent).toHaveLength(1);
   });
-  it("an unavailable store is a refusal: nothing sent, nothing held, no detail echoed", async () => {
-    const down: ReviewerGrantStore = { claim: async () => { throw new Error("store down secret-detail"); } };
-    const g = gateway({ grants: down });
+  it("an unreadable store is a refusal: nothing sent, nothing held, no detail echoed", async () => {
+    const spy = spyStore();
+    const g = gateway({ grants: { ...spy.store, read: async () => { throw new Error("store down secret-detail"); } } });
     const sink = await call(g.deps, requestBody, grant());
     expect(sink.status).toBe(401);
     expect(sink.text()).toBe(AUTH);
     expect(g.keySent).toEqual([]);
     await nothingHeld(g.meter);
   });
-  it("a store that answers 'not claimed' is a refusal", async () => {
-    const g = gateway({ grants: { claim: async () => false } });
+  it("a claim that fails with the session certainly not written gives the whole hold back", async () => {
+    const spy = spyStore();
+    const g = gateway({ grants: { ...spy.store, open: async () => { throw new Error("store down secret-detail"); } } });
+    const sink = await call(g.deps, requestBody, grant());
+    expect(sink.status).toBe(401); expect(sink.text()).toBe(AUTH);
+    expect(g.keySent).toEqual([]);
+    await nothingHeld(g.meter);
+  });
+  it("a claim whose answer is lost after it was written closes the session at once: nothing is sent, and the review can never use a released hold", async () => {
+    const spy = spyStore();
+    const g = gateway({ grants: { ...spy.store, open: async (session) => { await spy.store.open(session); throw new Error("answer lost"); } } });
+    const token = grant();
+    expect((await call(g.deps, requestBody, token)).status).toBe(401);
+    expect(g.keySent).toEqual([]);
+    expect([...spy.inner.sessions.values()][0]).toMatchObject({ status: "closed" });
+    expect((await call(g.deps, requestBody, token)).status).toBe(401);
+    expect(g.keySent).toEqual([]);
+    // Settled at the first debit only, never at the ceiling, and nothing stays held.
+    const company = (await g.meter.read(scope)).find((r) => r.item === "company")!;
+    expect(company.reservedMicros).toBe(0);
+  });
+  it("a store that refuses both the claim and a later debit is a refusal that holds nothing", async () => {
+    const spy = spyStore();
+    const g = gateway({ grants: { ...spy.store, open: async () => false, debit: async () => false } });
     expect((await call(g.deps, requestBody, grant())).status).toBe(401);
     expect(g.keySent).toEqual([]);
     await nothingHeld(g.meter);
   });
 });
 
-describe("the durable single-use claim (markers table)", () => {
+describe("the durable review session (markers table)", () => {
   const TABLES = ["gw-markers"];
   const credentials = async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" });
   const make = (wire: WireDynamo, at = now) => new DynamoReviewerGrants(new Dynamo({ region: "us-west-2", credentials, transport: wire.transport }), "gw-markers", () => at);
   const jti = randomUUID();
-  it("a gateway restart (a new process on the same table) still refuses the replay", async () => {
+  const fresh = (changes: Partial<NewReviewSession> = {}): NewReviewSession => ({ iss: claims.iss, cid: cidA, jti, bind: "bind-1", holdId: randomUUID(), ceilingMicros: 1_000, firstDebitMicros: 100, endsAt: secs + REVIEW_SESSION_SECONDS, ...changes });
+  it("a second gateway process (same table) continues the review and the total across both never passes the ceiling", async () => {
+    const spy = spyStore(); const probe = gateway({ grants: spy.store }); await call(probe.deps, requestBody, grant());
+    const E = spy.opened[0]!.firstDebitMicros; const ceiling = 2 * E + Math.floor(E / 2);
     const wire = new WireDynamo(TABLES);
-    const before = gateway({ grants: make(wire) });
-    const token = grant({ jti });
-    expect((await call(before.deps, requestBody, token)).status).toBe(200);
-    const after = gateway({ grants: make(wire) });
-    expect((await call(after.deps, requestBody, token)).status).toBe(401);
-    expect(after.keySent).toEqual([]);
+    const one = gateway({ heavy: true, grants: make(wire) }); const two = gateway({ heavy: true, grants: make(wire) });
+    const token = grant({ jti, ...ceilingOf(ceiling) });
+    expect((await call(one.deps, requestBody, token)).status).toBe(200);
+    expect((await call(two.deps, requestBody, token)).status).toBe(200);
+    expect((await call(one.deps, requestBody, token)).status).toBe(401);
+    expect((await call(two.deps, requestBody, token)).status).toBe(401);
+    expect([one.keySent.length, two.keySent.length]).toEqual([1, 1]);
   });
-  it("is one conditional put under the company's own key, expiring after the grant, with no other write", async () => {
-    const wire = new WireDynamo(TABLES);
-    expect(await make(wire).claim(claims.iss, cidA, jti, secs + REVIEWER_GRANT_SECONDS)).toBe(true);
-    expect(wire.items("gw-markers")).toEqual([{ pk: companyPartition(claims.iss, cidA), sk: `REVGRANT#${jti}`, claimedAt: secs, expiresAt: secs + REVIEWER_GRANT_SECONDS + REVIEWER_GRANT_KEEP_SECONDS }]);
+  it("opening is one conditional put under the company's own key, expiring after the session, with no other write", async () => {
+    const wire = new WireDynamo(TABLES); const s = fresh();
+    expect(await make(wire).open(s)).toBe(true);
+    expect(wire.items("gw-markers")).toEqual([{ pk: companyPartition(claims.iss, cidA), sk: `REVGRANT#${jti}`, bind: "bind-1", holdId: s.holdId, ceilingMicros: 1_000, roomMicros: 900, debitedMicros: 100, endsAt: s.endsAt, status: "open", claimedAt: secs,
+      expiresAt: s.endsAt + Math.ceil(REVIEW_SESSION_CLOSE_GRACE_MS / 1000) + REVIEWER_GRANT_KEEP_SECONDS }]);
     expect(wire.calls.map((c) => [c.operation, c.table])).toEqual([["PutItem", "gw-markers"]]);
     for (const c of wire.calls) for (const k of c.keys) expect(k.pk.startsWith("CO#")).toBe(true);
     expect(String((wire.calls[0]!.input as { ConditionExpression?: string }).ConditionExpression)).toContain("attribute_not_exists");
-    expect(await make(wire).claim(claims.iss, cidA, jti, secs + REVIEWER_GRANT_SECONDS)).toBe(false);
+    expect(await make(wire).open(fresh({ holdId: randomUUID() }))).toBe(false);
+    expect(await make(wire).read(claims.iss, cidA, jti)).toMatchObject({ holdId: s.holdId, roomMicros: 900, status: "open" });
   });
-  it("two companies: one company's claim never blocks or reveals another's", async () => {
+  it("a debit is taken only while open, inside the end time, for exactly the bound review and while the ceiling has room; each refusal changes nothing", async () => {
+    const wire = new WireDynamo(TABLES); const store = make(wire); await store.open(fresh());
+    expect(await store.debit(claims.iss, cidA, jti, "bind-2", 10, secs)).toBe(false);
+    expect(await store.debit(claims.iss, cidA, jti, "bind-1", 901, secs)).toBe(false);
+    expect(await store.debit(claims.iss, cidA, jti, "bind-1", 10, secs + REVIEW_SESSION_SECONDS)).toBe(false);
+    expect(await store.debit(claims.iss, cidB, jti, "bind-1", 10, secs)).toBe(false);
+    expect(await store.read(claims.iss, cidA, jti)).toMatchObject({ roomMicros: 900, debitedMicros: 100 });
+    expect(await store.debit(claims.iss, cidA, jti, "bind-1", 900, secs)).toBe(true);
+    expect(await store.read(claims.iss, cidA, jti)).toMatchObject({ roomMicros: 0, debitedMicros: 1_000 });
+    expect(await store.debit(claims.iss, cidA, jti, "bind-1", 1, secs)).toBe(false);
+  });
+  it("giving back returns room only while open and never more than was debited; closing happens once and stops every later debit", async () => {
+    const wire = new WireDynamo(TABLES); const store = make(wire); const s = fresh(); await store.open(s);
+    await store.giveBack(claims.iss, cidA, jti, 40);
+    expect(await store.read(claims.iss, cidA, jti)).toMatchObject({ roomMicros: 940, debitedMicros: 60 });
+    await store.giveBack(claims.iss, cidA, jti, 5_000);
+    expect(await store.read(claims.iss, cidA, jti)).toMatchObject({ roomMicros: 940, debitedMicros: 60 });
+    const [first, second] = await Promise.all([store.close(claims.iss, cidA, jti), store.close(claims.iss, cidA, jti)]);
+    expect([first, second].filter((r) => r !== undefined)).toEqual([{ holdId: s.holdId, debitedMicros: 60 }]);
+    expect(await store.debit(claims.iss, cidA, jti, "bind-1", 1, secs)).toBe(false);
+    await store.giveBack(claims.iss, cidA, jti, 10);
+    expect(await store.read(claims.iss, cidA, jti)).toMatchObject({ status: "closed", debitedMicros: 60 });
+    expect(await store.close(claims.iss, cidA, jti)).toBeUndefined();
+  });
+  it("closing while a debit lands between its read and its write reads again and settles at the total including that debit", async () => {
     const wire = new WireDynamo(TABLES);
-    expect(await make(wire).claim(claims.iss, cidA, jti, secs + 120)).toBe(true);
-    expect(await make(wire).claim(claims.iss, cidB, jti, secs + 120)).toBe(true);
-    expect(await make(wire).claim(claims.iss, cidA, jti, secs + 120)).toBe(false);
-    expect(await make(wire).claim(claims.iss, cidB, jti, secs + 120)).toBe(false);
-    expect(await make(wire).claim("https://install-b.example/v1/auth", cidA, jti, secs + 120)).toBe(true);
+    const db = new Dynamo({ region: "us-west-2", credentials, transport: wire.transport });
+    const store = new DynamoReviewerGrants(db, "gw-markers", () => now); await store.open(fresh());
+    const realGet = db.get.bind(db); let raced = false;
+    db.get = async (...args: Parameters<Dynamo["get"]>) => { const item = await realGet(...args); if (!raced) { raced = true; await store.debit(claims.iss, cidA, jti, "bind-1", 50, secs); } return item; };
+    expect(await store.close(claims.iss, cidA, jti)).toMatchObject({ debitedMicros: 150 });
+    expect(await store.read(claims.iss, cidA, jti)).toMatchObject({ status: "closed", debitedMicros: 150 });
   });
-  it("a store error is a refusal that sends nothing; a lost answer after the write leaves the grant claimed", async () => {
+  it("two companies: one company's session never blocks, reveals or is spent by another's", async () => {
+    const wire = new WireDynamo(TABLES);
+    expect(await make(wire).open(fresh())).toBe(true);
+    expect(await make(wire).open(fresh({ cid: cidB, bind: "bind-b" }))).toBe(true);
+    expect(await make(wire).open(fresh())).toBe(false);
+    expect(await make(wire).open(fresh({ iss: "https://install-b.example/v1/auth" }))).toBe(true);
+    expect(await make(wire).debit(claims.iss, cidB, jti, "bind-1", 1, secs)).toBe(false);
+    expect(await make(wire).read(claims.iss, cidA, jti)).toMatchObject({ debitedMicros: 100 });
+  });
+  it("a store error before the write is a refusal that sends nothing and holds nothing; a lost answer after the write closes the session", async () => {
     const wire = new WireDynamo(TABLES);
     wire.fault((c) => c.operation === "PutItem", { kind: "error", status: 500, type: "InternalServerError" });
     const a = gateway({ grants: make(wire) });
@@ -378,17 +545,22 @@ describe("the durable single-use claim (markers table)", () => {
     await nothingHeld(a.meter);
     wire.fault((c) => c.operation === "PutItem", { kind: "lost-after-apply" });
     expect((await call(a.deps, requestBody, token)).status).toBe(401);
+    expect(await make(wire).read(claims.iss, cidA, jti)).toMatchObject({ status: "closed" });
     expect((await call(a.deps, requestBody, token)).status).toBe(401);
     expect(a.keySent).toEqual([]);
+    expect((await a.meter.read(scope)).find((r) => r.item === "company")!.reservedMicros).toBe(0);
   });
-  it("refuses a malformed company, id or expiry before any write", async () => {
+  it("refuses a malformed company, id or session before any write", async () => {
     const wire = new WireDynamo(TABLES);
-    await expect(make(wire).claim("https://i.example", "org_x", jti, secs)).rejects.toThrow();
-    await expect(make(wire).claim("https://i.example", cidA, "not-a-uuid", secs)).rejects.toThrow();
-    await expect(make(wire).claim("https://i.example", cidA, jti, 0)).rejects.toThrow();
+    await expect(make(wire).open(fresh({ cid: "org_x" }))).rejects.toThrow();
+    await expect(make(wire).open(fresh({ jti: "not-a-uuid" }))).rejects.toThrow();
+    await expect(make(wire).open(fresh({ endsAt: 0 }))).rejects.toThrow();
+    await expect(make(wire).open(fresh({ firstDebitMicros: 2_000 }))).rejects.toThrow();
+    await expect(make(wire).read("https://i.example", "org_x", jti)).rejects.toThrow();
     expect(wire.calls).toEqual([]);
   });
 });
+const ceilingOf = (micros: number) => ({ reviewer: { kind: "second_review", slot: "second_review", ceilingUsd: micros / 1_000_000 } });
 
 describe("the room a review may take (company cap)", () => {
   it("is the company cap less what the company's holds and spend already took (all routes' rows), read for that company only", async () => {
@@ -502,7 +674,7 @@ describe("the deployed process wires the durable store", () => {
     server.emit("request", req, res);
     return done;
   }
-  it("company-key mode: a grant is served once and a restarted process (same tables) refuses it; the claim is in the markers table", async () => {
+  it("company-key mode: a grant opens its review session in the markers table, and a restarted process (same tables) continues it", async () => {
     const wire = new WireDynamo(Object.values(T), { namespaceTables: true });
     const sent: ProviderRequest[] = [];
     const token = grant();
@@ -510,9 +682,10 @@ describe("the deployed process wires the durable store", () => {
     expect([first.statusCode, first.text()]).toEqual([200, expect.any(String)]);
     const items = wire.items(T.markers).filter((item) => String(item.sk).startsWith("REVGRANT#"));
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ pk: companyPartition(claims.iss, cidA), expiresAt: secs + REVIEWER_GRANT_SECONDS + REVIEWER_GRANT_KEEP_SECONDS });
-    expect((await post((await serve(wire, "company", sent)).server, token)).statusCode).toBe(401);
-    expect(sent).toHaveLength(1);
+    expect(items[0]).toMatchObject({ pk: companyPartition(claims.iss, cidA), status: "open", endsAt: secs + REVIEW_SESSION_SECONDS, ceilingMicros: 1_000_000 });
+    expect((await post((await serve(wire, "company", sent)).server, token)).statusCode).toBe(200);
+    expect(sent).toHaveLength(2);
+    expect(wire.items(T.markers).filter((item) => String(item.sk).startsWith("REVGRANT#"))).toHaveLength(1);
   });
   it("install-key mode builds no grant store: a grant is refused and an ordinary token still works", async () => {
     const wire = new WireDynamo(Object.values(T), { namespaceTables: true });
