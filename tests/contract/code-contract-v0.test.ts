@@ -17,6 +17,11 @@ describe("code contract v0 tables", () => {
     for (const route of APP_ROUTES) for (const id of route.codeRoutes) expect(ids.has(id)).toBe(true);
   });
 
+  it("has no repository lessons file route (Rovara keeps what it learns inside Rovara; owner decision 2026-11-17)", () => {
+    expect(APP_ROUTES.filter((route) => /\/lessons\/repo(?:\/|$)/u.test(route.path) || route.source === "lessons-repo-file").map((route) => `${route.method} ${route.path}`)).toEqual([]);
+    expect(CODE_ROUTES.filter((route) => /lessons\/repo(?:\/|$)/u.test(route.path)).map((route) => `${route.method} ${route.path}`)).toEqual([]);
+  });
+
   it("gives every served route evidence and every missing route none", () => {
     for (const route of CODE_ROUTES) {
       if (route.awsApi === "no" && !route.mainline) expect(route.evidence).toBe("none");

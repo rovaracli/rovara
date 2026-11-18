@@ -1135,8 +1135,6 @@ POST /v1/app/projects/{p}/lessons/preset/approve | k | later | | lessons |
 POST /v1/app/projects/{p}/lessons/preset/cancel | k | later | | lessons |
 GET /v1/app/projects/{p}/lessons/local-tools | k | later | | lessons-local-tools | L
 POST /v1/app/projects/{p}/lessons/local-tools | k | later | | lessons-local-tools | L
-GET /v1/app/projects/{p}/lessons/repo | k | later | | lessons-repo-file | L
-POST /v1/app/projects/{p}/lessons/repo | k | later | | lessons-repo-file | L
 GET /v1/app/projects/{p}/learning | k | later | | learning |
 POST /v1/app/projects/{p}/learning/suggestions/{suggestionId}/accept | k | later | | learning |
 POST /v1/app/projects/{p}/learning/suggestions/{suggestionId}/dismiss | k | later | | learning |
