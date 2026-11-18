@@ -20,17 +20,22 @@ import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { openTaskByCodeId } from "./open-task.js";
 import { WIKI_ROUTES } from "./wiki-routes.js";
+import { SAVED_ENV_ROUTES } from "./saved-env-routes.js";
 import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
 import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
 import { ANSWERS_ROUTES } from "./answers-routes.js";
+import { AGENT_DIRECTORY_ROUTES } from "./agent-directory-routes.js";
+import { SYSTEM_RUNS_ROUTES } from "./system-runs-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { HOW_WE_WORK_ROUTES } from "./how-we-work-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
+import { SCRIPT_TOKEN_ROUTES } from "./script-token-routes.js";
 import { REPORT_ROUTES } from "./report-routes.js";
 import { PEOPLE_LIMITS_ROUTES } from "./people-limits-routes.js";
 import { REPORT_ACTION_ROUTES } from "./report-action-routes.js";
 import { INTAKE_UPDATES_ROUTES } from "./intake-updates-routes.js";
+import { TASK_LOG_ROUTES } from "./task-log-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
 import { NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
@@ -410,14 +415,15 @@ export const ROUTES: Route[] = [
     answer: () => Promise.resolve({ status: 404, body: { error: { code: "NOT_FOUND", message: "Live updates aren't on Rovara Code yet." } } }),
   },
   {
-    // GET /v1/app/decisions (DecisionCardsViewReaderSchema): Code's decision cards (contract v0 `decisions.list`, `/v1/dev/client/decisions`), passed through
-    // as Code built them: each card carries the digest Code checks when the person acts. Code does not serve the route yet (the decision cards arrive with
-    // the core on AWS, lane E2), so its 404 or 501 becomes the 404 the app reads as "cards are switched off": it shows none, and Home's plan, failure and
+    // GET /v1/app/decisions (DecisionCardsViewReaderSchema): Code's decision cards, passed through as Code built them: each card carries the digest Code
+    // checks when the person acts. Code serves them on its own `/v1/app/decisions` (core host, the same strict card shapes as contracts decision-card-tabs.ts);
+    // Cloud used to ask `/v1/dev/client/decisions`, which Code never served (L4-MF1 side finding, 2026-11-17). A Code that does not serve the route
+    // (an older one, or the core off), its 404 or 501 becomes the 404 the app reads as "cards are switched off": it shows none, and Home's plan, failure and
     // pull-request cards still show, where any other answer would show as an error.
     method: "GET", path: /^\/decisions$/u,
     answer: async ({ client, session }) => {
       try {
-        return ok(await client.json<unknown>(session, "/v1/dev/client/decisions"));
+        return ok(await client.json<unknown>(session, "/v1/app/decisions"));
       } catch (error) {
         if (error instanceof CodeError && (error.status === 404 || error.status === 501)) return decisionsOff;
         throw error;
@@ -425,7 +431,8 @@ export const ROUTES: Route[] = [
     },
   },
   {
-    // POST /v1/app/decisions/{kind}/{subject}/{approve|request-changes|reject|evidence-opened}: one card, one request (contract v0 `decisions.act`). Code checks
+    // POST /v1/app/decisions/{kind}/{subject}/{approve|request-changes|reject|evidence-opened}: one card, one request (contract v0 `decisions.act`; Code's own
+    // path is `/v1/app/decisions/...`, not the contract row's historical `/v1/dev/client/decisions/...`). Code checks
     // the digest the person was shown (409 CHANGE_STALE when the card changed), the card's risk and who may decide; its answer, refusals included, reaches the
     // app unchanged. Only `?merging=1` and `?tab=` of the query go on.
     method: "POST", path: /^\/decisions\/([A-Za-z0-9_]+)\/([A-Za-z0-9_-]{1,150})\/(approve|request-changes|reject|evidence-opened)$/u,
@@ -438,7 +445,7 @@ export const ROUTES: Route[] = [
       const tab = query.get("tab");
       if (tab === "requirements" || tab === "design") forwarded.set("tab", tab);
       const suffix = forwarded.size === 0 ? "" : `?${forwarded.toString()}`;
-      return ok(await client.json<unknown>(session, `/v1/dev/client/decisions/${encodeURIComponent(kind)}/${encodeURIComponent(subject)}/${action}${suffix}`, { method: "POST", body }));
+      return ok(await client.json<unknown>(session, `/v1/app/decisions/${encodeURIComponent(kind)}/${encodeURIComponent(subject)}/${action}${suffix}`, { method: "POST", body }));
     },
   },
   {
@@ -903,12 +910,18 @@ export const ROUTES: Route[] = [
   ...PEOPLE_ROUTES,
   // The admin's People and limits read (cost report slice A6): each member's spend this month against their limit, by name, company owners and admins only.
   ...PEOPLE_LIMITS_ROUTES,
+  ...TASK_LOG_ROUTES,
+  ...SCRIPT_TOKEN_ROUTES,
   // The project Wiki tab's reads (lead 4 W5): Code decides who may read; Cloud passes the person's token, rebuilds each answer for that project only, and answers in fixed words.
   ...WIKI_ROUTES,
+  // L4-MF1: the saved environment image read (forwarded to Code) and the start preview (answered here: unknown).
+  ...SAVED_ENV_ROUTES,
   // The wiki's corrections (lead 4 C1): Code decides who may add notes, mark wrong, approve and resolve; Cloud passes the person's token and rebuilds each answer.
   ...WIKI_CORRECTION_ROUTES,
   // The wiki panel on the setup page (lead 4 W6): the file map, the build controls and the nightly upkeep switch; Code decides who may, Cloud rebuilds bodies and answers (no dollar figure crosses).
   ...WIKI_SETUP_ROUTES,
+  // L4-P3: the company's one control over nightly upkeep (read, allow with Code's fresh step-up, withdraw): company owners and admins only; Code decides again.
+  ...SYSTEM_RUNS_ROUTES,
   // The admin portal's Cost and time report (Feature A, slice A3): Code's one-row-per-task read, grouped here for a company owner or admin.
   ...REPORT_ROUTES,
   // The smart Just answer and the start box's path suggestion (lead 4 J3): Code decides who may; Cloud passes the person's token, rebuilds each answer, and answers in fixed words. Off unless the deployment says so.
@@ -916,4 +929,6 @@ export const ROUTES: Route[] = [
   // Its actions (lane L4-CR4): new feature, rename, merge, mark done or reopen, move a task. Code decides; Cloud checks the body and words the refusals.
   ...REPORT_ACTION_ROUTES,
   ...INTAKE_UPDATES_ROUTES,
+  // The company-wide agent directory (lead 4 L4-MF3): only a company owner or administrator; Code decides again on its live membership.
+  ...AGENT_DIRECTORY_ROUTES,
 ];

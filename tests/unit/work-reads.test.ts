@@ -200,3 +200,38 @@ describe("the Work page's involved tasks (web task channel K4)", () => {
     expect(workTask({ title: "no id", project: "api" })).toBeUndefined();
   });
 });
+
+describe("the proof index's failing tests (TE-A6) and Code's own access rule", () => {
+  const evidenceRoute = WORK_READS.find((route) => route.method === "GET" && route.path.test(`/tasks/${TASK_IDS.planReview}/evidence`))!;
+  const seen: string[] = [];
+  const answerFrom = (body: unknown) => evidenceRoute.answer({ client: { json: async (_session: unknown, path: string) => { seen.push(path); return body; } }, session: { access: { developerId: "d".repeat(64) } }, params: [TASK_IDS.planReview], query: new URLSearchParams("company=other&developerId=x") } as unknown as RouteContext);
+  const rows = (count: number) => Array.from({ length: count }, (_, index) => ({ check: "pytest -q", test: `tests/a.test.ts::case ${String(index)}`, cause: "unknown (only weak evidence)" }));
+
+  it("passes on the item ids and at most ten failing tests, counting the rest; one call, with nothing of the browser's query", async () => {
+    seen.length = 0;
+    const answer = await answerFrom({ taskId: TASK_IDS.planReview, items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }], failures: rows(12), failuresNotListed: 5 });
+    const body = answer.body as { items: Array<Record<string, unknown>>; failures: unknown[]; failuresNotListed: number };
+    expect(body.items).toEqual([{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }]);
+    expect(body.failures).toEqual(rows(10));
+    expect(body.failuresNotListed).toBe(7);
+    expect(seen).toEqual([`/v1/dev/tasks/${TASK_IDS.planReview}/evidence`]);
+  });
+
+  it("drops a failure that is not three strings, bounds each text, and adds no failures key when Code sent none (an older Code)", async () => {
+    const odd = await answerFrom({ items: [], failures: [{ check: "c", test: 5, cause: "x" }, "text", null, { check: "c".repeat(400), test: "t".repeat(400), cause: "u".repeat(900) }], failuresNotListed: "3" });
+    const body = odd.body as { failures: Array<{ check: string; test: string; cause: string }> };
+    expect(body.failures).toHaveLength(1);
+    expect([body.failures[0]!.check.length, body.failures[0]!.test.length, body.failures[0]!.cause.length]).toEqual([200, 300, 500]);
+    expect(Object.keys(odd.body as object)).not.toContain("failuresNotListed");
+    const older = await answerFrom({ taskId: TASK_IDS.planReview, items: [] });
+    expect(older.body).toEqual({ taskId: TASK_IDS.planReview, items: [] });
+  });
+
+  it("a person Code does not let read the task gets Code's own 404, and nothing of the task's proof", async () => {
+    const sam = await signInAs(SAM);
+    const refused = await sam<{ error?: { code: string }; items?: unknown }>(`/tasks/${TASK_IDS.planReview}/evidence`);
+    expect(refused.status).toBe(404);
+    expect(refused.body.items).toBeUndefined();
+    expect(JSON.stringify(refused.body)).not.toContain("Unit tests");
+  });
+});

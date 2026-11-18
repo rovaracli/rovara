@@ -4,7 +4,7 @@
 //
 // What the schema itself guarantees (so no projector or client can build a card that breaks the rules):
 //   - the risk tier is one of three words and decides the friction: low is one tap, medium keeps Approve disabled until the evidence was opened, high has NO approve action on the card at all
-//     ("Open to decide" goes to the full page and its fresh sign-in);
+//     ("Open" goes to the card on its task page, decided there with a recent sign-in, or to a confirmation page);
 //   - nothing can be bulk-approved: there is no bulk field, no bulk body and every shape is strict;
 //   - a high-risk card is never answered by a standing rule;
 //   - a company lock raises a tier and never lowers it (`raiseRisk`).
@@ -43,6 +43,9 @@ export const DECISION_KINDS = [
   // Test services (TS24, design test-services.md 7.4): a recorded or written fake (a fixture set) for a dependency, pinned by digest. Medium; high when the fake answers unrecorded requests from the schema or was
   // recorded from a customer test account for the first time. The card shows counts, the schema, three redacted sample pairs, the personal-data scan, the ignored paths and the faults.
   "approve_fixture_set",
+  // Decision journey slice 3b: an outside approval (an agent's approval `apr_`, a spend request `spr_`) decided on its card by the people the confirmation page let decide it, with the same checks (a recent
+  // sign-in, always: high).
+  "approve_request",
 ] as const;
 export const DecisionKindSchema = z.enum(DECISION_KINDS);
 export type DecisionKind = z.infer<typeof DecisionKindSchema>;
@@ -78,6 +81,7 @@ export const DECISION_KIND_FLOOR_RISK: Record<DecisionKind, DecisionRisk> = {
   setup_host: "medium",
   second_review_notice: "low",
   approve_fixture_set: "medium",
+  approve_request: "high",
 };
 
 export const DecisionFrictionSchema = z.object({ expandEvidenceFirst: z.boolean(), freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict();
@@ -90,8 +94,11 @@ export function decisionFriction(risk: DecisionRisk, secondPerson = false): Deci
   return { expandEvidenceFirst: true, freshSignIn: true, secondPerson };
 }
 
-/** What an action does. `approve` is the only one that decides in favour; there is none on a high card. */
-export const DECISION_ACTION_KINDS = ["approve", "reject", "open", "answer", "choose"] as const;
+/**
+ * What an action does. `approve` is the only one that decides in favour; there is none on a high card. `request_changes` (decision journey slice 2) sends the document back with the person's reason, through
+ * the same workflow decision Slack and the task page use; it never approves.
+ */
+export const DECISION_ACTION_KINDS = ["approve", "reject", "open", "answer", "choose", "request_changes"] as const;
 export const DecisionActionKindSchema = z.enum(DECISION_ACTION_KINDS);
 export type DecisionActionKind = z.infer<typeof DecisionActionKindSchema>;
 
@@ -155,6 +162,11 @@ export const DecisionCardSchema = z
     riskReasons: z.array(line(100)).max(5),
     friction: DecisionFrictionSchema,
     actions: z.array(CardActionSchema).max(4),
+    /**
+     * A coding plan's card (slice 2): approving it sets the task's run limit. `currentUsd` is the limit now (absent: none yet), `proposedUsd` the one approving sets. When it raises the limit, the card asks for a
+     * tick and the approve carries `acknowledgedRunLimitUsd` (the server refuses a raise without it, whoever asks).
+     */
+    runLimit: z.object({ currentUsd: z.number().min(0).max(100_000).optional(), proposedUsd: z.number().min(0).max(100_000) }).strict().optional(),
     rejectReasons: z.array(DecisionRejectReasonSchema).max(6),
     /** Set exactly when a standing rule answered the card (recorded in history; never for a high card). */
     answeredByRule: z.object({ ruleId: line(64), at: z.string().datetime() }).strict().optional(),
@@ -177,6 +189,7 @@ export const DecisionCardSchema = z
     if (card.risk === "high" && card.answeredByRule !== undefined) problem(["answeredByRule"], "a high-risk card is never answered by a rule");
     if ((card.status === "answered_by_rule") !== (card.answeredByRule !== undefined)) problem(["answeredByRule"], "answeredByRule is there exactly when a rule answered the card");
     if (card.status !== "pending" && card.actions.length > 0) problem(["actions"], "an answered card has no actions");
+    if (card.runLimit !== undefined && card.kind !== "approve_plan") problem(["runLimit"], "only a coding plan's card carries a run limit");
     if (card.actions.some((action) => action.kind === "reject") && card.rejectReasons.length === 0) problem(["rejectReasons"], "a card that can be rejected lists its reject reasons");
     if (new Set(card.rejectReasons).size !== card.rejectReasons.length) problem(["rejectReasons"], "reject reasons are unique");
   });

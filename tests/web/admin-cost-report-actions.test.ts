@@ -23,7 +23,7 @@ const features = { localAgents: false, admin: true, usage: false, chains: false,
 const DAY = 86_400_000;
 const FT = (letter: string) => `ft_${letter.repeat(20)}`;
 const F1 = FT("1"), F2 = FT("2"), FDONE = FT("d");
-const SES = "ses_" + "a".repeat(20);
+const page = (n: number) => `/review/00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}/task`;
 const ok = (body: unknown): ApiResponse => ({ status: 200, body });
 const fail = (status: number, code: string, message: string): ApiResponse => ({ status, body: { error: { code, message } } });
 const nums = { tasks: 2, prsOpened: 2, prsMerged: 1, costCents: 10_000, unpricedCalls: 0, costIsFloor: false, costPerMergedCents: 10_000, endToEndMs: 5 * DAY, endToEndSoFar: false, medianRequestToPrMs: 2 * DAY };
@@ -38,7 +38,7 @@ const task = (n: number, over: Record<string, unknown> = {}) => ({
 });
 const detail = (id: string, over: Record<string, unknown> = {}) => ({
   feature: id === "none" ? { id: "none", name: "No feature", none: true } : { id, name: PICK.find(f => f.id === id)?.name ?? "Checkout v2", state: PICK.find(f => f.id === id)?.state ?? "open", none: false },
-  range: {}, asOf: "2026-11-17T12:00:00.000Z", totals: nums, sources: [{ source: "chosen", count: 2 }], tasksTotal: 2, canChange: true, features: PICK, tasks: [task(1, { sessionId: SES }), task(2)], ...over,
+  range: {}, asOf: "2026-11-17T12:00:00.000Z", totals: nums, sources: [{ source: "chosen", count: 2 }], tasksTotal: 2, canChange: true, features: PICK, tasks: [task(1, { taskPage: page(1) }), task(2)], ...over,
 });
 
 function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<ApiResponse>) {
@@ -59,7 +59,7 @@ const type = (label: string, value: string) => fireEvent.change(within(dialog())
 const press = (name: string | RegExp, scope: HTMLElement = document.body) => fireEvent.click(within(scope).getByRole("button", { name }));
 
 describe("the readers", () => {
-  it("read whether the person may change features (absent is no), the picker's features (a bad one is left out) and a task's session address", () => {
+  it("read whether the person may change features (absent is no), the picker's features (a bad one is left out) and a task's page reference", () => {
     const base = report() as any;
     expect(readCostReport.parse(base)).toMatchObject({ canChange: true, features: PICK });
     const old = { ...base }; delete old.canChange; delete old.features;
@@ -67,9 +67,14 @@ describe("the readers", () => {
     expect(readCostReport.parse({ ...base, canChange: "yes" }).canChange).toBe(false);
     expect(readCostReport.parse({ ...base, features: [{ id: "none", name: "x" }, { id: F1, name: "" }, { id: F2, name: "Ok", state: "weird" }, "x", { id: F1, name: "Fine", state: "open" }] }).features).toEqual([{ id: F2, name: "Ok" }, { id: F1, name: "Fine", state: "open" }]);
     const d = detail(F1) as any;
-    expect(readFeatureDetail.parse(d).tasks.map(t => t.sessionId)).toEqual([SES, undefined]);
-    d.tasks[1].sessionId = "ses_short"; d.tasks[0].sessionId = "javascript:alert(1)";
-    expect(readFeatureDetail.parse(d).tasks.map(t => t.sessionId)).toEqual([undefined, undefined]);
+    expect(readFeatureDetail.parse(d).tasks.map(t => t.taskPage)).toEqual([page(1), undefined]);
+    // only exactly this task's own page counts: another task's page, an address, a script, an api path, a query and a session are dropped
+    for (const bad of [page(2), `https://evil.example${page(1)}`, `//evil.example${page(1)}`, "javascript:alert(1)", `${page(1)}/api/state`, `${page(1)}?next=//evil`, `${page(1)}#x`, "/s/ses_aaaaaaaaaaaaaaaaaaaa", "", 7]) {
+      d.tasks[0].taskPage = bad;
+      expect(readFeatureDetail.parse(d).tasks[0]!.taskPage, String(bad)).toBeUndefined();
+    }
+    d.tasks[0].sessionId = "ses_aaaaaaaaaaaaaaaaaaaa";
+    expect(readFeatureDetail.parse(d).tasks[0]).not.toHaveProperty("sessionId");
   });
   it("checks a feature name the way Code does: one line, 80 characters", () => {
     expect(nameProblem("Checkout v2")).toBeUndefined();
@@ -313,11 +318,11 @@ describe("Move to feature", () => {
 });
 
 describe("task titles", () => {
-  it("link to the task page only where Cloud gave the session's address", async () => {
+  it("link to the task page only where Code gave a reference; a title with none is plain text", async () => {
     const f = mount(`/app/admin/money/report/features/${F1}`, server(detail(F1)));
     try {
       const table = await screen.findByRole("table", { name: "Tasks in this feature" });
-      expect(within(table).getByRole("link", { name: "Task 1" }).getAttribute("href")).toBe(`/app/sessions/${SES}`);
+      expect(within(table).getByRole("link", { name: "Task 1" }).getAttribute("href")).toBe(page(1));
       expect(within(table).queryByRole("link", { name: "Task 2" })).toBeNull();
       expect(within(table).getByText("Task 2")).toBeTruthy();
     } finally { f.close(); }

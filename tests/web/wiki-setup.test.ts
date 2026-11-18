@@ -482,6 +482,261 @@ describe("nightly upkeep", () => {
   });
 });
 
+// ---- L4-W6b: the company's choice (DEC 254zzt option A, two locks) -------------------------------------------------------------------------------------------------------------------
+// Mutants (each killed by the named test, run by hand): U1 offer drawn without canEnableSystemRuns; U2 offer drawn while system runs are on; U3 a maintainer's switch drawn while consent is off; U4 a reader's switch drawn;
+// U5 controls drawn when available is false; U6 the confirm sends without allowSystemRuns; U7 "on" shown for a project switch that is on while consent is off; U8 raise link without canRaise; U9 a made-up number for a null cap;
+// U10 a plain switch sends allowSystemRuns; U11 the "allow first" line shown to a reader; U12 the offer sends before the confirm; U13 a failed confirm shows Code's own text; U14 legacy Code (no systemRunsOn) gets the offer.
+const VIEW = { enabled: false, canManage: true, available: true, systemRunsOn: false, canEnableSystemRuns: true, cap: { monthlyUsd: null, canRaise: true } };
+const upkeepIs = (extra: Record<string, unknown>) => () => ({ status: 200, body: { ...VIEW, ...extra } });
+const OFFER = "Keep this project healthy every night";
+const noControls = () => {
+  expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
+  expect(screen.queryByTestId("wiki-setup-upkeep-offer")).toBeNull();
+  expect(screen.queryByTestId("wiki-setup-upkeep-confirm")).toBeNull();
+};
+
+// ---- L4-P3 (owner 2026-11-17): allowing needs a fresh sign-in; the company's one control is linked from here ---------------------------------------------------------------------------------
+// Mutants (each killed by the named test, run by hand): V1 a step-up answer shown as an error sentence instead of the sign-in step; V2 the request id replaced after a step-up refusal (the retry is a new act);
+// V3 the sign-in step drawn for any other refusal; V4 the company link drawn for a maintainer or while consent is off; V5 Confirm it's you does not ask Code for a step-up.
+describe("nightly upkeep: the fresh sign-in step and the company control's link (L4-P3)", () => {
+  it("Code asks for a fresh sign-in on the choice: the page shows the sign-in step (not an error), Confirm it's you asks Code for a step-up, and the same press afterwards is the retry with the same request id (V1, V2, V5)", async () => {
+    let step = true;
+    let state = { ...VIEW } as Record<string, unknown>;
+    const f = mount(row(true), { upkeep: () => ({ status: 200, body: state }), put: () => {
+      if (step) return err(403, "REAUTH_REQUIRED", WIKI_SETUP_WORDS.needsSignIn);
+      state = { ...state, enabled: true, systemRunsOn: true };
+      return { status: 200, body: state };
+    } });
+    await open();
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
+    const fresh = await screen.findByTestId("fresh-sign-in");
+    expect(fresh.getAttribute("data-state")).toBe("needed");
+    expect(fresh.textContent).toContain("allow nightly upkeep for the company");
+    expect(screen.queryByTestId("wiki-setup-upkeep-error")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
+    await expectNoAxeViolations(document.body);
+    fireEvent.click(within(fresh).getByTestId("fresh-sign-in-start"));
+    expect(f.host.signIn).toHaveBeenCalledTimes(1);
+    expect((f.host.signIn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![1]).toMatchObject({ stepUp: true });
+    // Back from the sign-in, the person presses again: the same request id, and now it works.
+    step = false;
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
+    const sent = calls(f, "PUT", ROOT + "/upkeep");
+    expect(sent).toHaveLength(2);
+    expect((sent[1]!.body as { requestId: string }).requestId).toBe((sent[0]!.body as { requestId: string }).requestId);
+    expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+    f.close();
+  });
+
+  it("any other refusal is an error sentence, never the sign-in step (V3)", async () => {
+    const f = mount(row(true), { upkeep: upkeepIs({}), put: () => err(403, "FORBIDDEN", WIKI_SETUP_WORDS.upkeepConsentNotAllowed) });
+    await open();
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
+    expect((await screen.findByTestId("wiki-setup-upkeep-error")).textContent).toBe(WIKI_SETUP_WORDS.upkeepConsentNotAllowed);
+    expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+    f.close();
+  });
+
+  it("an owner or admin with consent on sees where to withdraw it; a maintainer and anyone while consent is off do not (V4)", async () => {
+    const on = upkeepIs({ enabled: true, systemRunsOn: true, canEnableSystemRuns: true });
+    const a = mount(row(true), { upkeep: on });
+    await open();
+    const line = await screen.findByTestId("wiki-setup-upkeep-company-link");
+    expect(line.textContent).toBe("Withdraw nightly upkeep for the whole company in Company settings.");
+    expect(within(line).getByRole("link", { name: "Company settings" }).getAttribute("href")).toBe("/app/admin/settings");
+    a.close();
+    const m = mount(row(false), { upkeep: upkeepIs({ enabled: true, systemRunsOn: true, canEnableSystemRuns: false }) });
+    await open();
+    await screen.findByTestId("wiki-setup-upkeep-state");
+    expect(screen.queryByTestId("wiki-setup-upkeep-company-link")).toBeNull();
+    m.close();
+    const off = mount(row(true), { upkeep: upkeepIs({}) });
+    await open();
+    await screen.findByTestId("wiki-setup-upkeep-offer");
+    expect(screen.queryByTestId("wiki-setup-upkeep-company-link")).toBeNull();
+    off.close();
+  });
+});
+
+describe("nightly upkeep: the company's choice", () => {
+  it("a company owner or admin, consent off: one choice, then one confirm that says what runs and the cap; yes sends the consent and the switch in one act (U1, U6, U12, U14)", async () => {
+    let state = { ...VIEW } as Record<string, unknown>;
+    const f = mount(row(true), { upkeep: () => ({ status: 200, body: state }), put: () => { state = { ...state, enabled: true, systemRunsOn: true }; return { status: 200, body: state }; } });
+    await open();
+    const offer = await screen.findByTestId("wiki-setup-upkeep-offer");
+    expect(offer.textContent).toBe(OFFER);
+    noControlsExceptOffer();
+    expect(screen.queryByTestId("wiki-setup-upkeep-limits")).toBeNull();
+    expect(screen.queryByTestId("wiki-setup-cap")).toBeNull();
+    expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is off.");
+    fireEvent.click(offer);
+    const confirm = await screen.findByTestId("wiki-setup-upkeep-confirm");
+    expect(calls(f, "PUT", ROOT + "/upkeep")).toHaveLength(0);
+    expect(screen.getByRole("group", { name: OFFER })).toBe(confirm);
+    expect(confirm.textContent).toContain("Setup check and mock checks: no AI. Wiki refresh: AI, uses your key.");
+    // Code has no read of the cap: the page says where it is set and invents no figure.
+    const line = within(confirm).getByTestId("wiki-setup-upkeep-cap-line");
+    expect(line.textContent).toBe("Monthly cap: set in Spending limits.");
+    expect(within(line).getByRole("link", { name: "Spending limits" }).getAttribute("href")).toBe("/app/admin/money/limits");
+    expect(confirm.textContent).not.toMatch(/\$/u);
+    await expectNoAxeViolations(document.body);
+    fireEvent.click(within(confirm).getByTestId("wiki-setup-upkeep-yes"));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
+    const sent = calls(f, "PUT", ROOT + "/upkeep");
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body as { requestId: string; on: boolean; allowSystemRuns: boolean };
+    expect(Object.keys(body).sort()).toEqual(["allowSystemRuns", "on", "requestId"]);
+    expect(RID.test(body.requestId)).toBe(true);
+    expect([body.on, body.allowSystemRuns]).toEqual([true, true]);
+    expect(screen.queryByTestId("wiki-setup-upkeep-offer")).toBeNull();
+    expect(screen.queryByTestId("wiki-setup-upkeep-confirm")).toBeNull();
+    expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is on.");
+    expect(screen.getByTestId("wiki-setup-upkeep-limits")).toBeTruthy();
+    await screen.findByTestId("wiki-setup-cap");
+    f.close();
+  });
+
+  it("the confirm shows the cap Code states, and a raise link only when Code says the person can raise it (U8, U9)", async () => {
+    for (const [canRaise, link] of [[true, true], [false, false]] as const) {
+      const f = mount(row(true), { upkeep: upkeepIs({ cap: { monthlyUsd: 40, canRaise } }) });
+      await open();
+      fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+      const line = await screen.findByTestId("wiki-setup-upkeep-cap-line");
+      expect(line.textContent?.startsWith("Monthly cap: $40.00.")).toBe(true);
+      expect(line.textContent).not.toContain("25");
+      expect(within(line).queryAllByRole("link").length).toBe(link ? 1 : 0);
+      if (link) expect(within(line).getByRole("link", { name: "Raise the cap" }).getAttribute("href")).toBe("/app/admin/money/limits");
+      f.close();
+    }
+    const g = mount(row(true), { upkeep: upkeepIs({ cap: { monthlyUsd: null, canRaise: false } }) });
+    await open();
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+    const none = await screen.findByTestId("wiki-setup-upkeep-cap-line");
+    expect(none.textContent).toBe("Monthly cap: set in Spending limits.");
+    expect(within(none).queryAllByRole("link")).toHaveLength(0);
+    g.close();
+  });
+
+  it("cancel sends nothing; a refused confirm shows Cloud's fixed words and never Code's text, and the choice is still there (U13)", async () => {
+    const f = mount(row(true), { upkeep: upkeepIs({}) });
+    await open();
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-no"));
+    expect(screen.queryByTestId("wiki-setup-upkeep-confirm")).toBeNull();
+    expect(screen.getByTestId("wiki-setup-upkeep-offer")).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByTestId("wiki-setup-upkeep-offer"));
+    expect(calls(f, "PUT", ROOT + "/upkeep")).toHaveLength(0);
+    f.close();
+    for (const [answer, words] of [
+      [err(403, "FORBIDDEN", WIKI_SETUP_WORDS.upkeepConsentNotAllowed), WIKI_SETUP_WORDS.upkeepConsentNotAllowed],
+      [err(403, "FORBIDDEN", LEAK), "That could not be done just now. Try again."],
+      [err(501, "NOT_ON_CODE_YET", WIKI_SETUP_WORDS.upkeepNotYet), WIKI_SETUP_WORDS.upkeepNotYet],
+    ] as const) {
+      const g = mount(row(true), { upkeep: upkeepIs({}), put: () => answer });
+      await open();
+      fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+      fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
+      expect((await screen.findByTestId("wiki-setup-upkeep-error")).textContent).toBe(words);
+      expect(document.body.textContent).not.toContain(LEAK);
+      expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
+      g.close();
+    }
+  });
+
+  it("a maintainer (may manage, may not give the consent): no choice and no switch while consent is off, only who must act first (U1, U3)", async () => {
+    const f = mount(row(false), { upkeep: upkeepIs({ canEnableSystemRuns: false, cap: { monthlyUsd: 40, canRaise: false } }) });
+    await open();
+    expect((await screen.findByTestId("wiki-setup-upkeep-needs-admin")).textContent).toBe("A company admin must allow nightly upkeep first.");
+    noControls();
+    expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is off.");
+    expect(screen.queryByTestId("wiki-setup-upkeep-limits")).toBeNull();
+    expect(screen.queryByRole("link", { name: /Raise the cap|Spending limits/u })).toBeNull();
+    expect(document.body.textContent).not.toContain("$40");
+    f.close();
+  });
+
+  it("a maintainer, consent on: the project switch, which sends only the id and the choice, never the consent (U10)", async () => {
+    let state = { ...VIEW, canEnableSystemRuns: false, systemRunsOn: true, cap: { monthlyUsd: 40, canRaise: false } } as Record<string, unknown>;
+    const f = mount(row(false), { upkeep: () => ({ status: 200, body: state }), put: (request) => { state = { ...state, enabled: (request.body as { on: boolean }).on }; return { status: 200, body: state }; } });
+    await open();
+    const toggle = await screen.findByRole("switch", { name: "Nightly upkeep" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(screen.queryByTestId("wiki-setup-upkeep-offer")).toBeNull();
+    expect(screen.queryByTestId("wiki-setup-upkeep-needs-admin")).toBeNull();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
+    const sent = calls(f, "PUT", ROOT + "/upkeep");
+    expect(Object.keys(sent[0]!.body as object).sort()).toEqual(["on", "requestId"]);
+    expect(sent[0]!.body).toMatchObject({ on: true });
+    expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is on.");
+    expect(screen.getByTestId("wiki-setup-cap-ask").textContent).toBe("A company owner or admin sets the monthly cap.");
+    expect(screen.queryByRole("link", { name: /Raise the cap|Spending limits/u })).toBeNull();
+    f.close();
+  });
+
+  it("an owner or admin, consent on: the plain project switch and the cap editor, not the choice (U2)", async () => {
+    const f = mount(row(true), { upkeep: upkeepIs({ systemRunsOn: true, enabled: true }) });
+    await open();
+    expect((await screen.findByRole("switch", { name: "Nightly upkeep" })).getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByTestId("wiki-setup-upkeep-offer")).toBeNull();
+    await screen.findByTestId("wiki-setup-cap");
+    f.close();
+  });
+
+  it("a reader sees where it stands and nothing to press or ask for, with consent off or on (U4, U11)", async () => {
+    for (const [systemRunsOn, enabled, on] of [[false, false, false], [true, true, true], [true, false, false]] as const) {
+      const f = mount(row(false), { upkeep: upkeepIs({ canManage: false, canEnableSystemRuns: false, systemRunsOn, enabled, cap: { monthlyUsd: 40, canRaise: false } }) });
+      await open();
+      const state = await screen.findByTestId("wiki-setup-upkeep-state");
+      expect(state.textContent).toContain(on ? "Nightly upkeep is on." : "Nightly upkeep is off.");
+      noControls();
+      expect(screen.queryByTestId("wiki-setup-upkeep-needs-admin")).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-cap")).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-cap-ask")).toBeNull();
+      expect(screen.queryByRole("link", { name: /Raise the cap|Spending limits/u })).toBeNull();
+      f.close();
+    }
+  });
+
+  it("the project switch counts only while the company consent is on: a project switch left on with consent off reads as off (U7)", async () => {
+    const f = mount(row(true), { upkeep: upkeepIs({ enabled: true, systemRunsOn: false }) });
+    await open();
+    expect((await screen.findByTestId("wiki-setup-upkeep-state")).textContent).toContain("Nightly upkeep is off.");
+    expect(screen.getByTestId("wiki-setup-upkeep-offer")).toBeTruthy();
+    f.close();
+  });
+
+  it("not available on this Rovara (the ceiling is off): one muted line and no controls for anyone (U5)", async () => {
+    for (const [admin, extra] of [[true, {}], [false, { canEnableSystemRuns: false }], [false, { canManage: false, canEnableSystemRuns: false }], [true, { systemRunsOn: true, enabled: true }]] as const) {
+      const f = mount(row(admin), { upkeep: upkeepIs({ available: false, ...extra }) });
+      await open();
+      expect((await screen.findByTestId("wiki-setup-upkeep-absent")).textContent).toBe("Nightly upkeep isn't available on this Rovara yet.");
+      noControls();
+      for (const id of ["wiki-setup-upkeep-state", "wiki-setup-upkeep-limits", "wiki-setup-cap", "wiki-setup-cap-ask", "wiki-setup-upkeep-needs-admin", "wiki-setup-upkeep-cap-line"]) expect(screen.queryByTestId(id), id).toBeNull();
+      expect(screen.queryByRole("link", { name: /Raise the cap|Spending limits/u })).toBeNull();
+      f.close();
+    }
+  });
+
+  it("a Code with the project switch only (no consent members) keeps the plain switch and offers no choice (U14)", async () => {
+    const f = mount(row(true), { upkeep: () => ({ status: 200, body: { enabled: false, canManage: true, available: true } }) });
+    await open();
+    expect(await screen.findByRole("switch", { name: "Nightly upkeep" })).toBeTruthy();
+    expect(screen.queryByTestId("wiki-setup-upkeep-offer")).toBeNull();
+    expect(screen.queryByTestId("wiki-setup-upkeep-needs-admin")).toBeNull();
+    f.close();
+  });
+});
+
+function noControlsExceptOffer() {
+  expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
+  expect(screen.queryByTestId("wiki-setup-upkeep-confirm")).toBeNull();
+  expect(screen.queryByTestId("wiki-setup-upkeep-needs-admin")).toBeNull();
+}
+
 describe("in the checklist", () => {
   it("it is one more row, not counted in the progress Code computes, and the other rows are unchanged", async () => {
     const f = mount(h(ProjectChecklist, { project: "web" }));

@@ -10,8 +10,8 @@
 //   POST /v1/app/projects/{p}/wiki-build/refresh      { requestId }       Refresh now
 //   POST /v1/app/projects/{p}/wiki-build/agents       { requestId, on }   "Give the wiki to agents"
 //   POST /v1/app/projects/{p}/wiki-build/delete       { requestId }       Delete wiki
-//   GET  /v1/app/projects/{p}/upkeep                  { enabled, canManage, available? }  SEAM (L4-N1)
-//   PUT  /v1/app/projects/{p}/upkeep                  { requestId, on }               SEAM (L4-N1)
+//   GET  /v1/app/projects/{p}/upkeep                  { enabled, canManage, available?, systemRunsOn?, canEnableSystemRuns?, cap? }  (Code L4-N1 + L4-P2)
+//   PUT  /v1/app/projects/{p}/upkeep                  { requestId, on, allowSystemRuns? }                                       (allowSystemRuns: the company's consent, Code decides who may)
 //
 // Rules:
 //   - Code decides who may do each: the person's LIVE company and project standing, read on every call. Cloud adds no rule that could widen it and sends no person, company, role, limit, commit or goal:
@@ -67,6 +67,10 @@ export const WIKI_SETUP_WORDS = Object.freeze({
   upkeepNotAllowed: "Only company owners and admins, or this project's admins, can change nightly upkeep.",
   upkeepNotYet: "Nightly upkeep isn't available on this Rovara yet.",
   upkeepUnavailable: "Nightly upkeep could not be read or changed just now. Try again.",
+  upkeepNeedsConsent: "A company admin must allow nightly upkeep first.",
+  upkeepConsentNotAllowed: "Only company owners and admins can allow nightly upkeep for the company.",
+  needsSignIn: "Confirm it's you again, then try once more.",
+  systemRunsNotAllowed: "Only company owners and admins can see or change nightly upkeep for the company.",
 });
 const C = WIKI_SETUP_CODE_WORDS;
 const W = WIKI_SETUP_WORDS;
@@ -81,6 +85,10 @@ export const WIKI_SETUP_ANSWERS = Object.freeze({
   upkeepNotAllowed: answer(403, "FORBIDDEN", W.upkeepNotAllowed),
   upkeepNotYet: answer(501, "NOT_ON_CODE_YET", W.upkeepNotYet),
   upkeepUnavailable: answer(503, "RUNTIME_UNAVAILABLE", W.upkeepUnavailable),
+  upkeepNeedsConsent: answer(403, "FORBIDDEN", W.upkeepNeedsConsent),
+  upkeepConsentNotAllowed: answer(403, "FORBIDDEN", W.upkeepConsentNotAllowed),
+  needsSignIn: answer(403, "REAUTH_REQUIRED", W.needsSignIn),
+  systemRunsNotAllowed: answer(403, "FORBIDDEN", W.systemRunsNotAllowed),
 });
 const A = WIKI_SETUP_ANSWERS;
 
@@ -95,12 +103,24 @@ export const WIKI_SETUP_LIMITS = { notesChars: 2_000, chips: 200, chipChars: 80,
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const PROJECT_FOR_PATH = /^[a-z][a-z0-9-]{0,62}$/u;
 
+/** Code's fixed sentences of the consent step (its `SYSTEM_RUNS_CONSENT_WORDS`); matched exactly, never passed on. */
+export const CODE_CONSENT_WORDS = Object.freeze({
+  notAllowed: "Only company owners and admins can allow or stop Rovara's automatic runs for the company.",
+  needsConsent: "A company owner or admin has to allow Rovara's automatic runs for the company first.",
+});
 type Kind = "map" | "build" | "upkeep";
 /** Code's refusal in fixed words. Only Code's exact unknown-route 404 means "not on Code yet". */
 export function wikiSetupRefusal(kind: Kind, error: CodeError): RouteAnswer {
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
   const message = typeof body?.["message"] === "string" ? body["message"] : undefined, code = typeof body?.["code"] === "string" ? body["code"] : undefined;
   if (error.status === 404 && code === "NOT_FOUND" && message === "route not found") return kind === "upkeep" ? A.upkeepNotYet : A.notYet;
+  if (kind === "upkeep") {
+    // Code's fixed words of the consent step (its SYSTEM_RUNS_CONSENT_WORDS) and its "not available here" (the ceiling is off) are matched exactly and answered in Cloud's own words.
+    if (code === "NOT_AVAILABLE_HERE") return A.upkeepNotYet;
+    if (error.status === 403 && code === "REAUTH_REQUIRED") return A.needsSignIn;
+    if (error.status === 403 && message === CODE_CONSENT_WORDS.needsConsent) return A.upkeepNeedsConsent;
+    if (error.status === 403 && message === CODE_CONSENT_WORDS.notAllowed) return A.upkeepConsentNotAllowed;
+  }
   if (kind === "upkeep") return error.status === 404 ? A.notFound : error.status === 400 ? A.invalid : error.status === 403 ? A.upkeepNotAllowed : A.upkeepUnavailable;
   if (message === NOT_SET_UP) return A.notSetUp;
   if (message !== undefined && code !== undefined && PASS_WORDS.has(message) && PASS_CODES.has(code) && PASS_STATUSES.has(error.status)) return answer(error.status, code, message);
@@ -150,6 +170,14 @@ export function idBody(body: unknown): Record<string, unknown> | undefined {
 }
 export function switchBody(body: unknown): Record<string, unknown> | undefined {
   return plain(body) && hasOnly(body, ["requestId", "on"]) && requestId(body["requestId"]) && typeof body["on"] === "boolean" ? { requestId: body["requestId"], on: body["on"] } : undefined;
+}
+/** The upkeep switch (L4-W6b): the id and the choice, plus `allowSystemRuns` only when the page sent it. Nothing else is forwarded; `allowSystemRuns: false` with `on: true` is not a request (Code refuses it too). */
+export function upkeepBody(body: unknown): Record<string, unknown> | undefined {
+  if (!plain(body) || !hasOnly(body, ["requestId", "on", "allowSystemRuns"]) || !requestId(body["requestId"]) || typeof body["on"] !== "boolean") return undefined;
+  const allow = body["allowSystemRuns"];
+  if (allow !== undefined && typeof allow !== "boolean") return undefined;
+  if (allow === false && body["on"]) return undefined;
+  return { requestId: body["requestId"], on: body["on"], ...(allow === undefined ? {} : { allowSystemRuns: allow }) };
 }
 /** The map is made with no body (or an empty one). */
 const emptyBody = (body: unknown): Record<string, unknown> | undefined => (body === undefined || (plain(body) && Object.keys(body).length === 0) ? {} : undefined);
@@ -245,9 +273,22 @@ export function deleteAnswer(value: unknown): Record<string, unknown> {
   need(v["deleted"] === true && v["message"] === C.deleted, undefined);
   return { deleted: true, message: C.deleted, view: buildAnswer(v["view"]) };
 }
+/** Code's cap, field by field: a number from 0 to 1,000,000 (never invented: `null` stays `null`) and who may raise it. */
+function capAnswer(value: unknown): Record<string, unknown> {
+  const c = rec(value);
+  const usd = c["monthlyUsd"];
+  need(usd === null || (typeof usd === "number" && Number.isFinite(usd) && usd >= 0 && usd <= 1_000_000), usd);
+  return { monthlyUsd: usd, canRaise: flag(c["canRaise"]) };
+}
 export function upkeepAnswer(value: unknown): Record<string, unknown> {
   const v = rec(value);
-  return { enabled: flag(v["enabled"]), canManage: flag(v["canManage"]), ...(v["available"] === undefined ? {} : { available: flag(v["available"]) }) };
+  return {
+    enabled: flag(v["enabled"]), canManage: flag(v["canManage"]),
+    ...(v["available"] === undefined ? {} : { available: flag(v["available"]) }),
+    ...(v["systemRunsOn"] === undefined ? {} : { systemRunsOn: flag(v["systemRunsOn"]) }),
+    ...(v["canEnableSystemRuns"] === undefined ? {} : { canEnableSystemRuns: flag(v["canEnableSystemRuns"]) }),
+    ...(v["cap"] === undefined ? {} : { cap: capAnswer(v["cap"]) }),
+  };
 }
 
 // ---- The routes ------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -346,12 +387,12 @@ export const WIKI_SETUP_ROUTES: Route[] = [
     answer: async (context) => {
       const at = await target(context);
       if ("refusal" in at) return at.refusal;
-      const sent = switchBody(context.body);
+      const sent = upkeepBody(context.body);
       if (sent === undefined) return A.invalid;
       const got = await fromCode(context, "upkeep", base(at.project, "upkeep"), { method: "PUT", body: sent });
       if ("refusal" in got) return got.refusal;
       const out = rebuilt(() => upkeepAnswer(got.value), "upkeep");
-      if (out.status === 200) logged("upkeep_switch", at.project);
+      if (out.status === 200) logged(sent["allowSystemRuns"] === undefined ? "upkeep_switch" : "upkeep_setup", at.project);
       return out;
     },
   },

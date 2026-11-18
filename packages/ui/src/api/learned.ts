@@ -45,7 +45,8 @@ export function citationWords(citation: LessonCitation): { text: string; href?: 
  if (citation.kind === "code") return { text: `${citation.path}:${String(citation.startLine)}${citation.endLine > citation.startLine ? "-" + String(citation.endLine) : ""} (${CHECK[citation.check] ?? "not checked yet"})` };
  if (citation.kind === "pr") return { text: "The pull request it came from", href: citation.url };
  if (citation.kind === "task") return { text: "The task it came from" };
- return { text: "The team record" };
+ if (citation.kind === "record") return { text: "The team record" };
+ return { text: "Another kind of reference" };
 }
 const plural = (n: number, one: string, many = one + "s") => `${String(n)} ${n === 1 ? one : many}`;
 /** What Code counted, honestly: loads, helpful and not helpful marks, and the tasks that back it. Never "used in N tasks" (Code has no such count yet). */

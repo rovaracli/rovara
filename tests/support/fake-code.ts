@@ -18,6 +18,7 @@ import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tas
 import { wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
 import { wikiMapOf, wikiSetupBuildView, type FakeWikiSetup } from "./wiki-setup-fixture.js";
 import { WIKI_SETUP_CODE_WORDS } from "../../packages/contracts/src/app-wiki-setup.js";
+import { CreateScriptTokenBodySchema } from "../../packages/contracts/src/script-tokens.js";
 
 export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
 
@@ -156,6 +157,25 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (entry === undefined || companyless.has(person.developerId) || (entry.companyId ?? FAKE_COMPANY_ID) !== companyOfPerson(person)) return false;
     return person.administrator || roleIn(person, name) !== undefined;
   };
+  type SavedEnvMode = "off" | "route-missing" | "core-off" | "never" | "healthy" | "broken" | "extra-field" | "501";
+  // L4-MF1: Code's saved environment panel read on its own /v1/app path (core host, read only), per project (set by the specs through /__fake/saved-env). The default is `off`, as a hosted
+  // Code answers today (no image registry): a plain 404 "Saved environments are off for this install". `route-missing` is an older Code's unknown-route 404, `core-off` the core host's
+  // "not on the core engine" 404, `broken` an answer that does not read, `extra-field` one with a field this file does not know.
+  const savedEnvModes = new Map<string, SavedEnvMode>();
+  const savedEnvAnswer = (method: string, path: string, person: Person): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/environment-image$/u.exec(path);
+    if (match === null || method !== "GET") return undefined;
+    const name = decodeURIComponent(match[1]!), mode = savedEnvModes.get(name) ?? "off";
+    if (mode === "route-missing") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    if (mode === "core-off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "That is not on the core engine on this install yet." } } };
+    // Code's rule (canReadProject, checked before the switch): anyone who may not read the project, or another company's, gets the one 404.
+    if (!wikiReads(person, name)) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    if (mode === "501") return { status: 501, body: { error: { code: "NOT_IMPLEMENTED", message: "not served" } } };
+    if (mode === "off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "Saved environments are off for this install" } } };
+    if (mode === "broken") return { status: 200, body: { health: "fine", canReset: "yes" } };
+    const panel = { health: mode === "healthy" ? "healthy" : "never_proved", ...(mode === "healthy" ? { image: { builtAt: "2026-11-16T10:00:00.000Z", ageDays: 1, status: "ready" } } : {}), canReset: false, enabled: true, canChangeSetting: false };
+    return { status: 200, body: mode === "extra-field" ? { ...panel, digest: "sha256:abc" } : panel };
+  };
   // Lead 4 C1: the pretend corrections, per project and page (reset whenever a spec sets the wiki): notes added and approved here, claims marked wrong, notes removed.
   interface Corrections { added: Array<{ noteId: string; text: string; author: string; authorKey: string; createdAt: string; approval: "pending" | "approved"; file?: { repo: string; path: string } }>; approved: Set<string>; removed: Set<string>; marked: Set<string> }
   const corrections = new Map<string, Corrections>();
@@ -229,6 +249,49 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   // Lead 4 W6 (Code W0's wiki-map, W4's wiki-build controls, and the nightly upkeep seam): each project's pretend wiki build, set by the specs through /__fake/wiki-setup. `off` makes Code answer its unknown-route 404.
   const wikiSetups = new Map<string, FakeWikiSetup>();
   const wikiSetupOf = (name: string): FakeWikiSetup => { let one = wikiSetups.get(name); if (one === undefined) { one = { status: "none", pages: 0, refreshPages: 0, agentsOn: false, aiKey: "connected", mapMade: false, planned: 0, written: 0, upkeepOn: false }; wikiSetups.set(name, one); } return one; };
+  // L4-P2 (Code's two locks): the company's consent to Rovara's automatic runs is the company's, not a project's. It starts off; only a company owner or admin sets it, in the one PUT that also switches the project on.
+  const upkeepConsent = new Map<string, boolean>();
+  const companyKeyOf = (name: string) => project(name)?.companyId ?? "main";
+  // L4-P3 (owner 2026-11-17): ALLOWING the consent needs a fresh step-up; the pretend Code says so unless a spec sets `stepUp: "stale"` off again (the next /__fake/wiki-setup call resets it). Withdrawing never needs one.
+  let stepUpStale = false;
+  const NEEDS_SIGN_IN = "Rovara's automatic runs are allowed right after you confirm it's you on the sign-in page: a tool that holds an API token cannot allow them. Confirm it's you, then try again within a few minutes.";
+  const companyConsentKey = (person: Person) => (companyOfPerson(person) === FAKE_COMPANY_ID ? "main" : companyOfPerson(person));
+  /** Code's `GET`/`PUT /v1/app/company/system-runs`: a live company owner or admin only (a member is 403, a person with no company is not served). */
+  const systemRunsAnswer = (method: string, person: Person, body: unknown): { status: number; body: unknown } => {
+    const admin = person.administrator && !companyless.has(person.developerId);
+    if (!admin) return failure(403, "FORBIDDEN", "Only company owners and admins can see or change whether Rovara's automatic runs are allowed for the company.");
+    const key = companyConsentKey(person);
+    const available = [...wikiSetups.values()].every((entry) => entry.ceilingOff !== true);
+    const view = () => ({ available, allowed: upkeepConsent.get(key) === true, systemRunsOn: available && upkeepConsent.get(key) === true });
+    if (method === "GET") return { status: 200, body: view() };
+    const given = body as { requestId?: unknown; allowed?: unknown } | undefined;
+    if (typeof given?.requestId !== "string" || typeof given.allowed !== "boolean") return failure(400, "CONFIG_INVALID", "the request is not valid");
+    if (given.allowed) {
+      if (!available) return failure(404, "NOT_AVAILABLE_HERE", "Rovara's automatic runs aren't available on this Rovara yet");
+      if (stepUpStale) return failure(403, "REAUTH_REQUIRED", NEEDS_SIGN_IN);
+    }
+    upkeepConsent.set(key, given.allowed);
+    return { status: 200, body: view() };
+  };
+  const upkeepView = (name: string, one: FakeWikiSetup, person: Person, manage: boolean) => {
+    if (one.legacyUpkeep === true) return { enabled: one.upkeepOn, canManage: manage, available: true };
+    const available = one.ceilingOff !== true, admin = person.administrator && !companyless.has(person.developerId);
+    return { enabled: one.upkeepOn, canManage: manage, available, systemRunsOn: available && upkeepConsent.get(companyKeyOf(name)) === true, canEnableSystemRuns: available && admin, cap: { monthlyUsd: one.capUsd ?? null, canRaise: admin } };
+  };
+  const upkeepPut = (name: string, one: FakeWikiSetup, person: Person, manage: boolean, given: { on?: unknown; allowSystemRuns?: unknown }) => {
+    if (one.legacyUpkeep === true) { one.upkeepOn = given.on === true; return { status: 200, body: upkeepView(name, one, person, manage) }; }
+    if (one.ceilingOff === true) return failure(409, "NOT_AVAILABLE_HERE", "Nightly upkeep isn't available on this Rovara yet.");
+    if (given.allowSystemRuns !== undefined) {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only company owners and admins can allow or stop Rovara's automatic runs for the company.");
+      if (given.allowSystemRuns === false && given.on === true) return failure(400, "CONFIG_INVALID", "the request is not valid");
+      if (given.allowSystemRuns === true && stepUpStale) return failure(403, "REAUTH_REQUIRED", NEEDS_SIGN_IN);
+      upkeepConsent.set(companyKeyOf(name), given.allowSystemRuns === true);
+    } else if (given.on === true && upkeepConsent.get(companyKeyOf(name)) !== true) {
+      return failure(403, "FORBIDDEN", "A company owner or admin has to allow Rovara's automatic runs for the company first.");
+    }
+    one.upkeepOn = given.on === true;
+    return { status: 200, body: upkeepView(name, one, person, manage) };
+  };
   const wikiSetupAnswer = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
     const match = /^\/v1\/app\/projects\/([^/]+)\/(wiki-map|wiki-build(?:\/(?:continue|stop|refresh|agents|delete))?|upkeep)$/u.exec(path);
     if (match === null) return undefined;
@@ -237,12 +300,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (project(name) === undefined || companyless.has(person.developerId) || (!manage && grant === undefined) || !wikiReads(person, name)) return failure(404, "NOT_FOUND", "project not found");
     const view = (): { status: number; body: unknown } => ({ status: 200, body: wikiSetupBuildView(one, manage) });
-    if (method === "GET") return tail === "wiki-map" ? { status: 200, body: one.mapMade ? { status: "ready", canManage: manage, map: wikiMapOf(name) } : { status: "none", canManage: manage } } : tail === "upkeep" ? { status: 200, body: { enabled: one.upkeepOn, canManage: manage, available: true } } : view();
+    if (method === "GET") return tail === "wiki-map" ? { status: 200, body: one.mapMade ? { status: "ready", canManage: manage, map: wikiMapOf(name) } : { status: "none", canManage: manage } } : tail === "upkeep" ? { status: 200, body: upkeepView(name, one, person, manage) } : view();
     if (!manage) return failure(403, "FORBIDDEN", tail === "wiki-map" ? WIKI_SETUP_CODE_WORDS.mapNotAllowed : WIKI_SETUP_CODE_WORDS.notAllowed);
-    const given = body as { requestId?: unknown; on?: unknown } | undefined;
+    const given = body as { requestId?: unknown; on?: unknown; allowSystemRuns?: unknown } | undefined;
     if (tail === "wiki-map") { one.mapMade = true; return { status: 200, body: { status: "ready", canManage: true, map: wikiMapOf(name) } }; }
     if (typeof given?.requestId !== "string") return failure(400, "CONFIG_INVALID", "the request is not valid");
-    if (tail === "upkeep") { one.upkeepOn = given.on === true; return { status: 200, body: { enabled: one.upkeepOn, canManage: true, available: true } }; }
+    if (tail === "upkeep") return upkeepPut(name, one, person, manage, given);
     if (tail === "wiki-build/agents") { one.agentsOn = given.on === true; return view(); }
     if (tail === "wiki-build/delete") {
       if (one.status === "running") return failure(409, "WORKSPACE_BUSY", WIKI_SETUP_CODE_WORDS.deleteWhileRunning);
@@ -552,6 +615,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const comments = new Map<string, PlanComment[]>();
   const playbooks = new Map<string, PlaybookView>();
   const scriptTokens = new Map<string, ScriptToken[]>();
+  const scriptTokenKey = (person: Person) => `${person.company?.id ?? FAKE_COMPANY_ID}:${person.developerId}`;
+  const scriptTokenRequests = new Set<string>();
   const decided = new Set<string>();
   const companyMembers: CompanyMember[] = PEOPLE.map((person, index) => ({ developerId: person.developerId, name: person.name, email: person.email, role: person.administrator ? "owner" : "member", joinedAt: `2026-10-0${String(index + 1)}T09:00:00.000Z` }));
   let preApproved: string[] = ["new.hire@example.test"];
@@ -1193,12 +1258,23 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "company.audit.records": ({ person }) => person.administrator
       ? { body: { records: [{ at: "2026-11-14T10:00:00.000Z", actor: { developerId: PRIYA.developerId, name: "Priya" }, action: "task.start", subject: TASK_IDS.running, outcome: "ok" }] } }
       : failure(403, "FORBIDDEN", "Only an administrator can read the audit."),
-    "scriptTokens.list": ({ person }) => ({ body: { tokens: scriptTokens.get(person.developerId) ?? [] } }),
+    "scriptTokens.list": ({ person }) => {
+      const own = scriptTokenKey(person), company = `${person.company?.id ?? FAKE_COMPANY_ID}:`;
+      const tokens = [...scriptTokens].filter(([creator]) => creator === own || person.administrator && creator.startsWith(company))
+        .flatMap(([creator, list]) => list.map(token => ({ ...token, status: token.status === "active" && Date.parse(token.expiresAt) <= Date.now() ? "expired" as const : token.status, mine: creator === own, ...(creator === own ? {} : { createdBy: "A teammate" }) })));
+      return { body: { tokens, canCreate: person.administrator } };
+    },
     "scriptTokens.create": ({ body, person }) => {
-      if (body.label.trim() === "") return failure(400, "CONFIG_INVALID", "Name the token.");
-      const token: ScriptToken = { tokenId: randomUUID(), label: body.label.trim(), createdAt: iso() };
-      scriptTokens.set(person.developerId, [...(scriptTokens.get(person.developerId) ?? []), token]);
-      return { status: 201, body: { token, secret: `fake-script-${randomBytes(8).toString("hex")}` } };
+      const parsed = CreateScriptTokenBodySchema.safeParse(body);
+      if (!parsed.success) return failure(400, "CONFIG_INVALID", "That automation key request isn't valid.");
+      const own = scriptTokenKey(person), request = `${own}:${parsed.data.requestId}`;
+      if (scriptTokenRequests.has(request)) return failure(409, "CONFLICT", "This request was already used. The key is shown only once.");
+      if (parsed.data.projects.some(name => project(name) === undefined)) return failure(404, "NOT_FOUND", "project not found");
+      scriptTokenRequests.add(request);
+      const tokenPart = randomBytes(10).toString("hex");
+      const token: ScriptToken = { tokenId: `stk_${tokenPart}`, name: parsed.data.name, hint: `rvst_…${tokenPart.slice(-8)}`, projects: parsed.data.projects, permissions: parsed.data.permissions, createdAt: iso(), expiresAt: new Date(Date.now() + (parsed.data.days ?? 30) * 86400000).toISOString(), status: "active", mine: true };
+      scriptTokens.set(own, [...(scriptTokens.get(own) ?? []), token]);
+      return { status: 201, body: { token, secret: `rvst_${randomBytes(10).toString("hex")}_${tokenPart}_${randomBytes(32).toString("base64url")}` } };
     },
     "lessons.list": (context) => {
       const found = lessonsProject(context);
@@ -1315,10 +1391,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: settingsView(name) };
     },
     "scriptTokens.revoke": ({ params, person }) => {
-      const list = scriptTokens.get(person.developerId) ?? [];
-      const next = list.filter((entry) => entry.tokenId !== params["tokenId"]);
-      scriptTokens.set(person.developerId, next);
-      return { body: { revoked: next.length !== list.length } };
+      const own = scriptTokenKey(person), company = `${person.company?.id ?? FAKE_COMPANY_ID}:`;
+      for (const [creator, tokens] of scriptTokens) {
+        const token = tokens.find(entry => entry.tokenId === params["tokenId"]);
+        if (token === undefined || creator !== own && !(person.administrator && creator.startsWith(company))) continue;
+        token.status = "revoked"; token.revokedAt ??= iso();
+        return { body: { token: { ...token, mine: creator === own } } };
+      }
+      return failure(404, "NOT_FOUND", "That automation key doesn't exist, or you can't manage it.");
     },
   };
 
@@ -1431,6 +1511,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (taskId !== undefined) involved.set(taskId, new Set([...(involved.get(taskId) ?? []), added.developerId]));
           return send(200, { mode: involvedMode, ...(taskId === undefined ? {} : { taskId }) });
         }
+        if (method === "POST" && url.pathname === "/__fake/saved-env") {
+          const given = JSON.parse(await readBody(request)) as { project?: unknown; mode?: unknown };
+          if (typeof given.project !== "string" || !["off", "route-missing", "core-off", "never", "healthy", "broken", "extra-field", "501"].includes(given.mode as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and mode" } });
+          savedEnvModes.set(given.project, given.mode as SavedEnvMode);
+          return send(200, { mode: given.mode });
+        }
         if (method === "POST" && url.pathname === "/__fake/wiki") {
           const given = JSON.parse(await readBody(request)) as { project?: unknown; state?: unknown; off?: unknown; broken?: unknown };
           if (typeof given.project !== "string" || project(given.project) === undefined || (given.state !== undefined && !["ready", "none", "building", "stopped"].includes(given.state as string))) return send(400, { error: { code: "CONFIG_INVALID", message: "project, and state ready, none, building or stopped" } });
@@ -1442,6 +1528,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const given = JSON.parse(await readBody(request)) as Record<string, unknown>;
           if (typeof given["project"] !== "string" || project(given["project"]) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project" } });
           wikiSetups.delete(given["project"]);
+          upkeepConsent.set(companyKeyOf(given["project"]), given["consent"] === true);
+          stepUpStale = given["stepUp"] === "stale";
           const one = wikiSetupOf(given["project"]);
           const status = given["status"];
           if (status === "built" || status === "stopped" || status === "running") { Object.assign(one, { status, pages: 24, refreshPages: 2, mapMade: true, planned: 24, written: status === "built" ? 24 : 12 }); if (status === "stopped") one.stop = (given["stop"] as FakeWikiSetup["stop"] | undefined) ?? "stopped_by_person"; }
@@ -1452,6 +1540,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (given["upkeepOn"] === true) one.upkeepOn = true;
           if (given["off"] === true) one.off = true;
           if (given["upkeepOff"] === true) one.upkeepOff = true;
+          if (given["ceilingOff"] === true) one.ceilingOff = true;
+          if (given["legacyUpkeep"] === true) one.legacyUpkeep = true;
+          if (typeof given["capUsd"] === "number") one.capUsd = given["capUsd"];
           return send(200, { project: given["project"] });
         }
         if (method === "POST" && url.pathname === "/__fake/how-we-work") {
@@ -1580,22 +1671,35 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           }
           return send(200, { ok: true });
         }
+        if (url.pathname === "/v1/app/company/system-runs" && (method === "GET" || method === "PUT")) {
+          const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
+          const who = bearer === undefined ? undefined : access.get(bearer);
+          if (who === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          let parsed: unknown = {};
+          if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
+          const answered = systemRunsAnswer(method, who, parsed);
+          return send(answered.status, answered.body);
+        }
         if (url.pathname.startsWith("/v1/app/projects/")) {
           const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? answersAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? savedEnvAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? answersAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
           if (who === undefined && /\/(?:answers|code\/suggest)$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/how-we-work$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/(?:wiki(?:[-/]|$)|upkeep$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (who === undefined && /\/environment-image$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal|confirm|discard|decide))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           const updateAnswer = who === undefined ? undefined : ticketUpdatesAnswer(method, url.pathname, who, parsed);
           if (who === undefined && /\/intake\/updates$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (updateAnswer !== undefined) return send(updateAnswer.status, updateAnswer.body);
           if (answer !== undefined) return send(answer.status, answer.body);
         }
-        const matched = matchCodeRoute(method, url.pathname);
+        // Code serves its decision cards on its own `/v1/app/decisions...` (core host, L4-MF1); the contract rows still carry the historical `/v1/dev/client/decisions...`, which real Code never served and
+        // Cloud no longer asks. The fake answers the real path with the same cards, and the contract path too (the "answers every route in the contract" test reads the rows as they are); a spec that wants to
+        // prove Cloud never asks the old path reads the fake's log.
+        const matched = matchCodeRoute(method, /^\/v1\/app\/decisions(?:\/|$)/u.test(url.pathname) ? `/v1/dev/client${url.pathname.slice("/v1/app".length)}` : url.pathname);
         if (matched === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
         const id = matched.route.id;
         let person: Person | undefined = current;

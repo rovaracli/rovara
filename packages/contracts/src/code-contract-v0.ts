@@ -227,8 +227,10 @@ export interface UnderstandingQuestion { questionId: string; text: string; optio
 
 /** The proof index of one task (UX audit 2026-11-15): every item of evidence and what it proves, so the proof page can answer "which of the things I asked for are proven?". */
 export interface ProofItem {
-  /** Read it with `tasks.evidence.get`. */
-  sha256: string;
+  /** The item's id in the index (Code's `check:<n>`, `evidence:<n>`, `review:code`, `review:security`). Optional: an older Code sends none, and the digest is the key then. */
+  id?: string;
+  /** The digest of the check's stored output; read it with `tasks.evidence.get`. Code sends it only when it kept the output. */
+  sha256?: string;
   title: string;
   kind: string /* known: test_report, screenshot, log, diff, check_result, eval */;
   verdict: "pass" | "fail" | "unknown";
@@ -242,7 +244,10 @@ export interface ProofItem {
   total?: number;
   bar?: number;
 }
-export interface ProofIndexResponse { taskId: TaskId; items: ProofItem[] }
+/** TE-A6 (DEC 254zt/254zzf): one failing test of a failed check, as Code words it (plain text): the check, the test, and "likely broken by a change ... to <files>" or "unknown (<why>)". */
+export interface ProofFailure { check: string; test: string; cause: string }
+/** `failures` (at most ten) and `failuresNotListed` (how many more) are optional: a Code without TE-A6, or a task with no failing test that has a cause, sends neither. */
+export interface ProofIndexResponse { taskId: TaskId; items: ProofItem[]; failures?: ProofFailure[]; failuresNotListed?: number }
 
 /** Cloud's own `GET /v1/app/org/spend` gains two optional numbers (no Code route behind it): what the company spent this month and what is left of its budget (absent when there is no budget). */
 export interface OrgSpendSummaryAddition { spentThisMonthUsd?: number; remainingUsd?: number }
@@ -458,12 +463,12 @@ export interface CompanyAuditQuery { from?: Iso; to?: Iso; person?: DeveloperId;
 /** The reply to `GET /v1/app/company/audit` (admin only): the merged list, `next` (pass back as `cursor` with the same filters) while there may be more, and the engine's status. A page may be short while `next` is present. */
 export interface CompanyAuditPage { records: CompanyAuditEntry[]; next?: string; engine: CompanyAuditEngineStatus }
 
-export interface ScriptToken { tokenId: string; label: string; createdAt: Iso; lastUsedAt?: Iso; expiresAt?: Iso }
+export interface ScriptToken { tokenId: string; name: string; hint: string; projects: string[]; permissions: Array<"read" | "start" | "lessons" | "wiki">; createdAt: Iso; expiresAt: Iso; lastUsedAt?: Iso; revokedAt?: Iso; status: "active" | "expired" | "revoked"; mine: boolean; createdBy?: string }
 export interface ScriptTokensResponse { tokens: ScriptToken[] }
-export interface CreateScriptTokenRequest { requestId: string; label: string; expiresInDays?: number }
+export interface CreateScriptTokenRequest { requestId: string; name: string; projects: string[]; permissions: Array<"read" | "start" | "lessons">; days?: number }
 /** The secret is shown once, in this answer only. */
 export interface CreateScriptTokenResponse { token: ScriptToken; secret: string }
-export interface RevokeScriptTokenResponse { revoked: boolean }
+export interface RevokeScriptTokenResponse { token: ScriptToken }
 
 /** Guided onboarding PR 16/17 (Code #839): a reviewed archive or restore names the preview's revisions and acknowledges what it does (Code's ReviewedProject*Body). */
 export interface ArchiveProjectRequest { requestId: string; expectedOrgId?: string; expectedRevision: number; expectedProjectRevision: number; acknowledgeNewWorkStops?: true; acknowledgeNewWorkAllowed?: true }
@@ -507,7 +512,9 @@ export type LessonCitation =
   | { kind: "code"; repo: string; path: string; startLine: number; endLine: number; check: string /* known: valid, moved, stale, unchecked */; checkedAt?: number }
   | { kind: "pr"; url: string }
   | { kind: "task"; taskId: string }
-  | { kind: "record" };
+  | { kind: "record" }
+  /** A kind a newer Code added: Cloud keeps it as this (it never reads it as a known kind). */
+  | { kind: "other" };
 /** What a lesson waiting for people still needs: people in all (1, or 2 for reviewer, check and security lessons) and how many approved. */
 export interface LessonNeeds { required: 1 | 2; have: number; first?: LessonPerson; firstAt?: number; groups: string[] }
 /** One lesson as Code's list sends it (contracts `LessonViewSchema`; Cloud keeps the fields its screens draw). Times are milliseconds. */
@@ -859,9 +866,9 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.linear.team.clear", "DELETE", "/v1/dev/company/linear/projects/{project}", "Clear a project's Linear team", "full", ["admin"], "no", false, "none", true),
   spec("company.audit.records", "GET", "/v1/dev/client/company/audit/records", "Engine audit records, for a company administrator (lane AU)", "full", ["admin"], "no", false, "none"),
   // Settings: the person's script tokens
-  spec("scriptTokens.list", "GET", "/v1/dev/script-tokens", "The person's script tokens", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:94")),
-  spec("scriptTokens.create", "POST", "/v1/dev/script-tokens", "Make a script token; the secret is shown once", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:97")),
-  spec("scriptTokens.revoke", "DELETE", "/v1/dev/script-tokens/{tokenId}", "Revoke one", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:99")),
+  spec("scriptTokens.list", "GET", "/v1/app/script-tokens", "The caller's tokens, or company tokens Code lets them manage", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
+  spec("scriptTokens.create", "POST", "/v1/app/script-tokens", "Make a script token with a fresh step-up; secret shown once", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
+  spec("scriptTokens.revoke", "POST", "/v1/app/script-tokens/{tokenId}/revoke", "Revoke one", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
   // Lessons (PrepLabsAI/Rovara#713, LM8 part 1): served by code/next once merged and wired (its Step 6); until then every route answers 404 LESSONS_SWITCHED_OFF "Lessons are off."
   spec("lessons.list", "GET", `${DP}/lessons`, "One page of a project's lessons (query: list=proposed|approved|retired, since, limit 1..100, cursor)", "full", ["home", "how-we-work"], "no", false, "none", true),
   spec("lessons.approve", "POST", `${DP}/lessons/{lessonId}/approve`, "Keep a proposed lesson: the version read, or an edit of it", "full", ["how-we-work"], "no", false, "none", true),
@@ -912,6 +919,7 @@ PUT /v1/app/me/name | k | shell | me.setName | shell/NameForm | T
 GET /v1/app/me/sign-ins | k | later | | sign-ins | T
 POST /v1/app/me/sign-ins/link | k | later | | sign-ins | T
 DELETE /v1/app/me/sign-ins/{method} | k | later | | sign-ins | T
+GET /v1/app/me/sign-in-factors | k | later | | admin-company | T
 GET /v1/app/nav | c | shell | access.check,tasks.list,decisions.list | nav | T
 GET /v1/app/home | c | home | tasks.list,tasks.get,decisions.list | home | T
 POST /v1/app/home/cards/{card}/dismiss | c | home | | work-list |
@@ -928,6 +936,7 @@ GET /v1/app/inbox | k | later | | inbox | T
 POST /v1/app/inbox/read | k | later | | inbox | T
 GET /v1/app/sessions/{id} | c | session | tasks.get,tasks.people.get | sessions | T
 GET /v1/app/sessions/{id}/events | k | session | tasks.events | sessions | T
+GET /v1/app/sessions/{id}/log | k | later | | screens/session/DecisionsCard | T
 GET /v1/app/sessions/{id}/messages | k | session | tasks.messages.list | sessions | T
 POST /v1/app/sessions/{id}/messages | k | session | tasks.messages.send | sessions | T
 PATCH /v1/app/sessions/{id}/messages/{messageId} | k | session | tasks.messages.send | sessions | T
@@ -997,7 +1006,7 @@ POST /v1/app/tasks/{t}/review/release | k | later | | review-groups |
 POST /v1/app/tasks/{t}/review/reassign | k | later | | review-groups |
 POST /v1/app/projects/{p}/code | k | request | tasks.start | code | T
 POST /v1/app/projects/{p}/code/suggest | k | request | | code | T
-POST /v1/app/projects/{p}/start-preview | k | later | | code |
+POST /v1/app/projects/{p}/start-preview | c | later | | code | T
 GET /v1/app/projects | k | admin | access.check,client.projects.get | projects | T
 POST /v1/app/projects | k | admin | client.projects.create,client.projects.bulk | onboarding | T
 GET /v1/app/projects/{p} | k | admin | access.check,client.projects.get | onboarding | T
@@ -1081,6 +1090,8 @@ GET /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 PUT /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 POST /v1/app/projects/{p}/answers | k | later | | answers | T
 POST /v1/app/projects/{p}/answers/{a}/not-right | k | later | | answers | T
+GET /v1/app/company/system-runs | k | later | | wiki-setup | T
+PUT /v1/app/company/system-runs | k | later | | wiki-setup | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | LT
 POST /v1/app/projects/{p}/setup-agent/discard | k | later | | setup-agent | LT
@@ -1090,7 +1101,7 @@ GET /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 PUT /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 GET /v1/app/projects/{p}/setup-recipe | k | later | | setup-recipes |
 POST /v1/app/projects/{p}/setup-recipe | k | later | | setup-recipes |
-GET /v1/app/projects/{p}/environment-image | k | later | | saved-env |
+GET /v1/app/projects/{p}/environment-image | k | later | | saved-env | T
 POST /v1/app/projects/{p}/environment-image | k | later | | saved-env |
 PUT /v1/app/projects/{p}/environment-image/setting | k | later | | saved-env |
 GET /v1/app/projects/{p}/test-environment | k | later | | test-environment |
@@ -1235,9 +1246,9 @@ PUT /v1/app/org/model-selection-policy | g | later | | company-model-policy |
 POST /v1/app/org/model-selection-policy/preview | g | later | | company-model-policy |
 GET /v1/app/me/notifications | c | settings | | notifications |
 PUT /v1/app/me/notifications | c | settings | | notifications | L
-GET /v1/app/script-tokens | k | settings | scriptTokens.list | script-tokens | L
-POST /v1/app/script-tokens | k | settings | scriptTokens.create | script-tokens | L
-DELETE /v1/app/script-tokens/{tokenId} | k | settings | scriptTokens.revoke | script-tokens | L
+GET /v1/app/script-tokens | k | settings | scriptTokens.list | script-tokens | T
+POST /v1/app/script-tokens | k | settings | scriptTokens.create | script-tokens | T
+POST /v1/app/script-tokens/{tokenId}/revoke | k | settings | scriptTokens.revoke | script-tokens | T
 POST /v1/app/me/identities/slack | k | settings | | shell/SlackLink |
 DELETE /v1/app/me/identities/slack | k | settings | channelLinks.remove | shell/SlackLink |
 POST /v1/app/me/identities/github | k | settings | | shell/GithubLink |

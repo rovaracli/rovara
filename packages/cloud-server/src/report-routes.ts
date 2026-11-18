@@ -71,6 +71,8 @@ const INSTANT = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z)?$/
 /** Code's feature ids (FeatureIdSchema) and task ids (uuids). */
 export const FEATURE_ID = /^ft_[a-f0-9]{20}$/u;
 export const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+/** Code's own task page for one task (`taskPage` in Code's report rows, TASK_PAGE_PATH_PATTERN in its contracts): `/review/<taskId>/task`. Cloud's handler sends a browser that follows it to Code, which asks for sign-in and checks access itself. */
+export const TASK_PAGE_PATH = /^\/review\/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\/task$/u;
 export const NAME_UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 /** One task's cost can be at most $1,000,000: with at most 5,000 tasks the sum stays a safe integer. */
 const MAX_TASK_MICROS = 1_000_000_000_000;
@@ -107,6 +109,8 @@ export function parseReportFilters(query: URLSearchParams): ReportFilters | unde
 /** One task, as the report reads it. Only what the pages draw: no person, no wait split. */
 export interface ReportTask {
   taskId: string; project: string; title: string; origin: Origin; path?: TaskPath; state: TaskState;
+  /** Code's reference to this task's own page, as Code gave it and only when it names this very task. Absent: the title is plain text. */
+  taskPage?: string;
   feature?: { id: string; source: FeatureSource };
   startedAt: number; firstPrAt?: number; endedAt?: number;
   prsOpened: number; prsMerged: number; prLinks: string[];
@@ -158,9 +162,11 @@ export function readRow(raw: unknown, companyId: string): ReportTask | undefined
     if (!plain(found) || typeof found["id"] !== "string" || !FEATURE_ID.test(found["id"]) || found["id"] === NO_FEATURE_ID || !oneOf(FEATURE_SOURCES, found["source"])) return undefined;
     feature = { id: found["id"], source: found["source"] };
   }
+  // The reference is Code's, passed on as it stands and only when it is exactly the page of THIS row's task: any other value (another task, an address, a longer path) is dropped and the title stays text. Never built here.
+  const taskPage = typeof raw["taskPage"] === "string" && TASK_PAGE_PATH.test(raw["taskPage"]) && raw["taskPage"].toLowerCase() === `/review/${taskId}/task`.toLowerCase() ? raw["taskPage"] : undefined;
   const links = Array.isArray(raw["prLinks"]) ? (raw["prLinks"] as unknown[]).slice(0, 20).flatMap((link) => { const good = plainHttpsLink(link); return good === undefined ? [] : [good]; }) : [];
   return {
-    taskId, project, title: title ?? "Untitled task", origin, ...(path === undefined ? {} : { path }), state, ...(feature === undefined ? {} : { feature }), startedAt, ...(firstPrAt === undefined ? {} : { firstPrAt }), ...(endedAt === undefined ? {} : { endedAt }),
+    taskId, project, title: title ?? "Untitled task", origin, ...(path === undefined ? {} : { path }), state, ...(taskPage === undefined ? {} : { taskPage }), ...(feature === undefined ? {} : { feature }), startedAt, ...(firstPrAt === undefined ? {} : { firstPrAt }), ...(endedAt === undefined ? {} : { endedAt }),
     prsOpened: raw["prsOpened"], prsMerged: raw["prsMerged"], prLinks: links, costMicros: raw["costMicros"], unpricedCalls: raw["unpricedCalls"],
   };
 }
@@ -404,6 +410,8 @@ export interface FeatureDetail {
   tasks: Array<{
     taskId: string; title: string; project: string; origin: Origin; path?: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number;
     prsOpened: number; prsMerged: number; prLinks: string[]; wallMs?: number; wallSoFar?: boolean;
+    /** Code's reference to the task's own page (see `readRow`): the title links to it. Absent: plain text. */
+    taskPage?: string;
   }>;
   tasksTotal: number;
   unreadableTasks?: number;
@@ -431,7 +439,7 @@ export function buildFeatureDetail(id: string, rows: readonly ReportTask[], feat
     tasks: shown.map((task, at) => {
       const end = task.state === "open" ? nowMs : task.endedAt;
       return {
-        taskId: task.taskId, title: task.title, project: task.project, origin: task.origin, ...(task.path === undefined ? {} : { path: task.path }), state: task.state, startedAt: new Date(task.startedAt).toISOString(),
+        taskId: task.taskId, title: task.title, project: task.project, origin: task.origin, ...(task.path === undefined ? {} : { path: task.path }), state: task.state, ...(task.taskPage === undefined ? {} : { taskPage: task.taskPage }), startedAt: new Date(task.startedAt).toISOString(),
         costCents: cents[at]!, unpricedCalls: task.unpricedCalls, prsOpened: task.prsOpened, prsMerged: task.prsMerged, prLinks: task.prLinks,
         ...(end !== undefined && end >= task.startedAt ? { wallMs: end - task.startedAt, ...(task.state === "open" ? { wallSoFar: true } : {}) } : {}),
       };
@@ -449,21 +457,6 @@ async function adminOnly(context: RouteContext): Promise<{ companyId: string; de
   if (refused(who)) return who;
   if (!isCompanyAdmin(who.companyRole)) return REPORT_WORDS.notAdmin;
   return { companyId: who.companyId, developerId: who.developerId };
-}
-
-/** How many of the person's newest Cloud sessions a feature page matches to its tasks (a bound on the store read, like the Work list's). */
-const SESSIONS_LOOKED_AT = 500;
-
-/**
- * The page address of each shown task the signed-in person started in Cloud: Cloud's own record of their session (the company-scoped store, so another company's session never matches). A task
- * started by someone else, or somewhere else, has no address here and its title is not a link; the task page opens only a person's own tasks and sessions. A store that fails gives no links.
- */
-async function sessionsOf(context: RouteContext, developerId: string, taskIds: ReadonlySet<string>): Promise<Map<string, string>> {
-  const found = new Map<string, string>();
-  try {
-    for (const record of (await context.work.startedBy(developerId)).slice(0, SESSIONS_LOOKED_AT)) if (taskIds.has(record.taskId) && !found.has(record.taskId)) found.set(record.taskId, record.sessionId);
-  } catch { /* the page still answers, its titles are plain text */ }
-  return found;
 }
 
 /** The features for the pickers (Move to feature, Merge into), by name: id, name and state only. */
@@ -487,9 +480,7 @@ async function read(context: RouteContext, featureId: string | undefined): Promi
     if (featureId === undefined) return { status: 200, body: { ...buildReport(rows, features, filters, context.now()), ...may, ...unreadable } };
     const detail = buildFeatureDetail(featureId, rows, features, filters, context.now());
     if (detail === undefined) return REPORT_WORDS.notFound;
-    const links = await sessionsOf(context, who.developerId, new Set(detail.tasks.map((task) => task.taskId)));
-    const tasks = detail.tasks.map((task) => (links.has(task.taskId) ? { ...task, sessionId: links.get(task.taskId)! } : task));
-    return { status: 200, body: { ...detail, tasks, ...may, ...unreadable } };
+    return { status: 200, body: { ...detail, ...may, ...unreadable } };
   } catch (error) {
     if (error instanceof ReportRefused) return error.answer;
     // Code's access check failing is Code's refusal too: fixed words, never what Code said. An ended sign-in is the handler's.

@@ -1,0 +1,3467 @@
+{
+ "_about": "Decision card views as Code's own projector builds them (packages/broker/src/core/decisions/project.ts, the route's view assembly in routes.ts) for every card kind, plus plan cards with choices and a run limit, a requirements and design pair with tabs, and a mixed list. Generated from Code origin/code/next 5b8f7f5046b269af433cf3758d9e9cf48951b4c7 (L4-DCS, 2026-11-17). Regenerate when Code's decision-card contract changes.",
+ "codeSha": "5b8f7f5046b269af433cf3758d9e9cf48951b4c7",
+ "views": {
+  "approve_plan": {
+   "cards": [
+    {
+     "id": "approve_plan:plan1",
+     "kind": "approve_plan",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this plan and start the build?",
+     "recommended": {
+      "action": "approve",
+      "why": "Every claim in the plan has a planned check."
+     },
+     "next": {
+      "text": "Builds in 12 to 25 minutes, about $1.20 to $3.10, 12 to 25 minutes, and opens a pull request.",
+      "costUsd": 3.1,
+      "minutes": 25
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Files",
+       "value": "1 file",
+       "state": "good"
+      },
+      {
+       "kind": "test_proof",
+       "label": "Planned proof",
+       "value": "every claim has a check",
+       "state": "good"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_plan/plan1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "request_changes",
+       "label": "Request changes",
+       "href": "/v1/app/decisions/approve_plan/plan1/request-changes",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_plan%3Aplan1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_plan:plan1": [
+     {
+      "title": "Files that change",
+      "lines": [
+       "src/retry.ts"
+      ]
+     },
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_plan:plan1": "17b6390f2bf3b6169ff9985713b8cf7c195afc4e6e1e1264b789ad4f0f49da39"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "approve_requirements": {
+   "cards": [
+    {
+     "id": "approve_requirements:req1",
+     "kind": "approve_requirements",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve these requirements?",
+     "recommended": {
+      "action": "approve",
+      "why": "Requirements are the cheapest place to catch a wrong turn."
+     },
+     "next": {
+      "text": "Rovara moves on to the design."
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Requirements",
+       "value": "4 claims",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_requirements/req1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "request_changes",
+       "label": "Request changes",
+       "href": "/v1/app/decisions/approve_requirements/req1/request-changes",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_requirements%3Areq1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_requirements:req1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_requirements:req1": "cd844375b5da0f56bf0b999fb7ee89668b0d33378b6bf01c93fecb73be94e2ea"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "approve_design": {
+   "cards": [
+    {
+     "id": "approve_design:des1",
+     "kind": "approve_design",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this design?",
+     "recommended": {
+      "action": "approve",
+      "why": "The design fixes the approach before any code is written."
+     },
+     "next": {
+      "text": "Rovara writes the coding plan from it."
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Files named",
+       "value": "1 file",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_design/des1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "request_changes",
+       "label": "Request changes",
+       "href": "/v1/app/decisions/approve_design/des1/request-changes",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_design%3Ades1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_design:des1": [
+     {
+      "title": "Files that change",
+      "lines": [
+       "src/retry.ts"
+      ]
+     },
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_design:des1": "69de158905d579cc7e1e51228e47d4cb97018310da5e9c7cc71f5b52ae57aefa"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "merge": {
+   "cards": [
+    {
+     "id": "merge:pr1",
+     "kind": "merge",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Merge this pull request?",
+     "recommended": {
+      "action": "approve",
+      "why": "The checks passed and the review has no open concerns."
+     },
+     "next": {
+      "text": "The pull request is merged into the base branch."
+     },
+     "evidence": [
+      {
+       "kind": "test_proof",
+       "label": "Proof",
+       "value": "4 proven or passed, 0 failed, 0 not tested",
+       "state": "good"
+      },
+      {
+       "kind": "review",
+       "label": "Review",
+       "value": "no concerns",
+       "state": "good"
+      },
+      {
+       "kind": "checks",
+       "label": "CI",
+       "value": "passing",
+       "state": "good"
+      },
+      {
+       "kind": "risk",
+       "label": "Risk",
+       "value": "low",
+       "state": "good"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [
+      "The pull request is low risk."
+     ],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Merge",
+       "href": "/v1/app/decisions/merge/pr1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/merge/pr1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=merge%3Apr1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "merge:pr1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "The pull request is low risk."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "merge:pr1": "65f21100e35bac658a376b53f73716258a8e48e93dd5774c8a4233a987bc8bab"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "answer_question": {
+   "cards": [
+    {
+     "id": "answer_question:q1",
+     "kind": "answer_question",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Which gateway do refunds use?",
+     "recommended": {
+      "action": "open",
+      "why": "Rovara asks instead of guessing."
+     },
+     "next": {
+      "text": "Rovara goes on with your answer."
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Question",
+       "value": "1 of 2",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Answer",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=answer_question%3Aq1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "answer_question:q1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "answer_question:q1": "d405c9f264ea5626ea15d4a13361a5e937a63e75e430305d397265f5adfc11e1"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "choose_checks": {
+   "cards": [
+    {
+     "id": "choose_checks:ck1",
+     "kind": "choose_checks",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Which optional checks should run?",
+     "recommended": {
+      "action": "open",
+      "why": "The project's default choice is pre-selected."
+     },
+     "next": {
+      "text": "The chosen checks run with the build."
+     },
+     "evidence": [
+      {
+       "kind": "checks",
+       "label": "Default",
+       "value": "1 check",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Choose checks",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=choose_checks%3Ack1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "choose_checks:ck1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "choose_checks:ck1": "3acf7376eb5ceba5105ba93f2183d0a8baf1b6035cb92a2e192f595668272806"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "approve_dependency": {
+   "cards": [
+    {
+     "id": "approve_dependency:dep1",
+     "kind": "approve_dependency",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Allow these new packages?",
+     "recommended": {
+      "action": "approve",
+      "why": "No new package runs an install script."
+     },
+     "next": {
+      "text": "The packages are added to the change."
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Packages",
+       "value": "1 package",
+       "state": "warning"
+      },
+      {
+       "kind": "risk",
+       "label": "Install scripts",
+       "value": "none new",
+       "state": "good"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_dependency/dep1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/approve_dependency/dep1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_dependency%3Adep1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_dependency:dep1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_dependency:dep1": "faa31e1499616488b25e079d55236b8c57aa635fd7076e959fbc8a9909500914"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "approve_e2e_plan": {
+   "cards": [
+    {
+     "id": "approve_e2e_plan:e2e1",
+     "kind": "approve_e2e_plan",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this browser and API test plan?",
+     "recommended": {
+      "action": "approve",
+      "why": "These scenarios decide what the app is tested for."
+     },
+     "next": {
+      "text": "The scenarios run against the changed app."
+     },
+     "evidence": [
+      {
+       "kind": "test_proof",
+       "label": "Scenarios",
+       "value": "3 scenarios",
+       "state": "unknown"
+      },
+      {
+       "kind": "other",
+       "label": "AI navigation",
+       "value": "not used",
+       "state": "good"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_e2e_plan/e2e1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/approve_e2e_plan/e2e1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_e2e_plan:e2e1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_e2e_plan:e2e1": "6c529abb3b6e0f5aac705dd0b0ce3111df53dc95e24e6fcc1c9c6ebd495c4309"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "review_feedback": {
+   "cards": [
+    {
+     "id": "review_feedback:fb1",
+     "kind": "review_feedback",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Act on this review feedback?",
+     "recommended": {
+      "action": "approve",
+      "why": "The fix stays on the same pull request."
+     },
+     "next": {
+      "text": "Rovara makes the fix on the same pull request."
+     },
+     "evidence": [
+      {
+       "kind": "review",
+       "label": "Comments",
+       "value": "2 comments",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/review_feedback/fb1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/review_feedback/fb1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=review_feedback%3Afb1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "review_feedback:fb1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "review_feedback:fb1": "271400e9c829fba9d2e4ea7f249f3e1c01e8b0da51017381bac20c81a628b53d"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "autofix_ask": {
+   "cards": [
+    {
+     "id": "autofix_ask:af1",
+     "kind": "autofix_ask",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Let Rovara try to fix this?",
+     "recommended": {
+      "action": "approve",
+      "why": "Rovara already tried and wants your go-ahead."
+     },
+     "next": {
+      "text": "Rovara tries one more fix and re-runs the checks."
+     },
+     "evidence": [
+      {
+       "kind": "checks",
+       "label": "Attempts so far",
+       "value": "2",
+       "state": "warning"
+      },
+      {
+       "kind": "other",
+       "label": "Why asking",
+       "value": "the same check failed twice",
+       "state": "warning"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/autofix_ask/af1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/autofix_ask/af1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=autofix_ask%3Aaf1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "autofix_ask:af1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "autofix_ask:af1": "1bf86c8b0c279adc87c3277bd1b6abea7b3c9373a298a1a053b287bda948cd36"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "approve_setting": {
+   "cards": [
+    {
+     "id": "approve_setting:set1",
+     "kind": "approve_setting",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Change this setting: Allow video capture?",
+     "recommended": {
+      "action": "open",
+      "why": "A less-safe setting needs a full look."
+     },
+     "next": {
+      "text": "Rovara works less safely until the setting is changed back."
+     },
+     "evidence": [
+      {
+       "kind": "risk",
+       "label": "Effect",
+       "value": "less safe",
+       "state": "bad"
+      }
+     ],
+     "risk": "high",
+     "riskReasons": [
+      "A setting that makes Rovara less safe."
+     ],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": true,
+      "secondPerson": true
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_setting%3Aset1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_setting:set1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "A setting that makes Rovara less safe."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_setting:set1": "15099a02d443eae42ea720e7e0701206e02649483ab70b0834a311bed0b73d29"
+   },
+   "dropped": 0,
+   "unconfirmed": [
+    "approve_setting:set1"
+   ]
+  },
+  "approve_spend": {
+   "cards": [
+    {
+     "id": "approve_spend:spr1",
+     "kind": "approve_spend",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Raise the limit for this task?",
+     "recommended": {
+      "action": "approve",
+      "why": "The task is paused until the limit is raised."
+     },
+     "next": {
+      "text": "The limit goes up by $5.00.",
+      "costUsd": 5
+     },
+     "evidence": [
+      {
+       "kind": "cost",
+       "label": "Amount",
+       "value": "$5.00",
+       "state": "good"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_spend/spr1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/approve_spend/spr1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_spend%3Aspr1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_spend:spr1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_spend:spr1": "85795a2ad3b2000ce3c53233f9a271417e04160f03340a66f672c1cb89cea1d6"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "approve_test_env": {
+   "cards": [
+    {
+     "id": "approve_test_env:env1",
+     "kind": "approve_test_env",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this test setup?",
+     "recommended": {
+      "action": "approve",
+      "why": "Rovara booted the app and proved the setup."
+     },
+     "next": {
+      "text": "Tasks in this project use it from now on."
+     },
+     "evidence": [
+      {
+       "kind": "environment",
+       "label": "Tier",
+       "value": "sandbox",
+       "state": "unknown"
+      },
+      {
+       "kind": "risk",
+       "label": "Risk",
+       "value": "medium",
+       "state": "warning"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [
+      "Sets how tests run for this project."
+     ],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_test_env/env1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/approve_test_env/env1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_test_env%3Aenv1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_test_env:env1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "Sets how tests run for this project."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_test_env:env1": "444eaeca775fe8ea97cf3d2bf806db5fdd9d2ed27d8cb769056340d028854988"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "confirm_env_change": {
+   "cards": [
+    {
+     "id": "confirm_env_change:chg1",
+     "kind": "confirm_env_change",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Accept this change to the test setup?",
+     "recommended": {
+      "action": "approve",
+      "why": "The setup changed while the task was running."
+     },
+     "next": {
+      "text": "The running task continues on the new setup."
+     },
+     "evidence": [
+      {
+       "kind": "environment",
+       "label": "Changed",
+       "value": "accounts",
+       "state": "warning"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/confirm_env_change/chg1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/confirm_env_change/chg1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=confirm_env_change%3Achg1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "confirm_env_change:chg1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "confirm_env_change:chg1": "ac5d6d1d320ea953732b372e4d94d6968923cf7ec2bc147c4b0bd0d7a31011fc"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "spec_choice": {
+   "cards": [
+    {
+     "id": "spec_choice:spc1",
+     "kind": "spec_choice",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "The spec changed. Re-plan or keep?",
+     "recommended": {
+      "action": "open",
+      "why": "Only the task owner can choose."
+     },
+     "next": {
+      "text": "You choose on the task page; the code pull requests wait until you do."
+     },
+     "evidence": [],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Choose",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=spec_choice%3Aspc1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "spec_choice:spc1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "spec_choice:spc1": "6530177a5fe4805c559d7b3410ea6cca567887a1eaa36bd4f91169a9a39a43ee"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "fix_setup": {
+   "cards": [
+    {
+     "id": "fix_setup:fix1",
+     "kind": "fix_setup",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Fix the test setup?",
+     "recommended": {
+      "action": "open",
+      "why": "The code did not fail: the test setup could not give a verdict."
+     },
+     "next": {
+      "text": "2 tasks wait on this. Open the setup to fix it; their checks run again after."
+     },
+     "evidence": [
+      {
+       "kind": "environment",
+       "label": "Result",
+       "value": "Blocked by environment",
+       "state": "warning"
+      },
+      {
+       "kind": "environment",
+       "label": "Failing step",
+       "value": "Setup",
+       "state": "bad"
+      },
+      {
+       "kind": "checks",
+       "label": "Tasks affected",
+       "value": "2",
+       "state": "warning"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Open the setup",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=fix_setup%3Afix1",
+       "method": "GET"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/fix_setup/fix1/reject",
+       "method": "POST"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "fix_setup:fix1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "fix_setup:fix1": "2d9b617c201fac5bc2d6ea1ce4238b2e4b8b2342ada010eca148f3a807d83bd9"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "setup_host": {
+   "cards": [
+    {
+     "id": "setup_host:hst1",
+     "kind": "setup_host",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Let the setup of this project reach artifactory.corp.example?",
+     "recommended": {
+      "action": "approve",
+      "why": "A setup command could not reach this website. Allow it only if you know what it is."
+     },
+     "next": {
+      "text": "The website is added to this project's list; Rovara staff then approve it before it works."
+     },
+     "evidence": [
+      {
+       "kind": "environment",
+       "label": "Website",
+       "value": "artifactory.corp.example",
+       "state": "warning"
+      },
+      {
+       "kind": "other",
+       "label": "From the repository",
+       "value": "pip.conf:2",
+       "state": "unknown"
+      },
+      {
+       "kind": "checks",
+       "label": "Setup command",
+       "value": "#3 was blocked",
+       "state": "unknown"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [
+      "Lets this project's machines reach a new website."
+     ],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/setup_host/hst1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/setup_host/hst1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=setup_host%3Ahst1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "setup_host:hst1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "Lets this project's machines reach a new website."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "setup_host:hst1": "e6ab4c9bdf0c102b65f33b9fe6fd4cbf5b9014eb785ca1425178e69cf0389cb6"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "second_review_notice": {
+   "cards": [
+    {
+     "id": "second_review_notice:srn1",
+     "kind": "second_review_notice",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "The second-opinion model your company chose no longer qualifies.",
+     "recommended": {
+      "action": "open",
+      "why": "Only a company admin can choose the model."
+     },
+     "next": {
+      "text": "Choose another model on the settings page, or wait until it qualifies again. Tasks are not stopped."
+     },
+     "evidence": [],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Open the settings",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=second_review_notice%3Asrn1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "second_review_notice:srn1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "second_review_notice:srn1": "777c31ba155b78fef4c724f58b4b3dd6b94d8a40c823b3bb1559423fd7fff26b"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "approve_fixture_set": {
+   "cards": [
+    {
+     "id": "approve_fixture_set:fxs1",
+     "kind": "approve_fixture_set",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Use these recorded answers for payments-api?",
+     "recommended": {
+      "action": "approve",
+      "why": "Check that the sample answers are test data before you approve."
+     },
+     "next": {
+      "text": "Tasks in this project get these answers in place of the real service, exactly as pinned; a request with no answer fails the check."
+     },
+     "evidence": [
+      {
+       "kind": "environment",
+       "label": "Answers",
+       "value": "4 answers",
+       "state": "unknown"
+      },
+      {
+       "kind": "environment",
+       "label": "Faults",
+       "value": "1 named fault",
+       "state": "unknown"
+      },
+      {
+       "kind": "risk",
+       "label": "Personal-data scan",
+       "value": "clean",
+       "state": "good"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [
+      "Tasks will get these recorded answers in place of the real service."
+     ],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_fixture_set/fxs1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/approve_fixture_set/fxs1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_fixture_set%3Afxs1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_fixture_set:fxs1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "Tasks will get these recorded answers in place of the real service."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_fixture_set:fxs1": "f41588ae12212d9a7d47f3d6588cc33068523b9e37aa68ddf1b077e654671884"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "approve_request": {
+   "cards": [
+    {
+     "id": "approve_request:spr_aaaaaaaaaaaaaaaaaaaa",
+     "kind": "approve_request",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this spend request?",
+     "recommended": {
+      "action": "open",
+      "why": "You are one of the people who may decide this; it needs a recent sign-in."
+     },
+     "next": {
+      "text": "Approving does what it asks now; Decline stops it."
+     },
+     "evidence": [],
+     "risk": "high",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": true,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/decisions/approve_request/spr_aaaaaaaaaaaaaaaaaaaa",
+       "method": "GET"
+      },
+      {
+       "kind": "reject",
+       "label": "Decline",
+       "href": "/v1/app/decisions/approve_request/spr_aaaaaaaaaaaaaaaaaaaa/reject",
+       "method": "POST"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_request:spr_aaaaaaaaaaaaaaaaaaaa": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_request:spr_aaaaaaaaaaaaaaaaaaaa": "57fbbb391aaa8089f346a8cff560152717ea48b35531c5bde15bb7c8ab078920"
+   },
+   "dropped": 0,
+   "unconfirmed": [
+    "approve_request:spr_aaaaaaaaaaaaaaaaaaaa"
+   ]
+  },
+  "approve_plan_with_choices": {
+   "cards": [
+    {
+     "id": "approve_plan:plan2",
+     "kind": "approve_plan",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this plan and start the build?",
+     "recommended": {
+      "action": "approve",
+      "why": "Every claim in the plan has a planned check."
+     },
+     "next": {
+      "text": "Builds in 12 to 25 minutes, about $1.20 to $3.10, 12 to 25 minutes, and opens a pull request.",
+      "costUsd": 3.1,
+      "minutes": 25
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Files",
+       "value": "1 file",
+       "state": "good"
+      },
+      {
+       "kind": "test_proof",
+       "label": "Planned proof",
+       "value": "every claim has a check",
+       "state": "good"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_plan/plan2/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "request_changes",
+       "label": "Request changes",
+       "href": "/v1/app/decisions/approve_plan/plan2/request-changes",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_plan%3Aplan2",
+       "method": "GET"
+      }
+     ],
+     "runLimit": {
+      "currentUsd": 2,
+      "proposedUsd": 5
+     },
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_plan:plan2": [
+     {
+      "title": "Files that change",
+      "lines": [
+       "src/retry.ts"
+      ]
+     },
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_plan:plan2": "320f221e69441c816bd051aad01c9afaff3047fa480f24b30fe6bacdf7fcd72a"
+   },
+   "dropped": 0,
+   "unconfirmed": [],
+   "choices": {
+    "approve_plan:plan2": {
+     "questions": [
+      {
+       "id": "q1",
+       "question": "Which gateway do refunds use?",
+       "recommended": "a",
+       "options": [
+        {
+         "id": "a",
+         "label": "The existing gateway"
+        },
+        {
+         "id": "b",
+         "label": "A new gateway"
+        }
+       ],
+       "suggested": [
+        {
+         "optionId": "b",
+         "name": "Priya Shah"
+        }
+       ]
+      },
+      {
+       "id": "q2",
+       "question": "Keep the old retry count?",
+       "recommended": "yes",
+       "options": [
+        {
+         "id": "yes",
+         "label": "Yes, keep three"
+        },
+        {
+         "id": "no",
+         "label": "No, use five"
+        }
+       ]
+      }
+     ],
+     "optionalChecks": [
+      {
+       "id": "load",
+       "label": "Run the load check",
+       "selected": false
+      },
+      {
+       "id": "lint",
+       "label": "Run the strict lint shard",
+       "selected": true
+      }
+     ],
+     "openComments": [
+      {
+       "id": "33333333-3333-4333-8333-333333333333",
+       "excerpt": "Please cover the refund path"
+      },
+      {
+       "id": "44444444-4444-4444-8444-444444444444",
+       "excerpt": "What about timeouts?"
+      }
+     ],
+     "summary": {
+      "needed": "Failed payments retry on their own.",
+      "lines": [
+       "Retries failed payments up to three times.",
+       "Adds a test for each retry."
+      ]
+     },
+     "openCommentCount": 2
+    }
+   }
+  },
+  "approve_requirements_with_choices": {
+   "cards": [
+    {
+     "id": "approve_requirements:req2",
+     "kind": "approve_requirements",
+     "taskId": "22222222-2222-4222-8222-222222222222",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve these requirements?",
+     "recommended": {
+      "action": "approve",
+      "why": "Requirements are the cheapest place to catch a wrong turn."
+     },
+     "next": {
+      "text": "Rovara moves on to the design."
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Requirements",
+       "value": "4 claims",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_requirements/req2/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "request_changes",
+       "label": "Request changes",
+       "href": "/v1/app/decisions/approve_requirements/req2/request-changes",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_requirements%3Areq2",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_requirements:req2": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_requirements:req2": "02cbb840b3518b9065829b466283823b205d30d9bd274c4ee6ac2ff114c004cb"
+   },
+   "dropped": 0,
+   "unconfirmed": [],
+   "choices": {
+    "approve_requirements:req2": {
+     "questions": [
+      {
+       "id": "q1",
+       "question": "Which gateway do refunds use?",
+       "recommended": "a",
+       "options": [
+        {
+         "id": "a",
+         "label": "The existing gateway"
+        },
+        {
+         "id": "b",
+         "label": "A new gateway"
+        }
+       ],
+       "suggested": [
+        {
+         "optionId": "b",
+         "name": "Priya Shah"
+        }
+       ]
+      },
+      {
+       "id": "q2",
+       "question": "Keep the old retry count?",
+       "recommended": "yes",
+       "options": [
+        {
+         "id": "yes",
+         "label": "Yes, keep three"
+        },
+        {
+         "id": "no",
+         "label": "No, use five"
+        }
+       ]
+      }
+     ],
+     "optionalChecks": [],
+     "openComments": [
+      {
+       "id": "33333333-3333-4333-8333-333333333333",
+       "excerpt": "Please cover the refund path"
+      },
+      {
+       "id": "44444444-4444-4444-8444-444444444444",
+       "excerpt": "What about timeouts?"
+      }
+     ],
+     "summary": {
+      "needed": "Failed payments retry on their own.",
+      "lines": [
+       "Retries failed payments up to three times.",
+       "Adds a test for each retry."
+      ]
+     },
+     "openCommentCount": 2
+    }
+   }
+  },
+  "approve_design_with_choices": {
+   "cards": [
+    {
+     "id": "approve_design:des2",
+     "kind": "approve_design",
+     "taskId": "22222222-2222-4222-8222-222222222222",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this design?",
+     "recommended": {
+      "action": "approve",
+      "why": "The design fixes the approach before any code is written."
+     },
+     "next": {
+      "text": "Rovara writes the coding plan from it."
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Files named",
+       "value": "1 file",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_design/des2/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "request_changes",
+       "label": "Request changes",
+       "href": "/v1/app/decisions/approve_design/des2/request-changes",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_design%3Ades2",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {},
+   "details": {
+    "approve_design:des2": [
+     {
+      "title": "Files that change",
+      "lines": [
+       "src/retry.ts"
+      ]
+     },
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_design:des2": "0f7b05bacebfd438312f50d3fd7b43d849f3fc5c36c34e2a401a5cfe0f2de603"
+   },
+   "dropped": 0,
+   "unconfirmed": [],
+   "choices": {
+    "approve_design:des2": {
+     "questions": [],
+     "optionalChecks": [],
+     "openComments": [
+      {
+       "id": "33333333-3333-4333-8333-333333333333",
+       "excerpt": "Please cover the refund path"
+      },
+      {
+       "id": "44444444-4444-4444-8444-444444444444",
+       "excerpt": "What about timeouts?"
+      }
+     ],
+     "openCommentCount": 2
+    }
+   }
+  },
+  "full_pair_with_tabs": {
+   "cards": [
+    {
+     "id": "approve_requirements:req1",
+     "kind": "approve_requirements",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve the requirements and the design?",
+     "recommended": {
+      "action": "approve",
+      "why": "Two approvals, one for each document."
+     },
+     "next": {
+      "text": "Each document is approved on its own, requirements first; when both are, Rovara writes the coding plan."
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Requirements",
+       "value": "4 claims",
+       "state": "unknown"
+      },
+      {
+       "kind": "other",
+       "label": "Files named",
+       "value": "1 file",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_requirements/req1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "request_changes",
+       "label": "Request changes",
+       "href": "/v1/app/decisions/approve_requirements/req1/request-changes",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_requirements%3Areq1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 1,
+   "tabs": {
+    "approve_requirements:req1": [
+     {
+      "id": "requirements",
+      "title": "Requirements",
+      "summary": "Approve these requirements?",
+      "evidence": [
+       {
+        "kind": "other",
+        "label": "Requirements",
+        "value": "4 claims",
+        "state": "unknown"
+       }
+      ],
+      "approved": false
+     },
+     {
+      "id": "design",
+      "title": "Design",
+      "summary": "Approve this design?",
+      "evidence": [
+       {
+        "kind": "other",
+        "label": "Files named",
+        "value": "1 file",
+        "state": "unknown"
+       }
+      ],
+      "approved": false
+     }
+    ]
+   },
+   "details": {
+    "approve_requirements:req1": [
+     {
+      "tab": "requirements",
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     },
+     {
+      "tab": "design",
+      "title": "Files that change",
+      "lines": [
+       "src/retry.ts"
+      ]
+     },
+     {
+      "tab": "design",
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_requirements:req1": "bd19393b0299a0833fee69d47097ffd269f065591a67a23c58f8f223fbe62679"
+   },
+   "dropped": 0,
+   "unconfirmed": []
+  },
+  "all_kinds": {
+   "cards": [
+    {
+     "id": "approve_request:spr_aaaaaaaaaaaaaaaaaaaa",
+     "kind": "approve_request",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this spend request?",
+     "recommended": {
+      "action": "open",
+      "why": "You are one of the people who may decide this; it needs a recent sign-in."
+     },
+     "next": {
+      "text": "Approving does what it asks now; Decline stops it."
+     },
+     "evidence": [],
+     "risk": "high",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": true,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/decisions/approve_request/spr_aaaaaaaaaaaaaaaaaaaa",
+       "method": "GET"
+      },
+      {
+       "kind": "reject",
+       "label": "Decline",
+       "href": "/v1/app/decisions/approve_request/spr_aaaaaaaaaaaaaaaaaaaa/reject",
+       "method": "POST"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "approve_setting:set1",
+     "kind": "approve_setting",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Change this setting: Allow video capture?",
+     "recommended": {
+      "action": "open",
+      "why": "A less-safe setting needs a full look."
+     },
+     "next": {
+      "text": "Rovara works less safely until the setting is changed back."
+     },
+     "evidence": [
+      {
+       "kind": "risk",
+       "label": "Effect",
+       "value": "less safe",
+       "state": "bad"
+      }
+     ],
+     "risk": "high",
+     "riskReasons": [
+      "A setting that makes Rovara less safe."
+     ],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": true,
+      "secondPerson": true
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_setting%3Aset1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "approve_dependency:dep1",
+     "kind": "approve_dependency",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Allow these new packages?",
+     "recommended": {
+      "action": "approve",
+      "why": "No new package runs an install script."
+     },
+     "next": {
+      "text": "The packages are added to the change."
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Packages",
+       "value": "1 package",
+       "state": "warning"
+      },
+      {
+       "kind": "risk",
+       "label": "Install scripts",
+       "value": "none new",
+       "state": "good"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_dependency/dep1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/approve_dependency/dep1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_dependency%3Adep1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "approve_e2e_plan:e2e1",
+     "kind": "approve_e2e_plan",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this browser and API test plan?",
+     "recommended": {
+      "action": "approve",
+      "why": "These scenarios decide what the app is tested for."
+     },
+     "next": {
+      "text": "The scenarios run against the changed app."
+     },
+     "evidence": [
+      {
+       "kind": "test_proof",
+       "label": "Scenarios",
+       "value": "3 scenarios",
+       "state": "unknown"
+      },
+      {
+       "kind": "other",
+       "label": "AI navigation",
+       "value": "not used",
+       "state": "good"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_e2e_plan/e2e1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/approve_e2e_plan/e2e1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "approve_fixture_set:fxs1",
+     "kind": "approve_fixture_set",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Use these recorded answers for payments-api?",
+     "recommended": {
+      "action": "approve",
+      "why": "Check that the sample answers are test data before you approve."
+     },
+     "next": {
+      "text": "Tasks in this project get these answers in place of the real service, exactly as pinned; a request with no answer fails the check."
+     },
+     "evidence": [
+      {
+       "kind": "environment",
+       "label": "Answers",
+       "value": "4 answers",
+       "state": "unknown"
+      },
+      {
+       "kind": "environment",
+       "label": "Faults",
+       "value": "1 named fault",
+       "state": "unknown"
+      },
+      {
+       "kind": "risk",
+       "label": "Personal-data scan",
+       "value": "clean",
+       "state": "good"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [
+      "Tasks will get these recorded answers in place of the real service."
+     ],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_fixture_set/fxs1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/approve_fixture_set/fxs1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_fixture_set%3Afxs1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "approve_test_env:env1",
+     "kind": "approve_test_env",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this test setup?",
+     "recommended": {
+      "action": "approve",
+      "why": "Rovara booted the app and proved the setup."
+     },
+     "next": {
+      "text": "Tasks in this project use it from now on."
+     },
+     "evidence": [
+      {
+       "kind": "environment",
+       "label": "Tier",
+       "value": "sandbox",
+       "state": "unknown"
+      },
+      {
+       "kind": "risk",
+       "label": "Risk",
+       "value": "medium",
+       "state": "warning"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [
+      "Sets how tests run for this project."
+     ],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_test_env/env1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/approve_test_env/env1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_test_env%3Aenv1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "autofix_ask:af1",
+     "kind": "autofix_ask",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Let Rovara try to fix this?",
+     "recommended": {
+      "action": "approve",
+      "why": "Rovara already tried and wants your go-ahead."
+     },
+     "next": {
+      "text": "Rovara tries one more fix and re-runs the checks."
+     },
+     "evidence": [
+      {
+       "kind": "checks",
+       "label": "Attempts so far",
+       "value": "2",
+       "state": "warning"
+      },
+      {
+       "kind": "other",
+       "label": "Why asking",
+       "value": "the same check failed twice",
+       "state": "warning"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/autofix_ask/af1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/autofix_ask/af1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=autofix_ask%3Aaf1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "confirm_env_change:chg1",
+     "kind": "confirm_env_change",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Accept this change to the test setup?",
+     "recommended": {
+      "action": "approve",
+      "why": "The setup changed while the task was running."
+     },
+     "next": {
+      "text": "The running task continues on the new setup."
+     },
+     "evidence": [
+      {
+       "kind": "environment",
+       "label": "Changed",
+       "value": "accounts",
+       "state": "warning"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/confirm_env_change/chg1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/confirm_env_change/chg1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=confirm_env_change%3Achg1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "fix_setup:fix1",
+     "kind": "fix_setup",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Fix the test setup?",
+     "recommended": {
+      "action": "open",
+      "why": "The code did not fail: the test setup could not give a verdict."
+     },
+     "next": {
+      "text": "2 tasks wait on this. Open the setup to fix it; their checks run again after."
+     },
+     "evidence": [
+      {
+       "kind": "environment",
+       "label": "Result",
+       "value": "Blocked by environment",
+       "state": "warning"
+      },
+      {
+       "kind": "environment",
+       "label": "Failing step",
+       "value": "Setup",
+       "state": "bad"
+      },
+      {
+       "kind": "checks",
+       "label": "Tasks affected",
+       "value": "2",
+       "state": "warning"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Open the setup",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=fix_setup%3Afix1",
+       "method": "GET"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/fix_setup/fix1/reject",
+       "method": "POST"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "setup_host:hst1",
+     "kind": "setup_host",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Let the setup of this project reach artifactory.corp.example?",
+     "recommended": {
+      "action": "approve",
+      "why": "A setup command could not reach this website. Allow it only if you know what it is."
+     },
+     "next": {
+      "text": "The website is added to this project's list; Rovara staff then approve it before it works."
+     },
+     "evidence": [
+      {
+       "kind": "environment",
+       "label": "Website",
+       "value": "artifactory.corp.example",
+       "state": "warning"
+      },
+      {
+       "kind": "other",
+       "label": "From the repository",
+       "value": "pip.conf:2",
+       "state": "unknown"
+      },
+      {
+       "kind": "checks",
+       "label": "Setup command",
+       "value": "#3 was blocked",
+       "state": "unknown"
+      }
+     ],
+     "risk": "medium",
+     "riskReasons": [
+      "Lets this project's machines reach a new website."
+     ],
+     "friction": {
+      "expandEvidenceFirst": true,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/setup_host/hst1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/setup_host/hst1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=setup_host%3Ahst1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "answer_question:q1",
+     "kind": "answer_question",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Which gateway do refunds use?",
+     "recommended": {
+      "action": "open",
+      "why": "Rovara asks instead of guessing."
+     },
+     "next": {
+      "text": "Rovara goes on with your answer."
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Question",
+       "value": "1 of 2",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Answer",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=answer_question%3Aq1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "approve_design:des1",
+     "kind": "approve_design",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this design?",
+     "recommended": {
+      "action": "approve",
+      "why": "The design fixes the approach before any code is written."
+     },
+     "next": {
+      "text": "Rovara writes the coding plan from it."
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Files named",
+       "value": "1 file",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_design/des1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "request_changes",
+       "label": "Request changes",
+       "href": "/v1/app/decisions/approve_design/des1/request-changes",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_design%3Ades1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "approve_plan:plan1",
+     "kind": "approve_plan",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve this plan and start the build?",
+     "recommended": {
+      "action": "approve",
+      "why": "Every claim in the plan has a planned check."
+     },
+     "next": {
+      "text": "Builds in 12 to 25 minutes, about $1.20 to $3.10, 12 to 25 minutes, and opens a pull request.",
+      "costUsd": 3.1,
+      "minutes": 25
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Files",
+       "value": "1 file",
+       "state": "good"
+      },
+      {
+       "kind": "test_proof",
+       "label": "Planned proof",
+       "value": "every claim has a check",
+       "state": "good"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_plan/plan1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "request_changes",
+       "label": "Request changes",
+       "href": "/v1/app/decisions/approve_plan/plan1/request-changes",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_plan%3Aplan1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "approve_requirements:req1",
+     "kind": "approve_requirements",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Approve these requirements?",
+     "recommended": {
+      "action": "approve",
+      "why": "Requirements are the cheapest place to catch a wrong turn."
+     },
+     "next": {
+      "text": "Rovara moves on to the design."
+     },
+     "evidence": [
+      {
+       "kind": "other",
+       "label": "Requirements",
+       "value": "4 claims",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_requirements/req1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "request_changes",
+       "label": "Request changes",
+       "href": "/v1/app/decisions/approve_requirements/req1/request-changes",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_requirements%3Areq1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "approve_spend:spr1",
+     "kind": "approve_spend",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Raise the limit for this task?",
+     "recommended": {
+      "action": "approve",
+      "why": "The task is paused until the limit is raised."
+     },
+     "next": {
+      "text": "The limit goes up by $5.00.",
+      "costUsd": 5
+     },
+     "evidence": [
+      {
+       "kind": "cost",
+       "label": "Amount",
+       "value": "$5.00",
+       "state": "good"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/approve_spend/spr1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/approve_spend/spr1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_spend%3Aspr1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "choose_checks:ck1",
+     "kind": "choose_checks",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Which optional checks should run?",
+     "recommended": {
+      "action": "open",
+      "why": "The project's default choice is pre-selected."
+     },
+     "next": {
+      "text": "The chosen checks run with the build."
+     },
+     "evidence": [
+      {
+       "kind": "checks",
+       "label": "Default",
+       "value": "1 check",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Choose checks",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=choose_checks%3Ack1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "merge:pr1",
+     "kind": "merge",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Merge this pull request?",
+     "recommended": {
+      "action": "approve",
+      "why": "The checks passed and the review has no open concerns."
+     },
+     "next": {
+      "text": "The pull request is merged into the base branch."
+     },
+     "evidence": [
+      {
+       "kind": "test_proof",
+       "label": "Proof",
+       "value": "4 proven or passed, 0 failed, 0 not tested",
+       "state": "good"
+      },
+      {
+       "kind": "review",
+       "label": "Review",
+       "value": "no concerns",
+       "state": "good"
+      },
+      {
+       "kind": "checks",
+       "label": "CI",
+       "value": "passing",
+       "state": "good"
+      },
+      {
+       "kind": "risk",
+       "label": "Risk",
+       "value": "low",
+       "state": "good"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [
+      "The pull request is low risk."
+     ],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Merge",
+       "href": "/v1/app/decisions/merge/pr1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/merge/pr1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=merge%3Apr1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "review_feedback:fb1",
+     "kind": "review_feedback",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "Act on this review feedback?",
+     "recommended": {
+      "action": "approve",
+      "why": "The fix stays on the same pull request."
+     },
+     "next": {
+      "text": "Rovara makes the fix on the same pull request."
+     },
+     "evidence": [
+      {
+       "kind": "review",
+       "label": "Comments",
+       "value": "2 comments",
+       "state": "unknown"
+      }
+     ],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "approve",
+       "label": "Approve",
+       "href": "/v1/app/decisions/review_feedback/fb1/approve",
+       "method": "POST"
+      },
+      {
+       "kind": "reject",
+       "label": "Not now",
+       "href": "/v1/app/decisions/review_feedback/fb1/reject",
+       "method": "POST"
+      },
+      {
+       "kind": "open",
+       "label": "Open",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=review_feedback%3Afb1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [
+      "wrong_problem",
+      "wrong_approach",
+      "too_big",
+      "missing_test",
+      "not_now",
+      "other"
+     ],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "second_review_notice:srn1",
+     "kind": "second_review_notice",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "The second-opinion model your company chose no longer qualifies.",
+     "recommended": {
+      "action": "open",
+      "why": "Only a company admin can choose the model."
+     },
+     "next": {
+      "text": "Choose another model on the settings page, or wait until it qualifies again. Tasks are not stopped."
+     },
+     "evidence": [],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Open the settings",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=second_review_notice%3Asrn1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    },
+    {
+     "id": "spec_choice:spc1",
+     "kind": "spec_choice",
+     "taskId": "11111111-1111-4111-8111-111111111111",
+     "project": "payments",
+     "title": "Retry failed payments",
+     "question": "The spec changed. Re-plan or keep?",
+     "recommended": {
+      "action": "open",
+      "why": "Only the task owner can choose."
+     },
+     "next": {
+      "text": "You choose on the task page; the code pull requests wait until you do."
+     },
+     "evidence": [],
+     "risk": "low",
+     "riskReasons": [],
+     "friction": {
+      "expandEvidenceFirst": false,
+      "freshSignIn": false,
+      "secondPerson": false
+     },
+     "actions": [
+      {
+       "kind": "open",
+       "label": "Choose",
+       "href": "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=spec_choice%3Aspc1",
+       "method": "GET"
+      }
+     ],
+     "rejectReasons": [],
+     "status": "pending",
+     "createdAt": "2026-10-30T10:00:00.000Z"
+    }
+   ],
+   "total": 20,
+   "tabs": {},
+   "details": {
+    "approve_request:spr_aaaaaaaaaaaaaaaaaaaa": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "approve_setting:set1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "A setting that makes Rovara less safe."
+      ]
+     }
+    ],
+    "approve_dependency:dep1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "approve_e2e_plan:e2e1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "approve_fixture_set:fxs1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "Tasks will get these recorded answers in place of the real service."
+      ]
+     }
+    ],
+    "approve_test_env:env1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "Sets how tests run for this project."
+      ]
+     }
+    ],
+    "autofix_ask:af1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "confirm_env_change:chg1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "fix_setup:fix1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "setup_host:hst1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "Lets this project's machines reach a new website."
+      ]
+     }
+    ],
+    "answer_question:q1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "approve_design:des1": [
+     {
+      "title": "Files that change",
+      "lines": [
+       "src/retry.ts"
+      ]
+     },
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "approve_plan:plan1": [
+     {
+      "title": "Files that change",
+      "lines": [
+       "src/retry.ts"
+      ]
+     },
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "approve_requirements:req1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "approve_spend:spr1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "choose_checks:ck1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "merge:pr1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "The pull request is low risk."
+      ]
+     }
+    ],
+    "review_feedback:fb1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "second_review_notice:srn1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ],
+    "spec_choice:spc1": [
+     {
+      "title": "Why this needs a look",
+      "lines": [
+       "It is a kind of decision that always gets a look first."
+      ]
+     }
+    ]
+   },
+   "digests": {
+    "approve_request:spr_aaaaaaaaaaaaaaaaaaaa": "57fbbb391aaa8089f346a8cff560152717ea48b35531c5bde15bb7c8ab078920",
+    "approve_setting:set1": "15099a02d443eae42ea720e7e0701206e02649483ab70b0834a311bed0b73d29",
+    "approve_dependency:dep1": "faa31e1499616488b25e079d55236b8c57aa635fd7076e959fbc8a9909500914",
+    "approve_e2e_plan:e2e1": "6c529abb3b6e0f5aac705dd0b0ce3111df53dc95e24e6fcc1c9c6ebd495c4309",
+    "approve_fixture_set:fxs1": "f41588ae12212d9a7d47f3d6588cc33068523b9e37aa68ddf1b077e654671884",
+    "approve_test_env:env1": "444eaeca775fe8ea97cf3d2bf806db5fdd9d2ed27d8cb769056340d028854988",
+    "autofix_ask:af1": "1bf86c8b0c279adc87c3277bd1b6abea7b3c9373a298a1a053b287bda948cd36",
+    "confirm_env_change:chg1": "ac5d6d1d320ea953732b372e4d94d6968923cf7ec2bc147c4b0bd0d7a31011fc",
+    "fix_setup:fix1": "2d9b617c201fac5bc2d6ea1ce4238b2e4b8b2342ada010eca148f3a807d83bd9",
+    "setup_host:hst1": "e6ab4c9bdf0c102b65f33b9fe6fd4cbf5b9014eb785ca1425178e69cf0389cb6",
+    "answer_question:q1": "d405c9f264ea5626ea15d4a13361a5e937a63e75e430305d397265f5adfc11e1",
+    "approve_design:des1": "69de158905d579cc7e1e51228e47d4cb97018310da5e9c7cc71f5b52ae57aefa",
+    "approve_plan:plan1": "17b6390f2bf3b6169ff9985713b8cf7c195afc4e6e1e1264b789ad4f0f49da39",
+    "approve_requirements:req1": "cd844375b5da0f56bf0b999fb7ee89668b0d33378b6bf01c93fecb73be94e2ea",
+    "approve_spend:spr1": "85795a2ad3b2000ce3c53233f9a271417e04160f03340a66f672c1cb89cea1d6",
+    "choose_checks:ck1": "3acf7376eb5ceba5105ba93f2183d0a8baf1b6035cb92a2e192f595668272806",
+    "merge:pr1": "65f21100e35bac658a376b53f73716258a8e48e93dd5774c8a4233a987bc8bab",
+    "review_feedback:fb1": "271400e9c829fba9d2e4ea7f249f3e1c01e8b0da51017381bac20c81a628b53d",
+    "second_review_notice:srn1": "777c31ba155b78fef4c724f58b4b3dd6b94d8a40c823b3bb1559423fd7fff26b",
+    "spec_choice:spc1": "6530177a5fe4805c559d7b3410ea6cca567887a1eaa36bd4f91169a9a39a43ee"
+   },
+   "dropped": 0,
+   "unconfirmed": [
+    "approve_request:spr_aaaaaaaaaaaaaaaaaaaa",
+    "approve_setting:set1"
+   ]
+  }
+ }
+}

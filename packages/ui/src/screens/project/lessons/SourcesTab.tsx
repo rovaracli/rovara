@@ -7,7 +7,7 @@ import { Banner } from "../../../design/Banner.js";
 import { Button } from "../../../design/Button.js";
 import { Skeleton } from "../../../design/Skeleton.js";
 import { VisibleText } from "../../../design/VisibleText.js";
-import { T, healthWords, kindWords, retentionWords } from "./lessons-text.js";
+import { T, audienceWords, healthWords, kindWords, retentionWords } from "./lessons-text.js";
 import "./lessons.css";
 
 // The editing screen is its own chunk: it loads only when the record route returned the editors' view (a maintainer of this project, or an owner or admin, in a live browser session).
@@ -37,7 +37,7 @@ export function SourcesTab({ project }: { project: string }) {
    <h3>{kindWords(source.kind)}{source.scope !== undefined ? <> <span className="rv-muted"><VisibleText text={source.scope} /></span></> : <span className="rv-muted"> · {T.SOURCE_HIDDEN}</span>}</h3>
    <p>{T.KEEPS}: <strong>{retentionWords(source.retention)}</strong>{source.notesOptIn === true && <span className="rv-muted"> (notes with links, switched on by your admin)</span>}</p>
    <p>{T.STATUS}: {source.enabled ? T.SOURCE_ON : T.SOURCE_OFF} · {healthWords(source.health)}{source.excluded !== undefined && source.excluded > 0 && <span className="rv-muted"> · {String(source.excluded)} {T.SOURCE_EXCLUDED}</span>}</p>
-   <p className="rv-muted">{T.WHO_SEES}: {source.audience === "project" ? "Everyone on this project" : "Maintainers only"}</p>
+   <p className="rv-muted">{T.WHO_SEES}: {audienceWords(source.audience)}</p>
    {source.paused && <Banner title={T.SOURCE_PAUSED} tone="warning" />}
   </li>)}</ul>}
   {data.otherPaused > 0 && <p className="rv-muted">{String(data.otherPaused)} {T.SOURCE_PAUSED_OTHER}</p>}

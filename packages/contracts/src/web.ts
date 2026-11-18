@@ -1,4 +1,5 @@
 import "./web-init.js";
+export { SCRIPT_TOKEN_PERMISSIONS, SCRIPT_TOKEN_DEFAULT_DAYS, SCRIPT_TOKEN_MAX_DAYS, CreateScriptTokenBodySchema, ScriptTokenMetadataListSchema, CreatedScriptTokenMetadataSchema, RevokedScriptTokenMetadataSchema, type CreateScriptTokenBody } from "./script-tokens.js";
 export { configureZodForCsp } from "./web-init.js";
 export { forwardReader, type ForwardReader, SessionViewSchema, type SessionView, SessionViewReaderSchema, SessionResponseSchema, SessionResponseReaderSchema, CLOSE_MESSAGES, SessionCloseResponseSchema, SessionCloseResponseReaderSchema, SessionStepTaskResponseSchema, SessionStepTaskResponseReaderSchema, SessionShareSchema, type SessionShare, SessionShareReaderSchema, SessionSharesResponseSchema, SessionSharesResponseReaderSchema, SessionSharePutResponseSchema, SessionSharePutResponseReaderSchema, SessionShareDeleteResponseSchema, SessionShareDeleteResponseReaderSchema, SessionTileSchema, type SessionTile, SessionTileReaderSchema, SessionListSchema, type SessionList, SessionListReaderSchema, SessionEventReaderSchema, SessionEventPageSchema, type SessionEventPage, SessionEventPageReaderSchema, ProjectOverviewSchema, type ProjectOverview, ProjectOverviewReaderSchema, NeedsConfirmationSchema, type NeedsConfirmation } from "./session-views.js";
 export { SESSION_MESSAGE_MAX_CHARS, PRESENCE_HEARTBEAT_SECONDS, SessionIdSchema, STATUS_WORDS, LEVEL_WORDS, SessionMessageSchema } from "./agent-sessions.js";
@@ -131,6 +132,7 @@ export * from "./app-service-status.js";
 // Proof and evidence (W4/W5): browser-safe schemas for the evidence view, decision cards and the test environment.
 export * from "./evidence.js";
 export * from "./decision-cards.js";
+export * from "./decision-focus.js";
 // Setup and test health SH19: the four test results and their fixed words, for the task page's Evidence tab.
 export * from "./verification-result.js";
 export * from "./decision-card-tabs.js";
@@ -173,3 +175,4 @@ export * from "./task-stop-start-preview.js";
 
 export { INBOX_NOT_AVAILABLE_TEXT, INBOX_KINDS, INBOX_KIND_WORDS, INBOX_PAGE_MAX, INBOX_READ_IDS_MAX, INBOX_POLL_MS, InboxIdSchema, InboxOpenPathSchema, InboxItemSchema, type InboxItem, InboxPageSchema, InboxPageReaderSchema, InboxReadBodySchema, type InboxReadBody, InboxReadResponseSchema, InboxReadResponseReaderSchema } from "./app-inbox.js";
 export { PEOPLE_NOT_AVAILABLE_TEXT, SESSION_PEOPLE_CANDIDATES_MAX, SESSION_PEOPLE_METHOD_LABELS, SessionPeopleRoleSchema, SessionPeopleAddRoleSchema, SessionPeopleEntrySchema, SessionPeopleViewSchema, type SessionPeopleView, SessionPeopleSharedSchema, SessionPeopleResponseSchema, SessionPeopleResponseReaderSchema, SessionPeopleRoleBodySchema, type SessionPeopleRoleBody, SessionPeopleAddBodySchema, type SessionPeopleAddBody, SessionPeopleOwnershipBodySchema, type SessionPeopleOwnershipBody, SessionPeopleCandidatesResponseSchema, SessionPeopleCandidatesResponseReaderSchema, SessionPeopleChangeResponseSchema, SessionPeopleChangeResponseReaderSchema, type SessionPeopleChangeResponse } from "./app-session-people.js";
+export { SESSION_LOG_ENTRIES_MAX, SESSION_LOG_PERSON_MAX, SESSION_LOG_SURFACE_WORDS, SESSION_LOG_TEXT_MAX, SessionLogEntryReadSchema, SessionLogEntrySchema, SessionLogResponseReaderSchema, SessionLogResponseSchema, SessionLogSurfaceSchema, type SessionLogEntry, type SessionLogResponse } from "./app-session-log.js";
