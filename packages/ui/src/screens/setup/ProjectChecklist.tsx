@@ -17,6 +17,7 @@ import { LinearTeamRow } from "../connect/LinearTeamRow.js";
 import { SetupRunRow } from "./SetupRunRow.js";
 import { WikiChecklistRow } from "./wiki/WikiChecklistRow.js";
 import { CompanySetupLine } from "./CompanySetupLine.js";
+import { EvalCard } from "./EvalCard.js";
 import "./checklist.css";
 
 /** The words and tone each row state shows (design: Done, Needs you, Running, Optional, Failed; plus "Skipped (optional)"). */
@@ -88,9 +89,9 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
    </Row>
    <Row name="evalConfirm" state={data.evalConfirm.state} open={open("evalConfirm")}>
     {data.evalConfirm.blockedBy === "setupRun" ? <p>After the setup run, Rovara proposes how it checks work here.</p>
-     : data.evalConfirm.report === "confirmed" ? <p>Rovara runs <code><VisibleText text={data.evalConfirm.confirmedSelection ?? "the confirmed checks"} /></code> before every pull request.</p>
-     : data.evalConfirm.report === "reported" ? <>{(data.evalConfirm.suites ?? []).map(suite => <p key={suite.selection}>Rovara will run <code><VisibleText text={suite.selection} /></code> before every pull request.</p>)}<p className="rv-muted" data-testid="checklist-eval-not-yet">Confirming these checks from the web isn't connected yet; a company owner or admin, or this project's admin, confirms them where Rovara asks.</p></>
-     : <p data-testid="checklist-eval-none">The setup run found no checks to confirm yet. Run setup again, or edit the test commands.</p>}
+     : <EvalCard project={project} fallback={data.evalConfirm.report === "confirmed" ? <p>Rovara runs <code><VisibleText text={data.evalConfirm.confirmedSelection ?? "the confirmed checks"} /></code> before every pull request.</p>
+      : data.evalConfirm.report === "reported" ? <>{(data.evalConfirm.suites ?? []).map(suite => <p key={suite.selection}>Rovara will run <code><VisibleText text={suite.selection} /></code> before every pull request.</p>)}<p className="rv-muted" data-testid="checklist-eval-not-yet">Approving these checks from the web isn't connected yet; a company owner or admin, or this project's admin, approves them where Rovara asks.</p></>
+      : <p data-testid="checklist-eval-none">The setup run found no checks to confirm yet. Run setup again, or edit the test commands.</p>} />}
    </Row>
    <Row name="aiAndSpend" state={data.aiAndSpend.state} open={open("aiAndSpend")}>
     <p>{data.aiAndSpend.source === "project" && data.aiAndSpend.modelBudgetUsd !== null ? `This project's per-task limit: $${data.aiAndSpend.modelBudgetUsd.toFixed(2)}.` : "Same as company."}</p>

@@ -73,7 +73,8 @@ describe("code contract v0 tables", () => {
     // Plus the "Setup needs repair" card and its "Re-check setup" button (L4-U5): read and recheck: 2 rows.
 
     // Plus the lessons by code area, "Where Rovara learns from" with its pause, and the wiki page's team lessons (lead 4 L4-LP3W): 4 rows.
-    expect(counts.appCloudServerToday).toBe(156);
+    // Plus the setup flow's eval card (L4-EVC): the read and the one approval, each passed to Code's own route as the person: 2 rows.
+    expect(counts.appCloudServerToday).toBe(158);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
