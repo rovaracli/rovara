@@ -21,7 +21,8 @@ export function useDecisionActions() {
  const refresh = async () => { await Promise.all([query.invalidateQueries({ queryKey: ["decisions"] }), query.invalidateQueries({ queryKey: ["home"] })]); };
  return (decision: ReadDecision) => ({
   onOpenEvidence: async (tab?: Parameters<typeof api.evidenceOpened>[1]) => { await api.evidenceOpened(decision, tab); },
-  onApprove: async (tab?: Parameters<typeof api.approve>[1], reason?: string) => { const result = await api.approve(decision, tab, reason);await refresh();return result; },
+  onApprove: async (tab?: Parameters<typeof api.approve>[1], reason?: string, extras?: Parameters<typeof api.approve>[3]) => { const result = await api.approve(decision, tab, reason, extras);await refresh();return result; },
+  onRequestChanges: async (reason: string, includedCommentIds?: readonly string[]) => { const result = await api.requestChanges(decision, reason, includedCommentIds);await refresh();return result; },
   // A choice on a design review's cost card: the card's own action, through the design review route (the broker re-checks who may choose it).
   onChoose: async (action: ReadDecision["card"]["actions"][number]) => { await designApi.chooseSpend(decision, action, crypto.randomUUID());await refresh(); },
   onReject: async (reason: Parameters<typeof api.reject>[1]) => { const result = await api.reject(decision, reason);await refresh();return result; },

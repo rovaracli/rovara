@@ -23,12 +23,13 @@ describe("decision card", () => {
   it("accepts a low, a medium and a high card and round-trips them", () => {
     for (const value of [card(), medium(), high()]) expect(cards.DecisionCardSchema.parse(value)).toEqual(value);
   });
-  it("covers every touchpoint of the design's table, 15 kinds, the Fix setup card, the setup host card and the second-review notice card, each with a floor tier", () => {
-    expect([...cards.DECISION_KINDS]).toEqual(["approve_plan", "approve_requirements", "approve_design", "merge", "answer_question", "choose_checks", "approve_dependency", "approve_e2e_plan", "review_feedback", "autofix_ask", "approve_setting", "approve_spend", "approve_test_env", "confirm_env_change", "spec_choice", "fix_setup", "setup_host", "second_review_notice", "approve_fixture_set"]);
+  it("covers every touchpoint of the design's table, 15 kinds, the Fix setup card, the setup host card, the second-review notice card, the fixture set card and the outside approval card, each with a floor tier", () => {
+    expect([...cards.DECISION_KINDS]).toEqual(["approve_plan", "approve_requirements", "approve_design", "merge", "answer_question", "choose_checks", "approve_dependency", "approve_e2e_plan", "review_feedback", "autofix_ask", "approve_setting", "approve_spend", "approve_test_env", "confirm_env_change", "spec_choice", "fix_setup", "setup_host", "second_review_notice", "approve_fixture_set", "approve_request"]);
     expect(cards.DECISION_KIND_FLOOR_RISK.fix_setup).toBe("medium");
     expect(cards.DECISION_KIND_FLOOR_RISK.setup_host).toBe("medium");
     expect(cards.DECISION_KIND_FLOOR_RISK.second_review_notice).toBe("low");
     expect(cards.DECISION_KIND_FLOOR_RISK.approve_fixture_set).toBe("medium");
+    expect(cards.DECISION_KIND_FLOOR_RISK.approve_request).toBe("high");
     expect(Object.keys(cards.DECISION_KIND_FLOOR_RISK).sort()).toEqual([...cards.DECISION_KINDS].sort());
     expect(cards.DECISION_KIND_FLOOR_RISK.approve_setting).toBe("high");
   });
@@ -121,6 +122,18 @@ describe("decision card", () => {
     const read = cards.DecisionCardReaderSchema.parse({ ...card(), kind: "approve_something_new", id: "approve_plan:x", extra: 1 }) as Record<string, unknown>;
     expect(read["kind"]).toBe("unknown");
     expect(read["extra"]).toBe(1);
+  });
+});
+
+describe("decision journey fields (slice 2, synced from Code)", () => {
+  it("has Request changes as an action that must be a POST, and a run limit only on a coding plan's card", () => {
+    expect([...cards.DECISION_ACTION_KINDS]).toContain("request_changes");
+    const changes = { ...action("approve"), kind: "request_changes", label: "Request changes", href: "/v1/app/decisions/approve_plan/x/request-changes" };
+    expect(ok(card({ actions: [action("approve"), changes] }))).toBe(true);
+    expect(ok(card({ actions: [action("approve"), { ...changes, method: "GET" }] }))).toBe(false);
+    expect(ok(card({ runLimit: { currentUsd: 2, proposedUsd: 5 } }))).toBe(true);
+    expect(ok(card({ runLimit: { proposedUsd: 5, extra: 1 } }))).toBe(false);
+    expect(ok({ ...card({ runLimit: { proposedUsd: 5 } }), kind: "merge", id: "merge:x" })).toBe(false);
   });
 });
 
