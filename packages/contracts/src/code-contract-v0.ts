@@ -545,8 +545,6 @@ export interface LessonItem {
   possibleDuplicate?: string;
   /** The lesson this one contradicts. */
   contradicts?: string;
-  /** A possible duplicate that cannot be merged into the other (it came only from the repository's own reviews). */
-  mergeBlocked?: true;
   /** How many distinct tasks were given it. Not sent by Code yet (being added); shown only when present. */
   usedInTasks?: number;
   /** A lesson a person made permanent (L4-LP4G): it is retired, not handed to agents as a lesson any more, and stays in the retired list with this link. */
@@ -583,6 +581,14 @@ export interface TaskLessonsResponse { project: string; taskId: string; lessons:
 export interface NotHelpfulResponse { project: string; taskId: string; lessonId: string; marked: "not_helpful" }
 /** The project's own mode, the mode in force (the stricter of it and the company's), whether the company is the reason, and whether this person may change it. */
 export interface LessonModeResponse { project: string; mode: LessonMode; effective: LessonMode; lockedByCompany: boolean; canChange: boolean }
+/** Code's counts only phase 0 measurement, returned only to a project maintainer or company owner/admin. */
+export interface LessonMeasureResponse {
+  project: string; windowDays: number; floor: number; loads: number; lessonsInUse: number | null; loadedLessons: number; loadedBelowFloor: number;
+  loadsWithBelowFloor: number; loadedNoMatch: number; meanWordsLoaded: number | null; meanWordsLeftOut: number | null; loadsCapBound: number;
+  leftOutAtOrAboveFloor: number; meanFitLoaded: number | null; meanFitLeftOut: number | null;
+  cleanMerge: { merged: number; reverted: number; clean: number; rate: number | null };
+  revertDetection: "not_wired"; truncated: boolean; unreadable: number;
+}
 export interface PutLessonModeRequest { mode: LessonMode }
 /** Cloud's inbox read (`GET /v1/app/lessons/inbox`): one batch per project with proposed lessons the person can decide, theirs first. */
 export interface LessonInboxBatch { project: string; lessons: LessonItem[]; fromYou: number; partial?: true }
@@ -754,6 +760,7 @@ export interface CodeRouteTypes {
   "lessons.checkDraft.started": { request: CheckDraftStartedRequest; response: CheckDraftStartedResponse };
   "lessons.checkDraft.dismiss": { request: JsonObject; response: CheckDraftDismissResponse };
   "lessons.rules.retire": { request: JsonObject; response: RuleRetireResponse };
+  "lessons.measure": { request: void; response: LessonMeasureResponse };
   "company.engineModel.get": { request: void; response: CompanyEngineModelView };
   "company.engineModel.put": { request: PutCompanyEngineModelRequest; response: CompanyEngineModelView };
   "projects.settings.get": { request: void; response: ProjectSettingsView };
@@ -943,6 +950,7 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.checkDraft.started", "POST", `${DP}/lessons/check-drafts/{draftId}/started`, "The person says which of their own tasks they started from a draft", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.checkDraft.dismiss", "POST", `${DP}/lessons/check-drafts/{draftId}/dismiss`, "Drop a draft task", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.rules.retire", "POST", `${DP}/lessons/rules/{ruleId}/retire`, "Retire a live team rule (people who decide; audited)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.measure", "GET", `${DP}/lessons/measure`, "Counts only lesson fit, below-floor loads, clean merges and revert detection (maintainer or company owner/admin)", "full", ["how-we-work"], "no", false, "none", true),
   // Guided onboarding PR 15 (DEC 254l item 7, 254n item 1): the company's AI model (Code #835, not on code/next yet) and a project's per-task model budget (Code's M4a settings).
   spec("company.engineModel.get", "GET", "/v1/dev/company/engine-model", "The company's engine model, the models the gateway offers it now, and the one to preselect (any member)", "full", ["later"], "no", false, "none", true),
   spec("company.engineModel.put", "PUT", "/v1/dev/company/engine-model", "Set or clear the company's engine model, only from its offered list (owner or admin)", "full", ["later"], "no", false, "none", true),
@@ -982,6 +990,9 @@ GET /v1/app/me/sign-ins | k | later | | sign-ins | T
 POST /v1/app/me/sign-ins/link | k | later | | sign-ins | T
 DELETE /v1/app/me/sign-ins/{method} | k | later | | sign-ins | T
 GET /v1/app/me/sign-in-factors | k | later | | admin-company | T
+GET /v1/app/me/github | k | later | | github-link | T
+POST /v1/app/me/github/link | k | later | | github-link | T
+DELETE /v1/app/me/github | k | later | | github-link | T
 GET /v1/app/nav | c | shell | access.check,tasks.list,decisions.list | nav | T
 GET /v1/app/home | c | home | tasks.list,tasks.get,decisions.list | home | T
 POST /v1/app/home/cards/{card}/dismiss | c | home | | work-list |
@@ -1197,6 +1208,7 @@ POST /v1/app/projects/{p}/lessons/{lessonId}/retire-request | k | how-we-work | 
 GET /v1/app/projects/{p}/lessons/retire-requests | k | how-we-work | lessons.retireRequests | learned | T
 POST /v1/app/projects/{p}/lessons/decisions | k | home | lessons.decisions | learned | T
 GET /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.get | learned | T
+GET /v1/app/projects/{p}/lessons/measure | k | how-we-work | lessons.measure | learned | T
 PUT /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.put | learned | T
 GET /v1/app/projects/{p}/lessons/graduation | k | how-we-work | lessons.graduation | learned | T
 POST /v1/app/projects/{p}/lessons/{lessonId}/graduate | k | how-we-work | lessons.graduate | learned | T

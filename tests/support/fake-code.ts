@@ -12,7 +12,7 @@ import {
   matchCodeRoute,
   type AccessResponse, type CodeRequest, type CodeResponse, type CodeRouteId, type CompanyMember, type DecisionCard, type ErrorBody, type HowWeWorkView,
   type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
-  type DecisionsResponse, type DecisionOutcome, type GraduationResponse, type LessonItem, type LessonMode, type TaskLesson,
+  type DecisionsResponse, type DecisionOutcome, type GraduationResponse, type LessonItem, type LessonMeasureResponse, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
 import { wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
@@ -1395,6 +1395,18 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       const found = lessonsProject(context);
       if ("refused" in found) return found.refused;
       return { body: { project: found.name, mode: lessonMode, effective: lessonMode, lockedByCompany: false, canChange: found.decides } };
+    },
+    "lessons.measure": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      if (!found.decides) return failure(403, "FORBIDDEN", "Only an admin of this project, or an owner or admin of the company, can see how lessons are loaded.");
+      const body: LessonMeasureResponse = {
+        project: found.name, windowDays: 30, floor: 0.35, loads: 7, lessonsInUse: 12, loadedLessons: 21, loadedBelowFloor: 3,
+        loadsWithBelowFloor: 2, loadedNoMatch: 1, meanWordsLoaded: 0.42, meanWordsLeftOut: 0.3, loadsCapBound: 1,
+        leftOutAtOrAboveFloor: 4, meanFitLoaded: 0.61, meanFitLeftOut: 0.39,
+        cleanMerge: { merged: 5, reverted: 0, clean: 5, rate: 1 }, revertDetection: "not_wired", truncated: false, unreadable: 0,
+      };
+      return { body };
     },
     "lessons.mode.put": (context) => {
       const found = lessonsProject(context);

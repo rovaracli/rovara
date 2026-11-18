@@ -18,6 +18,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { NameForm } from "../../shell/NameForm.js";
 import { AdminSection, FreshSignIn, NotConnected, forgetConfirmed, useJustConfirmed } from "../admin/parts.js";
 import { ConnectedSignIns } from "./ConnectedSignIns.js";
+import { GithubAccount } from "./GithubAccount.js";
 import { useNav } from "./use-nav.js";
 import "../admin/admin.css";
 
@@ -62,6 +63,7 @@ export function AccountScreen() {
     : <ul className="rv-passkeys" aria-label="Your passkeys">{factors.data.passkeys.map(key => <li key={key.credentialId}><span>Passkey added {when(key.createdAt)}<small>{key.lastUsedAt === undefined ? "Not used yet" : `Last used ${when(key.lastUsedAt)}`}</small></span><Button aria-label={`Remove the passkey added ${when(key.createdAt)}`} onClick={() => { setResult(undefined); setRemoved(false); setParams({ remove: key.credentialId }, { replace: true }); }}>Remove</Button></li>)}</ul>}
   </AdminSection></>}
   <ConnectedSignIns confirmed={confirmed} who={nav?.me.developerId} />
+  <GithubAccount confirmed={confirmed} who={nav?.me.developerId} />
   <AdminSection title="Automation keys"><p>Manage keys for your scripts and CI.</p><Link to="/app/account/automation-keys">Automation keys</Link></AdminSection>
   <Dialog title="Remove this passkey?" description="You can still confirm with a code sent to your confirmation email." open={target !== undefined} onOpenChange={next => { if (!next) { setResult(undefined); setParams({}, { replace: true }); } }}>
    {!ready ? <FreshSignIn action="remove a passkey" refused={stale} /> : <><FreshSignIn action="remove a passkey" done /><Button variant="danger" busy={busy} onClick={() => { void remove(); }}>Remove passkey</Button></>}

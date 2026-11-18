@@ -308,7 +308,8 @@ it("names the projects whose lessons could not be read, instead of implying noth
 it("says when a lesson may duplicate or contradicts another, so Keep is never silent, and shows a distinct-task count only when Code sends one", async () => {
   const titleOf = (id: string) => (id === "les_mine0001" ? "Wrap webhook calls in withRetry" : undefined);
   expect(relationWords({ possibleDuplicate: "les_mine0001" }, titleOf)).toEqual(['May duplicate "Wrap webhook calls in withRetry". Keep keeps both; Drop if it repeats it.']);
-  expect(relationWords({ possibleDuplicate: "les_x", mergeBlocked: true, contradicts: "les_y" }, titleOf)).toEqual(["May duplicate another lesson. Keep keeps both (they can't be merged); Drop if it repeats it.", "Contradicts another lesson. Keep only the one that is right."]);
+  expect(relationWords({ possibleDuplicate: "les_x", contradicts: "les_y" }, titleOf)).toEqual(["May duplicate another lesson. Keep keeps both; Drop if it repeats it.", "Contradicts another lesson. Keep only the one that is right."]);
+  expect(relationWords({ possibleDuplicate: "les_x", mergeBlocked: true } as Parameters<typeof relationWords>[0], titleOf)).toEqual(["May duplicate another lesson. Keep keeps both; Drop if it repeats it."]);
   expect(relationWords({}, titleOf)).toEqual([]);
   expect(usageWords({ counters: { loaded: 3, helpful: 0, harmful: 0 }, supportTasks: 0, usedInTasks: 2 })).toBe("Loaded 3 times · used in 2 tasks");
   const batch = { ...BATCH, lessons: [BATCH.lessons[0]!, lesson("les_dup00001", { title: "Retry webhook calls", possibleDuplicate: "les_mine0001" })] };

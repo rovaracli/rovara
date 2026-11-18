@@ -37,6 +37,8 @@ describe("a lesson view as Code sends it today", () => {
     expect(read["paused"]).toEqual({ code: "monthly_limit", at: 1, scope: "company" });
     expect(read.active[0]!["trial"]).toBe("trial");
     expect(read.active[0]!["usedInTasks"]).toBe(3);
+    // Forward readers preserve unknown Code fields; the Cloud route/UI projection drops this retired field.
+    expect(read.active[0]!["mergeBlocked"]).toBe(true);
     expect(read.active[0]!.approvals[0]!.mode).toBe("unknown");
   });
   it("keeps sourceKinds (plan_comment, design_comment, other and a made-up kind) as the plain strings Code sent, on the lesson and in its provenance", () => {
