@@ -928,6 +928,7 @@ GET /v1/app/inbox | k | later | | inbox | T
 POST /v1/app/inbox/read | k | later | | inbox | T
 GET /v1/app/sessions/{id} | c | session | tasks.get,tasks.people.get | sessions | T
 GET /v1/app/sessions/{id}/events | k | session | tasks.events | sessions | T
+GET /v1/app/sessions/{id}/log | k | later | | screens/session/DecisionsCard | T
 GET /v1/app/sessions/{id}/messages | k | session | tasks.messages.list | sessions | T
 POST /v1/app/sessions/{id}/messages | k | session | tasks.messages.send | sessions | T
 PATCH /v1/app/sessions/{id}/messages/{messageId} | k | session | tasks.messages.send | sessions | T
