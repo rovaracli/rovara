@@ -174,3 +174,44 @@ describe("gateway process: the nightly upkeep cap", () => {
     expect((await nightlyPost(other, { pid: "api" })).statusCode).toBe(200);
   });
 });
+
+// L4-AIDEF (DEC 254zzz3(1)): the deployed process hands the exempt list, the saved-choice reader and Rovara's Bedrock to the answers route, so an exempt company with no connected
+// account is served by Rovara's AI there too, and every other company is paused as before.
+describe("gateway process: answers on Rovara's AI for an exempt company", () => {
+  const cidA = claims.cid;
+  const cidB = `org_${"b".repeat(20)}`;
+  const BEDROCK_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
+  async function serveRovara(saved?: Record<string, string>) {
+    const wire = new WireDynamo([...Object.values(TABLES), ...Object.values(ANSWERS)], { namespaceTables: true });
+    const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
+    for (const cid of [cidA, cidB]) await db.put(TABLES.companies, { pk: `COMPANY#${cid}`, sk: "SETTINGS", companyId: cid, version: 1, settings: { featureGates: {}, budgets: { companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } } });
+    for (const [cid, source] of Object.entries(saved ?? {})) await db.put(TABLES.companies, { pk: `COMPANY#${cid}`, sk: "AGENT_AI", companyId: cid, source, version: 1 });
+    const own: ProviderRequest[] = []; const bedrock: ProviderRequest[] = [];
+    const env = { ...ENV, ...PRODUCT_ENV, ...ANSWERS_ENV, [GATEWAY_ENV.agentKeys]: "company", [GATEWAY_ENV.rovaraAiModels]: `${claims.mdl[0]}=${BEDROCK_ID}`, [GATEWAY_ENV.rovaraAiExempt]: cidA };
+    const keys: LearningKeySource = { connected: async () => false, keyFor: async () => undefined };
+    const meter = new DynamoMeter({ db, tables: ANSWERS, now: () => now, combinedCompany: { meter: TABLES.meter, markers: TABLES.markers } });
+    const gateway = await startServe({ ...(readGatewayConfig(env) as ServeConfig), port: 0 }, {
+      db, fetch: jwksFetch, now: () => now, listen: false, log: () => undefined,
+      keys: { keyFor: async () => "never" }, agentKeys: keys,
+      transport: async (request) => { own.push(request); return { status: 200, body: answer() }; },
+      bedrockTransport: async (request) => { bedrock.push(request); return { status: 200, body: answer() }; },
+      answers: { keys, meter },
+    });
+    running.push(gateway);
+    return { gateway, own, bedrock, wire };
+  }
+  it("exempt A with no account is served by Rovara's AI and its ledger row carries the exempt line; not-exempt B is paused no_provider", async () => {
+    const s = await serveRovara();
+    expect((await post(s.gateway.server, mint({ stp: ANSWERS_STEP, cid: cidA }))).statusCode).toBe(200);
+    const paused = await post(s.gateway.server, mint({ stp: ANSWERS_STEP, cid: cidB }));
+    expect(paused.headers[ANSWERS_PAUSE_HEADER]).toBe("no_provider");
+    expect(s.bedrock).toHaveLength(1); expect(s.own).toEqual([]);
+    await settleAll();
+    expect(s.wire.items(ANSWERS.ledger).filter((r) => r.line !== undefined).map((r) => [r.cid, (r.line as { charge: string }).charge])).toEqual([[cidA, "exempt"]]);
+  });
+  it("exempt A that saved its own source is paused as before (the saved choice is read from the Companies table)", async () => {
+    const s = await serveRovara({ [cidA]: "openai_key" });
+    expect((await post(s.gateway.server, mint({ stp: ANSWERS_STEP, cid: cidA }))).headers[ANSWERS_PAUSE_HEADER]).toBe("no_provider");
+    expect(s.bedrock).toEqual([]);
+  });
+});

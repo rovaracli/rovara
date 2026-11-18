@@ -66,7 +66,15 @@ export interface CloudWebProps extends StackProps {
    * CLOUD_AI_SOURCE_KINDS. Absent: the variable is not set (none switched on; the template is what it was). Never for "production".
    */
   readonly aiSourceKinds?: string;
+  /**
+   * DEC 254zzz3(1): the operator's exempt (pilot) companies, the SAME ids as the gateway's `-c rovaraModelGatewayRovaraAiExempt`, set as CLOUD_ROVARA_AI_EXEMPT so the
+   * settings screen can say Rovara's AI is the company's default. The gateway decides every call; this changes words only. Absent: not set (the template is what it was). Never for "production".
+   */
+  readonly rovaraAiExempt?: string;
 }
+
+/** DEC 254zzz3(1): the server's environment variable for the exempt companies (scripts/cloud-lambda.ts reads it). */
+export const CLOUD_ROVARA_AI_EXEMPT_ENV = "CLOUD_ROVARA_AI_EXEMPT";
 
 /** DEC 254t: the server's environment variable for the switched-on company AI source kinds (scripts/cloud-lambda.ts reads it). */
 export const CLOUD_AI_SOURCE_KINDS_ENV = "CLOUD_AI_SOURCE_KINDS";
@@ -241,6 +249,10 @@ export class CloudWebStack extends Stack {
     if (props.aiSourceKinds !== undefined) {
       if (env === "production" && props.aiSourceKinds !== "") throw new Error("company AI sources are for named test environments until a Cloud release carries them");
       server.addEnvironment(CLOUD_AI_SOURCE_KINDS_ENV, props.aiSourceKinds);
+    }
+    if (props.rovaraAiExempt !== undefined) {
+      if (env === "production") throw new Error("Rovara's AI for exempt companies is for named test environments until a Cloud release carries it");
+      server.addEnvironment(CLOUD_ROVARA_AI_EXEMPT_ENV, props.rovaraAiExempt);
     }
     // IAM auth on the function URL, signed by CloudFront's origin access control (SigV4, always), and invoke rights only for this
     // distribution: the function's own address answers 403 to anyone else, so every request goes through CloudFront.

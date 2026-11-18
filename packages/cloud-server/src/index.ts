@@ -33,7 +33,7 @@ export {
   type CompanyBudgets, type CompanyInstruction, type CompanySettings, type LockValue, type SettingsCheck, type SettingsDecision, type WebsiteCeiling,
 } from "./company-settings.js";
 export {
-  AGENT_AI_SOURCES, AGENT_SOURCE_OF_KIND, AI_SOURCE_KINDS, agentSourceSwitchedOn, parseAiSourceKinds, PRE_SWITCH_AGENT_SOURCES, COMPANY_ID, CompanyStoreConflict, HOOK_INSTALL_COMPANIES_MAX, INVITES_READ_MAX, INVITE_DAYS, LocalCompanyStore, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, SPEND_LIMITS_MAX, SPEND_LIMIT_ID, SPEND_LIMIT_KINDS, SPEND_LIMIT_MICROS_MAX, SPEND_LIMIT_SCOPES, SPEND_LIMIT_SORT_PREFIX, spendLimitDef, StoreCompanyRules, StoreHookInstalls,
+  AGENT_AI_SOURCES, AGENT_SOURCE_OF_KIND, AI_SOURCE_KINDS, agentSourceSwitchedOn, effectiveAgentSource, parseAiSourceKinds, parseRovaraAiExempt, ROVARA_AI_EXEMPT_MAX, PRE_SWITCH_AGENT_SOURCES, COMPANY_ID, CompanyStoreConflict, HOOK_INSTALL_COMPANIES_MAX, INVITES_READ_MAX, INVITE_DAYS, LocalCompanyStore, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, SPEND_LIMITS_MAX, SPEND_LIMIT_ID, SPEND_LIMIT_KINDS, SPEND_LIMIT_MICROS_MAX, SPEND_LIMIT_SCOPES, SPEND_LIMIT_SORT_PREFIX, spendLimitDef, StoreCompanyRules, StoreHookInstalls,
   companySettings, validGithubUserId, validHookInstall,
   type AgentAiChoice, type CompanyTrial, type TrialUnlock, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type SpendLimit, type SpendLimitBasis, type SpendLimitKind, type SpendLimitKindDef, type SpendLimitList, type SpendLimitScope, type StoredSettings,
 } from "./company-store.js";

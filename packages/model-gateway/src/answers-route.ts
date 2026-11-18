@@ -4,7 +4,8 @@
 //
 //   Token    the TC-1 task token with `stp` = ANSWERS_STEP. That step is accepted on this route only, and this route accepts no other step
 //            (server.ts checks both directions with the fixed 401, before anything is read, held or sent). A learning token is refused here too.
-//   Key      LearningKeySource only (the company's own connected account). This route is never handed the gateway's ProviderKeys.
+//   Key      LearningKeySource only (the company's own connected account). This route is never handed the gateway's ProviderKeys. One exception (DEC 254zzz3(1)):
+//            a company the operator named exempt, with no connected account and Rovara's AI as its effective source, is served by Rovara's AI (`rovaraDefault`).
 //   Paths    /v1/answers/messages (Anthropic Messages), /v1/answers/gemini/..., /v1/answers/vertex/..., /v1/answers/openai/chat/completions: the same
 //            provider paths as the learning route under their own prefix. The company must have THAT provider connected.
 //   Money    its OWN meter (separate tables), combined with the agent meter's company row exactly as learning's is (DEC 228c): one hold takes the answers

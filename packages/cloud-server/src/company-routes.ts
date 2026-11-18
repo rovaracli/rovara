@@ -37,6 +37,8 @@ export interface CompanyBackend {
   log?: (event: Record<string, unknown>) => void;
   /** DEC 254t: the company AI source kinds this install switched on (CLOUD_AI_SOURCE_KINDS, company-store.ts parseAiSourceKinds). Absent: none. */
   aiSourceKinds?: ReadonlySet<string>;
+  /** DEC 254zzz3(1): the companies the operator named exempt (CLOUD_ROVARA_AI_EXEMPT, the gateway's list): the settings screen says Rovara's AI is their default. Absent: none (today's words). */
+  rovaraAiExempt?: ReadonlySet<string>;
   /** The model gateway's person-month spend (people-limits-routes.ts). Absent: People and limits answers 501. */
   peopleSpend?: PersonSpendReader;
 }

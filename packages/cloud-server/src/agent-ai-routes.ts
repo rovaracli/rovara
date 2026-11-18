@@ -13,7 +13,7 @@
 // the gateway uses only the saved one.
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction } from "./audit-log.js";
-import { AGENT_AI_SOURCES, agentSourceSwitchedOn, CompanyStoreConflict, type AgentAiSource } from "./company-store.js";
+import { AGENT_AI_SOURCES, agentSourceSwitchedOn, CompanyStoreConflict, effectiveAgentSource, type AgentAiSource } from "./company-store.js";
 import { bedrockConnected } from "./bedrock-byo-routes.js";
 import { LEARNING_AI_OWNER } from "./learning-ai-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
@@ -70,6 +70,8 @@ async function keyConnected(context: RouteContext, companyId: string, provider: 
     return view.sources.some((s) => s.provider === provider && s.hasKey && s.available);
   } catch { return null; }
 }
+/** For the default only: a Cloud with no Bedrock backend has no own Bedrock to prefer (the gateway builds it from the same switch), so that reads "not connected"; a backend that cannot be read stays null (cannot tell). */
+export const bedrockForDefault = (context: Pick<RouteContext, "productAi">, read: boolean | null): boolean | null => context.productAi?.bedrock === undefined ? false : read;
 export const anthropicKeyConnected = (context: RouteContext, companyId: string) => keyConnected(context, companyId, "anthropic");
 /** The learning document's revision (what an endpoint write sends as expectedRevision), or null when this Cloud can't tell. */
 async function keysRevision(context: RouteContext, companyId: string): Promise<number | null> {
@@ -89,8 +91,14 @@ async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
   const listed = AGENT_AI_SOURCES.filter((source) => ALWAYS_LISTED.includes(source) || switchedOn(context, source) || (source === "custom_endpoint" && storedEndpoint));
   const keys: Partial<Record<AgentAiSource, boolean | null>> = {};
   for (const source of listed) { const provider = KEY_OF[source]; if (provider !== undefined) keys[source] = await keyConnected(context, who.companyId, provider); }
+  // DEC 254zzz3(1): for an exempt company with no saved choice, what its agents use now (the gateway's default). Only for such a company is a
+  // connection read for it; anyone else is answered exactly as before (neither field is added).
+  const exempt = saved === undefined && context.company?.rovaraAiExempt?.has(who.companyId) === true;
+  const effective = effectiveAgentSource({ saved: saved?.source, exempt, keyConnected: exempt ? await anthropicKeyConnected(context, who.companyId) : null, bedrockConnected: exempt ? bedrockForDefault(context, bedrock) : null });
   return ok({
     source: saved?.source ?? null,
+    // Added only for a company on the default: every other answer is byte for byte what it was.
+    ...(effective.isDefault ? { effectiveSource: effective.source, sourceIsDefault: true } : {}),
     version: saved?.version ?? 0,
     canChange: true,
     choices: listed.map((source) => ({ source, available: AGENT_AI_CHOOSABLE.includes(source) && switchedOn(context, source) && (source !== "bedrock_byo" || bedrock === true) && (KEY_OF[source] === undefined || keys[source] === true) })),
