@@ -7,9 +7,13 @@ import {
  INBOX_KEY, MODES, OFF_TEXT, REJECT_REASONS, RETIRED_STATUS, RETIRE_REASONS, citationWords, expiryWords, fromWords, learnedKey, lessonsOff, modeLabel, notServed, reasonWords, usageWords,
  relationWords, useLearnedApi, useLessonMode, useLessonPages, useRetireRequests, type LessonItem, type LessonList, type LessonMode,
 } from "../../api/learned.js";
+import { becameWords } from "../../api/graduation.js";
 import { paths } from "../../paths.js";
 import { useAnnounce } from "../../design/Announcer.js";
 import { Button } from "../../design/Button.js";
+import { BothPlaces } from "./lessons/BothPlaces.js";
+import { TeamRules } from "./lessons/TeamRules.js";
+import { ThisWeek } from "./lessons/ThisWeek.js";
 import { RelativeTime } from "../../design/RelativeTime.js";
 import { Select } from "../../design/Select.js";
 import { Skeleton } from "../../design/Skeleton.js";
@@ -80,7 +84,8 @@ function LearnedLesson({ project, lesson, list }: { project: string; lesson: Les
   {lesson.description !== "" && <p className="rv-lesson-description"><VisibleText text={lesson.description} /></p>}
   {lesson.body !== "" && lesson.body !== lesson.description && <details><summary>The full lesson</summary><p className="rv-lesson-body"><VisibleText text={lesson.body} /></p></details>}
   <ul className="rv-lesson-facts">
-   {list === "retired" ? <li>{RETIRED_STATUS[lesson.status] ?? "No longer used"}{reasonWords(lesson.rejectedReason) === undefined ? "" : `: ${reasonWords(lesson.rejectedReason)!.toLowerCase()}`}</li> : <li>{usageWords(lesson)}</li>}
+   {list === "retired" && lesson.became !== undefined ? <li data-testid="lesson-became">{becameWords(lesson.became.kind)}{lesson.became.at > 0 && <> <span className="rv-muted"><RelativeTime at={new Date(lesson.became.at).toISOString()} /></span></>}</li>
+    : list === "retired" ? <li>{RETIRED_STATUS[lesson.status] ?? "No longer used"}{reasonWords(lesson.rejectedReason) === undefined ? "" : `: ${reasonWords(lesson.rejectedReason)!.toLowerCase()}`}</li> : <li>{usageWords(lesson)}</li>}
    {lesson.trial === "trial" && <li>On trial</li>}
    {lesson.needs !== undefined && lesson.needs.required === 2 && list === "proposed" && <li>{lesson.needs.have === 1 ? "One person kept it; needs one more" : "Needs two people to keep it"}</li>}
    {lesson.citations.slice(0, 3).map((one, index) => { const words = citationWords(one); return <li key={index}>{words.href === undefined ? <span className="mono"><VisibleText text={words.text} /></span> : <a href={words.href} target="_blank" rel="noreferrer">{words.text}</a>}</li>; })}
@@ -88,6 +93,7 @@ function LearnedLesson({ project, lesson, list }: { project: string; lesson: Les
   {list === "proposed" && relationWords(lesson, () => undefined).map(words => <p key={words} className="rv-lesson-relation"><VisibleText text={words} /></p>)}
   {expiry !== undefined && <p className={"rv-lesson-expiry" + (expiry.soon ? " soon" : "")}>{expiry.soon && <span className="rv-tone-dot" data-tone="wait" aria-hidden="true" />}{expiry.text}</p>}
   {actions}
+  {list === "proposed" && lesson.canApprove && lesson.contradicts !== undefined && action.kind === "idle" && <BothPlaces project={project} lesson={lesson} />}
   {action.kind === "error" && <p role="alert" className="rv-lesson-failed"><VisibleText text={action.text} /></p>}
  </article></li>;
 }
@@ -232,6 +238,8 @@ export function LearnedSection({ project }: { project: string }) {
  return <section className="rv-learned" aria-labelledby="learned-title" data-testid="learned">
   <header><h2 id="learned-title">Learned</h2><p className="rv-muted">Lessons Rovara learned from this project's corrections. Approved lessons are given to future tasks where they fit.</p></header>
   {isOff ? <p className="rv-learned-off" data-testid="lessons-off">{OFF_TEXT}</p> : <>
+   <ThisWeek project={project} />
+   <TeamRules project={project} />
    <ModeRow project={project} />
    <RetireRequests project={project} />
    <Tabs label="Lessons" value={tab} onValueChange={value => setTab(value as LessonList)} items={[

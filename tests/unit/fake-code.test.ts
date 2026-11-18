@@ -77,7 +77,7 @@ describe("fake Code answers contract v0", () => {
       taskId: TASK_IDS.running, project: "web", developerId: "e".repeat(64), requestId: randomUUID(), sha256: "d".repeat(64), kind: "approve_plan", subject: TASK_IDS.planReview,
       action: "evidence-opened", tokenId: randomUUID(), channel: "slack", workspace: "T0FAKE", account: "U0FAKE", lessonId: "les_logs00001",
       emailHash: "c".repeat(64),
-      installationId: "11",
+      installationId: "11", draftId: "chk_0123456789abcdef", ruleId: "rule_0123456789abcdef",
     };
     for (const route of CODE_ROUTES) {
       if (route.id === "auth.authorize" || route.id === "auth.token") continue;
@@ -93,7 +93,7 @@ describe("fake Code answers contract v0", () => {
 
   it("has a path parameter sample for every parameter the contract names", () => {
     const names = new Set(CODE_ROUTES.flatMap((route) => pathParamNames(route.path)));
-    expect([...names].sort()).toEqual(["account", "action", "channel", "developerId", "emailHash", "installationId", "kind", "lessonId", "project", "requestId", "sha256", "source", "subject", "taskId", "tokenId", "workspace"].sort());
+    expect([...names].sort()).toEqual(["account", "action", "channel", "developerId", "draftId", "emailHash", "installationId", "kind", "lessonId", "project", "requestId", "ruleId", "sha256", "source", "subject", "taskId", "tokenId", "workspace"].sort());
   });
 
   it("keeps a task you start, answers the same task for the same request id, and hides it from others", async () => {
