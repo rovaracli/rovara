@@ -67,6 +67,8 @@ const REPOSITORY_ACCESS = ["transferred", "removed"] as const;
 const RUN_STATUSES = ["none", "running", "ready", "failed"] as const;
 /** L4-T2 (Code's SETUP_APPROVALS and SETUP_CHECK_STATUSES). */
 const APPROVALS = ["none", "candidate", "checking", "approved"] as const;
+/** L4-T2c (Code's SETUP_NEWER_PROPOSALS): a newer proposal beside an approved setup. */
+const NEWER_PROPOSALS = ["needs_you", "checking", "rejected"] as const;
 const CHECK_STATUSES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
 const MODEL_CALLS = ["possible", "none", "unknown"] as const;
 /** The rows that must be done before the first task (the same list Code's progress uses). */
@@ -91,11 +93,14 @@ const optional = <T>(value: unknown, check: (one: unknown) => boolean, key: stri
 function setupRunRow(row: Plain): Plain {
   // L4-T2: the approval is part of the row; an answer without it is not one this Cloud can read (land with Code's change).
   need(oneOf(row["state"], ROW_STATES) && oneOf(row["status"], RUN_STATUSES) && oneOf(row["approval"], APPROVALS), undefined);
+  // L4-T2c: a newer proposal is only ever beside an approved setup, and is one of Code's three words; an answer without it (an older Code) reads as none.
+  need(row["newerProposal"] === undefined || (row["approval"] === "approved" && oneOf(row["newerProposal"], NEWER_PROPOSALS)), undefined);
   const found = row["commandsFound"], failed = row["failedCommand"], check = row["check"];
   return {
     state: row["state"], status: row["status"], approval: row["approval"],
     ...(check === undefined ? {} : { check: need(plain(check) && oneOf(check["status"], CHECK_STATUSES) && (check["failedStep"] === undefined || text(check["failedStep"], 300)), { status: (check as Plain)["status"], ...((check as Plain)["failedStep"] === undefined ? {} : { failedStep: (check as Plain)["failedStep"] }) }) }),
     ...optional<string>(row["approvedAt"], (one) => text(one, 40), "approvedAt"),
+    ...(row["newerProposal"] === undefined ? {} : { newerProposal: row["newerProposal"] }),
     ...optional<string>(row["startedAt"], (one) => text(one, 40), "startedAt"),
     ...optional<number>(row["elapsedMs"], (one) => whole(one), "elapsedMs"),
     ...optional<number>(row["costCents"], (one) => whole(one), "costCents"),
