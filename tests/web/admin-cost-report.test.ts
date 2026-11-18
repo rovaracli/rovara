@@ -152,8 +152,8 @@ describe("the navigation", () => {
   it("shows Cost and time under Money to an owner and an admin, and not to a member", () => {
     for (const role of ["owner", "admin"] as const) {
       const money = visibleAdminGroups(role, false).find(g => g.id === "money")!;
-      expect(money.links.map(l => l.label)).toEqual(["Spending", "Spending limits", "Cost and time"]);
-      expect(money.links[2]!.to).toBe("/app/admin/money/report");
+      expect(money.links.map(l => l.label)).toEqual(["Spending", "People and limits", "Spending limits", "Cost and time"]);
+      expect(money.links[3]!.to).toBe("/app/admin/money/report");
     }
     expect(visibleAdminGroups("member", false).flatMap(g => g.links.map(l => l.label))).not.toContain("Cost and time");
   });

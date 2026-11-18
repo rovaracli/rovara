@@ -150,7 +150,7 @@ describe("People and limits: the page", () => {
 });
 
 describe("Spending limits opened from People and limits", () => {
- const limits = (people: unknown[]) => ({ companyId: "org_aaaaaaaaaaaaaaaaaaaa", canChange: true, settingsVersion: 3, defaults: { companyMonthlyUsd: 500, memberMonthlyUsd: 50, projectMonthlyUsd: 100, taskUsd: 2 }, projects: [], people, partial: false, max: { projects: 200, people: 200 } });
+ const limits = (people: unknown[]) => ({ companyId: "org_aaaaaaaaaaaaaaaaaaaa", canChange: true, settingsVersion: 3, defaults: { companyMonthlyUsd: 500, memberMonthlyUsd: 50, projectMonthlyUsd: 100, taskUsd: 2, upkeepMonthlyUsd: 25, answersMonthlyUsd: 20 }, upkeep: [], answers: [], projects: [], people, partial: false, max: { projects: 200, people: 200, upkeep: 200, answers: 1 } });
  const answer = (people: unknown[]) => (r: ApiRequest): ApiResponse => (r.path === "/v1/app/org/spend-limits" ? ok(limits(people)) : r.path === "/v1/app/org/members" ? ok({ members: [{ developerId: AL, name: "Al" }, { developerId: BO, name: "Bo" }] }) : ok({}));
  it("opens the add form on the person when they have no limit of their own", async () => {
   const f = mount(`/app/admin/money/limits?person=${BO}`, answer([{ id: AL, monthlyUsd: 10, version: 1, updatedAt: "2026-11-17T00:00:00.000Z", updatedBy: me }]));
