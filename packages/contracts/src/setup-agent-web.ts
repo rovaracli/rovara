@@ -118,6 +118,8 @@ export const EVAL_CARD_STATES = ["none", "propose", "waiting", "approved", "rene
 const microDollars = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 export const EvalCardSuiteSchema = z.object({
   selection: z.string().min(1).max(512),
+  /** L4-T3: the AI provider this suite's evals call, as a person knows it ("Google Gemini", "Vertex AI"), from what setup found. */
+  provider: z.string().min(1).max(100).optional(),
   files: z.array(z.string().min(1).max(500)).max(200),
   cases: z.number().int().min(0).max(1_000_000),
   /** "Running your evals on each AI change will cost about $A-$B per PR, at most $X a month. Approve?" */
@@ -141,6 +143,9 @@ export const EvalCardViewSchema = z.object({
   canApprove: z.boolean(),
   report: z.object({ taskId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-]+$/u), reportDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).passthrough().optional(),
   suites: z.array(EvalCardSuiteSchema).max(16),
+  /** L4-T3 (G2): the AI provider the evals call, and whether the company's own connection to it stands right now. `connected` is absent when Code cannot tell (the card then says neither). */
+  provider: z.string().min(1).max(100).optional(),
+  connected: z.boolean().optional(),
   spend: z.object({
     state: z.string().min(1).max(60),
     perPr: z.string().min(1).max(100).optional(),

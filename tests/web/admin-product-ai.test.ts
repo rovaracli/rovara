@@ -46,6 +46,24 @@ describe("product AI keys page", () => {
   expect(() => readProductAi({ project: "web" })).toThrow();
   expect(usdToMicros("4.5")).toBe(4_500_000); expect(usdToMicros("x")).toBeUndefined(); expect(usdToMicros("1.1234567")).toBeUndefined();
  });
+ it("L4-T3: opens a project named in the link (`?project=`), with the field filled in, and reads only that project", async () => {
+  const f = mount("/app/admin/product-ai?project=web", () => ({ status: 200, body: view(false) }));
+  try {
+   expect(await screen.findByText(/No key is connected/u)).toBeTruthy();
+   expect(screen.getByLabelText("Project").getAttribute("value")).toBe("web");
+   expect(f.request.mock.calls.map(([r]) => r.path).filter(path => path.includes("product-ai"))).toEqual(["/v1/app/projects/web/product-ai"]);
+  } finally { f.close(); }
+ });
+ it("L4-T3: a project in the link that is not a project name is ignored (nothing is read), and the page asks as before", async () => {
+  for (const given of ["Bad%20Name", "..%2Fx", "web%0A", ""]) {
+   const f = mount(`/app/admin/product-ai?project=${given}`, () => ({ status: 200, body: view(false) }));
+   try {
+    expect(await screen.findByLabelText("Project")).toBeTruthy();
+    expect(screen.getByLabelText("Project").getAttribute("value") ?? "").toBe(given === "web%0A" ? "web" : "");
+    expect(f.request.mock.calls.map(([r]) => r.path).filter(path => path.includes("/projects/"))).toEqual(given === "web%0A" ? ["/v1/app/projects/web/product-ai"] : []);
+   } finally { f.close(); }
+  }
+ });
  it("asks for the fresh sign-in before any change, and shows no key field until then", async () => {
   const f = mount("/app/admin/product-ai", () => ({ status: 200, body: view(false) }));
   try {

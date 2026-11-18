@@ -8,6 +8,7 @@ import { randomUUID, sign } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import { beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { FixedCapsSource, type CapsSource } from "../../packages/model-gateway/src/caps.js";
 import { CompanyBudgetCaps, NO_CAP } from "../../packages/model-gateway/src/company-caps.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
@@ -224,5 +225,53 @@ describe("the HTTP handler", () => {
     for (let i = 0; i < EVAL_CAP_PER_MINUTE; i++) expect((await send(handler, ask())).statusCode).toBe(200);
     expect((await send(handler, ask())).statusCode).toBe(429);
     expect(reads).toBe(EVAL_CAP_PER_MINUTE);
+  });
+});
+
+// L4-T3: the one additive member, `connected` (the project's own product key, re-read with the check the authority and the hold make). No new route.
+describe("L4-T3: the cap answer says whether the project's AI key is connected", () => {
+  const source = (answer: boolean | undefined | Error, seen: Array<{ iss: string; cid: string; pid: string }> = []) => ({
+    connected: async (scope: { iss: string; cid: string; pid: string }) => { seen.push(scope); if (answer instanceof Error) throw answer; return answer; },
+  });
+  it("adds `connected` as the source answers, true or false, beside the same cap", async () => {
+    for (const connected of [true, false]) {
+      const w = world(); await w.seed(A, budgets(9, 4));
+      expect(await call({ ...w.opts, connection: source(connected) }, ask())).toEqual({ status: 200, body: { company: A, project: PROJECT, monthlyCapMicros: 4, connected } });
+    }
+  });
+  it("asks about exactly the token's company and the body's project, under the token's issuer", async () => {
+    const w = world(); await w.seed(A, budgets(9, 4)); const seen: Array<{ iss: string; cid: string; pid: string }> = [];
+    await call({ ...w.opts, connection: source(true, seen) }, ask());
+    expect(seen).toEqual([{ iss: ISS, cid: A, pid: PROJECT }]);
+  });
+  it("with no connection source the answer is the three members it always was", async () => {
+    const w = world(); await w.seed(A, budgets(9, 4));
+    expect(Object.keys((await call(w.opts, ask())).body as object).sort()).toEqual(["company", "monthlyCapMicros", "project"]);
+  });
+  it("a connection that cannot be said (no answer, a fault) is left out, never guessed, and never fails the cap", async () => {
+    for (const answer of [undefined, new Error("private store detail")]) {
+      const w = world(); await w.seed(A, budgets(9, 4));
+      const out = await call({ ...w.opts, connection: source(answer) }, ask());
+      expect(out).toEqual(ok(4)); expect(JSON.stringify(out)).not.toContain("private store detail");
+    }
+  });
+  it("a refusal is still the same fixed refusal and the connection is not even read (no budget source, another company's body, a bad project)", async () => {
+    const seen: Array<{ iss: string; cid: string; pid: string }> = [];
+    expect(await call({ ...world().opts, connection: source(false, seen) }, ask())).toEqual(NOT_FOUND);
+    const w = world(); await w.seed(A, budgets(9, 4));
+    expect(await call({ ...w.opts, connection: source(false, seen) }, ask(B))).toEqual(NOT_FOUND);
+    expect(await call({ ...w.opts, connection: source(false, seen) }, ask(A, "../x"))).toEqual(NOT_FOUND);
+    expect(seen).toEqual([]);
+  });
+  it("is exactly what Code's adapter reads (its CapAnswerSchema, copied from PrepLabsAI/Rovara packages/broker/src/core-host/eval-authority-http.ts): strict, `connected` an optional boolean", async () => {
+    const CodeCapAnswer = z.object({ company: z.string().regex(/^org_[0-9a-z]{20}$/), project: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u), monthlyCapMicros: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER), connected: z.boolean().optional() }).strict();
+    const w = world(); await w.seed(A, budgets(9, 4));
+    for (const opts of [w.opts, { ...w.opts, connection: source(true) }, { ...w.opts, connection: source(false) }, { ...w.opts, connection: source(undefined) }]) expect(CodeCapAnswer.safeParse((await call(opts, ask())).body).success).toBe(true);
+  });
+  it("two companies: company B's token is answered for B only, and A's connection is never asked for B", async () => {
+    const w = world(); await w.seed(A, budgets(9, 4)); await w.seed(B, budgets(8, 3));
+    const connection = { connected: async (scope: { cid: string }) => scope.cid === A };
+    expect(await call({ ...w.opts, connection }, ask(A))).toMatchObject({ status: 200, body: { company: A, connected: true } });
+    expect(await call({ ...w.opts, connection }, ask(B), { token: mintCap({ cid: B }) })).toMatchObject({ status: 200, body: { company: B, monthlyCapMicros: 3, connected: false } });
   });
 });

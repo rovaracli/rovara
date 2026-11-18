@@ -326,7 +326,7 @@ cap. A project with no cap of its own is held to the company cap.
 
 | Request | Body | Answer |
 |---|---|---|
-| `POST /v1/product/eval/cap`, `authorization: Bearer <service token>` | exactly `{"company","project"}` | `200` exactly `{"company","project","monthlyCapMicros"}` (a whole number, 0 to `Number.MAX_SAFE_INTEGER`) |
+| `POST /v1/product/eval/cap`, `authorization: Bearer <service token>` | exactly `{"company","project"}` | `200` exactly `{"company","project","monthlyCapMicros"}` (a whole number, 0 to `Number.MAX_SAFE_INTEGER`), plus `"connected"` (a boolean) where the gateway holds eval stages |
 
 - **Token**: as the eval authority's, with `aud: "rovara-model-gateway-eval-cap"` (`EVAL_CAP_AUDIENCE`). Another audience (the
   eval authority's included), a task token or an `x-api-key` header is `401`.
@@ -334,6 +334,10 @@ cap. A project with no cap of its own is held to the company cap.
   project name, or the company has no budget source (no settings row, a company monthly cap of null, another company's row) or a
   value that is not whole. `503` when the budget can't be read; `400`, `413`, `405` and `429` as on the eval authority.
   Nothing from the request is echoed or logged.
+- **`connected` (L4-T3, additive, no new route)**: whether the project's own product key is connected, re-read with the same check the
+  eval authority and the stage hold make. It is the one answer that says why an approved eval cannot run (the authority's `404` says
+  only "no"): Code shows "connect your AI" instead of "not approved". Left out (unknown, never guessed) where the gateway holds no eval
+  stages or the connection cannot be read; the cap itself is unchanged either way.
 - **Advisory bound**: this is the cap Code holds an eval spend item to at confirm. The binding check is still the gateway's own eval hold (`/v1/product/eval/hold`, the product caps), which may be lower; a hold it refuses spends nothing.
 - Mounted by `startServe` always: the company budget source (`GATEWAY_COMPANY_TABLE`) is part of every serving gateway.
 
