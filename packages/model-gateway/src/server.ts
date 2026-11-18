@@ -468,7 +468,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let reservedMicros = 0;
   // DEC 254zzz41: a review's first call holds the grant's whole ceiling (`held`) and opens the session that keeps it (`heldKept`); every call of a review debits that session
   // and holds nothing of its own (`sessionCall`: what it debited and gives back when it finishes).
-  let held: Reservation | undefined; let heldKept = false;
+  let held: Reservation | undefined; let heldKept = false; let pendingOpen: Promise<unknown> | undefined;
   let sessionCall: { debited: number; claims: TaskClaims } | undefined;
   let provider: ProviderResponse | undefined;
   let settlementPrice: ResolvedPrice | undefined;
@@ -588,13 +588,20 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     // REVIEW-1 M1: nothing may settle a review above its hold: no estimated price, no tier the request can reach whose rates are derived or uncertain (usageEstimated, at the most tokens the request's bytes can be), no unbounded input, and no source
     // whose provider reports its own cost (OpenRouter), which is a source Code never lists for reviews (reviewerProviderOf) but could be saved within the grant's 120 s.
     if (grant !== undefined && (overrunCapable || route.provider === "openrouter" || usageEstimated(price, { input: guarded.bytes.length, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || estimate > Math.floor(grant.ceilingUsd * 1_000_000))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
+    // The grant's own lifetime and binding, and the model the request names, are pure: checked BEFORE anything is read or held (the claim itself comes later).
+    const bind = grant === undefined ? "" : JSON.stringify([scope.cid, scope.pid, scope.tid, claims.ws, claims.op, grant.kind, grant.slot, claims.mdl[0]]);
+    let named: unknown;
+    if (grant !== undefined) {
+      try { named = (JSON.parse(Buffer.concat(parts).toString("utf8")) as { model?: unknown }).model; } catch { named = undefined; }
+      if (typeof named !== "string" || !(await consumeReviewerGrant(claims, { cid: scope.cid, pid: scope.pid, tid: scope.tid, ws: claims.ws, op: claims.op, kind: grant.kind, slot: grant.slot, model: named }, Math.floor(now() / 1000), async () => true))) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
+    }
     // A review's first call holds the grant's WHOLE ceiling (inside the task's limit and the company's cap) for its session; a later call of the same review
     // (the session exists) holds nothing new and debits the session below. Anything the store cannot answer is the fixed refusal, before any hold.
     let session: Awaited<ReturnType<ReviewerGrantStore["read"]>>;
     if (grant !== undefined) { try { session = await wait(deps.reviewerGrants!.read(claims.iss, scope.cid, claims.jti, controller.signal)); } catch { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; } }
     const ceilingMicros = grant === undefined ? 0 : Math.floor(grant.ceilingUsd * 1_000_000);
     const reserved = grant !== undefined && session !== undefined ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined ? estimate : ceilingMicros, appliedMaxOutputTokens, ...(line === undefined ? {} : { line }),
-      ...(grant === undefined ? {} : { sweepAfter: now() + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS }),
+      ...(grant === undefined ? {} : { sweepAfter: now() + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS, review: { jti: claims.jti.toLowerCase() } }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });
     if (!reserved.ok) {
@@ -623,29 +630,38 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       // Only after the hold is taken (a transient "busy" or a cap refusal burns nothing) and before any key is read or byte sent. The expected
       // company, project and task are the SCOPE the hold was taken in; the model is the one the request itself names (read from its body, not the grant).
       const store = deps.reviewerGrants;
-      const bind = JSON.stringify([scope.cid, scope.pid, scope.tid, claims.ws, claims.op, grant.kind, grant.slot, claims.mdl[0]]);
-      let named: unknown; try { named = (JSON.parse(Buffer.concat(parts).toString("utf8")) as { model?: unknown }).model; } catch { named = undefined; }
+      // Opens this call's session on the hold it took. Never raced against the deadline or an abort and never throws: the finally waits for it, so the hold is
+      // never released while a write that may have landed is unresolved.
+      const openSession = async (jti: string, at: number): Promise<"opened" | "exists" | "failed"> => {
+        const hold = held!;
+        try {
+          if (!(await store.open({ iss: claims.iss, cid: scope.cid, jti, bind, holdId: hold.id, ceilingMicros, firstDebitMicros: estimate, endsAt: at + REVIEW_SESSION_SECONDS }))) return "exists";
+          heldKept = true; sessionCall = { debited: estimate, claims };
+          // Whatever the review leaves unused goes back when its session ends (a short grace after); the session-aware hold sweep is only the backstop for a gateway task that died.
+          const timer = setTimeout(() => { void closeReviewSession(store, route!.meter, scope, jti, hold.id).catch(() => { log({ event: "settle_failed" }); }); }, (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS);
+          timer.unref();
+          return "opened";
+        } catch {
+          // The write's outcome is unknown. Certainly not written: the finally gives the hold back whole. Written by THIS hold: the session is closed at what was debited (never left
+          // on a released hold). Written by another call's hold: not ours to close, we continue as a later call of that review. Unreadable: the hold stays for the sweep.
+          let seen: Awaited<ReturnType<ReviewerGrantStore["read"]>>; let readable = true;
+          try { seen = await store.read(claims.iss, scope.cid, jti); } catch { readable = false; }
+          if (!readable) { heldKept = true; return "failed"; }
+          if (seen === undefined) return "failed";
+          if (seen.holdId !== hold.id) return "exists";
+          heldKept = true;
+          try { await closeReviewSession(store, route!.meter, scope, jti, hold.id); } catch { log({ event: "settle_failed" }); }
+          return "failed";
+        }
+      };
       const usable = typeof named === "string" && await wait(consumeReviewerGrant(claims, { cid: scope.cid, pid: scope.pid, tid: scope.tid, ws: claims.ws, op: claims.op, kind: grant.kind, slot: grant.slot, model: named }, Math.floor(now() / 1000), async (jti) => {
         const at = Math.floor(now() / 1000);
         // The first use claims the grant by opening the session (the one atomic write), with this call's worst case already debited.
-        let opened = false;
         if (held !== undefined) {
-          try { opened = await store.open({ iss: claims.iss, cid: scope.cid, jti, bind, holdId: held.id, ceilingMicros, firstDebitMicros: estimate, endsAt: at + REVIEW_SESSION_SECONDS }, controller.signal); }
-          catch {
-            // The write's outcome is unknown. Only when the session is certainly not there is the hold given back whole (the finally); otherwise it is closed at what was debited,
-            // or, if even that fails, left to the hold sweep (which settles a stale hold at its whole amount): a session never lives on a released hold.
-            let there: boolean | undefined;
-            try { there = (await store.read(claims.iss, scope.cid, jti)) !== undefined; } catch { there = undefined; }
-            if (there !== false) { heldKept = true; try { await closeReviewSession(store, route!.meter, scope, jti); } catch { log({ event: "settle_failed" }); } }
-            return false;
-          }
-        }
-        if (opened) {
-          heldKept = true; sessionCall = { debited: estimate, claims };
-          // Whatever the review leaves unused goes back when its session ends; the hold sweep is only the backstop for a gateway task that died.
-          const timer = setTimeout(() => { void closeReviewSession(store, route!.meter, scope, jti).catch(() => { log({ event: "settle_failed" }); }); }, (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS);
-          timer.unref();
-          return true;
+          pendingOpen = openSession(jti, at);
+          const outcome = await pendingOpen;
+          if (outcome === "opened") return true;
+          if (outcome === "failed") return false;
         }
         // A later call of the same review (or the loser of a race between two first calls): one more debit, never past the ceiling or the session's end.
         if (!(await store.debit(claims.iss, scope.cid, jti, bind, estimate, at, controller.signal))) return false;
@@ -721,6 +737,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     controller.abort(); clearTimeout(timer); clearTimeout(endedTimer); request.signal?.removeEventListener("abort", abort);
     controller.signal.removeEventListener("abort", onAbort);
     try { provider?.cancel?.(); } catch { /* Fixed log fields only; no provider text. */ }
+    // The claim is never left running past this point: a session it opened is then known (heldKept) before the hold is judged.
+    if (pendingOpen !== undefined) await pendingOpen.catch(() => undefined);
     // A hold taken for a review's first call that never opened its session (a refused or failed claim) is given back whole ($0).
     if (held !== undefined && !heldKept && route !== undefined) { try { await route.meter.settle(held, 0); } catch { log({ event: "settle_failed" }); } }
     await settleOnce();

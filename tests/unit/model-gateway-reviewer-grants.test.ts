@@ -20,6 +20,8 @@ import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import { answerOfferedModels, reviewerProviderOf, SERVICE_TOKEN_AUDIENCE, SERVICE_TOKEN_KIND, SERVICE_TOKEN_SECONDS, SERVICE_TOKEN_TYPE, type OfferedModelsHandlerOptions } from "../../packages/model-gateway/src/offered-models.js";
 import type { ProviderRequest } from "../../packages/model-gateway/src/provider.js";
+import { DynamoMeter, HOLD_SWEEP_AGE_MS } from "../../packages/model-gateway/src/dynamo-meter.js";
+import { handleGateway } from "../../packages/model-gateway/src/server.js";
 import { closeReviewSession, companyRoomMicros, DynamoReviewerGrants, InMemoryReviewerGrants, REVIEW_SESSION_CLOSE_GRACE_MS, REVIEW_SESSION_SECONDS, REVIEWER_GRANT_KEEP_SECONDS, type NewReviewSession, type ReviewerGrantStore } from "../../packages/model-gateway/src/reviewer-grants.js";
 import { agentRoute, REVIEWER_CEILING_REFUSED, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
 import { createSignedTokenVerifier, createTaskTokenVerifier } from "../../packages/model-gateway/src/token.js";
@@ -354,11 +356,14 @@ describe("(c) short-lived, one task, one kind, single use", () => {
   it("a grant used just after its 120 seconds is refused even though the signature check still allows its 30 second skew", async () => {
     const late = (secs + REVIEWER_GRANT_SECONDS + 10) * 1000;
     const verifyLate = createTaskTokenVerifier({ registry: new StaticInstallRegistry([{ issuer: claims.iss, jwksUrl: `${claims.iss}/.well-known/jwks.json`, taskKids: [kid] }]), readJwks: async () => [jwk], now: () => late });
-    const g = gateway({ overrides: { verifyToken: verifyLate, now: () => late } });
+    const reads: string[] = []; const spy = spyStore();
+    const g = gateway({ grants: { ...spy.store, read: async (iss, cid, jti) => { reads.push(jti); return spy.store.read(iss, cid, jti); } }, overrides: { verifyToken: verifyLate, now: () => late } });
     const token = grant();
     expect(await verifyLate(token)).toBeDefined();
     const sink = await call(g.deps, requestBody, token);
     expect(sink.status).toBe(401);
+    // The pure lifetime check runs before the store is read or any hold taken.
+    expect(reads).toEqual([]); expect(spy.claimed).toEqual([]);
     expect(g.keySent).toEqual([]);
     await nothingHeld(g.meter);
   });
@@ -454,6 +459,34 @@ describe("(c) short-lived, one task, one kind, single use", () => {
     // Settled at the first debit only, never at the ceiling, and nothing stays held.
     const company = (await g.meter.read(scope)).find((r) => r.item === "company")!;
     expect(company.reservedMicros).toBe(0);
+  });
+  it("REVIEW-3 M1: an abort while the claim is in flight never releases the hold under a session that may exist (and a later call is still covered by that hold)", async () => {
+    const spy = spyStore(); const abort = new AbortController(); let written = false;
+    const g = gateway({ grants: { ...spy.store, read: async (iss, cid, jti) => { if (written) throw new Error("store down"); return spy.store.read(iss, cid, jti); }, open: async (session) => { await spy.store.open(session); written = true; abort.abort(); await new Promise((resolve) => setTimeout(resolve, 25)); throw new Error("answer lost"); } } });
+    const sink = new MemorySink();
+    await handleGateway(g.deps, { method: "POST", url: "/v1/messages", headers: { "content-type": "application/json", "x-api-key": grant() }, body: (async function* () { yield Buffer.from(JSON.stringify(requestBody)); })(), signal: abort.signal }, sink);
+    expect(g.keySent).toEqual([]);
+    expect([...spy.inner.sessions.values()]).toHaveLength(1);
+    // The hold is still open under the session: nothing can be spent outside it.
+    expect((await g.meter.read(scope)).find((r) => r.item === "company")!.reservedMicros).toBe(1_000_000);
+  });
+  it("REVIEW-3 M2: a failed claim that finds ANOTHER call's session leaves it alone, releases its own hold and continues that review", async () => {
+    const spy = spyStore(); const jti = randomUUID();
+    await spy.inner.open({ iss: claims.iss, cid: cidA, jti, bind: JSON.stringify([cidA, claims.pid, claims.tid, claims.ws, claims.op, "second_review", "second_review", MODEL]), holdId: randomUUID(), ceilingMicros: 1_000_000, firstDebitMicros: 10, endsAt: secs + REVIEW_SESSION_SECONDS });
+    const g = gateway({ grants: { ...spy.store, read: (iss, cid, j) => spy.inner.read(iss, cid, j), open: async () => { throw new Error("answer lost"); } } });
+    // The first read (before the hold) already sees the winner's session, so make the pre-read miss it once and the post-failure read find it.
+    let reads = 0; const realRead = spy.inner.read.bind(spy.inner);
+    g.deps.reviewerGrants = { ...spy.store, open: async () => { throw new Error("answer lost"); }, read: async (iss, cid, j) => (reads++ === 0 ? undefined : realRead(iss, cid, j)) };
+    expect((await call(g.deps, requestBody, grant({ jti }))).status).toBe(200);
+    expect(g.keySent).toHaveLength(1);
+    expect([...spy.inner.sessions.values()][0]).toMatchObject({ status: "open" });
+    expect((await g.meter.read(scope)).find((r) => r.item === "company")!.reservedMicros).toBe(0);
+  });
+  it("closing is conditional on the hold that opened the session", async () => {
+    const spy = spyStore(); const jti = randomUUID(); const holdId = randomUUID();
+    await spy.inner.open({ iss: claims.iss, cid: cidA, jti, bind: "b", holdId, ceilingMicros: 100, firstDebitMicros: 10, endsAt: secs + 60 });
+    expect(await spy.inner.close(claims.iss, cidA, jti, randomUUID())).toBeUndefined();
+    expect(await spy.inner.close(claims.iss, cidA, jti, holdId)).toEqual({ holdId, debitedMicros: 10 });
   });
   it("a store that refuses both the claim and a later debit is a refusal that holds nothing", async () => {
     const spy = spyStore();
@@ -561,6 +594,44 @@ describe("the durable review session (markers table)", () => {
   });
 });
 const ceilingOf = (micros: number) => ({ reviewer: { kind: "second_review", slot: "second_review", ceilingUsd: micros / 1_000_000 } });
+
+describe("the hold sweep settles a dead gateway task's review at what its session debited (REVIEW-3 M3)", () => {
+  const T = { meter: "gw-meter", ledger: "gw-ledger", markers: "gw-markers" };
+  const credentials = async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" });
+  const sweepScope = { iss: claims.iss, cid: cidA, pid: "web", tid: "task_1" };
+  async function holdWithSession(opts: { session: boolean; debited?: number }) {
+    const wire = new WireDynamo(Object.values(T));
+    const db = new Dynamo({ region: "us-west-2", credentials, transport: wire.transport });
+    const meter = new DynamoMeter({ db, tables: T, now: () => now });
+    const jti = randomUUID();
+    const hold = await meter.reserve({ scope: sweepScope, caps: { task: 1e9, projectMonth: 1e9, companyMonth: 1e9 }, estimateMicros: 1_000, review: { jti } });
+    expect(hold.ok).toBe(true); if (!hold.ok) throw new Error("hold");
+    const store = new DynamoReviewerGrants(db, T.markers, () => now);
+    if (opts.session) { await store.open({ iss: claims.iss, cid: cidA, jti, bind: "b", holdId: hold.reservation.id, ceilingMicros: 1_000, firstDebitMicros: opts.debited ?? 300, endsAt: secs + 600 }); }
+    return { meter, store, jti, wire, db };
+  }
+  const company = async (meter: DynamoMeter) => (await meter.read(sweepScope)).find((r) => r.item === "company")!;
+  it("settles at the session's debited total, releases the rest and closes the session", async () => {
+    const h = await holdWithSession({ session: true });
+    const report = await h.meter.sweepOpenHolds(now + HOLD_SWEEP_AGE_MS + 1_000, 10);
+    expect(report).toMatchObject({ swept: 1, failed: 0 });
+    expect(await company(h.meter)).toMatchObject({ spentMicros: 300, committed: 300, reservedMicros: 0 });
+    expect(await h.store.read(claims.iss, cidA, h.jti)).toMatchObject({ status: "closed", debitedMicros: 300 });
+  });
+  it("settles at the whole ceiling only when the session cannot be read", async () => {
+    const h = await holdWithSession({ session: false });
+    await h.meter.sweepOpenHolds(now + HOLD_SWEEP_AGE_MS + 1_000, 10);
+    expect(await company(h.meter)).toMatchObject({ spentMicros: 1_000, committed: 1_000 });
+  });
+  it("an ordinary hold is swept exactly as before", async () => {
+    const wire = new WireDynamo(Object.values(T));
+    const db = new Dynamo({ region: "us-west-2", credentials, transport: wire.transport });
+    const meter = new DynamoMeter({ db, tables: T, now: () => now });
+    await meter.reserve({ scope: sweepScope, caps: { task: 1e9, projectMonth: 1e9, companyMonth: 1e9 }, estimateMicros: 700 });
+    await meter.sweepOpenHolds(now + HOLD_SWEEP_AGE_MS + 1_000, 10);
+    expect(await company(meter)).toMatchObject({ spentMicros: 700, committed: 700 });
+  });
+});
 
 describe("the room a review may take (company cap)", () => {
   it("is the company cap less what the company's holds and spend already took (all routes' rows), read for that company only", async () => {

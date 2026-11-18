@@ -45,5 +45,7 @@ Second review and design review run as one model call each, made with a 120 seco
   (`CO#[iss,cid]` / `REVGRANT#<jti>`: hold id, ceiling, room left, end time; `expiresAt` TTL; no new table, record kind or IAM). Later calls of the SAME review (same jti, same
   company, project, task, workspace, operation, kind, slot and model, including a renewed token with the same jti) debit the session, never past the ceiling and for at most
   600 seconds. What a call did not use is given back at once. When the session ends the gateway closes it: the hold settles at what the review really used and the rest of the
-  ceiling is released (an in-process timer; the hold sweep is only the backstop when a gateway task died). A mismatch, an exhausted ceiling, an ended or closed session, a
+  ceiling is released (an in-process timer 30 seconds after the end; if the gateway task died, the open-hold sweep settles a review's hold at what its session debited, found
+  through the `review` jti stored on the hold, and only a session that cannot be read costs the whole ceiling). A replay of the same grant is therefore a continuation of its
+  review until the ceiling, the session or the grant's own 120 seconds end (the owner decision's "replay refused" holds once the session is exhausted, ended or closed). A mismatch, an exhausted ceiling, an ended or closed session, a
   grant past its 120 seconds or a store that does not answer gives the fixed 401 and spends nothing.

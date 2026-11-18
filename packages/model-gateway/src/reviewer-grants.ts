@@ -20,12 +20,14 @@ import type { CapsSource } from "./caps.js";
 import type { Dynamo } from "./dynamo.js";
 import type { Meter, MeterScope, Reservation } from "./meter.js";
 import { COMPANY, whole } from "./model-gateway-token.js";
-import { CALL_HARD_CEILING_MS } from "./provider.js";
 
 /** How long a review session may run after its first call (several model calls; the grants' own 120 seconds still bound each call's token). */
 export const REVIEW_SESSION_SECONDS = 600;
-/** How long after the session's end the gateway waits before it closes it: every call admitted before the end has finished by then. */
-export const REVIEW_SESSION_CLOSE_GRACE_MS = CALL_HARD_CEILING_MS + 5_000;
+/**
+ * How long after the session's end the gateway closes it. A call still running then stays counted at its worst case (its debit is inside the total the hold settles at), so
+ * the unused ceiling is released promptly and closing never waits for slow calls.
+ */
+export const REVIEW_SESSION_CLOSE_GRACE_MS = 30_000;
 /** How long a session's item outlives its close time (clock skew; DynamoDB deletes lazily after this). */
 export const REVIEWER_GRANT_KEEP_SECONDS = 300;
 const JTI = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
@@ -43,7 +45,7 @@ export interface ReviewerGrantStore {
   /** Gives back what a finished call did not use (the debit less its real cost). Never throws; a failure leaves the call counted at its worst case. */
   giveBack(iss: string, cid: string, jti: string, micros: number): Promise<void>;
   /** Marks the session closed exactly once: its hold id and total debited the first time, undefined afterwards or when none. */
-  close(iss: string, cid: string, jti: string): Promise<{ holdId: string; debitedMicros: number } | undefined>;
+  close(iss: string, cid: string, jti: string, expectHoldId?: string): Promise<{ holdId: string; debitedMicros: number } | undefined>;
 }
 
 const readSession = (item: Record<string, unknown> | undefined): ReviewSession | undefined => {
@@ -90,13 +92,13 @@ export class DynamoReviewerGrants implements ReviewerGrantStore {
         (e) => `${e.name("status")} = ${e.value("open")} AND ${e.name("debitedMicros")} >= ${e.value(micros)}`);
     } catch { /* The call stays counted at its worst case. */ }
   }
-  async close(iss: string, cid: string, jti: string): Promise<{ holdId: string; debitedMicros: number } | undefined> {
+  async close(iss: string, cid: string, jti: string, expectHoldId?: string): Promise<{ holdId: string; debitedMicros: number } | undefined> {
     const key = this.#key(iss, cid, jti);
     // A debit that lands between the read and the conditional write changes debitedMicros: read again, a few times, then leave it to the hold sweep.
     for (let attempt = 0; attempt < 3; attempt++) {
       const seen = readSession(await this.db.get(this.table, key, { consistent: true }));
-      if (seen === undefined || seen.status !== "open") return undefined;
-      const closed = await this.db.update(this.table, key, (e) => `SET ${e.name("status")} = ${e.value("closed")}`, (e) => `${e.name("status")} = ${e.value("open")} AND ${e.name("debitedMicros")} = ${e.value(seen.debitedMicros)}`);
+      if (seen === undefined || seen.status !== "open" || (expectHoldId !== undefined && seen.holdId !== expectHoldId)) return undefined;
+      const closed = await this.db.update(this.table, key, (e) => `SET ${e.name("status")} = ${e.value("closed")}`, (e) => `${e.name("status")} = ${e.value("open")} AND ${e.name("debitedMicros")} = ${e.value(seen.debitedMicros)} AND ${e.name("holdId")} = ${e.value(seen.holdId)}`);
       if (closed) return { holdId: seen.holdId, debitedMicros: seen.debitedMicros };
     }
     return undefined;
@@ -124,9 +126,9 @@ export class InMemoryReviewerGrants implements ReviewerGrantStore {
     const s = this.sessions.get(this.#key(iss, cid, jti));
     if (s !== undefined && s.status === "open" && s.debitedMicros >= micros) { s.roomMicros += micros; s.debitedMicros -= micros; }
   }
-  async close(iss: string, cid: string, jti: string): Promise<{ holdId: string; debitedMicros: number } | undefined> {
+  async close(iss: string, cid: string, jti: string, expectHoldId?: string): Promise<{ holdId: string; debitedMicros: number } | undefined> {
     const s = this.sessions.get(this.#key(iss, cid, jti));
-    if (s === undefined || s.status !== "open") return undefined;
+    if (s === undefined || s.status !== "open" || (expectHoldId !== undefined && s.holdId !== expectHoldId)) return undefined;
     s.status = "closed";
     return { holdId: s.holdId, debitedMicros: s.debitedMicros };
   }
@@ -134,11 +136,12 @@ export class InMemoryReviewerGrants implements ReviewerGrantStore {
 
 /**
  * Closes one review session: marks it closed (once), then settles its hold at what the review really used, which gives the rest of the ceiling back to
- * the task's and the company's rows. A failure after the mark leaves the hold to the hold sweep (it settles a stale hold at its whole amount, never less).
+ * the task's and the company's rows. A failure after the mark leaves the hold to the hold sweep, which settles a review hold at what its session debited (dynamo-meter.ts reviewTotal), the whole ceiling only if the session cannot be read.
+ * `expectHoldId`: close only the session that THIS hold opened.
  * `meter.adopt` re-creates the settle handle in a gateway task that did not take the hold (DynamoMeter only).
  */
-export async function closeReviewSession(store: ReviewerGrantStore, meter: Meter & { adopt?(iss: string, cid: string, reservation: Reservation): Reservation }, scope: Pick<MeterScope, "iss" | "cid">, jti: string): Promise<boolean> {
-  const closed = await store.close(scope.iss, scope.cid, jti);
+export async function closeReviewSession(store: ReviewerGrantStore, meter: Meter & { adopt?(iss: string, cid: string, reservation: Reservation): Reservation }, scope: Pick<MeterScope, "iss" | "cid">, jti: string, expectHoldId?: string): Promise<boolean> {
+  const closed = await store.close(scope.iss, scope.cid, jti, expectHoldId);
   if (closed === undefined) return false;
   const handle: Reservation = { id: closed.holdId };
   await meter.settle(meter.adopt?.(scope.iss, scope.cid, handle) ?? handle, closed.debitedMicros);

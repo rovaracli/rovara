@@ -59,7 +59,7 @@ export const HOLD_SWEEP_MAX = 100;
 
 /** `combined`: the agent meter's company row (DynamoMeterOptions.combinedCompany), in the agent meter table. */
 interface Target { sk: string; item: MeterItem; cap?: number; combined?: true }
-interface Hold { scope: MeterScope; month: string; estimate: number; targets: Target[]; status: string; line?: BillLine }
+interface Hold { scope: MeterScope; month: string; estimate: number; targets: Target[]; status: string; line?: BillLine; review?: string }
 
 function validScope(value: unknown): value is MeterScope {
   const s = record(value);
@@ -100,7 +100,8 @@ function readHold(item: Item | undefined, combined: boolean): Hold | undefined {
   if (!validScope(scope) || targets === undefined || typeof item.month !== "string" || !whole(item.estimateMicros) || typeof item.status !== "string") throw new Error("settlement unavailable");
   // A billable line (DEC 240b) that does not read keeps the hold open (the sweep retries): it is never dropped from the ledger row.
   if (item.line !== undefined && !validLine(item.line)) throw new Error("settlement unavailable");
-  return { scope, month: item.month, estimate: item.estimateMicros, targets, status: item.status, ...(item.line === undefined ? {} : { line: { source: item.line.source, charge: item.line.charge, model: item.line.model } }) };
+  if (item.review !== undefined && !(typeof item.review === "string" && /^[0-9a-f-]{36}$/u.test(item.review))) throw new Error("settlement unavailable");
+  return { scope, month: item.month, estimate: item.estimateMicros, targets, status: item.status, ...(item.review === undefined ? {} : { review: item.review }), ...(item.line === undefined ? {} : { line: { source: item.line.source, charge: item.line.charge, model: item.line.model } }) };
 }
 function rowOf(item: Item | undefined, target: Target, company: string): MeterRow {
   if (item === undefined) return { item: target.item, company, spentMicros: 0, estimatedMicros: 0, reservedMicros: 0, committed: 0, overrun: false };
@@ -175,6 +176,7 @@ export class DynamoMeter implements Meter {
     const { scope, caps, estimateMicros } = input;
     if (input.appliedMaxOutputTokens !== undefined && (!whole(input.appliedMaxOutputTokens) || input.appliedMaxOutputTokens < 1)) return { ok: false, reason: "busy" };
     if (input.line !== undefined && !validLine(input.line)) return { ok: false, reason: "busy" };
+    if (input.review !== undefined && !(typeof input.review.jti === "string" && /^[0-9a-f-]{36}$/u.test(input.review.jti))) return { ok: false, reason: "busy" };
     // Fail closed: a combined meter without the combined company cap holds nothing.
     if (this.#combined !== undefined && caps.combinedCompanyMonth === undefined) return { ok: false, reason: "busy" };
     const now = this.#now();
@@ -231,6 +233,7 @@ export class DynamoMeter implements Meter {
         openAll: GATEWAY_OPEN_PARTITION, openAt: openAt(openFrom, pk, id), ...(openFrom === now ? {} : { openFrom }),
         ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }),
         ...(input.line === undefined ? {} : { line: { source: input.line.source, charge: input.line.charge, model: input.line.model } }),
+        ...(input.review === undefined ? {} : { review: input.review.jti }),
       } });
       if (expiresSeconds !== undefined) {
         const expires = expiresSeconds;
@@ -365,11 +368,26 @@ export class DynamoMeter implements Meter {
         // Re-read consistently: the index is eventually consistent, the decision is made from the table.
         const hold = readHold(await this.#db.get(this.#t.meter, { pk: item.pk, sk: item.sk }), this.#combined !== undefined);
         if (hold === undefined || hold.status !== "open" || companyPartition(hold.scope.iss, hold.scope.cid) !== item.pk) { report.already++; continue; }
-        const result = await this.#close(item.pk, id, hold, Math.max(1, hold.estimate), undefined, true);
+        // A review session's hold (DEC 254zzz41) is settled at what its session really debited, never above its ceiling (the hold): only a session that cannot be read costs the whole ceiling.
+        const result = await this.#close(item.pk, id, hold, hold.review === undefined ? Math.max(1, hold.estimate) : await this.#reviewTotal(item.pk, hold.review, hold.estimate), undefined, true);
         if (result === "closed") report.swept++; else report.already++;
       } catch { report.failed++; report.more = true; }
     }
     return report;
+  }
+
+  /** What a review session debited (its item in the markers table, this company's partition), closing the session so no later call can debit it; the whole hold when it cannot be read. */
+  async #reviewTotal(pk: string, jti: string, estimate: number): Promise<number> {
+    const key = { pk, sk: `REVGRANT#${jti}` };
+    try {
+      const item = await this.#db.get(this.#markers, key);
+      if (item === undefined || !whole(item.debitedMicros) || !whole(item.ceilingMicros) || item.ceilingMicros !== estimate || item.debitedMicros > estimate) return Math.max(1, estimate);
+      if (item.status === "open") await this.#db.update(this.#markers, key, (e) => `SET ${e.name("status")} = ${e.value("closed")}`, (e) => `${e.name("status")} = ${e.value("open")} AND ${e.name("debitedMicros")} = ${e.value(item.debitedMicros as number)}`);
+      // The close is conditional on the total read: a debit that lands in between leaves the session open, and then the whole hold is the safe answer.
+      const after = await this.#db.get(this.#markers, key);
+      if (after === undefined || after.status !== "closed" || !whole(after.debitedMicros) || after.debitedMicros > estimate) return Math.max(1, estimate);
+      return Math.max(1, after.debitedMicros);
+    } catch { return Math.max(1, estimate); }
   }
 
   async #beforeTransaction(operation: "correct" | "expire", input: ExpiryInput, rows?: MeterRow[]): Promise<boolean> {

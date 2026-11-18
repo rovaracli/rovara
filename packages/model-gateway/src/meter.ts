@@ -33,6 +33,11 @@ export interface ReserveInput {
    * when it settles (or is swept), in the same transaction, so every settled Rovara's AI call is exactly one billable line.
    */
   line?: BillLine;
+  /**
+   * DEC 254zzz41: this hold is a review session's whole ceiling; `jti` names its session item (reviewer-grants.ts) in the markers table. Only the hold sweep reads it: a hold
+   * whose gateway task died is then settled at what the session really debited, not at the whole ceiling. Absent: every other hold, as before.
+   */
+  review?: { jti: string };
 }
 /**
  * One billable line (DEC 240b). `charge` "customer": on the company's bill; "exempt": the operator-named founders' test company
@@ -127,6 +132,7 @@ export class InMemoryMeter implements Meter {
     if (input.appliedMaxOutputTokens !== undefined && (!whole(input.appliedMaxOutputTokens) || input.appliedMaxOutputTokens < 1)) return { ok: false, reason: "busy" };
     if (input.sweepAfter !== undefined && (!whole(input.sweepAfter) || input.sweepAfter > this.now() + SWEEP_AFTER_MAX_MS)) return { ok: false, reason: "busy" };
     if (input.line !== undefined && !validLine(input.line)) return { ok: false, reason: "busy" };
+    if (input.review !== undefined && !(typeof input.review.jti === "string" && /^[0-9a-f-]{36}$/u.test(input.review.jti))) return { ok: false, reason: "busy" };
     // Fail closed: a combined meter without the combined company cap holds nothing.
     if (this.#partner !== undefined && caps.combinedCompanyMonth === undefined) return { ok: false, reason: "busy" };
     const clock = Math.floor(this.now() / 1000);
