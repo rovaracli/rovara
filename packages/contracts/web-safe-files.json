@@ -13,6 +13,7 @@
   "packages/contracts/src/app-known-failing.ts",
   "packages/contracts/src/app-lessons.ts",
   "packages/contracts/src/app-nav.ts",
+  "packages/contracts/src/app-plan-feature.ts",
   "packages/contracts/src/app-project-slack.ts",
   "packages/contracts/src/app-projects.ts",
   "packages/contracts/src/app-saved-env.ts",

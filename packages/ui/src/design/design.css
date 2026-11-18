@@ -114,3 +114,5 @@ button:disabled{cursor:default;opacity:.65}
 .rv-decision-pane kbd,.rv-criterion kbd,.rv-work kbd{font:500 10.5px/1 var(--rv-font-mono);border:1px solid var(--rv-border-medium);border-radius:3px;padding:2px 4px;color:var(--rv-text-muted);background:var(--rv-bg-raised);margin-left:6px}
 .rv-decision-pane .rv-button-primary kbd{background:none;color:inherit;border-color:currentColor}
 .rv-decision-pane .rv-button{min-height:var(--rv-control-size,36px)}
+
+.rv-plan-feature{display:grid;gap:var(--rv-space-2);margin:var(--rv-space-2) 0}.rv-plan-feature-line{margin:0}.rv-plan-feature-actions,.rv-plan-feature-pick,.rv-plan-feature-create{display:flex;flex-wrap:wrap;align-items:end;gap:var(--rv-space-3)}

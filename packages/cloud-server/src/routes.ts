@@ -26,6 +26,7 @@ import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
 import { REPORT_ROUTES } from "./report-routes.js";
+import { PLAN_FEATURE_ROUTES } from "./plan-feature-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
 import { NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
@@ -898,4 +899,6 @@ export const ROUTES: Route[] = [
   ...WIKI_SETUP_ROUTES,
   // The admin portal's Cost and time report (Feature A, slice A3): Code's one-row-per-task read, grouped here for a company owner or admin.
   ...REPORT_ROUTES,
+  // The plan card's feature controls (lead 4 PCF): Code decides who may change a task's feature or make one; Cloud passes the person's token and rebuilds each answer.
+  ...PLAN_FEATURE_ROUTES,
 ];

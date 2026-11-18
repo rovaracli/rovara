@@ -1206,6 +1206,9 @@ GET /v1/app/budget | g | budgets | | spending |
 GET /v1/app/org/spend | g | budgets | | spending |
 GET /v1/app/org/report | c | admin | | admin/report | T
 GET /v1/app/org/report/features/{featureId} | c | admin | | admin/report | T
+GET /v1/app/tasks/{t}/feature-choices | k | later | | design/PlanFeature | T
+POST /v1/app/tasks/{t}/feature | k | later | | design/PlanFeature | T
+POST /v1/app/org/report/features | k | later | | design/PlanFeature | T
 GET /v1/app/spend-requests | g | budgets | | spending |
 GET /v1/app/org/budget-settings | g | budgets | | spending |
 GET /v1/app/org/engine-model | k | later | company.engineModel.get | setup/AiSpendStep | T
