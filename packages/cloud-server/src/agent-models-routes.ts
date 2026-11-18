@@ -127,8 +127,15 @@ export function agentModelsView(value: unknown): AgentModelsAnswer | undefined {
   if (!plain(state) || !whole(state["revision"], Number.MAX_SAFE_INTEGER - 1) || !Array.isArray(state["steps"]) || state["steps"].length > AGENT_MODEL_STAGES.length) return undefined;
   if (!plain(offered) || offered["version"] !== 1 || !Array.isArray(offered["models"]) || offered["models"].length === 0 || offered["models"].length > OFFERED_MAX) return undefined;
   const names: string[] = [];
+  // DEC 254zzz96 (2): the gateway's list price of an offered model, when it published one (Code passes it through untouched).
+  const listPrices = new Map<string, { input: number; output: number }>();
   for (const entry of offered["models"] as unknown[]) {
     if (!plain(entry) || typeof entry["model"] !== "string" || !MODEL_NAME.test(entry["model"])) return undefined;
+    const price = entry["price"];
+    if (price !== undefined) {
+      if (!plain(price) || !exactly(price, ["inputUsdPerMillion", "outputUsdPerMillion"]) || !money(price["inputUsdPerMillion"]) || !money(price["outputUsdPerMillion"])) return undefined;
+      listPrices.set(entry["model"], { input: price["inputUsdPerMillion"], output: price["outputUsdPerMillion"] });
+    }
     names.push(entry["model"]);
   }
   if (new Set(names).size !== names.length) return undefined;
@@ -136,7 +143,9 @@ export function agentModelsView(value: unknown): AgentModelsAnswer | undefined {
   for (const raw of state["steps"] as unknown[]) {
     const step = stepOf(raw);
     if (step === undefined || steps.some((seen) => seen.stage === step.stage)) return undefined;
-    steps.push(step);
+    // Code's own price for the step wins; else the gateway's list price of the model the step runs on.
+    const listed = step.effective === null || step.effective.priceUsdPerMillion !== undefined ? undefined : listPrices.get(step.effective.model);
+    steps.push(listed === undefined ? step : { ...step, effective: { ...step.effective!, priceUsdPerMillion: listed } });
   }
   steps.sort((a, b) => AGENT_MODEL_STAGES.indexOf(a.stage) - AGENT_MODEL_STAGES.indexOf(b.stage));
   return { revision: state["revision"], steps, offered: names };

@@ -50,6 +50,7 @@ export function readAgentModels(body: unknown): AgentModelsRead {
 /** "$3 in / $15 out per million tokens", or undefined when the price isn't known. */
 export function priceText(price: { input: number; output: number } | undefined): string | undefined {
  if (price === undefined) return undefined;
- const usd = (n: number) => `$${Number.isInteger(n) ? String(n) : n.toFixed(2)}`;
+ // Two decimals from a dollar up ($3.30); up to three significant digits below ($0.075, $0.0004), never rounded to $0.00.
+ const usd = (n: number) => `$${Number.isInteger(n) ? String(n) : n >= 1 ? n.toFixed(2) : String(Number(n.toPrecision(3)))}`;
  return `${usd(price.input)} in / ${usd(price.output)} out per million tokens`;
 }

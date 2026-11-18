@@ -26,6 +26,7 @@ import type { LearningKeySource } from "./learning-route.js";
 import { COMPANY, record, whole } from "./model-gateway-token.js";
 import { serviceCallLimiter } from "./service-call.js";
 import type { SignedTokenKind } from "./token.js";
+import { validPrice, type PriceSource } from "./price.js";
 
 export const SERVICE_TOKEN_TYPE = "rovara-service+jwt";
 export const SERVICE_TOKEN_AUDIENCE = "rovara-model-gateway-offered-models";
@@ -206,6 +207,12 @@ export interface OfferedModelsHandlerOptions {
   chat?: { openai?: boolean; openrouter?: boolean };
   /** DEC 254t (A3): the names a company registered for its own endpoint (its sealed account; undefined when none). Absent: custom_endpoint is refused. */
   endpointModels?: (iss: string, cid: string) => Promise<readonly string[] | undefined>;
+  /**
+   * DEC 254zzz96 (2): set (GATEWAY_OFFERED_PRICES=on), each model carries its list price where the price snapshot knows it, for the company's step models
+   * card only: `price: { inputUsdPerMillion, outputUsdPerMillion }`. Display only: a price that can't be read is left out, never a refusal. Absent: the
+   * answer is exactly as before (Code accepts the field only from the release that added it, so it stays off until that release is installed).
+   */
+  priceOf?: (model: string, source: AgentAiSource | undefined) => Promise<OfferedModelPrice | undefined>;
   /** DEC 254zzz41: set, the answer also carries `reviewerAccess` (above). Absent: the answer is exactly as before and no review can run. */
   reviewer?: ReviewerAccessOptions;
   now?: () => number;
@@ -263,7 +270,38 @@ export async function answerOfferedModels(options: OfferedModelsHandlerOptions, 
     if (options.reviewer !== undefined && added.length > 0) { const one = await reviewerAccessFor(options.reviewer, source, claims.iss, claims.cid, added); if (one !== undefined) access.push(one); }
   }
   const reviewerAccess = access.length === 0 ? undefined : { companyId: claims.cid, companyLimitUsd: access[0]!.companyLimitUsd, models: access.flatMap((one) => one.models) };
-  return { status: 200, body: { version: 1, models: models.map((model) => ({ model })), ...(reviewerAccess === undefined ? {} : { reviewerAccess }) } };
+  // The source each model is served from: the first in the order that lists it (the one the agent route admits a call on), so its price is that source's.
+  const servedBy = new Map<string, AgentAiSource | undefined>();
+  for (const { source, models: names } of served) for (const name of names) if (!servedBy.has(name)) servedBy.set(name, source);
+  const entries = options.priceOf === undefined ? models.map((model) => ({ model })) : await Promise.all(models.map(async (model) => {
+    let price: OfferedModelPrice | undefined;
+    try { price = await options.priceOf!(model, servedBy.get(model)); } catch { price = undefined; }
+    return price === undefined || !offeredPrice(price) ? { model } : { model, price: { inputUsdPerMillion: price.inputUsdPerMillion, outputUsdPerMillion: price.outputUsdPerMillion } };
+  }));
+  return { status: 200, body: { version: 1, models: entries, ...(reviewerAccess === undefined ? {} : { reviewerAccess }) } };
+}
+
+/** A model's list price in US dollars per million tokens (Code's OfferedModelPriceSchema: each 0 to OFFERED_PRICE_USD_MAX). */
+export interface OfferedModelPrice { inputUsdPerMillion: number; outputUsdPerMillion: number }
+/** Code's OFFERED_PRICE_USD_MAX (packages/contracts/src/agent-model-choice.ts). */
+export const OFFERED_PRICE_USD_MAX = 10_000;
+const usd = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= OFFERED_PRICE_USD_MAX;
+const offeredPrice = (value: OfferedModelPrice): boolean => usd(value.inputUsdPerMillion) && usd(value.outputUsdPerMillion);
+/**
+ * The list price shown for an offered name, as the agent route meters the source that serves it (server.ts): the company's own Anthropic key (or company-key
+ * mode) on Anthropic's row; Rovara's AI on the Bedrock row of the id it calls; the company's own OpenAI key on OpenAI's row. No price for its own Bedrock (metered
+ * at the dearer of two rows), OpenRouter or its own endpoint (their own catalog rows): never a price that could understate. Only an exact snapshot row: undefined
+ * when the snapshot has none, or the row waits for an operator's review (never shown as a plain list price).
+ */
+export async function offeredModelPrice(prices: Pick<PriceSource, "priceFor">, model: string, source: AgentAiSource | undefined, rovaraModels?: ReadonlyMap<string, string>): Promise<OfferedModelPrice | undefined> {
+  let row: [string, string] | undefined;
+  if (source === undefined || source === "anthropic_key") row = ["anthropic", model];
+  else if (source === "openai_key") row = ["openai", model];
+  else if (source === "rovara") { const id = rovaraModels?.get(model); row = id === undefined ? undefined : ["bedrock", id]; }
+  if (row === undefined) return undefined;
+  const price = await prices.priceFor(row[0], row[1]);
+  if (price === undefined || !validPrice(price) || price.operatorReview === true) return undefined;
+  return { inputUsdPerMillion: price.inputMicrosPerMTok / 1_000_000, outputUsdPerMillion: price.outputMicrosPerMTok / 1_000_000 };
 }
 
 const OFFERED_KEY_NOT_CONNECTED = refusal(403, "no_ai_key", "Connect an AI key: this company has no AI provider key connected, so its agents cannot call AI.");

@@ -86,6 +86,11 @@ export const GATEWAY_ENV = {
    * kind that is off is refused). Rovara's AI and the pre-switch sources (own Anthropic key, own Bedrock) are not gated by it.
    */
   aiSourceKinds: "GATEWAY_AI_SOURCE_KINDS",
+  /**
+   * DEC 254zzz96 (2): "on" publishes each offered model's list price on the offered-models answer (offered-models.ts `priceOf`). Absent: off, the answer
+   * exactly as before. Switch it on only once the Code install's release accepts the optional price field (a Code release without it refuses the whole list).
+   */
+  offeredPrices: "GATEWAY_OFFERED_PRICES",
 } as const;
 /** The values of GATEWAY_ENV.agentKeys. */
 export const GATEWAY_AGENT_KEY_MODES = ["install", "company"] as const;

@@ -109,5 +109,7 @@ describe("the reader", () => {
   }
   expect(priceText(undefined)).toBeUndefined();
   expect(priceText({ input: 0.25, output: 1.25 })).toBe("$0.25 in / $1.25 out per million tokens");
+  expect(priceText({ input: 0.075, output: 3.3 })).toBe("$0.075 in / $3.30 out per million tokens");
+  expect(priceText({ input: 0.0004, output: 15 })).toBe("$0.0004 in / $15 out per million tokens");
  });
 });
