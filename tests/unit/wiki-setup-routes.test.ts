@@ -496,7 +496,7 @@ describe("the upkeep spend pass-through (L4-CAPR)", () => {
   });
   it("a spend that does not read is 'couldn't be read', in fixed words (S3)", async () => {
     const bad: unknown[] = [
-      null, "3.5", [], {}, { ...SPEND, spentUsd: -0.01 }, { ...SPEND, spentUsd: "3.5" }, { ...SPEND, spentUsd: 1e12 }, { ...SPEND, spentUsd: null }, { ...SPEND, month: "2026-13" }, { ...SPEND, month: "2026-1" }, { ...SPEND, month: 202611 },
+      null, "3.5", [], {}, { ...SPEND, spentUsd: -0.01 }, { ...SPEND, spentUsd: "3.5" }, { ...SPEND, spentUsd: 1e12 }, { ...SPEND, spentUsd: null }, { ...SPEND, month: "2026-13" }, { ...SPEND, month: "2026-00" }, { ...SPEND, month: "2026-1" }, { ...SPEND, month: 202611 },
       { ...SPEND, runs: 1.5 }, { ...SPEND, runs: -1 }, { ...SPEND, unknownRuns: "1" }, { ...SPEND, runs: undefined }, { month: SPEND.month, spentUsd: 1, runs: 1 },
     ];
     for (const one of bad) {

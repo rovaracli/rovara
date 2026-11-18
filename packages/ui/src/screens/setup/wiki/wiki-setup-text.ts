@@ -1,4 +1,4 @@
-// The wiki panel's words (design: designs-2026-11-17/project-wiki-ux.md section 4a and the demo's setup tab; DEC 254zh: "source found", never "verified"; DEC 254zi: no dollar figure until the build is priced).
+// The wiki panel's words (design: designs-2026-11-17/project-wiki-ux.md section 4a and the demo's setup tab; DEC 254zh: "source found", never "verified"; DEC 254zi: no dollar figure until the build is priced; the nightly upkeep cap and spend are the exception).
 // The panel shows PAGES. It names no cap and no cost: the first measured build prices it. Wiki text itself is never here.
 import type { WikiSetupBuild, WikiSetupRepo } from "../../../api/wiki-setup.js";
 
@@ -95,6 +95,7 @@ export const T = {
   SPEND_LINE: "Nightly upkeep this month:",
   SPEND_OF: "of",
   SPEND_AT_LEAST: "at least",
+  SPEND_TINY: "less than $0.01",
   UPKEEP_LIMITS: "Which limit each part uses",
   LIMIT_FREE: "Setup and mock checks: no AI. They use machine minutes, held by the project's automatic-run limit.",
   LIMIT_CAP: "Wiki refresh and repair drafts: your AI key, held by the nightly upkeep cap below.",

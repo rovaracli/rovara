@@ -69,7 +69,11 @@ function CapLine({ cap }: { cap: WikiSetupUpkeepCap | undefined }) {
  */
 function SpendLine({ spend, cap }: { spend: WikiSetupUpkeepSpend; cap: WikiSetupUpkeepCap | undefined }) {
   const monthlyUsd = cap?.monthlyUsd ?? null, unknown = spend.unknownRuns;
-  return <p className="rv-muted" data-testid="wiki-setup-upkeep-spend">{T.SPEND_LINE} {unknown > 0 && <>{T.SPEND_AT_LEAST} </>}<Money usd={spend.spentUsd} />{monthlyUsd !== null && <> {T.SPEND_OF} <Money usd={monthlyUsd} /></>}
+  // The line says "this month": a total for another UTC month (a stale answer across a month change) is not drawn.
+  if (spend.month !== new Date().toISOString().slice(0, 7)) return null;
+  // Under half a cent would read as "$0.00", which says nothing ran: it says what it is.
+  const tiny = spend.spentUsd > 0 && spend.spentUsd < 0.005;
+  return <p className="rv-muted" data-testid="wiki-setup-upkeep-spend">{T.SPEND_LINE} {unknown > 0 && <>{T.SPEND_AT_LEAST} </>}{tiny ? T.SPEND_TINY : <Money usd={spend.spentUsd} />}{monthlyUsd !== null && <> {T.SPEND_OF} <Money usd={monthlyUsd} /></>}
     {unknown > 0 && <span data-testid="wiki-setup-upkeep-spend-unknown"> ({String(unknown)} {unknown === 1 ? "run" : "runs"} with unknown cost)</span>}</p>;
 }
 

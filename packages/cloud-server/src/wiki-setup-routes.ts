@@ -16,7 +16,7 @@
 // Rules:
 //   - Code decides who may do each: the person's LIVE company and project standing, read on every call. Cloud adds no rule that could widen it and sends no person, company, role, limit, commit or goal:
 //     each body is rebuilt here from known fields. Cloud refuses earlier only what cannot be valid (a malformed project name, an unreadable body, a query).
-//   - Every answer is rebuilt from known fields; one that does not read is refused whole ("unreadable is refusal"). NO DOLLAR FIGURE crosses Cloud: W4's `budgetCents` and `spentCents` (placeholders until the
+//   - Every answer is rebuilt from known fields; one that does not read is refused whole ("unreadable is refusal"). NO DOLLAR FIGURE crosses Cloud, except the nightly upkeep cap and this month's upkeep spend (a limit and a total a manager sets and watches, `upkeepAnswer`): W4's `budgetCents` and `spentCents` (placeholders until the
 //     first measured build) and W0's price are dropped or refused, and no task id or commit reaches the browser. The page shows pages.
 //   - A refusal reaches the app in the words Code fixed (an exact member of a known list), else in Cloud's own fixed words; never an echo of the browser's input, never other text of Code's. Until Code serves a
 //     route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
@@ -182,7 +182,7 @@ export function upkeepBody(body: unknown): Record<string, unknown> | undefined {
 /** The map is made with no body (or an empty one). */
 const emptyBody = (body: unknown): Record<string, unknown> | undefined => (body === undefined || (plain(body) && Object.keys(body).length === 0) ? {} : undefined);
 
-// ---- Answers: rebuilt, no dollar figure ----------------------------------------------------------------------------------------------------------------------------------------
+// ---- Answers: rebuilt, no dollar figure (but the upkeep cap and spend below) ----------------------------------------------------------------------------------------------------------------------------------------
 
 const KNOWN_SENTENCES: ReadonlySet<string> = new Set(Object.values(C));
 const END_WORDS = ["built", "budget_used", "pages_used", "time_used", "stopped_by_person", "needs_ai_key", "repo_unreadable", "access_lost", "infrastructure"] as const;

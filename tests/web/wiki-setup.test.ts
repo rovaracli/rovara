@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Lead 4 W6: the wiki row of the project's setup checklist (Code W0's file map, W4's build controls and the nightly upkeep seam, through Cloud). The row shows pages and never a dollar figure; every
+// Lead 4 W6: the wiki row of the project's setup checklist (Code W0's file map, W4's build controls and the nightly upkeep seam, through Cloud). The row shows pages and never a dollar figure (the nightly upkeep cap and this month's upkeep spend are the two it names); every
 // control is Code's call (a person who may not manage sees where the wiki stands and nothing to press); a refusal shows only a fixed sentence; one request id per action until it succeeds.
 import { describe, expect, it } from "vitest";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -807,8 +807,9 @@ describe("small helpers", () => {
 
 // L4-CAPR: "Nightly upkeep this month: $X of $Y" for people who manage the project (Code's `spend`, passed through Cloud). Each mutant is killed by the named test: U1 the line drawn for a reader (canManage false);
 // U2 the cap invented when Code states none ("of $25"); U3 unknown runs not counted in words; U4 dollars drawn as exact when a run's cost is unknown (no "at least"); U5 spend drawn while the page says upkeep is not available.
+const THIS_MONTH = new Date().toISOString().slice(0, 7);
 describe("nightly upkeep spend line (L4-CAPR)", () => {
-  const view = (extra: Record<string, unknown> = {}) => ({ enabled: true, canManage: true, available: true, systemRunsOn: true, canEnableSystemRuns: true, cap: { monthlyUsd: 25, canRaise: true }, spend: { month: "2026-11", spentUsd: 3.5, runs: 4, unknownRuns: 0 }, ...extra });
+  const view = (extra: Record<string, unknown> = {}) => ({ enabled: true, canManage: true, available: true, systemRunsOn: true, canEnableSystemRuns: true, cap: { monthlyUsd: 25, canRaise: true }, spend: { month: THIS_MONTH, spentUsd: 3.5, runs: 4, unknownRuns: 0 }, ...extra });
   it("a manager sees what was spent against the cap, in dollars and no counts when every run's cost is known", async () => {
     const f = mount(row(), { upkeep: () => ({ status: 200, body: view() }) });
     await open();
@@ -818,11 +819,11 @@ describe("nightly upkeep spend line (L4-CAPR)", () => {
     f.close();
   });
   it("runs with an unknown cost are counted in words and the dollars are 'at least' (U3, U4); one run reads in the singular", async () => {
-    const f = mount(row(), { upkeep: () => ({ status: 200, body: view({ spend: { month: "2026-11", spentUsd: 2, runs: 5, unknownRuns: 2 } }) }) });
+    const f = mount(row(), { upkeep: () => ({ status: 200, body: view({ spend: { month: THIS_MONTH, spentUsd: 2, runs: 5, unknownRuns: 2 } }) }) });
     await open();
     expect((await screen.findByTestId("wiki-setup-upkeep-spend")).textContent).toBe("Nightly upkeep this month: at least $2.00 of $25.00 (2 runs with unknown cost)");
     f.close();
-    const g = mount(row(), { upkeep: () => ({ status: 200, body: view({ spend: { month: "2026-11", spentUsd: 0, runs: 1, unknownRuns: 1 } }) }) });
+    const g = mount(row(), { upkeep: () => ({ status: 200, body: view({ spend: { month: THIS_MONTH, spentUsd: 0, runs: 1, unknownRuns: 1 } }) }) });
     await open();
     expect((await screen.findByTestId("wiki-setup-upkeep-spend")).textContent).toBe("Nightly upkeep this month: at least $0.00 of $25.00 (1 run with unknown cost)");
     g.close();
@@ -832,7 +833,7 @@ describe("nightly upkeep spend line (L4-CAPR)", () => {
     await open();
     expect((await screen.findByTestId("wiki-setup-upkeep-spend")).textContent).toBe("Nightly upkeep this month: $3.50");
     f.close();
-    const g = mount(row(), { upkeep: () => ({ status: 200, body: view({ cap: { monthlyUsd: 0, canRaise: true }, spend: { month: "2026-11", spentUsd: 0, runs: 0, unknownRuns: 0 } }) }) });
+    const g = mount(row(), { upkeep: () => ({ status: 200, body: view({ cap: { monthlyUsd: 0, canRaise: true }, spend: { month: THIS_MONTH, spentUsd: 0, runs: 0, unknownRuns: 0 } }) }) });
     await open();
     expect((await screen.findByTestId("wiki-setup-upkeep-spend")).textContent).toBe("Nightly upkeep this month: $0.00 of $0.00");
     g.close();
@@ -850,6 +851,16 @@ describe("nightly upkeep spend line (L4-CAPR)", () => {
     await open(); await screen.findByTestId("wiki-setup-upkeep-absent");
     expect(screen.queryByTestId("wiki-setup-upkeep-spend")).toBeNull();
     off.close();
+  });
+  it("a total for another month is not called 'this month' (not drawn), and under half a cent says so instead of $0.00", async () => {
+    const f = mount(row(), { upkeep: () => ({ status: 200, body: view({ spend: { month: "2001-01", spentUsd: 3.5, runs: 4, unknownRuns: 0 } }) }) });
+    await open(); await screen.findByTestId("wiki-setup-upkeep-state");
+    expect(screen.queryByTestId("wiki-setup-upkeep-spend")).toBeNull();
+    f.close();
+    const g = mount(row(), { upkeep: () => ({ status: 200, body: view({ spend: { month: THIS_MONTH, spentUsd: 0.002, runs: 1, unknownRuns: 0 } }) }) });
+    await open();
+    expect((await screen.findByTestId("wiki-setup-upkeep-spend")).textContent).toBe("Nightly upkeep this month: less than $0.01 of $25.00");
+    g.close();
   });
   it("a switch change keeps the spend line the answer carries", async () => {
     const f = mount(row(), { upkeep: () => ({ status: 200, body: view({ enabled: false }) }), put: (request) => ({ status: 200, body: view({ enabled: (request.body as { on: boolean }).on }) }) });
