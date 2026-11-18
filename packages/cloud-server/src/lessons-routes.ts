@@ -48,13 +48,15 @@ function citation(raw: unknown): Record<string, unknown> | undefined {
     case "pr": { const url = text(raw["url"], 300); return url !== undefined && url.startsWith("https://") ? { kind: "pr", url } : undefined; }
     case "task": { const taskId = text(raw["taskId"], 100); return taskId === undefined ? undefined : { kind: "task", taskId }; }
     case "record": return { kind: "record" };
-    default: return undefined;
+    // A kind a newer Code added: kept as an "other" reference (the screens say "Another kind of reference"), never dropped and never read as one of the known kinds.
+    default: return { kind: "other" };
   }
 }
 
 function needs(raw: unknown): Record<string, unknown> | undefined {
   if (!isRecord(raw)) return undefined;
-  const required = raw["required"] === 2 ? 2 : 1;
+  // 2 or more people reads as 2 (the screens say "two people"): a count a newer Code raised is never shown as one person.
+  const required = typeof raw["required"] === "number" && raw["required"] >= 2 ? 2 : 1;
   return some({ required, have: count(raw["have"]), first: person(raw["first"]), firstAt: num(raw["firstAt"]), groups: strings(raw["groups"], 10, 100) });
 }
 

@@ -512,7 +512,9 @@ export type LessonCitation =
   | { kind: "code"; repo: string; path: string; startLine: number; endLine: number; check: string /* known: valid, moved, stale, unchecked */; checkedAt?: number }
   | { kind: "pr"; url: string }
   | { kind: "task"; taskId: string }
-  | { kind: "record" };
+  | { kind: "record" }
+  /** A kind a newer Code added: Cloud keeps it as this (it never reads it as a known kind). */
+  | { kind: "other" };
 /** What a lesson waiting for people still needs: people in all (1, or 2 for reviewer, check and security lessons) and how many approved. */
 export interface LessonNeeds { required: 1 | 2; have: number; first?: LessonPerson; firstAt?: number; groups: string[] }
 /** One lesson as Code's list sends it (contracts `LessonViewSchema`; Cloud keeps the fields its screens draw). Times are milliseconds. */
