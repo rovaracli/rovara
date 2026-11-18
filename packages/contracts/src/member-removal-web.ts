@@ -23,7 +23,8 @@ const RemovalDutiesSchema = z.object({
 export const MemberRemovalPreviewSchema = z.object({
   member: MemberRemovalPersonSchema.extend({ role: OrgRoleSchema }).strict(),
   successor: MemberRemovalPersonSchema,
-  moves: z.object({ agents: RemovalCountSchema, skills: RemovalCountSchema, chains: RemovalCountSchema, triggers: RemovalCountSchema, approvals: RemovalCountSchema, spendRequests: RemovalCountSchema }).strict(),
+  // DEC 254zzz84 (5): `tasks` and `projects`, the open tasks and the projects they administer that go to the successor (optional: an older Cloud sends none).
+  moves: z.object({ agents: RemovalCountSchema, skills: RemovalCountSchema, chains: RemovalCountSchema, triggers: RemovalCountSchema, approvals: RemovalCountSchema, spendRequests: RemovalCountSchema, tasks: RemovalCountSchema.optional(), projects: RemovalCountSchema.optional() }).strict(),
   ends: z.array(z.string().max(300)).max(20),
   duties: RemovalDutiesSchema,
   warnings: z.array(z.string().max(300)).max(10),

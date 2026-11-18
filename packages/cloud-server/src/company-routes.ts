@@ -1,6 +1,6 @@
 // The app's company routes that Cloud answers from its own data (migration plan v3.2, 2.2 and 2.4, decision 17): the company's settings and
 // rules (with a second admin for a loosening change), its budgets as the app's Budgets screen reads them, its profile, and invites. Members
-// and roles are Code's, proxied as the person by member-routes.ts; removal is not wired yet (501 NOT_ON_CODE_YET).
+// and roles are Code's, proxied as the person by member-routes.ts, removal with a hand-over too (DEC 254zzz84 (5)).
 //
 // Who and which company: every route asks Code's access check afresh (company-caller.ts) and takes the company and the person's company role
 // from that answer (DEC 253z). A Code that names no company is refused ("You're not in a company yet."), never a fallback. A company admin is

@@ -20,7 +20,7 @@ async function bounded<T>(work: Promise<T>): Promise<T> {
 }
 function movesOf(moves: Preview["moves"]): string[] {
  const lines = [
-  moves.agents > 0 && plural(moves.agents, "agent"), moves.skills > 0 && plural(moves.skills, "skill"), moves.chains > 0 && plural(moves.chains, "chain"), moves.triggers > 0 && plural(moves.triggers, "trigger"),
+  moves.tasks !== undefined && moves.tasks > 0 && plural(moves.tasks, "open task"), moves.projects !== undefined && moves.projects > 0 && `admin of ${plural(moves.projects, "project")}`, moves.agents > 0 && plural(moves.agents, "agent"), moves.skills > 0 && plural(moves.skills, "skill"), moves.chains > 0 && plural(moves.chains, "chain"), moves.triggers > 0 && plural(moves.triggers, "trigger"),
   moves.approvals > 0 && `${plural(moves.approvals, "approval")} waiting on them`, moves.spendRequests > 0 && `${plural(moves.spendRequests, "spend request")} waiting on them`,
  ];
  return lines.filter((line): line is string => line !== false);
@@ -64,7 +64,9 @@ export function RemoveMemberDialog({ company, member, self, people, checking, st
    if (code === "CHANGE_STALE") { setBlocked(true);setMessage("Company members changed. Close and review the removal again."); }
    else if (code === "SUCCESSOR_INVALID") { setBlocked(true);setMessage("Pick someone who is still in the company to take over."); }
    else if (code === "LAST_OWNER") { setBlocked(true);setMessage("A company must keep at least one owner. Make someone else an owner first."); }
-   else if (code === "NOT_FOUND") { setBlocked(true);setMessage("That person is no longer a member of this company. Close and reload."); }
+   else if (code === "NOT_FOUND" || code === "MEMBER_ALREADY_REMOVED") { setBlocked(true);setMessage("That person is no longer a member of this company. Close and reload."); }
+   else if (code === "CONFIG_INVALID") { setBlocked(true);setMessage("This person owns too much to hand over in one go. Hand some of it over first."); }
+   else if (code === "IDEMPOTENCY_CONFLICT") { setBlocked(true);setMessage("Company members changed. Close and review the removal again."); }
    else { setUnknown(true);setMessage("The outcome is unknown. The removal may not have finished. Try the removal again: it will not hand anything over twice."); }
   } finally { sending.current = false;if (alive.current) setBusy(false); }
  }
@@ -94,7 +96,7 @@ export function RemoveMemberDialog({ company, member, self, people, checking, st
     {unknown ? <Button variant="primary" busy={busy} onClick={() => { void send(); }}>Try the removal again</Button>
      : <Button variant="primary" busy={busy} disabled={preview === undefined || loading || blocked || checking || staleData || sent} onClick={() => { void send(); }}>{`Remove ${member.name}`}</Button>}
    </div>
-   <p className="rv-muted">They can be invited again later. Running tasks are not handed over.</p>
+   <p className="rv-muted">They can be invited again later.</p>
   </div>
  </Dialog>;
 }

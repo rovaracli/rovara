@@ -1328,14 +1328,12 @@ GET /v1/app/org/members | k | admin | company.members.list | project-people |
 PUT /v1/app/org/members/{developerId}/role | k | admin | company.members.setRole | admin/RoleChangeDialog |
 GET /v1/app/org/members/{developerId}/removal-preview | k | admin | company.members.removalPreview | admin/RemoveMemberDialog |
 POST /v1/app/org/members/{developerId}/removal | k | admin | company.members.remove | admin/RemoveMemberDialog |
-POST /v1/app/org/members/lookup | k | session | company.members.list | session/ShareDialog |
 GET /v1/app/org/invites | c | admin | | admin/InvitesScreen |
 POST /v1/app/org/invites | c | admin | company.preapprovals.create | onboarding |
 POST /v1/app/org/invites/reviewed | c | admin | company.preapprovals.create | invite-admin |
 GET /v1/app/org/invites/requests/{requestId} | c | admin | | invite-admin |
 DELETE /v1/app/org/invites/{inviteId} | c | admin | company.preapprovals.withdraw | invite-admin |
 PATCH /v1/app/org | c | admin | | onboarding |
-POST /v1/app/org/leave | c | later | company.members.remove | shell/AccountMenu |
 GET /v1/app/companies | c | shell | | companies |
 POST /v1/app/companies | c | shell | company.create | onboarding/CreateCompany |
 GET /v1/app/org/audit/status | c | admin | | admin/audit/AuditScreen |
