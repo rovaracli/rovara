@@ -11,6 +11,7 @@ import { Skeleton } from "../../../design/Skeleton.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { Block, type BlockMarking } from "./WikiBlocks.js";
 import { MarkForm, PageMark, PageNotes, viewOf } from "./WikiCorrections.js";
+import { TeamLessons } from "../lessons/TeamLessons.js";
 import { hostLink, modelOf, type PageModel } from "./wiki-model.js";
 import { T, chipOf, crumbOf, linesWords, shortSha } from "./wiki-text.js";
 
@@ -115,6 +116,7 @@ export function WikiPageView({ project, id, entry, pages, focusTitle }: { projec
         <PageNotes project={project} res={res} view={view} />
         {model.cites.length > 0 && <Sources project={project} id={id} commits={new Map(res.page.repos.map((one) => [one.repo, one.commit]))} links={link} />}
         {res.page.blocks.map((block) => <Block key={block.blockId} block={block} context={context} />)}
+        <TeamLessons project={project} pageId={id} />
         <p className="rv-wiki-truth" data-testid="wiki-truth">{res.trustLine} {T.TRUTH_EXTRA}</p>
       </article>
       <Rail res={res} model={model} onJump={jump} />

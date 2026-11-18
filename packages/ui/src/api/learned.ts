@@ -121,7 +121,7 @@ function readLesson(raw: unknown): LessonItem | undefined {
   supportTasks: n(raw["supportTasks"]), canApprove: raw["canApprove"] === true, canReject: raw["canReject"] === true, canRetire: raw["canRetire"] === true,
  };
 }
-const readLessons = (value: unknown): LessonItem[] => (Array.isArray(value) ? value.flatMap(one => { const lesson = readLesson(one); return lesson === undefined ? [] : [lesson]; }) : []);
+export const readLessons = (value: unknown): LessonItem[] => (Array.isArray(value) ? value.flatMap(one => { const lesson = readLesson(one); return lesson === undefined ? [] : [lesson]; }) : []);
 export interface ReadInbox { state: "on" | "off"; batches: LessonInboxBatch[]; unavailable: string[] }
 export const InboxReader = { parse(body: unknown): ReadInbox {
  if (!isRecord(body) || (body["state"] !== "on" && body["state"] !== "off") || !Array.isArray(body["batches"])) throw new Error("not an inbox");
