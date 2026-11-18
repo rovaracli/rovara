@@ -23,17 +23,20 @@ describe("lessons extras forwarders", () => {
     const got = await call("GET", "/projects/web/lessons/weekly-summary");
     expect(got.body).toEqual({ project: "web", on: true, source: "chosen", canChange: true });
     await call("PUT", "/projects/web/lessons/weekly-summary", { on: false, extra: "drop" });
-    expect(fake.lessonCalls.at(-1)).toMatchObject({ id: "lessons.weeklySummary.put", body: { on: false } });
+    expect(fake.lessonCalls.at(-1)).toMatchObject({ id: "lessons.weeklySummary.put" });
+    expect(fake.lessonCalls.at(-1)?.body).toEqual({ on: false });
   });
   it("keeps only weekly list fields and only keep's empty request", async () => {
     fake.overrideLessonAnswer("lessons.weekly", { body: { weekly: { needLook: [{ id: "les_x", cause: "future", title: "x", secret: 1 }], picks: [], extra: 1 }, secret: 2 } });
     expect((await call("GET", "/projects/web/lessons/weekly")).body).toEqual({ project: "web", weekly: { needLook: [{ id: "les_x", cause: "future", title: "x" }], picks: [] } });
     await call("POST", "/projects/web/lessons/les_x/keep", { surprise: true });
-    expect(fake.lessonCalls.at(-1)).toMatchObject({ id: "lessons.keep", body: {} });
+    expect(fake.lessonCalls.at(-1)).toMatchObject({ id: "lessons.keep" });
+    expect(fake.lessonCalls.at(-1)?.body).toEqual({});
   });
   it("accepts only the two trial decisions and bounds replay query before Code", async () => {
     expect((await call("POST", "/projects/web/lessons/mode/trial-offer", { decision: "accept", extra: 1 })).status).toBe(200);
-    expect(fake.lessonCalls.at(-1)).toMatchObject({ id: "lessons.trialOffer", body: { decision: "accept" } });
+    expect(fake.lessonCalls.at(-1)).toMatchObject({ id: "lessons.trialOffer" });
+    expect(fake.lessonCalls.at(-1)?.body).toEqual({ decision: "accept" });
     const count = fake.lessonCalls.length;
     expect((await call("GET", "/projects/web/lessons/replay?tasks=0")).status).toBe(400);
     expect(fake.lessonCalls).toHaveLength(count);
@@ -43,6 +46,19 @@ describe("lessons extras forwarders", () => {
     expect(await call("GET", "/projects/web/lessons/tuning")).toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN", message: "Code says no." } } });
     fake.overrideLessonAnswer("lessons.weeklySummary.get", { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } });
     expect((await call("GET", "/projects/web/lessons/weekly-summary")).body).toMatchObject({ error: { code: "NOT_ON_CODE_YET" } });
+  });
+  it("keeps the tuning evidence numbers Code sends and drops what it does not name", async () => {
+    const suggestion = { setting: "stepLessonCap", status: "keep", current: 5, suggested: 5, evidence: { have: 64, needed: 20, unit: "loads", secret: 1 }, message: "keep 5: fine", extra: "x" };
+    fake.overrideLessonAnswer("lessons.tuning", { body: { project: "web", windowDays: 30, ready: true, message: "64 loads", evidence: { loads: 64, mergedTasks: 30, revertedTasks: 3, cleanMergeRate: 0.9, meanWordsCleanTasks: null, truncated: false, unreadable: 0, secret: "no" }, suggestions: [suggestion], note: "n", extra: 1 } });
+    const body = (await call("GET", "/projects/web/lessons/tuning")).body;
+    expect(body["evidence"]).toEqual({ loads: 64, mergedTasks: 30, revertedTasks: 3, cleanMergeRate: 0.9, truncated: false, unreadable: 0 });
+    expect(body["suggestions"]).toEqual([{ setting: "stepLessonCap", status: "keep", current: 5, suggested: 5, evidence: { have: 64, needed: 20, unit: "loads" }, message: "keep 5: fine" }]);
+    expect(body).not.toHaveProperty("extra");
+  });
+  it("answers the company's repeats with the counts only and passes a refusal through", async () => {
+    const answer = (await call("GET", "/lessons/repeats?month=2026-11")).body;
+    expect(answer).toMatchObject({ scope: "company", month: "2026-11" });
+    expect((await call("GET", "/lessons/repeats?month=2026-13")).status).toBe(400);
   });
   it("keeps a trial offer only when its three counts are whole numbers", () => {
     expect(modeOf({ mode: "suggest", trialOffer: { approvals: 12, drops: 1, since: 123 } }, "web")).toHaveProperty("trialOffer", { approvals: 12, drops: 1, since: 123 });

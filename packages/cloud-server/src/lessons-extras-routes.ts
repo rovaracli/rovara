@@ -21,7 +21,7 @@ function item(raw: unknown, keep: readonly string[]): Record<string, unknown> | 
   const out: Record<string, unknown> = {};
   for (const key of keep) {
     const value = raw[key];
-    if (key === "cause" || key === "status" || key === "setting") { if (typeof value === "string") out[key] = value; }
+    if (key === "cause" || key === "status" || key === "setting") { if (typeof value === "string") out[key] = value.slice(0, 60); }
     else if (typeof value === "string") out[key] = value.slice(0, 300);
     else if (typeof value === "boolean") out[key] = value;
     else if (typeof value === "number" && Number.isFinite(value)) out[key] = value;
@@ -52,7 +52,7 @@ function report(raw: unknown, project: string, kind: "replay" | "tuning" | "repe
   for (const field of fields) if (Object.hasOwn(raw, field)) {
     const value = raw[field];
     if (Array.isArray(value)) out[field] = value.slice(0, 100).flatMap((one) => { const kept = item(one, field === "tasks" ? ["taskId", "stage", "round", "actual", "replayed", "gained", "lost", "changed"] : ["setting", "status", "current", "suggested", "evidence", "message"]);return kept === undefined ? [] : [kept]; });
-    else if (isRecord(value)) out[field] = item(value, field === "totals" ? ["changedTasks", "lessonsGained", "lessonsLost"] : field === "split" ? ["lessonLoaded", "lessonNotLoaded", "noLesson"] : ["have", "needed", "unit", "loaded", "notLoaded"]);
+    else if (isRecord(value)) out[field] = item(value, field === "totals" ? ["changedTasks", "lessonsGained", "lessonsLost"] : field === "split" ? ["lessonLoaded", "lessonNotLoaded", "noLesson"] : ["loads", "loadedLessons", "lessonsLoaded", "mergedTasks", "revertedTasks", "cleanMergeRate", "meanWordsCleanTasks", "meanWordsRevertedTasks", "truncated", "unreadable"]);
     else if (typeof value === "string" || typeof value === "boolean" || typeof value === "number") out[field] = value;
   }
   const required = kind === "replay" ? ["tasks", "totals"] : kind === "tuning" ? ["windowDays", "ready", "suggestions"] : ["month", "repeated", "corrections", "enoughData", "split"];

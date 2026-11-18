@@ -117,10 +117,9 @@ export function sourceFailureText(error: unknown): string {
  return error instanceof ApiError && Object.hasOwn(SOURCE_FAILURES, error.code) ? SOURCE_FAILURES[error.code]! : T.SRC_ERR_OTHER;
 }
 export const sourceChangeIsStale = (error: unknown): boolean => error instanceof ApiError && (error.code === "CHANGE_STALE" || error.code === "NOT_FOUND" || error.code === "PROJECT_NOT_FOUND");
-export const EXTRAS_TEXT = {
- keep: "Keep it?", keepWhy: "No task has needed this lesson for a long time.", noAnswer: "If nobody answers, Rovara stops giving it to tasks.",
- kept: "Kept. Rovara will keep giving it to tasks where it fits.", conflict: "Someone already answered this.",
- summary: "Weekly summary in chat", summaryOn: "On. Once a week, the people who decide this project's lessons get a short message: what is waiting, what expires soon, what is fading. Sent only when there is something to say.",
- summaryOff: "Off. Nobody gets a weekly message. Suggestions still wait here.",
- checks: "Check how lessons are doing", replay: "Replay check", tuning: "Suggested settings",
+/** Read-only "Needs a look" lines for the other causes Code sends with the weekly list (design D1). Any cause this build does not know gets the plain line. */
+const NEED_LOOK_WORDS: Record<string, string> = {
+ conflict: "It conflicts with a lesson that is in use now.", retire_proposed: "People marked it wrong here.", revert_overlap: "A revert touched its area.",
+ area_gone: "The code area it is about is gone.", area_rewritten: "The code area it is about was rewritten.", sent_back: "It was sent back to a person for a decision.",
 };
+export const needLookWords = (cause: unknown): string => (typeof cause === "string" && Object.hasOwn(NEED_LOOK_WORDS, cause) ? NEED_LOOK_WORDS[cause]! : "Check that it still holds.");
