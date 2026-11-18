@@ -18,6 +18,12 @@ export const VERTEX_VERSIONS = ["v1", "v1beta1"] as const;
 export const VERTEX_HOST_GLOBAL = "aiplatform.googleapis.com";
 export const vertexHost = (location: string): string => (location === "global" ? VERTEX_HOST_GLOBAL : `${location}-aiplatform.googleapis.com`);
 export interface VertexPath { version: typeof VERTEX_VERSIONS[number]; project: string; location: string; model: string; streaming: boolean }
+/**
+ * The project and location Code's worker gives an eval sandbox's Vertex client (`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`; Code's `EVAL_VERTEX_PLACEHOLDER`, packages/contracts/src/eval-discovery-report.ts). The worker does not know the
+ * customer's connected pair, so under an eval stage's scope, and only there, the route reads exactly this pair as "the connected one". Both words pass `parseVertexPath` and are not real Google names. The upstream path is built from the key
+ * store (`guardVertex`), never from the request, so this changes where a call GOES by nothing; a drift between the two repos' constants fails closed (400 not_allowed).
+ */
+export const EVAL_VERTEX_PLACEHOLDER = Object.freeze({ projectId: "rovara-eval-project", location: "rovara-eval1" });
 /** Where the route sends a call: the key store's project and location. */
 export interface VertexTarget { projectId: string; location: string }
 

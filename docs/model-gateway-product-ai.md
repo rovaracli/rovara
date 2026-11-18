@@ -99,6 +99,14 @@ classes (`product-vertex.ts` wraps `guardGemini`).
   token or send, even if the token could reach it. The upstream path is built from the key store, never from the request;
   the host is `{location}-aiplatform.googleapis.com` (`aiplatform.googleapis.com` for `global`). Multi-region locations
   (`us`, `eu`, `*.rep.googleapis.com`) are not offered.
+- Eval stages (L4-EVV): Code's eval worker does not know the connected project and location, so its sandbox client is given Rovara's
+  placeholder pair (`EVAL_VERTEX_PLACEHOLDER`: project `rovara-eval-project`, location `rovara-eval1`; the same two words are Code's
+  `EVAL_VERTEX_PLACEHOLDER`). A Vertex call that carries a found eval stage's scope (`x-rovara-eval-scope`: this company, project and
+  task) and names exactly that pair is read as the connected one; the upstream path is built from the key store as always (the
+  placeholder never leaves). Any other pair, a half-pair, and the same pair with no scope or an unknown, another company's or another
+  task's scope keep the `400 not_allowed` / not-found answers above, before any hold, token or send. The stage's count, held cost,
+  caps, meter rows and release are the Gemini stage's (the eval hold already accepts a Vertex connection). Code names the row with
+  `catalogRowId = "vertex"` in the confirmed eval plan, so the owner's spend approval names Vertex.
 - Refused from the caller: `x-goog-api-key`, `x-goog-user-project`, `x-goog-iam-*`, `x-goog-authenticated-*`; a Google bearer
   next to the task token is ambiguous (401). A cached context must be `projects/<connected>/locations/<connected>/cachedContents/...`.
 - Prices (coordinator decision on review L1): a Vertex call is priced at the DEARER of the AI Studio row and the Vertex row
