@@ -15,7 +15,7 @@ import { createGeminiTransport } from "./product-gemini.js";
 import { createVertexTransport } from "./product-vertex.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
 import { awsKms } from "./aws-kms.js";
-import { CompanyAgentAiSource, parseAiSourceKinds, parseRovaraAiExempt, parseRovaraAiModels, storedBedrock, type AgentAiSourceReader, type ByoBedrock, type RovaraAi } from "./agent-ai.js";
+import { CompanyAgentAiSource, parseAiSourceKinds, parseRovaraAiExempt, parseRovaraAiModels, storedBedrock, type AgentAiSource, type AgentAiSourceReader, type ByoBedrock, type RovaraAi } from "./agent-ai.js";
 import { BedrockExternalIds, type MacGenerator } from "./bedrock-byo.js";
 import { BedrockSessions } from "./bedrock-byo-sessions.js";
 import { createBedrockTransport } from "./bedrock-transport.js";
@@ -389,7 +389,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }), now,
     switchedOn: config.aiSourceKinds ?? new Set<string>(), chat: { openai: true, openrouter: true },
     // DEC 254zzz96 (2): list prices on the offered list, only when switched on (display only).
-    ...(config.offeredPrices === true ? { priceOf: (model: string) => offeredModelPrice(prices, model) } : {}),
+    ...(config.offeredPrices === true ? { priceOf: (model: string, source: AgentAiSource | undefined) => offeredModelPrice(prices, model, source, config.rovaraAi?.models) } : {}),
     // DEC 254zzz41: what reviews may use, from the company's real connections and the room left in its one company cap (the agent meter's company row).
     reviewer: { keys: companyKeys, companyLimitMicros: (iss: string, cid: string) => companyRoomMicros(caps, meter, iss, cid) },
     // The endpoint's registered model names, from the company's sealed endpoint account (this company only).

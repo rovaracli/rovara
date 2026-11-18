@@ -437,33 +437,54 @@ describe("list prices on the offered list", () => {
   });
   it("switched on: each model carries its list price where known, others none, and the answer is Code's priced contract", async () => {
     const asked: string[] = [];
-    const out = await get(options({ priceOf: async (model) => { asked.push(model); return PRICES[model]; } }).opts, cidA, mintService());
+    const sources = new Set<string | undefined>();
+    const out = await get(options({ priceOf: async (model, source) => { asked.push(model); sources.add(source); return PRICES[model]; } }).opts, cidA, mintService());
     expect(out.status).toBe(200);
     const models = (out.body as { models: Array<{ model: string; price?: unknown }> }).models;
     expect(models.find((m) => m.model === "claude-haiku-4-5")?.price).toEqual(PRICES["claude-haiku-4-5"]);
     expect(models.find((m) => m.model === "zai.glm-5")?.price).toEqual(PRICES["zai.glm-5"]);
     expect(models.filter((m) => m.price === undefined).length).toBe(models.length - 2);
     expect(asked).toEqual(models.map((m) => m.model));
+    // Each model is priced as the source that serves it (company A: Rovara's AI).
+    expect([...sources]).toEqual(["rovara"]);
     expect(CodePricedSchema.safeParse(out.body).success).toBe(true);
   });
   it("a price that can't be read, or isn't an amount, is left out: never a refusal, never a bad field", async () => {
-    const bad: Record<string, unknown> = { "claude-haiku-4-5": { inputUsdPerMillion: -1, outputUsdPerMillion: 5 }, "zai.glm-5": { inputUsdPerMillion: Number.NaN, outputUsdPerMillion: 1 }, "claude-haiku-5-5": { inputUsdPerMillion: 1, outputUsdPerMillion: 10_001 } };
+    const bad: Record<string, unknown> = { "claude-haiku-5-5": PRICES["claude-haiku-4-5"], "claude-haiku-4-5": { inputUsdPerMillion: -1, outputUsdPerMillion: 5 }, "zai.glm-5": { inputUsdPerMillion: Number.NaN, outputUsdPerMillion: 1 }, "us.amazon.nova-2-lite-v1:0": { inputUsdPerMillion: 1, outputUsdPerMillion: 10_001 } };
     const out = await get(options({ priceOf: async (model) => { if (model === "deepseek.v3-v1:0") throw new Error("table down"); return bad[model] as never; } }).opts, cidA, mintService());
     expect(out.status).toBe(200);
-    expect((out.body as { models: Array<{ price?: unknown }> }).models.every((m) => m.price === undefined)).toBe(true);
+    // Only the one good price is shown: the bad ones (and the read that failed) are left out, the others are not dropped with them.
+    expect((out.body as { models: Array<{ model: string; price?: unknown }> }).models.filter((m) => m.price !== undefined)).toEqual([{ model: "claude-haiku-5-5", price: PRICES["claude-haiku-4-5"] }]);
   });
   it("company B's answer prices B's own list only", async () => {
-    const out = await get(options({ priceOf: async (model) => PRICES[model] }).opts, cidB, mintService({ cid: cidB }));
+    const sources = new Set<string | undefined>();
+    const out = await get(options({ priceOf: async (model, source) => { sources.add(source); return PRICES[model]; } }).opts, cidB, mintService({ cid: cidB }));
+    expect([...sources]).toEqual(["anthropic_key"]);
     expect(names(out.body)).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
     expect((out.body as { models: Array<{ model: string; price?: unknown }> }).models.find((m) => m.model === "claude-haiku-4-5")?.price).toEqual(PRICES["claude-haiku-4-5"]);
   });
-  it("the price shown is the snapshot's exact row: Anthropic's for a Claude name, Bedrock's for the rest; micros per million tokens to dollars", async () => {
+  it("the price shown is the exact snapshot row of the source that serves the model, as the agent route meters it; micros per million tokens to dollars", async () => {
     const asked: Array<[string, string]> = [];
-    const prices = { priceFor: (provider: string, model: string) => { asked.push([provider, model]); return provider === "anthropic" ? { inputMicrosPerMTok: 3_000_000, outputMicrosPerMTok: 15_000_000 } : undefined; } };
-    expect(await offeredModelPrice(prices, "claude-sonnet-5-5")).toEqual({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 });
-    expect(await offeredModelPrice(prices, "zai.glm-5")).toBeUndefined();
-    expect(asked).toEqual([["anthropic", "claude-sonnet-5-5"], ["bedrock", "zai.glm-5"]]);
-    expect(await offeredModelPrice({ priceFor: () => ({ inputMicrosPerMTok: 0, outputMicrosPerMTok: 1 }) }, "x")).toBeUndefined();
+    const rows: Record<string, { inputMicrosPerMTok: number; outputMicrosPerMTok: number; operatorReview?: true }> = {
+      "anthropic|claude-sonnet-5-5": { inputMicrosPerMTok: 3_000_000, outputMicrosPerMTok: 15_000_000 },
+      "bedrock|us.anthropic.claude-sonnet-5-5-v1:0": { inputMicrosPerMTok: 3_300_000, outputMicrosPerMTok: 16_500_000 },
+      "openai|gpt-5": { inputMicrosPerMTok: 1_250_000, outputMicrosPerMTok: 10_000_000 },
+      "anthropic|claude-review-me": { inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, operatorReview: true },
+    };
+    const prices = { priceFor: (provider: string, model: string) => { asked.push([provider, model]); return rows[`${provider}|${model}`]; } };
+    const rovara = new Map([["claude-sonnet-5-5", "us.anthropic.claude-sonnet-5-5-v1:0"]]);
+    expect(await offeredModelPrice(prices, "claude-sonnet-5-5", "anthropic_key")).toEqual({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 });
+    expect(await offeredModelPrice(prices, "claude-sonnet-5-5", undefined)).toEqual({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 });
+    // Rovara's AI is metered on the Bedrock row of the id it calls, not Anthropic's.
+    expect(await offeredModelPrice(prices, "claude-sonnet-5-5", "rovara", rovara)).toEqual({ inputUsdPerMillion: 3.3, outputUsdPerMillion: 16.5 });
+    expect(await offeredModelPrice(prices, "claude-unknown", "rovara", rovara)).toBeUndefined();
+    expect(await offeredModelPrice(prices, "gpt-5", "openai_key")).toEqual({ inputUsdPerMillion: 1.25, outputUsdPerMillion: 10 });
+    // Sources metered on another row than one list price: no price rather than one that could understate.
+    asked.length = 0;
+    for (const source of ["bedrock_byo", "openrouter_key", "custom_endpoint"] as const) expect(await offeredModelPrice(prices, "claude-sonnet-5-5", source, rovara)).toBeUndefined();
+    expect(asked).toEqual([]);
+    // A row that waits for an operator's review is never shown as a list price.
+    expect(await offeredModelPrice(prices, "claude-review-me", "anthropic_key")).toBeUndefined();
   });
   it("the switch reads 'on' only; any other value is a broken setting", () => {
     const base = { ...ENV };

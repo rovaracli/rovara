@@ -212,7 +212,7 @@ export interface OfferedModelsHandlerOptions {
    * card only: `price: { inputUsdPerMillion, outputUsdPerMillion }`. Display only: a price that can't be read is left out, never a refusal. Absent: the
    * answer is exactly as before (Code accepts the field only from the release that added it, so it stays off until that release is installed).
    */
-  priceOf?: (model: string) => Promise<OfferedModelPrice | undefined>;
+  priceOf?: (model: string, source: AgentAiSource | undefined) => Promise<OfferedModelPrice | undefined>;
   /** DEC 254zzz41: set, the answer also carries `reviewerAccess` (above). Absent: the answer is exactly as before and no review can run. */
   reviewer?: ReviewerAccessOptions;
   now?: () => number;
@@ -270,9 +270,12 @@ export async function answerOfferedModels(options: OfferedModelsHandlerOptions, 
     if (options.reviewer !== undefined && added.length > 0) { const one = await reviewerAccessFor(options.reviewer, source, claims.iss, claims.cid, added); if (one !== undefined) access.push(one); }
   }
   const reviewerAccess = access.length === 0 ? undefined : { companyId: claims.cid, companyLimitUsd: access[0]!.companyLimitUsd, models: access.flatMap((one) => one.models) };
+  // The source each model is served from: the first in the order that lists it (the one the agent route admits a call on), so its price is that source's.
+  const servedBy = new Map<string, AgentAiSource | undefined>();
+  for (const { source, models: names } of served) for (const name of names) if (!servedBy.has(name)) servedBy.set(name, source);
   const entries = options.priceOf === undefined ? models.map((model) => ({ model })) : await Promise.all(models.map(async (model) => {
     let price: OfferedModelPrice | undefined;
-    try { price = await options.priceOf!(model); } catch { price = undefined; }
+    try { price = await options.priceOf!(model, servedBy.get(model)); } catch { price = undefined; }
     return price === undefined || !offeredPrice(price) ? { model } : { model, price: { inputUsdPerMillion: price.inputUsdPerMillion, outputUsdPerMillion: price.outputUsdPerMillion } };
   }));
   return { status: 200, body: { version: 1, models: entries, ...(reviewerAccess === undefined ? {} : { reviewerAccess }) } };
@@ -285,12 +288,19 @@ export const OFFERED_PRICE_USD_MAX = 10_000;
 const usd = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= OFFERED_PRICE_USD_MAX;
 const offeredPrice = (value: OfferedModelPrice): boolean => usd(value.inputUsdPerMillion) && usd(value.outputUsdPerMillion);
 /**
- * The list price shown for an offered name: Anthropic's row for a Claude engine name, Bedrock's for every other (a Bedrock id), from the price snapshot.
- * Undefined when the snapshot has no exact price for it (an estimate is never shown as a price).
+ * The list price shown for an offered name, as the agent route meters the source that serves it (server.ts): the company's own Anthropic key (or company-key
+ * mode) on Anthropic's row; Rovara's AI on the Bedrock row of the id it calls; the company's own OpenAI key on OpenAI's row. No price for its own Bedrock (metered
+ * at the dearer of two rows), OpenRouter or its own endpoint (their own catalog rows): never a price that could understate. Only an exact snapshot row: undefined
+ * when the snapshot has none, or the row waits for an operator's review (never shown as a plain list price).
  */
-export async function offeredModelPrice(prices: Pick<PriceSource, "priceFor">, model: string): Promise<OfferedModelPrice | undefined> {
-  const price = await prices.priceFor(model.startsWith("claude-") ? "anthropic" : "bedrock", model);
-  if (price === undefined || !validPrice(price)) return undefined;
+export async function offeredModelPrice(prices: Pick<PriceSource, "priceFor">, model: string, source: AgentAiSource | undefined, rovaraModels?: ReadonlyMap<string, string>): Promise<OfferedModelPrice | undefined> {
+  let row: [string, string] | undefined;
+  if (source === undefined || source === "anthropic_key") row = ["anthropic", model];
+  else if (source === "openai_key") row = ["openai", model];
+  else if (source === "rovara") { const id = rovaraModels?.get(model); row = id === undefined ? undefined : ["bedrock", id]; }
+  if (row === undefined) return undefined;
+  const price = await prices.priceFor(row[0], row[1]);
+  if (price === undefined || !validPrice(price) || price.operatorReview === true) return undefined;
   return { inputUsdPerMillion: price.inputMicrosPerMTok / 1_000_000, outputUsdPerMillion: price.outputMicrosPerMTok / 1_000_000 };
 }
 
