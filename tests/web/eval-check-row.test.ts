@@ -18,7 +18,7 @@ import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
 afterEach(cleanup);
-const ME = "a".repeat(64), UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const ME = "a".repeat(64), UUID_TEXT = expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u) as string;
 const ACTIONS = "15368";
 const item = (over: Record<string, unknown> = {}) => ({ name: "evals", source: ACTIONS, workflow: ".github/workflows/ci.yml", repository: "web", basis: "name", ...over });
 const view = (over: Record<string, unknown> = {}) => ({ project: "web", canManage: true, confirmed: null, proposals: { verdict: "proposals", items: [item(), item({ name: "Quality gate", basis: "commands" })], cut: false }, explanation: W.explanation, ...over });
@@ -48,7 +48,7 @@ function mount(options: Options = {}) {
 const puts = (f: ReturnType<typeof mount>) => f.request.mock.calls.map(([r]) => r).filter((r) => r.method === "PUT" && r.path.endsWith("/ci-eval-check"));
 /** The row once it has read: not while it still says it is loading. */
 const row = async () => {
-  const found = await screen.findByTestId("checklist-row-evalCheck");
+  await screen.findByTestId("checklist-row-evalCheck");
   await waitFor(() => expect(screen.getByTestId("checklist-row-evalCheck").textContent).not.toContain(W.loading), { timeout: 5000 });
   return screen.getByTestId("checklist-row-evalCheck");
 };
@@ -79,7 +79,7 @@ describe("the row", () => {
     fireEvent.click(within(r).getAllByRole("button", { name: W.use })[0]!);
     await waitFor(() => expect(puts(f)).toHaveLength(1));
     const sent = puts(f)[0]!;
-    expect(sent.body).toEqual({ requestId: expect.stringMatching(UUID), check: { name: "evals", source: ACTIONS } });
+    expect(sent.body).toEqual({ requestId: UUID_TEXT, check: { name: "evals", source: ACTIONS } });
     expect(sent.retry).toBe("never");
     expect((await within(await row()).findByTestId("eval-check-confirmed")).textContent).toBe("Chosen: evals");
     expect(within(await row()).getByTestId("eval-check-saved").textContent).toBe(W.saved);
@@ -95,7 +95,7 @@ describe("the row", () => {
     expect(within(r).getByTestId("eval-check-confirmed").textContent).toBe("Chosen: evals");
     fireEvent.click(within(r).getByRole("button", { name: W.clear }));
     await waitFor(() => expect(puts(f)).toHaveLength(1));
-    expect(puts(f)[0]!.body).toEqual({ requestId: expect.stringMatching(UUID), check: null });
+    expect(puts(f)[0]!.body).toEqual({ requestId: UUID_TEXT, check: null });
     await waitFor(() => expect(within(screen.getByTestId("checklist-row-evalCheck")).queryByTestId("eval-check-confirmed")).toBeNull());
     expect((await row()).getAttribute("data-state")).toBe("optional");
     f.close();

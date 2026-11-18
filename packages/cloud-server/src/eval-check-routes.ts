@@ -90,7 +90,7 @@ export function evalCheckAnswer(value: unknown, project: string): Record<string,
         const item = rec(one);
         return {
           name: need(text(item["name"], EVAL_CHECK_LIMITS.name), item["name"]), ...(item["source"] === undefined ? {} : { source: need(text(item["source"], EVAL_CHECK_LIMITS.source), item["source"]) }),
-          workflow: need(safePath(item["workflow"]) && (item["workflow"] as string).length <= EVAL_CHECK_LIMITS.workflow, item["workflow"]),
+          workflow: need(safePath(item["workflow"]) && item["workflow"].length <= EVAL_CHECK_LIMITS.workflow, item["workflow"]),
           repository: need(text(item["repository"], EVAL_CHECK_LIMITS.repository), item["repository"]), basis: need(oneOf(item["basis"], BASES), item["basis"]),
         };
       });

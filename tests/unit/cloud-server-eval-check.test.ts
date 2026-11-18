@@ -51,7 +51,7 @@ function setUp(answer: Answer = () => json(200, VIEW())) {
     const url = new URL(target, "http://127.0.0.1:8787");
     const request: CloudRequest = { method, path: url.pathname, query: url.searchParams, headers, ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }) };
     const answered = await handler(request);
-    return { status: answered!.status, body: JSON.parse(answered!.body) as any, text: answered!.body, headers: answered!.headers }; // eslint-disable-line @typescript-eslint/no-explicit-any
+    return { status: answered!.status, body: JSON.parse(answered!.body) as Record<string, any>, text: answered!.body, headers: answered!.headers }; // eslint-disable-line @typescript-eslint/no-explicit-any
   };
   const toCode = () => calls.filter((call) => /\/ci-eval-check$/u.test(call.path));
   return { signIn, send, calls, toCode };
@@ -95,7 +95,7 @@ describe("the read", () => {
     const w = setUp(() => json(200, VIEW({ canManage: false, proposals: null, confirmed: { name: "evals" } })));
     expect((await w.send("GET", WEB(), await member(w))).body).toMatchObject({ canManage: false, proposals: null, confirmed: { name: "evals" } });
     const leaky = setUp(() => json(200, VIEW({ canManage: false })));
-    expect(await leaky.send("GET", WEB(), await member(leaky))).toMatchObject({ status: 503, body: { error: EVAL_CHECK_ANSWERS.unavailable.body.error } });
+    expect(await leaky.send("GET", WEB(), await member(leaky))).toMatchObject({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: SERVER_WORDS.unavailable } } });
   });
   it("an answer that does not read is refused whole", () => {
     const bad: unknown[] = [
@@ -160,7 +160,7 @@ describe("the confirm", () => {
     const secret = "SECRET-CHECK-NAME";
     const w = setUp(() => json(200, VIEW({ confirmed: { name: secret, source: "15368" } })));
     const answered = await w.send("PUT", WEB(), await admin(w), { requestId: UUID, check: { name: secret, source: "15368" } });
-    expect(answered.body.confirmed).toEqual({ name: secret, source: "15368" });
+    expect(answered.body["confirmed"]).toEqual({ name: secret, source: "15368" });
     expect(logged.join("\n")).toContain("cloud.eval_check");
     expect(logged.join("\n")).toContain("eval_check_confirmed");
     expect(logged.join("\n")).not.toContain(secret);
