@@ -192,7 +192,7 @@ The same default serves the answers and learning routes (`learning-route.ts` `ro
 Bedrock, which those routes never served) keeps today's pause. Every cap applies unchanged to the spend: task, person, project, company, the combined company cap,
 the upkeep month (agent route), the answers month and the learning month. The call's ledger row carries `{source: "rovara_ai", charge: "exempt", model}` (nothing is
 billed to the company); each agent call also logs `{event: "agent_source", company, source, via}` (ids and words only). Cloud's AI settings screen shows the
-effective source when `CLOUD_ROVARA_AI_EXEMPT` (the same ids) is set on Cloud's server.
+effective source when `CLOUD_ROVARA_AI_EXEMPT` (the same ids) is set on Cloud's server: pass the SAME `-c rovaraModelGatewayRovaraAiExempt=<org ids>` to the Cloud deploy (`-c rovaraCloudApp=<env>`) as to the gateway's. It changes words only; no IAM, secret or parameter, and refused for production at synth.
 
 Models (DEC 243): `-c rovaraModelGatewayRovaraAi=on` offers every Claude model Bedrock has in the account, each engine model name on
 its `us.` system inference profile (US cross-Region routing; data stays in the US): `claude-haiku-4-5` (and the dated
