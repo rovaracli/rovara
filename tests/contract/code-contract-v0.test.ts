@@ -59,7 +59,8 @@ describe("code contract v0 tables", () => {
     // Plus the Cost and time actions (lane L4-CR4): a new feature, rename, merge, mark done or reopen, and move a task, each passed to Code's own route as the person (Code decides): 5 rows.
     // Plus the session's decisions and answers (L4-B5, Code's task log read as the person): 1 row.
     // Plus script-token list, create and revoke, mirrored from Code's app routes: 3 rows.
-    expect(counts.appCloudServerToday).toBe(140);
+    // Plus the person's own sign-in factors (L4-MF4): the masked confirmation email and passkeys, as the person: 1 row.
+    expect(counts.appCloudServerToday).toBe(141);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
