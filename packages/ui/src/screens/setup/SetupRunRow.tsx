@@ -49,7 +49,7 @@ const approvedOn = (at: string | undefined): string => { const date = at === und
 /** The approved setup's line: its check is ready (Done), going, failed (with Code's reason) or not run on a fresh machine yet. */
 function ApprovedLine({ row }: { row: RunRow }) {
  const status = row.check?.status;
- if (status === "ready") return <p role="status" data-testid="setup-run-approved">Setup approved{approvedOn(row.approvedAt)}. Checked on a fresh machine.</p>;
+ if (status === "ready") return row.state !== "done" ? null : <p role="status" data-testid="setup-run-approved">Setup approved{approvedOn(row.approvedAt)}. Checked on a fresh machine.</p>;
  if (status === "checking") return <p role="status" data-testid="setup-run-approved-checking"><strong>{REVIEW_TEXT.checking}</strong></p>;
  if (status === "failed") return <p role="alert" data-testid="setup-run-approved-failed"><strong>Needs you: the approved setup failed its check.</strong>{row.check?.failedStep === undefined ? null : <> <VisibleText text={row.check.failedStep} /></>}</p>;
  return <p role="status" data-testid="setup-run-approved-unchecked"><strong>Needs you: the approved setup has not been checked on a fresh machine.</strong></p>;

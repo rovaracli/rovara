@@ -55,6 +55,14 @@ describe("the Setup run row (L4-T2)", () => {
     f.close();
   });
 
+  it("approved and checked but a newer run's proposal is unused: Needs you, and the row never says the setup is approved and checked", async () => {
+    const f = mount(checklist({ state: "needs_you", approval: "approved", check: { status: "ready" }, approvedAt: "2026-11-12T10:00:00.000Z" }));
+    const item = await row();
+    expect(item.getAttribute("data-state")).toBe("needs_you");
+    expect(within(item).queryByTestId("setup-run-approved")).toBeNull();
+    f.close();
+  });
+
   it("a proposal nobody approved: Needs you, never Done, and no link to the old Setup step", async () => {
     const f = mount(checklist({ state: "needs_you", approval: "none" }));
     const item = await row();
