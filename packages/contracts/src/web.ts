@@ -95,6 +95,7 @@ export * from "./app-wiki-corrections.js";
 export * from "./app-wiki-setup.js";
 // Lead 4 J3: the smart Just answer's web door and the start box's path suggestion.
 export * from "./app-answers.js";
+export * from "./app-setup-repair.js";
 
 // Lane B: browser-safe project-scoped working-branch page data.
 export * from "./app-working-branches.js";
@@ -136,6 +137,7 @@ export * from "./decision-focus.js";
 // Setup and test health SH19: the four test results and their fixed words, for the task page's Evidence tab.
 export * from "./verification-result.js";
 export * from "./decision-card-tabs.js";
+export * from "./app-plan-feature.js";
 export * from "./plan-one-screen.js";
 export * from "./test-environment.js";
 // Setup wizard (E4): what the test-environment setup routes answer and take (browser-safe).
@@ -155,6 +157,7 @@ export { SetupDraftResponseSchema, type SetupDraftResponse, SetupDraftResponseRe
 
 // Learning v2 L3b: the Lessons tab, the Sources tab and the task page's lessons list.
 export * from "./app-lessons.js";
+export * from "./app-lessons-areas.js";
 // Team record source rows (learning v2): the Sources tab editor's bodies and views.
 export * from "./team-record-sources.js";
 

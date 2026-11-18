@@ -69,7 +69,11 @@ describe("code contract v0 tables", () => {
     // Plus the company's one control over nightly upkeep (L4-P3): read and change: 2 rows.
     // Plus the person's own GitHub account link (L4-GH): read, connect and unlink, passed to Code's /v1/dev/me/github routes as the person: 3 rows.
     // Plus the project lessons measure (L4-MEAS): 1 row.
-    expect(counts.appCloudServerToday).toBe(149);
+    // Plus the plan card's feature choices (lead 4 PCF): Code answers this read as the person.
+    // Plus the "Setup needs repair" card and its "Re-check setup" button (L4-U5): read and recheck: 2 rows.
+
+    // Plus the lessons by code area, "Where Rovara learns from" with its pause, and the wiki page's team lessons (lead 4 L4-LP3W): 4 rows.
+    expect(counts.appCloudServerToday).toBe(156);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

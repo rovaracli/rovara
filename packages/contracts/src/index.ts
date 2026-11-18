@@ -292,6 +292,7 @@ export * from "./team-record.js";
 export * from "./team-record-sources.js";
 export * from "./lessons.js";
 export * from "./app-lessons.js";
+export * from "./app-lessons-areas.js";
 export * from "./spec-target.js";
 
 // Setup and test health: saved environments (SH3).

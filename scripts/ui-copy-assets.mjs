@@ -20,6 +20,8 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  "screens/project/lessons/lessons.css",
  // DEC 231: the inbox lesson batch, Learned in How we work, Lessons used on the task page.
  "screens/work/lessons.css",
+ // Lead 4 L4-LP3W: Learned by code area, Where Rovara learns from, Team lessons for this area.
+ "screens/project/lessons/areas.css",
  // Guided onboarding PR 11: Add to Slack, the Slack channel and Linear team rows.
  "screens/connect/connect.css",
  // Guided onboarding PR 9: the project setup checklist.
@@ -28,6 +30,8 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  "screens/project/wiki/wiki.css",
  // L4-D2: the setup approval card.
  "screens/setup/approval-card.css",
+ // L4-U5: the "Setup needs repair" card and the paused upkeep notice.
+ "screens/setup/setup-repair.css",
  // W6: the wiki row on the setup checklist.
  "screens/setup/wiki/wiki-setup.css",
  // Feature A3: the Cost and time pages.

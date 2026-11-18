@@ -291,6 +291,15 @@ function spendAnswer(value: unknown): Record<string, unknown> {
   need(typeof spent === "number" && Number.isFinite(spent) && spent >= 0 && spent <= 100_000_000, spent);
   return { month: s["month"], spentUsd: spent, runs: count(s["runs"]), unknownRuns: count(s["unknownRuns"]) };
 }
+
+/** L4-U5: why nightly upkeep is paused (Code tells managers only): one of Code's three reasons and the month, nothing else. */
+function pausedAnswer(value: unknown): Record<string, unknown> {
+  const p = rec(value);
+  need(Object.keys(p).every((key) => key === "reason" || key === "month"), p);
+  need(oneOf(p["reason"], ["no_budget", "monthly_limit", "cost_too_high"] as const), p["reason"]);
+  need(typeof p["month"] === "string" && /^\d{4}-(?:0[1-9]|1[0-2])$/u.test(p["month"]), p["month"]);
+  return { reason: p["reason"], month: p["month"] };
+}
 export function upkeepAnswer(value: unknown): Record<string, unknown> {
   const v = rec(value);
   const canManage = flag(v["canManage"]);
@@ -302,6 +311,7 @@ export function upkeepAnswer(value: unknown): Record<string, unknown> {
     ...(v["cap"] === undefined ? {} : { cap: capAnswer(v["cap"]) }),
     // Only a person who manages the project is shown the spend (Code sends it to no one else; a copy that reaches a reader anyway is dropped here).
     ...(v["spend"] === undefined || !canManage ? {} : { spend: spendAnswer(v["spend"]) }),
+    ...(v["paused"] === undefined ? {} : { paused: pausedAnswer(v["paused"]) }),
   };
 }
 

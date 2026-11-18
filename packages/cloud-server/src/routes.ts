@@ -26,12 +26,14 @@ import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
 import { ANSWERS_ROUTES } from "./answers-routes.js";
 import { AGENT_DIRECTORY_ROUTES } from "./agent-directory-routes.js";
 import { SYSTEM_RUNS_ROUTES } from "./system-runs-routes.js";
+import { SETUP_REPAIR_ROUTES } from "./setup-repair-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { HOW_WE_WORK_ROUTES } from "./how-we-work-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
 import { SCRIPT_TOKEN_ROUTES } from "./script-token-routes.js";
 import { REPORT_ROUTES } from "./report-routes.js";
+import { PLAN_FEATURE_ROUTES } from "./plan-feature-routes.js";
 import { PEOPLE_LIMITS_ROUTES } from "./people-limits-routes.js";
 import { REPORT_ACTION_ROUTES } from "./report-action-routes.js";
 import { INTAKE_UPDATES_ROUTES } from "./intake-updates-routes.js";
@@ -922,8 +924,12 @@ export const ROUTES: Route[] = [
   ...WIKI_SETUP_ROUTES,
   // L4-P3: the company's one control over nightly upkeep (read, allow with Code's fresh step-up, withdraw): company owners and admins only; Code decides again.
   ...SYSTEM_RUNS_ROUTES,
+  // L4-U5: the "Setup needs repair" card on a project's setup page and its "Re-check setup" button, passed to Code as the person; Code decides who may.
+  ...SETUP_REPAIR_ROUTES,
   // The admin portal's Cost and time report (Feature A, slice A3): Code's one-row-per-task read, grouped here for a company owner or admin.
   ...REPORT_ROUTES,
+  // The plan card's available feature choices (lead 4 PCF); filing and creation use the Cost and time report actions below.
+  ...PLAN_FEATURE_ROUTES,
   // The smart Just answer and the start box's path suggestion (lead 4 J3): Code decides who may; Cloud passes the person's token, rebuilds each answer, and answers in fixed words. Off unless the deployment says so.
   ...ANSWERS_ROUTES,
   // Its actions (lane L4-CR4): new feature, rename, merge, mark done or reopen, move a task. Code decides; Cloud checks the body and words the refusals.

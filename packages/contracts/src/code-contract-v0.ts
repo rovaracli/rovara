@@ -586,6 +586,22 @@ export interface LessonMeasureResponse {
   revertDetection: "not_wired"; truncated: boolean; unreadable: number;
 }
 export interface PutLessonModeRequest { mode: LessonMode }
+/** Lead 4 L4-LP3W: the approved lessons by code area (Code `GET .../lessons/areas`; the strict shape is contracts `app-lessons-areas.ts`). A folder holds the lessons anchored at it or below it, each counted once. */
+export interface LessonAreaFile { name: string; lessons: number }
+export interface LessonAreaNode { name: string; /** The folder with a trailing slash (`src/billing/`). */ path: string; lessons: number; children: LessonAreaNode[]; moreChildren?: number; files: LessonAreaFile[]; moreFiles?: number }
+/** `repo` null: lessons that name paths but no repository. */
+export interface LessonAreaRepo { repo: string | null; lessons: number; children: LessonAreaNode[]; moreChildren?: number; files: LessonAreaFile[]; moreFiles?: number }
+export interface LessonAreasResponse {
+  project: string; total: number; wholeProject: number; repos: LessonAreaRepo[]; partial?: true;
+  /** Present when one node was asked for (`repo` and `folder`, or `whole`): its lessons, in the same shape as the lessons list. */
+  selection?: { whole?: true; repo?: string | null; folder?: string; lessons: LessonItem[]; moreLessons?: number };
+}
+/** Lead 4 L4-LP3W: "Where Rovara learns from". Counts are the last 30 days; Cloud words every row itself. */
+export type LearningSourceKey = "task_decisions" | "review_comments" | "pr_edits" | "remember" | "after_merge" | "ci";
+export interface LearningSourceRow { key: LearningSourceKey; label: string; detail: string; seen: number; suggested: number; kept: number; paused: boolean; example?: { lessonId: string; title: string } }
+export interface LearningSourcesResponse { project: string; windowDays: 30; canPause: boolean; sources: LearningSourceRow[]; partial?: true }
+export interface PutLearningSourceRequest { paused: boolean }
+export interface PutLearningSourceResponse { project: string; key: LearningSourceKey; paused: boolean }
 /** Cloud's inbox read (`GET /v1/app/lessons/inbox`): one batch per project with proposed lessons the person can decide, theirs first. */
 export interface LessonInboxBatch { project: string; lessons: LessonItem[]; fromYou: number; partial?: true }
 export interface LessonInboxResponse { state: "on" | "off"; batches: LessonInboxBatch[]; unavailable: string[] }
@@ -708,6 +724,9 @@ export interface CodeRouteTypes {
   "lessons.mode.get": { request: void; response: LessonModeResponse };
   "lessons.mode.put": { request: PutLessonModeRequest; response: LessonModeResponse };
   "lessons.measure": { request: void; response: LessonMeasureResponse };
+  "lessons.areas": { request: void; response: LessonAreasResponse };
+  "lessons.learningSources.get": { request: void; response: LearningSourcesResponse };
+  "lessons.learningSources.put": { request: PutLearningSourceRequest; response: PutLearningSourceResponse };
   "company.engineModel.get": { request: void; response: CompanyEngineModelView };
   "company.engineModel.put": { request: PutCompanyEngineModelRequest; response: CompanyEngineModelView };
   "projects.settings.get": { request: void; response: ProjectSettingsView };
@@ -889,6 +908,10 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.mode.get", "GET", `${DP}/lessons/mode`, "The project's learning mode, the mode in force and whether the company locks it", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.mode.put", "PUT", `${DP}/lessons/mode`, "Set the learning mode (a project admin, or a company owner or admin)", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.measure", "GET", `${DP}/lessons/measure`, "Counts only lesson fit, below-floor loads, clean merges and revert detection (maintainer or company owner/admin)", "full", ["how-we-work"], "no", false, "none", true),
+  // Lead 4 L4-LP3W (Code pr/l4-lessons-by-area): the approved lessons by code area, and "Where Rovara learns from" with its Pause.
+  spec("lessons.areas", "GET", `${DP}/lessons/areas`, "The approved lessons by code area (a tree), and the lessons at one node (query: repo, folder, whole=1)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.learningSources.get", "GET", `${DP}/lessons/learning-sources`, "Where Rovara learns from: a row per kind of source with seen, suggested and kept counts (30 days), one example and whether it is paused", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.learningSources.put", "PUT", `${DP}/lessons/learning-sources/{source}`, "Pause or resume one source (a project admin, or a company owner or admin; recorded first)", "full", ["how-we-work"], "no", false, "none", true),
   // Guided onboarding PR 15 (DEC 254l item 7, 254n item 1): the company's AI model (Code #835, not on code/next yet) and a project's per-task model budget (Code's M4a settings).
   spec("company.engineModel.get", "GET", "/v1/dev/company/engine-model", "The company's engine model, the models the gateway offers it now, and the one to preselect (any member)", "full", ["later"], "no", false, "none", true),
   spec("company.engineModel.put", "PUT", "/v1/dev/company/engine-model", "Set or clear the company's engine model, only from its offered list (owner or admin)", "full", ["later"], "no", false, "none", true),
@@ -1080,6 +1103,7 @@ GET /v1/app/projects/{p}/wiki | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/search | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId} | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/pages/{pageId}/lessons | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId}/corrections | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/approve | k | later | | wiki | T
@@ -1103,6 +1127,8 @@ POST /v1/app/projects/{p}/answers | k | later | | answers | T
 POST /v1/app/projects/{p}/answers/{a}/not-right | k | later | | answers | T
 GET /v1/app/company/system-runs | k | later | | wiki-setup | T
 PUT /v1/app/company/system-runs | k | later | | wiki-setup | T
+GET /v1/app/projects/{p}/setup-repair | k | later | | setup-repair | T
+POST /v1/app/projects/{p}/setup-repair/recheck | k | later | | setup-repair | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | LT
 POST /v1/app/projects/{p}/setup-agent/discard | k | later | | setup-agent | LT
@@ -1144,6 +1170,9 @@ POST /v1/app/projects/{p}/lessons/{lessonId}/merge | k | later | | lessons | L
 POST /v1/app/projects/{p}/lessons/{lessonId}/retire | k | how-we-work | lessons.retire | learned | T
 POST /v1/app/projects/{p}/lessons/{lessonId}/retire-request | k | how-we-work | lessons.retireRequest | learned | T
 GET /v1/app/projects/{p}/lessons/retire-requests | k | how-we-work | lessons.retireRequests | learned | T
+GET /v1/app/projects/{p}/lessons/areas | k | how-we-work | lessons.areas | learned | T
+GET /v1/app/projects/{p}/lessons/learning-sources | k | how-we-work | lessons.learningSources.get | learned | T
+PUT /v1/app/projects/{p}/lessons/learning-sources/{source} | k | how-we-work | lessons.learningSources.put | learned | T
 POST /v1/app/projects/{p}/lessons/decisions | k | home | lessons.decisions | learned | T
 GET /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.get | learned | T
 GET /v1/app/projects/{p}/lessons/measure | k | how-we-work | lessons.measure | learned | T
@@ -1230,6 +1259,7 @@ GET /v1/app/budget | g | budgets | | spending |
 GET /v1/app/org/spend | g | budgets | | spending |
 GET /v1/app/org/report | c | admin | | admin/report | T
 GET /v1/app/org/report/features/{featureId} | c | admin | | admin/report | T
+GET /v1/app/tasks/{t}/feature-choices | k | later | | design/PlanFeature | T
 POST /v1/app/org/report/features | c | admin | | admin/report | T
 POST /v1/app/org/report/features/{featureId}/rename | c | admin | | admin/report | T
 POST /v1/app/org/report/features/{featureId}/merge | c | admin | | admin/report | T

@@ -186,11 +186,131 @@ async function inbox(context: RouteContext): Promise<RouteAnswer> {
   return ok({ state: "on", batches, unavailable: projects.filter((_, index) => read[index]!.kind === "unavailable") });
 }
 
+// ---- Lead 4 L4-LP3W: the approved lessons by code area, and "Where Rovara learns from" (Code: lessons/areas, lessons/learning-sources) -------------------------------------------------------------------
+
+/** The kinds of source one row stands for, with the words Cloud shows (Code's own words are never used; a test holds the keys equal to the contract's). */
+export const LEARNING_SOURCES = [
+  { key: "task_decisions", label: "Decisions in tasks", detail: "Send-backs and close reasons" },
+  { key: "review_comments", label: "Review comments", detail: "Comments on Rovara's pull requests and its own review findings" },
+  { key: "pr_edits", label: "Edits to Rovara's pull requests", detail: "Changes people make before merging" },
+  { key: "remember", label: "Things people ask Rovara to remember", detail: "Notes people write on purpose" },
+  { key: "after_merge", label: "After merge", detail: "Reverts and what happened to merged work" },
+  { key: "ci", label: "Failing checks", detail: "Test and build failures. No log text is kept" },
+] as const;
+const SOURCE_KEYS: readonly string[] = LEARNING_SOURCES.map((one) => one.key);
+/** The area tree is at most this deep and wide (Code's bounds; anything past them is dropped, never drawn). */
+const AREA_DEPTH = 7, AREA_CHILDREN = 40, AREA_FILES = 20, AREA_REPOS = 30, AREA_NODES = 800;
+const SEGMENT = /^(?!\.{1,2}$)[A-Za-z0-9_.@-]{1,100}$/u;
+const REPO_QUERY = /^(?:\*|[A-Za-z0-9_.@-]{1,100})$/u;
+
+/** One folder of the tree (a name, its path, its lessons and what is below it), or undefined when Code sent something that is not a plain folder. `budget` bounds the whole tree. */
+function areaNode(raw: unknown, depth: number, budget: { nodes: number }): Record<string, unknown> | undefined {
+  if (!isRecord(raw) || depth > AREA_DEPTH || budget.nodes <= 0) return undefined;
+  const name = text(raw["name"], 100), path = text(raw["path"], 400);
+  if (name === undefined || !SEGMENT.test(name) || path === undefined || !path.endsWith("/") || !path.slice(0, -1).split("/").every((part) => SEGMENT.test(part))) return undefined;
+  budget.nodes -= 1;
+  return some({
+    name, path, lessons: count(raw["lessons"]),
+    children: list(raw["children"], AREA_CHILDREN).flatMap((one) => { const node = areaNode(one, depth + 1, budget); return node === undefined ? [] : [node]; }),
+    moreChildren: count(raw["moreChildren"]) > 0 ? count(raw["moreChildren"]) : undefined,
+    files: areaFiles(raw["files"]), moreFiles: count(raw["moreFiles"]) > 0 ? count(raw["moreFiles"]) : undefined,
+  });
+}
+const areaFiles = (raw: unknown): Array<{ name: string; lessons: number }> => list(raw, AREA_FILES).flatMap((one) => (isRecord(one) && typeof one["name"] === "string" && SEGMENT.test(one["name"]) ? [{ name: one["name"], lessons: count(one["lessons"]) }] : []));
+
+/** Code's lessons-by-area answer for THIS project, rebuilt field by field. */
+export function areasAnswer(raw: unknown, project: string): Record<string, unknown> {
+  const body = isRecord(raw) ? raw : {};
+  const budget = { nodes: AREA_NODES };
+  const selection = isRecord(body["selection"]) ? body["selection"] : undefined;
+  return some({
+    project, total: count(body["total"]), wholeProject: count(body["wholeProject"]),
+    repos: list(body["repos"], AREA_REPOS).flatMap((one) => {
+      if (!isRecord(one)) return [];
+      const repo = one["repo"] === null ? null : text(one["repo"], 200);
+      if (repo === undefined || (repo !== null && !REPO_QUERY.test(repo))) return [];
+      return [some({
+        repo, lessons: count(one["lessons"]),
+        children: list(one["children"], AREA_CHILDREN).flatMap((child) => { const node = areaNode(child, 1, budget); return node === undefined ? [] : [node]; }),
+        moreChildren: count(one["moreChildren"]) > 0 ? count(one["moreChildren"]) : undefined, files: areaFiles(one["files"]), moreFiles: count(one["moreFiles"]) > 0 ? count(one["moreFiles"]) : undefined,
+      })];
+    }),
+    partial: body["partial"] === true ? true : undefined,
+    selection: selection === undefined ? undefined : some({
+      whole: selection["whole"] === true ? true : undefined,
+      repo: selection["whole"] === true ? undefined : selection["repo"] === null ? null : text(selection["repo"], 200),
+      folder: selection["whole"] === true ? undefined : text(selection["folder"], 400) ?? "",
+      lessons: list(selection["lessons"], AREA_LESSONS_MAX).flatMap((one) => { const view = lessonItem(one); return view === undefined ? [] : [view]; }),
+      moreLessons: count(selection["moreLessons"]) > 0 ? count(selection["moreLessons"]) : undefined,
+    }),
+  });
+}
+const AREA_LESSONS_MAX = 50;
+
+/** Code's "Where Rovara learns from" answer, in Cloud's own words: one row per known key, in order; a key Code does not send is a row of zeros, never invented counts. */
+export function learningSourcesAnswer(raw: unknown, project: string): Record<string, unknown> {
+  const body = isRecord(raw) ? raw : {};
+  const rows = new Map(list(body["sources"], SOURCE_KEYS.length).filter(isRecord).flatMap((one) => (typeof one["key"] === "string" && SOURCE_KEYS.includes(one["key"]) ? [[one["key"], one] as const] : [])));
+  return some({
+    project, windowDays: 30, canPause: body["canPause"] === true,
+    sources: LEARNING_SOURCES.map((words) => {
+      const one = rows.get(words.key) ?? {};
+      const example = isRecord(one["example"]) && typeof one["example"]["lessonId"] === "string" && new RegExp(`^${LESSON_ID}$`, "u").test(one["example"]["lessonId"]) && typeof one["example"]["title"] === "string"
+        ? { lessonId: one["example"]["lessonId"], title: one["example"]["title"].slice(0, 80) } : undefined;
+      return some({ key: words.key, label: words.label, detail: words.detail, seen: count(one["seen"]), suggested: count(one["suggested"]), kept: count(one["kept"]), paused: one["paused"] === true, example });
+    }),
+    partial: body["partial"] === true ? true : undefined,
+  });
+}
+
 const body = (context: RouteContext): Record<string, unknown> => (isRecord(context.body) ? context.body : {});
 const postTo = async (context: RouteContext, path: string, payload: unknown) => context.client.json<unknown>(context.session, path, { method: "POST", body: payload });
 
 export const LESSONS_ROUTES: Route[] = [
   { method: "GET", path: /^\/lessons\/inbox$/u, answer: inbox },
+  {
+    // GET /v1/app/projects/{p}/lessons/areas: the approved lessons by code area (a tree), and the lessons at one node. Only repo (a name, or * for no repository), folder and whole=1 go on.
+    method: "GET", path: new RegExp(`^/projects/${PROJECT}/lessons/areas$`, "u"),
+    answer: async (context) => {
+      const forward = new URLSearchParams();
+      const keys = [...context.query.keys()];
+      if (new Set(keys).size !== keys.length || keys.some((key) => key !== "repo" && key !== "folder" && key !== "whole")) return badRequest("areas takes repo, folder and whole, once each.");
+      const repo = context.query.get("repo"), folder = context.query.get("folder"), whole = context.query.get("whole");
+      if (whole !== null) { if (whole !== "1" || repo !== null || folder !== null) return badRequest("whole is 1 and takes nothing else."); forward.set("whole", "1"); }
+      else if (repo !== null) {
+        if (!REPO_QUERY.test(repo)) return badRequest("repo is a repository name, or * for lessons that name no repository.");
+        forward.set("repo", repo);
+        if (folder !== null && folder !== "") { const clean = folder.replace(/^\/+|\/+$/gu, ""); if (clean.split("/").length > AREA_DEPTH || !clean.split("/").every((part) => SEGMENT.test(part))) return badRequest("folder is a plain folder path."); forward.set("folder", clean); }
+      } else if (folder !== null) return badRequest("folder needs repo.");
+      const project = context.params[0]!;
+      const query = forward.toString();
+      return ok(areasAnswer(await context.client.json<unknown>(context.session, `${dev(project)}/lessons/areas${query === "" ? "" : "?" + query}`), project));
+    },
+  },
+  {
+    // GET /v1/app/projects/{p}/lessons/learning-sources: "Where Rovara learns from". Nothing goes on.
+    method: "GET", path: new RegExp(`^/projects/${PROJECT}/lessons/learning-sources$`, "u"),
+    answer: async (context) => {
+      if ([...context.query.keys()].length > 0) return badRequest("learning-sources takes nothing.");
+      const project = context.params[0]!;
+      return ok(learningSourcesAnswer(await context.client.json<unknown>(context.session, `${dev(project)}/lessons/learning-sources`), project));
+    },
+  },
+  {
+    // PUT …/lessons/learning-sources/{key} { paused }: pause or resume one row. Code says who may; the body is exactly one boolean.
+    method: "PUT", path: new RegExp(`^/projects/${PROJECT}/lessons/learning-sources/([a-z_]{1,40})$`, "u"),
+    answer: async (context) => {
+      const key = context.params[1]!;
+      if (!SOURCE_KEYS.includes(key)) return badRequest("That is not a source Rovara learns from.");
+      const raw = body(context);
+      if (typeof raw["paused"] !== "boolean" || Object.keys(raw).length !== 1) return badRequest("Pause takes paused: true or false.");
+      const project = context.params[0]!;
+      const answer = await context.client.json<unknown>(context.session, `${dev(project)}/lessons/learning-sources/${key}`, { method: "PUT", body: { paused: raw["paused"] } });
+      // Said only as Code confirmed it: an answer with no boolean is unreadable, never the requested state.
+      if (!isRecord(answer) || typeof answer["paused"] !== "boolean") return { status: 502, body: { error: { code: "INVALID_RESPONSE", message: "Rovara returned an unreadable response. Reload this page." } } };
+      return ok({ project, key, paused: answer["paused"] });
+    },
+  },
   {
     // GET /v1/app/projects/{p}/lessons (contract v0 `lessons.list`): one page of one list. Only list, since, limit and cursor go on.
     method: "GET", path: new RegExp(`^/projects/${PROJECT}/lessons$`, "u"),

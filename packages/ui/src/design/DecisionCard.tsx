@@ -12,6 +12,7 @@ import { Button } from "./Button.js";
 import { Tabs } from "./Tabs.js";
 import { EvalResult, type EvalResultProps } from "./EvalResult.js";
 import { VisibleText } from "./VisibleText.js";
+import { PlanFeatureLine } from "./PlanFeatureLine.js";
 
 type Confirming = { url: string; merging: ReadonlyArray<{ repositoryId: string; number: number; baseBranch: string }> };
 /** "Merge #7 into main?"; with several pull requests each is named by its repository: "Merge payments #7 into main and billing #8 into develop?". */
@@ -147,6 +148,7 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
   return <section className="rv-decision rv-decision-pane" data-risk={card.risk} data-kind={card.kind} data-tone={bad} aria-label={heading} {...swipe}>
    <h3>{heading}</h3>
    <p className="rv-decision-summary"><VisibleText text={card.question} /></p>
+   {card.kind === "approve_plan" && card.planFeature !== undefined && <PlanFeatureLine card={card} />}
    {pane.evalResult !== undefined && <EvalResult {...pane.evalResult} failed />}
    {tabs === undefined ? <dl className="rv-kv-list">{facts.map(([label, value], index) => <div key={index} className="rv-kv"><dt><VisibleText text={label} /></dt><dd><VisibleText text={value} /></dd></div>)}</dl>
     : <Tabs label={"Documents to approve for " + card.title} value={tab} onValueChange={value => { if (value === "requirements" || value === "design") setTab(value); }} items={tabs.map(item => ({ value: item.id, label: item.title + (item.approved ? " (approved)" : ""), content: <><Chips chips={item.evidence} />{needsEvidence && evidencePanel(item.id)}</> }))} />}
@@ -168,6 +170,7 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
   <p className="rv-decision-question"><VisibleText text={card.question} /></p>
   <p className="rv-decision-recommended">Recommended: <VisibleText text={card.recommended.action + ". " + card.recommended.why} /></p>
   <p className="rv-decision-next">Next: <VisibleText text={card.next.text} /></p>
+  {card.kind === "approve_plan" && card.planFeature !== undefined && <PlanFeatureLine card={card} />}
   {tabs === undefined ? <Chips chips={card.evidence} /> : <Tabs label={"Documents to approve for " + card.title} value={tab} onValueChange={value => { if (value === "requirements" || value === "design") setTab(value); }} items={tabs.map(item => ({ value: item.id, label: item.title + (item.approved ? " (approved)" : ""), content: <><Chips chips={item.evidence} />{needsEvidence && evidencePanel(item.id)}</> }))} />}
   {tabs === undefined && needsEvidence && evidencePanel(undefined)}
   {card.risk !== "high" && <PlanChoices decision={decision} pick={pick} onPick={setPick} disabled={busy} />}
