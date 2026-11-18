@@ -125,8 +125,8 @@ export function governsSettings(what: string): boolean {
   return ruleCovers(what, "setting.loosen") || ruleCovers(what, "setting.change");
 }
 
-// `signInMaxAgeSeconds` is the old approval sign-in age (owner DEC 254zzz73 removed it): a rule that carries it still reads and keeps it, so a
-// stored document compares the same, but nothing uses it any more and the hook no longer answers it.
+// `signInMaxAgeSeconds` is the old approval sign-in age (owner DEC 254zzz73 removed it): a stored rule or an older app's write that carries it (a whole number
+// 0..2592000) still reads, and the field is DROPPED, so it is never answered, shown in the rule editor or saved again (review L2: an ignored field must not look live).
 function readDecision(value: unknown): DecisionRule | undefined {
   if (!plainObject(value) || !keysAre(value, ["what", "allow", "minApprovers", "secondPerson", "selfApproval", "signInMaxAgeSeconds", "deciders"], ["what"])) return undefined;
   const { what, allow, minApprovers, secondPerson, selfApproval, signInMaxAgeSeconds, deciders } = value;
@@ -137,7 +137,7 @@ function readDecision(value: unknown): DecisionRule | undefined {
   return {
     what,
     ...(allow === undefined ? {} : { allow }), ...(minApprovers === undefined ? {} : { minApprovers }), ...(secondPerson === undefined ? {} : { secondPerson }),
-    ...(selfApproval === undefined ? {} : { selfApproval }), ...(signInMaxAgeSeconds === undefined ? {} : { signInMaxAgeSeconds }),
+    ...(selfApproval === undefined ? {} : { selfApproval }),
     ...(deciders === undefined ? {} : { deciders: [...(deciders as string[])] }),
   };
 }

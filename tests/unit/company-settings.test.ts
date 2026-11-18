@@ -114,13 +114,14 @@ describe("validateCompanySettings", () => {
     });
   });
 
-  it("still reads a stored document from before DEC 254zzz73: the old step-up window is dropped, an old sign-in age on a rule is kept but unused", () => {
+  it("still reads a stored document from before DEC 254zzz73: the old step-up window is dropped, an old sign-in age on a rule reads but is dropped, so the rule editor never shows it (review L2)", () => {
     const old = { ...base(), freshSignInSeconds: 120, decisions: [{ what: "setting.*", signInMaxAgeSeconds: 0 }] };
     const read = validateCompanySettings(old);
     expect(read.ok).toBe(true);
     if (read.ok) {
       expect(Object.keys(read.settings)).not.toContain("freshSignInSeconds");
-      expect(read.settings.decisions).toEqual([{ what: "setting.*", signInMaxAgeSeconds: 0 }]);
+      expect(read.settings.decisions).toEqual([{ what: "setting.*" }]);
+      expect(JSON.stringify(read.settings)).not.toContain("signInMaxAgeSeconds");
       // A zero age once refused every step-up; now it changes nothing: the settings decision is the same as without it.
       expect(settingsDecision(read.settings, false, "verdict", "dev")).toEqual({ allow: true, secondPerson: false });
       expect(answerFor("decide", { what: "setting.change", stage: "verdict", per: "dev" }, hookRulesOf(read.settings))).not.toHaveProperty("signInMaxAgeSeconds");
@@ -132,6 +133,10 @@ describe("validateCompanySettings", () => {
       const read = validateCompanySettings({ ...base(), decisions: [rule] });
       expect(read.ok).toBe(true);
     }
+  });
+
+  it("still refuses a malformed old sign-in age on a rule (the field is read before it is dropped)", () => {
+    for (const bad of [-1, 1.5, "60", 2_592_001]) expect(validateCompanySettings({ ...base(), decisions: [{ what: "setting.*", signInMaxAgeSeconds: bad }] }).ok).toBe(false);
   });
 
   it("refuses an object that isn't plain (a class instance, a null prototype)", () => {
