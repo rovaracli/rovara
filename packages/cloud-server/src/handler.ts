@@ -25,6 +25,7 @@ import { connectCookieName } from "./connect-flow.js";
 import { SLACK_CALLBACK_PATH, createSlackConnect } from "./slack-connect.js";
 import { LINEAR_CALLBACK_PATH, createLinearConnect } from "./linear-connect.js";
 import { createSignInLinks } from "./sign-in-links.js";
+import { createSignInFactors } from "./sign-in-factors.js";
 
 export interface CloudRequest {
   method: string;
@@ -129,6 +130,8 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
   const linear = createLinearConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, origin: options.origin });
   // DEC 254w: Connected sign-ins (sign-in-links.ts). Its return arrives at the registered sign-in callback, so the callback below asks `isReturn` first.
   const signInLinks = createSignInLinks({ client: options.client, store: options.store, now, log, expiredCookie: cookie("", 0) });
+  // L4-MF4: the person's own confirmation email (masked) and passkeys for the account page (sign-in-factors.ts).
+  const signInFactors = createSignInFactors({ client: options.client, log });
 
   /**
    * The join page's lookup (onboarding-routes.ts): same origin only (a page elsewhere can't start a join for someone), JSON, small. A usable
@@ -301,7 +304,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
               // Guided onboarding PR 12b: disconnect one of the company's GitHub accounts (owner + fresh step-up).
               : method === "DELETE" && GITHUB_DISCONNECT_PATH.test(apiPath) ? () => github.disconnect(session!, GITHUB_DISCONNECT_PATH.exec(apiPath)![1]!, parsedBody(request.body)) : undefined;
     // Guided onboarding PR 11: Slack and Linear (the start and result routes need this sign-in's cookie, as GitHub's).
-    const connectRoute = githubCall === undefined ? slack.route(method, apiPath, request.query) ?? linear.route(method, apiPath) ?? signInLinks.route(method, apiPath) : undefined;
+    const connectRoute = githubCall === undefined ? slack.route(method, apiPath, request.query) ?? linear.route(method, apiPath) ?? signInLinks.route(method, apiPath) ?? signInFactors.route(method, apiPath) : undefined;
     const connectCall = githubCall ?? (connectRoute === undefined ? undefined : () => connectRoute(session!, id, parsedBody(request.body)));
     if (connectCall !== undefined) {
       try {

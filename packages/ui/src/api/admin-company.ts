@@ -153,8 +153,9 @@ export function windowWords(seconds: number | undefined): string {
 export const WINDOW_CHOICES: ReadonlyArray<{ seconds: number; label: string }> = [60, 120, 300, 600].map(seconds => ({ seconds, label: windowWords(seconds) }));
 
 // ---- Sign-in factors (Code's step-up factor: a confirmation email and passkeys) ----
-// Proposed Cloud routes, passed through to Code's sign-in service once it serves them (it answers 501 until then, and the page says "not connected yet"):
-//   GET    /v1/app/me/sign-in-factors                      -> { factorEmail?: string (masked), passkeys: [{ credentialId, createdAt, lastUsedAt? }] }
+// The read below is served (L4-MF4: Cloud passes it to Code's GET /v1/dev/me/sign-in-factors as the person; the caller's own factors only). Until the Code in use serves it, Cloud answers 501 and the page
+// says "not connected yet". The three below are still proposed routes, passed through once Code serves them (501 until then):
+//   GET    /v1/app/me/sign-in-factors                      -> { factorEmail?: string (masked), passkeys: [{ credentialId, createdAt, lastUsedAt? }] }   (served)
 //   DELETE /v1/app/me/passkeys/{credentialId}              (fresh step-up)
 //   PUT    /v1/app/org/members/{developerId}/factor-email  { requestId, email }  (an admin's own fresh step-up; the old address is told first)
 //   DELETE /v1/app/org/members/{developerId}/passkeys      (an admin's own fresh step-up; the person is told)
