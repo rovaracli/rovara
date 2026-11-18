@@ -694,6 +694,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const EGRESS_ADDRESSES = ["198.51.100.10", "198.51.100.20"];
   const OFFERED_MODELS = ["zai.glm-4.7", "claude-sonnet-4-5", "zai.glm-4.6"];
   let companyModel: string | undefined;
+  /** DEC 254zzz63 (Code #1075): the company's lessons learning model; the install default is Claude Haiku 5.5, only Claude models are offered. */
+  const LEARNING_OFFERED = ["claude-sonnet-5-5", "claude-haiku-5-5"];
+  let learningModel: string | undefined;
+  const learningView = () => { const model = learningModel ?? "claude-haiku-5-5"; return { model, source: learningModel === undefined ? "install" as const : "company" as const, offered: [...LEARNING_OFFERED], preselect: LEARNING_OFFERED.includes(model) ? model : LEARNING_OFFERED[0]! }; };
   const engineView = () => { const model = companyModel ?? "zai.glm-4.6"; return { model, source: companyModel === undefined ? "install" as const : "company" as const, offered: [...OFFERED_MODELS], preselect: OFFERED_MODELS.includes(model) ? model : OFFERED_MODELS[0]! }; };
   const projectSettings = new Map<string, { overrides: Record<string, unknown>; revision: number }>();
   const settingsView = (name: string) => {
@@ -1709,6 +1713,15 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       if (body.model !== null && !OFFERED_MODELS.includes(body.model)) return failure(400, "CONFIG_INVALID", "That model isn't offered to this company now. Pick one from the list.");
       companyModel = body.model ?? undefined;
       return { body: engineView() };
+    },
+    // Any member reads; an owner or admin sets a Claude model from the offered list (null puts the install default back).
+    "company.learningModel.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : { body: learningView() }),
+    "company.learningModel.put": ({ person, body }) => {
+      if (companyless.has(person.developerId)) return failure(401, "AUTH_REQUIRED", "sign in again");
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can change the model lessons learn with.");
+      if (body.model !== null && !LEARNING_OFFERED.includes(body.model)) return failure(400, "CONFIG_INVALID", "That model isn't a Claude model offered to this company now. Pick one from the list.");
+      learningModel = body.model ?? undefined;
+      return { body: learningView() };
     },
     // Members of the project read; its administrator changes (revision-checked). The pretend Code sets no step-up, so it checks none here.
     "projects.settings.get": ({ params, person }) => (roleIn(person, params["project"] ?? "") === undefined ? notFound("project") : { body: settingsView(params["project"] ?? "") }),

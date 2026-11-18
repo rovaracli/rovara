@@ -18,6 +18,7 @@ import { MEMBER_ROUTES } from "./member-routes.js";
 import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
 import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./project-create-routes.js";
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
+import { LEARNING_MODEL_ROUTES } from "./learning-model-routes.js";
 import { EGRESS_ADDRESSES_ROUTES } from "./egress-addresses-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { codeOwnerOf, openTaskByCodeId } from "./open-task.js";
@@ -1126,6 +1127,8 @@ export const ROUTES: Route[] = [
   ...PROJECT_CREATE_ROUTES,
   // The "AI and spending" step (guided onboarding PR 15): the company's AI model and a project's per-task limit, answered by Code as the person.
   ...AI_SPEND_ROUTES,
+  // The model the company's lessons learn with (DEC 254zzz63): its own choice or the install default, answered by Code as the person.
+  ...LEARNING_MODEL_ROUTES,
   // Rovara's outbound addresses (L4-EGR): a read for company owners and admins, answered by Code as the person.
   ...EGRESS_ADDRESSES_ROUTES,
   // The in-app inbox (web task channel K5): Code's C7 routes, as the person.
