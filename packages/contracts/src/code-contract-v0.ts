@@ -589,7 +589,13 @@ export interface TaskLesson {
 export interface TaskLessonsResponse { project: string; taskId: string; lessons: TaskLesson[] }
 export interface NotHelpfulResponse { project: string; taskId: string; lessonId: string; marked: "not_helpful" }
 /** The project's own mode, the mode in force (the stricter of it and the company's), whether the company is the reason, and whether this person may change it. */
-export interface LessonModeResponse { project: string; mode: LessonMode; effective: LessonMode; lockedByCompany: boolean; canChange: boolean }
+export interface LessonModeResponse { project: string; mode: LessonMode; effective: LessonMode; lockedByCompany: boolean; canChange: boolean; trialOffer?: { approvals: number; drops: number; since: number } }
+export interface WeeklySummaryResponse { project: string; on: boolean; source: "chosen" | "pilot_default" | "default"; canChange: boolean }
+export interface WeeklyLessonsResponse { project: string; weekly: { needLook: JsonObject[]; picks: JsonObject[] } }
+export interface LessonReplayResponse { project: string; tasks: JsonObject[]; totals: JsonObject }
+export interface LessonTuningResponse { project: string; windowDays: number; ready: boolean; message: string; evidence: JsonObject; suggestions: JsonObject[]; note: string }
+export interface LessonRepeatsResponse { project: string; month: string; repeated: number; corrections: number; enoughData: boolean; split: JsonObject; unjudged: number; truncated: boolean }
+export interface CompanyLessonRepeatsResponse { scope: "company"; month: string; projects: JsonObject[]; repeated: number; corrections: number; enoughData: boolean }
 /** Code's counts only phase 0 measurement, returned only to a project maintainer or company owner/admin. */
 export interface LessonMeasureResponse {
   project: string; windowDays: number; floor: number; loads: number; lessonsInUse: number | null; loadedLessons: number; loadedBelowFloor: number;
@@ -795,6 +801,15 @@ export interface CodeRouteTypes {
   "lessons.notHelpful": { request: JsonObject; response: NotHelpfulResponse };
   "lessons.mode.get": { request: void; response: LessonModeResponse };
   "lessons.mode.put": { request: PutLessonModeRequest; response: LessonModeResponse };
+  "lessons.weeklySummary.get": { request: void; response: WeeklySummaryResponse };
+  "lessons.weeklySummary.put": { request: { on: boolean }; response: WeeklySummaryResponse };
+  "lessons.weekly": { request: void; response: WeeklyLessonsResponse };
+  "lessons.keep": { request: JsonObject; response: JsonObject };
+  "lessons.trialOffer": { request: { decision: "accept" | "not_now" }; response: JsonObject };
+  "lessons.replay": { request: void; response: LessonReplayResponse };
+  "lessons.tuning": { request: void; response: LessonTuningResponse };
+  "lessons.repeats": { request: void; response: LessonRepeatsResponse };
+  "lessons.repeats.company": { request: void; response: CompanyLessonRepeatsResponse };
   "lessons.graduation": { request: void; response: GraduationResponse };
   "lessons.graduate": { request: GraduateRequest; response: GraduateResponse };
   "lessons.graduateLater": { request: JsonObject; response: GraduateLaterResponse };
@@ -1000,6 +1015,15 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.notHelpful", "POST", `${DP}/tasks/{taskId}/lessons/{lessonId}/not-helpful`, "Mark a lesson the task was given as not helpful", "full", ["session"], "no", false, "none", true),
   spec("lessons.mode.get", "GET", `${DP}/lessons/mode`, "The project's learning mode, the mode in force and whether the company locks it", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.mode.put", "PUT", `${DP}/lessons/mode`, "Set the learning mode (a project admin, or a company owner or admin)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.weeklySummary.get", "GET", `${DP}/lessons/weekly-summary`, "Read the weekly lessons summary setting", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.weeklySummary.put", "PUT", `${DP}/lessons/weekly-summary`, "Set the weekly lessons summary setting", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.weekly", "GET", `${DP}/lessons/weekly`, "This week's lesson questions and picks (people who decide)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.keep", "POST", `${DP}/lessons/{lessonId}/keep`, "Keep a lesson asked to be reviewed", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.trialOffer", "POST", `${DP}/lessons/mode/trial-offer`, "Accept or decline the earned trial offer", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.replay", "GET", `${DP}/lessons/replay`, "Replay a sample of tasks against current lessons", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.tuning", "GET", `${DP}/lessons/tuning`, "Suggested lesson settings from usage evidence", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.repeats", "GET", `${DP}/lessons/repeats`, "Project repeated corrections", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.repeats.company", "GET", "/v1/dev/lessons/repeats", "Company repeated corrections", "full", ["admin"], "no", false, "none", true),
   spec("lessons.graduation", "GET", `${DP}/lessons/graduation`, "This week's one Make this permanent card, the tidy card and the draft tasks (people who decide)", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.graduate", "POST", `${DP}/lessons/{lessonId}/graduate`, "Make a proven lesson permanent: a team rule, a draft task to add a check, or a skill", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.graduateLater", "POST", `${DP}/lessons/{lessonId}/graduate-later`, "Not now: no card for this lesson for 60 days", "full", ["how-we-work"], "no", false, "none", true),
@@ -1315,6 +1339,15 @@ PUT /v1/app/projects/{p}/lessons/local-tools | k | how-we-work | lessons.localTo
 GET /v1/app/company/lessons/local-tools | k | admin | company.knowledgeStays.get | learned | T
 PUT /v1/app/company/lessons/local-tools | k | admin | company.knowledgeStays.put | learned | T
 PUT /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.put | learned | T
+GET /v1/app/projects/{p}/lessons/weekly-summary | k | how-we-work | lessons.weeklySummary.get | learned | T
+PUT /v1/app/projects/{p}/lessons/weekly-summary | k | how-we-work | lessons.weeklySummary.put | learned | T
+GET /v1/app/projects/{p}/lessons/weekly | k | how-we-work | lessons.weekly | learned | T
+POST /v1/app/projects/{p}/lessons/{lessonId}/keep | k | how-we-work | lessons.keep | learned | T
+POST /v1/app/projects/{p}/lessons/mode/trial-offer | k | how-we-work | lessons.trialOffer | learned | T
+GET /v1/app/projects/{p}/lessons/replay | k | how-we-work | lessons.replay | learned | T
+GET /v1/app/projects/{p}/lessons/tuning | k | how-we-work | lessons.tuning | learned | T
+GET /v1/app/projects/{p}/lessons/repeats | k | how-we-work | lessons.repeats | learned | T
+GET /v1/app/lessons/repeats | k | admin | lessons.repeats.company | learned | T
 GET /v1/app/projects/{p}/lessons/graduation | k | how-we-work | lessons.graduation | learned | T
 POST /v1/app/projects/{p}/lessons/{lessonId}/graduate | k | how-we-work | lessons.graduate | learned | T
 POST /v1/app/projects/{p}/lessons/{lessonId}/graduate-later | k | how-we-work | lessons.graduateLater | learned | T

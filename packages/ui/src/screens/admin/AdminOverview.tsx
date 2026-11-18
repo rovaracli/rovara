@@ -11,14 +11,17 @@ import { NotConnected, SpendMeter, Stat } from "./parts.js";
 import { useAdminRead } from "./models/read.js";
 import { useOrgSpendRead } from "./spending/SpendingSummary.js";
 import { GatewayReadinessBanner, useGatewayReadiness } from "./spending/GatewayReadiness.js";
+import { CompanyRepeatsLine } from "../project/lessons/RepeatsLine.js";
 
 /** The admin Overview (Hybrid 1, DEC 223): this month's money and who is in the company at a glance, then the five groups. Every number is read; none is made up. */
 export function AdminOverview() {
  const { company, role } = useAdminContext(), spend = useOrgSpendRead(), members = useAdminRead("overview-members", "/v1/app/org/members", AppOrgMembersResponseReaderSchema);
  const readiness = useGatewayReadiness(), summary = spend.data === undefined ? undefined : spendSummary(spend.data);
  const admins = members.data?.members.filter(member => member.role === "owner" || member.role === "admin").length;
+ const canSeeRepeats = role === "owner" || role === "admin";
  return <section><PageHeader focusOnMount title="Administration" description={`Everything for ${company} in five groups: people, money, rules, connections and oversight.`} />
   <GatewayReadinessBanner readiness={readiness} />
+  <CompanyRepeatsLine enabled={canSeeRepeats && !members.isPending} />
   {summary?.state === "over" && <Banner tone="danger" title="This month's budget is used up" action={<Link className="rv-button rv-button-secondary" to="/app/admin/money/budgets">Open Spending</Link>}><p>New tasks wait in the queue. Running tasks finish their current step.</p></Banner>}
   <div className="rv-stats" role="group" aria-label="At a glance">
    {spend.isPending ? <Skeleton label="Loading this month's spending" /> : summary === undefined || summary.state === "unknown" ? <div className="rv-stat" style={{ gridColumn: "span 2" }}><span className="rv-stat-label">This month</span>{isNotConnected(spend.error) || summary?.state === "unknown" ? <NotConnected what="Spending numbers" /> : <p role="alert">Couldn't load spending. <Link to="/app/admin/money/budgets">Open Spending</Link></p>}</div> : <>
