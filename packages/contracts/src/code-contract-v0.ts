@@ -545,8 +545,6 @@ export interface LessonItem {
   possibleDuplicate?: string;
   /** The lesson this one contradicts. */
   contradicts?: string;
-  /** A possible duplicate that cannot be merged into the other (it came only from the repository's own reviews). */
-  mergeBlocked?: true;
   /** How many distinct tasks were given it. Not sent by Code yet (being added); shown only when present. */
   usedInTasks?: number;
   canApprove: boolean; canReject: boolean; canRetire: boolean;
