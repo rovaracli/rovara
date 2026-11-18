@@ -202,8 +202,9 @@ async function readSpendLimits(context: RouteContext): Promise<RouteAnswer> {
   const got = await askCode(context, settingsPath(project), { method: "GET" }, projectSettingsRefusal);
   if ("refusal" in got) return got.refusal;
   const settings = projectSettingsOf(got.value);
-  // Code lets only the project's administrator change its settings today, so only they are offered the change.
-  return settings === undefined ? A.projectUnavailable : { status: 200, body: projectView(project, settings, projectAdmin(who, project)) };
+  // Code lets the project's administrator change its settings, and a live company owner or admin change its per-task limit (project-settings.ts, L2-5 b: COMPANY_ADMIN_BUDGET_ONLY).
+  // This page changes only that limit, so both are offered the change; Code still decides on every write.
+  return settings === undefined ? A.projectUnavailable : { status: 200, body: projectView(project, settings, projectAdmin(who, project) || companyAdmin(who)) };
 }
 
 async function changeSpendLimits(context: RouteContext): Promise<RouteAnswer> {
@@ -211,7 +212,7 @@ async function changeSpendLimits(context: RouteContext): Promise<RouteAnswer> {
   if (refused(who)) return who;
   const project = context.params[0]!;
   if (!PROJECT_NAME.test(project)) return A.projectNotFound;
-  // A company owner or admin, or the project's admin, may ask; Code decides (today: the project's administrator, with a fresh step-up).
+  // A company owner or admin, or the project's admin, may ask; Code decides (the project's administrator, or a company owner or admin for the per-task limit only, with a fresh step-up).
   if (!companyAdmin(who) && !projectAdmin(who, project)) return A.projectNotAllowed;
   const body = context.body;
   if (tooLarge(body) || !plain(body) || !exactly(body, ["expectedRevision", "perTaskUsd"]) || !whole(body["expectedRevision"], 0, Number.MAX_SAFE_INTEGER - 1)) return A.projectInvalid;
@@ -226,7 +227,7 @@ async function changeSpendLimits(context: RouteContext): Promise<RouteAnswer> {
   const overrides: Plain = { ...current.overrides };
   if (perTask === null) delete overrides[PER_TASK_FIELD];
   else overrides[PER_TASK_FIELD] = perTask;
-  // Nothing to change: answered without a write, but only to the project's administrator (anyone else goes to Code, which decides).
+  // Nothing to change: answered without a write, but only to the project's administrator (a company owner or admin still goes to Code, which checks them live).
   if (current.perTaskUsd === (perTask === null ? undefined : perTask) && projectAdmin(who, project)) return { status: 200, body: projectView(project, current, true) };
   const wrote = await askCode(context, settingsPath(project), { method: "PUT", body: { expectedRevision: current.revision, overrides } }, projectSettingsRefusal);
   if ("refusal" in wrote) return wrote.refusal;

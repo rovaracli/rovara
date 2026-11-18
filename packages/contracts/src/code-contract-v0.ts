@@ -193,7 +193,12 @@ export interface TaskEvent {
 }
 export interface TaskEventsResponse { events: TaskEvent[]; next?: string }
 
-/** One stored version of the task's plan (`GET /v1/dev/tasks/{id}/plan`), with the estimate the plan screen shows. */
+/**
+ * One stored version of the task's plan (`GET /v1/dev/tasks/{id}/plan`, Code's PLANFULLDOC `aws/task-plan-document.ts` TaskPlanDocumentView), as Code answers it: wrapped in
+ * `{ plan }`. `content` is the canonical plan document (its `title`, `claims` with ids "1", "1.1", and `decisions` with options and Code's `recommended` one); `summary` is
+ * Code's plan-check summary (`checks` with a `label` each, `lines`, ...). Code names no estimate, run limit or task status here. Cloud's work-reads.ts turns it into what the
+ * spec screen draws (SpecRequirement, UnderstandingQuestion).
+ */
 export interface PlanView {
   taskId: TaskId;
   document: "requirements" | "design" | "plan";
@@ -201,20 +206,12 @@ export interface PlanView {
   sha256: string;
   approved: boolean;
   current: boolean;
-  versions: number[];
+  versions: readonly number[];
   /** The canonical plan document, whole. Untrusted model text. */
   content: JsonObject;
-  summary: { headline: string; checks: string[] };
-  /** "about $1.20 to $3.10, 12 to 25 minutes"; absent when the task has no estimate (Code's one-screen plan, `cost`). */
-  estimate?: string;
-  /** The per-run dollar limit the approver acknowledges (decision card `acknowledgedRunLimitUsd`). */
-  runLimitUsd?: number;
-  /** Optional (UX audit 2026-11-15): the plan as a structured spec with stable ids, so a criterion, a task, a comment and a proof item can point at each other. */
-  requirements?: SpecRequirement[];
-  tasks?: SpecTask[];
-  /** Optional: the questions the plan asks, each tied to the criterion it settles. */
-  questions?: UnderstandingQuestion[];
+  summary: JsonObject;
 }
+export interface PlanResponse { plan: PlanView }
 
 /** A requirement of the structured spec. Ids are stable across plan versions (a changed requirement keeps its id). */
 export interface SpecRequirement { id: string; title: string; criteria: SpecCriterion[] }
@@ -583,7 +580,7 @@ export interface LessonMeasureResponse {
   loadsWithBelowFloor: number; loadedNoMatch: number; meanWordsLoaded: number | null; meanWordsLeftOut: number | null; loadsCapBound: number;
   leftOutAtOrAboveFloor: number; meanFitLoaded: number | null; meanFitLeftOut: number | null;
   cleanMerge: { merged: number; reverted: number; clean: number; rate: number | null };
-  revertDetection: "not_wired"; truncated: boolean; unreadable: number;
+  revertDetection: "not_wired" | "wired"; truncated: boolean; unreadable: number;
 }
 export interface PutLessonModeRequest { mode: LessonMode }
 /** Lead 4 L4-LP3W: the approved lessons by code area (Code `GET .../lessons/areas`; the strict shape is contracts `app-lessons-areas.ts`). A folder holds the lessons anchored at it or below it, each counted once. */
@@ -639,7 +636,7 @@ export interface CodeRouteTypes {
   "tasks.list": { request: void; response: TaskListResponse };
   "tasks.get": { request: void; response: TaskResponse };
   "tasks.events": { request: void; response: TaskEventsResponse };
-  "tasks.plan": { request: void; response: PlanView };
+  "tasks.plan": { request: void; response: PlanResponse };
   "tasks.cancel": { request: CancelRequest; response: TaskResponse };
   "tasks.close": { request: CloseRequest; response: CloseResponse };
   "tasks.continue": { request: ContinueRequest; response: TaskResponse };

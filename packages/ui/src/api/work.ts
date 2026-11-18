@@ -45,6 +45,8 @@ export interface ReadTask {
  hasThread: boolean;
  /** Rovara Cloud's session for the task (`ses_...`) when the person started it in Cloud: the steer, stop and comment routes are the session's. */
  sessionId: string | undefined;
+ /** The list could not read this task's own view (its stage, pull requests and cost): the row says nothing it cannot know, and never "Finished". */
+ detailUnread?: true;
 }
 export function readTask(raw: unknown): ReadTask | undefined {
  if (!isRecord(raw)) return undefined;
@@ -53,6 +55,7 @@ export function readTask(raw: unknown): ReadTask | undefined {
  const workflow = isRecord(raw["workflow"]) ? raw["workflow"] : undefined;
  const spent = isRecord(raw["spent"]) ? num(raw["spent"]["usd"]) : undefined, limit = isRecord(raw["runLimit"]) ? num(raw["runLimit"]["limitUsd"]) : undefined;
  return {
+  ...(raw["detail"] === "unread" ? { detailUnread: true as const } : {}),
   ...opt("setupRecheck", ((line) => (line !== undefined && line.length > 0 && line.length <= 600 && !/[\p{Cc}\p{Cf}]/u.test(line) ? line : undefined))(str(raw["setupRecheck"]))),
   hasThread: bool(raw["shared"]) === true || (isRecord(raw["share"]) && (str(raw["share"]["threadUrl"]) !== undefined || str(raw["share"]["threadTs"]) !== undefined)),
   taskId, sessionId: str(raw["sessionId"]), title, project, status: str(raw["status"]) as ReadTask["status"] | undefined,
@@ -196,6 +199,8 @@ export function workRow(task: ReadTask, decision: ReadDecision | undefined, now:
  }
  if (state === "WAITING" && stage === "PLAN_REVIEW") return { ...base, group: "you", tone: "wait", need: "Review spec", line: STAGE_WORDS["PLAN_REVIEW"]!, waitingSince, stale: now.getTime() - Date.parse(waitingSince) >= DAY_MS };
  if (state === "WAITING") return { ...base, ...none, group: "others", tone: "idle", line: stage === undefined ? "Waiting" : STAGE_WORDS[stage] ?? "Waiting" };
+ // A task whose own view the list could not read may be waiting between steps: it is not called finished.
+ if (task.workflow === undefined && task.status === "SUCCEEDED" && task.detailUnread === true) return { ...base, ...none, group: "run", tone: "idle", line: "Open it to see its step" };
  if (state === "COMPLETE" || (task.workflow === undefined && task.status === "SUCCEEDED")) return { ...base, ...none, group: "done", tone: "ok", line: "Finished" };
  if (task.status === "STARTING") return { ...base, ...none, group: "run", tone: "idle", line: "In the queue" };
  return { ...base, ...none, group: "run", tone: isOpen(task) || task.status === "RUNNING" ? "run" : "idle", line: stage === undefined ? "Working" : STAGE_WORDS[stage] ?? "Working" };
@@ -223,7 +228,8 @@ export function workRows(tasks: readonly ReadTask[], decisions: readonly ReadDec
 export function involvedRows(tasks: readonly ReadTask[], now: Date): WorkRow[] {
  return tasks.flatMap(task => {
   const row = workRow(task, undefined, now), idle = now.getTime() - Date.parse(row.updatedAt);
-  if (idle >= STOPPED_DROPPED_DAYS * DAY_MS || (row.group === "done" && idle >= 7 * DAY_MS)) return [];
+  // A row whose step the list could not read (it may be finished) leaves after a week, like finished work.
+  if (idle >= STOPPED_DROPPED_DAYS * DAY_MS || ((row.group === "done" || task.detailUnread === true) && idle >= 7 * DAY_MS)) return [];
   return [{ ...row, group: "involved" as const, need: undefined, stale: false, line: row.group === "you" && row.tone === "bad" ? "Stopped" : row.line }];
  }).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
 }

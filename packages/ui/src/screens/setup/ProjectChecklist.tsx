@@ -52,7 +52,7 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
   queryKey: setupChecklistKey(project), queryFn: () => api.status(project), retry: false,
   refetchInterval: current => (current.state.data?.setupRun.state === "running" ? 5000 : false),
  });
- const [busy, setBusy] = useState<SetupSkippableRow>(), [error, setError] = useState<string>();
+ const [busy, setBusy] = useState<SetupSkippableRow | "evalNone">(), [error, setError] = useState<string>();
  if (status.isError && checklistAbsent(status.error)) return null;
  if (status.isPending) return <Skeleton label="Loading the setup checklist" />;
  if (status.isError) return <section className="rv-checklist" aria-label="Finish setting up"><p role="status" data-testid="checklist-read-error"><VisibleText text={fixedSetupWords(status.error, "The project's setup couldn't be read just now. Try again.")} /></p><Button onClick={() => { void status.refetch(); }}>Try again</Button></section>;
@@ -67,6 +67,13 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
   catch (caught) { setError(fixedSetupWords(caught, "That couldn't be saved just now. Try again.")); }
   finally { setBusy(undefined); }
  }
+ async function evalNone(noEvals: boolean) {
+  setBusy("evalNone"); setError(undefined);
+  try { await api.evalNone(project, noEvals); refresh(); }
+  catch (caught) { setError(fixedSetupWords(caught, "That couldn't be saved just now. Try again.")); }
+  finally { setBusy(undefined); }
+ }
+ const noEvalsButton = canChange ? <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals" onClick={() => { void evalNone(true); }}>This project has no evals</Button> : null;
  const next = data.progress.nextRequired;
  const open = (row: SetupStatusRow) => row === next || (OPTIONAL.has(row) && data[row].state === "optional" && canChange);
  const skipButton = (row: SetupSkippableRow) => canChange && data[row].state === "optional" ? <Button busy={busy === row} data-testid={`checklist-skip-${row}`} onClick={() => { void skip(row, true); }}>Set up later</Button> : null;
@@ -88,9 +95,10 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
    </Row>
    <Row name="evalConfirm" state={data.evalConfirm.state} open={open("evalConfirm")}>
     {data.evalConfirm.blockedBy === "setupRun" ? <p>After the setup run, Rovara proposes how it checks work here.</p>
+     : data.evalConfirm.report === "no_evals" ? <><p data-testid="checklist-eval-no-evals-set">No evals for this project: Rovara checks work with the project's own tests.</p>{canChange && <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals-undo" onClick={() => { void evalNone(false); }}>This project has evals after all</Button>}</>
      : data.evalConfirm.report === "confirmed" ? <p>Rovara runs <code><VisibleText text={data.evalConfirm.confirmedSelection ?? "the confirmed checks"} /></code> before every pull request.</p>
-     : data.evalConfirm.report === "reported" ? <>{(data.evalConfirm.suites ?? []).map(suite => <p key={suite.selection}>Rovara will run <code><VisibleText text={suite.selection} /></code> before every pull request.</p>)}<p className="rv-muted" data-testid="checklist-eval-not-yet">Confirming these checks from the web isn't connected yet; a company owner or admin, or this project's admin, confirms them where Rovara asks.</p></>
-     : <p data-testid="checklist-eval-none">The setup run found no checks to confirm yet. Run setup again, or edit the test commands.</p>}
+     : data.evalConfirm.report === "reported" ? <>{(data.evalConfirm.suites ?? []).map(suite => <p key={suite.selection}>Rovara will run <code><VisibleText text={suite.selection} /></code> before every pull request.</p>)}<p className="rv-muted" data-testid="checklist-eval-not-yet">Confirming these checks from the web isn't connected yet; a company owner or admin, or this project's admin, confirms them where Rovara asks.</p>{noEvalsButton}</>
+     : <><p data-testid="checklist-eval-none">The setup run found no checks to confirm yet. Run setup again, or edit the test commands.</p>{noEvalsButton}</>}
    </Row>
    <Row name="aiAndSpend" state={data.aiAndSpend.state} open={open("aiAndSpend")}>
     <p>{data.aiAndSpend.source === "project" && data.aiAndSpend.modelBudgetUsd !== null ? `This project's per-task limit: $${data.aiAndSpend.modelBudgetUsd.toFixed(2)}.` : "Same as company."}</p>
