@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fixedWikiSetupWords, parseUsd, readUpkeepCap, useWikiSetupApi, wikiSetupAbsent, wikiSetupKey, type UpkeepCap, type WikiSetupUpkeepCap } from "../../../api/wiki-setup.js";
+import { fixedWikiSetupWords, parseUsd, readUpkeepCap, useWikiSetupApi, wikiSetupAbsent, wikiSetupKey, type UpkeepCap, type WikiSetupUpkeepCap, type WikiSetupUpkeepSpend } from "../../../api/wiki-setup.js";
 import { needsStepUp } from "../../../api/admin-company.js";
 import { ApiError } from "../../../api/errors.js";
 import { Button } from "../../../design/Button.js";
@@ -63,6 +63,20 @@ function CapLine({ cap }: { cap: WikiSetupUpkeepCap | undefined }) {
     : <>{T.CAP_LINE_SET} <Money usd={monthlyUsd} />. {canRaise && <Link to={SPENDING_LIMITS_ROUTE}>{T.CAP_LINK_RAISE}</Link>}</>}</p>;
 }
 
+/**
+ * L4-CAPR: what nightly upkeep spent this month against the cap, for people who manage the project (the server sends it to no one else). A run whose cost Code could not state adds nothing to the dollars, so the
+ * line says "at least" and counts those runs in words; the cap is Code's number from the gateway, and when it states none the line says only what was spent.
+ */
+function SpendLine({ spend, cap }: { spend: WikiSetupUpkeepSpend; cap: WikiSetupUpkeepCap | undefined }) {
+  const monthlyUsd = cap?.monthlyUsd ?? null, unknown = spend.unknownRuns;
+  // The line says "this month": a total for another UTC month (a stale answer across a month change) is not drawn.
+  if (spend.month !== new Date().toISOString().slice(0, 7)) return null;
+  // Under half a cent would read as "$0.00", which says nothing ran: it says what it is.
+  const tiny = spend.spentUsd > 0 && spend.spentUsd < 0.005;
+  return <p className="rv-muted" data-testid="wiki-setup-upkeep-spend">{T.SPEND_LINE} {unknown > 0 && <>{T.SPEND_AT_LEAST} </>}{tiny ? T.SPEND_TINY : <Money usd={spend.spentUsd} />}{monthlyUsd !== null && <> {T.SPEND_OF} <Money usd={monthlyUsd} /></>}
+    {unknown > 0 && <span data-testid="wiki-setup-upkeep-spend-unknown"> ({String(unknown)} {unknown === 1 ? "run" : "runs"} with unknown cost)</span>}</p>;
+}
+
 /** The setup choice (company owners and admins): one button, then one confirm that says what runs and what the cap is. Yes sends the company's consent and the project switch in one act. */
 function Offer({ cap, busy, onYes }: { cap: WikiSetupUpkeepCap | undefined; busy: boolean; onYes: () => void }) {
   const [asking, setAsking] = useState(false), group = useRef<HTMLDivElement>(null), button = useRef<HTMLButtonElement>(null), cancelled = useRef(false);
@@ -118,7 +132,8 @@ export function NightlyUpkeep({ project, companyAdmin }: { project: string; comp
   return <section className="rv-wikis-upkeep" aria-label={T.UPKEEP} data-testid="wiki-setup-upkeep">
     <div className="rv-wikis-setting"><div>
       <h3>{T.UPKEEP}</h3><p className="rv-muted">{T.UPKEEP_TEXT}</p>
-      <p className="rv-muted" data-testid="wiki-setup-upkeep-state">{running ? T.UPKEEP_ON : T.UPKEEP_OFF}</p></div>
+      <p className="rv-muted" data-testid="wiki-setup-upkeep-state">{running ? T.UPKEEP_ON : T.UPKEEP_OFF}</p>
+      {upkeep.canManage && upkeep.spend !== undefined && <SpendLine spend={upkeep.spend} cap={upkeep.cap} />}</div>
       {upkeep.canManage && settled && <Switch label={T.UPKEEP} checked={upkeep.enabled} disabled={busy} onCheckedChange={(on) => { void send(on); }} />}
     </div>
     {offer && <Offer cap={upkeep.cap} busy={busy} onYes={() => { void send(true, true); }} />}
