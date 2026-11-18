@@ -11,7 +11,7 @@ import { Code } from "aws-cdk-lib/aws-lambda";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { BEDROCK_TEMPLATE_URL_PATTERN, CLOUD_BEDROCK_TEMPLATE_URL_ENV, CLOUD_PRODUCT_AI_ENV, CloudWebStack } from "../../infra/lib/cloud-web.js";
+import { BEDROCK_TEMPLATE_URL_PATTERN, CLOUD_ANSWERS_ENABLED_ENV, CLOUD_ANSWERS_ENABLED_PARAMETER, CLOUD_BEDROCK_TEMPLATE_URL_ENV, CLOUD_PRODUCT_AI_ENV, CloudWebStack } from "../../infra/lib/cloud-web.js";
 import { validTemplateUrl } from "../../packages/model-gateway/src/bedrock-byo.js";
 import { MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
 
@@ -51,15 +51,38 @@ function withOldCompanySetting(template: ReturnType<typeof synth>): ReturnType<t
   return out as ReturnType<typeof synth>;
 }
 
+/**
+ * Live switches 2026-11-18 (rule D, additive): a named test environment's web stack gained exactly the AnswersEnabled parameter and the server's ROVARA_ANSWERS_ENABLED (its Ref). Taken out again (and
+ * checked to be exactly those two), the template must hash to what it was: so nothing else moved. Production has neither.
+ */
+function withoutAnswersSwitch(template: ReturnType<typeof synth>, env: string): ReturnType<typeof synth> {
+  const parameters = { ...template.Parameters };
+  if (env === "production") expect(parameters[CLOUD_ANSWERS_ENABLED_PARAMETER]).toBeUndefined();
+  else expect({ ...(parameters[CLOUD_ANSWERS_ENABLED_PARAMETER] as object), Description: "" }).toEqual({ Type: "String", Default: "1", AllowedValues: ["1", "0"], Description: "" });
+  delete parameters[CLOUD_ANSWERS_ENABLED_PARAMETER];
+  let removed = 0;
+  const resources: Record<string, unknown> = {};
+  for (const [id, resource] of Object.entries(template.Resources)) {
+    const variables = (resource.Properties.Environment as { Variables?: Record<string, unknown> } | undefined)?.Variables;
+    if (resource.Type !== "AWS::Lambda::Function" || variables === undefined || !(CLOUD_ANSWERS_ENABLED_ENV in variables)) { resources[id] = resource; continue; }
+    expect(variables[CLOUD_ANSWERS_ENABLED_ENV]).toEqual({ Ref: CLOUD_ANSWERS_ENABLED_PARAMETER });
+    const rest = Object.fromEntries(Object.entries(variables).filter(([key]) => key !== CLOUD_ANSWERS_ENABLED_ENV));
+    removed++;
+    resources[id] = { ...resource, Properties: { ...resource.Properties, Environment: { ...(resource.Properties.Environment as object), Variables: rest } } };
+  }
+  expect(removed).toBe(env === "production" ? 0 : 1);
+  return { ...template, Parameters: parameters, Resources: resources } as ReturnType<typeof synth>;
+}
+
 describe("Cloud web: product AI settings grants (B7)", () => {
   it("off: production and staging templates are byte for byte what they were (less the company setting DEC 253z removed)", () => {
-    expect(sha(withOldCompanySetting(synth("production")))).toBe(BEFORE.production);
-    expect(sha(withOldCompanySetting(synth("staging")))).toBe(BEFORE.staging);
-    expect(sha(withOldCompanySetting(synth("staging", false)))).toBe(BEFORE.staging);
+    expect(sha(withOldCompanySetting(withoutAnswersSwitch(synth("production"), "production")))).toBe(BEFORE.production);
+    expect(sha(withOldCompanySetting(withoutAnswersSwitch(synth("staging"), "staging")))).toBe(BEFORE.staging);
+    expect(sha(withOldCompanySetting(withoutAnswersSwitch(synth("staging", false), "staging")))).toBe(BEFORE.staging);
     expect(Object.keys(synth("staging").Parameters)).not.toContain("CompanyId");
   });
   it.each(["production", "staging"] as const)("%s: removing only the approved Companies ConditionCheckItem restores the previous template digest", (env) => {
-    const t = withOldCompanySetting(synth(env));
+    const t = withOldCompanySetting(withoutAnswersSwitch(synth(env), env));
     let changed = 0;
     for (const resource of Object.values(t.Resources)) {
       if (resource.Type !== "AWS::IAM::Policy") continue;
