@@ -3,7 +3,7 @@
 // (after a fresh sign-in); a changed eval set that grew past the approved dollars asks again (Approve / Not now); once approved it says what a PR costs and offers the OPT-IN health check, which is
 // never sent without a click. The dollars a person saw (`seen`) are copied from the read, never worked out here. No tokens, counts or micro-dollar words reach the page. The server decides everything;
 // these tests watch what the page asks and says.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -12,7 +12,7 @@ import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ProjectChecklist } from "../../packages/ui/src/screens/setup/ProjectChecklist.js";
-import { EVAL_CARD_WORDS } from "../../packages/ui/src/screens/setup/EvalCard.js";
+import { EVAL_CARD_WORDS, EVAL_HEALTH_POLL_MS, EVAL_HEALTH_WORDS, evalHealthPollMs } from "../../packages/ui/src/screens/setup/EvalCard.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
@@ -29,7 +29,8 @@ const suite = (over: Record<string, unknown> = {}) => ({ selection: "npm run eva
 const card = (over: Record<string, unknown> = {}) => ({ project: "web", state: "propose", canApprove: true, report: { taskId: TASK, reportDigest: DIGEST }, suites: [suite()], ...over });
 const offer = { requestId: OFFER_ID, revision: 3, artifactDigest: OFFER_DIGEST };
 const waiting = (over: Record<string, unknown> = {}) => card({ state: "waiting", suites: [], spend: { state: "waiting", perPr: "$0.90-$2.40", monthly: "$41.00", needsApproval: "Needs approval: your eval set grew past the approved $1.20", approval: offer }, ...over });
-const health = (state: "none" | "requested" | "finished") => ({ state, label: "Check my evals now (about $2.40)", cost: "$2.40", seenCostMicros: 2_400_777 });
+const health = (state: "none" | "requested" | "running" | "finished" | "not_run", extra: Record<string, unknown> = {}) => ({ state, label: "Check my evals now (about $2.40)", cost: "$2.40", seenCostMicros: 2_400_777, ...extra });
+const finishedResult = (over: Record<string, unknown> = {}) => ({ at: "2026-11-18T05:00:00.000Z", questionCount: 3, passedAnswers: 5, totalAnswers: 9, differing: 1, saved: true, reused: false, cases: [{ id: "refund-window", passes: 3 }, { id: "tone", passes: 2 }, { id: "leak", passes: 0 }], ...over });
 const approved = (over: Record<string, unknown> = {}) => card({ state: "approved", suites: [], spend: { state: "approved", perPr: "$0.50-$1.20", monthly: "$41.00" }, health: health("none"), ...over });
 const checklist = () => ({
   project: "web", viewer: { companyRole: "owner", projectAdmin: false, canSkip: true }, progress: { done: 3, total: 8, percent: 38, nextRequired: "evalConfirm" },
@@ -313,6 +314,98 @@ describe("the opt-in health check", () => {
   });
 });
 
+describe("the health check's answer (L4-EVH)", () => {
+  it("a check that is running says so, with no button, and the card reads again by itself", async () => {
+    const f = mount({ read: () => ({ status: 200, body: approved({ health: health("running") }) }) });
+    const c = await theCard();
+    expect(within(c).getByTestId("eval-health-state").textContent).toBe("Your eval check is running");
+    expect(within(c).queryByRole("button")).toBeNull();
+    f.close();
+  });
+  it("a finished check tells pass or fail per case, how many answers passed and which cases differed; never an answer", async () => {
+    const f = mount({ read: () => ({ status: 200, body: approved({ health: health("finished", { result: finishedResult() }) }) }) });
+    const c = await theCard();
+    expect(within(c).getByTestId("eval-health-state").textContent).toBe("Your eval check ran");
+    expect(within(c).getByTestId("eval-health-summary").textContent).toBe("Checked 3 eval cases: 5 of 9 answers passed.");
+    expect(within(c).getByTestId("eval-health-differing").textContent).toBe("1 eval case gave different answers on different runs.");
+    expect([...within(c).getByTestId("eval-health-cases").querySelectorAll("li")].map(li => li.textContent)).toEqual(["refund-window: Passed", "tone: Passed 2 of 3 times", "leak: Failed"]);
+    expect(within(c).queryByTestId("eval-health-not-saved")).toBeNull();
+    expect(within(c).queryByRole("button")).toBeNull();
+    f.close();
+  });
+  it("says when the baseline could not be saved and when nothing was run because the results were already saved", async () => {
+    const f = mount({ read: () => ({ status: 200, body: approved({ health: health("finished", { result: finishedResult({ saved: false, differing: 0 }) }) }) }) });
+    expect((await within(await theCard()).findByTestId("eval-health-not-saved")).textContent).toBe("Measured, but the result could not be saved as your baseline.");
+    f.close(); cleanup();
+    const g = mount({ read: () => ({ status: 200, body: approved({ health: health("finished", { result: finishedResult({ reused: true, differing: 0 }) }) }) }) });
+    expect((await within(await theCard()).findByTestId("eval-health-reused")).textContent).toBe("Rovara already had these results saved, so nothing was run.");
+    g.close();
+  });
+  it("a check that did not run says why in Code's own words and offers the button again, with a fresh request id after an earlier press", async () => {
+    let reply: ApiResponse = { status: 200, body: approved() };
+    const notRun: ApiResponse = { status: 200, body: approved({ health: health("not_run", { words: "Not run: your yes is more than a day old. Say yes again to run it." }) }) };
+    const f = mount({ read: () => reply, post: () => { reply = notRun; return { status: 200, body: { project: "web", requested: true, duplicate: false, cost: "$2.40" } }; } });
+    fireEvent.click(await within(await theCard()).findByRole("button", { name: "Check my evals now (about $2.40)" }));
+    await waitFor(() => expect(posts(f, "eval-health")).toHaveLength(1));
+    expect((await screen.findByTestId("eval-health-words")).textContent).toBe("Not run: your yes is more than a day old. Say yes again to run it.");
+    fireEvent.click(await within(await theCard()).findByRole("button", { name: "Check my evals now (about $2.40)" }));
+    await waitFor(() => expect(posts(f, "eval-health")).toHaveLength(2));
+    const ids = posts(f, "eval-health").map(r => (r.body as { requestId: string }).requestId);
+    expect(ids[0]).not.toBe(ids[1]);
+    f.close();
+  });
+  it("reads again by itself only while a check waits or runs, and never posts (the poll only reads)", () => {
+    expect(EVAL_HEALTH_POLL_MS).toBe(15_000);
+    for (const state of ["requested", "running"]) expect(evalHealthPollMs(state)).toBe(15_000);
+    for (const state of ["none", "finished", "not_run", undefined]) expect(evalHealthPollMs(state)).toBe(false);
+  });
+  it("a running card is read again after the poll interval, with no post", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const f = mount({ read: () => ({ status: 200, body: approved({ health: health("running") }) }) });
+      await theCard();
+      const before = evalReads(f);
+      await vi.advanceTimersByTimeAsync(EVAL_HEALTH_POLL_MS + 500);
+      await waitFor(() => expect(evalReads(f)).toBeGreaterThan(before));
+      expect(posts(f)).toHaveLength(0);
+      f.close();
+    } finally { vi.useRealTimers(); }
+  });
+  it("a card that read once keeps showing its last answer when a later read fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let ok = true;
+      const f = mount({ read: () => (ok ? { status: 200, body: approved({ health: health("running") }) } : { status: 500, body: { error: { code: "INTERNAL", message: "down" } } }) });
+      await theCard();
+      const before = evalReads(f);
+      ok = false;
+      await vi.advanceTimersByTimeAsync(EVAL_HEALTH_POLL_MS + 500);
+      await waitFor(() => expect(evalReads(f)).toBeGreaterThan(before));
+      expect(screen.queryByTestId("eval-card-read-error")).toBeNull();
+      expect(screen.getByTestId("eval-health-state").textContent).toBe("Your eval check is running");
+      f.close();
+    } finally { vi.useRealTimers(); }
+  });
+  it("a second press before Code's answer settles repeats the same request id (a double press is one request)", async () => {
+    const f = mount({ read: () => ({ status: 200, body: approved() }) });
+    const label = { name: "Check my evals now (about $2.40)" };
+    fireEvent.click(await within(await theCard()).findByRole("button", label));
+    await waitFor(() => expect(posts(f, "eval-health")).toHaveLength(1));
+    fireEvent.click(await within(await theCard()).findByRole("button", label));
+    await waitFor(() => expect(posts(f, "eval-health")).toHaveLength(2));
+    const ids = posts(f, "eval-health").map(r => (r.body as { requestId: string }).requestId);
+    expect(ids[0]).toBe(ids[1]);
+    f.close();
+  });
+  it("a person who may not approve sees the answer but no button", async () => {
+    const f = mount({ read: () => ({ status: 200, body: approved({ canApprove: false, health: health("not_run", { words: "Not run: the monthly AI spending limit cannot fit these runs." }) }) }) });
+    const c = await theCard();
+    expect(within(c).getByTestId("eval-health-words").textContent).toBe("Not run: the monthly AI spending limit cannot fit these runs.");
+    expect(within(c).queryByRole("button")).toBeNull();
+    f.close();
+  });
+});
+
 describe("when there is no card", () => {
   it("Code's `unavailable` sentence stands in place of the card", async () => {
     const words = "This install has no eval budget, so an eval can't be approved here yet.";
@@ -375,7 +468,7 @@ describe("dollars only", () => {
     });
   }
   it("the words the page itself says hold no token, call or micro-dollar word", () => {
-    const words = Object.values(EVAL_CARD_WORDS).map(value => typeof value === "function" ? value("$1.00", "$2.00") : value).join(" ");
+    const words = [...Object.values(EVAL_CARD_WORDS).map(value => typeof value === "function" ? value("$1.00", "$2.00") : value), EVAL_HEALTH_WORDS.resultLine({ questionCount: 3, passedAnswers: 5, totalAnswers: 9 } as never), EVAL_HEALTH_WORDS.differing(2), EVAL_HEALTH_WORDS.caseMixed(2)].join(" ");
     expect(words).not.toMatch(/token|call|micro/iu);
   });
 });

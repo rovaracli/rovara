@@ -1,6 +1,6 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { EvalCardSuite, EvalCardView } from "@agentx/contracts/web";
+import type { EvalCardSuite, EvalCardView, EvalHealthResult } from "@agentx/contracts/web";
 import { evalCardKey, useEvalCardApi } from "../../api/eval-card.js";
 import { setupChecklistKey } from "../../api/setup-checklist.js";
 import { ApiError } from "../../api/errors.js";
@@ -11,6 +11,8 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { useNav } from "../account/use-nav.js";
 import { confirmedReturn, forgetConfirmed, startStepUpNonce, useJustConfirmed } from "../admin/parts.js";
 import "./approval-card.css";
+
+const cases = (n: number) => `${String(n)} eval ${n === 1 ? "case" : "cases"}`;
 
 /** What the card itself says (everything else it shows is Code's own sentence, in dollars). No counts, no technical units: only dollars and plain words. */
 export const EVAL_CARD_WORDS = {
@@ -25,12 +27,24 @@ export const EVAL_CARD_WORDS = {
   approvedLine: (perPr: string, monthly: string) => `Rovara runs your evals on each AI change: about ${perPr} per PR, at most ${monthly} a month.`,
   carried: "Your eval cases changed and stayed inside what you approved.",
   queued: "Your eval check is queued",
+  running: "Your eval check is running",
   ran: "Your eval check ran",
+  notSaved: "Measured, but the result could not be saved as your baseline.",
+  reused: "Rovara already had these results saved, so nothing was run.",
+  casePassed: "Passed", caseFailed: "Failed",
   readError: "Your evals couldn't be read just now. Try again.",
   sendError: "Couldn't send that. Try again.",
 } as const;
 
-const cases = (n: number) => `${String(n)} eval ${n === 1 ? "case" : "cases"}`;
+/** What the health check's answer says: counts and plain words only, never an answer's text. */
+export const EVAL_HEALTH_WORDS = {
+  resultLine: (r: EvalHealthResult) => `Checked ${cases(r.questionCount)}: ${String(r.passedAnswers)} of ${String(r.totalAnswers)} answers passed.`,
+  differing: (n: number) => `${cases(n)} gave different answers on different runs.`,
+  caseMixed: (passes: number) => `Passed ${String(passes)} of 3 times`,
+} as const;
+/** How often the card reads again while a check waits or runs (milliseconds); never otherwise. */
+export const EVAL_HEALTH_POLL_MS = 15_000;
+export const evalHealthPollMs = (state: string | undefined): number | false => (state === "requested" || state === "running" ? EVAL_HEALTH_POLL_MS : false);
 type Problem = { message: string; moved: boolean };
 
 /**
@@ -43,14 +57,19 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
   const api = useEvalCardApi(), host = useAppHost(), query = useQueryClient();
   const who = useNav()?.me.developerId;
   const confirmed = useJustConfirmed(who);
-  const read = useQuery({ queryKey: evalCardKey(project), queryFn: () => api.read(project), retry: false });
+  // While a check waits or runs, the card reads again by itself (a person who pressed the button wants its answer); otherwise only when told to.
+  const read = useQuery({ queryKey: evalCardKey(project), queryFn: () => api.read(project), retry: false,
+    refetchInterval: (q) => evalHealthPollMs(q.state.data?.health?.state) });
   const [stale, setStale] = useState(false), [busy, setBusy] = useState<string>(), [problem, setProblem] = useState<Problem>(), [done, setDone] = useState(false);
   const sending = useRef(false);
   // One id per card view: Code keeps a health request once per id, so a press that failed and is pressed again is the same request, never a second one. Made on a click, never on a render.
   const healthId = useRef<string | undefined>(undefined);
+  // A press that was answered keeps its id until Code's answer settles (a double press is the same request); once a check ran or did not run, the next press is a new request.
+  const settled = read.data?.health?.state === "not_run" || read.data?.health?.state === "finished";
+  useEffect(() => { if (settled) healthId.current = undefined; }, [settled]);
   const fresh = confirmed && !stale;
   if (read.isPending) return <Skeleton label="Loading your evals" />;
-  if (read.isError) {
+  if (read.isError && read.data === undefined) {
     if (read.error instanceof ApiError && (read.error.code === "NOT_ON_CODE_YET" || read.error.status === 404)) return <>{fallback}</>;
     return <div data-testid="eval-card-read-error"><p role="status">{EVAL_CARD_WORDS.readError}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div>;
   }
@@ -59,7 +78,7 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
   if (data.state === "none") return <>{fallback}</>;
 
   const reread = () => { void query.invalidateQueries({ queryKey: evalCardKey(project) }); void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); };
-  const refresh = () => { setDone(false); reread(); };
+  const refresh = () => { setDone(false); healthId.current = undefined; reread(); };
   function confirmItsYou() { host.signIn(confirmedReturn(host.currentPath(), startStepUpNonce(host.storage)), { stepUp: true }); }
   /** One act: the latch keeps a second press from sending a second one; a sign-in the server finds too old asks again. */
   async function act(name: string, run: () => Promise<unknown>, finished: "reload" | "stay") {
@@ -111,12 +130,33 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
       {spend.carried === true && <p className="rv-muted" data-testid="eval-carried">{EVAL_CARD_WORDS.carried}</p>}
     </div>}
     {data.state === "rejected" && <p data-testid="eval-rejected">{EVAL_CARD_WORDS.rejected}</p>}
-    {health !== undefined && data.state === "approved" && data.canApprove && (health.state === "none"
-      ? <div className="rv-connect-actions rv-approval-actions"><Button busy={busy === "health"} disabled={busy !== undefined} data-testid="eval-health" onClick={() => { void act("health", () => api.health(project, { requestId: (healthId.current ??= crypto.randomUUID()), seenCostMicros: health.seenCostMicros }), "stay"); }}><VisibleText text={health.label} /></Button></div>
-      : <p role="status" data-testid="eval-health-state">{health.state === "requested" ? EVAL_CARD_WORDS.queued : EVAL_CARD_WORDS.ran}</p>)}
-    {health !== undefined && data.state === "approved" && !data.canApprove && health.state !== "none" && <p role="status" data-testid="eval-health-state">{health.state === "requested" ? EVAL_CARD_WORDS.queued : EVAL_CARD_WORDS.ran}</p>}
+    {health !== undefined && data.state === "approved" && <HealthBlock health={health} canAsk={data.canApprove} busy={busy} onAsk={() => { void act("health", () => api.health(project, { requestId: (healthId.current ??= crypto.randomUUID()), seenCostMicros: health.seenCostMicros }), "stay"); }} />}
     {!data.canApprove && (data.state === "propose" || data.state === "waiting" || data.state === "renew") && <p className="rv-muted" data-testid="eval-who">{EVAL_CARD_WORDS.noOne}</p>}
     {askStepUp && !done && <p className="rv-muted" data-testid="eval-fresh" role="status">{stale ? EVAL_CARD_WORDS.stepUpOld : fresh ? EVAL_CARD_WORDS.stepUpDone : EVAL_CARD_WORDS.stepUp}</p>}
     {problem !== undefined && <div role="alert" data-testid="eval-problem"><p><VisibleText text={problem.message} /></p>{problem.moved && <Button data-testid="eval-refresh" onClick={refresh}>Refresh</Button>}</div>}
   </section>;
+}
+
+type Health = NonNullable<EvalCardView["health"]>;
+const passWords = (passes: number) => (passes === 3 ? EVAL_CARD_WORDS.casePassed : passes === 0 ? EVAL_CARD_WORDS.caseFailed : EVAL_HEALTH_WORDS.caseMixed(passes));
+
+/** The opt-in health check, as Code reports it: the button (never sent on load), a waiting or running line, why it did not run, or pass or fail per case. */
+function HealthBlock({ health, canAsk, busy, onAsk }: { health: Health; canAsk: boolean; busy: string | undefined; onAsk: () => void }) {
+  const button = canAsk && (health.state === "none" || health.state === "not_run")
+    ? <div className="rv-connect-actions rv-approval-actions"><Button busy={busy === "health"} disabled={busy !== undefined} data-testid="eval-health" onClick={onAsk}><VisibleText text={health.label} /></Button></div>
+    : undefined;
+  if (health.state === "none") return button ?? null;
+  if (health.state === "not_run") return <>{health.words !== undefined && <p role="status" data-testid="eval-health-words"><VisibleText text={health.words} /></p>}{button}</>;
+  const line = health.state === "requested" ? EVAL_CARD_WORDS.queued : health.state === "running" ? EVAL_CARD_WORDS.running : EVAL_CARD_WORDS.ran;
+  const result = health.state === "finished" ? health.result : undefined;
+  return <>
+    <p role="status" data-testid="eval-health-state">{line}</p>
+    {result !== undefined && <div data-testid="eval-health-result">
+      <p data-testid="eval-health-summary">{EVAL_HEALTH_WORDS.resultLine(result)}</p>
+      {result.reused && <p className="rv-muted" data-testid="eval-health-reused">{EVAL_CARD_WORDS.reused}</p>}
+      {result.differing > 0 && <p className="rv-muted" data-testid="eval-health-differing">{EVAL_HEALTH_WORDS.differing(result.differing)}</p>}
+      {!result.saved && <p className="rv-muted" data-testid="eval-health-not-saved">{EVAL_CARD_WORDS.notSaved}</p>}
+      <ul data-testid="eval-health-cases">{result.cases.map(c => <li key={c.id} data-passes={c.passes}><VisibleText text={c.id} />: {passWords(c.passes)}</li>)}</ul>
+    </div>}
+  </>;
 }

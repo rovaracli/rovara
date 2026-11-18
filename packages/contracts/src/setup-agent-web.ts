@@ -126,6 +126,13 @@ export const EvalCardSuiteSchema = z.object({
   seen: z.object({ perCheckHighMicros: microDollars, monthlyCapMicros: microDollars }).strict(),
   versusApproved: z.object({ within: z.boolean(), words: z.string().min(1).max(600) }).passthrough().optional(),
 }).passthrough();
+/** What a finished health check tells a person: how many of each case's three answers passed (never an answer's text). */
+export const EvalHealthResultSchema = z.object({
+  questionCount: z.number().int().min(1).max(1_000), passedAnswers: z.number().int().min(0).max(3_000), totalAnswers: z.number().int().min(1).max(3_000), differing: z.number().int().min(0).max(1_000),
+  cases: z.array(z.object({ id: z.string().min(1).max(160), passes: z.number().int().min(0).max(3) }).passthrough()).min(1).max(1_000),
+  saved: z.boolean(), reused: z.boolean(),
+}).passthrough();
+export type EvalHealthResult = z.infer<typeof EvalHealthResultSchema>;
 export const EvalCardViewSchema = z.object({
   project: z.string().min(1).max(100).optional(),
   state: z.enum(EVAL_CARD_STATES),
@@ -140,8 +147,9 @@ export const EvalCardViewSchema = z.object({
     carried: z.boolean().optional(),
     approval: z.object({ requestId: z.string().regex(/^eval-[a-f0-9]{40}-[0-9]{1,15}$/u), revision: z.number().int().min(1), artifactDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).passthrough().optional(),
   }).passthrough().optional(),
-  /** The opt-in health run, shown only once the spend is approved. */
-  health: z.object({ state: z.enum(["none", "requested", "finished"]), label: z.string().min(1).max(200), cost: z.string().min(1).max(100), seenCostMicros: microDollars }).passthrough().optional(),
+  /** The opt-in health run, shown only once the spend is approved. `words` is Code's own fixed sentence for a check that did not run; `result` is pass or fail per case once it ran. */
+  health: z.object({ state: z.enum(["none", "requested", "running", "finished", "not_run"]), label: z.string().min(1).max(200), cost: z.string().min(1).max(100), seenCostMicros: microDollars,
+    words: z.string().min(1).max(300).optional(), result: EvalHealthResultSchema.optional() }).passthrough().optional(),
   unavailable: z.string().min(1).max(600).optional(),
 }).passthrough();
 export type EvalCardView = z.infer<typeof EvalCardViewSchema>;
