@@ -84,6 +84,7 @@ describe("the row", () => {
     expect((await within(await row()).findByTestId("eval-check-confirmed")).textContent).toBe("Chosen: evals");
     expect(within(await row()).getByTestId("eval-check-saved").textContent).toBe(W.saved);
     expect((await row()).getAttribute("data-state")).toBe("done");
+    expect(screen.getByTestId("checklist-row-evalCheck").querySelector("details")?.open).toBe(true);
     expect(within(await row()).getByRole("button", { name: W.clear })).toBeTruthy();
     f.close();
   });

@@ -98,5 +98,6 @@ export function EvalCheckRow({ project, alone = false }: { project: string; /** 
     {saved && <p role="status" data-testid="eval-check-saved">{W.saved}</p>}
     {error !== undefined && <p role="alert" data-testid="eval-check-error"><VisibleText text={error} /></p>}
   </>;
-  return confirmed === null ? wrap({ label: "Optional", tone: "idle" }, body, view.canManage && proposals?.verdict === "proposals") : wrap({ label: "Done", tone: "ok" }, body);
+  // The row stays open after a save, so the person sees "Saved." and the chosen name.
+  return confirmed === null ? wrap({ label: "Optional", tone: "idle" }, body, saved || (view.canManage && proposals?.verdict === "proposals")) : wrap({ label: "Done", tone: "ok" }, body, saved);
 }
