@@ -466,7 +466,8 @@ it("keeps Code's own words for any other 404 of the proof read (a task the perso
 const FAILURE = (index: number) => ({ check: "pytest -q", test: `tests/cart.test.ts::case ${String(index)}`, cause: index % 2 === 0 ? "likely broken by a change (commit aaaaaaa) to src/cart.ts" : "unknown (only weak evidence)" });
 it("reads Code's proof index: an item keyed by its id when it has no digest, each id once, and at most ten failing tests with the rest counted", () => {
   const index = readProofIndex({ items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }, { id: "evidence:0", title: "again", kind: "test_report", verdict: "pass" }, { title: "no key", kind: "log", verdict: "pass" }], failures: Array.from({ length: 13 }, (_, index) => FAILURE(index)), failuresNotListed: 2 });
-  expect(index.items.map(item => [item.id, item.sha256, item.title])).toEqual([["evidence:0", undefined, "pytest -q"]]);
+  // Every valid item is kept: a repeated key gets its own suffix (an older Code may send two checks with the same digest).
+  expect(index.items.map(item => [item.id, item.sha256, item.title])).toEqual([["evidence:0", undefined, "pytest -q"], ["evidence:0#1", undefined, "again"]]);
   expect(index.failures).toHaveLength(PROOF_FAILURES_SHOWN);expect(index.failures[0]).toEqual(FAILURE(0));
   expect(index.failuresNotListed).toBe(5);
   // An older Code (no failures) and odd values: no failing tests, nothing counted.
@@ -481,7 +482,7 @@ it("draws the failing tests under the proof as plain text, at most ten, and coun
   const list = screen.getByRole("list", { name: "Failing tests" });
   expect(within(list).getAllByRole("listitem")).toHaveLength(PROOF_FAILURES_SHOWN);
   expect(f.container.querySelector("img, script, b, a")).toBeNull();
-  expect(list.textContent).toContain("tests/<img src=x onerror=alert(1)>.test.ts::a");expect(list.textContent).toContain("(<b>suite</b>)");
+  expect(list.textContent).toContain("tests/<img src=x onerror=alert(1)>.test.ts::a");expect(list.textContent).toContain("(<b>suite</b>)");expect(list.textContent).toContain("[U+202E]");
   expect(f.container.textContent).toContain("and 5 more failing tests not listed");
   f.unmount();
   // Nothing to show: no section at all.

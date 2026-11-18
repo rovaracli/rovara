@@ -3,6 +3,7 @@ import { PROOF_FAILURES_SHOWN, provenCount } from "../../api/work.js";
 import { EvalResult } from "../../design/EvalResult.js";
 import { StatusPill, type StatusTone } from "../../design/StatusDot.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { useId } from "react";
 
 const STATE: Record<ProofState, { tone: StatusTone; label: string }> = {
  not_run: { tone: "idle", label: "Not run" }, running: { tone: "run", label: "Running" }, partly: { tone: "run", label: "Some checks" }, pass: { tone: "ok", label: "Pass" }, fail: { tone: "bad", label: "Fail" }, stale: { tone: "wait", label: "Out of date" },
@@ -24,11 +25,11 @@ export function ProofRow({ row }: { row: ProofRowModel }) {
  * at most ten, and the rest counted. Nothing when Code sent none.
  */
 export function FailingTests({ failures, notListed = 0 }: { failures: readonly ReadProofFailure[]; notListed?: number | undefined }) {
- const shown = failures.slice(0, PROOF_FAILURES_SHOWN), more = notListed + (failures.length - shown.length);
+ const headingId = useId(), shown = failures.slice(0, PROOF_FAILURES_SHOWN), more = notListed + (failures.length - shown.length);
  if (shown.length === 0 && more === 0) return null;
  return <div className="rv-proof-failures" data-testid="failing-tests">
-  <h4>Failing tests</h4>
-  {shown.length > 0 && <ul aria-label="Failing tests">{shown.map((row, index) => <li key={index}><span className="mono"><VisibleText text={row.test} /></span> <span className="rv-muted">(<VisibleText text={row.check} />)</span>: <VisibleText text={row.cause} /></li>)}</ul>}
+  <h4 id={headingId}>Failing tests</h4>
+  {shown.length > 0 && <ul aria-labelledby={headingId}>{shown.map((row, index) => <li key={index}><span className="mono"><VisibleText text={row.test} /></span> <span className="rv-muted">(<VisibleText text={row.check} />)</span>: <VisibleText text={row.cause} /></li>)}</ul>}
   {more > 0 && <p className="rv-muted">and {more} more failing {more === 1 ? "test" : "tests"} not listed</p>}
  </div>;
 }

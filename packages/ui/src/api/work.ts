@@ -93,17 +93,19 @@ export function readPlan(body: unknown): ReadPlan {
  };
 }
 
-/** One item of the proof index. `id` is the item's key: Code's item id, or its stored output's digest when Code sends no id. `sha256` is there only when Code kept the check's output. */
+/** One item of the proof index. `id` is the item's key: Code's item id, or its stored output's digest when Code sends no id (made unique with `#n` when repeated). `sha256` is there only when Code kept the check's output. */
 export interface ReadProofItem { id: string; sha256: string | undefined; title: string; kind: string; verdict: ProofItem["verdict"]; criterionIds: string[]; commit: string | undefined; stale: boolean; passed: number | undefined; total: number | undefined; bar: number | undefined }
 export function readProof(body: unknown): ReadProofItem[] {
  if (!isRecord(body) || !Array.isArray(body["items"])) throw new Error("not a proof index");
- const seen = new Set<string>();
+ const seen = new Map<string, number>();
  return records(body["items"]).flatMap(item => {
   const sha256 = str(item["sha256"]), id = str(item["id"]) ?? sha256, title = str(item["title"]), kind = str(item["kind"]);
   const verdict = (["pass", "fail", "unknown"] as const).find(value => value === item["verdict"]);
-  if (id === undefined || seen.has(id) || title === undefined || kind === undefined || verdict === undefined) return [];
-  seen.add(id);
-  return [{ id, sha256, title, kind, verdict, criterionIds: strings(item["criterionIds"]), commit: str(item["commit"]), stale: item["stale"] === true, passed: num(item["passed"]), total: num(item["total"]), bar: num(item["bar"]) }];
+  if (id === undefined || title === undefined || kind === undefined || verdict === undefined) return [];
+  // Every item is kept (an older Code may send two checks with the same output digest); a repeated key gets a suffix so each still has its own.
+  const repeat = seen.get(id) ?? 0;
+  seen.set(id, repeat + 1);
+  return [{ id: repeat === 0 ? id : `${id}#${String(repeat)}`, sha256, title, kind, verdict, criterionIds: strings(item["criterionIds"]), commit: str(item["commit"]), stale: item["stale"] === true, passed: num(item["passed"]), total: num(item["total"]), bar: num(item["bar"]) }];
  });
 }
 
@@ -119,7 +121,7 @@ export function readProofIndex(body: unknown): ReadProofIndex {
  const sent = isRecord(body) ? num(body["failuresNotListed"]) : undefined;
  const shown = failures.slice(0, PROOF_FAILURES_SHOWN);
  // What Code did not list, plus anything past the limit here: the rest is always counted, never dropped silently.
- const notListed = (sent !== undefined && Number.isInteger(sent) && sent > 0 ? sent : 0) + (failures.length - shown.length);
+ const notListed = (sent !== undefined && Number.isInteger(sent) && sent > 0 ? Math.min(sent, 100_000) : 0) + (failures.length - shown.length);
  return { items, failures: shown, failuresNotListed: notListed };
 }
 
