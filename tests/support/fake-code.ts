@@ -1147,7 +1147,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       const state = randomBytes(32).toString("base64url");
       connectStates.set(state, { developerId: person.developerId, spent: false, provider: "linear" });
       const authorize = new URL("https://linear.app/oauth/authorize");
-      for (const [key, value] of Object.entries({ client_id: "fakelinearclient", redirect_uri: linearRedirectUri, response_type: "code", scope: "read,comments:create,issues:create", state, actor: "app", prompt: "consent", code_challenge: "c".repeat(43), code_challenge_method: "S256" })) authorize.searchParams.set(key, value);
+      for (const [key, value] of Object.entries({ client_id: "fakelinearclient", redirect_uri: linearRedirectUri, response_type: "code", scope: "read,write,comments:create,issues:create", state, actor: "app", prompt: "consent", code_challenge: "c".repeat(43), code_challenge_method: "S256" })) authorize.searchParams.set(key, value);
       return { body: { state, expiresAt: new Date(now().getTime() + 600_000).toISOString(), authorizeUrl: authorize.toString() } };
     },
     "company.linear.complete": ({ body, person }) => {
