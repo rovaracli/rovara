@@ -100,6 +100,11 @@ describe("the graduation read", () => {
     expect(graduationView({ canDecide: true, tidy: { period: 30, lessons: [{ lessonId: "x", version: 1, title: "T" }, { lessonId: "les_aaaa", version: 1 }] } }, "web")).not.toHaveProperty("tidy");
     expect(graduationView("nope", "web")).toEqual({ project: "web", canDecide: false, drafts: [], rules: [] });
   });
+
+  it("keeps a card with dynamic paths and offers only targets that do not make a rule", () => {
+    const card = graduationView({ canDecide: true, card: { lessonId: "les_aaaa", version: 1, title: "T", target: "rule", targets: ["rule", "check", "skill"], paths: ["src/{area}/[id].ts"] } }, "web")["card"] as Record<string, unknown>;
+    expect(card).toMatchObject({ paths: ["src/{area}/[id].ts"], target: "check", targets: ["check", "skill"] });
+  });
 });
 
 describe("Make permanent", () => {
@@ -115,6 +120,15 @@ describe("Make permanent", () => {
       { target: "rule", name: "retry-helper" }, { target: "check", name: "retry-helper" }]) {
       expect((await priya.send("POST", `${P}/les_logs00001/graduate`, body)).status, JSON.stringify(body)).toBe(400);
     }
+    expect(sent("lessons.graduate")).toEqual([]);
+  });
+
+  it("refuses a rule request for a dynamic-path lesson before forwarding it", async () => {
+    const priya = await as("priya");
+    fake.overrideLessonAnswer("lessons.graduation", { body: { canDecide: true, card: { lessonId: "les_logs00001", version: 1, title: "T", target: "rule", targets: ["rule"], paths: ["src/[id].ts"] } } });
+    const result = await priya.send("POST", `${P}/les_logs00001/graduate`, { target: "rule" });
+    expect(result.status).toBe(400);
+    expect(result.body).toMatchObject({ error: { message: "Team rules need plain file paths, so this one can't become a rule." } });
     expect(sent("lessons.graduate")).toEqual([]);
   });
 
