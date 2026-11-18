@@ -23,6 +23,7 @@ import { WIKI_ROUTES } from "./wiki-routes.js";
 import { SAVED_ENV_ROUTES } from "./saved-env-routes.js";
 import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
 import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
+import { EVAL_CHECK_ROUTES } from "./eval-check-routes.js";
 import { ANSWERS_ROUTES } from "./answers-routes.js";
 import { AGENT_DIRECTORY_ROUTES } from "./agent-directory-routes.js";
 import { SYSTEM_RUNS_ROUTES } from "./system-runs-routes.js";
@@ -922,6 +923,8 @@ export const ROUTES: Route[] = [
   ...WIKI_CORRECTION_ROUTES,
   // The wiki panel on the setup page (lead 4 W6): the file map, the build controls and the nightly upkeep switch; Code decides who may, Cloud rebuilds bodies and answers (no dollar figure crosses).
   ...WIKI_SETUP_ROUTES,
+  // L4-EVCI2: the setup checklist's "Eval check from your CI" (Code decides who may; Cloud rebuilds every body and answer).
+  ...EVAL_CHECK_ROUTES,
   // L4-P3: the company's one control over nightly upkeep (read, allow with Code's fresh step-up, withdraw): company owners and admins only; Code decides again.
   ...SYSTEM_RUNS_ROUTES,
   // L4-U5: the "Setup needs repair" card on a project's setup page and its "Re-check setup" button, passed to Code as the person; Code decides who may.

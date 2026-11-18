@@ -17,6 +17,7 @@ import { LinearTeamRow } from "../connect/LinearTeamRow.js";
 import { SetupRunRow } from "./SetupRunRow.js";
 import { WikiChecklistRow } from "./wiki/WikiChecklistRow.js";
 import { CompanySetupLine } from "./CompanySetupLine.js";
+import { EvalCheckRow } from "./EvalCheckRow.js";
 import "./checklist.css";
 
 /** The words and tone each row state shows (design: Done, Needs you, Running, Optional, Failed; plus "Skipped (optional)"). */
@@ -59,7 +60,7 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
  const data: ProjectSetupChecklist = status.data;
  const canChange = data.viewer.canSkip, admin = data.viewer.companyRole === "owner" || data.viewer.companyRole === "admin";
  // A finished checklist leaves the project page, but the wiki's controls (Refresh now, the agents switch, Delete, nightly upkeep) stay reachable for the people who may use them (lead 4 W6).
- if (data.progress.percent >= 100 && place === "project") return canChange ? <WikiChecklistRow project={project} companyAdmin={admin} alone /> : null;
+ if (data.progress.percent >= 100 && place === "project") return canChange ? <><WikiChecklistRow project={project} companyAdmin={admin} alone /><EvalCheckRow project={project} alone /></> : null;
  const refresh = () => { void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); };
  async function skip(row: SetupSkippableRow, skipped: boolean) {
   setBusy(row); setError(undefined);
@@ -98,6 +99,8 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
    </Row>
    {/* Lead 4 W6: the project wiki is one more row here, not a second setup page. It is not counted in the progress above (Code computes that) and is absent while Code has no wiki build. */}
    <WikiChecklistRow project={project} companyAdmin={admin} />
+   {/* L4-EVCI2: "Eval check from your CI" is one more row, not counted in the progress above (Code computes that) and absent while Code does not serve it. */}
+   <EvalCheckRow project={project} />
    <Row name="slackChannel" state={data.slackChannel.state} open={open("slackChannel")}>
     <SlackChannelRow project={project} mode="checklist" canEdit={canChange} skipped={data.slackChannel.state === "skipped"} {...(canChange ? { onSkip: () => { void skip("slackChannel", true); }, onUndoSkip: () => { void skip("slackChannel", false); } } : {})} />
    </Row>

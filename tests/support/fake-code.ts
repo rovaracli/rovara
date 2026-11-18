@@ -304,6 +304,36 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     one.upkeepOn = given.on === true;
     return { status: 200, body: upkeepView(name, one, person, manage) };
   };
+  // L4-EVCI2: Code's eval check card (`/v1/app/projects/{p}/ci-eval-check`): each project's pretend proposals and confirmed check, set by the specs through /__fake/eval-check. `off` makes Code answer its unknown-route 404.
+  interface FakeEvalCheck { off?: boolean; verdict: "proposals" | "none_found" | "unknown"; items: Array<{ name: string; source?: string; workflow: string; repository: string; basis: "name" | "commands" }>; confirmed?: { name: string; source?: string }; puts: number; lastBody?: unknown }
+  const evalChecks = new Map<string, FakeEvalCheck>();
+  const evalCheckOf = (name: string): FakeEvalCheck => {
+    let one = evalChecks.get(name);
+    if (one === undefined) { one = { verdict: "proposals", items: [{ name: "evals", source: "15368", workflow: ".github/workflows/ci.yml", repository: name, basis: "name" }, { name: "Quality gate", source: "15368", workflow: ".github/workflows/ci.yml", repository: name, basis: "commands" }], puts: 0 }; evalChecks.set(name, one); }
+    return one;
+  };
+  const evalCheckAnswer = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/ci-eval-check$/u.exec(path);
+    if (match === null || (method !== "GET" && method !== "PUT")) return undefined;
+    const name = decodeURIComponent(match[1]!), one = evalCheckOf(name), grant = roleIn(person, name);
+    if (one.off === true) return failure(404, "NOT_FOUND", "route not found");
+    const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
+    if (project(name) === undefined || companyless.has(person.developerId) || (!manage && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
+    const view = () => ({ status: 200, body: { project: name, canManage: manage, confirmed: one.confirmed === undefined ? null : { ...one.confirmed, changedAt: "2026-11-18T08:00:00.000Z" }, proposals: manage ? { verdict: one.verdict, items: one.verdict === "proposals" ? one.items : [], cut: false } : null, explanation: "Rovara shows this check's result on its pull requests." } });
+    if (method === "GET") return view();
+    one.lastBody = body;
+    if (!manage) return failure(403, "FORBIDDEN", "Only company owners and admins, or this project's admins, can choose the eval check.");
+    const given = body as { requestId?: unknown; check?: unknown; [key: string]: unknown } | undefined;
+    if (typeof given?.requestId !== "string" || Object.keys(given).some((key) => key !== "requestId" && key !== "check") || given.check === undefined) return failure(400, "CONFIG_INVALID", "the request is not valid");
+    one.puts += 1;
+    if (given.check === null) { delete one.confirmed; return view(); }
+    const check = given.check as { name?: unknown; source?: unknown };
+    if (one.verdict === "unknown") return failure(503, "RUNTIME_UNAVAILABLE", "Rovara could not read your workflow files just now, so it cannot confirm a check. Try again.");
+    const found = one.items.find((item) => item.name === check.name && item.source === check.source);
+    if (one.verdict !== "proposals" || found === undefined) return failure(400, "CONFIG_INVALID", "That is not a check Rovara found in your workflow files. Open the setup again to see the list.");
+    one.confirmed = { name: found.name, ...(found.source === undefined ? {} : { source: found.source }) };
+    return view();
+  };
   const wikiSetupAnswer = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
     const match = /^\/v1\/app\/projects\/([^/]+)\/(wiki-map|wiki-build(?:\/(?:continue|stop|refresh|agents|delete))?|upkeep|setup-check)$/u.exec(path);
     if (match === null) return undefined;
@@ -1617,6 +1647,19 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           wikis.set(given.project, { ...(given.state === undefined ? {} : { state: given.state as "ready" }), ...(given.off === true ? { off: true } : {}), ...(given.broken === true ? { broken: true } : {}) });
           return send(200, { project: given.project });
         }
+        if (method === "POST" && url.pathname === "/__fake/eval-check") {
+          // L4-EVCI2: sets the pretend card of one project (verdict, items, the confirmed check, `off`), and reads back what it saw (`puts`, `lastBody`).
+          const given = JSON.parse(await readBody(request)) as Record<string, unknown>;
+          if (typeof given["project"] !== "string" || project(given["project"]) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project" } });
+          if (given["read"] === true) { const seen = evalCheckOf(given["project"]); return send(200, { puts: seen.puts, lastBody: seen.lastBody ?? null, confirmed: seen.confirmed ?? null }); }
+          evalChecks.delete(given["project"]);
+          const one = evalCheckOf(given["project"]);
+          if (given["off"] === true) one.off = true;
+          if (given["verdict"] === "proposals" || given["verdict"] === "none_found" || given["verdict"] === "unknown") one.verdict = given["verdict"];
+          if (Array.isArray(given["items"])) one.items = given["items"] as FakeEvalCheck["items"];
+          if (typeof given["confirmed"] === "object" && given["confirmed"] !== null) one.confirmed = given["confirmed"] as NonNullable<FakeEvalCheck["confirmed"]>;
+          return send(200, { project: given["project"] });
+        }
         if (method === "POST" && url.pathname === "/__fake/wiki-setup") {
           const given = JSON.parse(await readBody(request)) as Record<string, unknown>;
           if (typeof given["project"] !== "string" || project(given["project"]) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project" } });
@@ -1825,7 +1868,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? savedEnvAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? answersAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? savedEnvAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? evalCheckAnswer(method, url.pathname, who, parsed) ?? answersAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
           if (who === undefined && /\/(?:answers|code\/suggest)$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/how-we-work$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/(?:wiki(?:[-/]|$)|upkeep$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
