@@ -11,10 +11,11 @@ import type { AddressInfo } from "node:net";
 import {
   matchCodeRoute,
   type AccessResponse, type CodeRequest, type CodeResponse, type CodeRouteId, type CompanyMember, type DecisionCard, type ErrorBody, type HowWeWorkView,
-  type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
-  type DecisionsResponse, type DecisionOutcome, type LearningSourceKey, type LessonItem, type LessonMeasureResponse, type LessonMode, type TaskLesson,
+  type PlaybookView, type PlanComment, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
+  type DecisionsResponse, type DecisionOutcome, type GraduationResponse, type LearningSourceKey, type LessonItem, type LessonMeasureResponse, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
+import { taskPlanAnswer } from "../fixtures/code-answers.js";
 import { wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
 import { wikiMapOf, wikiSetupBuildView, type FakeWikiSetup } from "./wiki-setup-fixture.js";
 import { WIKI_SETUP_CODE_WORDS } from "../../packages/contracts/src/app-wiki-setup.js";
@@ -102,6 +103,12 @@ export interface FakeCode {
   close(): Promise<void>;
   /** Lessons on or off (off: every lessons route answers 404 LESSONS_SWITCHED_OFF "Lessons are off.", as Code does while its switch is off). */
   setLessons(on: boolean): void;
+  /** Lessons phase 4: every graduation, tidy, both-places and draft call Code received (route id, path params, body), newest last. */
+  lessonCalls: Array<{ id: string; params: Record<string, string>; body: unknown; person: string }>;
+  /** Lessons phase 4: answer one of those routes with this status and body instead (undefined puts the normal answer back). */
+  overrideLessonAnswer(id: string, answer: { status?: number; body: unknown } | undefined): void;
+  /** Lessons phase 4: put the lessons, the drafts and the held and closed cards back as the fake starts them. */
+  resetLessons(): void;
   /** Every request received, newest last (method, path, status). */
   log: Array<{ method: string; path: string; query: string; status: number }>;
 }
@@ -304,6 +311,36 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     one.upkeepOn = given.on === true;
     return { status: 200, body: upkeepView(name, one, person, manage) };
   };
+  // L4-EVCI2: Code's eval check card (`/v1/app/projects/{p}/ci-eval-check`): each project's pretend proposals and confirmed check, set by the specs through /__fake/eval-check. `off` makes Code answer its unknown-route 404.
+  interface FakeEvalCheck { off?: boolean; verdict: "proposals" | "none_found" | "unknown"; items: Array<{ name: string; source?: string; workflow: string; repository: string; basis: "name" | "commands" }>; confirmed?: { name: string; source?: string }; puts: number; lastBody?: unknown }
+  const evalChecks = new Map<string, FakeEvalCheck>();
+  const evalCheckOf = (name: string): FakeEvalCheck => {
+    let one = evalChecks.get(name);
+    if (one === undefined) { one = { verdict: "proposals", items: [{ name: "evals", source: "15368", workflow: ".github/workflows/ci.yml", repository: name, basis: "name" }, { name: "Quality gate", source: "15368", workflow: ".github/workflows/ci.yml", repository: name, basis: "commands" }], puts: 0 }; evalChecks.set(name, one); }
+    return one;
+  };
+  const evalCheckAnswer = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/ci-eval-check$/u.exec(path);
+    if (match === null || (method !== "GET" && method !== "PUT")) return undefined;
+    const name = decodeURIComponent(match[1]!), one = evalCheckOf(name), grant = roleIn(person, name);
+    if (one.off === true) return failure(404, "NOT_FOUND", "route not found");
+    const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
+    if (project(name) === undefined || companyless.has(person.developerId) || (!manage && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
+    const view = () => ({ status: 200, body: { project: name, canManage: manage, confirmed: one.confirmed === undefined ? null : { ...one.confirmed, changedAt: "2026-11-18T08:00:00.000Z" }, proposals: manage ? { verdict: one.verdict, items: one.verdict === "proposals" ? one.items : [], cut: false } : null, explanation: "Rovara shows this check's result on its pull requests." } });
+    if (method === "GET") return view();
+    one.lastBody = body;
+    if (!manage) return failure(403, "FORBIDDEN", "Only company owners and admins, or this project's admins, can choose the eval check.");
+    const given = body as { requestId?: unknown; check?: unknown; [key: string]: unknown } | undefined;
+    if (typeof given?.requestId !== "string" || Object.keys(given).some((key) => key !== "requestId" && key !== "check") || given.check === undefined) return failure(400, "CONFIG_INVALID", "the request is not valid");
+    one.puts += 1;
+    if (given.check === null) { delete one.confirmed; return view(); }
+    const check = given.check as { name?: unknown; source?: unknown };
+    if (one.verdict === "unknown") return failure(503, "RUNTIME_UNAVAILABLE", "Rovara could not read your workflow files just now, so it cannot confirm a check. Try again.");
+    const found = one.items.find((item) => item.name === check.name && item.source === check.source);
+    if (one.verdict !== "proposals" || found === undefined) return failure(400, "CONFIG_INVALID", "That is not a check Rovara found in your workflow files. Open the setup again to see the list.");
+    one.confirmed = { name: found.name, ...(found.source === undefined ? {} : { source: found.source }) };
+    return view();
+  };
   const wikiSetupAnswer = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
     const match = /^\/v1\/app\/projects\/([^/]+)\/(wiki-map|wiki-build(?:\/(?:continue|stop|refresh|agents|delete))?|upkeep|setup-check)$/u.exec(path);
     if (match === null) return undefined;
@@ -477,7 +514,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       : run.status === "ready" ? { state: "done" as const, status: "ready" as const, startedAt: run.startedAt, elapsedMs: 412_000, costCents: 48, commandsRun: 9, commandsFound: { setup: 2, tests: 1 }, testOutcome: "passed" as const }
       : { state: "failed" as const, status: "failed" as const, startedAt: run.startedAt, elapsedMs: 300_000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed" as const, ...(run.stop === undefined ? {} : { stop: run.stop }), failure: "A test command failed.", failedCommand: FAILED_COMMAND };
     const setupDone = runRow.state === "done";
-    const evalRow = setupDone ? { state: "needs_you" as const, report: "reported" as const, suites: [{ selection: "npm test", questions: 3 }] } : { state: "needs_you" as const, report: "none" as const, blockedBy: "setupRun" as const };
+    const evalRow = setupDone && evalOf(name).state === "approved" ? { state: "done" as const, report: "confirmed" as const, confirmedSelection: "npm run evals" } : setupDone ? { state: "needs_you" as const, report: "reported" as const, suites: [{ selection: "npm test", questions: 3 }] } : { state: "needs_you" as const, report: "none" as const, blockedBy: "setupRun" as const };
     const channels = [...slackLinks].filter(([, linked]) => linked === name).map(([channelId]) => ({ channelId, name: slackChannels.find((one) => one.id === channelId)?.name ?? channelId }));
     const team = linearPicks.get(name);
     const optional = (set: boolean, row: "slackChannel" | "linear" | "invites") => set ? "done" as const : skips.has(row) ? "skipped" as const : "optional" as const;
@@ -499,15 +536,52 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const run = runOf(name);
     return { status: run.status, basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, ...(run.taskId === undefined ? {} : { taskId: run.taskId }), ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }), ...(run.status === "failed" ? { failure: "A test command failed.", ...(run.stop === undefined ? {} : { stop: run.stop }) } : {}), canManage: manage, ...(setupApplies.has(name) ? { apply: applyView(setupApplies.get(name)!) } : {}) };
   };
+  // L4-EVC (DEC 254zzz20): the setup flow's ONE eval card, in dollars (Code's hosted eval routes, small). A project with a finished setup run has an eval to approve; the specs set the stage through /__fake/eval-card.
+  type FakeEval = { state: "none" | "propose" | "waiting" | "approved" | "rejected"; health: "none" | "requested" | "finished" };
+  const evalCards = new Map<string, FakeEval>();
+  const EVAL_SEEN = { perCheckHighMicros: 1_200_000, monthlyCapMicros: 41_000_000 };
+  const EVAL_OFFER = { requestId: `eval-${"e".repeat(40)}-3`, revision: 3, artifactDigest: "cd34".repeat(16) };
+  const evalOf = (name: string): FakeEval => evalCards.get(name) ?? { state: runOf(name).status === "ready" ? "propose" : "none", health: "none" };
+  const evalCardAnswer = (method: string, tail: string, name: string, manage: boolean, body: unknown): { status: number; body: unknown } => {
+    const card = evalOf(name);
+    if (method === "GET") {
+      const sentence = "Running your evals on each AI change will cost about $0.50-$1.20 per PR, at most $41.00 a month. Approve?";
+      return { status: 200, body: {
+        project: name, state: card.state, canApprove: manage,
+        ...(card.state === "none" ? {} : { report: { taskId: "task_fake-eval", reportDigest: "ab12".repeat(16) } }),
+        suites: card.state === "propose" ? [{ selection: "npm run evals", files: ["evals/a.yaml", "evals/b.yaml"], cases: 12, sentence, perPr: "$0.50-$1.20", monthly: "$41.00", seen: EVAL_SEEN }] : [],
+        ...(card.state === "waiting" ? { spend: { state: "waiting", perPr: "$0.90-$2.40", monthly: "$41.00", needsApproval: "Needs approval: your eval set grew past the approved $1.20", approval: EVAL_OFFER } }
+          : card.state === "approved" || card.state === "rejected" ? { spend: { state: card.state, perPr: "$0.50-$1.20", monthly: "$41.00" } } : {}),
+        ...(card.state === "approved" ? { health: { state: card.health, label: "Check my evals now (about $2.40)", cost: "$2.40", seenCostMicros: 2_400_000 } } : {}),
+      } };
+    }
+    if (!manage) return failure(403, "FORBIDDEN", "Only a company owner, admin or project maintainer can answer for the eval's spend.");
+    const given = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+    if (tail === "eval-approve") {
+      const seen = given["seen"] as Record<string, unknown> | undefined;
+      if (card.state !== "propose" || given["approve"] !== true || seen?.["perCheckHighMicros"] !== EVAL_SEEN.perCheckHighMicros || seen["monthlyCapMicros"] !== EVAL_SEEN.monthlyCapMicros) return failure(409, "CHANGE_STALE", "Your evals changed. Look again.");
+      evalCards.set(name, { state: "approved", health: "none" });
+      return { status: 200, body: { project: name, state: "approved", perPr: "$0.50-$1.20", monthly: "$41.00", carried: false } };
+    }
+    if (tail === "eval-decide") {
+      if (card.state !== "waiting" || given["requestId"] !== EVAL_OFFER.requestId) return failure(409, "CHANGE_STALE", "Your evals changed. Look again.");
+      evalCards.set(name, { state: given["outcome"] === "approve" ? "approved" : "rejected", health: "none" });
+      return { status: 200, body: { project: name, decision: given["outcome"] === "approve" ? "approved" : "rejected" } };
+    }
+    if (card.state !== "approved" || typeof given["requestId"] !== "string" || given["seenCostMicros"] !== 2_400_000) return failure(409, "CHANGE_STALE", "Your evals changed. Look again.");
+    evalCards.set(name, { ...card, health: "requested" });
+    return { status: 200, body: { project: name, requested: true, duplicate: false, cost: "$2.40" } };
+  };
   /** The hosted setup run's answer (Code #844 serves the laptop's /v1/app path), or undefined when the path is not one of its four. */
   const setupRunAnswer = (method: string, path: string, query: URLSearchParams, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
-    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide))?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide|eval|eval-approve|eval-decide|eval-health))?$/u.exec(path);
     if (match === null) return undefined;
     const tail = match[2];
-    if (!((method === "GET" && (tail === undefined || tail === "journal")) || (method === "POST" && tail !== "journal"))) return undefined;
+    if (!((method === "GET" && (tail === undefined || tail === "journal" || tail === "eval")) || (method === "POST" && tail !== "journal" && tail !== "eval"))) return undefined;
     const name = decodeURIComponent(match[1]!), entry = project(name), grant = roleIn(person, name);
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (entry === undefined || companyless.has(person.developerId) || (!manage && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
+    if (tail === "eval" || tail === "eval-approve" || tail === "eval-decide" || tail === "eval-health") return evalCardAnswer(method, tail, name, manage, body);
     if (method === "GET" && tail === undefined) return { status: 200, body: setupRunView(name, manage) };
     if (method === "GET") {
       const run = runOf(name), after = Number(query.get("after") ?? "0");
@@ -575,6 +649,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return { body: outcome };
   };
   // Guided onboarding PR 15: the company's engine model (Code #835) and each project's cost settings (Code's M4a), small.
+  /** Rovara's outbound addresses as the fake Code holds them (documentation-range style public addresses, not real ones). */
+  const EGRESS_ADDRESSES = ["198.51.100.10", "198.51.100.20"];
   const OFFERED_MODELS = ["zai.glm-4.7", "claude-sonnet-4-5", "zai.glm-4.6"];
   let companyModel: string | undefined;
   const engineView = () => { const model = companyModel ?? "zai.glm-4.6"; return { model, source: companyModel === undefined ? "install" as const : "company" as const, offered: [...OFFERED_MODELS], preselect: OFFERED_MODELS.includes(model) ? model : OFFERED_MODELS[0]! }; };
@@ -690,22 +766,31 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     pendingPeople.set(requestId, commit);
     return { body: { change: { status: "PENDING", requestId, confirmationUrl: `https://fake-code.invalid/review/${entry.task.taskId}/task/people/confirm/${requestId}`, expiresAt: new Date(now().getTime() + 600_000).toISOString() } } };
   };
-  const planOf = (task: TaskView): PlanView => ({
-    taskId: task.taskId, document: "plan", version: 1, sha256: PLAN_DIGEST, approved: task.workflow?.stage !== "PLAN_REVIEW", current: true, versions: [1],
-    content: { problem: `The task: ${task.title}`, approach: ["Read the code around the change", "Make the change", "Add a test that fails without it"], files: ["src/index.ts"], risks: ["Touches one shared module"] },
-    summary: { headline: "One small change, one new test", checks: ["Unit tests", "Type check"] },
-    estimate: "about $1.20 to $3.10, 12 to 25 minutes", runLimitUsd: 5,
-    // The structured spec (UX audit 2026-11-15): stable ids that a task, a comment, a question and a proof item can point at.
-    requirements: [{ id: "R1", title: "The change works and is tested", criteria: [{ id: "R1.1", when: "the change is made", then: "the new test passes", taskIds: ["T2", "T3"] }, { id: "R1.2", when: "the type check runs", then: "it reports no errors", taskIds: ["T2"] }] }],
-    tasks: [{ id: "T1", title: "Read the code around the change", status: "done" }, { id: "T2", title: "Make the change", status: "running", criterionIds: ["R1.1", "R1.2"] }, { id: "T3", title: "Add a test that fails without it", status: "todo", criterionIds: ["R1.1"] }],
-    questions: [{ questionId: "Q1", text: "Keep the old behaviour behind a flag?", options: [{ optionId: "yes", label: "Yes, behind a flag" }, { optionId: "no", label: "No, replace it" }], criterionId: "R1.1", defaultOptionId: "no" }],
-  });
+  // Code's REAL plan answer (`{ plan: TaskPlanDocumentView }`, tests/fixtures/code-answers.ts, made by Code's own readTaskPlanDocument): only the task id, the digest the fake's
+  // decision cards bind to and whether it was approved are this task's. Its claims ("1", "1.1", "2") are the criteria the proof index below points at.
+  const planOf = (task: TaskView) => {
+    const answer = taskPlanAnswer(task.taskId);
+    return { plan: { ...answer.plan, sha256: PLAN_DIGEST, approved: task.workflow?.stage !== "PLAN_REVIEW" } };
+  };
+
+  /** One task as Code's detailed list row says it (aws/developer-tasks.ts listRowDetail): the workflow's own upper-case pull request states, the cost and limit as numbers. */
+  const detailedRowOf = (task: TaskView): Record<string, unknown> => {
+    const workflow = task.workflow as (TaskWorkflow & { path?: string; blockReason?: string }) | undefined;
+    const pulls = (task.pullRequests ?? []) as Array<{ repository: string; number: number; url: string; state?: string }>;
+    const spent = (task as { spent?: { usd?: number } }).spent?.usd, limit = (task as { runLimit?: { limitUsd?: number } }).runLimit?.limitUsd;
+    return {
+      taskId: task.taskId, title: task.title, project: task.project, status: task.status, shared: task.shared === true, createdAt: task.createdAt, updatedAt: task.updatedAt,
+      ...(workflow === undefined ? {} : { workflow: { stage: workflow.stage, state: workflow.state, revision: workflow.revision, path: workflow.path ?? "FULL", ...(workflow.blockReason === undefined ? {} : { blockReason: workflow.blockReason }) } }),
+      ...(pulls.length === 0 ? {} : { pullRequests: pulls.map((pull) => ({ repository: pull.repository, number: pull.number, url: pull.url, state: (pull.state ?? "unknown").toUpperCase() })) }),
+      ...(spent === undefined ? {} : { costUsd: spent }), ...(limit === undefined ? {} : { runLimitUsd: limit }),
+    };
+  };
 
   const proofOf = (task: TaskView): ProofIndexResponse => ({
     taskId: task.taskId,
     items: [
-      { sha256: "d".repeat(64), title: "Unit tests", kind: "test_report", verdict: "pass", criterionIds: ["R1.1"], commit: "c".repeat(40), stale: false },
-      { sha256: "e".repeat(64), title: "Type check", kind: "check_result", verdict: "pass", criterionIds: ["R1.2"], commit: "c".repeat(40), stale: false },
+      { sha256: "d".repeat(64), title: "Unit tests", kind: "test_report", verdict: "pass", criterionIds: ["1.1"], commit: "c".repeat(40), stale: false },
+      { sha256: "e".repeat(64), title: "Type check", kind: "check_result", verdict: "pass", criterionIds: ["2"], commit: "c".repeat(40), stale: false },
       { sha256: "f".repeat(64), title: "Webhook retry eval", kind: "eval", verdict: "unknown", criterionIds: [], passed: 18, total: 20, bar: 0.95 },
     ],
   });
@@ -762,6 +847,35 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     ]],
   ]);
   const notHelpful = new Set<string>();
+  // --- lessons phase 4 (L4-LP4G): graduation, tidy, both places and draft tasks. Priya decides; Sam is refused in Code's words. Only project "web" has any.
+  const lessonCalls: FakeCode["lessonCalls"] = [];
+  const lessonOverrides = new Map<string, { status?: number; body: unknown }>();
+  const checkDrafts = new Map<string, { id: string; lessonId: string; title: string; request: string; paths: string[]; createdAt: number; status: "open" | "started" | "dismissed" }>([
+    ["chk_0123456789abcdef", { id: "chk_0123456789abcdef", lessonId: "les_semis0001", title: "Check that scripts have no semicolons", request: "Add a check that fails when a file in scripts/legacy has a semicolon at the end of a line.", paths: ["scripts/legacy/**"], createdAt: at(-1), status: "open" }],
+  ]);
+  /** Live team rules (a lesson made a rule): the rule's text, its paths and where it came from. */
+  const teamRules = new Map<string, { id: string; text: string; paths: string[]; repos: string[]; fromLesson: string; createdAt: number; status: "live" | "retired" }>();
+  const CARD_PATHS = ["src/logging/**"];
+  const graduationLater = new Set<string>();
+  let tidyClosed = false;
+  const initialLessons = [...lessonStore.entries()].map(([id, lesson]) => [id, JSON.parse(JSON.stringify(lesson)) as LessonItem] as const);
+  const initialDrafts = [...checkDrafts.entries()].map(([id, draft]) => [id, { ...draft }] as const);
+  const resetLessons = () => {
+    lessonStore.clear(); for (const [id, lesson] of initialLessons) lessonStore.set(id, JSON.parse(JSON.stringify(lesson)) as LessonItem);
+    checkDrafts.clear(); for (const [id, draft] of initialDrafts) checkDrafts.set(id, { ...draft });
+    teamRules.clear(); graduationLater.clear(); tidyClosed = false; retireAsks.clear(); lessonMode = "suggest";
+  };
+  const GRADUATION_REFUSED = "Only a maintainer of this project, or an admin, can decide what becomes permanent.";
+  /** One of the phase 4 routes: record the call, apply an override, refuse a non-decider in Code's words, else run `run`. */
+  const graduationRoute = <K extends CodeRouteId>(id: K, run: (context: Context<K>, project: string) => Answer<K>): Handler<K> => (context) => {
+    lessonCalls.push({ id, params: { ...context.params }, body: JSON.parse(JSON.stringify(context.body ?? null)) as unknown, person: context.person.key });
+    const found = lessonsProject(context);
+    if ("refused" in found) return found.refused;
+    const override = lessonOverrides.get(id);
+    if (override !== undefined) return { status: override.status ?? 200, body: override.body as CodeResponse<K> };
+    if (!found.decides) return failure(403, "FORBIDDEN", GRADUATION_REFUSED);
+    return run(context, found.name);
+  };
   const lessonsOff = () => failure(404, "LESSONS_SWITCHED_OFF", "Lessons are off.");
   const LIST_STATUSES: Record<string, string[]> = { proposed: ["pending"], approved: ["active", "stale"], retired: ["retired", "expired", "rejected"] };
   /** The project, if lessons are on and the person is on its roster (Code answers the same "No such project." for both). */
@@ -985,6 +1099,11 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { status: 201, body: { task: entry.task } };
     },
     "tasks.list": ({ person, query }) => {
+      // Code #1045 item 5: `detail=1` (exactly) answers Code's detailed rows (the list row and its stage, pull requests, cost and limit, contracts DeveloperTaskDetailedListItemSchema),
+      // only for the person's own tasks, as Code's list does; anything else is the list as before.
+      if (query.get("detail") === "1" && query.get("involved") !== "1") {
+        return { body: { tasks: [...tasks.values()].filter((entry) => entry.owner.developerId === person.developerId).map((entry) => detailedRowOf(entry.task)).sort((a, b) => String(b["updatedAt"]).localeCompare(String(a["updatedAt"]))) } as never };
+      }
       const ordinary = () => ({ body: { tasks: [...tasks.values()].filter((entry) => entry.owner.developerId === person.developerId || readers.get(entry.task.taskId)?.has(person.developerId) === true).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } });
       if (query.get("involved") !== "1" || involvedMode === "old") return ordinary();
       if (involvedMode !== "on") return failure(Number(involvedMode), involvedMode === "500" ? "RUNTIME_UNAVAILABLE" : involvedMode === "400" ? "CONFIG_INVALID" : "NOT_FOUND", "involved is not served here");
@@ -1462,6 +1581,85 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       lessonMode = context.body.mode;
       return { body: { project: found.name, mode: lessonMode, effective: lessonMode, lockedByCompany: false, canChange: true } };
     },
+    // Lessons phase 4. A non-decider reads canDecide false and nothing else (Code's own read); every write is refused in Code's words.
+    "lessons.graduation": (context) => {
+      lessonCalls.push({ id: "lessons.graduation", params: { ...context.params }, body: null, person: context.person.key });
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      const override = lessonOverrides.get("lessons.graduation");
+      if (override !== undefined) return { status: override.status ?? 200, body: override.body as GraduationResponse };
+      if (!found.decides || found.name !== "web") return { body: { project: found.name, canDecide: found.decides, drafts: [], rules: [] } };
+      const active = [...lessonStore.values()].filter((lesson) => lesson.status === "active" && !graduationLater.has(lesson.id));
+      const proven = active.find((lesson) => lesson.id === "les_logs00001");
+      const tidy = [...lessonStore.values()].filter((lesson) => lesson.status === "active").sort((a, b) => a.counters.loaded - b.counters.loaded);
+      return { body: {
+        project: found.name, canDecide: true,
+        ...(proven === undefined ? {} : { card: { lessonId: proven.id, version: proven.version, title: proven.title, description: proven.description, type: proven.type, tier: proven.tier, target: "rule" as const, targets: ["rule", "check", "skill"] as Array<"rule" | "check" | "skill">, paths: CARD_PATHS, tasks: 12, days: 41, needs: { required: 1 as const, have: 0, you: false } } }),
+        ...(tidyClosed || tidy.length === 0 ? {} : { tidy: { period: 30, lessons: tidy.slice(0, 10).map((lesson) => ({ lessonId: lesson.id, version: lesson.version, title: lesson.title, type: lesson.type, tasks: lesson.counters.helpful + 1, days: 20 })) } }),
+        rules: [...teamRules.values()].filter((rule) => rule.status === "live").map((rule) => ({ id: rule.id, text: rule.text, paths: rule.paths, repos: rule.repos, fromLesson: rule.fromLesson, createdAt: rule.createdAt })),
+        drafts: [...checkDrafts.values()].filter((draft) => draft.status === "open").map((draft) => ({ id: draft.id, lessonId: draft.lessonId, title: draft.title, request: draft.request, paths: draft.paths, createdAt: draft.createdAt })),
+      } };
+    },
+    "lessons.graduate": graduationRoute("lessons.graduate", (context, project) => {
+      const lesson = lessonStore.get(context.params["lessonId"] ?? "");
+      if (lesson === undefined || lesson.status !== "active") return failure(404, "NOT_FOUND", "That lesson is no longer there.");
+      const target = context.body.target;
+      if (!["rule", "check", "skill"].includes(target)) return failure(400, "CONFIG_INVALID", "target is rule, check or skill");
+      if (target === "skill") return { body: { project, lessonId: lesson.id, target: "skill", state: "drafted", name: context.body.name ?? "log-request-ids", version: 1 } };
+      const asked = context.body.paths;
+      // A rule may only narrow the lesson's own paths (Code's check, in its fixed words).
+      if (target === "rule" && asked !== undefined && (!Array.isArray(asked) || asked.length < 1 || asked.length > 20 || asked.some((one) => !CARD_PATHS.some((own) => one === own || one.startsWith(own.replace(/\*+$/u, "")))))) return failure(400, "CONFIG_INVALID", "A rule's paths must lie inside the lesson's own paths.");
+      const ref = target === "rule" ? "rule_0123456789abcdef" : "chk_fedcba9876543210";
+      if (target === "rule") teamRules.set(ref, { id: ref, text: lesson.body, paths: asked ?? CARD_PATHS, repos: lesson.scope.repos, fromLesson: lesson.id, createdAt: now().getTime(), status: "live" });
+      if (target === "check") checkDrafts.set(ref, { id: ref, lessonId: lesson.id, title: lesson.title, request: `Add a check for: ${lesson.body}`, paths: [], createdAt: now().getTime(), status: "open" });
+      lessonStore.set(lesson.id, { ...lesson, status: "retired", updatedAt: now().getTime(), became: { kind: target, ref, at: now().getTime() } });
+      return { body: { project, lessonId: lesson.id, target, state: "done", ref, already: false } };
+    }),
+    "lessons.graduateLater": graduationRoute("lessons.graduateLater", (context, project) => {
+      if (!lessonStore.has(context.params["lessonId"] ?? "")) return failure(404, "NOT_FOUND", "That lesson is no longer there.");
+      graduationLater.add(context.params["lessonId"] ?? "");
+      return { body: { project, lessonId: context.params["lessonId"] ?? "", later: true } };
+    }),
+    "lessons.bothPlaces": graduationRoute("lessons.bothPlaces", (context, project) => {
+      const lesson = lessonStore.get(context.params["lessonId"] ?? "");
+      if (lesson === undefined || lesson.status !== "pending" || lesson.contradicts === undefined) return failure(404, "NOT_FOUND", "That lesson is no longer there.");
+      if (lesson.version !== context.body.version) return failure(409, "IDEMPOTENCY_CONFLICT", "This lesson changed since you read it. Read it again and decide again.");
+      lessonStore.set(lesson.id, { ...lesson, scope: { ...lesson.scope, paths: context.body.cardPaths } });
+      return { body: { project, lessonId: lesson.id, otherId: lesson.contradicts, cardPaths: context.body.cardPaths, otherPaths: context.body.otherPaths, version: lesson.version, status: "pending", needs: "second_person" } };
+    }),
+    "lessons.tidy.retire": graduationRoute("lessons.tidy.retire", (context, project) => {
+      const ids = context.body.ids;
+      if (!Array.isArray(ids) || ids.length < 1 || ids.length > 10) return failure(400, "CONFIG_INVALID", "ids takes 1 to 10 lessons");
+      const retired: string[] = [];
+      for (const id of ids) {
+        const lesson = lessonStore.get(id);
+        if (lesson?.status === "active") { lessonStore.set(id, { ...lesson, status: "retired", updatedAt: now().getTime() }); retired.push(id); }
+      }
+      return { body: { project, retired, skipped: ids.length - retired.length } };
+    }),
+    "lessons.rules.retire": graduationRoute("lessons.rules.retire", (context, project) => {
+      const rule = teamRules.get(context.params["ruleId"] ?? "");
+      if (rule === undefined || rule.status !== "live") return failure(404, "NOT_FOUND", "That rule is no longer there.");
+      rule.status = "retired";
+      return { body: { project, ruleId: rule.id, status: "retired" } };
+    }),
+    "lessons.tidy.later": graduationRoute("lessons.tidy.later", (_context, project) => { tidyClosed = true; return { body: { project, closed: true } }; }),
+    "lessons.checkDraft.started": graduationRoute("lessons.checkDraft.started", (context, project) => {
+      const draft = checkDrafts.get(context.params["draftId"] ?? "");
+      if (draft === undefined || draft.status !== "open") return failure(404, "NOT_FOUND", "That draft is no longer there.");
+      const entry = mayRead(context.person, context.body.taskId);
+      if (entry === undefined || entry.owner.developerId !== context.person.developerId || entry.task.project !== project) return failure(404, "NOT_FOUND", "No such task.");
+      draft.status = "started";
+      return { body: { project, draftId: draft.id, status: "started" } };
+    }),
+    "lessons.checkDraft.dismiss": graduationRoute("lessons.checkDraft.dismiss", (context, project) => {
+      const draft = checkDrafts.get(context.params["draftId"] ?? "");
+      if (draft === undefined || draft.status !== "open") return failure(404, "NOT_FOUND", "That draft is no longer there.");
+      draft.status = "dismissed";
+      return { body: { project, draftId: draft.id, status: "dismissed" } };
+    }),
+    // L4-EGR: Rovara's outbound addresses, the same for every company (the install's); only an owner or admin reads them.
+    "company.egressAddresses.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : !person.administrator ? failure(403, "FORBIDDEN", "Only a company owner or admin can see Rovara's outbound addresses.") : { body: { addresses: EGRESS_ADDRESSES.slice(), requestId: "JBnQ5hKvIAMEJ-Q=" } }),
     // Any member reads; an owner or admin sets a model from the offered list.
     "company.engineModel.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : { body: engineView() }),
     "company.engineModel.put": ({ person, body }) => {
@@ -1616,6 +1814,19 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           for (const key of [...corrections.keys()]) if (key.startsWith(`${given.project}/`)) corrections.delete(key);
           wikis.set(given.project, { ...(given.state === undefined ? {} : { state: given.state as "ready" }), ...(given.off === true ? { off: true } : {}), ...(given.broken === true ? { broken: true } : {}) });
           return send(200, { project: given.project });
+        }
+        if (method === "POST" && url.pathname === "/__fake/eval-check") {
+          // L4-EVCI2: sets the pretend card of one project (verdict, items, the confirmed check, `off`), and reads back what it saw (`puts`, `lastBody`).
+          const given = JSON.parse(await readBody(request)) as Record<string, unknown>;
+          if (typeof given["project"] !== "string" || project(given["project"]) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project" } });
+          if (given["read"] === true) { const seen = evalCheckOf(given["project"]); return send(200, { puts: seen.puts, lastBody: seen.lastBody ?? null, confirmed: seen.confirmed ?? null }); }
+          evalChecks.delete(given["project"]);
+          const one = evalCheckOf(given["project"]);
+          if (given["off"] === true) one.off = true;
+          if (given["verdict"] === "proposals" || given["verdict"] === "none_found" || given["verdict"] === "unknown") one.verdict = given["verdict"];
+          if (Array.isArray(given["items"])) one.items = given["items"] as FakeEvalCheck["items"];
+          if (typeof given["confirmed"] === "object" && given["confirmed"] !== null) one.confirmed = given["confirmed"] as NonNullable<FakeEvalCheck["confirmed"]>;
+          return send(200, { project: given["project"] });
         }
         if (method === "POST" && url.pathname === "/__fake/wiki-setup") {
           const given = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -1801,6 +2012,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           setupSkips.delete(given.project);
           return send(200, { status });
         }
+        if (method === "POST" && url.pathname === "/__fake/eval-card") {
+          const given = JSON.parse(raw) as { project?: unknown; state?: unknown; health?: unknown };
+          if (typeof given.project !== "string" || project(given.project) === undefined || !["none", "propose", "waiting", "approved", "rejected"].includes(given.state as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and state" } });
+          evalCards.set(given.project, { state: given.state as FakeEval["state"], health: ["requested", "finished"].includes(given.health as string) ? given.health as FakeEval["health"] : "none" });
+          return send(200, { ok: true });
+        }
         if (method === "POST" && url.pathname === "/__fake/setup-apply") {
           const given = JSON.parse(raw) as { project?: unknown; apply?: Partial<FakeApply> | null };
           if (typeof given.project !== "string" || project(given.project) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project and apply" } });
@@ -1825,7 +2042,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? savedEnvAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? answersAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? savedEnvAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? evalCheckAnswer(method, url.pathname, who, parsed) ?? answersAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
           if (who === undefined && /\/(?:answers|code\/suggest)$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/how-we-work$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/(?:wiki(?:[-/]|$)|upkeep$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
@@ -1871,6 +2088,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     log,
     setPerson: (person) => { current = person; },
     setLessons: (on) => { lessonsOn = on; },
+    lessonCalls,
+    resetLessons,
+    overrideLessonAnswer: (id, answer) => { if (answer === undefined) lessonOverrides.delete(id); else lessonOverrides.set(id, answer); },
     close: () => new Promise<void>((resolve) => { server.close(() => { resolve(); }); server.closeAllConnections(); }),
   };
 }

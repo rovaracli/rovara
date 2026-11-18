@@ -152,6 +152,7 @@ export * from "./loaded-knowledge.js";
 export * from "./provenance.js";
 export * from "./setup-proposal.js";
 export * from "./setup-agent-web.js";
+export * from "./eval-check-web.js";
 export { CreateProjectFromMetaBodySchema, type CreateProjectFromMetaBody, META_KNOWLEDGE_DEFAULTS } from "./meta-project.js";
 export { SetupDraftResponseSchema, type SetupDraftResponse, SetupDraftResponseReaderSchema, SetupDraftStartBodySchema, type SetupDraftStartBody, SETUP_DRAFT_STATUSES } from "./rovara-code.js";
 
@@ -176,6 +177,6 @@ export { DiagnosisStatusReaderSchema, DIAGNOSIS_ANSWER_LABEL, DIAGNOSIS_NO_PROVI
 
 export * from "./task-stop-start-preview.js";
 
-export { INBOX_NOT_AVAILABLE_TEXT, INBOX_KINDS, INBOX_KIND_WORDS, INBOX_PAGE_MAX, INBOX_READ_IDS_MAX, INBOX_POLL_MS, InboxIdSchema, InboxOpenPathSchema, InboxItemSchema, type InboxItem, InboxPageSchema, InboxPageReaderSchema, InboxReadBodySchema, type InboxReadBody, InboxReadResponseSchema, InboxReadResponseReaderSchema } from "./app-inbox.js";
+export { INBOX_NOT_AVAILABLE_TEXT, INBOX_KINDS, INBOX_KIND_WORDS, INBOX_PAGE_MAX, INBOX_READ_IDS_MAX, INBOX_POLL_MS, InboxIdSchema, InboxOpenPathSchema, InboxItemSchema, type InboxItem, InboxPageSchema, InboxPageReaderSchema, InboxReadBodySchema, type InboxReadBody, InboxReadResponseSchema, InboxReadResponseReaderSchema, PROJECT_NOTICE_KINDS, PROJECT_NOTICE_KIND_WORDS, PROJECT_NOTICES_MAX, ProjectNoticeItemSchema, type ProjectNoticeItem, ProjectNoticesSchema, type ProjectNotices, ProjectNoticesReaderSchema } from "./app-inbox.js";
 export { PEOPLE_NOT_AVAILABLE_TEXT, SESSION_PEOPLE_CANDIDATES_MAX, SESSION_PEOPLE_METHOD_LABELS, SessionPeopleRoleSchema, SessionPeopleAddRoleSchema, SessionPeopleEntrySchema, SessionPeopleViewSchema, type SessionPeopleView, SessionPeopleSharedSchema, SessionPeopleResponseSchema, SessionPeopleResponseReaderSchema, SessionPeopleRoleBodySchema, type SessionPeopleRoleBody, SessionPeopleAddBodySchema, type SessionPeopleAddBody, SessionPeopleOwnershipBodySchema, type SessionPeopleOwnershipBody, SessionPeopleCandidatesResponseSchema, SessionPeopleCandidatesResponseReaderSchema, SessionPeopleChangeResponseSchema, SessionPeopleChangeResponseReaderSchema, type SessionPeopleChangeResponse } from "./app-session-people.js";
 export { SESSION_LOG_ENTRIES_MAX, SESSION_LOG_PERSON_MAX, SESSION_LOG_SURFACE_WORDS, SESSION_LOG_TEXT_MAX, SessionLogEntryReadSchema, SessionLogEntrySchema, SessionLogResponseReaderSchema, SessionLogResponseSchema, SessionLogSurfaceSchema, type SessionLogEntry, type SessionLogResponse } from "./app-session-log.js";

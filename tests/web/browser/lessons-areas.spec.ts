@@ -58,14 +58,14 @@ for (const scheme of ["light", "dark"] as const) {
   });
 }
 
-test("pausing a source holds it (the row says so and the switch stays on, after a reload too) and resuming puts it back", async ({ page }, testInfo) => {
+test("pausing a source stops it (the row says so and the switch stays on, after a reload too) and resuming puts it back", async ({ page }, testInfo) => {
   const lessons = new LessonsPage(page);
   await lessons.openHowWeWork(PROJECT);
   const sources = lessons.learned.getByTestId("learning-sources");
   const pause = sources.getByRole("switch", { name: "Pause Edits to Rovara's pull requests" });
   await pause.click();
   await expect(sources.getByRole("switch", { name: "Resume Edits to Rovara's pull requests" })).toBeChecked();
-  await expect(sources.locator('[data-source="pr_edits"]')).toContainText("Paused. New suggestions from this wait until you resume it");
+  await expect(sources.locator('[data-source="pr_edits"]')).toContainText("Paused. Rovara is not reading this source.");
   await page.screenshot({ path: shot(testInfo, "sources-paused.png"), fullPage: true });
   await page.reload();
   await expect(lessons.learned.getByTestId("learning-sources").getByRole("switch", { name: "Resume Edits to Rovara's pull requests" })).toBeChecked();

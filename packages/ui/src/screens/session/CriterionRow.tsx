@@ -56,7 +56,7 @@ export function CriterionRow({ criterion, question, answeredLabel, comments = []
  return <div className={`rv-criterion${open ? " q" : ""}`} data-criterion={criterion.id}>
   <span className="rv-criterion-id">{criterion.id}</span>
   <div className="rv-criterion-text">
-   <span><em>WHEN</em> <VisibleText text={criterion.when} /> <em>THEN</em> <VisibleText text={criterion.then} />.</span>
+   {criterion.when === "" ? <span><VisibleText text={criterion.then} /></span> : <span><em>WHEN</em> <VisibleText text={criterion.when} /> <em>THEN</em> <VisibleText text={criterion.then} />.</span>}
    {open && <span className="rv-criterion-question"><b>Question for you.</b> <VisibleText text={question.text} /><span className="rv-criterion-options">{question.options.map(option => <Button key={option.optionId} busy={busy} onClick={() => { void answer(option.optionId); }}>{option.label}</Button>)}</span>{fallback !== undefined && <span className="rv-muted rv-criterion-note">Leave it, and Rovara uses "{fallback}".</span>}</span>}
    {question !== undefined && answeredLabel !== undefined && <span className="rv-muted rv-criterion-note">You answered: <b><VisibleText text={answeredLabel} /></b></span>}
    {roots.map(root => <span key={root.commentId} className="rv-criterion-thread">

@@ -6,7 +6,7 @@
 //   - Code's answers are read against the shape Cloud expects and projected to the fields the app reads (nothing else is passed on);
 //   - the address of Code's confirm page is built here from Code's own base address, the task id and the proposal's id, never taken from Code's answer.
 // Every write is a non-GET under /v1/web, so the handler's CSRF check (the `x-rovara-csrf` header against the sign-in's token) covers it already.
-import { CodeError } from "./code-client.js";
+import { CodeError, SignInEnded } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import type { WorkSession } from "./work-sessions.js";
 
@@ -112,6 +112,24 @@ async function sharedReaders(context: RouteContext, record: WorkSession): Promis
     readers.push({ developerId: entry["developerId"], name: entry["name"], role: entry["role"] });
   }
   return readers;
+}
+
+/**
+ * Whether this person is a co-owner of the session's task by Code's People list now (DEC 254zzz39 (6), 254zzz44 (3)): an `owner` entry that is them (`you`). Asked only for someone
+ * who is not the session's owner, before an owner's move Code itself checks again. A refusal or an answer that does not read is "no"; an ended sign-in is not swallowed.
+ */
+export async function coOwnerOf(context: RouteContext, record: WorkSession): Promise<boolean> {
+  let raw: unknown;
+  try {
+    raw = await context.client.json<unknown>(context.session, peoplePath(record));
+  } catch (error) {
+    // Only an ended sign-in is the page's to handle; any other failure of this extra read is "no" (the session view still answers).
+    if (error instanceof SignInEnded) throw error;
+    return false;
+  }
+  const view = isObj(raw) ? projectView(raw["view"]) : undefined;
+  // An owner entry that still holds owner now (`effectiveRole`): someone whose access lapsed is not offered owner moves.
+  return view !== undefined && view.people.some((person) => person["you"] === true && person["role"] === "owner" && person["effectiveRole"] === "owner");
 }
 
 export const PEOPLE_ROUTES: Route[] = [

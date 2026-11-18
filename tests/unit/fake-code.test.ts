@@ -3,7 +3,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
-import { CODE_ROUTES, pathParamNames, type PlanComment, type PlanView, type ProofIndexResponse } from "../../packages/contracts/src/code-contract-v0.js";
+import { CODE_ROUTES, pathParamNames, type PlanComment, type ProofIndexResponse } from "../../packages/contracts/src/code-contract-v0.js";
+import { taskPlanAnswer } from "../fixtures/code-answers.js";
 import { PRIYA, SAM, TASK_IDS, startFakeCode, type FakeCode } from "../support/fake-code.js";
 
 let fake: FakeCode;
@@ -76,7 +77,7 @@ describe("fake Code answers contract v0", () => {
       taskId: TASK_IDS.running, project: "web", developerId: "e".repeat(64), requestId: randomUUID(), sha256: "d".repeat(64), kind: "approve_plan", subject: TASK_IDS.planReview,
       action: "evidence-opened", tokenId: randomUUID(), channel: "slack", workspace: "T0FAKE", account: "U0FAKE", lessonId: "les_logs00001",
       emailHash: "c".repeat(64),
-      installationId: "11",
+      installationId: "11", draftId: "chk_0123456789abcdef", ruleId: "rule_0123456789abcdef",
     };
     for (const route of CODE_ROUTES) {
       if (route.id === "auth.authorize" || route.id === "auth.token") continue;
@@ -92,7 +93,7 @@ describe("fake Code answers contract v0", () => {
 
   it("has a path parameter sample for every parameter the contract names", () => {
     const names = new Set(CODE_ROUTES.flatMap((route) => pathParamNames(route.path)));
-    expect([...names].sort()).toEqual(["account", "action", "channel", "developerId", "emailHash", "installationId", "kind", "lessonId", "project", "requestId", "sha256", "source", "subject", "taskId", "tokenId", "workspace"].sort());
+    expect([...names].sort()).toEqual(["account", "action", "channel", "developerId", "draftId", "emailHash", "installationId", "kind", "lessonId", "project", "requestId", "ruleId", "sha256", "source", "subject", "taskId", "tokenId", "workspace"].sort());
   });
 
   it("keeps a task you start, answers the same task for the same request id, and hides it from others", async () => {
@@ -142,24 +143,23 @@ describe("fake Code answers contract v0", () => {
 });
 
 describe("fake Code carries the UX additions of contract v0 (all optional)", () => {
-  it("returns a structured spec whose ids point at each other, a proof index that points at its criteria, and events that name their plan task", async () => {
+  it("returns Code's real plan answer ({ plan }), a proof index that points at the plan's claims, and events", async () => {
     const priya = (await (await signIn(fake.url)).token.json() as { access_token: string }).access_token;
-    const plan = (await call(`/v1/dev/tasks/${TASK_IDS.running}/plan`, priya)).body as PlanView;
-    const criteria = (plan.requirements ?? []).flatMap((requirement) => requirement.criteria);
-    const tasks = plan.tasks ?? [];
-    expect(criteria.length).toBeGreaterThan(0);
-    for (const criterion of criteria) for (const id of criterion.taskIds ?? []) expect(tasks.map((task) => task.id)).toContain(id);
-    for (const task of tasks) for (const id of task.criterionIds ?? []) expect(criteria.map((criterion) => criterion.id)).toContain(id);
-    for (const question of plan.questions ?? []) {
-      expect(criteria.map((criterion) => criterion.id)).toContain(question.criterionId);
-      expect((question.options ?? []).map((option) => option.optionId)).toContain(question.defaultOptionId);
+    const answer = (await call(`/v1/dev/tasks/${TASK_IDS.running}/plan`, priya)).body as { plan: { taskId: string; content: { claims: Array<{ id: string; children?: Array<{ id: string }> }>; decisions: Array<{ claimId: string; options: Array<{ id: string }>; recommended: string }> } } };
+    expect(Object.keys(answer.plan).sort()).toEqual(Object.keys(taskPlanAnswer().plan).sort());
+    expect(answer.plan.taskId).toBe(TASK_IDS.running);
+    const claims = answer.plan.content.claims.flatMap((claim) => [claim.id, ...(claim.children ?? []).map((child) => child.id)]);
+    expect(claims.length).toBeGreaterThan(0);
+    for (const decision of answer.plan.content.decisions) {
+      expect(claims).toContain(decision.claimId);
+      expect(decision.options.map((option) => option.id)).toContain(decision.recommended);
     }
     const proof = (await call(`/v1/dev/tasks/${TASK_IDS.running}/evidence`, priya)).body as ProofIndexResponse;
     expect(proof.items.length).toBeGreaterThan(0);
-    for (const item of proof.items) for (const id of item.criterionIds) expect(criteria.map((criterion) => criterion.id)).toContain(id);
+    for (const item of proof.items) for (const id of item.criterionIds) expect(claims).toContain(id);
     expect(proof.items.some((item) => item.passed !== undefined && item.total !== undefined && item.bar !== undefined)).toBe(true);
     const events = (await call(`/v1/dev/tasks/${TASK_IDS.running}/events`, priya)).body as { events: Array<{ taskItemId?: string }> };
-    expect(events.events.some((event) => tasks.some((task) => task.id === event.taskItemId))).toBe(true);
+    expect(events.events.length).toBeGreaterThan(0);
     expect((await call(`/v1/dev/tasks/${TASK_IDS.running}/evidence`, "not-a-token")).status).toBe(401);
   });
 

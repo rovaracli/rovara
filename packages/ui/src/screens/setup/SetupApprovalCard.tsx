@@ -26,6 +26,7 @@ function changeLines(apply: SetupApplyView): string[] {
   return apply.changes.map(change => {
     if (change.area === "setup_commands") return `Setup commands: ${String(apply.setup.length)} to run`;
     if (change.area === "test_commands") return `Test commands: ${String(apply.readiness.length)} to run`;
+    if (change.area === "prompt_locations" && apply.promptLocations !== undefined) return `Where the AI prompts live: ${apply.promptLocations.join("; ")}`;
     return `${sentence(T.area[change.area])} changed`;
   });
 }
@@ -75,7 +76,7 @@ export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefr
     <p className="rv-approval-risk" data-testid="setup-approval-risk"><strong className={`rv-approval-chip rv-approval-${apply.risk}`}>{T.risk[apply.risk]}</strong> <span>{riskReason(apply)}</span></p>
     <h5>What changed</h5>
     <ul aria-label="What changed" className="rv-approval-changes">
-      {lines.slice(0, SHOWN_CHANGES).map((text, index) => <li key={index}>{text}</li>)}
+      {lines.slice(0, SHOWN_CHANGES).map((text, index) => <li key={index}><VisibleText text={text} /></li>)}
     </ul>
     <p className="rv-approval-check" data-testid="setup-approval-check">
       {apply.check.status === "checking" && <span role="status">{T.check.checking}</span>}
@@ -86,7 +87,7 @@ export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefr
     <p className="rv-muted" data-testid="setup-approval-who">{T.who[apply.approver]}</p>
     <details className="rv-approval-details">
       <summary>Details</summary>
-      {more > 0 && <ul aria-label="More changes">{lines.slice(SHOWN_CHANGES).map((text, index) => <li key={index}>{text}</li>)}</ul>}
+      {more > 0 && <ul aria-label="More changes">{lines.slice(SHOWN_CHANGES).map((text, index) => <li key={index}><VisibleText text={text} /></li>)}</ul>}
       <p className="rv-proposal-meta">Setup commands</p>
       {apply.setup.length === 0 ? <p>None.</p> : <ul aria-label="Setup commands">{apply.setup.map((command, index) => <li key={index}><code><VisibleText text={command} /></code></li>)}</ul>}
       <p className="rv-proposal-meta">Test commands</p>

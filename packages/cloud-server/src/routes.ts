@@ -6,31 +6,35 @@ import type { CodeSession } from "./sessions.js";
 import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } from "./work-sessions.js";
 import { renameInSessions } from "./rename.js";
 import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
-import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
+import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask, type SessionExtras } from "./session-view.js";
+import { CORE_ACTION_WORDS, acceptOnPage, acceptStepUp, actOnCoreSession, codeSessionOf, isCoreNotYet, noSession, pendingPlanCards, securityAcceptRefusal, type FindingsAccept } from "./core-task-actions.js";
 import type { PresenceBoard } from "./presence.js";
-import { CodeError, SignInEnded } from "./code-client.js";
+import { CodeError, SignInEnded, slackWorkspaceHint } from "./code-client.js";
 import type { CloudAuditStore } from "./audit-log.js";
 import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, parseCompanyAuditQuery } from "./company-audit.js";
-import { WORK_READS } from "./work-reads.js";
+import { LIST_PAGE, WORK_READS, detailedTasks } from "./work-reads.js";
 import { ONBOARDING_ROUTES } from "./onboarding-routes.js";
 import { MEMBER_ROUTES } from "./member-routes.js";
 import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
 import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./project-create-routes.js";
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
+import { EGRESS_ADDRESSES_ROUTES } from "./egress-addresses-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
-import { openTaskByCodeId } from "./open-task.js";
+import { codeOwnerOf, openTaskByCodeId } from "./open-task.js";
 import { WIKI_ROUTES } from "./wiki-routes.js";
 import { SAVED_ENV_ROUTES } from "./saved-env-routes.js";
 import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
 import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
+import { EVAL_CHECK_ROUTES } from "./eval-check-routes.js";
 import { ANSWERS_ROUTES } from "./answers-routes.js";
 import { AGENT_DIRECTORY_ROUTES } from "./agent-directory-routes.js";
 import { SYSTEM_RUNS_ROUTES } from "./system-runs-routes.js";
 import { SETUP_REPAIR_ROUTES } from "./setup-repair-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
+import { GRADUATION_ROUTES } from "./lessons-graduation-routes.js";
 import { HOW_WE_WORK_ROUTES } from "./how-we-work-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
-import { PEOPLE_ROUTES } from "./people-routes.js";
+import { PEOPLE_ROUTES, coOwnerOf } from "./people-routes.js";
 import { SCRIPT_TOKEN_ROUTES } from "./script-token-routes.js";
 import { REPORT_ROUTES } from "./report-routes.js";
 import { PLAN_FEATURE_ROUTES } from "./plan-feature-routes.js";
@@ -142,6 +146,69 @@ function confirmsEval(access: CodeAccess, companyRole: CompanyRole, project: str
   return entry !== undefined && roleOf(entry.access) === "maintainer";
 }
 
+// L4-EVC (DEC 254zzz20 D5, D6, D8): the setup flow's ONE eval card. Code serves four hosted routes under /v1/app/projects/{p}/setup-agent/ (the card's read, ONE approval, a decision on a waiting spend
+// item, and the opt-in health check); Cloud forwards each as the signed-in person. Each POST names only its own keys (Code validates them strictly): nothing that names a company, a role or a payer is
+// ever forwarded, at the top or inside `seen`.
+export const EVAL_APPROVE_KEYS = ["taskId", "reportDigest", "selection", "paths", "approve", "seen"] as const;
+export const EVAL_DECIDE_KEYS = ["requestId", "outcome", "seen"] as const;
+export const EVAL_HEALTH_KEYS = ["requestId", "seenCostMicros"] as const;
+/** The members of `seen` that are passed on: the dollars the person was shown (approve), or the offer's revision and digest (decide). */
+const EVAL_SEEN_KEYS = { approve: ["perCheckHighMicros", "monthlyCapMicros"], decide: ["revision", "artifactDigest"] } as const;
+const evalCardNotOnCode: RouteAnswer = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "The eval card isn't connected to Rovara Code yet." } } };
+const evalCardStepUp: RouteAnswer = { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } };
+const evalCardRefused: RouteAnswer = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer can answer for the eval's spend." } } };
+const EVAL_UNAVAILABLE_ON_INSTALL = "Approving an eval's spend isn't available on this install yet.";
+
+/** Code's fixed refusals the eval card turns into Cloud's own: not served yet (its unknown-route 404, or the install has no eval approval) and a step-up that is not fresh. Any other refusal is Code's own. */
+function evalCardRefusal(error: unknown): RouteAnswer | undefined {
+  if (!(error instanceof CodeError)) return undefined;
+  const answered = (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+  if (error.status === 404 && answered?.code === "NOT_FOUND" && (answered.message === "route not found" || answered.message === EVAL_UNAVAILABLE_ON_INSTALL)) return evalCardNotOnCode;
+  if (error.status === 403 && answered?.code === "REAUTH_REQUIRED") return evalCardStepUp;
+  return undefined;
+}
+
+/** One member of the browser's `seen` handed on: only the named keys of a plain object; anything else goes as sent (Code refuses it). */
+function evalSeen(value: unknown, keys: readonly string[]): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const given = value as Record<string, unknown>;
+  const kept: Record<string, unknown> = {};
+  for (const key of keys) if (Object.hasOwn(given, key)) kept[key] = given[key];
+  return kept;
+}
+
+/** The eval card's read or one of its three acts, forwarded to Code's own path as the person. A POST is for a company owner or admin, or the project's maintainer (Code re-checks live); the read is for anyone in the company. */
+function evalCardRoute(method: "GET" | "POST", tail: "eval" | "eval-approve" | "eval-decide" | "eval-health", keys: readonly string[], seenKeys?: readonly string[]): Route {
+  return {
+    method, path: new RegExp(`^/projects/${PROJECT_IN_PATH}/setup-agent/${tail}$`, "u"),
+    answer: async ({ client, session, params, body }) => {
+      const project = params[0]!;
+      const membership = companyOf(session.access);
+      if (membership === undefined) return NOT_IN_COMPANY;
+      const path = `/v1/app/projects/${encodeURIComponent(project)}/setup-agent/${tail}`;
+      try {
+        if (method === "GET") return ok(await client.json<unknown>(session, path));
+        if (!confirmsEval(session.access, membership.companyRole, project)) return evalCardRefused;
+        if (body === null || typeof body !== "object" || Array.isArray(body)) return badRequest("Send the eval answer as a JSON object.");
+        const given = body as Record<string, unknown>;
+        const forwarded: Record<string, unknown> = {};
+        for (const key of keys) if (Object.hasOwn(given, key)) forwarded[key] = key === "seen" ? evalSeen(given[key], seenKeys ?? []) : given[key];
+        return ok(await client.json<unknown>(session, path, { method: "POST", body: forwarded }));
+      } catch (error) {
+        const refusal = evalCardRefusal(error);
+        if (refusal !== undefined) return refusal;
+        throw error;
+      }
+    },
+  };
+}
+const EVAL_CARD_ROUTES: Route[] = [
+  evalCardRoute("GET", "eval", []),
+  evalCardRoute("POST", "eval-approve", EVAL_APPROVE_KEYS, EVAL_SEEN_KEYS.approve),
+  evalCardRoute("POST", "eval-decide", EVAL_DECIDE_KEYS, EVAL_SEEN_KEYS.decide),
+  evalCardRoute("POST", "eval-health", EVAL_HEALTH_KEYS),
+];
+
 async function readTask(context: RouteContext, taskId: string): Promise<CodeTask> {
   return (await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}`, { headers: TASK_VIEW })).task;
 }
@@ -150,7 +217,23 @@ async function readTask(context: RouteContext, taskId: string): Promise<CodeTask
 async function sessionAndTask(context: RouteContext): Promise<{ record: WorkSession; task: CodeTask } | undefined> {
   const record = await context.work.get(context.params[0]!);
   if (record === undefined) return undefined;
-  return { record, task: await readTask(context, record.taskId) };
+  const task = await readTask(context, record.taskId);
+  return { record: await ownerFromCode(context, record, task), task };
+}
+
+/**
+ * Code names the task's owner (`task.owner`, open-task.ts codeOwnerOf). When that is the person reading and the session still names someone else (a take-over the
+ * person confirmed on Code's page after Code answered PENDING), the session now names them. Only ever the reader, only on Code's own word; best effort (a race keeps the record).
+ */
+async function ownerFromCode(context: RouteContext, record: WorkSession, task: CodeTask): Promise<WorkSession> {
+  const owner = codeOwnerOf(task);
+  const me = context.session.access.developerId;
+  if (owner === undefined || owner.developerId !== me || record.owner.developerId === me) return record;
+  const updated: WorkSession = { ...record, owner: { developerId: me, name: context.session.access.displayName }, revision: record.revision + 1 };
+  delete updated.ownerUnresolved;
+  // Best effort: a store that cannot be written now (a race, throttling) keeps the record and never costs the read.
+  try { await context.work.put(updated); } catch (error) { if (error instanceof SignInEnded) throw error; return record; }
+  return updated;
 }
 
 /** The reader, with the name they signed in with now: their own name on a session is always current (Rovara-cloud#39). */
@@ -159,6 +242,32 @@ const me = (context: RouteContext) => ({ developerId: context.session.access.dev
 
 /** The session's followers and viewers for this person. */
 const peopleOf = async (context: RouteContext, record: WorkSession) => ({ ...followState(record, context.session.access.developerId), viewingNow: await context.presence.viewing(record.sessionId, context.now().getTime()) });
+
+/** Code's pending plan cards for this request's person, read once per request and only when needed (core-task-actions.ts). */
+const planCardsRead = new WeakMap<RouteContext, Promise<ReadonlySet<string>>>();
+/**
+ * Audit 2026-11-18 item 6: what the session view needs beside the task. Only for the owner with a plan waiting: whether Code decides that plan on a card (a core task), so the
+ * view links to the card on the session page and never to Cloud's approval page, which the core does not take.
+ */
+async function extrasOf(context: RouteContext, record: WorkSession, task: CodeTask): Promise<SessionExtras> {
+  if (record.owner.developerId !== context.session.access.developerId) {
+    // A People co-owner may send back or accept review findings (DEC 254zzz39 (6), 254zzz44 (3)): asked of Code only while there are findings to answer.
+    return reviewChoices(task) !== undefined && await coOwnerOf(context, record) ? { coOwner: true } : {};
+  }
+  if (waitingPlan(task) === undefined) return {};
+  let cards = planCardsRead.get(context);
+  if (cards === undefined) planCardsRead.set(context, cards = pendingPlanCards(context.client, context.session));
+  return (await cards).has(record.taskId.toLowerCase()) ? { planOnCard: true } : {};
+}
+
+/** Whether this person may make an owner's move on the session's task from Cloud: its owner, or a co-owner on Code's People list (Code checks again either way). */
+const ownerOrCoOwner = async (context: RouteContext, record: WorkSession): Promise<boolean> =>
+  record.owner.developerId === context.session.access.developerId || await coOwnerOf(context, record);
+
+/** The session as the app reads it, for this person now. */
+async function viewOf(context: RouteContext, record: WorkSession, task: CodeTask, people?: Awaited<ReturnType<typeof peopleOf>>) {
+  return sessionView(record, task, viewer(context), context.origin, people, await extrasOf(context, record, task));
+}
 
 /**
  * The session, once Code has let the person read its task: its owner, or someone it is shared with who is still a member of the
@@ -236,15 +345,44 @@ async function runningInProject(context: RouteContext, project: string) {
     }
   }));
   const running = read.filter((entry): entry is { record: WorkSession; task: CodeTask } => entry !== undefined && sessionRunning(entry.task));
-  return (await Promise.all(running.map(async ({ record, task }) => liveTile(record, task, viewer(context), context.origin, await peopleOf(context, record)))))
+  return (await Promise.all(running.map(async ({ record, task }) => liveTile(record, task, viewer(context), context.origin, await peopleOf(context, record), await extrasOf(context, record, task)))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
+
+/**
+ * The person's own tasks from Code's detailed list (one read, Code #1045), by task id, as the task view would say the parts Home reads; undefined when Code refuses the list or
+ * does not serve the detail (Home then reads each session's task as before). An ended sign-in is not swallowed.
+ */
+async function listedTasks(context: RouteContext): Promise<Map<string, CodeTask> | undefined> {
+  let found: Awaited<ReturnType<typeof detailedTasks>>;
+  try {
+    found = await detailedTasks(context.client, context.session, 1, LIST_PAGE);
+  } catch (error) {
+    if (error instanceof CodeError) return undefined;
+    throw error;
+  }
+  if (!found.served) return undefined;
+  const byId = new Map<string, CodeTask>();
+  for (const row of found.rows) {
+    const task = row as Partial<CodeTask>;
+    if (typeof task.taskId === "string" && typeof task.title === "string" && typeof task.project === "string" && typeof task.status === "string" && typeof task.updatedAt === "string") byId.set(task.taskId.toLowerCase(), task as CodeTask);
+  }
+  return byId;
+}
+
+/** Whether Home needs the task's whole view for this person's card: a plan waiting for its owner's review, or a review stop its owner moves on (the list row has neither's details). */
+const needsWholeTask = (task: CodeTask, owner: boolean): boolean => owner && sessionStatus(task) === "needs_person"
+  && ((task.workflow?.stage === "PLAN_REVIEW" && task.workflow.state === "WAITING") || (task.workflow?.stage === "REVIEW" && task.workflow.state === "BLOCKED"));
 
 async function homeCards(context: RouteContext): Promise<{ cards: HomeCard[]; total: number }> {
   const me = context.session.access.developerId;
   const sessions = (await context.work.startedBy(me)).slice(0, HOME_SESSIONS_READ);
   const origin = context.origin.replace(/\/+$/u, "");
+  // One list read for the person's tasks; a task is read on its own only where the card needs its whole view, or where the list did not have it.
+  const listed = sessions.length === 0 ? undefined : await listedTasks(context);
   const read = await Promise.all(sessions.map(async (record) => {
+    const row = listed?.get(record.taskId.toLowerCase());
+    if (row !== undefined && !needsWholeTask(row, record.owner.developerId === me)) return { record, task: row };
     try {
       return { record, task: await readTask(context, record.taskId) };
     } catch (error) {
@@ -262,7 +400,9 @@ async function homeCards(context: RouteContext): Promise<{ cards: HomeCard[]; to
       cards.push({ cardId: `${kind}:${record.sessionId}`, kind, title, reason, sessionId: record.sessionId, at: task.updatedAt, buttons });
     const status = sessionStatus(task);
     if (record.owner.developerId === me && waitingPlan(task) !== undefined) {
-      card("plan", `The plan for ${task.project} is waiting for your review.`, [{ label: "Review plan", action: "confirm", href: approvalUrl(origin, record.sessionId), method: "GET" }, open]);
+      // A core task's plan is decided on its decision card, which the session page shows (audit 2026-11-18 item 6); any other plan on Cloud's approval page.
+      const onCard = (await extrasOf(context, record, task)).planOnCard === true;
+      card("plan", `The plan for ${task.project} is waiting for your review.`, [onCard ? { label: "Review plan", action: "open", href: open.href, method: "GET" } : { label: "Review plan", action: "confirm", href: approvalUrl(origin, record.sessionId), method: "GET" }, open]);
     } else if (record.owner.developerId === me && blockedReview(task) !== undefined) {
       // Rovara-cloud#15: stopped at review, which only its owner can move on. Shown as a stop, with Code's reason and, when Code would take it, Retry reviews.
       const blocked = blockedReview(task)!;
@@ -332,6 +472,16 @@ export const ROUTES: Route[] = [
         org: { orgId: who.companyId, name: companyNameOf(who), plan: org.plan },
         identities: [{ provider: "oidc", linkedAt: session.signedInAt, lastSignInAt: session.signedInAt }],
       });
+    },
+  },
+  {
+    // GET /v1/app/me/sign-in-workspace (L4-SIGNIN): the Slack workspace id of THIS sign-in, when it was a Slack sign-in, so the browser can remember it as
+    // "the last workspace" (a localStorage hint for the next Sign in with Slack). From the sign-in's own access check (Code's record, kept on the session);
+    // no call to Code, no company needed. Only a workspace id leaves, and only for the signed-in browser's own sign-in.
+    method: "GET", path: /^\/me\/sign-in-workspace$/u,
+    answer: async ({ session }) => {
+      const slackTeamId = slackWorkspaceHint((session.access as { slackTeamId?: unknown } | undefined)?.slackTeamId);
+      return ok(slackTeamId === undefined ? {} : { slackTeamId });
     },
   },
   {
@@ -607,7 +757,7 @@ export const ROUTES: Route[] = [
     method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})$/u,
     answer: async (context) => {
       const found = await sessionAndTask(context);
-      return found === undefined ? sessionNotFound : ok({ session: sessionView(found.record, found.task, viewer(context), context.origin, await peopleOf(context, found.record)) });
+      return found === undefined ? sessionNotFound : ok({ session: await viewOf(context, found.record, found.task, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -622,7 +772,7 @@ export const ROUTES: Route[] = [
       const input = parseAnswersBody(context.body);
       if (!input.ok) return badRequest(input.message);
       await context.client.json(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/answers`, { method: "POST", headers: TASK_VIEW, body: input.value });
-      return ok({ session: sessionView(found.record, await readTask(context, found.record.taskId), viewer(context), context.origin, await peopleOf(context, found.record)) });
+      return ok({ session: await viewOf(context, found.record, await readTask(context, found.record.taskId), await peopleOf(context, found.record)) });
     },
   },
   {
@@ -637,11 +787,21 @@ export const ROUTES: Route[] = [
       if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can retry this session.` } } };
       const retry = blockedReview(found.task)?.retry;
       if (retry === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There's nothing to retry on this session right now." } } };
-      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review`, {
-        method: "POST", headers: TASK_VIEW,
-        body: { requestId, ...retry, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
-      });
-      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
+      let task: CodeTask;
+      try {
+        ({ task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review`, {
+          method: "POST", headers: TASK_VIEW,
+          body: { requestId, ...retry, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
+        }));
+      } catch (error) {
+        // A core task (audit 2026-11-18 item 6): the core retries the blocked review through the task's session, after its own session-level check. The core's retry takes no
+        // revision or candidate: it retries what is blocked now (core/task-flow/retry.ts), and only re-runs the read-only reviews of the same checked code.
+        if (!isCoreNotYet(error)) throw error;
+        const done = await actOnCoreSession(context.client, context.session, found.task, "retry", requestId);
+        if ("answer" in done) return done.answer;
+        task = done.task;
+      }
+      return ok({ session: await viewOf(context, found.record, task, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -654,14 +814,14 @@ export const ROUTES: Route[] = [
       const input = (context.body ?? {}) as { requestId?: unknown; note?: unknown };
       if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
       if (input.note !== undefined && (typeof input.note !== "string" || input.note.trim().length > 1000)) return badRequest("The note is at most 1,000 characters.");
-      if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can send this back to coding.` } } };
       const choices = reviewChoices(found.task);
       if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to send back right now." } } };
+      if (!await ownerOrCoOwner(context, found.record)) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} or a co-owner can send this back to coding.` } } };
       const note = typeof input.note === "string" && input.note.trim() !== "" ? input.note.trim() : "Fix the review findings.";
       const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/send-back`, {
         method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, instructions: note },
       });
-      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
+      return ok({ session: await viewOf(context, found.record, task, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -675,14 +835,24 @@ export const ROUTES: Route[] = [
       if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
       const reason = typeof input.reason === "string" ? input.reason.trim() : "";
       if (reason === "" || reason.length > 500) return badRequest("Give a reason of up to 500 characters for accepting the findings.");
-      if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can accept these findings.` } } };
       const choices = reviewChoices(found.task);
       if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to accept right now." } } };
-      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review-findings`, {
-        method: "POST", headers: TASK_VIEW,
-        body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, candidateDigest: choices.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) },
-      });
-      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
+      if (!await ownerOrCoOwner(context, found.record)) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} or a co-owner can accept these findings.` } } };
+      const accept: FindingsAccept = { requestId: input.requestId, expectedRevision: choices.expectedRevision, candidateDigest: choices.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) };
+      let task: CodeTask;
+      try {
+        ({ task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review-findings`, { method: "POST", headers: TASK_VIEW, body: accept }));
+      } catch (error) {
+        // Accepting a security finding needs a fresh step-up: the old engine takes it here (REAUTH_REQUIRED when stale); the core takes it only on the web page's own route
+        // (Code #1045), which Cloud asks next, with the same body, when its own token's step-up is fresh. Said in fixed words, never Code's bare 403.
+        const refused = securityAcceptRefusal(error);
+        if (refused === "stepUp") return acceptStepUp();
+        if (refused !== "page") throw error;
+        const done = await acceptOnPage(context.client, context.session, found.record.taskId, accept, context.now().getTime());
+        if ("answer" in done) return done.answer;
+        task = done.task;
+      }
+      return ok({ session: await viewOf(context, found.record, task, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -755,7 +925,7 @@ export const ROUTES: Route[] = [
       const requestId = (context.body as { requestId?: unknown } | undefined)?.requestId;
       if (typeof requestId !== "string" || !UUID.test(requestId)) return badRequest("requestId must be a UUID.");
       const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/cancel`, { method: "POST", headers: TASK_VIEW, body: { requestId } });
-      return ok({ session: sessionView(record, task, viewer(context), context.origin) });
+      return ok({ session: await viewOf(context, record, task) });
     },
   },
   {
@@ -766,12 +936,29 @@ export const ROUTES: Route[] = [
       if (record === undefined) return sessionNotFound;
       const input = (context.body ?? {}) as { requestId?: unknown; discardUnpublished?: unknown };
       if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
-      const closed = await context.client.json<{ task: CodeTask; closed: boolean; discardedUnpublished?: boolean; unpublished?: unknown; message?: string }>(
-        context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/close`,
-        { method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, ...(input.discardUnpublished === true ? { discard_unpublished: true } : {}) } },
-      );
+      let closed: { task: CodeTask; closed: boolean; discardedUnpublished?: boolean; unpublished?: unknown; message?: string };
+      try {
+        closed = await context.client.json<{ task: CodeTask; closed: boolean; discardedUnpublished?: boolean; unpublished?: unknown; message?: string }>(
+          context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/close`,
+          { method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, ...(input.discardUnpublished === true ? { discard_unpublished: true } : {}) } },
+        );
+      } catch (error) {
+        // A core task (audit 2026-11-18 item 6): the core closes it through the task's session (its owner, at the `edit` level). Code's 404 said the person may read the task.
+        if (!isCoreNotYet(error)) throw error;
+        const current = await readTask(context, record.taskId);
+        // A core task started before Code kept a session for every task (Code #1045, no backfill) can't be closed from here: said at once, before any question about unpublished work.
+        if (codeSessionOf(current) === undefined) return noSession("close");
+        // The core's close has no unpublished-work check yet (Code core/task-flow/close.ts), so the first ask never closes: it says so, as the old close lists what it found, and only the
+        // person's second, explicit press (`discardUnpublished`) closes the task.
+        if (input.discardUnpublished !== true) {
+          return ok({ session: await viewOf(context, record, current), closed: false, unpublished: [{ repository: "This task's workspace", reasons: [CORE_ACTION_WORDS.closeFirstAsk] }] });
+        }
+        const done = await actOnCoreSession(context.client, context.session, current, "close", input.requestId);
+        if ("answer" in done) return done.answer;
+        closed = { task: done.task, closed: true };
+      }
       return ok({
-        session: sessionView(record, closed.task, viewer(context), context.origin), closed: closed.closed,
+        session: await viewOf(context, record, closed.task), closed: closed.closed,
         ...(closed.discardedUnpublished === undefined ? {} : { discardedUnpublished: closed.discardedUnpublished }),
         ...(closed.unpublished === undefined ? {} : { unpublished: closed.unpublished }),
         ...(closed.message === undefined ? {} : { message: closed.message }),
@@ -788,11 +975,22 @@ export const ROUTES: Route[] = [
       if (typeof requestId !== "string" || !UUID.test(requestId)) return badRequest("requestId must be a UUID.");
       const path = `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/people`;
       const { view } = await context.client.json<{ view: { revision: number } }>(context.session, path);
-      await context.client.json(context.session, `${path}/take-ownership`, { method: "POST", body: { requestId, expectedPeopleRevision: view.revision } });
+      const answer = await context.client.json<unknown>(context.session, `${path}/take-ownership`, { method: "POST", body: { requestId, expectedPeopleRevision: view.revision } });
+      // Code's answer (TaskPeopleChangeResultSchema): COMMITTED made the person the owner now; PENDING waits for them to confirm on Code's page, and until then the
+      // old owner stays the owner, in Code and here. Anything else is not a take-over Cloud records.
+      const change = typeof answer === "object" && answer !== null && typeof (answer as { change?: unknown }).change === "object" ? (answer as { change: Record<string, unknown> }).change : undefined;
+      if (change?.["status"] === "PENDING") {
+        const pending = change["requestId"];
+        if (typeof pending !== "string" || !UUID.test(pending) || pending.toLowerCase() !== requestId.toLowerCase() || !UUID.test(record.taskId)) return { status: 502, body: { error: { code: "INVALID_RESPONSE", message: "Rovara Code's answer couldn't be read. Refresh to check who owns this task." } } };
+        // Where to confirm is Cloud's own build of Code's confirm page (as the People panel's), never Code's text passed on.
+        const confirmUrl = `${context.client.baseUrl}/review/${record.taskId.toLowerCase()}/task/people/confirm/${pending.toLowerCase()}`;
+        return { status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl, changes: ["Make you the owner of this task"] } };
+      }
+      if (change?.["status"] !== "COMMITTED") return { status: 502, body: { error: { code: "INVALID_RESPONSE", message: "Rovara Code's answer couldn't be read. Refresh to check who owns this task." } } };
       const updated: WorkSession = { ...record, owner: { developerId: context.session.access.developerId, name: context.session.access.displayName }, revision: record.revision + 1 };
       delete updated.ownerUnresolved;
       await context.work.put(updated);
-      return ok({ session: sessionView(updated, await readTask(context, record.taskId), viewer(context), context.origin) });
+      return ok({ session: await viewOf(context, updated, await readTask(context, record.taskId)) });
     },
   },
   {
@@ -895,6 +1093,8 @@ export const ROUTES: Route[] = [
   },
   // The Work page's reads (the split inbox): the task list and, for one task, its plan, proof index, events and plan comments.
   ...WORK_READS,
+  // Graduation and tidy first: `…/lessons/tidy/retire` must be tried before `…/lessons/{id}/retire`.
+  ...GRADUATION_ROUTES,
   ...LESSONS_ROUTES,
   ...HOW_WE_WORK_ROUTES,
   // Creating a company (DEC 254a), for a person with no company yet.
@@ -905,10 +1105,13 @@ export const ROUTES: Route[] = [
   ...PROJECT_CREATE_ROUTES,
   // The "AI and spending" step (guided onboarding PR 15): the company's AI model and a project's per-task limit, answered by Code as the person.
   ...AI_SPEND_ROUTES,
+  // Rovara's outbound addresses (L4-EGR): a read for company owners and admins, answered by Code as the person.
+  ...EGRESS_ADDRESSES_ROUTES,
   // The in-app inbox (web task channel K5): Code's C7 routes, as the person.
   ...INBOX_ROUTES,
   // The project setup checklist and the hosted setup run (guided onboarding PR 9): Code decides who may; Cloud passes the person's token and fixed words.
   ...SETUP_CHECKLIST_ROUTES,
+  ...EVAL_CARD_ROUTES,
   ...PEOPLE_ROUTES,
   // The admin's People and limits read (cost report slice A6): each member's spend this month against their limit, by name, company owners and admins only.
   ...PEOPLE_LIMITS_ROUTES,
@@ -922,6 +1125,8 @@ export const ROUTES: Route[] = [
   ...WIKI_CORRECTION_ROUTES,
   // The wiki panel on the setup page (lead 4 W6): the file map, the build controls and the nightly upkeep switch; Code decides who may, Cloud rebuilds bodies and answers (no dollar figure crosses).
   ...WIKI_SETUP_ROUTES,
+  // L4-EVCI2: the setup checklist's "Eval check from your CI" (Code decides who may; Cloud rebuilds every body and answer).
+  ...EVAL_CHECK_ROUTES,
   // L4-P3: the company's one control over nightly upkeep (read, allow with Code's fresh step-up, withdraw): company owners and admins only; Code decides again.
   ...SYSTEM_RUNS_ROUTES,
   // L4-U5: the "Setup needs repair" card on a project's setup page and its "Re-check setup" button, passed to Code as the person; Code decides who may.

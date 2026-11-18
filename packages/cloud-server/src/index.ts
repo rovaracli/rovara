@@ -1,4 +1,4 @@
-export { CodeClient, CodeError, SignInEnded, type CodeAccess, type CodeClientOptions, type PendingSignIn } from "./code-client.js";
+export { CodeClient, CodeError, SignInEnded, withoutTraceId, type CodeAccess, type CodeClientOptions, type PendingSignIn } from "./code-client.js";
 export {
   LocalSessionStore, SESSION_ABSOLUTE_MS, SESSION_IDLE_MS, SessionKeeper, isDeployedEnvironment, sessionKey,
   type CodeSession, type LocalSessionStoreOptions, type PendingSignIns, type RefreshGuard, type SessionKeeperOptions, type SessionStore,
@@ -46,6 +46,7 @@ export { PRODUCT_AI_APPROVER_PROVIDER, PRODUCT_AI_ROUTES, PRODUCT_AI_SOURCE_ID, 
 export { AGENT_AI_CHOOSABLE, AGENT_AI_ROUTES } from "./agent-ai-routes.js";
 export { agentAiConnected } from "./agent-ai-presence.js";
 export { AI_SPEND_ANSWERS, AI_SPEND_ROUTES, AI_SPEND_WORDS, ENGINE_MODEL_CODE_PATH, PER_TASK_FIELD, PER_TASK_USD_MAX, engineModelRefusal, engineModelView, projectSettingsOf, projectSettingsRefusal } from "./ai-spend-routes.js";
+export { EGRESS_ADDRESSES_CODE_PATH, EGRESS_ADDRESSES_ROUTES, EGRESS_ANSWERS, EGRESS_WORDS, egressAddressesView } from "./egress-addresses-routes.js";
 export { SPEND_LIMIT_ROUTES, SPEND_LIMIT_WORDS, dollarsToMicros } from "./spend-limits-routes.js";
 export { BEDROCK_BYO_ROUTES, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";
 export { COMPANY_KEY_PROVIDERS, LEARNING_AI_OWNER, LEARNING_AI_PROVIDERS, LEARNING_AI_ROUTES, LEARNING_PAUSE_WORDS, learningSourceId } from "./learning-ai-routes.js";
@@ -58,15 +59,16 @@ export { GITHUB_LINK_LANDING, GITHUB_LINK_OUTCOMES, GITHUB_LINK_WORDS } from "./
 export { CONNECT_TTL_MS, connectBack, connectCallbackPath, connectCookieName, connectResultKey, connectStateKey, type ConnectPending, type ConnectProvider } from "./connect-flow.js";
 export { SLACK_CALLBACK_PATH, SLACK_OUTCOMES, SLACK_WORDS } from "./slack-connect.js";
 export { SIGN_IN_FACTOR_WORDS } from "./sign-in-factors.js";
+export { LESSONS_SLACK_WORDS } from "./lessons-slack-switch.js";
 export { LINK_FAILURES, LINK_LANDING, LINK_METHODS, LINK_TTL_MS, SIGN_IN_LINK_WORDS, linkPendingKey, type LinkPending } from "./sign-in-links.js";
 export { LINEAR_CALLBACK_PATH, LINEAR_OUTCOMES, LINEAR_WORDS } from "./linear-connect.js";
-export { SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_ANSWERS, SETUP_CHECKLIST_ROUTES, SETUP_CHECKLIST_WORDS, applyAnswer, approvalRefusal, checklistAnswer, confirmBody, decideBody, runBody, setupRefusal, skipBody } from "./setup-checklist-routes.js";
+export { SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_ANSWERS, SETUP_CHECKLIST_ROUTES, SETUP_CHECKLIST_WORDS, applyAnswer, approvalRefusal, checklistAnswer, confirmBody, decideBody, evalNoneBody, runBody, setupRefusal, skipBody } from "./setup-checklist-routes.js";
 export { LIFECYCLE_ANSWERS, LIFECYCLE_WORDS, PROJECT_LIFECYCLE_ROUTES, lifecycleBody, lifecycleRefusal } from "./project-lifecycle-routes.js";
 export { WIKI_CORRECTION_ANSWERS, WIKI_CORRECTION_ROUTES, WIKI_CORRECTION_WORDS, correctionsAnswer, disputedAnswer, markedAnswer, noteAddedAnswer, suggestedAnswer, wikiCorrectionRefusal } from "./wiki-corrections-routes.js";
 export { SETUP_REPAIR_ANSWERS, SETUP_REPAIR_ROUTES, SETUP_REPAIR_WORDS, recheckBody, setupRepairRefusal, setupRepairView } from "./setup-repair-routes.js";
 export { SYSTEM_RUNS_ROUTES, systemRunsAnswer, systemRunsBody, systemRunsRefusal } from "./system-runs-routes.js";
 export { WIKI_SETUP_ANSWERS, WIKI_SETUP_CODE_WORDS, WIKI_SETUP_ROUTES, WIKI_SETUP_WORDS, buildAnswer, deleteAnswer, idBody, mapViewAnswer, startBody, switchBody, upkeepAnswer, wikiSetupRefusal } from "./wiki-setup-routes.js";
-export { SAVED_ENV_ANSWERS, SAVED_ENV_ROUTES, savedEnvPanel } from "./saved-env-routes.js";
+export { SAVED_ENV_ANSWERS, SAVED_ENV_ROUTES, TEST_ENVIRONMENT_WORDS, savedEnvPanel, testEnvironmentState } from "./saved-env-routes.js";
 export { WIKI_ANSWERS, WIKI_ROUTES, WIKI_WORDS, indexAnswer, lessonsAnswer, pageAnswer, searchAnswer, sourcesAnswer, wikiRefusal } from "./wiki-routes.js";
 export { CODE_REPORT_FEATURES_PATH, CODE_REPORT_TASKS_PATH, FEATURE_TASKS_MAX, NO_FEATURE_ID, REPORT_PAGES_MAX, REPORT_ROUTES, REPORT_WORDS, allocateCents, buildFeatureDetail, buildReport, parseReportFilters, readRow, type CostReport, type FeatureDetail, type ReportGroup, type ReportNumbers, type ReportTask } from "./report-routes.js";
 export { ANSWERS_ANSWERS, ANSWERS_ROUTES, ANSWERS_WORDS, answerObject, answersRefusal, notRightObject, suggestObject } from "./answers-routes.js";

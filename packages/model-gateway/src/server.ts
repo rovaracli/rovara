@@ -18,9 +18,11 @@ import type { BillLine, Meter, MeterItem, MeterScope, Reservation } from "./mete
 import { LEARNING_PATH_PREFIX, LEARNING_STEP, type LearningKeySource, type LearningRouteFactory } from "./learning-route.js";
 import { ANSWERS_PATH_PREFIX, ANSWERS_STEP } from "./answers-route.js";
 import { isUpkeepCall, upkeepRefusal, withUpkeepCap, type UpkeepLimits } from "./upkeep-cap.js";
+import { usageEstimated } from "./price-tiers.js";
 import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceKind, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
-import { AUTH_ERROR, TASK_TOKEN_SECONDS, type TaskClaims, type TaskTokenVerifier } from "./token.js";
+import { AUTH_ERROR, TASK_TOKEN_SECONDS, consumeReviewerGrant, type TaskClaims, type TaskTokenVerifier } from "./token.js";
+import { closeReviewSession, REVIEW_SESSION_CLOSE_GRACE_MS, REVIEW_SESSION_SECONDS, type ReviewerGrantStore } from "./reviewer-grants.js";
 import { hasUsage, settleAmount, validUsage } from "./reported-cost.js";
 import type { ResolvedPrice } from "./price.js";
 import type { EstimatedSettlement } from "./meter.js";
@@ -35,6 +37,11 @@ export interface GatewayDependencies {
   modelLimits: ModelLimitsSource; now?: () => number;
   keys: ProviderKeys; transport: ProviderTransport; cautiousCeiling?: number; timeoutMs?: number;
   log: (event: GatewayLogEvent) => void;
+  /**
+   * DEC 254zzz41: the durable store of reviewer grants and of the review session each one opens (reviewer-grants.ts). Absent: a token carrying a `reviewer` grant is refused
+   * (401) before anything is read, held or sent, so a gateway without it never serves a review call.
+   */
+  reviewerGrants?: ReviewerGrantStore;
   /** The product-AI route (calls made by the customer's tests with the project's own key). Absent: every product path is 404, as before. */
   product?: ProductRouteResolver;
   /** The learning route (DEC 226, learning-route.ts: lessons' calls on the company's own key). Absent: its path is 404. */
@@ -115,6 +122,12 @@ export interface GatewayRoute {
    */
   readonly purpose?: "learning" | "answers";
   /**
+   * DEC 254zzz41: true only on the agent route in company-key mode, the one route a reviewer grant (a task token carrying `reviewer`) may
+   * use: it is paid by the SAME source as the task's main AI (the company's saved choice, resolved by admit for the token's company).
+   * Absent: a reviewer grant is refused on this route (401), so none can reach the product, learning, answers or install-key routes.
+   */
+  readonly reviewerGrants?: true;
+  /**
    * The response header that carries this call's settled cost (US dollars, a plain decimal of six places: whole micro-dollars). Set only on the answers route (L4-E2).
    * Sent on a complete NON-streaming success only, and only when the figure is exact: the core settles first, then sends the head, so the figure is the amount
    * the same settle wrote to the meter. Absent (never 0, never a guess) when the price is estimated, the provider reported no usage, or the meter could not settle, and it is lost if the response head is never sent. A slow meter delays the head for that route (no separate time limit, as the settle was never bounded).
@@ -150,6 +163,8 @@ export const ENDED_TASK_POLL_MS = 1000;
 const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" };
 const PREFIX: Record<MeterItem, string> = { task: "Budget has been exceeded! Key=task", person: "ExceededBudget: User=person", project: "Budget has been exceeded! Project=project", company: "Budget has been exceeded! Team=company", upkeep: "Budget has been exceeded! Upkeep=project" };
 export const PRODUCT_ROUTE_PREFIX = "/v1/product/";
+/** DEC 254zzz41: a review call whose own worst-case cost is above the grant's ceiling. Before any hold; fixed words. */
+export const REVIEWER_CEILING_REFUSED: RouteRefusal = Object.freeze({ ok: false as const, status: 422, code: "budget_exceeded", message: "Budget has been exceeded! Key=reviewer" });
 /** The agent route's refusal in company-key mode when the company has no usable AI key connected (DEC 236). Fixed words. */
 export const AGENT_KEY_MISSING: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect an AI key: this company has no AI provider key connected, so its agents cannot call AI." });
 /** Company-key mode: the provider refused the company's own key (401/403 before any output). Free; fixed words. */
@@ -218,6 +233,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
   let endpoint: { ai: CompanyEndpointAi; connection: EndpointConnection; target: EndpointTarget; transport: ProviderTransport; model?: EndpointModel; refused?: "address" | "busy" } | undefined;
   return {
     ...base,
+    reviewerGrants: true as const,
     // An endpoint call is priced as the catalog model each registered model stands for.
     get provider() { return endpoint !== undefined ? endpoint.model?.catalog.provider ?? "endpoint" : chat !== undefined ? chat.provider : rovara === undefined && byo === undefined ? base.provider : "bedrock"; },
     get transport() { return endpoint !== undefined ? endpoint.transport : chat !== undefined ? chat.ai.transport : byo !== undefined ? byo.transport : rovara === undefined ? base.transport : rovara.ai.transport; },
@@ -450,6 +466,10 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let estimated = true;
   let appliedMaxOutputTokens = 0;
   let reservedMicros = 0;
+  // DEC 254zzz41: a review's first call holds the grant's whole ceiling (`held`) and opens the session that keeps it (`heldKept`); every call of a review debits that session
+  // and holds nothing of its own (`sessionCall`: what it debited and gives back when it finishes).
+  let held: Reservation | undefined; let heldKept = false; let pendingOpen: Promise<unknown> | undefined;
+  let sessionCall: { debited: number; claims: TaskClaims } | undefined;
   let provider: ProviderResponse | undefined;
   let settlementPrice: ResolvedPrice | undefined;
   let settlementUsage: TokenUsage | undefined;
@@ -462,16 +482,18 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   // The settle, run once: early for a route that sends its cost in the head, else in the finally. Its result says what was written.
   let settled: { ok: boolean; micros: number; estimated: boolean } | undefined; let settling = false;
   const settleOnce = async (): Promise<{ ok: boolean; micros: number; estimated: boolean } | undefined> => {
-    if (settling || reservation === undefined || route === undefined) return settled;
+    if (settling || (reservation === undefined && sessionCall === undefined) || route === undefined) return settled;
     settling = true;
     try {
       let estimateRecord: EstimatedSettlement | undefined;
       if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
         const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: cost });
         cost = amount.actualMicros; estimated = amount.estimated;
+        // A review is never recorded above the hold it was admitted on (the task's and the company's caps were checked for exactly that amount).
+        if (callClaims?.reviewer !== undefined && cost > reservedMicros) cost = reservedMicros;
         if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
       }
-      await route.meter.settle(reservation, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === undefined ? {} : { route: route.purpose }) });
+      if (sessionCall !== undefined) await deps.reviewerGrants?.giveBack(sessionCall.claims.iss, sessionCall.claims.cid, sessionCall.claims.jti, Math.max(0, sessionCall.debited - cost)); else await route.meter.settle(reservation!, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === undefined ? {} : { route: route.purpose }) });
       settled = { ok: true, micros: cost, estimated };
       if (route.overReservation !== undefined && callClaims !== undefined && cost > reservedMicros) {
         log({ event: "product_over_reservation" });
@@ -507,6 +529,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (claims === undefined) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
     // A learning token only on the learning route, an answers token only on the answers route, and only such a token there (DEC 226, DEC 254z-amend2).
     if (tokenPurpose(claims.stp) !== route?.purpose) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
+    // DEC 254zzz41: a reviewer grant spends only on the agent route in company-key mode, and only where a durable single-use store is wired.
+    if (claims.reviewer !== undefined && (control !== undefined || route?.reviewerGrants !== true || deps.reviewerGrants === undefined)) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
     callClaims = claims;
     const stopsWithTask = route?.stopsWithTask !== false;
     const taskEnded = async () => stopsWithTask && await wait(deps.ended.isEnded(claims.iss, claims.cid, claims.tid, controller.signal));
@@ -558,7 +582,26 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (overrunCapable) shortenDeadline(Math.floor(Math.min(deadline, admissionExpiresSeconds * 1000) / 1000) * 1000);
     appliedMaxOutputTokens = guarded.maxTokens;
     const line = route.line?.(claims, guarded.model);
-    const reserved = await route.meter.reserve({ scope, caps, estimateMicros: estimate, appliedMaxOutputTokens, ...(line === undefined ? {} : { line }),
+    // DEC 254zzz41: a review call is held at its priced worst case, which must fit the grant's ceiling and be exact (no estimated price, no unbounded input):
+    // the hold below is then taken inside the task's limit AND the company's cap, so the ceiling cannot be spent beyond either.
+    const grant = claims.reviewer;
+    // REVIEW-1 M1: nothing may settle a review above its hold: no estimated price, no tier the request can reach whose rates are derived or uncertain (usageEstimated, at the most tokens the request's bytes can be), no unbounded input, and no source
+    // whose provider reports its own cost (OpenRouter), which is a source Code never lists for reviews (reviewerProviderOf) but could be saved within the grant's 120 s.
+    if (grant !== undefined && (overrunCapable || route.provider === "openrouter" || usageEstimated(price, { input: guarded.bytes.length, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || estimate > Math.floor(grant.ceilingUsd * 1_000_000))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
+    // The grant's own lifetime and binding, and the model the request names, are pure: checked BEFORE anything is read or held (the claim itself comes later).
+    const bind = grant === undefined ? "" : JSON.stringify([scope.cid, scope.pid, scope.tid, claims.ws, claims.op, grant.kind, grant.slot, claims.mdl[0]]);
+    let named: unknown;
+    if (grant !== undefined) {
+      try { named = (JSON.parse(Buffer.concat(parts).toString("utf8")) as { model?: unknown }).model; } catch { named = undefined; }
+      if (typeof named !== "string" || !(await consumeReviewerGrant(claims, { cid: scope.cid, pid: scope.pid, tid: scope.tid, ws: claims.ws, op: claims.op, kind: grant.kind, slot: grant.slot, model: named }, Math.floor(now() / 1000), async () => true))) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
+    }
+    // A review's first call holds the grant's WHOLE ceiling (inside the task's limit and the company's cap) for its session; a later call of the same review
+    // (the session exists) holds nothing new and debits the session below. Anything the store cannot answer is the fixed refusal, before any hold.
+    let session: Awaited<ReturnType<ReviewerGrantStore["read"]>>;
+    if (grant !== undefined) { try { session = await wait(deps.reviewerGrants!.read(claims.iss, scope.cid, claims.jti, controller.signal)); } catch { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; } }
+    const ceilingMicros = grant === undefined ? 0 : Math.floor(grant.ceilingUsd * 1_000_000);
+    const reserved = grant !== undefined && session !== undefined ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined ? estimate : ceilingMicros, appliedMaxOutputTokens, ...(line === undefined ? {} : { line }),
+      ...(grant === undefined ? {} : { sweepAfter: now() + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS, review: { jti: claims.jti.toLowerCase() } }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });
     if (!reserved.ok) {
@@ -573,7 +616,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       else await respond(422, "budget_exceeded", route.prefix[reserved.item]);
       return;
     }
-    reservation = reserved.reservation; reservedMicros = estimate;
+    if (grant === undefined) reservation = reserved.reservation; else held = reserved.reservation;
+    reservedMicros = estimate;
     // One non-overlapping, deadline-bounded poll also stops streams stalled between chunks.
     const pollEnded = async (): Promise<void> => {
       try { if (await taskEnded()) abort(); } catch { abort(); }
@@ -582,6 +626,51 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     endedTimer = setTimeout(() => { void pollEnded(); }, ENDED_TASK_POLL_MS);
     // No call has left the process yet, including while the key port is read.
     cost = 0; estimated = false;
+    if (grant !== undefined && deps.reviewerGrants !== undefined) {
+      // Only after the hold is taken (a transient "busy" or a cap refusal burns nothing) and before any key is read or byte sent. The expected
+      // company, project and task are the SCOPE the hold was taken in; the model is the one the request itself names (read from its body, not the grant).
+      const store = deps.reviewerGrants;
+      // Opens this call's session on the hold it took. Never raced against the deadline or an abort and never throws: the finally waits for it, so the hold is
+      // never released while a write that may have landed is unresolved.
+      const openSession = async (jti: string, at: number): Promise<"opened" | "exists" | "failed"> => {
+        const hold = held!;
+        try {
+          if (!(await store.open({ iss: claims.iss, cid: scope.cid, jti, bind, holdId: hold.id, ceilingMicros, firstDebitMicros: estimate, endsAt: at + REVIEW_SESSION_SECONDS }))) return "exists";
+          heldKept = true; sessionCall = { debited: estimate, claims };
+          // Whatever the review leaves unused goes back when its session ends (a short grace after); the session-aware hold sweep is only the backstop for a gateway task that died.
+          const timer = setTimeout(() => { void closeReviewSession(store, route!.meter, scope, jti, hold.id).catch(() => { log({ event: "settle_failed" }); }); }, (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS);
+          timer.unref();
+          return "opened";
+        } catch {
+          // The write's outcome is unknown. Certainly not written: the finally gives the hold back whole. Written by THIS hold: the session is closed at what was debited (never left
+          // on a released hold). Written by another call's hold: not ours to close, we continue as a later call of that review. Unreadable: the hold stays for the sweep.
+          let seen: Awaited<ReturnType<ReviewerGrantStore["read"]>>; let readable = true;
+          try { seen = await store.read(claims.iss, scope.cid, jti); } catch { readable = false; }
+          if (!readable) { heldKept = true; return "failed"; }
+          if (seen === undefined) return "failed";
+          if (seen.holdId !== hold.id) return "exists";
+          heldKept = true;
+          try { await closeReviewSession(store, route!.meter, scope, jti, hold.id); } catch { log({ event: "settle_failed" }); }
+          return "failed";
+        }
+      };
+      const usable = typeof named === "string" && await wait(consumeReviewerGrant(claims, { cid: scope.cid, pid: scope.pid, tid: scope.tid, ws: claims.ws, op: claims.op, kind: grant.kind, slot: grant.slot, model: named }, Math.floor(now() / 1000), async (jti) => {
+        const at = Math.floor(now() / 1000);
+        // The first use claims the grant by opening the session (the one atomic write), with this call's worst case already debited.
+        if (held !== undefined) {
+          pendingOpen = openSession(jti, at);
+          const outcome = await pendingOpen;
+          if (outcome === "opened") return true;
+          if (outcome === "failed") return false;
+        }
+        // A later call of the same review (or the loser of a race between two first calls): one more debit, never past the ceiling or the session's end.
+        if (!(await store.debit(claims.iss, scope.cid, jti, bind, estimate, at, controller.signal))) return false;
+        sessionCall = { debited: estimate, claims };
+        return true;
+      }));
+      // A refused grant (another task, kind or model, expired, a call past the ceiling or the session, or a store that did not answer) sends nothing; a hold taken for it is given back ($0) in the finally.
+      if (!usable) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
+    }
     if (controller.signal.aborted) throw new NotSentError();
     const key = await wait(route.key(claims, controller.signal));
     if (typeof key !== "string" || key.length < 6 || key.length > 8192 || /[\r\n]/u.test(key)) throw new NotSentError();
@@ -648,6 +737,10 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     controller.abort(); clearTimeout(timer); clearTimeout(endedTimer); request.signal?.removeEventListener("abort", abort);
     controller.signal.removeEventListener("abort", onAbort);
     try { provider?.cancel?.(); } catch { /* Fixed log fields only; no provider text. */ }
+    // The claim is never left running past this point: a session it opened is then known (heldKept) before the hold is judged.
+    if (pendingOpen !== undefined) await pendingOpen.catch(() => undefined);
+    // A hold taken for a review's first call that never opened its session (a refused or failed claim) is given back whole ($0).
+    if (held !== undefined && !heldKept && route !== undefined) { try { await route.meter.settle(held, 0); } catch { log({ event: "settle_failed" }); } }
     await settleOnce();
     // Exactly one settle event, after the call settled.
     if (events !== undefined) { try { await events.finish({ completed, ...(refusedCode === undefined ? {} : { code: refusedCode }) }); } catch { /* The sink ends or destroys itself. */ } }

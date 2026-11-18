@@ -1,5 +1,5 @@
 // "Where Rovara learns from" (lead 4 L4-LP3W): one row per kind of source, with what it gave in the last 30 days (seen, suggested, kept), one real example, and a Pause for those Code says may pause.
-// A paused source holds new suggestions until it is resumed: nothing is deleted. Code decides who may pause; this only shows the control when it says so. Every word is Cloud's own.
+// A paused source is not read at all (owner 2026-11-18): Rovara collects and keeps nothing from it while it is paused, and resuming starts again from then. Lessons already made stay. Code decides who may pause; this only shows the control when it says so. Every word is Cloud's own.
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { areasAbsent, SOURCE_FAILED, useLearnedAreasApi, useLearningSources, type LearningSourcesAnswer } from "../../../api/learned-areas.js";
@@ -18,7 +18,9 @@ export function countWords(row: Pick<Row, "seen" | "suggested" | "kept">): strin
  const base = `${String(row.seen)} seen · ${String(row.suggested)} suggested · ${String(row.kept)} kept`;
  return row.suggested === 0 ? base : `${base} (${String(Math.round((row.kept / row.suggested) * 100))}% of suggestions)`;
 }
-export const PAUSED_WORDS = "Paused. New suggestions from this wait until you resume it. Nothing already learned is removed.";
+export const PAUSED_WORDS = "Paused. Rovara is not reading this source. Lessons already made stay.";
+/** The Pause switch's help text (both states). */
+export const PAUSE_HELP = "Rovara stops reading this source while paused. Nothing from the paused time is kept.";
 
 function SourceRow({ project, row, canPause, onExample }: { project: string; row: Row; canPause: boolean; onExample: (lessonId: string) => void }) {
  const api = useLearnedAreasApi(), query = useQueryClient(), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
@@ -34,7 +36,7 @@ function SourceRow({ project, row, canPause, onExample }: { project: string; row
   <p className="rv-source-counts" data-testid={"source-counts-" + row.key}>{countWords(row)}</p>
   {row.example !== undefined && <p className="rv-source-example">Last suggestion: <a href={"#learned-" + row.example.lessonId} onClick={() => { onExample(row.example!.lessonId); }}><VisibleText text={row.example.title} /></a></p>}
   {row.paused && <p className="rv-source-paused" role="status">{PAUSED_WORDS}</p>}
-  {canPause && <Switch label={row.paused ? `Resume ${row.label}` : `Pause ${row.label}`} checked={row.paused} disabled={busy} onCheckedChange={paused => { void set(paused); }} />}
+  {canPause && <Switch label={row.paused ? `Resume ${row.label}` : `Pause ${row.label}`} checked={row.paused} disabled={busy} onCheckedChange={paused => { void set(paused); }} help={PAUSE_HELP} />}
   {error !== undefined && <p role="alert" className="rv-lesson-failed"><VisibleText text={error} /></p>}
  </li>;
 }
@@ -49,7 +51,7 @@ export function LearningSources({ project, onExample }: { project: string; onExa
  }
  return <section className="rv-sources" aria-labelledby="sources-title" data-testid="learning-sources">
   <h3 id="sources-title">Where Rovara learns from</h3>
-  <p className="rv-muted rv-learned-note">What each kind of source gave in the last 30 days. Pausing one holds its new suggestions; it removes nothing.</p>
+  <p className="rv-muted rv-learned-note">What each kind of source gave in the last 30 days. Pausing one stops Rovara reading it, and nothing from the paused time is kept. Lessons already made stay.</p>
   <ul className="rv-source-list">{read.data.sources.map(row => <SourceRow key={row.key} project={project} row={row} canPause={read.data.canPause} onExample={onExample} />)}</ul>
   {read.data.partial === true && <p className="rv-muted rv-learned-note">Rovara counted what it could in the time it had, so these numbers are at least this much.</p>}
   {!read.data.canPause && <p className="rv-muted rv-learned-note">Only an admin of this project, or an owner or admin of the company, can pause a source.</p>}

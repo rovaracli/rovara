@@ -5,7 +5,7 @@
 import { renameInSessions } from "./rename.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { CloudAuditStore } from "./audit-log.js";
-import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
+import { CodeError, SignInEnded, slackWorkspaceHint, type CodeClient } from "./code-client.js";
 import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
 import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
 import { POLICY_HOOK_PATH } from "./policy-hook.js";
@@ -27,6 +27,7 @@ import { SLACK_CALLBACK_PATH, createSlackConnect } from "./slack-connect.js";
 import { LINEAR_CALLBACK_PATH, createLinearConnect } from "./linear-connect.js";
 import { createSignInLinks } from "./sign-in-links.js";
 import { createSignInFactors } from "./sign-in-factors.js";
+import { createLessonsSlackSwitch } from "./lessons-slack-switch.js";
 
 export interface CloudRequest {
   method: string;
@@ -82,6 +83,8 @@ const JOIN_TICKET = /^([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/u;
 const JOIN_UNUSABLE_PAGE = "/app/join?unusable=1";
 /** The join page's lookup: the invite link's token in, the company's name and a join ticket out. */
 export const JOIN_PATH = "/v1/auth/browser/join";
+/** L4-SIGNIN: which sign-in buttons to show (Code's own configuration, two booleans). Public: the sign-in page asks before anyone is signed in. */
+export const SIGN_IN_OFFER_PATH = "/v1/auth/browser/methods";
 const SIGN_IN_TTL_MS = 10 * 60_000;
 
 /** Only an app path may be returned to after sign-in, as the app's own returnPath allows. */
@@ -140,6 +143,8 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
   const signInLinks = createSignInLinks({ client: options.client, store: options.store, now, log, expiredCookie: cookie("", 0) });
   // L4-MF4: the person's own confirmation email (masked) and passkeys for the account page (sign-in-factors.ts).
   const signInFactors = createSignInFactors({ client: options.client, log });
+  // L4-SRC-SL: the person's own "Don't learn from my Slack messages" switch (lessons-slack-switch.ts).
+  const lessonsSlackSwitch = createLessonsSlackSwitch({ client: options.client, log });
 
   /**
    * The join page's lookup (onboarding-routes.ts): same origin only (a page elsewhere can't start a join for someone), JSON, small. A usable
@@ -172,7 +177,9 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     if (invite === undefined || (invite.codeSecret === true && (secret === undefined || inviteTokenHash(secret) !== invite.tokenHash))) {
       return text(302, "", { location: JOIN_UNUSABLE_PAGE, "set-cookie": clear });
     }
-    const { url, state, pending } = options.client.startSignIn("/app", now().getTime(), { company: invite.companyId, invite: invite.tokenHash, ...(secret === undefined ? {} : { inviteSecret: secret }) });
+    // L4-SIGNIN: the browser's remembered Slack workspace is a hint only (Code re-checks it and passes it to Slack alone); the invite is checked as before.
+    const slackTeam = slackWorkspaceHint(request.query.get("slack_team"));
+    const { url, state, pending } = options.client.startSignIn("/app", now().getTime(), { company: invite.companyId, invite: invite.tokenHash, ...(secret === undefined ? {} : { inviteSecret: secret }), ...(slackTeam === undefined ? {} : { slackTeam }) });
     await options.store.putPending(state, pending);
     return text(302, "", { location: url, "set-cookie": clear });
   }
@@ -213,10 +220,17 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       return text(302, "", { location: back.location, "set-cookie": back.setCookie });
     }
     if (path === JOIN_PATH && method === "POST") return joinLookup(request);
+    if (path === SIGN_IN_OFFER_PATH && method === "GET") return json(200, await options.client.signInOffer());
     if (path === "/v1/auth/browser/authorize" && method === "GET" && request.query.get("join") === "1") return joinSignIn(request);
     if (path === "/v1/auth/browser/authorize" && method === "GET") {
       // `step_up=1`: the app asks for a fresh step-up before a sensitive change (company settings, inviting an admin).
-      const { url, state, pending } = options.client.startSignIn(returnPath(request.query.get("return_to")), now().getTime(), { stepUp: request.query.get("step_up") === "1" });
+      // L4-SIGNIN: `method` (the page's own "Sign in with Slack" / "Sign in with GitHub" button) and `slack_team` (the workspace the browser remembers) are passed on
+      // only when they have exactly the allowed shape; Code checks them again, and nothing here or at the callback trusts either to say who signed in.
+      const method = request.query.get("method");
+      const slackTeam = slackWorkspaceHint(request.query.get("slack_team"));
+      const { url, state, pending } = options.client.startSignIn(returnPath(request.query.get("return_to")), now().getTime(), {
+        stepUp: request.query.get("step_up") === "1", ...(method === "slack" || method === "github" ? { method } : {}), ...(slackTeam === undefined ? {} : { slackTeam }),
+      });
       await options.store.putPending(state, pending);
       return text(302, "", { location: url });
     }
@@ -312,7 +326,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
               // Guided onboarding PR 12b: disconnect one of the company's GitHub accounts (owner + fresh step-up).
               : method === "DELETE" && GITHUB_DISCONNECT_PATH.test(apiPath) ? () => github.disconnect(session!, GITHUB_DISCONNECT_PATH.exec(apiPath)![1]!, parsedBody(request.body)) : undefined;
     // Guided onboarding PR 11: Slack and Linear (the start and result routes need this sign-in's cookie, as GitHub's).
-    const connectRoute = githubCall === undefined ? slack.route(method, apiPath, request.query) ?? linear.route(method, apiPath) ?? signInLinks.route(method, apiPath) ?? signInFactors.route(method, apiPath) ?? githubLink.route(method, apiPath) : undefined;
+    const connectRoute = githubCall === undefined ? slack.route(method, apiPath, request.query) ?? linear.route(method, apiPath) ?? signInLinks.route(method, apiPath) ?? signInFactors.route(method, apiPath) ?? lessonsSlackSwitch.route(method, apiPath) ?? githubLink.route(method, apiPath) : undefined;
     const connectCall = githubCall ?? (connectRoute === undefined ? undefined : () => connectRoute(session!, id, parsedBody(request.body)));
     if (connectCall !== undefined) {
       try {

@@ -9,7 +9,7 @@ export const SETUP_AGENT_VIEW_STATUSES = ["none", "running", "ready", "failed"] 
 
 // L4-D (Code #899, DEC 254z b): the candidate setup waiting for a decision, as the run's read carries it once "Use this setup" was pressed (hosted Code only; the laptop decides on its own cards).
 export const SETUP_RISKS = ["low", "medium", "high"] as const;
-export const SETUP_CHANGE_AREAS = ["setup_commands", "test_commands", "test_mocks", "websites", "registries", "integrations", "dev_container", "other"] as const;
+export const SETUP_CHANGE_AREAS = ["setup_commands", "test_commands", "test_mocks", "prompt_locations", "websites", "registries", "integrations", "dev_container", "other"] as const;
 export const SETUP_CHECK_STATES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
 export const SetupApplyViewSchema = z.object({
   candidateRevision: z.number().int().min(1),
@@ -17,6 +17,8 @@ export const SetupApplyViewSchema = z.object({
   /** The candidate's commands as a person would type them, whole. */
   setup: z.array(z.string().min(1).max(2_000)).max(64),
   readiness: z.array(z.string().min(1).max(2_000)).max(64),
+  /** L4-EVP: where the project's AI prompts live, as the candidate adds them, one plain line each (Code's words). */
+  promptLocations: z.array(z.string().min(1).max(1_100)).max(40).optional(),
   /** Where the candidate's check on a fresh workspace stands; a decision is offered only once it is `ready`. */
   check: z.object({ status: z.enum(SETUP_CHECK_STATES), failedStep: z.string().min(1).max(1_000).optional() }).passthrough(),
   risk: z.enum(SETUP_RISKS),
@@ -94,13 +96,13 @@ export type SetupJournalReply = z.infer<typeof SetupJournalReplySchema>;
 export const SetupConfirmRequestSchema = z.object({
   requestId: z.string().uuid(),
   expectedRevision: z.number().int().min(0),
-  itemIds: z.array(z.string().min(1).max(100)).max(64).optional(),
+  itemIds: z.array(z.string().min(1).max(100)).max(128).optional(),
 }).strict();
 export const SETUP_CONFIRM_LEFT_OUT = ["unverified", "refused_command", "not_a_command_item", "too_many", "invalid_command"] as const;
 export const SetupConfirmReplySchema = z.object({
   digest: z.string().regex(/^[0-9a-f]{64}$/u),
-  used: z.array(z.string().min(1).max(100)).max(64),
-  unchecked: z.array(z.string().min(1).max(100)).max(64),
+  used: z.array(z.string().min(1).max(100)).max(128),
+  unchecked: z.array(z.string().min(1).max(100)).max(128),
   left: z.array(z.object({ id: z.string().min(1).max(100), reason: z.enum(SETUP_CONFIRM_LEFT_OUT) }).strict()).max(200),
   /** Hosted Code (L4-D): the revision the candidate was made at; the card that follows reads the candidate from the run's read. */
   candidateRevision: z.number().int().min(1).optional(),
@@ -109,3 +111,66 @@ export const SetupConfirmReplySchema = z.object({
   next: z.literal("check"),
 }).passthrough();
 export type SetupConfirmReply = z.infer<typeof SetupConfirmReplySchema>;
+
+// L4-EVC (DEC 254zzz20 D5, D6, D8): the setup flow's ONE eval card, in plain dollars. Code serves the read and three acts (setup-run-routes.ts, eval-card.ts); Cloud passes them on as the person. Every sentence
+// the card shows comes from Code (dollars, never counts or micro-dollar words). The whole-number `seen` figures travel as data only: they are copied from the read into the act that follows, never worked out here.
+export const EVAL_CARD_STATES = ["none", "propose", "waiting", "approved", "renew", "rejected"] as const;
+const microDollars = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
+export const EvalCardSuiteSchema = z.object({
+  selection: z.string().min(1).max(512),
+  files: z.array(z.string().min(1).max(500)).max(200),
+  cases: z.number().int().min(0).max(1_000_000),
+  /** "Running your evals on each AI change will cost about $A-$B per PR, at most $X a month. Approve?" */
+  sentence: z.string().min(1).max(600),
+  perPr: z.string().min(1).max(100),
+  monthly: z.string().min(1).max(100),
+  /** What the person's yes echoes back; copied from here, never computed by the page. */
+  seen: z.object({ perCheckHighMicros: microDollars, monthlyCapMicros: microDollars }).strict(),
+  versusApproved: z.object({ within: z.boolean(), words: z.string().min(1).max(600) }).passthrough().optional(),
+}).passthrough();
+/** What a finished health check tells a person: how many of each case's three answers passed (never an answer's text). */
+export const EvalHealthResultSchema = z.object({
+  questionCount: z.number().int().min(1).max(1_000), passedAnswers: z.number().int().min(0).max(3_000), totalAnswers: z.number().int().min(1).max(3_000), differing: z.number().int().min(0).max(1_000),
+  cases: z.array(z.object({ id: z.string().min(1).max(160), passes: z.number().int().min(0).max(3) }).passthrough()).min(1).max(1_000),
+  saved: z.boolean(), reused: z.boolean(),
+}).passthrough();
+export type EvalHealthResult = z.infer<typeof EvalHealthResultSchema>;
+export const EvalCardViewSchema = z.object({
+  project: z.string().min(1).max(100).optional(),
+  state: z.enum(EVAL_CARD_STATES),
+  canApprove: z.boolean(),
+  report: z.object({ taskId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-]+$/u), reportDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).passthrough().optional(),
+  suites: z.array(EvalCardSuiteSchema).max(16),
+  spend: z.object({
+    state: z.string().min(1).max(60),
+    perPr: z.string().min(1).max(100).optional(),
+    monthly: z.string().min(1).max(100).optional(),
+    needsApproval: z.string().min(1).max(600).optional(),
+    carried: z.boolean().optional(),
+    approval: z.object({ requestId: z.string().regex(/^eval-[a-f0-9]{40}-[0-9]{1,15}$/u), revision: z.number().int().min(1), artifactDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).passthrough().optional(),
+  }).passthrough().optional(),
+  /** The opt-in health run, shown only once the spend is approved. `words` is Code's own fixed sentence for a check that did not run; `result` is pass or fail per case once it ran. */
+  health: z.object({ state: z.enum(["none", "requested", "running", "finished", "not_run"]), label: z.string().min(1).max(200), cost: z.string().min(1).max(100), seenCostMicros: microDollars,
+    words: z.string().min(1).max(300).optional(), result: EvalHealthResultSchema.optional() }).passthrough().optional(),
+  unavailable: z.string().min(1).max(600).optional(),
+}).passthrough();
+export type EvalCardView = z.infer<typeof EvalCardViewSchema>;
+export type EvalCardSuite = z.infer<typeof EvalCardSuiteSchema>;
+
+export const EvalApproveRequestSchema = z.object({
+  taskId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-]+$/u),
+  reportDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+  selection: z.string().min(1).max(512),
+  paths: z.array(z.string().min(1).max(500)).min(1).max(200),
+  approve: z.literal(true),
+  seen: z.object({ perCheckHighMicros: microDollars, monthlyCapMicros: microDollars }).strict(),
+}).strict();
+export const EvalApproveReplySchema = z.object({ project: z.string().min(1).max(100), state: z.string().max(60).optional(), perPr: z.string().max(100).optional(), monthly: z.string().max(100).optional(), carried: z.boolean().optional() }).passthrough();
+export const EvalDecideRequestSchema = z.object({
+  requestId: z.string().regex(/^eval-[a-f0-9]{40}-[0-9]{1,15}$/u),
+  outcome: z.enum(["approve", "reject"]),
+  seen: z.object({ revision: z.number().int().min(1), artifactDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).strict(),
+}).strict();
+export const EvalDecideReplySchema = z.object({ project: z.string().min(1).max(100), decision: z.enum(["approved", "rejected"]) }).passthrough();
+export const EvalHealthRequestSchema = z.object({ requestId: z.string().uuid(), seenCostMicros: microDollars }).strict();
+export const EvalHealthReplySchema = z.object({ project: z.string().min(1).max(100), requested: z.literal(true), duplicate: z.boolean().optional(), cost: z.string().max(100).optional() }).passthrough();

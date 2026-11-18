@@ -67,13 +67,19 @@ describe("code contract v0 tables", () => {
     // Plus the person's own sign-in factors (L4-MF4): the masked confirmation email and passkeys, as the person: 1 row.
     // Plus the saved environment panel read (forwarded to Code's own route) and the start preview (answered here as unknown) (L4-MF1): existing rows, now T (the start preview's owner is now Cloud: c): 2.
     // Plus the company's one control over nightly upkeep (L4-P3): read and change: 2 rows.
+    // Plus lessons phase 4 (L4-LP4G): the graduation read, graduate, Not now, both places, the two tidy writes, the two draft task writes and retiring a team rule: 9 rows.
     // Plus the person's own GitHub account link (L4-GH): read, connect and unlink, passed to Code's /v1/dev/me/github routes as the person: 3 rows.
     // Plus the project lessons measure (L4-MEAS): 1 row.
     // Plus the plan card's feature choices (lead 4 PCF): Code answers this read as the person.
     // Plus the "Setup needs repair" card and its "Re-check setup" button (L4-U5): read and recheck: 2 rows.
 
+    // Plus the setup checklist's "Eval check from your CI" (L4-EVCI2): the read and the confirm, passed to Code's own routes as the person: 2 rows.
     // Plus the lessons by code area, "Where Rovara learns from" with its pause, and the wiki page's team lessons (lead 4 L4-LP3W): 4 rows.
-    expect(counts.appCloudServerToday).toBe(156);
+    // Plus the setup flow's eval card (L4-EVC): the read and the one approval, each passed to Code's own route as the person: 2 rows.
+    // Plus the setup flow's eval card (L4-EVC): the read, the one approval, a decision on a waiting spend item and the opt-in health check, each passed to Code's own route as the person: 4 rows.
+    // Plus the person's own "Don't learn from my Slack messages" switch (L4-SRC-SL): read and set, as the person: 2 rows.
+    // Plus Rovara's outbound addresses for company owners and admins (L4-EGR): the read, passed to Code as the person: 1 row.
+    expect(counts.appCloudServerToday).toBe(175);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
@@ -117,6 +123,32 @@ describe("code contract v0 tables", () => {
       expect(APP_ROUTES.find(row => row.codeRoutes.includes(id))?.cloudServerToday).toBe(true);
     }
     expect(matchCodeRoute("DELETE", "/v1/app/script-tokens/stk_aaaaaaaaaaaaaaaaaaaa")).toBeUndefined();
+  });
+
+  it("declares the nine lessons phase 4 routes (graduation and tidy) as Code routes Cloud calls and web rows Cloud answers, and Code's tidy retire has its own literal path", () => {
+    const rows = [
+      ["lessons.graduation", "GET", "/v1/dev/projects/{project}/lessons/graduation", "GET /v1/app/projects/{p}/lessons/graduation"],
+      ["lessons.graduate", "POST", "/v1/dev/projects/{project}/lessons/{lessonId}/graduate", "POST /v1/app/projects/{p}/lessons/{lessonId}/graduate"],
+      ["lessons.graduateLater", "POST", "/v1/dev/projects/{project}/lessons/{lessonId}/graduate-later", "POST /v1/app/projects/{p}/lessons/{lessonId}/graduate-later"],
+      ["lessons.bothPlaces", "POST", "/v1/dev/projects/{project}/lessons/{lessonId}/both-places", "POST /v1/app/projects/{p}/lessons/{lessonId}/both-places"],
+      ["lessons.tidy.retire", "POST", "/v1/dev/projects/{project}/lessons/tidy/retire-chosen", "POST /v1/app/projects/{p}/lessons/tidy/retire"],
+      ["lessons.tidy.later", "POST", "/v1/dev/projects/{project}/lessons/tidy/later", "POST /v1/app/projects/{p}/lessons/tidy/later"],
+      ["lessons.checkDraft.started", "POST", "/v1/dev/projects/{project}/lessons/check-drafts/{draftId}/started", "POST /v1/app/projects/{p}/lessons/check-drafts/{draftId}/started"],
+      ["lessons.checkDraft.dismiss", "POST", "/v1/dev/projects/{project}/lessons/check-drafts/{draftId}/dismiss", "POST /v1/app/projects/{p}/lessons/check-drafts/{draftId}/dismiss"],
+      ["lessons.rules.retire", "POST", "/v1/dev/projects/{project}/lessons/rules/{ruleId}/retire", "POST /v1/app/projects/{p}/lessons/rules/{ruleId}/retire"],
+    ] as const;
+    for (const [id, method, path, app] of rows) {
+      expect(CODE_ROUTES.find((route) => route.id === id), id).toMatchObject({ method, path, scope: "full", screens: ["how-we-work"], cloudCallsToday: true });
+      const row = APP_ROUTES.find((entry) => `${entry.method} ${entry.path}` === app);
+      expect(row, app).toMatchObject({ owner: "code", screen: "how-we-work", codeRoutes: [id], cloudServerToday: true });
+    }
+    expect(matchCodeRoute("POST", "/v1/dev/projects/web/lessons/tidy/retire-chosen")?.route.id).toBe("lessons.tidy.retire");
+    // Code's path for the tidy retire is its own literal, so it never collides with a lesson id's retire row.
+    expect(matchCodeRoute("POST", "/v1/dev/projects/web/lessons/tidy/retire")?.route.id).toBe("lessons.retire");
+    expect(matchCodeRoute("POST", "/v1/dev/projects/web/lessons/les_retry0001/retire")?.route.id).toBe("lessons.retire");
+    expect(matchCodeRoute("GET", "/v1/dev/projects/web/lessons/graduation")?.route.id).toBe("lessons.graduation");
+    expect(matchCodeRoute("POST", "/v1/dev/projects/web/lessons/rules/rule_0123456789abcdef/retire")?.route.id).toBe("lessons.rules.retire");
+    expect(matchCodeRoute("POST", "/v1/dev/projects/web/lessons/check-drafts/chk_0123456789abcdef/started")?.params).toEqual({ project: "web", draftId: "chk_0123456789abcdef" });
   });
 
   it("has no imports, so it can be copied byte for byte into Rovara Code", () => {

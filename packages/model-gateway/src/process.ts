@@ -33,6 +33,7 @@ import { kmsProductKeyService, ProductKeySealer, type KmsLike, type ProductKeyFi
 import { createSignedTokenVerifier } from "./token.js";
 import { createEvalAuthorityHandler, EVAL_AUTHORITY_PATH, EVAL_AUTHORITY_TOKEN_KIND } from "./eval-authority.js";
 import { createEvalCapHandler, EVAL_CAP_PATH, EVAL_CAP_TOKEN_KIND } from "./eval-cap.js";
+import { COMPANY_INSTRUCTIONS_PATH, COMPANY_INSTRUCTIONS_TOKEN_KIND, CompanyStoredInstructions, createCompanyInstructionsHandler, type CompanyInstructionsSource } from "./company-instructions.js";
 import { createOfferedModelsHandler, OFFERED_MODELS_PATH, parseDisabledAgentModels, SERVICE_TOKEN_KIND } from "./offered-models.js";
 import { createUpkeepCapReadHandler, UPKEEP_CAP_READ_PATH, UPKEEP_CAP_READ_TOKEN_KIND } from "./upkeep-cap-read.js";
 import { BEDROCK_CHECK_PATH, BEDROCK_SETUP_PATH, createBedrockServiceHandlers, createVertexCheckHandler, VERTEX_CHECK_PATH, type MacVerifier } from "./service-call.js";
@@ -47,6 +48,7 @@ import { SnapshotPriceSource } from "./price-index.js";
 import { PriceRefresher } from "./price-refresh.js";
 import { fetchAWS, fetchLiteLLM, fetchTransport } from "./price-sources.js";
 import { CALL_HARD_CEILING_MS, createAnthropicTransport, type ProviderKeys, type ProviderTransport } from "./provider.js";
+import { companyRoomMicros, DynamoReviewerGrants } from "./reviewer-grants.js";
 import { createSecretsManagerKeys, ProviderKeyUnavailable } from "./secrets.js";
 import { createGatewayHandler, type GatewayDependencies, type ProductRouteResolver } from "./server.js";
 import { createTaskTokenVerifier } from "./token.js";
@@ -239,6 +241,8 @@ export interface ServeDependencies {
   answers?: { keys: LearningKeySource; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; monthDefaultMicros?: number; transports?: NonNullable<LearningRouteOptions["transports"]> };
   /** Nightly upkeep's per-project limits and the company's answers limit (default: the Companies table, company-caps.ts). */
   upkeepLimits?: UpkeepLimits; answersLimits?: AnswersLimits;
+  /** L4-HW3c: the company's approved rules for Code's hosted broker (company-instructions.ts). Default: Cloud's Companies table. */
+  companyInstructions?: CompanyInstructionsSource;
   /**
    * DEC 236, with config.agentKeys "company": the company's OWN connected key for the agent route (default: the company source of the
    * product key store, the one the learning route reads). Never the install key (`keys`), which is then not read at all.
@@ -343,6 +347,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     // Company-key mode: the install key is never read (a call can only go out on the company's own key, `agentKeys`).
     keys: companyKeys !== undefined ? NO_INSTALL_KEY : deps.keys ?? createSecretsManagerKeys({ region: config.region, credentials, secretArns: { anthropic: config.anthropicKeySecret }, now }),
     ...(companyKeys === undefined ? {} : { agentKeys: companyKeys }),
+    // DEC 254zzz41: reviewer grants are claimed once, durably, in the markers table (company keys, TTL): company-key mode only.
+    ...(companyKeys === undefined ? {} : { reviewerGrants: new DynamoReviewerGrants(db, config.tables.markers, now) }),
     // DEC 240: in company-key mode each company's saved choice picks its agents' source; Rovara's AI only when configured.
     ...(companyKeys === undefined ? {} : { agentAi: {
       sources: agentAiSources,
@@ -377,6 +383,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt }, keys: companyKeys }),
     ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }), now,
     switchedOn: config.aiSourceKinds ?? new Set<string>(), chat: { openai: true, openrouter: true },
+    // DEC 254zzz41: what reviews may use, from the company's real connections and the room left in its one company cap (the agent meter's company row).
+    reviewer: { keys: companyKeys, companyLimitMicros: (iss: string, cid: string) => companyRoomMicros(caps, meter, iss, cid) },
     // The endpoint's registered model names, from the company's sealed endpoint account (this company only).
     endpointModels: async (iss: string, cid: string) => { const text = await companyKeys.keyFor(iss, cid, "endpoint"); const c = text === undefined ? undefined : parseEndpointConnect(text); return c?.models.map((m) => m.name); },
   });
@@ -399,6 +407,11 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, UPKEEP_CAP_READ_TOKEN_KIND),
     limits: upkeepLimits, meter, now,
   });
+  // L4-HW3c: the company's approved rules for Code's hosted broker (company-instructions.ts), from Cloud's Companies table (the same read-only grant as the budgets), signed with the task key.
+  const companyInstructions = createCompanyInstructionsHandler({
+    verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, COMPANY_INSTRUCTIONS_TOKEN_KIND),
+    rules: deps.companyInstructions ?? new CompanyStoredInstructions(db, config.tables.companies), now,
+  });
   const inFlight = new Set<Promise<void>>();
   let draining = false;
   const refuse = (res: ServerResponse) => { res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store", connection: "close" }); res.end(UNAVAILABLE); };
@@ -411,6 +424,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
       : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels
       : UPKEEP_CAP_READ_PATH.test(req.url ?? "") ? upkeepCapRead
       : evalAuthority !== undefined && path === EVAL_AUTHORITY_PATH ? evalAuthority
+      : path === COMPANY_INSTRUCTIONS_PATH ? companyInstructions
       : path === EVAL_CAP_PATH ? evalCap : undefined;
     const running = (service !== undefined ? service(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
     inFlight.add(running); void running.finally(() => inFlight.delete(running));

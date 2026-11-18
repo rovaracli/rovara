@@ -10,15 +10,15 @@ import { CodeError } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import type { LessonMeasureResponse } from "@agentx/contracts/code-contract-v0";
 
-const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
-const badRequest = (message: string): RouteAnswer => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message } } });
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const text = (value: unknown, max: number): string | undefined => (typeof value === "string" ? value.slice(0, max) : undefined);
-const num = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
-const count = (value: unknown): number => { const n = num(value); return n === undefined || n < 0 ? 0 : Math.floor(n); };
-const some = (entries: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== undefined));
-const list = (value: unknown, max: number): unknown[] => (Array.isArray(value) ? value.slice(0, max) : []);
-const strings = (value: unknown, max: number, each: number): string[] => list(value, max).flatMap((item) => (typeof item === "string" ? [item.slice(0, each)] : []));
+export const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
+export const badRequest = (message: string): RouteAnswer => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message } } });
+export const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+export const text = (value: unknown, max: number): string | undefined => (typeof value === "string" ? value.slice(0, max) : undefined);
+export const num = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+export const count = (value: unknown): number => { const n = num(value); return n === undefined || n < 0 ? 0 : Math.floor(n); };
+export const some = (entries: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== undefined));
+export const list = (value: unknown, max: number): unknown[] => (Array.isArray(value) ? value.slice(0, max) : []);
+export const strings = (value: unknown, max: number, each: number): string[] => list(value, max).flatMap((item) => (typeof item === "string" ? [item.slice(0, each)] : []));
 
 const measureUnavailable: RouteAnswer = { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Lessons measure is unavailable right now. Try again." } } };
 const measureDenied: RouteAnswer = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a project maintainer, or a company owner or admin, can see the lessons measure." } } };
@@ -26,6 +26,7 @@ const measureNotFound: RouteAnswer = { status: 404, body: { error: { code: "NOT_
 const measureNotYet: RouteAnswer = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Lessons measure isn't available on this Rovara yet." } } };
 const measureOff: RouteAnswer = { status: 404, body: { error: { code: "LESSONS_SWITCHED_OFF", message: "Lessons are off." } } };
 const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+/** Code's measure (lessons/measure.ts LessonMeasure). `revertDetection` is "wired" since Code's revert watch counts reverts; an older Code said "not_wired". Either reads. */
 function measureView(value: unknown, project: string): LessonMeasureResponse | undefined {
   if (!isRecord(value) || value["project"] !== project || !Number.isInteger(value["windowDays"]) || !isFiniteNumber(value["floor"]) || !Number.isInteger(value["loads"])
     || !(value["lessonsInUse"] === null || Number.isInteger(value["lessonsInUse"])) || !Number.isInteger(value["loadedLessons"]) || !Number.isInteger(value["loadedBelowFloor"])
@@ -34,7 +35,7 @@ function measureView(value: unknown, project: string): LessonMeasureResponse | u
     || !(value["meanFitLoaded"] === null || isFiniteNumber(value["meanFitLoaded"])) || !(value["meanFitLeftOut"] === null || isFiniteNumber(value["meanFitLeftOut"]))
     || !isRecord(value["cleanMerge"]) || !Number.isInteger(value["cleanMerge"]["merged"]) || !Number.isInteger(value["cleanMerge"]["reverted"])
     || !Number.isInteger(value["cleanMerge"]["clean"]) || !(value["cleanMerge"]["rate"] === null || isFiniteNumber(value["cleanMerge"]["rate"]))
-    || value["revertDetection"] !== "not_wired" || typeof value["truncated"] !== "boolean" || !Number.isInteger(value["unreadable"])) return undefined;
+    || (value["revertDetection"] !== "not_wired" && value["revertDetection"] !== "wired") || typeof value["truncated"] !== "boolean" || !Number.isInteger(value["unreadable"])) return undefined;
   return {
     project, windowDays: value["windowDays"] as number, floor: value["floor"], loads: value["loads"] as number, lessonsInUse: value["lessonsInUse"] as number | null,
     loadedLessons: value["loadedLessons"] as number, loadedBelowFloor: value["loadedBelowFloor"] as number, loadsWithBelowFloor: value["loadsWithBelowFloor"] as number,
@@ -42,7 +43,7 @@ function measureView(value: unknown, project: string): LessonMeasureResponse | u
     loadsCapBound: value["loadsCapBound"] as number, leftOutAtOrAboveFloor: value["leftOutAtOrAboveFloor"] as number, meanFitLoaded: value["meanFitLoaded"],
     meanFitLeftOut: value["meanFitLeftOut"],
     cleanMerge: { merged: value["cleanMerge"]["merged"] as number, reverted: value["cleanMerge"]["reverted"] as number, clean: value["cleanMerge"]["clean"] as number, rate: value["cleanMerge"]["rate"] },
-    revertDetection: "not_wired", truncated: value["truncated"], unreadable: value["unreadable"] as number,
+    revertDetection: value["revertDetection"], truncated: value["truncated"], unreadable: value["unreadable"] as number,
   };
 }
 function measureRefusal(error: CodeError): RouteAnswer {
@@ -55,8 +56,8 @@ function measureRefusal(error: CodeError): RouteAnswer {
 }
 
 /** A project name as Code takes it, a lesson id and a task id: anything else never reaches Code. */
-const PROJECT = "([A-Za-z0-9][A-Za-z0-9._-]{0,99})";
-const LESSON_ID = "([A-Za-z0-9_-]{4,64})";
+export const PROJECT = "([A-Za-z0-9][A-Za-z0-9._-]{0,99})";
+export const LESSON_ID = "([A-Za-z0-9_-]{4,64})";
 const TASK_ID = "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})";
 export const REJECT_REASONS = ["wrong", "too_narrow", "duplicate", "not_useful", "other"] as const;
 export const RETIRE_REASONS = ["outdated", "wrong", "harmful", "not_useful", "other"] as const;
@@ -68,7 +69,7 @@ export const INBOX_PROJECTS_MAX = 20;
 const INBOX_LESSONS_MAX = 20;
 const LESSONS_MAX = 50;
 
-const dev = (project: string) => `/v1/dev/projects/${encodeURIComponent(project)}`;
+export const dev = (project: string) => `/v1/dev/projects/${encodeURIComponent(project)}`;
 const person = (raw: unknown) => (isRecord(raw) && typeof raw["name"] === "string" ? some({ name: raw["name"].slice(0, 80), you: raw["you"] === true ? true : undefined }) : undefined);
 const people = (raw: unknown, max: number) => list(raw, max).flatMap((one) => { const view = person(one); return view === undefined ? [] : [view]; });
 
@@ -98,6 +99,21 @@ function needs(raw: unknown): Record<string, unknown> | undefined {
 /** Another lesson's id, as Code names it (a duplicate or a contradiction), or undefined. */
 const lessonRef = (value: unknown): string | undefined => (typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/u.test(value) ? value : undefined);
 
+/**
+ * What a lesson became (L4-LP4G): a team rule, a draft task to add a check, or a skill. A kind a newer Code added reads as `other` and the link is kept (never dropped, never
+ * read as a known kind); a value that is not an object is no link at all.
+ */
+export function became(raw: unknown): { kind: string; ref: string; at: number } | undefined {
+  if (!isRecord(raw)) return undefined;
+  const kind = BECAME_KINDS.find((one) => one === raw["kind"]) ?? "other";
+  // A time outside what a date can hold (a count in microseconds, say) reads as no time: the screen draws a date from it and must never throw.
+  const at = num(raw["at"]);
+  return { kind, ref: text(raw["ref"], 200) ?? "", at: at !== undefined && at >= 0 && at <= MAX_TIME ? at : 0 };
+}
+const BECAME_KINDS = ["rule", "check", "skill"] as const;
+/** The latest millisecond time a JavaScript date holds. */
+const MAX_TIME = 8.64e15;
+
 /** One lesson as the screens draw it (contract v0 `LessonItem`), or undefined for one Code sent without an id, a version or a title. */
 export function lessonItem(raw: unknown): Record<string, unknown> | undefined {
   // A lesson without its version or its lapse time cannot be decided or warned about honestly: it is left out, never shown as "lapses now".
@@ -116,6 +132,7 @@ export function lessonItem(raw: unknown): Record<string, unknown> | undefined {
     needs: needs(raw["needs"]), rejectedReason: text(raw["rejectedReason"], 40), trial: text(raw["trial"], 20),
     possibleDuplicate: lessonRef(raw["possibleDuplicate"]), contradicts: lessonRef(raw["contradicts"]),
     usedInTasks: num(raw["usedInTasks"]) === undefined ? undefined : count(raw["usedInTasks"]),
+    became: became(raw["became"]),
     canApprove: raw["canApprove"] === true, canReject: raw["canReject"] === true, canRetire: raw["canRetire"] === true,
   });
 }
@@ -130,8 +147,8 @@ function page(raw: unknown, project: string): Record<string, unknown> {
   });
 }
 
-const fixed = <T extends string>(value: unknown, words: readonly T[]): T | undefined => words.find((word) => word === value);
-const version = (value: unknown): number | undefined => (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 1_000_000 ? value : undefined);
+export const fixed = <T extends string>(value: unknown, words: readonly T[]): T | undefined => words.find((word) => word === value);
+export const version = (value: unknown): number | undefined => (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 1_000_000 ? value : undefined);
 
 /** An edit of a lesson's text, trimmed to what Code takes; undefined when absent, `false` when malformed. */
 function editOf(raw: unknown): { title: string; description: string; body: string } | undefined | false {
@@ -263,8 +280,8 @@ export function learningSourcesAnswer(raw: unknown, project: string): Record<str
   });
 }
 
-const body = (context: RouteContext): Record<string, unknown> => (isRecord(context.body) ? context.body : {});
-const postTo = async (context: RouteContext, path: string, payload: unknown) => context.client.json<unknown>(context.session, path, { method: "POST", body: payload });
+export const body = (context: RouteContext): Record<string, unknown> => (isRecord(context.body) ? context.body : {});
+export const postTo = async (context: RouteContext, path: string, payload: unknown) => context.client.json<unknown>(context.session, path, { method: "POST", body: payload });
 
 export const LESSONS_ROUTES: Route[] = [
   { method: "GET", path: /^\/lessons\/inbox$/u, answer: inbox },

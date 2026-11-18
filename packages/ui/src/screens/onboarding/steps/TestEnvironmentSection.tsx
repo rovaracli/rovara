@@ -98,7 +98,7 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
 
     {proposal === undefined && shown.draft.status === "ready" && <Button busy={busy === "propose"} onClick={() => { void act("propose", () => api.propose(project), take); }}>Propose a test environment</Button>}
     {proposal === undefined && shown.draft.status === "stale" && <p>The setup draft is older than the project's settings. Ask Rovara to propose the setup again, above.</p>}
-    {proposal === undefined && shown.draft.status === "none" && !shown.approved && <p>Ask Rovara to propose the setup above first. The test environment is drafted from that look at your default branch.</p>}
+    {proposal === undefined && shown.draft.status === "none" && !shown.approved && shown.draft.notes.length === 0 && <p>Ask Rovara to propose the setup above first. The test environment is drafted from that look at your default branch.</p>}
 
     {proposal !== undefined && <ProposalView
       proposal={proposal} approvedRevision={approvedRevision} busy={busy} confirmUrl={confirmUrl} origin={host.origin} applied={applied}
@@ -118,7 +118,7 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
       }}>Save my edit</Button>
       <Button onClick={() => setEditing(undefined)}>Cancel</Button>
     </div>}
-    {error && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => host.signIn(host.currentPath())}>Sign in again</Button></>}</p>}
+    {error && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => host.signIn(host.currentPath(), { stepUp: true })}>Confirm it's you</Button></>}</p>}
   </section>;
 }
 
@@ -162,7 +162,7 @@ function ProposalView(props: {
       <p>It needs a second person to confirm it, and you to sign in again just before you approve.</p></div>}
 
     <h4>Proof</h4>
-    {proposal.proved ? <p role="status">Proved: the check ran these commands and they passed ({proposal.proveSteps.filter((step) => step.status === "passed").map((step) => step.step.replace("_", " ")).join(", ")}).</p>
+    {proposal.proved ? <p role="status">Proved: the check ran these commands and they passed{proposal.proveSteps.some((step) => step.status === "passed") ? ` (${proposal.proveSteps.filter((step) => step.status === "passed").map((step) => step.step.replace("_", " ")).join(", ")})` : ""}.</p>
       : <p>Not proved yet. The check runs the commands above on a fresh copy of your default branch, before any of them is added to the project's settings{proposal.commandsNotInSettings > 0 ? ` (${String(proposal.commandsNotInSettings)} of them are not in the settings yet; approving adds them)` : ""}.</p>}
     {proposal.check.status === "checking" && <p role="status">The check is running.</p>}
     {proposal.check.status === "failed" && <p role="alert">The check failed{proposal.check.failedStep !== undefined && <>: <VisibleText text={proposal.check.failedStep} /></>}</p>}

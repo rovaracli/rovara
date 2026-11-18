@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
-import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
-import { INBOX_KIND_WORDS, INBOX_NOT_AVAILABLE_TEXT, INBOX_POLL_MS, INBOX_READ_IDS_MAX } from "@agentx/contracts/web";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { INBOX_KIND_WORDS, INBOX_NOT_AVAILABLE_TEXT, INBOX_POLL_MS, INBOX_READ_IDS_MAX, PROJECT_NOTICE_KIND_WORDS } from "@agentx/contracts/web";
 import { createInboxApi, inboxNotAvailable } from "../../api/inbox.js";
 import { ApiError } from "../../api/errors.js";
 import { useAppHost } from "../../host.js";
@@ -30,6 +30,9 @@ export function InboxScreen() {
   queryFn: ({ pageParam }): Promise<InboxPage> => api.page(pageParam === undefined ? {} : { cursor: pageParam }),
   refetchInterval: current => (current.state.error !== null && inboxNotAvailable(current.state.error) ? false : INBOX_POLL_MS),
  });
+ // L4-U5b: the notices about a project (an admin told by neither chat nor email finds them here). A failed read shows nothing here (the tasks below are the page's own state); a Code with no such route answers an empty list.
+ const notices = useQuery({ queryKey: ["inbox", "project-notices"], retry: false, queryFn: () => api.projectNotices(), refetchInterval: INBOX_POLL_MS });
+ const noticeItems = notices.data?.items ?? [];
  const items: InboxPage["items"] = inbox.data?.pages.flatMap(page => page.items) ?? [];
  const unreadIds = items.filter(item => !item.read).map(item => item.id);
  const unread = inbox.data?.pages[0]?.unread ?? unreadIds.length;
@@ -48,6 +51,14 @@ export function InboxScreen() {
  const notAvailable = inbox.isError && inboxNotAvailable(inbox.error);
  return <section className="rv-notices" data-testid="inbox"><PageHeader title="Inbox" {...(!notAvailable && inbox.data !== undefined && unread > 0 ? { description: `${String(unread)} unread` } : {})}
   actions={!notAvailable && unreadIds.length > 0 ? <Button disabled={marking} onClick={() => { void markAll(); }}>Mark all as read</Button> : undefined} />
+  {noticeItems.length > 0 && <section aria-labelledby="rv-project-notices-title" data-testid="project-notices"><h2 id="rv-project-notices-title" className="rv-notice-section">Projects that need an admin</h2>
+   <ol className="rv-notice-list" aria-label="Projects that need an admin">{noticeItems.map(item => <li key={item.id} className="rv-notice-row" data-read="false" data-testid="project-notice-row" data-kind={item.kind}>
+    <Link to={"/projects/" + encodeURIComponent(item.project)} className="rv-notice-link">
+     <span className="rv-notice-dot" aria-hidden="true" />
+     <span className="rv-notice-main"><b><VisibleText text={item.project} /></b><small>{Object.hasOwn(PROJECT_NOTICE_KIND_WORDS, item.kind) ? PROJECT_NOTICE_KIND_WORDS[item.kind as keyof typeof PROJECT_NOTICE_KIND_WORDS] : "Update"} · <VisibleText text={item.status} /></small></span>
+     <span className="rv-notice-meta"><RelativeTime at={item.at} /></span>
+    </Link>
+   </li>)}</ol></section>}
   {inbox.isPending && <Skeleton label="Loading your inbox" />}
   {notAvailable && <p role="status" data-testid="inbox-unavailable">{INBOX_NOT_AVAILABLE_TEXT}</p>}
   {inbox.isError && !notAvailable && <div role="alert" data-testid="load-error"><p><VisibleText text={inbox.error instanceof ApiError ? inbox.error.message : "Couldn't load your inbox. Try again."} /></p><Button onClick={() => { void inbox.refetch(); }}>Try again</Button></div>}

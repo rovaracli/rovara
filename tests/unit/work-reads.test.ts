@@ -55,16 +55,17 @@ describe("the Work page's reads", () => {
   it("reads one task's plan with its structured spec, without the raw document", async () => {
     const { status, body } = await call<PlanBody>(`/tasks/${TASK_IDS.planReview}/documents/plan`);
     expect(status).toBe(200);
-    expect(body.requirements[0]?.criteria[0]).toMatchObject({ id: "R1.1" });
-    expect(body.tasks.length).toBeGreaterThan(0);
-    expect(body.questions[0]).toMatchObject({ questionId: "Q1" });
+    // Code's real plan (tests/fixtures/code-answers.ts): its claims are the criteria, its decisions the questions; it names no task list of its own.
+    expect(body.requirements[0]?.criteria[0]).toMatchObject({ id: "1.1" });
+    expect(body.tasks).toBeUndefined();
+    expect(body.questions[0]).toMatchObject({ questionId: "d1" });
     expect(body.content).toBeUndefined();
     expect(body.summary.headline).toBeTruthy();
   });
 
   it("reads the proof index, the events and the comments", async () => {
     const proof = await call<ProofBody>(`/tasks/${TASK_IDS.planReview}/evidence`);
-    expect(proof.body.items[0]).toMatchObject({ title: "Unit tests", verdict: "pass", criterionIds: ["R1.1"] });
+    expect(proof.body.items[0]).toMatchObject({ title: "Unit tests", verdict: "pass", criterionIds: ["1.1"] });
     const events = await call<EventsBody>(`/tasks/${TASK_IDS.planReview}/events`);
     expect(events.body.events[1]).toMatchObject({ seq: 2, taskItemId: "T2", attempt: 1 });
     const comments = await call<{ comments: unknown[] }>(`/tasks/${TASK_IDS.planReview}/comments`);
@@ -97,7 +98,10 @@ describe("the Work page's reads", () => {
     expect(workTask({ title: "no id", project: "web" })).toBeUndefined();
     expect(workTask("nope")).toBeUndefined();
     expect(workPlan("not an object")).toEqual({});
-    expect(workPlan({ summary: { headline: 5, checks: ["a", 3] }, requirements: "x", content: { raw: 1 } })).toEqual({ summary: { checks: ["a"] } });
+    // Only Code's `{ plan: {...} }` reads; the flat contract-v0 shape is not a plan. Unreadable parts are left out, never guessed.
+    expect(workPlan({ summary: { headline: 5, checks: ["a", 3] }, requirements: "x", content: { raw: 1 } })).toEqual({});
+    expect(workPlan({ plan: { summary: { checks: [{ label: "a" }, { label: 3 }, "b"] }, content: { title: 5, claims: "x", decisions: [{ id: "bad id!", question: "q" }] } } }))
+      .toEqual({ summary: { checks: ["a"] }, requirements: [], questions: [] });
     expect(WORK_TASKS_MAX).toBe(100);
   });
 });

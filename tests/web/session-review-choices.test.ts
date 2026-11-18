@@ -27,8 +27,13 @@ const FINDINGS = [
  { advisory: false, origin: "INTRODUCED", severity: "LOW", file: "src/pages/Blog.jsx", text: "Blog.jsx injects blog.css after first render." },
  { advisory: true, origin: "INTRODUCED", severity: "LOW", text: "An advisory note that does not block." },
 ];
-function setup(raw: unknown, respond: (request: ApiRequest) => Promise<ApiResponse> = async () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "x" } } })) {
+const ME = "d".repeat(64);
+function setup(raw: unknown, respond: (request: ApiRequest) => Promise<ApiResponse> = async () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "x" } } }), options: { confirmedAgoMs?: number; note?: string } = {}) {
  const session = SessionViewReaderSchema.parse(raw), f = fakeHost(respond), query = createQueryClient();
+ query.setQueryData(["nav"], { me: { developerId: ME, name: "Maya", orgRole: "member" } });
+ // A confirmation (Code's step-up sign-in) this person finished that long ago, as the page records it.
+ if (options.confirmedAgoMs !== undefined) f.storage.set(`rovara.stepup.confirmedAt.${ME}`, String(Date.now() - options.confirmedAgoMs));
+ if (options.note !== undefined) f.storage.set(`rovara.reviewNote.${ME}.${SESSION_FIXTURE_ID}`, options.note);
  const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session, onComment: () => undefined })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
  return { f, close() { ui.unmount(); router.dispose(); query.clear(); } };
@@ -50,14 +55,53 @@ it("lists only the blocking findings and sends the code back to coding with the 
  s.close();
 });
 
-it("accepts with the note as the reason, and names a security finding on the button", async () => {
- const fixture = workspaceFixture({ status: "needs_person" }, blockedByFindings([], [{ advisory: true, origin: "INTRODUCED", severity: "LOW", text: "A security finding always blocks." }]));
- const s = setup(fixture, async request => request.path.endsWith("/accept-findings") ? { status: 200, body: { session: fixture } } : { status: 404, body: { error: { code: "NOT_FOUND", message: "x" } } });
+const SECURITY = [{ advisory: true, origin: "INTRODUCED", severity: "LOW", text: "A security finding always blocks." }];
+
+it("accepts with the note as the reason, and names a security finding on the button, right after the person confirmed it's them", async () => {
+ const fixture = workspaceFixture({ status: "needs_person" }, blockedByFindings([], SECURITY));
+ const s = setup(fixture, async request => request.path.endsWith("/accept-findings") ? { status: 200, body: { session: fixture } } : { status: 404, body: { error: { code: "NOT_FOUND", message: "x" } } }, { confirmedAgoMs: 60_000 });
  const button = await screen.findByRole("button", { name: "Accept, including the security finding, and open the pull request" });
  fireEvent.change(screen.getByLabelText("Your note"), { target: { value: "Reviewed; not reachable." } });
  fireEvent.click(button);
  await waitFor(() => { expect(screen.getByText("Accepted. Rovara is opening the pull request.")).toBeTruthy(); });
  expect(s.f.request.mock.calls.map(([request]) => request).find(request => request.path.endsWith("/accept-findings"))?.body).toMatchObject({ reason: "Reviewed; not reachable." });
+ s.close();
+});
+
+it("a security finding without a fresh confirmation: the button sends the person to Code's step-up sign-in, keeping the note, and nothing is accepted yet", async () => {
+ for (const confirmedAgoMs of [undefined, 11 * 60_000]) {
+  const fixture = workspaceFixture({ status: "needs_person" }, blockedByFindings([], SECURITY));
+  const s = setup(fixture, undefined, confirmedAgoMs === undefined ? {} : { confirmedAgoMs });
+  expect(screen.queryByRole("button", { name: "Accept, including the security finding, and open the pull request" })).toBeNull();
+  const confirm = await screen.findByRole("button", { name: "Confirm it's you to accept the security finding" });
+  fireEvent.change(screen.getByLabelText("Your note"), { target: { value: "Reviewed; not reachable." } });
+  fireEvent.click(confirm);
+  expect(s.f.host.signIn).toHaveBeenCalledTimes(1);
+  const [path, options] = (s.f.host.signIn as unknown as { mock: { calls: Array<[string, unknown]> } }).mock.calls[0]!;
+  expect(options).toEqual({ stepUp: true });
+  expect(path).toMatch(/confirmed=[0-9a-f-]{36}/u);
+  expect(s.f.storage.get(`rovara.reviewNote.${ME}.${SESSION_FIXTURE_ID}`)).toBe("Reviewed; not reachable.");
+  expect(s.f.request.mock.calls.some(([request]) => request.path.endsWith("/accept-findings"))).toBe(false);
+  s.close();
+ }
+});
+
+it("back from confirming, the kept note is filled in once; a server that still finds the confirmation too old asks again", async () => {
+ const fixture = workspaceFixture({ status: "needs_person" }, blockedByFindings([], SECURITY));
+ const s = setup(fixture, async request => request.path.endsWith("/accept-findings") ? { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Accepting a security finding needs you to confirm it's you again. Confirm it, then try once more." } } } : { status: 404, body: { error: { code: "NOT_FOUND", message: "x" } } }, { confirmedAgoMs: 60_000, note: "Kept note." });
+ expect((await screen.findByLabelText<HTMLTextAreaElement>("Your note")).value).toBe("Kept note.");
+ expect(s.f.storage.get(`rovara.reviewNote.${ME}.${SESSION_FIXTURE_ID}`)).toBe("");
+ fireEvent.click(screen.getByRole("button", { name: "Accept, including the security finding, and open the pull request" }));
+ await screen.findByRole("button", { name: "Confirm it's you to accept the security finding" });
+ expect(screen.getByRole("alert").textContent).toContain("confirm it's you again");
+ s.close();
+});
+
+it("a co-owner on the task's People list sees the choices; a code-only finding needs no confirmation", async () => {
+ const coOwner = workspaceFixture({ status: "needs_person", you: { level: "view", owner: false, coOwner: true, following: false, actions: ["watch"] } }, blockedByFindings(FINDINGS));
+ const s = setup(coOwner);
+ expect(await screen.findByRole("region", { name: "Review findings" })).toBeTruthy();
+ expect(screen.getByRole("button", { name: "Accept and open the pull request" })).toBeTruthy();
  s.close();
 });
 

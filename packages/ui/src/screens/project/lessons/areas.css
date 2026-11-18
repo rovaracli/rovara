@@ -22,6 +22,7 @@
 .rv-source-head{display:flex;flex-wrap:wrap;gap:var(--rv-space-1) var(--rv-space-3);align-items:baseline}.rv-source-head span{font-size:var(--rv-font-sm)}
 .rv-source-counts,.rv-source-example,.rv-source-paused{margin:0;font-size:var(--rv-font-sm);overflow-wrap:anywhere}
 .rv-source-counts{color:var(--rv-text-muted)}
+.rv-switch-help{margin:0 0 var(--rv-space-2);font-size:var(--rv-font-sm)}
 .rv-source-paused{border-left:3px solid var(--rv-status-needs-you);padding-left:var(--rv-space-2)}
 .rv-team-lessons{margin-top:var(--rv-space-6);min-width:0}
 .rv-team-lessons-note{font-size:var(--rv-font-sm)!important;margin:0 0 var(--rv-space-3)!important}

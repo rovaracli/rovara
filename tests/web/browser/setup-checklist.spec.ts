@@ -2,7 +2,7 @@
 // checklist on its page (a failed setup run with its failing command and last lines), runs setup again and stops it, sets Invite teammates aside, opens
 // Project settings (Re-run setup, Archive, Slack and Linear, spend), and sees "Finish setting up" on Home. Screenshots go to the test output folder.
 import { expect, test } from "@playwright/test";
-import { HomePage, PROJECT, ROUTES, SetupChecklistPage, setSetupRun } from "./pages/index.js";
+import { HomePage, PROJECT, ROUTES, SetupChecklistPage, setEvalCard, setSetupRun } from "./pages/index.js";
 
 test.afterEach(async ({ page }) => { await setSetupRun(page, PROJECT, "none"); });
 
@@ -31,6 +31,10 @@ test("a finished run, Project settings with Re-run setup, and Home's Finish sett
   const screen = new SetupChecklistPage(page);
   await screen.open(PROJECT);
   await expect(screen.row("setupRun")).toHaveAttribute("data-state", "done");
+  // L4-EVC: a finished run brings the eval card; with no card, the row keeps the checks the run reported.
+  await expect(screen.row("evalConfirm")).toContainText("Approve the cost of running your evals");
+  await setEvalCard(page, PROJECT, "none");
+  await screen.open(PROJECT);
   await expect(screen.row("evalConfirm")).toContainText("npm test");
   await page.screenshot({ path: testInfo.outputPath("checklist-ready.png"), fullPage: true });
   await screen.openSettings(PROJECT);
