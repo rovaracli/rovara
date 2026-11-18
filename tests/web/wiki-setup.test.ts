@@ -521,7 +521,10 @@ describe("nightly upkeep: the company's choice", () => {
     await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
     const sent = calls(f, "PUT", ROOT + "/upkeep");
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.body).toEqual({ requestId: expect.stringMatching(RID), on: true, allowSystemRuns: true });
+    const body = sent[0]!.body as { requestId: string; on: boolean; allowSystemRuns: boolean };
+    expect(Object.keys(body).sort()).toEqual(["allowSystemRuns", "on", "requestId"]);
+    expect(RID.test(body.requestId)).toBe(true);
+    expect([body.on, body.allowSystemRuns]).toEqual([true, true]);
     expect(screen.queryByTestId("wiki-setup-upkeep-offer")).toBeNull();
     expect(screen.queryByTestId("wiki-setup-upkeep-confirm")).toBeNull();
     expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is on.");
@@ -558,11 +561,13 @@ describe("nightly upkeep: the company's choice", () => {
     fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-no"));
     expect(screen.queryByTestId("wiki-setup-upkeep-confirm")).toBeNull();
     expect(screen.getByTestId("wiki-setup-upkeep-offer")).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByTestId("wiki-setup-upkeep-offer"));
     expect(calls(f, "PUT", ROOT + "/upkeep")).toHaveLength(0);
     f.close();
     for (const [answer, words] of [
       [err(403, "FORBIDDEN", WIKI_SETUP_WORDS.upkeepConsentNotAllowed), WIKI_SETUP_WORDS.upkeepConsentNotAllowed],
       [err(403, "FORBIDDEN", LEAK), "That could not be done just now. Try again."],
+      [err(501, "NOT_ON_CODE_YET", WIKI_SETUP_WORDS.upkeepNotYet), WIKI_SETUP_WORDS.upkeepNotYet],
     ] as const) {
       const g = mount(row(true), { upkeep: upkeepIs({}), put: () => answer });
       await open();

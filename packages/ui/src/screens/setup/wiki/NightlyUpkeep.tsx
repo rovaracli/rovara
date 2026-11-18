@@ -65,16 +65,17 @@ function CapLine({ cap }: { cap: WikiSetupUpkeepCap | undefined }) {
 
 /** The setup choice (company owners and admins): one button, then one confirm that says what runs and what the cap is. Yes sends the company's consent and the project switch in one act. */
 function Offer({ cap, busy, onYes }: { cap: WikiSetupUpkeepCap | undefined; busy: boolean; onYes: () => void }) {
-  const [asking, setAsking] = useState(false), group = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (asking) group.current?.focus(); }, [asking]);
-  if (!asking) return <Button variant="primary" data-testid="wiki-setup-upkeep-offer" onClick={() => { setAsking(true); }}>{T.OFFER_BUTTON}</Button>;
+  const [asking, setAsking] = useState(false), group = useRef<HTMLDivElement>(null), button = useRef<HTMLButtonElement>(null), cancelled = useRef(false);
+  // Focus follows the person: into the confirm when it opens, back to the choice when it is cancelled.
+  useEffect(() => { if (asking) group.current?.focus(); else if (cancelled.current) { cancelled.current = false; button.current?.focus(); } }, [asking]);
+  if (!asking) return <Button ref={button} variant="primary" data-testid="wiki-setup-upkeep-offer" onClick={() => { setAsking(true); }}>{T.OFFER_BUTTON}</Button>;
   return <div ref={group} tabIndex={-1} className="rv-wikis-controls" role="group" aria-label={T.OFFER_TITLE} data-testid="wiki-setup-upkeep-confirm">
     <p>{T.OFFER_CONFIRM_LINE}</p>
     <CapLine cap={cap} />
     <p>{T.OFFER_CONFIRM_ASK}</p>
     <div className="rv-wikis-actions">
       <Button variant="primary" busy={busy} data-testid="wiki-setup-upkeep-yes" onClick={onYes}>{T.OFFER_YES}</Button>
-      <Button disabled={busy} data-testid="wiki-setup-upkeep-no" onClick={() => { setAsking(false); }}>{T.CANCEL}</Button>
+      <Button disabled={busy} data-testid="wiki-setup-upkeep-no" onClick={() => { cancelled.current = true; setAsking(false); }}>{T.CANCEL}</Button>
     </div>
   </div>;
 }

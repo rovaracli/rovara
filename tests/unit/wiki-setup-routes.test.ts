@@ -498,7 +498,7 @@ describe("the upkeep consent step (L4-W6b)", () => {
       { requestId: "not-a-uuid", on: true }, [], '"text"', "null",
     ];
     for (const body of refused) {
-      const res = await w.send("PUT", P("payments", "upkeep"), headers, body as any);
+      const res = await w.send("PUT", P("payments", "upkeep"), headers, body);
       expect(asRefusal(res), JSON.stringify(body)).toEqual(refusal("invalid"));
     }
     expect(putCalls(w)).toHaveLength(0);

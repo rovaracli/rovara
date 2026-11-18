@@ -71,7 +71,6 @@ export const T = {
   UPKEEP_OFF: "Nightly upkeep is off. Pages still show when their files changed. Use Refresh now when you want.",
   OFFER_TITLE: "Keep this project healthy every night",
   OFFER_BUTTON: "Keep this project healthy every night",
-  OFFER_TEXT: "Rovara re-checks the setup and the mocks every night your code changed, and refreshes the project wiki.",
   OFFER_CONFIRM_LINE: "Setup check and mock checks: no AI. Wiki refresh: AI, uses your key.",
   OFFER_CONFIRM_ASK: "Turn this on for the company?",
   OFFER_YES: "Yes, keep it healthy",
