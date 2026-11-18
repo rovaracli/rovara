@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { EvalCardSuite, EvalCardView, EvalHealthResult } from "@agentx/contracts/web";
 import { evalCardKey, useEvalCardApi } from "../../api/eval-card.js";
@@ -42,6 +42,9 @@ export const EVAL_HEALTH_WORDS = {
   differing: (n: number) => `${cases(n)} gave different answers on different runs.`,
   caseMixed: (passes: number) => `Passed ${String(passes)} of 3 times`,
 } as const;
+/** How often the card reads again while a check waits or runs (milliseconds); never otherwise. */
+export const EVAL_HEALTH_POLL_MS = 15_000;
+export const evalHealthPollMs = (state: string | undefined): number | false => (state === "requested" || state === "running" ? EVAL_HEALTH_POLL_MS : false);
 type Problem = { message: string; moved: boolean };
 
 /**
@@ -56,14 +59,17 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
   const confirmed = useJustConfirmed(who);
   // While a check waits or runs, the card reads again by itself (a person who pressed the button wants its answer); otherwise only when told to.
   const read = useQuery({ queryKey: evalCardKey(project), queryFn: () => api.read(project), retry: false,
-    refetchInterval: (q) => { const state = q.state.data?.health?.state; return state === "requested" || state === "running" ? 15_000 : false; } });
+    refetchInterval: (q) => evalHealthPollMs(q.state.data?.health?.state) });
   const [stale, setStale] = useState(false), [busy, setBusy] = useState<string>(), [problem, setProblem] = useState<Problem>(), [done, setDone] = useState(false);
   const sending = useRef(false);
   // One id per card view: Code keeps a health request once per id, so a press that failed and is pressed again is the same request, never a second one. Made on a click, never on a render.
   const healthId = useRef<string | undefined>(undefined);
+  // A press that was answered keeps its id until Code's answer settles (a double press is the same request); once a check ran or did not run, the next press is a new request.
+  const settled = read.data?.health?.state === "not_run" || read.data?.health?.state === "finished";
+  useEffect(() => { if (settled) healthId.current = undefined; }, [settled]);
   const fresh = confirmed && !stale;
   if (read.isPending) return <Skeleton label="Loading your evals" />;
-  if (read.isError) {
+  if (read.isError && read.data === undefined) {
     if (read.error instanceof ApiError && (read.error.code === "NOT_ON_CODE_YET" || read.error.status === 404)) return <>{fallback}</>;
     return <div data-testid="eval-card-read-error"><p role="status">{EVAL_CARD_WORDS.readError}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div>;
   }
@@ -72,7 +78,7 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
   if (data.state === "none") return <>{fallback}</>;
 
   const reread = () => { void query.invalidateQueries({ queryKey: evalCardKey(project) }); void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); };
-  const refresh = () => { setDone(false); reread(); };
+  const refresh = () => { setDone(false); healthId.current = undefined; reread(); };
   function confirmItsYou() { host.signIn(confirmedReturn(host.currentPath(), startStepUpNonce(host.storage)), { stepUp: true }); }
   /** One act: the latch keeps a second press from sending a second one; a sign-in the server finds too old asks again. */
   async function act(name: string, run: () => Promise<unknown>, finished: "reload" | "stay") {
@@ -124,7 +130,7 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
       {spend.carried === true && <p className="rv-muted" data-testid="eval-carried">{EVAL_CARD_WORDS.carried}</p>}
     </div>}
     {data.state === "rejected" && <p data-testid="eval-rejected">{EVAL_CARD_WORDS.rejected}</p>}
-    {health !== undefined && data.state === "approved" && <HealthBlock health={health} canAsk={data.canApprove} busy={busy} onAsk={() => { void act("health", async () => { const answer = await api.health(project, { requestId: (healthId.current ??= crypto.randomUUID()), seenCostMicros: health.seenCostMicros }); healthId.current = undefined; return answer; }, "stay"); }} />}
+    {health !== undefined && data.state === "approved" && <HealthBlock health={health} canAsk={data.canApprove} busy={busy} onAsk={() => { void act("health", () => api.health(project, { requestId: (healthId.current ??= crypto.randomUUID()), seenCostMicros: health.seenCostMicros }), "stay"); }} />}
     {!data.canApprove && (data.state === "propose" || data.state === "waiting" || data.state === "renew") && <p className="rv-muted" data-testid="eval-who">{EVAL_CARD_WORDS.noOne}</p>}
     {askStepUp && !done && <p className="rv-muted" data-testid="eval-fresh" role="status">{stale ? EVAL_CARD_WORDS.stepUpOld : fresh ? EVAL_CARD_WORDS.stepUpDone : EVAL_CARD_WORDS.stepUp}</p>}
     {problem !== undefined && <div role="alert" data-testid="eval-problem"><p><VisibleText text={problem.message} /></p>{problem.moved && <Button data-testid="eval-refresh" onClick={refresh}>Refresh</Button>}</div>}

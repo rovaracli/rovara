@@ -3,7 +3,7 @@
 // (after a fresh sign-in); a changed eval set that grew past the approved dollars asks again (Approve / Not now); once approved it says what a PR costs and offers the OPT-IN health check, which is
 // never sent without a click. The dollars a person saw (`seen`) are copied from the read, never worked out here. No tokens, counts or micro-dollar words reach the page. The server decides everything;
 // these tests watch what the page asks and says.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -12,7 +12,7 @@ import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ProjectChecklist } from "../../packages/ui/src/screens/setup/ProjectChecklist.js";
-import { EVAL_CARD_WORDS, EVAL_HEALTH_WORDS } from "../../packages/ui/src/screens/setup/EvalCard.js";
+import { EVAL_CARD_WORDS, EVAL_HEALTH_POLL_MS, EVAL_HEALTH_WORDS, evalHealthPollMs } from "../../packages/ui/src/screens/setup/EvalCard.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
@@ -352,6 +352,49 @@ describe("the health check's answer (L4-EVH)", () => {
     await waitFor(() => expect(posts(f, "eval-health")).toHaveLength(2));
     const ids = posts(f, "eval-health").map(r => (r.body as { requestId: string }).requestId);
     expect(ids[0]).not.toBe(ids[1]);
+    f.close();
+  });
+  it("reads again by itself only while a check waits or runs, and never posts (the poll only reads)", () => {
+    expect(EVAL_HEALTH_POLL_MS).toBe(15_000);
+    for (const state of ["requested", "running"]) expect(evalHealthPollMs(state)).toBe(15_000);
+    for (const state of ["none", "finished", "not_run", undefined]) expect(evalHealthPollMs(state)).toBe(false);
+  });
+  it("a running card is read again after the poll interval, with no post", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const f = mount({ read: () => ({ status: 200, body: approved({ health: health("running") }) }) });
+      await theCard();
+      const before = evalReads(f);
+      await vi.advanceTimersByTimeAsync(EVAL_HEALTH_POLL_MS + 500);
+      await waitFor(() => expect(evalReads(f)).toBeGreaterThan(before));
+      expect(posts(f)).toHaveLength(0);
+      f.close();
+    } finally { vi.useRealTimers(); }
+  });
+  it("a card that read once keeps showing its last answer when a later read fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let ok = true;
+      const f = mount({ read: () => (ok ? { status: 200, body: approved({ health: health("running") }) } : { status: 500, body: { error: { code: "INTERNAL", message: "down" } } }) });
+      await theCard();
+      const before = evalReads(f);
+      ok = false;
+      await vi.advanceTimersByTimeAsync(EVAL_HEALTH_POLL_MS + 500);
+      await waitFor(() => expect(evalReads(f)).toBeGreaterThan(before));
+      expect(screen.queryByTestId("eval-card-read-error")).toBeNull();
+      expect(screen.getByTestId("eval-health-state").textContent).toBe("Your eval check is running");
+      f.close();
+    } finally { vi.useRealTimers(); }
+  });
+  it("a second press before Code's answer settles repeats the same request id (a double press is one request)", async () => {
+    const f = mount({ read: () => ({ status: 200, body: approved() }) });
+    const label = { name: "Check my evals now (about $2.40)" };
+    fireEvent.click(await within(await theCard()).findByRole("button", label));
+    await waitFor(() => expect(posts(f, "eval-health")).toHaveLength(1));
+    fireEvent.click(await within(await theCard()).findByRole("button", label));
+    await waitFor(() => expect(posts(f, "eval-health")).toHaveLength(2));
+    const ids = posts(f, "eval-health").map(r => (r.body as { requestId: string }).requestId);
+    expect(ids[0]).toBe(ids[1]);
     f.close();
   });
   it("a person who may not approve sees the answer but no button", async () => {
