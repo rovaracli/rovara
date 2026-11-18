@@ -28,7 +28,7 @@ export const ROW_STATE_WORDS: Readonly<Record<SetupRowState, { label: string; to
  optional: { label: "Optional", tone: "idle" }, skipped: { label: "Skipped (optional)", tone: "idle" }, failed: { label: "Failed", tone: "bad" },
 });
 const ROW_TITLES: Readonly<Record<SetupStatusRow, string>> = Object.freeze({
- repos: "Repos", setupRun: "Setup run", evalConfirm: "Confirm how work is checked", aiAndSpend: "AI for your agents",
+ repos: "Repos", setupRun: "Setup run", evalConfirm: "AI evals", aiAndSpend: "AI for your agents",
  slackChannel: "Slack channel", linear: "Linear", invites: "Invite teammates", firstTask: "Start your first task",
 });
 /** What the AI row says while no AI can be called (setup review G6). */
@@ -84,7 +84,7 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
   catch (caught) { setError(fixedSetupWords(caught, "That couldn't be saved just now. Try again.")); }
   finally { setBusy(undefined); }
  }
- const noEvalsButton = canChange ? <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals" onClick={() => { void evalNone(true); }}>This project has no evals</Button> : null;
+ const noEvalsButton = canChange ? <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals" onClick={() => { void evalNone(true); }}>This project has no AI evals</Button> : null;
  const next = data.progress.nextRequired;
  const open = (row: SetupStatusRow) => row === next || (OPTIONAL.has(row) && data[row].state === "optional" && canChange);
  const skipButton = (row: SetupSkippableRow) => canChange && data[row].state === "optional" ? <Button busy={busy === row} data-testid={`checklist-skip-${row}`} onClick={() => { void skip(row, true); }}>Set up later</Button> : null;
@@ -105,13 +105,14 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
    <Row name="setupRun" state={review.stage === "none" || hasNewer(runRow) ? runRow.state : review.stage === "checking" ? "running" : "needs_you"} open={open("setupRun") || waitingNewer(runRow) || runRow.state === "running" || runRow.state === "failed" || review.stage !== "none"}>
     <SetupRunRow project={project} row={runRow} onChanged={refresh} review={review} />
    </Row>
-   <Row name="evalConfirm" state={data.evalConfirm.state} open={open("evalConfirm")}>
-    {data.evalConfirm.blockedBy === "setupRun" ? <p>After the setup run, Rovara proposes how it checks work here.</p>
-     : data.evalConfirm.report === "no_evals" ? <><p data-testid="checklist-eval-no-evals-set">No evals for this project: Rovara checks work with the project's own tests.</p>{canChange && <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals-undo" onClick={() => { void evalNone(false); }}>This project has evals after all</Button>}</>
+   {/* L4-T5 (owner D9): the AI evals row shows only when the setup run found evals. A finished run that found none leaves nothing to confirm: Code marks the row done by itself, and nothing is shown here. */}
+   {!(data.evalConfirm.state === "done" && data.evalConfirm.report === "none") && <Row name="evalConfirm" state={data.evalConfirm.state} open={open("evalConfirm")}>
+    {data.evalConfirm.blockedBy === "setupRun" ? <p>After the setup run, Rovara looks for AI evals in your repos.</p>
+     : data.evalConfirm.report === "no_evals" ? <><p data-testid="checklist-eval-no-evals-set">No AI evals for this project: Rovara checks work with the project's own tests.</p>{canChange && <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals-undo" onClick={() => { void evalNone(false); }}>This project has AI evals after all</Button>}</>
      : <EvalCard project={project} fallback={data.evalConfirm.report === "confirmed" ? <p>Rovara runs <code><VisibleText text={data.evalConfirm.confirmedSelection ?? "the confirmed checks"} /></code> before every pull request.</p>
       : data.evalConfirm.report === "reported" ? <>{(data.evalConfirm.suites ?? []).map(suite => <p key={suite.selection}>Rovara will run <code><VisibleText text={suite.selection} /></code> before every pull request.</p>)}<p className="rv-muted" data-testid="checklist-eval-not-yet">Confirming these checks from the web isn't connected yet; a company owner or admin, or this project's admin, confirms them where Rovara asks.</p>{noEvalsButton}</>
-      : <><p data-testid="checklist-eval-none">The setup run found no checks to confirm yet. Run setup again, or edit the test commands.</p>{noEvalsButton}</>} />}
-   </Row>
+      : <><p data-testid="checklist-eval-none">Rovara has not found AI evals in this project yet. Run setup again, or edit the test commands.</p>{noEvalsButton}</>} />}
+   </Row>}
    {/* L4-T2 (D10): the project's "AI and spend limit" row is gone. This row shows only when no AI can be called (Code's or Cloud's `needs_you`), and says what to do about it. */}
    {data.aiAndSpend.state !== "done" && <Row name="aiAndSpend" state={data.aiAndSpend.state} open={open("aiAndSpend")}>
     <p data-testid="checklist-ai-needs-you"><strong>{AI_NEEDS_YOU}</strong></p>

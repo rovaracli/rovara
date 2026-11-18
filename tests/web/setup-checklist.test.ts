@@ -82,6 +82,38 @@ describe("the project checklist", () => {
     f.close();
   });
 
+  // L4-T5 (owner D9): the row is "AI evals", it shows only when evals were found, and a finished run that found none is done by itself with no row at all.
+  it("the AI evals row: named AI evals, and absent when Code says the run found none (done by itself)", async () => {
+    const found = mount(h(ProjectChecklist, { project: "web" }), { status: () => ({ status: 200, body: checklist({ evalConfirm: { state: "needs_you", report: "reported", suites: [{ selection: "npm run evals", questions: 12 }] } }) }) });
+    const row = await screen.findByTestId("checklist-row-evalConfirm");
+    expect(row.querySelector("summary")!.textContent).toContain("AI evals");
+    expect(row.textContent).not.toContain("Confirm how work is checked");
+    found.close();
+    const none = mount(h(ProjectChecklist, { project: "web" }), { status: () => ({ status: 200, body: checklist({ progress: { done: 4, total: 8, percent: 50, nextRequired: "firstTask" }, setupRun: { state: "done", status: "ready" }, evalConfirm: { state: "done", report: "none" } }) }) });
+    await screen.findByTestId("project-checklist");
+    expect(screen.queryByTestId("checklist-row-evalConfirm")).toBeNull();
+    expect(screen.queryByText(/AI evals/u)).toBeNull();
+    expect(screen.queryByTestId("checklist-eval-no-evals")).toBeNull();
+    // The other rows are still there, and the progress is Code's.
+    expect(screen.getByTestId("checklist-row-aiAndSpend")).toBeTruthy();
+    expect(screen.getByTestId("checklist-progress").textContent).toContain("50% done (4 of 8)");
+    none.close();
+  });
+
+  it("the AI evals row's words: waiting on the setup run, a person's 'no evals' (with its undo), and nothing found yet from an older Code", async () => {
+    const blocked = mount(h(ProjectChecklist, { project: "web" }));
+    expect((await screen.findByTestId("checklist-row-evalConfirm")).textContent).toContain("After the setup run, Rovara looks for AI evals in your repos.");
+    blocked.close();
+    const answered = mount(h(ProjectChecklist, { project: "web" }), { status: () => ({ status: 200, body: checklist({ setupRun: { state: "done", status: "ready" }, evalConfirm: { state: "done", report: "no_evals", noEvals: { confirmedAt: "2026-11-17T10:00:00.000Z" } } }) }) });
+    expect((await screen.findByTestId("checklist-eval-no-evals-set")).textContent).toBe("No AI evals for this project: Rovara checks work with the project's own tests.");
+    expect(screen.getByTestId("checklist-eval-no-evals-undo").textContent).toBe("This project has AI evals after all");
+    answered.close();
+    const older = mount(h(ProjectChecklist, { project: "web" }), { status: () => ({ status: 200, body: checklist({ setupRun: { state: "done", status: "ready" }, evalConfirm: { state: "needs_you", report: "none" } }) }) });
+    expect((await screen.findByTestId("checklist-eval-none")).textContent).toBe("Rovara has not found AI evals in this project yet. Run setup again, or edit the test commands.");
+    expect(screen.getByTestId("checklist-eval-no-evals").textContent).toBe("This project has no AI evals");
+    older.close();
+  });
+
   it("a failed setup run shows the failing command, its last lines, Edit commands and Run again (Code says canManage)", async () => {
     const f = mount(h(ProjectChecklist, { project: "web" }));
     const row = await screen.findByTestId("setup-run-row");

@@ -76,7 +76,7 @@ function setUp(options: { risk?: "low" | "medium" | "high"; check?: "checking" |
     if (tail === undefined) return json(200, view());
     if (!manage) return err(403, "FORBIDDEN", `${LEAK} not allowed`);
     if (tail === "confirm") {
-      if (mine !== undefined && mine.decided === undefined) return err(409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Decide it, or discard it, first.");
+      if (mine !== undefined && mine.decided === undefined) return err(409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Approve or reject it, or discard it, first.");
       return json(200, { digest: digestOf(person.company, project), used: ["setup-1"], unchecked: [], left: [{ id: "tests-2", reason: "unverified", note: LEAK }], candidateRevision: 5, proved: false, next: "check", secret: LEAK });
     }
     if (tail === "discard") {
@@ -208,6 +208,18 @@ describe("Use this setup (confirm)", () => {
     expect(w.codeCalls()).toHaveLength(0);
   });
 
+  // L4-T5: Code's sentences for a waiting setup are passed on only when exactly one of the fixed ones; the old false "Decide it, or discard it, first." is not.
+  it("passes on each of Code's L4-T5 sentences for a waiting setup and the new no-test sentence, and drops the old false one", () => {
+    for (const words of [
+      "Another setup is waiting for your approval. Approve or reject it, or discard it, first.",
+      "Another setup is still being checked on a fresh machine. Wait for the check to finish, or discard it, first.",
+      "Another setup can't be approved: its check on a fresh machine did not pass. Discard it, then use this one.",
+      "Another setup is waiting. If its check passed, approve or reject it; otherwise discard it. Then use this one.",
+    ]) expect(SETUP_APPROVAL_CODE_WORDS).toContain(words);
+    expect(SETUP_APPROVAL_CODE_WORDS).toContain("The setup has no test command to prove, so there is nothing to use yet. Add a test command to the project's setup, or run the setup again.");
+    expect(SETUP_APPROVAL_CODE_WORDS).not.toContain("Another setup is waiting for your approval. Decide it, or discard it, first.");
+  });
+
   it("answers Code's refusals in fixed words: a reader, a waiting candidate, an old revision, an answer Cloud cannot read; never Code's own text", async () => {
     const w = setUp();
     const reader = await w.send("POST", "/v1/web/projects/payments/setup-agent/confirm", await w.as("pam-token"), { requestId: UUID1, expectedRevision: 3 });
@@ -215,13 +227,19 @@ describe("Use this setup (confirm)", () => {
     expect(errorOf(reader)).toEqual({ code: "FORBIDDEN", message: SETUP_CHECKLIST_WORDS.runNotAllowed });
     const waiting = await w.send("POST", "/v1/web/projects/payments/setup-agent/confirm", await w.as("ada-token"), { requestId: UUID1, expectedRevision: 3 });
     expect(waiting.status).toBe(409);
-    expect(errorOf(waiting)).toEqual({ code: "WORKSPACE_BUSY", message: "Another setup is waiting for your approval. Decide it, or discard it, first." });
+    expect(errorOf(waiting)).toEqual({ code: "WORKSPACE_BUSY", message: "Another setup is waiting for your approval. Approve or reject it, or discard it, first." });
     expect(SETUP_APPROVAL_CODE_WORDS).toContain(errorOf(waiting).message);
     const cases: Array<[Response, number, string, string]> = [
       [err(409, "PROJECT_REVISION_MISMATCH", "Rovara found this setup for an earlier version of the project's settings. Set the project up again."), 409, "PROJECT_REVISION_MISMATCH", "Rovara found this setup for an earlier version of the project's settings. Set the project up again."],
       [err(409, "PROJECT_REVISION_MISMATCH", LEAK), 409, "CHANGE_STALE", SETUP_CHECKLIST_WORDS.stale],
       [err(409, "WORKSPACE_BUSY", LEAK), 409, "WORKSPACE_BUSY", SETUP_CHECKLIST_WORDS.busy],
-      [err(409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Decide it, or discard it, first."), 409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Decide it, or discard it, first."],
+      // L4-T5: each sentence Code now says for a waiting setup is passed on; the old one, which offered a decision that did not exist, is not.
+      [err(409, "WORKSPACE_BUSY", "Another setup is still being checked on a fresh machine. Wait for the check to finish, or discard it, first."), 409, "WORKSPACE_BUSY", "Another setup is still being checked on a fresh machine. Wait for the check to finish, or discard it, first."],
+      [err(409, "WORKSPACE_BUSY", "Another setup can't be approved: its check on a fresh machine did not pass. Discard it, then use this one."), 409, "WORKSPACE_BUSY", "Another setup can't be approved: its check on a fresh machine did not pass. Discard it, then use this one."],
+      [err(409, "WORKSPACE_BUSY", "Another setup is waiting. If its check passed, approve or reject it; otherwise discard it. Then use this one."), 409, "WORKSPACE_BUSY", "Another setup is waiting. If its check passed, approve or reject it; otherwise discard it. Then use this one."],
+      [err(409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Decide it, or discard it, first."), 409, "WORKSPACE_BUSY", SETUP_CHECKLIST_WORDS.busy],
+      [err(400, "CONFIG_INVALID", "The setup has no test command to prove, so there is nothing to use yet. Add a test command to the project's setup, or run the setup again."), 400, "CONFIG_INVALID", "The setup has no test command to prove, so there is nothing to use yet. Add a test command to the project's setup, or run the setup again."],
+      [err(409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Approve or reject it, or discard it, first."), 409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Approve or reject it, or discard it, first."],
       [err(500, "PROJECT_REVISION_MISMATCH", "Rovara found this setup for an earlier version of the project's settings. Set the project up again."), 503, "RUNTIME_UNAVAILABLE", SETUP_CHECKLIST_WORDS.unavailable],
       [err(400, "CONFIG_INVALID", "None of the suggestions can be used: each one failed its check, or is a command Rovara does not carry into a project's setup."), 400, "CONFIG_INVALID", "None of the suggestions can be used: each one failed its check, or is a command Rovara does not carry into a project's setup."],
       [err(400, "CONFIG_INVALID", LEAK), 400, "CONFIG_INVALID", SETUP_CHECKLIST_WORDS.invalid],

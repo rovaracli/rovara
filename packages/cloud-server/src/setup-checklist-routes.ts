@@ -238,8 +238,14 @@ export const SETUP_APPROVAL_CODE_WORDS: readonly string[] = Object.freeze([
   "None of the suggestions can be used: each one failed its check, or is a command Rovara does not carry into a project's setup.",
   "That suggestion is not part of this setup.",
   "The setup has no test command to prove, so there is nothing to use yet.",
+  // L4-T5: Code's own sentence now says what to do next (the one above is an older Code's).
+  "The setup has no test command to prove, so there is nothing to use yet. Add a test command to the project's setup, or run the setup again.",
   "The commands could not be made into the project's setup.",
-  "Another setup is waiting for your approval. Decide it, or discard it, first.",
+  // L4-T5: what a person can really do with the waiting setup, by where its check stands. (An older Code's "Decide it, or discard it, first." is not passed on: a failed check could only be discarded.)
+  "Another setup is waiting for your approval. Approve or reject it, or discard it, first.",
+  "Another setup is still being checked on a fresh machine. Wait for the check to finish, or discard it, first.",
+  "Another setup can't be approved: its check on a fresh machine did not pass. Discard it, then use this one.",
+  "Another setup is waiting. If its check passed, approve or reject it; otherwise discard it. Then use this one.",
   "A command in this setup is too long to show whole, so it cannot be approved.",
   "There is no setup waiting for a decision. Open the project's setup again.",
   "This setup change reaches outside the project's commands (a website, a secret, a registry, an integration or something Rovara does not recognise), so a company owner or admin must approve it.",
