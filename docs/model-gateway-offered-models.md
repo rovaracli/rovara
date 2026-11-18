@@ -25,3 +25,21 @@ A service token the Code install's broker signs with its task key (the one the a
 - The company is the token's `cid`; the path must name the same company or the call is refused like an unsigned one.
 
 The vertex-check HMAC is Cloud's own KMS key (only Cloud's settings role signs with it), so it is not available to Code's broker.
+
+## Reviewer access and reviewer grants (DEC 254zzz41, lane L4-GW6)
+
+Second review and design review run as one model call each, made with a 120 second task token that carries a `reviewer` grant
+(`{ kind, slot, ceilingUsd }`; Code's contract, `contracts/shared/model-gateway-token.v1.json`).
+
+- **`reviewerAccess` on the offered-models answer** (`src/offered-models.ts` `reviewerAccessFor`): `{ companyId, companyLimitUsd, models: [{ model, provider }] }`,
+  present only when the company's saved source is really connected now (an own-key source needs its key connected; Rovara's AI, own Bedrock and own
+  endpoint were just read) and the company has room left in its one cap (`src/reviewer-grants.ts` `companyRoomMicros`). A model's provider is its
+  vendor on Rovara's AI and one fixed name on every other source, so a company on one connection has no second provider and its review stays
+  unavailable. Absent, the answer is byte-identical to before.
+- **Same payer as the main AI**: the grant is served only by the agent route in company-key mode and goes through the same admission as the task's main
+  call (the company's saved source, resolved by the token's company). There is no company payer variant. Any other route, and install-key mode, answer 401.
+- **Inside both limits**: the call is held at its exact priced worst case (an estimated price or unbounded input is refused) which must fit `ceilingUsd`,
+  through the ordinary reservation, so the task's cap and the company's cap both apply and a refusal spends nothing.
+- **Single use, durable**: after the hold and before any key is read, the grant's jti is claimed once with a conditional put in the markers table
+  (`CO#[iss,cid]` / `REVGRANT#<jti>`, `expiresAt` = exp + 300 s). A scope or model mismatch, a grant past its 120 seconds, a replay (also after a restart or on
+  another gateway task) or a store that does not answer gives the fixed 401 and the hold is given back; no new table, record kind or IAM.

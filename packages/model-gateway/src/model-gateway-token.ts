@@ -3,6 +3,8 @@ export const TASK_TOKEN_TYPE = "rovara-task+jwt";
 export const TASK_TOKEN_AUDIENCE = "rovara-model-gateway";
 export const TASK_TOKEN_ALGORITHM = "RS256";
 export const TASK_TOKEN_SECONDS = 900;
+/** The lifetime of a reviewer grant (Code's REVIEWER_GRANT_SECONDS): exactly this, never a caller option. */
+export const REVIEWER_GRANT_SECONDS = 120;
 export const TASK_KEY_PURPOSE = "task";
 export const TASK_KEY_PURPOSE_MEMBER = "rovara_purpose";
 export const TASK_TOKEN_CLAIMS = [
@@ -85,6 +87,11 @@ export const TASK_TOKEN_CLAIMS = [
     "name": "mdl",
     "type": "string[]",
     "required": true
+  },
+  {
+    "name": "reviewer",
+    "type": "ReviewerGrant",
+    "required": false
   }
 ] as const;
 
@@ -97,10 +104,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/u;
 const BUILTIN_AGENTS = new Set(["rovara-code", "ticket-triage", "root-cause-analyst", "code-reviewer", "deploy-reviewer", "service-reviewer"]);
 export type Payer = { kind: "member"; developerId: string } | { kind: "project"; project: string } | { kind: "agent"; agentId: string } | { kind: "chain"; chainId: string };
+/** DEC 254zzz41: one reviewer model for one task and one review kind. The signed cid/pid/tid/ws/op bind the task; the gateway consumes the jti once. */
+export const REVIEWER_KINDS = ["second_review", "design_review"] as const;
+export type ReviewerKind = typeof REVIEWER_KINDS[number];
+export interface ReviewerGrant { kind: ReviewerKind; slot: string; ceilingUsd: number }
 export interface TaskClaims {
   iss: string; aud: typeof TASK_TOKEN_AUDIENCE; jti: string; iat: number; nbf: number; exp: number;
   cid: string; pid: string; per?: string; pay: Payer; tid: string; ws: string; op: string;
-  stp: string; src?: typeof WORK_ORIGINS[number]; mdl: string[];
+  stp: string; src?: typeof WORK_ORIGINS[number]; mdl: string[]; reviewer?: ReviewerGrant;
 }
 export const record = (v: unknown): Record<string, unknown> | undefined => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
 export const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
@@ -124,5 +135,26 @@ export function parseTaskClaims(value: unknown): TaskClaims | undefined {
   if (!matches(c.cid, COMPANY) || !matches(c.pid, PROJECT) || !matches(c.tid, TASK) || (c.per !== undefined && !matches(c.per, PERSON))) return undefined;
   if (!payer(c.pay) || !matches(c.stp, /^[a-z][a-z0-9_-]{0,63}$/u) || (c.src !== undefined && !WORK_ORIGINS.some((s) => s === c.src))) return undefined;
   if (!Array.isArray(c.mdl) || c.mdl.length < 1 || c.mdl.length > 16 || !c.mdl.every((v: unknown) => matches(v, MODEL))) return undefined;
+  if (c.reviewer !== undefined && !reviewerOk(c)) return undefined;
   return c as unknown as TaskClaims;
+}
+const REVIEWER_SLOT = /^[a-z][a-z0-9_-]{0,63}$/u;
+/** Code's TaskTokenClaimsSchema `reviewer` rules, exactly: strict members, one model, step = kind, the second review's own slot, the 120 second life. */
+function reviewerOk(c: Record<string, unknown>): boolean {
+  const r = record(c.reviewer);
+  if (r === undefined || Object.keys(r).length !== 3 || !REVIEWER_KINDS.some((k) => k === r.kind) || !matches(r.slot, REVIEWER_SLOT)) return false;
+  if (typeof r.ceilingUsd !== "number" || !Number.isFinite(r.ceilingUsd) || r.ceilingUsd <= 0 || r.ceilingUsd > 1_000_000) return false;
+  return (c.mdl as unknown[]).length === 1 && c.stp === r.kind && (r.kind !== "second_review" || r.slot === "second_review") && (c.exp as number) - (c.iat as number) === REVIEWER_GRANT_SECONDS;
+}
+/** What the gateway itself knows about the call being made, never taken from the grant. */
+export interface ReviewerExpectation { cid: string; pid: string; tid: string; ws: string; op: string; kind: ReviewerKind; slot: string; model: string }
+/**
+ * After signature and issuer verification only (Code's consumeReviewerGrant, packages/contracts model-gateway-token.ts; a contract test holds the two
+ * to the same answers). True only when the grant is inside its lifetime, bound to exactly the expected company, project, task, workspace, operation,
+ * kind, slot and model, AND `consume` atomically claims its jti for the first time. A throw or a refusal from `consume` is a refusal here.
+ */
+export async function consumeReviewerGrant(claims: TaskClaims, expected: ReviewerExpectation, nowSeconds: number, consume: (jti: string, expiresAt: number) => Promise<boolean>): Promise<boolean> {
+  const parsed = parseTaskClaims(claims);
+  if (parsed?.reviewer === undefined || !Number.isSafeInteger(nowSeconds) || nowSeconds < parsed.iat || nowSeconds >= parsed.exp || parsed.cid !== expected.cid || parsed.pid !== expected.pid || parsed.tid !== expected.tid || parsed.ws !== expected.ws || parsed.op !== expected.op || parsed.reviewer.kind !== expected.kind || parsed.reviewer.slot !== expected.slot || parsed.mdl[0] !== expected.model) return false;
+  try { return (await consume(parsed.jti, parsed.exp)) === true; } catch { return false; }
 }

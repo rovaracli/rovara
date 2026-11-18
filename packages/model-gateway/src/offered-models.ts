@@ -141,6 +141,51 @@ export async function offeredByoModels(byo: Pick<ByoBedrock, "connection"> | und
   return names.length === 0 ? OFFERED_EMPTY : { ok: true, models: names };
 }
 
+/**
+ * DEC 254zzz41 (L4-GW6): the provider a model is attributed to when Code looks for a SECOND reviewer from another provider. Rovara's AI serves many
+ * vendors through one account, so a model's provider is its vendor (a Claude name is anthropic; a Bedrock id's leading vendor, after any geography
+ * prefix); every other source is ONE connection, so all its models are that one provider (the company pays through that one source only).
+ */
+export const BEDROCK_VENDOR_ALIASES: Readonly<Record<string, string>> = Object.freeze({ moonshotai: "moonshot" });
+export function reviewerProviderOf(source: AgentAiSource | undefined, model: string): string | undefined {
+  let provider: string | undefined;
+  if (source === "openai_key") provider = "openai";
+  else if (source === "bedrock_byo") provider = "bedrock";
+  else if (source === "custom_endpoint") provider = "endpoint";
+  else if (source === undefined || source === "anthropic_key") provider = "anthropic";
+  else if (source === "rovara") {
+    if (model.startsWith("claude-")) provider = "anthropic";
+    else {
+      const vendor = model.replace(/^(?:us|eu|apac|jp|au|ca)\./u, "").split(".", 1)[0] ?? "";
+      provider = BEDROCK_VENDOR_ALIASES[vendor] ?? vendor;
+    }
+  }
+  return provider !== undefined && /^[a-z][a-z0-9-]{0,63}$/u.test(provider) ? provider : undefined;
+}
+/** Code's OfferedAgentModels.reviewerAccess: a company-bound attestation of what the company's REAL connections serve now, and its company limit. */
+export interface ReviewerAccess { companyId: string; companyLimitUsd: number; models: Array<{ model: string; provider: string }> }
+export interface ReviewerAccessOptions {
+  /** Whether the company's own account of this provider is connected now (the same store the agent route admits on). Absent: no reviewer access. */
+  keys: Pick<LearningKeySource, "connected">;
+  /** The company limit in micro-dollars the reviews share with the task's main AI (its room now), or undefined when none can be read. */
+  companyLimitMicros(iss: string, cid: string): Promise<number | undefined>;
+}
+/**
+ * Only from the SAME resolved source the agent route admits this company's next call on, and only while that source is really connected: an own-key
+ * source needs its key connected now, Rovara's AI needs the install to serve it, own Bedrock and own endpoint were just read as connected. Anything
+ * else (a failed read, no limit, a limit of zero) is no reviewer access, never a guess.
+ */
+export async function reviewerAccessFor(options: ReviewerAccessOptions, source: AgentAiSource | undefined, iss: string, cid: string, models: readonly string[]): Promise<ReviewerAccess | undefined> {
+  try {
+    if (source === "openai_key" ? (await options.keys.connected(iss, cid, "openai")) !== true : (source === undefined || source === "anthropic_key") && (await options.keys.connected(iss, cid, "anthropic")) !== true) return undefined;
+    const micros = await options.companyLimitMicros(iss, cid);
+    if (micros === undefined || !Number.isSafeInteger(micros) || micros <= 0) return undefined;
+    const listed: Array<{ model: string; provider: string }> = [];
+    for (const model of models) { const provider = reviewerProviderOf(source, model); if (provider !== undefined) listed.push({ model, provider }); }
+    return listed.length === 0 ? undefined : { companyId: cid, companyLimitUsd: Math.min(1_000_000, micros / 1_000_000), models: listed };
+  } catch { return undefined; }
+}
+
 export interface OfferedModelsHandlerOptions {
   /** createSignedTokenVerifier(..., SERVICE_TOKEN_KIND) over this gateway's one install. */
   verify: (token: unknown) => Promise<ServiceClaims | undefined>;
@@ -158,6 +203,8 @@ export interface OfferedModelsHandlerOptions {
   chat?: { openai?: boolean; openrouter?: boolean };
   /** DEC 254t (A3): the names a company registered for its own endpoint (its sealed account; undefined when none). Absent: custom_endpoint is refused. */
   endpointModels?: (iss: string, cid: string) => Promise<readonly string[] | undefined>;
+  /** DEC 254zzz41: set, the answer also carries `reviewerAccess` (above). Absent: the answer is exactly as before and no review can run. */
+  reviewer?: ReviewerAccessOptions;
   now?: () => number;
 }
 
@@ -182,9 +229,11 @@ export async function answerOfferedModels(options: OfferedModelsHandlerOptions, 
   // The token's company is THE company; a path naming another company is an unsigned call (nothing about either company is said).
   if (claims === undefined || claims.cid !== target[1]) return ANSWERS.refused;
   let outcome: OfferedModelsOutcome;
+  let chosen: AgentAiSource | undefined;
   try {
     // The same resolution as the agent route's admission (agent-ai.ts resolveAgentSource), so the list is what its very next call accepts.
     const { source } = await resolveAgentSource({ sources: options.sources, ...(options.rovara?.exempt === undefined || options.keys === undefined ? {} : { exempt: options.rovara.exempt }), keys: options.keys ?? NO_KEYS, ...(options.byo === undefined ? {} : { byo: options.byo }) }, claims.iss, claims.cid);
+    chosen = source;
     // The same order as the agent route's admission: the switch first, then whether this gateway serves the source at all.
     if (source !== undefined && !agentSourceSwitchedOn(source, options.switchedOn ?? new Set())) outcome = OFFERED_SWITCHED_OFF;
     else if ((source === "openai_key" && options.chat?.openai !== true) || (source === "openrouter_key" && options.chat?.openrouter !== true)) outcome = OFFERED_CHAT_OFF;
@@ -192,7 +241,8 @@ export async function answerOfferedModels(options: OfferedModelsHandlerOptions, 
     else outcome = source === "bedrock_byo" ? await offeredByoModels(options.byo, claims.iss, claims.cid) : offeredModelsFor(source, options.rovara, options.disabled);
   } catch { return ANSWERS.unavailable; }
   if (!outcome.ok) return { status: outcome.status, body: { error: { type: outcome.code, message: outcome.message } } };
-  return { status: 200, body: { version: 1, models: outcome.models.map((model) => ({ model })) } };
+  const access = options.reviewer === undefined ? undefined : await reviewerAccessFor(options.reviewer, chosen, claims.iss, claims.cid, outcome.models);
+  return { status: 200, body: { version: 1, models: outcome.models.map((model) => ({ model })), ...(access === undefined ? {} : { reviewerAccess: access }) } };
 }
 
 /** The HTTP handler the serving process mounts for OFFERED_MODELS_PATH (process.ts), only in company-key mode. */

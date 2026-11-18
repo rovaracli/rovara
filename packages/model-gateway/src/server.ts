@@ -20,7 +20,8 @@ import { ANSWERS_PATH_PREFIX, ANSWERS_STEP } from "./answers-route.js";
 import { isUpkeepCall, upkeepRefusal, withUpkeepCap, type UpkeepLimits } from "./upkeep-cap.js";
 import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceKind, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
-import { AUTH_ERROR, TASK_TOKEN_SECONDS, type TaskClaims, type TaskTokenVerifier } from "./token.js";
+import { AUTH_ERROR, TASK_TOKEN_SECONDS, consumeReviewerGrant, type TaskClaims, type TaskTokenVerifier } from "./token.js";
+import type { ReviewerGrantStore } from "./reviewer-grants.js";
 import { hasUsage, settleAmount, validUsage } from "./reported-cost.js";
 import type { ResolvedPrice } from "./price.js";
 import type { EstimatedSettlement } from "./meter.js";
@@ -35,6 +36,11 @@ export interface GatewayDependencies {
   modelLimits: ModelLimitsSource; now?: () => number;
   keys: ProviderKeys; transport: ProviderTransport; cautiousCeiling?: number; timeoutMs?: number;
   log: (event: GatewayLogEvent) => void;
+  /**
+   * DEC 254zzz41: the single-use store of reviewer grants (reviewer-grants.ts). Absent: a token carrying a `reviewer` grant is refused
+   * (401) before anything is read, held or sent, so a gateway without it never serves a review call.
+   */
+  reviewerGrants?: ReviewerGrantStore;
   /** The product-AI route (calls made by the customer's tests with the project's own key). Absent: every product path is 404, as before. */
   product?: ProductRouteResolver;
   /** The learning route (DEC 226, learning-route.ts: lessons' calls on the company's own key). Absent: its path is 404. */
@@ -115,6 +121,12 @@ export interface GatewayRoute {
    */
   readonly purpose?: "learning" | "answers";
   /**
+   * DEC 254zzz41: true only on the agent route in company-key mode, the one route a reviewer grant (a task token carrying `reviewer`) may
+   * use: it is paid by the SAME source as the task's main AI (the company's saved choice, resolved by admit for the token's company).
+   * Absent: a reviewer grant is refused on this route (401), so none can reach the product, learning, answers or install-key routes.
+   */
+  readonly reviewerGrants?: true;
+  /**
    * The response header that carries this call's settled cost (US dollars, a plain decimal of six places: whole micro-dollars). Set only on the answers route (L4-E2).
    * Sent on a complete NON-streaming success only, and only when the figure is exact: the core settles first, then sends the head, so the figure is the amount
    * the same settle wrote to the meter. Absent (never 0, never a guess) when the price is estimated, the provider reported no usage, or the meter could not settle, and it is lost if the response head is never sent. A slow meter delays the head for that route (no separate time limit, as the settle was never bounded).
@@ -150,6 +162,8 @@ export const ENDED_TASK_POLL_MS = 1000;
 const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" };
 const PREFIX: Record<MeterItem, string> = { task: "Budget has been exceeded! Key=task", person: "ExceededBudget: User=person", project: "Budget has been exceeded! Project=project", company: "Budget has been exceeded! Team=company", upkeep: "Budget has been exceeded! Upkeep=project" };
 export const PRODUCT_ROUTE_PREFIX = "/v1/product/";
+/** DEC 254zzz41: a review call whose own worst-case cost is above the grant's ceiling. Before any hold; fixed words. */
+export const REVIEWER_CEILING_REFUSED: RouteRefusal = Object.freeze({ ok: false as const, status: 422, code: "budget_exceeded", message: "Budget has been exceeded! Key=reviewer" });
 /** The agent route's refusal in company-key mode when the company has no usable AI key connected (DEC 236). Fixed words. */
 export const AGENT_KEY_MISSING: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect an AI key: this company has no AI provider key connected, so its agents cannot call AI." });
 /** Company-key mode: the provider refused the company's own key (401/403 before any output). Free; fixed words. */
@@ -218,6 +232,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
   let endpoint: { ai: CompanyEndpointAi; connection: EndpointConnection; target: EndpointTarget; transport: ProviderTransport; model?: EndpointModel; refused?: "address" | "busy" } | undefined;
   return {
     ...base,
+    reviewerGrants: true as const,
     // An endpoint call is priced as the catalog model each registered model stands for.
     get provider() { return endpoint !== undefined ? endpoint.model?.catalog.provider ?? "endpoint" : chat !== undefined ? chat.provider : rovara === undefined && byo === undefined ? base.provider : "bedrock"; },
     get transport() { return endpoint !== undefined ? endpoint.transport : chat !== undefined ? chat.ai.transport : byo !== undefined ? byo.transport : rovara === undefined ? base.transport : rovara.ai.transport; },
@@ -507,6 +522,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (claims === undefined) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
     // A learning token only on the learning route, an answers token only on the answers route, and only such a token there (DEC 226, DEC 254z-amend2).
     if (tokenPurpose(claims.stp) !== route?.purpose) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
+    // DEC 254zzz41: a reviewer grant spends only on the agent route in company-key mode, and only where a durable single-use store is wired.
+    if (claims.reviewer !== undefined && (control !== undefined || route?.reviewerGrants !== true || deps.reviewerGrants === undefined)) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
     callClaims = claims;
     const stopsWithTask = route?.stopsWithTask !== false;
     const taskEnded = async () => stopsWithTask && await wait(deps.ended.isEnded(claims.iss, claims.cid, claims.tid, controller.signal));
@@ -558,6 +575,10 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (overrunCapable) shortenDeadline(Math.floor(Math.min(deadline, admissionExpiresSeconds * 1000) / 1000) * 1000);
     appliedMaxOutputTokens = guarded.maxTokens;
     const line = route.line?.(claims, guarded.model);
+    // DEC 254zzz41: a review call is held at its priced worst case, which must fit the grant's ceiling and be exact (no estimated price, no unbounded input):
+    // the hold below is then taken inside the task's limit AND the company's cap, so the ceiling cannot be spent beyond either.
+    const grant = claims.reviewer;
+    if (grant !== undefined && (overrunCapable || estimate > Math.floor(grant.ceilingUsd * 1_000_000))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
     const reserved = await route.meter.reserve({ scope, caps, estimateMicros: estimate, appliedMaxOutputTokens, ...(line === undefined ? {} : { line }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });
@@ -582,6 +603,15 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     endedTimer = setTimeout(() => { void pollEnded(); }, ENDED_TASK_POLL_MS);
     // No call has left the process yet, including while the key port is read.
     cost = 0; estimated = false;
+    if (grant !== undefined && deps.reviewerGrants !== undefined) {
+      // Only after the hold is taken (a transient "busy" or a cap refusal burns nothing) and before any key is read or byte sent. The expected
+      // company, project and task are the SCOPE the hold was taken in; the model is the one the request itself names (read from its body, not the grant).
+      const store = deps.reviewerGrants;
+      let named: unknown; try { named = (JSON.parse(Buffer.concat(parts).toString("utf8")) as { model?: unknown }).model; } catch { named = undefined; }
+      const usable = typeof named === "string" && await wait(consumeReviewerGrant(claims, { cid: scope.cid, pid: scope.pid, tid: scope.tid, ws: claims.ws, op: claims.op, kind: grant.kind, slot: grant.slot, model: named }, Math.floor(now() / 1000), (jti, exp) => store.claim(claims.iss, scope.cid, jti, exp, controller.signal)));
+      // A refused grant (another task, kind or model, expired, replayed, or a store that did not answer) sends nothing; the hold is given back ($0) in the finally.
+      if (!usable) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
+    }
     if (controller.signal.aborted) throw new NotSentError();
     const key = await wait(route.key(claims, controller.signal));
     if (typeof key !== "string" || key.length < 6 || key.length > 8192 || /[\r\n]/u.test(key)) throw new NotSentError();

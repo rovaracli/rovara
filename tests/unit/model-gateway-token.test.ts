@@ -25,7 +25,7 @@ describe("TC-1 task tokens", () => {
     expect(contract.claims).toEqual(TASK_TOKEN_CLAIMS);
     expect(parseTaskClaims(contract.testVector.claims)).toBeDefined();
     expect(contract.testVector.expectedVerifyResult).toBe(true);
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe("1ee6a661a46f3a79cf61989d7fe19061fedd3e435a3ab1dd06f056d9bc24e7b3");
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("2376aa1542f645db45d081fa0818e0b6952f8fe78e485df679e04a492096f6e1");
   });
 });
 it("rejects a valid RSA signature from a JWKS key that is not the pinned task key", async () => {
