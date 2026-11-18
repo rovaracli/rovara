@@ -312,3 +312,21 @@ it("reads the work again once, after a pause, when a session updates (the build 
   expect(calls("work")).toBe(1);expect(calls("live")).toBe(1);
   apply.stop();query.clear();
 });
+
+// L4-U5: the one quiet evidence line about the project's setup, from Code's task, under the banners; absent when there was no drift.
+it("shows the setup's evidence line once, as plain text, when Rovara re-checked the setup for the task, and nothing otherwise", async () => {
+  const line = "Setup re-checked after dependency files changed: still works.";
+  const f = pageSetup({ path: `/app/sessions/${SESSION}`, session: workspaceFixture({}, { title: "Add a retry to the billing webhook", setupRecheck: line }), cards: decisionsView([]) });
+  expect((await screen.findByTestId("task-setup-evidence")).textContent).toBe(line);
+  expect(screen.getAllByTestId("task-setup-evidence")).toHaveLength(1);
+  f.close();
+  const none = pageSetup({ path: `/app/sessions/${SESSION}`, session: workspaceFixture({}, { title: "Add a retry to the billing webhook" }), cards: decisionsView([]) });
+  await screen.findByTestId("session-title");
+  expect(screen.queryByTestId("task-setup-evidence")).toBeNull();
+  none.close();
+  const markup = pageSetup({ path: `/app/sessions/${SESSION}`, session: workspaceFixture({}, { title: "Add a retry to the billing webhook", setupRecheck: "Couldn't re-check setup <img src=x onerror=alert(1)>" }), cards: decisionsView([]) });
+  const shown = await screen.findByTestId("task-setup-evidence");
+  expect(shown.querySelector("img")).toBeNull();
+  expect(shown.textContent).toContain("<img src=x onerror=alert(1)>");
+  markup.close();
+});

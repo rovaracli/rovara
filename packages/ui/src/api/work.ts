@@ -35,6 +35,8 @@ const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filt
 const records = (value: unknown): Array<Record<string, unknown>> => (Array.isArray(value) ? value.filter(isRecord) : []);
 
 export interface ReadTask {
+ /** L4-U5: the one evidence line when Rovara re-checked the project's setup for this task (Code's fixed words); absent when there was no drift. */
+ setupRecheck?: string | undefined;
  taskId: string; title: string; project: string; status: TaskView["status"] | undefined;
  workflow: { stage?: string; state?: string; revision?: number; path?: string; outcome?: string; blockReason?: string; round?: number } | undefined;
  pullRequests: Array<{ repository?: string; number?: number; url?: string; state?: string }>;
@@ -51,6 +53,7 @@ export function readTask(raw: unknown): ReadTask | undefined {
  const workflow = isRecord(raw["workflow"]) ? raw["workflow"] : undefined;
  const spent = isRecord(raw["spent"]) ? num(raw["spent"]["usd"]) : undefined, limit = isRecord(raw["runLimit"]) ? num(raw["runLimit"]["limitUsd"]) : undefined;
  return {
+  ...opt("setupRecheck", ((line) => (line !== undefined && line.length > 0 && line.length <= 600 && !/[\p{Cc}\p{Cf}]/u.test(line) ? line : undefined))(str(raw["setupRecheck"]))),
   hasThread: bool(raw["shared"]) === true || (isRecord(raw["share"]) && (str(raw["share"]["threadUrl"]) !== undefined || str(raw["share"]["threadTs"]) !== undefined)),
   taskId, sessionId: str(raw["sessionId"]), title, project, status: str(raw["status"]) as ReadTask["status"] | undefined,
   workflow: workflow === undefined ? undefined : { ...opt("stage", str(workflow["stage"])), ...opt("state", str(workflow["state"])), ...opt("revision", num(workflow["revision"])), ...opt("path", str(workflow["path"])), ...opt("outcome", str(workflow["outcome"])), ...opt("blockReason", str(workflow["blockReason"])), ...opt("round", num(workflow["round"])) },

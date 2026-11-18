@@ -214,5 +214,7 @@ export type WikiSetupUpkeepCap = z.infer<typeof WikiSetupUpkeepCapSchema>;
 export const WikiSetupUpkeepSchema = z.object({
   enabled: z.boolean(), canManage: z.boolean(), available: z.boolean().optional(),
   systemRunsOn: z.boolean().optional(), canEnableSystemRuns: z.boolean().optional(), cap: WikiSetupUpkeepCapSchema.optional(),
+  /** L4-U5: nightly upkeep is paused now and why (Code tells managers only; the page says it in `UPKEEP_PAUSE_SENTENCES`). */
+  paused: z.object({ reason: z.enum(["no_budget", "monthly_limit", "cost_too_high"]), month: z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/u) }).strict().optional(),
 }).strict();
 export type WikiSetupUpkeep = z.infer<typeof WikiSetupUpkeepSchema>;

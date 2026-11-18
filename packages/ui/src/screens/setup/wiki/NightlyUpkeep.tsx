@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { SETUP_REPAIR_SENTENCES, UPKEEP_PAUSE_SENTENCES } from "@agentx/contracts/web";
 import { fixedWikiSetupWords, parseUsd, readUpkeepCap, useWikiSetupApi, wikiSetupAbsent, wikiSetupKey, type UpkeepCap, type WikiSetupUpkeepCap } from "../../../api/wiki-setup.js";
 import { needsStepUp } from "../../../api/admin-company.js";
 import { ApiError } from "../../../api/errors.js";
@@ -121,6 +122,8 @@ export function NightlyUpkeep({ project, companyAdmin }: { project: string; comp
       <p className="rv-muted" data-testid="wiki-setup-upkeep-state">{running ? T.UPKEEP_ON : T.UPKEEP_OFF}</p></div>
       {upkeep.canManage && settled && <Switch label={T.UPKEEP} checked={upkeep.enabled} disabled={busy} onCheckedChange={(on) => { void send(on); }} />}
     </div>
+    {/* L4-U5: the admins' notice, on the page: why nightly upkeep is paused now (Code tells managers only), in the same fixed sentence the chat and the email carry. Silent when it is not paused. */}
+    {upkeep.paused !== undefined && <div role="status" className="rv-wikis-paused" data-testid="wiki-setup-upkeep-paused"><p><b>{SETUP_REPAIR_SENTENCES.upkeepPausedTitle}.</b> {UPKEEP_PAUSE_SENTENCES[upkeep.paused.reason]}</p>{upkeep.cap?.canRaise === true && <p><Link to="/app/admin/money/limits">{T.CAP_LINK_RAISE}</Link></p>}</div>}
     {offer && <Offer cap={upkeep.cap} busy={busy} onYes={() => { void send(true, true); }} />}
     {needsAdmin && <p className="rv-muted" data-testid="wiki-setup-upkeep-needs-admin">{T.NEEDS_ADMIN}</p>}
     {error !== undefined && <p role="alert" data-testid="wiki-setup-upkeep-error"><VisibleText text={error} /></p>}

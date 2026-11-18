@@ -276,6 +276,14 @@ function capAnswer(value: unknown): Record<string, unknown> {
   need(usd === null || (typeof usd === "number" && Number.isFinite(usd) && usd >= 0 && usd <= 1_000_000), usd);
   return { monthlyUsd: usd, canRaise: flag(c["canRaise"]) };
 }
+/** L4-U5: why nightly upkeep is paused (Code tells managers only): one of Code's three reasons and the month, nothing else. */
+function pausedAnswer(value: unknown): Record<string, unknown> {
+  const p = rec(value);
+  need(Object.keys(p).every((key) => key === "reason" || key === "month"), p);
+  need(oneOf(p["reason"], ["no_budget", "monthly_limit", "cost_too_high"] as const), p["reason"]);
+  need(typeof p["month"] === "string" && /^\d{4}-(?:0[1-9]|1[0-2])$/u.test(p["month"]), p["month"]);
+  return { reason: p["reason"], month: p["month"] };
+}
 export function upkeepAnswer(value: unknown): Record<string, unknown> {
   const v = rec(value);
   return {
@@ -284,6 +292,7 @@ export function upkeepAnswer(value: unknown): Record<string, unknown> {
     ...(v["systemRunsOn"] === undefined ? {} : { systemRunsOn: flag(v["systemRunsOn"]) }),
     ...(v["canEnableSystemRuns"] === undefined ? {} : { canEnableSystemRuns: flag(v["canEnableSystemRuns"]) }),
     ...(v["cap"] === undefined ? {} : { cap: capAnswer(v["cap"]) }),
+    ...(v["paused"] === undefined ? {} : { paused: pausedAnswer(v["paused"]) }),
   };
 }
 

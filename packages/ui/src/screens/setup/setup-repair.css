@@ -1,0 +1,7 @@
+.rv-setup-repair { border: 1px solid var(--rv-border-strong, currentColor); border-left-width: 4px; border-radius: 8px; padding: 12px 16px; margin: 0 0 16px; background: var(--rv-surface-raised, transparent); }
+.rv-setup-repair h2 { margin: 0 0 4px; font-size: 1rem; }
+.rv-setup-repair p { margin: 4px 0; }
+.rv-setup-repair-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.rv-setup-recheck { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.rv-wikis-paused { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--rv-border-strong, currentColor); border-radius: 6px; }
+.rv-wikis-paused p { margin: 2px 0; }

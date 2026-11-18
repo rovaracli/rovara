@@ -247,7 +247,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const upkeepView = (name: string, one: FakeWikiSetup, person: Person, manage: boolean) => {
     if (one.legacyUpkeep === true) return { enabled: one.upkeepOn, canManage: manage, available: true };
     const available = one.ceilingOff !== true, admin = person.administrator && !companyless.has(person.developerId);
-    return { enabled: one.upkeepOn, canManage: manage, available, systemRunsOn: available && upkeepConsent.get(companyKeyOf(name)) === true, canEnableSystemRuns: available && admin, cap: { monthlyUsd: one.capUsd ?? null, canRaise: admin } };
+    return { enabled: one.upkeepOn, canManage: manage, available, systemRunsOn: available && upkeepConsent.get(companyKeyOf(name)) === true, canEnableSystemRuns: available && admin, cap: { monthlyUsd: one.capUsd ?? null, canRaise: admin }, ...(manage && one.paused !== undefined ? { paused: { reason: one.paused, month: "2026-11" } } : {}) };
   };
   const upkeepPut = (name: string, one: FakeWikiSetup, person: Person, manage: boolean, given: { on?: unknown; allowSystemRuns?: unknown }) => {
     if (one.legacyUpkeep === true) { one.upkeepOn = given.on === true; return { status: 200, body: upkeepView(name, one, person, manage) }; }
@@ -264,10 +264,28 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return { status: 200, body: upkeepView(name, one, person, manage) };
   };
   const wikiSetupAnswer = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
-    const match = /^\/v1\/app\/projects\/([^/]+)\/(wiki-map|wiki-build(?:\/(?:continue|stop|refresh|agents|delete))?|upkeep)$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/(wiki-map|wiki-build(?:\/(?:continue|stop|refresh|agents|delete))?|upkeep|setup-check)$/u.exec(path);
     if (match === null) return undefined;
     const name = decodeURIComponent(match[1]!), tail = match[2]!, one = wikiSetupOf(name), grant = roleIn(person, name);
-    if (tail === "upkeep" ? one.upkeepOff === true : one.off === true) return failure(404, "NOT_FOUND", "route not found");
+    if (tail === "setup-check" ? one.setupCheckOff === true : tail === "upkeep" ? one.upkeepOff === true : one.off === true) return failure(404, "NOT_FOUND", "route not found");
+    if (tail === "setup-check") {
+      // L4-P1 + L4-U5: any live role reads (canManage and, while broken, the card); a person who manages starts the plain check (202), a repeat while one runs is 409.
+      const manager = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
+      if (project(name) === undefined || companyless.has(person.developerId) || (!manager && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
+      if (method === "GET") {
+        const repair = one.repair === undefined ? undefined : {
+          title: "Setup needs repair", body: `The project's setup stopped working after recent code changes (${one.repair.step}). Rovara cannot build on this project until it is fixed.`,
+          ...(one.repair.changed === undefined ? {} : { changed: one.repair.changed }), at: "2026-11-17T09:05:00.000Z", fixReady: one.repair.fixReady,
+          actions: manager ? [one.repair.fixReady ? { id: "approve_new_setup", label: "Approve new setup" } : { id: "fix_setup", label: "Fix setup" }] : [],
+        };
+        return { status: 200, body: { status: one.repair === undefined ? (one.rechecking === true ? "checking" : "ready") : "failed", canManage: manager, ...(repair === undefined ? {} : { repair }) } };
+      }
+      if (!manager) return failure(403, "FORBIDDEN", "Only company owners and admins, or this project's admins, can run the project's setup.");
+      if ((body as { requestId?: unknown } | undefined)?.requestId === undefined) return failure(400, "CONFIG_INVALID", "the request is not valid");
+      if (one.rechecking === true) return failure(409, "WORKSPACE_BUSY", "A setup check is already running for this project.");
+      one.rechecks = (one.rechecks ?? 0) + 1; one.rechecking = true;
+      return { status: 202, body: { workspaceId: "ws-recheck" } };
+    }
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (project(name) === undefined || companyless.has(person.developerId) || (!manage && grant === undefined) || !wikiReads(person, name)) return failure(404, "NOT_FOUND", "project not found");
     const view = (): { status: number; body: unknown } => ({ status: 200, body: wikiSetupBuildView(one, manage) });
@@ -1433,6 +1451,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (given["ceilingOff"] === true) one.ceilingOff = true;
           if (given["legacyUpkeep"] === true) one.legacyUpkeep = true;
           if (typeof given["capUsd"] === "number") one.capUsd = given["capUsd"];
+          if (typeof given["repair"] === "object" && given["repair"] !== null) one.repair = given["repair"] as NonNullable<FakeWikiSetup["repair"]>;
+          if (given["paused"] === "no_budget" || given["paused"] === "monthly_limit" || given["paused"] === "cost_too_high") one.paused = given["paused"];
+          if (given["setupCheckOff"] === true) one.setupCheckOff = true;
           return send(200, { project: given["project"] });
         }
         if (method === "POST" && url.pathname === "/__fake/lessons") {

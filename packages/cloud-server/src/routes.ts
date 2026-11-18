@@ -23,6 +23,7 @@ import { WIKI_ROUTES } from "./wiki-routes.js";
 import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
 import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
 import { SYSTEM_RUNS_ROUTES } from "./system-runs-routes.js";
+import { SETUP_REPAIR_ROUTES } from "./setup-repair-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
@@ -899,6 +900,8 @@ export const ROUTES: Route[] = [
   ...WIKI_SETUP_ROUTES,
   // L4-P3: the company's one control over nightly upkeep (read, allow with Code's fresh step-up, withdraw): company owners and admins only; Code decides again.
   ...SYSTEM_RUNS_ROUTES,
+  // L4-U5: the "Setup needs repair" card on a project's setup page and its "Re-check setup" button, passed to Code as the person; Code decides who may.
+  ...SETUP_REPAIR_ROUTES,
   // The admin portal's Cost and time report (Feature A, slice A3): Code's one-row-per-task read, grouped here for a company owner or admin.
   ...REPORT_ROUTES,
 ];
