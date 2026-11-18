@@ -24,7 +24,13 @@ export interface AppHost {
  copyText?(text: string): Promise<void>;
  openSocket(url: string, protocols: string[]): RealtimeSocket;
  openExternal(this: void, url: string): void;navigate(url: string): void;saveFile(name: string, data: Blob): void;
- signIn(this: void, returnPath: string, options?: { automatic?: boolean; /** Ask Code for a fresh sign-in (its step-up page: a passkey or an emailed code) before coming back. */ stepUp?: boolean; /** "Sign in to join": the invite the join page looked up (lookUpInvite) picks the company, on Cloud's server. */ join?: boolean }): void;signOut(this: void): Promise<void>;
+ signIn(this: void, returnPath: string, options?: { automatic?: boolean; /** Ask Code for a fresh sign-in (its step-up page: a passkey or an emailed code) before coming back. */ stepUp?: boolean; /** "Sign in to join": the invite the join page looked up (lookUpInvite) picks the company, on Cloud's server. */ join?: boolean; /** L4-SIGNIN: the sign-in page's own button for one method ("Sign in with Slack" / "Sign in with GitHub"). */ method?: "slack" | "github"; /** L4-SIGNIN: "Use a different workspace": sign in with no remembered Slack workspace, and forget it. */ differentWorkspace?: boolean }): void;signOut(this: void): Promise<void>;
+ /** L4-SIGNIN: which sign-in buttons Code offers (Slack, GitHub); undefined when that cannot be read, and the page then shows its one plain Sign in button. Absent on a host with one button. */
+ signInOffer?(this: void): Promise<{ slack: boolean; github: boolean } | undefined>;
+ /** L4-SIGNIN: the Slack workspace id this browser last signed in with (a non-sensitive id kept only here), or undefined. */
+ lastWorkspace?(this: void): string | undefined;
+ /** L4-SIGNIN: once signed in, keeps the Slack workspace of this sign-in as the browser's last workspace. Never throws. */
+ rememberSignInWorkspace?(this: void): Promise<void>;
  /** The join page (DEC 253z): looks up the invite link this page was opened with, on Cloud's server. Undefined when the link can't be used. Absent on a host without invite links. */
  lookUpInvite?(this: void): Promise<{ companyName: string } | undefined>;
  storage: { get(key: string): string | undefined;set(key: string, value: string): void };

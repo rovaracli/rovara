@@ -43,8 +43,17 @@ function noCompanyCsrf(response: ApiResponse): string | undefined {
  const body = response.body as { error?: { code?: unknown }; csrf?: unknown } | undefined;
  return response.status === 403 && body?.error?.code === "NO_COMPANY" && typeof body.csrf === "string" && /^[A-Za-z0-9_-]{43}$/u.test(body.csrf) ? body.csrf : undefined;
 }
+/**
+ * L4-SIGNIN: the browser's "last workspace": ONLY a Slack workspace id (a "T", then 6 to 15 capital letters or digits), kept in localStorage so the next Sign in
+ * with Slack opens on it. It is a convenience, never read as who someone is: every read and write is guarded, and anything that is not a workspace id is no hint.
+ */
+export const LAST_WORKSPACE_KEY = "rovara.last-slack-workspace";
+const WORKSPACE_ID = /^T[A-Z0-9]{6,15}$/u;
 export function createBrowserHost(win: BrowserWindow): AppHost {
  let csrf: string | undefined, refreshing: Promise<void> | undefined;
+ function lastWorkspace(): string | undefined {
+  try { const stored = win.localStorage.getItem(LAST_WORKSPACE_KEY);return typeof stored === "string" && WORKSPACE_ID.test(stored) ? stored : undefined; } catch { return undefined; }
+ }
  async function fetchJson(path: string, init: RequestInit): Promise<ApiResponse> {
   const method = (init.method ?? "GET").toUpperCase();
   if (method !== "GET" && method !== "HEAD") {
@@ -84,10 +93,29 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   openExternal(url) { const safe = safeExternalUrl(url);if (safe !== undefined) win.open(safe, "_blank", "noopener,noreferrer"); },
   navigate(url) { if (isGithubInstallationUrl(url) || isGithubAuthorizeUrl(url) || isSlackAuthorizeUrl(url, win.location.origin) || isLinearAuthorizeUrl(url, win.location.origin)) { win.location.assign(url);return; }const safe = returnPath(url);if (safe !== url) throw new Error("Invalid app destination.");win.location.assign(safe); },
   saveFile(name, data) { const url = win.URL.createObjectURL(data), link = win.document.createElement("a");try { link.href = url;link.download = name;win.document.body.appendChild(link);link.click(); } finally { link.remove();win.URL.revokeObjectURL(url); } },
+  lastWorkspace: () => lastWorkspace(),
+  async signInOffer() {
+   try {
+    const response = await fetchJson("/v1/auth/browser/methods", { method: "GET", headers: { accept: "application/json" } });
+    const body = response.body as { slack?: unknown; github?: unknown } | undefined;
+    return response.status === 200 && typeof body?.slack === "boolean" && typeof body.github === "boolean" ? { slack: body.slack, github: body.github } : undefined;
+   } catch { return undefined; }
+  },
+  async rememberSignInWorkspace() {
+   try {
+    const response = await fetchJson("/v1/web/me/sign-in-workspace", { method: "GET", headers: { accept: "application/json" } });
+    const id = (response.body as { slackTeamId?: unknown } | undefined)?.slackTeamId;
+    if (response.status === 200 && typeof id === "string" && WORKSPACE_ID.test(id) && id !== lastWorkspace()) win.localStorage.setItem(LAST_WORKSPACE_KEY, id);
+   } catch { /* The hint is optional: blocked or full storage, or a failed request, is no hint. */ }
+  },
   signIn(path, options) {
    const destination = returnPath(path), key = "rovara.sign-in." + destination;
+   // L4-SIGNIN: "Use a different workspace" (and a button for GitHub) sign in with no Slack hint; the remembered workspace is forgotten for the first.
+   if (options?.differentWorkspace === true) { try { win.localStorage.setItem(LAST_WORKSPACE_KEY, ""); } catch { /* Blocked storage: nothing to forget. */ } }
+   const hint = options?.differentWorkspace === true || options?.method === "github" ? undefined : lastWorkspace();
    try { const stored = win.sessionStorage.getItem(key);if (options?.automatic === true && stored !== null && Number.isFinite(Number(stored)) && Date.now() - Number(stored) < SIGN_IN_REPEAT_GUARD_MS) { win.location.assign("/app/signed-out?reason=failed");return; }win.sessionStorage.setItem(key, String(Date.now())); } catch { /* Blocked preference storage does not prevent a deliberate sign-in. */ }
-   win.location.assign("/v1/auth/browser/authorize?return_to=" + encodeURIComponent(destination) + (options?.stepUp === true ? "&step_up=1" : "") + (options?.join === true ? "&join=1" : ""));
+   win.location.assign("/v1/auth/browser/authorize?return_to=" + encodeURIComponent(destination) + (options?.stepUp === true ? "&step_up=1" : "") + (options?.join === true ? "&join=1" : "")
+    + (options?.method === "slack" || options?.method === "github" ? "&method=" + options.method : "") + (hint === undefined ? "" : "&slack_team=" + hint));
   },
   // DEC 253z: the invite link's token stays in the page's fragment (never sent as a URL); Cloud's server looks it up and keeps the join ticket.
   async lookUpInvite() {
