@@ -631,7 +631,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         await respond(429, "busy", OVERRUN_BUSY_MESSAGE, { "retry-after": String(OVERRUN_BUSY_RETRY_SECONDS) });
       } else if (reserved.reason === "busy") await respond(503, "unavailable", "model access unavailable");
       else if (reserved.held) await respond(429, "budget_held", "budget is held by another call", { "retry-after": "2" });
-      else if (route.capRefusal !== undefined) { refusedCap = reserved.item; const refused = await wait(route.capRefusal({ reason: reserved.reason, item: reserved.item }, scope, caps, estimate, controller.signal)); await respond(refused.status, refused.code, refused.message, refused.headers); }
+      else if (route.capRefusal !== undefined) { const refused = await wait(route.capRefusal({ reason: reserved.reason, item: reserved.item }, scope, caps, estimate, controller.signal)); refusedCap = reserved.item; await respond(refused.status, refused.code, refused.message, refused.headers); }
       else if (upkeep && reserved.item === "upkeep") { refusedCap = reserved.item; const refused = upkeepRefusal(caps, estimate); await respond(refused.status, refused.code, refused.message, refused.headers); }
       else { refusedCap = reserved.item; await respond(422, "budget_exceeded", route.prefix[reserved.item]); }
       return;
