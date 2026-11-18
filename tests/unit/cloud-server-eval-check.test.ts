@@ -23,12 +23,15 @@ interface CodeCall { method: string; path: string; search: string; authorization
 type Answer = (call: CodeCall) => Response;
 function setUp(answer: Answer = () => json(200, VIEW())) {
   const calls: CodeCall[] = [];
+  // Code's access check (what Cloud asks first, as the person): each token's own answer.
+  const accessOf = new Map<string, unknown>(), created = new Set<string>();
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
     const headers = { ...(init?.headers as Record<string, string> | undefined) };
     const call: CodeCall = { method: init?.method ?? "GET", path: url.pathname, search: url.search, authorization: headers["authorization"], body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined };
     calls.push(call);
     if (url.pathname === "/v1/auth/token") return json(400, { error: "invalid_grant" });
+    if (url.pathname === "/v1/dev/access") { calls.pop(); return json(200, accessOf.get((headers["authorization"] ?? "").replace("Bearer ", ""))); }
     if (/\/ci-eval-check$/u.test(url.pathname)) return answer(call);
     return json(404, NO_ROUTE);
   }) as typeof fetch;
@@ -39,7 +42,9 @@ function setUp(answer: Answer = () => json(200, VIEW())) {
     callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(Date.UTC(2026, 10, 18)),
   });
   const signIn = async (token: string, access: CodeSession["access"]) => {
-    await store.create(`cookie-${token}`, { accessToken: token, refreshToken: `r-${token}`, csrf: "csrf", signedInAt: "2026-11-18T00:00:00.000Z", access });
+    accessOf.set(token, access);
+    if (!created.has(token)) await store.create(`cookie-${token}`, { accessToken: token, refreshToken: `r-${token}`, csrf: "csrf", signedInAt: "2026-11-18T00:00:00.000Z", access });
+    created.add(token);
     return { cookie: `rovara_cloud_session=cookie-${token}`, "x-rovara-csrf": "csrf" };
   };
   const send = async (method: "GET" | "PUT" | "POST", target: string, headers: Record<string, string> = {}, body?: unknown) => {

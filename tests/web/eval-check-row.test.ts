@@ -23,12 +23,12 @@ const ACTIONS = "15368";
 const item = (over: Record<string, unknown> = {}) => ({ name: "evals", source: ACTIONS, workflow: ".github/workflows/ci.yml", repository: "web", basis: "name", ...over });
 const view = (over: Record<string, unknown> = {}) => ({ project: "web", canManage: true, confirmed: null, proposals: { verdict: "proposals", items: [item(), item({ name: "Quality gate", basis: "commands" })], cut: false }, explanation: W.explanation, ...over });
 const checklist = (percent = 38, canSkip = true) => ({
-  project: "web", viewer: { companyRole: canSkip ? "owner" : "member", projectAdmin: false, canSkip }, progress: { done: percent >= 100 ? 8 : 3, total: 8, percent, ...(percent >= 100 ? {} : { nextRequired: "evalConfirm" }) },
+  project: "web", viewer: { companyRole: canSkip ? "owner" : "member", projectAdmin: false, canSkip }, progress: { done: percent >= 100 ? 8 : 3, total: 8, percent, nextRequired: percent >= 100 ? null : "evalConfirm" },
   repos: { state: "done", count: 1, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }] },
   setupRun: { state: "done", status: "ready", startedAt: "2026-11-18T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "passed" },
-  evalConfirm: { state: percent >= 100 ? "done" : "needs_you", report: "none" },
+  evalConfirm: percent >= 100 ? { state: "done", report: "confirmed", confirmedSelection: "npm test" } : { state: "needs_you", report: "none" },
   aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
-  slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: { state: "needs_you", hasTask: false, canStart: false },
+  slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: percent >= 100 ? { state: "done", hasTask: true, canStart: false } : { state: "needs_you", hasTask: false, canStart: false },
 });
 
 interface Options { read?: () => ApiResponse; put?: (request: ApiRequest) => ApiResponse; percent?: number; canSkip?: boolean }
@@ -46,7 +46,12 @@ function mount(options: Options = {}) {
   return { ...f, close() { ui.unmount(); query.clear(); } };
 }
 const puts = (f: ReturnType<typeof mount>) => f.request.mock.calls.map(([r]) => r).filter((r) => r.method === "PUT" && r.path.endsWith("/ci-eval-check"));
-const row = async () => screen.findByTestId("checklist-row-evalCheck");
+/** The row once it has read: not while it still says it is loading. */
+const row = async () => {
+  const found = await screen.findByTestId("checklist-row-evalCheck");
+  await waitFor(() => expect(screen.getByTestId("checklist-row-evalCheck").textContent).not.toContain(W.loading), { timeout: 5000 });
+  return screen.getByTestId("checklist-row-evalCheck");
+};
 
 describe("the row", () => {
   it("is one more row of the checklist with the title and the one-line explanation, and lists what Rovara proposed with Use this one beside each", async () => {
