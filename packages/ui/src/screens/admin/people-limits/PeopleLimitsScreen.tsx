@@ -27,7 +27,7 @@ const dollars = (cents: number) => cents / 100;
 
 const columns: readonly Column<PersonLimitRow>[] = [
  { key: "person", title: "Person", render: row => <b><VisibleText text={row.name} /></b> },
- { key: "spent", title: "Spent this month", render: row => <span className="rv-num"><Money usd={dollars(row.spentCents)} /></span> },
+ { key: "spent", title: "Company spend this month", render: row => <span className="rv-num"><Money usd={dollars(row.spentCents)} /></span> },
  { key: "limit", title: "Monthly limit", render: row => row.limitCents === null ? <span className="rv-muted">No limit set</span> : <><span className="rv-num"><Money usd={dollars(row.limitCents)} /></span><span className="rv-muted"> {row.limitSource === "own" ? "set for this person" : "company default"}</span></> },
  { key: "standing", title: "Standing", render: row => { const state = standing(row); return state === "over" ? <span className="rv-spend-flag" data-tone="bad">{STANDING_WORDS[state]}</span> : state === "close" ? <span className="rv-spend-flag">{STANDING_WORDS[state]}</span> : <span className="rv-muted">{STANDING_WORDS[state]}</span>; } },
  { key: "change", title: "Change", render: row => <Link to={changeLimitPath(row.developerId)} aria-label={`Change the limit for ${row.name}`}>Change limit</Link> },
@@ -60,7 +60,7 @@ function PeopleLimits() {
 }
 
 function ReadFailed({ forbidden, busy, retry }: { forbidden: boolean; busy: boolean; retry: () => void }) {
- return <AdminSection title="This month"><div role="alert" className="rv-banner rv-banner-danger" data-testid="people-limits-error"><span><b>{forbidden ? "You don't have permission to see people's spending." : "Couldn't load people's spending."}</b> No amounts are shown.</span>{!forbidden && <Button disabled={busy} onClick={retry}>Try again</Button>}</div></AdminSection>;
+ return <AdminSection title="This month"><div role="alert" className="rv-banner rv-banner-danger" data-testid="people-limits-error"><span><b>{forbidden ? "You don't have permission to see people's spending." : "Couldn't load people's spending. Spending unavailable."}</b> No amounts are shown.</span>{!forbidden && <Button disabled={busy} onClick={retry}>Try again</Button>}</div></AdminSection>;
 }
 
 function Loaded({ data, project, setProject, stale }: { data: PeopleLimitsRead; project: string | undefined; setProject: (name: string | undefined) => void; stale: boolean }) {
@@ -72,7 +72,7 @@ function Loaded({ data, project, setProject, stale }: { data: PeopleLimitsRead; 
    {data.people.length === 0
     ? <p className="rv-muted" data-testid="people-limits-empty">{data.project === undefined ? "No one is in the company yet." : "No one is on this project."}</p>
     : <DataTable caption="People and limits" columns={columns} rows={data.people} rowKey={row => row.developerId} />}
-   <p className="rv-muted">Each amount is the person's spending across every project this month{data.project === undefined ? "" : <>, not only <VisibleText text={data.project} /></>}. Only finished calls are counted: money set aside for work still running is not in these amounts. The limit is their own if one was set, otherwise the company default. Names are in alphabetical order.</p>
+   <p className="rv-muted">Company-wide spend: each amount is the person's spending across every project this month{data.project === undefined ? "" : <>, not only <VisibleText text={data.project} /></>}. Only finished calls are counted: money set aside for work still running is not in these amounts. The limit is their own if one was set, otherwise the company default. Names are in alphabetical order.</p>
    <p className="rv-muted"><Link to="/app/admin/money/limits">Set or change a limit on the Spending limits page.</Link></p>
   </AdminSection>
  </>;

@@ -20,7 +20,7 @@ const columns: readonly Column<FeatureTask>[] = [
  { key: "origin", title: "Started from", render: t => ORIGIN_WORDS[t.origin] },
  { key: "state", title: "State", render: t => <span className="rv-report-state" data-state={t.state}>{STATE_WORDS[t.state]}</span> },
  { key: "pr", title: "Pull request", render: t => (t.prLinks[0] !== undefined ? <a href={t.prLinks[0]} target="_blank" rel="noopener noreferrer">{t.prsMerged} merged of {t.prsOpened}</a> : <PullRequestCell merged={t.prsMerged} opened={t.prsOpened} />) },
- { key: "cost", title: "Cost", render: t => <CostCell cents={t.costCents} floor={t.unpricedCalls > 0} unpriced={t.unpricedCalls} /> },
+ { key: "cost", title: "Cost", render: t => <CostCell cents={t.costCents} floor={t.unpricedCalls > 0} unpriced={t.unpricedCalls} unavailable={t.costUnavailable} /> },
  { key: "end", title: "End to end", render: t => <EndCell ms={t.wallMs} soFar={t.wallSoFar} /> },
 ];
 
@@ -44,7 +44,7 @@ function DetailView() {
     <RenameButton key={data.feature.name} feature={{ id: data.feature.id, name: data.feature.name }} />
     <MergeButton feature={{ id: data.feature.id, name: data.feature.name }} others={data.features.filter(other => other.id !== data.feature.id)} onMerged={into => { void navigate(`${REPORT_HOME}/features/${encodeURIComponent(into)}${state.carry}`); }} />
     <StateButton feature={{ id: data.feature.id, name: data.feature.name, ...(data.feature.state === undefined ? {} : { state: data.feature.state }) }} />
-   </>}<Button disabled={data === undefined || data.tasks.length === 0} onClick={() => { if (data !== undefined) host.saveFile("feature-tasks.csv", new Blob([featureCsv(data.tasks)], { type: "text/csv" })); }}>Download CSV</Button></>} />
+   </>}<Button disabled={data === undefined || data.tasks.length === 0} onClick={() => { if (data !== undefined) host.saveFile("feature-tasks.csv", new Blob([featureCsv(data.tasks, data)], { type: "text/csv" })); }}>Download CSV</Button></>} />
   <FilterRow projects={[]} state={state} hideProject />
   <ReadState read={read} what="this feature" title="Feature" />
   {data !== undefined && <>

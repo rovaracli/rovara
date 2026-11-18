@@ -203,7 +203,8 @@ function installKeyAgentRoute(deps: GatewayDependencies): GatewayRoute {
   return {
     provider: "anthropic", product: false, meter: deps.meter, prefix: PREFIX,
     guard: (bytes, headers, claims) => guardRequest(bytes, headers, claims.mdl, deps.modelLimits),
-    scope: (claims) => ({ iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid, ...(claims.per === undefined ? {} : { per: claims.per }) }),
+    // The signed payer owns the budget; `claims.per` remains the requester for audit/key lookup.
+    scope: (claims) => ({ iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid, ...(claims.pay.kind === "member" ? { per: claims.pay.developerId } : {}) }),
     caps: (scope, _claims, signal) => deps.caps.capsFor(scope, signal),
     key: (claims, signal) => deps.keys.keyFor(claims, "anthropic", signal),
     transport: deps.transport,
