@@ -93,14 +93,34 @@ export function readPlan(body: unknown): ReadPlan {
  };
 }
 
-export interface ReadProofItem { sha256: string; title: string; kind: string; verdict: ProofItem["verdict"]; criterionIds: string[]; commit: string | undefined; stale: boolean; passed: number | undefined; total: number | undefined; bar: number | undefined }
+/** One item of the proof index. `id` is the item's key: Code's item id, or its stored output's digest when Code sends no id. `sha256` is there only when Code kept the check's output. */
+export interface ReadProofItem { id: string; sha256: string | undefined; title: string; kind: string; verdict: ProofItem["verdict"]; criterionIds: string[]; commit: string | undefined; stale: boolean; passed: number | undefined; total: number | undefined; bar: number | undefined }
 export function readProof(body: unknown): ReadProofItem[] {
  if (!isRecord(body) || !Array.isArray(body["items"])) throw new Error("not a proof index");
+ const seen = new Set<string>();
  return records(body["items"]).flatMap(item => {
-  const sha256 = str(item["sha256"]), title = str(item["title"]), kind = str(item["kind"]);
+  const sha256 = str(item["sha256"]), id = str(item["id"]) ?? sha256, title = str(item["title"]), kind = str(item["kind"]);
   const verdict = (["pass", "fail", "unknown"] as const).find(value => value === item["verdict"]);
-  return sha256 === undefined || title === undefined || kind === undefined || verdict === undefined ? [] : [{ sha256, title, kind, verdict, criterionIds: strings(item["criterionIds"]), commit: str(item["commit"]), stale: item["stale"] === true, passed: num(item["passed"]), total: num(item["total"]), bar: num(item["bar"]) }];
+  if (id === undefined || seen.has(id) || title === undefined || kind === undefined || verdict === undefined) return [];
+  seen.add(id);
+  return [{ id, sha256, title, kind, verdict, criterionIds: strings(item["criterionIds"]), commit: str(item["commit"]), stale: item["stale"] === true, passed: num(item["passed"]), total: num(item["total"]), bar: num(item["bar"]) }];
  });
+}
+
+/** The most failing tests the Proof tab lists (Code's own limit); the rest are counted. */
+export const PROOF_FAILURES_SHOWN = 10;
+/** One failing test as Code words it: its check, the test, and the change that likely broke it or "unknown (...)". Plain text only. */
+export interface ReadProofFailure { check: string; test: string; cause: string }
+/** The proof index: its items, and (TE-A6) the failing tests with their likely causes, at most ten, with how many more there are. A Code without the failures sends none. */
+export interface ReadProofIndex { items: ReadProofItem[]; failures: ReadProofFailure[]; failuresNotListed: number }
+export function readProofIndex(body: unknown): ReadProofIndex {
+ const items = readProof(body), raw = isRecord(body) && Array.isArray(body["failures"]) ? records(body["failures"]) : [];
+ const failures = raw.flatMap(row => { const check = str(row["check"]), test = str(row["test"]), cause = str(row["cause"]);return check === undefined || test === undefined || cause === undefined ? [] : [{ check: check.slice(0, 200), test: test.slice(0, 300), cause: cause.slice(0, 500) }]; });
+ const sent = isRecord(body) ? num(body["failuresNotListed"]) : undefined;
+ const shown = failures.slice(0, PROOF_FAILURES_SHOWN);
+ // What Code did not list, plus anything past the limit here: the rest is always counted, never dropped silently.
+ const notListed = (sent !== undefined && Number.isInteger(sent) && sent > 0 ? sent : 0) + (failures.length - shown.length);
+ return { items, failures: shown, failuresNotListed: notListed };
 }
 
 export interface ReadEvent { seq: number; at: string; kind: string; text: string | undefined; taskItemId: string | undefined; attempt: number | undefined }
@@ -243,7 +263,7 @@ export function useWorkApi() {
     catch (failure) { if (failure instanceof ApiError && (failure.status === 404 || failure.status === 501)) return [];throw failure; }
    },
    plan: (id: string) => api.get(taskPath(id) + "/documents/plan", { parse: readPlan }),
-   proof: (id: string) => api.get(taskPath(id) + "/evidence", { parse: readProof }),
+   proof: (id: string) => api.get(taskPath(id) + "/evidence", { parse: readProofIndex }),
    events: (id: string) => api.get(taskPath(id) + "/events", { parse: readEvents }),
    comments: (id: string) => api.get(taskPath(id) + "/comments", { parse: readComments }),
    /** What is left of the company's budget this month (Cloud's own read, contract v0 `OrgSpendSummaryAddition`); undefined when Cloud does not serve it or the company has no budget. */

@@ -12,6 +12,8 @@ export const WORK_TASKS_MAX = 100;
 const EVENTS_MAX = 100;
 const COMMENTS_MAX = 100;
 const TEXT_MAX = 2000;
+/** How many failing tests the proof index passes on (Code's own limit, TE-A6). The rest are counted, never dropped silently. */
+export const PROOF_FAILURES_MAX = 10;
 /** How many of the person's newest sessions the list matches to tasks (a bound on the store read, like Home's). */
 const SESSIONS_LOOKED_AT = 200;
 /** How many involved tasks one read asks Code for (Code's own page bound is 50). The first page only: the list says nothing about more. */
@@ -103,17 +105,27 @@ const WORK_READS: Route[] = [
     },
   },
   {
-    // GET /v1/app/tasks/{t}/evidence (contract v0 `tasks.evidence.list`): the proof index, one item per check and the criteria it speaks to.
+    // GET /v1/app/tasks/{t}/evidence (contract v0 `tasks.evidence.list`): the proof index, one item per check and the criteria it speaks to, and (TE-A6) the failing tests with the change that
+    // likely broke each, at most ten (plain text as Code worded it; the page draws it as text). Code's refusal, its 404 and 501 included, reaches the page as Code worded it.
     method: "GET", path: new RegExp(`^/tasks/${TASK_ID}/evidence$`, "iu"),
     answer: async ({ client, session, params }) => {
-      const answer = await client.json<{ taskId?: unknown; items?: unknown[] }>(session, `/v1/dev/tasks/${encodeURIComponent(params[0]!)}/evidence`);
+      const answer = await client.json<{ taskId?: unknown; items?: unknown[]; failures?: unknown[]; failuresNotListed?: unknown }>(session, `/v1/dev/tasks/${encodeURIComponent(params[0]!)}/evidence`);
+      const failures = Array.isArray(answer.failures) ? answer.failures.filter(isRecord).flatMap((row) => {
+        const check = text(row["check"], 200), test = text(row["test"], 300), cause = text(row["cause"], 500);
+        return check === undefined || test === undefined || cause === undefined ? [] : [{ check, test, cause }];
+      }) : [];
+      const shown = failures.slice(0, PROOF_FAILURES_MAX);
+      const sent = num(answer.failuresNotListed);
+      const notListed = (sent !== undefined && Number.isInteger(sent) && sent > 0 ? Math.min(sent, 100_000) : 0) + (failures.length - shown.length);
       return ok({
         taskId: text(answer.taskId, 80) ?? params[0],
         items: list(answer.items, 200).filter(isRecord).map((item) => some({
-          sha256: text(item["sha256"], 80), title: text(item["title"], 300), kind: text(item["kind"], 60), verdict: text(item["verdict"], 20),
+          id: text(item["id"], 40), sha256: text(item["sha256"], 80), title: text(item["title"], 300), kind: text(item["kind"], 60), verdict: text(item["verdict"], 20),
           criterionIds: list(item["criterionIds"], 50).flatMap((id) => (typeof id === "string" ? [id.slice(0, 40)] : [])),
           commit: text(item["commit"], 80), stale: bool(item["stale"]), passed: num(item["passed"]), total: num(item["total"]), bar: num(item["bar"]),
         })),
+        ...(shown.length === 0 ? {} : { failures: shown }),
+        ...(notListed === 0 ? {} : { failuresNotListed: notListed }),
       });
     },
   },

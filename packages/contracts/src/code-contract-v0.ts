@@ -227,8 +227,10 @@ export interface UnderstandingQuestion { questionId: string; text: string; optio
 
 /** The proof index of one task (UX audit 2026-11-15): every item of evidence and what it proves, so the proof page can answer "which of the things I asked for are proven?". */
 export interface ProofItem {
-  /** Read it with `tasks.evidence.get`. */
-  sha256: string;
+  /** The item's id in the index (Code's `check:<n>`, `evidence:<n>`, `review:code`, `review:security`). Optional: an older Code sends none, and the digest is the key then. */
+  id?: string;
+  /** The digest of the check's stored output; read it with `tasks.evidence.get`. Code sends it only when it kept the output. */
+  sha256?: string;
   title: string;
   kind: string /* known: test_report, screenshot, log, diff, check_result, eval */;
   verdict: "pass" | "fail" | "unknown";
@@ -242,7 +244,10 @@ export interface ProofItem {
   total?: number;
   bar?: number;
 }
-export interface ProofIndexResponse { taskId: TaskId; items: ProofItem[] }
+/** TE-A6 (DEC 254zt/254zzf): one failing test of a failed check, as Code words it (plain text): the check, the test, and "likely broken by a change ... to <files>" or "unknown (<why>)". */
+export interface ProofFailure { check: string; test: string; cause: string }
+/** `failures` (at most ten) and `failuresNotListed` (how many more) are optional: a Code without TE-A6, or a task with no failing test that has a cause, sends neither. */
+export interface ProofIndexResponse { taskId: TaskId; items: ProofItem[]; failures?: ProofFailure[]; failuresNotListed?: number }
 
 /** Cloud's own `GET /v1/app/org/spend` gains two optional numbers (no Code route behind it): what the company spent this month and what is left of its budget (absent when there is no budget). */
 export interface OrgSpendSummaryAddition { spentThisMonthUsd?: number; remainingUsd?: number }

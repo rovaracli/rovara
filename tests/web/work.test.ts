@@ -7,7 +7,7 @@ import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { ageLabel, involvedRows, nextNeedsYou, proofRows, provenCount, readEvents, readPlan, readProof, readTaskList, sortRows, stepOf, workRows, type ReadProofItem } from "../../packages/ui/src/api/work.js";
+import { PROOF_FAILURES_SHOWN, ageLabel, involvedRows, nextNeedsYou, proofRows, provenCount, readEvents, readPlan, readProof, readProofIndex, readTaskList, sortRows, stepOf, workRows, type ReadProofItem } from "../../packages/ui/src/api/work.js";
 import { readDecisions } from "../../packages/ui/src/api/decisions.js";
 import { DecisionCardsViewReaderSchema } from "@agentx/contracts/web";
 import { BudgetBanner } from "../../packages/ui/src/design/BudgetBanner.js";
@@ -15,7 +15,7 @@ import { EvalResult } from "../../packages/ui/src/design/EvalResult.js";
 import { StepMini, StepRail } from "../../packages/ui/src/design/StepRail.js";
 import { BuildStep } from "../../packages/ui/src/screens/session/BuildStep.js";
 import { CriterionRow } from "../../packages/ui/src/screens/session/CriterionRow.js";
-import { ProofStep } from "../../packages/ui/src/screens/session/ProofStep.js";
+import { FailingTests, ProofStep } from "../../packages/ui/src/screens/session/ProofStep.js";
 import { PullRequestCard } from "../../packages/ui/src/screens/session/PullRequestCard.js";
 import { SpecStep } from "../../packages/ui/src/screens/session/SpecStep.js";
 import { HomeScreen } from "../../packages/ui/src/screens/home/HomeScreen.js";
@@ -82,7 +82,7 @@ it("reads each answer defensively: an answer that is not the shape is refused, a
   expect(readEvents({ events: [{ at: "x" }, { at: "2026", kind: "status" }] })).toHaveLength(1);
 });
 it("proves a criterion only when every check that speaks to it passed on current code", () => {
-  const plan = readPlan(PLAN), item = (patch: Partial<ReadProofItem>): ReadProofItem => ({ sha256: "a", title: "t", kind: "test_report", verdict: "pass", criterionIds: ["R1.1"], commit: undefined, stale: false, passed: undefined, total: undefined, bar: undefined, ...patch });
+  const plan = readPlan(PLAN), item = (patch: Partial<ReadProofItem>): ReadProofItem => ({ id: "a", sha256: "a", title: "t", kind: "test_report", verdict: "pass", criterionIds: ["R1.1"], commit: undefined, stale: false, passed: undefined, total: undefined, bar: undefined, ...patch });
   const state = (items: ReadProofItem[]) => proofRows(plan.requirements, items, plan.tasks).map(row => row.state);
   expect(state([])).toEqual(["not_run", "running"]);
   expect(state([item({})])).toEqual(["pass", "running"]);
@@ -459,5 +459,41 @@ it("still offers Try again when the proof read fails for another reason", async 
 it("keeps Code's own words for any other 404 of the proof read (a task the person can no longer read)", async () => {
   const f = screenSetup({ proof: { status: 404, body: { error: { code: "NOT_FOUND", message: "task not found" } } }, path: `/app/live?task=${ID.merge}` });
   expect((await screen.findByTestId("not-connected")).textContent).toBe("task not found");expect(screen.queryByTestId("proof-not-yet")).toBeNull();
+  f.close();
+});
+
+// Proof list (Code's GET /v1/dev/tasks/{id}/evidence): Code's items carry an id and a digest only when it kept the check's output, and (TE-A6) up to ten failing tests with their likely causes.
+const FAILURE = (index: number) => ({ check: "pytest -q", test: `tests/cart.test.ts::case ${String(index)}`, cause: index % 2 === 0 ? "likely broken by a change (commit aaaaaaa) to src/cart.ts" : "unknown (only weak evidence)" });
+it("reads Code's proof index: an item keyed by its id when it has no digest, each id once, and at most ten failing tests with the rest counted", () => {
+  const index = readProofIndex({ items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }, { id: "evidence:0", title: "again", kind: "test_report", verdict: "pass" }, { title: "no key", kind: "log", verdict: "pass" }], failures: Array.from({ length: 13 }, (_, index) => FAILURE(index)), failuresNotListed: 2 });
+  expect(index.items.map(item => [item.id, item.sha256, item.title])).toEqual([["evidence:0", undefined, "pytest -q"]]);
+  expect(index.failures).toHaveLength(PROOF_FAILURES_SHOWN);expect(index.failures[0]).toEqual(FAILURE(0));
+  expect(index.failuresNotListed).toBe(5);
+  // An older Code (no failures) and odd values: no failing tests, nothing counted.
+  expect(readProofIndex(PROOF)).toMatchObject({ failures: [], failuresNotListed: 0 });
+  expect(readProofIndex({ items: [], failures: [{ check: 1, test: "t", cause: "c" }, "x"], failuresNotListed: -4 })).toMatchObject({ failures: [], failuresNotListed: 0 });
+  // The fake Code's items have no id: the digest is the key.
+  expect(readProof(PROOF).map(item => item.id)).toEqual(PROOF.items.map(item => item.sha256));
+});
+it("draws the failing tests under the proof as plain text, at most ten, and counts the rest", () => {
+  const hostile = { check: "<b>suite</b>", test: "tests/<img src=x onerror=alert(1)>.test.ts::a", cause: "likely broken by a change to [x](https://evil.example) <script>alert(1)</script>\u202e" };
+  const f = wrap(h(FailingTests, { failures: [hostile, ...Array.from({ length: 11 }, (_, index) => FAILURE(index))], notListed: 3 }));
+  const list = screen.getByRole("list", { name: "Failing tests" });
+  expect(within(list).getAllByRole("listitem")).toHaveLength(PROOF_FAILURES_SHOWN);
+  expect(f.container.querySelector("img, script, b, a")).toBeNull();
+  expect(list.textContent).toContain("tests/<img src=x onerror=alert(1)>.test.ts::a");expect(list.textContent).toContain("(<b>suite</b>)");
+  expect(f.container.textContent).toContain("and 5 more failing tests not listed");
+  f.unmount();
+  // Nothing to show: no section at all.
+  const none = wrap(h(FailingTests, { failures: [] }));expect(none.container.textContent).toBe("");none.unmount();
+  const onlyMore = wrap(h(FailingTests, { failures: [], notListed: 1 }));expect(onlyMore.container.textContent).toContain("and 1 more failing test not listed");onlyMore.unmount();
+});
+it("the Proof tab shows Code's items and failing tests from the proof read", async () => {
+  const proof = { status: 200, body: { taskId: ID.merge, items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }, { id: "review:code", title: "Code review", kind: "review", verdict: "pass", criterionIds: [] }], failures: [FAILURE(0), FAILURE(1)] } };
+  const f = screenSetup({ proof, path: `/app/live?task=${ID.merge}` });
+  const failing = await screen.findByTestId("failing-tests");
+  expect(failing.textContent).toContain("tests/cart.test.ts::case 0");expect(failing.textContent).toContain("likely broken by a change (commit aaaaaaa) to src/cart.ts");expect(failing.textContent).toContain("unknown (only weak evidence)");
+  const pane = screen.getByRole("region", { name: "Selected task" });expect(pane.textContent).toContain("Also checked.");expect(pane.textContent).toContain("pytest -q (failed)");expect(pane.textContent).toContain("Code review");
+  expect(screen.queryByTestId("proof-not-yet")).toBeNull();
   f.close();
 });
