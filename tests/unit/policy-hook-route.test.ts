@@ -93,10 +93,10 @@ describe("policy hook answering route", () => {
     expect(referenceCheck((await post(none)).body, none, "start")).toEqual({ allow: false, code: "no_estimate" });
   });
 
-  it("row 11.5: loosening a setting answers second person needed, with a fresh sign-in", async () => {
+  it("row 11.5: loosening a setting answers second person needed (no sign-in age since owner DEC 254zzz73, even when a stored rule has one)", async () => {
     const { post } = world();
     const q = question("decide", { cid: COMPANY, stage: "requirement", what: "setting.loosen", styp: "setting", sid: "review_mode", by: "admin-a" });
-    expect(referenceCheck((await post(q)).body, q, "decide")).toEqual({ allow: true, minApprovers: 1, secondPerson: true, selfApproval: false, signInMaxAgeSeconds: 900 });
+    expect(referenceCheck((await post(q)).body, q, "decide")).toEqual({ allow: true, minApprovers: 1, secondPerson: true, selfApproval: false });
   });
 
   it("may this person decide: only the named deciders; a refused kind refuses", async () => {
@@ -195,7 +195,7 @@ describe("policy hook answering route", () => {
   it("every matching rule applies and the strictest wins, whatever the order", async () => {
     const { post } = world();
     const q = question("decide", { cid: "org_eeeeeeeeeeeeeeeeeeee", stage: "requirement", what: "setting.loosen", styp: "setting", sid: "s" });
-    expect(referenceCheck((await post(q)).body, q, "decide")).toEqual({ allow: true, minApprovers: 2, secondPerson: true, selfApproval: false, signInMaxAgeSeconds: 300 });
+    expect(referenceCheck((await post(q)).body, q, "decide")).toEqual({ allow: true, minApprovers: 2, secondPerson: true, selfApproval: false });
   });
 
   it("two copies of one question at once: one answer is signed, both get it or the second is refused; another text under the id is refused", async () => {

@@ -111,7 +111,7 @@ is separate from Code's own `ROVARA_CORE_LESSONS`: a company needs both on.
   never linked, never a product source; each provider's path answered only by its own account, Vertex learning never), and the
   learning meter's tables and grants are in `lib/model-gateway.ts` behind the product switch. A company admin connects them in
   Cloud under "Learning AI key" (`packages/cloud-server/src/learning-ai-routes.ts`: `GET /v1/app/org/learning-ai`,
-  `PUT|DELETE .../key`; fresh step-up, write-only, audited `learning_ai.key.*`), which also shows the learning cap and why
+  `PUT|DELETE .../key`; write-only, audited `learning_ai.key.*`), which also shows the learning cap and why
   lessons are paused. A provider 401/403 marks the account (`LearningKeySource.refused`) for that page.
 - Egress to `api.openai.com` for the OpenAI path in infra.
 - Code: mint learning tokens whose `mdl` names the model of the path it calls, call the provider's path for the company's

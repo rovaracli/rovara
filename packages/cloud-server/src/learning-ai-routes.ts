@@ -7,7 +7,7 @@
 //   PUT    /org/learning-ai/key    {requestId, expectedRevision, provider, key}: connect, or replace the provider's key when one is connected
 //   DELETE /org/learning-ai/key    {requestId, expectedRevision, provider}: remove (7-day recovery window in the store)
 //
-// Who: company admins only (Code's access check made now), reads included. Every write needs a fresh step-up and goes through the
+// Who: company admins only (Code's access check made now), reads included. Every write goes through the
 // app's signed-write path (CSRF in handler.ts, the body hash at CloudFront). Write-only: the key is never answered, logged or
 // audited. Cloud records its own audit record after the change is saved; the store keeps its own audit row in the same transaction.
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
@@ -15,7 +15,6 @@ import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import { companySettings } from "./company-store.js";
 import type { ProductAiErrorCode, ProductAiView } from "./product-ai-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
-import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
 /** The store's learning document (product-keys.ts LEARNING_OWNER). */
 export const LEARNING_AI_OWNER = "_learning";
@@ -46,7 +45,6 @@ const refusal = (status: number, code: string, message: string): RouteAnswer => 
 const WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "Learning AI keys aren't set up on this Cloud."),
   forbidden: refusal(403, "FORBIDDEN", "Only a company admin can see or change the company's learning AI key."),
-  stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   invalid: refusal(400, "CONFIG_INVALID", "This learning AI key is not valid."),
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
   stale: refusal(409, "CONFLICT", "The learning AI key changed. Refresh and try again."),
@@ -72,14 +70,13 @@ const providersShown = (context: RouteContext, v: ProductAiView): readonly Learn
 interface Admin { companyId: string; developerId: string; name: string }
 
 /** A company admin of a company Cloud knows, from Code's access check made now. A RouteAnswer when refused. */
-async function admin(context: RouteContext, write: boolean): Promise<Admin | RouteAnswer> {
+async function admin(context: RouteContext): Promise<Admin | RouteAnswer> {
   const backend = context.productAi;
   if (backend === undefined) return WORDS.off;
   const who = await companyCaller(context);
   if (refused(who)) return who;
   // A company owner or admin (Code's company role, never its install administrator flag).
   if (!isCompanyAdmin(who.companyRole)) return WORDS.forbidden;
-  if (write && freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return WORDS.stepUp;
   return { companyId: who.companyId, developerId: who.developerId, name: who.name };
 }
 
@@ -142,7 +139,7 @@ function envelope(context: RouteContext, keys: readonly string[], gated = true):
 }
 
 async function readLearningAi(context: RouteContext): Promise<RouteAnswer> {
-  const who = await admin(context, false);
+  const who = await admin(context);
   if (("status" in who)) return who;
   const backend = context.productAi!;
   const v = await guarded(() => backend.store.view(backend.issuer, who.companyId, LEARNING_AI_OWNER));
@@ -150,7 +147,7 @@ async function readLearningAi(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function putKey(context: RouteContext): Promise<RouteAnswer> {
-  const who = await admin(context, true);
+  const who = await admin(context);
   if (("status" in who)) return who;
   const e = envelope(context, ["key"]);
   if (("status" in e)) return e;
@@ -169,7 +166,7 @@ async function putKey(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function removeKey(context: RouteContext): Promise<RouteAnswer> {
-  const who = await admin(context, true);
+  const who = await admin(context);
   if (("status" in who)) return who;
   // Removing a key is never gated on the switch: a company can always remove what it stored (the store answers not found otherwise).
   const e = envelope(context, [], false);

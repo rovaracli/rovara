@@ -7,7 +7,7 @@ import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } f
 import { renameInSessions } from "./rename.js";
 import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
 import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask, type SessionExtras } from "./session-view.js";
-import { CORE_ACTION_WORDS, acceptOnPage, acceptStepUp, actOnCoreSession, codeSessionOf, isCoreNotYet, noSession, pendingPlanCards, securityAcceptRefusal, type FindingsAccept } from "./core-task-actions.js";
+import { CORE_ACTION_WORDS, acceptOnPage, actOnCoreSession, codeSessionOf, isCoreNotYet, noSession, pendingPlanCards, securityAcceptRefusal, type FindingsAccept } from "./core-task-actions.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError, SignInEnded, slackWorkspaceHint } from "./code-client.js";
 import type { CloudAuditStore } from "./audit-log.js";
@@ -47,7 +47,6 @@ import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
 import { NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
 import { parseAnswersBody } from "./answers.js";
-import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
 /** The deployment's plan words. The company itself (its id and name) is never the deployment's: it comes from Code's access check (company-caller.ts). */
 export interface OrgView { orgId: string; name: string; plan: string }
@@ -155,19 +154,17 @@ export const EVAL_HEALTH_KEYS = ["requestId", "seenCostMicros"] as const;
 /** The members of `seen` that are passed on: the dollars the person was shown (approve), or the offer's revision and digest (decide). */
 const EVAL_SEEN_KEYS = { approve: ["perCheckHighMicros", "monthlyCapMicros"], decide: ["revision", "artifactDigest"] } as const;
 const evalCardNotOnCode: RouteAnswer = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "The eval card isn't connected to Rovara Code yet." } } };
-const evalCardStepUp: RouteAnswer = { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } };
 const evalCardRefused: RouteAnswer = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer can answer for the eval's spend." } } };
 const EVAL_UNAVAILABLE_ON_INSTALL = "Approving an eval's spend isn't available on this install yet.";
 /** L4-EVW4 (DEC 254zzz43): a person's act on the wrapper card names its request id, the act and (to open a pull request) the eval; nothing else. Code's own refusal that no code host is wired for it reads as "not connected yet". */
 export const EVAL_WRAPPER_KEYS = ["requestId", "action", "selection"] as const;
 const EVAL_WRAPPER_UNAVAILABLE_ON_INSTALL = "Setting up the file Rovara needs to read your eval isn't available on this install yet.";
 
-/** Code's fixed refusals the eval card turns into Cloud's own: not served yet (its unknown-route 404, or the install has no eval approval) and a step-up that is not fresh. Any other refusal is Code's own. */
+/** Code's fixed refusal the eval card turns into Cloud's own: not served yet (its unknown-route 404, or the install has no eval approval). Any other refusal is Code's own. */
 function evalCardRefusal(error: unknown): RouteAnswer | undefined {
   if (!(error instanceof CodeError)) return undefined;
   const answered = (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
   if (error.status === 404 && answered?.code === "NOT_FOUND" && (answered.message === "route not found" || answered.message === EVAL_UNAVAILABLE_ON_INSTALL || answered.message === EVAL_WRAPPER_UNAVAILABLE_ON_INSTALL)) return evalCardNotOnCode;
-  if (error.status === 403 && answered?.code === "REAUTH_REQUIRED") return evalCardStepUp;
   return undefined;
 }
 
@@ -428,7 +425,7 @@ async function homeCards(context: RouteContext): Promise<{ cards: HomeCard[]; to
 
 export const ROUTES: Route[] = [
   {
-    // Project machine size: member reads; SET is a stored choice and requires a fresh web-page step-up in Cloud and Code.
+    // Project machine size: member reads; SET is a stored choice; Code decides who may make it.
     method: "GET", path: /^\/projects\/([^/]+)\/machine-size$/u,
     answer: async (context) => {
       const project = context.params[0]!;
@@ -449,7 +446,6 @@ export const ROUTES: Route[] = [
     answer: async (context) => {
       const project = context.params[0]!;
       if (mine(context.session.access, project) === undefined) return projectNotFound;
-      if (freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } };
       const rowId = (context.body as { rowId?: unknown } | undefined)?.rowId;
       if (typeof rowId !== "string") return badRequest("Choose one of the listed machine sizes.");
       try { return ok(await context.client.json<Record<string, unknown>>(context.session, `/v1/dev/projects/${encodeURIComponent(project)}/machine-size`, { method: "POST", body: { rowId } })); }
@@ -853,12 +849,11 @@ export const ROUTES: Route[] = [
       try {
         ({ task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review-findings`, { method: "POST", headers: TASK_VIEW, body: accept }));
       } catch (error) {
-        // Accepting a security finding needs a fresh step-up: the old engine takes it here (REAUTH_REQUIRED when stale); the core takes it only on the web page's own route
-        // (Code #1045), which Cloud asks next, with the same body, when its own token's step-up is fresh. Said in fixed words, never Code's bare 403.
+        // The core takes a security finding's accept only on the web page's own route (Code #1045), which Cloud asks next, with the same body. Said in fixed words,
+        // never Code's bare 403. The owner/co-owner rule above and Code's own check both stay (owner DEC 254zzz73 removed only the step-up).
         const refused = securityAcceptRefusal(error);
-        if (refused === "stepUp") return acceptStepUp();
         if (refused !== "page") throw error;
-        const done = await acceptOnPage(context.client, context.session, found.record.taskId, accept, context.now().getTime());
+        const done = await acceptOnPage(context.client, context.session, found.record.taskId, accept);
         if ("answer" in done) return done.answer;
         task = done.task;
       }
@@ -1139,7 +1134,7 @@ export const ROUTES: Route[] = [
   ...WIKI_SETUP_ROUTES,
   // L4-EVCI2: the setup checklist's "Eval check from your CI" (Code decides who may; Cloud rebuilds every body and answer).
   ...EVAL_CHECK_ROUTES,
-  // L4-P3: the company's one control over nightly upkeep (read, allow with Code's fresh step-up, withdraw): company owners and admins only; Code decides again.
+  // L4-P3: the company's one control over nightly upkeep (read, allow, withdraw): company owners and admins only; Code decides again.
   ...SYSTEM_RUNS_ROUTES,
   // L4-U5: the "Setup needs repair" card on a project's setup page and its "Re-check setup" button, passed to Code as the person; Code decides who may.
   ...SETUP_REPAIR_ROUTES,

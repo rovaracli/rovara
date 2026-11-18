@@ -1,4 +1,4 @@
-// The admin pages' read layer (Hybrid 1, DEC 223): what the Spending, Settings, sign-in factor and Sign-in clients pages read from Cloud's `/v1/app/*` routes.
+// The admin pages' read layer (Hybrid 1, DEC 223): what the Spending, Settings and Sign-in clients pages read from Cloud's `/v1/app/*` routes.
 // Every reader is total over untrusted data: a field that is not the shape is absent, never half drawn, and a body that is not an object is "unreadable".
 // Nothing is invented: when Cloud does not serve a route (404 or 501), the page says "not connected yet" and never shows a number it did not read.
 import { ApiError } from "./errors.js";
@@ -12,8 +12,6 @@ const opt = <K extends string, V>(key: K, value: V | undefined): { [P in K]?: V 
 
 /** Cloud's route is not there yet, or Code does not serve what it needs: the page says "not connected yet". */
 export function isNotConnected(error: unknown): boolean { return error instanceof ApiError && (error.status === 404 || error.status === 501); }
-/** A sensitive change needs a fresh sign-in (Code's step-up page) before it can be made. */
-export function needsStepUp(error: unknown): boolean { return error instanceof ApiError && (error.code === "STEP_UP_REQUIRED" || error.code === "REAUTH_REQUIRED"); }
 
 // ---- Spending ----
 export const ORG_SPEND_PATH = "/v1/app/org/spend";
@@ -79,7 +77,7 @@ export function lineState(spentUsd: number, limitUsd: number | undefined, heldUs
 // ---- Company settings (Cloud's company backend: GET and PUT /v1/app/org/settings) ----
 export const ORG_SETTINGS_PATH = "/v1/app/org/settings";
 export interface CompanyRule { text: string; priority: "required" | "preferred" }
-export interface PendingChange { changeId: string; proposedBy: string; proposedAt: string; expiresAt: string; instructions: CompanyRule[]; freshSignInSeconds: number | undefined }
+export interface PendingChange { changeId: string; proposedBy: string; proposedAt: string; expiresAt: string; instructions: CompanyRule[] }
 /** Cloud's company backend says whether the model gateway will serve the company: it refuses a company with no monthly cap, and Cloud sets no default amount. */
 export type GatewayReadiness = { ready: true } | { ready: false; reason: string; message: string };
 export function readGatewayReadiness(value: unknown): GatewayReadiness | undefined {
@@ -106,7 +104,7 @@ export interface CompanySettingsRead {
   modelGateway: GatewayReadiness | undefined;
   /** The company's monthly cap in dollars; null when none is set, undefined when Cloud did not send budgets. */
   monthlyCapUsd: number | null | undefined;
-  version: number; instructions: CompanyRule[]; freshSignInSeconds: number | undefined; websites: { mode: "any" } | { mode: "listed"; hosts: string[] } | undefined;
+  version: number; instructions: CompanyRule[]; websites: { mode: "any" } | { mode: "listed"; hosts: string[] } | undefined;
   start: { allow: boolean; maxEstimateUsd: number | undefined } | undefined; pending: PendingChange | undefined;
   /** The whole settings document as read, so an edit sends back everything it did not change. */
   raw: Record<string, unknown>;
@@ -127,46 +125,15 @@ export function readCompanySettings(body: unknown): CompanySettingsRead {
   return {
     modelGateway: readGatewayReadiness(body["modelGateway"]),
     monthlyCapUsd: capMicros === null ? null : typeof capMicros === "number" && Number.isFinite(capMicros) && capMicros >= 0 ? capMicros / MICROS : undefined,
-    version, instructions: readRules(settings["instructions"]), freshSignInSeconds: count(settings["freshSignInSeconds"]),
+    version, instructions: readRules(settings["instructions"]),
     websites: isRecord(ceiling) ? (ceiling["mode"] === "listed" ? { mode: "listed", hosts } : ceiling["mode"] === "any" ? { mode: "any" } : undefined) : undefined,
     start: isRecord(start) && typeof start["allow"] === "boolean" ? { allow: start["allow"], maxEstimateUsd: maxEstimate === undefined ? undefined : maxEstimate / MICROS } : undefined,
     pending: isRecord(pending) && pendingSettings !== undefined && str(pending["changeId"]) !== undefined && str(pending["proposedBy"]) !== undefined
-      ? { changeId: str(pending["changeId"])!, proposedBy: str(pending["proposedBy"])!, proposedAt: str(pending["proposedAt"]) ?? "", expiresAt: str(pending["expiresAt"]) ?? "", instructions: readRules(pendingSettings["instructions"]), freshSignInSeconds: count(pendingSettings["freshSignInSeconds"]) }
+      ? { changeId: str(pending["changeId"])!, proposedBy: str(pending["proposedBy"])!, proposedAt: str(pending["proposedAt"]) ?? "", expiresAt: str(pending["expiresAt"]) ?? "", instructions: readRules(pendingSettings["instructions"]) }
       : undefined,
     raw: settings,
   };
 }
-/** The approval window in words: an admin must have confirmed it is them within this long to change the company's rules. */
-export function windowWords(seconds: number | undefined): string {
-  if (seconds === undefined) return "Not set";
-  if (seconds % 60 === 0) return seconds / 60 === 1 ? "1 minute" : `${seconds / 60} minutes`;
-  return `${seconds} seconds`;
-}
-export const WINDOW_CHOICES: ReadonlyArray<{ seconds: number; label: string }> = [60, 120, 300, 600].map(seconds => ({ seconds, label: windowWords(seconds) }));
-
-// ---- Sign-in factors (Code's step-up factor: a confirmation email and passkeys) ----
-// The read below is served (L4-MF4: Cloud passes it to Code's GET /v1/dev/me/sign-in-factors as the person; the caller's own factors only). Until the Code in use serves it, Cloud answers 501 and the page
-// says "not connected yet". The three below are still proposed routes, passed through once Code serves them (501 until then):
-//   GET    /v1/app/me/sign-in-factors                      -> { factorEmail?: string (masked), passkeys: [{ credentialId, createdAt, lastUsedAt? }] }   (served)
-//   DELETE /v1/app/me/passkeys/{credentialId}              (fresh step-up)
-//   PUT    /v1/app/org/members/{developerId}/factor-email  { requestId, email }  (an admin's own fresh step-up; the old address is told first)
-//   DELETE /v1/app/org/members/{developerId}/passkeys      (an admin's own fresh step-up; the person is told)
-export const MY_FACTORS_PATH = "/v1/app/me/sign-in-factors";
-export interface Passkey { credentialId: string; createdAt: string; lastUsedAt?: string }
-export interface MyFactors { factorEmail: string | undefined; passkeys: Passkey[] }
-export function readMyFactors(body: unknown): MyFactors {
-  if (!isRecord(body) || !Array.isArray(body["passkeys"])) throw new Error("not sign-in factors");
-  const passkeys = body["passkeys"].flatMap(raw => {
-    if (!isRecord(raw)) return [];
-    const credentialId = str(raw["credentialId"]), createdAt = str(raw["createdAt"]);
-    return credentialId === undefined || createdAt === undefined || Number.isNaN(Date.parse(createdAt)) ? [] : [{ credentialId, createdAt, ...opt("lastUsedAt", str(raw["lastUsedAt"])) }];
-  });
-  return { factorEmail: str(body["factorEmail"]), passkeys };
-}
-export const passkeyPath = (credentialId: string) => "/v1/app/me/passkeys/" + encodeURIComponent(credentialId);
-export const memberFactorEmailPath = (developerId: string) => "/v1/app/org/members/" + encodeURIComponent(developerId) + "/factor-email";
-export const memberPasskeysPath = (developerId: string) => "/v1/app/org/members/" + encodeURIComponent(developerId) + "/passkeys";
-
 // ---- Sign-in clients (Code's per-company sign-in clients, DEC 136) ----
 // Proposed: GET /v1/app/org/sign-in-clients -> { clients: [{ clientId, name, kind, createdAt, lastUsedAt? }] }. Read only here; changing a client is Code's.
 export const SIGN_IN_CLIENTS_PATH = "/v1/app/org/sign-in-clients";

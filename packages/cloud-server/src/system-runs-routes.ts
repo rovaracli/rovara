@@ -1,15 +1,14 @@
 // Lead 4 L4-P3 (owner decision, 2026-11-17): the company's one control over nightly upkeep, passed to Rovara Code as the signed-in person, with their own token.
 //
 //   GET /v1/app/company/system-runs   -> Code GET /v1/app/company/system-runs   { available, allowed, systemRunsOn }
-//   PUT /v1/app/company/system-runs   { requestId, allowed }  -> Code PUT /v1/app/company/system-runs   (allow: Code asks for a fresh step-up; withdraw: it does not)
+//   PUT /v1/app/company/system-runs   { requestId, allowed }  -> Code PUT /v1/app/company/system-runs   (allow or withdraw)
 //
 // Rules:
 //   - Only a company owner or administrator uses it. Cloud asks Code who the person is and their role NOW (the access check, never the stored sign-in, a cookie or the browser); anyone else gets one fixed 403 and
-//     Code is not asked. Code checks the same rule again on its live membership and decides the fresh step-up itself: Cloud adds no rule that could widen it, and asks for no step-up on a withdrawal.
+//     Code is not asked. Code checks the same rule again on its live membership: Cloud adds no rule that could widen it.
 //   - The browser sends a request id and the one choice. Nothing else is forwarded (no company, person, role or query); an extra field, a malformed body or any query is refused without asking Code.
 //   - The answer is rebuilt from the three booleans and must read (and agree: running is available AND allowed), else the whole read is refused.
-//   - Code's refusals reach the app as Cloud's own fixed words, never Code's text and never an echo of the browser's input: the step-up answer keeps its code `REAUTH_REQUIRED`, which the app turns into the
-//     sign-in step. Until Code serves the route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
+//   - Code's refusals reach the app as Cloud's own fixed words, never Code's text and never an echo of the browser's input. Until Code serves the route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
 //   - The logs say what was done (allowed or withdrawn), never what the person wrote.
 import { CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
@@ -39,12 +38,10 @@ export function systemRunsAnswer(value: unknown): { available: boolean; allowed:
   return { available, allowed, systemRunsOn };
 }
 
-/** Code's refusal in Cloud's fixed words: the step-up answer keeps its code, a 404 (unknown route, not wired, or the operator's ceiling off) reads "not available yet", anything else is Cloud's own sentence. */
+/** Code's refusal in Cloud's fixed words: a 404 (unknown route, not wired, or the operator's ceiling off) reads "not available yet", anything else is Cloud's own sentence. */
 export function systemRunsRefusal(error: CodeError): RouteAnswer {
-  const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
-  const code = typeof body?.["code"] === "string" ? body["code"] : undefined;
-  // Code's 403 REAUTH_REQUIRED only ever means "confirm it's you again" (the code alone decides, as on Cloud's other step-up routes); its sentence is never passed on.
-  if (error.status === 403) return code === "REAUTH_REQUIRED" ? A.needsSignIn : A.systemRunsNotAllowed;
+  // Any 403 is "not allowed"; Code's sentence is never passed on.
+  if (error.status === 403) return A.systemRunsNotAllowed;
   if (error.status === 404) return A.upkeepNotYet;
   if (error.status === 400) return A.invalid;
   return A.upkeepUnavailable;

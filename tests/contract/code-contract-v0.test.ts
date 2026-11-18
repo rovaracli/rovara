@@ -64,7 +64,7 @@ describe("code contract v0 tables", () => {
     // Plus the Cost and time actions (lane L4-CR4): a new feature, rename, merge, mark done or reopen, and move a task, each passed to Code's own route as the person (Code decides): 5 rows.
     // Plus the session's decisions and answers (L4-B5, Code's task log read as the person): 1 row.
     // Plus script-token list, create and revoke, mirrored from Code's app routes: 3 rows.
-    // Plus the person's own sign-in factors (L4-MF4): the masked confirmation email and passkeys, as the person: 1 row.
+    // (The person's own sign-in factors row, L4-MF4, is gone: owner DEC 254zzz73 removed step-up and its confirmation email and passkeys: -1 row.)
     // Plus the saved environment panel read (forwarded to Code's own route) and the start preview (answered here as unknown) (L4-MF1): existing rows, now T (the start preview's owner is now Cloud: c): 2.
     // Plus the company's one control over nightly upkeep (L4-P3): read and change: 2 rows.
     // Plus lessons phase 4 (L4-LP4G): the graduation read, graduate, Not now, both places, the two tidy writes, the two draft task writes and retiring a team rule: 9 rows.
@@ -82,7 +82,7 @@ describe("code contract v0 tables", () => {
     // Plus Rovara's proposed wrapper file (L4-EVW2): "Try again", passed to Code's own route as the person: 1 row.
     // Plus answering Understand's questions from the Work list and Home (Code #1057's round on the list row): the task's answers, passed to Code as the person: 1 row.
     // Plus the model the company's lessons learn with (DEC 254zzz63, Code #1075): read and change, passed to Code as the person: 2 rows.
-    expect(counts.appCloudServerToday).toBe(179);
+    expect(counts.appCloudServerToday).toBe(178);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

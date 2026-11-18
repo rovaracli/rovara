@@ -189,7 +189,7 @@ staging deploys with `-c rovaraModelGatewayProductAi=on`, production never (refu
 
 Settings routes (B7, `packages/cloud-server/src/product-ai-routes.ts`; screen: admin area, AI and connections, Product AI
 keys): `GET /v1/app/projects/:name/product-ai`, `PUT|DELETE .../key`, `PUT .../eval-budget`, `PUT .../eval-approval`. The
-project's admin or a company admin (Code's access check, made on every request), a fresh step-up on every write, the signed
+project's admin or a company admin (Code's access check, made on every request), the signed
 write path (CSRF, body hash), Cloud audit records (`product_ai.*`). The key is write-only: no answer, log or audit carries it.
 `PUT|DELETE .../vertex` (PRODUCT-VERTEX-CLOUD-CONNECT) takes a Vertex AI federation setup (Google Cloud project, location,
 workload identity provider, optional service account): the store's `vertexCheck` asks the gateway to run the connection test

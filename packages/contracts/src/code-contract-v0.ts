@@ -419,7 +419,7 @@ export interface LinearDisconnected { status: "disconnected"; workspaceName: str
 export interface LinearTeam { id: string; key: string; name: string }
 export interface LinearProjectTeam { project: string; team: LinearTeam | null; teams?: LinearTeam[]; cleared?: boolean }
 export interface GithubConnectionsResponse { installations: Array<{ installationId: number; accountLogin: string; status?: "active" | "suspended" | "uninstalled"; accountType?: "User" | "Organization"; connectedAt: Iso; connectedBy: { kind: "person"; personId: string; name?: string } | { kind: "operator" } }> }
-/** Guided onboarding PR 12b (Code #832): a company owner with a fresh step-up disconnects one of the company's GitHub installations (refused while in use). */
+/** Guided onboarding PR 12b (Code #832): a company owner disconnects one of the company's GitHub installations (refused while in use). */
 export interface GithubDisconnected { status: "disconnected"; installationId: number; accountLogin: string; uninstallUrl: string }
 /**
  * One engine action (Code's `GET /v1/dev/client/company/audit/records`, lane AU, Rovara PR #649). The optional fields are what Code adds: the record's id, the actor's kind and the caller the
@@ -495,7 +495,7 @@ export interface CompanyLearningModelView { model: string | null; source: "compa
 export interface PutCompanyLearningModelRequest { model: string | null }
 /** Code's project settings (M4a, `GET|PUT /v1/dev/projects/{name}/settings`): the stored preset and overrides, the revision, and what applies under the company's bounds. */
 export interface ProjectSettingsView { preset: string | null; overrides: JsonObject; revision: number; updatedAt: Iso | null; updatedBy: string | null; resolved: JsonObject; values: JsonObject; clamped: JsonObject[] }
-/** A change names the revision read; a cost field (such as `model_budget_usd`, the per-task model budget) needs the person's fresh step-up at Code. */
+/** A change names the revision read; Code decides who may change a cost field (such as `model_budget_usd`, the per-task model budget). */
 export interface PutProjectSettingsRequest { expectedRevision: number; preset?: "lightweight" | "balanced" | "careful"; overrides?: JsonObject }
 
 /** Guided onboarding PR 9 (Code #841): the project checklist read (contracts project-setup-status.ts ProjectSetupChecklistSchema has every field). */
@@ -938,12 +938,12 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.github.claim", "POST", "/v1/dev/company/github/claim", "GitHub's return: spend the state, check the person controls the installation, bind it or list the ones they control", "full", ["admin"], "no", false, "none", true),
   spec("company.github.choose", "POST", "/v1/dev/company/github/choose", "Bind one installation from a claim's checked list, with its single-use ticket", "full", ["admin"], "no", false, "none", true),
   spec("company.github.status", "GET", "/v1/dev/company/github", "The company's connected GitHub installations, who connected each and when (any member)", "full", ["admin"], "no", false, "none", true),
-  spec("company.github.disconnect", "DELETE", "/v1/dev/company/github/{installationId}", "A company owner with a fresh step-up disconnects one GitHub installation (refused while projects use it)", "full", ["admin"], "no", false, "none", true),
+  spec("company.github.disconnect", "DELETE", "/v1/dev/company/github/{installationId}", "A company owner disconnects one GitHub installation (refused while projects use it)", "full", ["admin"], "no", false, "none", true),
   // Guided onboarding (Code PRs #836 pr/go-slack-install, #840 pr/go-slack-channel, #838 pr/go-linear-oauth): not on code/next yet.
   spec("company.slack.install", "POST", "/v1/dev/company/slack/install", "A company owner or admin starts Add to Slack: a single-use state and Slack's OAuth v2 address for Cloud's callback", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.installComplete", "POST", "/v1/dev/company/slack/install/complete", "Slack's return: spend the state, exchange the code, bind the workspace to the company", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.get", "GET", "/v1/dev/company/slack", "The company's Slack workspace, who connected it and when (any member)", "full", ["admin"], "no", false, "none", true),
-  spec("company.slack.disconnect", "POST", "/v1/dev/company/slack/disconnect", "A company owner with a fresh step-up disconnects Slack", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.disconnect", "POST", "/v1/dev/company/slack/disconnect", "A company owner disconnects Slack", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.channels", "GET", "/v1/dev/company/slack/channels", "One page of the company workspace's channels a project may link", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.channel.get", "GET", "/v1/dev/company/slack/projects/{project}/channel", "A project's linked Slack channel", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.channel.link", "PUT", "/v1/dev/company/slack/projects/{project}/channel", "Link a project's Slack channel (or say the bot must be invited)", "full", ["admin"], "no", false, "none", true),
@@ -952,14 +952,14 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.linear.connect", "POST", "/v1/dev/company/linear/connect", "A company owner or admin starts Connect Linear: a single-use state and Linear's consent address (as the app, PKCE)", "full", ["admin"], "no", false, "none", true),
   spec("company.linear.complete", "POST", "/v1/dev/company/linear/complete", "Linear's return: spend the state, exchange the code, bind the Linear workspace", "full", ["admin"], "no", false, "none", true),
   spec("company.linear.get", "GET", "/v1/dev/company/linear", "The company's Linear connection (any member)", "full", ["admin"], "no", false, "none", true),
-  spec("company.linear.disconnect", "DELETE", "/v1/dev/company/linear", "A company owner with a fresh step-up disconnects Linear", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.disconnect", "DELETE", "/v1/dev/company/linear", "A company owner disconnects Linear", "full", ["admin"], "no", false, "none", true),
   spec("company.linear.team.get", "GET", "/v1/dev/company/linear/projects/{project}", "A project's Linear team and the teams the company's token sees", "full", ["admin"], "no", false, "none", true),
   spec("company.linear.team.put", "PUT", "/v1/dev/company/linear/projects/{project}", "Pick a project's Linear team", "full", ["admin"], "no", false, "none", true),
   spec("company.linear.team.clear", "DELETE", "/v1/dev/company/linear/projects/{project}", "Clear a project's Linear team", "full", ["admin"], "no", false, "none", true),
   spec("company.audit.records", "GET", "/v1/dev/client/company/audit/records", "Engine audit records, for a company administrator (lane AU)", "full", ["admin"], "no", false, "none"),
   // Settings: the person's script tokens
   spec("scriptTokens.list", "GET", "/v1/app/script-tokens", "The caller's tokens, or company tokens Code lets them manage", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
-  spec("scriptTokens.create", "POST", "/v1/app/script-tokens", "Make a script token with a fresh step-up; secret shown once", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
+  spec("scriptTokens.create", "POST", "/v1/app/script-tokens", "Make a script token; secret shown once", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
   spec("scriptTokens.revoke", "POST", "/v1/app/script-tokens/{tokenId}/revoke", "Revoke one", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
   // Lessons (PrepLabsAI/Rovara#713, LM8 part 1): served by code/next once merged and wired (its Step 6); until then every route answers 404 LESSONS_SWITCHED_OFF "Lessons are off."
   spec("lessons.list", "GET", `${DP}/lessons`, "One page of a project's lessons (query: list=proposed|approved|retired, since, limit 1..100, cursor)", "full", ["home", "how-we-work"], "no", false, "none", true),
@@ -996,7 +996,7 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.learningModel.get", "GET", "/v1/dev/company/learning-model", "The model lessons learn with, whether it is the company's choice or the install default, and the Claude models the gateway offers it now (any member)", "full", ["later"], "no", false, "none", true),
   spec("company.learningModel.put", "PUT", "/v1/dev/company/learning-model", "Set or clear the company's lessons learning model, only from its offered Claude models (owner or admin)", "full", ["later"], "no", false, "none", true),
   spec("projects.settings.get", "GET", `${DP}/settings`, "A project's cost and approval settings (preset, overrides, what applies)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
-  spec("projects.settings.put", "PUT", `${DP}/settings`, "Change them (revision-checked; a cost field needs a fresh step-up; the project's administrator)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
+  spec("projects.settings.put", "PUT", `${DP}/settings`, "Change them (revision-checked; the project's administrator)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
 ];
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1030,7 +1030,6 @@ PUT /v1/app/me/name | k | shell | me.setName | shell/NameForm | T
 GET /v1/app/me/sign-ins | k | later | | sign-ins | T
 POST /v1/app/me/sign-ins/link | k | later | | sign-ins | T
 DELETE /v1/app/me/sign-ins/{method} | k | later | | sign-ins | T
-GET /v1/app/me/sign-in-factors | k | later | | admin-company | T
 GET /v1/app/me/lessons-slack | k | later | | admin-company | T
 PUT /v1/app/me/lessons-slack | k | later | | admin-company | T
 GET /v1/app/me/github | k | later | | github-link | T

@@ -344,7 +344,7 @@ describe("the agent route on the company's own endpoint", () => {
   });
 });
 
-// ---- Cloud: connect, replace, remove (company admins, fresh step-up, audited, write-only, only where switched on)
+// ---- Cloud: connect, replace, remove (company admins, audited, write-only, only where switched on)
 
 const PATH = "/org/agent-ai/endpoint";
 const form = (revision: number, more: Json = {}) => write(revision, { baseUrl: "https://llm.example.com/v1", key: keyOf(A), models: [{ name: SERVED, catalog: { provider: "openai", modelId: "gpt-5-mini" } }], ...more });
@@ -389,15 +389,17 @@ describe("your own endpoint in Cloud", () => {
     expect((await w.store.view(ISS, A, "_learning")).sources).toEqual([]);
   });
 
-  it("switched off: not listed, not connectable; non-admins and stale sign-ins refused", async () => {
+  it("switched off: not listed, not connectable; non-admins refused with or without a step-up; an admin needs none", async () => {
     const off = world({ company: true });
     const ada = await off.signIn("ada", 30);
     expect((await off.call(ada, "GET", "/org/agent-ai")).body).not.toHaveProperty("endpointConnected");
     expect((await off.call(ada, "PUT", PATH, form(0))).body.error?.message).toBe("Your own endpoint isn't switched on for this Cloud yet.");
     const on = world({ company: true, aiSourceKinds: new Set(["endpoint"]) });
     expect((await on.call(await on.signIn("pam", 30), "PUT", PATH, form(0))).status).toBe(403);
-    expect((await on.call(await on.signIn("ada", 3600), "PUT", PATH, form(0))).body.error?.code).toBe("STEP_UP_REQUIRED");
+    expect((await on.call(await on.signIn("pam"), "PUT", PATH, form(0))).status).toBe(403);
     expect((await on.store.view(ISS, A, "_learning")).sources).toEqual([]);
+    // Owner DEC 254zzz73: the admin with an old step-up connects.
+    expect((await on.call(await on.signIn("ada", 3600), "PUT", PATH, form(0))).status).toBe(200);
   });
 
   it("A3-REVIEW-1 L3: after the kind is switched off, a stored endpoint is still shown and can still be removed (never gated); connecting stays gated", async () => {
@@ -412,7 +414,7 @@ describe("your own endpoint in Cloud", () => {
     expect((await w.call(ada, "DELETE", PATH, write(1))).status).toBe(200);
     const { storedLearningKeys } = await import("../../packages/model-gateway/src/learning-keys.js");
     expect(await storedLearningKeys(w.store).keyFor(ISS, A, "endpoint")).toBeUndefined();
-    // Still admin + fresh step-up only.
+    // Still admin only.
     expect((await w.call(await w.signIn("pam", 30), "DELETE", PATH, write(2))).status).toBe(403);
   });
 

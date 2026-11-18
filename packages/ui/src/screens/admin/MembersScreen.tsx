@@ -14,7 +14,6 @@ import { useAdminContext } from "./AdminLayout.js";
 import { RoleChangeDialog } from "./RoleChangeDialog.js";
 import { RemoveMemberDialog } from "./RemoveMemberDialog.js";
 import { roleChangesFor, WhoCanDoWhat } from "./company-roles.js";
-import { useJustConfirmed } from "./parts.js";
 const roleNames: Record<string, string> = { owner: "Owner", admin: "Admin", member: "Member", auditor: "Auditor" };
 const methodNames: Record<string, string> = { cloud: "Rovara sign-in", github: "GitHub", slack: "Slack", oidc: "Organization sign-in" };
 type Role = "owner" | "admin" | "member";
@@ -24,7 +23,7 @@ export function MembersScreen() {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createApiClient(host), [host]);
  const { orgId, developerId, company, role, checking } = useAdminContext(), [params, setParams] = useSearchParams();
  const [removalReceipt, setRemovalReceipt] = useState<string>(), [receipt, setReceipt] = useState<Receipt>(), receiptElement = useRef<HTMLParagraphElement>(null), reasonId = useId();
- const scope = `${orgId}:${developerId}`, search = params.get("q") ?? "", confirmed = useJustConfirmed(developerId);
+ const scope = `${orgId}:${developerId}`, search = params.get("q") ?? "";
  useEffect(() => () => { const key = ["admin", "members", orgId, developerId];void query.cancelQueries({ queryKey: key, exact: true });query.removeQueries({ queryKey: key, exact: true }); }, [query, orgId, developerId]);
  useEffect(() => {
   if (receipt?.focus && receipt.scope === scope && role === "admin") { const timer = setTimeout(() => { receiptElement.current?.focus(); }, 0);return () => { clearTimeout(timer); }; }
@@ -43,7 +42,7 @@ export function MembersScreen() {
   if (member.role === "auditor") return "Set outside this screen";
   if (member.developerId === developerId) return <span className="rv-muted">You</span>;
   const target = member.role;
-  return <RoleChangeDialog key={`${scope}:${role}:${member.developerId}`} company={company} member={{ developerId: member.developerId, name: member.name, role: target }} changes={roleChangesFor(role, target, member.developerId === developerId)} viewerId={developerId} confirmed={confirmed} checking={accessChecking} staleData={dataStale} checkingReasonId={reasonId}
+  return <RoleChangeDialog key={`${scope}:${role}:${member.developerId}`} company={company} member={{ developerId: member.developerId, name: member.name, role: target }} changes={roleChangesFor(role, target, member.developerId === developerId)} checking={accessChecking} staleData={dataStale} checkingReasonId={reasonId}
    verify={async () => { const result = await read.refetch({ throwOnError: true });const actual = result.data?.members.find(person => person.developerId === member.developerId)?.role;return actual === "owner" || actual === "admin" || actual === "member" ? actual : undefined; }}
    onDenied={() => { void query.invalidateQueries({ queryKey: ["admin", "identity"] }).then(() => { setReceipt({ scope, focus: true, kind: "denied" }); });void query.invalidateQueries({ queryKey: ["nav"] }); }}
    onApplied={next => { setReceipt({ scope, focus: false, kind: "verified", person: member.name, role: next, checkedAt: new Date().toISOString() }); }} />;

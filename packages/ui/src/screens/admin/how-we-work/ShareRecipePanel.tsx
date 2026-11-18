@@ -15,13 +15,13 @@ import { RECIPES_TEXT } from "./recipes-text.js";
 export function ShareRecipePanel({ project }: { project: string }) {
  const host = useAppHost(), api = useMemo(() => createSetupRecipesApi(host), [host]), sending = useRef(false);
  const info = useQuery({ queryKey: ["setup-recipe-share", project], queryFn: () => api.shareInfo(project), retry: false, refetchOnWindowFocus: false });
- const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<{ message: string; reauth: boolean }>(), [note, setNote] = useState<string>();
+ const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<{ message: string }>(), [note, setNote] = useState<string>();
  if (info.data === undefined || !info.data.hasApprovedEnvironment) return null;
  async function share(input: ShareInput): Promise<boolean> {
   if (sending.current) return false;
   sending.current = true;setBusy(true);setError(undefined);setNote(undefined);
   try { await api.share(input);setNote(RECIPES_TEXT.SHARED_FROM_PROJECT);setOpen(false);return true; }
-  catch (caught) { setError(caught instanceof ApiError ? { message: caught.message, reauth: caught.code === "REAUTH_REQUIRED" } : { message: RECIPES_TEXT.FAILED, reauth: false });return false; }
+  catch (caught) { setError(caught instanceof ApiError ? { message: caught.message } : { message: RECIPES_TEXT.FAILED });return false; }
   finally { sending.current = false;setBusy(false); }
  }
  return <section aria-label="Company recipe" className="rv-proposal-card">
@@ -29,7 +29,7 @@ export function ShareRecipePanel({ project }: { project: string }) {
   <p>Offer this project's approved setup to the company's other projects as a starting point. An admin approves it first.</p>
   {!open && <Button onClick={() => { setOpen(true);setNote(undefined); }}>{RECIPES_TEXT.SHARE_BUTTON}</Button>}
   {open && <ShareRecipeForm project={project} repositories={info.data.repositories} markerFiles={info.data.markerFiles} busy={busy} onShare={share} />}
-  {error !== undefined && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>{RECIPES_TEXT.SIGN_IN_AGAIN}</Button></>}</p>}
+  {error !== undefined && <p role="alert"><VisibleText text={error.message} /></p>}
   <p role="status">{note ?? ""}</p>
  </section>;
 }

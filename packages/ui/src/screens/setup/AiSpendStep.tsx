@@ -4,7 +4,7 @@
 //
 // Save writes, in this order: the monthly limit (Cloud's company settings route, only when it changed), the AI source (Cloud's agent AI route,
 // only when it changed), then the model, ALWAYS, even when the person keeps the preselected one: a new company never silently depends on this
-// Rovara's default (the answer to Code #835's Question part 2). The two money writes need a fresh "confirm it's you"; the server checks it too.
+// Rovara's default (the answer to Code #835's Question part 2). The server checks who may make each write.
 // A plain member sees the step read only. Every refusal shown is the server's own fixed sentence.
 //
 // PR 9 (the setup shell) places this step; Company settings shows the same component (screens/admin/ai-spending).
@@ -13,7 +13,7 @@ import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { COMPANY_MONTHLY_DEFAULT_USD, ENGINE_MODEL_PATH, dollarsOf, readEngineModel, type EngineModelRead } from "../../api/ai-spend.js";
 import { AGENT_AI_PATH, readAgentAi, type AgentAiRead, type AgentAiSource } from "../../api/admin-agent-ai.js";
-import { ORG_SETTINGS_PATH, needsStepUp, readCompanySettings, type CompanySettingsRead } from "../../api/admin-company.js";
+import { ORG_SETTINGS_PATH, readCompanySettings, type CompanySettingsRead } from "../../api/admin-company.js";
 import { createApiClient } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";
 import { useAppHost } from "../../host.js";
@@ -22,7 +22,6 @@ import { Select } from "../../design/Select.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { TextField } from "../../design/TextField.js";
 import { VisibleText } from "../../design/VisibleText.js";
-import { FreshSignIn, forgetConfirmed, useJustConfirmed } from "../admin/parts.js";
 
 export type CompanyRole = "owner" | "admin" | "member";
 const MICROS = 1_000_000;
@@ -47,7 +46,6 @@ export const AI_SPEND_STEP_WORDS = Object.freeze({
  readOnly: "Only a company owner or admin can change this. Ask one of them.",
  saved: "Saved.",
  pending: "The new monthly limit is waiting for another admin to approve it. The rest is saved.",
- action: "save the company's AI and spending",
 });
 const W = AI_SPEND_STEP_WORDS;
 const usdText = (usd: number) => (Number.isInteger(usd) ? String(usd) : usd.toFixed(2));
@@ -69,7 +67,7 @@ export function AiSpendStep({ role, developerId, onSaved }: { role: CompanyRole;
   {failed !== undefined ? <><p role="alert" data-testid="ai-spend-read-error">{failed.error instanceof ApiError && failed.error.status === 501 ? "AI and spending isn't available on this Rovara yet." : "Couldn't load AI and spending. Try again."}</p><Button onClick={() => { for (const read of reads) void read.refetch(); }}>Try again</Button></>
    : reads.some(read => read.isPending) ? <Skeleton label="Loading AI and spending" />
    : admin && model.data !== undefined && source.data !== undefined && settings.data !== undefined
-    ? <Form key={`${String(settings.data.version)}:${String(source.data.version)}:${model.data.model ?? ""}`} developerId={developerId} model={model.data} source={source.data} settings={settings.data} setNotice={setNotice} reload={reload} onSaved={() => { reload(); onSaved?.(); }} />
+    ? <Form key={`${String(settings.data.version)}:${String(source.data.version)}:${model.data.model ?? ""}`} model={model.data} source={source.data} settings={settings.data} setNotice={setNotice} reload={reload} onSaved={() => { reload(); onSaved?.(); }} />
     : model.data !== undefined && <ReadOnly model={model.data} />}
  </section>;
 }
@@ -80,9 +78,8 @@ function ReadOnly({ model }: { model: EngineModelRead }) {
 
 type Choice = "rovara" | "own";
 type Notice = { ok: boolean; text: string } | undefined;
-function Form({ developerId, model, source, settings, setNotice, reload, onSaved }: { developerId: string; model: EngineModelRead; source: AgentAiRead; settings: CompanySettingsRead; setNotice: (notice: Notice) => void; reload: () => void; onSaved: () => void }) {
+function Form({ model, source, settings, setNotice, reload, onSaved }: { model: EngineModelRead; source: AgentAiRead; settings: CompanySettingsRead; setNotice: (notice: Notice) => void; reload: () => void; onSaved: () => void }) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
- const confirmed = useJustConfirmed(developerId);
  // DEC 254zzz3(1): what the company's agents use now (a saved choice, else the default it is on), never a guess.
  const shown = source.source ?? source.effectiveSource;
  const [choice, setChoice] = useState<Choice>(shown === null || shown === "rovara" ? "rovara" : "own");
@@ -90,10 +87,9 @@ function Form({ developerId, model, source, settings, setNotice, reload, onSaved
  const [picked, setPicked] = useState(model.preselect);
  const savedCap = typeof settings.monthlyCapUsd === "number" ? settings.monthlyCapUsd : undefined;
  const [cap, setCap] = useState(usdText(savedCap ?? COMPANY_MONTHLY_DEFAULT_USD));
- const [busy, setBusy] = useState(false), [stale, setStale] = useState(false);
+ const [busy, setBusy] = useState(false);
  const chosenSource: AgentAiSource = choice === "rovara" ? "rovara" : own;
  const capUsd = dollarsOf(cap, MONTHLY_MAX_USD);
- const ready = confirmed && !stale;
  const sourceUsable = source.available[chosenSource];
 
  async function save() {
@@ -118,15 +114,13 @@ function Form({ developerId, model, source, settings, setNotice, reload, onSaved
    await query.invalidateQueries({ queryKey: ["admin", "lane-c"] });
    onSaved();
   } catch (error) {
-   if (needsStepUp(error)) { setStale(true); forgetConfirmed(host.storage, developerId); }
-   else setNotice({ ok: false, text: error instanceof ApiError ? error.message : "Couldn't save that. Try again." });
+   setNotice({ ok: false, text: error instanceof ApiError ? error.message : "Couldn't save that. Try again." });
    // Part of it was saved: read everything again, so a retry names the new versions.
    if (wrote) reload();
   } finally { setBusy(false); }
  }
 
  return <>
-  {!ready && <FreshSignIn action={W.action} refused={stale} />}
   {source.sourceIsDefault && source.effectiveSource === "rovara" && <p data-testid="ai-spend-default">{W.defaultNote}</p>}
   <fieldset disabled={busy} aria-label="Who pays for the AI"><legend>Who pays for the AI</legend>
    <p><label data-testid="ai-spend-rovara"><input type="radio" name="ai-spend-source" value="rovara" checked={choice === "rovara"} disabled={!source.available.rovara} onChange={() => setChoice("rovara")} /> <b>{W.rovara}</b>: {W.rovaraText}</label></p>
@@ -140,6 +134,6 @@ function Form({ developerId, model, source, settings, setNotice, reload, onSaved
   <Select label={W.model} value={picked} onValueChange={setPicked} options={model.offered.map(id => ({ value: id, label: id }))} disabled={busy} />
   <p className="rv-muted">{W.modelHint}</p>
   <TextField label={W.limit} hint={W.limitHint} inputMode="decimal" value={cap} onChange={event => setCap(event.target.value)} disabled={busy} {...(capUsd === undefined || capUsd === 0 ? { error: W.badLimit } : {})} />
-  {ready && <p><Button variant="primary" busy={busy} disabled={capUsd === undefined || capUsd === 0 || !sourceUsable} onClick={() => { void save(); }}>Save</Button></p>}
+  <p><Button variant="primary" busy={busy} disabled={capUsd === undefined || capUsd === 0 || !sourceUsable} onClick={() => { void save(); }}>Save</Button></p>
  </>;
 }

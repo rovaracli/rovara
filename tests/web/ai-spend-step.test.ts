@@ -44,7 +44,6 @@ function mountAlone(element: ReturnType<typeof h>, respond: Respond, path = "/ap
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
  return { ...f, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
-function confirmedPath(path: string, nonce = "n-1"): string { seeded.set("rovara.stepup.nonce", JSON.stringify({ nonce, at: Date.now() })); return `${path}?confirmed=${nonce}`; }
 
 const OFFERED = ["zai.glm-4.7", "claude-sonnet-4-5"];
 const engine = (model: string | null, source: "company" | "install", canChange = true) => ({ model, source, offered: OFFERED, preselect: model !== null && OFFERED.includes(model) ? model : OFFERED[0], canChange });
@@ -88,15 +87,15 @@ describe("readers", () => {
 });
 
 describe("the company step, AI and spending", () => {
- it("a new company: Code's preselected model is picked, Rovara's AI is picked, the default limit is prefilled; no Save before the fresh sign-in", async () => {
+ it("a new company: Code's preselected model is picked, Rovara's AI is picked, the default limit is prefilled; Save is there at once (no step-up)", async () => {
   const c = company({ cap: null, source: null, model: null });
   const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
    expect((await screen.findByLabelText<HTMLSelectElement>("Model")).value).toBe("zai.glm-4.7");
    expect((screen.getByTestId("ai-spend-rovara").querySelector("input") as HTMLInputElement).checked).toBe(true);
    expect(screen.getByLabelText<HTMLInputElement>(/Company monthly limit/u).value).toBe("500");
-   expect(screen.getByTestId("fresh-sign-in")).toBeTruthy();
-   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+   expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+   expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
   } finally { f.close(); }
  });
 
@@ -115,7 +114,7 @@ describe("the company step, AI and spending", () => {
 
  it("one Save writes the limit, the source and the preselected model explicitly, in that order", async () => {
   const c = company({ cap: null, source: null, model: null });
-  const f = mountRoute(confirmedPath("/app/admin/ai-spending"), c.respond);
+  const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
    await screen.findByLabelText("Model");
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -134,7 +133,7 @@ describe("the company step, AI and spending", () => {
 
  it("with nothing changed, Save still writes the model (and only the model)", async () => {
   const c = company({ cap: 800_000_000, source: "rovara", model: null });
-  const f = mountRoute(confirmedPath("/app/admin/ai-spending"), c.respond);
+  const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
    expect((await screen.findByLabelText<HTMLInputElement>(/Company monthly limit/u)).value).toBe("800");
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -146,7 +145,7 @@ describe("the company step, AI and spending", () => {
 
  it("the person's own provider, another model and another limit; a lower limit lowers the learning cap too", async () => {
   const c = company({ cap: null, source: null, model: null });
-  const f = mountRoute(confirmedPath("/app/admin/ai-spending"), c.respond);
+  const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
    fireEvent.change(await screen.findByLabelText("Model"), { target: { value: "claude-sonnet-4-5" } });
    fireEvent.click(screen.getByTestId("ai-spend-own").querySelector("input")!);
@@ -162,7 +161,7 @@ describe("the company step, AI and spending", () => {
 
  it("a bad limit is not sent", async () => {
   const c = company({ cap: null, source: null, model: null });
-  const f = mountRoute(confirmedPath("/app/admin/ai-spending"), c.respond);
+  const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
    for (const value of ["0", "abc", "1.234", "2000000"]) {
     fireEvent.change(await screen.findByLabelText(/Company monthly limit/u), { target: { value } });
@@ -175,7 +174,7 @@ describe("the company step, AI and spending", () => {
  it("Code's refusal shows the server's fixed sentence; what was saved is read again", async () => {
   const notOffered = { status: 400, body: { error: { code: "MODEL_NOT_OFFERED", message: "That model isn't offered to this company now. Pick one from the list." } } };
   const c = company({ cap: null, source: null, model: null }, { "/v1/app/org/engine-model": notOffered });
-  const f = mountRoute(confirmedPath("/app/admin/ai-spending"), c.respond);
+  const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
    await screen.findByLabelText("Model");
    const reads = f.request.mock.calls.length;
@@ -185,14 +184,15 @@ describe("the company step, AI and spending", () => {
   } finally { f.close(); }
  });
 
- it("a step-up the server finds too old shows the fresh sign-in again and saves nothing more", async () => {
-  const stepUp = { status: 403, body: { error: { code: "STEP_UP_REQUIRED", message: "Confirm it's you again, then try once more." } } };
-  const c = company({ cap: null, source: null, model: null }, { "/v1/app/org/settings": stepUp });
-  const f = mountRoute(confirmedPath("/app/admin/ai-spending"), c.respond);
+ it("a refused money write shows the server's words, no sign-in step, and saves nothing more", async () => {
+  const refused = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company admin can do this." } } };
+  const c = company({ cap: null, source: null, model: null }, { "/v1/app/org/settings": refused });
+  const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
    await screen.findByLabelText("Model");
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-   await waitFor(() => { expect(screen.getByTestId("fresh-sign-in").getAttribute("data-state")).toBe("needed"); });
+   expect((await screen.findByRole("alert")).textContent).toContain("Only a company admin can do this.");
+   expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
    expect(c.writes.map(w => w.path)).toEqual(["/v1/app/org/settings"]);
    expect(c.state).toEqual({ cap: null, source: null, model: null });
   } finally { f.close(); }
@@ -226,7 +226,7 @@ describe("a project's AI and spend limit", () => {
   const f = mountAlone(h(ProjectSpendLimits, { project: "web", developerId: me }), r => {
    if (r.method === "PUT") { sent.push(r); const usd = (r.body as { perTaskUsd: number | null }).perTaskUsd; current = limits(usd === null ? { sameAsCompany: true, usd: null } : { sameAsCompany: false, usd }, true, current.revision + 1); }
    return { status: 200, body: current };
-  }, confirmedPath("/app/setup"));
+  }, "/app/setup");
   try {
    expect((await screen.findByTestId("project-spend-same")).querySelector("input")!.checked).toBe(true);
    expect(screen.getByTestId("project-spend-applied").textContent).toBe("Applies now: $50 a task.");
@@ -243,12 +243,12 @@ describe("a project's AI and spend limit", () => {
    expect(sent[1]!.body).toEqual({ expectedRevision: 3, perTaskUsd: null });
   } finally { f.close(); }
  });
- it("the project's admin gets no Save before the fresh sign-in; a read failure says fixed words, never the server's", async () => {
+ it("the project's admin gets Save at once (no step-up since owner DEC 254zzz73); a read failure says fixed words, never the server's", async () => {
   const f = mountAlone(h(ProjectSpendLimits, { project: "web", developerId: me }), () => ({ status: 200, body: limits({ sameAsCompany: true, usd: null }) }));
   try {
    await screen.findByTestId("project-spend-same");
-   expect(screen.getByTestId("fresh-sign-in")).toBeTruthy();
-   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+   expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+   expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
   } finally { f.close(); }
   const bad = mountAlone(h(ProjectSpendLimits, { project: "web", developerId: me }), () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "private canary" } } }));
   try {
@@ -262,7 +262,7 @@ describe("a project's AI and spend limit", () => {
    expect((await screen.findByTestId("project-spend-read-only")).textContent).toMatch(/\$7.*Only this project's admins can change it/u);
    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   } finally { ro.close(); }
-  const f = mountAlone(h(ProjectSpendLimits, { project: "web", developerId: me }), r => (r.method === "PUT" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "That's above your company's per-task limit. Pick a lower amount." } } } : { status: 200, body: limits({ sameAsCompany: true, usd: null }) }), confirmedPath("/app/setup"));
+  const f = mountAlone(h(ProjectSpendLimits, { project: "web", developerId: me }), r => (r.method === "PUT" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "That's above your company's per-task limit. Pick a lower amount." } } } : { status: 200, body: limits({ sameAsCompany: true, usd: null }) }), "/app/setup");
   try {
    fireEvent.click((await screen.findByTestId("project-spend-own")).querySelector("input")!);
    fireEvent.change(screen.getByLabelText(/Per-task limit \(USD\)/u), { target: { value: "999" } });

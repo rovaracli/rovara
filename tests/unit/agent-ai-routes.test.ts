@@ -1,4 +1,4 @@
-// DEC 240: "AI for your agents" (agent-ai-routes.ts). Company admins only (reads too), a fresh step-up on every write, audited, the
+// DEC 240: "AI for your agents" (agent-ai-routes.ts). Company admins only (reads too), audited (no step-up since owner DEC 254zzz73), the
 // three choices with "your own Bedrock" choosable only once it is connected (bedrock-byo-routes.test.ts), and two companies never meet. The gateway reads what these save
 // (tests/contract/model-gateway-agent-ai-choice.test.ts).
 import { randomBytes } from "node:crypto";
@@ -39,20 +39,25 @@ describe("AI for your agents", () => {
     expect((await w.audit.read(B, { max: 50 })).rows.filter((r) => r.action === "agent_ai.source.changed").map((r) => r.subject)).toEqual(["agent_ai:anthropic_key"]);
   });
 
-  it("refuses anyone but a company admin (reads too), and a write without a fresh step-up or the CSRF token", async () => {
+  it("refuses anyone but a company admin (reads too), and a write without the CSRF token; a sign-in with no step-up is enough (owner DEC 254zzz73)", async () => {
     const w = world({ company: true });
     for (const who of ["pam", "cal"]) {
       const cookie = await w.signIn(who, 30);
       expect((await w.call(cookie, "GET", PATH)).status).toBe(403);
       expect((await w.call(cookie, "PUT", PATH, choose(0, "rovara"))).status).toBe(403);
+      // Wrong role with no step-up claim at all: still refused, before anything is saved.
+      expect((await w.call(await w.signIn(who), "PUT", PATH, choose(0, "rovara"))).status).toBe(403);
     }
-    for (const age of [undefined, 3600]) {
-      const ada = await w.signIn("ada", age);
-      expect((await w.call(ada, "PUT", PATH, choose(0, "rovara"))).body.error?.code).toBe("STEP_UP_REQUIRED");
-    }
-    const ada = await w.signIn("ada", 30);
+    const ada = await w.signIn("ada");
     expect((await w.call(ada, "PUT", PATH, choose(0, "rovara"), "wrong")).status).toBe(403);
     expect(await w.companies.agentAi(A)).toBeUndefined();
+    // An admin whose sign-in carries no step-up (or only an old one) saves.
+    expect((await w.call(ada, "PUT", PATH, choose(0, "rovara"))).status).toBe(200);
+    expect((await w.call(await w.signIn("ada", 3600), "PUT", PATH, choose(1, "anthropic_key"))).status).toBe(200);
+    // Company B's admin, with no step-up, changes only B (wrong company never reaches A).
+    expect((await w.call(await w.signIn("bea"), "PUT", PATH, choose(0, "rovara"))).status).toBe(200);
+    expect(await w.companies.agentAi(A)).toMatchObject({ source: "anthropic_key", version: 2 });
+    expect(await w.companies.agentAi(B)).toMatchObject({ source: "rovara", version: 1 });
   });
 
   it("your own Bedrock needs a connection first; anything else is refused in fixed words; a stale version conflicts", async () => {

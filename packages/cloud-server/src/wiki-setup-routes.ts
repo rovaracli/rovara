@@ -70,7 +70,6 @@ export const WIKI_SETUP_WORDS = Object.freeze({
   upkeepUnavailable: "Nightly upkeep could not be read or changed just now. Try again.",
   upkeepNeedsConsent: "A company admin must allow nightly upkeep first.",
   upkeepConsentNotAllowed: "Only company owners and admins can allow nightly upkeep for the company.",
-  needsSignIn: "Confirm it's you again, then try once more.",
   systemRunsNotAllowed: "Only company owners and admins can see or change nightly upkeep for the company.",
 });
 const C = WIKI_SETUP_CODE_WORDS;
@@ -88,7 +87,6 @@ export const WIKI_SETUP_ANSWERS = Object.freeze({
   upkeepUnavailable: answer(503, "RUNTIME_UNAVAILABLE", W.upkeepUnavailable),
   upkeepNeedsConsent: answer(403, "FORBIDDEN", W.upkeepNeedsConsent),
   upkeepConsentNotAllowed: answer(403, "FORBIDDEN", W.upkeepConsentNotAllowed),
-  needsSignIn: answer(403, "REAUTH_REQUIRED", W.needsSignIn),
   systemRunsNotAllowed: answer(403, "FORBIDDEN", W.systemRunsNotAllowed),
 });
 const A = WIKI_SETUP_ANSWERS;
@@ -118,7 +116,6 @@ export function wikiSetupRefusal(kind: Kind, error: CodeError): RouteAnswer {
   if (kind === "upkeep") {
     // Code's fixed words of the consent step (its SYSTEM_RUNS_CONSENT_WORDS) and its "not available here" (the ceiling is off) are matched exactly and answered in Cloud's own words.
     if (code === "NOT_AVAILABLE_HERE") return A.upkeepNotYet;
-    if (error.status === 403 && code === "REAUTH_REQUIRED") return A.needsSignIn;
     if (error.status === 403 && message === CODE_CONSENT_WORDS.needsConsent) return A.upkeepNeedsConsent;
     if (error.status === 403 && message === CODE_CONSENT_WORDS.notAllowed) return A.upkeepConsentNotAllowed;
   }

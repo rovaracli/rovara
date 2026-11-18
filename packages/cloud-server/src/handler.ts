@@ -26,7 +26,6 @@ import { connectCookieName } from "./connect-flow.js";
 import { SLACK_CALLBACK_PATH, createSlackConnect } from "./slack-connect.js";
 import { LINEAR_CALLBACK_PATH, createLinearConnect } from "./linear-connect.js";
 import { createSignInLinks } from "./sign-in-links.js";
-import { createSignInFactors } from "./sign-in-factors.js";
 import { createLessonsSlackSwitch } from "./lessons-slack-switch.js";
 
 export interface CloudRequest {
@@ -141,8 +140,6 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
   const linear = createLinearConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, origin: options.origin });
   // DEC 254w: Connected sign-ins (sign-in-links.ts). Its return arrives at the registered sign-in callback, so the callback below asks `isReturn` first.
   const signInLinks = createSignInLinks({ client: options.client, store: options.store, now, log, expiredCookie: cookie("", 0) });
-  // L4-MF4: the person's own confirmation email (masked) and passkeys for the account page (sign-in-factors.ts).
-  const signInFactors = createSignInFactors({ client: options.client, log });
   // L4-SRC-SL: the person's own "Don't learn from my Slack messages" switch (lessons-slack-switch.ts).
   const lessonsSlackSwitch = createLessonsSlackSwitch({ client: options.client, log });
 
@@ -223,13 +220,12 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     if (path === SIGN_IN_OFFER_PATH && method === "GET") return json(200, await options.client.signInOffer());
     if (path === "/v1/auth/browser/authorize" && method === "GET" && request.query.get("join") === "1") return joinSignIn(request);
     if (path === "/v1/auth/browser/authorize" && method === "GET") {
-      // `step_up=1`: the app asks for a fresh step-up before a sensitive change (company settings, inviting an admin).
       // L4-SIGNIN: `method` (the page's own "Sign in with Slack" / "Sign in with GitHub" button) and `slack_team` (the workspace the browser remembers) are passed on
       // only when they have exactly the allowed shape; Code checks them again, and nothing here or at the callback trusts either to say who signed in.
       const method = request.query.get("method");
       const slackTeam = slackWorkspaceHint(request.query.get("slack_team"));
       const { url, state, pending } = options.client.startSignIn(returnPath(request.query.get("return_to")), now().getTime(), {
-        stepUp: request.query.get("step_up") === "1", ...(method === "slack" || method === "github" ? { method } : {}), ...(slackTeam === undefined ? {} : { slackTeam }),
+        ...(method === "slack" || method === "github" ? { method } : {}), ...(slackTeam === undefined ? {} : { slackTeam }),
       });
       await options.store.putPending(state, pending);
       return text(302, "", { location: url });
@@ -323,10 +319,10 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         : method === "POST" && apiPath === GITHUB_APP_PATHS.result ? () => github.result(session!, id)
           : method === "POST" && apiPath === GITHUB_APP_PATHS.choose ? () => github.choose(session!, id, parsedBody(request.body))
             : method === "GET" && apiPath === GITHUB_APP_PATHS.connections ? () => github.connections(session!)
-              // Guided onboarding PR 12b: disconnect one of the company's GitHub accounts (owner + fresh step-up).
+              // Guided onboarding PR 12b: disconnect one of the company's GitHub accounts (company owner only).
               : method === "DELETE" && GITHUB_DISCONNECT_PATH.test(apiPath) ? () => github.disconnect(session!, GITHUB_DISCONNECT_PATH.exec(apiPath)![1]!, parsedBody(request.body)) : undefined;
     // Guided onboarding PR 11: Slack and Linear (the start and result routes need this sign-in's cookie, as GitHub's).
-    const connectRoute = githubCall === undefined ? slack.route(method, apiPath, request.query) ?? linear.route(method, apiPath) ?? signInLinks.route(method, apiPath) ?? signInFactors.route(method, apiPath) ?? lessonsSlackSwitch.route(method, apiPath) ?? githubLink.route(method, apiPath) : undefined;
+    const connectRoute = githubCall === undefined ? slack.route(method, apiPath, request.query) ?? linear.route(method, apiPath) ?? signInLinks.route(method, apiPath) ?? lessonsSlackSwitch.route(method, apiPath) ?? githubLink.route(method, apiPath) : undefined;
     const connectCall = githubCall ?? (connectRoute === undefined ? undefined : () => connectRoute(session!, id, parsedBody(request.body)));
     if (connectCall !== undefined) {
       try {

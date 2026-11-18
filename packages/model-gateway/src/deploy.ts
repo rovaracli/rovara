@@ -165,14 +165,14 @@ export const GATEWAY_PRODUCT_TTL_ATTRIBUTE = "expiresAt";
 export const GATEWAY_COMPANY_SETTINGS = { partitionPrefix: "COMPANY#", sortKey: "SETTINGS" } as const;
 /**
  * The company's agent AI choice (DEC 240) in the same Companies table: COMPANY#<org_…> / AGENT_AI, written by Cloud's
- * agent-ai-routes.ts (company admins, fresh step-up, audited), read by the gateway (agent-ai.ts). A contract test writes through
+ * agent-ai-routes.ts (company admins, audited), read by the gateway (agent-ai.ts). A contract test writes through
  * Cloud's store and reads back through the gateway's reader.
  */
 export const GATEWAY_COMPANY_AGENT_AI = { partitionPrefix: "COMPANY#", sortKey: "AGENT_AI" } as const;
 /**
  * The company's spending-limit OVERRIDES (lead 3 row B1, DEC 254t b) in the same Companies table: one item per override, `COMPANY#<org_…>` /
  * `<sortPrefix><id>`, each `{ companyId, kind, id, monthlyUsdMicros, version, updatedAt, updatedBy }`. Written by Cloud's spend-limits-routes.ts
- * (company admins, step-up when a limit goes up, audited), read by the gateway (company-caps.ts): no item is the company default (`settings.budgets`);
+ * (company admins, audited), read by the gateway (company-caps.ts): no item is the company default (`settings.budgets`);
  * an item that does not read as exactly this company's, this kind's and this id's refuses the call.
  *
  * THIS IS THE TABLE OF KINDS on the gateway's side; Cloud's is SPEND_LIMIT_KINDS in cloud-server company-store.ts, and a contract test walks both

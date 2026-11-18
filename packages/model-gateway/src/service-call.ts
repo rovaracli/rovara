@@ -32,7 +32,7 @@ export const SERVICE_CALL_TIMEOUT_MS = 25_000;
  * Per serving task, before any KMS call: this path is on the public load balancer and each check costs a KMS VerifyMac (and,
  * when signed, a probe at Google), so anonymous traffic must not turn into unbounded paid calls or eat the account's KMS rate.
  * At most SERVICE_CALL_OPEN checks at once and SERVICE_CALL_PER_MINUTE started per minute; over either: 429, nothing called.
- * A person connects Vertex rarely (fresh step-up, admin only), so this never limits real use.
+ * A person connects Vertex rarely (admin only), so this never limits real use.
  */
 export const SERVICE_CALL_OPEN = 2;
 export const SERVICE_CALL_PER_MINUTE = 30;

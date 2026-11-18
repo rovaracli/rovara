@@ -10,7 +10,7 @@
 //   GET  /v1/app/projects/{p}/setup-agent/journal?after=n  -> Code GET .../setup-agent/journal?after=n
 //   POST /v1/app/projects/{p}/setup-agent/confirm {requestId, expectedRevision, itemIds?} -> Code POST .../setup-agent/confirm  ("Use this setup": a candidate and its check; L4-D, Code #899)
 //   POST /v1/app/projects/{p}/setup-agent/discard {requestId}                              -> Code POST .../setup-agent/discard  (drop the waiting candidate)
-//   POST /v1/app/projects/{p}/setup-agent/decide {requestId, outcome, seen, reason?}       -> Code POST .../setup-agent/decide   (approve or reject: a fresh step-up, then Code's risk-based approver rule)
+//   POST /v1/app/projects/{p}/setup-agent/decide {requestId, outcome, seen, reason?}       -> Code POST .../setup-agent/decide   (approve or reject: Code's risk-based approver rule)
 //   The setup-run read also carries Code's `apply` (the waiting candidate: risk, changes, who approves, the check, the approval binding), rebuilt field by field (L4-D2).
 //
 // Rules:
@@ -255,7 +255,6 @@ export const SETUP_APPROVAL_CODE_WORDS: readonly string[] = Object.freeze([
 export const SETUP_APPROVAL_WORDS = Object.freeze({
   stale: "This setup changed or is no longer waiting for a decision. Refresh to see where it stands.",
   conflict: "This was already sent. Refresh to see where the setup stands.",
-  stepUp: "Confirm it's you again, then try once more.",
   cannotDecide: "Only the project's maintainers, or a company owner or admin, can decide this setup.",
   approvalNotYet: "Approving a setup isn't available on this Rovara yet.",
   audit: "The record of this change could not be written, so nothing was done. Try again.",
@@ -341,7 +340,6 @@ export function approvalRefusal(kind: ApprovalKind, error: CodeError): RouteAnsw
     if (code === "NOT_FOUND" && body?.["message"] === "Approving a project's setup isn't available on this install yet.") return answer(501, "NOT_ON_CODE_YET", AW.approvalNotYet);
     return A.notFound;
   }
-  if (code === "REAUTH_REQUIRED") return answer(403, "REAUTH_REQUIRED", AW.stepUp);
   if (error.status === 403) return said !== undefined ? answer(403, "FORBIDDEN", said) : kind === "decide" ? answer(403, "FORBIDDEN", AW.cannotDecide) : A.runNotAllowed;
   if (error.status === 400) return said !== undefined ? answer(400, "CONFIG_INVALID", said) : A.invalid;
   if (error.status === 409) {

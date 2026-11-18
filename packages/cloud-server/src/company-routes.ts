@@ -6,8 +6,6 @@
 // from that answer (DEC 253z). A Code that names no company is refused ("You're not in a company yet."), never a fallback. A company admin is
 // a company owner or admin; Code's install `administrator` flag plays no part. Nothing a request carries ever names the company.
 //
-// Fresh step-up: changing settings and approving a change need the admin's step-up (step-up.ts) inside the company's window.
-//
 // Invites (DEC 253z): Code's own pre-approval routes, as the inviting admin with their own token: `POST /v1/dev/company/preapprovals`
 // { email, role: "member", expiresInHours } and, to withdraw, `DELETE /v1/dev/company/preapprovals/<sha256 of the normalised email>`. Code
 // checks the inviter's live company role itself. Cloud keeps the invite (the link token's hash, the company, the email, the expiry, the
@@ -26,7 +24,6 @@ import {
   type CompanyStore, type InviteRecord, type PendingSettingsChange,
 } from "./company-store.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
-import { freshStepUp } from "./step-up.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import { withdrawForMember } from "./product-ai-routes.js";
 import { LINK_TOKEN } from "./onboarding-routes.js";
@@ -51,7 +48,6 @@ const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
 const WORDS = Object.freeze({
   notAdmin: refusal(403, "FORBIDDEN", "Only a company admin can do this."),
-  stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   ruled: refusal(403, "FORBIDDEN", "Your company's rules don't allow this change."),
   secondPerson: refusal(403, "SECOND_PERSON_REQUIRED", "A different admin must approve this change."),
   conflict: refusal(409, "CONFLICT", "This changed since you opened it. Refresh and try again."),
@@ -95,9 +91,6 @@ async function admin(context: RouteContext): Promise<Caller | RouteAnswer> {
   if ("status" in who) return who;
   return isCompanyAdmin(who.companyRole) ? who : WORDS.notAdmin;
 }
-
-/** The admin's step-up is inside `windowSeconds`. */
-const steppedUp = (context: RouteContext, windowSeconds: number) => freshStepUp(context.session.accessToken, context.now().getTime(), windowSeconds) !== undefined;
 
 const tooLarge = (body: unknown) => Buffer.byteLength(JSON.stringify(body) ?? "", "utf8") > COMPANY_SETTINGS_LIMITS.bodyBytesMax;
 const log = (who: Caller, event: Record<string, unknown>) => (who.backend.log ?? ((entry) => { console.log(JSON.stringify(entry)); }))({ ...event, companyId: who.companyId, developerId: who.developerId });
@@ -146,7 +139,6 @@ async function changeSettings(context: RouteContext): Promise<RouteAnswer> {
   if (!required.allow) return WORDS.ruled;
   const decision = required.secondPerson ? required : settingsDecision(current.settings, loosening, "verdict", who.developerId);
   if (!decision.allow) return WORDS.ruled;
-  if (!steppedUp(context, decision.signInMaxAgeSeconds)) return WORDS.stepUp;
   if (current.version !== body["expectedVersion"]) return WORDS.conflict;
   if (canonical(next) === canonical(current.settings)) return ok({ companyId: who.companyId, version: current.version, settings: current.settings });
   const at = context.now().toISOString();
@@ -194,7 +186,6 @@ async function approveChange(context: RouteContext): Promise<RouteAnswer> {
   }
   const decision = settingsDecision(current.settings, loosens(current.settings, read.settings), "verdict", who.developerId);
   if (!decision.allow) return WORDS.ruled;
-  if (!steppedUp(context, decision.signInMaxAgeSeconds)) return WORDS.stepUp;
   let version: number;
   try {
     version = await store.applyChange({ ...change, settings: read.settings }, who.developerId, context.now().toISOString());
@@ -210,7 +201,7 @@ async function approveChange(context: RouteContext): Promise<RouteAnswer> {
 async function withdrawChange(context: RouteContext): Promise<RouteAnswer> {
   const who = await admin(context);
   if ("status" in who) return who;
-  // Withdrawing loosens nothing, so any admin may, without a step-up.
+  // Withdrawing loosens nothing, so any admin may.
   if (!(await who.backend.store.dropChange(who.companyId, context.params[0]!))) return WORDS.noChange;
   log(who, { event: "cloud.company_settings_withdrawn", changeId: context.params[0] });
   return ok({ withdrawn: true });

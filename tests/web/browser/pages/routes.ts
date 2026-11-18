@@ -8,11 +8,11 @@ export const ROUTES = {
   signedOut: "/app/signed-out",
   /** DEC 253z onboarding: no company yet, creating one, and the invite link's join page. */
   noCompany: "/app/no-company", createCompany: "/app/create-company", join: "/app/join", firstDay: "/app/onboard",
-  /** Your account: name, appearance, confirmation email and passkeys. */
+  /** Your account: name, appearance, connected sign-ins and the GitHub account. */
   account: "/app/account",
   /** The admin area (Hybrid 1, DEC 223): five groups in a sidebar. */
   admin: {
-    home: "/app/admin", people: "/app/admin/people", invites: "/app/admin/invites", signInClients: "/app/admin/sign-in-clients", signInFactors: "/app/admin/sign-in-factors",
+    home: "/app/admin", people: "/app/admin/people", invites: "/app/admin/invites", signInClients: "/app/admin/sign-in-clients",
     spending: "/app/admin/money/budgets", peopleLimits: "/app/admin/money/people", spendingLimits: "/app/admin/money/limits", costReport: "/app/admin/money/report", costFeature: (id: string) => `/app/admin/money/report/features/${id}`, settings: "/app/admin/settings", howWeWork: "/app/admin/how-we-work", projects: "/app/admin/projects", audit: "/app/admin/audit", aiSpending: "/app/admin/ai-spending",
   },
   project: (name: string) => `/app/projects/${name}`,

@@ -1,25 +1,21 @@
 // A company's settings and rules (company-settings.ts): every field validated at run time with a fixed problem and no echo; the
 // conservative "does this loosen anything" check; what the policy hook answers from; the settings decision under the CURRENT rules;
-// and Code's step-up claims (step-up.ts).
+// and the legacy step-up fields an older document may still carry (owner DEC 254zzz73 removed step-up).
 import { describe, expect, it } from "vitest";
 import {
-  COMPANY_SETTINGS_LIMITS, DEFAULT_COMPANY_SETTINGS, LEARNING_DEFAULT_MONTHLY_USD_MICROS, STEP_UP_WINDOW_SECONDS, answerFor, defaultCompanySettings, freshStepUp, hookRulesOf, loosens, settingsDecision, stepUpClaim,
+  COMPANY_SETTINGS_LIMITS, DEFAULT_COMPANY_SETTINGS, LEARNING_DEFAULT_MONTHLY_USD_MICROS, answerFor, defaultCompanySettings, hookRulesOf, loosens, settingsDecision,
   validateCompanySettings, type CompanySettings,
 } from "../../packages/cloud-server/src/index.js";
 
 const base = (): CompanySettings => defaultCompanySettings();
 const withPart = (part: Partial<CompanySettings>): CompanySettings => ({ ...base(), ...part });
-const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-const token = (payload: Record<string, unknown>) => `${b64({ alg: "RS256", typ: "JWT", kid: "k" })}.${b64(payload)}.c2ln`;
-const NOW = Date.parse("2026-11-15T12:00:00.000Z");
-const NOW_S = NOW / 1000;
 
 describe("validateCompanySettings", () => {
   it("reads the defaults, unchanged (golden)", () => {
     expect(validateCompanySettings(structuredClone(DEFAULT_COMPANY_SETTINGS))).toEqual({ ok: true, settings: DEFAULT_COMPANY_SETTINGS });
     expect(DEFAULT_COMPANY_SETTINGS.decisions).toEqual([{ what: "setting.loosen", secondPerson: true }]);
     expect(DEFAULT_COMPANY_SETTINGS.start).toEqual({ allow: true, maxEstimateUsdMicros: null });
-    expect(DEFAULT_COMPANY_SETTINGS.freshSignInSeconds).toBe(600);
+    expect(Object.keys(DEFAULT_COMPANY_SETTINGS)).not.toContain("freshSignInSeconds");
   });
 
   it("reads a full document, folding instructions", () => {
@@ -55,8 +51,8 @@ describe("validateCompanySettings", () => {
     ["too many instructions", (s) => ({ ...s, instructions: Array.from({ length: 31 }, () => ({ text: "a", priority: "preferred" })) })],
     ["a fractional eval budget", (s) => ({ ...s, evalBudgetUsdMicros: 1.5 })],
     ["a negative eval budget", (s) => ({ ...s, evalBudgetUsdMicros: -1 })],
-    ["a step-up window over Code's", (s) => ({ ...s, freshSignInSeconds: 601 })],
-    ["a step-up window under a minute", (s) => ({ ...s, freshSignInSeconds: 59 })],
+    ["a legacy step-up window that never read (over Code's)", (s) => ({ ...s, freshSignInSeconds: 601 })],
+    ["a legacy step-up window that never read (under a minute)", (s) => ({ ...s, freshSignInSeconds: 59 })],
     ["start without allow", (s) => ({ ...s, start: { maxEstimateUsdMicros: null } })],
     ["a decision rule with an unknown key", (s) => ({ ...s, decisions: [{ what: "merge", [SECRET]: 1 }] })],
     ["a decision rule with a bad kind", (s) => ({ ...s, decisions: [{ what: SECRET }] })],
@@ -65,7 +61,7 @@ describe("validateCompanySettings", () => {
     ["a rule freezing settings (allow false)", (s) => ({ ...s, decisions: [{ what: "setting.*", allow: false }] })],
     ["a rule freezing settings (three approvers)", (s) => ({ ...s, decisions: [{ what: "setting.change", minApprovers: 3 }] })],
     ["a rule freezing every settings change (setting.change allow false)", (s) => ({ ...s, decisions: [{ what: "setting.change", allow: false }] })],
-    ["a rule on every settings change asking a step-up in the same second", (s) => ({ ...s, decisions: [{ what: "setting.*", signInMaxAgeSeconds: 0 }] })],
+    ["a legacy sign-in age that never read", (s) => ({ ...s, decisions: [{ what: "setting.*", signInMaxAgeSeconds: 2_592_001 }] })],
     ["a prefix rule handing settings to one decider", (s) => ({ ...s, decisions: [{ what: "setting.*", deciders: ["dev_1"] }] })],
     ["a rule handing settings to one decider", (s) => ({ ...s, decisions: [{ what: "setting.change", deciders: ["dev_1"] }] })],
     ["a lock Code doesn't have", (s) => ({ ...s, locks: { [SECRET.toLowerCase()]: 1 } })],
@@ -118,11 +114,29 @@ describe("validateCompanySettings", () => {
     });
   });
 
+  it("still reads a stored document from before DEC 254zzz73: the old step-up window is dropped, an old sign-in age on a rule reads but is dropped, so the rule editor never shows it (review L2)", () => {
+    const old = { ...base(), freshSignInSeconds: 120, decisions: [{ what: "setting.*", signInMaxAgeSeconds: 0 }] };
+    const read = validateCompanySettings(old);
+    expect(read.ok).toBe(true);
+    if (read.ok) {
+      expect(Object.keys(read.settings)).not.toContain("freshSignInSeconds");
+      expect(read.settings.decisions).toEqual([{ what: "setting.*" }]);
+      expect(JSON.stringify(read.settings)).not.toContain("signInMaxAgeSeconds");
+      // A zero age once refused every step-up; now it changes nothing: the settings decision is the same as without it.
+      expect(settingsDecision(read.settings, false, "verdict", "dev")).toEqual({ allow: true, secondPerson: false });
+      expect(answerFor("decide", { what: "setting.change", stage: "verdict", per: "dev" }, hookRulesOf(read.settings))).not.toHaveProperty("signInMaxAgeSeconds");
+    }
+  });
+
   it("lets a company forbid loosening its settings (a ratchet), which never freezes them", () => {
     for (const rule of [{ what: "setting.loosen", allow: false }, { what: "setting.loosen", minApprovers: 3 }, { what: "setting.loosen", deciders: ["dev_1"] }, { what: "setting.change", signInMaxAgeSeconds: 60 }]) {
       const read = validateCompanySettings({ ...base(), decisions: [rule] });
       expect(read.ok).toBe(true);
     }
+  });
+
+  it("still refuses a malformed old sign-in age on a rule (the field is read before it is dropped)", () => {
+    for (const bad of [-1, 1.5, "60", 2_592_001]) expect(validateCompanySettings({ ...base(), decisions: [{ what: "setting.*", signInMaxAgeSeconds: bad }] }).ok).toBe(false);
   });
 
   it("refuses an object that isn't plain (a class instance, a null prototype)", () => {
@@ -134,13 +148,13 @@ describe("validateCompanySettings", () => {
 describe("loosens", () => {
   it("counts no change, and every stricter change, as not loosening", () => {
     const current = withPart({
-      featureGates: { slack: true }, websiteCeiling: { mode: "listed", hosts: ["a.com", "b.com"] }, evalBudgetUsdMicros: 10, freshSignInSeconds: 300,
+      featureGates: { slack: true }, websiteCeiling: { mode: "listed", hosts: ["a.com", "b.com"] }, evalBudgetUsdMicros: 10,
       start: { allow: true, maxEstimateUsdMicros: 100 }, budgets: { companyMonthlyUsdMicros: 100, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: 50, taskUsdMicros: 5, learningMonthlyUsdMicros: 100 },
     });
     expect(loosens(current, structuredClone(current))).toBe(false);
     expect(loosens(current, { ...current, featureGates: { slack: false, newgate: false } })).toBe(false);
     expect(loosens(current, { ...current, websiteCeiling: { mode: "listed", hosts: ["a.com"] } })).toBe(false);
-    expect(loosens(current, { ...current, evalBudgetUsdMicros: 5, freshSignInSeconds: 120, start: { allow: false, maxEstimateUsdMicros: 50 } })).toBe(false);
+    expect(loosens(current, { ...current, evalBudgetUsdMicros: 5, start: { allow: false, maxEstimateUsdMicros: 50 } })).toBe(false);
     expect(loosens(current, { ...current, decisions: [...current.decisions, { what: "merge", minApprovers: 2 }] })).toBe(false);
     expect(loosens(current, { ...current, budgets: { companyMonthlyUsdMicros: 10, memberMonthlyUsdMicros: 1, projectMonthlyUsdMicros: 50, taskUsdMicros: 0, learningMonthlyUsdMicros: 10 } })).toBe(false);
     expect(loosens(base(), withPart({ websiteCeiling: { mode: "listed", hosts: [] } }))).toBe(false);
@@ -151,7 +165,7 @@ describe("loosens", () => {
 
   const current = withPart({
     featureGates: { slack: false, beta: true }, websiteCeiling: { mode: "listed", hosts: ["a.com"] }, instructions: [{ text: "Be careful", priority: "required" }],
-    evalBudgetUsdMicros: 10, freshSignInSeconds: 120, start: { allow: false, maxEstimateUsdMicros: 100 }, locks: { extra_review: true },
+    evalBudgetUsdMicros: 10, start: { allow: false, maxEstimateUsdMicros: 100 }, locks: { extra_review: true },
     budgets: { companyMonthlyUsdMicros: 100, memberMonthlyUsdMicros: 100, projectMonthlyUsdMicros: 100, taskUsdMicros: 100, learningMonthlyUsdMicros: 100 },
   });
   const looser: Array<[string, Partial<CompanySettings>]> = [
@@ -164,7 +178,6 @@ describe("loosens", () => {
     ["an instruction added", { instructions: [{ text: "Be careful", priority: "required" }, { text: "More", priority: "required" }] }],
     ["the eval budget raised", { evalBudgetUsdMicros: 11 }],
     ["the eval budget removed", { evalBudgetUsdMicros: null }],
-    ["a longer step-up window", { freshSignInSeconds: 121 }],
     ["starts allowed", { start: { allow: true, maxEstimateUsdMicros: 100 } }],
     ["the start estimate cap raised", { start: { allow: false, maxEstimateUsdMicros: 101 } }],
     ["the start estimate cap removed", { start: { allow: false, maxEstimateUsdMicros: null } }],
@@ -192,48 +205,16 @@ describe("what the hook answers from, and the settings decision", () => {
   });
 
   it("asks for a second admin to loosen under the defaults, not to tighten", () => {
-    expect(settingsDecision(base(), true, "requirement", "dev")).toEqual({ allow: true, secondPerson: true, signInMaxAgeSeconds: 600 });
-    expect(settingsDecision(base(), false, "verdict", "dev")).toEqual({ allow: true, secondPerson: false, signInMaxAgeSeconds: 600 });
+    expect(settingsDecision(base(), true, "requirement", "dev")).toEqual({ allow: true, secondPerson: true });
+    expect(settingsDecision(base(), false, "verdict", "dev")).toEqual({ allow: true, secondPerson: false });
   });
 
-  it("follows the company's own rules: a shorter window, deciders, a refusal, two approvals, more than two", () => {
-    const short = withPart({ freshSignInSeconds: 120, decisions: [{ what: "setting.*", signInMaxAgeSeconds: 90 }] });
-    expect(settingsDecision(short, false, "verdict", "dev")).toEqual({ allow: true, secondPerson: false, signInMaxAgeSeconds: 90 });
-    expect(settingsDecision(withPart({ freshSignInSeconds: 120 }), false, "verdict", "dev")).toMatchObject({ signInMaxAgeSeconds: 120 });
+  it("follows the company's own rules: deciders, a refusal, two approvals, more than two", () => {
     const deciders = withPart({ decisions: [{ what: "setting.change", deciders: ["boss"] }] });
     expect(settingsDecision(deciders, false, "verdict", "dev")).toEqual({ allow: false });
     expect(settingsDecision(deciders, false, "verdict", "boss")).toMatchObject({ allow: true });
     expect(settingsDecision(withPart({ decisions: [{ what: "setting.loosen", allow: false }] }), true, "requirement", "dev")).toEqual({ allow: false });
     expect(settingsDecision(withPart({ decisions: [{ what: "setting.change", minApprovers: 2 }] }), false, "requirement", "dev")).toMatchObject({ allow: true, secondPerson: true });
     expect(settingsDecision(withPart({ decisions: [{ what: "setting.change", minApprovers: 3 }] }), false, "requirement", "dev")).toEqual({ allow: false });
-  });
-});
-
-describe("Code's step-up claims", () => {
-  it("reads a step-up Code put in the token, by each of Code's own factors", () => {
-    for (const method of ["email_code", "passkey", "company_reauth"]) expect(stepUpClaim(token({ sub: "x", step_up_at: NOW_S - 10, step_up_amr: method }))).toEqual({ at: NOW_S - 10, method });
-  });
-
-  it("reads nothing from a token without one, or with one that does not read", () => {
-    const cases = [
-      token({ sub: "x" }), token({ step_up_at: NOW_S }), token({ step_up_amr: "passkey" }), token({ step_up_at: NOW_S, step_up_amr: "slack" }),
-      token({ step_up_at: String(NOW_S), step_up_amr: "passkey" }), token({ step_up_at: NOW_S + 0.5, step_up_amr: "passkey" }), token({ step_up_at: 0, step_up_amr: "passkey" }),
-      token({ step_up_at: 9e12, step_up_amr: "passkey" }), "opaque-token", "a.b", `${b64({})}.!!!.sig`, `${b64({})}.${Buffer.from("not json").toString("base64url")}.sig`, `${b64({})}.${b64([1])}.sig`,
-    ];
-    for (const each of cases) expect(stepUpClaim(each)).toBeUndefined();
-  });
-
-  it("is fresh inside the window, never past Code's own window, and not from the future", () => {
-    const at = (age: number) => token({ step_up_at: NOW_S - age, step_up_amr: "passkey" });
-    expect(freshStepUp(at(600), NOW, 600)).toBeDefined();
-    expect(freshStepUp(at(601), NOW, 600)).toBeUndefined();
-    expect(freshStepUp(at(601), NOW, 10_000)).toBeUndefined();
-    expect(STEP_UP_WINDOW_SECONDS).toBe(600);
-    expect(freshStepUp(at(120), NOW, 120)).toBeDefined();
-    expect(freshStepUp(at(121), NOW, 120)).toBeUndefined();
-    expect(freshStepUp(at(-30), NOW, 600)).toBeDefined();
-    expect(freshStepUp(at(-31), NOW, 600)).toBeUndefined();
-    expect(freshStepUp(at(0), NOW, -1)).toBeUndefined();
-    expect(freshStepUp(at(0), NOW, 1.5)).toBeUndefined();
   });
 });

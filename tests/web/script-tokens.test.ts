@@ -13,15 +13,14 @@ import { h } from "./support/h.js";
 import { token, secret } from "./support/script-token-fixture.js";
 
 afterEach(() => { vi.restoreAllMocks(); localStorage.clear(); sessionStorage.clear(); });
-function mount(respond: (r: ApiRequest) => ApiResponse | Promise<ApiResponse>, form = false, confirmed = false, role = "owner") {
+function mount(respond: (r: ApiRequest) => ApiResponse | Promise<ApiResponse>, form = false, role = "owner") {
  const f = fakeHost(async r => respond(r));
  const copyText = vi.fn<(text: string) => Promise<void>>(async () => undefined); f.host.copyText = copyText;
  f.host.currentPath = () => "/app/account/automation-keys";
- if (confirmed) f.storage.set("rovara.stepup.confirmedAt.person", String(Date.now()));
  const query = createQueryClient();
  query.setQueryData(["nav"], { me: { developerId: "person", name: "Priya", orgRole: role }, org: { name: "Acme" } });
  const router = createMemoryRouter([
-  { path: "/app/account/automation-keys", element: form ? h(CreateAutomationKey, { who: "person", onCreated: () => undefined }) : h(AutomationKeysScreen) },
+  { path: "/app/account/automation-keys", element: form ? h(CreateAutomationKey, { onCreated: () => undefined }) : h(AutomationKeysScreen) },
   { path: "/elsewhere", element: h("p", {}, "Elsewhere") },
  ], { initialEntries: ["/app/account/automation-keys"] });
  const tree = () => h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) });
@@ -36,13 +35,14 @@ async function fill() {
 }
 
 it.each(["owner", "admin", "member"].flatMap(role => [true, false, undefined].map(canCreate => ({ role, canCreate }))))("uses only Code's canCreate=$canCreate signal for $role", async ({ role, canCreate }) => {
-  const f = mount(() => ({ status: 200, body: { tokens: [{ ...token, secret }], secret, ...(canCreate === undefined ? {} : { canCreate }) } }), false, false, role);
+  const f = mount(() => ({ status: 200, body: { tokens: [{ ...token, secret }], secret, ...(canCreate === undefined ? {} : { canCreate }) } }), false, role);
   await screen.findByText("Nightly CI");
   expect(screen.getByText("rvst_…aaaaaaaa")).toBeTruthy();
   expect(screen.getByText(/wiki/)).toBeTruthy();
   if (canCreate === true) {
    fireEvent.click(screen.getByRole("button", { name: "Create automation key" }));
-   expect(await screen.findByRole("button", { name: "Confirm it's you" })).toBeTruthy();
+   expect(await screen.findByLabelText("Name")).toBeTruthy();
+   expect(screen.queryByRole("button", { name: "Confirm it's you" })).toBeNull();
   } else {
    expect(screen.queryByRole("button", { name: /Create/ })).toBeNull();
   }
@@ -75,17 +75,18 @@ it.each([404, 501, 403, 502])("uses fixed words for list error %s", async status
  expect(document.body.textContent).not.toContain(secret); f.close();
 });
 
-it("requires fresh sign-in before the create form sends anything", async () => {
+it("the create form is there at once and sends nothing until submitted (no step-up since owner DEC 254zzz73)", async () => {
  const f = mount(() => list, true);
- fireEvent.click(await screen.findByRole("button", { name: "Confirm it's you" }));
- expect(f.host.signIn).toHaveBeenCalledWith(expect.stringMatching(/^\/app\/account\/automation-keys\?confirmed=/), { stepUp: true });
+ expect(await screen.findByRole("button", { name: "Create automation key" })).toBeTruthy();
+ expect(screen.queryByRole("button", { name: "Confirm it's you" })).toBeNull();
+ expect(f.host.signIn).not.toHaveBeenCalled();
  expect(f.request).not.toHaveBeenCalled(); f.close();
 });
 
 it("shows the creation secret once, copies on request, never stores/caches/logs it, and forgets it on navigation", async () => {
  const spies = ["log", "info", "warn", "error", "debug"].map(method => vi.spyOn(console, method as "log").mockImplementation(() => undefined));
  const local = vi.spyOn(Storage.prototype, "setItem");
- const f = mount(() => ({ status: 201, body: { token, secret } }), true, true);
+ const f = mount(() => ({ status: 201, body: { token, secret } }), true);
  await fill();
  await screen.findByText(secret);
  expect(screen.getByText(/You won't be able to see this key again/)).toBeTruthy();
@@ -109,7 +110,7 @@ it("shows the creation secret once, copies on request, never stores/caches/logs 
 });
 
 it("dismisses the secret without offering to show it again", async () => {
- const f = mount(() => ({ status: 201, body: { token, secret } }), true, true);
+ const f = mount(() => ({ status: 201, body: { token, secret } }), true);
  await fill(); await screen.findByText(secret);
  fireEvent.click(screen.getByRole("button", { name: "I've saved the key" }));
  expect(document.body.textContent).not.toContain(secret);
@@ -117,7 +118,7 @@ it("dismisses the secret without offering to show it again", async () => {
 });
 
 it("clears the secret before a browser history snapshot can preserve it", async () => {
- const f = mount(() => ({ status: 201, body: { token, secret } }), true, true);
+ const f = mount(() => ({ status: 201, body: { token, secret } }), true);
  await fill(); await screen.findByText(secret);
  act(() => { window.dispatchEvent(new Event("pagehide")); });
  expect(document.body.textContent).not.toContain(secret);
@@ -127,26 +128,26 @@ it("clears the secret before a browser history snapshot can preserve it", async 
 
 it("discards a creation answer that arrives after navigation", async () => {
  let finish!: (value: ApiResponse) => void;
- const f = mount(() => new Promise(resolve => { finish = resolve; }), true, true);
+ const f = mount(() => new Promise(resolve => { finish = resolve; }), true);
  await fill(); await act(() => f.router.navigate("/elsewhere"));
  await act(async () => { finish({ status: 201, body: { token, secret } }); });
  await act(() => f.router.navigate("/app/account/automation-keys"));
  expect(document.body.textContent).not.toContain(secret); f.close();
 });
 
-it("asks for step-up again when Code refuses an old confirmation", async () => {
- const f = mount(() => ({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: secret } } }), true, true);
- await fill(); await screen.findByRole("button", { name: "Confirm it's you" });
- expect(screen.queryByRole("button", { name: "Create automation key" })).toBeNull();
- expect(f.storage.get("rovara.stepup.confirmedAt.person")).toBe("");
+it("a 403 refusal (the wrong person, whatever Code's code) is fixed words with no sign-in step, and never echoes the server", async () => {
+ const f = mount(() => ({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: secret } } }), true);
+ await fill(); await screen.findByText("You can't manage these automation keys.");
+ expect(screen.queryByRole("button", { name: "Confirm it's you" })).toBeNull();
+ expect(f.host.signIn).not.toHaveBeenCalled();
  expect(document.body.textContent).not.toContain(secret); f.close();
 });
 
 it("never echoes a creation or clipboard failure containing the secret", async () => {
- const f = mount(() => ({ status: 409, body: { error: { code: "CONFLICT", message: secret } } }), true, true);
+ const f = mount(() => ({ status: 409, body: { error: { code: "CONFLICT", message: secret } } }), true);
  await fill(); await screen.findByText("You may have reached the limit of automation keys. Revoke one you no longer need, then try again.");
  expect(document.body.textContent).not.toContain(secret); f.close();
- const g = mount(() => ({ status: 201, body: { token, secret } }), true, true);
+ const g = mount(() => ({ status: 201, body: { token, secret } }), true);
  g.host.copyText = vi.fn(async () => { throw new Error(secret); });
  await fill(); await screen.findByText(secret);
  fireEvent.click(screen.getByRole("button", { name: "Copy key" }));

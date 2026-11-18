@@ -5,13 +5,10 @@ import type { EvalCardSuite, EvalCardView, EvalHealthResult, EvalWrapperCard } f
 import { evalCardKey, useEvalCardApi } from "../../api/eval-card.js";
 import { setupChecklistKey } from "../../api/setup-checklist.js";
 import { ApiError } from "../../api/errors.js";
-import { useAppHost } from "../../host.js";
 import { EvalWrapperCardView } from "./EvalWrapperCard.js";
 import { Button } from "../../design/Button.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
-import { useNav } from "../account/use-nav.js";
-import { confirmedReturn, forgetConfirmed, startStepUpNonce, useJustConfirmed } from "../admin/parts.js";
 import "./approval-card.css";
 
 const cases = (n: number) => `${String(n)} eval ${n === 1 ? "case" : "cases"}`;
@@ -20,9 +17,6 @@ const cases = (n: number) => `${String(n)} eval ${n === 1 ? "case" : "cases"}`;
 export const EVAL_CARD_WORDS = {
   heading: "Approve the cost of running your evals",
   noOne: "A company owner, admin or this project's maintainer approves this cost.",
-  stepUp: "Approving asks you to confirm it's you first.",
-  stepUpDone: "You confirmed it's you. This stays open for a few minutes.",
-  stepUpOld: "Your last confirmation is too old. Confirm it's you again, then choose.",
   waiting: "Your eval cost is waiting for approval.",
   renew: "The person who approved your eval cost can no longer approve it. A company owner, admin or maintainer needs to approve it again.",
   rejected: "The eval cost was not approved, so Rovara does not run your evals on each AI change.",
@@ -61,26 +55,23 @@ type Problem = { message: string; moved: boolean };
 
 /**
  * The setup flow's ONE eval card (L4-EVC, DEC 254zzz20 D5, D6, D8). Eval spending is approved once, on one card, in plain dollars. The server decides everything (who may approve, the dollars held
- * against its own figures); this card only asks. An approval needs a fresh sign-in, as the setup approval does: the first press sends the person to confirm it's them, the next one decides. The `seen` dollars
+ * against its own figures); this card only asks. One press decides (owner DEC 254zzz73 removed the step-up it once needed). The `seen` dollars
  * are copied from the read, never worked out here. The health check is OPT-IN: it is only ever sent from a click, never on load, and only for a person who may approve.
  * `fallback` is shown when Code has no eval card yet or there is nothing to approve. `secondary` is a quieter choice of the page's own shown right under the card (the checklist's
  * "This project has no evals", so it stays open while Code's card shows).
  */
 export function EvalCard({ project, fallback, secondary }: { project: string; fallback: ReactNode; secondary?: ReactNode }) {
-  const api = useEvalCardApi(), host = useAppHost(), query = useQueryClient();
-  const who = useNav()?.me.developerId;
-  const confirmed = useJustConfirmed(who);
+  const api = useEvalCardApi(), query = useQueryClient();
   // While a check waits or runs, the card reads again by itself (a person who pressed the button wants its answer); otherwise only when told to.
   const read = useQuery({ queryKey: evalCardKey(project), queryFn: () => api.read(project), retry: false,
     refetchInterval: (q) => evalHealthPollMs(q.state.data?.health?.state) });
-  const [stale, setStale] = useState(false), [busy, setBusy] = useState<string>(), [problem, setProblem] = useState<Problem>(), [done, setDone] = useState(false);
+  const [busy, setBusy] = useState<string>(), [problem, setProblem] = useState<Problem>(), [done, setDone] = useState(false);
   const sending = useRef(false);
   // One id per card view: Code keeps a health request once per id, so a press that failed and is pressed again is the same request, never a second one. Made on a click, never on a render.
   const healthId = useRef<string | undefined>(undefined);
   // A press that was answered keeps its id until Code's answer settles (a double press is the same request); once a check ran or did not run, the next press is a new request.
   const settled = read.data?.health?.state === "not_run" || read.data?.health?.state === "finished";
   useEffect(() => { if (settled) healthId.current = undefined; }, [settled]);
-  const fresh = confirmed && !stale;
   if (read.isPending) return <Skeleton label="Loading your evals" />;
   if (read.isError && read.data === undefined) {
     if (read.error instanceof ApiError && (read.error.code === "NOT_ON_CODE_YET" || read.error.status === 404)) return <>{fallback}</>;
@@ -92,35 +83,30 @@ export function EvalCard({ project, fallback, secondary }: { project: string; fa
 
   const reread = () => { void query.invalidateQueries({ queryKey: evalCardKey(project) }); void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); };
   const refresh = () => { setDone(false); healthId.current = undefined; reread(); };
-  function confirmItsYou() { host.signIn(confirmedReturn(host.currentPath(), startStepUpNonce(host.storage)), { stepUp: true }); }
-  /** One act: the latch keeps a second press from sending a second one; a sign-in the server finds too old asks again. */
+  /** One act: the latch keeps a second press from sending a second one. */
   async function act(name: string, run: () => Promise<unknown>, finished: "reload" | "stay") {
     if (sending.current) return;
     sending.current = true; setBusy(name); setProblem(undefined);
     try { await run(); if (finished === "reload") setDone(true); reread(); }
     catch (caught) {
-      if (caught instanceof ApiError && caught.code === "REAUTH_REQUIRED") { if (who !== undefined) forgetConfirmed(host.storage, who); setStale(true); }
-      else if (caught instanceof ApiError) setProblem({ message: caught.message, moved: caught.code === "CHANGE_STALE" || caught.code === "IDEMPOTENCY_CONFLICT" });
+      if (caught instanceof ApiError) setProblem({ message: caught.message, moved: caught.code === "CHANGE_STALE" || caught.code === "IDEMPOTENCY_CONFLICT" });
       else setProblem({ message: EVAL_CARD_WORDS.sendError, moved: false });
     } finally { sending.current = false; setBusy(undefined); }
   }
   const approve = (suite: EvalCardSuite) => {
     const report = data.report;
     if (report === undefined || done) return;
-    if (!fresh) { confirmItsYou(); return; }
     // The dollars are the ones this suite showed, passed back exactly as the read sent them.
     void act(`approve:${suite.selection}`, () => api.approve(project, { taskId: report.taskId, reportDigest: report.reportDigest, selection: suite.selection, paths: [...suite.files], approve: true, seen: { perCheckHighMicros: suite.seen.perCheckHighMicros, monthlyCapMicros: suite.seen.monthlyCapMicros } }), "reload");
   };
   const offer = data.spend?.approval;
   const decide = (outcome: "approve" | "reject") => {
     if (offer === undefined || done) return;
-    if (!fresh) { confirmItsYou(); return; }
     void act(outcome, () => api.decide(project, { requestId: offer.requestId, outcome, seen: { revision: offer.revision, artifactDigest: offer.artifactDigest } }), "reload");
   };
   // L4-T3: the provider line. `connected` is Code's own answer (the model gateway's key check); absent means Code cannot tell, and the card says neither. Approve waits for a connected provider.
   const provider = data.provider;
   const notConnected = provider !== undefined && data.connected === false;
-  const askStepUp = data.canApprove && ((data.state === "propose" && data.suites.some(suite => suite.readable !== false)) || ((data.state === "waiting" || data.state === "renew") && offer !== undefined));
   const spend = data.spend;
   const health = data.health;
 
@@ -163,7 +149,6 @@ export function EvalCard({ project, fallback, secondary }: { project: string; fa
     {health !== undefined && data.state === "approved" && <HealthBlock health={health} canAsk={data.canApprove} busy={busy} onAsk={() => { void act("health", () => api.health(project, { requestId: (healthId.current ??= crypto.randomUUID()), seenCostMicros: health.seenCostMicros }), "stay"); }} />}
     {notConnected && data.canApprove && (data.state === "propose" || data.state === "waiting" || data.state === "renew") && <p className="rv-muted" data-testid="eval-approve-waits">{EVAL_CARD_WORDS.approveAfterConnect(provider)}</p>}
     {!data.canApprove && (data.state === "propose" || data.state === "waiting" || data.state === "renew") && <p className="rv-muted" data-testid="eval-who">{EVAL_CARD_WORDS.noOne}</p>}
-    {askStepUp && !done && <p className="rv-muted" data-testid="eval-fresh" role="status">{stale ? EVAL_CARD_WORDS.stepUpOld : fresh ? EVAL_CARD_WORDS.stepUpDone : EVAL_CARD_WORDS.stepUp}</p>}
     {problem !== undefined && <div role="alert" data-testid="eval-problem"><p><VisibleText text={problem.message} /></p>{problem.moved && <Button data-testid="eval-refresh" onClick={refresh}>Refresh</Button>}</div>}
   </section>{secondary}</>;
 }

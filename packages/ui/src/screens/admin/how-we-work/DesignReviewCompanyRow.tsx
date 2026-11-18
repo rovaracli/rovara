@@ -3,7 +3,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_TIERS, type DesignReviewCompanyLock, type DesignReviewCompanyState } from "@agentx/contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { designReviewCompanyKey, useDesignReviewCompanyApi } from "../../../api/design-review-company.js";
-import { useAppHost } from "../../../host.js";
 import { Button } from "../../../design/Button.js";
 import { Select } from "../../../design/Select.js";
 import { Skeleton } from "../../../design/Skeleton.js";
@@ -31,7 +30,7 @@ const T = {
 } as const;
 const MIN_TIER_OPTIONS = [{ value: "", label: "No rule" }, ...DESIGN_REVIEW_TIERS.map(value => ({ value, label: value === "light" ? "Light or more" : value === "standard" ? "Standard or more" : "Thorough" }))];
 
-type Message = { kind: "status"; text: string } | { kind: "alert"; text: string; signIn?: boolean };
+type Message = { kind: "status"; text: string } | { kind: "alert"; text: string };
 type Draft = { tier: string; noSkip: boolean; cap: string; group: string };
 const draftOf = (state: DesignReviewCompanyState): Draft => ({ tier: state.lock.tierAtLeast ?? "", noSkip: state.lock.allowSkip === false, cap: state.lock.capCeilingUsd === undefined ? "" : String(state.lock.capCeilingUsd), group: state.lock.approverGroupId ?? "" });
 function lockOf(draft: Draft): { ok: true; lock: DesignReviewCompanyLock } | { ok: false; cap: string } {
@@ -50,7 +49,7 @@ const sameDraft = (left: Draft, right: Draft): boolean => JSON.stringify(left) =
  * change is; this card shows its answer, sends one press at a time and reads again. Absent (NOT_FOUND or FORBIDDEN) while design review is off in this environment, and for anyone who is not an admin. Loaded lazily with the How we work page.
  */
 export default function DesignReviewCompanyRow() {
- const api = useDesignReviewCompanyApi(), client = useQueryClient(), host = useAppHost(), sending = useRef(false);
+ const api = useDesignReviewCompanyApi(), client = useQueryClient(), sending = useRef(false);
  const read = useQuery({ queryKey: designReviewCompanyKey, queryFn: () => api.state(), retry: false, refetchOnWindowFocus: false });
  const [busy, setBusy] = useState(false), [message, setMessage] = useState<Message>(), [edit, setEdit] = useState<Draft>();
  if (read.error instanceof ApiError && (read.error.status === 404 || read.error.status === 403)) return null;
@@ -63,7 +62,6 @@ export default function DesignReviewCompanyRow() {
    await client.invalidateQueries({ queryKey: designReviewCompanyKey });
   } catch (error) {
    if (error instanceof ApiError && (error.code === "POLICY_STALE" || error.code === "CHANGE_STALE")) { await client.invalidateQueries({ queryKey: designReviewCompanyKey });setEdit(undefined);setMessage({ kind: "alert", text: error.code === "POLICY_STALE" ? T.CHANGED : error.message }); }
-   else if (error instanceof ApiError && error.code === "REAUTH_REQUIRED") setMessage({ kind: "alert", text: error.message, signIn: true });
    else setMessage({ kind: "alert", text: error instanceof ApiError ? error.message : T.FAILED });
   } finally { sending.current = false;setBusy(false); }
  }
@@ -100,6 +98,6 @@ export default function DesignReviewCompanyRow() {
  }
  return <section aria-label={T.HEADING} className="rv-hww-company-card rv-hww-suggestions" aria-busy={busy}><h2>{T.HEADING}</h2>{body}
   <p role="status">{message?.kind === "status" ? message.text : ""}</p>
-  {message?.kind === "alert" && <p role="alert"><VisibleText text={message.text} />{message.signIn === true && <> <Button onClick={() => host.signIn(host.currentPath())}>{T.SIGN_IN_AGAIN}</Button></>}</p>}
+  {message?.kind === "alert" && <p role="alert"><VisibleText text={message.text} /></p>}
  </section>;
 }

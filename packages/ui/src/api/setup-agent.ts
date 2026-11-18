@@ -24,7 +24,7 @@ export function createSetupAgentApi(host: AppHost) {
     confirm: (name: string, body: ReturnType<typeof SetupConfirmRequestSchema.parse>) => api.sendAnswer("POST", base(name) + "/confirm", SetupConfirmRequestSchema.parse(body), exactAnswer(SetupConfirmReplySchema)),
     /** L4-D2: drop the waiting candidate. */
     discard: (name: string, requestId: string) => api.sendAnswer("POST", base(name) + "/discard", SetupDiscardRequestSchema.parse({ requestId }), exactAnswer(SetupDiscardReplySchema)),
-    /** L4-D2: approve or reject the waiting candidate, bound to the id, revision and digest the read offered. Code asks for a fresh step-up first; never sent twice by the client. */
+    /** L4-D2: approve or reject the waiting candidate, bound to the id, revision and digest the read offered. Never sent twice by the client. */
     decide: (name: string, body: ReturnType<typeof SetupDecideRequestSchema.parse>) => api.sendAnswer("POST", base(name) + "/decide", SetupDecideRequestSchema.parse(body), exactAnswer(SetupDecideReplySchema), { retry: "never" }),
   };
 }
