@@ -40,7 +40,11 @@ const WHO: Record<string, { id: string; role?: string; company?: string }> = {
   "bob-token": { id: BOB, role: "admin", company: GLOBEX }, "nobody-token": { id: NOCOMPANY },
 };
 
-function world(over: { respond?: (call: Call) => Response | undefined; access?: () => Response | undefined } = {}) {
+/** What a pretend Code puts in a row's `taskPage`: the page of the row's own task (what Code #L4-TL does), or what a test says (`undefined` leaves the field out, as an older Code does). */
+type PageOf = (taskId: string, companyId: string) => unknown;
+const OWN_PAGE: PageOf = (taskId) => `/review/${taskId}/task`;
+
+function world(over: { respond?: (call: Call) => Response | undefined; access?: () => Response | undefined; page?: PageOf } = {}) {
   const companies: Record<string, CodeCompany> = {
     [ACME]: {
       features: new Map<string, CodeFeature>([[F1, { name: "Checkout v2", state: "open" }], [F2, { name: "Search", state: "open" }], [FDONE, { name: "Old work", state: "done" }]]),
@@ -75,7 +79,7 @@ function world(over: { respond?: (call: Call) => Response | undefined; access?: 
     if (method === "GET" && url.pathname === CODE_REPORT_TASKS_PATH) {
       calls.push(call);
       const tasks = [...company.tasks].map(([taskId, t]) => ({
-        taskId, project: t.project, title: t.title, origin: "web", state: "open", startedAt: iso(NOW - 86_400_000), prsOpened: 0, prsMerged: 0, prLinks: [], costMicros: 0, unpricedCalls: 0,
+        taskId, ...((over.page ?? OWN_PAGE)(taskId, who.company!) === undefined ? {} : { taskPage: (over.page ?? OWN_PAGE)(taskId, who.company!) }), project: t.project, title: t.title, origin: "web", state: "open", startedAt: iso(NOW - 86_400_000), prsOpened: 0, prsMerged: 0, prLinks: [], costMicros: 0, unpricedCalls: 0,
         ...(t.feature === undefined || t.feature === null ? {} : { feature: { id: t.feature, source: t.source ?? "moved" } }),
       }));
       return json(200, { tasks, next: String(tasks.length), hasMore: false, skipped: 0, unreadable: 0 });
@@ -422,33 +426,68 @@ describe("what the report answers say the person may do", () => {
 });
 
 describe("task links", () => {
-  const started = async (w: ReturnType<typeof world>, token: string, taskId: string, sessionId: string, companyId: string) => {
-    await w.sessions.put({ sessionId, taskId, project: "web", startedBy: { developerId: WHO[token]!.id, name: "x" }, owner: { developerId: WHO[token]!.id, name: "x" }, createdAt: iso(NOW), companyId, revision: 1 });
-  };
-  it("gives the session's address only for a task the signed-in person started in Cloud, in their own company", async () => {
+  const pages = (body: any) => Object.fromEntries(body.tasks.map((t: any) => [t.taskId, t.taskPage]));
+  it("passes on Code's reference for each task, and nothing else: no session id, no other field of the reference", async () => {
     const w = world();
-    await started(w, "ada-token", uuidOf(1), "ses_aaaaaaaaaaaaaaaaaaaa", ACME);
-    // Another person's session for another task of the same company, and a session of the same person for a task that is not in the page.
-    await started(w, "grace-token", uuidOf(2), "ses_bbbbbbbbbbbbbbbbbbbb", ACME);
-    w.companies[ACME]!.tasks.set(uuidOf(5), { starter: ADA, feature: F1, project: "web", title: "Fifth" });
     const detail = await w.get(`/v1/web/org/report/features/${F1}`, "ada-token");
-    const byId = Object.fromEntries(detail.body.tasks.map((t: any) => [t.taskId, t.sessionId]));
-    expect(byId).toEqual({ [uuidOf(1)]: "ses_aaaaaaaaaaaaaaaaaaaa", [uuidOf(5)]: undefined });
-    expect(detail.text).not.toContain("ses_bbbbbbbbbbbbbbbbbbbb");
+    expect(pages(detail.body)).toEqual({ [uuidOf(1)]: `/review/${uuidOf(1)}/task` });
+    const none = await w.get("/v1/web/org/report/features/none", "ada-token");
+    expect(pages(none.body)).toEqual({ [uuidOf(2)]: `/review/${uuidOf(2)}/task`, [uuidOf(3)]: `/review/${uuidOf(3)}/task` });
+    for (const t of [...detail.body.tasks, ...none.body.tasks]) expect(t).not.toHaveProperty("sessionId");
   });
-  it("never gives an address from another company's session, even for the same task id and person", async () => {
+  it("two companies: each admin gets references to their own company's tasks only, and the other company's task id never appears in the answer", async () => {
     const w = world();
-    await started(w, "ada-token", uuidOf(1), "ses_cccccccccccccccccccc", GLOBEX);
-    const detail = await w.get(`/v1/web/org/report/features/${F1}`, "ada-token");
-    expect(detail.body.tasks[0].sessionId).toBeUndefined();
-    expect(detail.text).not.toContain("ses_cccccccccccccccccccc");
+    const acme = await w.get("/v1/web/org/report/features/none", "ada-token");
+    const globex = await w.get("/v1/web/org/report/features/none", "bob-token");
+    expect(Object.values(pages(acme.body))).toEqual([`/review/${uuidOf(2)}/task`, `/review/${uuidOf(3)}/task`]);
+    expect(pages(globex.body)).toEqual({ [uuidOf(9)]: `/review/${uuidOf(9)}/task` });
+    expect(acme.text).not.toContain(uuidOf(9));
+    expect(globex.text).not.toContain(uuidOf(1));
+    expect(globex.text).not.toContain(uuidOf(2));
   });
-  it("still answers the page when the session store fails", async () => {
+  it("a row with no reference (an older Code) is listed with none: the title is plain text, and Cloud makes none up", async () => {
+    const w = world({ page: () => undefined });
+    const detail = await w.get(`/v1/web/org/report/features/${F1}`, "ada-token");
+    expect(detail.status).toBe(200);
+    expect(detail.body.tasks).toHaveLength(1);
+    expect(detail.body.tasks[0]).not.toHaveProperty("taskPage");
+    expect(detail.text).not.toContain("/review/");
+  });
+  it("Cloud's own session of the person never makes a link: with no reference from Code there is none, whoever started the task", async () => {
+    const w = world({ page: () => undefined });
+    await w.sessions.put({ sessionId: "ses_aaaaaaaaaaaaaaaaaaaa", taskId: uuidOf(1), project: "web", startedBy: { developerId: ADA, name: "x" }, owner: { developerId: ADA, name: "x" }, createdAt: iso(NOW), companyId: ACME, revision: 1 });
+    const detail = await w.get(`/v1/web/org/report/features/${F1}`, "ada-token");
+    expect(detail.body.tasks[0]).not.toHaveProperty("sessionId");
+    expect(detail.body.tasks[0]).not.toHaveProperty("taskPage");
+    expect(detail.text).not.toContain("ses_aaaaaaaaaaaaaaaaaaaa");
+  });
+  it("answers the page whatever the session store does (it is not asked)", async () => {
     const w = world();
     w.sessions.startedBy = () => Promise.reject(new Error("store down"));
     const detail = await w.get(`/v1/web/org/report/features/${F1}`, "ada-token");
     expect(detail.status).toBe(200);
-    expect(detail.body.tasks[0].sessionId).toBeUndefined();
+    expect(detail.body.tasks[0].taskPage).toBe(`/review/${uuidOf(1)}/task`);
+  });
+  it.each([
+    ["another task's page", () => `/review/${uuidOf(77)}/task`],
+    ["a page of the same company's other task", (taskId: string) => `/review/${taskId === uuidOf(1) ? uuidOf(2) : uuidOf(1)}/task`],
+    ["an absolute address", (taskId: string) => `https://evil.example/review/${taskId}/task`],
+    ["a protocol-relative address", (taskId: string) => `//evil.example/review/${taskId}/task`],
+    ["a script address", () => "javascript:alert(1)"],
+    ["a deeper path", (taskId: string) => `/review/${taskId}/task/api/state`],
+    ["a query", (taskId: string) => `/review/${taskId}/task?next=https://evil.example`],
+    ["a Cloud session", () => "/s/ses_aaaaaaaaaaaaaaaaaaaa"],
+    ["a number", () => 7],
+    ["an object", (taskId: string) => ({ href: `/review/${taskId}/task` })],
+  ])("drops %s: the task is still listed, its title is plain text, and nothing of the value is sent on", async (_name, make) => {
+    const w = world({ page: (taskId) => make(taskId) });
+    const detail = await w.get(`/v1/web/org/report/features/${F1}`, "ada-token");
+    expect(detail.status).toBe(200);
+    expect(detail.body.tasks).toHaveLength(1);
+    expect(detail.body.tasks[0]).not.toHaveProperty("taskPage");
+    expect(detail.text).not.toContain("evil.example");
+    expect(detail.text).not.toContain("javascript");
+    expect(detail.text).not.toContain(uuidOf(77));
   });
 });
 
