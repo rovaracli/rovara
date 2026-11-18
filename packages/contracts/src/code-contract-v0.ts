@@ -1210,6 +1210,7 @@ GET /v1/app/projects/{p}/setup-agent/eval | k | later | | setup-agent | T
 POST /v1/app/projects/{p}/setup-agent/eval-approve | k | later | | setup-agent | T
 POST /v1/app/projects/{p}/setup-agent/eval-decide | k | later | | setup-agent | T
 POST /v1/app/projects/{p}/setup-agent/eval-health | k | later | | setup-agent | T
+POST /v1/app/projects/{p}/setup-agent/eval-wrapper | k | later | | setup-agent | T
 GET /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 PUT /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 GET /v1/app/projects/{p}/setup-recipe | k | later | | setup-recipes |

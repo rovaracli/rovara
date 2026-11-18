@@ -127,6 +127,9 @@ export const EvalCardSuiteSchema = z.object({
   /** What the person's yes echoes back; copied from here, never computed by the page. */
   seen: z.object({ perCheckHighMicros: microDollars, monthlyCapMicros: microDollars }).strict(),
   versusApproved: z.object({ within: z.boolean(), words: z.string().min(1).max(600) }).passthrough().optional(),
+  /** L4-EVW2 (DEC 254zzz20 D2): false when Rovara cannot read this eval's results yet (a small file it proposed as a pull request is merged first). Absent (an older Code): readable. */
+  readable: z.boolean().optional(),
+  needsFile: z.string().min(1).max(600).optional(),
 }).passthrough();
 /** What a finished health check tells a person: how many of each case's three answers passed (never an answer's text). */
 export const EvalHealthResultSchema = z.object({
@@ -135,12 +138,41 @@ export const EvalHealthResultSchema = z.object({
   saved: z.boolean(), reused: z.boolean(),
 }).passthrough();
 export type EvalHealthResult = z.infer<typeof EvalHealthResultSchema>;
+/**
+ * L4-EVW4 (DEC 254zzz43): ONE card per eval whose results Rovara cannot read as they are. Code's own words and file: Cloud shows the title, the line and the file's path and text as they come, and works nothing out.
+ * [View the file] and [I'll add it myself] use `path` and `content`; [Let Rovara open a pull request] is offered only where `canOpenPullRequest`; [Not now] sets the card aside (`dismissed`).
+ */
+export const EVAL_WRAPPER_STEPS = ["needs_file", "pull_request_open", "file_found", "file_outdated", "test_approved", "readable", "unreadable", "not_offered", "dismissed"] as const;
+export const EVAL_WRAPPER_COPY_REASONS = ["custom", "another_eval", "cannot_write", "file_exists", "closed", "not_checked"] as const;
+export const EvalWrapperCardSchema = z.object({
+  selection: z.string().min(1).max(512),
+  repository: z.string().max(200).optional(),
+  language: z.enum(["python", "node"]),
+  kind: z.enum(["template", "custom"]),
+  /** Where the file goes in the repository, and what it holds. Everyone who can see the project may see and copy it. */
+  path: z.string().min(1).max(200),
+  content: z.string().max(40_000),
+  summary: z.string().max(300).optional(),
+  /** "Rovara can't read the results of <eval> yet" */
+  title: z.string().min(1).max(700),
+  step: z.enum(EVAL_WRAPPER_STEPS),
+  line: z.string().min(1).max(400),
+  offered: z.boolean(),
+  canOpenPullRequest: z.boolean(),
+  copyOnly: z.object({ reason: z.enum(EVAL_WRAPPER_COPY_REASONS), text: z.string().min(1).max(400) }).passthrough().optional(),
+  pullRequest: z.object({ number: z.string().min(1).max(40).optional(), url: z.string().min(1).max(500).optional(), state: z.enum(["opening", "open", "merged", "closed", "failed"]) }).passthrough().optional(),
+  fileStatus: z.enum(["same", "edited", "outdated"]).optional(),
+  dismissed: z.boolean(),
+  checkedAt: z.string().max(40).optional(),
+}).passthrough();
+export type EvalWrapperCard = z.infer<typeof EvalWrapperCardSchema>;
 export const EvalCardViewSchema = z.object({
   project: z.string().min(1).max(100).optional(),
   state: z.enum(EVAL_CARD_STATES),
   canApprove: z.boolean(),
   report: z.object({ taskId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-]+$/u), reportDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).passthrough().optional(),
   suites: z.array(EvalCardSuiteSchema).max(16),
+  wrappers: z.array(EvalWrapperCardSchema).max(8).optional(),
   spend: z.object({
     state: z.string().min(1).max(60),
     perPr: z.string().min(1).max(100).optional(),
@@ -174,3 +206,17 @@ export const EvalDecideRequestSchema = z.object({
 export const EvalDecideReplySchema = z.object({ project: z.string().min(1).max(100), decision: z.enum(["approved", "rejected"]) }).passthrough();
 export const EvalHealthRequestSchema = z.object({ requestId: z.string().uuid(), seenCostMicros: microDollars }).strict();
 export const EvalHealthReplySchema = z.object({ project: z.string().min(1).max(100), requested: z.literal(true), duplicate: z.boolean().optional(), cost: z.string().max(100).optional() }).passthrough();
+
+/** L4-EVW4: a person's act on the wrapper card: open the pull request for one eval, Not now, Set up now, or Check now (look for the file on the default branch). Exactly these members. */
+export const EVAL_WRAPPER_ACTIONS = ["open_pull_request", "dismiss", "reopen", "check"] as const;
+export const EvalWrapperActionRequestSchema = z.object({
+  requestId: z.string().uuid(),
+  action: z.enum(EVAL_WRAPPER_ACTIONS),
+  selection: z.string().min(1).max(512).optional(),
+}).strict().refine(body => body.action !== "open_pull_request" || body.selection !== undefined, "open_pull_request names the eval");
+export const EvalWrapperActionReplySchema = z.object({
+  project: z.string().min(1).max(100),
+  action: z.enum(EVAL_WRAPPER_ACTIONS),
+  outcome: z.object({ selection: z.string().max(512), state: z.string().max(40), failure: z.string().max(40).optional(), number: z.string().max(40).optional(), url: z.string().max(500).optional() }).passthrough().optional(),
+  wrappers: z.array(EvalWrapperCardSchema).max(8),
+}).passthrough();

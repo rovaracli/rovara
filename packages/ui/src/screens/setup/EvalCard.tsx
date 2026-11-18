@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { EvalCardSuite, EvalCardView, EvalHealthResult } from "@agentx/contracts/web";
+import type { EvalCardSuite, EvalCardView, EvalHealthResult, EvalWrapperCard } from "@agentx/contracts/web";
 import { evalCardKey, useEvalCardApi } from "../../api/eval-card.js";
 import { setupChecklistKey } from "../../api/setup-checklist.js";
 import { ApiError } from "../../api/errors.js";
 import { useAppHost } from "../../host.js";
+import { EvalWrapperCardView } from "./EvalWrapperCard.js";
 import { Button } from "../../design/Button.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
@@ -34,6 +35,7 @@ export const EVAL_CARD_WORDS = {
   casePassed: "Passed", caseFailed: "Failed",
   readError: "Your evals couldn't be read just now. Try again.",
   sendError: "Couldn't send that. Try again.",
+  wrapperHeading: "Rovara can't read your eval's results yet",
 } as const;
 
 /** What the health check's answer says: counts and plain words only, never an answer's text. */
@@ -104,17 +106,20 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
     if (!fresh) { confirmItsYou(); return; }
     void act(outcome, () => api.decide(project, { requestId: offer.requestId, outcome, seen: { revision: offer.revision, artifactDigest: offer.artifactDigest } }), "reload");
   };
-  const askStepUp = data.canApprove && ((data.state === "propose" && data.suites.length > 0) || ((data.state === "waiting" || data.state === "renew") && offer !== undefined));
+  const askStepUp = data.canApprove && ((data.state === "propose" && data.suites.some(suite => suite.readable !== false)) || ((data.state === "waiting" || data.state === "renew") && offer !== undefined));
   const spend = data.spend;
   const health = data.health;
 
   return <section aria-label={EVAL_CARD_WORDS.heading} className="rv-approval" data-testid="eval-card" data-state={data.state}>
     <h4>{EVAL_CARD_WORDS.heading}</h4>
+    {(data.wrappers ?? []).length > 0 && <div data-testid="eval-wrappers" aria-label={EVAL_CARD_WORDS.wrapperHeading}>
+      {(data.wrappers ?? []).map((wrapper: EvalWrapperCard) => <EvalWrapperCardView key={`${wrapper.selection}:${wrapper.language}`} project={project} card={wrapper} canManage={data.canApprove} onChanged={reread} />)}
+    </div>}
     {data.state === "propose" && data.suites.map(suite => <div key={suite.selection} data-testid="eval-suite">
       <p><strong><VisibleText text={suite.selection} /></strong>: {cases(suite.cases)}</p>
-      <p data-testid="eval-sentence"><VisibleText text={suite.sentence} /></p>
+      {suite.readable === false ? <p data-testid="eval-needs-file"><VisibleText text={suite.needsFile ?? "Rovara can't read this eval's results yet."} /></p> : <p data-testid="eval-sentence"><VisibleText text={suite.sentence} /></p>}
       {suite.versusApproved !== undefined && <p className="rv-muted" data-testid="eval-versus" data-within={String(suite.versusApproved.within)}><VisibleText text={suite.versusApproved.words} /></p>}
-      {data.canApprove && <div className="rv-connect-actions rv-approval-actions"><Button variant="primary" busy={busy === `approve:${suite.selection}`} disabled={busy !== undefined || done} data-testid="eval-approve" onClick={() => { approve(suite); }}>Approve</Button></div>}
+      {data.canApprove && suite.readable !== false && <div className="rv-connect-actions rv-approval-actions"><Button variant="primary" busy={busy === `approve:${suite.selection}`} disabled={busy !== undefined || done} data-testid="eval-approve" onClick={() => { approve(suite); }}>Approve</Button></div>}
     </div>)}
     {data.state === "propose" && data.suites.length === 0 && <p>{EVAL_CARD_WORDS.waiting}</p>}
     {(data.state === "waiting" || data.state === "renew") && <div data-testid="eval-waiting">
