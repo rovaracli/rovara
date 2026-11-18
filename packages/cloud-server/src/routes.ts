@@ -26,6 +26,7 @@ import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
 import { ANSWERS_ROUTES } from "./answers-routes.js";
 import { AGENT_DIRECTORY_ROUTES } from "./agent-directory-routes.js";
 import { SYSTEM_RUNS_ROUTES } from "./system-runs-routes.js";
+import { SETUP_REPAIR_ROUTES } from "./setup-repair-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { HOW_WE_WORK_ROUTES } from "./how-we-work-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
@@ -923,6 +924,8 @@ export const ROUTES: Route[] = [
   ...WIKI_SETUP_ROUTES,
   // L4-P3: the company's one control over nightly upkeep (read, allow with Code's fresh step-up, withdraw): company owners and admins only; Code decides again.
   ...SYSTEM_RUNS_ROUTES,
+  // L4-U5: the "Setup needs repair" card on a project's setup page and its "Re-check setup" button, passed to Code as the person; Code decides who may.
+  ...SETUP_REPAIR_ROUTES,
   // The admin portal's Cost and time report (Feature A, slice A3): Code's one-row-per-task read, grouped here for a company owner or admin.
   ...REPORT_ROUTES,
   // The plan card's available feature choices (lead 4 PCF); filing and creation use the Cost and time report actions below.

@@ -9,6 +9,10 @@ export interface FakeWikiSetup {
   /** L4-P2: the operator ceiling is off (Code answers `available: false`). */ ceilingOff?: boolean;
   /** The cap Code states (it has no read today, so the default is `null`). */ capUsd?: number;
   /** A Code with the project switch only (L4-N1): no consent members in the answer. */ legacyUpkeep?: boolean;
+  /** L4-U5: the project's setup is broken: the check's failing step, and whether a checked fix waits for approval. Absent: the setup works. */ repair?: { step: string; fixReady: boolean; changed?: string };
+  /** L4-U5: nightly upkeep is paused now, for this reason (Code tells managers only). */ paused?: "no_budget" | "monthly_limit" | "cost_too_high";
+  /** L4-U5: a Code with no `setup-check` read: its unknown-route 404. */ setupCheckOff?: boolean;
+  /** L4-U5: how many "Re-check setup" starts Code took, and whether one is running (a second start is 409). */ rechecks?: number; rechecking?: boolean;
 }
 const commit = (c: string) => c.repeat(40);
 

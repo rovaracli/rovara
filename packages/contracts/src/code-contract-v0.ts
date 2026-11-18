@@ -1103,6 +1103,8 @@ POST /v1/app/projects/{p}/answers | k | later | | answers | T
 POST /v1/app/projects/{p}/answers/{a}/not-right | k | later | | answers | T
 GET /v1/app/company/system-runs | k | later | | wiki-setup | T
 PUT /v1/app/company/system-runs | k | later | | wiki-setup | T
+GET /v1/app/projects/{p}/setup-repair | k | later | | setup-repair | T
+POST /v1/app/projects/{p}/setup-repair/recheck | k | later | | setup-repair | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | LT
 POST /v1/app/projects/{p}/setup-agent/discard | k | later | | setup-agent | LT

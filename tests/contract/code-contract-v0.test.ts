@@ -70,7 +70,8 @@ describe("code contract v0 tables", () => {
     // Plus the person's own GitHub account link (L4-GH): read, connect and unlink, passed to Code's /v1/dev/me/github routes as the person: 3 rows.
     // Plus the project lessons measure (L4-MEAS): 1 row.
     // Plus the plan card's feature choices (lead 4 PCF): Code answers this read as the person.
-    expect(counts.appCloudServerToday).toBe(150);
+    // Plus the "Setup needs repair" card and its "Re-check setup" button (L4-U5): read and recheck: 2 rows.
+    expect(counts.appCloudServerToday).toBe(152);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

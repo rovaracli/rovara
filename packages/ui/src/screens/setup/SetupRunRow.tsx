@@ -17,7 +17,7 @@ const minutes = (ms: number) => { const m = Math.max(1, Math.round(ms / 60_000))
 const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
 /** Start, Run again and Stop, for a person Code says may manage the run (`status`: the checklist's, else the run's own). `againLabel` names the start when a run already ended. */
-export function SetupRunControls({ project, status: given, onChanged, againLabel = "Run again" }: { project: string; status?: RunRow["status"]; onChanged: () => void; againLabel?: string }) {
+export function SetupRunControls({ project, status: given, onChanged, againLabel = "Run again", startLabel }: { project: string; status?: RunRow["status"]; onChanged: () => void; againLabel?: string; /** A label that replaces both "Run setup" and `againLabel` (the repair card's "Fix setup ..."). */ startLabel?: string }) {
  const api = useSetupAgentApi(), query = useQueryClient();
  const run = useQuery({ queryKey: ["setup-run", project], queryFn: () => api.read(project), retry: false });
  const [busy, setBusy] = useState<"start" | "stop">(), [error, setError] = useState<string>(), [requestId, setRequestId] = useState(() => crypto.randomUUID());
@@ -38,7 +38,7 @@ export function SetupRunControls({ project, status: given, onChanged, againLabel
  return <div className="rv-connect-actions" data-testid="setup-run-controls">
   {status === "running"
    ? <Button variant="danger" busy={busy === "stop"} data-testid="setup-run-stop" onClick={() => { void act("stop"); }}>Stop</Button>
-   : <Button variant={status === "none" ? "primary" : "secondary"} busy={busy === "start"} data-testid="setup-run-start" onClick={() => { void act("start"); }}>{status === "none" ? "Run setup" : againLabel}</Button>}
+   : <Button variant={status === "none" ? "primary" : "secondary"} busy={busy === "start"} data-testid="setup-run-start" onClick={() => { void act("start"); }}>{startLabel ?? (status === "none" ? "Run setup" : againLabel)}</Button>}
   {error !== undefined && <p role="alert" data-testid="setup-run-error"><VisibleText text={error} /></p>}
  </div>;
 }

@@ -43,3 +43,5 @@
 
 .rv-decisions-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--rv-space-2); }
 .rv-decisions-list li { display: grid; gap: var(--rv-space-1); overflow-wrap: anywhere; }
+/* L4-U5: the one quiet evidence line about the setup, under the task banners. */
+.rv-task-setup-line { margin: 4px 0 12px; }

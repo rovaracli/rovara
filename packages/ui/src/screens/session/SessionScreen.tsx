@@ -135,7 +135,7 @@ export function SessionScreen() {
   {controlsFailed && <div role="alert" className="rv-task-controls-error" data-testid="controls-error"><p>Couldn't load this task's controls (Stop, Share, Conversation).{read.error instanceof ApiError ? " " + read.error.message : ""}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div>}
   {session !== undefined && sessionId !== undefined && <PeoplePanel key={sessionId} id={sessionId} shareRequest={shareRequest} />}
   {session !== undefined && sessionId !== undefined && <DecisionsCard key={"decisions-" + sessionId} id={sessionId} />}
-  {session !== undefined && <MoneyBanners session={session} />}{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}
+  {session !== undefined && <MoneyBanners session={session} />}{task?.setupRecheck !== undefined && <p className="rv-muted rv-task-setup-line" role="status" data-testid="task-setup-evidence"><VisibleText text={task.setupRecheck} /></p>}{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}
   {conversation !== false && <div className="rv-task-bar">{conversation}</div>}
   {designTask !== undefined && <DesignActions task={designTask} sessionKey={designKey} />}
   {row !== undefined && <TaskPane wide row={row} decisionsError={decisions.isError ? decisions.error : undefined} onDecided={onDecided} steer={steer} onComment={comment} design={design} />}

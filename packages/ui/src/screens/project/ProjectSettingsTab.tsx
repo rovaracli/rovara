@@ -14,6 +14,7 @@ import { RestoreProject } from "../admin/projects/RestoreProject.js";
 import { ProjectIntegrations } from "../connect/ProjectIntegrations.js";
 import { ProjectSpendLimits } from "../setup/ProjectSpendLimits.js";
 import { SetupRunControls } from "../setup/SetupRunRow.js";
+import { RecheckSetupRow } from "../setup/SetupRepairCard.js";
 import { setupChecklistKey } from "../../api/setup-checklist.js";
 import { TicketUpdatesSettings } from "./TicketUpdatesSettings.js";
 
@@ -46,6 +47,7 @@ export function ProjectSettingsTab({ project, canEdit }: { project: string; canE
    <h2>Setup</h2>
    <p>Run Rovara's setup again to check how this project installs and tests. A re-run only proposes: the working setup stays until someone confirms a new one.</p>
    <SetupRunControls project={project} againLabel="Re-run setup" onChanged={() => { void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); }} />
+   <RecheckSetupRow project={project} />
   </section>
   <Lifecycle project={project} scope={scope} />
   <ProjectIntegrations project={project} canEdit={canEdit} />
