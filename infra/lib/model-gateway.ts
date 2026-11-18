@@ -196,6 +196,9 @@ export const MODEL_GATEWAY_ENV = {
   learningMeterTable: "GATEWAY_LEARNING_METER_TABLE",
   learningLedgerTable: "GATEWAY_LEARNING_LEDGER_TABLE",
   learningMarkersTable: "GATEWAY_LEARNING_MARKERS_TABLE",
+  answersMeterTable: "GATEWAY_ANSWERS_METER_TABLE",
+  answersLedgerTable: "GATEWAY_ANSWERS_LEDGER_TABLE",
+  answersMarkersTable: "GATEWAY_ANSWERS_MARKERS_TABLE",
   agentKeys: "GATEWAY_AGENT_KEYS",
   rovaraAiModels: "GATEWAY_ROVARA_AI_MODELS",
   rovaraAiExempt: "GATEWAY_ROVARA_AI_EXEMPT",
@@ -861,6 +864,10 @@ export class ModelGatewayStack extends Stack {
     const learningMeter = table(this, "LearningMeter", false, sparse(MODEL_GATEWAY_METER_INDEXES));
     const learningLedger = table(this, "LearningLedger", false, sparse(MODEL_GATEWAY_LEDGER_INDEXES));
     const learningMarkers = table(this, "LearningMarkers", true);
+    // The answers meter (L4-E, hosted Ask and smart Just answer): its own three tables as well, combined with the agent meter's company row in code.
+    const answersMeter = table(this, "AnswersMeter", false, sparse(MODEL_GATEWAY_METER_INDEXES));
+    const answersLedger = table(this, "AnswersLedger", false, sparse(MODEL_GATEWAY_LEDGER_INDEXES));
+    const answersMarkers = table(this, "AnswersMarkers", true);
     // Eval stages shared by every serving task (B8): conditional writes, rows expire after the stage plus the call ceiling.
     const stages = table(this, "EvalStages", true, sparse(MODEL_GATEWAY_EVAL_STAGE_INDEXES));
 
@@ -911,14 +918,14 @@ export class ModelGatewayStack extends Stack {
     // The serving role: read keys (and record a refused-key warning on the document), the two product meters as the agent's,
     // the stage table's items and its one index, Decrypt of a sealed row of this install.
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ProductKeysCompanyKeys", actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [keysTable.tableArn], conditions: companyKeysOnly }));
-    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ProductAndLearningMeterCompanyKeys", actions: moneyActions, resources: [productMeter.tableArn, productLedger.tableArn, learningMeter.tableArn, learningLedger.tableArn], conditions: companyKeysOnly }));
-    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ProductAndLearningMarkersCompanyKeys", actions: [...moneyActions, "dynamodb:DeleteItem"], resources: [productMarkers.tableArn, learningMarkers.tableArn], conditions: companyKeysOnly }));
+    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ProductAndLearningMeterCompanyKeys", actions: moneyActions, resources: [productMeter.tableArn, productLedger.tableArn, learningMeter.tableArn, learningLedger.tableArn, answersMeter.tableArn, answersLedger.tableArn], conditions: companyKeysOnly }));
+    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ProductAndLearningMarkersCompanyKeys", actions: [...moneyActions, "dynamodb:DeleteItem"], resources: [productMarkers.tableArn, learningMarkers.tableArn, answersMarkers.tableArn], conditions: companyKeysOnly }));
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "EvalStagesCompanyKeys", actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [stages.tableArn], conditions: companyKeysOnly }));
     serveRole.addToPolicy(new iam.PolicyStatement({
       sid: "QueryProductIndexes", actions: ["dynamodb:Query"],
       resources: [
-        ...[productLedger, learningLedger].flatMap((ledger) => Object.values(MODEL_GATEWAY_LEDGER_INDEXES).map((index) => `${ledger.tableArn}/index/${index.name}`)),
-        ...[productMeter, learningMeter].flatMap((meter) => Object.values(MODEL_GATEWAY_METER_INDEXES).map((index) => `${meter.tableArn}/index/${index.name}`)),
+        ...[productLedger, learningLedger, answersLedger].flatMap((ledger) => Object.values(MODEL_GATEWAY_LEDGER_INDEXES).map((index) => `${ledger.tableArn}/index/${index.name}`)),
+        ...[productMeter, learningMeter, answersMeter].flatMap((meter) => Object.values(MODEL_GATEWAY_METER_INDEXES).map((index) => `${meter.tableArn}/index/${index.name}`)),
         ...Object.values(MODEL_GATEWAY_EVAL_STAGE_INDEXES).map((index) => `${stages.tableArn}/index/${index.name}`),
       ],
     }));
@@ -948,6 +955,9 @@ export class ModelGatewayStack extends Stack {
         [MODEL_GATEWAY_ENV.learningMeterTable]: learningMeter.tableName,
         [MODEL_GATEWAY_ENV.learningLedgerTable]: learningLedger.tableName,
         [MODEL_GATEWAY_ENV.learningMarkersTable]: learningMarkers.tableName,
+        [MODEL_GATEWAY_ENV.answersMeterTable]: answersMeter.tableName,
+        [MODEL_GATEWAY_ENV.answersLedgerTable]: answersLedger.tableName,
+        [MODEL_GATEWAY_ENV.answersMarkersTable]: answersMarkers.tableName,
         // DEC 236: with the company key store deployed, agents call AI only on each company's own connected key.
         [MODEL_GATEWAY_ENV.agentKeys]: "company",
       },

@@ -33,9 +33,10 @@ function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<A
 }
 const body = (over: Record<string, unknown> = {}) => ({
  companyId: "org_aaaaaaaaaaaaaaaaaaaa", canChange: true, settingsVersion: 3,
- defaults: { companyMonthlyUsd: 500, memberMonthlyUsd: 50, projectMonthlyUsd: 100, taskUsd: 2 },
+ defaults: { companyMonthlyUsd: 500, memberMonthlyUsd: 50, projectMonthlyUsd: 100, taskUsd: 2, upkeepMonthlyUsd: 25, answersMonthlyUsd: 20 },
+ upkeep: [], answers: [],
  projects: [{ id: "web", monthlyUsd: 40, version: 2, updatedAt: "2026-11-17T12:00:00.000Z", updatedBy: me }], people: [{ id: PERSON, monthlyUsd: 10, version: 1, updatedAt: "2026-11-17T12:00:00.000Z", updatedBy: me }],
- partial: false, max: { projects: 200, people: 200 }, ...over,
+ partial: false, max: { projects: 200, people: 200, upkeep: 200, answers: 1 }, ...over,
 });
 
 describe("Spending limits page", () => {
@@ -50,7 +51,7 @@ describe("Spending limits page", () => {
    body({ projects: [{ id: "web", monthlyUsd: 1, version: 0 }] }), body({ partial: "no" }), body({ defaults: { companyMonthlyUsd: "5", memberMonthlyUsd: null, projectMonthlyUsd: null, taskUsd: null } }), body({ max: { projects: -1, people: 1 } })]) {
    expect(() => readSpendLimits(bad), JSON.stringify(bad)).toThrow();
   }
-  expect(readSpendLimits(body({ defaults: { companyMonthlyUsd: 5, memberMonthlyUsd: null, projectMonthlyUsd: null, taskUsd: null } })).defaults.memberMonthlyUsd).toBeNull();
+  expect(readSpendLimits(body({ defaults: { companyMonthlyUsd: 5, memberMonthlyUsd: null, projectMonthlyUsd: null, taskUsd: null, upkeepMonthlyUsd: 25, answersMonthlyUsd: 20 } })).defaults.memberMonthlyUsd).toBeNull();
   expect(["5", "12.50", "$1,200", " 0 ", "1000000"].map(parseUsd)).toEqual([5, 12.5, 1200, 0, 1_000_000]);
   expect(["", "-1", "1.234", "1e3", "abc", "1000001", "5 dollars", "NaN", "0x10", "1,2,3.456"].map(parseUsd)).toEqual(Array(10).fill(undefined));
  });
@@ -190,7 +191,7 @@ describe("Spending limits page", () => {
    for (const table of SPEND_LIMIT_TABLES) {
     expect(await screen.findByTestId(`spend-${table.listKey}-table`)).toBeTruthy();
     expect(screen.getByRole("region", { name: table.title })).toBeTruthy();
-    expect(screen.getByRole("form", { name: `Add a ${table.scope} limit` })).toBeTruthy();
+    expect(screen.getByRole("form", { name: table.add })).toBeTruthy();
     expect(limitPath(table, "x y")).toBe(`/v1/app/org/spend-limits/${table.segment}/x%20y`);
    }
   } finally { f.close(); }
@@ -200,5 +201,66 @@ describe("Spending limits page", () => {
    expect(() => readSpendLimits(withoutList), `no ${table.listKey}`).toThrow();
    expect(() => readSpendLimits(body({ max: { projects: 1, people: 1, [table.listKey]: undefined } })), `no bound for ${table.listKey}`).toThrow();
   }
+ });
+ it("shows the two lead-4 limits with their defaults and their words: nightly upkeep per project, and the company's answers limit", async () => {
+  const f = mount("/app/admin/money/limits", () => ({ status: 200, body: body() }));
+  try {
+   const defaults = await screen.findByTestId("spend-defaults");
+   expect(defaults.textContent).toMatch(/Nightly upkeep, each project, each month: \$25/u);
+   expect(defaults.textContent).toMatch(/Answers, the company, each month: \$20/u);
+   expect(screen.getByTestId("spend-upkeep-about").textContent).toBe("The most a project's nightly upkeep may spend on AI in a month. $0 stops its upkeep from spending. This can only lower what the project's and the company's limits already allow.");
+   expect(screen.getByTestId("spend-answers-about").textContent).toBe("The most answers (Ask about this task, Just answer) may spend in a month, on the company's own AI key. This can only lower what the company's monthly limit allows.");
+  } finally { f.close(); }
+ });
+
+ it("adds a nightly upkeep limit for a project, and sets the company's answers limit with no id to type (its id is the company's own)", async () => {
+  const sent: ApiRequest[] = [];
+  const f = mount("/app/admin/money/limits", r => { if (r.method === "PUT") { sent.push(r); } return { status: 200, body: body() }; });
+  try {
+   await screen.findByTestId("spend-upkeep-table");
+   const upkeep = within(screen.getByRole("form", { name: "Add a nightly upkeep limit" }));
+   fireEvent.change(upkeep.getByLabelText("Project name"), { target: { value: "api" } });
+   fireEvent.change(upkeep.getByLabelText(/Monthly limit for this project/u), { target: { value: "0" } });
+   fireEvent.click(upkeep.getByRole("button", { name: "Add limit" }));
+   await waitFor(() => { expect(sent).toHaveLength(1); });
+   expect(sent[0]!.path).toBe("/v1/app/org/spend-limits/upkeep/api");
+   expect(sent[0]!.body).toEqual({ expectedVersion: 0, monthlyUsd: 0 });
+   const answers = within(screen.getByRole("form", { name: "Set the answers limit" }));
+   expect(answers.queryByLabelText("Company")).toBeNull();
+   const add = answers.getByRole<HTMLButtonElement>("button", { name: "Add limit" });
+   expect(add.disabled).toBe(true);
+   fireEvent.change(answers.getByLabelText(/Monthly limit for this company/u), { target: { value: "15" } });
+   fireEvent.click(add);
+   await waitFor(() => { expect(sent).toHaveLength(2); });
+   expect(sent[1]!.path).toBe("/v1/app/org/spend-limits/answers/org_aaaaaaaaaaaaaaaaaaaa");
+   expect(sent[1]!.body).toEqual({ expectedVersion: 0, monthlyUsd: 15 });
+  } finally { f.close(); }
+ });
+
+ it("edits and removes the company's answers limit with the version read; with one saved there is no second to add", async () => {
+  const sent: ApiRequest[] = [];
+  const row = { id: "org_aaaaaaaaaaaaaaaaaaaa", monthlyUsd: 8, version: 3, updatedAt: "2026-11-17T12:00:00.000Z", updatedBy: me };
+  const f = mount("/app/admin/money/limits", r => { if (r.method === "PUT") { sent.push(r); } return { status: 200, body: body({ answers: [row] }) }; });
+  try {
+   const table = within(await screen.findByTestId("spend-answers-table"));
+   expect(table.getByText("The company")).toBeTruthy();
+   expect(screen.queryByRole("form", { name: "Set the answers limit" })).toBeNull();
+   fireEvent.click(table.getByRole("button", { name: "Edit" }));
+   fireEvent.change(table.getByLabelText(/New monthly limit/u), { target: { value: "5" } });
+   fireEvent.click(table.getByRole("button", { name: "Save" }));
+   await waitFor(() => { expect(sent).toHaveLength(1); });
+   expect(sent[0]!.path).toBe("/v1/app/org/spend-limits/answers/org_aaaaaaaaaaaaaaaaaaaa");
+   expect(sent[0]!.body).toEqual({ expectedVersion: 3, monthlyUsd: 5 });
+   fireEvent.click(table.getByRole("button", { name: "Remove" }));
+   await waitFor(() => { expect(sent).toHaveLength(2); });
+   expect(sent[1]!.body).toEqual({ expectedVersion: 3, monthlyUsd: null });
+  } finally { f.close(); }
+ });
+
+ it("refuses an answer whose company id or new defaults are not what the page expects", () => {
+  expect(() => readSpendLimits(body({ companyId: "acme" }))).toThrow();
+  expect(() => readSpendLimits(body({ companyId: undefined }))).toThrow();
+  expect(() => readSpendLimits(body({ defaults: { companyMonthlyUsd: 5, memberMonthlyUsd: null, projectMonthlyUsd: null, taskUsd: null } }))).toThrow();
+  expect(() => readSpendLimits(body({ answers: [{ id: "web", monthlyUsd: 1, version: 1 }] }))).toThrow();
  });
 });

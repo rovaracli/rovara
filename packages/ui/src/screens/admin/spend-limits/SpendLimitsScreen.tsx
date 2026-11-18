@@ -23,6 +23,7 @@ const reader = { parse: readSpendLimits };
 const namesReader = { parse: readPeopleNames };
 /** What a row of each scope is called, and what its id looks like. */
 const WORDS: Record<SpendLimitScope, { one: string; noun: string; idLabel: string; idHint: string; valid: (id: string) => boolean }> = {
+ company: { one: "company", noun: "The company", idLabel: "Company", idHint: "", valid: id => SCOPE_ID.company.test(id) },
  project: { one: "project", noun: "Projects", idLabel: "Project name", idHint: "The project's name, as it appears in Projects.", valid: id => SCOPE_ID.project.test(id) },
  person: { one: "person", noun: "People", idLabel: "Person ID", idHint: "The person's developer ID (64 letters and digits, from the People page).", valid: id => SCOPE_ID.person.test(id) },
 };
@@ -69,30 +70,34 @@ function Limits({ limits, reload }: { limits: SpendLimitsRead; reload: () => voi
     <li>Company, each month: {usdOrNone(d.companyMonthlyUsd)}</li>
     <li>Each person, each month: {usdOrNone(d.memberMonthlyUsd)}</li>
     <li>Each project, each month: {usdOrNone(d.projectMonthlyUsd)}</li>
+    <li data-testid="spend-upkeep-default">Nightly upkeep, each project, each month: {usdOrNone(d.upkeepMonthlyUsd)}</li>
+    <li data-testid="spend-answers-default">Answers, the company, each month: {usdOrNone(d.answersMonthlyUsd)}</li>
     <li data-testid="spend-task-default">Each task: {usdOrNone(d.taskUsd)}. A project's own per-task limit is set on <a href="/app/admin/projects">that project's page</a>.</li>
    </ul>
    <p className="rv-muted">Raising a limit asks you to confirm it's you. Lowering one does not.</p>
   </AdminSection>
-  {SPEND_LIMIT_TABLES.map(table => <LimitTable key={table.listKey} table={table} people={people} rows={limits.lists[table.listKey] ?? []} fallback={d[table.defaultKey]} max={limits.max[table.listKey] ?? 0} partial={limits.partial} busy={busy} send={send} />)}
+  {SPEND_LIMIT_TABLES.map(table => <LimitTable key={table.listKey} table={table} companyId={limits.companyId} people={people} rows={limits.lists[table.listKey] ?? []} fallback={d[table.defaultKey]} max={limits.max[table.listKey] ?? 0} partial={limits.partial} busy={busy} send={send} />)}
  </>;
 }
 
-interface TableProps { table: SpendLimitTable; people?: PersonName[] | undefined; rows: SpendLimitRow[]; fallback: number | null; max: number; partial: boolean; busy: boolean; send: (table: SpendLimitTable, id: string, version: number, usd: number | null, done: string) => Promise<boolean> }
-function LimitTable({ table, people, rows, fallback, max, partial, busy, send }: TableProps) {
+interface TableProps { table: SpendLimitTable; companyId: string; people?: PersonName[] | undefined; rows: SpendLimitRow[]; fallback: number | null; max: number; partial: boolean; busy: boolean; send: (table: SpendLimitTable, id: string, version: number, usd: number | null, done: string) => Promise<boolean> }
+function LimitTable({ table, companyId, people, rows, fallback, max, partial, busy, send }: TableProps) {
  const kind = table.scope, key = table.listKey, words = WORDS[kind];
  const names = new Map((people ?? []).map(person => [person.developerId, person.name]));
- const label = (id: string) => (kind === "person" ? names.get(id) ?? shortId(kind, id) : id);
+ const label = (id: string) => (kind === "person" ? names.get(id) ?? shortId(kind, id) : kind === "company" ? "The company" : id);
  // People without a limit of their own can be picked by name; with no readable list, the person's ID is typed.
  const pickable = kind === "person" ? (people ?? []).filter(person => !rows.some(row => row.id === person.developerId)) : [];
  const [editing, setEditing] = useState<string>(), [amount, setAmount] = useState(""), [newId, setNewId] = useState(""), [newAmount, setNewAmount] = useState("");
  const full = partial || rows.length >= max;
- const addId = newId.trim(), addUsd = parseUsd(newAmount);
- return <AdminSection title={table.title} note={`${String(rows.length)} of ${String(max)}`}>
+ // A company-wide limit is about the company itself: its id is the company's own, never typed.
+ const addId = kind === "company" ? companyId : newId.trim(), addUsd = parseUsd(newAmount);
+ return <AdminSection title={table.title} {...(kind === "company" ? {} : { note: `${String(rows.length)} of ${String(max)}` })}>
+  {table.about !== undefined && <p className="rv-muted" data-testid={`spend-${key}-about`}>{table.about}</p>}
   <div className="rv-table-wrap"><table className="rv-table" data-testid={`spend-${key}-table`}>
-   <caption>{words.noun} with their own monthly limit. Everyone else keeps the default ({usdOrNone(fallback)}).</caption>
+   <caption>{kind === "company" ? <>The company's own monthly limit. Without one, the default applies ({usdOrNone(fallback)}).</> : <>{words.noun} with their own monthly limit. Everyone else keeps the default ({usdOrNone(fallback)}).</>}</caption>
    <thead><tr><th scope="col">{words.idLabel}</th><th scope="col">Monthly limit</th><th scope="col"><VisuallyHidden>Actions</VisuallyHidden></th></tr></thead>
    <tbody>
-    {rows.length === 0 && <tr><td colSpan={3}>None. Every {words.one} uses the default.</td></tr>}
+    {rows.length === 0 && <tr><td colSpan={3}>{kind === "company" ? "None. The default applies." : <>None. Every {words.one} uses the default.</>}</td></tr>}
     {rows.map(row => <tr key={row.id} data-testid={`spend-${key}-row`}>
      <th scope="row" title={row.id}><VisibleText text={label(row.id)} /></th>
      {editing === row.id
@@ -104,9 +109,9 @@ function LimitTable({ table, people, rows, fallback, max, partial, busy, send }:
     </tr>)}
    </tbody>
   </table></div>
-  {full ? <p role="status" data-testid={`spend-${key}-full`}>There are too many limits of this kind. Remove some before adding another.</p>
-   : <form aria-label={`Add a ${words.one} limit`} onSubmit={event => { event.preventDefault(); if (words.valid(addId) && addUsd !== undefined) void send(table, addId, 0, addUsd, `Saved the limit for ${label(addId)}.`).then(saved => { if (saved) { setNewId(""); setNewAmount(""); } }); }}>
-    {pickable.length > 0
+  {full ? (kind === "company" ? null : <p role="status" data-testid={`spend-${key}-full`}>There are too many limits of this kind. Remove some before adding another.</p>)
+   : <form aria-label={table.add} onSubmit={event => { event.preventDefault(); if (words.valid(addId) && addUsd !== undefined) void send(table, addId, 0, addUsd, `Saved the limit for ${label(addId)}.`).then(saved => { if (saved) { setNewId(""); setNewAmount(""); } }); }}>
+    {kind === "company" ? null : pickable.length > 0
      ? <Select label="Person" value={newId} onValueChange={setNewId} placeholder="Choose a person" options={pickable.map(person => ({ value: person.developerId, label: person.name }))} />
      : <TextField label={words.idLabel} hint={words.idHint} value={newId} onChange={event => { setNewId(event.target.value); }} {...problem(addId !== "" && !words.valid(addId), `That isn't a valid ${words.one} ${kind === "project" ? "name" : "ID"}.`)} />}
     <TextField label={`Monthly limit for this ${words.one} (dollars)`} inputMode="decimal" value={newAmount} onChange={event => { setNewAmount(event.target.value); }} {...problem(newAmount !== "" && addUsd === undefined, AMOUNT_HELP)} />

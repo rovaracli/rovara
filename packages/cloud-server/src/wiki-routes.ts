@@ -43,7 +43,7 @@ export const WIKI_ANSWERS = Object.freeze({
 const A = WIKI_ANSWERS;
 
 /** Code's project names (AGENTX_NAME_PATTERN; a company-named project's id is the name plus a short suffix, which fits). */
-const PROJECT_NAME = /^[a-z][a-z0-9-]{0,62}$/u;
+export const PROJECT_NAME = /^[a-z][a-z0-9-]{0,62}$/u;
 export const WIKI_PAGE_ID = /^[a-z0-9][a-z0-9-]{0,119}$/u;
 const WIKI_ID = /^[A-Za-z0-9_-]{4,64}$/u;
 const COMMIT = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
@@ -58,26 +58,26 @@ const STOP_REASONS = ["cap", "person", "repo_unreadable", "no_ai_key", "unpriced
 const LIMITS = { pages: 300, blocks: 120, claims: 80, citations: 3, claimsPerBlock: 12, repos: 20, notes: 50, files: 240, ranges: 240 } as const;
 
 type Plain = Record<string, unknown>;
-const plain = (value: unknown): value is Plain => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
-const whole = (value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= min && value <= max;
-const oneOf = <T extends string>(value: unknown, words: readonly T[]): value is T => typeof value === "string" && (words as readonly string[]).includes(value);
+export const plain = (value: unknown): value is Plain => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+export const whole = (value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= min && value <= max;
+export const oneOf = <T extends string>(value: unknown, words: readonly T[]): value is T => typeof value === "string" && (words as readonly string[]).includes(value);
 /** A bounded string with no control or format characters (one line). */
-const text = (value: unknown, max: number, min = 1): value is string => typeof value === "string" && value.length >= min && value.length <= max && !CONTROL.test(value);
+export const text = (value: unknown, max: number, min = 1): value is string => typeof value === "string" && value.length >= min && value.length <= max && !CONTROL.test(value);
 /** A bounded paragraph: new lines allowed, no other control or format character. */
-const prose = (value: unknown, max: number): value is string => typeof value === "string" && value.length >= 1 && value.length <= max && NEWLINES_OK.test(value);
-const slug = (value: unknown): value is string => typeof value === "string" && WIKI_PAGE_ID.test(value);
-const wikiId = (value: unknown): value is string => typeof value === "string" && WIKI_ID.test(value);
-const when = (value: unknown): value is string => typeof value === "string" && ISO_TIME.test(value) && Number.isFinite(Date.parse(value));
-const repoName = (value: unknown): value is string => typeof value === "string" && PROJECT_NAME.test(value);
+export const prose = (value: unknown, max: number): value is string => typeof value === "string" && value.length >= 1 && value.length <= max && NEWLINES_OK.test(value);
+export const slug = (value: unknown): value is string => typeof value === "string" && WIKI_PAGE_ID.test(value);
+export const wikiId = (value: unknown): value is string => typeof value === "string" && WIKI_ID.test(value);
+export const when = (value: unknown): value is string => typeof value === "string" && ISO_TIME.test(value) && Number.isFinite(Date.parse(value));
+export const repoName = (value: unknown): value is string => typeof value === "string" && PROJECT_NAME.test(value);
 const commit = (value: unknown): value is string => typeof value === "string" && COMMIT.test(value);
-const safePath = (value: unknown): value is string => text(value, 256) && !value.startsWith("/") && !value.includes("\\") && !value.split("/").some((part) => part === ".." || part === "." || part === "");
-const list = (value: unknown, max: number): unknown[] => { if (!Array.isArray(value) || value.length > max) throw new Unreadable(); return value; };
+export const safePath = (value: unknown): value is string => text(value, 256) && !value.startsWith("/") && !value.includes("\\") && !value.split("/").some((part) => part === ".." || part === "." || part === "");
+export const list = (value: unknown, max: number): unknown[] => { if (!Array.isArray(value) || value.length > max) throw new Unreadable(); return value; };
 
 /** Not a readable answer: the whole read is refused, never a part of it. */
 export class Unreadable extends Error {}
-function need<T>(ok: boolean, value: T): T { if (!ok) throw new Unreadable(); return value; }
-const opt = <T>(value: unknown, check: (one: unknown) => boolean, key: string): Record<string, T> => (value === undefined ? {} : { [key]: need(check(value), value as T) });
-const rec = (value: unknown): Plain => need(plain(value), value as Plain);
+export function need<T>(ok: boolean, value: T): T { if (!ok) throw new Unreadable(); return value; }
+export const opt = <T>(value: unknown, check: (one: unknown) => boolean, key: string): Record<string, T> => (value === undefined ? {} : { [key]: need(check(value), value as T) });
+export const rec = (value: unknown): Plain => need(plain(value), value as Plain);
 
 const repoCommit = (value: unknown): Plain => { const v = rec(value); return { repo: need(repoName(v["repo"]), v["repo"]), commit: need(commit(v["commit"]), v["commit"]) }; };
 
@@ -217,7 +217,7 @@ async function fromCode(context: RouteContext, kind: Kind, path: string): Promis
 }
 
 /** The project in the path, after Code's access check names the person's company now; or the route's refusal. */
-async function scope(context: RouteContext): Promise<{ project: string } | { refusal: RouteAnswer }> {
+export async function scope(context: RouteContext): Promise<{ project: string } | { refusal: RouteAnswer }> {
   const project = context.params[0];
   if (project === undefined || !PROJECT_NAME.test(project)) return { refusal: A.notFound };
   let who: Awaited<ReturnType<typeof companyCaller>>;

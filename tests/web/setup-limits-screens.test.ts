@@ -37,6 +37,7 @@ function mountProject(options: { view?: ReturnType<typeof projectView>; missing?
  const f = fakeHost(async request => {
   const path = request.path.split("?")[0];
   if (path === "/v1/app/changes") return { status: 200, body: { notices: [], next: "settled" } };
+  if (path === "/v1/app/projects/payments/machine-size") return { status: 501, body: { status: "not_set_up", message: "Machine size suggestions are not set up on Rovara Code yet." } };
   if (path === "/v1/app/projects/payments/overview") return { status: 200, body: projectFixture(options.canEdit === false ? { you: { role: "contributor", canStartWork: true, canEditSettings: false, canViewSpend: false } } : {}) };
   if (path === LIMITS_PATH && options.missing === true) return refuse(404, "NOT_FOUND", "Not found.");
   if (path === LIMITS_PATH && request.method === "GET") return { status: 200, body: view };

@@ -4,7 +4,7 @@
 // a row that does not read as exactly this company's, kind's and id's is an outage, never "none saved"; two companies never meet.
 import { describe, expect, it } from "vitest";
 import {
-  CompanyStoreConflict, DynamoCompanyStore, LocalCompanyStore, SPEND_LIMITS_MAX, SPEND_LIMIT_SORT_PREFIX, defaultCompanySettings,
+  CompanyStoreConflict, DynamoCompanyStore, LocalCompanyStore, SPEND_LIMITS_MAX, SPEND_LIMIT_KINDS, SPEND_LIMIT_SORT_PREFIX, defaultCompanySettings,
   type CompanyStore, type SpendLimitBasis,
 } from "../../packages/cloud-server/src/index.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -147,9 +147,9 @@ describe("DynamoCompanyStore: what it writes", () => {
     const spy = { send: (command: { constructor: { name: string }; input: Record<string, unknown> }) => { sent.push({ name: command.constructor.name, input: command.input }); return fake.send(command); } };
     const store = new DynamoCompanyStore(spy as never, "cloud-companies");
     await store.spendLimits(A);
-    expect(sent.map((c) => c.name)).toEqual(["QueryCommand", "QueryCommand"]);
-    expect(sent.map((c) => [c.input.Limit, c.input.ConsistentRead, (c.input.ExpressionAttributeValues as Record<string, string>)[":prefix"]])).toEqual([
-      [SPEND_LIMITS_MAX.project_month + 1, true, "SPEND_LIMIT#PROJECT#"], [SPEND_LIMITS_MAX.person_month + 1, true, "SPEND_LIMIT#PERSON#"],
-    ]);
+    expect(sent.map((c) => c.name)).toEqual(SPEND_LIMIT_KINDS.map(() => "QueryCommand"));
+    expect(sent.map((c) => [c.input.Limit, c.input.ConsistentRead, (c.input.ExpressionAttributeValues as Record<string, string>)[":prefix"]])).toEqual(
+      SPEND_LIMIT_KINDS.map((def) => [SPEND_LIMITS_MAX[def.kind] + 1, true, def.sortPrefix]),
+    );
   });
 });

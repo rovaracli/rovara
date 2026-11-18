@@ -16,6 +16,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { SlackChannelRow } from "../connect/SlackChannelRow.js";
 import { LinearTeamRow } from "../connect/LinearTeamRow.js";
 import { SetupRunRow } from "./SetupRunRow.js";
+import { WikiChecklistRow } from "./wiki/WikiChecklistRow.js";
 import { CompanySetupLine } from "./CompanySetupLine.js";
 import "./checklist.css";
 
@@ -60,8 +61,9 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
  if (status.isPending) return <Skeleton label="Loading the setup checklist" />;
  if (status.isError) return <section className="rv-checklist" aria-label="Finish setting up"><p role="status" data-testid="checklist-read-error"><VisibleText text={fixedSetupWords(status.error, "The project's setup couldn't be read just now. Try again.")} /></p><Button onClick={() => { void status.refetch(); }}>Try again</Button></section>;
  const data: ProjectSetupChecklist = status.data;
- if (data.progress.percent >= 100 && place === "project") return null;
  const canChange = data.viewer.canSkip, admin = data.viewer.companyRole === "owner" || data.viewer.companyRole === "admin";
+ // A finished checklist leaves the project page, but the wiki's controls (Refresh now, the agents switch, Delete, nightly upkeep) stay reachable for the people who may use them (lead 4 W6).
+ if (data.progress.percent >= 100 && place === "project") return canChange ? <WikiChecklistRow project={project} companyAdmin={admin} alone /> : null;
  const refresh = () => { void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); };
  async function skip(row: SetupSkippableRow, skipped: boolean) {
   setBusy(row); setError(undefined);
@@ -98,6 +100,8 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
     <p>{data.aiAndSpend.source === "project" && data.aiAndSpend.modelBudgetUsd !== null ? `This project's per-task limit: $${data.aiAndSpend.modelBudgetUsd.toFixed(2)}.` : "Same as company."}</p>
     {canChange && <p><Link to={`/app/projects/${encodeURIComponent(project)}?tab=settings`}>Change in Project settings</Link></p>}
    </Row>
+   {/* Lead 4 W6: the project wiki is one more row here, not a second setup page. It is not counted in the progress above (Code computes that) and is absent while Code has no wiki build. */}
+   <WikiChecklistRow project={project} companyAdmin={admin} />
    <Row name="slackChannel" state={data.slackChannel.state} open={open("slackChannel")}>
     <SlackChannelRow project={project} mode="checklist" canEdit={canChange} skipped={data.slackChannel.state === "skipped"} {...(canChange ? { onSkip: () => { void skip("slackChannel", true); }, onUndoSkip: () => { void skip("slackChannel", false); } } : {})} />
    </Row>

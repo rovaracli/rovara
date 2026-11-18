@@ -4,25 +4,32 @@ export const SPEND_LIMITS_PATH = "/v1/app/org/spend-limits";
 /** The ids a limit may name (the same formats Cloud's routes accept), by what the limit is about. */
 export const PROJECT_NAME = /^[a-z][a-z0-9-]{0,62}$/u;
 export const PERSON_ID = /^[a-f0-9]{64}$/u;
-export type SpendLimitScope = "project" | "person";
-export const SCOPE_ID: Readonly<Record<SpendLimitScope, RegExp>> = { project: PROJECT_NAME, person: PERSON_ID };
+/** The company's own id (a company-wide limit is about the company itself). */
+export const COMPANY_ID = /^org_[0-9a-z]{20}$/u;
+export type SpendLimitScope = "project" | "person" | "company";
+export const SCOPE_ID: Readonly<Record<SpendLimitScope, RegExp>> = { project: PROJECT_NAME, person: PERSON_ID, company: COMPANY_ID };
 /** Which company default a table's rows replace (so the page can say what everyone else keeps). */
-export type DefaultKey = "projectMonthlyUsd" | "memberMonthlyUsd";
+export type DefaultKey = "projectMonthlyUsd" | "memberMonthlyUsd" | "upkeepMonthlyUsd" | "answersMonthlyUsd";
 /**
  * THE table of the page's limit tables, one per kind in Cloud's SPEND_LIMIT_KINDS (cloud-server company-store.ts): `listKey` names the members of the answer
  * that hold its rows and its bound, `segment` the path. A new kind is an entry here (and its words in the screen's WORDS) and nothing else on this page;
  * tests/web/admin-spend-limits.test.ts draws every entry.
  */
-export interface SpendLimitTable { listKey: string; segment: string; scope: SpendLimitScope; defaultKey: DefaultKey; /** The table's heading. */ title: string }
+export interface SpendLimitTable { listKey: string; segment: string; scope: SpendLimitScope; defaultKey: DefaultKey; /** The table's heading. */ title: string; /** The add form's accessible name (unique on the page). */ add: string; /** Fixed words above the table: what the limit is for. Absent: none. */ about?: string }
 export const SPEND_LIMIT_TABLES: readonly SpendLimitTable[] = [
- { listKey: "projects", segment: "projects", scope: "project", defaultKey: "projectMonthlyUsd", title: "Projects with their own limit" },
- { listKey: "people", segment: "people", scope: "person", defaultKey: "memberMonthlyUsd", title: "People with their own limit" },
+ { listKey: "projects", segment: "projects", scope: "project", defaultKey: "projectMonthlyUsd", title: "Projects with their own limit", add: "Add a project limit" },
+ { listKey: "people", segment: "people", scope: "person", defaultKey: "memberMonthlyUsd", title: "People with their own limit", add: "Add a person limit" },
+ // Lead 4 L4-E: nightly upkeep (a project's cap on its nightly AI) and answers (the company's limit on Ask and Just answer). Neither is about the agents' tasks.
+ { listKey: "upkeep", segment: "upkeep", scope: "project", defaultKey: "upkeepMonthlyUsd", title: "Nightly upkeep: projects with their own limit", add: "Add a nightly upkeep limit", about: "The most a project's nightly upkeep may spend on AI in a month. $0 stops its upkeep from spending. This can only lower what the project's and the company's limits already allow." },
+ { listKey: "answers", segment: "answers", scope: "company", defaultKey: "answersMonthlyUsd", title: "Answers: the company's own limit", add: "Set the answers limit", about: "The most answers (Ask about this task, Just answer) may spend in a month, on the company's own AI key. This can only lower what the company's monthly limit allows." },
 ];
 export const limitPath = (table: SpendLimitTable, id: string) => `${SPEND_LIMITS_PATH}/${table.segment}/${encodeURIComponent(id)}`;
 export interface SpendLimitRow { id: string; monthlyUsd: number; version: number }
 export interface SpendLimitsRead {
  /** The company defaults (null: no limit of that kind). Changed in Company settings, never here. */
- defaults: { companyMonthlyUsd: number | null; memberMonthlyUsd: number | null; projectMonthlyUsd: number | null; taskUsd: number | null };
+ defaults: { companyMonthlyUsd: number | null; memberMonthlyUsd: number | null; projectMonthlyUsd: number | null; taskUsd: number | null; upkeepMonthlyUsd: number | null; answersMonthlyUsd: number | null };
+ /** The company's own id: the id of its answers limit. */
+ companyId: string;
  /** The rows of each table, by its `listKey`. */
  lists: Readonly<Record<string, SpendLimitRow[]>>;
  /** There were more limits than the page lists. */
@@ -42,15 +49,15 @@ function rows(raw: unknown, id: RegExp): SpendLimitRow[] {
 }
 export function readSpendLimits(body: unknown): SpendLimitsRead {
  if (!isRecord(body) || !isRecord(body["defaults"]) || !isRecord(body["max"])) throw new Error("not spending limits");
- const d = body["defaults"], company = usd(d["companyMonthlyUsd"]), member = usd(d["memberMonthlyUsd"]), project = usd(d["projectMonthlyUsd"]), task = usd(d["taskUsd"]);
- if (company === undefined || member === undefined || project === undefined || task === undefined || typeof body["partial"] !== "boolean") throw new Error("not spending limits");
+ const d = body["defaults"], company = usd(d["companyMonthlyUsd"]), member = usd(d["memberMonthlyUsd"]), project = usd(d["projectMonthlyUsd"]), task = usd(d["taskUsd"]), upkeep = usd(d["upkeepMonthlyUsd"]), answers = usd(d["answersMonthlyUsd"]);
+ if (company === undefined || member === undefined || project === undefined || task === undefined || upkeep === undefined || answers === undefined || typeof body["partial"] !== "boolean" || typeof body["companyId"] !== "string" || !COMPANY_ID.test(body["companyId"])) throw new Error("not spending limits");
  const lists: Record<string, SpendLimitRow[]> = {}, max: Record<string, number> = {};
  for (const table of SPEND_LIMIT_TABLES) {
   const bound = body["max"][table.listKey];
   if (!whole(bound)) throw new Error("not spending limits");
   lists[table.listKey] = rows(body[table.listKey], SCOPE_ID[table.scope]); max[table.listKey] = bound;
  }
- return { defaults: { companyMonthlyUsd: company, memberMonthlyUsd: member, projectMonthlyUsd: project, taskUsd: task }, lists, partial: body["partial"], max };
+ return { defaults: { companyMonthlyUsd: company, memberMonthlyUsd: member, projectMonthlyUsd: project, taskUsd: task, upkeepMonthlyUsd: upkeep, answersMonthlyUsd: answers }, companyId: body["companyId"], lists, partial: body["partial"], max };
 }
 /** A dollar amount a person typed: 0 to 1,000,000 with at most two decimals ("5", "12.50", "$1,200"). undefined for anything else. */
 export function parseUsd(text: string): number | undefined {

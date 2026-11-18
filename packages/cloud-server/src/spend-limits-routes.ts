@@ -20,6 +20,9 @@
 // a limit here either; one that needs a second person or two approvals (the DEFAULT rules do) cannot raise one here, so the raise is refused in fixed words
 // (raise the company default in Company settings, which has the second-admin flow; lowering stays free); its `deciders` are enforced (the verdict stage);
 // its sign-in window applies.
+// Two kinds are not about a project's or person's agents (lead 4 L4-E): `upkeep` (a project's monthly cap on nightly upkeep AI, default $25, $0 = none) and
+// `answers` (the company's monthly limit on answers on its own AI key, default $20; its id is the company's own). Both are enforced only by the gateway, which can
+// only tighten the project and company caps; raising either above its default follows the same loosening rules as any other raise.
 // Every change is audited (`company.budget.changed`, subject `spend_limit:<kind>:<id>`, a fixed-word detail with the effective limit before and after).
 // Fail closed: a limit or settings row that does not read, a failed read or write, a project Code does not know, or a person Code does not list in
 // the company answers a fixed refusal.
@@ -49,6 +52,7 @@ export const SPEND_LIMIT_WORDS = Object.freeze({
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
   projectNotFound: refusal(404, "NOT_FOUND", "That project doesn't exist, or you can't use it."),
   personNotFound: refusal(404, "NOT_FOUND", "That person isn't in your company."),
+  companyNotFound: refusal(404, "NOT_FOUND", "That isn't your company."),
   stale: refusal(409, "CONFLICT", "This limit changed since you opened it. Refresh and try again."),
   tooMany: refusal(409, "CONFLICT", "There are too many limits of this kind. Remove some first."),
   unreadable: refusal(503, "RUNTIME_UNAVAILABLE", "The spending limits couldn't be read. Ask an installation administrator to check them."),
@@ -94,7 +98,11 @@ async function view(who: Admin): Promise<RouteAnswer> {
   const b = settings.settings.budgets;
   return ok({
     companyId: who.companyId, canChange: true, settingsVersion: settings.version,
-    defaults: { companyMonthlyUsd: usd(b.companyMonthlyUsdMicros), memberMonthlyUsd: usd(b.memberMonthlyUsdMicros), projectMonthlyUsd: usd(b.projectMonthlyUsdMicros), taskUsd: usd(b.taskUsdMicros) },
+    defaults: {
+      companyMonthlyUsd: usd(b.companyMonthlyUsdMicros), memberMonthlyUsd: usd(b.memberMonthlyUsdMicros), projectMonthlyUsd: usd(b.projectMonthlyUsdMicros), taskUsd: usd(b.taskUsdMicros),
+      // The kinds that have a fixed default of their own (upkeep, answers): what applies without an override.
+      upkeepMonthlyUsd: usd(spendLimitDef("upkeep_month").defaultOf(b)), answersMonthlyUsd: usd(spendLimitDef("answers_month").defaultOf(b)),
+    },
     // Each kind's rows under its own list member, and its bound under the same name.
     ...Object.fromEntries(SPEND_LIMIT_KINDS.map((def) => [def.listKey, listed.limits[def.kind].map(row)])),
     partial: listed.partial, max: Object.fromEntries(SPEND_LIMIT_KINDS.map((def) => [def.listKey, def.max])),
@@ -144,8 +152,10 @@ async function personKnown(context: RouteContext, companyId: string, personId: s
 const KNOWN: Record<SpendLimitScope, (context: RouteContext, companyId: string, id: string) => Promise<boolean | undefined>> = {
   project: (context, _companyId, id) => projectKnown(context, id),
   person: (context, companyId, id) => personKnown(context, companyId, id),
+  // A company-wide limit names the caller's own company and nothing else.
+  company: (_context, companyId, id) => Promise.resolve(id === companyId),
 };
-const NOT_FOUND: Record<SpendLimitScope, RouteAnswer> = { project: W.projectNotFound, person: W.personNotFound };
+const NOT_FOUND: Record<SpendLimitScope, RouteAnswer> = { project: W.projectNotFound, person: W.personNotFound, company: W.companyNotFound };
 
 const INFINITY = Number.POSITIVE_INFINITY;
 
@@ -155,6 +165,8 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
   const id = context.params[0]!;
   const def = spendLimitDef(kind);
   if (!SPEND_LIMIT_SCOPES[def.scope].id.test(id)) return W.invalid;
+  // A company-wide limit is the caller's own company's, set or removed: never another company's, whatever id the path carries.
+  if (def.scope === "company" && id !== who.companyId) return W.companyNotFound;
   const body = context.body;
   if (Buffer.byteLength(JSON.stringify(body) ?? "", "utf8") > BODY_BYTES_MAX) return W.tooLarge;
   if (!plainObject(body) || Object.keys(body).length !== 2 || !Object.hasOwn(body, "expectedVersion") || !Object.hasOwn(body, "monthlyUsd") || !whole(body["expectedVersion"])) return W.invalid;

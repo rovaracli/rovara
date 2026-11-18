@@ -20,13 +20,17 @@ import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { openTaskByCodeId } from "./open-task.js";
 import { WIKI_ROUTES } from "./wiki-routes.js";
+import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
+import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
+import { REPORT_ROUTES } from "./report-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
 import { NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
 import { parseAnswersBody } from "./answers.js";
+import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
 /** The deployment's plan words. The company itself (its id and name) is never the deployment's: it comes from Code's access check (company-caller.ts). */
 export interface OrgView { orgId: string; name: string; plan: string }
@@ -263,6 +267,42 @@ async function homeCards(context: RouteContext): Promise<{ cards: HomeCard[]; to
 }
 
 export const ROUTES: Route[] = [
+  {
+    // Project machine size: member reads; SET is a stored choice and requires a fresh web-page step-up in Cloud and Code.
+    method: "GET", path: /^\/projects\/([^/]+)\/machine-size$/u,
+    answer: async (context) => {
+      const project = context.params[0]!;
+      if (mine(context.session.access, project) === undefined) return projectNotFound;
+      try { return ok(await context.client.json<Record<string, unknown>>(context.session, `/v1/dev/projects/${encodeURIComponent(project)}/machine-size`)); }
+      catch (error) {
+        if (error instanceof CodeError) {
+          const answered = (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+          if (error.status === 501 || answered?.code === "NOT_AVAILABLE_HERE" || error.status === 404 && answered?.code === "NOT_FOUND" && answered.message === "route not found") return { status: 501, body: { status: "not_set_up", message: "Machine size suggestions are not set up on Rovara Code yet." } };
+          if (error.status === 404 && answered?.code === "NOT_FOUND" && answered.message === "project not found") return projectNotFound;
+        }
+        throw error;
+      }
+    },
+  },
+  {
+    method: "POST", path: /^\/projects\/([^/]+)\/machine-size$/u,
+    answer: async (context) => {
+      const project = context.params[0]!;
+      if (mine(context.session.access, project) === undefined) return projectNotFound;
+      if (freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } };
+      const rowId = (context.body as { rowId?: unknown } | undefined)?.rowId;
+      if (typeof rowId !== "string") return badRequest("Choose one of the listed machine sizes.");
+      try { return ok(await context.client.json<Record<string, unknown>>(context.session, `/v1/dev/projects/${encodeURIComponent(project)}/machine-size`, { method: "POST", body: { rowId } })); }
+      catch (error) {
+        if (error instanceof CodeError) {
+          const answered = (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+          if (error.status === 501 || answered?.code === "NOT_AVAILABLE_HERE" || error.status === 404 && answered?.code === "NOT_FOUND" && answered.message === "route not found") return { status: 501, body: { status: "not_set_up", message: "Machine size suggestions are not set up on Rovara Code yet." } };
+          if (error.status === 404 && answered?.code === "NOT_FOUND" && answered.message === "project not found") return projectNotFound;
+        }
+        throw error;
+      }
+    },
+  },
   {
     // GET /v1/app/me (AppMeResponseSchema): the person and their company from Code's access check made now. No company: NOT_IN_COMPANY.
     method: "GET", path: /^\/me$/u,
@@ -852,4 +892,10 @@ export const ROUTES: Route[] = [
   ...PEOPLE_ROUTES,
   // The project Wiki tab's reads (lead 4 W5): Code decides who may read; Cloud passes the person's token, rebuilds each answer for that project only, and answers in fixed words.
   ...WIKI_ROUTES,
+  // The wiki's corrections (lead 4 C1): Code decides who may add notes, mark wrong, approve and resolve; Cloud passes the person's token and rebuilds each answer.
+  ...WIKI_CORRECTION_ROUTES,
+  // The wiki panel on the setup page (lead 4 W6): the file map, the build controls and the nightly upkeep switch; Code decides who may, Cloud rebuilds bodies and answers (no dollar figure crosses).
+  ...WIKI_SETUP_ROUTES,
+  // The admin portal's Cost and time report (Feature A, slice A3): Code's one-row-per-task read, grouped here for a company owner or admin.
+  ...REPORT_ROUTES,
 ];

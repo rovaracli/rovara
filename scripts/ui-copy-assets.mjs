@@ -25,7 +25,13 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  // Guided onboarding PR 9: the project setup checklist.
  "screens/setup/checklist.css",
  // Lead 4 W5: the project Wiki tab.
- "screens/project/wiki/wiki.css"]) {
+ "screens/project/wiki/wiki.css",
+ // L4-D2: the setup approval card.
+ "screens/setup/approval-card.css",
+ // W6: the wiki row on the setup checklist.
+ "screens/setup/wiki/wiki-setup.css",
+ // Feature A3: the Cost and time pages.
+ "screens/admin/report/report.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

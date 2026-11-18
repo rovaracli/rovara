@@ -4,12 +4,13 @@
 import { useId, useState } from "react";
 import { useSearchParams } from "react-router";
 import { ApiError } from "../../../api/errors.js";
-import { fixedWikiWords, useWikiIndex, type WikiIndexEntry, type WikiIndexResponse } from "../../../api/wiki.js";
+import { fixedWikiWords, useWikiCorrections, useWikiIndex, type WikiIndexEntry, type WikiIndexResponse } from "../../../api/wiki.js";
 import { Button } from "../../../design/Button.js";
 import { EmptyState } from "../../../design/EmptyState.js";
 import { Skeleton } from "../../../design/Skeleton.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { WikiPageView } from "./WikiPageView.js";
+import { DisputedList } from "./WikiCorrections.js";
 import { BUILD_STOP_WORDS, T, buildNotice, crumbOf, dotOf, treeOf } from "./wiki-text.js";
 import "./wiki.css";
 
@@ -35,6 +36,13 @@ function Tree({ index, current, searching, open }: { index: WikiIndexResponse; c
       <p className="rv-muted rv-wiki-small"><span className="rv-wiki-dot rv-wiki-dot-warn" aria-hidden="true" /> {T.KEY_CHANGED}<br /><span className="rv-wiki-dot rv-wiki-dot-bad" aria-hidden="true" /> {T.KEY_BAD}</p>
     </>
   );
+}
+
+/** "Disputed marks" in the navigation, only for a person Code says may see the list (maintainers). The same read the page makes, so it costs nothing more. */
+function DisputedEntry({ project, pageId, active, onOpen }: { project: string; pageId: string | undefined; active: boolean; onOpen: () => void }) {
+  const read = useWikiCorrections(project, pageId);
+  if (read.data?.you.seeDisputed !== true) return null;
+  return <p className="rv-wiki-small"><button type="button" className="rv-wiki-disputed-link" data-testid="wiki-disputed-link" {...(active ? { "aria-current": "page" as const } : {})} onClick={onOpen}>{T.DISPUTED}</button></p>;
 }
 
 function SearchResults({ index, q, open }: { index: WikiIndexResponse; q: string; open: (id: string) => void }) {
@@ -81,6 +89,16 @@ export function WikiTab({ project }: { project: string }) {
   }
   const q = draft.trim();
   const wanted = params.get("page"), current = index.pages.find((page) => page.pageId === wanted) ?? index.pages.find((page) => page.kind === "overview") ?? index.pages[0];
+  const disputed = params.get("view") === "disputed";
+  const showDisputed = () => {
+    setDraft("");
+    setNavOpen(false);
+    const next = new URLSearchParams(params);
+    next.set("tab", "wiki");
+    next.set("view", "disputed");
+    next.delete("page");
+    setParams(next);
+  };
   const open = (id: string) => {
     setDraft("");
     setNavOpen(false);
@@ -88,6 +106,7 @@ export function WikiTab({ project }: { project: string }) {
     const next = new URLSearchParams(params);
     next.set("tab", "wiki");
     next.set("page", id);
+    next.delete("view");
     setParams(next);
   };
   return (
@@ -99,11 +118,12 @@ export function WikiTab({ project }: { project: string }) {
           <label htmlFor={searchId} className="rv-visually-hidden">{T.SEARCH}</label>
           <input id={searchId} className="rv-input rv-wiki-search" type="search" placeholder={T.SEARCH_PLACEHOLDER} value={draft} maxLength={80} onChange={(event) => { setDraft(event.target.value); }} />
           {notice !== undefined && <p className="rv-muted rv-wiki-small" data-testid="wiki-build-notice">{notice}</p>}
-          <Tree index={index} current={current?.pageId} searching={q !== ""} open={open} />
+          <Tree index={index} current={current?.pageId} searching={q !== "" || disputed} open={open} />
+          <DisputedEntry project={project} pageId={current?.pageId} active={disputed} onOpen={showDisputed} />
         </div>
       </nav>
       <div className="rv-wiki-main">
-        {q !== "" ? <SearchResults index={index} q={q} open={open} /> : current === undefined ? <p className="rv-muted">{T.NO_PAGE}</p> : <WikiPageView key={current.pageId} project={project} id={current.pageId} entry={current} pages={index.pages} focusTitle={opened} />}
+        {q !== "" ? <SearchResults index={index} q={q} open={open} /> : disputed ? <DisputedList project={project} open={open} back={() => { open(current?.pageId ?? ""); }} /> : current === undefined ? <p className="rv-muted">{T.NO_PAGE}</p> : <WikiPageView key={current.pageId} project={project} id={current.pageId} entry={current} pages={index.pages} focusTitle={opened} />}
       </div>
     </section>
   );

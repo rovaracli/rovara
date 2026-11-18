@@ -105,7 +105,7 @@ it("pins a comment to a criterion, threads replies under their comment, and keep
 });
 
 // ---- The page ----
-interface Setup { path: string; tasks?: unknown[]; session?: unknown; sessionStatus?: number; cards?: unknown; send?: (request: ApiRequest) => Promise<ApiResponse>; tasksResponse?: ApiResponse }
+interface Setup { path: string; tasks?: unknown[]; session?: unknown; sessionStatus?: number; cards?: unknown; send?: (request: ApiRequest) => Promise<ApiResponse>; tasksResponse?: ApiResponse; wikiUse?: { given: string[]; read: string[] } }
 function pageSetup(options: Setup) {
   const f = fakeHost(async request => {
     const path = request.path.split("?")[0]!;
@@ -116,6 +116,8 @@ function pageSetup(options: Setup) {
     if (path === "/v1/app/sessions") return options.tasksResponse ?? { status: 200, body: { tasks: options.tasks ?? TASKS } };
     if (path === "/v1/app/decisions") return { status: 200, body: options.cards ?? decisionsView() };
     if (path === "/v1/app/nav") return { status: 200, body: navFixture({ projects: [] }) };
+    if (path === `/v1/app/tasks/${ID.plan}/lessons`) return { status: 200, body: { lessons: [], ...(options.wikiUse === undefined ? {} : { wikiUse: options.wikiUse }) } };
+    if (path === "/v1/app/projects/web/wiki") return { status: 200, body: { project: "web", state: "ready", pages: [{ pageId: "wiki-overview", kind: "overview", title: "<img src=x onerror=alert(1)>\u0001", summary: "", order: 0, repos: [], writtenAt: "2026-01-01T00:00:00.000Z", claims: { found: 0, changed: 0 }, flagged: false }] } };
     if (path.startsWith("/v1/app/sessions/ses_")) return path.endsWith("/events") || path.endsWith("/messages") ? { status: 200, body: path.endsWith("/events") ? { events: [] } : { messages: [] } } : options.sessionStatus !== undefined && options.sessionStatus !== 200 ? { status: options.sessionStatus, body: { error: { code: "NOT_FOUND", message: "That session isn't here." } } } : { status: 200, body: { session: options.session } };
     if (path.endsWith("/documents/plan")) return { status: 200, body: PLAN };
     if (path.endsWith("/evidence")) return { status: 200, body: PROOF };
@@ -129,6 +131,30 @@ function pageSetup(options: Setup) {
   return { ...f, ...ui, query, where, close() { ui.unmount();query.clear(); } };
 }
 const taskWithSession = { ...TASKS[1]!, sessionId: SESSION };
+
+it("hides wiki use when empty and renders an unsafe title as visible text with a page-specific wiki link", async () => {
+  const absent = pageSetup({ path: `/app/sessions/${ID.plan}` });
+  await screen.findByTestId("session-title");
+  await waitFor(() => expect(absent.request.mock.calls.some(([request]) => request.path.endsWith(`/tasks/${ID.plan}/lessons`))).toBe(true));
+  expect(screen.queryByTestId("wiki-task-use")).toBeNull();
+  absent.close();
+
+  const empty = pageSetup({ path: `/app/sessions/${ID.plan}`, wikiUse: { given: ["wiki-overview"], read: [] } });
+  await screen.findByTestId("session-title");
+  await waitFor(() => expect(empty.request.mock.calls.some(([request]) => request.path.endsWith(`/tasks/${ID.plan}/lessons`))).toBe(true));
+  expect(screen.queryByTestId("wiki-task-use")).toBeNull();
+  empty.close();
+
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, wikiUse: { given: ["wiki-overview"], read: ["wiki-overview"] } });
+  const card = await screen.findByTestId("wiki-task-use");
+  const link = within(card).getByRole("link");
+  await waitFor(() => expect(link.textContent).toContain("<img src=x onerror=alert(1)>"));
+  expect(link.textContent).toContain("<img src=x onerror=alert(1)>");
+  expect(link.textContent).toContain("[U+0001]");
+  expect(card.querySelector("img")).toBeNull();
+  expect(link.getAttribute("href")).toBe("/app/projects/web?tab=wiki&page=wiki-overview");
+  f.close();
+});
 
 it("opens a task by its own id at full width: title, steps, the decision, the spec, cost, and no steer or stop for a task Cloud did not start", async () => {
   const f = pageSetup({ path: `/app/sessions/${ID.plan}` });

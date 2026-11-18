@@ -5,13 +5,16 @@ import { denyNetwork } from "../unit/model-gateway-no-network.js";
 beforeAll(denyNetwork);
 import { beforeAll, describe, expect, it } from "vitest";
 import {
-  DynamoCompanyStore, SPEND_LIMIT_KINDS, SPEND_LIMIT_MICROS_MAX, SPEND_LIMIT_SCOPES, defaultCompanySettings, validateCompanySettings,
+  DynamoCompanyStore, SPEND_LIMIT_KINDS, SPEND_LIMIT_MICROS_MAX, SPEND_LIMIT_SCOPES, defaultCompanySettings, spendLimitDef, validateCompanySettings,
 } from "../../packages/cloud-server/src/index.js";
+import { ANSWERS_DEFAULT_MONTH_MICROS, UPKEEP_DEFAULT_MONTH_MICROS } from "../../packages/cloud-server/src/company-store.js";
+import { ANSWERS_DEFAULT_MONTH_MICROS as GATEWAY_ANSWERS_DEFAULT_MONTH_MICROS } from "../../packages/model-gateway/src/answers-route.js";
+import { UPKEEP_DEFAULT_MONTH_MICROS as GATEWAY_UPKEEP_DEFAULT_MONTH_MICROS } from "../../packages/model-gateway/src/upkeep-cap.js";
 import { validCaps } from "../../packages/model-gateway/src/caps.js";
 import { CompanyBudgetCaps, readSpendLimit } from "../../packages/model-gateway/src/company-caps.js";
 import { GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_SPEND_LIMITS } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
-import { PERSON, PROJECT } from "../../packages/model-gateway/src/model-gateway-token.js";
+import { COMPANY, PERSON, PROJECT } from "../../packages/model-gateway/src/model-gateway-token.js";
 import { SPEND_LIMIT_TABLES } from "../../packages/ui/src/api/admin-spend-limits.js";
 import { existsSync, readFileSync } from "node:fs";
 import { WireDynamo } from "../unit/model-gateway-wire-dynamo.js";
@@ -43,6 +46,15 @@ describe("the gateway's override reader matches the company store", () => {
     expect(SPEND_LIMIT_SCOPES.person.id.source).toBe(PERSON.source);
     expect(`^${SPEND_LIMIT_SCOPES.project.idSource}$`).toBe(PROJECT.source);
     expect(`^${SPEND_LIMIT_SCOPES.person.idSource}$`).toBe(PERSON.source);
+    expect(SPEND_LIMIT_SCOPES.company.id.source).toBe(COMPANY.source);
+    expect(`^${SPEND_LIMIT_SCOPES.company.idSource}$`).toBe(COMPANY.source);
+  });
+
+  it("agree on what the gateway-enforced kinds allow without an override (upkeep $25, answers $20)", () => {
+    expect(UPKEEP_DEFAULT_MONTH_MICROS).toBe(GATEWAY_UPKEEP_DEFAULT_MONTH_MICROS);
+    expect(ANSWERS_DEFAULT_MONTH_MICROS).toBe(GATEWAY_ANSWERS_DEFAULT_MONTH_MICROS);
+    expect(spendLimitDef("upkeep_month").defaultOf(defaultCompanySettings().budgets)).toBe(25_000_000);
+    expect(spendLimitDef("answers_month").defaultOf(defaultCompanySettings().budgets)).toBe(20_000_000);
   });
 
   it("reads back each company's own overrides as the meter's caps; a change applies to the next read (two companies)", async () => {
@@ -78,6 +90,8 @@ describe("the gateway's override reader matches the company store", () => {
 
 // ---- Every kind in the tables: a new kind is an entry in each table, and these walk them all ----
 const EXAMPLE_ID = { project: "web", person: "1".repeat(64) } as const;
+/** The id a kind's item has for a company: a company-wide kind (scope company) is about the company itself, so its id is the company's own. */
+const idOf = (scope: keyof typeof EXAMPLE_ID | "company", company: string): string => (scope === "company" ? company : EXAMPLE_ID[scope]);
 const GATEWAY_KINDS = GATEWAY_COMPANY_SPEND_LIMITS.kinds;
 const DEFS = SPEND_LIMIT_KINDS.map((def) => def);
 
@@ -114,20 +128,20 @@ describe("the tables of limit kinds", () => {
 
   for (const def of DEFS) {
     describe(`kind ${def.kind}`, () => {
-      const id = EXAMPLE_ID[def.scope];
-      const item = (company: string, more: Record<string, unknown> = {}) => ({ pk: `COMPANY#${company}`, sk: `${def.sortPrefix}${id}`, companyId: company, kind: def.kind, id, monthlyUsdMicros: 4_000_000, version: 1, updatedAt: at, updatedBy: by, ...more });
+      const id = idOf(def.scope, A);
+      const item = (company: string, more: Record<string, unknown> = {}) => ({ pk: `COMPANY#${company}`, sk: `${def.sortPrefix}${idOf(def.scope, company)}`, companyId: company, kind: def.kind, id: idOf(def.scope, company), monthlyUsdMicros: 4_000_000, version: 1, updatedAt: at, updatedBy: by, ...more });
 
       it("is written under COMPANY#<org> / <prefix><id> as exactly the item the gateway reads back, per company", async () => {
         const { wire, store } = both();
         const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
-        const read = (company: string) => readSpendLimit(db, TABLE, def.kind, company, id);
+        const read = (company: string) => readSpendLimit(db, TABLE, def.kind, company, idOf(def.scope, company));
         expect(await read(A)).toBeUndefined();
         await store.putSpendLimit({ companyId: A, kind: def.kind, id, monthlyUsdMicros: 4_000_000, updatedAt: at, updatedBy: by }, { override: undefined, settingsVersion: 0 });
         expect(wire.fake.get(`COMPANY#${A}`, `${def.sortPrefix}${id}`)).toEqual(item(A));
         expect(await read(A)).toBe(4_000_000);
         // Company B has the same id and none of A's limit.
         expect(await read(B)).toBeUndefined();
-        await store.putSpendLimit({ companyId: B, kind: def.kind, id, monthlyUsdMicros: 9, updatedAt: at, updatedBy: by }, { override: undefined, settingsVersion: 0 });
+        await store.putSpendLimit({ companyId: B, kind: def.kind, id: idOf(def.scope, B), monthlyUsdMicros: 9, updatedAt: at, updatedBy: by }, { override: undefined, settingsVersion: 0 });
         expect([await read(A), await read(B)]).toEqual([4_000_000, 9]);
         expect((await store.spendLimits(A)).limits[def.kind].map((l) => [l.companyId, l.monthlyUsdMicros])).toEqual([[A, 4_000_000]]);
         // Other kinds' lists are untouched by this kind's item.
@@ -140,7 +154,7 @@ describe("the tables of limit kinds", () => {
       it("fails closed on an item that does not read as exactly this company's, kind's and id's, in Cloud (throws) and at the gateway (null)", async () => {
         const otherKind = DEFS.find((d) => d.kind !== def.kind)?.kind ?? "another_kind";
         const damages: Array<[string, Record<string, unknown>]> = [
-          ["another company's attribute", { companyId: B }], ["another kind", { kind: otherKind }], ["no kind", { kind: undefined }], ["another id", { id: id === "web" ? "api" : "2".repeat(64) }],
+          ["another company's attribute", { companyId: B }], ["another kind", { kind: otherKind }], ["no kind", { kind: undefined }], ["another id", { id: def.scope === "company" ? B : id === "web" ? "api" : "2".repeat(64) }],
           ["no id", { id: undefined }], ["a negative amount", { monthlyUsdMicros: -1 }], ["a fraction", { monthlyUsdMicros: 1.5 }], ["a text amount", { monthlyUsdMicros: "5" }], ["no amount", { monthlyUsdMicros: undefined }],
           ["an amount past the ceiling", { monthlyUsdMicros: GATEWAY_COMPANY_BUDGET_MAX + 1 }], ["no version", { version: undefined }], ["version 0", { version: 0 }],
           // Cloud's store and the gateway agree on what reads: the author and time Cloud writes are required by both.

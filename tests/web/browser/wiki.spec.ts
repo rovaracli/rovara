@@ -52,7 +52,8 @@ test("only the paragraph that needs it carries a note: stale, not found and mark
   await expect(wiki.article.getByText("Marked wrong.")).toHaveCount(1);
   await expect(wiki.article.getByRole("group", { name: "Note from Priya" })).toContainText("Agents get it after a maintainer approves it.");
   await expect(wiki.article.getByRole("group", { name: "Note from Sam" })).toContainText("Pinned for people and agents.");
-  await expect(page.getByRole("button", { name: /mark wrong|add a note/iu })).toHaveCount(0);
+  // Priya is an administrator: she is offered the corrections (C1), and the paragraph already marked wrong has no Mark wrong button.
+  await expect(wiki.article.getByRole("button", { name: /^Mark wrong/u })).toHaveCount(4);
   await page.screenshot({ path: testInfo.outputPath("wiki-billing-notes.png"), fullPage: true });
 });
 
@@ -146,4 +147,47 @@ test("dark mode keeps the page readable", async ({ page }, testInfo) => {
   await page.emulateMedia({ colorScheme: "light" });
   await expect(wiki.article).toBeVisible();
   expect(await violations(page, true)).toEqual([]);
+});
+
+test("corrections: a person adds a note and marks a paragraph wrong; a maintainer approves the note; screenshots", async ({ page }, testInfo) => {
+  const wiki = new WikiPage(page);
+  await wiki.open(PROJECT, "beacon-api--billing");
+  await expect(wiki.article).toBeVisible();
+  await wiki.article.getByTestId("wiki-add-note").click();
+  await page.getByLabel(/Your note\./u).fill("Never call billing from the web package.");
+  await page.screenshot({ path: testInfo.outputPath("wiki-add-note.png"), fullPage: true });
+  await page.getByRole("button", { name: "Pin note" }).click();
+  const note = wiki.article.getByRole("group", { name: "Note from Priya" }).filter({ hasText: "Never call billing" });
+  await expect(note).toContainText("Agents get it after a maintainer approves it.");
+  await expect(note.getByTestId("wiki-lesson-offer")).toBeVisible();
+  await note.getByRole("button", { name: "Approve for agents" }).click();
+  await expect(note).toContainText("Pinned for people and agents.");
+  const paragraph = wiki.article.locator('[data-block="p-does-1"]');
+  await paragraph.hover();
+  await paragraph.getByRole("button", { name: /^Mark wrong/u }).click();
+  await page.getByLabel(/What is wrong/u).fill("It moved to charge_v2.ts");
+  await page.screenshot({ path: testInfo.outputPath("wiki-mark-wrong.png"), fullPage: true });
+  await page.getByTestId("wiki-mark-form").getByRole("button", { name: "Mark wrong" }).click();
+  // The paragraph, and the file list that rests on two of the same claims, now read "Marked wrong." beside the one that already did.
+  await expect(wiki.article.getByText("Marked wrong.")).toHaveCount(3);
+  expect(await violations(page)).toEqual([]);
+});
+
+test("corrections: a contributor can add notes and mark wrong but cannot approve and has no disputed list", async ({ page }) => {
+  await setFakePerson(page, "sam");
+  const wiki = new WikiPage(page);
+  await wiki.open(PROJECT, "beacon-api--billing");
+  await expect(wiki.article).toBeVisible();
+  await expect(wiki.article.getByTestId("wiki-add-note")).toBeVisible();
+  await expect(wiki.article.getByRole("button", { name: "Approve for agents" })).toHaveCount(0);
+  await expect(page.getByTestId("wiki-disputed-link")).toHaveCount(0);
+});
+
+test("corrections: a maintainer opens the disputed list from the navigation", async ({ page }, testInfo) => {
+  const wiki = new WikiPage(page);
+  await wiki.open(PROJECT, "beacon-api--billing");
+  await expect(wiki.article).toBeVisible();
+  await page.getByTestId("wiki-disputed-link").click();
+  await expect(page.getByTestId("wiki-disputed-empty")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("wiki-disputed.png"), fullPage: true });
 });

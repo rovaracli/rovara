@@ -1059,8 +1059,29 @@ PUT /v1/app/projects/{p}/setup-status/skips | k | later | client.projects.setupS
 GET /v1/app/projects/{p}/wiki | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId} | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/pages/{pageId}/corrections | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/approve | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/delete | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/suggest-lesson | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags/resolve | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/disputed | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki-map | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-map | k | later | | wiki-setup | T
+GET /v1/app/projects/{p}/wiki-build | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/continue | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/stop | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/refresh | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/agents | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/delete | k | later | | wiki-setup | T
+GET /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
+PUT /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
-POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | L
+POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | LT
+POST /v1/app/projects/{p}/setup-agent/discard | k | later | | setup-agent | LT
+POST /v1/app/projects/{p}/setup-agent/decide | k | later | | setup-agent | T
 POST /v1/app/projects/{p}/setup-agent/eval-confirm | k | later | | setup-agent | LT
 GET /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 PUT /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
@@ -1070,6 +1091,8 @@ GET /v1/app/projects/{p}/environment-image | k | later | | saved-env |
 POST /v1/app/projects/{p}/environment-image | k | later | | saved-env |
 PUT /v1/app/projects/{p}/environment-image/setting | k | later | | saved-env |
 GET /v1/app/projects/{p}/test-environment | k | later | | test-environment |
+GET /v1/app/projects/{p}/machine-size | k | later | | machine-size | T
+POST /v1/app/projects/{p}/machine-size | k | later | | machine-size | T
 POST /v1/app/projects/{p}/test-environment/propose | k | later | | test-environment |
 POST /v1/app/projects/{p}/test-environment/edit | k | later | | test-environment |
 POST /v1/app/projects/{p}/test-environment/seed | k | later | | test-environment |
@@ -1181,6 +1204,8 @@ GET /v1/app/company/audit | c | admin | company.audit.records | admin/audit/Comp
 GET /v1/app/audit/view | c | later | | admin/audit/metadata |
 GET /v1/app/budget | g | budgets | | spending |
 GET /v1/app/org/spend | g | budgets | | spending |
+GET /v1/app/org/report | c | admin | | admin/report | T
+GET /v1/app/org/report/features/{featureId} | c | admin | | admin/report | T
 GET /v1/app/spend-requests | g | budgets | | spending |
 GET /v1/app/org/budget-settings | g | budgets | | spending |
 GET /v1/app/org/engine-model | k | later | company.engineModel.get | setup/AiSpendStep | T
