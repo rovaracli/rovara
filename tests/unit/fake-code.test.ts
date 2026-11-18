@@ -208,8 +208,8 @@ describe("Cloud's server on the fake Code", () => {
       const session = await call2("GET", `/v1/web/sessions/${sessionId}`, { cookie });
       expect(session.status).toBe(200);
       expect((session.body as { session: { title: string } }).session.title).toBe("Add dark mode");
-      // A route Code does not serve yet answers 501 through Cloud, not an error page (How we work is forwarded since walkthrough item 4; the saved environment is not on Code).
-      expect((await call2("GET", "/v1/web/projects/web/environment-image", { cookie })).status).toBe(501);
+      // A route Code does not serve yet answers 501 through Cloud, not an error page (How we work is forwarded since walkthrough item 4, the saved environment image since L4-MF1; the test environment is not on Code).
+      expect((await call2("GET", "/v1/web/projects/web/test-environment", { cookie })).status).toBe(501);
       // Home reads the person's own sessions: the one just started shows (no card yet), and the call works.
       expect((await call2("GET", "/v1/web/home", { cookie })).status).toBe(200);
       expect((await call2("GET", "/v1/web/nav", { cookie })).status).toBe(200);

@@ -17,7 +17,7 @@ interface Person { key: string; developerId: string; token: string }
 const person = (key: string): Person => ({ key, developerId: id64(key), token: jwt({ sub: key }) });
 const NOVA = person("nova"), BOB = person("bob");
 const GOOD = { credentialId: "key-one", createdAt: "2026-10-01T00:00:00.000Z" };
-type Factors = { factorEmail?: unknown; passkeys: unknown };
+type Factors = { factorEmail?: unknown; passkeys?: unknown; secret?: unknown };
 
 function world() {
   const calls: Array<{ method: string; path: string; search: string; token?: string; body?: string }> = [];
