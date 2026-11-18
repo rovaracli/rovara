@@ -58,7 +58,7 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
  const api = useSetupChecklistApi(), query = useQueryClient();
  const status = useQuery({
   queryKey: setupChecklistKey(project), queryFn: () => api.status(project), retry: false,
-  refetchInterval: current => (current.state.data?.setupRun.state === "running" ? 5000 : false),
+  refetchInterval: current => (current.state.data?.setupRun.state === "running" || current.state.data?.setupRun.newerProposal === "checking" ? 5000 : false),
  });
  const [busy, setBusy] = useState<SetupSkippableRow | "evalNone">(), [error, setError] = useState<string>();
  // L4-T1: a setup waiting for a person is reviewed and approved in the Setup run row, not on another page. Asked only once the checklist says a run finished.
@@ -68,9 +68,9 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
  if (status.isError) return <section className="rv-checklist" aria-label="Finish setting up"><p role="status" data-testid="checklist-read-error"><VisibleText text={fixedSetupWords(status.error, "The project's setup couldn't be read just now. Try again.")} /></p><Button onClick={() => { void status.refetch(); }}>Try again</Button></section>;
  const data: ProjectSetupChecklist = status.data;
  const canChange = data.viewer.canSkip, admin = data.viewer.companyRole === "owner" || data.viewer.companyRole === "admin";
- // L4-T2c: a finished checklist whose approved setup has a newer proposal waiting (or being checked) stays, so the proposal can be reviewed where it is named; a rejected one needs no decision, so it leaves with the rest.
+ // L4-T2c: a finished checklist whose approved setup has a newer proposal waiting (or being checked) stays, so the proposal can be reviewed where it is named; a rejected one needs no decision, and a person who cannot change the project has nothing to do about one, so they leave with the rest. It is read again every 5 s while its check goes (Code keeps the row Done meanwhile).
  // A finished checklist leaves the project page, but the wiki's controls (Refresh now, the agents switch, Delete, nightly upkeep) stay reachable for the people who may use them (lead 4 W6).
- if (data.progress.percent >= 100 && place === "project" && !waitingNewer(data.setupRun)) return canChange ? <><WikiChecklistRow project={project} companyAdmin={admin} alone /><EvalCheckRow project={project} alone /></> : null;
+ if (data.progress.percent >= 100 && place === "project" && !(canChange && waitingNewer(data.setupRun))) return canChange ? <><WikiChecklistRow project={project} companyAdmin={admin} alone /><EvalCheckRow project={project} alone /></> : null;
  const refresh = () => { void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); };
  async function skip(row: SetupSkippableRow, skipped: boolean) {
   setBusy(row); setError(undefined);
@@ -102,7 +102,7 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
     {data.repos.items.length === 0 ? <p>No repos in this project yet.</p> : <ul className="rv-checklist-chips" aria-label="Repos in this project">{data.repos.items.map(repo => <li key={repo.name}><VisibleText text={repo.fullName ?? repo.name} /></li>)}</ul>}
    </Row>
    {/* L4-T2: Code says the truth: Done only with an approved setup whose check is ready, Needs you while a proposal or a candidate waits or the check failed, Running while the check goes. The review read below is only ever fresher (it is asked again every 5 s while the check goes), so what it says about a waiting setup wins. */}
-   <Row name="setupRun" state={review.stage === "none" || hasNewer(runRow) ? runRow.state : review.stage === "checking" ? "running" : "needs_you"} open={open("setupRun") || runRow.state === "running" || runRow.state === "failed" || review.stage !== "none"}>
+   <Row name="setupRun" state={review.stage === "none" || hasNewer(runRow) ? runRow.state : review.stage === "checking" ? "running" : "needs_you"} open={open("setupRun") || waitingNewer(runRow) || runRow.state === "running" || runRow.state === "failed" || review.stage !== "none"}>
     <SetupRunRow project={project} row={runRow} onChanged={refresh} review={review} />
    </Row>
    <Row name="evalConfirm" state={data.evalConfirm.state} open={open("evalConfirm")}>

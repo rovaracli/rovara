@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // L4-T2c (pairs with Code #1063): the Setup run row of a project whose setup was approved earlier. A re-run's proposal that waits, is being checked or was rejected never takes the approval away: the row stays Done
 // (the approved setup's own check), says so in Cloud's fixed words, and a waiting proposal gets the same approve card a first proposal gets. A Code that sends no `newerProposal` reads as before.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -110,6 +110,40 @@ describe("a newer setup proposal beside the approved setup (L4-T2c)", () => {
       expect(screen.queryByTestId("project-checklist")).toBeNull();
       f.close(); cleanup();
     }
+  });
+
+  it("a read-only viewer of an otherwise finished project does not get the checklist back for a waiting proposal", async () => {
+    const f = mount({ ...checklist({ newerProposal: "needs_you" }, 100), viewer: { companyRole: "member", projectAdmin: false, canSkip: false } }, agent({ canManage: false, apply: apply({ canApprove: false, canReject: false }) }));
+    await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/projects/web/setup-status")).toBe(true));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(screen.queryByTestId("project-checklist")).toBeNull();
+    f.close();
+  });
+
+  it("the checklist is read again while the newer proposal's check goes, and the line follows the fresher review read when the check has finished", async () => {
+    const f = mount(checklist({ newerProposal: "checking" }), agent({ apply: apply() }));
+    const item = await row();
+    // The review read already shows a checked candidate to decide; the checklist still says "checking": the line says what the card says.
+    expect((await within(item).findByTestId("setup-run-newer-proposal")).textContent).toBe(NEWER_PROPOSAL_WORDS.needs_you);
+    expect(await within(item).findByTestId("setup-approval")).toBeTruthy();
+    f.close(); cleanup();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const g = mount(checklist({ newerProposal: "checking" }), agent({ apply: apply({ check: { status: "checking" }, canApprove: false, canReject: false, approval: undefined }) }));
+      await row();
+      const reads = () => g.request.mock.calls.filter(([r]) => r.path === "/v1/app/projects/web/setup-status").length;
+      const before = reads();
+      await vi.advanceTimersByTimeAsync(5_200);
+      await waitFor(() => expect(reads()).toBeGreaterThan(before));
+      g.close();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("a waiting proposal opens the row even when its review read is absent", async () => {
+    const f = mount(checklist({ newerProposal: "needs_you" }));
+    const item = await row();
+    expect((item.querySelector("details") as HTMLDetailsElement).open).toBe(true);
+    f.close();
   });
 
   it("no newerProposal (an older Code): the row reads as before, with no newer-proposal line", async () => {

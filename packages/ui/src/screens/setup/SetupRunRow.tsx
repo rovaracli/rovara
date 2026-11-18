@@ -69,9 +69,11 @@ export function SetupRunRow({ project, row, onChanged, review }: { project: stri
   row.elapsedMs === undefined ? undefined : `Took ${minutes(row.elapsedMs)}${row.costCents === undefined ? "" : `, cost ${dollars(row.costCents)}`}.`,
  ].filter((one): one is string => one !== undefined);
  // L4-T2c: a newer proposal beside the approved setup says so in fixed words instead of the review line; its cards (below) are the same ones a first proposal gets.
- const newer = row.approval === "approved" ? row.newerProposal : undefined;
+ // The review read is fresher than the checklist while a check goes: a check that finished (a card to decide) or a new one that started moves the word; a rejection is only ever Code's.
+ const given = row.approval === "approved" ? row.newerProposal : undefined;
+ const newer = given === "checking" && (review?.stage === "approve" || review?.stage === "review") ? "needs_you" : given === "needs_you" && review?.stage === "checking" ? "checking" : given;
  return <div data-testid="setup-run-row" data-status={row.status}>
-  {row.status === "none" && <p>Rovara works out how to install and test this project in a throw-away sandbox with no secrets. It uses this project's AI budget.</p>}
+  {row.status === "none" && newer === undefined && <p>Rovara works out how to install and test this project in a throw-away sandbox with no secrets. It uses this project's AI budget.</p>}
   {row.status === "running" && <p role="status">Rovara is working out how to install and test the project. You can leave and come back.</p>}
   {row.status === "ready" && newer === undefined && (review === undefined || review.stage === "none" ? <p role="status">Rovara found how to set the project up.</p> : <p role="status" data-testid="setup-run-needs-you"><strong>{REVIEW_TEXT[review.stage]}</strong></p>)}
   {newer !== undefined && <p role="status" data-testid="setup-run-newer-proposal" data-newer={newer}>{newer === "needs_you" ? <strong>{NEWER_PROPOSAL_WORDS[newer]}</strong> : NEWER_PROPOSAL_WORDS[newer]}</p>}
