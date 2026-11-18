@@ -41,7 +41,7 @@ export function blockingFindings(task: ReadTask): Finding[] {
 export function ReviewChoices({ session, task }: { session: ReadSession; task: ReadTask }) {
  if (!(session.you.owner || session.you.coOwner === true) || task.workflow?.stage !== "REVIEW" || task.workflow.state !== "BLOCKED") return null;
  const findings = blockingFindings(task);
- return findings.length === 0 ? null : <ReviewChoicesPanel sessionId={session.sessionId} findings={findings} />;
+ return findings.length === 0 ? null : <ReviewChoicesForPerson sessionId={session.sessionId} findings={findings} />;
 }
 
 /** Where the note waits while the person confirms it's them (a full page round trip), per person and session; forgotten once read back. */
@@ -50,13 +50,19 @@ function keptNote(storage: { get(key: string): string | undefined }, sessionId: 
  try { return (storage.get(noteKey(sessionId, who)) ?? "").slice(0, 1000); } catch { return ""; }
 }
 
-function ReviewChoicesPanel({ sessionId, findings }: { sessionId: string; findings: Finding[] }) {
+/** The panel, mounted again once the signed-in person is known, so the note kept for them is read with their own key (never cleared unread). */
+function ReviewChoicesForPerson({ sessionId, findings }: { sessionId: string; findings: Finding[] }) {
+ const who = useNav()?.me.developerId;
+ return <ReviewChoicesPanel key={who ?? "loading"} sessionId={sessionId} findings={findings} who={who} />;
+}
+
+function ReviewChoicesPanel({ sessionId, findings, who }: { sessionId: string; findings: Finding[]; who: string | undefined }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionActions(host), [host]);
- const who = useNav()?.me.developerId, confirmed = useJustConfirmed(who);
+ const confirmed = useJustConfirmed(who);
  const [note, setNote] = useState(() => keptNote(host.storage, sessionId, who)), [busy, setBusy] = useState<"send" | "accept">(), [error, setError] = useState<string>(), [done, setDone] = useState<string>();
  const [stale, setStale] = useState(false);
  // The kept note is filled in once: forget it as soon as the panel has it (an effect, so a render run twice never loses it).
- useEffect(() => { try { if ((host.storage.get(noteKey(sessionId, who)) ?? "") !== "") host.storage.set(noteKey(sessionId, who), ""); } catch { /* blocked storage */ } }, [host, sessionId, who]);
+ useEffect(() => { if (who === undefined) return; try { if ((host.storage.get(noteKey(sessionId, who)) ?? "") !== "") host.storage.set(noteKey(sessionId, who), ""); } catch { /* blocked storage */ } }, [host, sessionId, who]);
  const security = findings.some((finding) => finding.role === "SECURITY");
  /** A security finding is accepted only right after the person confirms it's them: Code's step-up page, then back here with the note kept. */
  const mustConfirm = security && (!confirmed || stale);
