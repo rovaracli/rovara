@@ -11,6 +11,7 @@ import { CommandBox, SteerBox } from "./RunControls.js";
 import { RunJournal } from "./RunJournal.js";
 import { APPROVAL_WORDS, STOP_WORDS } from "./words.js";
 import { SETUP_LOCKS } from "./limits-text.js";
+import { setupAgentKey, setupAgentRefetch } from "./SetupReview.js";
 
 /**
  * Setup with a run (SH15, behind the `su` switch): Rovara runs the project's own commands in a throw-away sandbox, the page shows what it ran and which websites it asked for, a maintainer can steer it or run a
@@ -19,8 +20,8 @@ import { SETUP_LOCKS } from "./limits-text.js";
 export default function SetupRunSection({ project, settingsRevision, onDecided }: { project: string; settingsRevision: number; /** A candidate was approved (the project's settings changed): the page reads the project again. */ onDecided?: () => void }) {
   const api = useSetupAgentApi();
   const client = useQueryClient();
-  const key = ["onboard", "setup-agent", project];
-  const query = useQuery({ queryKey: key, queryFn: () => api.read(project), retry: false, refetchInterval: current => (current.state.data?.status === "running" ? 4000 : current.state.data?.apply?.check.status === "checking" ? 5000 : false) });
+  const key = setupAgentKey(project);
+  const query = useQuery({ queryKey: key, queryFn: () => api.read(project), retry: false, refetchInterval: setupAgentRefetch });
   const [decided, setDecided] = useState<"approved" | "rejected" | "discarded">();
   const [busy, setBusy] = useState<"start" | "stop">(), [error, setError] = useState<string>(), [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const view = query.data;
