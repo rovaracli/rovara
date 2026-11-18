@@ -176,6 +176,23 @@ it("does not read again on focus or reconnect", async () => {
  f.close();
 });
 
+it("a next cursor that names the page just read is refused (no page loop)", async () => {
+ const cloudAs = await cloud();
+ const me = { developer: { id: OWNER, name: "Priya", orgRole: "owner" }, org: { orgId: A, name: "Acme", plan: "team" }, identities: [] };
+ let firstNext = "";
+ const f = mount({ path: "/app/admin/audit", role: "owner", respond: async r => {
+  if (!r.path.startsWith("/v1/app/company/audit")) return { status: 200, body: r.path === "/v1/app/me" ? me : {} };
+  const real = await cloudAs("owner-token", r.path);
+  const body = real.body as { next?: string; records: Array<{ action: string }> };
+  if (!r.path.includes("cursor=")) { firstNext = body.next ?? ""; return real; }
+  return { status: 200, body: { ...body, next: firstNext, records: [{ ...body.records[0]!, action: "company.rules.changed" }] } };
+ } });
+ await screen.findByText("company.rules.changed");
+ fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+ await screen.findByText("This information is unavailable. Reload or try again.");
+ f.close();
+});
+
 it("an answer that does not read (unknown source) is refused before it is shown or cached", async () => {
  const cloudAs = await cloud();
  const me = { developer: { id: OWNER, name: "Priya", orgRole: "owner" }, org: { orgId: A, name: "Acme", plan: "team" }, identities: [] };

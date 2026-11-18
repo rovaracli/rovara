@@ -43,7 +43,8 @@ function AuditView() {
  const cursor = cursors[page] ?? "";
  useEffect(() => () => { const key = ["admin", "lane-c", "audit", orgId, developerId, role];void query.cancelQueries({ queryKey: key });query.removeQueries({ queryKey: key }); }, [query, orgId, developerId, role]);
  const params = new URLSearchParams({ limit: String(AUDIT_PAGE_SIZE) });if (range.from !== undefined) params.set("from", range.from);if (range.to !== undefined) params.set("to", range.to);if (cursor) params.set("cursor", cursor);
- const records = useQuery({ ...readPolicy, queryKey: ["admin", "lane-c", "audit", orgId, developerId, role, "records", range.from ?? "", range.to ?? "", cursor, generation], queryFn: () => api.get(COMPANY_AUDIT_PATH + "?" + params.toString(), companyAuditSchema) });
+ const records = useQuery({ ...readPolicy, queryKey: ["admin", "lane-c", "audit", orgId, developerId, role, "records", range.from ?? "", range.to ?? "", cursor, generation], // A next page that names the page just read would loop: refused like any answer that does not read.
+ queryFn: () => api.get(COMPANY_AUDIT_PATH + "?" + params.toString(), companyAuditSchema.refine(value => value.next === undefined || value.next !== cursor)) });
  function apply(event: FormEvent) {
   event.preventDefault();if (records.isFetching) return;
   let from: string | undefined, to: string | undefined;
