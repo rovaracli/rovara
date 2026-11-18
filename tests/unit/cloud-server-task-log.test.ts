@@ -93,7 +93,7 @@ function setUp() {
   const session = (sessionId: string, taskId: string, owner: { developerId: string; name: string }) => work.put({ sessionId, taskId, project: "payments", startedBy: owner, owner, createdAt: AT, revision: 1 });
   return { code, call, signIn, session };
 }
-type LogBody = { entries: Array<Record<string, unknown>> };
+type LogBody = { entries: Array<Record<string, unknown>>; error?: unknown };
 const json = (response: { body: string }) => JSON.parse(response.body) as LogBody;
 const base = async () => {
   const context = setUp();
@@ -130,7 +130,7 @@ describe("the decisions and answers of a session", () => {
 
   it("leaves out an entry that does not read (bad key, time, surface, empty text, too long a list) and refuses a list that is not a list", async () => {
     const w = await base();
-    w.code.logs[CODE_SES_A] = { entries: [answerEntry({ key: "bad key" }), answerEntry({ at: "yesterday" }), answerEntry({ surface: "carrier-pigeon" }), answerEntry({ text: "\u0007 " }), answerEntry({ by: "" }), answerEntry({ questionId: "../x" }), answerEntry({ round: -1 }), answerEntry({ key: "answer:r2:q1", text: "kept" })] };
+    w.code.logs[CODE_SES_A] = { entries: [answerEntry({ key: "bad key" }), answerEntry({ at: "yesterday" }), answerEntry({ at: "2026-02-31T10:00:00.000Z" }), answerEntry({ at: "2026-11-17T10:00:00+02:00" }), answerEntry({ surface: "carrier-pigeon" }), answerEntry({ text: "\u0007 " }), answerEntry({ by: "" }), answerEntry({ questionId: "../x" }), answerEntry({ round: -1 }), answerEntry({ key: "answer:r2:q1", text: "kept" })] };
     expect(json(await w.call("GET", path(), { cookie: w.ada.cookie })).entries).toHaveLength(1);
     w.code.flags.log = "garbage";
     const refused = await w.call("GET", path(), { cookie: w.ada.cookie });
@@ -177,6 +177,7 @@ describe("who may read it: Code decides", () => {
     w.code.calls.length = 0;
     const refused = await w.call("GET", path(), { cookie: w.cal.cookie });
     expect(refused.status).toBe(404);
+    expect(json(refused)).toEqual({ error: { code: "TASK_NOT_FOUND", message: `no task ${TASK_A} of yours` } });
     expect(refused.body).not.toContain("Ana Ruiz");
     expect(w.code.calls.some((call) => call.path.includes("/log"))).toBe(false);
   });
@@ -186,6 +187,7 @@ describe("who may read it: Code decides", () => {
     w.code.flags.log = "404";
     const refused = await w.call("GET", path(), { cookie: w.ada.cookie });
     expect(refused.status).toBe(404);
+    expect(json(refused)).toEqual({ error: { code: "NOT_FOUND", message: "There is no such session." } });
     expect(refused.body).not.toContain("Ana Ruiz");
   });
 

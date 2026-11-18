@@ -35,7 +35,7 @@ function line(value: unknown, max: number): string | undefined {
   const cut = [...flat].slice(0, max).join("").trimEnd();
   return cut === "" ? undefined : cut;
 }
-const instant = (value: unknown): string | undefined => (typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/u.test(value) && !Number.isNaN(Date.parse(value)) ? value : undefined);
+const instant = (value: unknown): string | undefined => (typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/u.test(value) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value.slice(0, 10) ? value : undefined);
 const round = (value: unknown): number | undefined => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined);
 
 /** One of Code's entries as the page reads it, or undefined for an entry Cloud does not show or cannot read. */

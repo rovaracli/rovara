@@ -30,15 +30,15 @@ describe("Decisions and answers", () => {
     const card = await screen.findByTestId("decisions");
     const items = card.querySelectorAll("li");
     expect(items).toHaveLength(2);
-    expect(items[0]!.textContent).toContain("The plan was approved.");
+    expect(items[0]!.textContent).toContain("Decision: the plan, approved.");
     expect(items[0]!.textContent).toContain("Nick P., in Slack, Nov 17, 10:03 UTC");
-    expect(items[1]!.textContent).toContain("Cap value? 20,000");
+    expect(items[1]!.textContent).toContain("Cap value? Answer: 20,000");
     expect(items[1]!.textContent).toContain("Ana Ruiz, in Linear, Nov 17, 10:02 UTC");
   });
 
   it("says each outcome in words, and an answer whose question is not in the list still reads", () => {
-    const rows = decisionRows([approval({ outcome: "changes_requested" }), approval({ key: "approval:b", outcome: "rejected", what: "design" }), answer({ text: "yes" })] as never);
-    expect(rows.map(row => row.main)).toEqual(["Changes were requested on the plan.", "The design was rejected.", "A question yes"]);
+    const rows = decisionRows([approval({ outcome: "changes_requested" }), approval({ key: "approval:b", outcome: "rejected", what: "design" }), approval({ key: "approval:c", what: "requirements" }), answer({ text: "yes" })] as never);
+    expect(rows.map(row => row.main)).toEqual(["Decision: the plan, changes requested.", "Decision: the design, rejected.", "Decision: the requirements, approved.", "A question was answered: yes"]);
     expect(whenWords("2026-01-05T04:07:00.000Z")).toBe("Jan 5, 04:07 UTC");
   });
 
