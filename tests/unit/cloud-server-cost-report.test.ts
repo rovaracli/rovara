@@ -480,7 +480,9 @@ describe("a feature's page total is its row in the table, to the cent", () => {
   });
 
   it("still agrees with the table under a filter (both use the filtered rows)", async () => {
-    const w = world();
+    // One task of the thirds feature is closed, so the filter really changes the row set (and the thirds' cents).
+    const filtered = rows.map((r, at) => (at === 3 ? { ...r, state: "closed", prsMerged: 0, prsOpened: 0 } : r));
+    const w = setUp({ [ACME]: { rows: filtered, features } });
     const query = "?state=merged";
     const { body: report } = await w.get(REPORT + query, "ada-token");
     for (const group of report.byFeature as Array<{ key: string; costCents: number }>) {

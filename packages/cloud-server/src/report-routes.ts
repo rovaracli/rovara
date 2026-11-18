@@ -286,7 +286,7 @@ const centsOf = (micros: number): number => Math.round(micros / MICROS_PER_CENT)
  */
 export function allocateCents(microsList: readonly number[], wholeCents?: number): number[] {
   const total = microsList.reduce((sum, micros) => sum + micros, 0);
-  // `wholeCents`: the cents the caller already settled for the whole (a table row, for the tasks under it), so the parts add up to exactly that. Without it, the whole's own rounding.
+  // `wholeCents`: the cents the caller already settled for the whole (a table row, for the tasks under it), so the parts add up to exactly that. It must be the whole's own rounding or the table's one-cent adjustment of it (within the sum of the floors plus the number of parts); the table row always is. Without it, the whole's own rounding.
   const target = wholeCents ?? centsOf(total);
   const floors = microsList.map((micros) => Math.floor(micros / MICROS_PER_CENT));
   const order = microsList.map((micros, at) => ({ at, rest: micros - floors[at]! * MICROS_PER_CENT })).sort((a, b) => b.rest - a.rest || a.at - b.at);
