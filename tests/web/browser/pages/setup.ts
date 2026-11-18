@@ -9,6 +9,12 @@ export async function setSetupRun(page: Page, project: string, status: "none" | 
   expect(answer.status()).toBe(200);
 }
 
+/** Sets a project's eval card on the pretend Code (L4-EVC: a finished setup run proposes one by default; "none" shows the checklist's own words instead). */
+export async function setEvalCard(page: Page, project: string, state: "none" | "propose" | "waiting" | "approved" | "rejected"): Promise<void> {
+  const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/eval-card`, { data: { project, state } });
+  expect(answer.status()).toBe(200);
+}
+
 /** The project setup checklist on the project's page, Project settings, and Home's "Finish setting up" card (guided onboarding PR 9). */
 export class SetupChecklistPage {
   readonly page: Page;
