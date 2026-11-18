@@ -94,6 +94,32 @@ export function agentSourceSwitchedOn(source: string, switchedOn: ReadonlySet<st
 }
 
 /**
+ * DEC 254zzz3(1) (L4-AIDEF): the company AI source defaults to Rovara's AI for a company the operator named exempt (the pilot list; the gateway's
+ * GATEWAY_ROVARA_AI_EXEMPT, here CLOUD_ROVARA_AI_EXEMPT) that saved no choice. The gateway decides every call (model-gateway agent-ai.ts
+ * resolveAgentSource); this is the same rule for the settings screen, and a contract test holds the two equal. A saved choice wins; no choice and
+ * not exempt: nothing is said (today's company-key mode); exempt: its own Anthropic key, else its own Bedrock, else Rovara's AI. A connection
+ * Cloud cannot read (null) is "cannot tell": never guessed.
+ */
+export type EffectiveAgentSource = { source: AgentAiSource | null; isDefault: boolean };
+export function effectiveAgentSource(input: { saved: AgentAiSource | undefined; exempt: boolean; keyConnected: boolean | null; bedrockConnected: boolean | null }): EffectiveAgentSource {
+  if (input.saved !== undefined) return { source: input.saved, isDefault: false };
+  if (!input.exempt) return { source: null, isDefault: false };
+  if (input.keyConnected === null) return { source: null, isDefault: false };
+  if (input.keyConnected) return { source: "anthropic_key", isDefault: true };
+  if (input.bedrockConnected === null) return { source: null, isDefault: false };
+  return { source: input.bedrockConnected ? "bedrock_byo" : "rovara", isDefault: true };
+}
+export const ROVARA_AI_EXEMPT_MAX = 10;
+const EXEMPT_COMPANY = /^org_[0-9a-z]{20}$/u;
+/** CLOUD_ROVARA_AI_EXEMPT (the same ids as the gateway's GATEWAY_ROVARA_AI_EXEMPT): company ids, comma-separated, at most ten, no repeats. Absent or empty: none. Anything else throws (fixed words, the value never repeated). */
+export function parseRovaraAiExempt(value: string | undefined): Set<string> {
+  if (value === undefined || value === "") return new Set();
+  const ids = value.split(",").map((id) => id.trim());
+  if (ids.length > ROVARA_AI_EXEMPT_MAX || ids.some((id) => !EXEMPT_COMPANY.test(id)) || new Set(ids).size !== ids.length) throw new Error("invalid rovara ai exempt companies");
+  return new Set(ids);
+}
+
+/**
  * Lead 3 B1 (DEC 254t b): a monthly limit of its own for one project or one person, over the company default (`settings.budgets`). One item
  * per override in the Companies table (`SPEND_LIMIT#PROJECT#<project>` / `SPEND_LIMIT#PERSON#<developer id>` under the company); the model
  * gateway reads the same item on every call (model-gateway company-caps.ts; deploy.ts GATEWAY_COMPANY_SPEND_LIMITS; a contract test holds the

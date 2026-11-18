@@ -10,6 +10,10 @@ export type AgentAiSource = typeof AGENT_AI_SOURCES[number];
 export interface AgentAiRead {
  /** The saved choice; null when none is saved yet. */
  source: AgentAiSource | null;
+ /** DEC 254zzz3(1): what the company's agents use now when nothing is saved and the company is on the default (Rovara's AI unless its own key or Bedrock is connected); null otherwise. */
+ effectiveSource: AgentAiSource | null;
+ /** True when `effectiveSource` is the company's default and not a saved choice. */
+ sourceIsDefault: boolean;
  version: number;
  /** Which sources can be chosen now ("your own Bedrock" is coming soon). */
  available: Readonly<Record<AgentAiSource, boolean>>;
@@ -34,5 +38,7 @@ export function readAgentAi(body: unknown): AgentAiRead {
  const said = choices.map(c => c["source"]).filter(named);
  const listed = AGENT_AI_SOURCES.filter(source => ALWAYS_LISTED.includes(source) || said.includes(source));
  const flag = (v: unknown) => typeof v === "boolean" ? v : null;
- return { source: body["source"], version: body["version"], available, anthropicKeyConnected: flag(body["anthropicKeyConnected"]), listed, openaiKeyConnected: flag(body["openaiKeyConnected"]), openrouterKeyConnected: flag(body["openrouterKeyConnected"]), endpointConnected: flag(body["endpointConnected"]), keysRevision: whole(body["keysRevision"]) ? body["keysRevision"] : null };
+ // The default is only ever a statement about an unsaved company: a saved choice is `source`, nothing else.
+ const effectiveSource = body["source"] === null && named(body["effectiveSource"]) && body["sourceIsDefault"] === true ? body["effectiveSource"] : null;
+ return { source: body["source"], effectiveSource, sourceIsDefault: effectiveSource !== null, version: body["version"], available, anthropicKeyConnected: flag(body["anthropicKeyConnected"]), listed, openaiKeyConnected: flag(body["openaiKeyConnected"]), openrouterKeyConnected: flag(body["openrouterKeyConnected"]), endpointConnected: flag(body["endpointConnected"]), keysRevision: whole(body["keysRevision"]) ? body["keysRevision"] : null };
 }

@@ -17,8 +17,9 @@
 //
 // Every failure is a fixed answer: nothing from the request, a token or the store is echoed or logged.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { agentSourceSwitchedOn, type AgentAiSource, type AgentAiSourceReader, type ByoBedrock } from "./agent-ai.js";
+import { agentSourceSwitchedOn, resolveAgentSource, type AgentAiSource, type AgentAiSourceReader, type ByoBedrock } from "./agent-ai.js";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
+import type { LearningKeySource } from "./learning-route.js";
 import { COMPANY, record, whole } from "./model-gateway-token.js";
 import { serviceCallLimiter } from "./service-call.js";
 import type { SignedTokenKind } from "./token.js";
@@ -144,8 +145,10 @@ export interface OfferedModelsHandlerOptions {
   /** createSignedTokenVerifier(..., SERVICE_TOKEN_KIND) over this gateway's one install. */
   verify: (token: unknown) => Promise<ServiceClaims | undefined>;
   sources: AgentAiSourceReader;
-  /** The agent route's Rovara's AI allow-list, when configured. */
-  rovara?: { models: ReadonlyMap<string, string> };
+  /** The agent route's Rovara's AI allow-list, when configured, and (DEC 254zzz3(1)) its exempt companies: an exempt company with no saved choice is offered what the agent route's default serves it. */
+  rovara?: { models: ReadonlyMap<string, string>; exempt?: ReadonlySet<string> };
+  /** The company key source the agent route reads (needed for the default above; without it no company is defaulted). */
+  keys?: Pick<LearningKeySource, "connected">;
   disabled: ReadonlySet<string>;
   /** The company's own Bedrock (DEC 238), when this gateway has it built (as the agent route's `agentAi.byo`). Absent: bedrock_byo is refused. */
   byo?: Pick<ByoBedrock, "connection">;
@@ -158,6 +161,8 @@ export interface OfferedModelsHandlerOptions {
   now?: () => number;
 }
 
+/** Never asked: without a key source no company is defaulted (resolveAgentSource reads keys only for an exempt company). */
+const NO_KEYS: Pick<LearningKeySource, "connected"> = { connected: async () => false };
 const ANSWERS = {
   busy: { status: 429, body: { error: { type: "busy", message: "too many service calls; try again later" } } },
   notFound: { status: 404, body: { error: { type: "not_found", message: "not found" } } },
@@ -178,7 +183,8 @@ export async function answerOfferedModels(options: OfferedModelsHandlerOptions, 
   if (claims === undefined || claims.cid !== target[1]) return ANSWERS.refused;
   let outcome: OfferedModelsOutcome;
   try {
-    const source = await options.sources.sourceFor(claims.cid);
+    // The same resolution as the agent route's admission (agent-ai.ts resolveAgentSource), so the list is what its very next call accepts.
+    const { source } = await resolveAgentSource({ sources: options.sources, ...(options.rovara?.exempt === undefined || options.keys === undefined ? {} : { exempt: options.rovara.exempt }), keys: options.keys ?? NO_KEYS, ...(options.byo === undefined ? {} : { byo: options.byo }) }, claims.iss, claims.cid);
     // The same order as the agent route's admission: the switch first, then whether this gateway serves the source at all.
     if (source !== undefined && !agentSourceSwitchedOn(source, options.switchedOn ?? new Set())) outcome = OFFERED_SWITCHED_OFF;
     else if ((source === "openai_key" && options.chat?.openai !== true) || (source === "openrouter_key" && options.chat?.openrouter !== true)) outcome = OFFERED_CHAT_OFF;

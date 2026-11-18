@@ -179,6 +179,21 @@ no output and no token counts, so it is never charged (including 5xx, model time
 first frame, which the transport answers as its error status); its refusal of Rovara's own role (401, 403) answers 503 "Rovara's AI
 is unavailable right now". A stream that breaks after output started is charged at its hold, as on every route.
 
+### The default for exempt companies (DEC 254zzz3(1), L4-AIDEF)
+
+This REPLACES, for the operator's exempt (pilot) companies only, the older "customer always pays / never Rovara-paid model use" rule. A company
+named in `GATEWAY_ROVARA_AI_EXEMPT` (the same list as above; the operator adds the pilot company's id) with NO saved choice uses Rovara's AI
+automatically, with no click, in this order (`agent-ai.ts` `resolveAgentSource`, one function for the agent route, the answers and learning routes and the
+offered-models list): a saved choice always wins; else its own connected Anthropic key; else its own connected Bedrock; else Rovara's AI. Switching back
+to Rovara's AI later is an explicit saved choice. A company that is not exempt, or a gateway without Rovara's AI, is exactly as before (company-key mode). A read
+that fails refuses the call (503) and never guesses onto Rovara's account; there is no fallback from one source to another.
+The same default serves the answers and learning routes (`learning-route.ts` `rovaraDefault`): only where the call would otherwise pause `no_provider`
+(no connected Anthropic account, Anthropic Messages path only), the company is exempt and its effective source is Rovara's AI; an explicit other source (or its own
+Bedrock, which those routes never served) keeps today's pause. Every cap applies unchanged to the spend: task, person, project, company, the combined company cap,
+the upkeep month (agent route), the answers month and the learning month. The call's ledger row carries `{source: "rovara_ai", charge: "exempt", model}` (nothing is
+billed to the company); each agent call also logs `{event: "agent_source", company, source, via}` (ids and words only). Cloud's AI settings screen shows the
+effective source when `CLOUD_ROVARA_AI_EXEMPT` (the same ids) is set on Cloud's server.
+
 Models (DEC 243): `-c rovaraModelGatewayRovaraAi=on` offers every Claude model Bedrock has in the account, each engine model name on
 its `us.` system inference profile (US cross-Region routing; data stays in the US): `claude-haiku-4-5` (and the dated
 `claude-haiku-4-5-20251001`), `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-fable-5-2`
