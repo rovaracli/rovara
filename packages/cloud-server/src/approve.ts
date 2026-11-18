@@ -14,6 +14,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { CodeError, type CodeClient } from "./code-client.js";
 import { waitingPlan, type CodeTask } from "./session-view.js";
+import { CORE_ACTION_WORDS, isCoreNotYet, planDecidedOnCard } from "./core-task-actions.js";
 import type { CodeSession } from "./sessions.js";
 import type { WorkSessionStore } from "./work-sessions.js";
 
@@ -89,6 +90,9 @@ export async function approvalRoute(
     if (record.owner.developerId !== context.session.access.developerId) {
       return page(403, "Not yours to decide", `<h1>Only ${escape(record.owner.name)} can decide this plan</h1><p>They own the session. <a href="${sessionLink}">Back to the session</a></p>`);
     }
+    // A core task's plan is decided on its decision card, with Code's own step-up, digest and risk rules (audit 2026-11-18 item 6): the core takes no decision from this page.
+    const onCard = page(200, "Decide on the session page", `<h1>Decide this plan on its card</h1><p>${escape(CORE_ACTION_WORDS.planOnCard)}</p><p><a href="${sessionLink}">Open the session</a></p>`);
+    if (await planDecidedOnCard(context.client, context.session, record.taskId)) return onCard;
     if (method === "GET") {
       return page(200, "Approve the plan",
         `<h1>Approve the plan</h1><p><strong>${escape(task.title || "Task")}</strong> in ${escape(task.project)}</p>`
@@ -108,10 +112,16 @@ export async function approvalRoute(
     if (Number(form.get("revision")) !== plan.revision || form.get("digest") !== plan.digest) {
       return page(409, "The plan changed", `<h1>The plan changed</h1><p>A newer plan is waiting. <a href="/v1/app/approve/plan-${record.sessionId}">Review it</a>.</p>`);
     }
-    await context.client.json(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/workflow/decision`, {
-      method: "POST",
-      body: { requestId: randomUUID(), expectedRevision: plan.revision, decision, reason: decision === "APPROVE" ? (reason || "Approved in Rovara Cloud") : reason, artifactDigest: plan.digest },
-    });
+    try {
+      await context.client.json(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/workflow/decision`, {
+        method: "POST",
+        body: { requestId: randomUUID(), expectedRevision: plan.revision, decision, reason: decision === "APPROVE" ? (reason || "Approved in Rovara Cloud") : reason, artifactDigest: plan.digest },
+      });
+    } catch (error) {
+      // Code says the task is the core's (its card was not listed a moment ago): nothing was decided, and the card is where it is decided.
+      if (isCoreNotYet(error)) return onCard;
+      throw error;
+    }
     return { status: 303, headers: { location: sessionLink, "cache-control": "no-store" }, body: "" };
   } catch (error) {
     if (error instanceof CodeError) {
