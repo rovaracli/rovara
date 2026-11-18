@@ -11,6 +11,7 @@ import { checklistAbsent, fixedSetupWords, setupChecklistKey } from "../../api/s
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { RunJournal } from "./RunJournal.js";
+import { REVIEW_TEXT, SetupReview, type SetupReviewState } from "./SetupReview.js";
 
 type RunRow = ProjectSetupChecklist["setupRun"];
 const minutes = (ms: number) => { const m = Math.max(1, Math.round(ms / 60_000)); return `${String(m)} ${m === 1 ? "minute" : "minutes"}`; };
@@ -43,7 +44,7 @@ export function SetupRunControls({ project, status: given, onChanged, againLabel
  </div>;
 }
 
-export function SetupRunRow({ project, row, onChanged }: { project: string; row: RunRow; onChanged: () => void }) {
+export function SetupRunRow({ project, row, onChanged, review }: { project: string; row: RunRow; onChanged: () => void; /** L4-T1: where a setup of Rovara's waits for a person; its cards are mounted here, so no page change is needed to approve. */ review?: SetupReviewState }) {
  const facts = [
   row.commandsFound === undefined ? undefined : `Commands found: ${String(row.commandsFound.setup)} to set up, ${String(row.commandsFound.tests)} to test.`,
   row.testOutcome === "passed" ? "Tests passed." : row.testOutcome === "failed" ? "Tests failed." : undefined,
@@ -52,7 +53,8 @@ export function SetupRunRow({ project, row, onChanged }: { project: string; row:
  return <div data-testid="setup-run-row" data-status={row.status}>
   {row.status === "none" && <p>Rovara works out how to install and test this project in a throw-away sandbox with no secrets. It uses this project's AI budget.</p>}
   {row.status === "running" && <p role="status">Rovara is working out how to install and test the project. You can leave and come back.</p>}
-  {row.status === "ready" && <p role="status">Rovara found how to set the project up.</p>}
+  {row.status === "ready" && (review === undefined || review.stage === "none" ? <p role="status">Rovara found how to set the project up.</p> : <p role="status" data-testid="setup-run-needs-you"><strong>{REVIEW_TEXT[review.stage]}</strong></p>)}
+  {review !== undefined && <SetupReview project={project} review={review} />}
   {row.status === "failed" && row.failure !== undefined && <p role="alert" data-testid="setup-run-failure"><VisibleText text={row.failure} /></p>}
   {facts.length > 0 && <p className="rv-muted" data-testid="setup-run-facts">{facts.join(" ")}</p>}
   {row.failedCommand !== undefined && <div className="rv-checklist-failed" data-testid="setup-run-failed-command">
@@ -61,7 +63,7 @@ export function SetupRunRow({ project, row, onChanged }: { project: string; row:
   </div>}
   {row.status === "ready" && <p className="rv-muted">Running it again only proposes: the working setup stays until someone confirms a new one.</p>}
   <div className="rv-connect-actions">
-   <SetupRunControls project={project} status={row.status} onChanged={onChanged} />
+   <SetupRunControls project={project} status={row.status} onChanged={() => { review?.reset(); onChanged(); }} />
    {row.status === "failed" && <Link className="rv-button" data-testid="setup-run-edit" to={`/app/onboard?project=${encodeURIComponent(project)}&step=setup`}>Edit commands</Link>}
   </div>
   {row.status !== "none" && <details><summary>What Rovara ran</summary><RunJournal project={project} running={row.status === "running"} /></details>}

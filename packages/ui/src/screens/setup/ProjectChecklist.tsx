@@ -15,6 +15,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { SlackChannelRow } from "../connect/SlackChannelRow.js";
 import { LinearTeamRow } from "../connect/LinearTeamRow.js";
 import { SetupRunRow } from "./SetupRunRow.js";
+import { useSetupReview } from "./SetupReview.js";
 import { WikiChecklistRow } from "./wiki/WikiChecklistRow.js";
 import { CompanySetupLine } from "./CompanySetupLine.js";
 import { EvalCard } from "./EvalCard.js";
@@ -55,6 +56,8 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
   refetchInterval: current => (current.state.data?.setupRun.state === "running" ? 5000 : false),
  });
  const [busy, setBusy] = useState<SetupSkippableRow | "evalNone">(), [error, setError] = useState<string>();
+ // L4-T1: a setup waiting for a person is reviewed and approved in the Setup run row, not on another page. Asked only once the checklist says a run finished.
+ const review = useSetupReview(project, status.data?.setupRun.status === "ready");
  if (status.isError && checklistAbsent(status.error)) return null;
  if (status.isPending) return <Skeleton label="Loading the setup checklist" />;
  if (status.isError) return <section className="rv-checklist" aria-label="Finish setting up"><p role="status" data-testid="checklist-read-error"><VisibleText text={fixedSetupWords(status.error, "The project's setup couldn't be read just now. Try again.")} /></p><Button onClick={() => { void status.refetch(); }}>Try again</Button></section>;
@@ -92,8 +95,8 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
    <Row name="repos" state={data.repos.state} open={open("repos")}>
     {data.repos.items.length === 0 ? <p>No repos in this project yet.</p> : <ul className="rv-checklist-chips" aria-label="Repos in this project">{data.repos.items.map(repo => <li key={repo.name}><VisibleText text={repo.fullName ?? repo.name} /></li>)}</ul>}
    </Row>
-   <Row name="setupRun" state={runRow.state} open={open("setupRun") || runRow.state === "running" || runRow.state === "failed"}>
-    <SetupRunRow project={project} row={runRow} onChanged={refresh} />
+   <Row name="setupRun" state={review.stage === "none" ? runRow.state : review.stage === "checking" ? "running" : "needs_you"} open={open("setupRun") || runRow.state === "running" || runRow.state === "failed" || review.stage !== "none"}>
+    <SetupRunRow project={project} row={runRow} onChanged={refresh} review={review} />
    </Row>
    <Row name="evalConfirm" state={data.evalConfirm.state} open={open("evalConfirm")}>
     {data.evalConfirm.blockedBy === "setupRun" ? <p>After the setup run, Rovara proposes how it checks work here.</p>

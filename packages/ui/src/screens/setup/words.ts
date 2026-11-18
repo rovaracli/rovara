@@ -57,3 +57,11 @@ export const APPROVAL_WORDS = {
   discarded: "Discarded. The project keeps its current setup.",
   moved: "This setup changed or is no longer waiting.",
 } as const;
+
+/** The checklist's Setup run row while a setup of Rovara's waits for a person (L4-T1, G1): what the row says, and what a person who may not decide reads. */
+export const REVIEW_WORDS = {
+  review: "Needs you: review the setup",
+  checking: "Checking on a fresh machine",
+  approve: "Needs you: approve",
+  readOnly: "Rovara has a setup waiting. A project admin, or a company owner or admin, reviews and approves it.",
+} as const;
