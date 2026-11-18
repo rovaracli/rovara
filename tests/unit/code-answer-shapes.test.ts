@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import {
   CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, buildAnswer, createCloudHandler, newSessionId, withoutTraceId, type CloudRequest,
 } from "../../packages/cloud-server/src/index.js";
-import { WORK_DETAILS_MAX, workPlan } from "../../packages/cloud-server/src/work-reads.js";
+import { workPlan } from "../../packages/cloud-server/src/work-reads.js";
+import { CORE_TASK_ROUTES, renamed } from "../fixtures/code-core-task-routes.js";
 import { ProjectSetupChecklistSchema, SetupAgentViewSchema, SetupConfirmReplySchema, TestEnvironmentStateSchema } from "../../packages/contracts/src/web.js";
 import { readPlan, readTaskList, workRow } from "../../packages/ui/src/api/work.js";
 import {
@@ -20,6 +21,7 @@ const START = Date.parse("2026-11-17T12:00:00.000Z");
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
 const ME = "d".repeat(64), OTHER = "e".repeat(64);
+type Obj = Record<string, unknown>;
 
 interface Call { method: string; path: string; search: string; body: unknown }
 type Code = (call: Call) => Response | undefined;
@@ -140,53 +142,61 @@ describe("the Plan/Spec tab reads Code's {plan:{...}} answer (audit item 5)", ()
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 describe("the Work list and Home rows (audit item 7)", () => {
-  it("pages past Code's first page, fills each open task from its own view, and a task between steps is never 'Finished'", async () => {
-    const page1 = Array.from({ length: 50 }, (_, n) => taskListRow(id(n + 1), { status: n === 0 ? "SUCCEEDED" : "CLOSED" }));
-    const page2 = [taskListRow(id(51), { status: "RUNNING" })];
-    const w = setUp((call) => {
-      if (call.path === "/v1/dev/tasks") return json(200, devAnswer(new URLSearchParams(call.search).get("cursor") === null ? { tasks: page1, nextCursor: "c2" } : { tasks: page2 }));
-      const one = /^\/v1\/dev\/tasks\/([0-9a-f-]{36})$/u.exec(call.path)?.[1];
-      if (one === id(1)) return json(200, devAnswer({ task: { ...taskListRow(id(1)), workflow: { stage: "PLAN_REVIEW", state: "WAITING", revision: 3 }, pullRequests: [{ repository: "acme/api", number: 7, url: "https://github.com/acme/api/pull/7", state: "open" }], spent: { usd: 1.25 }, runLimit: { limitUsd: 5 } } }));
-      if (one === id(51)) return json(500, { error: { code: "RUNTIME_UNAVAILABLE", message: "busy" } });
-      return undefined;
-    });
+  // Code #1045 item 5: one detailed list read (`?detail=1`) gives each row its stage, pull requests, cost and limit; no task is read one by one. The rows are Code's real ones
+  // (tests/fixtures/code-core-task-routes.json `list`).
+  const L = CORE_TASK_ROUTES.list;
+  const coreRow = (taskId: string) => renamed((L.detailed.body["tasks"] as Obj[])[0]!, [[L.taskId, taskId]]);
+  const plainCoreRow = (taskId: string) => renamed((L.plain.body["tasks"] as Obj[])[0]!, [[L.taskId, taskId]]);
+  const workflowlessRow = (taskId: string) => renamed((L.workflowDetailed.body["tasks"] as Obj[])[0]!, [[L.workflowTaskId, taskId]]);
+
+  it("one detailed list read per page (pages past the first), no task read one by one; each row carries Code's stage, pull requests, cost and limit", async () => {
+    const page1 = [coreRow(id(1)), ...Array.from({ length: 49 }, (_, n) => taskListRow(id(n + 2), { status: "CLOSED" }))];
+    const page2 = [workflowlessRow(id(51))];
+    const w = setUp((call) => call.path === "/v1/dev/tasks" ? json(200, devAnswer(new URLSearchParams(call.search).get("cursor") === null ? { tasks: page1, nextCursor: "c2" } : { tasks: page2 })) : undefined);
     const answer = await w.send("GET", "/v1/web/sessions");
     expect(answer.status).toBe(200);
     const tasks = answer.body["tasks"] as Array<Record<string, unknown>>;
     expect(tasks).toHaveLength(51);
-    expect(w.calls.filter((call) => call.path === "/v1/dev/tasks").map((call) => new URLSearchParams(call.search).get("limit"))).toEqual(["50", "50"]);
-    // Closed tasks are not read one by one.
-    expect(w.calls.filter((call) => /^\/v1\/dev\/tasks\/[0-9a-f-]{36}$/u.test(call.path)).map((call) => call.path.slice(-12))).toEqual([id(1).slice(-12), id(51).slice(-12)]);
-    expect(tasks[0]).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" }, pullRequests: [{ number: 7 }], spent: { usd: 1.25 }, runLimit: { limitUsd: 5 } });
-    expect(tasks[50]).toMatchObject({ status: "RUNNING", detail: "unread" });
+    expect(w.calls.filter((call) => call.path === "/v1/dev/tasks").map((call) => [new URLSearchParams(call.search).get("detail"), new URLSearchParams(call.search).get("limit")])).toEqual([["1", "50"], ["1", "50"]]);
+    expect(w.calls.filter((call) => /^\/v1\/dev\/tasks\/[0-9a-f-]{36}/u.test(call.path))).toEqual([]);
+    // Code's upper-case pull request state is the task view's lower-case word, which the app reads.
+    expect(tasks[0]).toMatchObject({ workflow: { stage: "PLAN", state: "RUNNING", revision: 1, path: "QUICK" }, pullRequests: [{ repository: "demo", number: 42, url: "https://github.com/example/demo/pull/42", state: "open" }], spent: { usd: 1.25 }, runLimit: { limitUsd: 7.5 } });
+    expect(tasks[0]).not.toHaveProperty("detail");
+    expect(tasks[50]).toMatchObject({ status: "STARTING", spent: { usd: 0.42 } });
+    expect(tasks[50]).not.toHaveProperty("runLimit");
     const rows = readTaskList(answer.body);
-    const now = new Date(START);
-    expect(workRow(rows[0]!, undefined, now)).toMatchObject({ group: "you", need: "Review spec", path: undefined });
-    expect(rows[0]).toMatchObject({ spentUsd: 1.25, runLimitUsd: 5 });
+    expect(rows[0]).toMatchObject({ spentUsd: 1.25, runLimitUsd: 7.5 });
+    expect(workRow(rows[0]!, undefined, new Date(START))).toMatchObject({ group: "run" });
   });
 
-  it("a SUCCEEDED task whose own view could not be read is not shown as finished; one Code says has no workflow is", async () => {
-    const w = setUp((call) => {
-      if (call.path === "/v1/dev/tasks") return json(200, devAnswer({ tasks: [taskListRow(id(1)), taskListRow(id(2))] }));
-      if (call.path === `/v1/dev/tasks/${id(1)}`) return json(403, { error: { code: "FORBIDDEN", message: "no" } });
-      if (call.path === `/v1/dev/tasks/${id(2)}`) return json(200, devAnswer({ task: taskListRow(id(2)) }));
-      return undefined;
-    });
-    const rows = readTaskList((await w.send("GET", "/v1/web/sessions")).body);
-    const now = new Date(START);
-    expect(workRow(rows[0]!, undefined, now)).toMatchObject({ group: "run", line: "Open it to see its step" });
-    expect(workRow(rows[1]!, undefined, now)).toMatchObject({ group: "done", line: "Finished" });
+  it("a pull request state Code does not name (UNKNOWN) says nothing; a merged one is the app's 'merged'", async () => {
+    const row = { ...coreRow(id(1)), pullRequests: [{ repository: "demo", number: 1, url: "https://github.com/example/demo/pull/1", state: "UNKNOWN" }, { repository: "demo", number: 2, url: "https://github.com/example/demo/pull/2", state: "MERGED" }] };
+    const w = setUp((call) => call.path === "/v1/dev/tasks" ? json(200, devAnswer({ tasks: [row] })) : undefined);
+    const tasks = (await w.send("GET", "/v1/web/sessions")).body["tasks"] as Array<{ pullRequests: Obj[] }>;
+    expect(tasks[0]!.pullRequests).toEqual([{ repository: "demo", number: 1, url: "https://github.com/example/demo/pull/1" }, { repository: "demo", number: 2, url: "https://github.com/example/demo/pull/2", state: "merged" }]);
   });
 
-  it(`reads at most ${String(WORK_DETAILS_MAX)} task views per list; the rest are marked unread`, async () => {
-    const w = setUp((call) => {
-      if (call.path === "/v1/dev/tasks") return json(200, devAnswer({ tasks: Array.from({ length: 40 }, (_, n) => taskListRow(id(n + 1), { status: "RUNNING" })) }));
-      const one = /^\/v1\/dev\/tasks\/([0-9a-f-]{36})$/u.exec(call.path)?.[1];
-      return one === undefined ? undefined : json(200, devAnswer({ task: { ...taskListRow(one, { status: "RUNNING" }), workflow: { stage: "IMPLEMENT", state: "RUNNING" } } }));
-    });
-    const tasks = (await w.send("GET", "/v1/web/sessions")).body["tasks"] as Array<Record<string, unknown>>;
-    expect(w.calls.filter((call) => /^\/v1\/dev\/tasks\/[0-9a-f-]{36}$/u.test(call.path))).toHaveLength(WORK_DETAILS_MAX);
-    expect(tasks.filter((task) => task["detail"] === "unread")).toHaveLength(40 - WORK_DETAILS_MAX);
+  it("a Code without the detailed list answers its plain rows: an open SUCCEEDED row is never 'Finished' (unread); a closed one says so; a detailed row with no workflow is a plain task's", async () => {
+    const plain = setUp((call) => call.path === "/v1/dev/tasks" ? json(200, devAnswer({ tasks: [{ ...plainCoreRow(id(1)), status: "SUCCEEDED" }, taskListRow(id(2), { status: "CLOSED" })] })) : undefined);
+    const plainTasks = (await plain.send("GET", "/v1/web/sessions")).body["tasks"] as Array<Record<string, unknown>>;
+    expect(plainTasks[0]).toMatchObject({ detail: "unread" });
+    expect(plainTasks[1]).not.toHaveProperty("detail");
+    const rows = readTaskList({ tasks: plainTasks });
+    expect(workRow(rows[0]!, undefined, new Date(START))).toMatchObject({ group: "run", line: "Open it to see its step" });
+    // Code served the detail: a plain task (no workflow) that succeeded is finished.
+    const served = setUp((call) => call.path === "/v1/dev/tasks" ? json(200, devAnswer({ tasks: [{ ...workflowlessRow(id(3)), status: "SUCCEEDED" }] })) : undefined);
+    const servedRows = readTaskList((await served.send("GET", "/v1/web/sessions")).body);
+    expect(workRow(servedRows[0]!, undefined, new Date(START))).toMatchObject({ group: "done", line: "Finished" });
+    // A SUCCEEDED row with no detail at all in a served list (Code could not read its detail): never "Finished".
+    const bare = setUp((call) => call.path === "/v1/dev/tasks" ? json(200, devAnswer({ tasks: [coreRow(id(4)), { ...plainCoreRow(id(5)), status: "SUCCEEDED" }] })) : undefined);
+    const bareTasks = (await bare.send("GET", "/v1/web/sessions")).body["tasks"] as Array<Record<string, unknown>>;
+    expect(bareTasks[1]).toMatchObject({ detail: "unread" });
+    expect(bareTasks[0]).not.toHaveProperty("detail");
+  });
+
+  it("another company's caller: Code lists none of the task, and Cloud adds nothing", async () => {
+    const w = setUp((call) => call.path === "/v1/dev/tasks" ? json(200, devAnswer(L.omarDetailed.body)) : undefined);
+    expect((await w.send("GET", "/v1/web/sessions")).body).toEqual({ tasks: [] });
   });
 
   it("take-over: Code's PENDING answer keeps the old owner and asks the person to confirm on Code's page", async () => {
@@ -277,12 +287,19 @@ describe("setup (audit items 8b, 8c, 9, 10b)", () => {
     const answer = await w.send("GET", "/v1/web/projects/payments/test-environment");
     expect(answer).toEqual({ status: 200, body: { draft: { status: "none", notes: [TEST_ENVIRONMENT_HOSTED.testServicesUnavailable], questions: [], pendingServices: [] } } });
     expect(TestEnvironmentStateSchema.safeParse(answer.body).success).toBe(true);
-    state = { ...TEST_ENVIRONMENT_HOSTED, approved: { revision: 3, digest: "b".repeat(64) }, proposal: { digest: "c".repeat(64) } };
-    expect(((await w.send("GET", "/v1/web/projects/payments/test-environment")).body["draft"] as { notes: string[] }).notes).toEqual(["An approved test environment is in place (revision 3).", "A proposed test environment is waiting for review in Rovara Code.", TEST_ENVIRONMENT_HOSTED.testServicesUnavailable]);
+    // A proposal without its body (an older Code): one fixed line, nothing offered for approval.
+    const realProposal = CORE_TASK_ROUTES.testenv.read.body["proposal"] as Obj;
+    const withoutBody: Obj = { ...realProposal };
+    delete withoutBody["environment"];
+    state = { ...TEST_ENVIRONMENT_HOSTED, approved: { revision: 3, digest: "b".repeat(64) }, proposal: withoutBody };
+    const older = (await w.send("GET", "/v1/web/projects/payments/test-environment")).body;
+    expect((older["draft"] as { notes: string[] }).notes).toEqual(["An approved test environment is in place (revision 3).", "A proposed test environment is waiting for review in Rovara Code.", TEST_ENVIRONMENT_HOSTED.testServicesUnavailable]);
+    expect(older).not.toHaveProperty("proposal");
     state = { ...TEST_ENVIRONMENT_HOSTED, enabled: false };
     expect((await w.send("GET", "/v1/web/projects/payments/test-environment")).status).toBe(404);
     // A field Code does not send, or a sentence that is not Code's fixed one, is refused whole: nothing of it reaches the page.
-    for (const bad of [{ ...TEST_ENVIRONMENT_HOSTED, extra: 1 }, { ...TEST_ENVIRONMENT_HOSTED, testServicesUnavailable: "<b>LEAK</b>" }, { ...TEST_ENVIRONMENT_HOSTED, testServicesUnavailable: "Test services not available here: LEAK" }, { ...TEST_ENVIRONMENT_HOSTED, project: "other" }]) {
+    for (const bad of [{ ...TEST_ENVIRONMENT_HOSTED, extra: 1 }, { ...TEST_ENVIRONMENT_HOSTED, testServicesUnavailable: "<b>LEAK</b>" }, { ...TEST_ENVIRONMENT_HOSTED, testServicesUnavailable: "Test services not available here: LEAK" }, { ...TEST_ENVIRONMENT_HOSTED, project: "other" },
+      { ...TEST_ENVIRONMENT_HOSTED, proposal: { ...realProposal, extra: "LEAK" } }, { ...TEST_ENVIRONMENT_HOSTED, proposal: { ...realProposal, risk: "LEAK" } }, { ...TEST_ENVIRONMENT_HOSTED, proposal: { ...realProposal, digest: "LEAK" } }]) {
       state = bad;
       const refused = await w.send("GET", "/v1/web/projects/payments/test-environment");
       expect(refused.status).toBe(502);

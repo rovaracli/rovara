@@ -773,6 +773,19 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return { plan: { ...answer.plan, sha256: PLAN_DIGEST, approved: task.workflow?.stage !== "PLAN_REVIEW" } };
   };
 
+  /** One task as Code's detailed list row says it (aws/developer-tasks.ts listRowDetail): the workflow's own upper-case pull request states, the cost and limit as numbers. */
+  const detailedRowOf = (task: TaskView): Record<string, unknown> => {
+    const workflow = task.workflow as (TaskWorkflow & { path?: string; blockReason?: string }) | undefined;
+    const pulls = (task.pullRequests ?? []) as Array<{ repository: string; number: number; url: string; state?: string }>;
+    const spent = (task as { spent?: { usd?: number } }).spent?.usd, limit = (task as { runLimit?: { limitUsd?: number } }).runLimit?.limitUsd;
+    return {
+      taskId: task.taskId, title: task.title, project: task.project, status: task.status, shared: task.shared === true, createdAt: task.createdAt, updatedAt: task.updatedAt,
+      ...(workflow === undefined ? {} : { workflow: { stage: workflow.stage, state: workflow.state, revision: workflow.revision, path: workflow.path ?? "FULL", ...(workflow.blockReason === undefined ? {} : { blockReason: workflow.blockReason }) } }),
+      ...(pulls.length === 0 ? {} : { pullRequests: pulls.map((pull) => ({ repository: pull.repository, number: pull.number, url: pull.url, state: (pull.state ?? "unknown").toUpperCase() })) }),
+      ...(spent === undefined ? {} : { costUsd: spent }), ...(limit === undefined ? {} : { runLimitUsd: limit }),
+    };
+  };
+
   const proofOf = (task: TaskView): ProofIndexResponse => ({
     taskId: task.taskId,
     items: [
@@ -1086,6 +1099,11 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { status: 201, body: { task: entry.task } };
     },
     "tasks.list": ({ person, query }) => {
+      // Code #1045 item 5: `detail=1` (exactly) answers Code's detailed rows (the list row and its stage, pull requests, cost and limit, contracts DeveloperTaskDetailedListItemSchema),
+      // only for the person's own tasks, as Code's list does; anything else is the list as before.
+      if (query.get("detail") === "1" && query.get("involved") !== "1") {
+        return { body: { tasks: [...tasks.values()].filter((entry) => entry.owner.developerId === person.developerId).map((entry) => detailedRowOf(entry.task)).sort((a, b) => String(b["updatedAt"]).localeCompare(String(a["updatedAt"]))) } as never };
+      }
       const ordinary = () => ({ body: { tasks: [...tasks.values()].filter((entry) => entry.owner.developerId === person.developerId || readers.get(entry.task.taskId)?.has(person.developerId) === true).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } });
       if (query.get("involved") !== "1" || involvedMode === "old") return ordinary();
       if (involvedMode !== "on") return failure(Number(involvedMode), involvedMode === "500" ? "RUNTIME_UNAVAILABLE" : involvedMode === "400" ? "CONFIG_INVALID" : "NOT_FOUND", "involved is not served here");

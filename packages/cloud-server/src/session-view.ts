@@ -83,8 +83,11 @@ export function freshPerson<P extends { developerId: string; name: string }>(per
   return viewer.name !== undefined && viewer.name !== "" && person.developerId === viewer.developerId ? { ...person, name: viewer.name } : person;
 }
 
-/** What Cloud learnt from Code beside the task: `planOnCard` when Code holds a pending coding-plan card for it (a core task), decided on that card, not on Cloud's approval page. */
-export interface SessionExtras { planOnCard?: boolean }
+/**
+ * What Cloud learnt from Code beside the task: `planOnCard` when Code holds a pending coding-plan card for it (a core task), decided on that card, not on Cloud's approval page;
+ * `coOwner` when the viewer is not the session's owner but is an owner on the task's People list (they may answer review findings, DEC 254zzz39 (6)).
+ */
+export interface SessionExtras { planOnCard?: boolean; coOwner?: boolean }
 
 export function sessionView(session: WorkSession, task: CodeTask, viewer: { developerId: string; name?: string }, origin: string, people?: SessionPeople, extras: SessionExtras = {}) {
   const status = sessionStatus(task);
@@ -114,7 +117,7 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
     approvals: owner && waitingPlan(task) !== undefined && extras.planOnCard !== true ? [{ approvalId: `plan-${session.sessionId}`, title: "Review the plan", confirmUrl: approvalUrl(origin, session.sessionId) }] : [],
     followers: follow.followers,
     viewingNow: follow.viewingNow,
-    you: { level: owner ? "edit" : "view", owner, following: follow.following, actions },
+    you: { level: owner ? "edit" : "view", owner, following: follow.following, actions, ...(!owner && extras.coOwner === true ? { coOwner: true } : {}) },
     link: `${origin.replace(/\/+$/u, "")}/s/${session.sessionId}`,
     bindings: [],
     legs: [],

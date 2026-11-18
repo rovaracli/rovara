@@ -1,0 +1,1463 @@
+{
+ "_about": "Generated 2026-11-18 by running Rovara Code's own handlers (not written by hand), in clones made for this purpose (not the live worktrees): PrepLabsAI/Rovara #1052 head 1ec1226db (stacked on #1045 a91ae12dd and mega17) for page, sessions, rules, testenv and list; PrepLabsAI/Rovara #1022 head f47ce5acb for members. Each section came from a generator appended to Code's own test file, over that file's own harness: page and sessions from tests/unit/core-host-task-web-routes.test.ts (sessions: a core runtime whose start extras are aws/hosted-intake.ts ticketSessionStartExtras, so every person's start writes its session; a second app without them for a task started before that); rules from tests/contract/core-task-rule-routes.test.ts (through the AWS developer API, engine boundary and core; People switched on, but this harness has no People person check, so People answers are Code's own refusals); testenv from tests/unit/core-host-test-environment-approval.test.ts (with the read wired too); list from tests/contract/aws-engine-boundary.test.ts (the core task's record given one pull request); members from tests/contract/project-setup-status-routes.test.ts. The developer API answers had the broker's requestId taken off by those harnesses (Cloud's CodeClient drops it anyway). Regenerate from Code's code; never edit a value to make a Cloud test pass.",
+ "page": {
+  "taskId": "244bed8a-4806-4367-adf5-2cf9fe551236",
+  "revision": 6,
+  "candidateDigest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d",
+  "findingId": "db21177e022992e630816f79a03e86144c0918d377153d8821ab595ba39bcec2",
+  "blockedTask": {
+   "taskId": "244bed8a-4806-4367-adf5-2cf9fe551236",
+   "owner": {
+    "developerId": "local-owner",
+    "name": "Local owner"
+   },
+   "title": "Add a /health endpoint",
+   "project": "payments",
+   "status": "STARTING",
+   "startingRevision": 1,
+   "client": "an AI tool",
+   "shared": false,
+   "createdAt": "2026-11-15T10:00:00.000Z",
+   "updatedAt": "2026-11-15T10:00:00.000Z",
+   "events": [],
+   "workflow": {
+    "schemaVersion": 1,
+    "definitionId": "agentx-task-to-pr",
+    "definitionVersion": "1.1.0",
+    "taskId": "244bed8a-4806-4367-adf5-2cf9fe551236",
+    "ownerId": "2ddb4153c89c799ae4b6389564e87c67d3986673dba5674e3a98697253d44f58",
+    "path": "QUICK",
+    "revision": 6,
+    "stage": "REVIEW",
+    "state": "BLOCKED",
+    "blockReason": "the security review did not pass",
+    "createdAt": "2026-11-10T10:00:00.000Z",
+    "updatedAt": "2026-11-10T10:00:00.000Z",
+    "artifacts": [
+     {
+      "id": "plan-1",
+      "type": "plan",
+      "version": 1,
+      "sha256": "6392cfd69c208fc6aba6d8d8a36bdfd382f4f3d263a478e5ae90f12b080f3975",
+      "producer": "agentx-worker-untrusted",
+      "objectKey": "tasks/8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6/plan-1.md",
+      "createdAt": "2026-11-10T10:00:00.000Z"
+     }
+    ],
+    "decisions": [],
+    "checkPolicy": {
+     "required": [
+      {
+       "id": "unit",
+       "label": "Unit",
+       "command": {
+        "cwd": "repo/demo",
+        "executable": "npm",
+        "args": [
+         "test"
+        ],
+        "timeoutSeconds": 30
+       }
+      }
+     ],
+     "optional": [],
+     "selectedOptionalIds": [],
+     "proposed": []
+    },
+    "candidate": {
+     "schemaVersion": 1,
+     "repositories": [
+      {
+       "repositoryId": "demo",
+       "commitSha": "1111111111111111111111111111111111111111",
+       "treeSha": "1111111111111111111111111111111111111111",
+       "baseCommitSha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+     ],
+     "digest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d"
+    },
+    "verification": {
+     "candidateDigest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d",
+     "producer": "agentx-broker",
+     "environmentId": "ci",
+     "recordedAt": "2026-11-10T10:00:00.000Z",
+     "results": [
+      {
+       "checkId": "unit",
+       "status": "PASS"
+      }
+     ]
+    },
+    "reviews": [
+     {
+      "operationId": "11111111-1111-4111-8111-111111111111",
+      "candidateDigest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d",
+      "role": "CRITIC",
+      "provider": "scripted",
+      "version": "1",
+      "status": "PASS",
+      "findings": [],
+      "readOnly": true,
+      "recordedAt": "2026-11-10T10:00:00.000Z"
+     },
+     {
+      "operationId": "11111111-1111-4111-8111-111111111111",
+      "candidateDigest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d",
+      "role": "SECURITY",
+      "provider": "scripted",
+      "version": "1",
+      "status": "FINDINGS",
+      "findings": [
+       {
+        "text": "A token is written to the log.",
+        "origin": "INTRODUCED"
+       }
+      ],
+      "readOnly": true,
+      "recordedAt": "2026-11-10T10:00:00.000Z"
+     }
+    ]
+   }
+  },
+  "tokenRoute": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "FORBIDDEN",
+     "message": "Accepting a security finding needs the Rovara web page with a fresh sign-in"
+    }
+   }
+  },
+  "notWebApp": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "FORBIDDEN",
+     "message": "Accepting a security finding needs the Rovara web page with a fresh sign-in"
+    }
+   }
+  },
+  "noStepUp": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "REAUTH_REQUIRED",
+     "message": "Accepting a security finding needs the Rovara web page with a fresh sign-in"
+    }
+   }
+  },
+  "staleStepUp": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "REAUTH_REQUIRED",
+     "message": "Accepting a security finding needs the Rovara web page with a fresh sign-in"
+    }
+   }
+  },
+  "member": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "TASK_NOT_FOUND",
+     "message": "no such task"
+    }
+   }
+  },
+  "otherCompany": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "TASK_NOT_FOUND",
+     "message": "no such task"
+    }
+   }
+  },
+  "accepted": {
+   "status": 200,
+   "body": {
+    "task": {
+     "taskId": "244bed8a-4806-4367-adf5-2cf9fe551236",
+     "owner": {
+      "developerId": "local-owner",
+      "name": "Local owner"
+     },
+     "title": "Add a /health endpoint",
+     "project": "payments",
+     "status": "STARTING",
+     "startingRevision": 1,
+     "client": "an AI tool",
+     "shared": false,
+     "createdAt": "2026-11-15T10:00:00.000Z",
+     "updatedAt": "2026-11-15T10:00:00.000Z",
+     "events": [],
+     "workflow": {
+      "schemaVersion": 1,
+      "definitionId": "agentx-task-to-pr",
+      "definitionVersion": "1.1.0",
+      "taskId": "244bed8a-4806-4367-adf5-2cf9fe551236",
+      "ownerId": "2ddb4153c89c799ae4b6389564e87c67d3986673dba5674e3a98697253d44f58",
+      "path": "QUICK",
+      "revision": 7,
+      "stage": "PULL_REQUEST",
+      "state": "READY",
+      "createdAt": "2026-11-10T10:00:00.000Z",
+      "updatedAt": "2026-11-15T10:00:00.000Z",
+      "artifacts": [
+       {
+        "id": "plan-1",
+        "type": "plan",
+        "version": 1,
+        "sha256": "6392cfd69c208fc6aba6d8d8a36bdfd382f4f3d263a478e5ae90f12b080f3975",
+        "producer": "agentx-worker-untrusted",
+        "objectKey": "tasks/8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6/plan-1.md",
+        "createdAt": "2026-11-10T10:00:00.000Z"
+       }
+      ],
+      "decisions": [
+       {
+        "requestId": "0e75f26b-5daf-4d51-8965-e9cf5b679fba",
+        "workflowRevision": 6,
+        "decision": "APPROVE",
+        "actorId": "2ddb4153c89c799ae4b6389564e87c67d3986673dba5674e3a98697253d44f58",
+        "actorRole": "TASK_OWNER",
+        "reason": "1 accepted, 0 to fix",
+        "source": "FINDINGS",
+        "at": "2026-11-15T10:00:00.000Z"
+       }
+      ],
+      "checkPolicy": {
+       "required": [
+        {
+         "id": "unit",
+         "label": "Unit",
+         "command": {
+          "cwd": "repo/demo",
+          "executable": "npm",
+          "args": [
+           "test"
+          ],
+          "timeoutSeconds": 30
+         }
+        }
+       ],
+       "optional": [],
+       "selectedOptionalIds": [],
+       "proposed": []
+      },
+      "candidate": {
+       "schemaVersion": 1,
+       "repositories": [
+        {
+         "repositoryId": "demo",
+         "commitSha": "1111111111111111111111111111111111111111",
+         "treeSha": "1111111111111111111111111111111111111111",
+         "baseCommitSha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+       ],
+       "digest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d"
+      },
+      "verification": {
+       "candidateDigest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d",
+       "producer": "agentx-broker",
+       "environmentId": "ci",
+       "recordedAt": "2026-11-10T10:00:00.000Z",
+       "results": [
+        {
+         "checkId": "unit",
+         "status": "PASS"
+        }
+       ]
+      },
+      "reviews": [
+       {
+        "operationId": "11111111-1111-4111-8111-111111111111",
+        "candidateDigest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d",
+        "role": "CRITIC",
+        "provider": "scripted",
+        "version": "1",
+        "status": "PASS",
+        "findings": [],
+        "readOnly": true,
+        "recordedAt": "2026-11-10T10:00:00.000Z"
+       },
+       {
+        "operationId": "11111111-1111-4111-8111-111111111111",
+        "candidateDigest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d",
+        "role": "SECURITY",
+        "provider": "scripted",
+        "version": "1",
+        "status": "FINDINGS",
+        "findings": [
+         {
+          "text": "A token is written to the log.",
+          "origin": "INTRODUCED"
+         }
+        ],
+        "readOnly": true,
+        "recordedAt": "2026-11-10T10:00:00.000Z"
+       }
+      ],
+      "acceptedFindings": [
+       {
+        "candidateDigest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d",
+        "role": "SECURITY",
+        "fingerprint": "db21177e022992e630816f79a03e86144c0918d377153d8821ab595ba39bcec2",
+        "text": "A token is written to the log.",
+        "reason": "Only a test token.",
+        "actorId": "2ddb4153c89c799ae4b6389564e87c67d3986673dba5674e3a98697253d44f58",
+        "at": "2026-11-15T10:00:00.000Z"
+       }
+      ]
+     }
+    }
+   }
+  },
+  "notOnCore": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "NOT_FOUND",
+     "message": "That is not on the core engine on this install yet."
+    }
+   }
+  }
+ },
+ "sessions": {
+  "taskId": "3d4ab9aa-90dd-448d-b70f-43ce56f946ee",
+  "sessionId": "ses_1ff674b762d37807a6d2",
+  "startedTask": {
+   "taskId": "3d4ab9aa-90dd-448d-b70f-43ce56f946ee",
+   "owner": {
+    "developerId": "local-owner",
+    "name": "Local owner"
+   },
+   "title": "Add a /health endpoint",
+   "project": "payments",
+   "status": "STARTING",
+   "startingRevision": 1,
+   "client": "an AI tool",
+   "shared": false,
+   "createdAt": "2026-11-15T10:00:00.000Z",
+   "updatedAt": "2026-11-15T10:00:00.000Z",
+   "events": [],
+   "workflow": {
+    "schemaVersion": 1,
+    "definitionId": "agentx-task-to-pr",
+    "definitionVersion": "1.0.0",
+    "taskId": "3d4ab9aa-90dd-448d-b70f-43ce56f946ee",
+    "ownerId": "f013db36a2d151d508567a3349fd7ba29f3b413763254c3e57cbc6f5f14fe13e",
+    "path": "QUICK",
+    "revision": 1,
+    "stage": "PLAN",
+    "state": "RUNNING",
+    "createdAt": "2026-11-15T10:00:00.000Z",
+    "updatedAt": "2026-11-15T10:00:00.000Z",
+    "artifacts": [],
+    "decisions": [],
+    "checkPolicy": {
+     "required": [],
+     "optional": [],
+     "selectedOptionalIds": [],
+     "proposed": []
+    }
+   },
+   "sessionId": "ses_1ff674b762d37807a6d2"
+  },
+  "retryNothing": {
+   "status": 409,
+   "body": {
+    "error": {
+     "code": "CONFIG_INVALID",
+     "message": "There is nothing to retry: the task is not blocked."
+    }
+   }
+  },
+  "memberClose": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "NOT_FOUND",
+     "message": "There is no such session."
+    }
+   }
+  },
+  "otherCompanyClose": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "NOT_FOUND",
+     "message": "There is no such session."
+    }
+   }
+  },
+  "otherCompanyRetry": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "NOT_FOUND",
+     "message": "There is no such session."
+    }
+   }
+  },
+  "stop": {
+   "status": 200,
+   "body": {
+    "session": {
+     "contractVersion": 1,
+     "sessionId": "ses_1ff674b762d37807a6d2",
+     "kind": "task",
+     "mode": "delegate",
+     "title": "Add a /health endpoint",
+     "project": "payments",
+     "agent": {
+      "agentId": "rovara-code",
+      "name": "Rovara Code",
+      "version": "draft"
+     },
+     "owner": {
+      "developerId": "3a1ffb674bf75bb195c53cef5e5da45419a42d3126adc1c8095ec911a5c54f06",
+      "name": "Local owner"
+     },
+     "startedBy": {
+      "kind": "member",
+      "developerId": "3a1ffb674bf75bb195c53cef5e5da45419a42d3126adc1c8095ec911a5c54f06"
+     },
+     "where": {
+      "kind": "cloud"
+     },
+     "status": "starting",
+     "cost": {
+      "spentUsd": 0,
+      "payer": {
+       "kind": "member",
+       "name": "Local owner"
+      }
+     },
+     "approvals": [],
+     "followers": 0,
+     "viewingNow": [],
+     "you": {
+      "level": "edit",
+      "owner": true,
+      "following": true,
+      "actions": [
+       "watch",
+       "steer",
+       "stop",
+       "close"
+      ]
+     },
+     "link": "https://api.example/v1/app/sessions/ses_1ff674b762d37807a6d2",
+     "bindings": [],
+     "legs": [
+      {
+       "seq": 1,
+       "subject": {
+        "kind": "task",
+        "taskId": "3d4ab9aa-90dd-448d-b70f-43ce56f946ee"
+       },
+       "where": {
+        "kind": "cloud"
+       },
+       "startedAt": "2026-11-15T10:00:00.000Z"
+      }
+     ],
+     "revision": 1,
+     "createdAt": "2026-11-15T10:00:00.000Z",
+     "updatedAt": "2026-11-15T10:00:00.000Z",
+     "body": {
+      "kind": "task",
+      "task": {
+       "taskId": "3d4ab9aa-90dd-448d-b70f-43ce56f946ee",
+       "owner": {
+        "developerId": "local-owner",
+        "name": "Local owner"
+       },
+       "title": "Add a /health endpoint",
+       "project": "payments",
+       "status": "FAILED",
+       "startingRevision": 1,
+       "client": "an AI tool",
+       "shared": false,
+       "createdAt": "2026-11-15T10:00:00.000Z",
+       "updatedAt": "2026-11-15T10:00:00.000Z",
+       "events": [],
+       "workflow": {
+        "schemaVersion": 1,
+        "definitionId": "agentx-task-to-pr",
+        "definitionVersion": "1.0.0",
+        "taskId": "3d4ab9aa-90dd-448d-b70f-43ce56f946ee",
+        "ownerId": "f013db36a2d151d508567a3349fd7ba29f3b413763254c3e57cbc6f5f14fe13e",
+        "path": "QUICK",
+        "revision": 2,
+        "stage": "PLAN",
+        "state": "BLOCKED",
+        "createdAt": "2026-11-15T10:00:00.000Z",
+        "updatedAt": "2026-11-15T10:00:00.000Z",
+        "artifacts": [],
+        "decisions": [],
+        "checkPolicy": {
+         "required": [],
+         "optional": [],
+         "selectedOptionalIds": [],
+         "proposed": []
+        },
+        "blockReason": "You stopped this step. Retry to run it again."
+       },
+       "failure": {
+        "category": "setup_failed",
+        "stage": "setup",
+        "message": "the prepare operation ended CANCELLED"
+       },
+       "sessionId": "ses_1ff674b762d37807a6d2"
+      }
+     }
+    }
+   }
+  },
+  "retryAfterStop": {
+   "status": 409,
+   "body": {
+    "error": {
+     "code": "CONFIG_INVALID",
+     "message": "There is nothing to retry: the task is not blocked."
+    }
+   }
+  },
+  "close": {
+   "status": 200,
+   "body": {
+    "session": {
+     "contractVersion": 1,
+     "sessionId": "ses_1ff674b762d37807a6d2",
+     "kind": "task",
+     "mode": "delegate",
+     "title": "Add a /health endpoint",
+     "project": "payments",
+     "agent": {
+      "agentId": "rovara-code",
+      "name": "Rovara Code",
+      "version": "draft"
+     },
+     "owner": {
+      "developerId": "3a1ffb674bf75bb195c53cef5e5da45419a42d3126adc1c8095ec911a5c54f06",
+      "name": "Local owner"
+     },
+     "startedBy": {
+      "kind": "member",
+      "developerId": "3a1ffb674bf75bb195c53cef5e5da45419a42d3126adc1c8095ec911a5c54f06"
+     },
+     "where": {
+      "kind": "cloud"
+     },
+     "status": "starting",
+     "cost": {
+      "spentUsd": 0,
+      "payer": {
+       "kind": "member",
+       "name": "Local owner"
+      }
+     },
+     "approvals": [],
+     "followers": 0,
+     "viewingNow": [],
+     "you": {
+      "level": "edit",
+      "owner": true,
+      "following": true,
+      "actions": [
+       "watch",
+       "steer",
+       "stop",
+       "close"
+      ]
+     },
+     "link": "https://api.example/v1/app/sessions/ses_1ff674b762d37807a6d2",
+     "bindings": [],
+     "legs": [
+      {
+       "seq": 1,
+       "subject": {
+        "kind": "task",
+        "taskId": "3d4ab9aa-90dd-448d-b70f-43ce56f946ee"
+       },
+       "where": {
+        "kind": "cloud"
+       },
+       "startedAt": "2026-11-15T10:00:00.000Z"
+      }
+     ],
+     "revision": 1,
+     "createdAt": "2026-11-15T10:00:00.000Z",
+     "updatedAt": "2026-11-15T10:00:00.000Z",
+     "body": {
+      "kind": "task",
+      "task": {
+       "taskId": "3d4ab9aa-90dd-448d-b70f-43ce56f946ee",
+       "owner": {
+        "developerId": "local-owner",
+        "name": "Local owner"
+       },
+       "title": "Add a /health endpoint",
+       "project": "payments",
+       "status": "CLOSED",
+       "startingRevision": 1,
+       "client": "an AI tool",
+       "shared": false,
+       "createdAt": "2026-11-15T10:00:00.000Z",
+       "updatedAt": "2026-11-15T10:00:00.000Z",
+       "events": [],
+       "workflow": {
+        "schemaVersion": 1,
+        "definitionId": "agentx-task-to-pr",
+        "definitionVersion": "1.0.0",
+        "taskId": "3d4ab9aa-90dd-448d-b70f-43ce56f946ee",
+        "ownerId": "f013db36a2d151d508567a3349fd7ba29f3b413763254c3e57cbc6f5f14fe13e",
+        "path": "QUICK",
+        "revision": 2,
+        "stage": "PLAN",
+        "state": "BLOCKED",
+        "createdAt": "2026-11-15T10:00:00.000Z",
+        "updatedAt": "2026-11-15T10:00:00.000Z",
+        "artifacts": [],
+        "decisions": [],
+        "checkPolicy": {
+         "required": [],
+         "optional": [],
+         "selectedOptionalIds": [],
+         "proposed": []
+        },
+        "blockReason": "You stopped this step. Retry to run it again."
+       },
+       "sessionId": "ses_1ff674b762d37807a6d2"
+      }
+     }
+    },
+    "closed": true
+   }
+  },
+  "blockedTaskId": "00f2ebc7-2050-4c55-b886-749ad884336d",
+  "blockedTask": {
+   "taskId": "00f2ebc7-2050-4c55-b886-749ad884336d",
+   "owner": {
+    "developerId": "local-owner",
+    "name": "Local owner"
+   },
+   "title": "Add a /ready endpoint",
+   "project": "payments",
+   "status": "STARTING",
+   "startingRevision": 1,
+   "client": "an AI tool",
+   "shared": false,
+   "createdAt": "2026-11-15T10:00:00.000Z",
+   "updatedAt": "2026-11-15T10:00:00.000Z",
+   "events": [],
+   "workflow": {
+    "schemaVersion": 1,
+    "definitionId": "agentx-task-to-pr",
+    "definitionVersion": "1.1.0",
+    "taskId": "00f2ebc7-2050-4c55-b886-749ad884336d",
+    "ownerId": "4d5b60798a089035713664711936abe7a337bb86efe84f31987172cfff557f0f",
+    "path": "QUICK",
+    "revision": 6,
+    "stage": "REVIEW",
+    "state": "BLOCKED",
+    "blockReason": "the security review did not pass",
+    "createdAt": "2026-11-10T10:00:00.000Z",
+    "updatedAt": "2026-11-10T10:00:00.000Z",
+    "artifacts": [
+     {
+      "id": "plan-1",
+      "type": "plan",
+      "version": 1,
+      "sha256": "6392cfd69c208fc6aba6d8d8a36bdfd382f4f3d263a478e5ae90f12b080f3975",
+      "producer": "agentx-worker-untrusted",
+      "objectKey": "tasks/8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6/plan-1.md",
+      "createdAt": "2026-11-10T10:00:00.000Z"
+     }
+    ],
+    "decisions": [],
+    "checkPolicy": {
+     "required": [
+      {
+       "id": "unit",
+       "label": "Unit",
+       "command": {
+        "cwd": "repo/demo",
+        "executable": "npm",
+        "args": [
+         "test"
+        ],
+        "timeoutSeconds": 30
+       }
+      }
+     ],
+     "optional": [],
+     "selectedOptionalIds": [],
+     "proposed": []
+    },
+    "candidate": {
+     "schemaVersion": 1,
+     "repositories": [
+      {
+       "repositoryId": "demo",
+       "commitSha": "1111111111111111111111111111111111111111",
+       "treeSha": "1111111111111111111111111111111111111111",
+       "baseCommitSha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+     ],
+     "digest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d"
+    },
+    "verification": {
+     "candidateDigest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d",
+     "producer": "agentx-broker",
+     "environmentId": "ci",
+     "recordedAt": "2026-11-10T10:00:00.000Z",
+     "results": [
+      {
+       "checkId": "unit",
+       "status": "PASS"
+      }
+     ]
+    },
+    "reviews": [
+     {
+      "operationId": "11111111-1111-4111-8111-111111111111",
+      "candidateDigest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d",
+      "role": "CRITIC",
+      "provider": "scripted",
+      "version": "1",
+      "status": "PASS",
+      "findings": [],
+      "readOnly": true,
+      "recordedAt": "2026-11-10T10:00:00.000Z"
+     },
+     {
+      "operationId": "11111111-1111-4111-8111-111111111111",
+      "candidateDigest": "9b91ddedaf1b132cc62bbb2a1d999c3420209e1ca7f81447c8f3f36b7da5761d",
+      "role": "SECURITY",
+      "provider": "scripted",
+      "version": "1",
+      "status": "FINDINGS",
+      "findings": [
+       {
+        "text": "A token is written to the log.",
+        "origin": "INTRODUCED"
+       }
+      ],
+      "readOnly": true,
+      "recordedAt": "2026-11-10T10:00:00.000Z"
+     }
+    ]
+   },
+   "sessionId": "ses_839c2e882b5c6a51cd4b"
+  },
+  "viewerRetry": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "SESSION_LEVEL_REQUIRED",
+     "message": "Viewers of payments can only watch its sessions."
+    }
+   }
+  },
+  "viewerClose": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "SESSION_LEVEL_REQUIRED",
+     "message": "Viewers of payments can only watch its sessions."
+    }
+   }
+  },
+  "retry": {
+   "status": 409,
+   "body": {
+    "error": {
+     "code": "CONFIG_INVALID",
+     "message": "There is nothing to retry: the task is not blocked."
+    }
+   }
+  },
+  "oldTaskId": "b91bce6c-e560-466c-b028-c264ae2e83a0",
+  "oldTask": {
+   "taskId": "b91bce6c-e560-466c-b028-c264ae2e83a0",
+   "owner": {
+    "developerId": "local-owner",
+    "name": "Local owner"
+   },
+   "title": "Old task",
+   "project": "payments",
+   "status": "STARTING",
+   "startingRevision": 1,
+   "client": "an AI tool",
+   "shared": false,
+   "createdAt": "2026-11-15T10:00:00.000Z",
+   "updatedAt": "2026-11-15T10:00:00.000Z",
+   "events": [],
+   "workflow": {
+    "schemaVersion": 1,
+    "definitionId": "agentx-task-to-pr",
+    "definitionVersion": "1.0.0",
+    "taskId": "b91bce6c-e560-466c-b028-c264ae2e83a0",
+    "ownerId": "ce33c008a8846baaf583395b29066cf98b05064f8d576aff91a937aa97a3069d",
+    "path": "QUICK",
+    "revision": 1,
+    "stage": "PLAN",
+    "state": "RUNNING",
+    "createdAt": "2026-11-15T10:00:00.000Z",
+    "updatedAt": "2026-11-15T10:00:00.000Z",
+    "artifacts": [],
+    "decisions": [],
+    "checkPolicy": {
+     "required": [],
+     "optional": [],
+     "selectedOptionalIds": [],
+     "proposed": []
+    }
+   }
+  }
+ },
+ "rules": {
+  "taskId": "bb95d6b1-83a9-4c1f-846a-cfbb479904e5",
+  "maya": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "tess": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "sam": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "omar": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "readersEmpty": {
+   "status": 200,
+   "body": {
+    "readers": []
+   }
+  },
+  "share": {
+   "status": 200,
+   "body": {
+    "reader": {
+     "developerId": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+     "name": "Tess Team",
+     "role": "viewer",
+     "projectMember": true,
+     "grantedAt": "2026-11-18T15:28:09.432Z"
+    },
+    "already": false
+   }
+  },
+  "readers": {
+   "status": 200,
+   "body": {
+    "readers": [
+     {
+      "developerId": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "name": "Tess Team",
+      "role": "viewer",
+      "projectMember": true,
+      "grantedAt": "2026-11-18T15:28:09.432Z"
+     }
+    ]
+   }
+  },
+  "readerReaders": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "FORBIDDEN",
+     "message": "only the task's owner can share it"
+    }
+   }
+  },
+  "samReaders": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "TASK_NOT_FOUND",
+     "message": "no task bb95d6b1-83a9-4c1f-846a-cfbb479904e5 of yours"
+    }
+   }
+  },
+  "omarReaders": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "TASK_NOT_FOUND",
+     "message": "no task bb95d6b1-83a9-4c1f-846a-cfbb479904e5 of yours"
+    }
+   }
+  },
+  "readerTask": {
+   "status": 200,
+   "body": {
+    "task": {
+     "taskId": "bb95d6b1-83a9-4c1f-846a-cfbb479904e5",
+     "owner": {
+      "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "name": "Local owner"
+     },
+     "title": "Add a /health endpoint",
+     "project": "payments",
+     "status": "STARTING",
+     "startingRevision": 1,
+     "client": "an AI tool",
+     "shared": false,
+     "createdAt": "2026-11-15T10:00:00.000Z",
+     "updatedAt": "2026-11-15T10:00:00.000Z",
+     "events": [],
+     "workflow": {
+      "schemaVersion": 1,
+      "definitionId": "agentx-task-to-pr",
+      "definitionVersion": "1.0.0",
+      "taskId": "bb95d6b1-83a9-4c1f-846a-cfbb479904e5",
+      "ownerId": "e8ad41d7d376a5c0592e8e268ea56af1ddf240885c9e62ecedefbef4c1aae122",
+      "path": "QUICK",
+      "revision": 1,
+      "stage": "PLAN",
+      "state": "RUNNING",
+      "createdAt": "2026-11-15T10:00:00.000Z",
+      "updatedAt": "2026-11-15T10:00:00.000Z",
+      "artifacts": [],
+      "decisions": [],
+      "checkPolicy": {
+       "required": [],
+       "optional": [],
+       "selectedOptionalIds": [],
+       "proposed": []
+      }
+     }
+    }
+   }
+  },
+  "samTask": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "TASK_NOT_FOUND",
+     "message": "no task bb95d6b1-83a9-4c1f-846a-cfbb479904e5 of yours"
+    }
+   }
+  },
+  "events": {
+   "status": 200,
+   "body": {
+    "events": [
+     {
+      "at": "2026-11-15T10:00:00.000Z",
+      "kind": "status",
+      "text": "Task started"
+     },
+     {
+      "at": "2026-11-15T10:01:00.000Z",
+      "kind": "message",
+      "text": "Question: Which path?"
+     },
+     {
+      "at": "2026-11-15T10:02:00.000Z",
+      "kind": "message",
+      "text": "Answer from Maya Chen: /health"
+     }
+    ]
+   }
+  },
+  "readerEvents": {
+   "status": 200,
+   "body": {
+    "events": [
+     {
+      "at": "2026-11-15T10:00:00.000Z",
+      "kind": "status",
+      "text": "Task started"
+     },
+     {
+      "at": "2026-11-15T10:01:00.000Z",
+      "kind": "message",
+      "text": "Question: Which path?"
+     },
+     {
+      "at": "2026-11-15T10:02:00.000Z",
+      "kind": "message",
+      "text": "Answer from Maya Chen: /health"
+     }
+    ]
+   }
+  },
+  "samEvents": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "TASK_NOT_FOUND",
+     "message": "no task bb95d6b1-83a9-4c1f-846a-cfbb479904e5 of yours"
+    }
+   }
+  },
+  "omarEvents": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "TASK_NOT_FOUND",
+     "message": "no task bb95d6b1-83a9-4c1f-846a-cfbb479904e5 of yours"
+    }
+   }
+  },
+  "comments": {
+   "status": 200,
+   "body": {
+    "comments": []
+   }
+  },
+  "samComments": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "TASK_NOT_FOUND",
+     "message": "no task here that you can see"
+    }
+   }
+  },
+  "omarComments": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "TASK_NOT_FOUND",
+     "message": "no task here that you can see"
+    }
+   }
+  },
+  "people": {
+   "status": 503,
+   "body": {
+    "error": {
+     "code": "RUNTIME_UNAVAILABLE",
+     "message": "Task People is unavailable in this deployment"
+    }
+   }
+  },
+  "candidates": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "TASK_ACCESS_DENIED",
+     "message": "People confirmation could not be verified"
+    }
+   }
+  },
+  "samPeople": {
+   "status": 503,
+   "body": {
+    "error": {
+     "code": "RUNTIME_UNAVAILABLE",
+     "message": "Task People is unavailable in this deployment"
+    }
+   }
+  },
+  "omarPeople": {
+   "status": 503,
+   "body": {
+    "error": {
+     "code": "RUNTIME_UNAVAILABLE",
+     "message": "Task People is unavailable in this deployment"
+    }
+   }
+  },
+  "add": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "TASK_ACCESS_DENIED",
+     "message": "People confirmation could not be verified"
+    }
+   }
+  },
+  "peopleAfterAdd": {
+   "status": 503,
+   "body": {
+    "error": {
+     "code": "RUNTIME_UNAVAILABLE",
+     "message": "Task People is unavailable in this deployment"
+    }
+   }
+  },
+  "samTakeOwnership": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "TASK_ACCESS_DENIED",
+     "message": "People confirmation could not be verified"
+    }
+   }
+  },
+  "omarTakeOwnership": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "TASK_ACCESS_DENIED",
+     "message": "task access could not be verified"
+    }
+   }
+  },
+  "unshare": {
+   "status": 200,
+   "body": {
+    "developerId": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "removed": true
+   }
+  },
+  "unwiredPeople": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "NOT_FOUND",
+     "message": "That is not on the core engine on this install yet."
+    }
+   }
+  }
+ },
+ "testenv": {
+  "seen": {
+   "digest": "da1fd939b42acd5a55a183d6f413917f54af87f43f7441a3ab3e6f253ec38e0b",
+   "revision": 1
+  },
+  "read": {
+   "status": 200,
+   "body": {
+    "project": "payments",
+    "enabled": true,
+    "testServices": false,
+    "proposal": {
+     "digest": "da1fd939b42acd5a55a183d6f413917f54af87f43f7441a3ab3e6f253ec38e0b",
+     "proposedAt": "2026-11-15T10:00:00.000Z",
+     "risk": "medium",
+     "lessSafe": [],
+     "changes": [
+      "tier: (none) → sandbox",
+      "services[partner-scorer].kind: (none) → sagemaker_runtime",
+      "services[partner-scorer].match.endpointName: (none) → partner-scorer",
+      "services[partner-scorer].mock.fixtureSetRef: (none) → aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "services[partner-scorer].mock.schemaRef: (none) → bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "services[partner-scorer].mock.unmatched: (none) → fail",
+      "services[partner-scorer].mode: (none) → mock",
+      "services[partner-scorer].name: (none) → partner-scorer",
+      "accounts: (none) → ",
+      "capture.screenshots: (none) → failed",
+      "capture.traces: (none) → false",
+      "capture.video: (none) → false",
+      "nightly.branch: (none) → main",
+      "nightly.cronUtc: (none) → 0 6 * * *",
+      "nightly.enabled: (none) → false",
+      "roundBudgetMin: (none) → 30",
+      "prodDeny.accountIds: (none) → 111122223333",
+      "prodDeny.arnPrefixes: (none) → ",
+      "prodDeny.hosts: (none) → ",
+      "data.generator: (none) → faker_seeded",
+      "data.seed: (none) → 7",
+      "data.seeds: (none) → ",
+      "selection.alwaysRun: (none) → ",
+      "selection.fullSuiteOn: (none) → ",
+      "selection.method: (none) → full",
+      "repos[partner-service].checks[unit].command: (none) → repo/partner-service: pytest -q (up to 600 seconds)",
+      "repos[partner-service].checks[unit].id: (none) → unit",
+      "repos[partner-service].checks[unit].kind: (none) → test",
+      "repos[partner-service].checks[unit].label: (none) → Unit tests",
+      "repos[partner-service].repositoryId: (none) → partner-service",
+      "repos[partner-service].setupCommands[0]: (none) → repo/partner-service: pip install -e . (up to 600 seconds)"
+     ],
+     "proved": true,
+     "nextRevision": 1,
+     "environment": {
+      "tier": "sandbox",
+      "repos": [
+       {
+        "repositoryId": "partner-service",
+        "setupCommands": [
+         {
+          "cwd": "repo/partner-service",
+          "executable": "pip",
+          "args": [
+           "install",
+           "-e",
+           "."
+          ],
+          "timeoutSeconds": 600
+         }
+        ],
+        "checks": [
+         {
+          "id": "unit",
+          "label": "Unit tests",
+          "command": {
+           "cwd": "repo/partner-service",
+           "executable": "pytest",
+           "args": [
+            "-q"
+           ],
+           "timeoutSeconds": 600
+          },
+          "kind": "test"
+         }
+        ]
+       }
+      ],
+      "roundBudgetMin": 30,
+      "selection": {
+       "method": "full",
+       "alwaysRun": [],
+       "fullSuiteOn": []
+      },
+      "nightly": {
+       "enabled": false,
+       "cronUtc": "0 6 * * *",
+       "branch": "main"
+      },
+      "services": [
+       {
+        "name": "partner-scorer",
+        "kind": "sagemaker_runtime",
+        "match": {
+         "endpointName": "partner-scorer"
+        },
+        "mode": "mock",
+        "mock": {
+         "fixtureSetRef": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+         "schemaRef": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+         "unmatched": "fail"
+        }
+       }
+      ],
+      "data": {
+       "seeds": [],
+       "generator": "faker_seeded",
+       "seed": 7
+      },
+      "accounts": [],
+      "prodDeny": {
+       "accountIds": [
+        "111122223333"
+       ],
+       "hosts": [],
+       "arnPrefixes": []
+      },
+      "capture": {
+       "screenshots": "failed",
+       "video": false,
+       "traces": false
+      }
+     }
+    }
+   }
+  },
+  "readOther": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "NOT_FOUND",
+     "message": "project not found"
+    }
+   }
+  },
+  "readNoGrant": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "NOT_FOUND",
+     "message": "project not found"
+    }
+   }
+  },
+  "approveNoStepUp": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "REAUTH_REQUIRED",
+     "message": "A decision is made right after you confirm it's you on the sign-in page: a tool that holds an API token cannot approve or reject. Confirm it's you, then try again within a few minutes."
+    }
+   }
+  },
+  "approveDeveloper": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "FORBIDDEN",
+     "message": "Only a company admin, or the project's maintainer for a low or medium risk change, can approve this test environment."
+    }
+   }
+  },
+  "approveNoGrant": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "NOT_FOUND",
+     "message": "project not found"
+    }
+   }
+  },
+  "approveOtherCompany": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "NOT_FOUND",
+     "message": "That is no longer there."
+    }
+   }
+  },
+  "approveStale": {
+   "status": 409,
+   "body": {
+    "error": {
+     "code": "CHANGE_STALE",
+     "message": "It changed while you were looking. Open it again."
+    }
+   }
+  },
+  "approved": {
+   "status": 200,
+   "body": {
+    "project": "payments",
+    "message": "Approved. Tasks that start from now on use it."
+   }
+  },
+  "readAfter": {
+   "status": 200,
+   "body": {
+    "project": "payments",
+    "enabled": true,
+    "testServices": false,
+    "approved": {
+     "revision": 1,
+     "digest": "da1fd939b42acd5a55a183d6f413917f54af87f43f7441a3ab3e6f253ec38e0b",
+     "approvedAt": "2026-11-15T10:00:00.000Z",
+     "approvedBy": "mia",
+     "tier": "sandbox",
+     "roundBudgetMin": 30,
+     "checks": [
+      {
+       "id": "unit",
+       "label": "Unit tests",
+       "kind": "test"
+      }
+     ],
+     "nightly": {
+      "enabled": false,
+      "cronUtc": "0 6 * * *"
+     },
+     "dependencies": [],
+     "lines": [
+      "Tier: sandbox",
+      "Round budget: 30 minutes",
+      "Selection: full",
+      "Nightly run: off"
+     ]
+    }
+   }
+  }
+ },
+ "list": {
+  "taskId": "a53adf7a-8ea9-4b5f-90df-c80f8499ad1f",
+  "detailed": {
+   "status": 200,
+   "body": {
+    "tasks": [
+     {
+      "taskId": "a53adf7a-8ea9-4b5f-90df-c80f8499ad1f",
+      "title": "Core work",
+      "project": "payments",
+      "status": "RUNNING",
+      "shared": false,
+      "createdAt": "2026-11-15T00:00:00.000Z",
+      "updatedAt": "2026-11-15T00:00:00.000Z",
+      "workflow": {
+       "stage": "PLAN",
+       "state": "RUNNING",
+       "revision": 1,
+       "path": "QUICK"
+      },
+      "pullRequests": [
+       {
+        "repository": "demo",
+        "number": 42,
+        "url": "https://github.com/example/demo/pull/42",
+        "state": "OPEN"
+       }
+      ],
+      "costUsd": 1.25,
+      "runLimitUsd": 7.5
+     }
+    ]
+   }
+  },
+  "plain": {
+   "status": 200,
+   "body": {
+    "tasks": [
+     {
+      "taskId": "a53adf7a-8ea9-4b5f-90df-c80f8499ad1f",
+      "title": "Core work",
+      "project": "payments",
+      "status": "RUNNING",
+      "shared": false,
+      "createdAt": "2026-11-15T00:00:00.000Z",
+      "updatedAt": "2026-11-15T00:00:00.000Z"
+     }
+    ]
+   }
+  },
+  "omarDetailed": {
+   "status": 200,
+   "body": {
+    "tasks": []
+   }
+  },
+  "workflowTaskId": "b845c514-576e-48f7-b24e-d19408213d25",
+  "workflowDetailed": {
+   "status": 200,
+   "body": {
+    "tasks": [
+     {
+      "taskId": "b845c514-576e-48f7-b24e-d19408213d25",
+      "title": "Fix the flaky retry test",
+      "project": "payments",
+      "status": "STARTING",
+      "shared": false,
+      "createdAt": "2026-11-18T15:28:58.395Z",
+      "updatedAt": "2026-11-18T15:28:58.395Z",
+      "costUsd": 0.42
+     }
+    ]
+   }
+  }
+ },
+ "members": {
+  "memberRefused": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "FORBIDDEN",
+     "message": "Only a company owner or admin, or the project's admin, can see and change its members."
+    }
+   }
+  },
+  "otherCompanyProject": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "FORBIDDEN",
+     "message": "Only a company owner or admin, or the project's admin, can see and change its members."
+    }
+   }
+  },
+  "missingProject": {
+   "status": 403,
+   "body": {
+    "error": {
+     "code": "FORBIDDEN",
+     "message": "Only a company owner or admin, or the project's admin, can see and change its members."
+    }
+   }
+  },
+  "ownerList": {
+   "status": 200,
+   "body": {
+    "project": "alpha",
+    "members": []
+   }
+  }
+ }
+}
