@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router";
 import type { OrgServiceStatus } from "@agentx/contracts/web";
 import { useAppHost } from "../../../host.js";
 import { createServiceStatusApi } from "../../../api/service-status.js";
+import { ApiError } from "../../../api/errors.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { useAdminContext } from "../AdminLayout.js";
 type Kind = "web" | "api";
@@ -14,10 +15,10 @@ const observation = { qualified: "Qualification recorded", warning: "Warning", e
 function stamp(value: string) { return <time dateTime={value}>{new Date(value).toLocaleString()}</time>; }
 export function ServiceStatusContent({ orgId, kind, enabled }: { orgId: string; kind?: Kind; enabled: boolean }) {
  const host = useAppHost(), api = useMemo(() => createServiceStatusApi(host, orgId), [host, orgId]);
- const [revision, setRevision] = useState(0), [result, setResult] = useState<{ orgId: string; revision: number; data?: OrgServiceStatus; failed?: true }>();
+ const [revision, setRevision] = useState(0), [result, setResult] = useState<{ orgId: string; revision: number; data?: OrgServiceStatus; failed?: true; error?: unknown }>();
  useEffect(() => {
   let alive = true;api.setScopeActive(enabled);
-  if (enabled) void api.read().then(data => { if (alive) setResult({ orgId, revision, data }); }).catch(() => { if (alive) setResult({ orgId, revision, failed: true }); });
+  if (enabled) void api.read().then(data => { if (alive) setResult({ orgId, revision, data }); }).catch(error => { if (alive) setResult({ orgId, revision, failed: true, error }); });
   return () => { alive = false;api.setScopeActive(false); };
  }, [api, enabled, orgId, revision]);
  const current = enabled && result?.orgId === orgId && result.revision === revision ? result : undefined, pending = enabled && current === undefined;
@@ -26,7 +27,7 @@ export function ServiceStatusContent({ orgId, kind, enabled }: { orgId: string; 
   <p>These deployment-wide runtime facts are shared with every company's admins. This is stored qualification evidence, not a live availability check or proof that this project can run checks. No probe or renewal runs here.</p>
   <Link to={kind ? "/app/admin/health" : "/app/admin"}>{kind ? "Back to service status" : "Back to Administration"}</Link>
   {!enabled && <p role="alert">Service status is unavailable while company access is being checked.</p>}
-  {current?.failed && <p role="alert">Stored service status could not be verified. Refresh to try another read.</p>}
+  {current?.failed && <p role="alert">{current.error instanceof ApiError && current.error.status === 501 ? "Not available yet." : "Stored service status could not be verified. Refresh to try another read."}</p>}
   {data && kind === undefined && <><ul>{data.checks.map(check => <li key={check.kind}><Link to={`/app/admin/health/runtime/${check.kind}`}>{name(check.kind)}</Link>: {check.state} · {observation[check.observation]}</li>)}</ul><h2>Not observed here</h2><p>Other doctor checks have no stored report here: Slack, GitHub, connectors, models, alarms, capacity, sign-in and ChatGPT reachability. Their configuration does not prove a successful check.</p></>}
   {row && data && <><table><caption>Stored {name(row.kind)} qualification</caption><tbody>
    <tr><th scope="row">Recorded state</th><td>{row.state}</td></tr>
