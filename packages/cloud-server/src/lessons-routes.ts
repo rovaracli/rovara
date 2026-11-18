@@ -8,6 +8,7 @@
 // this person may decide, the ones from their own corrections first.
 import { CodeError } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
+import type { LessonMeasureResponse } from "@agentx/contracts/code-contract-v0";
 
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const badRequest = (message: string): RouteAnswer => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message } } });
@@ -18,6 +19,40 @@ const count = (value: unknown): number => { const n = num(value); return n === u
 const some = (entries: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== undefined));
 const list = (value: unknown, max: number): unknown[] => (Array.isArray(value) ? value.slice(0, max) : []);
 const strings = (value: unknown, max: number, each: number): string[] => list(value, max).flatMap((item) => (typeof item === "string" ? [item.slice(0, each)] : []));
+
+const measureUnavailable: RouteAnswer = { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Lessons measure is unavailable right now. Try again." } } };
+const measureDenied: RouteAnswer = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a project maintainer, or a company owner or admin, can see the lessons measure." } } };
+const measureNotFound: RouteAnswer = { status: 404, body: { error: { code: "NOT_FOUND", message: "No lessons measure is available for this project." } } };
+const measureNotYet: RouteAnswer = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Lessons measure isn't available on this Rovara yet." } } };
+const measureOff: RouteAnswer = { status: 404, body: { error: { code: "LESSONS_SWITCHED_OFF", message: "Lessons are off." } } };
+const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+function measureView(value: unknown, project: string): LessonMeasureResponse | undefined {
+  if (!isRecord(value) || value["project"] !== project || !Number.isInteger(value["windowDays"]) || !isFiniteNumber(value["floor"]) || !Number.isInteger(value["loads"])
+    || !(value["lessonsInUse"] === null || Number.isInteger(value["lessonsInUse"])) || !Number.isInteger(value["loadedLessons"]) || !Number.isInteger(value["loadedBelowFloor"])
+    || !Number.isInteger(value["loadsWithBelowFloor"]) || !Number.isInteger(value["loadedNoMatch"]) || !(value["meanWordsLoaded"] === null || isFiniteNumber(value["meanWordsLoaded"]))
+    || !(value["meanWordsLeftOut"] === null || isFiniteNumber(value["meanWordsLeftOut"])) || !Number.isInteger(value["loadsCapBound"]) || !Number.isInteger(value["leftOutAtOrAboveFloor"])
+    || !(value["meanFitLoaded"] === null || isFiniteNumber(value["meanFitLoaded"])) || !(value["meanFitLeftOut"] === null || isFiniteNumber(value["meanFitLeftOut"]))
+    || !isRecord(value["cleanMerge"]) || !Number.isInteger(value["cleanMerge"]["merged"]) || !Number.isInteger(value["cleanMerge"]["reverted"])
+    || !Number.isInteger(value["cleanMerge"]["clean"]) || !(value["cleanMerge"]["rate"] === null || isFiniteNumber(value["cleanMerge"]["rate"]))
+    || value["revertDetection"] !== "not_wired" || typeof value["truncated"] !== "boolean" || !Number.isInteger(value["unreadable"])) return undefined;
+  return {
+    project, windowDays: value["windowDays"] as number, floor: value["floor"], loads: value["loads"] as number, lessonsInUse: value["lessonsInUse"] as number | null,
+    loadedLessons: value["loadedLessons"] as number, loadedBelowFloor: value["loadedBelowFloor"] as number, loadsWithBelowFloor: value["loadsWithBelowFloor"] as number,
+    loadedNoMatch: value["loadedNoMatch"] as number, meanWordsLoaded: value["meanWordsLoaded"], meanWordsLeftOut: value["meanWordsLeftOut"],
+    loadsCapBound: value["loadsCapBound"] as number, leftOutAtOrAboveFloor: value["leftOutAtOrAboveFloor"] as number, meanFitLoaded: value["meanFitLoaded"],
+    meanFitLeftOut: value["meanFitLeftOut"],
+    cleanMerge: { merged: value["cleanMerge"]["merged"] as number, reverted: value["cleanMerge"]["reverted"] as number, clean: value["cleanMerge"]["clean"] as number, rate: value["cleanMerge"]["rate"] },
+    revertDetection: "not_wired", truncated: value["truncated"], unreadable: value["unreadable"] as number,
+  };
+}
+function measureRefusal(error: CodeError): RouteAnswer {
+  const body = isRecord(error.body) && isRecord(error.body["error"]) ? error.body["error"] : undefined;
+  if (error.status === 403) return measureDenied;
+  if (error.status === 405 || error.status === 404 && body?.["code"] === "NOT_FOUND" && body["message"] === "route not found") return measureNotYet;
+  if (error.status === 404 && body?.["code"] === "LESSONS_SWITCHED_OFF") return measureOff;
+  if (error.status === 404) return measureNotFound;
+  return measureUnavailable;
+}
 
 /** A project name as Code takes it, a lesson id and a task id: anything else never reaches Code. */
 const PROJECT = "([A-Za-z0-9][A-Za-z0-9._-]{0,99})";
@@ -79,7 +114,7 @@ export function lessonItem(raw: unknown): Record<string, unknown> | undefined {
     citations: list(raw["citations"], 8).flatMap((one) => { const view = citation(one); return view === undefined ? [] : [view]; }),
     from: people(raw["from"], 20), measured: raw["measured"] === true, supportTasks: count(raw["supportTasks"]),
     needs: needs(raw["needs"]), rejectedReason: text(raw["rejectedReason"], 40), trial: text(raw["trial"], 20),
-    possibleDuplicate: lessonRef(raw["possibleDuplicate"]), contradicts: lessonRef(raw["contradicts"]), mergeBlocked: raw["mergeBlocked"] === true ? true : undefined,
+    possibleDuplicate: lessonRef(raw["possibleDuplicate"]), contradicts: lessonRef(raw["contradicts"]),
     usedInTasks: num(raw["usedInTasks"]) === undefined ? undefined : count(raw["usedInTasks"]),
     canApprove: raw["canApprove"] === true, canReject: raw["canReject"] === true, canRetire: raw["canRetire"] === true,
   });
@@ -208,6 +243,18 @@ export const LESSONS_ROUTES: Route[] = [
     // GET and PUT …/lessons/mode (`lessons.mode.get`, `lessons.mode.put`): off, suggest or auto; Code says who may change it.
     method: "GET", path: new RegExp(`^/projects/${PROJECT}/lessons/mode$`, "u"),
     answer: async (context) => ok(modeOf(await context.client.json<unknown>(context.session, `${dev(context.params[0]!)}/lessons/mode`), context.params[0]!)),
+  },
+  {
+    // GET …/lessons/measure (`lessons.measure`): Code gates this read to project maintainers and company admins. Only Code's named fields reach the app.
+    method: "GET", path: new RegExp(`^/projects/${PROJECT}/lessons/measure$`, "u"),
+    answer: async (context) => {
+      const project = context.params[0]!;
+      let raw: unknown;
+      try { raw = await context.client.json<unknown>(context.session, `${dev(project)}/lessons/measure`); }
+      catch (error) { if (error instanceof CodeError) return measureRefusal(error);throw error; }
+      const view = measureView(raw, project);
+      return view === undefined ? measureUnavailable : ok(view);
+    },
   },
   {
     method: "PUT", path: new RegExp(`^/projects/${PROJECT}/lessons/mode$`, "u"),

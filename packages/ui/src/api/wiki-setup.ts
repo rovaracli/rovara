@@ -9,7 +9,7 @@ import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";
 
-export type { SystemRunsView, WikiSetupBuild, WikiSetupChip, WikiSetupMap, WikiSetupMapView, WikiSetupRepo, WikiSetupUpkeep, WikiSetupUpkeepCap } from "@agentx/contracts/web";
+export type { SystemRunsView, WikiSetupBuild, WikiSetupChip, WikiSetupMap, WikiSetupMapView, WikiSetupRepo, WikiSetupUpkeep, WikiSetupUpkeepCap, WikiSetupUpkeepSpend } from "@agentx/contracts/web";
 
 const base = (name: string, tail: string) => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(name)) + "/" + tail;
 const P = WIKI_SETUP_PATHS;
