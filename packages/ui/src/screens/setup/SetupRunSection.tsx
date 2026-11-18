@@ -48,6 +48,7 @@ export default function SetupRunSection({ project, settingsRevision, onDecided }
     <h3>Set up with Rovara</h3>
     {off && <p role="status"><strong>{SETUP_LOCKS.AGENT_OFF}</strong>. {unreadable ? SETUP_LOCKS.UNREADABLE_RUNS : SETUP_LOCKS.AGENT_OFF_HELP}</p>}
     {view.status !== "running" && <p>Rovara can run your project's own setup and test commands in a throw-away sandbox with no secrets, see what fails, and propose commands that worked. It uses the model budget of this project.</p>}
+    {view.status !== "running" && !off && view.standInWriter !== undefined && <p data-testid="stand-in-writer"><VisibleText text={view.standInWriter.words} /></p>}
     {running && <p role="status">Rovara is setting the project up. You can leave and come back.</p>}
     {view.status === "failed" && view.failure !== undefined && <p role="alert"><VisibleText text={view.failure} /></p>}
     {view.status === "ready" && view.stop !== undefined && <p role="status">{STOP_WORDS[view.stop]}</p>}

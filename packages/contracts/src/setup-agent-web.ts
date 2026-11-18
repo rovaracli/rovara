@@ -71,6 +71,8 @@ export const SetupAgentViewSchema = z.object({
   apply: SetupApplyViewSchema.optional(),
   /** A run a person stopped: who (a name, one plain line) and when. Its proposal, if it has one, is what the run had so far: unproven and never applied. */
   stoppedBy: z.object({ name: z.string().min(1).max(100), at: z.string().datetime() }).strict().optional(),
+  /** L4-E7 (Code's setup view): what the run's sample-data writer does and costs, before the run (inside the run's own limit); or that an AI must be connected first. Fixed words from Code. */
+  standInWriter: z.object({ ceilingCents: z.number().int().min(0).max(100_000).optional(), connected: z.boolean(), words: z.string().min(1).max(600) }).strict().optional(),
 }).passthrough();
 export type SetupAgentView = z.infer<typeof SetupAgentViewSchema>;
 
