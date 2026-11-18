@@ -140,7 +140,7 @@ function build() {
   // DEC 254zzz3(1): the operator's exempt (pilot) companies, for the settings screen only; the gateway decides every call. Absent: none.
   const rovaraAiExempt = parseRovaraAiExempt(process.env.CLOUD_ROVARA_AI_EXEMPT);
   // People and limits (cost report slice A6): the model gateway's meter table, read only. Unset: that page answers "not set up" (501). It needs a read grant on the gateway's
-  // meter table (leading keys CO#*) that the stacks do not give yet: an owner decision before it is set.
+  // meter table (leading keys CO#*), granted by CloudWebStack. Its issuer must match the gateway's GATEWAY_INSTALL_ISSUER.
   const meterTable = process.env.CLOUD_GATEWAY_METER_TABLE;
   const peopleSpend = companyTable && meterTable ? new DynamoGatewayMeterReader(db, meterTable, `${required("ROVARA_CODE_URL")}/v1/auth`) : undefined;
   const company = companyTable ? { store: new DynamoCompanyStore(db, companyTable), aiSourceKinds, rovaraAiExempt, ...(peopleSpend === undefined ? {} : { peopleSpend }) } : undefined;

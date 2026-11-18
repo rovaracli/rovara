@@ -226,15 +226,21 @@ const bounded = new WeakMap<Stack, iam.CfnManagedPolicy>();
 
 /**
  * Makes the stack's boundary and the aspect that puts it on every role the stack makes (and the environment's role path on the parts
- * in ROLE_PATH_PARTS). Called once, last, by each Cloud stack's constructor; a second call throws. The gateway's boundary is retained:
+ * in ROLE_PATH_PARTS). The web stack also supplies its meter table ARN for the narrowly conditioned batch reads (the other table
+ * actions above already fit). Called once, last, by each Cloud stack's constructor; a second call throws. The gateway's boundary is retained:
  * its Bedrock broker role is retained, and a policy still in use as a role's boundary can't be deleted.
  */
-export function applyCloudBoundary(stack: Stack, env: string, part: CloudStackPart): iam.CfnManagedPolicy {
+export function applyCloudBoundary(stack: Stack, env: string, part: CloudStackPart, gatewayMeterTableArn?: string): iam.CfnManagedPolicy {
   if (bounded.has(stack)) throw new Error(`${stack.node.path} already has its boundary`);
+  // Only the web stack's approved meter reads extend the boundary, on the same exact ARN and company keys as its identity policy.
+  const meterReads = part === "web" && gatewayMeterTableArn !== undefined ? [new iam.PolicyStatement({
+    sid: "GatewayMeterCompanyReads", actions: ["dynamodb:GetItem", "dynamodb:BatchGetItem"], resources: [gatewayMeterTableArn],
+    conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["CO#*"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+  }).toStatementJson() as Record<string, unknown>] : [];
   const policy = new iam.CfnManagedPolicy(stack, BOUNDARY_LOGICAL_ID, {
     path: cloudRolePath(env),
     description: `Rovara Cloud ${env} (${part}): the permissions boundary of every role this stack makes`,
-    policyDocument: { Version: "2012-10-17", Statement: cloudBoundaryStatements({ env, partition: stack.partition, region: stack.region, account: stack.account }, part) },
+    policyDocument: { Version: "2012-10-17", Statement: [...cloudBoundaryStatements({ env, partition: stack.partition, region: stack.region, account: stack.account }, part), ...meterReads] },
   });
   if (part === "gateway") {
     policy.cfnOptions.deletionPolicy = CfnDeletionPolicy.RETAIN;

@@ -95,7 +95,12 @@ describe("every role Rovara Cloud makes carries the environment's permissions bo
 
   it("each stack's boundary is its part's, the same in every shape (no switch changes it)", () => {
     for (const stack of Object.values(synthesized).flat()) {
-      expect(resolvedBoundaries([stack], scope)[stack.stackName]!.Statement, stack.stackName).toEqual(cloudBoundaryStatements(scope, part(stack)));
+      const meterReads = part(stack) === "web" ? [{
+        Sid: "GatewayMeterCompanyReads", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:BatchGetItem"],
+        Resource: [`arn:aws:dynamodb:${REGION}:123456789012:table/rovara-cloud-staging-gateway-Meter-SAMPLE0000AA`],
+        Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["CO#*"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+      }] : [];
+      expect(resolvedBoundaries([stack], scope)[stack.stackName]!.Statement, stack.stackName).toEqual([...cloudBoundaryStatements(scope, part(stack)), ...meterReads]);
     }
   });
 

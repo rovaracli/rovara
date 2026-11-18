@@ -32,6 +32,7 @@ function parameterSamples(s: CheckScope): Record<string, string> {
   return {
     ProductKeysTableName: `rovara-cloud-${s.env}-gateway-ProductKeys518BAD1E-SAMPLE0000AA`,
     CompanyTableName: `rovara-cloud-${s.env}-web-CompaniesAF68172A-SAMPLE0000AA`,
+    GatewayMeterTableName: `rovara-cloud-${s.env}-gateway-Meter-SAMPLE0000AA`,
     ProductKeysKeyArn: `arn:${s.partition}:kms:${s.region}:${s.account}:key/11111111-1111-4111-8111-111111111111`,
     ProductKeysMacKeyArn: `arn:${s.partition}:kms:${s.region}:${s.account}:key/22222222-2222-4222-8222-222222222222`,
     GitHubConnectionArn: `arn:${s.partition}:codeconnections:${s.region}:${s.account}:connection/33333333-3333-4333-8333-333333333333`,
