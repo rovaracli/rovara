@@ -225,7 +225,7 @@ describe("the return (GET /api/connect/github/callback, a link flow)", () => {
       const { binder, state } = await w.start(nova);
       const hasCode = extra.startsWith("&code");
       const back = await w.callback(`state=${state}${extra === "" ? "&error=access_denied" : hasCode ? extra : `${extra}&code=${code}`}`, { binder, session: nova.cookie });
-      expect(back.location, extra).toBe(`${LANDING}${word === "start_again" && hasCode ? "cancelled" : word}`);
+      expect(back.location, extra).toBe(`${LANDING}${word}`);
     }
     expect(w.codeCalls("/v1/dev/me/github/link/claim")).toEqual([]);
   });

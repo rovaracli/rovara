@@ -312,8 +312,10 @@ export function createGithubConnect(deps: GithubConnectDeps) {
       // L4-GH: the cookie's binding says this return is the person's own GitHub link, not the company connect: it never reaches the install claim below.
       if (binding.flow === "link") {
         if (deps.link === undefined) return refuse("no_link");
+        // A code that is present but not a code is a bad return, not a cancel.
+        if (code !== undefined && !GITHUB_CODE.test(code)) return refuse("query");
         const extra = installation !== undefined || setupAction !== undefined;
-        const done = await deps.link.finish(session, sessionCookie, { state, code: code !== undefined && GITHUB_CODE.test(code) ? code : undefined, extra });
+        const done = await deps.link.finish(session, sessionCookie, { state, code, extra });
         return { location: done.location, setCookie: clearCookie };
       }
       if ((code !== undefined && !GITHUB_CODE.test(code)) || (installation !== undefined && !INSTALLATION_ID.test(installation))
