@@ -402,10 +402,10 @@ describe("which company", () => {
     expect((await w.store.settings(A))!.version).toBe(1);
   });
 
-  it("leaves removal on Code: that route still answers 501 (members and roles: member-role-routes.test.ts)", async () => {
+  it("removal is served now (DEC 254zzz84 (5); member-removal-routes.test.ts): an empty body is refused in fixed words, never 501", async () => {
     const w = world();
     const ada = await w.signIn("ada", 10);
-    expect((await w.call(ada, "POST", `/org/members/${"b".repeat(64)}/removal`, {})).body.error.code).toBe("NOT_ON_CODE_YET");
+    expect((await w.call(ada, "POST", `/org/members/${"b".repeat(64)}/removal`, {})).body.error.code).toBe("CONFIG_INVALID");
   });
 
   it("serves no company routes on a Cloud without company data", async () => {
