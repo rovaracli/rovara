@@ -23,9 +23,9 @@ export type AgentModelStage = typeof AGENT_MODEL_STAGES[number];
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const OFFERED_MAX = 64;
 const BODY_BYTES_MAX = 1_024;
-/** The reasons Code gives for a step's model (Code's MODEL_STEP_REASONS); anything else is not Code's answer. */
 /** The reasons that mean "the step follows the company's model" (no step setting: the company's engine model, else the install's). */
 const COMPANY_MODEL_REASONS = new Set(["BUILTIN_DEFAULT", "INSTALL_MODEL"]);
+/** The reasons Code gives for a step's model (Code's MODEL_STEP_REASONS); anything else is not Code's answer. */
 const REASONS = new Set(["COMPANY_LOCK", "PROJECT_CHOICE", "COMPANY_DEFAULT", "PROJECT_SELECTION", "PROJECT_DEFAULT", "BUILTIN_DEFAULT", "PERSONAL_PLAN_DEFAULT", "RECIPE_DEFAULT", "APPROVED_SAME_MODEL", "DEFAULT_DIFFERENT_COMPANY", "INSTALL_MODEL"]);
 
 export const AGENT_MODELS_WORDS = Object.freeze({
