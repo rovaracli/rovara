@@ -227,6 +227,18 @@ describe("the projection", () => {
     expect(agentModelsView(page(undefined))?.steps[0]?.effective).toEqual({ model: "zai.glm-5", companyDefault: true });
     expect(agentModelsView(page("free"))).toBeUndefined();
   });
+  it("a step without Code's own price shows the gateway's list price of its model; Code's price wins; a bad list price refuses the page", () => {
+    const page = (offered: unknown[], price?: unknown) => ({ state: { revision: 1, steps: [{ stage: "build", setting: null, effective: { model: id("zai.glm-5"), reason: "BUILTIN_DEFAULT", ...(price === undefined ? {} : { priceUsdPerMillion: price }) } }, { stage: "plan", setting: null, effective: { model: id("claude-sonnet-5-5"), reason: "BUILTIN_DEFAULT" } }] }, offered: { version: 1, models: offered } });
+    const listed = [{ model: "zai.glm-5", price: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.2 } }, { model: "claude-sonnet-5-5" }];
+    const view = agentModelsView(page(listed));
+    expect(view?.steps.find((s) => s.stage === "build")?.effective?.priceUsdPerMillion).toEqual({ input: 0.6, output: 2.2 });
+    expect(view?.steps.find((s) => s.stage === "plan")?.effective?.priceUsdPerMillion).toBeUndefined();
+    expect(agentModelsView(page(listed, { input: 1, output: 3 }))?.steps.find((s) => s.stage === "build")?.effective?.priceUsdPerMillion).toEqual({ input: 1, output: 3 });
+    expect(view?.offered).toEqual(["zai.glm-5", "claude-sonnet-5-5"]);
+    for (const price of [{ inputUsdPerMillion: -1, outputUsdPerMillion: 1 }, { inputUsdPerMillion: 1 }, { inputUsdPerMillion: 1, outputUsdPerMillion: 1, x: 1 }, "1"]) {
+      expect(agentModelsView(page([{ model: "zai.glm-5", price }]))).toBeUndefined();
+    }
+  });
   it("a set change becomes Code's model identity", () => {
     expect(agentModelsChange({ action: "set", stage: "plan", model: "claude-fable-5-2", expectedRevision: 2 })).toEqual({ action: "set", stage: "plan", choice: { model: { provider: "anthropic", modelId: "claude-fable-5-2" } }, expectedRevision: 2 });
   });

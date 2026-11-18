@@ -34,7 +34,7 @@ import { createSignedTokenVerifier } from "./token.js";
 import { createEvalAuthorityHandler, EVAL_AUTHORITY_PATH, EVAL_AUTHORITY_TOKEN_KIND } from "./eval-authority.js";
 import { createEvalCapHandler, EVAL_CAP_PATH, EVAL_CAP_TOKEN_KIND } from "./eval-cap.js";
 import { COMPANY_INSTRUCTIONS_PATH, COMPANY_INSTRUCTIONS_TOKEN_KIND, CompanyStoredInstructions, createCompanyInstructionsHandler, type CompanyInstructionsSource } from "./company-instructions.js";
-import { createOfferedModelsHandler, OFFERED_MODELS_PATH, parseDisabledAgentModels, SERVICE_TOKEN_KIND } from "./offered-models.js";
+import { createOfferedModelsHandler, offeredModelPrice, OFFERED_MODELS_PATH, parseDisabledAgentModels, SERVICE_TOKEN_KIND } from "./offered-models.js";
 import { createUpkeepCapReadHandler, UPKEEP_CAP_READ_PATH, UPKEEP_CAP_READ_TOKEN_KIND } from "./upkeep-cap-read.js";
 import { BEDROCK_CHECK_PATH, BEDROCK_SETUP_PATH, createBedrockServiceHandlers, createVertexCheckHandler, VERTEX_CHECK_PATH, type MacVerifier } from "./service-call.js";
 import { Dynamo } from "./dynamo.js";
@@ -67,7 +67,7 @@ export interface ProductConfig { keysTable: string; keysKeyArn: string; meter: s
 export interface LearningConfig { meter: string; ledger: string; markers: string }
 /** The answers route's meter tables (GATEWAY_ANSWERS_ENV): only with the product route, whose key store holds the company's account. */
 export type AnswersConfig = LearningConfig;
-export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; answers?: AnswersConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode; /** DEC 240, only with agentKeys "company". Absent: Rovara's AI is off. */ rovaraAi?: RovaraAiConfig; /** DEC 238, only with agentKeys "company" and the product MAC key. Absent: a company's own Bedrock is refused. */ bedrockByo?: BedrockByoConfig; /** DEC 254t, only with agentKeys "company": the switched-on company AI source kinds. Absent: none. */ aiSourceKinds?: ReadonlySet<string>; /** Models left off every company's offered list on Rovara's AI (offered-models.ts). Absent: the default list. */ agentModelsDisabled?: ReadonlySet<string> }
+export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; answers?: AnswersConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode; /** DEC 240, only with agentKeys "company". Absent: Rovara's AI is off. */ rovaraAi?: RovaraAiConfig; /** DEC 238, only with agentKeys "company" and the product MAC key. Absent: a company's own Bedrock is refused. */ bedrockByo?: BedrockByoConfig; /** DEC 254t, only with agentKeys "company": the switched-on company AI source kinds. Absent: none. */ aiSourceKinds?: ReadonlySet<string>; /** Models left off every company's offered list on Rovara's AI (offered-models.ts). Absent: the default list. */ agentModelsDisabled?: ReadonlySet<string>; /** DEC 254zzz96 (2): publish list prices on the offered list. Absent: off. */ offeredPrices?: true }
 /** Bring your own Bedrock (DEC 238): Rovara's broker role and the KMS HMAC key the companies' external ids come from. */
 export interface BedrockByoConfig { brokerRoleArn: string; externalIdKeyArn: string }
 /** Rovara's AI (DEC 240): the allow-list (agent model to Bedrock id, the gateway's own region's geography) and the exempt companies. */
@@ -170,6 +170,9 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
     try { agentModelsDisabled = parseDisabledAgentModels(env[GATEWAY_ENV.agentModelsDisabled]); } catch { throw new GatewayConfigError(GATEWAY_ENV.agentModelsDisabled); }
   }
   // DEC 254t: the switched-on company AI source kinds, only in company-key mode (where a company picks its agents' source).
+  // DEC 254zzz96 (2): "on" only; any other value is a broken setting (never read as off or on by guess).
+  const pricesSetting = env[GATEWAY_ENV.offeredPrices];
+  if (pricesSetting !== undefined && pricesSetting !== "on") throw new GatewayConfigError(GATEWAY_ENV.offeredPrices);
   let aiSourceKinds: ReadonlySet<string> | undefined;
   if (env[GATEWAY_ENV.aiSourceKinds] !== undefined) {
     if (agentKeys !== "company") throw new GatewayConfigError(GATEWAY_ENV.agentKeys);
@@ -178,7 +181,7 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
   // Every table distinct: no two meters, stores or the stage table may share rows.
   const all = [tables.meter, tables.ledger, tables.markers, tables.prices, tables.companies, ...(product === undefined ? [] : [product.keysTable, product.meter, product.ledger, product.markers, product.stages]), ...(learning === undefined ? [] : [learning.meter, learning.ledger, learning.markers]), ...(answers === undefined ? [] : [answers.meter, answers.ledger, answers.markers])];
   if (new Set(all).size !== all.length) throw new GatewayConfigError(product === undefined ? GATEWAY_ENV.meterTable : learning === undefined ? GATEWAY_ENV.productMeterTable : answers === undefined ? GATEWAY_ENV.learningMeterTable : GATEWAY_ENV.answersMeterTable);
-  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(answers === undefined ? {} : { answers }), ...(agentKeys === undefined ? {} : { agentKeys }), ...(rovaraAi === undefined ? {} : { rovaraAi }), ...(bedrockByo === undefined ? {} : { bedrockByo }), ...(agentModelsDisabled === undefined ? {} : { agentModelsDisabled }), ...(aiSourceKinds === undefined ? {} : { aiSourceKinds }) };
+  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(answers === undefined ? {} : { answers }), ...(agentKeys === undefined ? {} : { agentKeys }), ...(rovaraAi === undefined ? {} : { rovaraAi }), ...(bedrockByo === undefined ? {} : { bedrockByo }), ...(agentModelsDisabled === undefined ? {} : { agentModelsDisabled }), ...(aiSourceKinds === undefined ? {} : { aiSourceKinds }), ...(pricesSetting === "on" ? { offeredPrices: true as const } : {}) };
 }
 
 /** One JSON object per line on stdout, with an `event` field the alarms' metric filters count (deploy.ts GATEWAY_LOG_EVENTS). */
@@ -385,6 +388,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt }, keys: companyKeys }),
     ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }), now,
     switchedOn: config.aiSourceKinds ?? new Set<string>(), chat: { openai: true, openrouter: true },
+    // DEC 254zzz96 (2): list prices on the offered list, only when switched on (display only).
+    ...(config.offeredPrices === true ? { priceOf: (model: string) => offeredModelPrice(prices, model) } : {}),
     // DEC 254zzz41: what reviews may use, from the company's real connections and the room left in its one company cap (the agent meter's company row).
     reviewer: { keys: companyKeys, companyLimitMicros: (iss: string, cid: string) => companyRoomMicros(caps, meter, iss, cid) },
     // The endpoint's registered model names, from the company's sealed endpoint account (this company only).
