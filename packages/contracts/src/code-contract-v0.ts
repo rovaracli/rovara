@@ -485,6 +485,14 @@ export interface CompanyEgressAddressesView { addresses: string[] }
 export interface CompanyEngineModelView { model: string | null; source: "company" | "install"; offered: string[]; preselect: string }
 /** A model id, or null to clear the company's own (the install default applies again). Nothing else. */
 export interface PutCompanyEngineModelRequest { model: string | null }
+/**
+ * Code #1075 (DEC 254zzz58/63): the model the company's lessons LEARN with, separate from the engine model. `model` is what lessons learn with now (the company's own, else the
+ * install default, null only where the install's setting is broken); `offered` holds only the Claude models the gateway offers THIS company now (it can be empty); `preselect` is
+ * `model` when offered, else the first offered, else null.
+ */
+export interface CompanyLearningModelView { model: string | null; source: "company" | "install"; offered: string[]; preselect: string | null }
+/** A Claude model id, or null to clear the company's own (the install default applies again). Nothing else. */
+export interface PutCompanyLearningModelRequest { model: string | null }
 /** Code's project settings (M4a, `GET|PUT /v1/dev/projects/{name}/settings`): the stored preset and overrides, the revision, and what applies under the company's bounds. */
 export interface ProjectSettingsView { preset: string | null; overrides: JsonObject; revision: number; updatedAt: Iso | null; updatedBy: string | null; resolved: JsonObject; values: JsonObject; clamped: JsonObject[] }
 /** A change names the revision read; a cost field (such as `model_budget_usd`, the per-task model budget) needs the person's fresh step-up at Code. */
@@ -785,6 +793,8 @@ export interface CodeRouteTypes {
   "company.egressAddresses.get": { request: void; response: CompanyEgressAddressesView };
   "company.engineModel.get": { request: void; response: CompanyEngineModelView };
   "company.engineModel.put": { request: PutCompanyEngineModelRequest; response: CompanyEngineModelView };
+  "company.learningModel.get": { request: void; response: CompanyLearningModelView };
+  "company.learningModel.put": { request: PutCompanyLearningModelRequest; response: CompanyLearningModelView };
   "projects.settings.get": { request: void; response: ProjectSettingsView };
   "projects.settings.put": { request: PutProjectSettingsRequest; response: ProjectSettingsView };
 }
@@ -982,6 +992,9 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.egressAddresses.get", "GET", "/v1/dev/company/egress-addresses", "Rovara's outbound addresses (the same for every company on this Rovara), for a company owner or admin", "full", ["admin"], "no", false, "none", true),
   spec("company.engineModel.get", "GET", "/v1/dev/company/engine-model", "The company's engine model, the models the gateway offers it now, and the one to preselect (any member)", "full", ["later"], "no", false, "none", true),
   spec("company.engineModel.put", "PUT", "/v1/dev/company/engine-model", "Set or clear the company's engine model, only from its offered list (owner or admin)", "full", ["later"], "no", false, "none", true),
+  // Code #1075 (DEC 254zzz63): the model lessons learn with, a company choice beside the install default.
+  spec("company.learningModel.get", "GET", "/v1/dev/company/learning-model", "The model lessons learn with, whether it is the company's choice or the install default, and the Claude models the gateway offers it now (any member)", "full", ["later"], "no", false, "none", true),
+  spec("company.learningModel.put", "PUT", "/v1/dev/company/learning-model", "Set or clear the company's lessons learning model, only from its offered Claude models (owner or admin)", "full", ["later"], "no", false, "none", true),
   spec("projects.settings.get", "GET", `${DP}/settings`, "A project's cost and approval settings (preset, overrides, what applies)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
   spec("projects.settings.put", "PUT", `${DP}/settings`, "Change them (revision-checked; a cost field needs a fresh step-up; the project's administrator)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
 ];
@@ -1357,6 +1370,8 @@ GET /v1/app/org/budget-settings | g | budgets | | spending |
 GET /v1/app/org/egress-addresses | k | admin | company.egressAddresses.get | admin/settings/OutboundAddresses | T
 GET /v1/app/org/engine-model | k | later | company.engineModel.get | setup/AiSpendStep | T
 PUT /v1/app/org/engine-model | k | later | company.engineModel.put | setup/AiSpendStep | T
+GET /v1/app/org/learning-model | k | later | company.learningModel.get | admin/ai-spending/LearningModelCard | T
+PUT /v1/app/org/learning-model | k | later | company.learningModel.put | admin/ai-spending/LearningModelCard | T
 GET /v1/app/projects/{p}/spend-limits | k | later | projects.settings.get | setup/ProjectSpendLimits | T
 PUT /v1/app/projects/{p}/spend-limits | k | later | projects.settings.put | setup/ProjectSpendLimits | T
 GET /v1/app/trial | c | budgets | | trial-billing |
