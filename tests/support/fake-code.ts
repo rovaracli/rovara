@@ -685,6 +685,22 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   let lessonsOn = true;
   /** The Cost and time report's rows and features (set by the specs through /__fake/report); none: Code does not serve the report (404), as before the report lane merges. */
   let reportData: { tasks: unknown[]; features: unknown[] } | undefined;
+  /**
+   * Lead 4 PCF: the open features each company's plan card offers and the feature each task is filed under (set by the specs through /__fake/plan-features). Code words the line, says who may change it
+   * (a task filed by the tracker or not at all may be changed by its person; one a person chose only by an administrator) and refuses a feature of another company, as Code does.
+   */
+  const planChoices = new Map<string, Array<{ id: string; name: string }>>();
+  const planFiled = new Map<string, { featureId: string | null; source: string }>();
+  /** A spec can make Code say "this person may not change it" whatever the rule says (a person who only reads the plan card). */
+  let planMayChange: boolean | undefined;
+  const companyIdOf = (person: Person): string => person.company?.id ?? FAKE_COMPANY_ID;
+  const planFeatureView = (person: Person, taskId: string) => {
+    const own = planFiled.get(taskId);
+    const named = own === undefined || own.featureId === null ? undefined : (planChoices.get(companyIdOf(person)) ?? []).find((item) => item.id === own.featureId);
+    const words = own?.source === "tracker" ? "from the Linear parent" : "chosen";
+    const canChange = planMayChange ?? (own === undefined || own.source === "tracker" || person.administrator);
+    return { line: named === undefined ? "Feature: No feature" : `Feature: ${named.name} (${words})`, feature: named === undefined || own === undefined ? null : { id: named.id, name: named.name, source: own.source }, canChange, canCreate: canChange && person.administrator };
+  };
   const DAY = 864e5;
   const at = (days: number) => now().getTime() + days * DAY;
   const lessonOf = (id: string, patch: Partial<LessonItem> & { title: string }): LessonItem => ({
@@ -761,6 +777,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           evidence: [{ kind: "cost", label: "Cost", value: "about $1.20 to $3.10", state: "good" }], risk: "low", riskReasons: [], friction: NO,
           actions: [{ kind: "approve", label: "Approve plan", href: decisionHref(id, "approve"), method: "POST" }, { kind: "reject", label: "Reject", href: decisionHref(id, "reject"), method: "POST" }, { kind: "open", label: "Open the plan", href: `/app/sessions/${task.taskId}`, method: "GET" }],
           rejectReasons: REJECT_REASONS, status: "pending", createdAt: task.updatedAt,
+          ...(planFiled.size > 0 || planChoices.size > 0 ? { planFeature: planFeatureView(person, task.taskId) } : {}),
         });
       }
       const open = (task.pullRequests ?? []).find((entry) => entry.state === "open");
@@ -1596,6 +1613,25 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const size = 200, start = Number(cursor ?? "0");
           const more = start + size < reportData.tasks.length;
           return send(200, { tasks: reportData.tasks.slice(start, start + size), next: String(more ? start + size : reportData.tasks.length), hasMore: more, skipped: 0, unreadable: 0 });
+        }
+        if (method === "POST" && url.pathname === "/__fake/plan-features") {
+          const given = JSON.parse(await readBody(request)) as { reset?: unknown; company?: unknown; features?: unknown; filed?: unknown };
+          if (given.reset === true) { planChoices.clear(); planFiled.clear(); planMayChange = undefined; return send(200, { reset: true }); }
+          if (typeof (given as { canChange?: unknown }).canChange === "boolean") planMayChange = (given as { canChange: boolean }).canChange;
+          if (Array.isArray(given.features)) planChoices.set(typeof given.company === "string" ? given.company : FAKE_COMPANY_ID, given.features as Array<{ id: string; name: string }>);
+          if (typeof given.filed === "object" && given.filed !== null) { const filed = given.filed as { taskId: string; featureId: string | null; source: string }; planFiled.set(filed.taskId, { featureId: filed.featureId, source: filed.source }); }
+          return send(200, { ok: true });
+        }
+        // The plan card's feature-choice read is Code's own gate; its writes use the report actions below.
+        const planTask = method === "GET" && /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/feature-choices$/u.exec(url.pathname);
+        if (planTask) {
+          const who = access.get(/^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1] ?? "");
+          if (who === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          const taskId = planTask[1]!;
+          const found = tasks.get(taskId);
+          const mine = found !== undefined && (found.owner.developerId === who.developerId || who.administrator) && companyIdOf(found.owner) === companyIdOf(who);
+          if (!mine) return send(404, { error: { code: "NOT_FOUND", message: "task not found" } });
+          return send(200, { features: planChoices.get(companyIdOf(who)) ?? [], canCreate: who.administrator });
         }
         // The Cost and time actions (lane L4-CR4), with Code's own rules and fixed sentences (Code PR #913): company owners and admins change features; the report's rows and features are the ones the specs set.
         const featureAction = /^\/v1\/app\/org\/report\/features(?:\/(ft_[a-f0-9]{20})\/(rename|merge|state))?$/u.exec(url.pathname);

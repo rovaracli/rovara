@@ -136,6 +136,7 @@ export * from "./decision-focus.js";
 // Setup and test health SH19: the four test results and their fixed words, for the task page's Evidence tab.
 export * from "./verification-result.js";
 export * from "./decision-card-tabs.js";
+export * from "./app-plan-feature.js";
 export * from "./plan-one-screen.js";
 export * from "./test-environment.js";
 // Setup wizard (E4): what the test-environment setup routes answer and take (browser-safe).

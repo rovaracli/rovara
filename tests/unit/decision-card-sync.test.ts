@@ -15,9 +15,9 @@ const FIXTURE = JSON.parse(readFileSync("tests/fixtures/code-decision-cards.json
 const view = (name: string): Record<string, unknown> & { cards: Array<Record<string, unknown>> } => structuredClone(FIXTURE.views[name]!);
 
 describe("Code's decision-card contract copy", () => {
-  it("is Code's file, byte for byte (digests of Code 5b8f7f504)", () => {
+  it("is Code's file, byte for byte (Code 250282ac2)", () => {
     expect(FIXTURE.codeSha).toBe("5b8f7f5046b269af433cf3758d9e9cf48951b4c7");
-    expect(sha("decision-cards")).toBe("17d838b9cc4d1e07a6309d3cbab311687e4f6ff731c216e297e34802c3d2f3c6");
+    expect(sha("decision-cards")).toBe("3b4531d60fe857777ba087d40392f306d5b9b022990a9b3626711582a2ad8701");
     expect(sha("decision-card-tabs")).toBe("a30003ca106d11c164bb99a0b28d5f10500f6b834eccd70dd5e816a6433dbe2a");
     expect(sha("decision-focus")).toBe("7393f3c37f0d26b6106e20c1232ac76d52ad728d1f93272bc6da4d3208a1c832");
   });
