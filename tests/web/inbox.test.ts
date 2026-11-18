@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { AppNavSchema, INBOX_NOT_AVAILABLE_TEXT, InboxPageSchema } from "@agentx/contracts/web";
+import { AppNavSchema, INBOX_NOT_AVAILABLE_TEXT, InboxPageSchema, ProjectNoticesSchema } from "@agentx/contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -24,18 +24,23 @@ const item = (n: number, extra: Record<string, unknown> = {}) => ({ id: id(n), k
 const PAGE = InboxPageSchema.parse({ items: [item(1), item(2, { kind: "failed", read: true, open: `/t/${TASK}`, title: "<img src=x onerror=alert(1)>" })], unread: 1 });
 const ERROR = (status: number, code: string, message: string): ApiResponse => ({ status, body: { error: { code, message } } });
 
-function mount(options: { beforeMount?: (host: { kind: "web" | "desktop" }) => void; path?: string; theme?: "light" | "dark"; inbox?: (request: ApiRequest) => ApiResponse | Promise<ApiResponse> } = {}) {
+const NOTICE = (project: string, kind: "setup_broken" | "upkeep_paused" = "setup_broken", extra: Record<string, unknown> = {}) => ({ id: `${kind}.1763380800000.${project}`, kind, project, status: kind === "setup_broken" ? "Setup needs repair. Fix setup on the setup page." : "Nightly upkeep is paused: this month's upkeep limit is used up.", at: "2026-11-17T11:00:00.000Z", ...extra });
+const NO_NOTICES = { items: [] };
+
+function mount(options: { beforeMount?: (host: { kind: "web" | "desktop" }) => void; path?: string; theme?: "light" | "dark"; inbox?: (request: ApiRequest) => ApiResponse | Promise<ApiResponse>; notices?: (request: ApiRequest) => ApiResponse | Promise<ApiResponse> } = {}) {
  const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: "member" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
  let current = options.inbox ?? (() => ({ status: 200, body: PAGE }));
  const f = fakeHost(async r => {
+  if (r.path === "/v1/app/inbox/project-notices") return (options.notices ?? (() => ({ status: 200, body: NO_NOTICES })))(r);
   if (r.path.startsWith("/v1/app/inbox")) return current(r);
   return { status: 200, body: r.path === "/v1/app/nav" ? nav : r.path === "/v1/app/home" ? { cards: [], total: 0 } : { notices: [], next: "settled" } };
  });
  options.beforeMount?.(f.host);const query = createQueryClient();query.setQueryData(["nav"], nav);f.storage.set("rovara.theme", options.theme ?? "light");
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [options.path ?? "/app/inbox"] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }), { theme: options.theme ?? "light" });
- const inboxCalls = () => f.request.mock.calls.map(([r]) => r).filter(r => r.path.startsWith("/v1/app/inbox"));
- return { ...f, ...view, query, router, inboxCalls, answer(next: (request: ApiRequest) => ApiResponse | Promise<ApiResponse>) { current = next; }, close: () => { view.unmount();router.dispose();query.clear(); } };
+ const inboxCalls = () => f.request.mock.calls.map(([r]) => r).filter(r => r.path.startsWith("/v1/app/inbox") && r.path !== "/v1/app/inbox/project-notices");
+ const noticeCalls = () => f.request.mock.calls.map(([r]) => r).filter(r => r.path === "/v1/app/inbox/project-notices");
+ return { ...f, ...view, query, router, inboxCalls, noticeCalls, answer(next: (request: ApiRequest) => ApiResponse | Promise<ApiResponse>) { current = next; }, close: () => { view.unmount();router.dispose();query.clear(); } };
 }
 
 it("draws the person's rows newest first as links to the task, with the kind, the status and the time, and shows titles as text", async () => {
@@ -179,4 +184,57 @@ it("refreshes the rows after a mark-all that failed part way", async () => {
 it("draws a kind it does not know as a plain update", async () => {
  const f = mount({ inbox: () => ({ status: 200, body: { items: [item(1, { kind: "mentioned" })], unread: 1 } }) });
  expect((await screen.findByTestId("inbox-row")).textContent).toContain("Update · Waiting for you.");f.close();
+});
+
+// ---- L4-U5b: the notices about a project, for an admin told by neither chat nor email
+
+it("shows the project notices above the tasks: the project's name, the kind in words, Code's sentence and the time, each opening the project's page", async () => {
+ const f = mount({ notices: () => ({ status: 200, body: ProjectNoticesSchema.parse({ items: [NOTICE("payments"), NOTICE("beacon-api", "upkeep_paused", { id: "upkeep_paused.1763380800000.beacon-api" })] }) }) });
+ const section = await screen.findByTestId("project-notices");
+ expect(section.querySelector("h2")?.textContent).toBe("Projects that need an admin");
+ const rows = await screen.findAllByTestId("project-notice-row");expect(rows).toHaveLength(2);
+ expect(rows.map(row => row.querySelector("a")!.getAttribute("href"))).toEqual(["/projects/payments", "/projects/beacon-api"]);
+ expect(rows[0]!.textContent).toContain("payments");expect(rows[0]!.textContent).toContain("Setup needs repair · Setup needs repair. Fix setup on the setup page.");
+ expect(rows[1]!.textContent).toContain("Nightly upkeep paused · Nightly upkeep is paused: this month's upkeep limit is used up.");
+ expect(rows[0]!.querySelector("time")?.getAttribute("datetime")).toBe("2026-11-17T11:00:00.000Z");
+ // The tasks are still drawn below, and the notices were asked for once with no query (nothing about a person or a company is sent).
+ expect(await screen.findAllByTestId("inbox-row")).toHaveLength(2);
+ expect(f.noticeCalls()).toHaveLength(1);expect(f.noticeCalls()[0]).toMatchObject({ method: "GET", path: "/v1/app/inbox/project-notices" });
+ f.close();
+});
+
+it("draws the project's name and Code's sentence as text, never as markup, and builds the link from the name alone", async () => {
+ const f = mount({ notices: () => ({ status: 200, body: { items: [NOTICE("payments", "setup_broken", { status: "<img src=x onerror=alert(1)> Setup needs repair." })] } }) });
+ expect(await screen.findByText(/<img src=x onerror=alert\(1\)> Setup needs repair\./u)).toBeTruthy();expect(f.container.querySelector("img")).toBeNull();
+ expect(f.container.querySelector("[data-testid='project-notice-row'] a")!.getAttribute("href")).toBe("/projects/payments");f.close();
+});
+
+it("draws a notice kind it does not know as a plain update", async () => {
+ const f = mount({ notices: () => ({ status: 200, body: { items: [NOTICE("payments", "setup_broken", { kind: "billing_paused", id: "billing_paused.1763380800000.payments" })] } }) });
+ expect((await screen.findByTestId("project-notice-row")).textContent).toContain("Update · ");f.close();
+});
+
+it("shows no section when there is no notice, and the tasks are unchanged", async () => {
+ const f = mount();await screen.findAllByTestId("inbox-row");
+ expect(screen.queryByTestId("project-notices")).toBeNull();f.close();
+});
+
+it("a notices read that fails (or answers something Cloud rejects) shows no section and never breaks the tasks below", async () => {
+ for (const answer of [ERROR(502, "RUNTIME_UNAVAILABLE", "Rovara Code sent an inbox answer Cloud couldn't read."), ERROR(403, "FORBIDDEN", "no"), { status: 200, body: { items: [{ id: "x" }] } } as ApiResponse]) {
+  const f = mount({ notices: () => answer });
+  expect(await screen.findAllByTestId("inbox-row")).toHaveLength(2);
+  await waitFor(() => expect(f.noticeCalls().length).toBeGreaterThan(0));
+  expect(screen.queryByTestId("project-notices")).toBeNull();expect(screen.queryByTestId("load-error")).toBeNull();f.close();
+ }
+});
+
+it("reads the notices again every 30 seconds", async () => {
+ const f = mount({ path: "/app/inbox" });await screen.findAllByTestId("inbox-row");
+ const observer = f.query.getQueryCache().find({ queryKey: ["inbox", "project-notices"] })!.observers[0]!;
+ expect(observer.options.refetchInterval).toBe(30_000);f.close();
+});
+
+for (const theme of ["light", "dark"] as const) it("has an accessible inbox with project notices in " + theme, async () => {
+ const f = mount({ theme, notices: () => ({ status: 200, body: { items: [NOTICE("payments"), NOTICE("payments", "upkeep_paused", { id: "upkeep_paused.1763380800000.payments" })] } }) });
+ await screen.findAllByTestId("project-notice-row");await screen.findAllByTestId("inbox-row");await expectNoAxeViolations(f.container);f.close();
 });

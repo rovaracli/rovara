@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
 import { codeSessionIdOf, forgetPlacedRows } from "../../packages/cloud-server/src/inbox-routes.js";
-import { InboxPageSchema, InboxReadResponseSchema, INBOX_NOT_AVAILABLE_TEXT } from "../../packages/contracts/src/app-inbox.js";
+import { InboxPageSchema, InboxReadResponseSchema, INBOX_NOT_AVAILABLE_TEXT, ProjectNoticesSchema } from "../../packages/contracts/src/app-inbox.js";
 
 const CODE = "https://code.example.test";
 const ADA = "a".repeat(64), CAL = "c".repeat(64), BEA = "b".repeat(64);
@@ -41,7 +41,13 @@ function fakeCode() {
     [CAL]: [row(TASK_C, "needs_you")],
     [BEA]: [row(TASK_B, "failed")],
   };
-  const flags = { mode: "ok" as Mode, sessionRead: "ok" as "ok" | "404" | "wrong-task" | "garbage" | "not-task" | "403" | "429" | "503", marked: 1 as unknown };
+  // L4-U5b: the project notices Code keeps in each person's own inbox (an admin told by neither chat nor email). Code shows a person only their own.
+  const notices: Record<string, unknown[]> = {
+    [ADA]: [{ id: `setup_broken.${String(AT)}.payments`, kind: "setup_broken", project: "payments", status: "Setup needs repair. The project's setup stopped working after recent code changes (setup: npm ci - exit 1). Fix setup on the setup page.", at: new Date(AT).toISOString(), link: "https://evil.example.test/steal" },
+      { id: `upkeep_paused.${String(AT - 1000)}.payments`, kind: "upkeep_paused", project: "payments", status: "Nightly upkeep is paused: this month's upkeep limit is used up.", at: new Date(AT - 1000).toISOString() }],
+    [BEA]: [{ id: `setup_broken.${String(AT)}.billing`, kind: "setup_broken", project: "billing", status: "Setup needs repair.", at: new Date(AT).toISOString() }],
+  };
+  const flags = { notice: "ok" as "ok" | "404" | "501" | "403" | "garbage" | "bad-item" | "foreign-id" | "bad-kind" | "new-kind" | "long-status" | "huge" | "bad-project", mode: "ok" as Mode, sessionRead: "ok" as "ok" | "404" | "wrong-task" | "garbage" | "not-task" | "403" | "429" | "503", marked: 1 as unknown };
   const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const refuse = (status: number, code: string, message: string) => respond(status, { error: { code, message } });
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -67,6 +73,22 @@ function fakeCode() {
       if (flags.sessionRead === "garbage") return respond(200, { session: { sessionId: session[1], body: { kind: "task", task: { taskId: "not-a-uuid" } } } });
       return respond(200, { session: { sessionId: session[1], body: { kind: "task", task: { taskId: flags.sessionRead === "wrong-task" ? TASK_B : taskId } } } });
     }
+    if (url.pathname === "/v1/app/inbox/project-notices") {
+      if (flags.notice === "404") return refuse(404, "NOT_FOUND", "route not found");
+      if (flags.notice === "501") return refuse(501, "NOT_ON_CORE_ENGINE", "Not here");
+      if (flags.notice === "403") return refuse(403, "FORBIDDEN", "Your access ended.");
+      const own = notices[me.developerId] ?? [];
+      const first = own[0] as Record<string, unknown> | undefined;
+      if (flags.notice === "garbage") return respond(200, { items: "nope" });
+      if (flags.notice === "bad-item") return respond(200, { items: [{ id: "x" }] });
+      if (flags.notice === "foreign-id") return respond(200, { items: [{ ...first, id: `setup_broken.${String(AT)}.other` }] });
+      if (flags.notice === "bad-kind") return respond(200, { items: [{ ...first, kind: "Not A Kind!" }] });
+      if (flags.notice === "new-kind") return respond(200, { items: [{ ...first, kind: "billing_paused", id: `billing_paused.${String(AT)}.payments` }] });
+      if (flags.notice === "long-status") return respond(200, { items: [{ ...first, status: "s".repeat(501) }] });
+      if (flags.notice === "bad-project") return respond(200, { items: [{ ...first, project: "../x", id: `setup_broken.${String(AT)}.../x` }] });
+      if (flags.notice === "huge") return respond(200, { items: Array.from({ length: 51 }, () => first) });
+      return respond(200, { items: own });
+    }
     if (url.pathname === "/v1/app/inbox" || url.pathname === "/v1/app/inbox/read") {
       if (flags.mode === "404") return refuse(404, "NOT_FOUND", "That is not on the core engine on this install yet.");
       if (flags.mode === "501") return refuse(501, "NOT_ON_CORE_ENGINE", "Not here");
@@ -87,7 +109,7 @@ function fakeCode() {
     }
     return refuse(404, "NOT_FOUND", "route not found");
   }) as typeof fetch;
-  return { fetchImpl, calls, flags, rows, inboxCalls: () => calls.filter((call) => call.path.startsWith("/v1/app/inbox")), sessionCalls: () => calls.filter((call) => call.path.startsWith("/v1/app/sessions/")) };
+  return { fetchImpl, calls, flags, rows, inboxCalls: () => calls.filter((call) => call.path.startsWith("/v1/app/inbox") && !call.path.startsWith("/v1/app/inbox/project-notices")), noticeCalls: () => calls.filter((call) => call.path.startsWith("/v1/app/inbox/project-notices")), sessionCalls: () => calls.filter((call) => call.path.startsWith("/v1/app/sessions/")) };
 }
 
 function setUp() {
@@ -386,5 +408,77 @@ describe("Inbox: marking rows read", () => {
       expect(answer.status, String(marked)).toBe(502);
       expect(json(answer)).toEqual(UNREADABLE);
     }
+  });
+});
+
+describe("Inbox: project notices (L4-U5b)", () => {
+  it("answers the person's own notices from Code as the person, newest first, with only the named fields (Code's link is never passed on)", async () => {
+    const { call, ada, code } = await base();
+    const answer = await call("GET", "/v1/web/inbox/project-notices", ada);
+    expect(answer.status).toBe(200);
+    const page = ProjectNoticesSchema.parse(json(answer));
+    expect(page.items.map((item) => [item.kind, item.project])).toEqual([["setup_broken", "payments"], ["upkeep_paused", "payments"]]);
+    expect(answer.body).not.toContain("evil.example.test");
+    expect(answer.body).not.toContain("link");
+    expect(code.noticeCalls()).toEqual([{ method: "GET", path: "/v1/app/inbox/project-notices", token: "ada-access" }]);
+    expect(code.inboxCalls()).toEqual([]);
+  });
+
+  it("two companies: each person sees only what Code keeps for them (Bea reads her own company's, Ada never reads it, and Cal, who was told nothing, reads an empty list)", async () => {
+    const { call, ada, bea, cal } = await base();
+    expect((ProjectNoticesSchema.parse(json(await call("GET", "/v1/web/inbox/project-notices", bea))).items).map((item) => item.project)).toEqual(["billing"]);
+    expect(ProjectNoticesSchema.parse(json(await call("GET", "/v1/web/inbox/project-notices", ada))).items.every((item) => item.project === "payments")).toBe(true);
+    expect(json(await call("GET", "/v1/web/inbox/project-notices", cal))).toEqual({ items: [] });
+  });
+
+  it("sends Code nothing from the browser: no query is accepted and none reaches Code", async () => {
+    const { call, ada, code } = await base();
+    for (const query of ["developerId=" + BEA, "companyId=" + COMPANY_B, "project=billing", "limit=5"]) {
+      const answer = await call("GET", `/v1/web/inbox/project-notices?${query}`, ada);
+      expect(answer.status, query).toBe(400);
+      expect(json(answer), query).toEqual(BAD);
+    }
+    expect(code.noticeCalls()).toEqual([]);
+  });
+
+  it("a Code with no such route or no inbox reads as nothing to show (never an error on the inbox page)", async () => {
+    for (const mode of ["404", "501"] as const) {
+      const { call, ada, code } = await base();
+      code.flags.notice = mode;
+      const answer = await call("GET", "/v1/web/inbox/project-notices", ada);
+      expect(answer.status, mode).toBe(200);
+      expect(json(answer), mode).toEqual({ items: [] });
+    }
+  });
+
+  it("passes any other refusal on as Code worded it", async () => {
+    const { call, ada, code } = await base();
+    code.flags.notice = "403";
+    const answer = await call("GET", "/v1/web/inbox/project-notices", ada);
+    expect(answer.status).toBe(403);
+    expect(json(answer)).toMatchObject({ error: { code: "FORBIDDEN", message: "Your access ended." } });
+  });
+
+  it.each(["garbage", "bad-item", "foreign-id", "bad-kind", "long-status", "huge", "bad-project"] as const)("an answer that is not the shape Cloud expects (%s) is one fixed sentence, never a partial list", async (mode) => {
+    const { call, ada, code } = await base();
+    code.flags.notice = mode;
+    const answer = await call("GET", "/v1/web/inbox/project-notices", ada);
+    expect(answer.status).toBe(502);
+    expect(json(answer)).toEqual(UNREADABLE);
+  });
+
+  it("a kind a newer Code adds is passed on (the app reads it as a plain update), so one new kind never hides the list", async () => {
+    const { call, ada, code } = await base();
+    code.flags.notice = "new-kind";
+    const answer = await call("GET", "/v1/web/inbox/project-notices", ada);
+    expect(answer.status).toBe(200);
+    expect((json(answer).items as Array<{ kind: string }>).map((item) => item.kind)).toEqual(["billing_paused"]);
+  });
+
+  it("needs a sign-in, and a write method is not served here", async () => {
+    const { call, ada } = await base();
+    expect((await call("GET", "/v1/web/inbox/project-notices")).status).toBe(401);
+    const post = await call("POST", "/v1/web/inbox/project-notices", { ...ada, body: {} });
+    expect(post.status).not.toBe(200);
   });
 });

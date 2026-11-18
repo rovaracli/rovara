@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { INBOX_POLL_MS, InboxPageReaderSchema, InboxReadResponseReaderSchema, type InboxReadBody } from "@agentx/contracts/web";
+import { INBOX_POLL_MS, InboxPageReaderSchema, InboxReadResponseReaderSchema, ProjectNoticesReaderSchema, type InboxReadBody } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";
@@ -18,6 +18,8 @@ export function createInboxApi(host: AppHost) {
    if (options.cursor !== undefined) query.set("cursor", options.cursor);
    return api.get("/v1/app/inbox" + (query.size > 0 ? "?" + query.toString() : ""), InboxPageReaderSchema);
   },
+  // L4-U5b: the notices about a project that Code keeps in the person's own inbox (setup needs repair, nightly upkeep paused). Code shows one only to a person who still administers the project.
+  projectNotices: () => api.get("/v1/app/inbox/project-notices", ProjectNoticesReaderSchema),
   // The answer is its own body, never a confirmation, so it is read with sendAnswer.
   markRead: (body: InboxReadBody) => api.sendAnswer("POST", "/v1/app/inbox/read", body, InboxReadResponseReaderSchema),
  };

@@ -77,7 +77,7 @@ describe("code contract v0 tables", () => {
     // Plus the setup flow's eval card (L4-EVC): the read and the one approval, each passed to Code's own route as the person: 2 rows.
     // Plus the setup flow's eval card (L4-EVC): the read, the one approval, a decision on a waiting spend item and the opt-in health check, each passed to Code's own route as the person: 4 rows.
     // Plus the person's own "Don't learn from my Slack messages" switch (L4-SRC-SL): read and set, as the person: 2 rows.
-    expect(counts.appCloudServerToday).toBe(164);
+    expect(counts.appCloudServerToday).toBe(165);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
