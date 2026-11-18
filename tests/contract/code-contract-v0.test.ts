@@ -83,7 +83,8 @@ describe("code contract v0 tables", () => {
     // Plus answering Understand's questions from the Work list and Home (Code #1057's round on the list row): the task's answers, passed to Code as the person: 1 row.
     // Plus the model the company's lessons learn with (DEC 254zzz63, Code #1075): read and change, passed to Code as the person: 2 rows.
     // Plus "Knowledge stays in Rovara" and a project's local coding tools setting (L4-JA7): read and set each, as the person: 4 rows (the laptop-only GET row for the project becomes the served one).
-    expect(counts.appCloudServerToday).toBe(182);
+    // Plus the wiki's "questions the wiki could not answer" and acknowledging a note whose file changed (journey audit B17), passed to Code's own routes as the person: 2 rows.
+    expect(counts.appCloudServerToday).toBe(184);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

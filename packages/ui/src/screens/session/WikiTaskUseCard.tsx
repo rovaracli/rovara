@@ -5,7 +5,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 
 /** A compact task page record of the wiki pages the agent received and opened. */
 export function WikiTaskUseCard({ project, taskId }: { project: string; taskId: string }) {
- const read = useLoadedLessons(taskId, true), wiki = useWikiIndex(project, read.data?.wikiUse !== undefined);
+ const read = useLoadedLessons(project, taskId, true), wiki = useWikiIndex(project, read.data?.wikiUse !== undefined);
  const use = read.data?.wikiUse;
  if (use === undefined || use.read.length === 0) return null;
  const names = new Map((wiki.data?.pages ?? []).map(page => [page.pageId, page.title]));

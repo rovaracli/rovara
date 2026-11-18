@@ -10,13 +10,14 @@ import { SKILL_SKIP, STAGE_TITLES, budgetWords, itemWords, kilobytes, modeWords,
 const LoadedLessons = lazy(async () => ({ default: (await import("./LoadedLessons.js")).LoadedLessons }));
 
 /** "What the agent loaded": one closed section on the Pipeline tab. It reads nothing until it is opened, and shows references; rule text is fetched per file on request. */
-export function LoadedKnowledgePanel({ taskId }: { taskId: string }) {
+export function LoadedKnowledgePanel({ project, taskId }: { project: string | undefined; taskId: string }) {
  const [open, setOpen] = useState(false);
- return <details className="rv-loaded-knowledge" onToggle={event => { setOpen(event.currentTarget.open); }}><summary>What the agent loaded</summary>{open && <LoadedKnowledgeBody taskId={taskId} />}</details>;
+ return <details className="rv-loaded-knowledge" onToggle={event => { setOpen(event.currentTarget.open); }}><summary>What the agent loaded</summary>{open && <LoadedKnowledgeBody project={project} taskId={taskId} />}</details>;
 }
 
-function LoadedKnowledgeBody({ taskId }: { taskId: string }) {
- return <><RulesBody taskId={taskId} /><Suspense fallback={null}><LoadedLessons taskId={taskId} /></Suspense></>;
+function LoadedKnowledgeBody({ project, taskId }: { project: string | undefined; taskId: string }) {
+ // The lessons are read per project; a session with no project has none to read.
+ return <><RulesBody taskId={taskId} />{project !== undefined && <Suspense fallback={null}><LoadedLessons project={project} taskId={taskId} /></Suspense>}</>;
 }
 
 function RulesBody({ taskId }: { taskId: string }) {
