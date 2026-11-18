@@ -1,12 +1,14 @@
 // Lead 4 W6 in the browser, on the pretend Code (which serves Code W0's file map, W4's build controls and the nightly upkeep seam): the wiki row of the project's setup checklist. Priya, the company owner, maps the
 // files, reads the forecast (pages, no dollars), picks what matters, builds, watches progress, stops and continues, reads the report, turns "Give the wiki to agents" on, refreshes, turns nightly upkeep on, changes its
-// cap and deletes the wiki; Sam (a developer) sees where it stands and no control; a Code without the routes shows no row. Screenshots go to the test output folder.
+// cap and deletes the wiki (L4-W6b: nightly upkeep is the company's one choice, with one confirm, before the project switch); Sam (a developer) sees where it stands and no control; a Code without the routes shows no row. Screenshots go to the test output folder.
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { expect, test, type Page } from "@playwright/test";
 import { PROJECT, WikiSetupPanel, setFakePerson, setSetupRun, setWikiSetup } from "./pages/index.js";
 
-test.afterEach(async ({ page }) => { await setWikiSetup(page, PROJECT); await setSetupRun(page, PROJECT, "none"); await setFakePerson(page, "priya"); });
+const OTHER_PROJECT = "secret-ledger";
+
+test.afterEach(async ({ page }) => { await setWikiSetup(page, PROJECT); await setWikiSetup(page, OTHER_PROJECT); await setSetupRun(page, PROJECT, "none"); await setFakePerson(page, "priya"); });
 
 const axeSource = readFileSync(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
 async function violations(page: Page, contrast = false): Promise<string[]> {
@@ -102,20 +104,36 @@ test("a built wiki: the agents switch starts off, refresh now, and delete asks f
   await expect(panel.byId("wiki-setup-controls")).toHaveCount(0);
 });
 
-test("nightly upkeep: one switch, off by default; the cap saves lower at once and asks for a fresh sign-in to raise; each part names its limit", async ({ page }, testInfo) => {
+test("nightly upkeep: the owner makes the one choice and confirms; then the switch, the cap saves lower at once and asks for a fresh sign-in to raise; each part names its limit", async ({ page }, testInfo) => {
   const cap: { usd: number | null; version: number; puts: unknown[]; stepUp?: boolean } = { usd: null, version: 0, puts: [] };
   await pretendSpendLimits(page, cap);
   const panel = new WikiSetupPanel(page);
   await panel.open(PROJECT);
-  await expect(panel.upkeep).not.toBeChecked();
+  await expect(panel.upkeep).toHaveCount(0);
   await expect(panel.byId("wiki-setup-upkeep-state")).toContainText("Nightly upkeep is off.");
+  await expect(panel.byId("wiki-setup-cap")).toHaveCount(0);
+  await expect(panel.byId("wiki-setup-upkeep-offer")).toHaveText("Keep this project healthy every night");
+  await page.screenshot({ path: testInfo.outputPath("wiki-setup-upkeep-offer.png"), fullPage: true });
+  await panel.byId("wiki-setup-upkeep-offer").click();
+  await expect(panel.byId("wiki-setup-upkeep-confirm")).toContainText("Setup check and mock checks: no AI. Wiki refresh: AI, uses your key.");
+  await expect(panel.byId("wiki-setup-upkeep-cap-line")).toHaveText("Monthly cap: set in Spending limits.");
+  await expect(panel.byId("wiki-setup-upkeep-cap-line").getByRole("link", { name: "Spending limits" })).toHaveAttribute("href", "/app/admin/money/limits");
+  await expect(panel.byId("wiki-setup-upkeep-confirm")).not.toContainText("$");
+  await page.screenshot({ path: testInfo.outputPath("wiki-setup-upkeep-confirm.png"), fullPage: true });
+  expect(await violations(page)).toEqual([]);
+  await panel.byId("wiki-setup-upkeep-yes").click();
+  await expect(panel.upkeep).toBeChecked();
+  await expect(panel.byId("wiki-setup-upkeep-offer")).toHaveCount(0);
+  await expect(panel.byId("wiki-setup-upkeep-state")).toContainText("Nightly upkeep is on.");
   await expect(panel.byId("wiki-setup-upkeep-limits")).toContainText("Setup and mock checks: no AI.");
   await expect(panel.byId("wiki-setup-upkeep-limits")).toContainText("held by the nightly upkeep cap below");
   await expect(panel.byId("wiki-setup-cap")).toContainText("This is the standard cap for nightly upkeep.");
   await expect(panel.byId("wiki-setup-cap").getByLabel("Monthly cap on nightly upkeep")).toHaveValue("25.00");
   await panel.upkeep.click();
+  await expect(panel.upkeep).not.toBeChecked();
+  await expect(panel.byId("wiki-setup-upkeep-state")).toContainText("Nightly upkeep is off.");
+  await panel.upkeep.click();
   await expect(panel.upkeep).toBeChecked();
-  await expect(panel.byId("wiki-setup-upkeep-state")).toContainText("Nightly upkeep is on.");
   await panel.byId("wiki-setup-cap").getByLabel("Monthly cap on nightly upkeep").fill("12.50");
   await panel.byId("wiki-setup-cap-save").click();
   await expect(panel.byId("wiki-setup-cap-saved")).toBeVisible();
@@ -128,6 +146,69 @@ test("nightly upkeep: one switch, off by default; the cap saves lower at once an
   await expect(page.getByTestId("fresh-sign-in")).toBeVisible();
   expect(cap.puts).toEqual([{ expectedVersion: 0, monthlyUsd: 12.5 }, { expectedVersion: 1, monthlyUsd: 40 }]);
   expect(await violations(page)).toEqual([]);
+});
+
+test("the choice and its confirm in light and dark, with a cap Code states and a link to raise it; axe with contrast in both", async ({ page }, testInfo) => {
+  await setWikiSetup(page, PROJECT, { capUsd: 40 });
+  const panel = new WikiSetupPanel(page);
+  await panel.open(PROJECT);
+  await panel.byId("wiki-setup-upkeep-offer").click();
+  await expect(panel.byId("wiki-setup-upkeep-cap-line")).toContainText("Monthly cap: $40.00.");
+  await expect(panel.byId("wiki-setup-upkeep-cap-line").getByRole("link", { name: "Raise the cap" })).toHaveAttribute("href", "/app/admin/money/limits");
+  await page.screenshot({ path: testInfo.outputPath("wiki-setup-upkeep-confirm-light.png"), fullPage: true });
+  expect(await violations(page, true)).toEqual([]);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(panel.byId("wiki-setup-upkeep-confirm")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("wiki-setup-upkeep-confirm-dark.png"), fullPage: true });
+  expect(await violations(page, true)).toEqual([]);
+  await page.emulateMedia({ colorScheme: "light" });
+});
+
+test("a person who cannot give the consent sees no choice (Sam: consent off, then on)", async ({ page }, testInfo) => {
+  // Sam: reads the project, may not manage it. Consent off: only the state. Consent on and the project switch on: the state says on, still nothing to press.
+  await setFakePerson(page, "sam");
+  await page.context().clearCookies();
+  const panel = new WikiSetupPanel(page);
+  await panel.open(PROJECT);
+  await expect(panel.byId("wiki-setup-upkeep-state")).toContainText("Nightly upkeep is off.");
+  await expect(panel.byId("wiki-setup-upkeep-offer")).toHaveCount(0);
+  await expect(panel.byId("wiki-setup-upkeep-needs-admin")).toHaveCount(0);
+  await expect(panel.upkeep).toHaveCount(0);
+  await setWikiSetup(page, PROJECT, { consent: true, upkeepOn: true });
+  await page.reload();
+  await expect(panel.byId("wiki-setup-upkeep-state")).toContainText("Nightly upkeep is on.");
+  await expect(panel.upkeep).toHaveCount(0);
+  await expect(panel.byId("wiki-setup-cap")).toHaveCount(0);
+  await expect(panel.row.getByRole("link", { name: /Raise the cap|Spending limits/u })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("wiki-setup-upkeep-reader.png"), fullPage: true });
+  expect(await violations(page)).toEqual([]);
+});
+
+test("where the operator's ceiling is off, the owner sees one muted line and no controls", async ({ page }, testInfo) => {
+  await setWikiSetup(page, PROJECT, { ceilingOff: true });
+  const panel = new WikiSetupPanel(page);
+  await panel.open(PROJECT);
+  await expect(panel.byId("wiki-setup-upkeep-absent")).toHaveText("Nightly upkeep isn't available on this Rovara yet.");
+  await expect(panel.byId("wiki-setup-upkeep-offer")).toHaveCount(0);
+  await expect(panel.upkeep).toHaveCount(0);
+  await expect(panel.byId("wiki-setup-upkeep-state")).toHaveCount(0);
+  await expect(panel.byId("wiki-setup-cap")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("wiki-setup-upkeep-unavailable.png"), fullPage: true });
+  expect(await violations(page, true)).toEqual([]);
+});
+
+test("two companies: the consent one company's owner gives is not another company's (Zed still gets the choice)", async ({ page }) => {
+  const panel = new WikiSetupPanel(page);
+  await panel.open(PROJECT);
+  await panel.byId("wiki-setup-upkeep-offer").click();
+  await panel.byId("wiki-setup-upkeep-yes").click();
+  await expect(panel.upkeep).toBeChecked();
+  await setFakePerson(page, "zed");
+  await page.context().clearCookies();
+  await panel.open(OTHER_PROJECT);
+  await expect(panel.byId("wiki-setup-upkeep-offer")).toBeVisible();
+  await expect(panel.upkeep).toHaveCount(0);
+  await expect(panel.byId("wiki-setup-upkeep-state")).toContainText("Nightly upkeep is off.");
 });
 
 test("a person who may not manage (Sam) sees where the wiki stands and no control", async ({ page }, testInfo) => {

@@ -220,6 +220,27 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   // Lead 4 W6 (Code W0's wiki-map, W4's wiki-build controls, and the nightly upkeep seam): each project's pretend wiki build, set by the specs through /__fake/wiki-setup. `off` makes Code answer its unknown-route 404.
   const wikiSetups = new Map<string, FakeWikiSetup>();
   const wikiSetupOf = (name: string): FakeWikiSetup => { let one = wikiSetups.get(name); if (one === undefined) { one = { status: "none", pages: 0, refreshPages: 0, agentsOn: false, aiKey: "connected", mapMade: false, planned: 0, written: 0, upkeepOn: false }; wikiSetups.set(name, one); } return one; };
+  // L4-P2 (Code's two locks): the company's consent to Rovara's automatic runs is the company's, not a project's. It starts off; only a company owner or admin sets it, in the one PUT that also switches the project on.
+  const upkeepConsent = new Map<string, boolean>();
+  const companyKeyOf = (name: string) => project(name)?.companyId ?? "main";
+  const upkeepView = (name: string, one: FakeWikiSetup, person: Person, manage: boolean) => {
+    if (one.legacyUpkeep === true) return { enabled: one.upkeepOn, canManage: manage, available: true };
+    const available = one.ceilingOff !== true, admin = person.administrator && !companyless.has(person.developerId);
+    return { enabled: one.upkeepOn, canManage: manage, available, systemRunsOn: available && upkeepConsent.get(companyKeyOf(name)) === true, canEnableSystemRuns: available && admin, cap: { monthlyUsd: one.capUsd ?? null, canRaise: admin } };
+  };
+  const upkeepPut = (name: string, one: FakeWikiSetup, person: Person, manage: boolean, given: { on?: unknown; allowSystemRuns?: unknown }) => {
+    if (one.legacyUpkeep === true) { one.upkeepOn = given.on === true; return { status: 200, body: upkeepView(name, one, person, manage) }; }
+    if (one.ceilingOff === true) return failure(409, "NOT_AVAILABLE_HERE", "Nightly upkeep isn't available on this Rovara yet.");
+    if (given.allowSystemRuns !== undefined) {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only company owners and admins can allow or stop Rovara's automatic runs for the company.");
+      if (given.allowSystemRuns === false && given.on === true) return failure(400, "CONFIG_INVALID", "the request is not valid");
+      upkeepConsent.set(companyKeyOf(name), given.allowSystemRuns === true);
+    } else if (given.on === true && upkeepConsent.get(companyKeyOf(name)) !== true) {
+      return failure(403, "FORBIDDEN", "A company owner or admin has to allow Rovara's automatic runs for the company first.");
+    }
+    one.upkeepOn = given.on === true;
+    return { status: 200, body: upkeepView(name, one, person, manage) };
+  };
   const wikiSetupAnswer = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
     const match = /^\/v1\/app\/projects\/([^/]+)\/(wiki-map|wiki-build(?:\/(?:continue|stop|refresh|agents|delete))?|upkeep)$/u.exec(path);
     if (match === null) return undefined;
@@ -228,12 +249,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (project(name) === undefined || companyless.has(person.developerId) || (!manage && grant === undefined) || !wikiReads(person, name)) return failure(404, "NOT_FOUND", "project not found");
     const view = (): { status: number; body: unknown } => ({ status: 200, body: wikiSetupBuildView(one, manage) });
-    if (method === "GET") return tail === "wiki-map" ? { status: 200, body: one.mapMade ? { status: "ready", canManage: manage, map: wikiMapOf(name) } : { status: "none", canManage: manage } } : tail === "upkeep" ? { status: 200, body: { enabled: one.upkeepOn, canManage: manage, available: true } } : view();
+    if (method === "GET") return tail === "wiki-map" ? { status: 200, body: one.mapMade ? { status: "ready", canManage: manage, map: wikiMapOf(name) } : { status: "none", canManage: manage } } : tail === "upkeep" ? { status: 200, body: upkeepView(name, one, person, manage) } : view();
     if (!manage) return failure(403, "FORBIDDEN", tail === "wiki-map" ? WIKI_SETUP_CODE_WORDS.mapNotAllowed : WIKI_SETUP_CODE_WORDS.notAllowed);
-    const given = body as { requestId?: unknown; on?: unknown } | undefined;
+    const given = body as { requestId?: unknown; on?: unknown; allowSystemRuns?: unknown } | undefined;
     if (tail === "wiki-map") { one.mapMade = true; return { status: 200, body: { status: "ready", canManage: true, map: wikiMapOf(name) } }; }
     if (typeof given?.requestId !== "string") return failure(400, "CONFIG_INVALID", "the request is not valid");
-    if (tail === "upkeep") { one.upkeepOn = given.on === true; return { status: 200, body: { enabled: one.upkeepOn, canManage: true, available: true } }; }
+    if (tail === "upkeep") return upkeepPut(name, one, person, manage, given);
     if (tail === "wiki-build/agents") { one.agentsOn = given.on === true; return view(); }
     if (tail === "wiki-build/delete") {
       if (one.status === "running") return failure(409, "WORKSPACE_BUSY", WIKI_SETUP_CODE_WORDS.deleteWhileRunning);
@@ -1375,6 +1396,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const given = JSON.parse(await readBody(request)) as Record<string, unknown>;
           if (typeof given["project"] !== "string" || project(given["project"]) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project" } });
           wikiSetups.delete(given["project"]);
+          upkeepConsent.set(companyKeyOf(given["project"]), given["consent"] === true);
           const one = wikiSetupOf(given["project"]);
           const status = given["status"];
           if (status === "built" || status === "stopped" || status === "running") { Object.assign(one, { status, pages: 24, refreshPages: 2, mapMade: true, planned: 24, written: status === "built" ? 24 : 12 }); if (status === "stopped") one.stop = (given["stop"] as FakeWikiSetup["stop"] | undefined) ?? "stopped_by_person"; }
@@ -1385,6 +1407,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (given["upkeepOn"] === true) one.upkeepOn = true;
           if (given["off"] === true) one.off = true;
           if (given["upkeepOff"] === true) one.upkeepOff = true;
+          if (given["ceilingOff"] === true) one.ceilingOff = true;
+          if (given["legacyUpkeep"] === true) one.legacyUpkeep = true;
+          if (typeof given["capUsd"] === "number") one.capUsd = given["capUsd"];
           return send(200, { project: given["project"] });
         }
         if (method === "POST" && url.pathname === "/__fake/lessons") {

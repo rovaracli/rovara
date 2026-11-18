@@ -1,9 +1,10 @@
 // "Nightly upkeep" (setup-upkeep-plan.md decision 2; lead 4 W6): the ONE switch, off by default, and its monthly cap. The switch is Code's (a seam the nightly runner supplies: until Code serves it this says so and
 // draws no dead switch). The cap is a spend limit of the company (`upkeep_month`, L4-E): a company owner or admin reads and changes it here with the same body the Spending page sends; a lower cap saves at once, a
 // higher one asks for a fresh sign-in (the server decides, this page only asks). Anyone else is told who sets it. The panel says which limit each part uses.
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fixedWikiSetupWords, parseUsd, readUpkeepCap, useWikiSetupApi, wikiSetupAbsent, wikiSetupKey, type UpkeepCap } from "../../../api/wiki-setup.js";
+import { fixedWikiSetupWords, parseUsd, readUpkeepCap, useWikiSetupApi, wikiSetupAbsent, wikiSetupKey, type UpkeepCap, type WikiSetupUpkeepCap } from "../../../api/wiki-setup.js";
 import { needsStepUp } from "../../../api/admin-company.js";
 import { ApiError } from "../../../api/errors.js";
 import { Button } from "../../../design/Button.js";
@@ -51,6 +52,33 @@ function Cap({ project }: { project: string }) {
   </>;
 }
 
+/** Spending limits is where the company's caps live (company owners and admins only); only a person Code says can raise the cap gets the link. */
+const SPENDING_LIMITS_ROUTE = "/app/admin/money/limits";
+
+/** The monthly cap as Code states it: its number, or (Code has no read) "set in Spending limits"; never a figure of ours. */
+function CapLine({ cap }: { cap: WikiSetupUpkeepCap | undefined }) {
+  const monthlyUsd = cap?.monthlyUsd ?? null, canRaise = cap?.canRaise === true;
+  return <p className="rv-muted" data-testid="wiki-setup-upkeep-cap-line">{monthlyUsd === null
+    ? <>{T.CAP_LINE_UNSET} {canRaise ? <Link to={SPENDING_LIMITS_ROUTE}>{T.CAP_LINK_LIMITS}</Link> : T.CAP_LINK_LIMITS}.</>
+    : <>{T.CAP_LINE_SET} <Money usd={monthlyUsd} />. {canRaise && <Link to={SPENDING_LIMITS_ROUTE}>{T.CAP_LINK_RAISE}</Link>}</>}</p>;
+}
+
+/** The setup choice (company owners and admins): one button, then one confirm that says what runs and what the cap is. Yes sends the company's consent and the project switch in one act. */
+function Offer({ cap, busy, onYes }: { cap: WikiSetupUpkeepCap | undefined; busy: boolean; onYes: () => void }) {
+  const [asking, setAsking] = useState(false), group = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (asking) group.current?.focus(); }, [asking]);
+  if (!asking) return <Button variant="primary" data-testid="wiki-setup-upkeep-offer" onClick={() => { setAsking(true); }}>{T.OFFER_BUTTON}</Button>;
+  return <div ref={group} tabIndex={-1} className="rv-wikis-controls" role="group" aria-label={T.OFFER_TITLE} data-testid="wiki-setup-upkeep-confirm">
+    <p>{T.OFFER_CONFIRM_LINE}</p>
+    <CapLine cap={cap} />
+    <p>{T.OFFER_CONFIRM_ASK}</p>
+    <div className="rv-wikis-actions">
+      <Button variant="primary" busy={busy} data-testid="wiki-setup-upkeep-yes" onClick={onYes}>{T.OFFER_YES}</Button>
+      <Button disabled={busy} data-testid="wiki-setup-upkeep-no" onClick={() => { setAsking(false); }}>{T.CANCEL}</Button>
+    </div>
+  </div>;
+}
+
 export function NightlyUpkeep({ project, companyAdmin }: { project: string; companyAdmin: boolean }) {
   const api = useWikiSetupApi(), query = useQueryClient();
   const read = useQuery({ queryKey: wikiSetupKey(project, "upkeep"), queryFn: () => api.upkeep(project), retry: false });
@@ -66,22 +94,31 @@ export function NightlyUpkeep({ project, companyAdmin }: { project: string; comp
     return <section className="rv-wikis-upkeep" aria-label={T.UPKEEP} data-testid="wiki-setup-upkeep"><h3>{T.UPKEEP}</h3>
       <p className="rv-muted" data-testid="wiki-setup-upkeep-absent">{T.UPKEEP_NOT_YET}</p></section>;
   }
-  async function flip(on: boolean) {
+  async function send(on: boolean, allowSystemRuns?: boolean) {
     setBusy(true); setError(undefined);
     const requestId = id.current ?? crypto.randomUUID();
     id.current = requestId;
-    try { { const answer = await api.setUpkeep(project, requestId, on); query.setQueryData(wikiSetupKey(project, "upkeep"), { ...answer, available: answer.available ?? true }); } id.current = undefined; }
+    try { { const answer = await api.setUpkeep(project, requestId, on, allowSystemRuns); query.setQueryData(wikiSetupKey(project, "upkeep"), { ...answer, available: answer.available ?? true }); } id.current = undefined; }
     catch (caught) { setError(fixedWikiSetupWords(caught, T.ACT_FAILED)); void query.invalidateQueries({ queryKey: wikiSetupKey(project, "upkeep") }); }
     finally { setBusy(false); }
   }
+  // L4-W6b (DEC 254zzt option A, two locks): `systemRunsOn` is what really runs (the operator's ceiling AND the company's consent). Absent: a Code with the project switch only, shown as before.
+  const gated = upkeep.systemRunsOn !== undefined, consent = upkeep.systemRunsOn === true;
+  const offer = gated && !consent && upkeep.canEnableSystemRuns === true;
+  const needsAdmin = gated && !consent && !offer && upkeep.canManage;
+  const settled = !gated || consent;
+  // The project's own switch counts only while system runs are on: with the company's consent off nothing runs, whatever the project switch says.
+  const running = upkeep.enabled && settled;
   return <section className="rv-wikis-upkeep" aria-label={T.UPKEEP} data-testid="wiki-setup-upkeep">
     <div className="rv-wikis-setting"><div>
       <h3>{T.UPKEEP}</h3><p className="rv-muted">{T.UPKEEP_TEXT}</p>
-      <p className="rv-muted" data-testid="wiki-setup-upkeep-state">{upkeep.enabled ? T.UPKEEP_ON : T.UPKEEP_OFF}</p></div>
-      {upkeep.canManage && <Switch label={T.UPKEEP} checked={upkeep.enabled} disabled={busy} onCheckedChange={(on) => { void flip(on); }} />}
+      <p className="rv-muted" data-testid="wiki-setup-upkeep-state">{running ? T.UPKEEP_ON : T.UPKEEP_OFF}</p></div>
+      {upkeep.canManage && settled && <Switch label={T.UPKEEP} checked={upkeep.enabled} disabled={busy} onCheckedChange={(on) => { void send(on); }} />}
     </div>
+    {offer && <Offer cap={upkeep.cap} busy={busy} onYes={() => { void send(true, true); }} />}
+    {needsAdmin && <p className="rv-muted" data-testid="wiki-setup-upkeep-needs-admin">{T.NEEDS_ADMIN}</p>}
     {error !== undefined && <p role="alert" data-testid="wiki-setup-upkeep-error"><VisibleText text={error} /></p>}
-    <div data-testid="wiki-setup-upkeep-limits"><h4>{T.UPKEEP_LIMITS}</h4><ul><li>{T.LIMIT_FREE}</li><li>{T.LIMIT_CAP}</li><li>{T.LIMIT_MANUAL}</li></ul></div>
-    {upkeep.canManage && (companyAdmin ? <Cap project={project} /> : <p className="rv-muted" data-testid="wiki-setup-cap-ask">{T.CAP_ASK_ADMIN}</p>)}
+    {settled && <div data-testid="wiki-setup-upkeep-limits"><h4>{T.UPKEEP_LIMITS}</h4><ul><li>{T.LIMIT_FREE}</li><li>{T.LIMIT_CAP}</li><li>{T.LIMIT_MANUAL}</li></ul></div>}
+    {settled && upkeep.canManage && (companyAdmin ? <Cap project={project} /> : <p className="rv-muted" data-testid="wiki-setup-cap-ask">{T.CAP_ASK_ADMIN}</p>)}
   </section>;
 }
