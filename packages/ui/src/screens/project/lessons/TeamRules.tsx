@@ -14,7 +14,7 @@ function Rule({ project, rule }: { project: string; rule: TeamRule }) {
   async function retire() {
     setState({ kind: "busy" });
     try { await api.retireRule(project, rule.id);setState({ kind: "done" });announce("Rule retired. Rovara no longer adds it to tasks.");refreshLessons(query, project); }
-    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project); }
+    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project, announce); }
   }
   const busy = state.kind === "busy";
   return <li><article className="rv-lesson" data-rule-id={rule.id}>

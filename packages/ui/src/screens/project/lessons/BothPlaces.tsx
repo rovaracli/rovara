@@ -38,12 +38,12 @@ export function BothPlaces({ project, lesson }: { project: string; lesson: Lesso
     try {
       const text = bothPlacesWords(await api.bothPlaces(project, lesson.id, { version: lesson.version, cardPaths, otherPaths }));
       setState({ kind: "done", text });announce(`${lesson.title}: ${text}`);refreshLessons(query, project);
-    } catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project); }
+    } catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project, announce); }
   }
   if (state.kind === "done") return <p role="status" className="rv-learned-note" data-testid="both-places-result"><VisibleText text={state.text} /></p>;
   return <div className="rv-both-places">
     {!open ? <Button variant="quiet" aria-label={visibleText(`Both, in different places: ${lesson.title}`)} onClick={() => setOpen(true)}>Both, in different places</Button> : <form className="rv-retire-form" aria-label={visibleText(`Both, in different places: ${lesson.title}`)} onSubmit={event => { event.preventDefault();void save(); }}>
-      <p className="rv-lesson-relation">Both lessons can be right when they apply in different places. {older === undefined ? "The older lesson" : olderName} will apply only to its new place.</p>
+      <p className="rv-lesson-relation">Both lessons can be right when they apply in different places. <VisibleText text={older === undefined ? "The older lesson" : olderName} /> will apply only to its new place.</p>
       <TextArea label={visibleText(`Where "${lesson.title}" applies`)} hint={PATHS_HELP} rows={3} value={cardText} disabled={busy} {...(cardProblem === undefined ? {} : { error: cardProblem })} onChange={event => setCardText(event.target.value)} />
       <TextArea label={visibleText(`Where ${olderName} will apply from now on`)} hint={PATHS_HELP} rows={3} value={otherText} disabled={busy} {...(otherProblem === undefined ? {} : { error: otherProblem })} onChange={event => setOtherText(event.target.value)} />
       {sameProblem !== undefined && <p role="alert" className="rv-lesson-failed">{sameProblem}</p>}

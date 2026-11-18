@@ -5,8 +5,12 @@ import { INBOX_KEY, learnedKey } from "../../../api/learned.js";
 
 export const failureWords = (error: unknown, fallback: string) => (error instanceof ApiError ? error.message : fallback);
 /** A write Code refused because what the person saw is out of date (gone, or changed by someone else): the cards are read again, and Code's own sentence stays on screen. */
-export function refreshIfStale(error: unknown, query: QueryClient, project: string) {
-  if (error instanceof ApiError && (error.status === 404 || error.status === 409 || error.status === 412)) refreshLessons(query, project);
+export function refreshIfStale(error: unknown, query: QueryClient, project: string, announce?: (text: string) => void) {
+  if (error instanceof ApiError && (error.status === 404 || error.status === 409 || error.status === 412)) {
+    // The item may leave the screen when the cards are read again, so Code's sentence is also announced.
+    announce?.(error.message);
+    refreshLessons(query, project);
+  }
 }
 /** A write came through: every lessons list, this week's cards and the inbox are read again. */
 export function refreshLessons(query: QueryClient, project: string) {

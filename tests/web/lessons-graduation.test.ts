@@ -519,3 +519,32 @@ it("reads the cards again after Code says a Make permanent is out of date (409),
   expect(reads()).toBeGreaterThanOrEqual(2);
   f.close();
 });
+it("lists a tidy lesson once when Code repeats it, so the one retire it sends is not refused for a repeated id", async () => {
+  const sent: ApiRequest[] = [];
+  const dup = { period: 30, lessons: [TIDY.lessons[0], TIDY.lessons[0], TIDY.lessons[1]] };
+  const f = mount({ graduation: { tidy: dup }, send: request => { sent.push(request);return ok({ project: "web", retired: ["les_old00001"], skipped: 0 }); } });
+  const card = await screen.findByTestId("tidy-card");
+  expect(within(card).getAllByRole("checkbox")).toHaveLength(2);
+  fireEvent.click(within(card).getByRole("checkbox", { name: /Old A/u }));
+  fireEvent.click(within(card).getByRole("button", { name: "Retire chosen" }));
+  await act(async () => { fireEvent.click(within(card).getByRole("button", { name: "Retire 1 lesson" })); });
+  expect(sent[0]!.body).toEqual({ ids: ["les_old00001"] });
+  f.close();
+});
+it("copies a draft request without hidden control or format characters, the same as the screen shows it", async () => {
+  const writeText = vi.fn(async () => undefined);
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  const hidden = { ...DRAFT, request: "Add a check\u202E for semicolons\u200B.\nKeep it fast." };
+  const f = mount({ graduation: { drafts: [hidden] } });
+  await act(async () => { fireEvent.click(await screen.findByRole("button", { name: `Copy the request: ${DRAFT.title}` })); });
+  expect(writeText).toHaveBeenCalledWith("Add a check for semicolons.\nKeep it fast.");
+  expect(screen.getByTestId("draft-request").textContent).toContain("[U+202E]");
+  f.close();
+});
+it("announces Code's sentence when a stale write makes the draft leave the screen", async () => {
+  const f = mount({ send: () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "That draft is no longer there." } } }) });
+  await act(async () => { fireEvent.click(await screen.findByRole("button", { name: `Drop it: ${DRAFT.title}` })); });
+  // The live region (not the card, which may be gone by then) says it.
+  await waitFor(() => expect(document.querySelector('.rv-visually-hidden[aria-live="polite"]')?.textContent).toContain("That draft is no longer there."), { timeout: 4000 });
+  f.close();
+});

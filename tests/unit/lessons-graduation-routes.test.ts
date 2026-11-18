@@ -348,6 +348,16 @@ describe("what review found", () => {
     expect(graduationView({ canDecide: true, drafts: [{ ...draft, title: "" }] }, "web")["drafts"]).toEqual([]);
   });
 
+  it("lists each tidy lesson, draft and rule once (the first), so a repeated id can never make a retire fail", () => {
+    const lesson = { lessonId: "les_aaaa", version: 1, title: "T" };
+    const tidy = graduationView({ canDecide: true, tidy: { period: 30, lessons: [lesson, { ...lesson, title: "Again" }, { ...lesson, lessonId: "les_bbbb" }] } }, "web")["tidy"] as { lessons: Array<{ lessonId: string; title: string }> };
+    expect(tidy.lessons.map((one) => `${one.lessonId}:${one.title}`)).toEqual(["les_aaaa:T", "les_bbbb:T"]);
+    const draft = { id: "chk_0123456789abcdef", lessonId: "les_aaaa", title: "T", request: "R" };
+    expect(graduationView({ canDecide: true, drafts: [draft, { ...draft, title: "Again" }] }, "web")["drafts"]).toEqual([expect.objectContaining({ title: "T" })]);
+    const rule = { id: "rule_0123456789abcdef", text: "Words" };
+    expect(graduationView({ canDecide: true, rules: [rule, { ...rule, text: "Again" }] }, "web")["rules"]).toEqual([expect.objectContaining({ text: "Words" })]);
+  });
+
   it("reads a time a date cannot hold as no time, so a screen never throws drawing it", () => {
     const row = { id: "les_aaaa", version: 1, expiresAt: 5, title: "T" };
     for (const at of [1e18, 8.64e15 + 1, -5, Number.NaN, "5"]) expect(lessonItem({ ...row, became: { kind: "rule", ref: "r", at } })?.["became"], String(at)).toMatchObject({ at: 0 });
@@ -367,7 +377,7 @@ describe("live team rules", () => {
 
   it("keeps a rule to the fields drawn: a bad id, empty words or a path that is not plain is left out, text and lists are bounded, and at most 50 are listed", () => {
     const row = { id: RULE, text: "Use withRetry.", paths: ["src/**"], repos: ["a/b"], fromLesson: "les_aaaa", createdAt: 5 };
-    const read = graduationView({ canDecide: true, rules: [{ ...row, secret: 1, text: "t".repeat(700), paths: ["src/**", "../x", "a b"], repos: Array.from({ length: 14 }, () => "r"), fromLesson: "x" }, { ...row, id: "rule_bad" }, { ...row, text: "" }, { ...row, id: 4 }, "nope", ...Array.from({ length: 60 }, () => row)] }, "web")["rules"] as Array<Record<string, unknown>>;
+    const read = graduationView({ canDecide: true, rules: [{ ...row, secret: 1, text: "t".repeat(700), paths: ["src/**", "../x", "a b"], repos: Array.from({ length: 14 }, () => "r"), fromLesson: "x" }, { ...row, id: "rule_bad" }, { ...row, text: "" }, { ...row, id: 4 }, "nope", ...Array.from({ length: 60 }, (_, index) => ({ ...row, id: `rule_${String(index).padStart(16, "0")}` }))] }, "web")["rules"] as Array<Record<string, unknown>>;
     // The first 50 entries are read; the 4 unreadable ones among them are left out.
     expect(read).toHaveLength(46);
     expect(read[0]).toEqual({ id: RULE, text: "t".repeat(600), paths: ["src/**"], repos: Array.from({ length: 10 }, () => "r"), fromLesson: "", createdAt: 5 });

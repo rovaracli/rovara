@@ -61,26 +61,33 @@ function card(raw: unknown): Record<string, unknown> | undefined {
 
 function tidy(raw: unknown): Record<string, unknown> | undefined {
   if (!isRecord(raw)) return undefined;
+  const seen = new Set<string>();
   const lessons = list(raw["lessons"], TIDY_IDS_MAX).filter(isRecord).flatMap((one) => {
     const id = lessonId(one["lessonId"]), title = text(one["title"], 80), at = version(one["version"]);
+    // Each lesson once (the first): a repeated id would make every retire attempt fail.
+    if (id !== undefined) { if (seen.has(id)) return []; seen.add(id); }
     return id === undefined || title === undefined || title === "" || at === undefined ? [] : [{ lessonId: id, version: at, title, type: text(one["type"], 40) ?? "", tasks: count(one["tasks"]), days: count(one["days"]) }];
   });
   return lessons.length === 0 ? undefined : { period: count(raw["period"]), lessons };
 }
 
 function drafts(raw: unknown): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
   return list(raw, DRAFTS_MAX).filter(isRecord).flatMap((one) => {
     const id = text(one["id"], 40), lesson = lessonId(one["lessonId"]), title = text(one["title"], 80), request = text(one["request"], REQUEST_MAX + 1);
     // A draft with no title, no request or a request too long to show whole is left out: a person never copies a request that was cut short.
-    if (id === undefined || !DRAFT_RE.test(id) || lesson === undefined || title === undefined || title === "" || request === undefined || request === "" || request.length > REQUEST_MAX) return [];
+    if (id === undefined || !DRAFT_RE.test(id) || lesson === undefined || title === undefined || title === "" || request === undefined || request === "" || request.length > REQUEST_MAX || seen.has(id)) return [];
+    seen.add(id);
     return [{ id, lessonId: lesson, title, request, paths: strings(one["paths"], PATHS_MAX, PATH_MAX).filter(plainGlob), createdAt: num(one["createdAt"]) ?? 0 }];
   });
 }
 
 function rules(raw: unknown): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
   return list(raw, RULES_MAX).filter(isRecord).flatMap((one) => {
     const id = text(one["id"], 40), words = text(one["text"], 600);
-    if (id === undefined || !RULE_RE.test(id) || words === undefined || words === "") return [];
+    if (id === undefined || !RULE_RE.test(id) || words === undefined || words === "" || seen.has(id)) return [];
+    seen.add(id);
     return [{ id, text: words, paths: strings(one["paths"], PATHS_MAX, PATH_MAX).filter(plainGlob), repos: strings(one["repos"], 10, 200), fromLesson: lessonId(one["fromLesson"]) ?? "", createdAt: num(one["createdAt"]) ?? 0 }];
   });
 }

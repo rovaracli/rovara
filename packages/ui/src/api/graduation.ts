@@ -97,7 +97,8 @@ function readCard(raw: unknown): GraduationCard | undefined {
 }
 function readTidy(raw: unknown): TidyCard | undefined {
   if (!isRecord(raw) || !Array.isArray(raw["lessons"])) return undefined;
-  const lessons = raw["lessons"].filter(isRecord).flatMap(one => (str(one["lessonId"]) && fin(one["version"]) && str(one["title"]) ? [{ lessonId: one["lessonId"], version: one["version"], title: one["title"], type: str(one["type"]) ? one["type"] : "", tasks: n(one["tasks"]), days: n(one["days"]) }] : []));
+  const seen = new Set<string>();
+  const lessons = raw["lessons"].filter(isRecord).flatMap(one => (str(one["lessonId"]) && !seen.has(one["lessonId"]) && seen.add(one["lessonId"]) && fin(one["version"]) && str(one["title"]) ? [{ lessonId: one["lessonId"], version: one["version"], title: one["title"], type: str(one["type"]) ? one["type"] : "", tasks: n(one["tasks"]), days: n(one["days"]) }] : []));
   return lessons.length === 0 ? undefined : { period: n(raw["period"]), lessons: lessons.slice(0, 10) };
 }
 function readDrafts(raw: unknown): CheckDraft[] {
