@@ -62,7 +62,8 @@ describe("code contract v0 tables", () => {
     // Plus the person's own sign-in factors (L4-MF4): the masked confirmation email and passkeys, as the person: 1 row.
     // Plus the saved environment panel read (forwarded to Code's own route) and the start preview (answered here as unknown) (L4-MF1): existing rows, now T (the start preview's owner is now Cloud: c): 2.
     // Plus the company's one control over nightly upkeep (L4-P3): read and change: 2 rows.
-    expect(counts.appCloudServerToday).toBe(145);
+    // Plus the lessons by code area, "Where Rovara learns from" with its pause, and the wiki page's team lessons (lead 4 L4-LP3W): 4 rows.
+    expect(counts.appCloudServerToday).toBe(149);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

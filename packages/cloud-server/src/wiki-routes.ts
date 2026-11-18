@@ -5,6 +5,7 @@
 //   GET /v1/app/projects/{p}/wiki/search?q=               -> Code GET /v1/app/projects/{p}/wiki/search?q=               (WikiSearchResponseSchema)
 //   GET /v1/app/projects/{p}/wiki/pages/{pageId}         -> Code GET /v1/app/projects/{p}/wiki/pages/{pageId}         (WikiPageResponseSchema)
 //   GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources -> Code GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources (WikiSourcesResponseSchema)
+//   GET /v1/app/projects/{p}/wiki/pages/{pageId}/lessons -> Code GET /v1/app/projects/{p}/wiki/pages/{pageId}/lessons (TeamLessonsAnswerSchema, lead 4 L4-LP3W: "Team lessons for this area")
 //
 // Rules:
 //   - Code decides who may read: its live company and project role, on every call (any project role reads; anyone else, another company's project, a missing project or page
@@ -22,6 +23,8 @@ import { CodeError } from "./code-client.js";
 import { companyCaller, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
+/** The one sentence under "Team lessons for this area" (Code's `TEAM_LESSONS_NOTE`; a test holds the two equal). A lessons answer without it does not read. */
+export const TEAM_LESSONS_NOTE = "These are the team's approved lessons for this area. Agents are told them as notes, not commands, and the code wins when they disagree.";
 export const WIKI_TRUST_LINE = "Written by Rovara from the code. It can be wrong. The code is the truth.";
 export const WIKI_WORDS = Object.freeze({
   notFound: "project not found",
@@ -56,7 +59,9 @@ const SOURCE_STATES = ["found", "changed", "not_found"] as const;
 const BUILD_KINDS = ["first", "refresh", "nightly"] as const;
 const BUILD_STATES = ["running", "done", "stopped", "failed"] as const;
 const STOP_REASONS = ["cap", "person", "repo_unreadable", "no_ai_key", "unpriced_model", "failed"] as const;
-const LIMITS = { pages: 300, blocks: 120, claims: 80, citations: 3, claimsPerBlock: 12, repos: 20, notes: 50, files: 240, ranges: 240, searchResults: 20 } as const;
+const LIMITS = { pages: 300, blocks: 120, claims: 80, citations: 3, claimsPerBlock: 12, repos: 20, notes: 50, files: 240, ranges: 240, searchResults: 20, teamLessons: 30 } as const;
+const LESSON_TYPES = ["fact", "convention", "pitfall", "procedure", "preference", "review_check"] as const;
+const LESSON_ID = /^[A-Za-z0-9_-]{4,64}$/u;
 
 type Plain = Record<string, unknown>;
 export const plain = (value: unknown): value is Plain => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
@@ -196,7 +201,7 @@ export function sourcesAnswer(value: unknown, project: string, id: string): Plai
   };
 }
 
-type Kind = "index" | "search" | "page" | "sources";
+type Kind = "index" | "search" | "page" | "sources" | "lessons";
 /** Code's refusal in Cloud's fixed words. Only Code's exact unknown-route 404 means "not on Code yet"; any other 404 is "not found". */
 export function wikiRefusal(kind: Kind, error: CodeError): RouteAnswer {
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
@@ -219,6 +224,35 @@ export function searchAnswer(value: unknown, project: string, query: string): Pl
     ids.add(hit["pageId"] as string);
     return { pageId: hit["pageId"], title: need(text(hit["title"], 120), hit["title"]), summary: need(text(hit["summary"], 300, 0), hit["summary"]), snippet: need(prose(hit["snippet"], 240), hit["snippet"]) };
   }), trustLine: WIKI_TRUST_LINE };
+}
+
+/**
+ * Code's "Team lessons for this area" for THIS project and THIS page id, rebuilt from its known fields only; throws Unreadable on anything off. A row's id must be its own lesson id with the lesson letter, so a row can never
+ * stand for another lesson. Every text is one line with no control or format character (a lesson's words are the team's notes written from tasks and repository text: data, drawn as text and never as markup).
+ */
+export function lessonsAnswer(value: unknown, project: string, id: string): Plain {
+  const v = rec(value);
+  need(v["project"] === project && v["pageId"] === id && v["note"] === TEAM_LESSONS_NOTE, undefined);
+  const area = v["area"] === undefined ? undefined : rec(v["area"]);
+  const seen = new Set<string>();
+  const rows = list(v["lessons"], LIMITS.teamLessons).map((one) => {
+    const r = rec(one);
+    const lessonId = need(typeof r["lessonId"] === "string" && LESSON_ID.test(r["lessonId"]), r["lessonId"]) as string;
+    need(r["id"] === `L-${lessonId}` && !seen.has(lessonId) && r["trust"] === "team-approved", undefined);
+    seen.add(lessonId);
+    return {
+      id: r["id"], lessonId, version: need(whole(r["version"], 1, 1_000_000), r["version"]), type: need(oneOf(r["type"], LESSON_TYPES), r["type"]),
+      statement: need(text(r["statement"], 240), r["statement"]), why: need(text(r["why"], 160, 0), r["why"]), detail: need(text(r["detail"], 600, 0), r["detail"]),
+      scopeLabel: need(text(r["scopeLabel"], 200, 0), r["scopeLabel"]), trust: "team-approved",
+    };
+  });
+  // A page with no area of its own lists no lessons: an answer that says otherwise does not read.
+  need(area !== undefined || rows.length === 0, undefined);
+  return {
+    project, pageId: id,
+    ...(area === undefined ? {} : { area: { repo: need(repoName(area["repo"]), area["repo"]), folder: need(typeof area["folder"] === "string" && area["folder"].length <= 400 && (area["folder"] === "" || safePath(area["folder"])), area["folder"]) } }),
+    lessons: rows, moreLessons: need(whole(v["moreLessons"], 0, 1_000_000), v["moreLessons"]), note: TEAM_LESSONS_NOTE,
+  };
 }
 
 type Got = { value: unknown } | { refusal: RouteAnswer };
@@ -300,6 +334,18 @@ export const WIKI_ROUTES: Route[] = [
       const got = await fromCode(context, "sources", wikiPath(at.project, `/pages/${encodeURIComponent(id)}/sources`));
       if ("refusal" in got) return got.refusal;
       return rebuilt(() => sourcesAnswer(got.value, at.project, id));
+    },
+  },
+  {
+    method: "GET", path: /^\/projects\/([^/]+)\/wiki\/pages\/([^/]+)\/lessons$/u,
+    answer: async (context) => {
+      const at = await scope(context);
+      if ("refusal" in at) return at.refusal;
+      const id = context.params[1];
+      if (id === undefined || !WIKI_PAGE_ID.test(id) || [...context.query.keys()].length > 0) return A.invalid;
+      const got = await fromCode(context, "lessons", wikiPath(at.project, `/pages/${encodeURIComponent(id)}/lessons`));
+      if ("refusal" in got) return got.refusal;
+      return rebuilt(() => lessonsAnswer(got.value, at.project, id));
     },
   },
 ];

@@ -1,0 +1,35 @@
+/* Learned by code area, "Where Rovara learns from" and "Team lessons for this area" (lead 4 L4-LP3W). Tokens only; light and dark come from the tokens. */
+.rv-areas{display:grid;grid-template-columns:minmax(200px,260px) minmax(0,1fr);gap:var(--rv-space-4);align-items:start;min-width:0}
+.rv-areas-nav{border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised);padding:var(--rv-space-2);display:grid;gap:var(--rv-space-1);min-width:0;max-height:70vh;overflow:auto}
+.rv-areas-nav ul{list-style:none;margin:0;padding:0}.rv-areas-nav ul ul{padding-left:var(--rv-space-3)}
+.rv-areas-nav button{width:100%;min-height:32px;text-align:left;border:0;background:none;cursor:pointer;padding:2px var(--rv-space-2);border-radius:var(--rv-radius-sm);display:flex;justify-content:space-between;gap:var(--rv-space-2);align-items:center;color:var(--rv-text);overflow-wrap:anywhere;font-size:var(--rv-font-sm)}
+.rv-areas-nav button:hover{background:var(--rv-bg-sunken)}
+.rv-areas-nav button[aria-current="true"]{background:var(--rv-accent-soft);color:var(--rv-accent-text);font-weight:600}
+.rv-areas-nav button:focus-visible{outline:2px solid var(--rv-focus);outline-offset:1px}
+.rv-areas-nav .rv-area-repo>button{font-family:var(--rv-font-mono);font-weight:600}
+.rv-area-row{display:flex;align-items:center;gap:2px}.rv-area-row>button:last-child{flex:1;min-width:0}
+.rv-areas-nav .rv-area-fold{width:24px;min-height:32px;flex:none;justify-content:center;padding:0;color:var(--rv-text-muted)}
+.rv-area-count{font-size:var(--rv-font-xs);color:var(--rv-text-muted);flex:none}
+.rv-areas-nav button[aria-current="true"] .rv-area-count{color:inherit}
+.rv-areas-main{display:grid;gap:var(--rv-space-2);min-width:0}
+.rv-areas-view{display:flex;gap:var(--rv-space-2);flex-wrap:wrap;align-items:center}
+.rv-areas-pick{margin:0;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-sources{display:grid;gap:var(--rv-space-2);margin-top:var(--rv-space-4);min-width:0}
+.rv-sources h3{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui);margin:0}
+.rv-source-list{list-style:none;margin:0;padding:0;display:grid;gap:var(--rv-space-2)}
+.rv-source{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3) var(--rv-space-4);display:grid;gap:var(--rv-space-1);min-width:0}
+.rv-source[data-paused=true]{box-shadow:inset 3px 0 0 var(--rv-status-needs-you)}
+.rv-source-head{display:flex;flex-wrap:wrap;gap:var(--rv-space-1) var(--rv-space-3);align-items:baseline}.rv-source-head span{font-size:var(--rv-font-sm)}
+.rv-source-counts,.rv-source-example,.rv-source-paused{margin:0;font-size:var(--rv-font-sm);overflow-wrap:anywhere}
+.rv-source-counts{color:var(--rv-text-muted)}
+.rv-source-paused{border-left:3px solid var(--rv-status-needs-you);padding-left:var(--rv-space-2)}
+.rv-team-lessons{margin-top:var(--rv-space-6);min-width:0}
+.rv-team-lessons-note{font-size:var(--rv-font-sm)!important;margin:0 0 var(--rv-space-3)!important}
+.rv-team-lesson-list{list-style:none;margin:0!important;padding:0!important;display:grid;gap:var(--rv-space-3)!important}
+.rv-team-lesson{border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised);padding:var(--rv-space-3) var(--rv-space-4);display:grid;gap:var(--rv-space-1);min-width:0;line-height:1.5}
+.rv-team-lesson p{margin:0!important;font-size:var(--rv-font-md)}
+.rv-team-lesson-meta{font-size:var(--rv-font-xs);color:var(--rv-text-muted);font-weight:400}
+.rv-team-lesson-meta code{font-size:var(--rv-font-xs)}
+.rv-team-lesson-scope{font-size:var(--rv-font-xs)!important}
+.rv-team-lesson .rv-button{justify-self:start;min-height:26px;padding:2px 8px;font-size:var(--rv-font-xs)}
+@media(max-width:720px){.rv-areas{grid-template-columns:minmax(0,1fr)}.rv-areas-nav{max-height:40vh}}

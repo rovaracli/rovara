@@ -37,6 +37,8 @@ test("How we work has a Learned section with the mode, the approved lessons and 
   await lessons.openHowWeWork(PROJECT);
   await expect(lessons.learned.getByRole("heading", { name: "Learned" })).toBeVisible();
   await expect(lessons.learned.getByRole("group", { name: "Learning" }).getByRole("radio", { name: "Suggest" })).toBeChecked();
+  // The Approved tab opens by code area (lead 4 L4-LP3W); the full list is one click away.
+  await lessons.learned.getByRole("button", { name: "All lessons" }).click();
   await expect(lessons.learned).toContainText("Log request ids with every error");
   await expect(lessons.learned).toContainText("Loaded 14 times · 3 helpful · 1 not helpful · learned from 3 tasks");
   await expect(lessons.learned).not.toContainText(/used in \d+ tasks/u);

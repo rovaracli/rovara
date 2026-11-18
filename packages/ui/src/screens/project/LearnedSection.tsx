@@ -15,7 +15,10 @@ import { Select } from "../../design/Select.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { Tabs } from "../../design/Tabs.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { areasAbsent, useLessonAreas, type AreaPick, type LessonAreaNode, type LessonAreaRepo } from "../../api/learned-areas.js";
+import { LearningSources } from "./lessons/LearningSources.js";
 import "../work/lessons.css";
+import "./lessons/areas.css";
 
 const failureWords = (error: unknown, fallback: string) => (error instanceof ApiError ? error.message : fallback);
 
@@ -95,9 +98,21 @@ const EMPTY: Record<LessonList, string> = {
  retired: "No lessons have been retired, dropped or lapsed.",
 };
 
-function LessonsList({ project, list, onOff }: { project: string; list: LessonList; onOff: () => void }) {
+/** Scrolls to the lesson a "Last suggestion" link named, loading more pages until it is found or the list ends. */
+function useFocusLesson(focus: string | undefined, found: boolean, hasNext: boolean, fetching: boolean, fetchNext: () => void) {
+ useEffect(() => {
+  if (focus === undefined) return;
+  if (found) { document.getElementById("learned-" + focus)?.scrollIntoView?.({ block: "center" });return; }
+  if (hasNext && !fetching) fetchNext();
+ }, [focus, found, hasNext, fetching, fetchNext]);
+}
+
+function LessonsList({ project, list, onOff, focus }: { project: string; list: LessonList; onOff: () => void; focus?: string | undefined }) {
  const read = useLessonPages(project, list), off = read.isError && lessonsOff(read.error);
  useEffect(() => { if (off) onOff(); }, [off, onOff]);
+ const loaded = read.data?.pages.flatMap(one => one.lessons) ?? [], focusFound = focus !== undefined && loaded.some(lesson => lesson.id === focus);
+ const fetchNext = useCallback(() => { void read.fetchNextPage(); }, [read]);
+ useFocusLesson(focus, focusFound, read.hasNextPage, read.isFetchingNextPage, fetchNext);
  if (read.isPending) return <Skeleton label="Loading lessons" />;
  if (read.isError) {
   if (off) return null;
@@ -109,8 +124,77 @@ function LessonsList({ project, list, onOff }: { project: string; list: LessonLi
   {list === "proposed" && lessons.length > 0 && pages[0]?.canDecide && <p className="rv-learned-note">Decide them all at once from <Link to={paths.live + "?task=" + encodeURIComponent("lessons:" + project)}>your Work inbox</Link>.</p>}
   {lessons.length === 0 ? <p className="rv-muted">{list === "proposed" && pages[0]?.canDecide === false ? "Only a maintainer of this project, or an admin, decides proposed lessons." : EMPTY[list]}</p>
    : <ul className="rv-learned-list" aria-label={list === "approved" ? "Approved lessons" : list === "proposed" ? "Proposed lessons" : "Retired lessons"}>{lessons.map(lesson => <LearnedLesson key={lesson.id} project={project} lesson={lesson} list={list} />)}</ul>}
+  {focus !== undefined && !focusFound && !read.hasNextPage && <p role="status" className="rv-learned-note" data-testid="focus-missing">That lesson isn't in the approved list now. It may be waiting for a decision, or retired or dropped.</p>}
   {last?.partial && <p className="rv-muted rv-learned-note">Some lessons took too long to read. Load more to see the rest.</p>}
   {read.hasNextPage && <Button busy={read.isFetchingNextPage} onClick={() => { void read.fetchNextPage(); }}>Load more</Button>}
+ </>;
+}
+
+/** One folder of the tree: its name and count, and the folders below it (open down to the second level, and along the picked path). The fold is its own button beside the one that picks the folder. */
+function AreaFolder({ node, repo, pick, onPick, depth }: { node: LessonAreaNode; repo: string | null; pick: AreaPick | undefined; onPick: (next: AreaPick) => void; depth: number }) {
+ const picked = pick?.kind === "folder" && pick.repo === repo && pick.folder === node.path.slice(0, -1);
+ const onPath = pick?.kind === "folder" && pick.repo === repo && (pick.folder + "/").startsWith(node.path);
+ const [open, setOpen] = useState(depth < 2 || onPath), shown = open || onPath;
+ const folds = node.children.length > 0;
+ return <li><div className="rv-area-row">
+  {folds ? <button type="button" className="rv-area-fold" aria-expanded={shown} aria-label={(shown ? "Hide" : "Show") + " the folders in " + node.name} onClick={() => setOpen(!shown)}>{shown ? "\u25BE" : "\u25B8"}</button> : <span className="rv-area-fold" aria-hidden="true" />}
+  <button type="button" aria-current={picked ? "true" : undefined} onClick={() => onPick({ kind: "folder", repo, folder: node.path.slice(0, -1) })}><span><VisibleText text={node.name + "/"} /></span><span className="rv-area-count">{node.lessons}</span></button>
+ </div>
+  {folds && shown && <ul>{node.children.map(child => <AreaFolder key={child.path} node={child} repo={repo} pick={pick} onPick={onPick} depth={depth + 1} />)}</ul>}
+  {folds && shown && node.moreChildren !== undefined && <p className="rv-muted rv-learned-note">{node.moreChildren} more folders</p>}</li>;
+}
+
+function AreaRepo({ one, pick, onPick }: { one: LessonAreaRepo; pick: AreaPick | undefined; onPick: (next: AreaPick) => void }) {
+ const picked = pick?.kind === "folder" && pick.repo === one.repo && pick.folder === "";
+ return <li className="rv-area-repo"><button type="button" aria-current={picked ? "true" : undefined} onClick={() => onPick({ kind: "folder", repo: one.repo, folder: "" })}><span><VisibleText text={one.repo ?? "Any repository"} /></span><span className="rv-area-count">{one.lessons}</span></button>
+  {one.children.length > 0 && <ul>{one.children.map(child => <AreaFolder key={child.path} node={child} repo={one.repo} pick={pick} onPick={onPick} depth={1} />)}</ul>}
+  {one.moreChildren !== undefined && <p className="rv-muted rv-learned-note">{one.moreChildren} more folders</p>}</li>;
+}
+
+export const areaTitle = (pick: AreaPick) => (pick.kind === "whole" ? "Whole project" : `${pick.repo ?? "Any repository"}${pick.folder === "" ? "" : "/" + pick.folder + "/"}`);
+
+/** The approved lessons by code area: a tree of repositories and folders (the customer's own layout), and the lessons of the one picked. "Whole project" holds those that name no area. */
+function AreaBrowser({ project, tree }: { project: string; tree: ReturnType<typeof useLessonAreas> }) {
+ const [pick, setPick] = useState<AreaPick>(), chosen = useLessonAreas(project, pick, pick !== undefined);
+ if (tree.isPending) return <Skeleton label="Loading lessons by code area" />;
+ if (tree.isError) return <div role="alert" className="rv-section-error"><p><VisibleText text={failureWords(tree.error, "Couldn't load the lessons by code area. Try again.")} /></p><Button onClick={() => { void tree.refetch(); }}>Try again</Button></div>;
+ const data = tree.data, selection = chosen.data?.selection;
+ if (data.total === 0) return <p className="rv-muted">{EMPTY.approved}</p>;
+ return <div className="rv-areas" data-testid="areas">
+  <nav className="rv-areas-nav" aria-label="Code areas">
+   <ul>
+    {data.repos.map(one => <AreaRepo key={one.repo ?? "*"} one={one} pick={pick} onPick={setPick} />)}
+    {data.wholeProject > 0 && <li className="rv-area-repo"><button type="button" aria-current={pick?.kind === "whole" ? "true" : undefined} onClick={() => setPick({ kind: "whole" })}><span>Whole project</span><span className="rv-area-count">{data.wholeProject}</span></button></li>}
+   </ul>
+  </nav>
+  <div className="rv-areas-main" aria-live="polite">
+   {pick === undefined ? <p className="rv-areas-pick">Pick a repository or folder to see what Rovara was taught about it. {data.total} approved {data.total === 1 ? "lesson" : "lessons"} in all.</p>
+    : chosen.isPending ? <Skeleton label="Loading lessons" />
+    : chosen.isError ? <p role="alert" className="rv-lesson-failed"><VisibleText text={failureWords(chosen.error, "Couldn't load that area.")} /></p>
+    : <>
+     <h3 className="rv-areas-pick" data-testid="area-title"><VisibleText text={areaTitle(pick)} /> <span className="rv-muted">({selection?.lessons.length ?? 0}{selection?.moreLessons === undefined ? "" : " of " + String((selection?.lessons.length ?? 0) + selection.moreLessons)})</span></h3>
+     {selection === undefined || selection.lessons.length === 0 ? <p className="rv-muted">No approved lessons here.</p>
+      : <ul className="rv-learned-list" aria-label={"Lessons for " + areaTitle(pick)}>{selection.lessons.map(lesson => <LearnedLesson key={lesson.id} project={project} lesson={lesson} list="approved" />)}</ul>}
+     {selection?.moreLessons !== undefined && <p className="rv-muted rv-learned-note">{selection.moreLessons} more are not listed here. Use the full list.</p>}
+    </>}
+   {data.partial === true && <p className="rv-muted rv-learned-note">This project has more lessons than are counted here. Use the full list for all of them.</p>}
+  </div>
+ </div>;
+}
+
+/** The Approved tab: by code area (the default) or the flat list. A "Last suggestion" link opens the flat list at that lesson. */
+function ApprovedView({ project, onOff, view, setView, focus }: { project: string; onOff: () => void; view: "area" | "all"; setView: (view: "area" | "all") => void; focus: string | undefined }) {
+ const tree = useLessonAreas(project, undefined), off = tree.isError && lessonsOff(tree.error);
+ useEffect(() => { if (off) onOff(); }, [off, onOff]);
+ // An older Code (or one with lessons off for the company) has no area browse: the Approved tab is the full list, exactly as before.
+ if (off) return null;
+ if (tree.isError && areasAbsent(tree.error)) return <LessonsList project={project} list="approved" onOff={onOff} focus={focus} />;
+ return <>
+  <div className="rv-areas-view" role="group" aria-label="How to browse approved lessons">
+   <Button variant={view === "area" ? "primary" : "quiet"} aria-pressed={view === "area"} onClick={() => setView("area")}>By code area</Button>
+   <Button variant={view === "all" ? "primary" : "quiet"} aria-pressed={view === "all"} onClick={() => setView("all")}>All lessons</Button>
+  </div>
+  {view === "area" ? <AreaBrowser project={project} tree={tree} /> : <LessonsList project={project} list="approved" onOff={onOff} focus={focus} />}
  </>;
 }
 
@@ -142,6 +226,8 @@ function RetireRequests({ project }: { project: string }) {
  */
 export function LearnedSection({ project }: { project: string }) {
  const [tab, setTab] = useState<LessonList>("approved"), [off, setOff] = useState(false), markOff = useCallback(() => setOff(true), [setOff]);
+ const [view, setView] = useState<"area" | "all">("area"), [focus, setFocus] = useState<string>();
+ const showExample = useCallback((lessonId: string) => { setTab("approved");setView("all");setFocus(lessonId); }, []);
  const mode = useLessonMode(project), isOff = off || (mode.isError && lessonsOff(mode.error));
  return <section className="rv-learned" aria-labelledby="learned-title" data-testid="learned">
   <header><h2 id="learned-title">Learned</h2><p className="rv-muted">Lessons Rovara learned from this project's corrections. Approved lessons are given to future tasks where they fit.</p></header>
@@ -149,10 +235,11 @@ export function LearnedSection({ project }: { project: string }) {
    <ModeRow project={project} />
    <RetireRequests project={project} />
    <Tabs label="Lessons" value={tab} onValueChange={value => setTab(value as LessonList)} items={[
-    { value: "approved", label: "Approved", content: <LessonsList project={project} list="approved" onOff={markOff} /> },
+    { value: "approved", label: "Approved", content: <ApprovedView project={project} onOff={markOff} view={view} setView={next => { setView(next);setFocus(undefined); }} focus={focus} /> },
     { value: "proposed", label: "Proposed", content: <LessonsList project={project} list="proposed" onOff={markOff} /> },
     { value: "retired", label: "Retired", content: <LessonsList project={project} list="retired" onOff={markOff} /> },
    ]} />
+   <LearningSources project={project} onExample={showExample} />
   </>}
  </section>;
 }

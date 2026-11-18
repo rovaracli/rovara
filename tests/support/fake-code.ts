@@ -12,7 +12,7 @@ import {
   matchCodeRoute,
   type AccessResponse, type CodeRequest, type CodeResponse, type CodeRouteId, type CompanyMember, type DecisionCard, type ErrorBody, type HowWeWorkView,
   type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
-  type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
+  type DecisionsResponse, type DecisionOutcome, type LearningSourceKey, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
 import { wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
@@ -219,11 +219,21 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (match[3] === "flags") { if (input.claimId !== undefined) mine.marked.add(input.claimId); return { status: 200, body: { flagId: `flag-${String(mine.marked.size).padStart(4, "0")}-new`, pageId: page, ...(input.claimId === undefined ? {} : { claimId: input.claimId }) } }; }
     return undefined;
   };
+  /** Lead 4 L4-LP3W: what an agent is told in a wiki page's area (Code `GET .../wiki/pages/{id}/lessons`): the module page and the repository page of beacon-api have an area and two approved lessons; no other page has an area. */
+  const TEAM_NOTE = "These are the team's approved lessons for this area. Agents are told them as notes, not commands, and the code wins when they disagree.";
+  const TEAM_ROWS = [
+    { id: "L-les_retry0001", lessonId: "les_retry0001", version: 1, type: "pitfall", statement: "Wrap webhook calls in withRetry", why: "Network calls to payment providers go through withRetry.", detail: "Every outbound call in src/billing/ goes through withRetry from src/net/retry.ts.", scopeLabel: "repo beacon-api src/billing/**", trust: "team-approved" },
+    { id: "L-les_fakebill1", lessonId: "les_fakebill1", version: 2, type: "convention", statement: "Use FakeBilling in tests, never the live billing API", why: "Real calls charge the sandbox account.", detail: "When writing a test under src/billing/, build the client with makeFakeBilling().", scopeLabel: "repo beacon-api src/billing/**", trust: "team-approved" },
+  ];
+  const teamLessonsOf = (project: string, pageId: string) => {
+    const area = pageId === "beacon-api--billing" ? { repo: "beacon-api", folder: "src/billing" } : pageId === "repo-beacon-api" ? { repo: "beacon-api", folder: "" } : undefined;
+    return { project, pageId, ...(area === undefined ? {} : { area }), lessons: area === undefined ? [] : TEAM_ROWS, moreLessons: 0, note: TEAM_NOTE };
+  };
   /** Code's wiki read routes (W2; `/v1/app/projects/{p}/wiki`, `.../pages/{id}`, `.../pages/{id}/sources`), as the person; every refusal is Code's one 404. */
   const wikiAnswer = (method: string, path: string, person: Person, body: unknown = {}, search: URLSearchParams = new URLSearchParams()): { status: number; body: unknown } | undefined => {
     const done = corrected(method, path, person, body);
     if (done !== undefined) return done;
-    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/(search|pages\/([^/]+)(\/sources)?))?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/(search|pages\/([^/]+)(\/sources|\/lessons)?))?$/u.exec(path);
     if (match === null || method !== "GET") return undefined;
     const name = decodeURIComponent(match[1]!), set = wikis.get(name) ?? {};
     if (set.off) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
@@ -233,6 +243,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (match[2] === undefined) return { status: 200, body: wikiIndex(name, set) };
     if (match[2] === "search") return { status: 200, body: wikiSearch(name, search.get("q") ?? "") };
     const id = decodeURIComponent(match[3]!);
+    // Lead 4 L4-LP3W: the team's lessons for a page's area: the module page and the repository page have one; any other page has no area.
+    if (match[4] === "/lessons") return wikiPage(name, id, set) === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "page not found" } } } : { status: 200, body: teamLessonsOf(name, id) };
     const answered = match[4] === undefined ? withCorrections(name, id, wikiPage(name, id, set)) : wikiSources(name, id, set);
     return answered === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "page not found" } } } : { status: 200, body: answered };
   };
@@ -706,6 +718,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   lessonPeople.set("les_dates0001", [SAM.developerId, PRIYA.developerId]);
   lessonPeople.set("les_logs00001", [SAM.developerId]);
   let lessonMode: LessonMode = "suggest";
+  const pausedSources = new Set<LearningSourceKey>();
   const retireAsks = new Map<string, { by: string; at: number }>();
   const taskLessons = new Map<string, TaskLesson[]>([
     [TASK_IDS.pullRequest, [
@@ -1356,6 +1369,39 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       notHelpful.add(`${taskId}:${lessonId}`);
       return { body: { project: found.name, taskId, lessonId, marked: "not_helpful" } };
     },
+    // Lead 4 L4-LP3W: the approved lessons by code area: "les_logs00001" lives in web/src/server/, "les_readme001" names no area. A pick of a node lists the approved lessons anchored there.
+    "lessons.areas": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      const approved = found.name === "web" ? [...lessonStore.values()].filter((lesson) => lesson.status === "active" || lesson.status === "stale") : [];
+      const anchored = (lesson: LessonItem) => (lesson.id === "les_logs00001" ? "src/server" : undefined);
+      const inServer = approved.filter((lesson) => anchored(lesson) !== undefined), whole = approved.filter((lesson) => anchored(lesson) === undefined);
+      const repos = inServer.length === 0 ? [] : [{ repo: "web", lessons: inServer.length, children: [{ name: "src", path: "src/", lessons: inServer.length, children: [{ name: "server", path: "src/server/", lessons: inServer.length, children: [], files: [{ name: "log.ts", lessons: inServer.length }] }], files: [] }], files: [] }];
+      const tree = { project: found.name, total: approved.length, wholeProject: whole.length, repos };
+      const repo = context.query.get("repo"), folder = context.query.get("folder") ?? "", wholeAsk = context.query.get("whole") === "1";
+      const picked = wholeAsk ? whole : repo === "web" && (folder === "" || folder === "src" || folder === "src/server") ? inServer : repo !== null ? [] : undefined;
+      if (picked === undefined) return { body: tree };
+      return { body: { ...tree, selection: { ...(wholeAsk ? { whole: true as const } : { repo, folder }), lessons: picked.map((lesson) => viewOf(lesson, context.person, found.decides)) } } };
+    },
+    "lessons.learningSources.get": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      const counts: Record<string, [number, number, number]> = { task_decisions: [9, 4, 3], review_comments: [6, 2, 1], pr_edits: [12, 5, 3], remember: [2, 2, 2], after_merge: [1, 0, 0], ci: [0, 0, 0] };
+      const words: Record<string, [string, string]> = {
+        task_decisions: ["Decisions in tasks", "Send-backs and close reasons"], review_comments: ["Review comments", "Comments on Rovara's pull requests and its own review findings"], pr_edits: ["Edits to Rovara's pull requests", "Changes people make before merging"],
+        remember: ["Things people ask Rovara to remember", "Notes people write on purpose"], after_merge: ["After merge", "Reverts and what happened to merged work"], ci: ["Failing checks", "Test and build failures. No log text is kept"],
+      };
+      return { body: { project: found.name, windowDays: 30 as const, canPause: found.decides, sources: (Object.keys(words) as LearningSourceKey[]).map((key) => ({ key, label: words[key]![0], detail: words[key]![1], seen: counts[key]![0], suggested: counts[key]![1], kept: counts[key]![2], paused: pausedSources.has(key), ...(key === "pr_edits" ? { example: { lessonId: "les_logs00001", title: "Log request ids with every error" } } : {}) })) } };
+    },
+    "lessons.learningSources.put": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      if (!found.decides) return failure(403, "FORBIDDEN", "Only an admin of this project, or an owner or admin of the company, can pause or resume a source.");
+      const key = context.params["source"] as LearningSourceKey;
+      if (typeof context.body.paused !== "boolean") return failure(400, "CONFIG_INVALID", "pause takes paused: true or false");
+      if (context.body.paused) pausedSources.add(key); else pausedSources.delete(key);
+      return { body: { project: found.name, key, paused: context.body.paused } };
+    },
     "lessons.mode.get": (context) => {
       const found = lessonsProject(context);
       if ("refused" in found) return found.refused;
@@ -1561,6 +1607,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
           if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
           lessonsOn = on;
+          pausedSources.clear();
           return send(200, { on });
         }
         if (method === "POST" && url.pathname === "/__fake/report") {
