@@ -152,6 +152,7 @@ export * from "./loaded-knowledge.js";
 export * from "./provenance.js";
 export * from "./setup-proposal.js";
 export * from "./setup-agent-web.js";
+export * from "./eval-check-web.js";
 export { CreateProjectFromMetaBodySchema, type CreateProjectFromMetaBody, META_KNOWLEDGE_DEFAULTS } from "./meta-project.js";
 export { SetupDraftResponseSchema, type SetupDraftResponse, SetupDraftResponseReaderSchema, SetupDraftStartBodySchema, type SetupDraftStartBody, SETUP_DRAFT_STATUSES } from "./rovara-code.js";
 
