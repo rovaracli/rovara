@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // L4-EVC slice 1 (DEC 254zzz20 D8): the setup flow's ONE eval card, in plain dollars, on the checklist's "Confirm how work is checked" row. It shows what was found with Code's own sentence and ONE Approve
-// (after a fresh sign-in); a cost that is waiting or needs renewing is shown as text only (the decision and the opt-in health check come in the next slice). The dollars a person saw (`seen`) are copied from the read, never worked out here. No tokens, counts or micro-dollar words reach the page. The server decides everything;
+// (after a fresh sign-in); a cost that is waiting or needs renewing is shown as text only. The dollars a person saw (`seen`) are copied from the read, never worked out here. No tokens, counts or micro-dollar words reach the page. The server decides everything;
 // these tests watch what the page asks and says.
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
