@@ -32,20 +32,21 @@ const waiting = (over: Record<string, unknown> = {}) => card({ state: "waiting",
 const health = (state: "none" | "requested" | "running" | "finished" | "not_run", extra: Record<string, unknown> = {}) => ({ state, label: "Check my evals now (about $2.40)", cost: "$2.40", seenCostMicros: 2_400_777, ...extra });
 const finishedResult = (over: Record<string, unknown> = {}) => ({ at: "2026-11-18T05:00:00.000Z", questionCount: 3, passedAnswers: 5, totalAnswers: 9, differing: 1, saved: true, reused: false, cases: [{ id: "refund-window", passes: 3 }, { id: "tone", passes: 2 }, { id: "leak", passes: 0 }], ...over });
 const approved = (over: Record<string, unknown> = {}) => card({ state: "approved", suites: [], spend: { state: "approved", perPr: "$0.50-$1.20", monthly: "$41.00" }, health: health("none"), ...over });
-const checklist = () => ({
-  project: "web", viewer: { companyRole: "owner", projectAdmin: false, canSkip: true }, progress: { done: 3, total: 8, percent: 38, nextRequired: "evalConfirm" },
+const checklist = (evalConfirm: Record<string, unknown> = { state: "needs_you", report: "reported", suites: [{ selection: "npm run evals", questions: 12 }] }, canSkip = true) => ({
+  project: "web", viewer: { companyRole: "owner", projectAdmin: false, canSkip }, progress: { done: 3, total: 8, percent: 38, nextRequired: "evalConfirm" },
   repos: { state: "done", count: 1, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }] },
-  setupRun: { state: "done", status: "ready", startedAt: "2026-11-18T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "passed" },
-  evalConfirm: { state: "needs_you", report: "reported", suites: [{ selection: "npm run evals", questions: 12 }] },
+  setupRun: { state: "done", status: "ready", approval: "approved", check: { status: "ready" }, startedAt: "2026-11-18T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "passed" },
+  evalConfirm,
   aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
   slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: { state: "needs_you", hasTask: false, canStart: false },
 });
 
-interface Options { read?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse; fresh?: boolean }
+interface Options { read?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse; fresh?: boolean; status?: () => unknown; put?: (request: ApiRequest) => ApiResponse }
 function mount(options: Options = {}) {
   let current: ApiResponse = options.read?.() ?? { status: 200, body: card() };
   const f = fakeHost(async (request) => {
-    if (request.path === "/v1/app/projects/web/setup-status") return { status: 200, body: checklist() };
+    if (request.path === "/v1/app/projects/web/setup-status") return { status: 200, body: options.status?.() ?? checklist() };
+    if (request.path === "/v1/app/projects/web/setup-status/eval-none" && request.method === "PUT") return options.put?.(request) ?? { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
     if (request.path === "/v1/app/projects/web/setup-agent/eval" && request.method === "GET") return options.read === undefined ? current : options.read();
     if (request.path.startsWith("/v1/app/projects/web/setup-agent/eval-") && request.method === "POST") return options.post?.(request) ?? { status: 200, body: { project: "web", state: "approved", decision: "approved", requested: true, requestId: "gw" } };
     if (request.path === "/v1/app/projects/web/setup-agent") return { status: 200, body: { status: "ready", basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, canManage: true } };
@@ -468,7 +469,10 @@ describe("dollars only", () => {
     });
   }
   it("the words the page itself says hold no token, call or micro-dollar word", () => {
-    const words = [...Object.values(EVAL_CARD_WORDS).map(value => typeof value === "function" ? value("$1.00", "$2.00") : value), EVAL_HEALTH_WORDS.resultLine({ questionCount: 3, passedAnswers: 5, totalAnswers: 9 } as never), EVAL_HEALTH_WORDS.differing(2), EVAL_HEALTH_WORDS.caseMixed(2)].join(" ");
+    // L4-T3: "Your evals call Google Gemini" says which AI the evals call (the design's own words), not a number of calls: that one sentence may say "call" and is held to the other two words.
+    const { callsLine, ...rest } = EVAL_CARD_WORDS;
+    expect(callsLine("Google Gemini")).not.toMatch(/token|micro|[0-9]/iu);
+    const words = [...Object.values(rest).map(value => typeof value === "function" ? value("$1.00", "$2.00") : value), EVAL_HEALTH_WORDS.resultLine({ questionCount: 3, passedAnswers: 5, totalAnswers: 9 } as never), EVAL_HEALTH_WORDS.differing(2), EVAL_HEALTH_WORDS.caseMixed(2)].join(" ");
     expect(words).not.toMatch(/token|call|micro/iu);
   });
 });
@@ -480,5 +484,134 @@ describe("two projects", () => {
     const paths = f.request.mock.calls.map(([r]) => r.path).filter(path => path.includes("/setup-agent/eval"));
     expect(paths).toEqual(["/v1/app/projects/web/setup-agent/eval"]);
     f.close();
+  });
+});
+
+// Batch 12 review L2: #187's "This project has no evals" stays open while Code's eval card shows (in any state), as a quiet button right under the card: the same PUT and the same undo.
+describe("This project has no evals, while the eval card shows", () => {
+  const NO_EVALS = { state: "done", report: "no_evals", noEvals: { confirmedAt: "2026-11-18T12:00:00.000Z" } };
+  for (const [state, view] of [["propose", card()], ["waiting", waiting()], ["approved", approved()], ["rejected", card({ state: "rejected", suites: [] })]] as const) {
+    it(`on a ${state} card: marks the project, and the undo puts it back`, async () => {
+      let noEvals = false;
+      const f = mount({ read: () => ({ status: 200, body: view }), status: () => checklist(noEvals ? NO_EVALS : undefined), put: (request) => { noEvals = (request.body as { noEvals: boolean }).noEvals;return { status: 200, body: { project: "web", noEvals, taskId: "11111111-1111-4111-8111-111111111111" } }; } });
+      await theCard();
+      fireEvent.click(within(screen.getByTestId("checklist-row-evalConfirm")).getByTestId("checklist-eval-no-evals-card"));
+      expect(await screen.findByTestId("checklist-eval-no-evals-set")).toBeTruthy();
+      const puts = () => f.request.mock.calls.map(([r]) => r).filter(r => r.method === "PUT" && r.path.endsWith("/setup-status/eval-none"));
+      expect(puts().map(r => r.body)).toEqual([{ noEvals: true }]);
+      fireEvent.click(screen.getByTestId("checklist-eval-no-evals-undo"));
+      await theCard();
+      expect(puts().map(r => r.body)).toEqual([{ noEvals: true }, { noEvals: false }]);
+      expect(posts(f)).toHaveLength(0);
+      f.close();
+    });
+  }
+  it("is not offered to someone who can't change the project", async () => {
+    const f = mount({ status: () => checklist(undefined, false) });
+    await theCard();
+    expect(screen.queryByTestId("checklist-eval-no-evals-card")).toBeNull();
+    f.close();
+  });
+});
+
+// Batch 12 review L1: #179's deliberate wording in the reported fallback (41be75c3a).
+it("the reported fallback says approving, as #179 worded it", async () => {
+  const f = mount({ read: () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } }) });
+  expect((await screen.findByTestId("checklist-eval-not-yet")).textContent).toBe("Approving these checks from the web isn't connected yet; a company owner or admin, or this project's admin, approves them where Rovara asks.");
+  f.close();
+});
+
+// L4-T3 (G2, G3): the card says which AI the evals call and whether it is connected, links to Product AI keys with the project filled in, offers "Check again", and holds Approve until the provider is connected.
+// The provider and the connection are Code's own words and answer; the page works out neither.
+describe("the AI the evals call (L4-T3)", () => {
+  const withProvider = (provider: string | undefined, connected: boolean | undefined, over: Record<string, unknown> = {}) => ({ status: 200, body: card({ ...(provider === undefined ? {} : { provider }), ...(connected === undefined ? {} : { connected }), ...over }) });
+  it("not connected: says which AI, that it is not connected, links to Product AI keys with this project, and Approve waits (nothing is sent, even after a fresh sign-in)", async () => {
+    const f = mount({ fresh: true, read: () => withProvider("Google Gemini", false) });
+    const c = await theCard();
+    expect(within(c).getByTestId("eval-provider-calls").textContent).toBe(EVAL_CARD_WORDS.callsLine("Google Gemini"));
+    expect(within(c).getByTestId("eval-provider-calls").textContent).toBe("Your evals call Google Gemini. Rovara runs them on your own AI account, so the spend and the data stay with you.");
+    expect(within(c).getByTestId("eval-provider-state").textContent).toBe("Google Gemini is not connected for this project. Connect it in Company settings, Product AI keys.");
+    const link = within(c).getByTestId("eval-provider-connect");
+    expect(link.textContent).toBe("Connect Google Gemini"); expect(link.getAttribute("href")).toBe("/app/admin/product-ai?project=web");
+    const approve = within(c).getByRole("button", { name: "Approve" });
+    expect(approve.hasAttribute("disabled")).toBe(true);
+    expect(within(c).getByTestId("eval-approve-waits").textContent).toBe("Connect Google Gemini first. Then you can approve.");
+    fireEvent.click(approve);
+    expect(posts(f)).toHaveLength(0); expect(f.host.signIn).not.toHaveBeenCalled();
+    await expectNoAxeViolations(document.body);
+    f.close();
+  });
+  it("the link carries only the project name the card is for, encoded", async () => {
+    const f = mount({ read: () => withProvider("Vertex AI", false) });
+    const link = (await within(await theCard()).findByTestId("eval-provider-connect"));
+    expect(link.getAttribute("href")).toBe(`/app/admin/product-ai?project=${encodeURIComponent("web")}`);
+    f.close();
+  });
+  it("Check again reads the card again and, once the provider is connected, says so and lets Approve through (flipping `connected` flips the page)", async () => {
+    let connected = false;
+    const f = mount({ fresh: true, read: () => withProvider("Vertex AI", connected) });
+    const c = await theCard();
+    expect(within(c).getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(true);
+    const before = evalReads(f);
+    connected = true;
+    fireEvent.click(within(c).getByTestId("eval-provider-check"));
+    await waitFor(() => expect(evalReads(f)).toBe(before + 1));
+    await waitFor(() => expect(within(c).getByTestId("eval-provider-state").textContent).toBe("Vertex AI is connected."));
+    expect(within(c).queryByTestId("eval-provider-connect")).toBeNull(); expect(within(c).queryByTestId("eval-provider-check")).toBeNull();
+    const approve = within(c).getByRole("button", { name: "Approve" });
+    expect(approve.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(approve);
+    await waitFor(() => expect(posts(f, "eval-approve")).toHaveLength(1));
+    f.close();
+  });
+  it("connected says so with no connect link; an unknown connection names the AI and says neither (and does not hold Approve)", async () => {
+    const on = mount({ read: () => withProvider("Google Gemini", true) });
+    const c = await theCard();
+    expect(within(c).getByTestId("eval-provider").getAttribute("data-connected")).toBe("true");
+    expect(within(c).queryByTestId("eval-provider-connect")).toBeNull();
+    expect(within(c).getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(false);
+    on.close(); cleanup();
+    const unknown = mount({ read: () => withProvider("Google Gemini", undefined) });
+    const u = await theCard();
+    expect(within(u).getByTestId("eval-provider").getAttribute("data-connected")).toBe("unknown");
+    expect(within(u).getByTestId("eval-provider-calls").textContent).toContain("Google Gemini");
+    expect(within(u).queryByTestId("eval-provider-state")).toBeNull(); expect(within(u).queryByTestId("eval-provider-connect")).toBeNull();
+    expect(within(u).getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(false);
+    unknown.close();
+  });
+  it("approved but not connected: 'Approved. Evals start running when it is connected.', with the connect link, never 'not approved'", async () => {
+    const f = mount({ read: () => withProvider("Vertex AI", false, { state: "approved", suites: [], spend: { state: "approved", perPr: "$0.50-$1.20", monthly: "$41.00" }, health: health("none") }) });
+    const c = await theCard();
+    expect(within(c).getByTestId("eval-provider-state").textContent).toBe("Approved. Evals start running when Vertex AI is connected.");
+    expect(within(c).getByTestId("eval-provider-connect")).toBeTruthy();
+    expect(readable(c)).not.toMatch(/not approved/iu);
+    f.close();
+  });
+  it("a waiting approval (an eval that grew) holds Approve too, but Not now stays", async () => {
+    const f = mount({ read: () => ({ status: 200, body: { ...waiting(), provider: "Google Gemini", connected: false, spend: { ...(waiting() as unknown as { spend: object }).spend, approval: offer } } }) });
+    const c = await theCard();
+    expect(within(c).getByTestId("eval-decide-approve").hasAttribute("disabled")).toBe(true);
+    expect(within(c).getByTestId("eval-decide-reject").hasAttribute("disabled")).toBe(false);
+    f.close();
+  });
+  it("no provider in the read (no eval found, or an install that cannot say): the card is as it was, with no provider block", async () => {
+    const f = mount();
+    const c = await theCard();
+    expect(within(c).queryByTestId("eval-provider")).toBeNull(); expect(within(c).getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(false);
+    f.close();
+  });
+  it("a provider name is shown as plain text, and a rejected eval shows no provider block", async () => {
+    const f = mount({ read: () => withProvider("<img src=x onerror=alert(1)>", false) });
+    const c = await theCard();
+    expect(c.querySelector("img")).toBeNull(); expect(within(c).getByTestId("eval-provider-calls").textContent).toContain("<img src=x onerror=alert(1)>");
+    f.close(); cleanup();
+    const g = mount({ read: () => withProvider("Google Gemini", false, { state: "rejected", suites: [] }) });
+    expect(within(await theCard()).queryByTestId("eval-provider")).toBeNull();
+    g.close();
+  });
+  it("the contract reads the two additive members strictly: a provider is a short name, `connected` a boolean", () => {
+    expect(EvalCardViewSchema.safeParse(card({ provider: "Vertex AI", connected: false })).success).toBe(true);
+    expect(EvalCardViewSchema.safeParse(card()).success).toBe(true);
+    for (const bad of [{ connected: "false" }, { connected: 0 }, { provider: "" }, { provider: "x".repeat(101) }, { provider: 5 }]) expect(EvalCardViewSchema.safeParse(card(bad)).success, JSON.stringify(bad)).toBe(false);
   });
 });

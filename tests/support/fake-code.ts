@@ -154,7 +154,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const linearPicks = new Map<string, string>();
   // Guided onboarding PR 9 (Code #841, #844): each project's skipped optional rows and its hosted setup run (set by the specs through /__fake/setup-run).
   const setupSkips = new Map<string, Set<"slackChannel" | "linear" | "invites">>();
-  type FakeRun = { status: "none" | "running" | "ready" | "failed"; startedAt?: string; taskId?: string; stop?: "stopped_by_person" | "proposed" };
+  type FakeRun = { status: "none" | "running" | "ready" | "failed"; startedAt?: string; taskId?: string; stop?: "stopped_by_person" | "proposed"; /** L4-T2: a person approved the setup and its check is ready (Code's rule for Done). A ready run is not approved until a spec says so. */ approved?: boolean };
   const setupRuns = new Map<string, FakeRun>();
   // Lead 4 W5 (Code W2): the pretend wiki, per project (set by the specs through /__fake/wiki); `off` makes Code answer its unknown-route 404, as a Code without the wiki does.
   const wikis = new Map<string, WikiFixtureOptions & { off?: boolean; broken?: boolean }>();
@@ -509,11 +509,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const run = runOf(name), skips = setupSkips.get(name) ?? new Set();
     const grant = entry.members.get(person.developerId);
     const companyRole = person.administrator ? "owner" as const : "member" as const;
-    const runRow = run.status === "none" ? { state: "needs_you" as const, status: "none" as const }
-      : run.status === "running" ? { state: "running" as const, status: "running" as const, startedAt: run.startedAt, elapsedMs: 95_000, costCents: 12, commandsRun: 3 }
-      : run.status === "ready" ? { state: "done" as const, status: "ready" as const, startedAt: run.startedAt, elapsedMs: 412_000, costCents: 48, commandsRun: 9, commandsFound: { setup: 2, tests: 1 }, testOutcome: "passed" as const }
-      : { state: "failed" as const, status: "failed" as const, startedAt: run.startedAt, elapsedMs: 300_000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed" as const, ...(run.stop === undefined ? {} : { stop: run.stop }), failure: "A test command failed.", failedCommand: FAILED_COMMAND };
-    const setupDone = runRow.state === "done";
+    const baseRow = run.status === "none" ? { state: "needs_you" as const, status: "none" as const, approval: "none" as const }
+      : run.status === "running" ? { state: "running" as const, status: "running" as const, approval: "none" as const, startedAt: run.startedAt, elapsedMs: 95_000, costCents: 12, commandsRun: 3 }
+      : run.status === "ready" ? { state: run.approved === true ? "done" as const : "needs_you" as const, status: "ready" as const, ...(run.approved === true ? { approval: "approved" as const, check: { status: "ready" as const }, approvedAt: "2026-11-12T10:00:00.000Z" } : { approval: "none" as const }), startedAt: run.startedAt, elapsedMs: 412_000, costCents: 48, commandsRun: 9, commandsFound: { setup: 2, tests: 1 }, testOutcome: "passed" as const }
+      : { state: "failed" as const, status: "failed" as const, approval: "none" as const, startedAt: run.startedAt, elapsedMs: 300_000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed" as const, ...(run.stop === undefined ? {} : { stop: run.stop }), failure: "A test command failed.", failedCommand: FAILED_COMMAND };
+    // L4-T2: a candidate waiting for a decision (/__fake/setup-apply) is Needs you (its check ready or failed) or Running (its check going), as Code says.
+    const waiting = setupApplies.get(name);
+    const runRow = waiting === undefined || run.status === "running" || run.status === "failed" ? baseRow
+      : { ...baseRow, state: waiting.check === "checking" ? "running" as const : "needs_you" as const, approval: waiting.check === "checking" ? "checking" as const : "candidate" as const,
+        check: { status: waiting.check, ...(waiting.failedStep === undefined ? {} : { failedStep: waiting.failedStep }) } };
+    const setupDone = run.status === "ready";
     const evalRow = setupDone && evalOf(name).state === "approved" ? { state: "done" as const, report: "confirmed" as const, confirmedSelection: "npm run evals" } : setupDone ? { state: "needs_you" as const, report: "reported" as const, suites: [{ selection: "npm test", questions: 3 }] } : { state: "needs_you" as const, report: "none" as const, blockedBy: "setupRun" as const };
     const channels = [...slackLinks].filter(([, linked]) => linked === name).map(([channelId]) => ({ channelId, name: slackChannels.find((one) => one.id === channelId)?.name ?? channelId }));
     const team = linearPicks.get(name);
@@ -537,11 +542,32 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return { status: run.status, basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, ...(run.taskId === undefined ? {} : { taskId: run.taskId }), ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }), ...(run.status === "failed" ? { failure: "A test command failed.", ...(run.stop === undefined ? {} : { stop: run.stop }) } : {}), canManage: manage, ...(setupApplies.has(name) ? { apply: applyView(setupApplies.get(name)!) } : {}) };
   };
   // L4-EVC (DEC 254zzz20): the setup flow's ONE eval card, in dollars (Code's hosted eval routes, small). A project with a finished setup run has an eval to approve; the specs set the stage through /__fake/eval-card.
-  type FakeEval = { state: "none" | "propose" | "waiting" | "approved" | "rejected"; health: "none" | "requested" | "finished" };
+  type FakeWrapperStep = "needs_file" | "pull_request_open" | "file_found" | "dismissed" | "not_offered" | "custom";
+  type FakeEval = { state: "none" | "propose" | "waiting" | "approved" | "rejected"; health: "none" | "requested" | "finished"; wrapper?: FakeWrapperStep };
   const evalCards = new Map<string, FakeEval>();
   const EVAL_SEEN = { perCheckHighMicros: 1_200_000, monthlyCapMicros: 41_000_000 };
   const EVAL_OFFER = { requestId: `eval-${"e".repeat(40)}-3`, revision: 3, artifactDigest: "cd34".repeat(16) };
   const evalOf = (name: string): FakeEval => evalCards.get(name) ?? { state: runOf(name).status === "ready" ? "propose" : "none", health: "none" };
+  /** L4-EVW4 (DEC 254zzz43): Code's wrapper card, small: the file's path and text for everyone, the pull request only for a manager. */
+  const WRAPPER_FILE = "#!/usr/bin/env python3\n# Made by Rovara so it can read the results of your eval.\n# rovara-eval-wrapper-template: 1\nimport json\n";
+  const wrapperCard = (step: FakeWrapperStep, manage: boolean) => {
+    const custom = step === "custom", shown = step === "dismissed" ? "dismissed" : step === "custom" ? "needs_file" : step;
+    const lines: Record<string, string> = {
+      needs_file: "Rovara needs a small file in your repository to read this eval's results. Add it yourself, or let Rovara open a pull request for it.",
+      pull_request_open: "Rovara opened PR #12 with the file. Review and merge it; Rovara notices it on your default branch by itself.",
+      file_found: "The file is on your default branch. Approve a test run (its cost is shown) so Rovara can check it reads your results.",
+      dismissed: "Set aside for now. Pull requests will say the eval was not read until it is set up.",
+      not_offered: "Rovara could not check a file for this eval, so it is not offering one. If you add your own file at the place Rovara looks, Rovara will find it.",
+    };
+    return {
+      selection: "npm run evals", language: "python", kind: custom ? "custom" : "template", path: "rovara/eval-wrapper.py", content: step === "not_offered" ? "" : WRAPPER_FILE,
+      title: "Rovara can't read the results of npm run evals yet", step: shown, line: lines[shown]!, offered: step !== "not_offered",
+      canOpenPullRequest: manage && step === "needs_file",
+      ...(custom ? { copyOnly: { reason: "custom", text: "A file Rovara's setup agent wrote itself is copy-only: copy it into your repository." } } : {}),
+      ...(step === "pull_request_open" ? { pullRequest: { number: "12", url: "https://github.com/acme/web/pull/12", state: "open" } } : {}),
+      ...(step === "file_found" ? { fileStatus: "same" } : {}), dismissed: step === "dismissed",
+    };
+  };
   const evalCardAnswer = (method: string, tail: string, name: string, manage: boolean, body: unknown): { status: number; body: unknown } => {
     const card = evalOf(name);
     if (method === "GET") {
@@ -549,14 +575,27 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { status: 200, body: {
         project: name, state: card.state, canApprove: manage,
         ...(card.state === "none" ? {} : { report: { taskId: "task_fake-eval", reportDigest: "ab12".repeat(16) } }),
-        suites: card.state === "propose" ? [{ selection: "npm run evals", files: ["evals/a.yaml", "evals/b.yaml"], cases: 12, sentence, perPr: "$0.50-$1.20", monthly: "$41.00", seen: EVAL_SEEN }] : [],
+        suites: card.state === "propose" ? [{ selection: "npm run evals", files: ["evals/a.yaml", "evals/b.yaml"], cases: 12, sentence, perPr: "$0.50-$1.20", monthly: "$41.00", seen: EVAL_SEEN, ...(card.wrapper !== undefined && card.wrapper !== "file_found" ? { readable: false, needsFile: "Rovara can't read this eval's results yet. It needs a small file in your repository. Add it yourself or let Rovara open a pull request for it; once the file is on your default branch, approve a test run." } : {}) }] : [],
+        ...(card.wrapper === undefined ? {} : { wrappers: [wrapperCard(card.wrapper, manage)] }),
         ...(card.state === "waiting" ? { spend: { state: "waiting", perPr: "$0.90-$2.40", monthly: "$41.00", needsApproval: "Needs approval: your eval set grew past the approved $1.20", approval: EVAL_OFFER } }
           : card.state === "approved" || card.state === "rejected" ? { spend: { state: card.state, perPr: "$0.50-$1.20", monthly: "$41.00" } } : {}),
         ...(card.state === "approved" ? { health: { state: card.health, label: "Check my evals now (about $2.40)", cost: "$2.40", seenCostMicros: 2_400_000 } } : {}),
       } };
     }
-    if (!manage) return failure(403, "FORBIDDEN", "Only a company owner, admin or project maintainer can answer for the eval's spend.");
     const given = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+    // L4-EVW4: a person's act on the wrapper card: exactly a request id, an act and (to open a pull request) the eval. "Check now" only reads, so a project member may ask it; every other act is for a manager.
+    if (tail === "eval-wrapper") {
+      const keys = Object.keys(given), action = given["action"];
+      const known = ["open_pull_request", "dismiss", "reopen", "check"];
+      if (typeof given["requestId"] !== "string" || !/^[0-9a-f-]{36}$/u.test(given["requestId"]) || typeof action !== "string" || !known.includes(action) || keys.some((key) => !["requestId", "action", "selection"].includes(key)) || (action === "open_pull_request" && typeof given["selection"] !== "string")) return failure(400, "CONFIG_INVALID", "requestId: invalid");
+      if (action !== "check" && !manage) return failure(403, "FORBIDDEN", "Only a company owner, admin or project maintainer can ask Rovara to open a pull request for the eval's file, set it aside, or approve its test run.");
+      const at = card.wrapper;
+      if (at === undefined) return failure(404, "NOT_FOUND", "There is no eval report for this project's latest setup run.");
+      const next: FakeWrapperStep = action === "open_pull_request" ? (at === "needs_file" ? "pull_request_open" : at) : action === "dismiss" ? "dismissed" : action === "reopen" ? "needs_file" : at;
+      evalCards.set(name, { ...card, wrapper: next });
+      return { status: 200, body: { project: name, action, ...(action === "open_pull_request" ? { outcome: { selection: given["selection"], state: next === "pull_request_open" ? "open" : "failed", ...(next === "pull_request_open" ? { number: "12", url: "https://github.com/acme/web/pull/12" } : { failure: "copy_only" }) } } : {}), wrappers: [wrapperCard(next, manage)] } };
+    }
+    if (!manage) return failure(403, "FORBIDDEN", "Only a company owner, admin or project maintainer can answer for the eval's spend.");
     if (tail === "eval-approve") {
       const seen = given["seen"] as Record<string, unknown> | undefined;
       if (card.state !== "propose" || given["approve"] !== true || seen?.["perCheckHighMicros"] !== EVAL_SEEN.perCheckHighMicros || seen["monthlyCapMicros"] !== EVAL_SEEN.monthlyCapMicros) return failure(409, "CHANGE_STALE", "Your evals changed. Look again.");
@@ -574,14 +613,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   };
   /** The hosted setup run's answer (Code #844 serves the laptop's /v1/app path), or undefined when the path is not one of its four. */
   const setupRunAnswer = (method: string, path: string, query: URLSearchParams, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
-    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide|eval|eval-approve|eval-decide|eval-health))?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide|eval|eval-approve|eval-decide|eval-health|eval-wrapper))?$/u.exec(path);
     if (match === null) return undefined;
     const tail = match[2];
     if (!((method === "GET" && (tail === undefined || tail === "journal" || tail === "eval")) || (method === "POST" && tail !== "journal" && tail !== "eval"))) return undefined;
     const name = decodeURIComponent(match[1]!), entry = project(name), grant = roleIn(person, name);
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (entry === undefined || companyless.has(person.developerId) || (!manage && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
-    if (tail === "eval" || tail === "eval-approve" || tail === "eval-decide" || tail === "eval-health") return evalCardAnswer(method, tail, name, manage, body);
+    if (tail === "eval" || tail === "eval-approve" || tail === "eval-decide" || tail === "eval-health" || tail === "eval-wrapper") return evalCardAnswer(method, tail, name, manage, body);
     if (method === "GET" && tail === undefined) return { status: 200, body: setupRunView(name, manage) };
     if (method === "GET") {
       const run = runOf(name), after = Number(query.get("after") ?? "0");
@@ -599,6 +638,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       if (waiting === undefined || waiting.check !== "ready") return failure(409, "CHANGE_STALE", "There is no setup waiting for a decision. Open the project's setup again.");
       if (waiting.moved || asked.seen?.artifactDigest !== APPLY_DIGEST || asked.seen?.revision !== waiting.revision) return failure(409, "CHANGE_STALE", "The setup moved.");
       setupApplies.delete(name);
+      // L4-T2: an approved setup (its check was ready) makes the checklist's Setup run row Done.
+      if (asked.outcome === "approve") setupRuns.set(name, { ...runOf(name), approved: true });
       return { status: 200, body: { project: name, decision: asked.outcome === "approve" ? "approved" : "rejected", risk: waiting.risk, revision: waiting.revision, replayed: false } };
     }
     if (tail === "confirm") return failure(409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Decide it, or discard it, first.");
@@ -2005,17 +2046,20 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (answered !== undefined) return send(answered.status, answered.body);
         }
         if (method === "POST" && url.pathname === "/__fake/setup-run") {
-          const given = JSON.parse(raw) as { project?: unknown; status?: unknown };
+          const given = JSON.parse(raw) as { project?: unknown; status?: unknown; approved?: unknown };
           if (typeof given.project !== "string" || project(given.project) === undefined || !["none", "running", "ready", "failed"].includes(given.status as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and status" } });
           const status = given.status as FakeRun["status"];
-          setupRuns.set(given.project, status === "none" ? { status } : { status, startedAt: iso(), taskId: randomUUID() });
+          setupRuns.set(given.project, status === "none" ? { status } : { status, startedAt: iso(), taskId: randomUUID(), ...(status === "ready" && given.approved === true ? { approved: true } : {}) });
           setupSkips.delete(given.project);
           return send(200, { status });
         }
         if (method === "POST" && url.pathname === "/__fake/eval-card") {
           const given = JSON.parse(raw) as { project?: unknown; state?: unknown; health?: unknown };
-          if (typeof given.project !== "string" || project(given.project) === undefined || !["none", "propose", "waiting", "approved", "rejected"].includes(given.state as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and state" } });
-          evalCards.set(given.project, { state: given.state as FakeEval["state"], health: ["requested", "finished"].includes(given.health as string) ? given.health as FakeEval["health"] : "none" });
+          if (typeof given.project !== "string" || project(given.project) === undefined || !["default", "none", "propose", "waiting", "approved", "rejected"].includes(given.state as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and state" } });
+          const wrapper = (given as { wrapper?: unknown }).wrapper;
+          // "default": forget the set card, so the project's card follows its setup run again (a spec's afterEach puts it back this way).
+          if (given.state === "default") { evalCards.delete(given.project);return send(200, { ok: true }); }
+          evalCards.set(given.project, { state: given.state as FakeEval["state"], health: ["requested", "finished"].includes(given.health as string) ? given.health as FakeEval["health"] : "none", ...(typeof wrapper === "string" && ["needs_file", "pull_request_open", "file_found", "dismissed", "not_offered", "custom"].includes(wrapper) ? { wrapper: wrapper as FakeWrapperStep } : {}) });
           return send(200, { ok: true });
         }
         if (method === "POST" && url.pathname === "/__fake/setup-apply") {

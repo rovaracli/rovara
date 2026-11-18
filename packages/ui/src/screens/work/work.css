@@ -67,3 +67,5 @@
 .rv-steer{margin-top:var(--rv-space-2)}.rv-steer-row{display:flex;gap:var(--rv-space-2)}.rv-steer-row .rv-input{flex:1;min-width:0}.rv-steer-note{margin:var(--rv-space-1) 0 0;font-size:var(--rv-font-sm)}
 .rv-criterion-thread{display:grid;gap:2px}.rv-criterion-comment.reply{padding-left:var(--rv-space-4);border-left:2px solid var(--rv-border)}.rv-criterion-reply,.rv-criterion-comment-open{padding:2px 8px;min-height:24px;font-size:var(--rv-font-xs)}
 .rv-criterion-form{display:grid;gap:var(--rv-space-1)}.rv-criterion-form textarea{width:100%;resize:vertical}.rv-criterion-form-actions{display:flex;gap:var(--rv-space-2)}
+/* Code #1057: how the workflow ended, as a short label beside the row's age. */
+.rv-inbox-outcome{font:600 var(--rv-font-xs)/1.4 var(--rv-font-ui);color:var(--rv-text-muted)}

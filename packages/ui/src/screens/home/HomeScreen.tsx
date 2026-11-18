@@ -16,6 +16,8 @@ import { useNav } from "../account/use-nav.js";
 const NeedsYou = lazy(async () => ({ default: (await import("./NeedsYou.js")).NeedsYou }));
 // The empty state is in the same lazy chunk: it must know whether decision cards wait, and reading them would bring their contracts into the first page.
 const NothingNeedsYou = lazy(async () => ({ default: (await import("./NeedsYou.js")).NothingNeedsYou }));
+// Understand's questions on the person's own tasks, answered on Home (Code #1057's round on the list row), after the first paint.
+const HomeQuestions = lazy(async () => ({ default: (await import("./HomeQuestions.js")).HomeQuestions }));
 // Guided onboarding PR 9: "Finish setting up" cards and the no-project empty state, after the first paint.
 const FinishSetup = lazy(async () => ({ default: (await import("./FinishSetup.js")).FinishSetup }));
 // Guided onboarding PR 13: the teammate's welcome and the admins' "connection needs attention" cards, after the first paint.
@@ -39,6 +41,7 @@ export function HomeScreen() {
  <Suspense fallback={null}><HomeNotices /></Suspense>
  <Suspense fallback={null}><FinishSetup /></Suspense>
  <Suspense fallback={null}><NeedsYou /></Suspense>
+ <Suspense fallback={null}><HomeQuestions /></Suspense>
  {home.isPending && <Skeleton label="Loading what needs you" />}
  {home.isError && <div className="rv-home-error" role="alert" data-testid="load-error"><p><VisibleText text={home.error instanceof ApiError ? home.error.message : "Couldn't load what needs you. Try again."} /></p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
  {cards !== undefined && cards.length === 0 && total === 0 && <Suspense fallback={null}><NothingNeedsYou /></Suspense>}

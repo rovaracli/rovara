@@ -3,7 +3,7 @@
 // `requestId` in every answer and the contracts are strict, so it is set aside first.
 import { useMemo } from "react";
 import {
-  EvalApproveReplySchema, EvalApproveRequestSchema, EvalCardViewSchema, EvalDecideReplySchema, EvalDecideRequestSchema, EvalHealthReplySchema, EvalHealthRequestSchema, ProjectOverviewProjectSchema,
+  EvalApproveReplySchema, EvalApproveRequestSchema, EvalCardViewSchema, EvalDecideReplySchema, EvalDecideRequestSchema, EvalHealthReplySchema, EvalHealthRequestSchema, EvalWrapperActionReplySchema, EvalWrapperActionRequestSchema, ProjectOverviewProjectSchema,
 } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
@@ -23,6 +23,8 @@ export function createEvalCardApi(host: AppHost) {
     decide: (name: string, body: ReturnType<typeof EvalDecideRequestSchema.parse>) => api.sendAnswer("POST", base(name) + "/eval-decide", EvalDecideRequestSchema.parse(body), exactAnswer(EvalDecideReplySchema), { retry: "never" }),
     /** The opt-in health check: a person's yes. Only ever called from a click. */
     health: (name: string, body: ReturnType<typeof EvalHealthRequestSchema.parse>) => api.sendAnswer("POST", base(name) + "/eval-health", EvalHealthRequestSchema.parse(body), exactAnswer(EvalHealthReplySchema), { retry: "never" }),
+    /** L4-EVW4: a person's act on the wrapper card (open a pull request for the file, Not now, Set up now, Check now). It needs no fresh sign-in: it writes at most one new file as a pull request, spends nothing, and Code re-checks the person's role live. */
+    wrapperAct: (name: string, body: ReturnType<typeof EvalWrapperActionRequestSchema.parse>) => api.sendAnswer("POST", base(name) + "/eval-wrapper", EvalWrapperActionRequestSchema.parse(body), exactAnswer(EvalWrapperActionReplySchema), { retry: "never" }),
   };
 }
 export function useEvalCardApi() { const host = useAppHost(); return useMemo(() => createEvalCardApi(host), [host]); }

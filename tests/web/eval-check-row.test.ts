@@ -25,7 +25,7 @@ const view = (over: Record<string, unknown> = {}) => ({ project: "web", canManag
 const checklist = (percent = 38, canSkip = true) => ({
   project: "web", viewer: { companyRole: canSkip ? "owner" : "member", projectAdmin: false, canSkip }, progress: { done: percent >= 100 ? 8 : 3, total: 8, percent, nextRequired: percent >= 100 ? null : "evalConfirm" },
   repos: { state: "done", count: 1, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }] },
-  setupRun: { state: "done", status: "ready", startedAt: "2026-11-18T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "passed" },
+  setupRun: { state: "done", status: "ready", approval: "approved", check: { status: "ready" }, startedAt: "2026-11-18T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "passed" },
   evalConfirm: percent >= 100 ? { state: "done", report: "confirmed", confirmedSelection: "npm test" } : { state: "needs_you", report: "none" },
   aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
   slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: percent >= 100 ? { state: "done", hasTask: true, canStart: false } : { state: "needs_you", hasTask: false, canStart: false },

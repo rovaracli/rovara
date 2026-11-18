@@ -5,6 +5,7 @@
 // the server checks too; only the project's admin or a company admin may change these.
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router";
 import { EVAL_APPROVAL_COUNTS_MINUTES, PROJECT_NAME, VERTEX_FORM, productAiPath, readProductAi, usdToMicros, type ProductAiRead } from "../../../api/admin-product-ai.js";
 import { isNotConnected, needsStepUp } from "../../../api/admin-company.js";
 import { createApiClient } from "../../../api/client.js";
@@ -17,6 +18,8 @@ import { Select } from "../../../design/Select.js";
 import { SecretField } from "../../../design/SecretField.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
+import { VertexGuide } from "./VertexGuide.js";
+import { isVertexRefusalReason, type VertexRefusalReason } from "./vertex-guide.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { ReadSection, useAdminRead } from "../models/read.js";
 import { AdminSection, FreshSignIn, NotConnected, forgetConfirmed, useJustConfirmed } from "../parts.js";
@@ -25,7 +28,9 @@ const reader = { parse: readProductAi };
 const when = (ms: number) => new Date(ms).toLocaleString("en-US", { timeZone: "UTC", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) + " UTC";
 
 export function ProductAiScreen() {
- const [typed, setTyped] = useState(""), [project, setProject] = useState<string>();
+ // L4-T3 (G3): the eval card opens this page with the project filled in (`?project=`); only a name the page would accept itself is used, anything else is ignored.
+ const [params] = useSearchParams(), given = params.get("project")?.trim() ?? "", fromLink = PROJECT_NAME.test(given) ? given : undefined;
+ const [typed, setTyped] = useState(fromLink ?? ""), [project, setProject] = useState<string | undefined>(fromLink);
  return <section><PageHeader focusOnMount title="Product AI keys" description="A project's own AI provider for the calls its tests make (AI Studio or Vertex AI), and what its evals may spend. Keys are write-only: Rovara uses them but never shows them." />
   <form onSubmit={event => { event.preventDefault(); if (PROJECT_NAME.test(typed.trim())) setProject(typed.trim()); }}>
    <TextField label="Project" value={typed} onChange={event => { setTyped(event.target.value); }} hint="The project's name, as on the Projects page." {...(typed !== "" && !PROJECT_NAME.test(typed.trim()) ? { error: "Lowercase letters, digits and hyphens, starting with a letter." } : {})} />
@@ -44,7 +49,7 @@ function Project({ project }: { project: string }) {
 function Settings({ settings, reload }: { settings: ProductAiRead; reload: () => void }) {
  const { developerId } = useAdminContext(), host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
  const confirmed = useJustConfirmed(developerId);
- const [stale, setStale] = useState(false), [busy, setBusy] = useState(false), [notice, setNotice] = useState<{ ok: boolean; text: string }>();
+ const [stale, setStale] = useState(false), [busy, setBusy] = useState(false), [notice, setNotice] = useState<{ ok: boolean; text: string; reason?: VertexRefusalReason }>();
  const [calls, setCalls] = useState(String(settings.evalBudget.calls)), [usd, setUsd] = useState(String(settings.evalBudget.costMicros / 1_000_000));
  const [selection, setSelection] = useState(settings.evalApproval?.selection ?? ""), [digest, setDigest] = useState(settings.evalApproval?.inputsDigest ?? ""), [maxCalls, setMaxCalls] = useState(String(settings.evalApproval?.maxCalls ?? "")), [maxUsd, setMaxUsd] = useState(settings.evalApproval === undefined ? "" : String(settings.evalApproval.maxCostMicros / 1_000_000)), [model, setModel] = useState(settings.evalApproval?.model ?? "");
  const path = productAiPath(settings.project);
@@ -57,7 +62,7 @@ function Settings({ settings, reload }: { settings: ProductAiRead; reload: () =>
    await query.invalidateQueries({ queryKey: ["admin", "lane-c", `product-ai-${settings.project}`] }); reload();
   } catch (error) {
    if (needsStepUp(error)) { setStale(true); forgetConfirmed(host.storage, developerId); }
-   else setNotice({ ok: false, text: error instanceof ApiError ? error.message : "Couldn't save that. Try again." });
+   else setNotice({ ok: false, text: error instanceof ApiError ? error.message : "Couldn't save that. Try again.", ...(error instanceof ApiError && isVertexRefusalReason(error.reason) ? { reason: error.reason } : {}) });
   } finally { setBusy(false); }
  }
  const ready = confirmed && !stale;
@@ -67,7 +72,7 @@ function Settings({ settings, reload }: { settings: ProductAiRead; reload: () =>
   {notice !== undefined && <p role={notice.ok ? "status" : "alert"}><VisibleText text={notice.text} /></p>}
   {!ready && <FreshSignIn action="change this project's product AI settings" refused={stale} />}
   <Select label="AI provider" value={provider} onValueChange={value => { setProvider(value === "vertex" ? "vertex" : "gemini"); }} options={[{ value: "gemini", label: "Google AI Studio (API key)" }, { value: "vertex", label: "Vertex AI (your Google Cloud project)" }]} />
-  {provider === "vertex" ? <Vertex settings={settings} ready={ready} busy={busy} send={send} path={path} /> : <AdminSection title="AI Studio key" note={settings.key.connected ? "Connected" : "Not connected"}>
+  {provider === "vertex" ? <Vertex settings={settings} ready={ready} busy={busy} send={send} path={path} refusal={notice?.ok === false ? notice.reason : undefined} /> : <AdminSection title="AI Studio key" note={settings.key.connected ? "Connected" : "Not connected"}>
    {settings.key.connected ? <p>A key is connected{settings.key.updatedAt === undefined ? "" : `, last changed ${when(settings.key.updatedAt)}`}. It is never shown here.{settings.key.refusedAt === undefined ? "" : ` Google refused it at ${when(settings.key.refusedAt)}: replace it.`}</p>
     : <p>No key is connected. The project's tests can't call Gemini until one is.{settings.removedUntil === undefined ? "" : ` The last key was removed; it can be recovered until ${when(settings.removedUntil)}.`}</p>}
    {ready && <SecretField label={settings.key.connected ? "Replace the key" : "Paste the AI Studio key"} submitLabel={settings.key.connected ? "Replace key" : "Connect key"} onSubmit={value => send("PUT", `${path}/key`, { key: value.trim() }, settings.key.connected ? "Key replaced." : "Key connected.")} />}
@@ -97,18 +102,19 @@ function Settings({ settings, reload }: { settings: ProductAiRead; reload: () =>
 type Send = (method: "PUT" | "DELETE", where: string, body: Record<string, unknown>, done: string) => Promise<void>;
 /** Vertex AI: the customer's workload identity pool trusts Rovara's AWS role for this company; the model gateway tests it (a token for this
  * company, and another company refused) before Cloud saves it. There is no secret to type. */
-function Vertex({ settings, ready, busy, send, path }: { settings: ProductAiRead; ready: boolean; busy: boolean; send: Send; path: string }) {
+function Vertex({ settings, ready, busy, send, path, refusal }: { settings: ProductAiRead; ready: boolean; busy: boolean; send: Send; path: string; refusal?: VertexRefusalReason | undefined }) {
  const v = settings.vertex;
  const [projectId, setProjectId] = useState(v.projectId ?? ""), [location, setLocation] = useState(v.location ?? "us-central1"), [audience, setAudience] = useState(""), [account, setAccount] = useState(v.serviceAccount ?? "");
  const okProject = VERTEX_FORM.projectId.test(projectId), okLocation = VERTEX_FORM.location.test(location), okAudience = VERTEX_FORM.audience.test(audience), okAccount = account === "" || VERTEX_FORM.serviceAccount.test(account);
  return <AdminSection title="Vertex AI" note={v.connected ? "Connected" : "Not connected"}>
   {v.connected ? <p>Connected to <code><VisibleText text={v.projectId ?? ""} /></code> in <code><VisibleText text={v.location ?? ""} /></code>{v.serviceAccount === undefined ? "" : <> as <code><VisibleText text={v.serviceAccount} /></code></>}{v.updatedAt === undefined ? "" : `, last changed ${when(v.updatedAt)}`}.{v.refusedAt === undefined ? "" : ` Google refused it at ${when(v.refusedAt)}: test it again.`}</p>
    : <p>Not connected. The project's tests can't call Vertex AI until it is.{settings.vertexRemovedUntil === undefined ? "" : ` The last setup was removed; it can be recovered until ${when(settings.vertexRemovedUntil)}.`}</p>}
+  <VertexGuide projectId={projectId} setup={settings.vertexSetup} usesServiceAccount={account !== ""} refusal={refusal} />
   {ready && <form onSubmit={event => { event.preventDefault(); if (okProject && okLocation && okAudience && okAccount) void send("PUT", `${path}/vertex`, { projectId, location, audience, serviceAccount: account === "" ? null : account }, "Vertex AI tested and saved."); }}>
    <TextField label="Google Cloud project ID" value={projectId} spellCheck={false} onChange={event => { setProjectId(event.target.value.trim()); }} {...(projectId === "" || okProject ? {} : { error: "6 to 30 lowercase letters, digits or hyphens, starting with a letter." })} />
    <TextField label="Location" value={location} spellCheck={false} hint="A region such as us-central1, or global." onChange={event => { setLocation(event.target.value.trim()); }} {...(okLocation ? {} : { error: "A Vertex AI region, or global." })} />
    <TextField label="Workload identity provider" value={audience} spellCheck={false} hint="Its full name: //iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>" onChange={event => { setAudience(event.target.value.trim()); }} {...(audience === "" || okAudience ? {} : { error: "The provider's full resource name, starting //iam.googleapis.com/projects/." })} />
-   <TextField label="Service account (optional)" value={account} spellCheck={false} onChange={event => { setAccount(event.target.value.trim()); }} {...(okAccount ? {} : { error: "A Google service account address." })} />
+   <TextField label="Service account (optional)" value={account} spellCheck={false} hint="Enter the one step 2 creates: step 2 grants the Vertex AI User role to it, so real calls need it." onChange={event => { setAccount(event.target.value.trim()); }} {...(okAccount ? {} : { error: "A Google service account address." })} />
    <Button type="submit" variant="primary" busy={busy} disabled={!okProject || !okLocation || !okAudience || !okAccount}>Test and save</Button>
   </form>}
   {ready && v.connected && <p><Button busy={busy} onClick={() => { void send("DELETE", `${path}/vertex`, {}, "Vertex AI removed. Tests can't call Vertex AI until it is connected again."); }}>Remove Vertex AI</Button></p>}

@@ -57,3 +57,14 @@ export const APPROVAL_WORDS = {
   discarded: "Discarded. The project keeps its current setup.",
   moved: "This setup changed or is no longer waiting.",
 } as const;
+
+/** The checklist's Setup run row while a setup of Rovara's waits for a person (L4-T1, G1): what the row says, and what a person who may not decide reads. */
+export const REVIEW_WORDS = {
+  review: "Needs you: review the setup",
+  checking: "Checking on a fresh machine",
+  approve: "Needs you: approve",
+  /** What "Use this setup" says on the checklist, where the check starts by itself and the approval is on the same card (the Setup step's words point at a test environment section the checklist doesn't have). */
+  confirmRule: "Using this setup saves it as a proposal and checks it on a fresh machine. It does not change the project's settings. You approve it here once the check has passed.",
+  confirmNext: "Saved as a proposal. Rovara is checking it on a fresh machine. When the check passes, approve it here with a fresh sign-in.",
+  readOnly: "Rovara has a setup waiting. A project admin, or a company owner or admin, reviews and approves it.",
+} as const;
