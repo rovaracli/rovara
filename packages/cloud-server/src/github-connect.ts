@@ -37,9 +37,13 @@ import { sessionKey, type CodeSession, type SessionStore } from "./sessions.js";
 export const GITHUB_CALLBACK_PATH = "/api/connect/github/callback";
 export const GITHUB_CONNECT_COOKIE = "rovara_cloud_github";
 const COOKIE_PATH = "/api/connect/github";
+/** The Set-Cookie value of the connect cookie (shared with the person's own GitHub link, github-link.ts: one cookie, one callback). */
+export const githubConnectCookie = (value: string, maxAge: number, secure: boolean) => `${GITHUB_CONNECT_COOKIE}=${value}; HttpOnly; SameSite=Lax; Path=${COOKIE_PATH}${secure ? "; Secure" : ""}; Max-Age=${String(maxAge)}`;
 export const GITHUB_CONNECT_TTL_MS = 10 * 60_000;
 const CODE_GITHUB = "/v1/dev/company/github";
 const LANDING = "/app/onboard";
+/** L4-GH: where a return of the person's own GitHub link lands (github-link.ts): the profile page. */
+export const GITHUB_LINK_LANDING = "/app/account";
 
 /** Code's fixed sentences (Code PR #830 github-connect-routes.ts), and Cloud's own for a Code without the routes. */
 export const GITHUB_WORDS = Object.freeze({
@@ -82,6 +86,8 @@ export type GithubResult =
 /** A pending-store row of a GitHub connect: the cookie binding ("state") or the callback's outcome ("result"). Hashes and ids only. */
 export interface GithubPending {
   kind: "state" | "result";
+  /** L4-GH: kind state only. `link`: the person's own GitHub account link (github-link.ts), whose return the callback hands to that module; absent: the company connect. */
+  flow?: "link";
   /** sha256 of this sign-in's cookie key (sessionBinding). */
   session: string;
   developerId: string;
@@ -112,7 +118,7 @@ function sameDigest(a: string | undefined, b: string): boolean {
 export const githubStateKey = (binder: string) => `github.state.${sha256(`rovara-github-connect-binder:${binder}`)}`;
 /** The pending-store key of this sign-in's outcome: derived from the sign-in's cookie, so only that browser's sign-in reads it. */
 export const githubResultKey = (sessionCookie: string) => `github.result.${sha256(`rovara-github-connect-result:${sessionKey(sessionCookie)}`)}`;
-const sessionBinding = (sessionCookie: string) => sha256(`rovara-github-connect-session:${sessionKey(sessionCookie)}`);
+export const sessionBinding = (sessionCookie: string) => sha256(`rovara-github-connect-session:${sessionKey(sessionCookie)}`);
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const installationId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
@@ -127,6 +133,8 @@ export interface GithubConnectDeps {
   /** Cloud's company data, for the trial rule. Absent: no trial is recorded (this Cloud has no company data). */
   companies?: CompanyStore;
   secureCookies: boolean;
+  /** L4-GH: the person's own GitHub link (github-link.ts). Absent: a link return is refused (the install flow is unchanged). */
+  link?: { finish(session: CodeSession, sessionCookie: string, query: { state: string; code: string | undefined; extra: boolean }): Promise<{ location: string }> };
 }
 
 export interface GithubAnswer { status: number; body: unknown; setCookie?: string }
@@ -280,13 +288,16 @@ export function createGithubConnect(deps: GithubConnectDeps) {
      * person; the cookie is cleared; Code's claim is asked as the person; the outcome is kept server-side and the person lands on onboarding.
      */
     async callback(query: URLSearchParams, cookieBinder: string | undefined, sessionCookie: string | undefined): Promise<{ location: string; setCookie: string }> {
+      // L4-GH: once the cookie's binding is known to be a link flow, a refusal lands on the profile page, not on onboarding.
+      let linkFlow = false;
       const refuse = (reason: string, outcome: Exclude<Outcome, "result"> = "start_again") => {
         deps.log({ event: "cloud.github_callback_refused", reason });
-        return { location: landing(outcome), setCookie: clearCookie };
+        return { location: linkFlow ? `${GITHUB_LINK_LANDING}?github_link=${outcome === "start_again" ? "start_again" : "unavailable"}` : landing(outcome), setCookie: clearCookie };
       };
       if (cookieBinder === undefined || !SECRET.test(cookieBinder)) return refuse("no_binding");
       const kept = await deps.store.takePending(githubStateKey(cookieBinder));
       const binding = kept?.github;
+      linkFlow = binding?.kind === "state" && binding.flow === "link";
       if (kept === undefined || binding?.kind !== "state" || nowMs() - kept.at > GITHUB_CONNECT_TTL_MS) return refuse("no_binding");
       let session = sessionCookie === undefined ? undefined : await deps.store.get(sessionCookie);
       if (session === undefined || sessionCookie === undefined || !sameDigest(binding.session, sessionBinding(sessionCookie)) || session.access.developerId !== binding.developerId) return refuse("session");
@@ -298,6 +309,15 @@ export function createGithubConnect(deps: GithubConnectDeps) {
       if (typeof state !== "string" || !SECRET.test(state) || binding.stateHash === undefined || !sameDigest(binding.stateHash, sha256(state))) return refuse("state");
       const code = one("code"), installation = one("installation_id"), setupAction = one("setup_action");
       if (code === null || installation === null || setupAction === null) return refuse("query");
+      // L4-GH: the cookie's binding says this return is the person's own GitHub link, not the company connect: it never reaches the install claim below.
+      if (binding.flow === "link") {
+        if (deps.link === undefined) return refuse("no_link");
+        // A code that is present but not a code is a bad return, not a cancel.
+        if (code !== undefined && !GITHUB_CODE.test(code)) return refuse("query");
+        const extra = installation !== undefined || setupAction !== undefined;
+        const done = await deps.link.finish(session, sessionCookie, { state, code, extra });
+        return { location: done.location, setCookie: clearCookie };
+      }
       if ((code !== undefined && !GITHUB_CODE.test(code)) || (installation !== undefined && !INSTALLATION_ID.test(installation))
         || (setupAction !== undefined && !(SETUP_ACTIONS as readonly string[]).includes(setupAction))) return refuse("query");
       const id = installation === undefined ? undefined : Number(installation);
