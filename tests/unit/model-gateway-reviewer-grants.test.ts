@@ -519,7 +519,9 @@ describe("the durable review session (markers table)", () => {
     const wire = new WireDynamo(TABLES); const s = fresh();
     expect(await make(wire).open(s)).toBe(true);
     expect(wire.items("gw-markers")).toEqual([{ pk: companyPartition(claims.iss, cidA), sk: `REVGRANT#${jti}`, bind: "bind-1", holdId: s.holdId, ceilingMicros: 1_000, roomMicros: 900, debitedMicros: 100, endsAt: s.endsAt, status: "open", claimedAt: secs,
-      expiresAt: s.endsAt + Math.ceil(REVIEW_SESSION_CLOSE_GRACE_MS / 1000) + REVIEWER_GRANT_KEEP_SECONDS }]);
+      expiresAt: s.endsAt + Math.ceil((REVIEW_SESSION_CLOSE_GRACE_MS + HOLD_SWEEP_AGE_MS) / 1000) + REVIEWER_GRANT_KEEP_SECONDS }]);
+    // It outlives the earliest time the hold sweep may look for it (a hold taken when the session opened is swept HOLD_SWEEP_AGE_MS after the session end plus the close grace).
+    expect((wire.items("gw-markers")[0]!.expiresAt as number) * 1000).toBeGreaterThan(s.endsAt * 1000 + REVIEW_SESSION_CLOSE_GRACE_MS + HOLD_SWEEP_AGE_MS);
     expect(wire.calls.map((c) => [c.operation, c.table])).toEqual([["PutItem", "gw-markers"]]);
     for (const c of wire.calls) for (const k of c.keys) expect(k.pk.startsWith("CO#")).toBe(true);
     expect(String((wire.calls[0]!.input as { ConditionExpression?: string }).ConditionExpression)).toContain("attribute_not_exists");
@@ -622,6 +624,21 @@ describe("the hold sweep settles a dead gateway task's review at what its sessio
     const h = await holdWithSession({ session: false });
     await h.meter.sweepOpenHolds(now + HOLD_SWEEP_AGE_MS + 1_000, 10);
     expect(await company(h.meter)).toMatchObject({ spentMicros: 1_000, committed: 1_000 });
+  });
+  it("a hold that did not open the session (the loser of two racing first calls) is settled at 1 micro and leaves the winner's session alone", async () => {
+    const h = await holdWithSession({ session: true });
+    const loser = await h.meter.reserve({ scope: sweepScope, caps: { task: 1e9, projectMonth: 1e9, companyMonth: 1e9 }, estimateMicros: 1_000, review: { jti: h.jti } });
+    expect(loser.ok).toBe(true);
+    await h.meter.sweepOpenHolds(now + HOLD_SWEEP_AGE_MS + 1_000, 10);
+    // The winner's hold: its debited total (300); the loser's: 1 micro. The session is closed once and charged once.
+    expect(await company(h.meter)).toMatchObject({ spentMicros: 301, committed: 301, reservedMicros: 0 });
+    expect(await h.store.read(claims.iss, cidA, h.jti)).toMatchObject({ status: "closed", debitedMicros: 300 });
+  });
+  it("the session item written by the gateway is still there when the sweep looks for it (TTL outlives the sweep)", async () => {
+    const h = await holdWithSession({ session: true });
+    const item = h.wire.items("gw-markers").find((i) => String(i.sk).startsWith("REVGRANT#"))!;
+    const sweepAt = now + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS + HOLD_SWEEP_AGE_MS;
+    expect((item.expiresAt as number) * 1000).toBeGreaterThan(sweepAt);
   });
   it("an ordinary hold is swept exactly as before", async () => {
     const wire = new WireDynamo(Object.values(T));

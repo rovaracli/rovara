@@ -15,7 +15,7 @@
 // claim that cannot be made (the store is down, times out, or its answer is lost) is a refusal: the caller spends nothing. A lost answer after the
 // write applied leaves a claimed grant, which is the safe side (a grant is never "maybe once more").
 import { AwsNotSentError } from "./aws.js";
-import { companyPartition } from "./dynamo-meter.js";
+import { companyPartition, HOLD_SWEEP_AGE_MS } from "./dynamo-meter.js";
 import type { CapsSource } from "./caps.js";
 import type { Dynamo } from "./dynamo.js";
 import type { Meter, MeterScope, Reservation } from "./meter.js";
@@ -28,8 +28,11 @@ export const REVIEW_SESSION_SECONDS = 600;
  * the unused ceiling is released promptly and closing never waits for slow calls.
  */
 export const REVIEW_SESSION_CLOSE_GRACE_MS = 30_000;
-/** How long a session's item outlives its close time (clock skew; DynamoDB deletes lazily after this). */
-export const REVIEWER_GRANT_KEEP_SECONDS = 300;
+/**
+ * How long a session's item outlives the hold sweep's earliest time for its hold (HOLD_SWEEP_AGE_MS after the hold's openFrom = the session's end plus the close grace): the session-aware
+ * sweep (dynamo-meter.ts reviewTotal) must still find it, and a closed item keeps refusing the grant until it is gone. DynamoDB deletes lazily after the TTL.
+ */
+export const REVIEWER_GRANT_KEEP_SECONDS = 3600;
 const JTI = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 /** One review session as stored. `room` is what the ceiling still allows (ceiling less everything debited). */
@@ -71,7 +74,7 @@ export class DynamoReviewerGrants implements ReviewerGrantStore {
     return this.db.put(
       this.table,
       { ...key, bind: s.bind, holdId: s.holdId, ceilingMicros: s.ceilingMicros, roomMicros: s.ceilingMicros - s.firstDebitMicros, debitedMicros: s.firstDebitMicros, endsAt: s.endsAt, status: "open", claimedAt: Math.floor(this.now() / 1000),
-        expiresAt: s.endsAt + Math.ceil(REVIEW_SESSION_CLOSE_GRACE_MS / 1000) + REVIEWER_GRANT_KEEP_SECONDS },
+        expiresAt: s.endsAt + Math.ceil((REVIEW_SESSION_CLOSE_GRACE_MS + HOLD_SWEEP_AGE_MS) / 1000) + REVIEWER_GRANT_KEEP_SECONDS },
       (e) => `attribute_not_exists(${e.name("pk")})`,
       signal === undefined ? {} : { signal },
     );

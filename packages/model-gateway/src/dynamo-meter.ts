@@ -369,7 +369,7 @@ export class DynamoMeter implements Meter {
         const hold = readHold(await this.#db.get(this.#t.meter, { pk: item.pk, sk: item.sk }), this.#combined !== undefined);
         if (hold === undefined || hold.status !== "open" || companyPartition(hold.scope.iss, hold.scope.cid) !== item.pk) { report.already++; continue; }
         // A review session's hold (DEC 254zzz41) is settled at what its session really debited, never above its ceiling (the hold): only a session that cannot be read costs the whole ceiling.
-        const result = await this.#close(item.pk, id, hold, hold.review === undefined ? Math.max(1, hold.estimate) : await this.#reviewTotal(item.pk, hold.review, hold.estimate), undefined, true);
+        const result = await this.#close(item.pk, id, hold, hold.review === undefined ? Math.max(1, hold.estimate) : await this.#reviewTotal(item.pk, hold.review, hold.estimate, id), undefined, true);
         if (result === "closed") report.swept++; else report.already++;
       } catch { report.failed++; report.more = true; }
     }
@@ -377,11 +377,13 @@ export class DynamoMeter implements Meter {
   }
 
   /** What a review session debited (its item in the markers table, this company's partition), closing the session so no later call can debit it; the whole hold when it cannot be read. */
-  async #reviewTotal(pk: string, jti: string, estimate: number): Promise<number> {
+  async #reviewTotal(pk: string, jti: string, estimate: number, holdId: string): Promise<number> {
     const key = { pk, sk: `REVGRANT#${jti}` };
     try {
       const item = await this.#db.get(this.#markers, key);
       if (item === undefined || !whole(item.debitedMicros) || !whole(item.ceilingMicros) || item.ceilingMicros !== estimate || item.debitedMicros > estimate) return Math.max(1, estimate);
+      // Another hold (the loser of a race between two first calls) took the jti's session: this hold carried no call of it, and the session is not ours to close (never $0, DEC 172).
+      if (item.holdId !== holdId) return 1;
       if (item.status === "open") await this.#db.update(this.#markers, key, (e) => `SET ${e.name("status")} = ${e.value("closed")}`, (e) => `${e.name("status")} = ${e.value("open")} AND ${e.name("debitedMicros")} = ${e.value(item.debitedMicros as number)}`);
       // The close is conditional on the total read: a debit that lands in between leaves the session open, and then the whole hold is the safe answer.
       const after = await this.#db.get(this.#markers, key);
