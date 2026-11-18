@@ -357,6 +357,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
       ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }),
       // DEC 254t: the kinds the owner switched on (none when unset).
       switchedOn: config.aiSourceKinds ?? new Set<string>(),
+      // DEC 254zzz84(4): Rovara's AI models not enabled yet, so a company's saved order passes Rovara's AI over for them (the offered list leaves them out too).
+      rovaraDisabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined),
       // DEC 254t (A2): the company's own OpenAI and OpenRouter keys (fixed hosts), each held to its price row's output limit.
       openai: { transport: deps.openaiAgentTransport ?? createChatCompletionsTransport("openai"), maxOutputTokens: (model: string) => prices.maxOutputTokens("openai", model) },
       openrouter: { transport: deps.openrouterAgentTransport ?? createChatCompletionsTransport("openrouter"), maxOutputTokens: (model: string) => prices.maxOutputTokens("openrouter", model) },

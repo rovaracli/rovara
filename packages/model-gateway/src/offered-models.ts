@@ -11,6 +11,9 @@
 // never opens the agent route. (The vertex-check HMAC is Cloud's own KMS key: only Cloud's settings role may sign with it, and Code's
 // broker has no such right, so it is not an option for Code.)
 //
+// DEC 254zzz84(4): with the company's saved fallback order, the list is the models of every usable source of that order, in order, each once (the agent
+// route admits the first source that serves the call's model); without one, exactly the first choice's list as before.
+//
 // Company isolation: the company is the token's `cid`, the path must name the same company (anything else is refused as an unsigned call,
 // so a caller that builds company A's address with company B's token learns nothing), and every read below is for that one company. The
 // source row's own companyId is checked again by CompanyAgentAiSource.
@@ -228,21 +231,57 @@ export async function answerOfferedModels(options: OfferedModelsHandlerOptions, 
   const claims = await options.verify(auth.slice(7));
   // The token's company is THE company; a path naming another company is an unsigned call (nothing about either company is said).
   if (claims === undefined || claims.cid !== target[1]) return ANSWERS.refused;
-  let outcome: OfferedModelsOutcome;
-  let chosen: AgentAiSource | undefined;
+  // The same resolution as the agent route's admission (agent-ai.ts resolveAgentSource), so the list is what its very next call accepts.
+  let resolved: Awaited<ReturnType<typeof resolveAgentSource>>;
   try {
-    // The same resolution as the agent route's admission (agent-ai.ts resolveAgentSource), so the list is what its very next call accepts.
-    const { source } = await resolveAgentSource({ sources: options.sources, ...(options.rovara?.exempt === undefined || options.keys === undefined ? {} : { exempt: options.rovara.exempt }), keys: options.keys ?? NO_KEYS, ...(options.byo === undefined ? {} : { byo: options.byo }) }, claims.iss, claims.cid);
-    chosen = source;
-    // The same order as the agent route's admission: the switch first, then whether this gateway serves the source at all.
-    if (source !== undefined && !agentSourceSwitchedOn(source, options.switchedOn ?? new Set())) outcome = OFFERED_SWITCHED_OFF;
-    else if ((source === "openai_key" && options.chat?.openai !== true) || (source === "openrouter_key" && options.chat?.openrouter !== true)) outcome = OFFERED_CHAT_OFF;
-    else if (source === "custom_endpoint") outcome = await offeredEndpointModels(options.endpointModels, claims.iss, claims.cid);
-    else outcome = source === "bedrock_byo" ? await offeredByoModels(options.byo, claims.iss, claims.cid) : offeredModelsFor(source, options.rovara, options.disabled);
+    resolved = await resolveAgentSource({ sources: options.sources, ...(options.rovara?.exempt === undefined || options.keys === undefined ? {} : { exempt: options.rovara.exempt }), keys: options.keys ?? NO_KEYS, ...(options.byo === undefined ? {} : { byo: options.byo }) }, claims.iss, claims.cid);
   } catch { return ANSWERS.unavailable; }
-  if (!outcome.ok) return { status: outcome.status, body: { error: { type: outcome.code, message: outcome.message } } };
-  const access = options.reviewer === undefined ? undefined : await reviewerAccessFor(options.reviewer, chosen, claims.iss, claims.cid, outcome.models);
-  return { status: 200, body: { version: 1, models: outcome.models.map((model) => ({ model })), ...(access === undefined ? {} : { reviewerAccess: access }) } };
+  // DEC 254zzz84(4): with a saved fallback, every usable source of the company's order in turn (the agent route admits the first that serves the call's model),
+  // its models in order, each once. Without one, the first choice alone, exactly as before. A read that fails anywhere is the fixed 503 (never a partial list).
+  const order: Array<AgentAiSource | undefined> = [resolved.source, ...(resolved.fallback ?? [])];
+  const served: Array<{ source: AgentAiSource | undefined; models: string[] }> = [];
+  let first: OfferedModelsOutcome | undefined;
+  try {
+    for (const source of order) {
+      // With a fallback, an own-key source counts only while its key is connected now (the agent route passes it over otherwise): never offer what the next call refuses.
+      if (order.length > 1 && !(await ownKeyConnected(options, source, claims.iss, claims.cid))) { first ??= OFFERED_KEY_NOT_CONNECTED; continue; }
+      const outcome = await offeredForSource(options, source, claims.iss, claims.cid);
+      first ??= outcome;
+      if (outcome.ok) served.push({ source, models: outcome.models });
+    }
+  } catch { return ANSWERS.unavailable; }
+  if (order.length === 1 || served.length === 0) {
+    const outcome = first!;
+    if (!outcome.ok) return { status: outcome.status, body: { error: { type: outcome.code, message: outcome.message } } };
+  }
+  const models: string[] = [];
+  const seen = new Set<string>();
+  const access: ReviewerAccess[] = [];
+  for (const { source, models: names } of served) {
+    const added = names.filter((name) => { if (seen.has(name) || seen.size >= OFFERED_MODELS_MAX) return false; seen.add(name); return true; });
+    models.push(...added);
+    if (options.reviewer !== undefined && added.length > 0) { const one = await reviewerAccessFor(options.reviewer, source, claims.iss, claims.cid, added); if (one !== undefined) access.push(one); }
+  }
+  const reviewerAccess = access.length === 0 ? undefined : { companyId: claims.cid, companyLimitUsd: access[0]!.companyLimitUsd, models: access.flatMap((one) => one.models) };
+  return { status: 200, body: { version: 1, models: models.map((model) => ({ model })), ...(reviewerAccess === undefined ? {} : { reviewerAccess }) } };
+}
+
+const OFFERED_KEY_NOT_CONNECTED = refusal(403, "no_ai_key", "Connect an AI key: this company has no AI provider key connected, so its agents cannot call AI.");
+const KEY_PROVIDER: Readonly<Partial<Record<AgentAiSource, "anthropic" | "openai" | "openrouter">>> = { anthropic_key: "anthropic", openai_key: "openai", openrouter_key: "openrouter" };
+/** Whether a source's own key is connected now (true for a source without one). No key source on this gateway: not connected (never guessed). Throws on a failed read. */
+async function ownKeyConnected(options: OfferedModelsHandlerOptions, source: AgentAiSource | undefined, iss: string, cid: string): Promise<boolean> {
+  const provider = source === undefined ? undefined : KEY_PROVIDER[source];
+  if (provider === undefined) return true;
+  const keys = options.keys ?? options.reviewer?.keys;
+  return keys !== undefined && (await keys.connected(iss, cid, provider)) === true;
+}
+
+/** What one source offers the company now (the agent route's order of checks: the switch first, then whether this gateway serves the source at all). Throws on a failed read. */
+async function offeredForSource(options: OfferedModelsHandlerOptions, source: AgentAiSource | undefined, iss: string, cid: string): Promise<OfferedModelsOutcome> {
+  if (source !== undefined && !agentSourceSwitchedOn(source, options.switchedOn ?? new Set())) return OFFERED_SWITCHED_OFF;
+  if ((source === "openai_key" && options.chat?.openai !== true) || (source === "openrouter_key" && options.chat?.openrouter !== true)) return OFFERED_CHAT_OFF;
+  if (source === "custom_endpoint") return offeredEndpointModels(options.endpointModels, iss, cid);
+  return source === "bedrock_byo" ? offeredByoModels(options.byo, iss, cid) : offeredModelsFor(source, options.rovara, options.disabled);
 }
 
 /** The HTTP handler the serving process mounts for OFFERED_MODELS_PATH (process.ts), only in company-key mode. */

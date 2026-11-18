@@ -9,8 +9,8 @@
 //   PUT /org/agent-ai   {expectedVersion, source}: save the choice
 //
 // Who: company admins only (Code's access check made now), reads included. A write needs a fresh step-up and goes through the
-// app's signed-write path (CSRF in handler.ts). Each saved change is audited. There is never an automatic switch between sources:
-// the gateway uses only the saved one.
+// app's signed-write path (CSRF in handler.ts). Each saved change is audited. The only switch between sources is the company's own saved
+// order (DEC 254zzz84(4), model-sources-routes.ts): a change here keeps the sources after the first choice, minus the new first choice.
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction } from "./audit-log.js";
 import { AGENT_AI_SOURCES, agentSourceSwitchedOn, CompanyStoreConflict, effectiveAgentSource, type AgentAiSource } from "./company-store.js";
@@ -80,6 +80,25 @@ async function keysRevision(context: RouteContext, companyId: string): Promise<n
   try { return (await productAi.store.view(productAi.issuer, companyId, LEARNING_AI_OWNER)).revision; } catch { return null; }
 }
 
+/**
+ * DEC 254zzz84(4): the sources this Cloud lists for the company and whether each can be chosen now (switched on, served, and connected): the same rule as the
+ * choices below, for the model-sources screen. `null` where a connection can't be told (never guessed available).
+ */
+export async function agentSourceAvailability(context: RouteContext, companyId: string): Promise<Array<{ source: AgentAiSource; available: boolean; connected: boolean | null }>> {
+  const bedrock = await bedrockConnected(context, companyId);
+  const storedEndpoint = !switchedOn(context, "custom_endpoint") && (await keyConnected(context, companyId, "endpoint")) === true;
+  const listed = AGENT_AI_SOURCES.filter((source) => ALWAYS_LISTED.includes(source) || switchedOn(context, source) || (source === "custom_endpoint" && storedEndpoint));
+  const out: Array<{ source: AgentAiSource; available: boolean; connected: boolean | null }> = [];
+  for (const source of listed) {
+    // As PUT /org/agent-ai: an own-key source of DEC 254t needs its key connected to be chosen; the Anthropic key may be chosen before it is (the gateway passes it over meanwhile).
+    const provider = KEY_OF[source];
+    const key = provider === undefined ? null : await keyConnected(context, companyId, provider);
+    const connected = source === "rovara" ? true : source === "bedrock_byo" ? bedrock : source === "anthropic_key" ? await anthropicKeyConnected(context, companyId) : key;
+    out.push({ source, available: AGENT_AI_CHOOSABLE.includes(source) && switchedOn(context, source) && (source !== "bedrock_byo" || bedrock === true) && (provider === undefined || key === true), connected });
+  }
+  return out;
+}
+
 async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
   let saved;
   try { saved = await context.company!.store.agentAi(who.companyId); } catch { return WORDS.unavailable; }
@@ -132,7 +151,9 @@ async function putAgentAi(context: RouteContext): Promise<RouteAnswer> {
   if (provider !== undefined && (await keyConnected(context, who.companyId, provider)) !== true) return WORDS.keyFirst;
   const store = context.company!.store;
   try {
-    await store.putAgentAi({ companyId: who.companyId, source, updatedAt: context.now().toISOString(), updatedBy: who.developerId }, body.expectedVersion);
+    // DEC 254zzz84(4): the saved order's later sources stay, without the new first choice (the version check below refuses a change made meanwhile).
+    const kept = (await store.agentAi(who.companyId))?.fallback?.filter((other) => other !== source);
+    await store.putAgentAi({ companyId: who.companyId, source, updatedAt: context.now().toISOString(), updatedBy: who.developerId, ...(kept === undefined || kept.length === 0 ? {} : { fallback: kept }) }, body.expectedVersion);
   } catch (error) { return error instanceof CompanyStoreConflict ? WORDS.stale : WORDS.unavailable; }
   if (context.audit !== undefined) {
     try {
