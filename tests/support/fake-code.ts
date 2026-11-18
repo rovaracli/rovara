@@ -11,10 +11,11 @@ import type { AddressInfo } from "node:net";
 import {
   matchCodeRoute,
   type AccessResponse, type CodeRequest, type CodeResponse, type CodeRouteId, type CompanyMember, type DecisionCard, type ErrorBody, type HowWeWorkView,
-  type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
+  type PlaybookView, type PlanComment, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
   type DecisionsResponse, type DecisionOutcome, type LearningSourceKey, type LessonItem, type LessonMeasureResponse, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
+import { taskPlanAnswer } from "../fixtures/code-answers.js";
 import { wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
 import { wikiMapOf, wikiSetupBuildView, type FakeWikiSetup } from "./wiki-setup-fixture.js";
 import { WIKI_SETUP_CODE_WORDS } from "../../packages/contracts/src/app-wiki-setup.js";
@@ -757,22 +758,18 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     pendingPeople.set(requestId, commit);
     return { body: { change: { status: "PENDING", requestId, confirmationUrl: `https://fake-code.invalid/review/${entry.task.taskId}/task/people/confirm/${requestId}`, expiresAt: new Date(now().getTime() + 600_000).toISOString() } } };
   };
-  const planOf = (task: TaskView): PlanView => ({
-    taskId: task.taskId, document: "plan", version: 1, sha256: PLAN_DIGEST, approved: task.workflow?.stage !== "PLAN_REVIEW", current: true, versions: [1],
-    content: { problem: `The task: ${task.title}`, approach: ["Read the code around the change", "Make the change", "Add a test that fails without it"], files: ["src/index.ts"], risks: ["Touches one shared module"] },
-    summary: { headline: "One small change, one new test", checks: ["Unit tests", "Type check"] },
-    estimate: "about $1.20 to $3.10, 12 to 25 minutes", runLimitUsd: 5,
-    // The structured spec (UX audit 2026-11-15): stable ids that a task, a comment, a question and a proof item can point at.
-    requirements: [{ id: "R1", title: "The change works and is tested", criteria: [{ id: "R1.1", when: "the change is made", then: "the new test passes", taskIds: ["T2", "T3"] }, { id: "R1.2", when: "the type check runs", then: "it reports no errors", taskIds: ["T2"] }] }],
-    tasks: [{ id: "T1", title: "Read the code around the change", status: "done" }, { id: "T2", title: "Make the change", status: "running", criterionIds: ["R1.1", "R1.2"] }, { id: "T3", title: "Add a test that fails without it", status: "todo", criterionIds: ["R1.1"] }],
-    questions: [{ questionId: "Q1", text: "Keep the old behaviour behind a flag?", options: [{ optionId: "yes", label: "Yes, behind a flag" }, { optionId: "no", label: "No, replace it" }], criterionId: "R1.1", defaultOptionId: "no" }],
-  });
+  // Code's REAL plan answer (`{ plan: TaskPlanDocumentView }`, tests/fixtures/code-answers.ts, made by Code's own readTaskPlanDocument): only the task id, the digest the fake's
+  // decision cards bind to and whether it was approved are this task's. Its claims ("1", "1.1", "2") are the criteria the proof index below points at.
+  const planOf = (task: TaskView) => {
+    const answer = taskPlanAnswer(task.taskId);
+    return { plan: { ...answer.plan, sha256: PLAN_DIGEST, approved: task.workflow?.stage !== "PLAN_REVIEW" } };
+  };
 
   const proofOf = (task: TaskView): ProofIndexResponse => ({
     taskId: task.taskId,
     items: [
-      { sha256: "d".repeat(64), title: "Unit tests", kind: "test_report", verdict: "pass", criterionIds: ["R1.1"], commit: "c".repeat(40), stale: false },
-      { sha256: "e".repeat(64), title: "Type check", kind: "check_result", verdict: "pass", criterionIds: ["R1.2"], commit: "c".repeat(40), stale: false },
+      { sha256: "d".repeat(64), title: "Unit tests", kind: "test_report", verdict: "pass", criterionIds: ["1.1"], commit: "c".repeat(40), stale: false },
+      { sha256: "e".repeat(64), title: "Type check", kind: "check_result", verdict: "pass", criterionIds: ["2"], commit: "c".repeat(40), stale: false },
       { sha256: "f".repeat(64), title: "Webhook retry eval", kind: "eval", verdict: "unknown", criterionIds: [], passed: 18, total: 20, bar: 0.95 },
     ],
   });

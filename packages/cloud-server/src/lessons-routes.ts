@@ -26,6 +26,7 @@ const measureNotFound: RouteAnswer = { status: 404, body: { error: { code: "NOT_
 const measureNotYet: RouteAnswer = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Lessons measure isn't available on this Rovara yet." } } };
 const measureOff: RouteAnswer = { status: 404, body: { error: { code: "LESSONS_SWITCHED_OFF", message: "Lessons are off." } } };
 const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+/** Code's measure (lessons/measure.ts LessonMeasure). `revertDetection` is "wired" since Code's revert watch counts reverts; an older Code said "not_wired". Either reads. */
 function measureView(value: unknown, project: string): LessonMeasureResponse | undefined {
   if (!isRecord(value) || value["project"] !== project || !Number.isInteger(value["windowDays"]) || !isFiniteNumber(value["floor"]) || !Number.isInteger(value["loads"])
     || !(value["lessonsInUse"] === null || Number.isInteger(value["lessonsInUse"])) || !Number.isInteger(value["loadedLessons"]) || !Number.isInteger(value["loadedBelowFloor"])
@@ -34,7 +35,7 @@ function measureView(value: unknown, project: string): LessonMeasureResponse | u
     || !(value["meanFitLoaded"] === null || isFiniteNumber(value["meanFitLoaded"])) || !(value["meanFitLeftOut"] === null || isFiniteNumber(value["meanFitLeftOut"]))
     || !isRecord(value["cleanMerge"]) || !Number.isInteger(value["cleanMerge"]["merged"]) || !Number.isInteger(value["cleanMerge"]["reverted"])
     || !Number.isInteger(value["cleanMerge"]["clean"]) || !(value["cleanMerge"]["rate"] === null || isFiniteNumber(value["cleanMerge"]["rate"]))
-    || value["revertDetection"] !== "not_wired" || typeof value["truncated"] !== "boolean" || !Number.isInteger(value["unreadable"])) return undefined;
+    || (value["revertDetection"] !== "not_wired" && value["revertDetection"] !== "wired") || typeof value["truncated"] !== "boolean" || !Number.isInteger(value["unreadable"])) return undefined;
   return {
     project, windowDays: value["windowDays"] as number, floor: value["floor"], loads: value["loads"] as number, lessonsInUse: value["lessonsInUse"] as number | null,
     loadedLessons: value["loadedLessons"] as number, loadedBelowFloor: value["loadedBelowFloor"] as number, loadsWithBelowFloor: value["loadsWithBelowFloor"] as number,
@@ -42,7 +43,7 @@ function measureView(value: unknown, project: string): LessonMeasureResponse | u
     loadsCapBound: value["loadsCapBound"] as number, leftOutAtOrAboveFloor: value["leftOutAtOrAboveFloor"] as number, meanFitLoaded: value["meanFitLoaded"],
     meanFitLeftOut: value["meanFitLeftOut"],
     cleanMerge: { merged: value["cleanMerge"]["merged"] as number, reverted: value["cleanMerge"]["reverted"] as number, clean: value["cleanMerge"]["clean"] as number, rate: value["cleanMerge"]["rate"] },
-    revertDetection: "not_wired", truncated: value["truncated"], unreadable: value["unreadable"] as number,
+    revertDetection: value["revertDetection"], truncated: value["truncated"], unreadable: value["unreadable"] as number,
   };
 }
 function measureRefusal(error: CodeError): RouteAnswer {

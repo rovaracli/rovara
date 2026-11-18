@@ -9,7 +9,7 @@ export const SETUP_AGENT_VIEW_STATUSES = ["none", "running", "ready", "failed"] 
 
 // L4-D (Code #899, DEC 254z b): the candidate setup waiting for a decision, as the run's read carries it once "Use this setup" was pressed (hosted Code only; the laptop decides on its own cards).
 export const SETUP_RISKS = ["low", "medium", "high"] as const;
-export const SETUP_CHANGE_AREAS = ["setup_commands", "test_commands", "test_mocks", "websites", "registries", "integrations", "dev_container", "other"] as const;
+export const SETUP_CHANGE_AREAS = ["setup_commands", "test_commands", "test_mocks", "prompt_locations", "websites", "registries", "integrations", "dev_container", "other"] as const;
 export const SETUP_CHECK_STATES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
 export const SetupApplyViewSchema = z.object({
   candidateRevision: z.number().int().min(1),
@@ -17,6 +17,8 @@ export const SetupApplyViewSchema = z.object({
   /** The candidate's commands as a person would type them, whole. */
   setup: z.array(z.string().min(1).max(2_000)).max(64),
   readiness: z.array(z.string().min(1).max(2_000)).max(64),
+  /** L4-EVP: where the project's AI prompts live, as the candidate adds them, one plain line each (Code's words). */
+  promptLocations: z.array(z.string().min(1).max(1_100)).max(40).optional(),
   /** Where the candidate's check on a fresh workspace stands; a decision is offered only once it is `ready`. */
   check: z.object({ status: z.enum(SETUP_CHECK_STATES), failedStep: z.string().min(1).max(1_000).optional() }).passthrough(),
   risk: z.enum(SETUP_RISKS),
@@ -94,13 +96,13 @@ export type SetupJournalReply = z.infer<typeof SetupJournalReplySchema>;
 export const SetupConfirmRequestSchema = z.object({
   requestId: z.string().uuid(),
   expectedRevision: z.number().int().min(0),
-  itemIds: z.array(z.string().min(1).max(100)).max(64).optional(),
+  itemIds: z.array(z.string().min(1).max(100)).max(128).optional(),
 }).strict();
 export const SETUP_CONFIRM_LEFT_OUT = ["unverified", "refused_command", "not_a_command_item", "too_many", "invalid_command"] as const;
 export const SetupConfirmReplySchema = z.object({
   digest: z.string().regex(/^[0-9a-f]{64}$/u),
-  used: z.array(z.string().min(1).max(100)).max(64),
-  unchecked: z.array(z.string().min(1).max(100)).max(64),
+  used: z.array(z.string().min(1).max(100)).max(128),
+  unchecked: z.array(z.string().min(1).max(100)).max(128),
   left: z.array(z.object({ id: z.string().min(1).max(100), reason: z.enum(SETUP_CONFIRM_LEFT_OUT) }).strict()).max(200),
   /** Hosted Code (L4-D): the revision the candidate was made at; the card that follows reads the candidate from the run's read. */
   candidateRevision: z.number().int().min(1).optional(),

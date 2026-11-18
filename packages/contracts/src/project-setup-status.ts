@@ -59,10 +59,13 @@ export const ProjectSetupChecklistSchema = z.object({
   }).passthrough(),
   evalConfirm: z.object({
     state: State,
-    report: z.enum(["none", "reported", "confirmed"]),
+    /** none: the latest run reported no eval; reported: waiting for a person; confirmed; no_evals: a person confirmed the project runs no evals, for the latest finished setup run (done). */
+    report: z.enum(["none", "reported", "confirmed", "no_evals"]),
     blockedBy: z.literal("setupRun").optional(),
     suites: z.array(z.object({ selection: z.string().max(512), questions: z.number().int().min(0) }).passthrough()).max(4).optional(),
     confirmedSelection: z.string().max(512).optional(),
+    /** Set with report `no_evals`: when the person confirmed it (who is in the company log). */
+    noEvals: z.object({ confirmedAt: z.string().max(40) }).passthrough().optional(),
   }).passthrough(),
   aiAndSpend: z.object({
     state: State,
@@ -86,6 +89,14 @@ export const ProjectSetupSkipResponseSchema = z.object({
   project: z.string().min(1).max(128), row: z.enum(SETUP_SKIPPABLE_ROWS), skipped: z.boolean(), skippedRows: z.array(z.enum(SETUP_SKIPPABLE_ROWS)).max(SETUP_SKIPPABLE_ROWS.length),
 }).passthrough();
 export type ProjectSetupSkipResponse = z.infer<typeof ProjectSetupSkipResponseSchema>;
+
+/** `PUT /v1/app/projects/{p}/setup-status/eval-none` (Code L2-5 c): strict. `true` confirms that the project runs no evals for its latest finished setup run; `false` takes that back. `viewer.canSkip` says who may. */
+export const ProjectSetupEvalNoneBodySchema = z.object({ noEvals: z.boolean() }).strict();
+export type ProjectSetupEvalNoneBody = z.infer<typeof ProjectSetupEvalNoneBodySchema>;
+
+/** Its answer: the flag now and the setup run it is bound to (null when taken back). A repeat answers the same and writes nothing. */
+export const ProjectSetupEvalNoneResponseSchema = z.object({ project: z.string().min(1).max(128), noEvals: z.boolean(), taskId: z.string().min(1).max(160).nullable() }).passthrough();
+export type ProjectSetupEvalNoneResponse = z.infer<typeof ProjectSetupEvalNoneResponseSchema>;
 
 /** Cloud's fixed words for the checklist and the hosted setup run. The app shows one of these (or its own words), never Code's or the browser's text. */
 export const SETUP_CHECKLIST_WORDS = Object.freeze({

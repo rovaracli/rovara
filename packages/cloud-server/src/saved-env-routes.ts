@@ -1,6 +1,7 @@
 // L4-MF1 (lead 4, missing Code features the Cloud website calls): two reads of the project page that had no route at all and answered 501 NOT_ON_CODE_YET.
 //
 //   GET  /v1/app/projects/{p}/environment-image -> Code GET /v1/app/projects/{p}/environment-image  (SavedEnvPanelSchema, contracts app-saved-env.ts), as the person
+//   GET  /v1/app/projects/{p}/test-environment  -> Code GET /v1/app/projects/{p}/test-environment (core-host dev-routes.ts, DEC 254z-amend3), as the person, read below
 //   POST /v1/app/projects/{p}/start-preview     -> answered here: 200 { orgId, project, kind: "unknown" }                       (TaskStopStartPreviewSchema)
 //
 // The saved environment image read (Code PR "l4-env-image-read"): Code decides who may read, from the person's live project grant in their company, and answers
@@ -91,7 +92,66 @@ function codeMessage(error: CodeError): { code: unknown; message: unknown } | un
   return body === undefined ? undefined : { code: body["code"], message: body["message"] };
 }
 
+// ---- The test environment read (DEC 254z-amend3) ----
+// Code's hosted answer is the laptop's own state view (core/test-env/local-view.ts TestEnvironmentView): `{ project, enabled, testServices, testServicesUnavailable?, approved?, proposal?,
+// serviceCatalog? }`. The app's onboarding section reads Cloud's TestEnvironmentState (contracts test-environment-wire.ts), which needs the full proposed body and the setup draft
+// that Code's hosted read does not carry. So Cloud answers what it can say truthfully: no draft, no proposal and no approved body to edit, with fixed lines naming what Code holds
+// (only Code's fixed "not available here" sentence and two whole numbers pass). The section still shows (with the machine size card) instead of "Couldn't load". Approve is not
+// forwarded: the app's approve needs a proposal, which this read never shows. With the feature off (`enabled: false`) the app gets Code's 404 words and shows nothing.
+export const TEST_ENVIRONMENT_WORDS = Object.freeze({
+  off: "The test environment is off for this install.",
+  approved: (revision: number) => `An approved test environment is in place (revision ${String(revision)}).`,
+  proposal: "A proposed test environment is waiting for review in Rovara Code.",
+  notYet: "The test environment isn't available on this Rovara yet.",
+  unreadable: "The test environment could not be read just now. Try again.",
+});
+/** Code's four fixed "not available here" sentences (core/test-env/test-services-switch.ts TEST_SERVICES_UNAVAILABLE_WORDS); only an exact one is said. */
+const TEST_SERVICES_UNAVAILABLE: ReadonlySet<string> = new Set([
+  "Test services not available here: this install's workers cannot start them yet",
+  "Test services not available here: this computer already uses addresses in 172.30.0.0/16, where test runs put their networks",
+  "Test services not available here: no service image can be used on this install",
+  "Test services not available here: something they need is missing on this install",
+]);
+const TEST_ENVIRONMENT_FIELDS = ["project", "enabled", "testServices", "testServicesUnavailable", "approved", "proposal", "serviceCatalog"] as const;
+
+/** Code's hosted test environment view as Cloud's TestEnvironmentState, or undefined when it does not read (refused whole). `off` when Code says the feature is off. */
+export function testEnvironmentState(raw: unknown, project: string): Record<string, unknown> | "off" | undefined {
+  if (!isRecord(raw) || !exactly(raw, TEST_ENVIRONMENT_FIELDS) || raw["project"] !== project || typeof raw["enabled"] !== "boolean" || typeof raw["testServices"] !== "boolean") return undefined;
+  const unavailable = raw["testServicesUnavailable"], approved = raw["approved"], proposal = raw["proposal"];
+  if (unavailable !== undefined && !(typeof unavailable === "string" && TEST_SERVICES_UNAVAILABLE.has(unavailable))) return undefined;
+  if (approved !== undefined && !(isRecord(approved) && Number.isSafeInteger(approved["revision"]) && (approved["revision"] as number) >= 1)) return undefined;
+  if (proposal !== undefined && !isRecord(proposal)) return undefined;
+  if (!raw["enabled"]) return "off";
+  const notes = [
+    ...(approved === undefined ? [] : [TEST_ENVIRONMENT_WORDS.approved(approved["revision"] as number)]),
+    ...(proposal === undefined ? [] : [TEST_ENVIRONMENT_WORDS.proposal]),
+    ...(unavailable === undefined ? [] : [unavailable]),
+  ];
+  return { draft: { status: "none", notes, questions: [], pendingServices: [] } };
+}
+
 export const SAVED_ENV_ROUTES: Route[] = [
+  {
+    method: "GET", path: /^\/projects\/([^/]+)\/test-environment$/u,
+    answer: async ({ client, session, params }) => {
+      const project = params[0]!;
+      if (!CODE_PROJECT_NAME.test(project)) return A.notFound;
+      let raw: unknown;
+      try {
+        raw = await client.json<unknown>(session, `/v1/app/projects/${encodeURIComponent(project)}/test-environment`);
+      } catch (error) {
+        if (error instanceof CodeError) {
+          if (notYetFromCode(error)) return answer(501, "NOT_ON_CODE_YET", TEST_ENVIRONMENT_WORDS.notYet);
+          // Code's own 404 (a project the person may not read, or a missing one, alike) reads as a missing project.
+          if (error.status === 404) return A.notFound;
+        }
+        throw error;
+      }
+      const state = testEnvironmentState(raw, project);
+      if (state === "off") return answer(404, "NOT_FOUND", TEST_ENVIRONMENT_WORDS.off);
+      return state === undefined ? answer(502, "INVALID_RESPONSE", TEST_ENVIRONMENT_WORDS.unreadable) : { status: 200, body: state };
+    },
+  },
   {
     method: "GET", path: /^\/projects\/([^/]+)\/environment-image$/u,
     answer: async ({ client, session, params }) => {

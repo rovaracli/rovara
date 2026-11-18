@@ -55,6 +55,20 @@ export class CodeError extends Error {
   }
 }
 
+/**
+ * Code's deployed broker adds its own HTTP trace id to every `/v1/dev/*` object answer (`aws/broker.ts` json(): `{ ...value, requestId }`). It is trace
+ * metadata, never part of the answer, so it is set aside here once, before any route checks the answer strictly (an exact-keys check would refuse every
+ * answer otherwise). Only a plain object's top-level string `requestId` on a `/v1/dev/` path is removed; nothing else is touched.
+ */
+export function withoutTraceId(path: string, body: unknown): unknown {
+  if (!path.startsWith("/v1/dev/") || body === null || typeof body !== "object" || Array.isArray(body) || Object.getPrototypeOf(body) !== Object.prototype) return body;
+  const value = body as Record<string, unknown>;
+  if (typeof value["requestId"] !== "string") return body;
+  const { requestId: _trace, ...rest } = value;
+  void _trace;
+  return rest;
+}
+
 /** The person's sign-in has ended (no refresh possible): Cloud signs them out. */
 export class SignInEnded extends Error {
   constructor() {
@@ -217,7 +231,7 @@ export class CodeClient {
     const response = await this.call(session, path, init);
     const body: unknown = await response.json().catch(() => undefined);
     if (!response.ok) throw new CodeError(response.status, body);
-    return body as T;
+    return withoutTraceId(path, body) as T;
   }
 
   private async call(session: CodeSession, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> }): Promise<Response> {

@@ -30,8 +30,9 @@ test("the Work pane opens the task on its own page, with the pane at full width 
   await expect(task.title).toHaveText(PLAN_TASK);
   await expect(task.stepRail).toBeVisible();
   await expect(task.decision()).toBeVisible();
-  await expect(task.pane.getByRole("region", { name: "Spec" })).toContainText("R1.1");
-  await expect(task.pane.getByRole("region", { name: "Cost" })).toBeVisible();
+  await expect(task.pane.getByRole("region", { name: "Spec" })).toContainText("1.1");
+  // Code's plan names no estimate or run limit, and this task has spent nothing yet: no Cost card (nothing is made up).
+  await expect(task.pane.getByRole("region", { name: "Cost" })).toHaveCount(0);
   const wide = await task.pane.boundingBox();
   expect(narrow !== null && wide !== null && wide.width > narrow.width).toBe(true);
   await task.backToWork.click();
@@ -111,8 +112,8 @@ test("Continue in my tool and a comment on a criterion say not connected yet, an
   await page.getByRole("button", { name: "Continue in my tool" }).click();
   await expect(page.getByTestId("continue-message")).toContainText("isn't connected to Rovara Code yet");
   const spec = task.pane.getByRole("region", { name: "Spec" });
-  await spec.getByRole("button", { name: /^Comment on R1\.1/u }).click();
-  const box = spec.getByRole("textbox", { name: "Comment on R1.1" });
+  await spec.getByRole("button", { name: /^Comment on 1\.1/u }).click();
+  const box = spec.getByRole("textbox", { name: "Comment on 1.1" });
   await box.fill("Count the retries");
   await spec.getByRole("button", { name: "Send" }).click();
   await expect(page.getByTestId("comment-error").first()).toContainText("isn't connected to Rovara Code yet");

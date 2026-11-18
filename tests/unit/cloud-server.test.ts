@@ -130,7 +130,8 @@ function fakeCode() {
       const body = JSON.parse(call.body ?? "{}") as { expectedPeopleRevision?: number };
       if (body.expectedPeopleRevision !== peopleRevision) return respond(409, { error: { code: "CONFLICT", message: "people changed" } });
       peopleRevision += 1;
-      return respond(200, { view: { revision: peopleRevision } });
+      // Code's answer (TaskPeopleChangeResultSchema, its COMMITTED branch): the change is made now.
+      return respond(200, { change: { status: "COMMITTED", view: { revision: peopleRevision } } });
     }
     if (url.pathname === "/v1/dev/client/repositories") return respond(200, { installations: [{ installationId: 7, accountLogin: "acme", accountType: "Organization", repositorySelection: "selected", status: "active", repositories: [{ fullName: "acme/payments-api", githubRepositoryId: 1, private: true, defaultBranch: "main" }, { fullName: "acme/web-app", githubRepositoryId: 2, private: true, defaultBranch: "main" }] }] });
     return respond(404, { error: { code: "NOT_FOUND", message: "route not found" } });
