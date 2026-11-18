@@ -3,7 +3,7 @@
 // recommendation), only a changed answer is; the optional checks are sent only when the ticks differ from the plan's own selection; the open comments are sent only when one was unticked (absent: all of
 // them go, as Slack's Approve takes them); a note goes when there is one; and a raised run limit is sent only after the person ticked it.
 import {
- DECISION_OPTIONAL_CHECK_KINDS, DECISION_PLAN_CHOICE_KINDS, DECISION_PLAN_NOTE_MAX, DECISION_RUN_LIMIT_KINDS,
+ DECISION_CHANGES_REASON_MAX, DECISION_OPTIONAL_CHECK_KINDS, DECISION_PLAN_CHOICE_KINDS, DECISION_PLAN_NOTE_MAX, DECISION_RUN_LIMIT_KINDS,
  type DecisionPlanAnswer, type DecisionPlanChoices,
 } from "@agentx/contracts/web";
 
@@ -68,6 +68,12 @@ export function approveWaitsForLimit(card: { kind: string; runLimit?: unknown },
 export function cleanNote(text: string): string | undefined {
  const kept = Array.from(text.replace(/\r\n?/gu, "\n").replace(/[\p{Cc}\p{Cf}]/gu, character => (character === "\n" ? character : ""))).slice(0, DECISION_PLAN_NOTE_MAX).join("").trim();
  return kept === "" ? undefined : kept;
+}
+
+/** The reason of a Request changes as it is sent: Code's reason is one plain line (no control characters, line breaks included), so breaks, tabs and hidden characters become single spaces, and the text is trimmed and cut at the contract's limit. Undefined when nothing is left. */
+export function cleanChangesReason(text: string): string | undefined {
+ const line = Array.from(text.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim()).slice(0, DECISION_CHANGES_REASON_MAX).join("").trim();
+ return line === "" ? undefined : line;
 }
 
 /** Whether every open comment is listed. When the card says more are open than it lists, the person cannot untick one, because an id list would leave the unlisted ones out. */

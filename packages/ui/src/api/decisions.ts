@@ -10,7 +10,7 @@ import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";
 import { exactAnswer } from "./without-request-id.js";
 import { isConfirmUrl } from "../text/links.js";
-import { extrasAllowedFor, type ApproveExtras } from "./plan-pick.js";
+import { cleanChangesReason, extrasAllowedFor, type ApproveExtras } from "./plan-pick.js";
 
 type View = ReturnType<typeof DecisionCardsViewReaderSchema.parse>;
 export type ReadDecisionCard = View["cards"][number];
@@ -19,7 +19,7 @@ export type ReadDecisionCard = View["cards"][number];
  * shown (sent back with every open and approve). A card with no valid digest is not shown. `choices` is undefined for a card without any, and for one whose choices do not read (the person can still approve with
  * Rovara's own answers).
  */
-export interface ReadDecision { card: ReadDecisionCard; tabs: DecisionTab[] | undefined; details: DecisionDetailGroup[]; choices: DecisionPlanChoices | undefined; digest: string }
+export interface ReadDecision { card: ReadDecisionCard; tabs: DecisionTab[] | undefined; details: DecisionDetailGroup[]; choices: DecisionPlanChoices | undefined; /** The server sent an entry of choices for this card that could not be read: the card says so and offers no swipe. */ choicesUnreadable: boolean; digest: string }
 
 /** The card's own action of a kind, only when its address is exactly the card route this app knows: a client never follows an address a card made up. */
 export function decisionActionPath(card: ReadDecisionCard, kind: "approve" | "reject" | "request_changes"): string | undefined {
@@ -58,7 +58,7 @@ export function readDecisions(view: View): ReadDecision[] {
   const tabs = DecisionTabsSchema.safeParse(view.tabs?.[card.id]), details = DecisionDetailGroupsSchema.safeParse(view.details?.[card.id]);
   // Plan choices are read one card at a time, and only for the kinds that carry them: a bad entry hides this card's choices and nothing else.
   const choices = DECISION_PLAN_CHOICE_KINDS.includes(card.kind) ? DecisionPlanChoicesSchema.safeParse(view.choices?.[card.id]) : undefined;
-  return [{ card, tabs: tabs.success ? tabs.data : undefined, details: details.success ? details.data : [], choices: choices?.success === true ? choices.data : undefined, digest: digest.data }];
+  return [{ card, tabs: tabs.success ? tabs.data : undefined, details: details.success ? details.data : [], choices: choices?.success === true ? choices.data : undefined, choicesUnreadable: choices?.success === false && view.choices?.[card.id] !== undefined, digest: digest.data }];
  });
 }
 
@@ -88,8 +88,8 @@ export function createDecisionsApi(host: AppHost) {
   async requestChanges(decision: ReadDecision, reason: string, includedCommentIds?: readonly string[]): Promise<DecisionResult> {
    const path = mayRequestChangesHere(decision.card) ? decisionActionPath(decision.card, "request_changes") : undefined;
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
-   const body = DecisionRequestChangesBodySchema.safeParse({ requestId: crypto.randomUUID(), shownDigest: decision.digest, reason, ...(includedCommentIds === undefined ? {} : { includedCommentIds }) });
-   if (!body.success) throw new ApiError(400, "INVALID", "Say what should change, in plain text and under 500 characters.");
+   const body = DecisionRequestChangesBodySchema.safeParse({ requestId: crypto.randomUUID(), shownDigest: decision.digest, reason: cleanChangesReason(reason) ?? "", ...(includedCommentIds === undefined ? {} : { includedCommentIds }) });
+   if (!body.success) throw new ApiError(400, "INVALID", "Say what should change, in plain text.");
    return resultOf(done(await api.send("POST", path, body.data, DecisionOutcomeReaderSchema, { retry: "never" })));
   },
   async reject(decision: ReadDecision, reason: DecisionRejectReason): Promise<DecisionResult> {

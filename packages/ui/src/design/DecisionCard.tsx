@@ -4,7 +4,7 @@ import { DECISION_CHANGES_REASON_MAX, DECISION_LABELS, DECISION_REJECT_REASONS, 
 import { useAppHost } from "../host.js";
 import { ApiError } from "../api/errors.js";
 import { decisionOpenTarget, mayApproveHere, mayRequestChangesHere, type DecisionResult, type ReadDecision } from "../api/decisions.js";
-import { approveExtras, approveWaitsForLimit, initialPick, requestChangesCommentIds, runLimitOf, type ApproveExtras, type PlanPick } from "../api/plan-pick.js";
+import { approveExtras, approveWaitsForLimit, cleanChangesReason, initialPick, requestChangesCommentIds, runLimitOf, type ApproveExtras, type PlanPick } from "../api/plan-pick.js";
 import { PlanChoices } from "./PlanChoices.js";
 import { spendChoiceOf } from "../api/design-review.js";
 import { APPROVE_REASON_HINT, cleanApproveReason, openBlockersOnCard } from "./design-review-card.js";
@@ -108,17 +108,17 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
   settle(Object.keys(extras).length === 0 ? await actions.onApprove(which, reasonOf(which)) : await actions.onApprove(which, reasonOf(which), extras));
  });
  const sendBack = () => run(async () => {
-  const reasonText = changes.trim();
-  if (reasonText === "" || actions.onRequestChanges === undefined) return;
+  const reasonText = cleanChangesReason(changes);
+  if (reasonText === undefined || actions.onRequestChanges === undefined) return;
   const ids = requestChangesCommentIds(decision.choices, pick, card);
   const result = await (ids === undefined ? actions.onRequestChanges(reasonText) : actions.onRequestChanges(reasonText, ids));
   if (result.kind === "decided") { setChanges("");setNote(<p role="status">Sent back for changes. Rovara goes on from here.</p>); } else settle(result);
  });
  const changesBox = canRequestChanges && <details className="rv-decision-changes"><summary>{DECISION_LABELS.requestChanges}</summary>
   <label htmlFor={"changes-" + card.id}>What should change?</label><textarea id={"changes-" + card.id} rows={3} maxLength={DECISION_CHANGES_REASON_MAX} value={changes} onChange={event => setChanges(event.target.value)} />
-  <Button busy={busy} disabled={changes.trim() === ""} onClick={() => { void sendBack(); }}>{DECISION_LABELS.requestChanges}</Button></details>;
+  <Button busy={busy} disabled={cleanChangesReason(changes) === undefined} onClick={() => { void sendBack(); }}>Send back for changes</Button></details>;
  const link: ReactNode = target === undefined ? null : target.kind === "internal" ? <Link className="rv-decision-open" to={target.to}>{card.risk === "high" ? "Open to decide" : "Open the details"}</Link> : <Button variant="quiet" onClick={() => host.openExternal(target.href)}>{card.risk === "high" ? "Open to decide" : "Open the details"}</Button>;
- const swipe = card.risk === "low" && canApprove && tabs === undefined && !planExtras ? {
+ const swipe = card.risk === "low" && canApprove && tabs === undefined && !planExtras && !decision.choicesUnreadable ? {
   onTouchStart: (event: TouchEvent) => { const point = event.touches[0];touch.current = point === undefined || event.touches.length !== 1 ? undefined : { x: point.clientX, y: point.clientY }; },
   onTouchEnd: (event: TouchEvent) => {
    const start = touch.current, end = event.changedTouches[0];touch.current = undefined;
@@ -134,7 +134,7 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
   </details>;
  };
  const reasonField = (which: DecisionTabId | undefined) => canApprove && blockers(which) > 0 && <div className="rv-decision-reason"><label htmlFor={"reason-" + card.id}>Why approve with an open blocker?</label><input id={"reason-" + card.id} type="text" maxLength={200} value={reason} onChange={event => setReason(event.target.value)} aria-describedby={"reason-hint-" + card.id} /><p id={"reason-hint-" + card.id} className="rv-muted">{APPROVE_REASON_HINT}</p></div>;
- const approveButton = (which: DecisionTabId | undefined) => canApprove && <>{reasonField(which)}<Button variant="primary" busy={busy} disabled={(needsEvidence && !isOpened(which)) || designBlocked(which) || approveWaitsForLimit(card, pick) || (blockers(which) > 0 && reasonOf(which) === undefined)} onClick={() => { void approve(which); }}>{which === undefined ? (blockers(which) > 0 ? "Approve with a reason" : pane !== undefined ? card.actions.find(action => action.kind === "approve")?.label ?? "Approve" : "Approve") : "Approve " + (which === "requirements" ? "requirements" : "design")}</Button></>;
+ const approveButton = (which: DecisionTabId | undefined) => canApprove && <>{reasonField(which)}<Button variant="primary" busy={busy} aria-describedby={approveWaitsForLimit(card, pick) ? "limit-hint-" + card.id.replace(/[^A-Za-z0-9_-]/gu, "_") : undefined} disabled={(needsEvidence && !isOpened(which)) || designBlocked(which) || approveWaitsForLimit(card, pick) || (blockers(which) > 0 && reasonOf(which) === undefined)} onClick={() => { void approve(which); }}>{which === undefined ? (blockers(which) > 0 ? "Approve with a reason" : pane !== undefined ? card.actions.find(action => action.kind === "approve")?.label ?? "Approve" : "Approve") : "Approve " + (which === "requirements" ? "requirements" : "design")}</Button></>;
  const choices = card.kind === "approve_spend" && card.risk !== "high" && actions.onChoose !== undefined ? card.actions.filter(action => spendChoiceOf(card, action) !== undefined) : [];
  const choiceButtons = choices.map(action => <Button key={action.href} variant={action.kind === card.recommended.action ? "primary" : "secondary"} busy={busy} disabled={needsEvidence && !isOpened(undefined)} onClick={() => { void run(async () => { await actions.onChoose!(action);setNote(<p role="status">Done. Rovara goes on from here.</p>); }); }}><VisibleText text={action.label} /></Button>);
  const design = card.kind === "approve_plan" ? actions.design : undefined;

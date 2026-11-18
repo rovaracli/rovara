@@ -128,6 +128,15 @@ describe("requirements and design cards", () => {
     await waitFor(() => expect(f.posts()).toHaveLength(1));
     expect(Object.keys(f.posts()[0]!.body as object).sort()).toEqual(["requestId", "shownDigest"]);
   });
+  it("sends the ticked comments and the note of a design card once one comment is unticked", async () => {
+    const f = show(decisionsOf(view("approve_design_with_choices")));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Please cover the refund path" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /Note for Rovara/u }), { target: { value: "Fine otherwise." } });
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(f.posts()).toHaveLength(1));
+    expect(f.posts()[0]!.body).toMatchObject({ includedCommentIds: [COMMENTS[1]], note: "Fine otherwise." });
+    expect(Object.keys(f.posts()[0]!.body as object)).not.toContain("selectedOptionalCheckIds");
+  });
   it("draws no choices where the card has none, and approves exactly as before", async () => {
     const f = show(decisionsOf(view("approve_plan")));
     expect(screen.queryByTestId("plan-choices")).toBeNull();
@@ -140,10 +149,46 @@ describe("requirements and design cards", () => {
     ((value["choices"] as Record<string, Record<string, unknown>>)["approve_plan:plan2"]!)["unknownThing"] = 1;
     value.cards[0]!["runLimit"] = undefined;
     const f = show(decisionsOf(value));
-    expect(screen.queryByTestId("plan-choices")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Which gateway do refunds use?" })).toBeNull();expect(screen.getByTestId("plan-choices-unreadable")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(f.posts()).toHaveLength(1));
     expect(Object.keys(f.posts()[0]!.body as object).sort()).toEqual(["requestId", "shownDigest"]);
+  });
+  it("with unreadable choices and a valid run limit: says so, still needs the tick, still sends the limit, and offers no swipe", async () => {
+    const value = view("approve_plan_with_choices");
+    ((value["choices"] as Record<string, Record<string, unknown>>)["approve_plan:plan2"]!)["unknownThing"] = 1;
+    const f = show(decisionsOf(value));
+    expect(screen.getByTestId("plan-choices-unreadable").textContent).toContain("could not be shown");
+    expect(screen.queryByRole("group", { name: "Which gateway do refunds use?" })).toBeNull();
+    const approve = screen.getByRole<HTMLButtonElement>("button", { name: "Approve" });
+    expect(approve.disabled).toBe(true);
+    expect(approve.getAttribute("aria-describedby")).toBeTruthy();
+    expect(document.getElementById(approve.getAttribute("aria-describedby")!)?.textContent).toContain("Tick the box");
+    fireEvent.touchStart(f.container.querySelector("article")!, { touches: [{ clientX: 0, clientY: 0 }] });fireEvent.touchEnd(f.container.querySelector("article")!, { changedTouches: [{ clientX: 300, clientY: 0 }] });
+    fireEvent.click(screen.getByRole("checkbox", { name: /I agree Rovara may spend/u }));
+    fireEvent.click(approve);
+    await waitFor(() => expect(f.posts()).toHaveLength(1));
+    expect(Object.keys(f.posts()[0]!.body as object).sort()).toEqual(["acknowledgedRunLimitUsd", "requestId", "shownDigest"]);
+  });
+  it("offers no swipe for a requirements card whose choices could not be read", async () => {
+    const value = view("approve_requirements_with_choices");
+    ((value["choices"] as Record<string, Record<string, unknown>>)["approve_requirements:req2"]!)["unknownThing"] = 1;
+    const f = show(decisionsOf(value));
+    fireEvent.touchStart(f.container.querySelector("article")!, { touches: [{ clientX: 0, clientY: 0 }] });fireEvent.touchEnd(f.container.querySelector("article")!, { changedTouches: [{ clientX: 300, clientY: 0 }] });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(f.posts()).toHaveLength(0);
+  });
+  it("has no unreadable note, and no swipe change, when a card simply has no choices entry", () => {
+    show(decisionsOf(view("approve_plan")));
+    expect(screen.queryByTestId("plan-choices-unreadable")).toBeNull();
+  });
+  it("offers no choices on a Full pair with tabs, and approves a tab with only its tab", async () => {
+    const f = show(decisionsOf(view("full_pair_with_tabs")), () => ({ status: 200, body: { cardId: "approve_requirements:req1", outcome: "approved", tab: "requirements", remainingTabs: ["design"] } }));
+    expect(screen.queryByTestId("plan-choices")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Approve requirements" }));
+    await waitFor(() => expect(f.posts()).toHaveLength(1));
+    expect(Object.keys(f.posts()[0]!.body as object).sort()).toEqual(["requestId", "shownDigest", "tab"]);
+    expect((f.posts()[0]!.body as { tab: string }).tab).toBe("requirements");
   });
   it("draws server words as visible text, never as markup", () => {
     const value = view("approve_requirements_with_choices");
@@ -157,14 +202,14 @@ describe("requirements and design cards", () => {
     ((value["choices"] as Record<string, { openCommentCount: number }>)["approve_requirements:req2"]!).openCommentCount = 30;
     show(decisionsOf(value));
     expect(screen.queryByRole("checkbox", { name: "What about timeouts?" })).toBeNull();
-    expect(screen.getByTestId("plan-choices").textContent).toContain("30 comments are open; all of them go with your decision.");
+    expect(screen.getByTestId("plan-choices").textContent).toContain("30 comments are open; Approve takes all of them.");
   });
 });
 
 describe("Request changes", () => {
   it("sends the reason and the ticked comments to the card's own request-changes route", async () => {
     const f = show(decisionsOf(view("approve_plan_with_choices")), () => ({ status: 200, body: { cardId: "approve_plan:plan2", outcome: "rejected", remainingTabs: [] } }));
-    const send = within(screen.getByText("Request changes", { selector: "summary" }).closest("details")!).getByRole<HTMLButtonElement>("button", { name: "Request changes" });
+    const send = within(screen.getByText("Request changes", { selector: "summary" }).closest("details")!).getByRole<HTMLButtonElement>("button", { name: "Send back for changes" });
     expect(send.disabled).toBe(true);
     fireEvent.change(screen.getByRole("textbox", { name: "What should change?" }), { target: { value: " Cover the refund path. " } });
     fireEvent.click(screen.getByRole("checkbox", { name: "What about timeouts?" }));
@@ -178,7 +223,7 @@ describe("Request changes", () => {
   it("sends no comment list when the card has no open comments", async () => {
     const f = show(decisionsOf(view("approve_plan")), () => ({ status: 200, body: { cardId: "approve_plan:plan1", outcome: "rejected", remainingTabs: [] } }));
     fireEvent.change(screen.getByRole("textbox", { name: "What should change?" }), { target: { value: "Smaller." } });
-    fireEvent.click(within(screen.getByText("Request changes", { selector: "summary" }).closest("details")!).getByRole("button", { name: "Request changes" }));
+    fireEvent.click(within(screen.getByText("Request changes", { selector: "summary" }).closest("details")!).getByRole("button", { name: "Send back for changes" }));
     await waitFor(() => expect(f.posts()).toHaveLength(1));
     expect(Object.keys(f.posts()[0]!.body as object).sort()).toEqual(["reason", "requestId", "shownDigest"]);
   });
@@ -193,14 +238,24 @@ describe("Request changes", () => {
     expect(decisionActionPath(plan.card, "request_changes")).toBe("/v1/app/decisions/approve_plan/plan1/request-changes");
     expect(decisionActionPath(decisionsOf(view("merge"))[0]!.card, "request_changes")).toBeUndefined();
   });
-  it("refuses an empty or over-long reason before anything is sent", async () => {
-    const f = fakeHost(async () => ({ status: 200, body: {} }));
+  it("refuses an empty reason before anything is sent, and folds line breaks and hidden characters into one plain line", async () => {
+    const f = fakeHost(async () => ({ status: 200, body: { cardId: "approve_plan:plan1", outcome: "rejected", remainingTabs: [] } }));
     const api = createDecisionsApi(f.host);
     const plan = decisionsOf(view("approve_plan"))[0]!;
     await expect(api.requestChanges(plan, "   ")).rejects.toThrow(/plain text/u);
-    await expect(api.requestChanges(plan, "x".repeat(501))).rejects.toThrow(/plain text/u);
-    await expect(api.requestChanges(plan, "a‮b")).rejects.toThrow(/plain text/u);
+    await expect(api.requestChanges(plan, "\n\u202e\t")).rejects.toThrow(/plain text/u);
     expect(f.request).not.toHaveBeenCalled();
+    await api.requestChanges(plan, "First line.\nSecond\u202e line.\r\n\r\nThird.");
+    expect((f.request.mock.calls[0]![0].body as { reason: string }).reason).toBe("First line. Second line. Third.");
+    await api.requestChanges(plan, "x".repeat(600));
+    expect((f.request.mock.calls[1]![0].body as { reason: string }).reason).toHaveLength(500);
+  });
+  it("sends a reason typed over several lines as one line", async () => {
+    const f = show(decisionsOf(view("approve_plan")), () => ({ status: 200, body: { cardId: "approve_plan:plan1", outcome: "rejected", remainingTabs: [] } }));
+    fireEvent.change(screen.getByRole("textbox", { name: "What should change?" }), { target: { value: "Smaller.\nAnd add a test." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send back for changes" }));
+    await waitFor(() => expect(f.posts()).toHaveLength(1));
+    expect((f.posts()[0]!.body as { reason: string }).reason).toBe("Smaller. And add a test.");
   });
   it("is not shown where the page gives no handler", () => {
     const f = fakeHost(async () => ({ status: 200, body: {} }));

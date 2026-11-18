@@ -13,8 +13,9 @@ const dollars = (amount: number): string => "$" + amount.toFixed(2);
  */
 export function PlanChoices({ decision, pick, onPick, disabled }: { decision: ReadDecision; pick: PlanPick; onPick: (next: PlanPick) => void; disabled: boolean }) {
  const { card, choices } = decision, limit = runLimitOf(card), id = card.id.replace(/[^A-Za-z0-9_-]/gu, "_");
- if (choices === undefined && limit === undefined) return null;
+ if (choices === undefined && limit === undefined && !decision.choicesUnreadable) return null;
  const parts: ReactNode[] = [];
+ if (decision.choicesUnreadable) parts.push(<p key="unreadable" className="rv-muted" data-testid="plan-choices-unreadable">Some details of this decision could not be shown. Open the details to see them.</p>);
  if (choices?.summary !== undefined) {
   parts.push(<section key="summary" className="rv-plan-summary" aria-label="Key facts"><p><VisibleText text={choices.summary.needed} /></p><ul>{choices.summary.lines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul></section>);
  }
@@ -37,7 +38,7 @@ export function PlanChoices({ decision, pick, onPick, disabled }: { decision: Re
   parts.push(<fieldset key="comments" className="rv-plan-comments" disabled={disabled}>
    <legend>Open comments that go with your decision</legend>
    {choices.openComments.map(comment => <label key={comment.id}>{all ? <input type="checkbox" checked={pick.comments.has(comment.id)} onChange={event => { const next = new Set(pick.comments);if (event.target.checked) next.add(comment.id);else next.delete(comment.id);onPick({ ...pick, comments: next }); }} /> : null}{all ? " " : ""}<VisibleText text={comment.excerpt} /></label>)}
-   {all ? null : <p className="rv-muted">{String(choices.openCommentCount)} comments are open; all of them go with your decision.</p>}
+   {all ? null : <p className="rv-muted">{String(choices.openCommentCount)} comments are open; Approve takes all of them.</p>}
   </fieldset>);
  } else if (choices?.openCommentCount !== undefined && choices.openCommentCount > 0) {
   parts.push(<p key="comment-count" className="rv-muted">{String(choices.openCommentCount)} open comments go with your decision.</p>);
@@ -48,7 +49,7 @@ export function PlanChoices({ decision, pick, onPick, disabled }: { decision: Re
  }
  if (limit !== undefined) {
   parts.push(<div key="limit" className="rv-plan-limit"><p>{"Run limit: " + (limit.currentUsd === undefined ? "none yet" : dollars(limit.currentUsd) + " now") + ", " + dollars(limit.proposedUsd) + " once you approve."}</p>
-   {limit.raises ? <label><input type="checkbox" checked={pick.limitAgreed} disabled={disabled} onChange={event => onPick({ ...pick, limitAgreed: event.target.checked })} /> {"I agree Rovara may spend up to " + dollars(limit.proposedUsd) + " on this task."}</label> : null}</div>);
+   {limit.raises ? <label><input type="checkbox" checked={pick.limitAgreed} disabled={disabled} onChange={event => onPick({ ...pick, limitAgreed: event.target.checked })} /> {"I agree Rovara may spend up to " + dollars(limit.proposedUsd) + " on this task."}</label> : null}{limit.raises && !pick.limitAgreed ? <p id={"limit-hint-" + id} className="rv-muted">Tick the box above to approve.</p> : null}</div>);
  }
  if (choices !== undefined) parts.push(<p key="takes" className="rv-muted rv-plan-takes">{DECISION_APPROVE_TAKES}</p>);
  return <div className="rv-decision-plan" data-testid="plan-choices">{parts}</div>;
