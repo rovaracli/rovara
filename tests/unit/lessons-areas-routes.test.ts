@@ -193,6 +193,13 @@ describe("where Rovara learns from", () => {
     expect(w.codeCalls()).toHaveLength(before);
   });
 
+  it("an answer from Code that does not confirm the state is unreadable, never the state that was asked for", async () => {
+    const w = setUp((call) => (call.method === "PUT" ? json(200, { project: "payments", key: "ci" }) : undefined));
+    const res = await w.send("PUT", `${P}/lessons/learning-sources/ci`, await w.as("pam-token"), { paused: true });
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe("INVALID_RESPONSE");
+  });
+
   it("Code's refusal of a person who may not pause reaches the screen as Code worded it", async () => {
     const w = setUp(() => json(403, { error: { code: "FORBIDDEN", message: "Only an admin of this project, or an owner or admin of the company, can pause or resume a source." } }));
     const res = await w.send("PUT", `${P}/lessons/learning-sources/ci`, await w.as("pam-token"), { paused: true });
