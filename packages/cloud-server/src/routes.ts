@@ -32,6 +32,7 @@ import { SYSTEM_RUNS_ROUTES } from "./system-runs-routes.js";
 import { SETUP_REPAIR_ROUTES } from "./setup-repair-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { GRADUATION_ROUTES } from "./lessons-graduation-routes.js";
+import { SKILLS_ROUTES } from "./skills-routes.js";
 import { HOW_WE_WORK_ROUTES } from "./how-we-work-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES, coOwnerOf } from "./people-routes.js";
@@ -1117,6 +1118,8 @@ export const ROUTES: Route[] = [
   // Graduation and tidy first: `…/lessons/tidy/retire` must be tried before `…/lessons/{id}/retire`.
   ...GRADUATION_ROUTES,
   ...LESSONS_ROUTES,
+  // Rovara skills (L4-JA): list, one skill with its text, edit, approve (two different people) and retire, as the person; Code decides.
+  ...SKILLS_ROUTES,
   ...HOW_WE_WORK_ROUTES,
   // Creating a company (DEC 254a), for a person with no company yet.
   ...ONBOARDING_ROUTES,
