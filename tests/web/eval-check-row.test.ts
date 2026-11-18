@@ -144,6 +144,14 @@ describe("who and what Code said", () => {
     g.close();
   });
 
+  it("even if an answer gave a person who may not choose a list, no button is drawn for it", async () => {
+    const f = mount({ read: () => ({ status: 200, body: view({ canManage: false }) }) });
+    const r = await row();
+    expect(within(r).queryByRole("button")).toBeNull();
+    expect(within(r).queryAllByTestId("eval-check-proposal")).toHaveLength(0);
+    f.close();
+  });
+
   it("no eval-looking check in the workflow files says so; unreadable files say so with Try again; neither offers a button to choose", async () => {
     const none = mount({ read: () => ({ status: 200, body: view({ proposals: { verdict: "none_found", items: [], cut: false } }) }) });
     expect((await within(await row()).findByTestId("eval-check-none-found")).textContent).toBe(W.noneFound);

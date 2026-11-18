@@ -101,7 +101,7 @@ describe("the read", () => {
     const bad: unknown[] = [
       null, "x", [], VIEW({ project: "other" }), VIEW({ canManage: "yes" }), VIEW({ confirmed: { name: "" } }), VIEW({ confirmed: { name: "a\nb" } }), VIEW({ confirmed: { name: "x".repeat(201) } }), VIEW({ confirmed: { name: "evals", source: "" } }),
       VIEW({ proposals: { verdict: "maybe", items: [], cut: false } }), VIEW({ proposals: { verdict: "proposals", items: [], cut: false } }), VIEW({ proposals: { verdict: "none_found", items: [ITEM], cut: false } }),
-      VIEW({ proposals: { verdict: "proposals", items: Array(6).fill(ITEM), cut: false } }), VIEW({ proposals: { verdict: "proposals", items: [{ ...ITEM, basis: "other" }], cut: false } }),
+      VIEW({ proposals: { verdict: "proposals", items: Array(6).fill(ITEM), cut: false } }), VIEW({ proposals: { verdict: "proposals", items: [{ ...ITEM, basis: "other" }], cut: false } }), VIEW({ proposals: { verdict: "proposals", items: [{ ...ITEM, name: "a\nb" }], cut: false } }),
       VIEW({ proposals: { verdict: "proposals", items: [{ ...ITEM, workflow: "../x" }], cut: false } }), VIEW({ proposals: { verdict: "proposals", items: [{ ...ITEM, workflow: "/etc/x" }], cut: false } }), VIEW({ proposals: { verdict: "proposals", items: [{ ...ITEM, repository: "a‮b" }], cut: false } }),
       VIEW({ proposals: { verdict: "proposals", items: [ITEM], cut: "no" } }), VIEW({ proposals: "x" }), VIEW({ confirmed: "evals" }),
     ];
