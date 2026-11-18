@@ -3,7 +3,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { useOnboardingApi } from "../../api/onboarding.js";
 import { ProjectOverviewProjectSchema, type AppProjectDetail } from "@agentx/contracts/web";
-import { VisibleText } from "../../design/VisibleText.js";
 import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { Button } from "../../design/Button.js";
@@ -37,7 +36,6 @@ function useSlackLater(){
 export function OnboardScreen(){
  const [slackLater,setSlackLater]=useSlackLater(),navigate=useNavigate();
  const api=useOnboardingApi(),query=useQueryClient(),[params,setParams]=useSearchParams(),me=useQuery({queryKey:["me"],queryFn:api.me}),canAdd=me.data?.developer.orgRole==="owner"||me.data?.developer.orgRole==="admin";
- const members=useQuery({queryKey:["org","members"],enabled:me.data!==undefined&&!canAdd,queryFn:api.members});
  const installations=useQuery({queryKey:["github","installations"],enabled:canAdd,queryFn:api.installations}),active=installations.data?.installations.filter(item=>item.status==="active")??[];
  // Guided onboarding PR 2: the company's connected GitHub accounts (Code's read): the step is Done from real state, not a saved position.
  const connections=useQuery({queryKey:["github","connections"],enabled:canAdd,queryFn:api.githubConnections,retry:false}),githubDone=(connections.data?.installations.length??0)>0||active.length>0,githubOutcome=params.get("github")??"";
@@ -58,7 +56,8 @@ export function OnboardScreen(){
  function update(value:AppProjectDetail){query.setQueryData(["onboard","project",value.name],value);setPolls(0);}
  if(me.isPending)return <Skeleton label="Loading onboarding"/>;
  if(me.isError)return <section><PageHeader title="Couldn't load your account"/><Button onClick={()=>{void me.refetch();}}>Try again</Button></section>;
- if(!canAdd)return <section><PageHeader title="Onboard a project" focusOnMount/>{members.isPending?<Skeleton label="Loading your admins"/>:members.isError?<><p role="alert">Couldn't load your organization's admins.</p><Button onClick={()=>{void members.refetch();}}>Try again</Button></>:<p>Only owners and admins can add projects. Ask <VisibleText text={members.data.members.filter(member=>member.role==="owner"||member.role==="admin").map(member=>member.name).join(", ")||"your organization owner"}/> to add one.</p>}</section>;
+ // A person who is not an owner or admin: the company member list is admin-only on Code (a plain member is answered 404 by design), so it is never asked for here and no admin is named.
+ if(!canAdd)return <section><PageHeader title="Onboard a project" focusOnMount/><p>Only owners and admins can add projects. Ask your organization owner or an admin to add one.</p></section>;
  const results=<>{githubOutcome==="trial_used"&&<aside className="rv-trial-banner"><p>{TRIAL_USED}</p></aside>}<GithubConnectResult outcome={githubOutcome}/><SlackConnectResult outcome={params.get("slack")??""}/><LinearConnectResult outcome={params.get("linear")??""}/></>;
  // A project: its checklist, or one of the older single-project steps asked for by address.
  if(projectName!==undefined){

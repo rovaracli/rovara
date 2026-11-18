@@ -44,6 +44,7 @@ export { PICKER_WORDS, PROJECT_CREATE_ROUTES, createProjects, readCreateProjects
 export { COMPANY_CREATE_PATH, CREATE_WORDS, JOIN_UNUSABLE, ONBOARDING_ROUTES, inviteTokenHash, usableInvite } from "./onboarding-routes.js";
 export { PRODUCT_AI_APPROVER_PROVIDER, PRODUCT_AI_ROUTES, PRODUCT_AI_SOURCE_ID, PRODUCT_AI_VERTEX_SOURCE_ID, withdrawForMember, type ProductAiBackend, type ProductAiStore, type ProductAiView } from "./product-ai-routes.js";
 export { AGENT_AI_CHOOSABLE, AGENT_AI_ROUTES } from "./agent-ai-routes.js";
+export { agentAiConnected } from "./agent-ai-presence.js";
 export { AI_SPEND_ANSWERS, AI_SPEND_ROUTES, AI_SPEND_WORDS, ENGINE_MODEL_CODE_PATH, PER_TASK_FIELD, PER_TASK_USD_MAX, engineModelRefusal, engineModelView, projectSettingsOf, projectSettingsRefusal } from "./ai-spend-routes.js";
 export { SPEND_LIMIT_ROUTES, SPEND_LIMIT_WORDS, dollarsToMicros } from "./spend-limits-routes.js";
 export { BEDROCK_BYO_ROUTES, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";
@@ -61,5 +62,8 @@ export { SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_ANSWER
 export { LIFECYCLE_ANSWERS, LIFECYCLE_WORDS, PROJECT_LIFECYCLE_ROUTES, lifecycleBody, lifecycleRefusal } from "./project-lifecycle-routes.js";
 export { WIKI_CORRECTION_ANSWERS, WIKI_CORRECTION_ROUTES, WIKI_CORRECTION_WORDS, correctionsAnswer, disputedAnswer, markedAnswer, noteAddedAnswer, suggestedAnswer, wikiCorrectionRefusal } from "./wiki-corrections-routes.js";
 export { WIKI_SETUP_ANSWERS, WIKI_SETUP_CODE_WORDS, WIKI_SETUP_ROUTES, WIKI_SETUP_WORDS, buildAnswer, deleteAnswer, idBody, mapViewAnswer, startBody, switchBody, upkeepAnswer, wikiSetupRefusal } from "./wiki-setup-routes.js";
-export { WIKI_ANSWERS, WIKI_ROUTES, WIKI_WORDS, indexAnswer, pageAnswer, sourcesAnswer, wikiRefusal } from "./wiki-routes.js";
+export { WIKI_ANSWERS, WIKI_ROUTES, WIKI_WORDS, indexAnswer, pageAnswer, searchAnswer, sourcesAnswer, wikiRefusal } from "./wiki-routes.js";
 export { CODE_REPORT_FEATURES_PATH, CODE_REPORT_TASKS_PATH, FEATURE_TASKS_MAX, NO_FEATURE_ID, REPORT_PAGES_MAX, REPORT_ROUTES, REPORT_WORDS, allocateCents, buildFeatureDetail, buildReport, parseReportFilters, readRow, type CostReport, type FeatureDetail, type ReportGroup, type ReportNumbers, type ReportTask } from "./report-routes.js";
+export { ANSWERS_ANSWERS, ANSWERS_ROUTES, ANSWERS_WORDS, answerObject, answersRefusal, notRightObject, suggestObject } from "./answers-routes.js";
+export { PEOPLE_LIMITS_ROUTES, PEOPLE_LIMITS_WORDS, type PersonSpendReader } from "./people-limits-routes.js";
+export { DynamoGatewayMeterReader, meterPartition, personMonthSort } from "./gateway-meter-read.js";

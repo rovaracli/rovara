@@ -6,16 +6,18 @@ import { ApiError } from "../../api/errors.js";
 import { createApiClient } from "../../api/client.js";
 export function useAgentMembers(enabled: boolean) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
- const identity = useQuery({ queryKey: ["agent-directory", "identity"], enabled, staleTime: 0, gcTime: 0, refetchOnMount: "always", queryFn: async () => { const me = await api.get("/v1/app/me", AppMeResponseReaderSchema);return { orgId: me.org.orgId, developerId: me.developer.id }; } });
+ const identity = useQuery({ queryKey: ["agent-directory", "identity"], enabled, staleTime: 0, gcTime: 0, refetchOnMount: "always", queryFn: async () => { const me = await api.get("/v1/app/me", AppMeResponseReaderSchema);return { orgId: me.org.orgId, developerId: me.developer.id, canList: me.developer.orgRole === "owner" || me.developer.orgRole === "admin" }; } });
  const orgId = identity.data?.orgId, developerId = identity.data?.developerId;
- const allowed = enabled && identity.isSuccess && orgId !== undefined && developerId !== undefined;
+ // The company's people list is admin-only (Code answers a plain member 404 by design): a person who is not an owner or admin never sends the read. `restricted` says so, so a screen can say it in words instead of an alert.
+ const restricted = identity.data?.canList === false;
+ const allowed = enabled && identity.isSuccess && orgId !== undefined && developerId !== undefined && !restricted;
  const key = useMemo(() => ["org", "members", orgId, developerId], [orgId, developerId]);
  useEffect(() => {
   if (identity.isError) { void query.cancelQueries({ queryKey: key, exact: true });query.removeQueries({ queryKey: key, exact: true }); }
   return () => { if ((query.getQueryCache().find({ queryKey: key, exact: true })?.getObserversCount() ?? 0) <= 1) { void query.cancelQueries({ queryKey: key, exact: true });query.removeQueries({ queryKey: key, exact: true }); } };
  }, [query, key, identity.isError]);
  const members = useQuery({ queryKey: key, enabled: allowed, gcTime: 0, queryFn: async () => { const result = await api.get("/v1/app/org/members", AppOrgMembersResponseReaderSchema);return { members: result.members.map(person => ({ developerId: person.developerId, name: person.name })) }; } });
- return { ...members, data: allowed && !members.isError ? members.data : undefined, isPending: identity.isPending || members.isPending, isError: identity.isError || members.isError, error: identity.error ?? members.error };
+ return { ...members, data: allowed && !members.isError ? members.data : undefined, restricted, isPending: restricted ? false : identity.isPending || members.isPending, isError: restricted || identity.isError || members.isError, error: identity.error ?? members.error };
 }
 export function useAgentProjects(enabled: boolean) { const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);return useQuery({ queryKey: ["projects"], enabled, queryFn: () => api.get("/v1/app/projects", AppProjectsResponseSchema) }); }
 export function failureText(error: unknown, fallback: string) { return error instanceof ApiError ? error.message : fallback; }

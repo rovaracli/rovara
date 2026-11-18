@@ -91,6 +91,8 @@ const cloud = createCloudHandler({
   // CLOUD_COMPANY_DATA=memory: company settings, invites and profile in this server's memory. The company is always the one Code's access
   // check names (DEC 253z); this only says where Cloud keeps its own company data.
   ...(process.env.CLOUD_COMPANY_DATA === "memory" ? { company: { store: new LocalCompanyStore() } } : {}),
+  // Lead 4 J3: the smart Just answer's Ask boxes. Off unless this is exactly "1" (turn it on only against a Code whose answers are set up).
+  ...(process.env.ROVARA_ANSWERS_ENABLED === "1" ? { answersEnabled: true } : {}),
 });
 const appDirectory = process.env.CLOUD_APP_DIRECTORY ?? join(resolve(process.cwd(), "packages/web/dist"), "app");
 const app = createAppHandler({ appDirectory, assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });

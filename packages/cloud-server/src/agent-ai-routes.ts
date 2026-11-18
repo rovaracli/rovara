@@ -70,7 +70,7 @@ async function keyConnected(context: RouteContext, companyId: string, provider: 
     return view.sources.some((s) => s.provider === provider && s.hasKey && s.available);
   } catch { return null; }
 }
-const anthropicKeyConnected = (context: RouteContext, companyId: string) => keyConnected(context, companyId, "anthropic");
+export const anthropicKeyConnected = (context: RouteContext, companyId: string) => keyConnected(context, companyId, "anthropic");
 /** The learning document's revision (what an endpoint write sends as expectedRevision), or null when this Cloud can't tell. */
 async function keysRevision(context: RouteContext, companyId: string): Promise<number | null> {
   const productAi = context.productAi;

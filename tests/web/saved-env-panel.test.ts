@@ -29,6 +29,7 @@ function setup(options: { panel?: ReturnType<typeof panel>; read?: ApiResponse; 
   const path = request.path.split("?")[0];
   if (path === "/v1/app/changes") return { status: 200, body: { notices: [], next: "settled" } };
   if (path === "/v1/app/projects/payments/overview") return { status: 200, body: projectFixture() };
+  if (path === "/v1/app/projects/payments/machine-size") return { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not served" } } };
   if (path === PATH && request.method === "GET") return options.read ?? { status: 200, body: state };
   if (path === PATH && request.method === "POST") {
    const custom = await options.post?.(request);
@@ -142,6 +143,13 @@ it("shows nothing at all where saved environments are off (404) or the person ma
   expect(screen.queryByRole("region", { name: "Saved environment" })).toBeNull();
   f.unmount();
  }
+});
+
+it("where Cloud answers 501 NOT_ON_CODE_YET the panel is one plain muted line: no error text, no alert, no Try again", async () => {
+ setup({ page: true, read: { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/projects/payments/environment-image isn't connected to Rovara Code yet." } } } });
+ expect((await screen.findByText("Saved environments aren't available yet.")).className).toContain("rv-muted");
+ expect(screen.queryByText(/Couldn't load the saved environment/)).toBeNull();expect(screen.queryByRole("alert")).toBeNull();expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+ expect(screen.queryByText(/isn't connected to Rovara Code yet/)).toBeNull();
 });
 
 it("a read that fails says so and can be tried again", async () => {

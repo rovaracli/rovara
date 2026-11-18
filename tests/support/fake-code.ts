@@ -14,7 +14,8 @@ import {
   type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
   type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
-import { wikiIndex, wikiPage, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
+import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
+import { wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
 import { wikiMapOf, wikiSetupBuildView, type FakeWikiSetup } from "./wiki-setup-fixture.js";
 import { WIKI_SETUP_CODE_WORDS } from "../../packages/contracts/src/app-wiki-setup.js";
 
@@ -110,6 +111,13 @@ type Handler<K extends CodeRouteId> = (context: Context<K>) => Answer<K> | Promi
 type Handlers = { [K in CodeRouteId]: Handler<K> };
 
 const failure = (status: number, code: string, message: string): { status: number; body: ErrorBody } => ({ status, body: { error: { code, message } } });
+/** Code's events limit check (`whole`: one to three digits, then the range): absent is its default, anything else outside 1..DEVELOPER_EVENTS_MAX is refused with Code's 400. */
+const eventsLimitRefused = (query: URLSearchParams): { status: number; body: ErrorBody } | undefined => {
+  const raw = query.get("limit");
+  if (raw === null) return undefined;
+  const limit = /^\d{1,3}$/u.test(raw) ? Number(raw) : Number.NaN;
+  return limit >= 1 && limit <= DEVELOPER_EVENTS_MAX ? undefined : failure(400, "CONFIG_INVALID", `limit must be a whole number from 1 to ${String(DEVELOPER_EVENTS_MAX)}`);
+};
 const notFound = (what = "route") => failure(404, "NOT_FOUND", `${what} not found`);
 
 export async function startFakeCode(options: FakeCodeOptions = {}): Promise<FakeCode> {
@@ -192,10 +200,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return undefined;
   };
   /** Code's wiki read routes (W2; `/v1/app/projects/{p}/wiki`, `.../pages/{id}`, `.../pages/{id}/sources`), as the person; every refusal is Code's one 404. */
-  const wikiAnswer = (method: string, path: string, person: Person, body: unknown = {}): { status: number; body: unknown } | undefined => {
+  const wikiAnswer = (method: string, path: string, person: Person, body: unknown = {}, search: URLSearchParams = new URLSearchParams()): { status: number; body: unknown } | undefined => {
     const done = corrected(method, path, person, body);
     if (done !== undefined) return done;
-    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/pages\/([^/]+)(\/sources)?)?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/(search|pages\/([^/]+)(\/sources)?))?$/u.exec(path);
     if (match === null || method !== "GET") return undefined;
     const name = decodeURIComponent(match[1]!), set = wikis.get(name) ?? {};
     if (set.off) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
@@ -203,8 +211,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (!wikiReads(person, name)) return refuse;
     if (set.broken) return { status: 200, body: { project: "elsewhere" } };
     if (match[2] === undefined) return { status: 200, body: wikiIndex(name, set) };
-    const id = decodeURIComponent(match[2]);
-    const answered = match[3] === undefined ? withCorrections(name, id, wikiPage(name, id, set)) : wikiSources(name, id, set);
+    if (match[2] === "search") return { status: 200, body: wikiSearch(name, search.get("q") ?? "") };
+    const id = decodeURIComponent(match[3]!);
+    const answered = match[4] === undefined ? withCorrections(name, id, wikiPage(name, id, set)) : wikiSources(name, id, set);
     return answered === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "page not found" } } } : { status: 200, body: answered };
   };
   // L4-D2 (Code #899): the candidate waiting for a decision on a project (set by the specs through /__fake/setup-apply), and what decide does with it.
@@ -228,12 +237,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (project(name) === undefined || companyless.has(person.developerId) || (!manage && grant === undefined) || !wikiReads(person, name)) return failure(404, "NOT_FOUND", "project not found");
     const view = (): { status: number; body: unknown } => ({ status: 200, body: wikiSetupBuildView(one, manage) });
-    if (method === "GET") return tail === "wiki-map" ? { status: 200, body: one.mapMade ? { status: "ready", canManage: manage, map: wikiMapOf(name) } : { status: "none", canManage: manage } } : tail === "upkeep" ? { status: 200, body: { enabled: one.upkeepOn, canManage: manage } } : view();
+    if (method === "GET") return tail === "wiki-map" ? { status: 200, body: one.mapMade ? { status: "ready", canManage: manage, map: wikiMapOf(name) } : { status: "none", canManage: manage } } : tail === "upkeep" ? { status: 200, body: { enabled: one.upkeepOn, canManage: manage, available: true } } : view();
     if (!manage) return failure(403, "FORBIDDEN", tail === "wiki-map" ? WIKI_SETUP_CODE_WORDS.mapNotAllowed : WIKI_SETUP_CODE_WORDS.notAllowed);
     const given = body as { requestId?: unknown; on?: unknown } | undefined;
     if (tail === "wiki-map") { one.mapMade = true; return { status: 200, body: { status: "ready", canManage: true, map: wikiMapOf(name) } }; }
     if (typeof given?.requestId !== "string") return failure(400, "CONFIG_INVALID", "the request is not valid");
-    if (tail === "upkeep") { one.upkeepOn = given.on === true; return { status: 200, body: { enabled: one.upkeepOn, canManage: true } }; }
+    if (tail === "upkeep") { one.upkeepOn = given.on === true; return { status: 200, body: { enabled: one.upkeepOn, canManage: true, available: true } }; }
     if (tail === "wiki-build/agents") { one.agentsOn = given.on === true; return view(); }
     if (tail === "wiki-build/delete") {
       if (one.status === "running") return failure(409, "WORKSPACE_BUSY", WIKI_SETUP_CODE_WORDS.deleteWhileRunning);
@@ -264,6 +273,45 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     delete one.stop;
     return { status: 202, body: wikiSetupBuildView(one, true) };
   };
+  type HowWeWorkMode = "on" | "off" | "core-off" | "broken" | "501" | "403";
+  // Walkthrough 2026-11-17 item 4: Code's How we work read on its own /v1/app path (core host, read only), per project (set by the specs through /__fake/how-we-work).
+  // `off` is an older Code's unknown-route 404, `core-off` the core host's "not on the core engine" 404, `broken` an answer for another project.
+  const howWeWorkModes = new Map<string, HowWeWorkMode>();
+  const howWeWorkAnswer = (method: string, path: string, person: Person): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/how-we-work$/u.exec(path);
+    if (match === null || method !== "GET") return undefined;
+    const name = decodeURIComponent(match[1]!), mode = howWeWorkModes.get(name) ?? "on";
+    if (mode === "off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    if (mode === "core-off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "That is not on the core engine on this install yet." } } };
+    // Code's rule (canReadProject: the person's own grant row on the project, in the project's own company; no company-administrator shortcut); anyone else gets the one 404.
+    const entry = project(name);
+    if (entry === undefined || companyless.has(person.developerId) || (entry.companyId ?? FAKE_COMPANY_ID) !== companyOfPerson(person) || roleIn(person, name) === undefined) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    if (mode === "501") return { status: 501, body: { error: { code: "NOT_IMPLEMENTED", message: "not served" } } };
+    if (mode === "403") return { status: 403, body: { error: { code: "FORBIDDEN", message: "This sign-in can't read projects." } } };
+    if (mode === "broken") return { status: 200, body: { project: "elsewhere", playbookRevision: 1, process: { kind: "builtin", agentId: "rovara-standard" }, stages: [], rules: [], modelsEditable: false } };
+    return { status: 200, body: { project: name, playbookRevision: 3, process: { kind: "builtin", agentId: "rovara-standard" }, stages: [], rules: [], modelsEditable: false, requestId: "req-fake" } };
+  };
+  // Lead 4 J3 (Code J1 and its start-suggest route): the pretend answer service, per project (set by the specs through /__fake/answers). Default is a Code with no model set up: every answer is the fixed
+  // "not set up" outcome and the suggestion says the classifier is unavailable. `off` makes Code answer its unknown-route 404. Who may ask is Code's rule for the wiki (a role on the project in its own company).
+  const answerSets = new Map<string, { answers?: "answered" | "not_set_up" | "off"; suggest?: Record<string, unknown> }>();
+  const ANSWER_SHA = "a".repeat(40);
+  const answersAnswer = (method: string, path: string, person: Person, given: unknown): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/(answers|code\/suggest)$/u.exec(path);
+    if (match === null || method !== "POST") return undefined;
+    const name = decodeURIComponent(match[1]!), set = answerSets.get(name) ?? {};
+    if (set.answers === "off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    if (!wikiReads(person, name)) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    if (match[2] === "code/suggest") return { status: 200, body: set.suggest ?? { kind: "unknown", classifier: "unavailable", pick: "answer" } };
+    const asked = (given as { question?: unknown }).question;
+    if (typeof asked !== "string" || asked.trim() === "") return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "An answer needs a request ID and a question of 1 to 1,000 characters." } } };
+    if (set.answers !== "answered") return { status: 200, body: { threadId: "t-fake0001", outcome: "not_set_up", text: "", honesty: "Answers are not set up here yet.", unconfirmed: [], sources: [], wikiPages: [] } };
+    return { status: 200, body: {
+      answerId: "a-fake0001", threadId: "t-fake0001", outcome: "answered", text: "Refunds go out to the payment provider and come back by webhook. [1] Only full refunds work today. [2]", unconfirmed: [],
+      honesty: "I checked the code: the wiki was out of date here.", wikiPages: [{ pageId: "beacon-api--billing", title: "billing" }],
+      sources: [{ n: 1, repo: "beacon-api", path: "src/billing/refund.ts", line: 12, lineEnd: 40, commit: ANSWER_SHA }, { n: 2, repo: "beacon-api", path: "src/billing/webhooks.ts", line: 104, lineEnd: 139, commit: ANSWER_SHA }],
+      action: { kind: "quick_task", label: "Start a Quick task", title: "Support partial refunds" },
+    } };
+  };
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
@@ -280,6 +328,24 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   ];
   const companyOfPerson = (person: Person) => person.company?.id ?? FAKE_COMPANY_ID;
   const project = (name: string) => projects.find((entry) => entry.name === name);
+  const ticketUpdates = new Map<string, { comments: boolean; changeStatus: boolean; statuses: Record<string, string>; level?: "status_only" | "decisions" | "plan_decisions" | "full" }>();
+  const ticketUpdatesAnswer = (method: string, path: string, who: Person, body: unknown) => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/intake\/updates$/u.exec(path);
+    if (match === null) return undefined;
+    const name = decodeURIComponent(match[1]!);
+    const selected = project(name);
+    if (selected === undefined || companyOfPerson(who) !== (selected.companyId ?? FAKE_COMPANY_ID) || (!who.administrator && !selected.members.has(who.developerId))) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    const canEdit = who.administrator || selected.members.get(who.developerId) === "administrator";
+    const key = `${selected.companyId ?? FAKE_COMPANY_ID}:${name}`;
+    const settings = ticketUpdates.get(key) ?? { comments: true, changeStatus: false, statuses: { started: "In Progress", pr_opened: "In Review", merged: "Done" } };
+    if (method === "GET") return { status: 200, body: { settings, canEdit, access: [] } };
+    if (method !== "PUT") return { status: 405, body: { error: { code: "METHOD_NOT_ALLOWED", message: "method not allowed" } } };
+    if (!canEdit) return { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a project admin can change these settings." } } };
+    if (typeof body !== "object" || body === null || !("requestId" in body) || !((body as { requestId?: unknown }).requestId) || !("settings" in body)) return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Send valid ticket update settings." } } };
+    const next = (body as { settings: typeof settings }).settings;
+    ticketUpdates.set(key, next);
+    return { status: 200, body: { settings: next, canEdit, access: [] } };
+  };
   const linearRedirectUri = options.linearRedirectUri ?? "http://127.0.0.1:8787/api/connect/linear/callback";
   const linkNotAllowed = "Only a company owner or admin, or this project's admin, can link or unlink its Slack channel.";
   /** Link (or ask for the /invite: a private channel needs Check after /invite, which the fake takes as done). */
@@ -812,7 +878,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: { involved: true, tasks: [...tasks.values()].filter((entry) => involved.get(entry.task.taskId)?.has(person.developerId) === true && entry.owner.developerId !== person.developerId).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } as never };
     },
     "tasks.get": (context) => taskOr404(context, ({ task }) => ({ body: { task } })),
-    "tasks.events": (context) => taskOr404(context, ({ task }) => ({ body: { events: [{ seq: 1, at: task.createdAt, kind: "status", text: "Task started" }, { seq: 2, at: task.updatedAt, kind: "progress", text: `Now at ${task.workflow?.stage ?? "start"}`, taskItemId: "T2", attempt: 1 }] } })),
+    // Code's own bound (packages/broker/src/aws/developer-tasks.ts taskEvents): the task is read first (its 404), then a limit outside 1..DEVELOPER_EVENTS_MAX is a 400.
+    "tasks.events": (context) => taskOr404(context, ({ task }) => eventsLimitRefused(context.query) ?? ({ body: { events: [{ seq: 1, at: task.createdAt, kind: "status", text: "Task started" }, { seq: 2, at: task.updatedAt, kind: "progress", text: `Now at ${task.workflow?.stage ?? "start"}`, taskItemId: "T2", attempt: 1 }] } })),
     "tasks.plan": (context) => taskOr404(context, ({ task }) => ({ body: planOf(task) })),
     "tasks.cancel": (context) => ownerTask(context, ({ task }) => { touch(task, { status: "CANCELLED" }); return { body: { task } }; }),
     "tasks.close": (context) => ownerTask(context, ({ task }) => { touch(task, { status: "CLOSED" }); return { body: { task, closed: true } }; }),
@@ -1387,6 +1454,18 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (given["upkeepOff"] === true) one.upkeepOff = true;
           return send(200, { project: given["project"] });
         }
+        if (method === "POST" && url.pathname === "/__fake/how-we-work") {
+          const given = JSON.parse(await readBody(request)) as { project?: unknown; mode?: unknown };
+          if (typeof given.project !== "string" || !["on", "off", "core-off", "broken", "501", "403"].includes(given.mode as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and mode" } });
+          howWeWorkModes.set(given.project, given.mode as HowWeWorkMode);
+          return send(200, { mode: given.mode });
+        }
+        if (method === "POST" && url.pathname === "/__fake/answers") {
+          const given = JSON.parse(await readBody(request)) as { project?: unknown; answers?: unknown; suggest?: unknown };
+          if (typeof given.project !== "string" || project(given.project) === undefined || (given.answers !== undefined && !["answered", "not_set_up", "off"].includes(given.answers as string))) return send(400, { error: { code: "CONFIG_INVALID", message: "project and answers" } });
+          answerSets.set(given.project, { ...(given.answers === undefined ? {} : { answers: given.answers as "answered" }), ...(given.suggest === undefined ? {} : { suggest: given.suggest as Record<string, unknown> }) });
+          return send(200, { project: given.project });
+        }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
           if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
@@ -1414,6 +1493,60 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const size = 200, start = Number(cursor ?? "0");
           const more = start + size < reportData.tasks.length;
           return send(200, { tasks: reportData.tasks.slice(start, start + size), next: String(more ? start + size : reportData.tasks.length), hasMore: more, skipped: 0, unreadable: 0 });
+        }
+        // The Cost and time actions (lane L4-CR4), with Code's own rules and fixed sentences (Code PR #913): company owners and admins change features; the report's rows and features are the ones the specs set.
+        const featureAction = /^\/v1\/app\/org\/report\/features(?:\/(ft_[a-f0-9]{20})\/(rename|merge|state))?$/u.exec(url.pathname);
+        const taskMove = /^\/v1\/app\/tasks\/([^/]+)\/feature$/u.exec(url.pathname);
+        if (method === "POST" && (featureAction !== null || taskMove !== null)) {
+          const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
+          const who = bearer === undefined ? undefined : access.get(bearer);
+          if (who === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (reportData === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
+          if (!who.administrator) return send(403, { error: { code: "FORBIDDEN", message: "Only an owner or admin of the company can change features." } });
+          const given = JSON.parse(await readBody(request) || "{}") as Record<string, unknown>;
+          const features = reportData.features as Array<{ id: string; name: string; state: string }>;
+          const tasks = reportData.tasks as Array<Record<string, unknown>>;
+          const refuse = (status: number, code: string, message: string) => send(status, { error: { code, message } });
+          const view = (feature: { id: string; name: string; state: string }) => ({ ...feature, createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-17T00:00:00.000Z" });
+          if (taskMove !== null) {
+            const task = tasks.find((entry) => entry["taskId"] === taskMove[1]);
+            if (task === undefined) return refuse(404, "NOT_FOUND", "task not found");
+            const target = given["feature"];
+            if (target !== null && typeof target !== "string") return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            const into = target === null ? undefined : features.find((entry) => entry.id === target);
+            if (target !== null && into === undefined) return refuse(404, "NOT_FOUND", "That feature does not exist.");
+            if (into?.state === "done") return refuse(400, "CONFIG_INVALID", "That feature is done. Reopen it first.");
+            if (into === undefined) delete task["feature"]; else task["feature"] = { id: into.id, source: "moved" };
+            return send(200, { task: { taskId: task["taskId"], feature: into === undefined ? null : { id: into.id, source: "moved" } } });
+          }
+          if (featureAction![1] === undefined) {
+            const name = typeof given["name"] === "string" ? given["name"].trim() : "";
+            if (name === "" || [...name].length > 80) return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            if (features.some((entry) => entry.name === name)) return refuse(400, "CONFIG_INVALID", "A feature with that name already exists.");
+            const made = { id: `ft_${(features.length + 1 + 0xe0).toString(16).padStart(20, "0")}`, name, state: "open" };
+            features.push(made);
+            return send(201, { feature: view(made) });
+          }
+          const feature = features.find((entry) => entry.id === featureAction![1]);
+          if (feature === undefined) return refuse(404, "NOT_FOUND", "That feature does not exist.");
+          if (featureAction![2] === "rename") {
+            const name = typeof given["name"] === "string" ? given["name"].trim() : "";
+            if (name === "" || [...name].length > 80) return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            if (features.some((entry) => entry.name === name && entry.id !== feature.id)) return refuse(400, "CONFIG_INVALID", "A feature with that name already exists.");
+            feature.name = name;
+            return send(200, { feature: view(feature) });
+          }
+          if (featureAction![2] === "state") {
+            if (given["state"] !== "open" && given["state"] !== "done") return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            feature.state = given["state"];
+            return send(200, { feature: view(feature) });
+          }
+          const into = features.find((entry) => entry.id === given["into"]);
+          if (into === undefined) return refuse(404, "NOT_FOUND", "That feature does not exist.");
+          if (into.id === feature.id) return refuse(400, "CONFIG_INVALID", "A feature cannot be merged into itself or into one already merged away.");
+          for (const task of tasks) { const filed = task["feature"] as { id: string } | undefined; if (filed?.id === feature.id) task["feature"] = { id: into.id, source: "moved" }; }
+          features.splice(features.indexOf(feature), 1);
+          return send(200, { feature: view(into) });
         }
         const raw = await readBody(request);
         if (method === "POST" && url.pathname === "/v1/auth/token") {
@@ -1452,9 +1585,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? answersAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          if (who === undefined && /\/(?:answers|code\/suggest)$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (who === undefined && /\/how-we-work$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/(?:wiki(?:[-/]|$)|upkeep$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal|confirm|discard|decide))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          const updateAnswer = who === undefined ? undefined : ticketUpdatesAnswer(method, url.pathname, who, parsed);
+          if (who === undefined && /\/intake\/updates$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (updateAnswer !== undefined) return send(updateAnswer.status, updateAnswer.body);
           if (answer !== undefined) return send(answer.status, answer.body);
         }
         const matched = matchCodeRoute(method, url.pathname);

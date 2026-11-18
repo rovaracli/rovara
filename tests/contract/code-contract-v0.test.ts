@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { APP_ROUTES, CODE_ROUTES, contractCounts, matchCodeRoute, pathParamNames, pathPattern } from "../../packages/contracts/src/code-contract-v0.js";
+import { DEFAULT_TICKET_UPDATES, NEW_HOSTED_TICKET_UPDATES, TICKET_UPDATE_LEVELS, TICKET_UPDATE_LEVEL_WORDS, TicketStatusNameSchema } from "../../packages/contracts/src/ticket-updates.js";
 
 describe("code contract v0 tables", () => {
   it("has one entry per Code route id and one per method and path", () => {
@@ -47,13 +48,16 @@ describe("code contract v0 tables", () => {
     // Plus the two inbox routes (web task channel K5): the person's own rows and marking them read; Cloud forwards them to Code's C7 inbox as the person (501 until Code serves it).
     // Plus the five People panel routes (web task channel K3): the list, the candidates, a role change, adding a person and taking ownership; the candidates and add need Code's C4.
     // Plus Connected sign-ins (DEC 254w, approved DEC 254zf): the list, Connect and Unlink, passed to Code's /v1/dev/me/sign-ins routes as the person.
-    // Plus the project wiki's page list, one page and its cited files (lead 4 W5).
+    // Plus the project wiki's page list, search, one page and its cited files (lead 4 W5).
     // Plus the project machine-size read and stored-choice write (machine-size screen).
     // Plus the wiki's corrections: the notes, marks, approvals and the disputed list (lead 4 C1): 8 rows.
     // Plus the setup approval (L4-D2): confirm flips to answered here, discard and decide are added: 3.
     // Plus the wiki panel on the setup page: the file map, the build controls and the nightly upkeep switch (lead 4 W6): 11 rows.
     // Plus the Cost and time report (Feature A, slice A3): the report and a feature's page: 2 rows.
-    expect(counts.appCloudServerToday).toBe(126);
+    // Plus How we work (walkthrough 2026-11-17 item 4): forwarded to Code's own GET /v1/app/projects/{p}/how-we-work as the person (an existing row, L to LT: +1).
+    // Plus the smart Just answer's ask and the start box's suggestion, both off unless the deployment's answers setting is on (lead 4 J3), and "Not right" on an answer (lead 4 J5).
+    // Plus the Cost and time actions (lane L4-CR4): a new feature, rename, merge, mark done or reopen, and move a task, each passed to Code's own route as the person (Code decides): 5 rows.
+    expect(counts.appCloudServerToday).toBe(136);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
@@ -91,5 +95,13 @@ describe("code contract v0 tables", () => {
     const text = readFileSync(new URL("../../packages/contracts/src/code-contract-v0.ts", import.meta.url), "utf8");
     expect(/^\s*(import\s|export\s.*\sfrom\s)/mu.test(text)).toBe(false);
     expect(text).not.toMatch(/require\(|process\.|node:/u);
+  });
+
+  it("pins ticket update settings to Code contract 5d7b2e934", () => {
+    expect(TICKET_UPDATE_LEVELS).toEqual(["status_only", "decisions", "plan_decisions", "full"]);
+    expect(NEW_HOSTED_TICKET_UPDATES).toEqual({ comments: true, changeStatus: false, statuses: { started: "In Progress", pr_opened: "In Review", merged: "Done" }, level: "full" });
+    expect(DEFAULT_TICKET_UPDATES).toEqual({ comments: true, changeStatus: false, statuses: { started: "In Progress", pr_opened: "In Review", merged: "Done" } });
+    expect(Object.keys(TICKET_UPDATE_LEVEL_WORDS)).toEqual(TICKET_UPDATE_LEVELS);
+    expect(TicketStatusNameSchema.safeParse("project-1").success).toBe(true);
   });
 });

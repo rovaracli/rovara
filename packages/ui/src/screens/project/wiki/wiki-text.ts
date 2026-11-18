@@ -8,6 +8,8 @@ export const T = {
   NAV: "Wiki pages",
   SEARCH: "Search the wiki",
   SEARCH_PLACEHOLDER: "Search pages",
+  AGENTS_OFF: "Agents do not get the wiki right now",
+  SEARCH_FAILED: "The wiki search could not be read just now.",
   BROWSE: "Browse pages",
   HIDE: "Hide pages",
   LOADING: "Loading the wiki",

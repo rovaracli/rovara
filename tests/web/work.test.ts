@@ -250,7 +250,7 @@ it("answers a question from the card; a route Code does not serve says so, never
   const f = screenSetup({ send, path: `/app/live?task=${ID.question}`, plan: { status: 200, body: { ...PLAN, questions: [{ ...PLAN.questions[0], criterionId: undefined }] } } });
   const card = await screen.findByRole("region", { name: "Question for you" });
   fireEvent.click(await within(card).findByRole("button", { name: /Yes, behind a flag/u }));
-  expect((await screen.findByTestId("decision-error")).textContent).toContain("isn't connected to Rovara Code yet");
+  expect((await screen.findByTestId("decision-error")).textContent).toContain("Not available yet.");
   const call = send.mock.calls[0]![0];expect(call.path).toBe(`/v1/app/sessions/${QUESTION_SESSION}/answers`);expect(call.body).toMatchObject({ round: 2, revision: 2, answers: [{ questionId: "Q1", optionId: "yes" }] });
   expect(call.path).not.toContain(ID.question);
   expect(screen.queryByRole("progressbar")).toBeNull();
@@ -268,7 +268,7 @@ it.each(["no Cloud session", "no round from Code"])("a question on a task with %
 });
 it("says Work isn't connected yet, plainly, when Code does not serve the list", async () => {
   const f = screenSetup({ tasks: NOT_YET });
-  const error = await screen.findByTestId("load-error");expect(error.textContent).toContain("isn't connected to Rovara Code yet");expect(screen.queryByRole("progressbar")).toBeNull();
+  const error = await screen.findByTestId("load-error");expect(error.textContent).toContain("Work isn't available yet.");expect(error.textContent).not.toContain("Not available yet.");expect(error.textContent).not.toContain("/v1/");expect(screen.queryByRole("progressbar")).toBeNull();
   f.answerTasks({ status: 200, body: { tasks: TASKS } });fireEvent.click(within(error).getByRole("button", { name: "Try again" }));await screen.findByRole("heading", { name: /Needs you/u });
   f.close();
 });
@@ -288,8 +288,8 @@ it("says nothing needs you inside the Needs you group when it is empty but work 
 });
 it("says decisions aren't connected yet in the pane of a task that needs a person but has no card", async () => {
   const f = screenSetup({ tasks: { status: 200, body: { tasks: [task(ID.checks, "Stopped one", { status: "FAILED", workflow: { stage: "IMPLEMENT", state: "BLOCKED", revision: 1, blockReason: "The coding step could not finish." } }, "IMPLEMENT", "BLOCKED")] }, }, decisions: { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/decisions isn't connected to Rovara Code yet." } } } });
-  expect((await screen.findByTestId("decisions-unavailable")).textContent).toContain("isn't connected to Rovara Code yet");
-  expect((await screen.findByTestId("decision-quiet")).textContent).toContain("isn't connected to Rovara Code yet");
+  expect((await screen.findByTestId("decisions-unavailable")).textContent).toContain("Not available yet.");
+  expect((await screen.findByTestId("decision-quiet")).textContent).toContain("Not available yet.");
   f.close();
 });
 it("shows the budget banner when the company's budget is used up, and the agents row says it is not connected yet", async () => {
@@ -436,3 +436,28 @@ for (const theme of ["light", "dark"] as const) it("has no accessibility violati
   document.documentElement.setAttribute("data-theme", theme);await expectNoAxeViolations(f.container);f.close();
 });
 void act;
+
+// Staging walkthrough 2026-11-17 item 3: Code has no proof index route yet, so the proof read answers Code's unknown-route 404 ("route not found") or Cloud's 501.
+// The pane says "Proof will appear here." in plain words, never the route text; any other failure still offers Try again.
+it.each([
+ ["Code's unknown-route 404", { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } }],
+ ["Cloud's 501", { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/tasks/x/evidence isn't connected to Rovara Code yet." } } }],
+])("says proof will appear here, plainly, when the proof read is not served (%s)", async (_label, proof) => {
+  const f = screenSetup({ proof, path: `/app/live?task=${ID.merge}` });
+  expect((await screen.findByTestId("proof-not-yet")).textContent).toBe("Proof will appear here.");
+  const pane = screen.getByRole("region", { name: "Selected task" });
+  expect(pane.textContent).not.toContain("route not found");expect(pane.textContent).not.toContain("/v1/");
+  expect(within(pane).queryByRole("button", { name: "Try again" })).toBeNull();
+  f.close();
+});
+it("still offers Try again when the proof read fails for another reason", async () => {
+  const f = screenSetup({ proof: { status: 500, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara Code didn't answer." } } }, path: `/app/live?task=${ID.merge}` });
+  // The client tries a 500 again before it gives up, so the error shows after its back-off.
+  expect(await screen.findByTestId("section-error", {}, { timeout: 5000 })).toBeTruthy();expect(screen.queryByTestId("proof-not-yet")).toBeNull();
+  f.close();
+});
+it("keeps Code's own words for any other 404 of the proof read (a task the person can no longer read)", async () => {
+  const f = screenSetup({ proof: { status: 404, body: { error: { code: "NOT_FOUND", message: "task not found" } } }, path: `/app/live?task=${ID.merge}` });
+  expect((await screen.findByTestId("not-connected")).textContent).toBe("task not found");expect(screen.queryByTestId("proof-not-yet")).toBeNull();
+  f.close();
+});

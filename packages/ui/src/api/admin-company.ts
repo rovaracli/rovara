@@ -18,14 +18,13 @@ export function needsStepUp(error: unknown): boolean { return error instanceof A
 // ---- Spending ----
 export const ORG_SPEND_PATH = "/v1/app/org/spend";
 export interface ProjectSpend { name: string; spentUsd: number; heldUsd?: number; limitUsd?: number; taskStopUsd?: number; mergedCount?: number; paidFrom?: string; locked?: boolean }
-export interface PersonSpend { name: string; role?: string; spentUsd: number; allowanceUsd?: number; allowanceSource?: "own" | "company_default"; tasks?: number; mergedCount?: number }
 /**
  * Cloud's `GET /v1/app/org/spend`. Contract v0 (`OrgSpendSummaryAddition`) has `spentThisMonthUsd` and `remainingUsd`; the page also reads these optional
- * additions when Cloud sends them: `heldUsd`, `limitUsd`, `runsOutOn`, `costPerMergedChangeUsd`, `mergedCount`, `month`, `byProject[]` and `byPerson[]`.
+ * additions when Cloud sends them: `heldUsd`, `limitUsd`, `runsOutOn`, `costPerMergedChangeUsd`, `mergedCount`, `month`, and `byProject[]`. Per-person spending is NOT read here (owner rule, decision D2): it lives on People and limits only.
  */
 export interface OrgSpendRead {
   spentUsd?: number; remainingUsd?: number; heldUsd?: number; limitUsd?: number; runsOutOn?: string; costPerMergedChangeUsd?: number; mergedCount?: number; month?: string;
-  projects?: ProjectSpend[]; people?: PersonSpend[];
+  projects?: ProjectSpend[];
 }
 function readProject(raw: unknown): ProjectSpend | undefined {
   if (!isRecord(raw)) return undefined;
@@ -33,21 +32,14 @@ function readProject(raw: unknown): ProjectSpend | undefined {
   if (name === undefined || spent === undefined) return undefined;
   return { name, spentUsd: spent, ...opt("heldUsd", money(raw["heldUsd"])), ...opt("limitUsd", money(raw["limitUsd"])), ...opt("taskStopUsd", money(raw["taskStopUsd"])), ...opt("mergedCount", count(raw["mergedCount"])), ...opt("paidFrom", str(raw["paidFrom"])), ...opt("locked", raw["locked"] === true ? true : undefined) };
 }
-function readPerson(raw: unknown): PersonSpend | undefined {
-  if (!isRecord(raw)) return undefined;
-  const name = str(raw["name"]), spent = money(raw["spentUsd"]), source = raw["allowanceSource"] === "own" ? "own" as const : raw["allowanceSource"] === "company_default" ? "company_default" as const : undefined;
-  if (name === undefined || spent === undefined) return undefined;
-  return { name, spentUsd: spent, ...opt("role", str(raw["role"])), ...opt("allowanceUsd", money(raw["allowanceUsd"])), ...opt("allowanceSource", source), ...opt("tasks", count(raw["tasks"])), ...opt("mergedCount", count(raw["mergedCount"])) };
-}
 export function readOrgSpend(body: unknown): OrgSpendRead {
   if (!isRecord(body)) throw new Error("not a spending summary");
   const projects = Array.isArray(body["byProject"]) ? body["byProject"].flatMap(raw => { const line = readProject(raw); return line === undefined ? [] : [line]; }) : undefined;
-  const people = Array.isArray(body["byPerson"]) ? body["byPerson"].flatMap(raw => { const line = readPerson(raw); return line === undefined ? [] : [line]; }) : undefined;
   const remaining = num(body["remainingUsd"]), runsOutOn = str(body["runsOutOn"]);
   return {
     ...opt("spentUsd", money(body["spentThisMonthUsd"] ?? body["spentUsd"])), ...opt("remainingUsd", remaining), ...opt("heldUsd", money(body["heldUsd"])), ...opt("limitUsd", money(body["limitUsd"])),
     ...opt("runsOutOn", runsOutOn !== undefined && !Number.isNaN(Date.parse(runsOutOn)) ? runsOutOn : undefined), ...opt("costPerMergedChangeUsd", money(body["costPerMergedChangeUsd"])), ...opt("mergedCount", count(body["mergedCount"])), ...opt("month", str(body["month"])),
-    ...opt("projects", projects), ...opt("people", people),
+    ...opt("projects", projects),
   };
 }
 

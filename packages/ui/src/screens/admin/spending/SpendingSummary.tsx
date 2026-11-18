@@ -1,10 +1,10 @@
-// Spending, the top of the page (Hybrid 1, DEC 223): real amounts first. Spent this month, held for running work, what is left, then by project and by person.
+// Spending, the top of the page (Hybrid 1, DEC 223): real amounts first. Spent this month, held for running work, what is left, then by project. Per-person spending is on People and limits.
 // The numbers are Cloud's own read (`GET /v1/app/org/spend`, contract v0 `OrgSpendSummaryAddition` plus the optional additions in api/admin-company.ts). A number Cloud
 // did not send is not drawn; a page Cloud does not serve says "not connected yet".
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { ORG_SPEND_PATH, isNotConnected, lineState, readOrgSpend, spendSummary, type OrgSpendRead, type PersonSpend, type ProjectSpend } from "../../../api/admin-company.js";
+import { ORG_SPEND_PATH, isNotConnected, lineState, readOrgSpend, spendSummary, type OrgSpendRead, type ProjectSpend } from "../../../api/admin-company.js";
 import { ApiError, apiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";
 import { Banner } from "../../../design/Banner.js";
@@ -60,14 +60,6 @@ const projectColumns: readonly Column<ProjectSpend>[] = [
  { key: "merged", title: "Merged", render: row => row.mergedCount === undefined ? "Unavailable" : <span className="rv-num">{row.mergedCount}</span> },
  { key: "paid", title: "Paid from", render: row => row.paidFrom === undefined ? "Unavailable" : <VisibleText text={row.paidFrom} /> },
 ];
-const personColumns: readonly Column<PersonSpend>[] = [
- { key: "person", title: "Person", render: row => <b><VisibleText text={row.name} /></b> },
- { key: "role", title: "Role", render: row => row.role === undefined ? "Unavailable" : <VisibleText text={row.role} /> },
- { key: "spent", title: "Spent", render: row => <span className="rv-num"><Money usd={row.spentUsd} /></span> },
- { key: "allowance", title: "Allowance", render: row => <>{<LimitCell spent={row.spentUsd} limit={row.allowanceUsd} />}{row.allowanceUsd !== undefined && row.allowanceSource !== undefined && <span className="rv-muted"> {row.allowanceSource === "own" ? "set for this person" : "company default"}</span>}</> },
- { key: "tasks", title: "Tasks", render: row => row.tasks === undefined ? "Unavailable" : <span className="rv-num">{row.tasks}</span> },
- { key: "merged", title: "Merged", render: row => row.mergedCount === undefined ? "Unavailable" : <span className="rv-num">{row.mergedCount}</span> },
-];
 
 export function SpendingSummary({ read }: { read: UseQueryResult<OrgSpendRead> }) {
  const readiness = useGatewayReadiness();
@@ -93,7 +85,7 @@ export function SpendingSummary({ read }: { read: UseQueryResult<OrgSpendRead> }
   </div>
   {s.usedFraction !== undefined && <SpendMeter used={(s.spentUsd ?? 0) / (s.limitUsd ?? 1)} held={s.heldFraction ?? 0} bad={s.state === "over"} caption label={`${Math.round(s.usedFraction * 100)}% of this month's limit used or held`} />}
   <AdminSection title="By project">{data.projects === undefined ? <NotConnected what="Spending by project" /> : data.projects.length === 0 ? <p className="rv-muted">No project has spent anything this month.</p> : <DataTable caption="Spending by project" columns={projectColumns} rows={data.projects} rowKey={row => row.name} />}</AdminSection>
-  <AdminSection title="By person" note="Only owners and admins see this table.">{data.people === undefined ? <NotConnected what="Spending by person" /> : data.people.length === 0 ? <p className="rv-muted">Nobody has spent anything this month.</p> : <DataTable caption="Spending by person" columns={personColumns} rows={data.people} rowKey={row => `${row.name}|${row.role ?? ""}|${row.spentUsd}`} />}</AdminSection>
+  <AdminSection title="People and limits" note="Only owners and admins see this."><p className="rv-muted">Each person's spending this month against their own limit is on <Link to="/app/admin/money/people">People and limits</Link>.</p></AdminSection>
   <p className="rv-muted"><Link to="/app/admin/audit">Changes to limits are recorded in the audit.</Link></p>
  </>;
 }

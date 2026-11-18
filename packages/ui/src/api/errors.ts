@@ -7,12 +7,17 @@ function safeSignInUrl(value: string | undefined, origin: string): string | unde
  if (value === undefined || /[\p{Cc}\p{Cf}\\]|%2e|%2f|%5c/iu.test(value.split("?", 1)[0]!)) return undefined;
  try { const url = new URL(value, origin);return safeExternalUrl(url.href) !== undefined && url.origin === new URL(origin).origin && /^\/v1\/auth\/(?:browser\/authorize|decide\/(?:start|identify))$/.test(url.pathname) && !url.hash ? url.href : undefined; } catch { return undefined; }
 }
+/**
+ * What a person reads for Cloud's 501 NOT_ON_CODE_YET when its message names a raw route (walkthrough 2026-11-17 item 10: the handler's fallback,
+ * "/v1/app/... isn't connected to Rovara Code yet."). A route's own fixed sentence ("Connecting GitHub isn't available yet.") is kept: it names its subject.
+ */
+export const NOT_AVAILABLE_YET = "Not available yet.";
 export function apiError(status: number, body: unknown, origin: string): ApiError {
  const parsed = ApiErrorResponseReaderSchema.safeParse(body);
  if (parsed.success) {
   const error = parsed.data.error;
   const stage = (error as { stage?: unknown }).stage, fixHref = (error as { fixHref?: unknown }).fixHref;
-  return new ApiError(status, /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : "REQUEST_FAILED", error.message.slice(0, 2000), safeSignInUrl(error.signInUrl, origin), error.confirmUrl !== undefined && isConfirmUrl(error.confirmUrl, origin) ? error.confirmUrl : undefined, typeof stage === "string" && /^[a-z_]{2,40}$/.test(stage) ? { stage, ...(typeof fixHref === "string" ? { fixHref } : {}) } : undefined);
+  return new ApiError(status, /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : "REQUEST_FAILED", error.code === "NOT_ON_CODE_YET" && error.message.includes("/v1/") ? NOT_AVAILABLE_YET : error.message.slice(0, 2000), safeSignInUrl(error.signInUrl, origin), error.confirmUrl !== undefined && isConfirmUrl(error.confirmUrl, origin) ? error.confirmUrl : undefined, typeof stage === "string" && /^[a-z_]{2,40}$/.test(stage) ? { stage, ...(typeof fixHref === "string" ? { fixHref } : {}) } : undefined);
  }
  return new ApiError(status, "REQUEST_FAILED", status === 401 ? "Sign in to continue." : status === 404 ? "This item wasn't found, or you no longer have access." : "Rovara couldn't complete this request. Try again shortly.");
 }

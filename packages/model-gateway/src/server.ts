@@ -20,7 +20,7 @@ import { isUpkeepCall, upkeepRefusal, withUpkeepCap, type UpkeepLimits } from ".
 import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceKind, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, type TaskClaims, type TaskTokenVerifier } from "./token.js";
-import { settleAmount } from "./reported-cost.js";
+import { hasUsage, settleAmount, validUsage } from "./reported-cost.js";
 import type { ResolvedPrice } from "./price.js";
 import type { EstimatedSettlement } from "./meter.js";
 import type { TokenUsage } from "./usage.js";
@@ -113,6 +113,12 @@ export interface GatewayRoute {
    * Either mismatch gets the fixed 401 before anything is read, held or sent.
    */
   readonly purpose?: "learning" | "answers";
+  /**
+   * The response header that carries this call's settled cost (US dollars, a plain decimal of six places: whole micro-dollars). Set only on the answers route (L4-E2).
+   * Sent on a complete NON-streaming success only, and only when the figure is exact: the core settles first, then sends the head, so the figure is the amount
+   * the same settle wrote to the meter. Absent (never 0, never a guess) when the price is estimated, the provider reported no usage, or the meter could not settle, and it is lost if the response head is never sent. A slow meter delays the head for that route (no separate time limit, as the settle was never bounded).
+   */
+  readonly costHeader?: string;
   /** false: the task-ended record does not stop this route's calls (learning runs after its task ended). Absent: it does. */
   readonly stopsWithTask?: false;
   /** A permanent cap refusal from the meter, in the route's own words. Absent: 422 budget_exceeded with `prefix`. */
@@ -487,6 +493,29 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let settlementKind: PriceKind = "chat";
   // How the call ended, for an events route's settle: the refusal word last answered, or a complete answer.
   let refusedCode: string | undefined; let completed = false;
+  let early: TokenUsage | undefined;
+  // The settle, run once: early for a route that sends its cost in the head, else in the finally. Its result says what was written.
+  let settled: { ok: boolean; micros: number; estimated: boolean } | undefined; let settling = false;
+  const settleOnce = async (): Promise<{ ok: boolean; micros: number; estimated: boolean } | undefined> => {
+    if (settling || reservation === undefined || route === undefined) return settled;
+    settling = true;
+    try {
+      let estimateRecord: EstimatedSettlement | undefined;
+      if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
+        const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: cost });
+        cost = amount.actualMicros; estimated = amount.estimated;
+        if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
+      }
+      await route.meter.settle(reservation, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === undefined ? {} : { route: route.purpose }) });
+      settled = { ok: true, micros: cost, estimated };
+      if (route.overReservation !== undefined && callClaims !== undefined && cost > reservedMicros) {
+        log({ event: "product_over_reservation" });
+        try { await route.overReservation(callClaims); } catch { log({ event: "settle_failed" }); }
+      }
+    }
+    catch { log({ event: "settle_failed" }); settled ??= { ok: false, micros: cost, estimated }; } // Adapter keeps the hold if its atomic settle fails.
+    return settled;
+  };
   let events: (GatewaySink & { finish(outcome: { completed: boolean; code?: string }): Promise<void> }) | undefined;
   const respond = async (status: number, type: string, message: string, extra: Readonly<Record<string, string>> = {}) => {
     refusedCode = type;
@@ -625,9 +654,21 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     else {
       output.push(last); const bytes = Buffer.concat(output);
       let value: unknown; try { value = JSON.parse(bytes.toString()); } catch { throw new Error("provider unavailable"); }
-      usage.whole(value); head = true; sink.head(200, JSON_HEADERS); await wait(sink.write(bytes));
+      usage.whole(value);
+      let successHeaders: Readonly<Record<string, string>> = JSON_HEADERS;
+      if (route.costHeader !== undefined) {
+        // The cost header (answers route): settle BEFORE the head, so the figure sent is the one the meter was written with. Never a guess:
+        // the usage was read, the price is exact, and the settle went through; otherwise no header.
+        early = usage.finish();
+        if (early === undefined) throw new Error("provider unavailable");
+        settlementUsage = early;
+        try { const reported = provider.reportedCostMicros?.(); if (reported !== undefined) settlementReported = reported; } catch { /* no reported cost */ }
+        const settledNow = await settleOnce();
+        if (settledNow?.ok === true && !settledNow.estimated && settledNow.micros > 0 && validUsage(early) && hasUsage(early)) successHeaders = { ...JSON_HEADERS, [route.costHeader]: usdOf(settledNow.micros) };
+      }
+      head = true; sink.head(200, successHeaders); await wait(sink.write(bytes));
     }
-    const counts = usage.finish();
+    const counts = early ?? usage.finish();
     // Incomplete/malformed SSE is a failed stream, never a silent partial success.
     if (counts === undefined) throw new Error("provider unavailable");
     sink.end(); completed = true;
@@ -642,26 +683,13 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     controller.abort(); clearTimeout(timer); clearTimeout(endedTimer); request.signal?.removeEventListener("abort", abort);
     controller.signal.removeEventListener("abort", onAbort);
     try { provider?.cancel?.(); } catch { /* Fixed log fields only; no provider text. */ }
-    if (reservation !== undefined && route !== undefined) {
-      try {
-        let estimateRecord: EstimatedSettlement | undefined;
-        if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
-          const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: cost });
-          cost = amount.actualMicros; estimated = amount.estimated;
-          if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
-        }
-        await route.meter.settle(reservation, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === undefined ? {} : { route: route.purpose }) });
-        if (route.overReservation !== undefined && callClaims !== undefined && cost > reservedMicros) {
-          log({ event: "product_over_reservation" });
-          try { await route.overReservation(callClaims); } catch { log({ event: "settle_failed" }); }
-        }
-      }
-      catch { log({ event: "settle_failed" }); } // Adapter keeps the hold if its atomic settle fails.
-    }
+    await settleOnce();
     // Exactly one settle event, after the call settled.
     if (events !== undefined) { try { await events.finish({ completed, ...(refusedCode === undefined ? {} : { code: refusedCode }) }); } catch { /* The sink ends or destroys itself. */ } }
   }
 }
+/** Whole micro-dollars as a plain decimal USD string (six places), by integer arithmetic: no float noise. */
+const usdOf = (micros: number): string => `${Math.floor(micros / 1_000_000)}.${String(micros % 1_000_000).padStart(6, "0")}`;
 /** node:http adapter, including backpressure and disconnect cancellation. It never opens a listener itself. */
 export function createGatewayHandler(deps: GatewayDependencies): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {

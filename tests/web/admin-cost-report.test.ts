@@ -33,7 +33,7 @@ const group = (key: string, name: string, over: Partial<ReportGroup> = {}): Repo
 const report = (over: Partial<CostReport> = {}): CostReport => ({
   range: { from: "2026-11-01T00:00:00.000Z" }, asOf: "2026-11-17T12:00:00.000Z", totals: nums({ tasks: 7, prsOpened: 7, prsMerged: 6, costCents: 24_000, costPerMergedCents: 4_000 }), projects: ["api", "web"],
   byFeature: [group("f1", "Checkout v2", { costCents: 21_234, unpricedCalls: 3, costIsFloor: true }), group("f2", "Search", { costCents: 2_000, state: "done", endToEndSoFar: true }), group("none", "No feature", { costCents: 766, tasks: 1, prsOpened: 0, prsMerged: 0, costPerMergedCents: undefined as unknown as number })],
-  byProject: [group("web", "web", { costCents: 20_000 }), group("api", "api", { costCents: 4_000 })], ...over,
+  byProject: [group("web", "web", { costCents: 20_000 }), group("api", "api", { costCents: 4_000 })], canChange: false, features: [], ...over,
 });
 // Strip the undefined the helper put in for "no value" so the body is what Cloud sends.
 const clean = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -43,7 +43,7 @@ const detail = (over: Partial<FeatureDetail> = {}): FeatureDetail => ({
   tasks: [
     { taskId: "t1", title: "Pay with card", project: "web", origin: "linear", path: "full", state: "merged", startedAt: "2026-11-10T00:00:00.000Z", costCents: 12_000, unpricedCalls: 0, prsOpened: 1, prsMerged: 1, prLinks: ["https://github.com/acme/web/pull/7"], wallMs: 2 * DAY },
     { taskId: "t2", title: "Pay with wallet", project: "web", origin: "slack", path: "quick", state: "open", startedAt: "2026-11-15T00:00:00.000Z", costCents: 500, unpricedCalls: 2, prsOpened: 0, prsMerged: 0, prLinks: [], wallMs: DAY, wallSoFar: true },
-  ], ...over,
+  ], canChange: false, features: [], ...over,
 });
 
 function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<ApiResponse>, options: { role?: "owner" | "admin" | "member" } = {}) {
@@ -152,8 +152,8 @@ describe("the navigation", () => {
   it("shows Cost and time under Money to an owner and an admin, and not to a member", () => {
     for (const role of ["owner", "admin"] as const) {
       const money = visibleAdminGroups(role, false).find(g => g.id === "money")!;
-      expect(money.links.map(l => l.label)).toEqual(["Spending", "Spending limits", "Cost and time"]);
-      expect(money.links[2]!.to).toBe("/app/admin/money/report");
+      expect(money.links.map(l => l.label)).toEqual(["Spending", "People and limits", "Spending limits", "Cost and time"]);
+      expect(money.links[3]!.to).toBe("/app/admin/money/report");
     }
     expect(visibleAdminGroups("member", false).flatMap(g => g.links.map(l => l.label))).not.toContain("Cost and time");
   });

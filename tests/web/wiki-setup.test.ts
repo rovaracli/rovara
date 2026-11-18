@@ -55,8 +55,8 @@ function mount(element: ReturnType<typeof h>, options: Options = {}) {
     if (path === ROOT + "/wiki-build" && request.method === "GET") return options.build?.() ?? { status: 200, body: build() };
     if (path === ROOT + "/wiki-map" && request.method === "GET") return options.map?.() ?? { status: 200, body: { status: "ready", canManage: true, map: map() } };
     if (path === ROOT + "/wiki-map") return options.post?.(request) ?? { status: 200, body: { status: "ready", canManage: true, map: map() } };
-    if (path === ROOT + "/upkeep" && request.method === "GET") return options.upkeep?.() ?? { status: 200, body: { enabled: false, canManage: true } };
-    if (path === ROOT + "/upkeep") return options.put?.(request) ?? { status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true } };
+    if (path === ROOT + "/upkeep" && request.method === "GET") return options.upkeep?.() ?? { status: 200, body: { enabled: false, canManage: true, available: true } };
+    if (path === ROOT + "/upkeep") return options.put?.(request) ?? { status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true, available: true } };
     if (path === "/v1/app/org/spend-limits" && request.method === "GET") return options.cap?.() ?? { status: 200, body: { companyId: "org_aaaaaaaaaaaaaaaaaaaa", defaults: { upkeepMonthlyUsd: 25 }, upkeep: [] } };
     if (path.startsWith("/v1/app/org/spend-limits/upkeep/")) return options.capPut?.(request) ?? { status: 200, body: {} };
     if (path.startsWith(ROOT + "/wiki-build")) return options.post?.(request) ?? { status: 200, body: build() };
@@ -156,7 +156,7 @@ describe("before a build", () => {
   });
 
   it("a person who may not manage sees the state and no control; Code said so (canManage false)", async () => {
-    const f = mount(row(false), { build: () => ({ status: 200, body: built({ canManage: false, agents: { on: true } }) }), upkeep: () => ({ status: 200, body: { enabled: true, canManage: false } }) });
+    const f = mount(row(false), { build: () => ({ status: 200, body: built({ canManage: false, agents: { on: true } }) }), upkeep: () => ({ status: 200, body: { enabled: true, canManage: false, available: true } }) });
     const li = await open();
     expect((await screen.findByTestId("wiki-setup-read-only")).textContent).toContain("Only project admins can build the wiki");
     expect(li.textContent).toContain("Wiki built.");
@@ -355,7 +355,7 @@ describe("small behaviours the review asked for", () => {
 
 describe("nightly upkeep", () => {
   it("one switch, off by default; turning it on sends the request id and the choice; each part names its limit", async () => {
-    const f = mount(row(), { put: (request) => ({ status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true } }) });
+    const f = mount(row(), { put: (request) => ({ status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true, available: true } }) });
     await open();
     const toggle = await screen.findByRole("switch", { name: "Nightly upkeep" });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
@@ -384,6 +384,30 @@ describe("nightly upkeep", () => {
     expect((await screen.findByTestId("wiki-setup-upkeep-absent", {}, { timeout: 5_000 })).textContent).toBe("That could not be done just now. Try again.");
     expect(document.body.textContent).not.toContain(LEAK);
     g.close();
+  });
+
+  it("until Code says its nightly runs are available (false or absent), no switch, state or cap is drawn; only the not-yet line", async () => {
+    for (const body of [{ enabled: false, canManage: true, available: false }, { enabled: false, canManage: true }]) {
+      const f = mount(row(true), { upkeep: () => ({ status: 200, body }) });
+      await open();
+      expect((await screen.findByTestId("wiki-setup-upkeep-absent")).textContent).toBe(WIKI_SETUP_WORDS.upkeepNotYet);
+      expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-upkeep-state")).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-upkeep-limits")).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-cap")).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-cap-ask")).toBeNull();
+      f.close();
+    }
+  });
+
+  it("a PUT answer that omits available keeps the switch and its state visible (the switch was only drawn because Code said it was available)", async () => {
+    const f = mount(row(), { put: (request) => ({ status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true } }) });
+    await open();
+    fireEvent.click(await screen.findByRole("switch", { name: "Nightly upkeep" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
+    expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is on.");
+    expect(screen.queryByTestId("wiki-setup-upkeep-absent")).toBeNull();
+    f.close();
   });
 
   it("a refused switch shows fixed words only", async () => {

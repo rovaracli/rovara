@@ -158,7 +158,8 @@ describe("every route passes the person's own token, to Code's own path, with th
     expect(WikiSetupDeleteAnswerSchema.parse(deleted.body)).toMatchObject({ deleted: true, message: WIKI_SETUP_CODE_WORDS.deleted, view: { status: "none" } });
     const switched = await w.send("PUT", P("payments", "upkeep"), headers, { requestId: RID, on: true });
     expect(WikiSetupUpkeepSchema.parse(switched.body)).toEqual({ enabled: true, canManage: true });
-    const sent = w.codeCalls();
+    // Build, Continue and Refresh now first read the state as the person (L4-CW: so a person who may not start is never told anything about the company's AI); only the changes are listed here.
+    const sent = w.codeCalls().filter((call) => call.method !== "GET");
     expect(sent.map((call) => `${call.method} ${call.path}`)).toEqual([
       ...POSTS.map(([, codePath]) => `POST /v1/app/projects/payments/${codePath}`), "POST /v1/app/projects/payments/wiki-map", "POST /v1/app/projects/payments/wiki-build/delete", "PUT /v1/app/projects/payments/upkeep",
     ]);
@@ -262,7 +263,7 @@ describe("bodies are rebuilt from known fields (M2 to M5)", () => {
     expect((await start({ notes: "x".repeat(2_000), chipsOn: Array.from({ length: 200 }, (_, i) => `c${String(i)}`) })).status).toBe(200);
     expect((await start({ notes: "  \n " })).status).toBe(200);
     expect((await start({ notes: "two\nlines" })).status).toBe(200);
-    const sent = w.codeCalls().map((call) => call.body as any);
+    const sent = w.codeCalls().filter((call) => call.method !== "GET").map((call) => call.body as any);
     expect(sent[1]).toEqual({ requestId: RID });
     expect(sent[2].notes).toBe("two\nlines");
   });
@@ -384,6 +385,15 @@ describe("Code's failures (M11, M13, M14)", () => {
     expect(refusedMap.text).not.toContain(LEAK);
     const noStarter = setUp((call) => (call.path.endsWith("/wiki-build") && call.method === "POST" ? err(404, "NOT_FOUND", "building the wiki is not set up in this deployment") : undefined));
     expect(asRefusal(await noStarter.send("POST", P("payments", "wiki-build"), await noStarter.as("mia-token"), { requestId: RID }))).toEqual(refusal("notSetUp"));
+  });
+
+  it("the upkeep answer passes Code's `available` through when it is sent, and leaves it out when it is not (DEC 254zzl P0)", async () => {
+    const yes = setUp((call) => (call.path.endsWith("/upkeep") ? json(200, { enabled: false, canManage: true, available: true }) : undefined));
+    expect(WikiSetupUpkeepSchema.parse((await yes.send("GET", P("payments", "upkeep"), await yes.as("ada-token"))).body)).toEqual({ enabled: false, canManage: true, available: true });
+    const no = setUp((call) => (call.path.endsWith("/upkeep") ? json(200, { enabled: false, canManage: true, available: false }) : undefined));
+    expect(WikiSetupUpkeepSchema.parse((await no.send("GET", P("payments", "upkeep"), await no.as("ada-token"))).body)).toEqual({ enabled: false, canManage: true, available: false });
+    const absent = setUp((call) => (call.path.endsWith("/upkeep") ? json(200, { enabled: false, canManage: true }) : undefined));
+    expect((await absent.send("GET", P("payments", "upkeep"), await absent.as("ada-token"))).body).toEqual({ enabled: false, canManage: true });
   });
 
   it("the upkeep seam answers Cloud's own words for Code's refusals, never Code's text", async () => {

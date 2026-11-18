@@ -170,6 +170,6 @@ export type WikiSetupDeleteAnswer = z.infer<typeof WikiSetupDeleteAnswerSchema>;
 
 // ---- Nightly upkeep --------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-/** `GET` and `PUT /v1/app/projects/{p}/upkeep`: the one switch. Off until a person turns it on. `canManage`: this person may turn it on or off. */
-export const WikiSetupUpkeepSchema = z.object({ enabled: z.boolean(), canManage: z.boolean() }).strict();
+/** `GET` and `PUT /v1/app/projects/{p}/upkeep`: the one switch. Off until a person turns it on. `canManage`: this person may turn it on or off. `available` (DEC 254zzl P0): Code's nightly runs really exist; the switch and its cap show only when it is true (absent or false: neither is drawn). */
+export const WikiSetupUpkeepSchema = z.object({ enabled: z.boolean(), canManage: z.boolean(), available: z.boolean().optional() }).strict();
 export type WikiSetupUpkeep = z.infer<typeof WikiSetupUpkeepSchema>;

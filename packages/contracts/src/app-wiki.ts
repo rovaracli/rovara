@@ -1,8 +1,9 @@
-// Lead 4 slice W5 (DEC 254zi; designs-2026-11-17/wiki-and-just-answer-plan.md section 1.2): the project Wiki tab's three reads, as Rovara Code serves them (slice W2) and the
+// Lead 4 slice W5 (DEC 254zi; designs-2026-11-17/wiki-and-just-answer-plan.md section 1.2): the project Wiki tab's four reads, as Rovara Code serves them (slice W2) and the
 // fixed words Cloud answers for them. Browser-safe: it imports only zod.
 //
 // MIRROR of the read-route part of Code's `packages/contracts/src/wiki-store.ts` at 07cd73a5f (Code local branch `pr/l4-wiki-store`), schema for schema and word for word:
 //   GET /v1/app/projects/{project}/wiki                          -> WikiIndexResponseSchema
+//   GET /v1/app/projects/{project}/wiki/search?q=                 -> WikiSearchResponseSchema
 //   GET /v1/app/projects/{project}/wiki/pages/{pageId}           -> WikiPageResponseSchema
 //   GET /v1/app/projects/{project}/wiki/pages/{pageId}/sources   -> WikiSourcesResponseSchema
 // Cloud's server rebuilds each Code answer field by field into exactly these shapes (`packages/cloud-server/src/wiki-routes.ts`), so the app reads them strictly. When W2's
@@ -21,6 +22,8 @@ const NO_CONTROL_BUT_NEWLINES = /^(?:[^\p{Cc}\p{Cf}]|\n)*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_CONTROL);
 const prose = (max: number) => z.string().min(1).max(max).regex(NO_CONTROL_BUT_NEWLINES);
 const isoTime = z.string().datetime({ offset: false });
+/** The fixed footer line under every wiki page and search result. */
+export const WIKI_TRUST_LINE = "Written by Rovara from the code. It can be wrong. The code is the truth.";
 
 /** Limits, as W2's WIKI_LIMITS (the page and its claims). */
 export const WIKI_LIMITS = { pagesPerProject: 300, blocksPerPage: 120, claimsPerPage: 80, citationsPerClaim: 3, claimsPerBlock: 12, reposPerPage: 20, notesPerPage: 50 } as const;
@@ -81,10 +84,20 @@ export type WikiLastBuild = z.infer<typeof WikiLastBuildSchema>;
 export const WikiIndexResponseSchema = z.object({
   project: WikiProjectSchema,
   state: z.enum(["empty", "ready"]),
+  agentsEnabled: z.boolean(),
   pages: z.array(WikiIndexEntrySchema).max(WIKI_LIMITS.pagesPerProject),
   lastBuild: WikiLastBuildSchema.optional(),
 }).strict();
 export type WikiIndexResponse = z.infer<typeof WikiIndexResponseSchema>;
+
+/** `GET /v1/app/projects/{p}/wiki/search?q=...`; text is a bounded plain-text excerpt. */
+export const WikiSearchResponseSchema = z.object({
+  project: WikiProjectSchema,
+  query: z.string().min(1).max(80).regex(NO_CONTROL),
+  results: z.array(z.object({ pageId: WikiPageIdSchema, title: line(120), summary: z.string().max(300).regex(NO_CONTROL), snippet: prose(240) }).strict()).max(20),
+  trustLine: z.literal(WIKI_TRUST_LINE),
+}).strict();
+export type WikiSearchResponse = z.infer<typeof WikiSearchResponseSchema>;
 
 /** A claim as people see it: no quotes. */
 export const WikiShownClaimSchema = z.object({
@@ -108,9 +121,6 @@ export const WikiShownNoteSchema = z.object({
   approval: z.enum(["pending", "approved"]),
 }).strict();
 export type WikiShownNote = z.infer<typeof WikiShownNoteSchema>;
-
-/** The fixed footer line under every page (W2's WIKI_TRUST_LINE). */
-export const WIKI_TRUST_LINE = "Written by Rovara from the code. It can be wrong. The code is the truth.";
 
 /** `GET /v1/app/projects/{p}/wiki/pages/{pageId}`. */
 export const WikiPageResponseSchema = z.object({

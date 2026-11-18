@@ -9,13 +9,15 @@ import "./learning.css";
 
 /**
  * The project's saved environment (SH26): its health, how old the saved copy is, why the last rebuild was started, and Reset for a maintainer. Every sentence is a fixed one; the server sends words, counts and times.
- * Where saved environments are not on (the route answers 404) the panel shows nothing at all. A read that fails otherwise is a quiet sentence with Try again, not an alert: the panel is a secondary part of the page. Reset asks for a rebuild once per press and shows the server's answer as the new panel; a person who cannot reset sees no button (the server says so in `canReset`).
+ * Where saved environments are not on (the route answers 404) the panel shows nothing at all; where Cloud answers 501 NOT_ON_CODE_YET it is one plain muted line. A read that fails otherwise is a quiet sentence with Try again, not an alert: the panel is a secondary part of the page. Reset asks for a rebuild once per press and shows the server's answer as the new panel; a person who cannot reset sees no button (the server says so in `canReset`).
  */
 export function EnvironmentPanel({ project }: { project: string }) {
  const read = useSavedEnvPanel(project), api = useSavedEnvApi(), query = useQueryClient(), sending = useRef(false);
  const [busy, setBusy] = useState(false), [message, setMessage] = useState<{ kind: "status" | "alert"; text: string }>();
  if (read.isPending) return <section className="rv-project-section rv-learning" aria-label={T.HEADING}><Skeleton label={T.LOADING} /></section>;
  if (read.error instanceof ApiError && (read.error.status === 404 || read.error.status === 403)) return null;
+ // Cloud answers 501 NOT_ON_CODE_YET while Rovara Code does not serve saved environments: a designed absence, one plain muted line, never an error and never Try again.
+ if (read.error instanceof ApiError && (read.error.status === 501 || read.error.code === "NOT_ON_CODE_YET")) return <section className="rv-project-section rv-learning" aria-label={T.HEADING}><h2>{T.HEADING}</h2><p className="rv-muted">{T.NOT_AVAILABLE}</p></section>;
  if (read.data === undefined) return <section className="rv-project-section rv-learning" aria-label={T.HEADING}><h2>{T.HEADING}</h2><p>{T.LOAD_FAILED}</p><Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button></section>;
  const panel = read.data;
  async function reset() {

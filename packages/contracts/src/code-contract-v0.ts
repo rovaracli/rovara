@@ -996,7 +996,7 @@ POST /v1/app/tasks/{t}/review/claim | k | later | | review-groups |
 POST /v1/app/tasks/{t}/review/release | k | later | | review-groups |
 POST /v1/app/tasks/{t}/review/reassign | k | later | | review-groups |
 POST /v1/app/projects/{p}/code | k | request | tasks.start | code | T
-POST /v1/app/projects/{p}/code/suggest | k | request | | code |
+POST /v1/app/projects/{p}/code/suggest | k | request | | code | T
 POST /v1/app/projects/{p}/start-preview | k | later | | code |
 GET /v1/app/projects | k | admin | access.check,client.projects.get | projects | T
 POST /v1/app/projects | k | admin | client.projects.create,client.projects.bulk | onboarding | T
@@ -1010,7 +1010,7 @@ PUT /v1/app/projects/{p}/people/{who} | k | admin | client.members.put | project
 DELETE /v1/app/projects/{p}/people/{who} | k | admin | client.members.remove | project-people |
 GET /v1/app/projects/{p}/code-settings | k | admin | client.projects.codeSettings.get | project-people |
 PUT /v1/app/projects/{p}/code-settings | k | admin | client.projects.codeSettings.put | project-people |
-GET /v1/app/projects/{p}/how-we-work | k | how-we-work | howWeWork.get | how-we-work | L
+GET /v1/app/projects/{p}/how-we-work | k | how-we-work | howWeWork.get | how-we-work | LT
 POST /v1/app/projects/{p}/playbook/process | k | how-we-work | playbook.process | how-we-work |
 GET /v1/app/projects/{p}/playbook | k | how-we-work | playbook.get | how-we-work | L
 PUT /v1/app/projects/{p}/playbook | k | how-we-work | playbook.put | how-we-work | L
@@ -1057,6 +1057,7 @@ POST /v1/app/projects/{p}/setup-agent/stop | k | later | | setup-agent | LT
 GET /v1/app/projects/{p}/setup-status | k | later | client.projects.setupStatus | setup-status | T
 PUT /v1/app/projects/{p}/setup-status/skips | k | later | client.projects.setupSkips | setup-status | T
 GET /v1/app/projects/{p}/wiki | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/search | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId} | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId}/corrections | k | later | | wiki | T
@@ -1078,6 +1079,8 @@ POST /v1/app/projects/{p}/wiki-build/agents | k | later | | wiki-setup | T
 POST /v1/app/projects/{p}/wiki-build/delete | k | later | | wiki-setup | T
 GET /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 PUT /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/answers | k | later | | answers | T
+POST /v1/app/projects/{p}/answers/{a}/not-right | k | later | | answers | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | LT
 POST /v1/app/projects/{p}/setup-agent/discard | k | later | | setup-agent | LT
@@ -1206,6 +1209,11 @@ GET /v1/app/budget | g | budgets | | spending |
 GET /v1/app/org/spend | g | budgets | | spending |
 GET /v1/app/org/report | c | admin | | admin/report | T
 GET /v1/app/org/report/features/{featureId} | c | admin | | admin/report | T
+POST /v1/app/org/report/features | c | admin | | admin/report | T
+POST /v1/app/org/report/features/{featureId}/rename | c | admin | | admin/report | T
+POST /v1/app/org/report/features/{featureId}/merge | c | admin | | admin/report | T
+POST /v1/app/org/report/features/{featureId}/state | c | admin | | admin/report | T
+POST /v1/app/tasks/{taskId}/feature | c | admin | | admin/report | T
 GET /v1/app/spend-requests | g | budgets | | spending |
 GET /v1/app/org/budget-settings | g | budgets | | spending |
 GET /v1/app/org/engine-model | k | later | company.engineModel.get | setup/AiSpendStep | T
