@@ -47,6 +47,10 @@ export const WikiRequestBodySchema = z.object({ requestId: z.string().uuid() }).
 export type WikiRequestBody = z.infer<typeof WikiRequestBodySchema>;
 export const WikiSwitchBodySchema = z.object({ requestId: z.string().uuid(), on: z.boolean() }).strict();
 export type WikiSwitchBody = z.infer<typeof WikiSwitchBodySchema>;
+/** `PUT .../upkeep` (L4-W6b, DEC 254zzt option A): the project switch, plus `allowSystemRuns` on the setup step (one company owner or admin act: the company's consent AND the project switch). `allowSystemRuns: false` with `on: true` is not a request. */
+export const WikiUpkeepBodySchema = z.object({ requestId: z.string().uuid(), on: z.boolean(), allowSystemRuns: z.boolean().optional() }).strict()
+  .refine((body) => !(body.allowSystemRuns === false && body.on), { message: "the request is not valid" });
+export type WikiUpkeepBody = z.infer<typeof WikiUpkeepBodySchema>;
 
 // ---- Words ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -90,6 +94,8 @@ export const WIKI_SETUP_WORDS = Object.freeze({
   upkeepNotAllowed: "Only company owners and admins, or this project's admins, can change nightly upkeep.",
   upkeepNotYet: "Nightly upkeep isn't available on this Rovara yet.",
   upkeepUnavailable: "Nightly upkeep could not be read or changed just now. Try again.",
+  upkeepNeedsConsent: "A company admin must allow nightly upkeep first.",
+  upkeepConsentNotAllowed: "Only company owners and admins can allow nightly upkeep for the company.",
 });
 export const WIKI_SETUP_SENTENCES: ReadonlySet<string> = new Set([...Object.values(WIKI_SETUP_CODE_WORDS), ...Object.values(WIKI_SETUP_WORDS)]);
 
@@ -170,6 +176,25 @@ export type WikiSetupDeleteAnswer = z.infer<typeof WikiSetupDeleteAnswerSchema>;
 
 // ---- Nightly upkeep --------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-/** `GET` and `PUT /v1/app/projects/{p}/upkeep`: the one switch. Off until a person turns it on. `canManage`: this person may turn it on or off. `available` (DEC 254zzl P0): Code's nightly runs really exist; the switch and its cap show only when it is true (absent or false: neither is drawn). */
-export const WikiSetupUpkeepSchema = z.object({ enabled: z.boolean(), canManage: z.boolean(), available: z.boolean().optional() }).strict();
+/**
+ * The monthly cap as Code states it (L4-W6b): `monthlyUsd` is the number Code read from the gateway, or `null` where Code has no read (the page then says "Set in Spending limits" and invents no figure);
+ * `canRaise` is true only for a live company owner or admin.
+ */
+export const WikiSetupUpkeepCapSchema = z.object({ monthlyUsd: z.number().min(0).max(1_000_000).nullable(), canRaise: z.boolean() }).strict();
+export type WikiSetupUpkeepCap = z.infer<typeof WikiSetupUpkeepCapSchema>;
+
+/**
+ * `GET` and `PUT /v1/app/projects/{p}/upkeep` (Code L4-P2, DEC 254zzt option A "two locks"): the one switch and the consent behind it. Off until a person turns it on.
+ *   enabled              the PROJECT's switch.
+ *   canManage            this person may turn the project switch on or off.
+ *   available            (DEC 254zzl P0) the operator's ceiling covers this company; the switch and its cap show only when it is true (absent or false: only the "isn't available" line is drawn).
+ *   systemRunsOn         EFFECTIVE system runs: the ceiling AND the company's consent (what really runs). The project switch counts only while this is true.
+ *   canEnableSystemRuns  a live company owner or admin, with the ceiling on: this person may give the company's consent (the one setup choice).
+ *   cap                  the monthly cap as Code states it.
+ * The last three are absent from a Code that has the project switch only (L4-N1): the page then shows the plain switch to whoever `canManage`, as before.
+ */
+export const WikiSetupUpkeepSchema = z.object({
+  enabled: z.boolean(), canManage: z.boolean(), available: z.boolean().optional(),
+  systemRunsOn: z.boolean().optional(), canEnableSystemRuns: z.boolean().optional(), cap: WikiSetupUpkeepCapSchema.optional(),
+}).strict();
 export type WikiSetupUpkeep = z.infer<typeof WikiSetupUpkeepSchema>;

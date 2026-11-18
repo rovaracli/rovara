@@ -7,6 +7,9 @@
 // Mutants (each killed by the named test, run by hand): M1 project in Code's path (every route); M2 extra body field forwarded (bodies); M3 notes unbounded; M4 chip ids unbounded/duplicates; M5 requestId not a uuid;
 // M6 budgetCents/spentCents/taskId passed (no dollars); M7 payer not checked; M8 unknown sentence passed (sentences); M9 forecast price accepted (map); M10 map for another project accepted (map);
 // M11 Code's text echoed on refusal (failures); M12 query forwarded; M13 unknown-route 404 not "not yet"; M14 Code's unknown code/status passed (failures); M15 upkeep refusal words passed from Code; M16 log carries the notes.
+// L4-W6b (the consent step of the upkeep switch, Code L4-P2; each killed by the named test in "the upkeep consent step"): R1 extra body field forwarded (PUT body); R2 allowSystemRuns not checked to be a boolean; R3 allowSystemRuns false with on true
+// forwarded; R4 Code's extra answer fields passed (rebuild); R5 cap.monthlyUsd not range-checked; R6 null cap turned into a number; R7 Code's consent words passed on instead of Cloud's; R8 NOT_AVAILABLE_HERE read as a fault;
+// R9 canEnableSystemRuns invented when Code omits it; R10 allowSystemRuns added to a plain switch; R11 the log says what the person chose, not just the action; R12 another company's project forwarded.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CodeClient, LocalSessionStore, LocalWorkSessionStore, WIKI_SETUP_ANSWERS, WIKI_SETUP_CODE_WORDS, WIKI_SETUP_WORDS, buildAnswer, createCloudHandler, mapViewAnswer, wikiSetupRefusal, type CloudRequest, type CodeSession,
@@ -427,6 +430,134 @@ describe("Code's failures (M11, M13, M14)", () => {
       expect(res.text).not.toContain(LEAK);
       expect(await w.store.get("cookie-ada-token"), path).toBeUndefined();
     }
+  });
+});
+
+// ---- L4-W6b: the consent step -----------------------------------------------------------------------------------------------------------------------------------------------------------
+const CODE_CONSENT = {
+  notAllowed: "Only company owners and admins can allow or stop Rovara's automatic runs for the company.",
+  needsConsent: "A company owner or admin has to allow Rovara's automatic runs for the company first.",
+};
+const VIEW = { enabled: false, canManage: true, available: true, systemRunsOn: false, canEnableSystemRuns: true, cap: { monthlyUsd: null, canRaise: true } };
+const upkeepWorld = (answer: (call: CodeCall) => Response) => setUp((call) => (call.path.endsWith("/upkeep") ? answer(call) : undefined));
+const putCalls = (w: ReturnType<typeof setUp>) => w.codeCalls().filter((call) => call.method === "PUT");
+
+describe("the upkeep consent step (L4-W6b)", () => {
+  it("GET rebuilds Code's answer field by field: the three new members pass, anything else Code adds does not (R4, R9)", async () => {
+    const w = upkeepWorld(() => json(200, { ...VIEW, secretBalanceUsd: 4242, taskId: "task-secret", cap: { monthlyUsd: 25, canRaise: false, ledger: "SECRET-LEDGER" } }));
+    const res = await w.send("GET", P("payments", "upkeep"), await w.as("ada-token"));
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ...VIEW, cap: { monthlyUsd: 25, canRaise: false } });
+    expect(WikiSetupUpkeepSchema.parse(res.body)).toEqual(res.body);
+    expect(res.text).not.toMatch(/SECRET|4242|task-secret/u);
+    // Code omitting a member is not turned into an answer: nothing is invented (a Code without the consent step, L4-N1).
+    const old = upkeepWorld(() => json(200, { enabled: true, canManage: true, available: true }));
+    expect((await old.send("GET", P("payments", "upkeep"), await old.as("ada-token"))).body).toEqual({ enabled: true, canManage: true, available: true });
+    const partial = upkeepWorld(() => json(200, { enabled: false, canManage: true, available: true, systemRunsOn: false }));
+    const got = (await partial.send("GET", P("payments", "upkeep"), await partial.as("ada-token"))).body;
+    expect(got).toEqual({ enabled: false, canManage: true, available: true, systemRunsOn: false });
+    expect("canEnableSystemRuns" in got).toBe(false);
+  });
+
+  it("a null cap stays null (no number is made up) and a stated number passes as it is (R6)", async () => {
+    const none = upkeepWorld(() => json(200, VIEW));
+    expect((await none.send("GET", P("payments", "upkeep"), await none.as("ada-token"))).body.cap).toEqual({ monthlyUsd: null, canRaise: true });
+    const zero = upkeepWorld(() => json(200, { ...VIEW, cap: { monthlyUsd: 0, canRaise: true } }));
+    expect((await zero.send("GET", P("payments", "upkeep"), await zero.as("ada-token"))).body.cap).toEqual({ monthlyUsd: 0, canRaise: true });
+  });
+
+  it("an answer that does not read is 'couldn't be read', in fixed words (R5)", async () => {
+    const bad: unknown[] = [
+      { ...VIEW, systemRunsOn: "yes" }, { ...VIEW, canEnableSystemRuns: 1 }, { ...VIEW, cap: "25" }, { ...VIEW, cap: null }, { ...VIEW, cap: { monthlyUsd: -1, canRaise: true } },
+      { ...VIEW, cap: { monthlyUsd: 1_000_001, canRaise: true } }, { ...VIEW, cap: { monthlyUsd: "25", canRaise: true } }, { ...VIEW, cap: { monthlyUsd: 25 } }, { ...VIEW, cap: { monthlyUsd: undefined, canRaise: true } },
+      { ...VIEW, cap: [] },
+    ];
+    for (const one of bad) {
+      const w = upkeepWorld(() => json(200, one));
+      const res = await w.send("GET", P("payments", "upkeep"), await w.as("ada-token"));
+      expect(asRefusal(res), JSON.stringify(one)).toEqual(refusal("upkeepUnavailable"));
+    }
+  });
+
+  it("PUT sends Code the request id, the choice and, only when the page sent it, allowSystemRuns (R1, R10)", async () => {
+    const w = upkeepWorld((call) => json(200, { ...VIEW, enabled: (call.body as any).on, systemRunsOn: true }));
+    const headers = await w.as("ada-token");
+    expect((await w.send("PUT", P("payments", "upkeep"), headers, { requestId: RID, on: true, allowSystemRuns: true })).status).toBe(200);
+    expect((await w.send("PUT", P("payments", "upkeep"), headers, { requestId: RID, on: false })).status).toBe(200);
+    expect((await w.send("PUT", P("payments", "upkeep"), headers, { requestId: RID, on: false, allowSystemRuns: false })).status).toBe(200);
+    expect(putCalls(w).map((call) => call.body)).toEqual([{ requestId: RID, on: true, allowSystemRuns: true }, { requestId: RID, on: false }, { requestId: RID, on: false, allowSystemRuns: false }]);
+    expect(putCalls(w).map((call) => call.path)).toEqual(Array(3).fill("/v1/app/projects/payments/upkeep"));
+  });
+
+  it("PUT bodies outside the allow-list are refused before Code is asked (R1, R2, R3)", async () => {
+    const w = upkeepWorld(() => json(200, VIEW));
+    const headers = await w.as("ada-token");
+    const refused: unknown[] = [
+      { requestId: RID, on: true, allowSystemRuns: true, companyId: A }, { requestId: RID, on: true, monthlyUsd: 500 }, { requestId: RID, on: true, cap: { monthlyUsd: 500 } },
+      { requestId: RID, on: true, allowSystemRuns: "yes" }, { requestId: RID, on: true, allowSystemRuns: 1 }, { requestId: RID, on: true, allowSystemRuns: null },
+      { requestId: RID, on: true, allowSystemRuns: false }, { requestId: RID, allowSystemRuns: true }, { requestId: RID, on: "true" }, { on: true, allowSystemRuns: true },
+      { requestId: "not-a-uuid", on: true }, [], '"text"', "null",
+    ];
+    for (const body of refused) {
+      const res = await w.send("PUT", P("payments", "upkeep"), headers, body);
+      expect(asRefusal(res), JSON.stringify(body)).toEqual(refusal("invalid"));
+    }
+    expect(putCalls(w)).toHaveLength(0);
+    expect((await w.send("PUT", P("payments", "upkeep") + "?x=1", headers, { requestId: RID, on: true })).status).toBe(400);
+    expect(putCalls(w)).toHaveLength(0);
+  });
+
+  it("Code's consent words (and 'not available here') become Cloud's own words; no other text of Code's gets through (R7, R8)", async () => {
+    const cases: Array<[number, string, string, keyof typeof WIKI_SETUP_ANSWERS]> = [
+      [403, "FORBIDDEN", CODE_CONSENT.needsConsent, "upkeepNeedsConsent"], [403, "FORBIDDEN", CODE_CONSENT.notAllowed, "upkeepConsentNotAllowed"], [403, "FORBIDDEN", LEAK, "upkeepNotAllowed"],
+      [409, "NOT_AVAILABLE_HERE", "Nightly upkeep isn't available on this Rovara yet. " + LEAK, "upkeepNotYet"], [501, "NOT_AVAILABLE_HERE", LEAK, "upkeepNotYet"],
+      [400, "CONFIG_INVALID", LEAK, "invalid"], [503, "RUNTIME_UNAVAILABLE", LEAK, "upkeepUnavailable"],
+    ];
+    for (const [status, code, message, key] of cases) {
+      const w = upkeepWorld(() => err(status, code, message));
+      const res = await w.send("PUT", P("payments", "upkeep"), await w.as("mia-token"), { requestId: RID, on: true });
+      expect(asRefusal(res), `${status} ${code} ${message}`).toEqual(refusal(key));
+      expect(res.text).not.toContain(LEAK);
+    }
+    // The consent words are Cloud's own and are known sentences of the panel (the page may show them).
+    expect(WIKI_SETUP_SENTENCES.has(WIKI_SETUP_WORDS.upkeepNeedsConsent)).toBe(true);
+    expect(WIKI_SETUP_SENTENCES.has(WIKI_SETUP_WORDS.upkeepConsentNotAllowed)).toBe(true);
+    // The same words on a 403 from another status are not the consent step.
+    const other = upkeepWorld(() => err(409, "FORBIDDEN", CODE_CONSENT.needsConsent));
+    expect(asRefusal(await other.send("PUT", P("payments", "upkeep"), await other.as("mia-token"), { requestId: RID, on: true }))).toEqual(refusal("upkeepUnavailable"));
+  });
+
+  it("two companies: another company's person, or another company's project, is the same 404 and nothing of the consent crosses (R12)", async () => {
+    const w = upkeepWorld((call) => {
+      const project = /projects\/([^/]+)\//u.exec(call.path)![1]!;
+      const person = PEOPLE[(call.authorization ?? "").replace(/^Bearer /u, "")]!;
+      if (standing(person, project) === undefined) return err(404, "NOT_FOUND", `project not found ${LEAK}`);
+      return json(200, { ...VIEW, enabled: call.method === "PUT" ? (call.body as any).on : false, systemRunsOn: call.method === "PUT" });
+    });
+    const body = { requestId: RID, on: true, allowSystemRuns: true };
+    const ada = await w.as("ada-token"), bob = await w.as("bob-token");
+    expect((await w.send("PUT", P("payments", "upkeep"), ada, body)).body.systemRunsOn).toBe(true);
+    expect(asRefusal(await w.send("PUT", P("payments", "upkeep"), bob, body))).toEqual(refusal("notFound"));
+    expect(asRefusal(await w.send("GET", P("payments", "upkeep"), bob))).toEqual(refusal("notFound"));
+    expect(asRefusal(await w.send("PUT", P("ledger", "upkeep"), ada, body))).toEqual(refusal("notFound"));
+    expect((await w.send("PUT", P("ledger", "upkeep"), bob, body)).status).toBe(200);
+    // Each ask carried its own person's token and only the path's project.
+    expect(w.codeCalls().map((call) => [call.method, call.path, call.authorization])).toEqual([
+      ["PUT", "/v1/app/projects/payments/upkeep", "Bearer ada-token"], ["PUT", "/v1/app/projects/payments/upkeep", "Bearer bob-token"], ["GET", "/v1/app/projects/payments/upkeep", "Bearer bob-token"],
+      ["PUT", "/v1/app/projects/ledger/upkeep", "Bearer ada-token"], ["PUT", "/v1/app/projects/ledger/upkeep", "Bearer bob-token"],
+    ]);
+    expect(JSON.stringify((await w.send("PUT", P("payments", "upkeep"), bob, body)).body)).not.toContain(LEAK);
+  });
+
+  it("the log says only that the setup step or the switch was used, and where (R11)", async () => {
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(" ")); });
+    const w = upkeepWorld(() => json(200, VIEW));
+    const headers = await w.as("ada-token");
+    await w.send("PUT", P("payments", "upkeep"), headers, { requestId: RID, on: true, allowSystemRuns: true });
+    await w.send("PUT", P("payments", "upkeep"), headers, { requestId: RID, on: false });
+    const mine = lines.filter((one) => one.includes("cloud.wiki_setup")).map((one) => JSON.parse(one));
+    expect(mine).toEqual([{ event: "cloud.wiki_setup", action: "upkeep_setup", project: "payments" }, { event: "cloud.wiki_setup", action: "upkeep_switch", project: "payments" }]);
   });
 });
 

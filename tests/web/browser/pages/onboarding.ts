@@ -11,7 +11,7 @@ export async function setNoCompany(page: Page, on: boolean): Promise<void> {
 }
 
 /** Makes the pretend Code's next sign-in this person (tests/support/fake-code.ts PEOPLE: priya, sam). */
-export async function setFakePerson(page: Page, person: "priya" | "sam"): Promise<void> {
+export async function setFakePerson(page: Page, person: "priya" | "sam" | "zed"): Promise<void> {
   const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/person`, { data: { person } });
   expect(answer.status()).toBe(200);
 }

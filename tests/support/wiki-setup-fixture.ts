@@ -6,6 +6,9 @@ export interface FakeWikiSetup {
   status: "none" | "running" | "built" | "stopped";
   stop?: "built" | "budget_used" | "pages_used" | "time_used" | "stopped_by_person" | "needs_ai_key" | "repo_unreadable" | "access_lost" | "infrastructure";
   pages: number; refreshPages: number; agentsOn: boolean; aiKey: "connected" | "missing" | "unknown"; mapMade: boolean; planned: number; written: number; upkeepOn: boolean; off?: boolean; upkeepOff?: boolean;
+  /** L4-P2: the operator ceiling is off (Code answers `available: false`). */ ceilingOff?: boolean;
+  /** The cap Code states (it has no read today, so the default is `null`). */ capUsd?: number;
+  /** A Code with the project switch only (L4-N1): no consent members in the answer. */ legacyUpkeep?: boolean;
 }
 const commit = (c: string) => c.repeat(40);
 
