@@ -1057,6 +1057,7 @@ POST /v1/app/projects/{p}/setup-agent/stop | k | later | | setup-agent | LT
 GET /v1/app/projects/{p}/setup-status | k | later | client.projects.setupStatus | setup-status | T
 PUT /v1/app/projects/{p}/setup-status/skips | k | later | client.projects.setupSkips | setup-status | T
 GET /v1/app/projects/{p}/wiki | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/search | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId} | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId}/corrections | k | later | | wiki | T

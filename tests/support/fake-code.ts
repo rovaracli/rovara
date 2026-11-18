@@ -15,7 +15,7 @@ import {
   type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
-import { wikiIndex, wikiPage, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
+import { wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
 import { wikiMapOf, wikiSetupBuildView, type FakeWikiSetup } from "./wiki-setup-fixture.js";
 import { WIKI_SETUP_CODE_WORDS } from "../../packages/contracts/src/app-wiki-setup.js";
 
@@ -200,10 +200,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return undefined;
   };
   /** Code's wiki read routes (W2; `/v1/app/projects/{p}/wiki`, `.../pages/{id}`, `.../pages/{id}/sources`), as the person; every refusal is Code's one 404. */
-  const wikiAnswer = (method: string, path: string, person: Person, body: unknown = {}): { status: number; body: unknown } | undefined => {
+  const wikiAnswer = (method: string, path: string, person: Person, body: unknown = {}, search: URLSearchParams = new URLSearchParams()): { status: number; body: unknown } | undefined => {
     const done = corrected(method, path, person, body);
     if (done !== undefined) return done;
-    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/pages\/([^/]+)(\/sources)?)?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/(search|pages\/([^/]+)(\/sources)?))?$/u.exec(path);
     if (match === null || method !== "GET") return undefined;
     const name = decodeURIComponent(match[1]!), set = wikis.get(name) ?? {};
     if (set.off) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
@@ -211,8 +211,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (!wikiReads(person, name)) return refuse;
     if (set.broken) return { status: 200, body: { project: "elsewhere" } };
     if (match[2] === undefined) return { status: 200, body: wikiIndex(name, set) };
-    const id = decodeURIComponent(match[2]);
-    const answered = match[3] === undefined ? withCorrections(name, id, wikiPage(name, id, set)) : wikiSources(name, id, set);
+    if (match[2] === "search") return { status: 200, body: wikiSearch(name, search.get("q") ?? "") };
+    const id = decodeURIComponent(match[3]!);
+    const answered = match[4] === undefined ? withCorrections(name, id, wikiPage(name, id, set)) : wikiSources(name, id, set);
     return answered === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "page not found" } } } : { status: 200, body: answered };
   };
   // L4-D2 (Code #899): the candidate waiting for a decision on a project (set by the specs through /__fake/setup-apply), and what decide does with it.
@@ -1485,7 +1486,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed) ?? howWeWorkAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
           if (who === undefined && /\/how-we-work$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/(?:wiki(?:[-/]|$)|upkeep$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal|confirm|discard|decide))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });

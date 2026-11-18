@@ -81,7 +81,7 @@ const DEFS: Def[] = [
 ];
 
 export type WikiVariant = "ready" | "none" | "building" | "stopped";
-export interface WikiFixtureOptions { state?: WikiVariant }
+export interface WikiFixtureOptions { state?: WikiVariant; agentsEnabled?: boolean }
 
 const shown = (c: ClaimDef): WikiShownClaim => ({
   claimId: c.id, text: c.text, source: c.source ?? "found", flagged: c.flagged ?? false,
@@ -91,16 +91,26 @@ const counts = (def: Def) => ({ found: def.claims.filter((c) => (c.source ?? "fo
 
 export function wikiIndex(project: string, options: WikiFixtureOptions = {}): WikiIndexResponse {
   const state = options.state ?? "ready";
-  if (state === "none") return { project, state: "empty", pages: [] };
-  if (state === "building") return { project, state: "empty", pages: [], lastBuild: { buildId: "build-0001", kind: "first", state: "running", startedAt: iso(0) } };
+  if (state === "none") return { project, state: "empty", agentsEnabled: options.agentsEnabled ?? false, pages: [] };
+  if (state === "building") return { project, state: "empty", agentsEnabled: options.agentsEnabled ?? false, pages: [], lastBuild: { buildId: "build-0001", kind: "first", state: "running", startedAt: iso(0) } };
   return {
-    project, state: "ready",
+    project, state: "ready", agentsEnabled: options.agentsEnabled ?? false,
     pages: DEFS.map((def) => ({
       pageId: def.id, kind: def.kind, title: def.title, summary: def.summary, ...(def.parent === undefined ? {} : { parentId: def.parent }), order: def.order,
       repos: def.repos.map((repo) => ({ repo, commit: commitOf(repo) })), writtenAt: iso(def.writtenAgo), claims: counts(def), flagged: def.flagged ?? false,
     })),
     lastBuild: state === "stopped" ? { buildId: "build-0002", kind: "refresh", state: "stopped", startedAt: iso(1), endedAt: iso(1), stopReason: "cap" } : { buildId: "build-0001", kind: "first", state: "done", startedAt: iso(3), endedAt: iso(3) },
   };
+}
+
+export function wikiSearch(project: string, query: string) {
+  const q = query.toLocaleLowerCase("en-US");
+  const results = DEFS.flatMap((def) => {
+    const text = [def.title, def.summary, ...def.blocks.map((block) => block.kind === "diagram" ? block.mermaid : block.text)].join("\n");
+    const at = text.toLocaleLowerCase("en-US").indexOf(q);
+    return at < 0 ? [] : [{ pageId: def.id, title: def.title, summary: def.summary, snippet: text.slice(Math.max(0, at - 80), at + query.length + 120) }];
+  }).slice(0, 20);
+  return { project, query, results, trustLine: WIKI_TRUST_LINE };
 }
 
 export function wikiPage(project: string, id: string, options: WikiFixtureOptions = {}): WikiPageResponse | undefined {
