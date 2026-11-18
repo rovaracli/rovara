@@ -65,3 +65,5 @@ export { WIKI_SETUP_ANSWERS, WIKI_SETUP_CODE_WORDS, WIKI_SETUP_ROUTES, WIKI_SETU
 export { WIKI_ANSWERS, WIKI_ROUTES, WIKI_WORDS, indexAnswer, pageAnswer, searchAnswer, sourcesAnswer, wikiRefusal } from "./wiki-routes.js";
 export { CODE_REPORT_FEATURES_PATH, CODE_REPORT_TASKS_PATH, FEATURE_TASKS_MAX, NO_FEATURE_ID, REPORT_PAGES_MAX, REPORT_ROUTES, REPORT_WORDS, allocateCents, buildFeatureDetail, buildReport, parseReportFilters, readRow, type CostReport, type FeatureDetail, type ReportGroup, type ReportNumbers, type ReportTask } from "./report-routes.js";
 export { ANSWERS_ANSWERS, ANSWERS_ROUTES, ANSWERS_WORDS, answerObject, answersRefusal, notRightObject, suggestObject } from "./answers-routes.js";
+export { PEOPLE_LIMITS_ROUTES, PEOPLE_LIMITS_WORDS, type PersonSpendReader } from "./people-limits-routes.js";
+export { DynamoGatewayMeterReader, meterPartition, personMonthSort } from "./gateway-meter-read.js";

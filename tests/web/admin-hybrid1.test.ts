@@ -53,7 +53,7 @@ const writes = (f: ReturnType<typeof mount>) => f.request.mock.calls.map(([r]) =
 
 describe("spending numbers", () => {
  it("reads only numbers that are the right shape", () => {
-  const read = readOrgSpend({ spentThisMonthUsd: -1, remainingUsd: 10, heldUsd: "x", byProject: [{ name: "a", spentUsd: 5 }, { name: "bad" }, 7], byPerson: "no" });
+  const read = readOrgSpend({ spentThisMonthUsd: -1, remainingUsd: 10, heldUsd: "x", byProject: [{ name: "a", spentUsd: 5 }, { name: "bad" }, 7], byPerson: [{ name: "Priya", spentUsd: 5, mergedCount: 3 }] });
   expect(read).toEqual({ remainingUsd: 10, projects: [{ name: "a", spentUsd: 5 }] });
   expect(() => readOrgSpend("nope")).toThrow();
  });
@@ -116,8 +116,10 @@ describe("Spending", () => {
    const projects = screen.getByRole("table", { name: "Spending by project" });
    expect(within(projects).getByText("evals-api")).toBeTruthy(); expect(within(projects).getByText("$201.40")).toBeTruthy();
    expect(projects.textContent).toContain("$0.40 left");
-   const people = screen.getByRole("table", { name: "Spending by person" });
-   expect(within(people).getByText("Priya Raman")).toBeTruthy(); expect(within(people).getByText("company default")).toBeTruthy();
+   // Per-person spending is not on this page at all (owner rule D2): not the table, not the names, not a merged count; only a link to People and limits.
+   expect(screen.queryByRole("table", { name: "Spending by person" })).toBeNull();
+   expect(document.body.textContent).not.toMatch(/Priya Raman|Sam Okoye|company default/u);
+   expect(screen.getAllByRole("link", { name: "People and limits" }).map(link => link.getAttribute("href"))).toEqual(["/app/admin/money/people", "/app/admin/money/people"]);
    expect(screen.queryByText("Not connected yet")).toBeNull();
    expect(screen.queryByText("This month's budget is used up")).toBeNull();
   } finally { f.close(); }
@@ -144,13 +146,13 @@ describe("Spending", () => {
    expect(screen.queryByRole("table", { name: "Spending by project" })).toBeNull();
   } finally { f.close(); }
  });
- it("says per-project and per-person amounts are not connected when only the totals are served", async () => {
+ it("says per-project amounts are not connected when only the totals are served", async () => {
   const f = mount("/app/admin/money/budgets", r => (r.path === "/v1/app/org/spend" ? ok({ spentThisMonthUsd: 12, remainingUsd: 88 }) : ok({})));
-  try { await screen.findByRole("group", { name: /Spending in/ }); expect(screen.getAllByTestId("not-connected")).toHaveLength(2); } finally { f.close(); }
+  try { await screen.findByRole("group", { name: /Spending in/ }); expect(screen.getAllByTestId("not-connected")).toHaveLength(1); } finally { f.close(); }
  });
  it("has no accessibility violations with amounts shown", async () => {
   const f = mount("/app/admin/money/budgets", r => (r.path === "/v1/app/org/spend" ? ok(spendBody) : ok({})));
-  try { await screen.findByRole("table", { name: "Spending by person" }); await expectNoAxeViolations(f.container); } finally { f.close(); }
+  try { await screen.findByRole("table", { name: "Spending by project" }); await expectNoAxeViolations(f.container); } finally { f.close(); }
  });
 });
 

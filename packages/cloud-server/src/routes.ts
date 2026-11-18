@@ -28,6 +28,7 @@ import { HOW_WE_WORK_ROUTES } from "./how-we-work-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
 import { REPORT_ROUTES } from "./report-routes.js";
+import { PEOPLE_LIMITS_ROUTES } from "./people-limits-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
 import { NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
@@ -898,6 +899,8 @@ export const ROUTES: Route[] = [
   // The project setup checklist and the hosted setup run (guided onboarding PR 9): Code decides who may; Cloud passes the person's token and fixed words.
   ...SETUP_CHECKLIST_ROUTES,
   ...PEOPLE_ROUTES,
+  // The admin's People and limits read (cost report slice A6): each member's spend this month against their limit, by name, company owners and admins only.
+  ...PEOPLE_LIMITS_ROUTES,
   // The project Wiki tab's reads (lead 4 W5): Code decides who may read; Cloud passes the person's token, rebuilds each answer for that project only, and answers in fixed words.
   ...WIKI_ROUTES,
   // The wiki's corrections (lead 4 C1): Code decides who may add notes, mark wrong, approve and resolve; Cloud passes the person's token and rebuilds each answer.

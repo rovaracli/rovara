@@ -10,7 +10,8 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
   { to: "/app/admin/domains", label: "Company domains", blurb: "Verify the email domains that belong to the company.", ownerOnly: true },
  ] },
  { id: "money", title: "Money", links: [
-  { to: "/app/admin/money/budgets", label: "Spending", blurb: "Spent this month, what is left, by project and by person." },
+  { to: "/app/admin/money/budgets", label: "Spending", blurb: "Spent this month, what is left, and by project." },
+  { to: "/app/admin/money/people", label: "People and limits", blurb: "Each person's spending this month against their monthly limit. Owners and admins only." },
   { to: "/app/admin/money/limits", label: "Spending limits", blurb: "A monthly limit on agents' AI spending for one project or one person, over the company default." },
   { to: "/app/admin/money/report", label: "Cost and time", blurb: "What work cost and how long it took, by feature and by project." },
  ] },

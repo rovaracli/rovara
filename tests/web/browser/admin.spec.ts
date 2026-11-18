@@ -37,7 +37,7 @@ test("Spending says it is not connected yet when Cloud has no spending read", as
   await admin.expectNotConnected("Company spending");
 });
 
-test("Spending shows real amounts, by project and by person, and the over-budget state", async ({ page }) => {
+test("Spending shows real amounts, by project (people are on their own page), and the over-budget state", async ({ page }) => {
   await serve(page, "/org/spend", SPEND);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.spending);
@@ -47,7 +47,10 @@ test("Spending shows real amounts, by project and by person, and the over-budget
   await expect(stats).toContainText("$549.20");
   await expect(admin.table("Spending by project")).toContainText("evals-api");
   await expect(admin.table("Spending by project")).toContainText("$0.40 left");
-  await expect(admin.table("Spending by person")).toContainText("Sam Okoye");
+  // Per-person spending is on People and limits only (owner rule D2): a link here, no table, no names.
+  await expect(page.getByRole("table", { name: "Spending by person" })).toHaveCount(0);
+  await expect(page.getByText("Sam Okoye")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "People and limits" }).first()).toHaveAttribute("href", "/app/admin/money/people");
   await expect(page.getByText("This month's budget is used up")).toHaveCount(0);
   // Over budget: Rovara says so, by how much, and where to raise the limit.
   await page.unroute("**/v1/web/org/spend");
