@@ -43,7 +43,8 @@ export function createCodeApi(host: AppHost) {
      if (signal?.aborted === true) cancel();else signal?.addEventListener("abort", cancel, { once: true });
     })]);
     const parsed = response.status === 200 ? TaskStopStartPreviewSchema.safeParse(withoutRequestId(response.body)) : undefined;
-    return parsed?.success === true && parsed.data.project === name && parsed.data.kind === "captured" ? parsed.data : undefined;
+    // "captured" carries the stop; "unknown" (Rovara Code has no per-task stop to show yet) is passed on so the page can say so plainly; "disabled" and anything unreadable show nothing.
+    return parsed?.success === true && parsed.data.project === name && (parsed.data.kind === "captured" || parsed.data.kind === "unknown") ? parsed.data : undefined;
    } catch { return undefined; }
    finally { clearTimeout(timer);if (cancel !== undefined) signal?.removeEventListener("abort", cancel); }
   },

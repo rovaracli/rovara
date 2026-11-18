@@ -158,6 +158,19 @@ it("sends no start-preview POST when the page loads, only after the person start
   expect(previews(f)).toHaveLength(1);expect(previews(f)[0]?.method).toBe("POST");
  } finally { f.close(); }
 });
+it("says plainly that the spending stop is not shown yet when the preview answers unknown, and still starts work", async () => {
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "unknown" } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  expect((await screen.findByText("Spending stop: not shown yet. It is checked when work starts.")).className).toContain("rv-muted");
+  expect(screen.queryByText(/Effective spending stop:/)).toBeNull();expect(screen.queryByRole("alert")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1));
+ } finally { f.close(); }
+});
+it("an unknown preview for another project shows nothing", async () => {
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "other", kind: "unknown" } }) });
+ try { fireEvent.change(await box(), { target: { value: "Fix it" } });await new Promise(resolve => setTimeout(resolve, 50));expect(screen.queryByText(/Spending stop:/)).toBeNull(); } finally { f.close(); }
+});
 for (const result of [{ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "disabled" } }, { status: 503, body: {} }, { status: 200, body: { kind: "captured", effectiveStopMicrousd: "bad" } }]) it(`unclear preview ${JSON.stringify(result)} never blocks Start`, async () => {
  const f = setup(undefined, { preview: async () => result });
  try { fireEvent.change(await box(), { target: { value: "Fix it" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1));expect(screen.queryByText(/Effective spending stop:/)).toBeNull(); } finally { f.close(); }
