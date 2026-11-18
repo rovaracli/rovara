@@ -71,6 +71,8 @@ export interface CompanyKeyFlavor {
   readonly pathPrefix: string;
   /** The refusal for a pause reason (a fixed message and the reason in the purpose's own header). */
   paused(reason: LearningPauseReason): RouteRefusal;
+  /** The response header that carries the call's settled cost (see GatewayRoute.costHeader). Absent: the purpose sends none (learning). */
+  readonly costHeader?: string;
 }
 /** The default refusal words per meter row (unused in practice: `capRefusal` answers every permanent cap refusal). */
 const prefixOf = (text: string): Readonly<Record<MeterItem, string>> => ({ task: text, person: text, project: text, company: text, upkeep: text });
@@ -183,7 +185,7 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
       let target: VertexTarget | undefined;
       const route: GatewayRoute = {
         // The price rows' provider: Vertex is priced on the Gemini rows and the Vertex rows, at the dearer (alsoPricedAs).
-        provider: provider === "vertex" ? "gemini" : provider, product: false, purpose: flavor.purpose, stopsWithTask: false, meter: options.meter, prefix: prefixOf(paused("monthly_limit").message),
+        provider: provider === "vertex" ? "gemini" : provider, product: false, purpose: flavor.purpose, ...(flavor.costHeader === undefined ? {} : { costHeader: flavor.costHeader }), stopsWithTask: false, meter: options.meter, prefix: prefixOf(paused("monthly_limit").message),
         async admit(claims, signal) {
           try {
             // The switch first: while it is off nothing else is read, held or sent.
