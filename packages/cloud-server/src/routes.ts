@@ -7,7 +7,7 @@ import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } f
 import { renameInSessions } from "./rename.js";
 import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
 import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask, type SessionExtras } from "./session-view.js";
-import { actOnCoreSession, isCoreNotYet, pendingPlanCards, securityAcceptRefusal } from "./core-task-actions.js";
+import { CORE_ACTION_WORDS, actOnCoreSession, isCoreNotYet, pendingPlanCards, securityAcceptRefusal } from "./core-task-actions.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError, SignInEnded } from "./code-client.js";
 import type { CloudAuditStore } from "./audit-log.js";
@@ -665,7 +665,8 @@ export const ROUTES: Route[] = [
           body: { requestId, ...retry, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
         }));
       } catch (error) {
-        // A core task (audit 2026-11-18 item 6): the core retries the blocked review through the task's session, after its own session-level check.
+        // A core task (audit 2026-11-18 item 6): the core retries the blocked review through the task's session, after its own session-level check. The core's retry takes no
+        // revision or candidate: it retries what is blocked now (core/task-flow/retry.ts), and only re-runs the read-only reviews of the same checked code.
         if (!isCoreNotYet(error)) throw error;
         const done = await actOnCoreSession(context.client, context.session, found.task, "retry", requestId);
         if ("answer" in done) return done.answer;
@@ -813,7 +814,13 @@ export const ROUTES: Route[] = [
       } catch (error) {
         // A core task (audit 2026-11-18 item 6): the core closes it through the task's session (its owner, at the `edit` level). Code's 404 said the person may read the task.
         if (!isCoreNotYet(error)) throw error;
-        const done = await actOnCoreSession(context.client, context.session, await readTask(context, record.taskId), "close", input.requestId);
+        const current = await readTask(context, record.taskId);
+        // The core's close has no unpublished-work check yet (Code core/task-flow/close.ts), so the first ask never closes: it says so, as the old close lists what it found, and only the
+        // person's second, explicit press (`discardUnpublished`) closes the task.
+        if (input.discardUnpublished !== true) {
+          return ok({ session: await viewOf(context, record, current), closed: false, unpublished: [{ repository: "This task's workspace", reasons: [CORE_ACTION_WORDS.closeFirstAsk] }] });
+        }
+        const done = await actOnCoreSession(context.client, context.session, current, "close", input.requestId);
         if ("answer" in done) return done.answer;
         closed = { task: done.task, closed: true };
       }

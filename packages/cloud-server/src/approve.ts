@@ -92,7 +92,7 @@ export async function approvalRoute(
     }
     // A core task's plan is decided on its decision card, with Code's own step-up, digest and risk rules (audit 2026-11-18 item 6): the core takes no decision from this page.
     const onCard = page(200, "Decide on the session page", `<h1>Decide this plan on its card</h1><p>${escape(CORE_ACTION_WORDS.planOnCard)}</p><p><a href="${sessionLink}">Open the session</a></p>`);
-    if (await planDecidedOnCard(context.client, context.session, record.taskId)) return onCard;
+    if (method === "GET" && await planDecidedOnCard(context.client, context.session, record.taskId)) return onCard;
     if (method === "GET") {
       return page(200, "Approve the plan",
         `<h1>Approve the plan</h1><p><strong>${escape(task.title || "Task")}</strong> in ${escape(task.project)}</p>`
@@ -105,6 +105,8 @@ export async function approvalRoute(
     // POST: from this origin, with this session's CSRF token, for the plan the page showed.
     if (headers.origin !== new URL(context.origin).origin) return page(403, "Refused", "<h1>Refused</h1><p>Open the approval from Rovara Cloud and try again.</p>");
     if (form === undefined || !sameText(form.get("csrf") ?? "", context.session.csrf)) return page(403, "Refused", "<h1>Refused</h1><p>Refresh the page and try again.</p>");
+    // Only after the post is known to be this page's own: Code is asked whether the plan is on a card.
+    if (await planDecidedOnCard(context.client, context.session, record.taskId)) return onCard;
     const decision = form.get("decision");
     if (decision !== "APPROVE" && decision !== "REQUEST_CHANGES") return page(400, "Choose", "<h1>Choose Approve or Request changes</h1>");
     const reason = (form.get("reason") ?? "").trim();
@@ -119,7 +121,7 @@ export async function approvalRoute(
       });
     } catch (error) {
       // Code says the task is the core's (its card was not listed a moment ago): nothing was decided, and the card is where it is decided.
-      if (isCoreNotYet(error)) return onCard;
+      if (isCoreNotYet(error)) return page(409, "Not decided", `<h1>This plan can't be decided here yet</h1><p>${escape(CORE_ACTION_WORDS.planNotHere)}</p><p><a href="${sessionLink}">Back to the session</a></p>`);
       throw error;
     }
     return { status: 303, headers: { location: sessionLink, "cache-control": "no-store" }, body: "" };

@@ -31,6 +31,8 @@ export const CORE_ACTION_WORDS = Object.freeze({
   securityNotHere: "Rovara accepts a security finding only on its own task page, right after you confirm it's you, and that isn't available for this task in Rovara Cloud yet. Nothing was accepted. Send the work back to coding to fix it.",
   stepUp: "Accepting a security finding needs you to confirm it's you again. Confirm it, then try once more.",
   planOnCard: "This plan is decided on its card on the session page.",
+  planNotHere: "Rovara Code runs this task on its new engine, which takes a plan decision only on the plan's decision card, and that card isn't showing for you yet. Nothing was decided. Open the session and try again in a moment.",
+  closeFirstAsk: "Rovara can't check this task for unpublished work yet, so closing it now may delete work that was never published.",
 });
 
 const CODE_SESSION = /^ses_[0-9a-z]{20}$/u;
@@ -76,7 +78,8 @@ export async function actOnCoreSession(client: CodeClient, session: CodeSession,
     raw = await client.json<unknown>(session, `/v1/app/sessions/${codeSessionOf(task)}/${action}`, { method: "POST", body: { requestId: lowered } });
   } catch (error) {
     const refusal = refusalOf(error);
-    if (refusal !== undefined && refusal.status === 404 && refusal.message === CODE_NO_SESSION) return { answer: fail(501, "NOT_ON_CODE_YET", CORE_ACTION_WORDS[action]) };
+    // No session for this task, or a Code whose core does not serve sessions on this install: fixed words, never Code's own.
+    if (refusal !== undefined && refusal.status === 404 && (refusal.message === CODE_NO_SESSION || isCoreNotYet(error))) return { answer: fail(501, "NOT_ON_CODE_YET", CORE_ACTION_WORDS[action]) };
     throw error;
   }
   const view = isObj(raw) && isObj(raw["session"]) ? raw["session"] : undefined;

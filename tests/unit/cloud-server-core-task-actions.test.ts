@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type CodeSession, type WorkSession } from "../../packages/cloud-server/src/index.js";
 import { CORE_ACTION_WORDS } from "../../packages/cloud-server/src/core-task-actions.js";
 import { codeSessionIdOf } from "../../packages/cloud-server/src/inbox-routes.js";
-import { SessionResponseReaderSchema } from "../../packages/contracts/src/web.js";
+import { SessionCloseResponseReaderSchema, SessionResponseReaderSchema } from "../../packages/contracts/src/web.js";
 
 type Obj = Record<string, unknown>;
 interface Fixture {
@@ -45,12 +45,13 @@ const ours = <T>(value: T, taskId = TASK): T => JSON.parse(JSON.stringify(value)
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 interface CodeCall { method: string; path: string; token: string | undefined; body: unknown }
-type Engine = "core" | "legacy";
+/** `refuses`: the old route refuses for its own reasons (a conflict, a 404 with other words), which never starts the core fallback. */
+type Engine = "core" | "legacy" | "refuses";
 interface Options {
   engine?: Engine;
   task?: "review" | "plan";
   /** Who Code lets read the task (core: and act on its session). */
-  session?: "present" | "absent" | "level" | "foreign";
+  session?: "present" | "absent" | "level" | "foreign" | "unwired";
   security?: "forbidden" | "stale";
   cards?: "this" | "other" | "off" | "not-plan" | "decided";
   retryAnswer?: Obj;
@@ -83,6 +84,7 @@ function setUp(options: Options = {}) {
     const legacy = [`/v1/dev/tasks/${TASK}/workflow/review`, `/v1/dev/tasks/${TASK}/close`, `/v1/dev/tasks/${TASK}/workflow/decision`];
     if (legacy.includes(url.pathname) && call.method === "POST") {
       if (engine === "core") return json(FIXTURE.coreNotYet.status, FIXTURE.coreNotYet.body);
+      if (engine === "refuses") return url.pathname.endsWith("/close") ? json(404, { error: { code: "NOT_FOUND", message: "route not found" } }) : json(409, { error: { code: "IDEMPOTENCY_CONFLICT", message: "this request ID was already used" } });
       return json(200, url.pathname.endsWith("/close") ? { task: { ...task(), status: "CLOSED" }, closed: true } : { task: task() });
     }
     if (url.pathname === `/v1/dev/tasks/${TASK}/workflow/review-findings` && call.method === "POST") {
@@ -92,6 +94,8 @@ function setUp(options: Options = {}) {
     }
     if ((url.pathname === `/v1/app/sessions/${CODE_SESSION}/retry` || url.pathname === `/v1/app/sessions/${CODE_SESSION}/close`) && call.method === "POST") {
       if (options.session === "absent") return json(FIXTURE.noSession.status, FIXTURE.noSession.body);
+      // A Code whose core serves no sessions on this install (no members wiring) says its own core-404 words.
+      if (options.session === "unwired") return json(FIXTURE.coreNotYet.status, FIXTURE.coreNotYet.body);
       if (options.session === "level" || token === "sam-token") return json(FIXTURE.sessionLevel.status, FIXTURE.sessionLevel.body);
       if (options.session === "foreign") return json(200, ours(FIXTURE.retry.body, OTHER_TASK));
       if (url.pathname.endsWith("/retry")) return json(FIXTURE.retry.status, options.retryAnswer ?? ours(FIXTURE.retry.body));
@@ -172,6 +176,19 @@ describe("Retry reviews on a core task", () => {
     expect(w.calls).toHaveLength(3);
   });
 
+  it("a Code whose core serves no sessions here: the same fixed words, never Code's own", async () => {
+    const w = setUp({ session: "unwired" });
+    const res = await w.send("POST", RETRY, { requestId: REQUEST_ID }, await w.ada());
+    expect(res).toMatchObject({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: CORE_ACTION_WORDS.retry } } });
+    expect(JSON.stringify(res.body)).not.toContain("core engine");
+  });
+
+  it("an old route that refuses for its own reasons never starts the core fallback", async () => {
+    const w = setUp({ engine: "refuses" });
+    expect((await w.send("POST", RETRY, { requestId: REQUEST_ID }, await w.ada())).status).toBe(409);
+    expect(w.coreSessionCalls()).toEqual([]);
+  });
+
   it("an answer for another task, or one that does not read, is refused in fixed words", async () => {
     for (const w of [setUp({ session: "foreign" }), setUp({ retryAnswer: { session: { body: { kind: "task" } } } })]) {
       const res = await w.send("POST", RETRY, { requestId: REQUEST_ID }, await w.ada());
@@ -213,9 +230,26 @@ describe("Close on a core task", () => {
     expect(w.coreSessionCalls()).toEqual([{ method: "POST", path: `/v1/app/sessions/${CODE_SESSION}/close`, token: "ada-token", body: { requestId: REQUEST_ID } }]);
   });
 
+  it("the first ask never closes a core task: Code cannot check it for unpublished work yet, so the person is told and must press again", async () => {
+    const w = setUp({ task: "plan" });
+    const res = await w.send("POST", CLOSE, { requestId: REQUEST_ID }, await w.ada());
+    expect(res.status).toBe(200);
+    const read = SessionCloseResponseReaderSchema.parse(res.body);
+    expect(read).toMatchObject({ closed: false, unpublished: [{ repository: "This task's workspace", reasons: [CORE_ACTION_WORDS.closeFirstAsk] }] });
+    expect(w.coreSessionCalls()).toEqual([]);
+    // The task is read for the session it answers with (and, its plan waiting, Code's cards for the owner); nothing is closed.
+    expect(w.route()).toEqual([`POST /v1/dev/tasks/${TASK}/close`, `GET /v1/dev/tasks/${TASK}`, "GET /v1/app/decisions"]);
+  });
+
+  it("an old close that refuses for its own reasons never starts the core fallback", async () => {
+    const w = setUp({ task: "plan", engine: "refuses" });
+    expect((await w.send("POST", CLOSE, { requestId: REQUEST_ID, discardUnpublished: true }, await w.ada())).status).toBe(404);
+    expect(w.coreSessionCalls()).toEqual([]);
+  });
+
   it("a task Code holds no session for: fixed words", async () => {
     const w = setUp({ task: "plan", session: "absent" });
-    expect(await w.send("POST", CLOSE, { requestId: REQUEST_ID }, await w.ada())).toMatchObject({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: CORE_ACTION_WORDS.close } } });
+    expect(await w.send("POST", CLOSE, { requestId: REQUEST_ID, discardUnpublished: true }, await w.ada())).toMatchObject({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: CORE_ACTION_WORDS.close } } });
   });
 
   it("a workflow task is closed on the old route only", async () => {
@@ -226,13 +260,13 @@ describe("Close on a core task", () => {
 
   it("auth: a member without access gets the missing task and no session is touched; a reader without the level gets Code's refusal; another company is refused", async () => {
     const sam = setUp({ task: "plan" });
-    const refused = await sam.send("POST", CLOSE, { requestId: REQUEST_ID }, await sam.sam());
+    const refused = await sam.send("POST", CLOSE, { requestId: REQUEST_ID, discardUnpublished: true }, await sam.sam());
     expect(refused).toMatchObject({ status: FIXTURE.missingTask.status, body: ours(FIXTURE.missingTask.body) });
     expect(sam.coreSessionCalls()).toEqual([]);
     const level = setUp({ task: "plan", session: "level" });
-    expect(await level.send("POST", CLOSE, { requestId: REQUEST_ID }, await level.sam())).toMatchObject({ status: FIXTURE.sessionLevel.status, body: FIXTURE.sessionLevel.body });
+    expect(await level.send("POST", CLOSE, { requestId: REQUEST_ID, discardUnpublished: true }, await level.sam())).toMatchObject({ status: FIXTURE.sessionLevel.status, body: FIXTURE.sessionLevel.body });
     const eve = setUp({ task: "plan" });
-    expect((await eve.send("POST", CLOSE, { requestId: REQUEST_ID }, await eve.eve())).status).toBe(404);
+    expect((await eve.send("POST", CLOSE, { requestId: REQUEST_ID, discardUnpublished: true }, await eve.eve())).status).toBe(404);
     expect(eve.coreSessionCalls()).toEqual([]);
   });
 });
@@ -312,9 +346,18 @@ describe("plan approval on a core task: the decision card, not Cloud's approval 
     const revision = /name="revision" value="(\d+)"/u.exec(String(shown.body))![1]!;
     const digest = /name="digest" value="([a-f0-9]{64})"/u.exec(String(shown.body))![1]!;
     const posted = await w.send("POST", APPROVE, `csrf=csrf&decision=APPROVE&revision=${revision}&digest=${digest}`, headers, true);
-    expect(posted.status).toBe(200);
-    expect(String(posted.body)).toContain(CORE_ACTION_WORDS.planOnCard);
+    expect(posted.status).toBe(409);
+    expect(String(posted.body)).toContain(CORE_ACTION_WORDS.planNotHere.replaceAll("'", "&#39;"));
     expect(w.calls.filter((call) => call.path.endsWith("/workflow/decision"))).toHaveLength(1);
+  });
+
+  it("a post that is not this page's own (wrong CSRF token or origin) is refused before Code is asked anything", async () => {
+    const w = setUp({ task: "plan" });
+    const headers = await w.ada();
+    const before = w.calls.length;
+    expect((await w.send("POST", APPROVE, "csrf=wrong&decision=APPROVE&revision=1&digest=x", headers, true)).status).toBe(403);
+    expect((await w.send("POST", APPROVE, "csrf=csrf&decision=APPROVE&revision=1&digest=x", { ...headers, origin: "https://evil.example" }, true)).status).toBe(403);
+    expect(w.calls.slice(before).some((call) => call.path === "/v1/app/decisions" || call.path.endsWith("/workflow/decision"))).toBe(false);
   });
 
   it("auth: a member without access and another company see no plan and read no cards", async () => {
