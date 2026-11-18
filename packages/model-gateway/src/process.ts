@@ -15,7 +15,7 @@ import { createGeminiTransport } from "./product-gemini.js";
 import { createVertexTransport } from "./product-vertex.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
 import { awsKms } from "./aws-kms.js";
-import { CompanyAgentAiSource, parseAiSourceKinds, parseRovaraAiExempt, parseRovaraAiModels, storedBedrock, type AgentAiSourceReader, type ByoBedrock } from "./agent-ai.js";
+import { CompanyAgentAiSource, parseAiSourceKinds, parseRovaraAiExempt, parseRovaraAiModels, storedBedrock, type AgentAiSourceReader, type ByoBedrock, type RovaraAi } from "./agent-ai.js";
 import { BedrockExternalIds, type MacGenerator } from "./bedrock-byo.js";
 import { BedrockSessions } from "./bedrock-byo-sessions.js";
 import { createBedrockTransport } from "./bedrock-transport.js";
@@ -312,11 +312,11 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const transport = deps.transport ?? createAnthropicTransport();
   // DEC 254zzz3(1): the exempt companies' default on Rovara's AI, for the learning and answers routes too (only where Rovara's AI is on, in company-key mode).
   const agentAiSources = deps.agentAiSources ?? new CompanyAgentAiSource(db, config.tables.companies);
-  const rovaraBedrock = {
-    models: config.rovaraAi?.models ?? new Map<string, string>(), exempt: config.rovaraAi?.exempt ?? new Set<string>(),
+  const rovaraBedrock: RovaraAi | undefined = config.rovaraAi === undefined ? undefined : {
+    models: config.rovaraAi.models, exempt: config.rovaraAi.exempt,
     transport: deps.bedrockTransport ?? createBedrockTransport({ region: config.region, credentials, now }), maxOutputTokens: (id: string) => prices.maxOutputTokens("bedrock", id),
   };
-  const rovaraDefault = companyKeys === undefined || config.rovaraAi === undefined ? {} : { rovaraDefault: { ai: rovaraBedrock, sources: agentAiSources, ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }) } };
+  const rovaraDefault = companyKeys === undefined || rovaraBedrock === undefined ? {} : { rovaraDefault: { ai: rovaraBedrock, sources: agentAiSources, ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }) } };
   const learning = deps.learning === undefined ? undefined : createLearningRoutes({
     ...rovaraDefault,
     keys: deps.learning.keys, meter: deps.learning.meter, companyCaps: caps, lessons: new CompanyLessonsSwitch(db, config.tables.companies), transport,
@@ -345,7 +345,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     // DEC 240: in company-key mode each company's saved choice picks its agents' source; Rovara's AI only when configured.
     ...(companyKeys === undefined ? {} : { agentAi: {
       sources: agentAiSources,
-      ...(config.rovaraAi === undefined ? {} : { rovara: rovaraBedrock }),
+      ...(rovaraBedrock === undefined ? {} : { rovara: rovaraBedrock }),
       // DEC 238: only when configured (a company that chose its own Bedrock is refused otherwise, never sent elsewhere).
       ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }),
       // DEC 254t: the kinds the owner switched on (none when unset).
