@@ -83,7 +83,7 @@ function Offer({ cap, busy, onYes }: { cap: WikiSetupUpkeepCap | undefined; busy
 export function NightlyUpkeep({ project, companyAdmin }: { project: string; companyAdmin: boolean }) {
   const api = useWikiSetupApi(), query = useQueryClient();
   const read = useQuery({ queryKey: wikiSetupKey(project, "upkeep"), queryFn: () => api.upkeep(project), retry: false });
-  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), id = useRef<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [stepUp, setStepUp] = useState(false), id = useRef<string | undefined>(undefined);
   if (read.isPending) return null;
   if (read.isError || read.data === undefined) {
     return <section className="rv-wikis-upkeep" aria-label={T.UPKEEP} data-testid="wiki-setup-upkeep"><h3>{T.UPKEEP}</h3>
@@ -96,11 +96,16 @@ export function NightlyUpkeep({ project, companyAdmin }: { project: string; comp
       <p className="rv-muted" data-testid="wiki-setup-upkeep-absent">{T.UPKEEP_NOT_YET}</p></section>;
   }
   async function send(on: boolean, allowSystemRuns?: boolean) {
-    setBusy(true); setError(undefined);
+    setBusy(true); setError(undefined); setStepUp(false);
     const requestId = id.current ?? crypto.randomUUID();
     id.current = requestId;
     try { { const answer = await api.setUpkeep(project, requestId, on, allowSystemRuns); query.setQueryData(wikiSetupKey(project, "upkeep"), { ...answer, available: answer.available ?? true }); } id.current = undefined; }
-    catch (caught) { setError(fixedWikiSetupWords(caught, T.ACT_FAILED)); void query.invalidateQueries({ queryKey: wikiSetupKey(project, "upkeep") }); }
+    catch (caught) {
+      // L4-P3: allowing the company's nightly runs needs a fresh sign-in (Code's step-up, the same as making a script token). Nothing was changed, so the same request id is kept: after the person confirms it's them
+      // and comes back to this step, the same press is the retry.
+      if (needsStepUp(caught)) setStepUp(true);
+      else { setError(fixedWikiSetupWords(caught, T.ACT_FAILED)); void query.invalidateQueries({ queryKey: wikiSetupKey(project, "upkeep") }); }
+    }
     finally { setBusy(false); }
   }
   // L4-W6b (DEC 254zzt option A, two locks): `systemRunsOn` is what really runs (the operator's ceiling AND the company's consent). Absent: a Code with the project switch only, shown as before.
@@ -119,6 +124,8 @@ export function NightlyUpkeep({ project, companyAdmin }: { project: string; comp
     {offer && <Offer cap={upkeep.cap} busy={busy} onYes={() => { void send(true, true); }} />}
     {needsAdmin && <p className="rv-muted" data-testid="wiki-setup-upkeep-needs-admin">{T.NEEDS_ADMIN}</p>}
     {error !== undefined && <p role="alert" data-testid="wiki-setup-upkeep-error"><VisibleText text={error} /></p>}
+    {stepUp && <FreshSignIn action="allow nightly upkeep for the company" refused />}
+    {companyAdmin && gated && consent && <p className="rv-muted" data-testid="wiki-setup-upkeep-company-link">{T.COMPANY_LINK_LINE} <Link to="/app/admin/settings">{T.COMPANY_LINK}</Link>.</p>}
     {settled && <div data-testid="wiki-setup-upkeep-limits"><h4>{T.UPKEEP_LIMITS}</h4><ul><li>{T.LIMIT_FREE}</li><li>{T.LIMIT_CAP}</li><li>{T.LIMIT_MANUAL}</li></ul></div>}
     {settled && upkeep.canManage && (companyAdmin ? <Cap project={project} /> : <p className="rv-muted" data-testid="wiki-setup-cap-ask">{T.CAP_ASK_ADMIN}</p>)}
   </section>;

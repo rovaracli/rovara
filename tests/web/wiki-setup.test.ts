@@ -495,6 +495,72 @@ const noControls = () => {
   expect(screen.queryByTestId("wiki-setup-upkeep-confirm")).toBeNull();
 };
 
+// ---- L4-P3 (owner 2026-11-17): allowing needs a fresh sign-in; the company's one control is linked from here ---------------------------------------------------------------------------------
+// Mutants (each killed by the named test, run by hand): V1 a step-up answer shown as an error sentence instead of the sign-in step; V2 the request id replaced after a step-up refusal (the retry is a new act);
+// V3 the sign-in step drawn for any other refusal; V4 the company link drawn for a maintainer or while consent is off; V5 Confirm it's you does not ask Code for a step-up.
+describe("nightly upkeep: the fresh sign-in step and the company control's link (L4-P3)", () => {
+  it("Code asks for a fresh sign-in on the choice: the page shows the sign-in step (not an error), Confirm it's you asks Code for a step-up, and the same press afterwards is the retry with the same request id (V1, V2, V5)", async () => {
+    let step = true;
+    let state = { ...VIEW } as Record<string, unknown>;
+    const f = mount(row(true), { upkeep: () => ({ status: 200, body: state }), put: () => {
+      if (step) return err(403, "REAUTH_REQUIRED", WIKI_SETUP_WORDS.needsSignIn);
+      state = { ...state, enabled: true, systemRunsOn: true };
+      return { status: 200, body: state };
+    } });
+    await open();
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
+    const fresh = await screen.findByTestId("fresh-sign-in");
+    expect(fresh.getAttribute("data-state")).toBe("needed");
+    expect(fresh.textContent).toContain("allow nightly upkeep for the company");
+    expect(screen.queryByTestId("wiki-setup-upkeep-error")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
+    await expectNoAxeViolations(document.body);
+    fireEvent.click(within(fresh).getByTestId("fresh-sign-in-start"));
+    expect(f.host.signIn).toHaveBeenCalledTimes(1);
+    expect((f.host.signIn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![1]).toMatchObject({ stepUp: true });
+    // Back from the sign-in, the person presses again: the same request id, and now it works.
+    step = false;
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
+    const sent = calls(f, "PUT", ROOT + "/upkeep");
+    expect(sent).toHaveLength(2);
+    expect((sent[1]!.body as { requestId: string }).requestId).toBe((sent[0]!.body as { requestId: string }).requestId);
+    expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+    f.close();
+  });
+
+  it("any other refusal is an error sentence, never the sign-in step (V3)", async () => {
+    const f = mount(row(true), { upkeep: upkeepIs({}), put: () => err(403, "FORBIDDEN", WIKI_SETUP_WORDS.upkeepConsentNotAllowed) });
+    await open();
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
+    expect((await screen.findByTestId("wiki-setup-upkeep-error")).textContent).toBe(WIKI_SETUP_WORDS.upkeepConsentNotAllowed);
+    expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+    f.close();
+  });
+
+  it("an owner or admin with consent on sees where to withdraw it; a maintainer and anyone while consent is off do not (V4)", async () => {
+    const on = upkeepIs({ enabled: true, systemRunsOn: true, canEnableSystemRuns: true });
+    const a = mount(row(true), { upkeep: on });
+    await open();
+    const line = await screen.findByTestId("wiki-setup-upkeep-company-link");
+    expect(line.textContent).toBe("Withdraw nightly upkeep for the whole company in Company settings.");
+    expect(within(line).getByRole("link", { name: "Company settings" }).getAttribute("href")).toBe("/app/admin/settings");
+    a.close();
+    const m = mount(row(false), { upkeep: upkeepIs({ enabled: true, systemRunsOn: true, canEnableSystemRuns: false }) });
+    await open();
+    await screen.findByTestId("wiki-setup-upkeep-state");
+    expect(screen.queryByTestId("wiki-setup-upkeep-company-link")).toBeNull();
+    m.close();
+    const off = mount(row(true), { upkeep: upkeepIs({}) });
+    await open();
+    await screen.findByTestId("wiki-setup-upkeep-offer");
+    expect(screen.queryByTestId("wiki-setup-upkeep-company-link")).toBeNull();
+    off.close();
+  });
+});
+
 describe("nightly upkeep: the company's choice", () => {
   it("a company owner or admin, consent off: one choice, then one confirm that says what runs and the cap; yes sends the consent and the switch in one act (U1, U6, U12, U14)", async () => {
     let state = { ...VIEW } as Record<string, unknown>;
