@@ -10,13 +10,13 @@
 //   POST /v1/app/projects/{p}/wiki-build/refresh      { requestId }       Refresh now
 //   POST /v1/app/projects/{p}/wiki-build/agents       { requestId, on }   "Give the wiki to agents"
 //   POST /v1/app/projects/{p}/wiki-build/delete       { requestId }       Delete wiki
-//   GET  /v1/app/projects/{p}/upkeep                  { enabled, canManage, available?, systemRunsOn?, canEnableSystemRuns?, cap? }  (Code L4-N1 + L4-P2)
+//   GET  /v1/app/projects/{p}/upkeep                  { enabled, canManage, available?, systemRunsOn?, canEnableSystemRuns?, cap?, spend? }  (Code L4-N1 + L4-P2 + L4-SR1; spend: managers only)
 //   PUT  /v1/app/projects/{p}/upkeep                  { requestId, on, allowSystemRuns? }                                       (allowSystemRuns: the company's consent, Code decides who may)
 //
 // Rules:
 //   - Code decides who may do each: the person's LIVE company and project standing, read on every call. Cloud adds no rule that could widen it and sends no person, company, role, limit, commit or goal:
 //     each body is rebuilt here from known fields. Cloud refuses earlier only what cannot be valid (a malformed project name, an unreadable body, a query).
-//   - Every answer is rebuilt from known fields; one that does not read is refused whole ("unreadable is refusal"). NO DOLLAR FIGURE crosses Cloud: W4's `budgetCents` and `spentCents` (placeholders until the
+//   - Every answer is rebuilt from known fields; one that does not read is refused whole ("unreadable is refusal"). NO DOLLAR FIGURE crosses Cloud, except the nightly upkeep cap and this month's upkeep spend (a limit and a total a manager sets and watches, `upkeepAnswer`): W4's `budgetCents` and `spentCents` (placeholders until the
 //     first measured build) and W0's price are dropped or refused, and no task id or commit reaches the browser. The page shows pages.
 //   - A refusal reaches the app in the words Code fixed (an exact member of a known list), else in Cloud's own fixed words; never an echo of the browser's input, never other text of Code's. Until Code serves a
 //     route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
@@ -182,7 +182,7 @@ export function upkeepBody(body: unknown): Record<string, unknown> | undefined {
 /** The map is made with no body (or an empty one). */
 const emptyBody = (body: unknown): Record<string, unknown> | undefined => (body === undefined || (plain(body) && Object.keys(body).length === 0) ? {} : undefined);
 
-// ---- Answers: rebuilt, no dollar figure ----------------------------------------------------------------------------------------------------------------------------------------
+// ---- Answers: rebuilt, no dollar figure (but the upkeep cap and spend below) ----------------------------------------------------------------------------------------------------------------------------------------
 
 const KNOWN_SENTENCES: ReadonlySet<string> = new Set(Object.values(C));
 const END_WORDS = ["built", "budget_used", "pages_used", "time_used", "stopped_by_person", "needs_ai_key", "repo_unreadable", "access_lost", "infrastructure"] as const;
@@ -280,14 +280,28 @@ function capAnswer(value: unknown): Record<string, unknown> {
   need(usd === null || (typeof usd === "number" && Number.isFinite(usd) && usd >= 0 && usd <= 1_000_000), usd);
   return { monthlyUsd: usd, canRaise: flag(c["canRaise"]) };
 }
+/**
+ * L4-CAPR: what nightly upkeep spent on the project this UTC month (Code's `UpkeepSpendSchema`), field by field: the month, a dollar figure that is never negative, and two counts. `unknownRuns` are runs whose
+ * cost Code could not state (they add nothing to `spentUsd`, so with any the figure is "at least"); nothing is made up here and no other member passes.
+ */
+function spendAnswer(value: unknown): Record<string, unknown> {
+  const s = rec(value);
+  const spent = s["spentUsd"];
+  need(typeof s["month"] === "string" && /^\d{4}-(?:0[1-9]|1[0-2])$/u.test(s["month"]), s["month"]);
+  need(typeof spent === "number" && Number.isFinite(spent) && spent >= 0 && spent <= 100_000_000, spent);
+  return { month: s["month"], spentUsd: spent, runs: count(s["runs"]), unknownRuns: count(s["unknownRuns"]) };
+}
 export function upkeepAnswer(value: unknown): Record<string, unknown> {
   const v = rec(value);
+  const canManage = flag(v["canManage"]);
   return {
-    enabled: flag(v["enabled"]), canManage: flag(v["canManage"]),
+    enabled: flag(v["enabled"]), canManage,
     ...(v["available"] === undefined ? {} : { available: flag(v["available"]) }),
     ...(v["systemRunsOn"] === undefined ? {} : { systemRunsOn: flag(v["systemRunsOn"]) }),
     ...(v["canEnableSystemRuns"] === undefined ? {} : { canEnableSystemRuns: flag(v["canEnableSystemRuns"]) }),
     ...(v["cap"] === undefined ? {} : { cap: capAnswer(v["cap"]) }),
+    // Only a person who manages the project is shown the spend (Code sends it to no one else; a copy that reaches a reader anyway is dropped here).
+    ...(v["spend"] === undefined || !canManage ? {} : { spend: spendAnswer(v["spend"]) }),
   };
 }
 
