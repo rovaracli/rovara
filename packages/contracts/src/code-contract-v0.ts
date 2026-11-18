@@ -663,6 +663,24 @@ export interface RuleRetireResponse { project: string; ruleId: string; status: "
 // ---------------------------------------------------------------------------------------------------------------
 // The typed map: one entry per Code route id (request is the JSON body or `void`, response the 2xx JSON body).
 
+
+/** Rovara skills (L4-AK3, with L4-JA's `canDecide` and `?name=`): a procedure the team proved, versioned, used only after TWO different eligible people approved the newest version. Text only; it grants nothing. */
+export interface SkillRow {
+  name: string; description: string; currentVersion: number; activeVersion?: number; approvals: number; approvedByYou: boolean; retired: boolean; bytes: number;
+  /** Code's one sentence for a skill over 8 KB ("This skill is long. Consider splitting it into smaller skills."). */
+  note?: string;
+}
+/** The fields an edit takes, and what a skill's text reads back as (only when Code can make the very same text from it). */
+export interface SkillForm { description: string; when: string; steps: string[]; doneWhen?: string; why?: string }
+export interface SkillDetail extends SkillRow { content: string; form?: SkillForm }
+/** `GET …/skills` (every skill, no text) and `GET …/skills?name=` (that one skill, with the text of its newest version and its form). `canDecide`: a maintainer of the project or a company owner or admin. */
+export interface SkillsResponse { project: string; canDecide: boolean; skills: Array<SkillRow | SkillDetail> }
+export interface SkillEditRequest { expectedVersion: number; description: string; when: string; steps: string[]; doneWhen?: string; why?: string }
+export interface SkillEditResponse { project: string; name: string; version: number; note?: string }
+export interface SkillApproveRequest { version: number }
+export interface SkillApproveResponse { project: string; name: string; version: number; approvals: number; live: boolean }
+export interface SkillRetireResponse { project: string; name: string; retired: true }
+
 export interface CodeRouteTypes {
   "auth.authorize": { request: void; response: void };
   "auth.token": { request: TokenRequestCode | TokenRequestRefresh; response: TokenResponse };
@@ -788,6 +806,10 @@ export interface CodeRouteTypes {
   "lessons.rules.retire": { request: JsonObject; response: RuleRetireResponse };
   "lessons.measure": { request: void; response: LessonMeasureResponse };
   "lessons.areas": { request: void; response: LessonAreasResponse };
+  "skills.list": { request: void; response: SkillsResponse };
+  "skills.edit": { request: SkillEditRequest; response: SkillEditResponse };
+  "skills.approve": { request: SkillApproveRequest; response: SkillApproveResponse };
+  "skills.retire": { request: JsonObject; response: SkillRetireResponse };
   "lessons.learningSources.get": { request: void; response: LearningSourcesResponse };
   "lessons.learningSources.put": { request: PutLearningSourceRequest; response: PutLearningSourceResponse };
   "company.egressAddresses.get": { request: void; response: CompanyEgressAddressesView };
@@ -990,6 +1012,11 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.measure", "GET", `${DP}/lessons/measure`, "Counts only lesson fit, below-floor loads, clean merges and revert detection (maintainer or company owner/admin)", "full", ["how-we-work"], "no", false, "none", true),
   // Lead 4 L4-LP3W (Code pr/l4-lessons-by-area): the approved lessons by code area, and "Where Rovara learns from" with its Pause.
   spec("lessons.areas", "GET", `${DP}/lessons/areas`, "The approved lessons by code area (a tree), and the lessons at one node (query: repo, folder, whole=1)", "full", ["how-we-work"], "no", false, "none", true),
+  // L4-JA (Code #1034 and its skills read): Rovara skills. Full access; the approver directory (a maintainer of the project, or a company owner or admin) decides who may draft, edit, approve and retire; no step-up.
+  spec("skills.list", "GET", `${DP}/skills`, "The project's skills (newest version of each) and whether the person may decide; with ?name= one skill with its text and form", "full", ["how-we-work"], "no", false, "none", true),
+  spec("skills.edit", "PUT", `${DP}/skills/{skill}`, "Edit a skill: a new version with no approvals; the live version stays live", "full", ["how-we-work"], "no", false, "none", true),
+  spec("skills.approve", "POST", `${DP}/skills/{skill}/approve`, "One of the two different people a version needs before it is used", "full", ["how-we-work"], "no", false, "none", true),
+  spec("skills.retire", "POST", `${DP}/skills/{skill}/retire`, "Take a skill out of use at once", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.learningSources.get", "GET", `${DP}/lessons/learning-sources`, "Where Rovara learns from: a row per kind of source with seen, suggested and kept counts (30 days), one example and whether it is paused", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.learningSources.put", "PUT", `${DP}/lessons/learning-sources/{source}`, "Pause or resume one source (a project admin, or a company owner or admin; recorded first)", "full", ["how-we-work"], "no", false, "none", true),
   // Guided onboarding PR 15 (DEC 254l item 7, 254n item 1): the company's AI model (Code #835, not on code/next yet) and a project's per-task model budget (Code's M4a settings).
@@ -1273,6 +1300,11 @@ POST /v1/app/projects/{p}/lessons/{lessonId}/retire | k | how-we-work | lessons.
 POST /v1/app/projects/{p}/lessons/{lessonId}/retire-request | k | how-we-work | lessons.retireRequest | learned | T
 GET /v1/app/projects/{p}/lessons/retire-requests | k | how-we-work | lessons.retireRequests | learned | T
 GET /v1/app/projects/{p}/lessons/areas | k | how-we-work | lessons.areas | learned | T
+GET /v1/app/projects/{p}/skills | k | how-we-work | skills.list | skills | T
+GET /v1/app/projects/{p}/skills/{skill} | k | how-we-work | skills.list | skills | T
+PUT /v1/app/projects/{p}/skills/{skill} | k | how-we-work | skills.edit | skills | T
+POST /v1/app/projects/{p}/skills/{skill}/approve | k | how-we-work | skills.approve | skills | T
+POST /v1/app/projects/{p}/skills/{skill}/retire | k | how-we-work | skills.retire | skills | T
 GET /v1/app/projects/{p}/lessons/learning-sources | k | how-we-work | lessons.learningSources.get | learned | T
 PUT /v1/app/projects/{p}/lessons/learning-sources/{source} | k | how-we-work | lessons.learningSources.put | learned | T
 POST /v1/app/projects/{p}/lessons/decisions | k | home | lessons.decisions | learned | T

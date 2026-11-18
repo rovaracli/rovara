@@ -12,7 +12,7 @@ import {
   matchCodeRoute,
   type AccessResponse, type CodeRequest, type CodeResponse, type CodeRouteId, type CompanyMember, type DecisionCard, type ErrorBody, type HowWeWorkView,
   type PlaybookView, type PlanComment, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
-  type DecisionsResponse, type DecisionOutcome, type GraduationResponse, type LearningSourceKey, type LessonItem, type LessonMeasureResponse, type LessonMode, type TaskLesson,
+  type DecisionsResponse, type DecisionOutcome, type GraduationResponse, type SkillsResponse, type LearningSourceKey, type LessonItem, type LessonMeasureResponse, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
 import { taskPlanAnswer } from "../fixtures/code-answers.js";
@@ -902,13 +902,23 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const teamRules = new Map<string, { id: string; text: string; paths: string[]; repos: string[]; fromLesson: string; createdAt: number; status: "live" | "retired" }>();
   const CARD_PATHS = ["src/logging/**"];
   const graduationLater = new Set<string>();
+  // --- Rovara skills (L4-JA): Priya decides; Sam reads. Two approvals by two DIFFERENT deciders make a version live; an edit is a new version with none. Only project "web" has any.
+  interface FakeSkill { name: string; description: string; currentVersion: number; activeVersion?: number; approvers: string[]; retired: boolean; form: { description: string; when: string; steps: string[]; doneWhen?: string; why?: string } | undefined; content: string; bytes: number }
+  const SKILL_SEED = (): Map<string, FakeSkill> => new Map<string, FakeSkill>([
+    ["add-queue-handler", { name: "add-queue-handler", description: "Add a queue and its handler", currentVersion: 2, activeVersion: 2, approvers: ["zoe", "yan"], retired: false, bytes: 410,
+      form: { description: "Add a queue and its handler", when: "adding a queue", steps: ["Create the queue and its dead-letter queue.", "Register the handler."], why: "The alarm needs the dead-letter queue." }, content: "---\nname: add-queue-handler\ndescription: Add a queue and its handler\n---\n\n## When to use\nadding a queue\n\n## Steps\n1. Create the queue and its dead-letter queue.\n2. Register the handler.\n\n## Why this order\nThe alarm needs the dead-letter queue.\n" }],
+    ["log-request-ids", { name: "log-request-ids", description: "Log request ids with every error", currentVersion: 1, approvers: ["zoe"], retired: false, bytes: 9_000,
+      form: { description: "Log request ids with every error", when: "writing an error path", steps: ["Read the id from the request.", "Add it to the log line."] }, content: "---\nname: log-request-ids\ndescription: Log request ids with every error\n---\n\n## When to use\nwriting an error path\n\n## Steps\n1. Read the id from the request.\n2. Add it to the log line.\n" }],
+    ["old-hand-written", { name: "old-hand-written", description: "Written by hand", currentVersion: 1, approvers: [], retired: false, bytes: 100, form: undefined, content: "Just some words a person wrote.\n" }],
+  ]);
+  let skillStore = SKILL_SEED();
   let tidyClosed = false;
   const initialLessons = [...lessonStore.entries()].map(([id, lesson]) => [id, JSON.parse(JSON.stringify(lesson)) as LessonItem] as const);
   const initialDrafts = [...checkDrafts.entries()].map(([id, draft]) => [id, { ...draft }] as const);
   const resetLessons = () => {
     lessonStore.clear(); for (const [id, lesson] of initialLessons) lessonStore.set(id, JSON.parse(JSON.stringify(lesson)) as LessonItem);
     checkDrafts.clear(); for (const [id, draft] of initialDrafts) checkDrafts.set(id, { ...draft });
-    teamRules.clear(); graduationLater.clear(); tidyClosed = false; retireAsks.clear(); lessonMode = "suggest";
+    teamRules.clear(); graduationLater.clear(); skillStore = SKILL_SEED(); tidyClosed = false; retireAsks.clear(); lessonMode = "suggest";
   };
   const GRADUATION_REFUSED = "Only a maintainer of this project, or an admin, can decide what becomes permanent.";
   /** One of the phase 4 routes: record the call, apply an override, refuse a non-decider in Code's words, else run `run`. */
@@ -921,6 +931,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (!found.decides) return failure(403, "FORBIDDEN", GRADUATION_REFUSED);
     return run(context, found.name);
   };
+  const skillRowOf = (skill: FakeSkill, person: Person) => ({
+    name: skill.name, description: skill.description, currentVersion: skill.currentVersion, ...(skill.activeVersion === undefined ? {} : { activeVersion: skill.activeVersion }), approvals: skill.approvers.length,
+    approvedByYou: skill.approvers.includes(person.key), retired: skill.retired, bytes: skill.bytes, ...(skill.bytes > 8_192 ? { note: "This skill is long. Consider splitting it into smaller skills." } : {}),
+  });
   const lessonsOff = () => failure(404, "LESSONS_SWITCHED_OFF", "Lessons are off.");
   const LIST_STATUSES: Record<string, string[]> = { proposed: ["pending"], approved: ["active", "stale"], retired: ["retired", "expired", "rejected"] };
   /** The project, if lessons are on and the person is on its roster (Code answers the same "No such project." for both). */
@@ -1706,6 +1720,52 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       if (rule === undefined || rule.status !== "live") return failure(404, "NOT_FOUND", "That rule is no longer there.");
       rule.status = "retired";
       return { body: { project, ruleId: rule.id, status: "retired" } };
+    }),
+    // Rovara skills (L4-JA). Everyone on the roster reads; only a decider writes, in Code's words; an override answers instead.
+    "skills.list": (context) => {
+      lessonCalls.push({ id: "skills.list", params: { ...context.params }, body: context.query.get("name"), person: context.person.key });
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      const override = lessonOverrides.get("skills.list");
+      if (override !== undefined) return { status: override.status ?? 200, body: override.body as SkillsResponse };
+      const all = found.name === "web" ? [...skillStore.values()] : [];
+      const named = context.query.get("name");
+      if (named !== null) {
+        const one = all.find((skill) => skill.name === named);
+        if (one === undefined) return failure(404, "NOT_FOUND", "That skill is no longer there.");
+        return { body: { project: found.name, canDecide: found.decides, skills: [{ ...skillRowOf(one, context.person), content: one.content, ...(one.form === undefined ? {} : { form: one.form }) }] } };
+      }
+      return { body: { project: found.name, canDecide: found.decides, skills: all.map((skill) => skillRowOf(skill, context.person)) } };
+    },
+    "skills.edit": graduationRoute("skills.edit", (context, project) => {
+      const skill = skillStore.get(context.params["skill"] ?? "");
+      if (skill === undefined || project !== "web") return failure(404, "NOT_FOUND", "That skill is no longer there.");
+      if (skill.retired) return failure(409, "IDEMPOTENCY_CONFLICT", "That skill was retired.");
+      if (context.body.expectedVersion !== skill.currentVersion) return failure(409, "IDEMPOTENCY_CONFLICT", "This skill changed since you read it. Read it again and decide again.");
+      if (context.body.steps.join("").length > 20_000) return failure(400, "CONFIG_INVALID", "That skill is too long. A skill is at most 32 KB.");
+      skill.currentVersion += 1; skill.approvers = []; skill.description = context.body.description;
+      skill.form = { description: context.body.description, when: context.body.when, steps: context.body.steps, ...(context.body.doneWhen === undefined ? {} : { doneWhen: context.body.doneWhen }), ...(context.body.why === undefined ? {} : { why: context.body.why }) };
+      skill.content = `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n## When to use\n${context.body.when}\n\n## Steps\n${context.body.steps.map((step, index) => `${String(index + 1)}. ${step}`).join("\n")}\n`;
+      skill.bytes = skill.content.length;
+      return { body: { project, name: skill.name, version: skill.currentVersion } };
+    }),
+    "skills.approve": graduationRoute("skills.approve", (context, project) => {
+      const skill = skillStore.get(context.params["skill"] ?? "");
+      if (skill === undefined || project !== "web") return failure(404, "NOT_FOUND", "That skill is no longer there.");
+      if (skill.retired) return failure(409, "IDEMPOTENCY_CONFLICT", "That skill was retired.");
+      if (context.body.version !== skill.currentVersion) return failure(409, "IDEMPOTENCY_CONFLICT", "This skill changed since you read it. Read it again and decide again.");
+      if (skill.activeVersion === skill.currentVersion) return failure(409, "IDEMPOTENCY_CONFLICT", "That version is already in use.");
+      if (skill.approvers.includes(context.person.key)) return failure(409, "IDEMPOTENCY_CONFLICT", "You already approved this version.");
+      skill.approvers.push(context.person.key);
+      const live = skill.approvers.length >= 2;
+      if (live) skill.activeVersion = skill.currentVersion;
+      return { body: { project, name: skill.name, version: skill.currentVersion, approvals: skill.approvers.length, live } };
+    }),
+    "skills.retire": graduationRoute("skills.retire", (context, project) => {
+      const skill = skillStore.get(context.params["skill"] ?? "");
+      if (skill === undefined || project !== "web") return failure(404, "NOT_FOUND", "That skill is no longer there.");
+      skill.retired = true;
+      return { body: { project, name: skill.name, retired: true } };
     }),
     "lessons.tidy.later": graduationRoute("lessons.tidy.later", (_context, project) => { tidyClosed = true; return { body: { project, closed: true } }; }),
     "lessons.checkDraft.started": graduationRoute("lessons.checkDraft.started", (context, project) => {

@@ -108,6 +108,7 @@ describe("the fixed words and limits", () => {
     expect(ANSWER_WORDS.projectNotFound).toBe("project not found");
     expect(ANSWER_WORDS.limitReached).toBe("This project has reached its spending limit for now.");
     expect(ANSWER_WORDS.rate).toBe("You've asked a lot of questions lately. Try again a little later.");
+    expect(ANSWER_WORDS.paused).toBe("Answers are paused for this month.");
     expect(START_SUGGEST_WORDS.rate).toBe("You've asked for a lot of suggestions lately. Try again a little later.");
     expect(ANSWER_SOURCES_MAX).toBe(8);
     expect(Object.keys(START_SMALL_TALK_WORDS)).toEqual(["greeting", "thanks", "help", "ack"]);
@@ -208,6 +209,8 @@ describe("an answer that does not read is refused whole", () => {
   });
   bad("an extra field", goodAnswer({ cost: 12, CANARY: 1 }));
   bad("a marker that names no source", goodAnswer({ text: "Refunds last 30 days. [2] CANARY" }));
+  bad("a marker 0", goodAnswer({ text: "Refunds last 30 days. [0] CANARY" }));
+  bad("a marker past the sources", goodAnswer({ text: "Refunds last 30 days. [12] CANARY" }));
   bad("sources not numbered 1..n", goodAnswer({ sources: [{ n: 2, repo: "web", path: "src/refund.ts", line: 3, commit: SHA }] }));
   bad("a source at a commit that is not one", goodAnswer({ sources: [{ n: 1, repo: "web", path: "src/refund.ts", line: 3, commit: "main" }] }));
   bad("a source path that climbs out", goodAnswer({ sources: [{ n: 1, repo: "web", path: "../etc/passwd", line: 3, commit: SHA }] }));
@@ -229,7 +232,7 @@ describe("refusals are Cloud's fixed words", () => {
   const refuse = (status: number, message: string, code = "X") => (call: CodeCall) => (/\/(answers|suggest)$/u.test(call.path) ? json(status, { error: { code, message } }) : undefined);
   it.each([
     [404, "route not found", "NOT_FOUND", "notYet"], [404, "That is not on the core engine on this install yet.", "NOT_FOUND", "notYet"], [404, `project not found ${LEAK}`, "NOT_FOUND", "notFound"], [403, `no ${LEAK}`, "FORBIDDEN", "forbidden"], [400, `bad ${LEAK}`, "CONFIG_INVALID", "invalid"],
-    [429, ANSWER_WORDS.limitReached, "TOO_MANY_REQUESTS", "limitReached"], [429, `slow ${LEAK}`, "TOO_MANY_REQUESTS", "rate"], [500, `boom ${LEAK}`, "X", "unavailable"], [503, `down ${LEAK}`, "RUNTIME_UNAVAILABLE", "unavailable"],
+    [429, ANSWER_WORDS.limitReached, "TOO_MANY_REQUESTS", "limitReached"], [429, ANSWER_WORDS.paused, "TOO_MANY_REQUESTS", "paused"], [429, `slow ${LEAK}`, "TOO_MANY_REQUESTS", "rate"], [500, `boom ${LEAK}`, "X", "unavailable"], [503, `down ${LEAK}`, "RUNTIME_UNAVAILABLE", "unavailable"],
   ] as const)("Code %i %s becomes the fixed '%s'", async (status, message, code, key) => {
     const w = setUp({ override: refuse(status, message, code) });
     const res = await w.send("POST", ASK, await w.as("pam-token"), ask(), );
@@ -237,6 +240,59 @@ describe("refusals are Cloud's fixed words", () => {
     expect(res.text).not.toContain(LEAK);
     expect(res.text).not.toContain("request-0001");
     expect(res.text).not.toContain("refunds");
+  });
+});
+
+describe("B8: the Ask box's edge cases", () => {
+  it("a repeat of a NOT FOUND question (Code's earlier Code replays the fixed words as the text) is the not-found answer, never 'Couldn't answer that just now'", async () => {
+    const replayed = { answerId: "a1234567890", threadId: "t-1234", outcome: "not_found", text: "I don't know. The wiki and the code I can read do not cover this.", unconfirmed: [], sources: [], wikiPages: [] };
+    const w = setUp({ override: (call) => (/\/answers$/u.test(call.path) ? json(200, replayed) : undefined) });
+    const res = await w.send("POST", ASK, await w.as("pam-token"), ask());
+    expect(res.status).toBe(200);
+    expect(AnswerResponseSchema.parse(res.body)).toMatchObject({ outcome: "not_found", text: "", honesty: replayed.text, sources: [] });
+  });
+
+  it("the same not-found answer in Code's own current shape (empty text, the words as honesty) reads as it always did", async () => {
+    const own = { answerId: "a1234567890", threadId: "t-1234", outcome: "not_found", text: "", honesty: "I don't know. The wiki and the code I can read do not cover this.", unconfirmed: [], sources: [], wikiPages: [], action: { kind: "quick_task", label: "Start a Quick task", title: "x" } };
+    const w = setUp({ override: (call) => (/\/answers$/u.test(call.path) ? json(200, own) : undefined) });
+    const res = await w.send("POST", ASK, await w.as("pam-token"), ask());
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ outcome: "not_found", text: "", honesty: own.honesty });
+  });
+
+  it("a not-found with sources, or with text AND honesty, or with text that is not one plain line of words, is still refused whole", async () => {
+    const base = { answerId: "a1234567890", threadId: "t-1234", outcome: "not_found", unconfirmed: [], wikiPages: [] };
+    for (const [name, answer] of [
+      ["a source", { ...base, text: "", sources: [{ n: 1, repo: "web", path: "src/a.ts", line: 1, commit: SHA }] }],
+      ["text and honesty both", { ...base, text: "Invented CANARY", honesty: "I don't know.", sources: [] }],
+      ["a marker in the words", { ...base, text: "I don't know. [1] CANARY", sources: [] }],
+      ["words over 300", { ...base, text: "x".repeat(301), sources: [] }],
+      ["a control character", { ...base, text: "a\u0000b", sources: [] }],
+    ] as const) {
+      const w = setUp({ override: (call) => (/\/answers$/u.test(call.path) ? json(200, answer) : undefined) });
+      expect(asFixed(await w.send("POST", ASK, await w.as("pam-token"), ask())), name).toEqual(fixed("unavailable"));
+    }
+  });
+
+  it("'answers paused this month' is its own fixed sentence, not 'you've asked a lot of questions'; the project limit and the real rate limit keep theirs", async () => {
+    for (const [message, key] of [[ANSWER_WORDS.paused, "paused"], [ANSWER_WORDS.limitReached, "limitReached"], [ANSWER_WORDS.rate, "rate"], [`Answers are paused for this month. ${LEAK}`, "rate"]] as const) {
+      const w = setUp({ override: (call) => (/\/answers$/u.test(call.path) ? json(429, { error: { code: "TOO_MANY_REQUESTS", message } }) : undefined) });
+      const res = await w.send("POST", ASK, await w.as("pam-token"), ask());
+      expect(asFixed(res), message).toEqual(fixed(key));
+      expect(res.text).not.toContain(LEAK);
+    }
+    expect(err({ body: { error: (ANSWERS_ANSWERS.paused.body as any).error } }).message).toBe("Answers are paused for this month.");
+    expect(ANSWERS_ANSWERS.paused.status).toBe(429);
+  });
+
+  it("the suggestion route never says 'paused': a 429 there is the suggestion's own words", async () => {
+    const w = setUp({ override: (call) => (/suggest$/u.test(call.path) ? json(429, { error: { code: "TOO_MANY_REQUESTS", message: ANSWER_WORDS.paused } }) : undefined) });
+    expect(asFixed(await w.send("POST", SUGGEST, await w.as("pam-token"), text()))).toEqual(fixed("suggestRate"));
+  });
+
+  it("an answer whose text holds a plain number in brackets is still refused here (Code now neutralises them before it answers; this check stays as the guard)", () => {
+    expect(() => answerObject(goodAnswer({ text: "The first is refunds[0]. [1]" }))).toThrow();
+    expect(answerObject(goodAnswer({ text: "The first is refunds(0). [1]" }))).toMatchObject({ text: "The first is refunds(0). [1]" });
   });
 });
 

@@ -35,6 +35,7 @@ import { SETUP_REPAIR_ROUTES } from "./setup-repair-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { KNOWLEDGE_SWITCH_ROUTES } from "./knowledge-switch-routes.js";
 import { GRADUATION_ROUTES } from "./lessons-graduation-routes.js";
+import { SKILLS_ROUTES } from "./skills-routes.js";
 import { HOW_WE_WORK_ROUTES } from "./how-we-work-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES, coOwnerOf } from "./people-routes.js";
@@ -1105,6 +1106,8 @@ export const ROUTES: Route[] = [
   ...LESSONS_ROUTES,
   // L4-JA7: "Knowledge stays in Rovara" and a project's local tools setting, as the person (knowledge-switch-routes.ts).
   ...KNOWLEDGE_SWITCH_ROUTES,
+  // Rovara skills (L4-JA): list, one skill with its text, edit, approve (two different people) and retire, as the person; Code decides.
+  ...SKILLS_ROUTES,
   ...HOW_WE_WORK_ROUTES,
   // Creating a company (DEC 254a), for a person with no company yet.
   ...ONBOARDING_ROUTES,
