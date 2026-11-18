@@ -105,9 +105,13 @@ const lessonRef = (value: unknown): string | undefined => (typeof value === "str
 export function became(raw: unknown): { kind: string; ref: string; at: number } | undefined {
   if (!isRecord(raw)) return undefined;
   const kind = BECAME_KINDS.find((one) => one === raw["kind"]) ?? "other";
-  return { kind, ref: text(raw["ref"], 200) ?? "", at: num(raw["at"]) ?? 0 };
+  // A time outside what a date can hold (a count in microseconds, say) reads as no time: the screen draws a date from it and must never throw.
+  const at = num(raw["at"]);
+  return { kind, ref: text(raw["ref"], 200) ?? "", at: at !== undefined && at >= 0 && at <= MAX_TIME ? at : 0 };
 }
 const BECAME_KINDS = ["rule", "check", "skill"] as const;
+/** The latest millisecond time a JavaScript date holds. */
+const MAX_TIME = 8.64e15;
 
 /** One lesson as the screens draw it (contract v0 `LessonItem`), or undefined for one Code sent without an id, a version or a title. */
 export function lessonItem(raw: unknown): Record<string, unknown> | undefined {

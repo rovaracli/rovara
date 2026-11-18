@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { TidyCard } from "../../../api/graduation.js";
-import { NOT_NOW, TIDY_CONFIRM, TIDY_TITLE, tidyUseWords, tidyWords } from "../../../api/graduation.js";
+import { NOT_NOW, TIDY_CONFIRM, tidyTitle, tidyUseWords, tidyWords } from "../../../api/graduation.js";
 import { useLearnedApi } from "../../../api/learned.js";
 import { useAnnounce } from "../../../design/Announcer.js";
 import { Button } from "../../../design/Button.js";
 import { Checkbox } from "../../../design/Checkbox.js";
 import { VisibleText, visibleText } from "../../../design/VisibleText.js";
-import { failureWords, refreshLessons } from "./graduation-shared.js";
+import { failureWords, refreshIfStale, refreshLessons } from "./graduation-shared.js";
 
 /** The tidy card: the 10 least used lessons, each with its use count and a checkbox; one confirm retires the chosen ones. */
 export function TidyCardView({ project, tidy }: { project: string; tidy: TidyCard }) {
@@ -17,11 +17,11 @@ export function TidyCardView({ project, tidy }: { project: string; tidy: TidyCar
   const busy = state.kind === "busy", ids = tidy.lessons.map(lesson => lesson.lessonId).filter(id => chosen.has(id));
   async function run(write: () => Promise<string>) {
     setState({ kind: "busy" });
-    try { const text = await write();setState({ kind: "done", text });announce(`${TIDY_TITLE} ${text}`);refreshLessons(query, project); }
-    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });setConfirming(false); }
+    try { const text = await write();setState({ kind: "done", text });announce(`${tidyTitle(tidy.lessons.length)} ${text}`);refreshLessons(query, project); }
+    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });setConfirming(false);refreshIfStale(failure, query, project); }
   }
   return <article className="rv-permanent rv-tidy" aria-labelledby="tidy-title" data-testid="tidy-card">
-    <h3 id="tidy-title">{TIDY_TITLE}</h3>
+    <h3 id="tidy-title">{tidyTitle(tidy.lessons.length)}</h3>
     {state.kind === "done" ? <p role="status" className="rv-learned-note" data-testid="tidy-result"><VisibleText text={state.text} /></p> : <>
       <p className="rv-muted">These lessons have been used least. Choose the ones Rovara should stop giving to tasks.</p>
       <ul className="rv-tidy-list" aria-label="Least used lessons">{tidy.lessons.map(lesson => <li key={lesson.lessonId}>

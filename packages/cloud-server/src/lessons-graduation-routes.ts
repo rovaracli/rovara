@@ -12,6 +12,7 @@ export const PATHS_MAX = 20;
 export const PATH_MAX = 200;
 export const TIDY_IDS_MAX = 10;
 const DRAFTS_MAX = 20;
+export const REQUEST_MAX = 4000;
 const LESSON_RE = new RegExp(`^${LESSON_ID}$`, "u");
 const DRAFT_ID = "(chk_[0-9a-f]{16})";
 const RULE_ID = "(rule_[0-9a-f]{16})";
@@ -46,10 +47,13 @@ function card(raw: unknown): Record<string, unknown> | undefined {
   const target = suggested ?? targets[0];
   if (target === undefined) return undefined;
   const needs = isRecord(raw["needs"]) ? raw["needs"] : {};
+  // The lesson's own paths, each once. A card whose paths Code sent but none of which can be drawn is left out, never shown as "the whole project".
+  const sentPaths = strings(raw["paths"], PATHS_MAX, PATH_MAX), paths = [...new Set(sentPaths.filter(plainGlob))];
+  if (sentPaths.length > 0 && paths.length === 0) return undefined;
   return {
     lessonId: id, version: at, title, description: text(raw["description"], 160) ?? "", type: text(raw["type"], 40) ?? "", tier: tier(raw["tier"]),
     target, targets: [target, ...targets.filter((one) => one !== target)],
-    paths: strings(raw["paths"], PATHS_MAX, PATH_MAX).filter(plainGlob), tasks: count(raw["tasks"]), days: count(raw["days"]),
+    paths, tasks: count(raw["tasks"]), days: count(raw["days"]),
     // 2 or more people reads as 2: a count a newer Code raised is never shown as one person.
     needs: { required: typeof needs["required"] === "number" && needs["required"] >= 2 ? 2 : 1, have: count(needs["have"]), you: needs["you"] === true },
   };
@@ -66,8 +70,9 @@ function tidy(raw: unknown): Record<string, unknown> | undefined {
 
 function drafts(raw: unknown): Array<Record<string, unknown>> {
   return list(raw, DRAFTS_MAX).filter(isRecord).flatMap((one) => {
-    const id = text(one["id"], 40), lesson = lessonId(one["lessonId"]), title = text(one["title"], 80), request = text(one["request"], 4000);
-    if (id === undefined || !DRAFT_RE.test(id) || lesson === undefined || title === undefined || request === undefined || request === "") return [];
+    const id = text(one["id"], 40), lesson = lessonId(one["lessonId"]), title = text(one["title"], 80), request = text(one["request"], REQUEST_MAX + 1);
+    // A draft with no title, no request or a request too long to show whole is left out: a person never copies a request that was cut short.
+    if (id === undefined || !DRAFT_RE.test(id) || lesson === undefined || title === undefined || title === "" || request === undefined || request === "" || request.length > REQUEST_MAX) return [];
     return [{ id, lessonId: lesson, title, request, paths: strings(one["paths"], PATHS_MAX, PATH_MAX).filter(plainGlob), createdAt: num(one["createdAt"]) ?? 0 }];
   });
 }
@@ -107,7 +112,7 @@ const lessonPath = (context: { params: string[] }) => [context.params[0]!, conte
 
 export const GRADUATION_ROUTES: Route[] = [
   {
-    // POST …/lessons/tidy/retire (`lessons.tidy.retire`): retire the chosen lessons, at most 10, each once. Listed before `…/lessons/{id}/retire`, which "tidy" would also match.
+    // POST …/lessons/tidy/retire (`lessons.tidy.retire`, Code's `…/lessons/tidy/retire-chosen`): retire the chosen lessons, at most 10, each once. Listed before `…/lessons/{id}/retire`, which "tidy" would also match here.
     method: "POST", path: new RegExp(`^/projects/${PROJECT}/lessons/tidy/retire$`, "u"),
     answer: async (context) => {
       const raw = body(context)["ids"];
@@ -115,7 +120,7 @@ export const GRADUATION_ROUTES: Route[] = [
       const ids = raw as string[];
       if (new Set(ids).size !== ids.length) return badRequest("Choose each lesson once.");
       const project = context.params[0]!;
-      const answer = await postTo(context, `${dev(project)}/lessons/tidy/retire`, { ids });
+      const answer = await postTo(context, `${dev(project)}/lessons/tidy/retire-chosen`, { ids });
       const reply = isRecord(answer) ? answer : {};
       // Only a lesson that was asked for is ever reported as retired.
       const retired = [...new Set(list(reply["retired"], TIDY_IDS_MAX).flatMap((one) => (typeof one === "string" && ids.includes(one) ? [one] : [])))];

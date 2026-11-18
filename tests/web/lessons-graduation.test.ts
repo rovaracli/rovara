@@ -97,6 +97,7 @@ it("reads the graduation answer only for a person who decides, one card with the
   expect(read.card?.targets).toEqual(["skill", "rule"]);
   expect(read.tidy?.lessons).toHaveLength(10);
   expect(read.drafts).toEqual([DRAFT]);
+  expect(GraduationReader.parse({ project: "web", canDecide: true, card: { ...CARD, paths: ["a/**", "a/**", "b/**"] } }).card?.paths).toEqual(["a/**", "b/**"]);
   expect(read.rules).toEqual([RULE]);
   expect(GraduationReader.parse({ project: "web", canDecide: true, card: { ...CARD, target: "wiki", targets: ["wiki"] } }).card).toBeUndefined();
   expect(() => GraduationReader.parse({ canDecide: true })).toThrow();
@@ -274,7 +275,7 @@ it("lists the least used lessons with their use counts, retires only the chosen 
   const sent: ApiRequest[] = [];
   const f = mount({ send: request => { sent.push(request);return ok({ project: "web", retired: ["les_old00003", "les_old00001"], skipped: 0 }); } });
   const card = await screen.findByTestId("tidy-card");
-  expect(within(card).getByRole("heading", { name: "10 least used: retire?" })).toBeTruthy();
+  expect(within(card).getByRole("heading", { name: "3 least used: retire?" })).toBeTruthy();
   const boxes = within(card).getAllByRole("checkbox");
   expect(boxes).toHaveLength(3);
   expect(card.textContent).toContain("Used in 3 tasks over 20 days");
@@ -302,6 +303,7 @@ it("shows at most 10 lessons on the tidy card, whatever Code sent, and Not now c
   const many = { period: 30, lessons: Array.from({ length: 14 }, (_, index) => ({ lessonId: `les_t${String(index).padStart(5, "0")}`, version: 1, title: `Tidy ${String(index)}`, type: "fact", tasks: index, days: 9 })) };
   const f = mount({ graduation: { tidy: many }, send: request => { sent.push(request);return ok({ project: "web", closed: true }); } });
   const card = await screen.findByTestId("tidy-card");
+  expect(within(card).getByRole("heading", { name: "10 least used: retire?" })).toBeTruthy();
   expect(within(card).getAllByRole("checkbox")).toHaveLength(10);
   await act(async () => { fireEvent.click(within(card).getByRole("button", { name: "Not now" })); });
   expect(sent).toHaveLength(1);
@@ -486,5 +488,34 @@ it("draws no team rules for a person who may not decide, nor when there are none
   fireEvent.click(await screen.findByRole("button", { name: /^Retire rule:/u }));
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Retire rule" })); });
   expect((await screen.findByRole("alert")).textContent).toContain("Only a maintainer");
+  f.close();
+});
+
+// ---- What review found ----
+it("draws a retired lesson whose time no date can hold without a time, and never throws", async () => {
+  const f = mount({ retired: [lesson("les_huge00001", { status: "retired", title: "H", became: { kind: "rule", ref: "r", at: 1e18 } })] });
+  fireEvent.mouseDown(await screen.findByRole("tab", { name: "Retired" }), { button: 0, ctrlKey: false });
+  expect((await screen.findByTestId("lesson-became")).textContent).toBe("Became a team rule");
+  f.close();
+});
+it("does not open the link form after a failed Drop it, and reads the cards again when Code says a draft is gone or changed", async () => {
+  const f = mount({ send: () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "That draft is no longer there." } } }) });
+  const draft = await screen.findByRole("article", { name: DRAFT.title });
+  const reads = () => f.request.mock.calls.filter(([request]) => request.method === "GET" && request.path.endsWith("/lessons/graduation")).length;
+  const before = reads();
+  await act(async () => { fireEvent.click(within(draft).getByRole("button", { name: `Drop it: ${DRAFT.title}` })); });
+  expect((await within(draft).findByRole("alert")).textContent).toBe("That draft is no longer there.");
+  expect(within(draft).queryByRole("textbox", { name: /Link to the task you started/u })).toBeNull();
+  await waitFor(() => expect(reads()).toBeGreaterThan(before));
+  f.close();
+});
+it("reads the cards again after Code says a Make permanent is out of date (409), keeping Code's sentence", async () => {
+  const f = mount({ send: () => ({ status: 409, body: { error: { code: "IDEMPOTENCY_CONFLICT", message: "The first person asked for something else (another target or other paths)." } } }) });
+  const reads = () => f.request.mock.calls.filter(([request]) => request.method === "GET" && request.path.endsWith("/lessons/graduation")).length;
+  await act(async () => { fireEvent.click(await screen.findByRole("button", { name: "Make it a rule" })); });
+  const before = reads();
+  expect((await screen.findByRole("alert")).textContent).toContain("The first person asked for something else");
+  await waitFor(() => expect(reads()).toBeGreaterThanOrEqual(before));
+  expect(reads()).toBeGreaterThanOrEqual(2);
   f.close();
 });

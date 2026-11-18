@@ -945,7 +945,7 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.graduate", "POST", `${DP}/lessons/{lessonId}/graduate`, "Make a proven lesson permanent: a team rule, a draft task to add a check, or a skill", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.graduateLater", "POST", `${DP}/lessons/{lessonId}/graduate-later`, "Not now: no card for this lesson for 60 days", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.bothPlaces", "POST", `${DP}/lessons/{lessonId}/both-places`, "A conflict's third answer: both lessons are right, each in its own place", "full", ["how-we-work"], "no", false, "none", true),
-  spec("lessons.tidy.retire", "POST", `${DP}/lessons/tidy/retire`, "Retire the lessons chosen on the tidy card (1 to 10)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.tidy.retire", "POST", `${DP}/lessons/tidy/retire-chosen`, "Retire the lessons chosen on the tidy card (1 to 10)", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.tidy.later", "POST", `${DP}/lessons/tidy/later`, "Not now: close this period's tidy card", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.checkDraft.started", "POST", `${DP}/lessons/check-drafts/{draftId}/started`, "The person says which of their own tasks they started from a draft", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.checkDraft.dismiss", "POST", `${DP}/lessons/check-drafts/{draftId}/dismiss`, "Drop a draft task", "full", ["how-we-work"], "no", false, "none", true),

@@ -5,8 +5,8 @@ import { useLearnedApi, useLessonPages, type LessonItem } from "../../../api/lea
 import { useAnnounce } from "../../../design/Announcer.js";
 import { Button } from "../../../design/Button.js";
 import { TextArea } from "../../../design/TextArea.js";
-import { VisibleText } from "../../../design/VisibleText.js";
-import { failureWords, refreshLessons } from "./graduation-shared.js";
+import { VisibleText, visibleText } from "../../../design/VisibleText.js";
+import { failureWords, refreshIfStale, refreshLessons } from "./graduation-shared.js";
 
 const MAX = 20;
 const same = (a: string[], b: string[]) => a.length === b.length && [...a].sort().every((one, index) => one === [...b].sort()[index]);
@@ -38,14 +38,14 @@ export function BothPlaces({ project, lesson }: { project: string; lesson: Lesso
     try {
       const text = bothPlacesWords(await api.bothPlaces(project, lesson.id, { version: lesson.version, cardPaths, otherPaths }));
       setState({ kind: "done", text });announce(`${lesson.title}: ${text}`);refreshLessons(query, project);
-    } catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") }); }
+    } catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project); }
   }
   if (state.kind === "done") return <p role="status" className="rv-learned-note" data-testid="both-places-result"><VisibleText text={state.text} /></p>;
   return <div className="rv-both-places">
-    {!open ? <Button variant="quiet" aria-label={`Both, in different places: ${lesson.title}`} onClick={() => setOpen(true)}>Both, in different places</Button> : <form className="rv-retire-form" aria-label={`Both, in different places: ${lesson.title}`} onSubmit={event => { event.preventDefault();void save(); }}>
+    {!open ? <Button variant="quiet" aria-label={visibleText(`Both, in different places: ${lesson.title}`)} onClick={() => setOpen(true)}>Both, in different places</Button> : <form className="rv-retire-form" aria-label={visibleText(`Both, in different places: ${lesson.title}`)} onSubmit={event => { event.preventDefault();void save(); }}>
       <p className="rv-lesson-relation">Both lessons can be right when they apply in different places. {older === undefined ? "The older lesson" : olderName} will apply only to its new place.</p>
-      <TextArea label={`Where "${lesson.title}" applies`} hint={PATHS_HELP} rows={3} value={cardText} disabled={busy} {...(cardProblem === undefined ? {} : { error: cardProblem })} onChange={event => setCardText(event.target.value)} />
-      <TextArea label={`Where ${olderName} will apply from now on`} hint={PATHS_HELP} rows={3} value={otherText} disabled={busy} {...(otherProblem === undefined ? {} : { error: otherProblem })} onChange={event => setOtherText(event.target.value)} />
+      <TextArea label={visibleText(`Where "${lesson.title}" applies`)} hint={PATHS_HELP} rows={3} value={cardText} disabled={busy} {...(cardProblem === undefined ? {} : { error: cardProblem })} onChange={event => setCardText(event.target.value)} />
+      <TextArea label={visibleText(`Where ${olderName} will apply from now on`)} hint={PATHS_HELP} rows={3} value={otherText} disabled={busy} {...(otherProblem === undefined ? {} : { error: otherProblem })} onChange={event => setOtherText(event.target.value)} />
       {sameProblem !== undefined && <p role="alert" className="rv-lesson-failed">{sameProblem}</p>}
       <div className="rv-lesson-actions">
         <Button type="submit" variant="primary" busy={busy} disabled={cardProblem !== undefined || otherProblem !== undefined || sameProblem !== undefined}>Save both</Button>

@@ -116,13 +116,13 @@ describe("code contract v0 tables", () => {
     expect(matchCodeRoute("DELETE", "/v1/app/script-tokens/stk_aaaaaaaaaaaaaaaaaaaa")).toBeUndefined();
   });
 
-  it("declares the nine lessons phase 4 routes (graduation and tidy) as Code routes Cloud calls and web rows Cloud answers, and a literal tidy path beats a lesson id", () => {
+  it("declares the nine lessons phase 4 routes (graduation and tidy) as Code routes Cloud calls and web rows Cloud answers, and Code's tidy retire has its own literal path", () => {
     const rows = [
       ["lessons.graduation", "GET", "/v1/dev/projects/{project}/lessons/graduation", "GET /v1/app/projects/{p}/lessons/graduation"],
       ["lessons.graduate", "POST", "/v1/dev/projects/{project}/lessons/{lessonId}/graduate", "POST /v1/app/projects/{p}/lessons/{lessonId}/graduate"],
       ["lessons.graduateLater", "POST", "/v1/dev/projects/{project}/lessons/{lessonId}/graduate-later", "POST /v1/app/projects/{p}/lessons/{lessonId}/graduate-later"],
       ["lessons.bothPlaces", "POST", "/v1/dev/projects/{project}/lessons/{lessonId}/both-places", "POST /v1/app/projects/{p}/lessons/{lessonId}/both-places"],
-      ["lessons.tidy.retire", "POST", "/v1/dev/projects/{project}/lessons/tidy/retire", "POST /v1/app/projects/{p}/lessons/tidy/retire"],
+      ["lessons.tidy.retire", "POST", "/v1/dev/projects/{project}/lessons/tidy/retire-chosen", "POST /v1/app/projects/{p}/lessons/tidy/retire"],
       ["lessons.tidy.later", "POST", "/v1/dev/projects/{project}/lessons/tidy/later", "POST /v1/app/projects/{p}/lessons/tidy/later"],
       ["lessons.checkDraft.started", "POST", "/v1/dev/projects/{project}/lessons/check-drafts/{draftId}/started", "POST /v1/app/projects/{p}/lessons/check-drafts/{draftId}/started"],
       ["lessons.checkDraft.dismiss", "POST", "/v1/dev/projects/{project}/lessons/check-drafts/{draftId}/dismiss", "POST /v1/app/projects/{p}/lessons/check-drafts/{draftId}/dismiss"],
@@ -133,7 +133,9 @@ describe("code contract v0 tables", () => {
       const row = APP_ROUTES.find((entry) => `${entry.method} ${entry.path}` === app);
       expect(row, app).toMatchObject({ owner: "code", screen: "how-we-work", codeRoutes: [id], cloudServerToday: true });
     }
-    expect(matchCodeRoute("POST", "/v1/dev/projects/web/lessons/tidy/retire")?.route.id).toBe("lessons.tidy.retire");
+    expect(matchCodeRoute("POST", "/v1/dev/projects/web/lessons/tidy/retire-chosen")?.route.id).toBe("lessons.tidy.retire");
+    // Code's path for the tidy retire is its own literal, so it never collides with a lesson id's retire row.
+    expect(matchCodeRoute("POST", "/v1/dev/projects/web/lessons/tidy/retire")?.route.id).toBe("lessons.retire");
     expect(matchCodeRoute("POST", "/v1/dev/projects/web/lessons/les_retry0001/retire")?.route.id).toBe("lessons.retire");
     expect(matchCodeRoute("GET", "/v1/dev/projects/web/lessons/graduation")?.route.id).toBe("lessons.graduation");
     expect(matchCodeRoute("POST", "/v1/dev/projects/web/lessons/rules/rule_0123456789abcdef/retire")?.route.id).toBe("lessons.rules.retire");

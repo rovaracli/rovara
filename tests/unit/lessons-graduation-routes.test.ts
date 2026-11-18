@@ -240,8 +240,11 @@ describe("the tidy card", () => {
 
   it("sends only the chosen ids, answers which were retired and how many were skipped, and never reports a lesson that was not asked for", async () => {
     const priya = await as("priya");
+    const mark = fake.log.length;
     expect((await priya.send("POST", `${P}/tidy/retire`, { ids: ["les_readme001", "les_nothere01"], extra: 1 })).body).toEqual({ project: "web", retired: ["les_readme001"], skipped: 1 });
     expect(sent("lessons.tidy.retire")[0]!.body).toEqual({ ids: ["les_readme001", "les_nothere01"] });
+    // Code names its own path for this one (not `…/lessons/tidy/retire`, which is a lesson id's retire row).
+    expect(fake.log.slice(mark).filter((entry) => entry.method === "POST" && entry.path.includes("/lessons/tidy/")).map((entry) => entry.path)).toEqual(["/v1/dev/projects/web/lessons/tidy/retire-chosen"]);
     fake.overrideLessonAnswer("lessons.tidy.retire", { body: { retired: ["les_readme001", "les_other_one", "les_readme001", 5], skipped: -4 } });
     expect((await priya.send("POST", `${P}/tidy/retire`, { ids: ["les_readme001"] })).body).toEqual({ project: "web", retired: ["les_readme001"], skipped: 0 });
   });
@@ -326,6 +329,29 @@ describe("two projects and two companies", () => {
     expect((await priya.send("POST", `${P}/les_logs00001/graduate-later`, {})).body).toEqual({ project: "web", lessonId: "les_logs00001", later: true });
     fake.overrideLessonAnswer("lessons.graduation", { body: { project: "secret-ledger", canDecide: true, drafts: [] } });
     expect((await priya.get(`${P}/graduation`)).body).toMatchObject({ project: "web" });
+  });
+});
+
+describe("what review found", () => {
+  it("lists a card's own paths once each, and leaves out a card whose paths Code sent but none can be drawn (never shown as the whole project)", () => {
+    const base = { lessonId: "les_aaaa", version: 1, title: "T", target: "rule", targets: ["rule"] };
+    expect(graduationView({ canDecide: true, card: { ...base, paths: ["src/**", "src/**", "lib/**"] } }, "web")["card"]).toMatchObject({ paths: ["src/**", "lib/**"] });
+    expect(graduationView({ canDecide: true, card: { ...base, paths: ["../x", "/abs"] } }, "web")).not.toHaveProperty("card");
+    expect(graduationView({ canDecide: true, card: { ...base, paths: [] } }, "web")["card"]).toMatchObject({ paths: [] });
+    expect(graduationView({ canDecide: true, card: { ...base, paths: ["../x", "ok/**"] } }, "web")["card"]).toMatchObject({ paths: ["ok/**"] });
+  });
+
+  it("leaves out a draft with no title or with a request too long to show whole, and keeps one at exactly the limit", () => {
+    const draft = { id: "chk_0123456789abcdef", lessonId: "les_aaaa", title: "T", request: "r".repeat(4000) };
+    expect((graduationView({ canDecide: true, drafts: [draft] }, "web")["drafts"] as unknown[])).toHaveLength(1);
+    expect(graduationView({ canDecide: true, drafts: [{ ...draft, request: "r".repeat(4001) }] }, "web")["drafts"]).toEqual([]);
+    expect(graduationView({ canDecide: true, drafts: [{ ...draft, title: "" }] }, "web")["drafts"]).toEqual([]);
+  });
+
+  it("reads a time a date cannot hold as no time, so a screen never throws drawing it", () => {
+    const row = { id: "les_aaaa", version: 1, expiresAt: 5, title: "T" };
+    for (const at of [1e18, 8.64e15 + 1, -5, Number.NaN, "5"]) expect(lessonItem({ ...row, became: { kind: "rule", ref: "r", at } })?.["became"], String(at)).toMatchObject({ at: 0 });
+    expect(lessonItem({ ...row, became: { kind: "rule", ref: "r", at: 8.64e15 } })?.["became"]).toMatchObject({ at: 8.64e15 });
   });
 });
 

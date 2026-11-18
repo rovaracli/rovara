@@ -9,7 +9,7 @@ import { Checkbox } from "../../../design/Checkbox.js";
 import { TextArea } from "../../../design/TextArea.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText, visibleText } from "../../../design/VisibleText.js";
-import { failureWords, refreshLessons } from "./graduation-shared.js";
+import { failureWords, refreshIfStale, refreshLessons } from "./graduation-shared.js";
 
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 const PATHS_MAX = 20;
@@ -31,13 +31,13 @@ export function GraduationCardView({ project, card }: { project: string; card: G
       const answer = await api.graduate(project, card.lessonId, { target, ...(target === "rule" && paths.length > 0 ? { paths } : {}), ...(target === "skill" && name.trim() !== "" ? { name: name.trim() } : {}) });
       const text = graduatedWords(answer);
       setState(answer.state === "waiting" ? { kind: "waiting", text } : { kind: "done", text });announce(`${card.title}: ${text}`);refreshLessons(query, project);
-    } catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") }); }
+    } catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project); }
   }
   async function later() {
     if (busy || closed) return;
     setState({ kind: "busy" });
     try { await api.graduateLater(project, card.lessonId);const text = "Okay. Rovara won't ask about this lesson again for 60 days.";setState({ kind: "done", text });announce(text);refreshLessons(query, project); }
-    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") }); }
+    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project); }
   }
   return <article className="rv-permanent" aria-labelledby="permanent-title" data-testid="permanent-card">
     <h3 id="permanent-title">{GRADUATION_TITLE}</h3>

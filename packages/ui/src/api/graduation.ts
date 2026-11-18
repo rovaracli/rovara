@@ -22,7 +22,8 @@ const BECAME_WORDS: Record<string, string> = { rule: "Became a team rule", check
 export const becameWords = (kind: string) => BECAME_WORDS[kind] ?? "Made permanent";
 export const WAITING_WORDS = "Waiting for a second person";
 export const GRADUATION_TITLE = "Make this permanent?";
-export const TIDY_TITLE = "10 least used: retire?";
+/** The tidy card's title with how many lessons it holds (up to 10). */
+export const tidyTitle = (count: number) => `${String(count)} least used: retire?`;
 export const NOT_NOW = "Not now";
 const plural = (n: number, one: string, many = one + "s") => `${String(n)} ${n === 1 ? one : many}`;
 /** Why the lesson is proven, in words: "Used in 12 tasks over 41 days". */
@@ -90,7 +91,7 @@ function readCard(raw: unknown): GraduationCard | undefined {
   const needs = isRecord(raw["needs"]) ? raw["needs"] : {};
   return {
     lessonId: raw["lessonId"], version: raw["version"], title: raw["title"], description: str(raw["description"]) ? raw["description"] : "", type: str(raw["type"]) ? raw["type"] : "",
-    tier: raw["tier"] === 0 || raw["tier"] === 2 ? raw["tier"] : 1, target: suggested, targets: [suggested, ...offered.filter(one => one !== suggested)], paths: strs(raw["paths"]), tasks: n(raw["tasks"]), days: n(raw["days"]),
+    tier: raw["tier"] === 0 || raw["tier"] === 2 ? raw["tier"] : 1, target: suggested, targets: [suggested, ...offered.filter(one => one !== suggested)], paths: [...new Set(strs(raw["paths"]))], tasks: n(raw["tasks"]), days: n(raw["days"]),
     needs: { required: fin(needs["required"]) && needs["required"] >= 2 ? 2 : 1, have: n(needs["have"]), you: needs["you"] === true },
   };
 }
@@ -161,5 +162,6 @@ export function graduationApi(api: Api) {
 export function readBecame(raw: unknown): LessonBecame | undefined {
   if (!isRecord(raw)) return undefined;
   const kind = raw["kind"] === "rule" || raw["kind"] === "check" || raw["kind"] === "skill" ? raw["kind"] : "other";
-  return { kind, ref: str(raw["ref"]) ? raw["ref"] : "", at: n(raw["at"]) };
+  // A time a date cannot hold reads as no time.
+  return { kind, ref: str(raw["ref"]) ? raw["ref"] : "", at: n(raw["at"]) <= 8.64e15 ? n(raw["at"]) : 0 };
 }

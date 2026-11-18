@@ -5,8 +5,8 @@ import { RULE_RETIRE_CONFIRM, TEAM_RULES_TITLE, whereWords } from "../../../api/
 import { useGraduation, useLearnedApi, useLessonPages } from "../../../api/learned.js";
 import { useAnnounce } from "../../../design/Announcer.js";
 import { Button } from "../../../design/Button.js";
-import { VisibleText } from "../../../design/VisibleText.js";
-import { failureWords, refreshLessons } from "./graduation-shared.js";
+import { VisibleText, visibleText } from "../../../design/VisibleText.js";
+import { failureWords, refreshIfStale, refreshLessons } from "./graduation-shared.js";
 
 function Rule({ project, rule }: { project: string; rule: TeamRule }) {
   const api = useLearnedApi(), query = useQueryClient(), announce = useAnnounce();
@@ -14,7 +14,7 @@ function Rule({ project, rule }: { project: string; rule: TeamRule }) {
   async function retire() {
     setState({ kind: "busy" });
     try { await api.retireRule(project, rule.id);setState({ kind: "done" });announce("Rule retired. Rovara no longer adds it to tasks.");refreshLessons(query, project); }
-    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") }); }
+    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project); }
   }
   const busy = state.kind === "busy";
   return <li><article className="rv-lesson" data-rule-id={rule.id}>
@@ -25,7 +25,7 @@ function Rule({ project, rule }: { project: string; rule: TeamRule }) {
         <p>{RULE_RETIRE_CONFIRM}</p>
         <Button variant="danger" busy={busy} onClick={() => { void retire(); }}>Retire rule</Button>
         <Button variant="quiet" disabled={busy} onClick={() => setState({ kind: "idle" })}>Cancel</Button></div>
-      : <div className="rv-lesson-actions"><Button variant="quiet" aria-label={`Retire rule: ${rule.text.slice(0, 60)}`} onClick={() => setState({ kind: "confirming" })}>Retire</Button></div>}
+      : <div className="rv-lesson-actions"><Button variant="quiet" aria-label={visibleText(`Retire rule: ${rule.text.slice(0, 60)}`)} onClick={() => setState({ kind: "confirming" })}>Retire</Button></div>}
     {state.kind === "error" && <p role="alert" className="rv-lesson-failed"><VisibleText text={state.text} /></p>}
   </article></li>;
 }
