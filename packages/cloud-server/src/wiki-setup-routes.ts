@@ -21,9 +21,13 @@
 //   - A refusal reaches the app in the words Code fixed (an exact member of a known list), else in Cloud's own fixed words; never an echo of the browser's input, never other text of Code's. Until Code serves a
 //     route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
 //   - The logs say what was done and where (action, project), never what the person wrote.
+//   - AI key (L4-CW): hosted Code cannot see the company's AI choice and answers `aiKey: "unknown"`. For a person Code says manages the project, Cloud replaces it with its own yes/no (agent-ai-presence.ts:
+//     the saved "AI for your agents" choice and its connection), and refuses Build/Continue/Refresh now with Code's fixed "Connect an AI key" sentence before Code is asked when it knows there is none.
+//     Code's own connected/missing wins; a reader keeps "unknown"; a fact Cloud cannot read stays "unknown". Only the enum and that sentence leave (no key, provider, source or model).
 // cloud-server takes no package dependency, so the shapes are checked here by hand against contracts app-wiki-setup.ts (its limits and words are repeated and a unit test pins them).
 import { CodeError } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
+import { agentAiConnected } from "./agent-ai-presence.js";
 import { Unreadable, list, need, oneOf, plain, prose, rec, scope, text, when, whole } from "./wiki-routes.js";
 
 export const WIKI_SETUP_CODE_WORDS = Object.freeze({
@@ -249,11 +253,47 @@ export function upkeepAnswer(value: unknown): Record<string, unknown> {
 // ---- The routes ------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /** The project (after Code's access check names the person's company now), or the route's refusal. A query is never forwarded. */
-async function target(context: RouteContext): Promise<{ project: string } | { refusal: RouteAnswer }> {
+async function target(context: RouteContext): Promise<{ project: string; company: string } | { refusal: RouteAnswer }> {
   const at = await scope(context);
   if ("refusal" in at) return at;
   if ([...context.query.keys()].length > 0 || !PROJECT_FOR_PATH.test(at.project)) return { refusal: A.invalid };
   return at;
+}
+
+/** The routes that start a task (and so spend): Build, Continue and Refresh now. */
+const STARTS: ReadonlySet<string> = new Set(["build", "continue", "refresh"]);
+const CONNECT_KEY_ANSWER = answer(503, "MODEL_PROXY_UNAVAILABLE", C.connectKey);
+
+/**
+ * L4-CW: Code on a hosted Rovara cannot see the gateway's per-company choice and answers `aiKey: "unknown"`. Cloud can, so for a person Code says manages the project it is replaced by the company's yes/no
+ * (`connected`/`missing`, with Code's fixed sentence beside `missing`). Code's own `connected`/`missing` is never overridden, a person who only reads keeps `unknown` (and costs no read), and a fact Cloud cannot read
+ * leaves `unknown`. The company is Code's live answer for the person; only the enum and the fixed sentence leave: no key, provider, source or model.
+ */
+async function withAiKey(context: RouteContext, company: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (body["canManage"] !== true || body["aiKey"] !== "unknown") return body;
+  const fact = await agentAiConnected(context, company);
+  if (fact === null) return body;
+  const rest = { ...body };
+  delete rest["connectKey"];
+  return fact ? { ...rest, aiKey: "connected" } : { ...rest, aiKey: "missing", connectKey: C.connectKey };
+}
+async function withAiKeyAnswer(context: RouteContext, company: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const view = body["view"];
+  return plain(view) ? { ...body, view: await withAiKey(context, company, view) } : withAiKey(context, company, body);
+}
+
+/**
+ * A start the company's own AI cannot serve is refused before Code is asked to start it, so no task is started that would end "needs an AI key". Code's state is read FIRST, as the person: only a person Code
+ * says manages the project, with Code's own `aiKey` still "unknown", causes a read of the company's choice, and only for them is the sentence ever answered (a reader's start reaches Code and gets Code's own refusal,
+ * in the same time and steps whatever the company's AI state is).
+ */
+async function startWouldDie(context: RouteContext, project: string, company: string): Promise<boolean> {
+  const state = await fromCode(context, "build", base(project, "wiki-build"));
+  if ("refusal" in state) return false;
+  const seen = rebuilt(() => buildAnswer(state.value), "build");
+  const body = seen.body as Record<string, unknown>;
+  if (seen.status !== 200 || body["canManage"] !== true || body["aiKey"] !== "unknown") return false;
+  return (await agentAiConnected(context, company)) === false;
 }
 
 function postRoute(tail: RegExp, action: string, codeTail: string, body: (given: unknown) => Record<string, unknown> | undefined, answerOf: (value: unknown, project: string) => Record<string, unknown>, kind: Kind = "build"): Route {
@@ -264,10 +304,14 @@ function postRoute(tail: RegExp, action: string, codeTail: string, body: (given:
       if ("refusal" in at) return at.refusal;
       const sent = body(context.body);
       if (sent === undefined) return A.invalid;
+      if (STARTS.has(action) && await startWouldDie(context, at.project, at.company)) return CONNECT_KEY_ANSWER;
       const got = await fromCode(context, kind, base(at.project, codeTail), { method: "POST", body: sent });
       if ("refusal" in got) return got.refusal;
       const out = rebuilt(() => answerOf(got.value, at.project), kind);
-      if (out.status === 200) logged(action, at.project);
+      if (out.status === 200) {
+        logged(action, at.project);
+        if (kind === "build") return { status: 200, body: await withAiKeyAnswer(context, at.company, out.body as Record<string, unknown>) };
+      }
       return out;
     },
   };
@@ -280,7 +324,8 @@ function getRoute(tail: RegExp, codeTail: string, kind: Kind, answerOf: (value: 
       if ("refusal" in at) return at.refusal;
       const got = await fromCode(context, kind, base(at.project, codeTail));
       if ("refusal" in got) return got.refusal;
-      return rebuilt(() => answerOf(got.value, at.project), kind);
+      const out = rebuilt(() => answerOf(got.value, at.project), kind);
+      return out.status === 200 && kind === "build" ? { status: 200, body: await withAiKey(context, at.company, out.body as Record<string, unknown>) } : out;
     },
   };
 }

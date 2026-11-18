@@ -158,7 +158,8 @@ describe("every route passes the person's own token, to Code's own path, with th
     expect(WikiSetupDeleteAnswerSchema.parse(deleted.body)).toMatchObject({ deleted: true, message: WIKI_SETUP_CODE_WORDS.deleted, view: { status: "none" } });
     const switched = await w.send("PUT", P("payments", "upkeep"), headers, { requestId: RID, on: true });
     expect(WikiSetupUpkeepSchema.parse(switched.body)).toEqual({ enabled: true, canManage: true });
-    const sent = w.codeCalls();
+    // Build, Continue and Refresh now first read the state as the person (L4-CW: so a person who may not start is never told anything about the company's AI); only the changes are listed here.
+    const sent = w.codeCalls().filter((call) => call.method !== "GET");
     expect(sent.map((call) => `${call.method} ${call.path}`)).toEqual([
       ...POSTS.map(([, codePath]) => `POST /v1/app/projects/payments/${codePath}`), "POST /v1/app/projects/payments/wiki-map", "POST /v1/app/projects/payments/wiki-build/delete", "PUT /v1/app/projects/payments/upkeep",
     ]);
@@ -262,7 +263,7 @@ describe("bodies are rebuilt from known fields (M2 to M5)", () => {
     expect((await start({ notes: "x".repeat(2_000), chipsOn: Array.from({ length: 200 }, (_, i) => `c${String(i)}`) })).status).toBe(200);
     expect((await start({ notes: "  \n " })).status).toBe(200);
     expect((await start({ notes: "two\nlines" })).status).toBe(200);
-    const sent = w.codeCalls().map((call) => call.body as any);
+    const sent = w.codeCalls().filter((call) => call.method !== "GET").map((call) => call.body as any);
     expect(sent[1]).toEqual({ requestId: RID });
     expect(sent[2].notes).toBe("two\nlines");
   });
