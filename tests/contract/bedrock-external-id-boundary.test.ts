@@ -3,7 +3,7 @@
 // over both, from code, (3) the shipped customer role template names the same scheme, (4) the Code-side default boundary's `rovara-org_*` ceiling
 // (access-policies.ts AssumeOrgRoles) is for the CloudWatch / test-account roles only and never covers the Bedrock broker, (5) the check can fail.
 import { readFileSync } from "node:fs";
-import { Stack } from "aws-cdk-lib";
+import type { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { defaultBoundaryStatements, brokerRoleName } from "@agentx/contracts";
