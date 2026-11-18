@@ -9,6 +9,7 @@ import type { LessonCitation, LessonDecision, LessonDecisionResult, LessonEdit, 
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient, type SendResult } from "./client.js";
 import { ApiError } from "./errors.js";
+import { graduationApi, readBecame } from "./graduation.js";
 
 export type { LessonDecision, LessonEdit, LessonItem, LessonList, LessonMode, TaskLesson };
 const NEVER = { retry: "never" } as const;
@@ -113,10 +114,11 @@ function readLesson(raw: unknown): LessonItem | undefined {
  if (!isRecord(raw) || !str(raw["id"]) || !str(raw["title"]) || !fin(raw["version"]) || !fin(raw["expiresAt"]) || !fin(raw["createdAt"]) || !isRecord(raw["counters"])) return undefined;
  const counters = raw["counters"], n = (value: unknown) => (fin(value) && value > 0 ? Math.floor(value) : 0);
  return {
-  ...(raw as unknown as LessonItem),
+  ...(Object.fromEntries(Object.entries(raw).filter(([key]) => key !== "became")) as unknown as LessonItem),
   description: str(raw["description"]) ? raw["description"] : "", body: str(raw["body"]) ? raw["body"] : "",
   counters: { loaded: n(counters["loaded"]), helpful: n(counters["helpful"]), harmful: n(counters["harmful"]) },
   from: Array.isArray(raw["from"]) ? raw["from"].filter((one): one is { name: string; you?: true } => isRecord(one) && str(one["name"])) : [],
+  ...(readBecame(raw["became"]) === undefined ? {} : { became: readBecame(raw["became"])! }),
   citations: Array.isArray(raw["citations"]) ? (raw["citations"].filter(isRecord) as unknown as LessonCitation[]) : [],
   supportTasks: n(raw["supportTasks"]), canApprove: raw["canApprove"] === true, canReject: raw["canReject"] === true, canRetire: raw["canRetire"] === true,
  };
@@ -178,7 +180,8 @@ export function createLearnedApi(host: AppHost) {
   async retire(project: string, lessonId: string, reason: LessonRetireReason) { return settled(await api.send("POST", lessonPath(project, lessonId) + "/retire", { reason }, StatusReader, NEVER)); },
   async askRetire(project: string, lessonId: string) { return settled(await api.send("POST", lessonPath(project, lessonId) + "/retire-request", {}, AnyReader, NEVER)); },
   async setMode(project: string, mode: LessonMode) { return settled(await api.send("PUT", projectPath(project) + "/lessons/mode", { mode }, ModeReader, NEVER)); },
-  async notHelpful(project: string, taskId: string, lessonId: string) { return settled(await api.send("POST", projectPath(project) + "/tasks/" + encodeURIComponent(taskId) + "/lessons/" + encodeURIComponent(lessonId) + "/not-helpful", {}, AnyReader, NEVER)); },
+  ...graduationApi(api),
+ async notHelpful(project: string, taskId: string, lessonId: string) { return settled(await api.send("POST", projectPath(project) + "/tasks/" + encodeURIComponent(taskId) + "/lessons/" + encodeURIComponent(lessonId) + "/not-helpful", {}, AnyReader, NEVER)); },
  };
 }
 export function useLearnedApi() { const host = useAppHost();return useMemo(() => createLearnedApi(host), [host]); }
@@ -193,3 +196,5 @@ export function useLessonPages(project: string, list: LessonList, enabled = true
 export function useLessonMode(project: string) { const api = useLearnedApi();return useQuery({ queryKey: [...learnedKey(project), "mode"], queryFn: () => api.mode(project) }); }
 export function useRetireRequests(project: string, enabled: boolean) { const api = useLearnedApi();return useQuery({ queryKey: [...learnedKey(project), "retire-requests"], enabled, queryFn: () => api.retireRequests(project) }); }
 export function useTaskLessons(project: string, taskId: string) { const api = useLearnedApi();return useQuery({ queryKey: [...learnedKey(project), "task", taskId], queryFn: () => api.taskLessons(project, taskId) }); }
+/** This week's card, the tidy card and the draft tasks: read only for people who decide (`enabled`), and again after any write. */
+export function useGraduation(project: string, enabled: boolean) { const api = useLearnedApi();return useQuery({ queryKey: [...learnedKey(project), "graduation"], enabled, queryFn: () => api.graduation(project), refetchOnWindowFocus: false }); }

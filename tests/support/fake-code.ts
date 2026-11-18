@@ -12,7 +12,7 @@ import {
   matchCodeRoute,
   type AccessResponse, type CodeRequest, type CodeResponse, type CodeRouteId, type CompanyMember, type DecisionCard, type ErrorBody, type HowWeWorkView,
   type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
-  type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
+  type DecisionsResponse, type DecisionOutcome, type GraduationResponse, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
 import { wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
@@ -102,6 +102,12 @@ export interface FakeCode {
   close(): Promise<void>;
   /** Lessons on or off (off: every lessons route answers 404 LESSONS_SWITCHED_OFF "Lessons are off.", as Code does while its switch is off). */
   setLessons(on: boolean): void;
+  /** Lessons phase 4: every graduation, tidy, both-places and draft call Code received (route id, path params, body), newest last. */
+  lessonCalls: Array<{ id: string; params: Record<string, string>; body: unknown; person: string }>;
+  /** Lessons phase 4: answer one of those routes with this status and body instead (undefined puts the normal answer back). */
+  overrideLessonAnswer(id: string, answer: { status?: number; body: unknown } | undefined): void;
+  /** Lessons phase 4: put the lessons, the drafts and the held and closed cards back as the fake starts them. */
+  resetLessons(): void;
   /** Every request received, newest last (method, path, status). */
   log: Array<{ method: string; path: string; query: string; status: number }>;
 }
@@ -715,6 +721,35 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     ]],
   ]);
   const notHelpful = new Set<string>();
+  // --- lessons phase 4 (L4-LP4G): graduation, tidy, both places and draft tasks. Priya decides; Sam is refused in Code's words. Only project "web" has any.
+  const lessonCalls: FakeCode["lessonCalls"] = [];
+  const lessonOverrides = new Map<string, { status?: number; body: unknown }>();
+  const checkDrafts = new Map<string, { id: string; lessonId: string; title: string; request: string; paths: string[]; createdAt: number; status: "open" | "started" | "dismissed" }>([
+    ["chk_0123456789abcdef", { id: "chk_0123456789abcdef", lessonId: "les_semis0001", title: "Check that scripts have no semicolons", request: "Add a check that fails when a file in scripts/legacy has a semicolon at the end of a line.", paths: ["scripts/legacy/**"], createdAt: at(-1), status: "open" }],
+  ]);
+  /** Live team rules (a lesson made a rule): the rule's text, its paths and where it came from. */
+  const teamRules = new Map<string, { id: string; text: string; paths: string[]; repos: string[]; fromLesson: string; createdAt: number; status: "live" | "retired" }>();
+  const CARD_PATHS = ["src/logging/**"];
+  const graduationLater = new Set<string>();
+  let tidyClosed = false;
+  const initialLessons = [...lessonStore.entries()].map(([id, lesson]) => [id, JSON.parse(JSON.stringify(lesson)) as LessonItem] as const);
+  const initialDrafts = [...checkDrafts.entries()].map(([id, draft]) => [id, { ...draft }] as const);
+  const resetLessons = () => {
+    lessonStore.clear(); for (const [id, lesson] of initialLessons) lessonStore.set(id, JSON.parse(JSON.stringify(lesson)) as LessonItem);
+    checkDrafts.clear(); for (const [id, draft] of initialDrafts) checkDrafts.set(id, { ...draft });
+    teamRules.clear(); graduationLater.clear(); tidyClosed = false; retireAsks.clear(); lessonMode = "suggest";
+  };
+  const GRADUATION_REFUSED = "Only a maintainer of this project, or an admin, can decide what becomes permanent.";
+  /** One of the phase 4 routes: record the call, apply an override, refuse a non-decider in Code's words, else run `run`. */
+  const graduationRoute = <K extends CodeRouteId>(id: K, run: (context: Context<K>, project: string) => Answer<K>): Handler<K> => (context) => {
+    lessonCalls.push({ id, params: { ...context.params }, body: JSON.parse(JSON.stringify(context.body ?? null)) as unknown, person: context.person.key });
+    const found = lessonsProject(context);
+    if ("refused" in found) return found.refused;
+    const override = lessonOverrides.get(id);
+    if (override !== undefined) return { status: override.status ?? 200, body: override.body as CodeResponse<K> };
+    if (!found.decides) return failure(403, "FORBIDDEN", GRADUATION_REFUSED);
+    return run(context, found.name);
+  };
   const lessonsOff = () => failure(404, "LESSONS_SWITCHED_OFF", "Lessons are off.");
   const LIST_STATUSES: Record<string, string[]> = { proposed: ["pending"], approved: ["active", "stale"], retired: ["retired", "expired", "rejected"] };
   /** The project, if lessons are on and the person is on its roster (Code answers the same "No such project." for both). */
@@ -1369,6 +1404,83 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       lessonMode = context.body.mode;
       return { body: { project: found.name, mode: lessonMode, effective: lessonMode, lockedByCompany: false, canChange: true } };
     },
+    // Lessons phase 4. A non-decider reads canDecide false and nothing else (Code's own read); every write is refused in Code's words.
+    "lessons.graduation": (context) => {
+      lessonCalls.push({ id: "lessons.graduation", params: { ...context.params }, body: null, person: context.person.key });
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      const override = lessonOverrides.get("lessons.graduation");
+      if (override !== undefined) return { status: override.status ?? 200, body: override.body as GraduationResponse };
+      if (!found.decides || found.name !== "web") return { body: { project: found.name, canDecide: found.decides, drafts: [], rules: [] } };
+      const active = [...lessonStore.values()].filter((lesson) => lesson.status === "active" && !graduationLater.has(lesson.id));
+      const proven = active.find((lesson) => lesson.id === "les_logs00001");
+      const tidy = [...lessonStore.values()].filter((lesson) => lesson.status === "active").sort((a, b) => a.counters.loaded - b.counters.loaded);
+      return { body: {
+        project: found.name, canDecide: true,
+        ...(proven === undefined ? {} : { card: { lessonId: proven.id, version: proven.version, title: proven.title, description: proven.description, type: proven.type, tier: proven.tier, target: "rule" as const, targets: ["rule", "check", "skill"] as Array<"rule" | "check" | "skill">, paths: CARD_PATHS, tasks: 12, days: 41, needs: { required: 1 as const, have: 0, you: false } } }),
+        ...(tidyClosed || tidy.length === 0 ? {} : { tidy: { period: 30, lessons: tidy.slice(0, 10).map((lesson) => ({ lessonId: lesson.id, version: lesson.version, title: lesson.title, type: lesson.type, tasks: lesson.counters.helpful + 1, days: 20 })) } }),
+        rules: [...teamRules.values()].filter((rule) => rule.status === "live").map((rule) => ({ id: rule.id, text: rule.text, paths: rule.paths, repos: rule.repos, fromLesson: rule.fromLesson, createdAt: rule.createdAt })),
+        drafts: [...checkDrafts.values()].filter((draft) => draft.status === "open").map((draft) => ({ id: draft.id, lessonId: draft.lessonId, title: draft.title, request: draft.request, paths: draft.paths, createdAt: draft.createdAt })),
+      } };
+    },
+    "lessons.graduate": graduationRoute("lessons.graduate", (context, project) => {
+      const lesson = lessonStore.get(context.params["lessonId"] ?? "");
+      if (lesson === undefined || lesson.status !== "active") return failure(404, "NOT_FOUND", "That lesson is no longer there.");
+      const target = context.body.target;
+      if (!["rule", "check", "skill"].includes(target)) return failure(400, "CONFIG_INVALID", "target is rule, check or skill");
+      if (target === "skill") return { body: { project, lessonId: lesson.id, target: "skill", state: "drafted", name: context.body.name ?? "log-request-ids", version: 1 } };
+      const asked = context.body.paths;
+      // A rule may only narrow the lesson's own paths (Code's check, in its fixed words).
+      if (target === "rule" && asked !== undefined && (!Array.isArray(asked) || asked.length < 1 || asked.length > 20 || asked.some((one) => !CARD_PATHS.some((own) => one === own || one.startsWith(own.replace(/\*+$/u, "")))))) return failure(400, "CONFIG_INVALID", "A rule's paths must lie inside the lesson's own paths.");
+      const ref = target === "rule" ? "rule_0123456789abcdef" : "chk_fedcba9876543210";
+      if (target === "rule") teamRules.set(ref, { id: ref, text: lesson.body, paths: asked ?? CARD_PATHS, repos: lesson.scope.repos, fromLesson: lesson.id, createdAt: now().getTime(), status: "live" });
+      if (target === "check") checkDrafts.set(ref, { id: ref, lessonId: lesson.id, title: lesson.title, request: `Add a check for: ${lesson.body}`, paths: [], createdAt: now().getTime(), status: "open" });
+      lessonStore.set(lesson.id, { ...lesson, status: "retired", updatedAt: now().getTime(), became: { kind: target, ref, at: now().getTime() } });
+      return { body: { project, lessonId: lesson.id, target, state: "done", ref, already: false } };
+    }),
+    "lessons.graduateLater": graduationRoute("lessons.graduateLater", (context, project) => {
+      if (!lessonStore.has(context.params["lessonId"] ?? "")) return failure(404, "NOT_FOUND", "That lesson is no longer there.");
+      graduationLater.add(context.params["lessonId"] ?? "");
+      return { body: { project, lessonId: context.params["lessonId"] ?? "", later: true } };
+    }),
+    "lessons.bothPlaces": graduationRoute("lessons.bothPlaces", (context, project) => {
+      const lesson = lessonStore.get(context.params["lessonId"] ?? "");
+      if (lesson === undefined || lesson.status !== "pending" || lesson.contradicts === undefined) return failure(404, "NOT_FOUND", "That lesson is no longer there.");
+      if (lesson.version !== context.body.version) return failure(409, "IDEMPOTENCY_CONFLICT", "This lesson changed since you read it. Read it again and decide again.");
+      lessonStore.set(lesson.id, { ...lesson, scope: { ...lesson.scope, paths: context.body.cardPaths } });
+      return { body: { project, lessonId: lesson.id, otherId: lesson.contradicts, cardPaths: context.body.cardPaths, otherPaths: context.body.otherPaths, version: lesson.version, status: "pending", needs: "second_person" } };
+    }),
+    "lessons.tidy.retire": graduationRoute("lessons.tidy.retire", (context, project) => {
+      const ids = context.body.ids;
+      if (!Array.isArray(ids) || ids.length < 1 || ids.length > 10) return failure(400, "CONFIG_INVALID", "ids takes 1 to 10 lessons");
+      const retired: string[] = [];
+      for (const id of ids) {
+        const lesson = lessonStore.get(id);
+        if (lesson?.status === "active") { lessonStore.set(id, { ...lesson, status: "retired", updatedAt: now().getTime() }); retired.push(id); }
+      }
+      return { body: { project, retired, skipped: ids.length - retired.length } };
+    }),
+    "lessons.rules.retire": graduationRoute("lessons.rules.retire", (context, project) => {
+      const rule = teamRules.get(context.params["ruleId"] ?? "");
+      if (rule === undefined || rule.status !== "live") return failure(404, "NOT_FOUND", "That rule is no longer there.");
+      rule.status = "retired";
+      return { body: { project, ruleId: rule.id, status: "retired" } };
+    }),
+    "lessons.tidy.later": graduationRoute("lessons.tidy.later", (_context, project) => { tidyClosed = true; return { body: { project, closed: true } }; }),
+    "lessons.checkDraft.started": graduationRoute("lessons.checkDraft.started", (context, project) => {
+      const draft = checkDrafts.get(context.params["draftId"] ?? "");
+      if (draft === undefined || draft.status !== "open") return failure(404, "NOT_FOUND", "That draft is no longer there.");
+      const entry = mayRead(context.person, context.body.taskId);
+      if (entry === undefined || entry.owner.developerId !== context.person.developerId || entry.task.project !== project) return failure(404, "NOT_FOUND", "No such task.");
+      draft.status = "started";
+      return { body: { project, draftId: draft.id, status: "started" } };
+    }),
+    "lessons.checkDraft.dismiss": graduationRoute("lessons.checkDraft.dismiss", (context, project) => {
+      const draft = checkDrafts.get(context.params["draftId"] ?? "");
+      if (draft === undefined || draft.status !== "open") return failure(404, "NOT_FOUND", "That draft is no longer there.");
+      draft.status = "dismissed";
+      return { body: { project, draftId: draft.id, status: "dismissed" } };
+    }),
     // Any member reads; an owner or admin sets a model from the offered list.
     "company.engineModel.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : { body: engineView() }),
     "company.engineModel.put": ({ person, body }) => {
@@ -1731,6 +1843,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     log,
     setPerson: (person) => { current = person; },
     setLessons: (on) => { lessonsOn = on; },
+    lessonCalls,
+    resetLessons,
+    overrideLessonAnswer: (id, answer) => { if (answer === undefined) lessonOverrides.delete(id); else lessonOverrides.set(id, answer); },
     close: () => new Promise<void>((resolve) => { server.close(() => { resolve(); }); server.closeAllConnections(); }),
   };
 }

@@ -56,3 +56,18 @@
 .rv-lessons-used .rv-button{justify-self:start;min-height:26px;padding:2px 8px;font-size:var(--rv-font-xs)}
 .rv-lessons-used p{margin:0;font-size:var(--rv-font-sm)}
 @media(max-width:520px){.rv-lesson{padding:var(--rv-space-3)}.rv-lesson-send-row .rv-button{flex:1}}
+
+/* Lessons phase 4 (L4-LP4G): "This week" in Learned: the one Make this permanent card, the tidy card, draft tasks and "Both, in different places". Tokens only. */
+.rv-thisweek{display:grid;gap:var(--rv-space-3);min-width:0}
+.rv-thisweek>h3,.rv-draft-tasks>h3{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui);margin:0}
+.rv-permanent{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-left:3px solid var(--rv-accent);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3) var(--rv-space-4);display:grid;gap:var(--rv-space-2);min-width:0}
+.rv-permanent>h3{font:600 var(--rv-font-md)/1.35 var(--rv-font-ui);margin:0}
+.rv-permanent-lesson{margin:0;overflow-wrap:anywhere}
+.rv-permanent-targets{border:0;margin:0;padding:0;display:grid;gap:var(--rv-space-2)}.rv-permanent-targets legend{font-size:var(--rv-font-sm);color:var(--rv-text-muted);padding:0}
+.rv-tidy-list{list-style:none;margin:0;padding:0;display:grid;gap:var(--rv-space-2)}.rv-tidy-list li{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-1) var(--rv-space-3)}
+.rv-tidy-use{font-size:var(--rv-font-xs)}
+.rv-draft-tasks{display:grid;gap:var(--rv-space-2)}.rv-draft-tasks>p{margin:0;font-size:var(--rv-font-sm)}
+.rv-draft-request{white-space:pre-wrap;border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg);padding:var(--rv-space-2) var(--rv-space-3);user-select:all}
+.rv-both-places{display:grid;gap:var(--rv-space-2)}
+.rv-team-rules{display:grid;gap:var(--rv-space-2)}.rv-team-rules>h3{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui);margin:0}
+.rv-permanent-paths{border:0;margin:0;padding:0;display:grid;gap:var(--rv-space-1)}.rv-permanent-paths legend{font-size:var(--rv-font-sm);color:var(--rv-text-muted);padding:0}.rv-permanent-paths p{margin:0;font-size:var(--rv-font-xs)}

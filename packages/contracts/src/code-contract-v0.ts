@@ -549,8 +549,12 @@ export interface LessonItem {
   mergeBlocked?: true;
   /** How many distinct tasks were given it. Not sent by Code yet (being added); shown only when present. */
   usedInTasks?: number;
+  /** A lesson a person made permanent (L4-LP4G): it is retired, not handed to agents as a lesson any more, and stays in the retired list with this link. */
+  became?: LessonBecame;
   canApprove: boolean; canReject: boolean; canRetire: boolean;
 }
+/** What a lesson became: a team rule, a draft task to add a check, or a skill; `other` is a kind a newer Code added (Cloud keeps the link and never reads it as a known kind). */
+export interface LessonBecame { kind: "rule" | "check" | "skill" | "other"; ref: string; at: number }
 export interface LessonsPageResponse { project: string; list: LessonList; canDecide: boolean; lessons: LessonItem[]; next?: string; partial?: true }
 export interface LessonEdit { title: string; description: string; body: string }
 export interface ApproveLessonRequest { version: number; edit?: LessonEdit }
@@ -583,6 +587,46 @@ export interface PutLessonModeRequest { mode: LessonMode }
 /** Cloud's inbox read (`GET /v1/app/lessons/inbox`): one batch per project with proposed lessons the person can decide, theirs first. */
 export interface LessonInboxBatch { project: string; lessons: LessonItem[]; fromYou: number; partial?: true }
 export interface LessonInboxResponse { state: "on" | "off"; batches: LessonInboxBatch[]; unavailable: string[] }
+
+// Lessons phase 4 (L4-LP4G, lead 4): graduation and tidy. For the people who decide lessons only (Code refuses everyone else, a script token included, in its
+// own fixed sentences, which Cloud passes through). A proven lesson gets at most one "Make this permanent?" card a week; the target is inside Rovara.
+export type GraduationTarget = "rule" | "check" | "skill";
+export interface GraduationNeeds { required: 1 | 2; have: number; you: boolean }
+/** The week's one card. `target` is the suggestion and one of `targets`; `paths` prefill a team rule's code area (none: the whole project). */
+export interface GraduationCard {
+  lessonId: string; version: number; title: string; description: string; type: string; tier: 0 | 1 | 2;
+  target: GraduationTarget; targets: GraduationTarget[]; paths: string[]; tasks: number; days: number; needs: GraduationNeeds;
+}
+export interface TidyLesson { lessonId: string; version: number; title: string; type: string; tasks: number; days: number }
+/** The tidy card: up to 10 least used lessons, for the person to retire the ones they choose. */
+export interface TidyCard { period: number; lessons: TidyLesson[] }
+/** A draft task to add a check: text a person starts themselves (nothing starts it for them). */
+export interface CheckDraft { id: string; lessonId: string; title: string; request: string; paths: string[]; createdAt: number }
+/** A live team rule a lesson became (read into the standing block as "How we work", scoped to its paths and repositories); people who decide see these and can retire one. */
+export interface TeamRule { id: string; text: string; paths: string[]; repos: string[]; fromLesson: string; createdAt: number }
+export interface GraduationResponse { project: string; canDecide: boolean; card?: GraduationCard; tidy?: TidyCard; drafts: CheckDraft[]; rules: TeamRule[] }
+export interface GraduateRequest { target: GraduationTarget; paths?: string[]; name?: string }
+export type GraduateResponse =
+  | { project: string; lessonId: string; target: GraduationTarget; state: "done"; ref: string; already: boolean }
+  | { project: string; lessonId: string; target: GraduationTarget; state: "waiting"; needs: "second_person" }
+  | { project: string; lessonId: string; target: "skill"; state: "drafted"; name: string; version: number }
+  /** A state a newer Code added: Cloud keeps nothing of it, and the screen says to reload. */
+  | { project: string; lessonId: string; target: GraduationTarget; state: "unknown" };
+export interface GraduateLaterResponse { project: string; lessonId: string; later: true }
+/** "Both, in different places": the third answer to a conflict; the waiting lesson is then kept as usual. */
+export interface BothPlacesRequest { version: number; cardPaths: string[]; otherPaths: string[] }
+export interface BothPlacesResponse {
+  project: string; lessonId: string; otherId: string; cardPaths: string[]; otherPaths: string[]; version: number;
+  status: string /* known: active, pending */; needs: string /* known: nothing, second_person, group_member, decision */;
+}
+export interface TidyRetireRequest { ids: string[] }
+export interface TidyRetireResponse { project: string; retired: string[]; skipped: number }
+export interface TidyLaterResponse { project: string; closed: true }
+/** The person says which of their own tasks they started from a draft. */
+export interface CheckDraftStartedRequest { taskId: string }
+export interface CheckDraftStartedResponse { project: string; draftId: string; status: "started" }
+export interface CheckDraftDismissResponse { project: string; draftId: string; status: "dismissed" }
+export interface RuleRetireResponse { project: string; ruleId: string; status: "retired" }
 
 // ---------------------------------------------------------------------------------------------------------------
 // The typed map: one entry per Code route id (request is the JSON body or `void`, response the 2xx JSON body).
@@ -701,6 +745,15 @@ export interface CodeRouteTypes {
   "lessons.notHelpful": { request: JsonObject; response: NotHelpfulResponse };
   "lessons.mode.get": { request: void; response: LessonModeResponse };
   "lessons.mode.put": { request: PutLessonModeRequest; response: LessonModeResponse };
+  "lessons.graduation": { request: void; response: GraduationResponse };
+  "lessons.graduate": { request: GraduateRequest; response: GraduateResponse };
+  "lessons.graduateLater": { request: JsonObject; response: GraduateLaterResponse };
+  "lessons.bothPlaces": { request: BothPlacesRequest; response: BothPlacesResponse };
+  "lessons.tidy.retire": { request: TidyRetireRequest; response: TidyRetireResponse };
+  "lessons.tidy.later": { request: JsonObject; response: TidyLaterResponse };
+  "lessons.checkDraft.started": { request: CheckDraftStartedRequest; response: CheckDraftStartedResponse };
+  "lessons.checkDraft.dismiss": { request: JsonObject; response: CheckDraftDismissResponse };
+  "lessons.rules.retire": { request: JsonObject; response: RuleRetireResponse };
   "company.engineModel.get": { request: void; response: CompanyEngineModelView };
   "company.engineModel.put": { request: PutCompanyEngineModelRequest; response: CompanyEngineModelView };
   "projects.settings.get": { request: void; response: ProjectSettingsView };
@@ -881,6 +934,15 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.notHelpful", "POST", `${DP}/tasks/{taskId}/lessons/{lessonId}/not-helpful`, "Mark a lesson the task was given as not helpful", "full", ["session"], "no", false, "none", true),
   spec("lessons.mode.get", "GET", `${DP}/lessons/mode`, "The project's learning mode, the mode in force and whether the company locks it", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.mode.put", "PUT", `${DP}/lessons/mode`, "Set the learning mode (a project admin, or a company owner or admin)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.graduation", "GET", `${DP}/lessons/graduation`, "This week's one Make this permanent card, the tidy card and the draft tasks (people who decide)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.graduate", "POST", `${DP}/lessons/{lessonId}/graduate`, "Make a proven lesson permanent: a team rule, a draft task to add a check, or a skill", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.graduateLater", "POST", `${DP}/lessons/{lessonId}/graduate-later`, "Not now: no card for this lesson for 60 days", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.bothPlaces", "POST", `${DP}/lessons/{lessonId}/both-places`, "A conflict's third answer: both lessons are right, each in its own place", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.tidy.retire", "POST", `${DP}/lessons/tidy/retire`, "Retire the lessons chosen on the tidy card (1 to 10)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.tidy.later", "POST", `${DP}/lessons/tidy/later`, "Not now: close this period's tidy card", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.checkDraft.started", "POST", `${DP}/lessons/check-drafts/{draftId}/started`, "The person says which of their own tasks they started from a draft", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.checkDraft.dismiss", "POST", `${DP}/lessons/check-drafts/{draftId}/dismiss`, "Drop a draft task", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.rules.retire", "POST", `${DP}/lessons/rules/{ruleId}/retire`, "Retire a live team rule (people who decide; audited)", "full", ["how-we-work"], "no", false, "none", true),
   // Guided onboarding PR 15 (DEC 254l item 7, 254n item 1): the company's AI model (Code #835, not on code/next yet) and a project's per-task model budget (Code's M4a settings).
   spec("company.engineModel.get", "GET", "/v1/dev/company/engine-model", "The company's engine model, the models the gateway offers it now, and the one to preselect (any member)", "full", ["later"], "no", false, "none", true),
   spec("company.engineModel.put", "PUT", "/v1/dev/company/engine-model", "Set or clear the company's engine model, only from its offered list (owner or admin)", "full", ["later"], "no", false, "none", true),
@@ -1136,6 +1198,15 @@ GET /v1/app/projects/{p}/lessons/retire-requests | k | how-we-work | lessons.ret
 POST /v1/app/projects/{p}/lessons/decisions | k | home | lessons.decisions | learned | T
 GET /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.get | learned | T
 PUT /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.put | learned | T
+GET /v1/app/projects/{p}/lessons/graduation | k | how-we-work | lessons.graduation | learned | T
+POST /v1/app/projects/{p}/lessons/{lessonId}/graduate | k | how-we-work | lessons.graduate | learned | T
+POST /v1/app/projects/{p}/lessons/{lessonId}/graduate-later | k | how-we-work | lessons.graduateLater | learned | T
+POST /v1/app/projects/{p}/lessons/{lessonId}/both-places | k | how-we-work | lessons.bothPlaces | learned | T
+POST /v1/app/projects/{p}/lessons/tidy/retire | k | how-we-work | lessons.tidy.retire | learned | T
+POST /v1/app/projects/{p}/lessons/tidy/later | k | how-we-work | lessons.tidy.later | learned | T
+POST /v1/app/projects/{p}/lessons/check-drafts/{draftId}/started | k | how-we-work | lessons.checkDraft.started | learned | T
+POST /v1/app/projects/{p}/lessons/check-drafts/{draftId}/dismiss | k | how-we-work | lessons.checkDraft.dismiss | learned | T
+POST /v1/app/projects/{p}/lessons/rules/{ruleId}/retire | k | how-we-work | lessons.rules.retire | learned | T
 GET /v1/app/projects/{p}/tasks/{t}/lessons | k | session | lessons.task | learned | T
 POST /v1/app/projects/{p}/tasks/{t}/lessons/{lessonId}/not-helpful | k | session | lessons.notHelpful | learned | T
 GET /v1/app/lessons/inbox | k | home | lessons.list | learned | T
