@@ -117,7 +117,7 @@ function pageSetup(options: Setup) {
     if (path === "/v1/app/decisions") return { status: 200, body: options.cards ?? decisionsView() };
     if (path === "/v1/app/nav") return { status: 200, body: navFixture({ projects: [] }) };
     if (path === `/v1/app/tasks/${ID.plan}/lessons`) return { status: 200, body: { lessons: [], ...(options.wikiUse === undefined ? {} : { wikiUse: options.wikiUse }) } };
-    if (path === "/v1/app/projects/web/wiki") return { status: 200, body: { project: "web", state: "ready", pages: [{ pageId: "wiki-overview", kind: "overview", title: "<img src=x onerror=alert(1)>\u0001", summary: "", order: 0, repos: [], writtenAt: "2026-01-01T00:00:00.000Z", claims: { found: 0, changed: 0 }, flagged: false }] } };
+    if (path === "/v1/app/projects/web/wiki") return { status: 200, body: { project: "web", state: "ready", agentsEnabled: true, pages: [{ pageId: "wiki-overview", kind: "overview", title: "<img src=x onerror=alert(1)>\u0001", summary: "", order: 0, repos: [], writtenAt: "2026-01-01T00:00:00.000Z", claims: { found: 0, changed: 0 }, flagged: false }] } };
     if (path.startsWith("/v1/app/sessions/ses_")) return path.endsWith("/events") || path.endsWith("/messages") ? { status: 200, body: path.endsWith("/events") ? { events: [] } : { messages: [] } } : options.sessionStatus !== undefined && options.sessionStatus !== 200 ? { status: options.sessionStatus, body: { error: { code: "NOT_FOUND", message: "That session isn't here." } } } : { status: 200, body: { session: options.session } };
     if (path.endsWith("/documents/plan")) return { status: 200, body: PLAN };
     if (path.endsWith("/evidence")) return { status: 200, body: PROOF };

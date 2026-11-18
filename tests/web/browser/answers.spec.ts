@@ -27,7 +27,9 @@ test("the Ask box on the Wiki tab answers first, with sources, one wiki link and
   await expect(ask.answer).toContainText("Refunds go out to the payment provider and come back by webhook.");
   await expect(page.getByTestId("answer-sources")).toContainText("beacon-api/src/billing/refund.ts:12-40");
   await expect(page.getByTestId("answer-honesty")).toContainText("I checked the code: the wiki was out of date here.");
-  await expect(ask.answer.getByRole("button")).toHaveCount(1);
+  // The one fixed action, and the small "Not right" control (lead 4 J5).
+  await expect(ask.answer.getByRole("button")).toHaveCount(2);
+  await expect(ask.answer.getByTestId("answer-not-right")).toBeVisible();
   await expect(ask.answer.getByRole("button", { name: "Start a Quick task" })).toBeVisible();
   await expect(ask.answer).not.toContainText(/\$|cost|confidence/iu);
   await page.screenshot({ path: testInfo.outputPath("answer-wiki-tab.png"), fullPage: true });

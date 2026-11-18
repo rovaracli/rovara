@@ -29,6 +29,7 @@ function setup(options: { panel?: ReturnType<typeof panel>; read?: ApiResponse; 
   const path = request.path.split("?")[0];
   if (path === "/v1/app/changes") return { status: 200, body: { notices: [], next: "settled" } };
   if (path === "/v1/app/projects/payments/overview") return { status: 200, body: projectFixture() };
+  if (path === "/v1/app/projects/payments/machine-size") return { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not served" } } };
   if (path === PATH && request.method === "GET") return options.read ?? { status: 200, body: state };
   if (path === PATH && request.method === "POST") {
    const custom = await options.post?.(request);

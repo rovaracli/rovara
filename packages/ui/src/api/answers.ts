@@ -28,7 +28,7 @@ export function useAnswersApi() { const host = useAppHost(); return useMemo(() =
  * Whether this Cloud offers the smart Just answer at all (DEC 254z-amend2): the deployment's setting, read from the nav the shell already makes. False while the nav is loading or the setting is off:
  * no Ask box is drawn, the start box starts work as it always did, and no answers request is made.
  */
-export function useAnswersEnabled(): boolean { return useNav()?.features.answers === true; }
+export function useAnswersEnabled(): boolean { return useNav()?.features?.answers === true; }
 
 /** A refusal's words when they are one of Cloud's fixed answer sentences, else the fallback (never the server's other text). */
 export function fixedAnswerWords(error: unknown, fallback: string): string { return error instanceof ApiError && ANSWERS_SENTENCES.has(error.message) ? error.message : fallback; }
