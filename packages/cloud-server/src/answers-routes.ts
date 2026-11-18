@@ -30,6 +30,8 @@ export const ANSWERS_WORDS = Object.freeze({
   limitReached: "This project has reached its spending limit for now.",
   suggestUnavailable: "Couldn't suggest a path just now.",
   suggestRate: "You've asked for a lot of suggestions lately. Try again a little later.",
+  answerGone: "That answer is not there.",
+  notRightFailed: "Couldn't save that just now. Try again.",
 });
 const W = ANSWERS_WORDS;
 const TASK_BUTTON = "Start a Quick task";
@@ -46,6 +48,8 @@ export const ANSWERS_ANSWERS = Object.freeze({
   limitReached: answer(429, "TOO_MANY_REQUESTS", W.limitReached),
   suggestUnavailable: answer(503, "RUNTIME_UNAVAILABLE", W.suggestUnavailable),
   suggestRate: answer(429, "TOO_MANY_REQUESTS", W.suggestRate),
+  answerGone: answer(404, "NOT_FOUND", W.answerGone),
+  notRightFailed: answer(503, "RUNTIME_UNAVAILABLE", W.notRightFailed),
 });
 const A = ANSWERS_ANSWERS;
 
@@ -129,11 +133,19 @@ export function suggestObject(value: unknown): Plain {
   return { kind, classifier, pick, ...(kind === "small_talk" ? { smallTalk: v["smallTalk"] } : {}) };
 }
 
-type Kind = "answer" | "suggest";
+/** Code's answer to "Not right", rebuilt from its known fields only; throws Unreadable on anything off. */
+export function notRightObject(value: unknown): Plain {
+  const v = rec(value);
+  keysOnly(v, ["answerId", "state", "claims"]);
+  return { answerId: need(typeof v["answerId"] === "string" && ANSWER_ID.test(v["answerId"]), v["answerId"]), state: need(oneOf(v["state"], ["queued", "noted", "already"] as const), v["state"]), claims: need(whole(v["claims"], 0, 100), v["claims"]) };
+}
+
+type Kind = "answer" | "suggest" | "notRight";
 /** Code's refusal in Cloud's fixed words. Only Code's exact unknown-route 404 means "not on Code yet"; any other 404 is "not found". */
 export function answersRefusal(kind: Kind, error: CodeError): RouteAnswer {
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
-  if (error.status === 404) return body?.["code"] === "NOT_FOUND" && (body["message"] === "route not found" || body["message"] === CORE_NOT_YET) ? A.notYet : A.notFound;
+  if (error.status === 404) return body?.["code"] === "NOT_FOUND" && (body["message"] === "route not found" || body["message"] === CORE_NOT_YET) ? A.notYet : kind === "notRight" ? A.answerGone : A.notFound;
+  if (kind === "notRight") return error.status === 403 ? A.forbidden : error.status === 400 ? A.invalid : A.notRightFailed;
   if (error.status === 403) return A.forbidden;
   if (error.status === 400) return A.invalid;
   if (error.status === 429) return kind === "suggest" ? A.suggestRate : body?.["message"] === W.limitReached ? A.limitReached : A.rate;
@@ -148,7 +160,7 @@ async function scope(context: RouteContext, kind: Kind): Promise<{ project: stri
   try {
     who = await companyCaller(context);
   } catch (error) {
-    if (error instanceof CodeError) return { refusal: kind === "suggest" ? A.suggestUnavailable : A.unavailable };
+    if (error instanceof CodeError) return { refusal: kind === "suggest" ? A.suggestUnavailable : kind === "notRight" ? A.notRightFailed : A.unavailable };
     throw error;
   }
   return refused(who) ? { refusal: who } : { project };
@@ -163,7 +175,7 @@ async function viaCode(context: RouteContext, kind: Kind, path: string, body: Pl
     if (error instanceof CodeError) return answersRefusal(kind, error);
     throw error;
   }
-  try { return { status: 200, body: build(got) }; } catch (error) { if (error instanceof Unreadable) return kind === "suggest" ? A.suggestUnavailable : A.unavailable; throw error; }
+  try { return { status: 200, body: build(got) }; } catch (error) { if (error instanceof Unreadable) return kind === "suggest" ? A.suggestUnavailable : kind === "notRight" ? A.notRightFailed : A.unavailable; throw error; }
 }
 
 const projectPath = (project: string, tail: string) => `/v1/app/projects/${encodeURIComponent(project)}${tail}`;
@@ -171,6 +183,19 @@ const bodyOf = (context: RouteContext): Plain | undefined => (plain(context.body
 const hasQuery = (context: RouteContext): boolean => [...context.query.keys()].length > 0;
 
 export const ANSWERS_ROUTES: Route[] = [
+  {
+    // J5: the asker's "Not right" on an answer. Code decides who (only the asker, with a role now); Cloud passes the person's token with an EMPTY body and rebuilds the reply.
+    method: "POST", path: /^\/projects\/([^/]+)\/answers\/([^/]+)\/not-right$/u,
+    answer: async (context) => {
+      if (context.answersEnabled !== true) return A.notYet;
+      const at = await scope(context, "notRight");
+      if ("refusal" in at) return at.refusal;
+      const given = context.body;
+      const answerId = context.params[1];
+      if (hasQuery(context) || (given !== undefined && (!plain(given) || Object.keys(given).length > 0)) || answerId === undefined || !ANSWER_ID.test(answerId)) return A.invalid;
+      return viaCode(context, "notRight", projectPath(at.project, `/answers/${encodeURIComponent(answerId)}/not-right`), {}, notRightObject);
+    },
+  },
   {
     method: "POST", path: /^\/projects\/([^/]+)\/answers$/u,
     answer: async (context) => {

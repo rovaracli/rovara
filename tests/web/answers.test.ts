@@ -32,9 +32,11 @@ const answered = (extra: Record<string, unknown> = {}) => ({
   sources: [1, 2, 3, 4, 5].map((n) => ({ n, repo: "web", path: `src/refund${String(n)}.ts`, line: n, lineEnd: n + 8, commit: SHA })),
   action: { kind: "quick_task", label: "Start a Quick task", title: "Change the refund window" }, ...extra,
 });
+const NOT_RIGHT = (path: string) => /^\/v1\/app\/projects\/payments\/answers\/[A-Za-z0-9_-]+\/not-right$/u.test(path);
 const NOT_SET_UP = { threadId: "t-1234", outcome: "not_set_up", text: "", honesty: ANSWER_WORDS.notSetUp, unconfirmed: [], sources: [], wikiPages: [] };
 
 interface Options {
+  notRight?: (body: any) => ApiResponse;
   on?: boolean; canStart?: boolean; ask?: (body: any) => ApiResponse; suggest?: (body: any) => ApiResponse; start?: (body: any) => ApiResponse; initial?: string;
 }
 function mount(options: Options = {}, element: "wiki" | "project" | "task" = "wiki") {
@@ -52,6 +54,7 @@ function mount(options: Options = {}, element: "wiki" | "project" | "task" = "wi
     const page = /^\/v1\/app\/projects\/payments\/wiki\/pages\/([^/]+)$/u.exec(path);
     if (page !== null) { const one = wikiPage("payments", page[1]!); return one === undefined ? refusal(404, "NOT_FOUND", "x") : json(200, one); }
     if (path === "/v1/app/projects/payments/answers" && request.method === "POST") return options.ask?.(request.body) ?? json(200, answered());
+    if (NOT_RIGHT(path) && request.method === "POST") return options.notRight?.(request.body) ?? json(200, { answerId: "a1234567890", state: "queued", claims: 2 });
     if (path === "/v1/app/projects/payments/code/suggest" && request.method === "POST") return options.suggest?.(request.body) ?? json(200, { kind: "question", classifier: "ok", pick: "answer" });
     if (path === "/v1/app/projects/payments/code" && request.method === "POST") return options.start?.(request.body) ?? json(201, { task: taskFixture({ sessionId: SESSION }), sessionId: SESSION, sessionUrl: "https://x/s/" + SESSION });
     return refusal(404, "NOT_FOUND", "route not found");
@@ -114,7 +117,8 @@ describe("the Ask box on the wiki tab", () => {
     expect(within(sources).getByRole("link", { name: "Product overview" }).getAttribute("href")).toBe("/app/projects/payments?tab=wiki&page=overview");
     expect(within(sources).queryByText(/refund5/u)).toBeNull();
     expect(within(answer).getByTestId("answer-honesty").textContent).toBe("I checked the code: the wiki was out of date here.");
-    expect(within(answer).getAllByRole("button")).toHaveLength(1);
+    // One action (the fixed task button) and the one small control (Not right).
+    expect(within(answer).getAllByRole("button").map((button) => button.textContent)).toEqual(["Start a Quick task", "Not right"]);
     expect(within(answer).getByRole("button", { name: "Start a Quick task" })).toBeTruthy();
     expect(answer.textContent).not.toMatch(/\$|cost|confidence|model/iu);
     // The fold lists every source and both pages.
@@ -271,7 +275,7 @@ describe("the start box with answers on (DEC 173)", () => {
   it("an unclear message is answered first and ends in the one button", async () => {
     const f = await startBox(mount({ suggest: () => json(200, { kind: "unclear", classifier: "ok", pick: "answer" }) }, "project"), "refunds?");
     const answer = await screen.findByTestId("answer");
-    expect(within(answer).getAllByRole("button")).toHaveLength(1);
+    expect(within(answer).getAllByRole("button").map((button) => button.textContent)).toEqual(["Start a Quick task", "Not right"]);
     expect(f.posts("/code")).toEqual([]);
     f.close();
   });
@@ -380,5 +384,76 @@ describe("the pure helpers", () => {
   it("splits only the marks that name one of the answer's sources", () => {
     expect(pieces("a [1] b [3] c [x] [2]", 2)).toEqual([{ kind: "text", text: "a " }, { kind: "mark", n: 1 }, { kind: "text", text: " b [3] c [x] " }, { kind: "mark", n: 2 }]);
     expect(pieces("none", 0)).toEqual([{ kind: "text", text: "none" }]);
+  });
+});
+
+
+describe("Not right on an answer (lead 4 J5)", () => {
+  const askAndGet = async () => {
+    await screen.findByTestId("wiki-page");
+    type("Ask a question", "How long do refunds last?");
+    fireEvent.click(screen.getByTestId("ask-box-submit"));
+    return await screen.findByTestId("answer");
+  };
+
+  it("one press sends one empty-bodied request for this answer, then says fixed words and the control is gone (no second press)", async () => {
+    const f = mount();
+    const answer = await askAndGet();
+    fireEvent.click(within(answer).getByTestId("answer-not-right"));
+    expect((await within(answer).findByTestId("not-right-done")).textContent).toBe("Thanks. Rovara will check the wiki pages behind this answer at the next refresh.");
+    expect(f.posts("/not-right")).toHaveLength(1);
+    expect(f.posts("/not-right")[0]!.path).toBe("/v1/app/projects/payments/answers/a1234567890/not-right");
+    expect(f.posts("/not-right")[0]!.body).toEqual({});
+    expect(within(answer).queryByTestId("answer-not-right")).toBeNull();
+    f.close();
+  });
+
+  it("'noted' and 'already' say the short fixed thanks", async () => {
+    const f = mount({ notRight: () => json(200, { answerId: "a1234567890", state: "already", claims: 0 }) });
+    const answer = await askAndGet();
+    fireEvent.click(within(answer).getByTestId("answer-not-right"));
+    expect((await within(answer).findByTestId("not-right-done")).textContent).toBe("Thanks. This is noted.");
+    f.close();
+  });
+
+  it("a refusal shows only Cloud's fixed words (never the server's text) and the person can press again", async () => {
+    let calls = 0;
+    const f = mount({ notRight: () => (++calls === 1 ? refusal(503, "RUNTIME_UNAVAILABLE", LEAK) : json(200, { answerId: "a1234567890", state: "queued", claims: 1 })) });
+    const answer = await askAndGet();
+    fireEvent.click(within(answer).getByTestId("answer-not-right"));
+    expect((await within(answer).findByTestId("not-right-error")).textContent).toContain("Couldn't save that just now. Try again.");
+    expect(answer.textContent).not.toContain(LEAK);
+    fireEvent.click(within(answer).getByTestId("answer-not-right"));
+    await within(answer).findByTestId("not-right-done");
+    expect(f.posts("/not-right")).toHaveLength(2);
+    f.close();
+  });
+
+  it("a new answer in the same box has its own control: pressing on the first does not use up the second", async () => {
+    let n = 0;
+    const f = mount({ ask: () => json(200, answered({ answerId: `a${String(1000 + ++n)}x` })), notRight: () => json(200, { answerId: "a1001x", state: "queued", claims: 1 }) });
+    const first = await askAndGet();
+    fireEvent.click(within(first).getByTestId("answer-not-right"));
+    await within(first).findByTestId("not-right-done");
+    type("Ask a question", "And what about partial refunds?");
+    fireEvent.click(screen.getByTestId("ask-box-submit"));
+    await waitFor(() => expect(f.posts("/answers")).toHaveLength(2));
+    const second = await screen.findByTestId("answer-not-right");
+    fireEvent.click(second);
+    await waitFor(() => expect(f.posts("/not-right")).toHaveLength(2));
+    expect(f.posts("/not-right")[1]!.path).toBe("/v1/app/projects/payments/answers/a1002x/not-right");
+    f.close();
+  });
+
+  it("is not drawn for an answer with no id (nothing was recorded) or for 'not set up'", async () => {
+    const noId = answered(); delete (noId as { answerId?: string }).answerId;
+    const f = mount({ ask: () => json(200, noId) });
+    const answer = await askAndGet();
+    expect(within(answer).queryByTestId("answer-not-right")).toBeNull();
+    f.close();
+    const g = mount({ ask: () => json(200, { ...NOT_SET_UP, answerId: "a1234567890" }) });
+    const none = await askAndGet();
+    expect(within(none).queryByTestId("answer-not-right")).toBeNull();
+    g.close();
   });
 });

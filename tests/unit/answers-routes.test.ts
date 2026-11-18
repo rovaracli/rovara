@@ -51,6 +51,13 @@ function setUp(options: { enabled?: boolean; override?: Override } = {}) {
     }
     const replaced = options.override?.(call, person);
     if (replaced !== undefined) return replaced;
+    // J5: "Not right": Code's rule is the same role rule here (the real route also needs the asker; the pretend Code lets any person with a role press).
+    const notRight = /^\/v1\/app\/projects\/([^/]+)\/answers\/([^/]+)\/not-right$/u.exec(url.pathname);
+    if (notRight !== null && call.method === "POST") {
+      const name = decodeURIComponent(notRight[1]!);
+      const allowed = person.company !== undefined && PROJECTS[name] === person.company && (person.role === "owner" || person.role === "admin" || person.grants[name] !== undefined);
+      return allowed ? json(200, { answerId: decodeURIComponent(notRight[2]!), state: "queued", claims: 1 }) : json(404, { error: { code: "NOT_FOUND", message: `answer not there ${LEAK}` } });
+    }
     const match = /^\/v1\/app\/projects\/([^/]+)\/(answers|code\/suggest)$/u.exec(url.pathname);
     if (match === null || call.method !== "POST") return json(404, { error: { code: "NOT_FOUND", message: "route not found" } });
     const project = decodeURIComponent(match[1]!);
@@ -85,6 +92,7 @@ function setUp(options: { enabled?: boolean; override?: Override } = {}) {
   const codeCalls = () => calls.filter((call) => call.path !== "/v1/dev/access");
   return { as, send, calls, codeCalls };
 }
+const NOT_RIGHT = "/v1/web/projects/payments/answers/a1234567890/not-right";
 const ASK = "/v1/web/projects/payments/answers", SUGGEST = "/v1/web/projects/payments/code/suggest";
 const ask = (extra: Record<string, unknown> = {}) => ({ requestId: "request-0001", question: "How long do refunds last?", ...extra });
 const text = (extra: Record<string, unknown> = {}) => ({ requestId: "request-0001", text: "Fix the typo in the README", ...extra });
@@ -290,6 +298,53 @@ describe("starting from the start box names its path", () => {
       const bad = await start({ path });
       expect(bad.res.status).toBe(400);
       expect(bad.tasks).toEqual([]);
+    }
+  });
+});
+
+describe("Not right (lead 4 J5)", () => {
+  it("is off unless the deployment says so and never asks Code then", async () => {
+    const w = setUp({ enabled: false });
+    expect(asFixed(await w.send("POST", NOT_RIGHT, await w.as("pam-token"), {}))).toEqual(fixed("notYet"));
+    expect(w.calls).toEqual([]);
+  });
+
+  it("passes the person's own token, the project and answer only in Code's path, an EMPTY body, and reads Code's reply field by field", async () => {
+    const w = setUp();
+    const res = await w.send("POST", NOT_RIGHT, { ...await w.as("pam-token"), "x-rovara-company": B }, {});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ answerId: "a1234567890", state: "queued", claims: 1 });
+    expect(w.codeCalls()).toEqual([expect.objectContaining({ method: "POST", path: "/v1/app/projects/payments/answers/a1234567890/not-right", search: "", authorization: "Bearer pam-token", body: {} })]);
+    for (const call of w.calls) expect(JSON.stringify(call.headers)).not.toContain(B);
+  });
+
+  it("a body with anything in it, a query, a malformed answer id and a malformed project name are refused before Code is asked", async () => {
+    const w = setUp();
+    const headers = await w.as("pam-token");
+    for (const [path, body] of [[NOT_RIGHT, { personId: "x" }], [`${NOT_RIGHT}?x=1`, {}], ["/v1/web/projects/payments/answers/a%2F1/not-right", {}], ["/v1/web/projects/payments/answers/ab/not-right", {}], ["/v1/web/projects/Bad%20Name/answers/a1234567890/not-right", {}]] as const) {
+      const res = await w.send("POST", path, headers, body);
+      expect([asFixed(res)], `${path}`).toEqual([path.includes("Bad") ? fixed("notFound") : fixed("invalid")]);
+    }
+    expect(w.codeCalls()).toEqual([]);
+  });
+
+  it("a person with no role, another company's project and a person with no company get fixed words that name nothing from Code", async () => {
+    const w = setUp();
+    const none = await w.send("POST", "/v1/web/projects/ledger/answers/a1234567890/not-right", await w.as("pam-token"), {});
+    expect(asFixed(none)).toEqual(fixed("answerGone"));
+    expect(none.text).not.toContain(LEAK);
+    const noCompany = await w.send("POST", NOT_RIGHT, await w.as("nob-token"), {});
+    expect(noCompany.status).toBeGreaterThanOrEqual(400);
+    expect(noCompany.text).not.toContain(LEAK);
+  });
+
+  it("Code's refusals and a reply that does not read become fixed words", async () => {
+    for (const [reply, key] of [[json(403, { error: { code: "FORBIDDEN", message: LEAK } }), "forbidden"], [json(503, { error: { message: LEAK } }), "notRightFailed"], [json(404, { error: { code: "NOT_FOUND", message: "route not found" } }), "notYet"],
+      [json(200, { answerId: "a1234567890", state: "queued", claims: 1, extra: LEAK }), "notRightFailed"], [json(200, { answerId: "a1234567890", state: "hidden", claims: 1 }), "notRightFailed"], [json(200, { answerId: "a1234567890", state: "queued", claims: -1 }), "notRightFailed"]] as const) {
+      const w = setUp({ override: (call) => (call.path.endsWith("/not-right") ? reply.clone() : undefined) });
+      const res = await w.send("POST", NOT_RIGHT, await w.as("pam-token"), {});
+      expect(asFixed(res)).toEqual(fixed(key));
+      expect(res.text).not.toContain(LEAK);
     }
   });
 });

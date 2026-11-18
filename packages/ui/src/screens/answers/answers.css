@@ -9,3 +9,4 @@
 .rv-answer-list{margin:var(--rv-space-2) 0;font-size:var(--rv-font-sm);line-height:1.7;overflow-wrap:anywhere}
 .rv-start-card{display:grid;gap:var(--rv-space-3);padding:var(--rv-space-4);border:1px solid var(--rv-border-medium);border-radius:var(--rv-radius-md);max-width:46rem}
 .rv-start-card-choices{display:flex;gap:var(--rv-space-2);flex-wrap:wrap}
+.rv-answer-feedback{margin:0}
