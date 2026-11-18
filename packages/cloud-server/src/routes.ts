@@ -137,7 +137,6 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 /** A project name in a path, as the lessons routes take it (lessons-routes.ts PROJECT). */
 const PROJECT_IN_PATH = "([A-Za-z0-9][A-Za-z0-9._-]{0,99})";
 /** DEC 253q (d): the only members of an eval confirm Cloud passes on to Code (Code validates them strictly). */
-export const EVAL_CONFIRM_KEYS = ["taskId", "reportDigest", "selection", "paths"] as const;
 const evalConfirmNotOnCode = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Confirming an eval isn't connected to Rovara Code yet." } } };
 const evalConfirmRefused: RouteAnswer = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer confirms the eval." } } };
 /** A company owner or admin (Code's company role), or the project's maintainer (its "administrator" access, roleOf). Code re-checks the role live. */
@@ -647,28 +646,17 @@ export const ROUTES: Route[] = [
     },
   },
   {
-    // POST /v1/web/projects/{p}/setup-agent/eval-confirm (the app's /v1/app/..., DEC 253q d): forwarded to Code's own route as the signed-in person. Only a
-    // company administrator or the project's maintainer is forwarded (Code re-checks the role live); only an object body, and only
-    // its EVAL_CONFIRM_KEYS. Until Code serves the route (E2) its unknown-route 404 reaches the app as 501 NOT_ON_CODE_YET.
+    // POST /v1/web/projects/{p}/setup-agent/eval-confirm: remains unavailable on Cloud. Keep the company and project role checks
+    // so unauthorized callers receive the same fixed refusal as other company actions.
     method: "POST", path: new RegExp(`^/projects/${PROJECT_IN_PATH}/setup-agent/eval-confirm$`, "u"),
-    answer: async ({ client, session, params, body }) => {
+    answer: async ({ session, params, body }) => {
       const project = params[0]!;
       // The sign-in's latest access answer: Code re-checks the role live on its own route, so this only spares Code a call it would refuse.
       const membership = companyOf(session.access);
       if (membership === undefined) return NOT_IN_COMPANY;
       if (!confirmsEval(session.access, membership.companyRole, project)) return evalConfirmRefused;
       if (body === null || typeof body !== "object" || Array.isArray(body)) return badRequest("Send the eval confirmation as a JSON object.");
-      const given = body as Record<string, unknown>;
-      const forwarded: Record<string, unknown> = {};
-      for (const key of EVAL_CONFIRM_KEYS) if (Object.hasOwn(given, key)) forwarded[key] = given[key];
-      try {
-        return ok(await client.json<unknown>(session, `/v1/app/projects/${encodeURIComponent(project)}/setup-agent/eval-confirm`, { method: "POST", body: forwarded }));
-      } catch (error) {
-        // A Code that does not serve the route yet answers its fixed unknown-route 404 (handler.ts "route not found"): the app reads that as not on Code yet. Any other 404 (no report, no project) is Code's own.
-        const answered = error instanceof CodeError ? (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error : undefined;
-        if (error instanceof CodeError && error.status === 404 && answered?.code === "NOT_FOUND" && answered.message === "route not found") return evalConfirmNotOnCode;
-        throw error;
-      }
+      return evalConfirmNotOnCode;
     },
   },
   {
