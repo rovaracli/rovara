@@ -31,7 +31,9 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  // W6: the wiki row on the setup checklist.
  "screens/setup/wiki/wiki-setup.css",
  // Feature A3: the Cost and time pages.
- "screens/admin/report/report.css"]) {
+ "screens/admin/report/report.css",
+ // Lead 4 J3: the Ask box and its answer.
+ "screens/answers/answers.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

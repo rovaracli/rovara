@@ -55,7 +55,8 @@ export default defineConfig({
     },
     {
       name: "Rovara Cloud",
-      command: `env ${CLEARED_FOR_CLOUD} npm run cloud:local`,
+      // ROVARA_ANSWERS_ENABLED=1 turns on the smart Just answer (lead 4 J3): the pretend Code answers "no model set up" unless a spec says otherwise, so the other specs see the start box start Quick as ever.
+      command: `env ${CLEARED_FOR_CLOUD} ROVARA_ANSWERS_ENABLED=1 npm run cloud:local`,
       cwd: root,
       // CLOUD_COMPANY_DATA=memory turns on Cloud's company backend (settings, invites, budgets, profile) in this server's memory. The company is the one the pretend Code's access check names.
       env: { PORT: String(cloudPort), ROVARA_CODE_URL: codeUrl, ROVARA_CLIENT_SECRET: clientSecret, CLOUD_COMPANY_DATA: "memory" },

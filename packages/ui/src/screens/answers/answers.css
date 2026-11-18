@@ -1,0 +1,11 @@
+/* The Ask box and its answer (lead 4 J3). Colors, spacing and type come from the --rv-* tokens only. */
+.rv-ask-box{display:grid;gap:var(--rv-space-3);margin:var(--rv-space-5) 0;max-width:46rem}
+.rv-ask-box-bar{display:flex;gap:var(--rv-space-3);align-items:center;flex-wrap:wrap}
+.rv-answer{display:grid;gap:var(--rv-space-3);padding:var(--rv-space-4);border:1px solid var(--rv-border-medium);border-radius:var(--rv-radius-md);background:var(--rv-bg-sunken);max-width:46rem;min-width:0}
+.rv-answer-text{margin:0;font-size:1.0625rem;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+.rv-answer-text sup a{text-decoration:none;font-weight:600}
+.rv-answer-sources{margin:0;font-size:var(--rv-font-sm);line-height:1.6;overflow-wrap:anywhere}
+.rv-answer-more summary{cursor:pointer;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-answer-list{margin:var(--rv-space-2) 0;font-size:var(--rv-font-sm);line-height:1.7;overflow-wrap:anywhere}
+.rv-start-card{display:grid;gap:var(--rv-space-3);padding:var(--rv-space-4);border:1px solid var(--rv-border-medium);border-radius:var(--rv-radius-md);max-width:46rem}
+.rv-start-card-choices{display:flex;gap:var(--rv-space-2);flex-wrap:wrap}

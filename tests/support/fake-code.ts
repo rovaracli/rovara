@@ -291,6 +291,27 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (mode === "broken") return { status: 200, body: { project: "elsewhere", playbookRevision: 1, process: { kind: "builtin", agentId: "rovara-standard" }, stages: [], rules: [], modelsEditable: false } };
     return { status: 200, body: { project: name, playbookRevision: 3, process: { kind: "builtin", agentId: "rovara-standard" }, stages: [], rules: [], modelsEditable: false, requestId: "req-fake" } };
   };
+  // Lead 4 J3 (Code J1 and its start-suggest route): the pretend answer service, per project (set by the specs through /__fake/answers). Default is a Code with no model set up: every answer is the fixed
+  // "not set up" outcome and the suggestion says the classifier is unavailable. `off` makes Code answer its unknown-route 404. Who may ask is Code's rule for the wiki (a role on the project in its own company).
+  const answerSets = new Map<string, { answers?: "answered" | "not_set_up" | "off"; suggest?: Record<string, unknown> }>();
+  const ANSWER_SHA = "a".repeat(40);
+  const answersAnswer = (method: string, path: string, person: Person, given: unknown): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/(answers|code\/suggest)$/u.exec(path);
+    if (match === null || method !== "POST") return undefined;
+    const name = decodeURIComponent(match[1]!), set = answerSets.get(name) ?? {};
+    if (set.answers === "off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    if (!wikiReads(person, name)) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    if (match[2] === "code/suggest") return { status: 200, body: set.suggest ?? { kind: "unknown", classifier: "unavailable", pick: "answer" } };
+    const asked = (given as { question?: unknown }).question;
+    if (typeof asked !== "string" || asked.trim() === "") return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "An answer needs a request ID and a question of 1 to 1,000 characters." } } };
+    if (set.answers !== "answered") return { status: 200, body: { threadId: "t-fake0001", outcome: "not_set_up", text: "", honesty: "Answers are not set up here yet.", unconfirmed: [], sources: [], wikiPages: [] } };
+    return { status: 200, body: {
+      answerId: "a-fake0001", threadId: "t-fake0001", outcome: "answered", text: "Refunds go out to the payment provider and come back by webhook. [1] Only full refunds work today. [2]", unconfirmed: [],
+      honesty: "I checked the code: the wiki was out of date here.", wikiPages: [{ pageId: "beacon-api--billing", title: "billing" }],
+      sources: [{ n: 1, repo: "beacon-api", path: "src/billing/refund.ts", line: 12, lineEnd: 40, commit: ANSWER_SHA }, { n: 2, repo: "beacon-api", path: "src/billing/webhooks.ts", line: 104, lineEnd: 139, commit: ANSWER_SHA }],
+      action: { kind: "quick_task", label: "Start a Quick task", title: "Support partial refunds" },
+    } };
+  };
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
@@ -1421,6 +1442,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           howWeWorkModes.set(given.project, given.mode as HowWeWorkMode);
           return send(200, { mode: given.mode });
         }
+        if (method === "POST" && url.pathname === "/__fake/answers") {
+          const given = JSON.parse(await readBody(request)) as { project?: unknown; answers?: unknown; suggest?: unknown };
+          if (typeof given.project !== "string" || project(given.project) === undefined || (given.answers !== undefined && !["answered", "not_set_up", "off"].includes(given.answers as string))) return send(400, { error: { code: "CONFIG_INVALID", message: "project and answers" } });
+          answerSets.set(given.project, { ...(given.answers === undefined ? {} : { answers: given.answers as "answered" }), ...(given.suggest === undefined ? {} : { suggest: given.suggest as Record<string, unknown> }) });
+          return send(200, { project: given.project });
+        }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
           if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
@@ -1486,7 +1513,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? answersAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          if (who === undefined && /\/(?:answers|code\/suggest)$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/how-we-work$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/(?:wiki(?:[-/]|$)|upkeep$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal|confirm|discard|decide))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });

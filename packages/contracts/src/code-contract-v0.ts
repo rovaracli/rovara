@@ -996,7 +996,7 @@ POST /v1/app/tasks/{t}/review/claim | k | later | | review-groups |
 POST /v1/app/tasks/{t}/review/release | k | later | | review-groups |
 POST /v1/app/tasks/{t}/review/reassign | k | later | | review-groups |
 POST /v1/app/projects/{p}/code | k | request | tasks.start | code | T
-POST /v1/app/projects/{p}/code/suggest | k | request | | code |
+POST /v1/app/projects/{p}/code/suggest | k | request | | code | T
 POST /v1/app/projects/{p}/start-preview | k | later | | code |
 GET /v1/app/projects | k | admin | access.check,client.projects.get | projects | T
 POST /v1/app/projects | k | admin | client.projects.create,client.projects.bulk | onboarding | T
@@ -1079,6 +1079,7 @@ POST /v1/app/projects/{p}/wiki-build/agents | k | later | | wiki-setup | T
 POST /v1/app/projects/{p}/wiki-build/delete | k | later | | wiki-setup | T
 GET /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 PUT /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/answers | k | later | | answers | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | LT
 POST /v1/app/projects/{p}/setup-agent/discard | k | later | | setup-agent | LT

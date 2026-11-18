@@ -91,6 +91,8 @@ export * from "./project-setup-status.js";
 export * from "./app-wiki.js";
 export * from "./app-wiki-corrections.js";
 export * from "./app-wiki-setup.js";
+// Lead 4 J3: the smart Just answer's web door and the start box's path suggestion.
+export * from "./app-answers.js";
 
 // Lane B: browser-safe project-scoped working-branch page data.
 export * from "./app-working-branches.js";
