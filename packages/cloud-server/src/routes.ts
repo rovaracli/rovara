@@ -6,7 +6,8 @@ import type { CodeSession } from "./sessions.js";
 import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } from "./work-sessions.js";
 import { renameInSessions } from "./rename.js";
 import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
-import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
+import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask, type SessionExtras } from "./session-view.js";
+import { CORE_ACTION_WORDS, actOnCoreSession, isCoreNotYet, pendingPlanCards, securityAcceptRefusal } from "./core-task-actions.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError, SignInEnded, slackWorkspaceHint } from "./code-client.js";
 import type { CloudAuditStore } from "./audit-log.js";
@@ -240,6 +241,24 @@ const me = (context: RouteContext) => ({ developerId: context.session.access.dev
 /** The session's followers and viewers for this person. */
 const peopleOf = async (context: RouteContext, record: WorkSession) => ({ ...followState(record, context.session.access.developerId), viewingNow: await context.presence.viewing(record.sessionId, context.now().getTime()) });
 
+/** Code's pending plan cards for this request's person, read once per request and only when needed (core-task-actions.ts). */
+const planCardsRead = new WeakMap<RouteContext, Promise<ReadonlySet<string>>>();
+/**
+ * Audit 2026-11-18 item 6: what the session view needs beside the task. Only for the owner with a plan waiting: whether Code decides that plan on a card (a core task), so the
+ * view links to the card on the session page and never to Cloud's approval page, which the core does not take.
+ */
+async function extrasOf(context: RouteContext, record: WorkSession, task: CodeTask): Promise<SessionExtras> {
+  if (record.owner.developerId !== context.session.access.developerId || waitingPlan(task) === undefined) return {};
+  let cards = planCardsRead.get(context);
+  if (cards === undefined) planCardsRead.set(context, cards = pendingPlanCards(context.client, context.session));
+  return (await cards).has(record.taskId.toLowerCase()) ? { planOnCard: true } : {};
+}
+
+/** The session as the app reads it, for this person now. */
+async function viewOf(context: RouteContext, record: WorkSession, task: CodeTask, people?: Awaited<ReturnType<typeof peopleOf>>) {
+  return sessionView(record, task, viewer(context), context.origin, people, await extrasOf(context, record, task));
+}
+
 /**
  * The session, once Code has let the person read its task: its owner, or someone it is shared with who is still a member of the
  * project (spec 067). Code's own refusal (not found) reaches the app as the route's answer. The read asks for no events.
@@ -316,7 +335,7 @@ async function runningInProject(context: RouteContext, project: string) {
     }
   }));
   const running = read.filter((entry): entry is { record: WorkSession; task: CodeTask } => entry !== undefined && sessionRunning(entry.task));
-  return (await Promise.all(running.map(async ({ record, task }) => liveTile(record, task, viewer(context), context.origin, await peopleOf(context, record)))))
+  return (await Promise.all(running.map(async ({ record, task }) => liveTile(record, task, viewer(context), context.origin, await peopleOf(context, record), await extrasOf(context, record, task)))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -342,7 +361,9 @@ async function homeCards(context: RouteContext): Promise<{ cards: HomeCard[]; to
       cards.push({ cardId: `${kind}:${record.sessionId}`, kind, title, reason, sessionId: record.sessionId, at: task.updatedAt, buttons });
     const status = sessionStatus(task);
     if (record.owner.developerId === me && waitingPlan(task) !== undefined) {
-      card("plan", `The plan for ${task.project} is waiting for your review.`, [{ label: "Review plan", action: "confirm", href: approvalUrl(origin, record.sessionId), method: "GET" }, open]);
+      // A core task's plan is decided on its decision card, which the session page shows (audit 2026-11-18 item 6); any other plan on Cloud's approval page.
+      const onCard = (await extrasOf(context, record, task)).planOnCard === true;
+      card("plan", `The plan for ${task.project} is waiting for your review.`, [onCard ? { label: "Review plan", action: "open", href: open.href, method: "GET" } : { label: "Review plan", action: "confirm", href: approvalUrl(origin, record.sessionId), method: "GET" }, open]);
     } else if (record.owner.developerId === me && blockedReview(task) !== undefined) {
       // Rovara-cloud#15: stopped at review, which only its owner can move on. Shown as a stop, with Code's reason and, when Code would take it, Retry reviews.
       const blocked = blockedReview(task)!;
@@ -697,7 +718,7 @@ export const ROUTES: Route[] = [
     method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})$/u,
     answer: async (context) => {
       const found = await sessionAndTask(context);
-      return found === undefined ? sessionNotFound : ok({ session: sessionView(found.record, found.task, viewer(context), context.origin, await peopleOf(context, found.record)) });
+      return found === undefined ? sessionNotFound : ok({ session: await viewOf(context, found.record, found.task, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -712,7 +733,7 @@ export const ROUTES: Route[] = [
       const input = parseAnswersBody(context.body);
       if (!input.ok) return badRequest(input.message);
       await context.client.json(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/answers`, { method: "POST", headers: TASK_VIEW, body: input.value });
-      return ok({ session: sessionView(found.record, await readTask(context, found.record.taskId), viewer(context), context.origin, await peopleOf(context, found.record)) });
+      return ok({ session: await viewOf(context, found.record, await readTask(context, found.record.taskId), await peopleOf(context, found.record)) });
     },
   },
   {
@@ -727,11 +748,21 @@ export const ROUTES: Route[] = [
       if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can retry this session.` } } };
       const retry = blockedReview(found.task)?.retry;
       if (retry === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There's nothing to retry on this session right now." } } };
-      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review`, {
-        method: "POST", headers: TASK_VIEW,
-        body: { requestId, ...retry, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
-      });
-      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
+      let task: CodeTask;
+      try {
+        ({ task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review`, {
+          method: "POST", headers: TASK_VIEW,
+          body: { requestId, ...retry, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
+        }));
+      } catch (error) {
+        // A core task (audit 2026-11-18 item 6): the core retries the blocked review through the task's session, after its own session-level check. The core's retry takes no
+        // revision or candidate: it retries what is blocked now (core/task-flow/retry.ts), and only re-runs the read-only reviews of the same checked code.
+        if (!isCoreNotYet(error)) throw error;
+        const done = await actOnCoreSession(context.client, context.session, found.task, "retry", requestId);
+        if ("answer" in done) return done.answer;
+        task = done.task;
+      }
+      return ok({ session: await viewOf(context, found.record, task, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -751,7 +782,7 @@ export const ROUTES: Route[] = [
       const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/send-back`, {
         method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, instructions: note },
       });
-      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
+      return ok({ session: await viewOf(context, found.record, task, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -768,11 +799,19 @@ export const ROUTES: Route[] = [
       if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can accept these findings.` } } };
       const choices = reviewChoices(found.task);
       if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to accept right now." } } };
-      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review-findings`, {
-        method: "POST", headers: TASK_VIEW,
-        body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, candidateDigest: choices.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) },
-      });
-      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
+      let task: CodeTask;
+      try {
+        ({ task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review-findings`, {
+          method: "POST", headers: TASK_VIEW,
+          body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, candidateDigest: choices.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) },
+        }));
+      } catch (error) {
+        // Accepting a security finding is Code's web page's alone, with a fresh step-up (audit 2026-11-18 item 6): said in fixed words, never Code's bare 403.
+        const refused = securityAcceptRefusal(error);
+        if (refused !== undefined) return refused;
+        throw error;
+      }
+      return ok({ session: await viewOf(context, found.record, task, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -845,7 +884,7 @@ export const ROUTES: Route[] = [
       const requestId = (context.body as { requestId?: unknown } | undefined)?.requestId;
       if (typeof requestId !== "string" || !UUID.test(requestId)) return badRequest("requestId must be a UUID.");
       const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/cancel`, { method: "POST", headers: TASK_VIEW, body: { requestId } });
-      return ok({ session: sessionView(record, task, viewer(context), context.origin) });
+      return ok({ session: await viewOf(context, record, task) });
     },
   },
   {
@@ -856,12 +895,27 @@ export const ROUTES: Route[] = [
       if (record === undefined) return sessionNotFound;
       const input = (context.body ?? {}) as { requestId?: unknown; discardUnpublished?: unknown };
       if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
-      const closed = await context.client.json<{ task: CodeTask; closed: boolean; discardedUnpublished?: boolean; unpublished?: unknown; message?: string }>(
-        context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/close`,
-        { method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, ...(input.discardUnpublished === true ? { discard_unpublished: true } : {}) } },
-      );
+      let closed: { task: CodeTask; closed: boolean; discardedUnpublished?: boolean; unpublished?: unknown; message?: string };
+      try {
+        closed = await context.client.json<{ task: CodeTask; closed: boolean; discardedUnpublished?: boolean; unpublished?: unknown; message?: string }>(
+          context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/close`,
+          { method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, ...(input.discardUnpublished === true ? { discard_unpublished: true } : {}) } },
+        );
+      } catch (error) {
+        // A core task (audit 2026-11-18 item 6): the core closes it through the task's session (its owner, at the `edit` level). Code's 404 said the person may read the task.
+        if (!isCoreNotYet(error)) throw error;
+        const current = await readTask(context, record.taskId);
+        // The core's close has no unpublished-work check yet (Code core/task-flow/close.ts), so the first ask never closes: it says so, as the old close lists what it found, and only the
+        // person's second, explicit press (`discardUnpublished`) closes the task.
+        if (input.discardUnpublished !== true) {
+          return ok({ session: await viewOf(context, record, current), closed: false, unpublished: [{ repository: "This task's workspace", reasons: [CORE_ACTION_WORDS.closeFirstAsk] }] });
+        }
+        const done = await actOnCoreSession(context.client, context.session, current, "close", input.requestId);
+        if ("answer" in done) return done.answer;
+        closed = { task: done.task, closed: true };
+      }
       return ok({
-        session: sessionView(record, closed.task, viewer(context), context.origin), closed: closed.closed,
+        session: await viewOf(context, record, closed.task), closed: closed.closed,
         ...(closed.discardedUnpublished === undefined ? {} : { discardedUnpublished: closed.discardedUnpublished }),
         ...(closed.unpublished === undefined ? {} : { unpublished: closed.unpublished }),
         ...(closed.message === undefined ? {} : { message: closed.message }),
@@ -893,7 +947,7 @@ export const ROUTES: Route[] = [
       const updated: WorkSession = { ...record, owner: { developerId: context.session.access.developerId, name: context.session.access.displayName }, revision: record.revision + 1 };
       delete updated.ownerUnresolved;
       await context.work.put(updated);
-      return ok({ session: sessionView(updated, await readTask(context, record.taskId), viewer(context), context.origin) });
+      return ok({ session: await viewOf(context, updated, await readTask(context, record.taskId)) });
     },
   },
   {
