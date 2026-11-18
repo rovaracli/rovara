@@ -6,9 +6,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   LessonApproveBodySchema, LessonFeedbackBodySchema, LessonSourcesReaderSchema, LessonsDigestReaderSchema, LessonsViewReaderSchema, LessonHistoryReaderSchema,
-  LoadedLessonsReaderSchema, SourceWriteBodySchema, SourcesAdminViewReaderSchema, forwardReader,
+  LoadedLessonsReaderSchema, ModelSelectionPolicyResponseReaderSchema, SourceWriteBodySchema, SourcesAdminViewReaderSchema, forwardReader,
 } from "@agentx/contracts/web";
 import { LessonProvenanceSchema } from "@agentx/contracts";
+import { readsAsUnknown } from "../../packages/contracts/src/forward-reader-unknown.js";
 import { z } from "zod";
 
 type Raw = Record<string, unknown>;
@@ -150,10 +151,10 @@ describe("what Cloud sends to Code stays strict", () => {
   });
 });
 
-describe("the forward reader's rules for literal unions, records and nullable values", () => {
-  const schema = z.object({ tier: z.union([z.literal(0), z.literal(1)]), word: z.union([z.literal("a"), z.literal("b")]), by: z.record(z.string(), z.enum(["x", "y"])), note: z.string().nullable(), grade: z.enum(["x", "y"]).nullable(), one: z.literal(1) }).strict();
+describe("the forward reader's rules for literal unions and records", () => {
+  const schema = z.object({ tier: z.union([z.literal(0), z.literal(1)]), word: z.union([z.literal("a"), z.literal("b")]), by: z.record(z.string(), z.enum(["x", "y"])), one: z.literal(1) }).strict();
   const reader = forwardReader(schema);
-  const base = { tier: 1, word: "a", by: { k: "x" }, note: null, grade: null, one: 1 };
+  const base = { tier: 1, word: "a", by: { k: "x" }, one: 1 };
   it("reads a number or a word that no literal names as unknown, and a known one as itself", () => {
     expect(reader.parse({ ...base, tier: 9, word: "zzz" })).toMatchObject({ tier: "unknown", word: "unknown" });
     expect(reader.parse(base)).toMatchObject({ tier: 1, word: "a" });
@@ -170,13 +171,28 @@ describe("the forward reader's rules for literal unions, records and nullable va
     expect(reader.parse({ ...base, by: { k: "x", j: "future" } }).by).toEqual({ k: "x", j: "unknown" });
     expect(reader.safeParse({ ...base, by: { k: 5 } }).success).toBe(false);
   });
-  it("reads a nullable value as a value or null, and keeps unknown fields", () => {
-    expect(reader.parse({ ...base, note: "hi", more: 1 })).toMatchObject({ note: "hi", more: 1 });
-    expect(reader.safeParse({ ...base, note: 4 }).success).toBe(false);
-    // The value inside a nullable is read by the same rules (an enum is open); a null stays null.
-    expect(reader.parse({ ...base, grade: "future" }).grade).toBe("unknown");
-    expect(reader.parse({ ...base, grade: "x" }).grade).toBe("x");
-    expect(reader.parse(base).grade).toBeNull();
+  it("tells readsAsUnknown about the marker a literal union gives, and not about a real value", () => {
+    const union = z.union([z.literal(0), z.literal(1)]);
+    expect(readsAsUnknown(union, "unknown")).toBe(true);
+    expect(readsAsUnknown(union, 1)).toBe(false);
+    expect(readsAsUnknown(z.object({ tier: union }), { tier: "unknown" })).toBe(true);
+  });
+  it("keeps unknown fields on the object", () => {
+    expect(reader.parse({ ...base, more: 1 })).toMatchObject({ more: 1 });
+  });
+  it("leaves a partial record, an enum-keyed record and a record with its own refinement as the schema has them", () => {
+    const strict = z.object({
+      partial: z.partialRecord(z.enum(["a", "b"]), z.object({ x: z.number() })),
+      checked: z.record(z.string(), z.number()).superRefine((value, context) => { if (Object.keys(value).length > 1) context.addIssue({ code: "custom", message: "one" }); }),
+    });
+    const read = forwardReader(strict);
+    expect(read.safeParse({ partial: {}, checked: {} }).success).toBe(true);
+    expect(read.safeParse({ partial: { a: { x: 1 } }, checked: { k: 1 } }).success).toBe(true);
+    expect(read.safeParse({ partial: { c: { x: 1 } }, checked: {} }).success).toBe(false);
+    expect(read.safeParse({ partial: {}, checked: { k: 1, j: 2 } }).success).toBe(false);
+  });
+  it("still reads a policy-shaped answer with empty maps (company model policy)", () => {
+    expect(ModelSelectionPolicyResponseReaderSchema.safeParse({ version: 1, revision: 1, rankingVersion: "g3-v1", stepOverrides: {}, candidates: {}, reviewDefaults: {} }).success).toBe(true);
   });
 });
 

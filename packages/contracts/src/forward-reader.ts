@@ -48,11 +48,13 @@ export function readerOf(schema: z.ZodType): z.ZodType {
       return z.array(readerOf(def.element as z.ZodType));
     case "optional":
       return readerOf(def.innerType as z.ZodType).optional();
-    case "nullable":
-      return readerOf(def.innerType as z.ZodType).nullable();
-    case "record":
-      // The keys stay as the schema has them; the values are read the same way as any other value (an enum in a record's list is open too).
+    case "record": {
+      // Only a record keyed by plain strings with no checks of its own is rebuilt (its values are read like any other value: an enum in a record's list is open). An enum-keyed or partial record, or one with a
+      // refinement, stays as the schema has it: rebuilding it would make it exhaustive or drop the refinement.
+      const keyDef = defOf(def.keyType as z.ZodType);
+      if (keyDef.type !== "string" || def.partial === true || ((def.checks as unknown[] | undefined)?.length ?? 0) > 0) return schema;
       return z.record(def.keyType as z.ZodType<string>, readerOf(def.valueType as z.ZodType));
+    }
     case "union": {
       const options = def.options as z.ZodType[];
       if (typeof def.discriminator !== "string" && options.length > 1 && options.every((option) => defOf(option).type === "literal")) {
