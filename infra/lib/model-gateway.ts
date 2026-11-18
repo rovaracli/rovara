@@ -23,7 +23,7 @@ import {
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
-import { applyCloudBoundary } from "./cloud-boundary.js";
+import { applyCloudBoundary, byoCustomerAssumeConditions } from "./cloud-boundary.js";
 
 /**
  * The Cloud model gateway's infrastructure (migration plan v3.2, 7.4; packages/model-gateway). Every model call of every task
@@ -769,7 +769,7 @@ export class ModelGatewayStack extends Stack {
             sid: "AssumeCustomerBedrockRoles", actions: ["sts:AssumeRole"],
             resources: [`arn:${this.partition}:iam::*:role/${BEDROCK_BYO_CUSTOMER_ROLE_PREFIX}*`],
             // Customers' accounts only: never a role of that name in Rovara's own account (made by mistake or by an insider).
-            conditions: { StringLike: { "sts:ExternalId": "rvb-*", "sts:RoleSessionName": "org_*" }, StringNotEquals: { "aws:ResourceAccount": this.account } },
+            conditions: byoCustomerAssumeConditions(this.account),
           })],
         }),
       },

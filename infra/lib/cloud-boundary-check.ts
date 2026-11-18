@@ -19,7 +19,9 @@ export interface CheckScope { readonly partition: string; readonly region: strin
 interface Statement { Sid?: string; Effect: string; Action?: string | string[]; NotAction?: unknown; Resource?: unknown; NotResource?: unknown; Condition?: unknown }
 
 /** One action a role's own policy allows on one resource (a pattern when the policy's resource has a wildcard). */
-export interface RoleCase { readonly stackName: string; readonly role: string; readonly action: string; readonly resource: string }
+export interface RoleCase { readonly stackName: string; readonly role: string; readonly action: string; readonly resource: string; readonly condition?: ResolvedCondition }
+/** A statement's Condition with every value resolved to a string list: operator -> key -> values. */
+export type ResolvedCondition = Record<string, Record<string, string[]>>;
 export interface Violation extends RoleCase { readonly reason: string }
 
 /** The AWS managed policies a Cloud role may carry, with their statements (no other managed policy is allowed). */
@@ -202,6 +204,50 @@ function statementsOf(doc: unknown, where: string): Statement[] {
   return statements;
 }
 
+function resolveCondition(stack: StackTemplate, resolver: Resolver, condition: unknown): ResolvedCondition | undefined {
+  if (condition === undefined) return undefined;
+  const out: ResolvedCondition = {};
+  for (const [operator, keys] of Object.entries(condition as Record<string, Record<string, unknown>>)) {
+    // A value that is not a string or a resolvable intrinsic (a boolean, an unknown function) stays as its JSON text: it can only fail to satisfy a boundary's condition, never satisfy one.
+    const text = (value: unknown): string => {
+      if (typeof value !== "object" || value === null) return String(value);
+      try { return resolver.resolve(stack, value); } catch { return JSON.stringify(value); }
+    };
+    out[operator] = Object.fromEntries(Object.entries(keys).map(([key, values]) => [key, list(values).map(text)]));
+  }
+  return out;
+}
+
+/** The resolved condition in the shape the policy wrote it (a single value stays a string, a list stays a list). */
+function keepShape(original: unknown, resolved: ResolvedCondition): Record<string, Record<string, string | string[]>> {
+  const out: Record<string, Record<string, string | string[]>> = {};
+  for (const [operator, keys] of Object.entries(resolved)) {
+    out[operator] = Object.fromEntries(Object.entries(keys).map(([key, values]) => [key, Array.isArray((original as Record<string, Record<string, unknown>>)[operator]![key]) ? values : values[0]!]));
+  }
+  return out;
+}
+
+/**
+ * Does a role statement's own condition keep the request inside what a boundary Allow's condition requires? (A boundary only caps: an Allow with a condition
+ * covers a grant only when the grant is at least as narrow.) Only the three operators Cloud's boundary uses are understood; any other in a boundary is an error,
+ * never a guess. StringLike / StringEquals: every value the grant allows must match one the boundary allows. StringNotEquals: the grant must exclude every
+ * value the boundary excludes. A key the grant does not constrain does not satisfy a boundary that does.
+ */
+export function conditionWithin(own: ResolvedCondition | undefined, required: ResolvedCondition | undefined): boolean {
+  if (required === undefined) return true;
+  for (const [operator, keys] of Object.entries(required)) {
+    if (operator !== "StringLike" && operator !== "StringEquals" && operator !== "StringNotEquals") throw new Error(`the boundary condition operator ${operator} is not supported by this check`);
+    for (const [key, wanted] of Object.entries(keys)) {
+      const given = own?.[operator]?.[key];
+      if (given === undefined) return false;
+      if (operator === "StringNotEquals") { if (!wanted.every((w) => given.includes(w))) return false; }
+      else if (operator === "StringEquals") { if (!given.every((g) => wanted.includes(g))) return false; }
+      else if (!given.every((g) => wanted.some((w) => globMatch(w, g)))) return false;
+    }
+  }
+  return true;
+}
+
 interface RoleView { stack: StackTemplate; id: string; statements: Statement[]; boundary: Statement[] }
 
 function rolesOf(stack: StackTemplate, resolver: Resolver): RoleView[] {
@@ -261,12 +307,13 @@ export function roleCases(stacks: readonly StackTemplate[], scope: CheckScope): 
   const cases: Array<RoleCase & { boundary: Statement[] }> = [];
   for (const stack of stacks) {
     for (const role of rolesOf(stack, resolver)) {
-      const boundary = role.boundary.map((b) => ({ ...b, Action: list(b.Action).map(String), Resource: list(b.Resource).map((x) => resolver.resolve(stack, x)) }));
+      const boundary = role.boundary.map((b) => ({ ...b, Action: list(b.Action).map(String), Resource: list(b.Resource).map((x) => resolver.resolve(stack, x)), Condition: resolveCondition(stack, resolver, b.Condition) }));
       for (const s of role.statements) {
         if (s.Effect !== "Allow") continue;
+        const condition = resolveCondition(stack, resolver, s.Condition);
         for (const action of list(s.Action).map(String)) {
           for (const resource of list(s.Resource).map((x) => resolver.resolve(stack, x))) {
-            cases.push({ stackName: stack.stackName, role: role.id, action, resource, boundary });
+            cases.push({ stackName: stack.stackName, role: role.id, action, resource, ...(condition === undefined ? {} : { condition }), boundary });
           }
         }
       }
@@ -282,7 +329,7 @@ export function boundaryViolations(stacks: readonly StackTemplate[], scope: Chec
     const { boundary, ...rest } = c;
     const allows = boundary.filter((b) => b.Effect === "Allow");
     const denies = boundary.filter((b) => b.Effect === "Deny");
-    const allowed = allows.some((b) => (b.Action as string[]).some((a) => covers(a, c.action)) && (b.Resource as string[]).some((r) => coversResource(r, c.resource)));
+    const allowed = allows.some((b) => (b.Action as string[]).some((a) => covers(a, c.action)) && (b.Resource as string[]).some((r) => coversResource(r, c.resource)) && conditionWithin(c.condition, b.Condition as ResolvedCondition | undefined));
     const denied = denies.find((b) => (b.Action as string[]).some((a) => overlaps(a, c.action, true)) && (b.Resource as string[]).some((r) => overlaps(r, c.resource, false)));
     if (!allowed) violations.push({ ...rest, reason: "not allowed by the boundary" });
     else if (denied !== undefined) violations.push({ ...rest, reason: `denied by the boundary's ${denied.Sid ?? "Deny"}` });
@@ -300,7 +347,7 @@ export function resolvedBoundaries(stacks: readonly StackTemplate[], scope: Chec
       if (id !== BOUNDARY_LOGICAL_ID || r.Type !== "AWS::IAM::ManagedPolicy" || r.Properties?.Roles !== undefined) continue;
       if (out[stack.stackName] !== undefined) throw new Error(`${stack.stackName} has two boundary policies`);
       const statements = statementsOf(r.Properties?.PolicyDocument, `${stack.stackName}/${id}`);
-      out[stack.stackName] = { Version: "2012-10-17", Statement: statements.map((s) => ({ ...s, Resource: list(s.Resource).map((x) => resolver.resolve(stack, x)) })) };
+      out[stack.stackName] = { Version: "2012-10-17", Statement: statements.map((s) => ({ ...s, Resource: list(s.Resource).map((x) => resolver.resolve(stack, x)), ...(s.Condition === undefined ? {} : { Condition: keepShape(s.Condition, resolveCondition(stack, resolver, s.Condition)!) }) })) };
     }
   }
   return out;

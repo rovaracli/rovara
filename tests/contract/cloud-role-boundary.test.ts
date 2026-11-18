@@ -264,7 +264,7 @@ describe("the boundary breaks nothing a Cloud role's own policy grants", () => {
       app: ["Logs"],
       pipeline: ["Logs", "OwnBuckets", "PipelineBuilds", "PipelineSource", "ReleaseCheckReadsWebStack", "AssumeDeployRoles"],
       "gateway-images": [],
-      gateway: ["Logs", "TableItems", "OwnSecrets", "KeyUse", "ModelCalls", "ImageToken", "ImagePull", "PriceFetchTask", "PassOwnRoles", "AssumeGatewayRoles"],
+      gateway: ["Logs", "TableItems", "OwnSecrets", "KeyUse", "ModelCalls", "ImageToken", "ImagePull", "PriceFetchTask", "PassOwnRoles", "AssumeGatewayRoles", "AssumeCustomerBedrockRoles"],
     });
     const statement = (p: CloudStackPart, sid: string) => allowsOf(p).find((s) => s.Sid === sid)!;
     expect(statement("web", "KeyUse").Action).toEqual(["kms:Decrypt", "kms:GenerateDataKey", "kms:GenerateMac"]);
@@ -275,8 +275,10 @@ describe("the boundary breaks nothing a Cloud role's own policy grants", () => {
       ...["deploy-role", "file-publishing-role", "image-publishing-role", "lookup-role"].map((r) => `arn:aws:iam::123456789012:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-${r}-123456789012-us-west-2`),
     ]);
     expect(statement("gateway", "AssumeGatewayRoles").Resource).toEqual([
-      "arn:aws:iam::123456789012:role/rovara-cloud/staging/gateway/*", "arn:aws:iam::123456789012:role/RovaraBedrockBroker-staging", `arn:aws:iam::*:role/${BEDROCK_BYO_CUSTOMER_ROLE_PREFIX}*`,
+      "arn:aws:iam::123456789012:role/rovara-cloud/staging/gateway/*", "arn:aws:iam::123456789012:role/RovaraBedrockBroker-staging",
     ]);
+    expect(statement("gateway", "AssumeGatewayRoles").Condition).toBeUndefined();
+    expect(statement("gateway", "AssumeCustomerBedrockRoles").Resource).toEqual([`arn:aws:iam::*:role/${BEDROCK_BYO_CUSTOMER_ROLE_PREFIX}*`]);
     for (const p of CLOUD_STACK_PARTS) {
       const allows = allowsOf(p);
       const actions = allows.flatMap((s) => s.Action);
@@ -490,9 +492,27 @@ describe("the boundary breaks nothing a Cloud role's own policy grants", () => {
             "Resource": [
               "arn:aws:iam::123456789012:role/rovara-cloud/staging/gateway/*",
               "arn:aws:iam::123456789012:role/RovaraBedrockBroker-staging",
-              "arn:aws:iam::*:role/RovaraBedrockInvoke-*",
             ],
             "Sid": "AssumeGatewayRoles",
+          },
+          {
+            "Action": [
+              "sts:AssumeRole",
+            ],
+            "Condition": {
+              "StringLike": {
+                "sts:ExternalId": "rvb-*",
+                "sts:RoleSessionName": "org_*",
+              },
+              "StringNotEquals": {
+                "aws:ResourceAccount": "123456789012",
+              },
+            },
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:iam::*:role/RovaraBedrockInvoke-*",
+            ],
+            "Sid": "AssumeCustomerBedrockRoles",
           },
           {
             "Action": [
