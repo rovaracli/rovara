@@ -2,11 +2,14 @@ import { useLessonMeasure } from "../../api/lessons.js";
 import { ApiError } from "../../api/errors.js";
 
 /** The read itself is the permission check: Code returns this only to a maintainer or company administrator. */
-export function LearningMeasure({ project }: { project: string }) {
+export function LearningMeasure({ project, canSeeLessonsOff = false }: { project: string; canSeeLessonsOff?: boolean }) {
  const measure = useLessonMeasure(project);
  if (measure.data === undefined) {
   if (!measure.isError) return null;
-  if (measure.error instanceof ApiError && measure.error.status === 403) return null;
+  if (measure.error instanceof ApiError && (measure.error.status === 403 || measure.error.status === 404)) {
+   if (canSeeLessonsOff && measure.error.status === 404 && measure.error.code === "LESSONS_SWITCHED_OFF") return <p className="rv-muted" role="status">Lessons are off.</p>;
+   return null;
+  }
   const words = measure.error instanceof ApiError ? measure.error.message : "Lessons measure is unavailable right now. Try again.";
   return <section className="rv-project-section" aria-labelledby="lessons-measure-title"><h2 id="lessons-measure-title">Lessons measure</h2><p role="status">{words}</p></section>;
  }

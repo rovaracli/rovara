@@ -42,3 +42,22 @@ it("keeps the panel hidden when Code denies a project member", async () => {
   f.close();
 });
 
+it("hides every 404 for a member, including the lessons-off wording", async () => {
+  const f = mountLessonsScreen(h(LearningMeasure, { project: "web" }), () => ({ status: 404, body: { error: { code: "LESSONS_SWITCHED_OFF", message: "Lessons are off." } } }));
+  await waitFor(() => expect(f.request.mock.calls.length).toBeGreaterThan(0));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  expect(screen.queryByRole("heading", { name: "Lessons measure" })).toBeNull();
+  expect(screen.queryByText("Lessons are off.")).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
+  f.close();
+});
+
+it("shows one muted lessons-off line when the existing screen role read says the viewer can edit", async () => {
+  const f = mountLessonsScreen(h(LearningMeasure, { project: "web", canSeeLessonsOff: true }), () => ({ status: 404, body: { error: { code: "LESSONS_SWITCHED_OFF", message: "Lessons are off." } } }));
+  expect(await screen.findByText("Lessons are off.")).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "Lessons measure" })).toBeNull();
+  expect(screen.getByText("Lessons are off.").className).toBe("rv-muted");
+  expect(screen.getAllByText("Lessons are off.")).toHaveLength(1);
+  f.close();
+});
+

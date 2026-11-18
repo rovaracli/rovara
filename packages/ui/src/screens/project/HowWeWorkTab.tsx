@@ -134,7 +134,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
    {chooseError !== undefined && <p role="alert"><VisibleText text={chooseError} /></p>}
   </section>}
   <LearningSection project={project} />
-  <LearningMeasure project={project} />
+  <LearningMeasure project={project} canSeeLessonsOff={canEdit} />
   <ol className="rv-hww-stages" aria-label="Stages">{data.stages.map(stage => <li key={stage.id}><button type="button" className="rv-hww-stage" onClick={() => { const card = document.getElementById(stageDomId(stage.id) + "-title");card?.scrollIntoView({ block: "start" });card?.focus(); }}><VisibleText text={stage.name} />{hasChanged(stage, data) && <span className="rv-muted"> (changed here)</span>}</button></li>)}</ol>
   <div className="rv-hww-controls">
    <fieldset className="rv-hww-filter"><legend>Show</legend>{FILTERS.map(option => <label key={option.value}><input type="radio" name="hww-filter" value={option.value} checked={filter === option.value} onChange={() => setFilter(option.value)} /> {option.label}</label>)}</fieldset>
