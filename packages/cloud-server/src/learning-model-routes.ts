@@ -62,6 +62,7 @@ export function learningModelView(value: unknown): LearningModelAnswer | undefin
   const { model, source, offered, preselect } = value;
   if (!(model === null || (typeof model === "string" && MODEL_ID.test(model)))) return undefined;
   if (source !== "company" && source !== "install") return undefined;
+  // Duplicates and an over-long list are never Code's answer (it lists each Claude model once, from a short list); Cloud refuses them as the engine model route does.
   if (!Array.isArray(offered) || offered.length > OFFERED_MAX || !offered.every((id) => typeof id === "string" && MODEL_ID.test(id)) || new Set(offered).size !== offered.length) return undefined;
   // Code preselects the model when it is offered, else the gateway's first Claude model, else nothing.
   const expected = model !== null && offered.includes(model) ? model : (offered[0] as string | undefined) ?? null;

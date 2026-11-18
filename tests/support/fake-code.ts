@@ -1719,6 +1719,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "company.learningModel.put": ({ person, body }) => {
       if (companyless.has(person.developerId)) return failure(401, "AUTH_REQUIRED", "sign in again");
       if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can change the model lessons learn with.");
+      // Code's body schema takes only Claude ids (its own words); a Claude id the gateway doesn't offer is the "not offered" answer.
+      if (body.model !== null && !(typeof body.model === "string" && body.model.startsWith("claude-"))) return failure(400, "CONFIG_INVALID", "Send the Claude model lessons should learn with, as { \"model\": \"<model id>\" }, or { \"model\": null } to use this Rovara's default.");
       if (body.model !== null && !LEARNING_OFFERED.includes(body.model)) return failure(400, "CONFIG_INVALID", "That model isn't a Claude model offered to this company now. Pick one from the list.");
       learningModel = body.model ?? undefined;
       return { body: learningView() };

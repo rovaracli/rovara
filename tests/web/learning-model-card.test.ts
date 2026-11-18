@@ -128,6 +128,18 @@ describe("an owner or admin", () => {
   } finally { f.close(); }
  });
 
+ it("a failed save says the server's fixed sentence for not available yet (501) and for a 503", async () => {
+  for (const [status, message] of [[501, "Choosing the model lessons learn with isn't available on this Rovara yet."], [503, "The model lessons learn with couldn't be read or saved just now. Try again."]] as const) {
+   const c = cloud({ model: null });
+   const f = mountCard("owner", r => (r.method === "PUT" ? { status, body: { error: { code: "X", message } } } : c.respond(r)));
+   try {
+    await screen.findByTestId("learning-model-current");
+    fireEvent.click(screen.getByRole("button", { name: W.save }));
+    expect((await screen.findByTestId("learning-model-error")).textContent).toBe(message);
+   } finally { f.close(); }
+  }
+ });
+
  it("a refusal shows the server's fixed sentence, and the card reads again", async () => {
   const c = cloud({ model: null }, {});
   const refuse: ApiResponse = { status: 400, body: { error: { code: "MODEL_NOT_OFFERED", message: "That model isn't offered to this company now. Pick one from the list." } } };
@@ -152,12 +164,26 @@ describe("an owner or admin", () => {
    expect((await screen.findByTestId("learning-model-none-offered")).textContent).toBe(W.noneOffered);
    expect(screen.queryByRole("button", { name: W.save })).toBeNull();
    expect(screen.queryByLabelText(W.pick)).toBeNull();
+   expect(screen.queryByRole("button", { name: W.useDefault })).toBeNull();
   } finally { none.close(); }
+  // A stale company choice with nothing offered can still be dropped: going back to the default needs no list.
+  const state = { model: SONNET as string | null };
+  const writes: ApiRequest[] = [];
+  const stuck = mountCard("owner", (r) => {
+   if (r.method === "PUT") { writes.push(r); state.model = null; }
+   return { status: 200, body: view(state.model ?? HAIKU, state.model === null ? "install" : "company", { offered: [] }) };
+  });
+  try {
+   fireEvent.click(await screen.findByRole("button", { name: W.useDefault }));
+   await waitFor(() => { expect(screen.getByTestId("learning-model-saved").textContent).toBe(W.savedDefault); });
+   expect(writes.map(w => w.body)).toEqual([{ model: null }]);
+   await waitFor(() => { expect(screen.queryByRole("button", { name: W.useDefault })).toBeNull(); });
+  } finally { stuck.close(); }
  });
 
  it("says plainly when this Rovara has no default", async () => {
   const f = mountCard("owner", () => ({ status: 200, body: view(null, "install", { offered: [SONNET] }) }));
-  try { expect((await screen.findByTestId("learning-model-current")).textContent).toBe(`Model: ${W.noDefault} (${W.installDefault})`); } finally { f.close(); }
+  try { expect((await screen.findByTestId("learning-model-current")).textContent).toBe(`Model: ${W.noDefault}`); } finally { f.close(); }
  });
 });
 
@@ -212,7 +238,7 @@ describe("a read that fails says fixed words, never the server's", () => {
   } finally { f.close(); }
  }, 15_000);
 
- it("a body that is not the view is an unreadable answer, not a half-drawn card", async () => {
+ it("an extra member is ignored (the server holds the exact shape); a body whose preselect breaks the rule is an unreadable answer, not a half-drawn card", async () => {
   const f = mountCard("owner", () => ({ status: 200, body: { model: HAIKU, source: "install", offered: [SONNET], preselect: SONNET, canChange: true, extra: 1 } }));
   try { expect(await screen.findByTestId("learning-model-current")).toBeTruthy(); } finally { f.close(); }
   const bad = mountCard("owner", () => ({ status: 200, body: { model: HAIKU, source: "install", offered: [SONNET], preselect: "other", canChange: true } }));

@@ -66,8 +66,8 @@ function setUp(override: Override = () => undefined, lists: Record<string, strin
     const body = call.body as Record<string, unknown> | undefined;
     const model = body?.["model"];
     if (body === undefined || Object.keys(body).length !== 1 || !(model === null || (typeof model === "string" && /^claude-/u.test(model)))) return refusal(LEARNING_MODEL_REFUSALS.bodyInvalid);
-    if (model !== null && !lists[person.company]!.includes(model as string)) return refusal(LEARNING_MODEL_REFUSALS.notOffered);
-    if (model === null) chosen.delete(person.company); else chosen.set(person.company, model as string);
+    if (model !== null && !lists[person.company]!.includes(model)) return refusal(LEARNING_MODEL_REFUSALS.notOffered);
+    if (model === null) chosen.delete(person.company); else chosen.set(person.company, model);
     return json(200, devAnswer(view(person.company)));
   }) as typeof fetch;
   const sessions = new LocalSessionStore(undefined, { now: () => clock.at, environment: {} });
@@ -219,6 +219,8 @@ describe("Code's refusals and failures become fixed sentences; nothing of Code's
 
 describe("Code's learning-model answer is checked", () => {
   it("passes Code's real answers through, including no Claude model offered and a broken install default", () => {
+    // The real "no Claude model offered" answer with no default either: not a Code scenario, but the same rule (model null, nothing offered, nothing to preselect).
+    expect(learningModelView({ model: null, source: "install", offered: [], preselect: null })).toEqual({ model: null, source: "install", offered: [], preselect: null });
     for (const real of [LEARNING_MODEL_READ_INSTALL, LEARNING_MODEL_SAVED, LEARNING_MODEL_CLEARED, LEARNING_MODEL_DEFAULT_NOT_OFFERED, LEARNING_MODEL_NONE_OFFERED, LEARNING_MODEL_INSTALL_BROKEN, LEARNING_MODEL_OTHER_COMPANY_READ]) {
       expect(learningModelView(JSON.parse(JSON.stringify(real)))).toEqual(real);
     }

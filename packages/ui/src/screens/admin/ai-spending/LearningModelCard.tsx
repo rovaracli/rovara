@@ -72,9 +72,13 @@ function Body({ view, notice, setNotice, reload }: { view: LearningModelRead; no
 
  return <>
   {notice !== undefined && <p role={notice.ok ? "status" : "alert"} data-testid={notice.ok ? "learning-model-saved" : "learning-model-error"}><VisibleText text={notice.text} /></p>}
-  <p data-testid="learning-model-current">{W.pick}: <b><VisibleText text={current} /></b> ({view.source === "company" ? W.companyChoice : W.installDefault})</p>
+  <p data-testid="learning-model-current">{W.pick}: <b><VisibleText text={current} /></b>{view.model !== null && ` (${view.source === "company" ? W.companyChoice : W.installDefault})`}</p>
   {!view.canChange ? <p data-testid="learning-model-read-only">{W.readOnly}</p>
-   : view.offered.length === 0 ? <p data-testid="learning-model-none-offered">{W.noneOffered}</p>
+   : view.offered.length === 0 ? <>
+    <p data-testid="learning-model-none-offered">{W.noneOffered}</p>
+    {/* Going back to the default needs no offered list (Code clears the setting without one), so a stale own choice can always be dropped. */}
+    {view.source === "company" && <p><Button disabled={busy} onClick={() => { void send(null); }}>{W.useDefault}</Button></p>}
+   </>
    : <>
     {stale && <p data-testid="learning-model-stale">{W.notOffered}</p>}
     <Select label={W.pick} value={picked} onValueChange={setPicked} options={view.offered.map(id => ({ value: id, label: learningModelLabel(id) }))} disabled={busy} />
