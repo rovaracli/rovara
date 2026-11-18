@@ -29,13 +29,14 @@
 // No answer ever echoes what the browser sent or what a lower layer said.
 import { recordCloudAction } from "./audit-log.js";
 import { CodeError } from "./code-client.js";
-import { companyCaller, isCompanyAdmin, refused as notCaller } from "./company-caller.js";
+import { companyCaller, isCompanyAdmin, refused as notCaller, type CompanyRole } from "./company-caller.js";
 import { plainObject, settingsDecision } from "./company-settings.js";
 import {
   CompanyStoreConflict, SPEND_LIMIT_KINDS, SPEND_LIMIT_SCOPES, SPEND_LIMIT_MICROS_MAX, companySettings, spendLimitDef,
   type CompanyStore, type SpendLimit, type SpendLimitKind, type SpendLimitScope,
 } from "./company-store.js";
 import { CODE_MEMBERS_PATH, MEMBER_LIST_PAGES_MAX } from "./member-routes.js";
+import { SELF_APPROVED_ONLY_ADMIN, isSoleCompanyAdmin } from "./sole-admin.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { freshStepUp } from "./step-up.js";
 
@@ -73,7 +74,7 @@ export function dollarsToMicros(value: unknown): number | undefined {
 }
 const usd = (micros: number | null) => (micros === null ? null : micros / 1_000_000);
 
-interface Admin { companyId: string; developerId: string; name: string; store: CompanyStore }
+interface Admin { companyId: string; developerId: string; name: string; companyRole: CompanyRole; store: CompanyStore }
 
 /** A company owner or admin, from Code's access check made now. A RouteAnswer when refused (no company, a plain member, no company backend). */
 async function admin(context: RouteContext): Promise<Admin | RouteAnswer> {
@@ -82,7 +83,7 @@ async function admin(context: RouteContext): Promise<Admin | RouteAnswer> {
   const who = await companyCaller(context);
   if (notCaller(who)) return who;
   if (!isCompanyAdmin(who.companyRole)) return W.forbidden;
-  return { companyId: who.companyId, developerId: who.developerId, name: who.name, store: backend.store };
+  return { companyId: who.companyId, developerId: who.developerId, name: who.name, companyRole: who.companyRole, store: backend.store };
 }
 const refused = (value: Admin | RouteAnswer): value is RouteAnswer => "status" in value;
 
@@ -195,13 +196,18 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
   const raises = after > before;
   // Nothing changes (same effective limit, same override or none): answered without a write.
   if (after === before && (current !== undefined) === (asked !== null)) return view(who);
+  let selfApproved = false;
   if (raises) {
     // The company's own rules for a loosening, asked as PUT /org/settings asks them (company-routes.ts changeSettings): a company that forbids it can't
     // have a limit raised; one that needs a second person (or two approvals) can't have it raised here (a raise waits for a second admin only through
     // the company default in Company settings); the `deciders` are enforced by asking for the verdict; and its sign-in window applies.
     const required = settingsDecision(settings.settings, true, "requirement", who.developerId);
     if (!required.allow) return W.ruled;
-    if (required.secondPerson) return W.secondPerson;
+    // DEC 254zzz79 (2): a company with ONE live owner/admin has no second person: that person raises it themselves (audited). With two or more, a raise here stays refused.
+    if (required.secondPerson) {
+      if (!(await isSoleCompanyAdmin(context, who))) return W.secondPerson;
+      selfApproved = true;
+    }
     const decision = settingsDecision(settings.settings, true, "verdict", who.developerId);
     if (!decision.allow) return W.ruled;
     if (freshStepUp(context.session.accessToken, context.now().getTime(), decision.signInMaxAgeSeconds) === undefined) return W.stepUp;
@@ -222,7 +228,7 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
       await recordCloudAction(context.audit, {
         companyId: who.companyId, actor: { developerId: who.developerId, name: who.name, type: "person" }, action: "company.budget.changed", via: "web",
         subject: `spend_limit:${kind}:${id}`, ...(def.scope === "project" ? { project: id } : {}),
-        detail: `${asked === null ? (raises ? AUDIT_WORD.removedRaised : AUDIT_WORD.removedLowered) : raises ? AUDIT_WORD.raised : AUDIT_WORD.lowered} from=${micros(before)} to=${micros(after)}`,
+        detail: `${asked === null ? (raises ? AUDIT_WORD.removedRaised : AUDIT_WORD.removedLowered) : raises ? AUDIT_WORD.raised : AUDIT_WORD.lowered} from=${micros(before)} to=${micros(after)}${selfApproved ? ` ${SELF_APPROVED_ONLY_ADMIN}` : ""}`,
       }, context.now);
     } catch { console.log(JSON.stringify({ event: "cloud.audit_failed", action: "company.budget.changed", companyId: who.companyId })); }
   }
