@@ -14,7 +14,8 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const NO_ROUTE = { error: { code: "NOT_FOUND", message: "route not found" } };
 const UUID = "6f9d0c1e-2b3a-4c5d-8e7f-001122334455";
 const APPROVE = { taskId: UUID, reportDigest: "d".repeat(64), selection: "npm test", paths: ["evals/a.yaml"], approve: true, seen: { perCheckHighMicros: 1_500_000, monthlyCapMicros: 40_000_000 } };
-const WRAPPER = { requestId: UUID };
+const WRAPPER = { requestId: UUID, action: "open_pull_request", selection: "npm test" };
+const CHECK = { requestId: UUID, action: "check" };
 const TAILS = { get: "eval", approve: "eval-approve", wrapper: "eval-wrapper" } as const;
 const codePath = (tail: string, project = "payments") => `/v1/app/projects/${project}/setup-agent/${tail}`;
 const webPath = (tail: string, project = "payments") => `/v1/web/projects/${project}/setup-agent/${tail}`;
@@ -111,6 +112,17 @@ describe("who may ask", () => {
       expect(w.calls).toHaveLength(0);
     });
   }
+  it("POST eval-wrapper: a plain member may ask only for Check now (a read of the default branch); every other act is refused 403 and Code is never called for it", async () => {
+    const w = setUp();
+    const cookie = await member(w);
+    for (const body of [WRAPPER, { requestId: UUID, action: "dismiss" }, { requestId: UUID, action: "reopen" }, { requestId: UUID, action: "merge" }, { requestId: UUID }]) {
+      expect(await w.send("POST", webPath("eval-wrapper"), cookie, body), JSON.stringify(body)).toMatchObject(REFUSED);
+    }
+    expect(w.calls).toHaveLength(0);
+    expect((await w.send("POST", webPath("eval-wrapper"), cookie, { ...CHECK, company: OTHER, extra: 1 })).status).toBe(200);
+    expect(w.toCode().map((call) => [call.method, call.path, call.body])).toEqual([["POST", codePath("eval-wrapper"), CHECK]]);
+    expect(w.toCode().map((call) => call.authorization)).toEqual(["Bearer dev-token"]);
+  });
   it("GET eval: a plain member of the company may read the card (Code decides canApprove); a person with no company may not", async () => {
     const w = setUp();
     expect((await w.send("GET", webPath("eval"), await member(w))).status).toBe(200);
@@ -133,7 +145,7 @@ describe("who may ask", () => {
 describe("the body", () => {
   it("names each route's own keys and nothing else", () => {
     expect([...EVAL_APPROVE_KEYS]).toEqual(["taskId", "reportDigest", "selection", "paths", "approve", "seen"]);
-    expect([...EVAL_WRAPPER_KEYS]).toEqual(["requestId"]);
+    expect([...EVAL_WRAPPER_KEYS]).toEqual(["requestId", "action", "selection"]);
   });
   const extra = { company: OTHER, companyId: OTHER, role: "owner", payer: "someone", approver: "x", maxCostMicros: 1, __proto__x: 1 };
   for (const [name, body] of posts) {
@@ -178,7 +190,7 @@ describe("Code's answer", () => {
       expect(await other.send(method, webPath(tail), await admin(other), body)).toMatchObject({ status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } });
       const off = setUp(() => json(404, { error: { code: "NOT_FOUND", message: "Approving an eval's spend isn't available on this install yet." } }));
       expect((await off.send(method, webPath(tail), await admin(off), body)).status).toBe(501);
-      const noHost = setUp(() => json(404, { error: { code: "NOT_FOUND", message: "Proposing a file for your eval isn't available on this install yet." } }));
+      const noHost = setUp(() => json(404, { error: { code: "NOT_FOUND", message: "Setting up the file Rovara needs to read your eval isn't available on this install yet." } }));
       expect((await noHost.send(method, webPath(tail), await admin(noHost), body)).status).toBe(501);
     });
   }
