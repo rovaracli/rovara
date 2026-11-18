@@ -156,6 +156,17 @@ describe("the shapes Cloud keeps", () => {
     // No lapse time: left out, never shown as "lapses now".
     expect(lessonItem({ id: "les_bbbb", version: 1, title: "T" })).toBeUndefined();
   });
+  it("keeps a lesson whose citation kind, tier, count of people or source kinds Code added later: an unknown kind is an `other` reference, never dropped, never read as a known kind", () => {
+    const row = { id: "les_aaaa", version: 1, expiresAt: 5, title: "T", sourceKinds: ["plan_comment", "design_comment", "other", "made_up_future_kind"], provenance: { sourceKinds: ["plan_comment"] }, newerField: { deep: 1 } };
+    const view = lessonItem({ ...row, citations: [{ kind: "wiki", page: "p" }, { kind: "pr", url: "https://github.com/x/y/pull/1" }, { kind: "task", taskId: "t1" }, 7, { kind: "code", repo: "r" }], needs: { required: 3, have: 1, groups: [] } });
+    expect(view).not.toHaveProperty("sourceKinds");
+    expect(view).not.toHaveProperty("provenance");
+    // A known kind with a bad body is still dropped; a non-object is dropped; only an unknown kind of an object becomes `other`.
+    expect(view?.["citations"]).toEqual([{ kind: "other" }, { kind: "pr", url: "https://github.com/x/y/pull/1" }, { kind: "task", taskId: "t1" }]);
+    expect(view?.["needs"]).toMatchObject({ required: 2, have: 1 });
+    expect(lessonItem({ ...row, needs: { required: 1, have: 0 } })?.["needs"]).toMatchObject({ required: 1 });
+    expect(lessonItem({ ...row, needs: { required: "many", have: 0 } })?.["needs"]).toMatchObject({ required: 1 });
+  });
   it("tells Code's off refusal from any other 404", () => {
     expect(lessonsOff(new CodeError(404, { error: { code: "LESSONS_SWITCHED_OFF", message: "Lessons are off." } }))).toBe(true);
     expect(lessonsOff(new CodeError(404, { error: { code: "NOT_FOUND", message: "No such project." } }))).toBe(false);
