@@ -75,7 +75,8 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
   return {
    ...base,
    ...(design === undefined ? {} : { design }),
-   onApprove: async (tab, reason) => { const result = await base.onApprove(tab, reason);if (result.kind === "decided") onDecided(row.id);return result; },
+   onApprove: async (tab, reason, extras) => { const result = await (extras === undefined ? base.onApprove(tab, reason) : base.onApprove(tab, reason, extras));if (result.kind === "decided") onDecided(row.id);return result; },
+   onRequestChanges: async (reason, includedCommentIds) => { const result = await (includedCommentIds === undefined ? base.onRequestChanges(reason) : base.onRequestChanges(reason, includedCommentIds));if (result.kind === "decided") onDecided(row.id);return result; },
    onReject: async reason => { const result = await base.onReject(reason);if (result.kind === "decided") onDecided(row.id);return result; },
    onChoose: async action => { await base.onChoose(action);onDecided(row.id); },
   };

@@ -180,6 +180,27 @@ describe("decision cards: the contract, the fake Code and Cloud agree on /v1/app
     } finally { await own.close(); }
   });
 
+  it("passes the plan fields of an approve and the whole request-changes body to Code unchanged (L4-DCS)", async () => {
+    const own = await startFakeCode();
+    try {
+      const real = fetch;
+      const seen: Array<{ path: string; body: unknown }> = [];
+      const recording: typeof fetch = async (input, init) => {
+        const target = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (new URL(target).pathname.startsWith("/v1/app/decisions") && init?.method === "POST") seen.push({ path: new URL(target).pathname, body: JSON.parse(typeof init.body === "string" ? init.body : "null") });
+        return real(input, init);
+      };
+      const cloud = cloudOn(own.url, { fetch: recording });
+      const { cookie, csrf } = await signedIn(cloud, own.url);
+      const plan = `approve_plan/${TASK_IDS.planReview}`;
+      const approve = { requestId: randomUUID(), shownDigest: "b".repeat(64), acknowledgedRunLimitUsd: 5, answers: [{ decisionId: "q1", optionId: "b", opened: true }], selectedOptionalCheckIds: ["load"], includedCommentIds: ["33333333-3333-4333-8333-333333333333"], note: "Mind the refund path." };
+      const changes = { requestId: randomUUID(), shownDigest: "b".repeat(64), reason: "Cover the refund path.", includedCommentIds: ["33333333-3333-4333-8333-333333333333"] };
+      await cloud.call("POST", `/v1/web/decisions/${plan}/approve`, { cookie, csrf, body: approve });
+      await cloud.call("POST", `/v1/web/decisions/${plan}/request-changes`, { cookie, csrf, body: changes });
+      expect(seen).toEqual([{ path: `/v1/app/decisions/${plan}/approve`, body: approve }, { path: `/v1/app/decisions/${plan}/request-changes`, body: changes }]);
+    } finally { await own.close(); }
+  });
+
   it("answers the 404 the app reads as 'cards are switched off' when Code does not serve decisions (as it does today)", async () => {
     const own = await startFakeCode();
     try {
