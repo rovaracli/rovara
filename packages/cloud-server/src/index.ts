@@ -54,6 +54,7 @@ export {
   GITHUB_CALLBACK_PATH, GITHUB_CONNECT_COOKIE, GITHUB_CONNECT_TTL_MS, GITHUB_OUTCOMES, GITHUB_WORDS, githubInUseWords, githubResultKey, githubStateKey,
   type GithubPending, type GithubResult,
 } from "./github-connect.js";
+export { GITHUB_LINK_LANDING, GITHUB_LINK_OUTCOMES, GITHUB_LINK_WORDS } from "./github-link.js";
 export { CONNECT_TTL_MS, connectBack, connectCallbackPath, connectCookieName, connectResultKey, connectStateKey, type ConnectPending, type ConnectProvider } from "./connect-flow.js";
 export { SLACK_CALLBACK_PATH, SLACK_OUTCOMES, SLACK_WORDS } from "./slack-connect.js";
 export { LINK_FAILURES, LINK_LANDING, LINK_METHODS, LINK_TTL_MS, SIGN_IN_LINK_WORDS, linkPendingKey, type LinkPending } from "./sign-in-links.js";
