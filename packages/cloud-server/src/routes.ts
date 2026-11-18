@@ -31,6 +31,7 @@ import { AGENT_DIRECTORY_ROUTES } from "./agent-directory-routes.js";
 import { SYSTEM_RUNS_ROUTES } from "./system-runs-routes.js";
 import { SETUP_REPAIR_ROUTES } from "./setup-repair-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
+import { KNOWLEDGE_SWITCH_ROUTES } from "./knowledge-switch-routes.js";
 import { GRADUATION_ROUTES } from "./lessons-graduation-routes.js";
 import { HOW_WE_WORK_ROUTES } from "./how-we-work-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
@@ -1117,6 +1118,8 @@ export const ROUTES: Route[] = [
   // Graduation and tidy first: `…/lessons/tidy/retire` must be tried before `…/lessons/{id}/retire`.
   ...GRADUATION_ROUTES,
   ...LESSONS_ROUTES,
+  // L4-JA7: "Knowledge stays in Rovara" and a project's local tools setting, as the person (knowledge-switch-routes.ts).
+  ...KNOWLEDGE_SWITCH_ROUTES,
   ...HOW_WE_WORK_ROUTES,
   // Creating a company (DEC 254a), for a person with no company yet.
   ...ONBOARDING_ROUTES,

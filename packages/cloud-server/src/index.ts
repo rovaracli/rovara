@@ -66,6 +66,7 @@ export { SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_ANSWER
 export { LIFECYCLE_ANSWERS, LIFECYCLE_WORDS, PROJECT_LIFECYCLE_ROUTES, lifecycleBody, lifecycleRefusal } from "./project-lifecycle-routes.js";
 export { WIKI_CORRECTION_ANSWERS, WIKI_CORRECTION_ROUTES, WIKI_CORRECTION_WORDS, correctionsAnswer, disputedAnswer, markedAnswer, noteAddedAnswer, suggestedAnswer, wikiCorrectionRefusal } from "./wiki-corrections-routes.js";
 export { SETUP_REPAIR_ANSWERS, SETUP_REPAIR_ROUTES, SETUP_REPAIR_WORDS, recheckBody, setupRepairRefusal, setupRepairView } from "./setup-repair-routes.js";
+export { KNOWLEDGE_SWITCH_ROUTES, KNOWLEDGE_SWITCH_WORDS, companyAnswer as knowledgeStaysAnswer, projectAnswer as localToolsAnswer, knowledgeSwitchRefusal } from "./knowledge-switch-routes.js";
 export { SYSTEM_RUNS_ROUTES, systemRunsAnswer, systemRunsBody, systemRunsRefusal } from "./system-runs-routes.js";
 export { WIKI_SETUP_ANSWERS, WIKI_SETUP_CODE_WORDS, WIKI_SETUP_ROUTES, WIKI_SETUP_WORDS, buildAnswer, deleteAnswer, idBody, mapViewAnswer, startBody, switchBody, upkeepAnswer, wikiSetupRefusal } from "./wiki-setup-routes.js";
 export { SAVED_ENV_ANSWERS, SAVED_ENV_ROUTES, TEST_ENVIRONMENT_WORDS, savedEnvPanel, testEnvironmentState } from "./saved-env-routes.js";

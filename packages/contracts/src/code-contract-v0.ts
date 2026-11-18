@@ -783,6 +783,11 @@ export interface CodeRouteTypes {
   "lessons.learningSources.get": { request: void; response: LearningSourcesResponse };
   "lessons.learningSources.put": { request: PutLearningSourceRequest; response: PutLearningSourceResponse };
   "company.egressAddresses.get": { request: void; response: CompanyEgressAddressesView };
+  // L4-JA7: Knowledge stays in Rovara and a project's local coding tools setting (shapes in cloud-server/src/knowledge-switch-routes.ts).
+  "company.knowledgeStays.get": { request: void; response: { stays: boolean } };
+  "company.knowledgeStays.put": { request: { stays: boolean }; response: { stays: boolean } };
+  "lessons.localTools.get": { request: void; response: { enabled: boolean; own?: boolean; reason?: "company_stays" | "regulated" | "project_setting"; preset: "standard" | "regulated"; companyStays: boolean; canChange: boolean } };
+  "lessons.localTools.put": { request: { enabled: boolean }; response: { enabled: boolean; own?: boolean; reason?: "company_stays" | "regulated" | "project_setting"; preset: "standard" | "regulated"; companyStays: boolean; canChange: boolean } };
   "company.engineModel.get": { request: void; response: CompanyEngineModelView };
   "company.engineModel.put": { request: PutCompanyEngineModelRequest; response: CompanyEngineModelView };
   "projects.settings.get": { request: void; response: ProjectSettingsView };
@@ -979,6 +984,11 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.learningSources.put", "PUT", `${DP}/lessons/learning-sources/{source}`, "Pause or resume one source (a project admin, or a company owner or admin; recorded first)", "full", ["how-we-work"], "no", false, "none", true),
   // Guided onboarding PR 15 (DEC 254l item 7, 254n item 1): the company's AI model (Code #835, not on code/next yet) and a project's per-task model budget (Code's M4a settings).
   // L4-EGR: Rovara's fixed outbound addresses (owner or admin), shown read-only in company settings. Code company-egress-routes.ts.
+  // L4-JA7 (Code pr/l4-ja-knowledge-switch-hosted): "Knowledge stays in Rovara" (company owner or admin) and a project's "local coding tools can fetch lessons" (the project's admin, or a company owner or admin; recorded first).
+  spec("company.knowledgeStays.get", "GET", "/v1/dev/company/lessons/local-tools", "Whether the company keeps team knowledge inside Rovara (owner or admin)", "full", ["admin"], "no", false, "none", true),
+  spec("company.knowledgeStays.put", "PUT", "/v1/dev/company/lessons/local-tools", "Turn Knowledge stays in Rovara on or off (owner or admin; recorded first)", "full", ["admin"], "no", false, "none", true),
+  spec("lessons.localTools.get", "GET", `${DP}/lessons/local-tools`, "Whether local coding tools get the project's lessons now, and the first reason they do not (a person on the project)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.localTools.put", "PUT", `${DP}/lessons/local-tools`, "Turn the project's local coding tools setting on or off (a project admin, or a company owner or admin; recorded first)", "full", ["how-we-work"], "no", false, "none", true),
   spec("company.egressAddresses.get", "GET", "/v1/dev/company/egress-addresses", "Rovara's outbound addresses (the same for every company on this Rovara), for a company owner or admin", "full", ["admin"], "no", false, "none", true),
   spec("company.engineModel.get", "GET", "/v1/dev/company/engine-model", "The company's engine model, the models the gateway offers it now, and the one to preselect (any member)", "full", ["later"], "no", false, "none", true),
   spec("company.engineModel.put", "PUT", "/v1/dev/company/engine-model", "Set or clear the company's engine model, only from its offered list (owner or admin)", "full", ["later"], "no", false, "none", true),
@@ -1254,6 +1264,10 @@ PUT /v1/app/projects/{p}/lessons/learning-sources/{source} | k | how-we-work | l
 POST /v1/app/projects/{p}/lessons/decisions | k | home | lessons.decisions | learned | T
 GET /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.get | learned | T
 GET /v1/app/projects/{p}/lessons/measure | k | how-we-work | lessons.measure | learned | T
+GET /v1/app/projects/{p}/lessons/local-tools | k | how-we-work | lessons.localTools.get | learned | T
+PUT /v1/app/projects/{p}/lessons/local-tools | k | how-we-work | lessons.localTools.put | learned | T
+GET /v1/app/company/lessons/local-tools | k | admin | company.knowledgeStays.get | learned | T
+PUT /v1/app/company/lessons/local-tools | k | admin | company.knowledgeStays.put | learned | T
 PUT /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.put | learned | T
 GET /v1/app/projects/{p}/lessons/graduation | k | how-we-work | lessons.graduation | learned | T
 POST /v1/app/projects/{p}/lessons/{lessonId}/graduate | k | how-we-work | lessons.graduate | learned | T
@@ -1272,7 +1286,6 @@ POST /v1/app/projects/{p}/lessons/sources/resume | k | later | | lessons |
 POST /v1/app/projects/{p}/lessons/preset | k | later | | lessons |
 POST /v1/app/projects/{p}/lessons/preset/approve | k | later | | lessons |
 POST /v1/app/projects/{p}/lessons/preset/cancel | k | later | | lessons |
-GET /v1/app/projects/{p}/lessons/local-tools | k | later | | lessons-local-tools | L
 POST /v1/app/projects/{p}/lessons/local-tools | k | later | | lessons-local-tools | L
 GET /v1/app/projects/{p}/learning | k | later | | learning |
 POST /v1/app/projects/{p}/learning/suggestions/{suggestionId}/accept | k | later | | learning |
