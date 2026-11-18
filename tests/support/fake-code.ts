@@ -12,7 +12,7 @@ import {
   matchCodeRoute,
   type AccessResponse, type CodeRequest, type CodeResponse, type CodeRouteId, type CompanyMember, type DecisionCard, type ErrorBody, type HowWeWorkView,
   type PlaybookView, type PlanComment, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
-  type DecisionsResponse, type DecisionOutcome, type GraduationResponse, type LearningSourceKey, type LessonItem, type LessonMeasureResponse, type LessonMode, type TaskLesson,
+  type DecisionsResponse, type DecisionOutcome, type GraduationResponse, type LearningSourceKey, type LessonItem, type LessonMeasureResponse, type LessonMode, type TaskLesson, type WeeklySummaryResponse, type LessonTuningResponse,
 } from "../../packages/contracts/src/code-contract-v0.js";
 import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
 import { taskPlanAnswer } from "../fixtures/code-answers.js";
@@ -1602,6 +1602,15 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       if ("refused" in found) return found.refused;
       return { body: { project: found.name, mode: lessonMode, effective: lessonMode, lockedByCompany: false, canChange: found.decides } };
     },
+    "lessons.weeklySummary.get": (context) => { lessonCalls.push({ id: "lessons.weeklySummary.get", params: { ...context.params }, body: null, person: context.person.key });const override = lessonOverrides.get("lessons.weeklySummary.get");if (override !== undefined) return { status: override.status ?? 200, body: override.body as WeeklySummaryResponse };const found = lessonsProject(context);if ("refused" in found) return found.refused;return { body: { project: found.name, on: true, source: "chosen", canChange: found.decides } }; },
+    "lessons.weeklySummary.put": (context) => { lessonCalls.push({ id: "lessons.weeklySummary.put", params: { ...context.params }, body: JSON.parse(JSON.stringify(context.body)) as unknown, person: context.person.key });const found = lessonsProject(context);if ("refused" in found) return found.refused;if (!found.decides) return failure(403, "FORBIDDEN", "Only an admin of this project can change weekly summary.");return { body: { project: found.name, on: context.body.on === true, source: "chosen", canChange: true } }; },
+    "lessons.weekly": graduationRoute("lessons.weekly", (_context, project) => ({ body: { project, weekly: { needLook: [], picks: [] } } })),
+    "lessons.keep": graduationRoute("lessons.keep", (context, project) => ({ body: { project, lessonId: context.params["lessonId"], kept: true } })),
+    "lessons.trialOffer": graduationRoute("lessons.trialOffer", (_context, project) => ({ body: { project, mode: lessonMode } })),
+    "lessons.replay": graduationRoute("lessons.replay", (_context, project) => ({ body: { project, tasks: [], totals: { changedTasks: 0, lessonsGained: 0, lessonsLost: 0 } } })),
+    "lessons.tuning": graduationRoute("lessons.tuning", (_context, project) => { const override = lessonOverrides.get("lessons.tuning");if (override !== undefined) return { status: override.status ?? 200, body: override.body as LessonTuningResponse };return { body: { project, windowDays: 30, ready: false, message: "Not enough evidence yet.", evidence: {}, suggestions: [], note: "" } }; }),
+    "lessons.repeats": graduationRoute("lessons.repeats", (_context, project) => ({ body: { project, month: "2026-11", repeated: 0, corrections: 21, enoughData: true, split: { lessonLoaded: 0, lessonNotLoaded: 0, noLesson: 0 }, unjudged: 0, truncated: false } })),
+    "lessons.repeats.company": () => ({ body: { scope: "company", month: "2026-11", projects: [], repeated: 0, corrections: 0, enoughData: false } }),
     "lessons.measure": (context) => {
       const found = lessonsProject(context);
       if ("refused" in found) return found.refused;

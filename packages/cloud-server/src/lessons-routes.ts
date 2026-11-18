@@ -478,8 +478,11 @@ export const LESSONS_ROUTES: Route[] = [
   },
 ];
 
-function modeOf(raw: unknown, project: string): Record<string, unknown> {
+export function modeOf(raw: unknown, project: string): Record<string, unknown> {
   const body = isRecord(raw) ? raw : {};
   const mode = fixed(body["mode"], LESSON_MODES) ?? "off";
-  return { project, mode, effective: fixed(body["effective"], LESSON_MODES) ?? mode, lockedByCompany: body["lockedByCompany"] === true, canChange: body["canChange"] === true };
+  const offer = isRecord(body["trialOffer"]) ? body["trialOffer"] : undefined;
+  const trialOffer = offer !== undefined && ["approvals", "drops", "since"].every((key) => Number.isSafeInteger(offer[key]) && (offer[key] as number) >= 0)
+    ? { approvals: offer["approvals"], drops: offer["drops"], since: offer["since"] } : undefined;
+  return { project, mode, effective: fixed(body["effective"], LESSON_MODES) ?? mode, lockedByCompany: body["lockedByCompany"] === true, canChange: body["canChange"] === true, ...(trialOffer === undefined ? {} : { trialOffer }) };
 }

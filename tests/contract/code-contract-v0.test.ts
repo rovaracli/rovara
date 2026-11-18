@@ -68,6 +68,7 @@ describe("code contract v0 tables", () => {
     // Plus the saved environment panel read (forwarded to Code's own route) and the start preview (answered here as unknown) (L4-MF1): existing rows, now T (the start preview's owner is now Cloud: c): 2.
     // Plus the company's one control over nightly upkeep (L4-P3): read and change: 2 rows.
     // Plus lessons phase 4 (L4-LP4G): the graduation read, graduate, Not now, both places, the two tidy writes, the two draft task writes and retiring a team rule: 9 rows.
+    // Plus L4-B12 K1: weekly summary, weekly list, Keep, trial offer, replay, tuning and project/company repeats.
     // Plus the person's own GitHub account link (L4-GH): read, connect and unlink, passed to Code's /v1/dev/me/github routes as the person: 3 rows.
     // Plus the project lessons measure (L4-MEAS): 1 row.
     // Plus the plan card's feature choices (lead 4 PCF): Code answers this read as the person.
@@ -81,7 +82,7 @@ describe("code contract v0 tables", () => {
     // Plus Rovara's outbound addresses for company owners and admins (L4-EGR): the read, passed to Code as the person: 1 row.
     // Plus Rovara's proposed wrapper file (L4-EVW2): "Try again", passed to Code's own route as the person: 1 row.
     // Plus answering Understand's questions from the Work list and Home (Code #1057's round on the list row): the task's answers, passed to Code as the person: 1 row.
-    expect(counts.appCloudServerToday).toBe(177);
+    expect(counts.appCloudServerToday).toBe(186);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
