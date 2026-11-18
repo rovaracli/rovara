@@ -2,11 +2,8 @@ import { useRef, useState } from "react";
 import type { SetupApplyView, SetupDecideReply } from "@agentx/contracts/web";
 import { useSetupAgentApi } from "../../api/setup-agent.js";
 import { ApiError } from "../../api/errors.js";
-import { useAppHost } from "../../host.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
-import { useNav } from "../account/use-nav.js";
-import { confirmedReturn, forgetConfirmed, startStepUpNonce, useJustConfirmed } from "../admin/parts.js";
 import { APPROVAL_WORDS as T } from "./words.js";
 import "./approval-card.css";
 
@@ -33,22 +30,17 @@ function changeLines(apply: SetupApplyView): string[] {
 
 /**
  * "Use this setup" approval (L4-D2, DEC 254z b): the candidate Rovara made, its risk in plain words, what changed, who may approve, and how its check on a fresh workspace went. Approve and Reject show only for a person Code says
- * may give that answer (no dead buttons); anyone else reads one line about who approves. A decision always needs a fresh sign-in: the button sends the person to confirm it's them, then the next press decides, bound to exactly the
+ * may give that answer (no dead buttons); anyone else reads one line about who approves. One press decides (owner DEC 254zzz73 removed the step-up), bound to exactly the
  * revision and digest the read offered (never shown). A candidate that moved shows Cloud's fixed refusal and a Refresh. The server decides everything; this card only asks.
  */
 export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefresh }: { project: string; apply: SetupApplyView; canManage: boolean; onDecided: (reply: SetupDecideReply | "discarded") => void; onRefresh: () => void }) {
   const api = useSetupAgentApi();
-  const host = useAppHost();
-  const who = useNav()?.me.developerId;
-  const confirmed = useJustConfirmed(who);
-  const [stale, setStale] = useState(false), [done, setDone] = useState(false), [busy, setBusy] = useState<"approve" | "reject" | "discard">(), [problem, setProblem] = useState<{ message: string; moved: boolean }>();
+  const [done, setDone] = useState(false), [busy, setBusy] = useState<"approve" | "reject" | "discard">(), [problem, setProblem] = useState<{ message: string; moved: boolean }>();
   const sending = useRef(false);
   const lines = changeLines(apply), more = lines.length - SHOWN_CHANGES;
   const ready = apply.check.status === "ready", failed = apply.check.status === "failed";
-  const fresh = confirmed && !stale;
   const approval = apply.approval;
 
-  function confirmItsYou() { host.signIn(confirmedReturn(host.currentPath(), startStepUpNonce(host.storage)), { stepUp: true }); }
   async function decide(outcome: "approve" | "reject") {
     if (approval === undefined || sending.current) return;
     sending.current = true; setBusy(outcome); setProblem(undefined);
@@ -57,8 +49,7 @@ export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefr
       // Decided: nothing more can be pressed while the page reads the project again.
       setDone(true); onDecided(reply);
     } catch (caught) {
-      if (caught instanceof ApiError && caught.code === "REAUTH_REQUIRED") { if (who !== undefined) forgetConfirmed(host.storage, who); setStale(true); }
-      else if (caught instanceof ApiError) setProblem({ message: caught.message, moved: caught.code === "CHANGE_STALE" || caught.code === "IDEMPOTENCY_CONFLICT" || caught.code === "PROJECT_REVISION_MISMATCH" });
+      if (caught instanceof ApiError) setProblem({ message: caught.message, moved: caught.code === "CHANGE_STALE" || caught.code === "IDEMPOTENCY_CONFLICT" || caught.code === "PROJECT_REVISION_MISMATCH" });
       else setProblem({ message: "Couldn't send that. Try again.", moved: false });
     } finally { sending.current = false; setBusy(undefined); }
   }
@@ -93,10 +84,9 @@ export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefr
       <p className="rv-proposal-meta">Test commands</p>
       {apply.readiness.length === 0 ? <p>None.</p> : <ul aria-label="Test commands">{apply.readiness.map((command, index) => <li key={index}><code><VisibleText text={command} /></code></li>)}</ul>}
     </details>
-    {allowed && <p className="rv-muted" data-testid="setup-approval-fresh" role="status">{stale ? T.stepUpOld : fresh ? T.stepUpDone : T.stepUp}</p>}
     <div className="rv-connect-actions rv-approval-actions">
-      {allowed && apply.canApprove && <Button variant="primary" busy={busy === "approve"} disabled={busy !== undefined || done} data-testid="setup-approve" onClick={() => { if (fresh) void decide("approve"); else confirmItsYou(); }}>Approve</Button>}
-      {allowed && apply.canReject && <Button variant="danger" busy={busy === "reject"} disabled={busy !== undefined || done} data-testid="setup-reject" onClick={() => { if (fresh) void decide("reject"); else confirmItsYou(); }}>Reject</Button>}
+      {allowed && apply.canApprove && <Button variant="primary" busy={busy === "approve"} disabled={busy !== undefined || done} data-testid="setup-approve" onClick={() => { void decide("approve"); }}>Approve</Button>}
+      {allowed && apply.canReject && <Button variant="danger" busy={busy === "reject"} disabled={busy !== undefined || done} data-testid="setup-reject" onClick={() => { void decide("reject"); }}>Reject</Button>}
       {canManage && !ready && <Button busy={busy === "discard"} disabled={busy !== undefined || done} data-testid="setup-discard" onClick={() => { void discard(); }}>Discard this setup</Button>}
     </div>
     {problem !== undefined && <div role="alert" data-testid="setup-approval-problem"><p><VisibleText text={problem.message} /></p>{problem.moved && <Button data-testid="setup-approval-refresh" onClick={onRefresh}>Refresh</Button>}</div>}

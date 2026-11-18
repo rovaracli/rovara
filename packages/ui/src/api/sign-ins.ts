@@ -1,8 +1,8 @@
 // Connected sign-ins (DEC 254w): the second ways a person can sign in to their own account, read and changed through Cloud's `/v1/app/me/sign-ins` routes
 // (Cloud passes them to Rovara Code as the person; Code answers 501 here until it serves them, and the page says "not connected yet").
 //   GET    /v1/app/me/sign-ins                  -> { signIns: [{ method, primary, linkedAt? }], linkable?: string[] }
-//   POST   /v1/app/me/sign-ins/link { method }  -> { authorizeUrl } (the provider's page; a fresh sign-in is needed first)
-//   DELETE /v1/app/me/sign-ins/{method}         -> { removed: true } (a fresh sign-in is needed; Code then ends every sign-in of the person)
+//   POST   /v1/app/me/sign-ins/link { method }  -> { authorizeUrl } (the provider's page)
+//   DELETE /v1/app/me/sign-ins/{method}         -> { removed: true } (Code then ends every sign-in of the person)
 // Every reader is total over untrusted data. Words shown come from this file, never from the server or a provider.
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 

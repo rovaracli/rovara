@@ -29,11 +29,10 @@ describe("Vertex refusal reason codes", () => {
     expect(r.body.error).toMatchObject({ code: "CONFIG_INVALID", reason: "vertex_invalid" });
     expect(calls).toBe(0);
   });
-  it("other refusals carry no reason: a bad key, a stale revision, no step-up, not an admin", async () => {
+  it("other refusals carry no reason: a bad key, a stale revision, not an admin", async () => {
     const w = world({ vertexCheck: check("ok") });
     const pam = await w.signIn("pam", 30);
     expect((await w.call(pam, "PUT", VERTEX, write(7, FORM))).body.error).toEqual({ code: "CONFLICT", message: "Product AI settings changed. Refresh and try again." });
-    expect((await w.call(await w.signIn("pam"), "PUT", VERTEX, write(0, FORM))).body.error).not.toHaveProperty("reason");
     expect((await w.call(await w.signIn("cal", 30), "PUT", VERTEX, write(0, FORM))).body.error).not.toHaveProperty("reason");
     const key = await w.call(pam, "PUT", "/projects/web/product-ai/eval-budget", write(0, { calls: 0, costMicros: 1 }));
     expect(key.body.error).not.toHaveProperty("reason");

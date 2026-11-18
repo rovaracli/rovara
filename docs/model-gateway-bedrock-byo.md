@@ -39,7 +39,7 @@ Slice 1 is agents; slice 2 (the product route, below) is the customer's tests. L
      quick-create link is a small addition.
 3. The admin pastes the role ARN (`PUT /org/bedrock`). The store refuses a role another company holds, then asks the gateway to
    test it, then seals it in the company document as source `src_bedrock`.
-4. A removal keeps the connection for 7 days; the company admin can undo it then (`POST /org/bedrock/recover`, fresh step-up).
+4. A removal keeps the connection for 7 days; the company admin can undo it then (`POST /org/bedrock/recover`).
 5. Under "AI for your agents" the admin picks "your own Bedrock". It is refused until a connection is saved. There is one active
    source and never a fallback.
 

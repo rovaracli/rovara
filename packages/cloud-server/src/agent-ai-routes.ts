@@ -8,7 +8,7 @@
 //   GET /org/agent-ai   the saved choice (null when none), its version, and the three choices
 //   PUT /org/agent-ai   {expectedVersion, source}: save the choice
 //
-// Who: company admins only (Code's access check made now), reads included. A write needs a fresh step-up and goes through the
+// Who: company admins only (Code's access check made now), reads included. A write goes through the
 // app's signed-write path (CSRF in handler.ts). Each saved change is audited. There is never an automatic switch between sources:
 // the gateway uses only the saved one.
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
@@ -17,7 +17,6 @@ import { AGENT_AI_SOURCES, agentSourceSwitchedOn, CompanyStoreConflict, effectiv
 import { bedrockConnected } from "./bedrock-byo-routes.js";
 import { LEARNING_AI_OWNER } from "./learning-ai-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
-import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
 /** The sources an admin may save. `bedrock_byo` (DEC 238) only once the company's Bedrock is connected on this Cloud. */
 export const AGENT_AI_CHOOSABLE: readonly AgentAiSource[] = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key", "custom_endpoint"];
@@ -31,7 +30,6 @@ const refusal = (status: number, code: string, message: string): RouteAnswer => 
 const WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "AI for your agents isn't set up on this Cloud."),
   forbidden: refusal(403, "FORBIDDEN", "Only a company admin can see or change the AI the company's agents use."),
-  stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   invalid: refusal(400, "CONFIG_INVALID", "Choose Rovara's AI, your own Anthropic key or your own Bedrock."),
   bedrockFirst: refusal(400, "CONFIG_INVALID", "Connect your own Bedrock first (Settings, Your own Bedrock), then choose it here."),
   keyFirst: refusal(400, "CONFIG_INVALID", "Connect that provider's key first (Settings, AI keys), then choose it here."),
@@ -50,14 +48,13 @@ const NOTHING_SWITCHED_ON: ReadonlySet<string> = new Set();
 const switchedOn = (context: RouteContext, source: string): boolean => agentSourceSwitchedOn(source, context.company?.aiSourceKinds ?? NOTHING_SWITCHED_ON);
 
 /** A company admin of a company Cloud knows, from Code's access check made now. A RouteAnswer when refused. */
-async function admin(context: RouteContext, write: boolean): Promise<Admin | RouteAnswer> {
+async function admin(context: RouteContext): Promise<Admin | RouteAnswer> {
   const backend = context.company;
   if (backend === undefined) return WORDS.off;
   const who = await companyCaller(context);
   if (refused(who)) return who;
   // A company owner or admin (Code's company role, never its install administrator flag).
   if (!isCompanyAdmin(who.companyRole)) return WORDS.forbidden;
-  if (write && freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return WORDS.stepUp;
   return { companyId: who.companyId, developerId: who.developerId, name: who.name };
 }
 
@@ -111,12 +108,12 @@ async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
 }
 
 async function readAgentAi(context: RouteContext): Promise<RouteAnswer> {
-  const who = await admin(context, false);
+  const who = await admin(context);
   return "status" in who ? who : answer(context, who);
 }
 
 async function putAgentAi(context: RouteContext): Promise<RouteAnswer> {
-  const who = await admin(context, true);
+  const who = await admin(context);
   if ("status" in who) return who;
   if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return WORDS.tooLarge;
   const body = record(context.body);
@@ -147,7 +144,7 @@ async function putAgentAi(context: RouteContext): Promise<RouteAnswer> {
 //   PUT    /org/agent-ai/endpoint   {requestId, expectedRevision, baseUrl, key, models: [{name, catalog: {provider, modelId}}]}: connect or replace
 //   DELETE /org/agent-ai/endpoint   {requestId, expectedRevision}: remove (7-day recovery window in the store)
 //
-// Only where the endpoint kind is switched on. Company admins, a fresh step-up, audited. The address, key and models are sealed TOGETHER
+// Only where the endpoint kind is switched on. Company admins, audited. The address, key and models are sealed TOGETHER
 // as one company account in the write-only learning document (provider "endpoint"): never answered, logged or audited. The store checks
 // the address with the gateway's SSRF guard (https, port 443, no user, a public host); the gateway checks it again, with DNS, on every
 // call. `expectedRevision` is the learning document's revision (GET /org/learning-ai).
@@ -168,7 +165,7 @@ const ENDPOINT_ERRORS: Readonly<Record<string, RouteAnswer>> = Object.freeze({ i
 /** Connect/replace needs the kind switched on; removal never does (A3-REVIEW-1 L3): a company can always remove what it stored. */
 async function endpointAdmin(context: RouteContext, gated = true): Promise<Admin | RouteAnswer> {
   if (context.productAi === undefined) return ENDPOINT_WORDS.off;
-  const who = await admin(context, true);
+  const who = await admin(context);
   if ("status" in who) return who;
   if (gated && !switchedOn(context, "custom_endpoint")) return ENDPOINT_WORDS.switchedOff;
   return who;

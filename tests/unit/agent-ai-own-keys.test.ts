@@ -1,6 +1,6 @@
 // DEC 254t (a), row A2 in Cloud: "AI for your agents" offers the company's own OpenAI and OpenRouter keys only where the install switched
 // the kind on, and only once that provider's key is connected. The OpenAI key is the company's existing sealed OpenAI account; the
-// OpenRouter key joins the same write-only learning document (company admins, fresh step-up, audited, never answered), is connectable
+// OpenRouter key joins the same write-only learning document (company admins, audited, never answered), is connectable
 // only where its kind is on, and never makes lessons usable. The gateway reads exactly what these routes save. Two companies never meet.
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -113,12 +113,11 @@ describe("own OpenAI / OpenRouter keys for agents (Cloud)", () => {
     expect(await w.companies.agentAi(B)).toBeUndefined();
   });
 
-  it("non-admins can neither read nor change it; a write needs a fresh step-up", async () => {
+  it("non-admins can neither read nor change it, with or without a step-up; an admin needs none (owner DEC 254zzz73)", async () => {
     const w = world({ company: true, aiSourceKinds: both });
-    const pam = await w.signIn("pam", 30);
-    expect((await w.call(pam, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key: routerKey() }))).status).toBe(403);
-    const stale = await w.signIn("ada", 3600);
-    expect((await w.call(stale, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key: routerKey() }))).body.error?.code).toBe("STEP_UP_REQUIRED");
+    for (const age of [30, undefined]) expect((await w.call(await w.signIn("pam", age), "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key: routerKey() }))).status).toBe(403);
     expect((await w.store.view(ISS, A, "_learning")).sources).toEqual([]);
+    // Past the role check with an old step-up: a malformed write is the 400, never a step-up answer.
+    expect((await w.call(await w.signIn("ada", 3600), "PUT", `${KEYS}/key`, { ...write(0, { provider: "openrouter", key: routerKey() }), extra: 1 })).status).toBe(400);
   });
 });

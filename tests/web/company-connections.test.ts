@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Guided onboarding PR 12b: Company settings, Connections. Each integration shows its account, who connected it and when, and its health; owners and admins see
-// Connect/Reconnect; only an owner sees Disconnect, which confirms first, asks for a fresh sign-in when Cloud says so, names the projects that block it or lose
+// Connect/Reconnect; only an owner sees Disconnect, which confirms first (no step-up since owner DEC 254zzz73), names the projects that block it or lose
 // their channel/team, and links only to GitHub's own settings. Refusals show Cloud's fixed words only.
 import { describe, expect, it } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -78,11 +78,13 @@ describe("Connections", () => {
     }
   });
 
-  it("asks for a fresh sign-in when Cloud says the confirmation is too old", async () => {
-    const f = mount({ remove: () => ({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } }) });
+  it("a 403 from Cloud is a fixed refusal with no sign-in step (owner DEC 254zzz73)", async () => {
+    const f = mount({ remove: () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner can disconnect GitHub." } } }) });
     fireEvent.click(await screen.findByTestId("github-11-disconnect"));
     fireEvent.click(screen.getByTestId("github-11-disconnect-confirm"));
-    expect((await screen.findByTestId("fresh-sign-in")).getAttribute("data-state")).toBe("needed");
+    await screen.findByTestId("github-11-error");
+    expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+    expect(f.host.signIn).not.toHaveBeenCalled();
     f.close();
   });
 

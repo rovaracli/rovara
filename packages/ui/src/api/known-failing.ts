@@ -21,7 +21,7 @@ export function createKnownFailingApi(host: AppHost) {
   policy: () => api.get(KNOWN_FAILING_POLICY_PATH, KnownFailingPolicyStateReaderSchema),
   /** Turning "always two people" on applies at once; turning it off waits for a different admin (`needs_approval`). */
   setPolicy: (alwaysTwoPeople: boolean) => api.sendAnswer("POST", KNOWN_FAILING_POLICY_PATH, KnownFailingPolicyBodySchema.parse({ action: "set", alwaysTwoPeople }), KnownFailingPolicyAnswerReaderSchema, NEVER),
-  /** A different admin approves turning it off. The server asks for a sign-in within the last 10 minutes (`REAUTH_REQUIRED` otherwise). */
+  /** A different admin approves turning it off. */
   approvePolicy: (changeId: string) => api.sendAnswer("POST", KNOWN_FAILING_POLICY_PATH, KnownFailingPolicyBodySchema.parse({ action: "approve", changeId }), KnownFailingPolicyAnswerReaderSchema, NEVER),
  };
 }

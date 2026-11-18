@@ -28,14 +28,12 @@ async function serveMembers(page: Page, put: (request: Request) => { status: num
   return { puts };
 }
 
-/** Coming back from Code's step-up page: the nonce this tab stored, in the return address (as admin.spec.ts does). */
-async function openConfirmed(admin: AdminPage, page: Page): Promise<void> {
+/** Opens the Members page (no step-up since owner DEC 254zzz73). */
+async function openPeople(admin: AdminPage): Promise<void> {
   await admin.open(ROUTES.admin.people);
-  await page.evaluate(() => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce: "e2e-roles", at: Date.now() })));
-  await admin.open(`${ROUTES.admin.people}?confirmed=e2e-roles`);
 }
 
-test("Members shows who can do what and only the role buttons the viewer may use; a change asks to confirm it's you first", async ({ page }, testInfo) => {
+test("Members shows who can do what and only the role buttons the viewer may use; a change opens its review with no sign-in step", async ({ page }, testInfo) => {
   const { puts } = await serveMembers(page, () => ({ status: 500, body: {} }));
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.people);
@@ -49,19 +47,16 @@ test("Members shows who can do what and only the role buttons the viewer may use
   await expect(page.getByRole("button", { name: /^Make Priya/u })).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("members-owner.png"), fullPage: true });
   await page.getByRole("button", { name: "Make Maya an admin" }).click();
-  await expect(admin.freshSignIn).toHaveAttribute("data-state", "ask");
-  await expect(page.getByRole("button", { name: "Confirm role change" })).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath("role-change-confirm-first.png"), fullPage: true });
-  const asked = page.waitForRequest(request => request.url().includes("/v1/auth/browser/authorize") && request.url().includes("step_up=1"));
-  await page.getByTestId("fresh-sign-in-start").click();
-  expect(decodeURIComponent((await asked).url())).toMatch(/return_to=\/app\/admin\/people\?confirmed=[0-9a-f-]{36}/u);
+  await expect(admin.freshSignIn).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Confirm role change" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("role-change-review.png"), fullPage: true });
   expect(puts).toHaveLength(0);
 });
 
-test("after confirming, Make admin sends the role and verifies it against the list", async ({ page }, testInfo) => {
+test("Make admin sends the role and verifies it against the list", async ({ page }, testInfo) => {
   const { puts } = await serveMembers(page, () => ({ status: 200, body: { developerId: MAYA, role: "admin" } }));
   const admin = new AdminPage(page);
-  await openConfirmed(admin, page);
+  await openPeople(admin);
   await page.getByRole("button", { name: "Make Maya an admin" }).click();
   await expect(page.getByText("New role: Admin")).toBeVisible();
   await page.getByRole("button", { name: "Confirm role change" }).click();
@@ -73,28 +68,23 @@ test("after confirming, Make admin sends the role and verifies it against the li
   await page.screenshot({ path: testInfo.outputPath("role-change-verified.png"), fullPage: true });
 });
 
-test("refusals are fixed sentences: the last owner, and a confirmation that is too old", async ({ page }, testInfo) => {
-  let answer = { status: 409, body: { error: { code: "LAST_OWNER", message: "server words never shown" } } };
+test("refusals are fixed sentences: the last owner", async ({ page }, testInfo) => {
+  const answer = { status: 409, body: { error: { code: "LAST_OWNER", message: "server words never shown" } } };
   await serveMembers(page, () => answer);
   const admin = new AdminPage(page);
-  await openConfirmed(admin, page);
+  await openPeople(admin);
   await page.getByRole("button", { name: "Make Maya an admin" }).click();
   await page.getByRole("button", { name: "Confirm role change" }).click();
   await expect(page.getByText("A company needs at least one owner. Make someone else an owner first.")).toBeVisible();
   await expect(page.getByText("server words never shown")).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("role-change-last-owner.png"), fullPage: true });
-  await page.getByRole("button", { name: "Close dialog" }).click();
-  answer = { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "server words never shown" } } };
-  await page.getByRole("button", { name: "Make Maya an admin" }).click();
-  await page.getByRole("button", { name: "Confirm role change" }).click();
-  await expect(admin.freshSignIn).toHaveAttribute("data-state", "needed");
-  await page.screenshot({ path: testInfo.outputPath("role-change-confirm-again.png"), fullPage: true });
+  await expect(admin.freshSignIn).toHaveCount(0);
 });
 
 test("an open role dialog and its refusal survive a narrow window, a focus and a visibility change (nothing is unmounted)", async ({ page }) => {
   await serveMembers(page, () => ({ status: 409, body: { error: { code: "LAST_OWNER", message: "server words never shown" } } }));
   const admin = new AdminPage(page);
-  await openConfirmed(admin, page);
+  await openPeople(admin);
   await page.getByRole("button", { name: "Make Maya an admin" }).click();
   await expect(page.getByText("New role: Admin")).toBeVisible();
   await page.getByRole("button", { name: "Confirm role change" }).click();

@@ -1,19 +1,19 @@
 // L4-D2 in the browser, on the pretend Code (Code #899's candidate, confirm, discard and decide): Priya, the company owner, opens the Setup step and meets the approval card in each of its states (low, medium and high risk, a person who
-// can and cannot approve, a check that is running or failed, a candidate that moved), approves after the fresh sign-in, and the card holds at phone width in light and dark. Screenshots go to the test output folder.
+// can and cannot approve, a check that is running or failed, a candidate that moved), approves with one press (no step-up since owner DEC 254zzz73), and the card holds at phone width in light and dark. Screenshots go to the test output folder.
 import { expect, test, type Page } from "@playwright/test";
 import { PROJECT, SetupApprovalPage, setSetupApply, setSetupRun } from "./pages/index.js";
 
 test.afterEach(async ({ page }) => { await setSetupApply(page, PROJECT, null); await setSetupRun(page, PROJECT, "none"); });
 
-async function open(page: Page, confirmed?: string) {
+async function open(page: Page) {
   await setSetupRun(page, PROJECT, "ready");
   const approval = new SetupApprovalPage(page);
-  await approval.open(PROJECT, confirmed);
+  await approval.open(PROJECT);
   await expect(approval.card).toBeVisible();
   return approval;
 }
 
-test("low risk: the card shows the risk, the changes and the passed check; Approve asks for the fresh sign-in first", async ({ page }, testInfo) => {
+test("low risk: the card shows the risk, the changes and the passed check; Approve never sends the person to a sign-in page", async ({ page }, testInfo) => {
   await setSetupApply(page, PROJECT, { risk: "low" });
   const approval = await open(page);
   await expect(approval.card.getByTestId("setup-approval-risk")).toContainText("Low risk");
@@ -23,16 +23,18 @@ test("low risk: the card shows the risk, the changes and the passed check; Appro
   await expect(approval.approve).toBeVisible();
   await expect(approval.reject).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("approval-low.png"), fullPage: true });
-  const asked = page.waitForRequest(request => request.url().includes("/v1/auth/browser/authorize") && request.url().includes("step_up=1"));
+  const signIns: string[] = [];
+  page.on("request", request => { if (request.url().includes("/v1/auth/browser/authorize")) signIns.push(request.url()); });
+  const sent = page.waitForRequest(request => request.method() === "POST" && request.url().endsWith(`/v1/web/projects/${PROJECT}/setup-agent/decide`));
   await approval.approve.click();
-  const url = (await asked).url();
-  expect(decodeURIComponent(url)).toMatch(/confirmed=[0-9a-f-]{36}/u);
+  await sent;
+  expect(signIns).toEqual([]);
 });
 
-test("after the fresh sign-in, Approve sends the decision bound to what the card read, and the card gives way to the result", async ({ page }, testInfo) => {
+test("Approve sends the decision bound to what the card read, and the card gives way to the result", async ({ page }, testInfo) => {
   await setSetupApply(page, PROJECT, { risk: "low" });
-  const approval = await open(page, "e2e-approve");
-  await expect(approval.card.getByTestId("setup-approval-fresh")).toContainText("You confirmed it's you");
+  const approval = await open(page);
+  await expect(approval.card.getByTestId("setup-approval-fresh")).toHaveCount(0);
   const sent = page.waitForRequest(request => request.method() === "POST" && request.url().endsWith(`/v1/web/projects/${PROJECT}/setup-agent/decide`));
   await approval.approve.click();
   const body = JSON.parse((await sent).postData() ?? "{}") as { outcome: string; seen: { revision: number; artifactDigest: string } };
@@ -79,7 +81,7 @@ test("a check that is running or failed offers no decision, only Discard", async
 
 test("a candidate that moved shows the fixed refusal and a Refresh", async ({ page }, testInfo) => {
   await setSetupApply(page, PROJECT, { risk: "low", moved: true });
-  const approval = await open(page, "e2e-stale");
+  const approval = await open(page);
   await approval.approve.click();
   await expect(approval.problem).toContainText("changed or is no longer waiting");
   await expect(approval.problem.getByRole("button", { name: "Refresh" })).toBeVisible();

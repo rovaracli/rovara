@@ -1,7 +1,7 @@
 // The app's company routes on Cloud's own data (company-routes.ts), through the real handler and a fake Code that issues JWT access tokens
-// carrying Code's step-up claims. Covers: the company comes from Code's access check (never the request), company isolation, admin-only
-// routes checked against Code live, the fresh step-up on every settings change (refused when stale, missing, of a factor Code doesn't own,
-// or past the company's own window), a second admin for a loosening change, invites told to Code first (501 while Code lacks the route),
+// (some still carrying Code's old step-up claims, which no longer matter: owner DEC 254zzz73). Covers: the company comes from Code's access
+// check (never the request), company isolation, admin-only routes checked against Code live, no step-up on a settings change (an admin with
+// none, an old one or a foreign one changes them; a member with none is still refused), a second admin for a loosening change, invites told to Code first (501 while Code lacks the route),
 // the app's reader schemas, and the policy hook answering from the same store with its install allow-list.
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -150,7 +150,7 @@ describe("company settings", () => {
     expect((await w.call(cal, "GET", "/org/budget-settings")).status).toBe(403);
   });
 
-  it("saves a tightening change straight away with a fresh step-up, and only for the admin's own company", async () => {
+  it("saves a tightening change straight away, and only for the admin's own company", async () => {
     const w = world();
     const ada = await w.signIn("ada", 30);
     const saved = await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
@@ -171,30 +171,35 @@ describe("company settings", () => {
     expect((await w.store.settings(B))!.version).toBe(1);
   });
 
-  const refusedStepUps: Array<[string, number | undefined, string?]> = [
+  // Owner DEC 254zzz73: no step-up. Each sign-in that once was refused now changes the settings, while the wrong role (a member) and the wrong
+  // company (another company's admin) with the same sign-in still change nothing of company A's.
+  const formerlyRefused: Array<[string, number | undefined, string?]> = [
     ["no step-up in this sign-in", undefined],
-    ["a step-up older than Code's window", 601],
+    ["a step-up older than Code's old window", 601],
     ["a factor Code doesn't own (a Slack round trip)", 10, "slack"],
     ["a step-up time from the future", -120],
   ];
-  for (const [name, age, method] of refusedStepUps) {
-    it(`refuses a settings change with ${name}, and saves nothing`, async () => {
+  for (const [name, age, method] of formerlyRefused) {
+    it(`saves a settings change with ${name}; a member and another company's admin with the same sign-in change nothing of A's`, async () => {
       const w = world();
-      const ada = await w.signIn("ada", age, method);
-      const answer = await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
-      expect(answer).toEqual({ status: 403, body: { error: { code: "STEP_UP_REQUIRED", message: "Confirm it's you again, then try once more." } } });
+      const cal = await w.signIn("cal", age, method);
+      expect((await w.call(cal, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() })).body.error.code).toBe("FORBIDDEN");
+      expect((await w.call(cal, "POST", "/org/settings/pending/chg_aaaaaaaaaaaaaaaaaaaa/approve", {})).status).toBe(403);
+      const dan = await w.signIn("dan", age, method);
+      expect((await w.call(dan, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() })).body.companyId).toBe(B);
       expect(await w.store.settings(A)).toBeUndefined();
+      const ada = await w.signIn("ada", age, method);
+      expect(await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() })).toEqual({ status: 200, body: { companyId: A, version: 1, settings: tightened() } });
     });
   }
 
-  it("goes stale as time passes, and follows the company's own shorter window", async () => {
+  it("still reads an older app's document that carries the removed step-up window, and never keeps it", async () => {
     const w = world();
-    const ada = await w.signIn("ada", 0);
-    expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: { ...tightened(), freshSignInSeconds: 120 } })).status).toBe(200);
-    w.advance(121_000);
-    expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 1, settings: { ...tightened(), freshSignInSeconds: 120, evalBudgetUsdMicros: 1 } })).body.error.code).toBe("STEP_UP_REQUIRED");
-    const again = await w.signIn("ada", 119);
-    expect((await w.call(again, "PUT", "/org/settings", { expectedVersion: 1, settings: { ...tightened(), freshSignInSeconds: 120, evalBudgetUsdMicros: 1 } })).status).toBe(200);
+    const ada = await w.signIn("ada");
+    expect(await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: { ...tightened(), freshSignInSeconds: 120 } })).toEqual({ status: 200, body: { companyId: A, version: 1, settings: tightened() } });
+    w.advance(3_600_000);
+    expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 1, settings: { ...tightened(), evalBudgetUsdMicros: 1 } })).status).toBe(200);
+    expect(JSON.stringify((await w.call(ada, "GET", "/org/settings")).body)).not.toContain("freshSignInSeconds");
   });
 
   it("asks Code afresh: an admin Code has demoted since sign-in is refused", async () => {
@@ -215,7 +220,7 @@ describe("company settings", () => {
     expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: { ...tightened(), instructions: Array.from({ length: 30 }, () => ({ text: "x".repeat(4000), priority: "required" })) } })).status).toBe(413);
   });
 
-  it("holds a loosening change for a different admin, each with a fresh step-up", async () => {
+  it("holds a loosening change for a different admin (no step-up for either)", async () => {
     const w = world();
     const ada = await w.signIn("ada", 10);
     await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
@@ -236,10 +241,9 @@ describe("company settings", () => {
     // A member can't approve.
     const cal = await w.signIn("cal", 10);
     expect((await w.call(cal, "POST", `/org/settings/pending/${changeId}/approve`, {})).status).toBe(403);
-    // The second admin needs a fresh step-up of their own.
-    const staleBea = await w.signIn("bea", 700);
-    expect((await w.call(staleBea, "POST", `/org/settings/pending/${changeId}/approve`, {})).body.error.code).toBe("STEP_UP_REQUIRED");
-    const bea = await w.signIn("bea", 5);
+    // A member with no step-up claim still can't approve; the second admin approves with an old step-up (owner DEC 254zzz73).
+    expect((await w.call(await w.signIn("cal"), "POST", `/org/settings/pending/${changeId}/approve`, {})).status).toBe(403);
+    const bea = await w.signIn("bea", 700);
     expect(await w.call(bea, "POST", `/org/settings/pending/${changeId}/approve`, {})).toEqual({ status: 200, body: { companyId: A, version: 2, settings: looser } });
     expect((await w.call(ada, "GET", "/org/settings")).body).toMatchObject({ version: 2, settings: looser });
     expect((await w.call(ada, "GET", "/org/settings")).body.pending).toBeUndefined();
@@ -305,7 +309,7 @@ describe("company settings", () => {
     expect(await w.store.pendingChange(B, w.now())).toBeUndefined();
     // Tightening still works, so the settings are never frozen.
     expect((await w.call(dan, "PUT", "/org/settings", { expectedVersion: 1, settings: { ...defaultCompanySettings(), decisions: forbid, evalBudgetUsdMicros: 1 } })).status).toBe(200);
-    // Through the app, too: the rule saves with a fresh step-up (a second admin agrees, as for any new rule on settings).
+    // Through the app, too: the rule saves (a second admin agrees, as for any new rule on settings).
     const ada = await w.signIn("ada", 10);
     const bea = await w.signIn("bea", 10);
     const proposed = await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: { ...defaultCompanySettings(), decisions: [...defaultCompanySettings().decisions, ...forbid] } });
@@ -706,13 +710,13 @@ describe("invites", () => {
   });
 });
 
-describe("the step-up sign-in", () => {
-  it("asks Code for a step-up only when the app asks for one", async () => {
+describe("sign-in never asks Code for a step-up (owner DEC 254zzz73)", () => {
+  it("sends no acr_values, even when an older app still asks with step_up=1", async () => {
     const w = world();
     const plain = await w.handler({ method: "GET", path: "/v1/auth/browser/authorize", query: new URLSearchParams("return_to=/app"), headers: {} });
     expect(new URL(plain!.headers.location!).searchParams.get("acr_values")).toBeNull();
-    const stepUp = await w.handler({ method: "GET", path: "/v1/auth/browser/authorize", query: new URLSearchParams("return_to=/app&step_up=1"), headers: {} });
-    expect(new URL(stepUp!.headers.location!).searchParams.get("acr_values")).toBe("step-up");
+    const old = await w.handler({ method: "GET", path: "/v1/auth/browser/authorize", query: new URLSearchParams("return_to=/app&step_up=1"), headers: {} });
+    expect(new URL(old!.headers.location!).searchParams.get("acr_values")).toBeNull();
   });
 });
 

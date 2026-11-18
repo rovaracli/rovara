@@ -4,17 +4,15 @@ import { flushSync } from "react-dom";
 import { CreateScriptTokenBodySchema, SCRIPT_TOKEN_DEFAULT_DAYS, SCRIPT_TOKEN_MAX_DAYS, SCRIPT_TOKEN_PERMISSIONS, type CreateScriptTokenBody } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
 import { createScriptTokenApi, scriptTokenError } from "../../api/script-tokens.js";
-import { needsStepUp } from "../../api/admin-company.js";
 import { Button } from "../../design/Button.js";
-import { FreshSignIn, forgetConfirmed, useJustConfirmed } from "../admin/parts.js";
 
-export function CreateAutomationKey({ who, onCreated }: { who: string; onCreated: () => void }) {
- const host = useAppHost(), api = useMemo(() => createScriptTokenApi(host), [host]), confirmed = useJustConfirmed(who);
+export function CreateAutomationKey({ onCreated }: { onCreated: () => void }) {
+ const host = useAppHost(), api = useMemo(() => createScriptTokenApi(host), [host]);
  const alive = useRef(true), sending = useRef(false);
  const [name, setName] = useState(""), [projects, setProjects] = useState(""), [days, setDays] = useState(SCRIPT_TOKEN_DEFAULT_DAYS);
  const [permissions, setPermissions] = useState<CreateScriptTokenBody["permissions"]>(["read"]);
  // Only component state owns this value: no URL, host storage, query/mutation cache, telemetry or logs.
- const [secret, setSecret] = useState<string>(), [finished, setFinished] = useState(false), [busy, setBusy] = useState(false), [stale, setStale] = useState(false), [problem, setProblem] = useState<string>(), [copied, setCopied] = useState(false), [left, setLeft] = useState(false);
+ const [secret, setSecret] = useState<string>(), [finished, setFinished] = useState(false), [busy, setBusy] = useState(false), [problem, setProblem] = useState<string>(), [copied, setCopied] = useState(false), [left, setLeft] = useState(false);
  useEffect(() => {
   alive.current = true;
   // A browser history snapshot may preserve this component without unmounting it. Clear before the page is frozen.
@@ -23,7 +21,7 @@ export function CreateAutomationKey({ who, onCreated }: { who: string; onCreated
   return () => { alive.current = false; window.removeEventListener("pagehide", leave); };
  }, []);
  async function create() {
-  if (!confirmed || stale || sending.current || finished) return;
+  if (sending.current || finished) return;
   const parsed = CreateScriptTokenBodySchema.safeParse({ requestId: crypto.randomUUID(), name, projects: projects.split(/\r?\n/u).map(p => p.trim()).filter(Boolean), permissions, days });
   if (!parsed.success) { setProblem("Choose a name, at least one project and permission, and a lifetime from 1 to 90 days."); return; }
   sending.current = true; setBusy(true); setProblem(undefined);
@@ -33,8 +31,7 @@ export function CreateAutomationKey({ who, onCreated }: { who: string; onCreated
    setSecret(made.secret); setFinished(true); onCreated();
   } catch (error) {
    if (!alive.current) return;
-   if (needsStepUp(error)) { setStale(true); forgetConfirmed(host.storage, who); }
-   else setProblem(scriptTokenError(error, "create"));
+   setProblem(scriptTokenError(error, "create"));
   } finally { sending.current = false; if (alive.current) setBusy(false); }
  }
  async function copy() {
@@ -52,9 +49,7 @@ export function CreateAutomationKey({ who, onCreated }: { who: string; onCreated
   <Button onClick={() => { setSecret(undefined); setProblem(undefined); }}>I've saved the key</Button>
   {problem && <p role="alert">{problem}</p>}
  </section>;
- if (!confirmed || stale) return <FreshSignIn action="create an automation key" refused={stale} />;
  return <form onSubmit={event => { event.preventDefault(); void create(); }}>
-  <FreshSignIn action="create an automation key" done />
   <p><label>Name<input value={name} maxLength={60} onChange={event => setName(event.target.value)} /></label></p>
   <p><label>Projects (one name per line)<textarea value={projects} onChange={event => setProjects(event.target.value)} /></label></p>
   <fieldset><legend>Permissions</legend>{SCRIPT_TOKEN_PERMISSIONS.map(permission => <div key={permission}><label><input type="checkbox" checked={permissions.includes(permission)} onChange={event => setPermissions(previous => event.target.checked ? [...previous, permission] : previous.filter(p => p !== permission))} />{permission === "lessons" ? "Team knowledge" : permission}</label>{permission === "lessons" && <p className="rv-muted">Lets AI tools read your team's rules and lessons, and suggest new ones for a person to review.</p>}</div>)}</fieldset>

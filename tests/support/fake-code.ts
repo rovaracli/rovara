@@ -271,9 +271,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   // L4-P2 (Code's two locks): the company's consent to Rovara's automatic runs is the company's, not a project's. It starts off; only a company owner or admin sets it, in the one PUT that also switches the project on.
   const upkeepConsent = new Map<string, boolean>();
   const companyKeyOf = (name: string) => project(name)?.companyId ?? "main";
-  // L4-P3 (owner 2026-11-17): ALLOWING the consent needs a fresh step-up; the pretend Code says so unless a spec sets `stepUp: "stale"` off again (the next /__fake/wiki-setup call resets it). Withdrawing never needs one.
-  let stepUpStale = false;
-  const NEEDS_SIGN_IN = "Rovara's automatic runs are allowed right after you confirm it's you on the sign-in page: a tool that holds an API token cannot allow them. Confirm it's you, then try again within a few minutes.";
+  // L4-P3 (owner 2026-11-17): allowing or withdrawing the consent is a company owner's or admin's (no step-up since owner DEC 254zzz73).
   const companyConsentKey = (person: Person) => (companyOfPerson(person) === FAKE_COMPANY_ID ? "main" : companyOfPerson(person));
   /** Code's `GET`/`PUT /v1/app/company/system-runs`: a live company owner or admin only (a member is 403, a person with no company is not served). */
   const systemRunsAnswer = (method: string, person: Person, body: unknown): { status: number; body: unknown } => {
@@ -287,7 +285,6 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (typeof given?.requestId !== "string" || typeof given.allowed !== "boolean") return failure(400, "CONFIG_INVALID", "the request is not valid");
     if (given.allowed) {
       if (!available) return failure(404, "NOT_AVAILABLE_HERE", "Rovara's automatic runs aren't available on this Rovara yet");
-      if (stepUpStale) return failure(403, "REAUTH_REQUIRED", NEEDS_SIGN_IN);
     }
     upkeepConsent.set(key, given.allowed);
     return { status: 200, body: view() };
@@ -303,7 +300,6 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (given.allowSystemRuns !== undefined) {
       if (!person.administrator) return failure(403, "FORBIDDEN", "Only company owners and admins can allow or stop Rovara's automatic runs for the company.");
       if (given.allowSystemRuns === false && given.on === true) return failure(400, "CONFIG_INVALID", "the request is not valid");
-      if (given.allowSystemRuns === true && stepUpStale) return failure(403, "REAUTH_REQUIRED", NEEDS_SIGN_IN);
       upkeepConsent.set(companyKeyOf(name), given.allowSystemRuns === true);
     } else if (given.on === true && upkeepConsent.get(companyKeyOf(name)) !== true) {
       return failure(403, "FORBIDDEN", "A company owner or admin has to allow Rovara's automatic runs for the company first.");
@@ -1710,7 +1706,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       companyModel = body.model ?? undefined;
       return { body: engineView() };
     },
-    // Members of the project read; its administrator changes (revision-checked). The pretend Code sets no step-up, so it checks none here.
+    // Members of the project read; its administrator changes (revision-checked). No step-up (owner DEC 254zzz73).
     "projects.settings.get": ({ params, person }) => (roleIn(person, params["project"] ?? "") === undefined ? notFound("project") : { body: settingsView(params["project"] ?? "") }),
     "projects.settings.put": ({ params, person, body }) => {
       const name = params["project"] ?? "";
@@ -1874,7 +1870,6 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (typeof given["project"] !== "string" || project(given["project"]) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project" } });
           wikiSetups.delete(given["project"]);
           upkeepConsent.set(companyKeyOf(given["project"]), given["consent"] === true);
-          stepUpStale = given["stepUp"] === "stale";
           const one = wikiSetupOf(given["project"]);
           const status = given["status"];
           if (status === "built" || status === "stopped" || status === "running") { Object.assign(one, { status, pages: 24, refreshPages: 2, mapMade: true, planned: 24, written: status === "built" ? 24 : 12 }); if (status === "stopped") one.stop = (given["stop"] as FakeWikiSetup["stop"] | undefined) ?? "stopped_by_person"; }

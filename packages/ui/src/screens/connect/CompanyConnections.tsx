@@ -1,18 +1,16 @@
 // Guided onboarding PR 12b (design section 4 "Connections page", section 3 shared rules; DEC 254l item 2): Company settings, Connections. Each integration with
-// its account name, who connected it and when, its health, Reconnect and Disconnect. Connect: a company owner or admin. Disconnect: a company OWNER only, with a
-// fresh step-up (Cloud checks both before Code is asked; Code checks again). Everything shown is read from Code through Cloud; refusals show Cloud's fixed words.
+// its account name, who connected it and when, its health, Reconnect and Disconnect. Connect: a company owner or admin. Disconnect: a company OWNER only
+// (Cloud checks it before Code is asked; Code checks again). Everything shown is read from Code through Cloud; refusals show Cloud's fixed words.
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useOnboardingApi } from "../../api/onboarding.js";
 import { useIntegrationsApi } from "../../api/integrations.js";
 import { ApiError } from "../../api/errors.js";
-import { needsStepUp } from "../../api/admin-company.js";
 import { isGithubUrl } from "../../text/links.js";
 import { Button } from "../../design/Button.js";
 import { StatusPill } from "../../design/StatusDot.js";
 import { VisibleText } from "../../design/VisibleText.js";
-import { FreshSignIn } from "../admin/parts.js";
 import { useSlackInstall } from "./SlackConnect.js";
 import { LinearConnectButton } from "./LinearConnect.js";
 import { readFailure } from "./read-failure.js";
@@ -38,15 +36,15 @@ function disconnectWords(error: unknown, what: string): string {
 const when = (at: string) => { const date = new Date(at);return Number.isNaN(date.getTime()) ? "at an unknown time" : `on ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(date)}`; };
 const byWords = (by: { kind: string; name?: string | undefined } | undefined) => by === undefined ? "" : by.kind === "operator" ? "by a Rovara operator" : by.name === undefined ? "by a teammate" : `by ${by.name}`;
 
-/** One "Disconnect" with its confirm, the owner-only and step-up rules, and the result. */
+/** One "Disconnect" with its confirm, the owner-only rule, and the result. */
 function Disconnect({ what, effect, role, testId, run }: { what: string; effect: string; role: Role; testId: string; run: () => Promise<ReactNode> }) {
- const [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [stepUp, setStepUp] = useState(false), [done, setDone] = useState<ReactNode>();
+ const [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<ReactNode>();
  if (role !== "owner") return <p className="rv-connect-note" data-testid={`${testId}-owner-only`}>Only a company owner can disconnect {what}.</p>;
  if (done !== undefined) return <div role="status" data-testid={`${testId}-done`}>{done}</div>;
  async function go() {
-  setBusy(true);setError(undefined);setStepUp(false);
+  setBusy(true);setError(undefined);
   try { setDone(await run());setConfirming(false); }
-  catch (caught) { if (needsStepUp(caught)) setStepUp(true); else setError(disconnectWords(caught, what)); }
+  catch (caught) { setError(disconnectWords(caught, what)); }
   finally { setBusy(false); }
  }
  return <div className="rv-connect-disconnect">
@@ -54,7 +52,6 @@ function Disconnect({ what, effect, role, testId, run }: { what: string; effect:
    <p><strong>Disconnect {what}?</strong> {effect}</p>
    <div className="rv-connect-actions"><Button variant="danger" busy={busy} data-testid={`${testId}-disconnect-confirm`} onClick={() => { void go(); }}>Disconnect {what}</Button><Button onClick={() => setConfirming(false)}>Cancel</Button></div>
   </div>}
-  {stepUp && <FreshSignIn action={`disconnect ${what}`} refused />}
   {error !== undefined && <p role="alert" data-testid={`${testId}-error`}><VisibleText text={error} /></p>}
  </div>;
 }

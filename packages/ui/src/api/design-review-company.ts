@@ -16,7 +16,7 @@ export function createDesignReviewCompanyApi(host: AppHost) {
   save: (expectedRevision: number, change: Pick<Extract<DesignReviewCompanyBody, { action: "save" }>, "lock">) => send({ action: "save", expectedRevision, ...change }),
   /** Not allowing applies at once; allowing waits for a different admin when there is one (`needs_approval`). */
   allow: (expectedRevision: number, allowed: boolean) => send({ action: "allow", expectedRevision, allowed }),
-  /** A different admin approves allowing it. The server asks for a sign-in within the last 10 minutes (`REAUTH_REQUIRED` otherwise). */
+  /** A different admin approves allowing it. */
   approve: (changeId: string) => send({ action: "approve", changeId }),
   /** Withdraws the waiting request (its proposer, or any admin). */
   cancel: (changeId: string) => send({ action: "cancel", changeId }),

@@ -7,14 +7,14 @@
 //   PUT /v1/app/projects/{p}/spend-limits      -> Code GET, then PUT /v1/dev/projects/{p}/settings           {expectedRevision, perTaskUsd: number | null}
 //
 // The company's monthly limit and "Rovara's AI or your own provider" are NOT here: the step saves them through Cloud's own routes (PUT /org/settings,
-// PUT /org/agent-ai), so their existing authorization (company owner or admin from Code's access answer, a fresh step-up, the company's decision rules)
+// PUT /org/agent-ai), so their existing authorization (company owner or admin from Code's access answer, the company's decision rules)
 // and their audit records apply unchanged.
 //
 // Rules:
 //   - The browser never names a company. Code takes the company from the person's live membership; nothing a request carries (query, header, body)
 //     reaches Code except the checked body members below. The project name goes only into Code's path.
 //   - Cloud refuses first where it can tell (no company; a change by a plain member), so Code is not asked. Code then decides itself (live role,
-//     the gateway's live offered list, the project's administrator, the fresh step-up for a cost setting). Cloud adds no rule that could widen Code's.
+//     the gateway's live offered list, the project's administrator). Cloud adds no rule that could widen Code's.
 //   - Code's answers are checked (shape) before they reach the app; anything else is "couldn't be read". Code's refusals reach the app as the fixed
 //     sentences below (AI_SPEND_WORDS), never Code's or the browser's text.
 //   - A project's per-task limit is Code's per-project cost setting `model_budget_usd` (US dollars a task; absent: the company's limit applies, "Same as
@@ -36,7 +36,6 @@ export const AI_SPEND_WORDS = Object.freeze({
   projectInvalid: "The per-task limit must be an amount in dollars, like 5 or 12.50, up to 1,000,000. Or choose Same as company.",
   projectAboveCompany: "That's above your company's per-task limit. Pick a lower amount.",
   projectStale: "This project's settings changed since you opened them. Refresh and try again.",
-  stepUp: "Confirm it's you again, then try once more.",
   projectUnavailable: "The project's spending limits couldn't be read or saved just now. Try again.",
 });
 const W = AI_SPEND_WORDS;
@@ -53,7 +52,6 @@ export const AI_SPEND_ANSWERS = Object.freeze({
   projectInvalid: answer(400, "CONFIG_INVALID", W.projectInvalid),
   projectAboveCompany: answer(403, "FORBIDDEN", W.projectAboveCompany),
   projectStale: answer(409, "CONFLICT", W.projectStale),
-  stepUp: answer(403, "STEP_UP_REQUIRED", W.stepUp),
   projectUnavailable: answer(503, "RUNTIME_UNAVAILABLE", W.projectUnavailable),
 });
 const A = AI_SPEND_ANSWERS;
@@ -115,7 +113,6 @@ export function engineModelRefusal(error: CodeError): RouteAnswer {
 export function projectSettingsRefusal(error: CodeError): RouteAnswer {
   const said = errorOf(error);
   if (error.status === 404) return A.projectNotFound;
-  if (error.status === 403 && said?.["code"] === "REAUTH_REQUIRED") return A.stepUp;
   if (error.status === 403 && said?.["message"] === CODE_ABOVE_COMPANY) return A.projectAboveCompany;
   if (error.status === 403) return A.projectNotAllowed;
   if (error.status === 409) return A.projectStale;
@@ -212,7 +209,7 @@ async function changeSpendLimits(context: RouteContext): Promise<RouteAnswer> {
   if (refused(who)) return who;
   const project = context.params[0]!;
   if (!PROJECT_NAME.test(project)) return A.projectNotFound;
-  // A company owner or admin, or the project's admin, may ask; Code decides (the project's administrator, or a company owner or admin for the per-task limit only, with a fresh step-up).
+  // A company owner or admin, or the project's admin, may ask; Code decides (the project's administrator, or a company owner or admin for the per-task limit only).
   if (!companyAdmin(who) && !projectAdmin(who, project)) return A.projectNotAllowed;
   const body = context.body;
   if (tooLarge(body) || !plain(body) || !exactly(body, ["expectedRevision", "perTaskUsd"]) || !whole(body["expectedRevision"], 0, Number.MAX_SAFE_INTEGER - 1)) return A.projectInvalid;

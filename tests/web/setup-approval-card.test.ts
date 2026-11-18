@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // L4-D2 (DEC 254z b): the setup approval card on the Setup step's run section. It shows the candidate's risk in plain words with the reason, a short list of what changed, who approves and how the
-// check on a fresh workspace went; Approve and Reject only for a person the server says may give that answer (otherwise one line); a decision needs a fresh sign-in, then is sent bound to exactly the
+// check on a fresh workspace went; Approve and Reject only for a person the server says may give that answer (otherwise one line); a decision is one press (no step-up since owner DEC 254zzz73), sent bound to exactly the
 // revision and digest the read offered (never shown); a moved candidate shows the server's fixed refusal and a Refresh. The server decides; these tests only watch what the page asks and says.
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -18,7 +18,7 @@ import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
 afterEach(cleanup);
-const ME = "a".repeat(64), DIGEST = "ab12".repeat(16), NONCE_KEY = "rovara.stepup.nonce";
+const ME = "a".repeat(64), DIGEST = "ab12".repeat(16);
 const LIMITS = { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 };
 const apply = (over: Record<string, unknown> = {}) => ({
   candidateRevision: 4, baseRevision: 3, setup: ["npm ci"], readiness: ["npm test", "npm run lint"], check: { status: "ready" }, risk: "low",
@@ -27,7 +27,7 @@ const apply = (over: Record<string, unknown> = {}) => ({
 });
 const view = (over: Record<string, unknown> = {}, applyOver: Record<string, unknown> | null = {}) => ({ status: "ready", basedOnRevision: 3, limits: LIMITS, canManage: true, ...(applyOver === null ? {} : { apply: apply(applyOver) }), ...over });
 
-interface Options { read?: unknown; decide?: { status: number; body: unknown }; discard?: { status: number; body: unknown }; fresh?: boolean }
+interface Options { read?: unknown; decide?: { status: number; body: unknown }; discard?: { status: number; body: unknown } }
 function mount(options: Options = {}) {
   let current: unknown = options.read ?? view();
   const f = fakeHost(async request => {
@@ -45,11 +45,10 @@ function mount(options: Options = {}) {
     }
     return { status: 200, body: { requestId: "x" } };
   });
-  if (options.fresh === true) f.storage.set(NONCE_KEY, JSON.stringify({ nonce: "n-1", at: Date.now() }));
   const onDecided = vi.fn();
   const query = createQueryClient();
   query.setQueryData(["nav"], { me: { developerId: ME, name: "Maya", orgRole: "owner" } });
-  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/onboard?project=web&step=setup" + (options.fresh === true ? "&confirmed=n-1" : "")], children: h(SetupRunSection, { project: "web", settingsRevision: 3, onDecided }) }) }) }));
+  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/onboard?project=web&step=setup"], children: h(SetupRunSection, { project: "web", settingsRevision: 3, onDecided }) }) }) }));
   return { ...f, onDecided, query, setCurrent(value: unknown) { current = value; }, close() { ui.unmount(); query.clear(); } };
 }
 const decides = (f: ReturnType<typeof mount>) => f.request.mock.calls.map(([r]) => r).filter(r => r.method === "POST" && r.path.endsWith("/setup-agent/decide"));
@@ -141,25 +140,10 @@ it("a failed check says so, names the step, applied nothing, and offers Discard 
   reader.close();
 });
 
-it("Approve without a fresh sign-in sends the person to confirm it's them (no decision is sent); Reject does the same", async () => {
+it("Approve sends exactly the binding the read offered with one press, then says it is approved and asks the page to read the project again", async () => {
   const f = mount();
   const c = await card();
-  expect(within(c).getByTestId("setup-approval-fresh").textContent).toBe(T.stepUp);
-  fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
-  expect(f.host.signIn).toHaveBeenCalledTimes(1);
-  const [path, options] = (f.host.signIn as unknown as { mock: { calls: Array<[string, { stepUp?: boolean }]> } }).mock.calls[0]!;
-  expect(path).toMatch(/confirmed=[0-9a-f-]{36}/u);
-  expect(options).toEqual({ stepUp: true });
-  fireEvent.click(within(c).getByRole("button", { name: "Reject" }));
-  expect(f.host.signIn).toHaveBeenCalledTimes(2);
-  expect(decides(f)).toHaveLength(0);
-  f.close();
-});
-
-it("after the fresh sign-in, Approve sends exactly the binding the read offered, then says it is approved and asks the page to read the project again", async () => {
-  const f = mount({ fresh: true });
-  const c = await card();
-  expect(within(c).getByTestId("setup-approval-fresh").textContent).toBe(T.stepUpDone);
+  expect(within(c).queryByTestId("setup-approval-fresh")).toBeNull();
   fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
   await waitFor(() => expect(decides(f)).toHaveLength(1));
   expect(decides(f)[0]!.body).toEqual({ requestId: `setup-${DIGEST.slice(0, 40)}-4`, outcome: "approve", seen: { revision: 4, artifactDigest: DIGEST } });
@@ -172,7 +156,7 @@ it("after the fresh sign-in, Approve sends exactly the binding the read offered,
 });
 
 it("a second press while the result is being read does not send a second decision", async () => {
-  const f = mount({ fresh: true });
+  const f = mount();
   const c = await card();
   const approve = within(c).getByRole("button", { name: "Approve" });
   fireEvent.click(approve);
@@ -184,7 +168,7 @@ it("a second press while the result is being read does not send a second decisio
 });
 
 it("Reject sends the reject answer with the same binding and says the project keeps its setup", async () => {
-  const f = mount({ fresh: true, decide: { status: 200, body: { project: "web", decision: "rejected", risk: "low", revision: 4, replayed: false } } });
+  const f = mount({ decide: { status: 200, body: { project: "web", decision: "rejected", risk: "low", revision: 4, replayed: false } } });
   const c = await card();
   fireEvent.click(within(c).getByRole("button", { name: "Reject" }));
   await waitFor(() => expect(decides(f)).toHaveLength(1));
@@ -194,20 +178,9 @@ it("Reject sends the reject answer with the same binding and says the project ke
   f.close();
 });
 
-it("a sign-in the server finds too old asks again: the confirmation is forgotten and the next press goes to the sign-in", async () => {
-  const f = mount({ fresh: true, decide: { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } } });
-  const c = await card();
-  fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
-  await waitFor(() => expect(within(c).getByTestId("setup-approval-fresh").textContent).toBe(T.stepUpOld));
-  fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
-  expect(f.host.signIn).toHaveBeenCalledTimes(1);
-  expect(decides(f)).toHaveLength(1);
-  f.close();
-});
-
 it("a moved candidate shows the fixed refusal and a Refresh that reads the run again", async () => {
   const stale = "This setup changed or is no longer waiting for a decision. Refresh to see where it stands.";
-  const f = mount({ fresh: true, decide: { status: 409, body: { error: { code: "CHANGE_STALE", message: stale } } } });
+  const f = mount({ decide: { status: 409, body: { error: { code: "CHANGE_STALE", message: stale } } } });
   const c = await card();
   fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
   const problem = await screen.findByTestId("setup-approval-problem");
@@ -226,7 +199,7 @@ it("a moved candidate shows the fixed refusal and a Refresh that reads the run a
 
 it("another refusal (a maintainer on a high-risk change) is shown as it comes, with no Refresh", async () => {
   const words = "This setup change reaches outside the project's commands (a website, a secret, a registry, an integration or something Rovara does not recognise), so a company owner or admin must approve it.";
-  const f = mount({ fresh: true, decide: { status: 403, body: { error: { code: "FORBIDDEN", message: words } } } });
+  const f = mount({ decide: { status: 403, body: { error: { code: "FORBIDDEN", message: words } } } });
   fireEvent.click(within(await card()).getByRole("button", { name: "Approve" }));
   const problem = await screen.findByTestId("setup-approval-problem");
   expect(problem.textContent).toContain("company owner or admin must approve");
@@ -242,7 +215,7 @@ it("no candidate waiting: no card, and the ordinary 'Use this setup' card shows 
 });
 
 it("offers no decision before the check passed, even if the server's flags said yes (the page never trusts a flag alone)", async () => {
-  const f = mount({ fresh: true, read: view({}, { check: { status: "checking" }, canApprove: true, canReject: true }) });
+  const f = mount({ read: view({}, { check: { status: "checking" }, canApprove: true, canReject: true }) });
   const c = await card();
   expect(within(c).queryByRole("button", { name: "Approve" })).toBeNull();
   expect(within(c).queryByRole("button", { name: "Reject" })).toBeNull();

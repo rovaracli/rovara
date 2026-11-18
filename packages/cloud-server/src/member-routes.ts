@@ -7,7 +7,7 @@
 // Who: Code decides. The company is the one Code's live membership names for the person (Code reads it again on every call); the browser never
 // names a company, and the person id is passed only as Code's path parameter. Cloud asks Code's access check first (company-caller.ts) and
 // refuses early, in fixed words, what Code would refuse anyway: a person who is not a company owner or admin, their own role, an owner change by a
-// non-owner, and a role change without a fresh step-up (step-up.ts; Code checks the same claims of the same token). Code alone answers
+// non-owner. Code alone answers
 // "another company's person" (404, which reaches the app as one fixed sentence, the same as a missing person) and "the last owner" (Code refuses
 // demoting or removing a company's last active owner inside its own transaction; Cloud only words it).
 //
@@ -16,7 +16,6 @@
 import { CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
-import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
 /** Code's member routes (company-member-routes.ts on Code). */
 export const CODE_MEMBERS_PATH = "/v1/dev/company/members";
@@ -32,7 +31,6 @@ export const MEMBER_WORDS = Object.freeze({
   notFound: refusal(404, "NOT_FOUND", "That person isn't in your company."),
   self: refusal(403, "FORBIDDEN", "You can't change your own role. Ask another owner."),
   ownerOnly: refusal(403, "FORBIDDEN", "Only an owner can make someone an owner or change an owner's role."),
-  stepUp: refusal(403, "REAUTH_REQUIRED", "Confirm it's you again, then try once more."),
   lastOwner: refusal(409, "LAST_OWNER", "A company needs at least one owner. Make someone else an owner first."),
   removed: refusal(409, "MEMBER_ALREADY_REMOVED", "This person was removed from the company."),
   badBody: refusal(400, "CONFIG_INVALID", "Choose member, admin or owner."),
@@ -72,7 +70,6 @@ export function roleRefusal(error: CodeError): RouteAnswer {
   const { code, message } = codeRefusal(error);
   if (error.status === 404 && message === CODE_NOT_ADMIN) return MEMBER_WORDS.notAdmin;
   if (error.status === 404) return MEMBER_WORDS.notFound;
-  if (code === "REAUTH_REQUIRED") return MEMBER_WORDS.stepUp;
   if (code === "LAST_OWNER") return MEMBER_WORDS.lastOwner;
   if (code === "MEMBER_ALREADY_REMOVED") return MEMBER_WORDS.removed;
   if (error.status === 403 && message === CODE_OWN_MEMBERSHIP) return MEMBER_WORDS.self;
@@ -96,9 +93,8 @@ async function changeRole(context: RouteContext): Promise<RouteAnswer> {
   if (!PERSON_ID.test(personId)) return MEMBER_WORDS.notFound;
   if (personId === who.developerId) return MEMBER_WORDS.self;
   // Owner changes are an owner's. The person's real role is Code's to know (it refuses an admin who changes an owner); the screen's `expectedRole`
-  // only lets Cloud say so before asking for a step-up.
+  // only lets Cloud say so before asking Code.
   if ((role === "owner" || body["expectedRole"] === "owner") && who.companyRole !== "owner") return MEMBER_WORDS.ownerOnly;
-  if (freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return MEMBER_WORDS.stepUp;
   try {
     await context.client.json<unknown>(context.session, `${CODE_MEMBERS_PATH}/${personId}/role`, { method: "PUT", body: { role } });
   } catch (error) {

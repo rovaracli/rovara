@@ -14,7 +14,7 @@ person a monthly limit of their own. The company's monthly cap stays the outer b
 | Gateway read (strongly consistent, fail closed) | `packages/model-gateway/src/company-caps.ts` (`readSpendLimit`, `CompanyBudgetCaps`), table in `deploy.ts` (`GATEWAY_COMPANY_SPEND_LIMITS`) |
 | Admin page | `packages/ui/src/screens/admin/spend-limits/SpendLimitsScreen.tsx`, table in `packages/ui/src/api/admin-spend-limits.ts` |
 
-Rules: admins only (reads too); a fresh step-up only when a change raises the effective limit (removing an override raises it when the default is higher; no
+Rules: admins only (reads too); the company's loosening rules only when a change raises the effective limit (removing an override raises it when the default is higher; no
 limit counts as the highest). A raise also follows the company's rules for a loosening: `allow: false` refuses it, a second-person or two-approver rule (the
 default rules) refuses it here (raise the company default in Company settings instead; lowering stays free), `deciders` are enforced, and the company's sign-in window applies; every write is conditional on the override as read and on the settings version the default came from; every change is audited
 (`company.budget.changed`, subject `spend_limit:<kind>:<id>`, detail `raised|lowered|removed_raised|removed_lowered from=<micros|none> to=<micros|none>`); a missing item is the company default; an item that is not exactly this company's, kind's and
@@ -48,7 +48,7 @@ Neither is an agent limit: they do not change what `project_month` or `person_mo
 | `answers_month` | the company (`PUT /org/spend-limits/answers/<company id>`; the id is the caller's own company, any other id is 404) | $20 a month (a placeholder until the first dry run) | `answers-route.ts` (`docs/model-gateway-learning.md`, "The answers route") |
 
 The defaults are in `company-store.ts` (`UPKEEP_DEFAULT_MONTH_MICROS`, `ANSWERS_DEFAULT_MONTH_MICROS`) and at the gateway (`upkeep-cap.ts`, `answers-route.ts`); a contract test keeps them equal.
-Raising either above its default is a raise like any other (fresh step-up, the company's loosening rules); lowering, even to $0, is not.
+Raising either above its default is a raise like any other (the company's loosening rules); lowering, even to $0, is not.
 
 ### Nightly upkeep (DEC 254z(2))
 

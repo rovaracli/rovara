@@ -1,6 +1,6 @@
 // L4-D2 (DEC 254z b; Code #899): the setup approval through Cloud's handler: the run's read carries the waiting candidate (`apply`), and "Use this setup" (confirm), Discard and
 // Approve or Reject (decide) are forwarded to Code as the signed-in person. The pretend Code keeps TWO companies and TWO projects, each with its own waiting candidate, and applies Code's
-// rules (a project's managers confirm and discard; a fresh step-up decides; low and medium risk need a maintainer, high a company owner or admin; a stale digest or revision is refused;
+// rules (a project's managers confirm and discard; no step-up (owner DEC 254zzz73); low and medium risk need a maintainer, high a company owner or admin; a stale digest or revision is refused;
 // another company's project reads as "project not found"). Cloud must: pass the person's own token, put the project only into Code's path, forward only checked bodies, rebuild every answer
 // from known fields, never say Code's or the browser's own text, and add no rule of its own that could widen Code's.
 import { describe, expect, it } from "vitest";
@@ -84,8 +84,7 @@ function setUp(options: { risk?: "low" | "medium" | "high"; check?: "checking" |
       if (had) mine.decided = "discarded";
       return json(200, { discarded: had });
     }
-    // decide: a fresh step-up first, then the live risk rule, then the binding.
-    if (person.fresh !== true) return err(403, "REAUTH_REQUIRED", `${LEAK} sign in again`);
+    // decide: the live risk rule, then the binding (no step-up since owner DEC 254zzz73).
     if (mine === undefined || mine.decided !== undefined) return err(409, "CHANGE_STALE", "There is no setup waiting for a decision. Open the project's setup again.");
     const asked = body as { outcome: string; seen: { revision: number; artifactDigest: string } };
     if (mine.risk === "high" && asked.outcome === "approve" && person.role === "member") return err(403, "FORBIDDEN", "This setup change reaches outside the project's commands (a website, a secret, a registry, an integration or something Rovara does not recognise), so a company owner or admin must approve it.");
@@ -298,13 +297,20 @@ describe("Approve or Reject (decide)", () => {
     expect((await owner.send("POST", "/v1/web/projects/payments/setup-agent/decide", await owner.as("ada-token"), decision(A, "payments", 4))).body).toMatchObject({ decision: "approved" });
   });
 
-  it("a sign-in that is not fresh is Code's refusal in Cloud's fixed words; nothing is decided; a refusal of a stale binding is fixed words with the same status", async () => {
-    const w = setUp();
-    const old = await w.send("POST", "/v1/web/projects/payments/setup-agent/decide", await w.as("ada-stale-token"), decision(A, "payments", 4));
-    expect(old.status).toBe(403);
-    expect(errorOf(old)).toEqual({ code: "REAUTH_REQUIRED", message: W.stepUp });
-    expect(old.text).not.toContain(LEAK);
+  it("an owner whose sign-in carries no fresh step-up decides (owner DEC 254zzz73); the wrong role and the wrong company still decide nothing", async () => {
+    const w = setUp({ risk: "high" });
+    // Wrong role: a plain member who maintains nothing here; wrong company: B's admin on A's project (Code's not-found).
+    const member = await w.send("POST", "/v1/web/projects/payments/setup-agent/decide", await w.as("pam-token"), decision(A, "payments", 4));
+    expect(member.status).toBe(403);
+    const other = await w.send("POST", "/v1/web/projects/payments/setup-agent/decide", await w.as("bob-token"), decision(A, "payments", 4));
+    expect(other.status).not.toBe(200);
     expect(w.candidates.get(key(A, "payments"))!.decided).toBeUndefined();
+    const old = await w.send("POST", "/v1/web/projects/payments/setup-agent/decide", await w.as("ada-stale-token"), decision(A, "payments", 4));
+    expect(old.body).toMatchObject({ decision: "approved" });
+  });
+
+  it("a refusal of a stale binding is fixed words with the same status; nothing is decided", async () => {
+    const w = setUp();
     const stale = await w.send("POST", "/v1/web/projects/payments/setup-agent/decide", await w.as("ada-token"), { ...decision(A, "payments", 4), seen: { revision: 4, artifactDigest: "f".repeat(64) } });
     expect(stale.status).toBe(409);
     expect(errorOf(stale)).toEqual({ code: "CHANGE_STALE", message: W.stale });
@@ -319,7 +325,7 @@ describe("Approve or Reject (decide)", () => {
       [err(403, "FORBIDDEN", "Only the project's maintainers, or a company owner or admin, can decide this setup."), 403, "FORBIDDEN", "Only the project's maintainers, or a company owner or admin, can decide this setup."],
       [err(403, "FORBIDDEN", LEAK), 403, "FORBIDDEN", W.cannotDecide],
       [err(403, "FORBIDDEN", "Your approval could not be proved just now, so nothing was decided. Try again."), 403, "FORBIDDEN", "Your approval could not be proved just now, so nothing was decided. Try again."],
-      [err(403, "REAUTH_REQUIRED", LEAK), 403, "REAUTH_REQUIRED", W.stepUp],
+      [err(403, "REAUTH_REQUIRED", LEAK), 403, "FORBIDDEN", W.cannotDecide],
       [err(409, "IDEMPOTENCY_CONFLICT", LEAK), 409, "IDEMPOTENCY_CONFLICT", W.conflict],
       [err(409, "CHANGE_STALE", "There is no setup waiting for a decision. Open the project's setup again."), 409, "CHANGE_STALE", "There is no setup waiting for a decision. Open the project's setup again."],
       [err(409, "CHANGE_STALE", LEAK), 409, "CHANGE_STALE", W.stale],

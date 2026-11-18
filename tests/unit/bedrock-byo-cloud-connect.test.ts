@@ -1,7 +1,7 @@
 // DEC 238 slice 1: connecting "your own Bedrock" from Cloud. Cloud asks the model gateway (a call signed with the product key store's
 // KMS HMAC key, service-call.ts) for the company's external id and Rovara's broker role, builds the one CloudShell command, and on
-// save asks the gateway to test the role for THIS company (canaries refused) before the store seals it. Company admins only, fresh
-// step-up on changes, audited; the agents use it only when the admin also picks it; two companies never meet.
+// save asks the gateway to test the role for THIS company (canaries refused) before the store seals it. Company admins only (no
+// step-up since owner DEC 254zzz73), audited; the agents use it only when the admin also picks it; two companies never meet.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { BedrockBackend } from "../../packages/cloud-server/src/index.js";
@@ -164,10 +164,10 @@ describe("Cloud: your own Bedrock settings", () => {
     expect(again.status).toBe(409);
     expect(again.body.error?.message).toBe("This connection was removed less than 7 days ago. Recover it, or wait until the 7 days have passed.");
     expect((await w.call(bea, "PUT", "/org/bedrock", write(0, FORM(B, { roleArn: ROLE(A) })))).status).toBe(409);
-    // Not without a fresh step-up, and never B recovering A's.
-    expect((await w.call(await w.signIn("ada", 3600), "POST", "/org/bedrock/recover", write(2))).body.error?.code).toBe("STEP_UP_REQUIRED");
+    // Never B recovering A's (wrong company), never a plain member of A (wrong role); A's admin needs no step-up (owner DEC 254zzz73).
     expect((await w.call(bea, "POST", "/org/bedrock/recover", write(0))).status).toBe(404);
-    const back = await w.call(ada, "POST", "/org/bedrock/recover", write(2));
+    expect((await w.call(await w.signIn("cal"), "POST", "/org/bedrock/recover", write(2))).status).toBe(403);
+    const back = await w.call(await w.signIn("ada", 3600), "POST", "/org/bedrock/recover", write(2));
     expect(back.status).toBe(200);
     expect(back.body.connection).toMatchObject({ roleArn: ROLE(A), connected: true });
     expect((await w.audit.read(A, { max: 50 })).rows.map((r) => r.action).sort()).toEqual(["agent_ai.bedrock.connected", "agent_ai.bedrock.recovered", "agent_ai.bedrock.removed"]);
@@ -188,7 +188,7 @@ describe("Cloud: your own Bedrock settings", () => {
     }
   });
 
-  it("company admins only (reads too); changes need a fresh step-up; bad input refused; off without the backend", async () => {
+  it("company admins only (reads too), with or without a step-up; bad input refused; off without the backend", async () => {
     const { w } = bedrockWorld();
     for (const who of ["pam", "cal"]) {
       const cookie = await w.signIn(who, 30);
@@ -196,8 +196,9 @@ describe("Cloud: your own Bedrock settings", () => {
         expect((await w.call(cookie, method, path, body)).status, `${who} ${method} ${path}`).toBe(403);
       }
     }
-    const stale = await w.signIn("ada", 3600);
-    expect((await w.call(stale, "PUT", "/org/bedrock", write(0, FORM(A)))).body.error?.code).toBe("STEP_UP_REQUIRED");
+    for (const who of ["pam", "cal"]) expect((await w.call(await w.signIn(who), "PUT", "/org/bedrock", write(0, FORM(A)))).status).toBe(403);
+    // An admin with an old step-up (or none) gets past the role check: a bad body is the 400, never a step-up answer.
+    expect((await w.call(await w.signIn("ada", 3600), "PUT", "/org/bedrock", write(0, { ...FORM(A), extra: 1 }))).status).toBe(400);
     const ada = await w.signIn("ada", 30);
     for (const body of [write(0, FORM(A, { roleArn: "arn:aws:iam::111111111111:role/Admin" })), write(0, FORM(A, { region: "us-gov-west-1" })), write(0, FORM(A, { models: { "claude-x": "meta.llama" } })), write(0, { ...FORM(A), extra: 1 }), { ...FORM(A) }]) {
       expect((await w.call(ada, "PUT", "/org/bedrock", body)).status).toBe(400);
