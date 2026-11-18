@@ -401,6 +401,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const evalCap = createEvalCapHandler({
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, EVAL_CAP_TOKEN_KIND),
     caps, now,
+    // L4-T3: the project's own key connection, from the same stages the authority is answered from (absent where the route holds none: the answer then has no `connected`).
+    ...(authorityStages === undefined ? {} : { connection: authorityStages }),
   });
   // L4-CAPR: Code's read of one project's nightly upkeep cap (upkeep-cap-read.ts), over the SAME limits the agent route enforces and the agent meter, signed with the task key.
   const upkeepCapRead = createUpkeepCapReadHandler({

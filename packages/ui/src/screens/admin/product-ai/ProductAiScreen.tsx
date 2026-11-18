@@ -5,6 +5,7 @@
 // the server checks too; only the project's admin or a company admin may change these.
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router";
 import { EVAL_APPROVAL_COUNTS_MINUTES, PROJECT_NAME, VERTEX_FORM, productAiPath, readProductAi, usdToMicros, type ProductAiRead } from "../../../api/admin-product-ai.js";
 import { isNotConnected, needsStepUp } from "../../../api/admin-company.js";
 import { createApiClient } from "../../../api/client.js";
@@ -27,7 +28,9 @@ const reader = { parse: readProductAi };
 const when = (ms: number) => new Date(ms).toLocaleString("en-US", { timeZone: "UTC", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) + " UTC";
 
 export function ProductAiScreen() {
- const [typed, setTyped] = useState(""), [project, setProject] = useState<string>();
+ // L4-T3 (G3): the eval card opens this page with the project filled in (`?project=`); only a name the page would accept itself is used, anything else is ignored.
+ const [params] = useSearchParams(), given = params.get("project")?.trim() ?? "", fromLink = PROJECT_NAME.test(given) ? given : undefined;
+ const [typed, setTyped] = useState(fromLink ?? ""), [project, setProject] = useState<string | undefined>(fromLink);
  return <section><PageHeader focusOnMount title="Product AI keys" description="A project's own AI provider for the calls its tests make (AI Studio or Vertex AI), and what its evals may spend. Keys are write-only: Rovara uses them but never shows them." />
   <form onSubmit={event => { event.preventDefault(); if (PROJECT_NAME.test(typed.trim())) setProject(typed.trim()); }}>
    <TextField label="Project" value={typed} onChange={event => { setTyped(event.target.value); }} hint="The project's name, as on the Projects page." {...(typed !== "" && !PROJECT_NAME.test(typed.trim()) ? { error: "Lowercase letters, digits and hyphens, starting with a letter." } : {})} />
