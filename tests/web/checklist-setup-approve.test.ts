@@ -46,13 +46,14 @@ interface Options { read?: unknown; fresh?: boolean; decide?: { status: number; 
 function mount(options: Options = {}) {
   let current: unknown = options.read ?? run({ apply: apply() });
   let list: unknown = checklist();
+  let failing = false;
   const f = fakeHost(async request => {
     if (request.path === "/v1/app/projects/web/setup-status") return { status: 200, body: list };
-    if (request.path === "/v1/app/projects/web/setup-agent" && request.method === "GET") return options.agentGone === true ? { status: 404, body: { error: { code: "NOT_FOUND", message: "not found" } } } : { status: 200, body: { ...(current as object), requestId: "gw" } };
+    if (request.path === "/v1/app/projects/web/setup-agent" && request.method === "GET") return failing ? { status: 500, body: { error: { code: "INTERNAL", message: "boom" } } } : options.agentGone === true ? { status: 404, body: { error: { code: "NOT_FOUND", message: "not found" } } } : { status: 200, body: { ...(current as object), requestId: "gw" } };
     if (request.path === "/v1/app/projects/web/setup-agent/journal") return { status: 200, body: { status: "ready", entries: [], hostAsks: [], requestId: "gw" } };
     if (request.path === "/v1/app/projects/web/setup-agent/decide") {
       const answer = options.decide ?? { status: 200, body: { project: "web", decision: "approved", risk: "low", revision: 4, replayed: false } };
-      if (answer.status === 200) { current = run(); list = checklist("done"); }
+      if (answer.status === 200) { current = run(); list = { ...checklist("done"), progress: { done: 4, total: 8, percent: 50, nextRequired: "evalConfirm" } }; }
       return { status: answer.status, body: answer.status === 200 ? { ...(answer.body as object), requestId: "gw" } : answer.body };
     }
     if (request.path === "/v1/app/projects/web") return { status: 200, body: { name: "web", status: "active", latestRevision: 7, repositories: [{ fullName: "acme/web", defaultBranch: "main" }], myRole: "maintainer", setup: { status: "ready" }, settings: { setupCommands: [], testCommands: [], devcontainer: null, allowedDomains: [] }, createdAt: "2026-10-23T12:00:00.000Z", createdBy: { developerId: ME, name: "Maya" }, requestId: "gw" } };
@@ -67,7 +68,7 @@ function mount(options: Options = {}) {
   const query = createQueryClient();
   query.setQueryData(["nav"], { me: { developerId: ME, name: "Maya", orgRole: "owner" } });
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/web" + (options.fresh === true ? "?confirmed=n-1" : "")], children: h(ProjectChecklist, { project: "web" }) }) }) }), { theme: "light" });
-  return { ...f, query, setCurrent(value: unknown) { current = value; }, close() { ui.unmount(); query.clear(); } };
+  return { ...f, query, setCurrent(value: unknown) { current = value; }, failReads(value: boolean) { failing = value; }, close() { ui.unmount(); query.clear(); } };
 }
 const row = () => screen.findByTestId("setup-run-row");
 const rowItem = () => screen.getByTestId("checklist-row-setupRun");
@@ -139,6 +140,7 @@ describe("approving a setup from the checklist", () => {
     // The checklist was read again, so the row and the progress follow what Code says now.
     await waitFor(() => expect(checklistReads(f)).toBeGreaterThan(1));
     expect(rowItem().getAttribute("data-state")).toBe("done");
+    await waitFor(() => expect(screen.getByTestId("checklist-progress").textContent).toContain("50% done (4 of 8)"));
     f.close();
   });
 
@@ -148,6 +150,50 @@ describe("approving a setup from the checklist", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
     expect(f.host.signIn).toHaveBeenCalledTimes(1);
     expect(decides(f)).toHaveLength(0);
+    f.close();
+  });
+
+  it("a manager sees Discard on a candidate whose check failed; a reader does not", async () => {
+    const failedCheck = { check: { status: "failed", failedStep: "npm test" }, canApprove: false, canReject: false, approval: undefined };
+    const manager = mount({ read: run({ apply: apply(failedCheck) }) });
+    const card = await within(await row()).findByTestId("setup-approval");
+    expect(within(card).getByRole("button", { name: "Discard this setup" })).toBeTruthy();
+    expect(within(card).getByRole("alert").textContent).toContain("npm test");
+    expect(rowItem().getAttribute("data-state")).toBe("needs_you");
+    manager.close(); cleanup();
+    const reader = mount({ read: run({ canManage: false, apply: apply(failedCheck) }) });
+    const readOnly = await within(await row()).findByTestId("setup-approval");
+    expect(within(readOnly).queryByRole("button")).toBeNull();
+    reader.close();
+  });
+
+  it("on the checklist Use this setup says the check starts by itself and the approval is here, not in a test environment below", async () => {
+    const f = mount({ read: run({ proposal: PROPOSAL, verified: true, verification: { "setup-web": "verified", "tests-web": "verified" } }) });
+    const found = await within(await row()).findByRole("region", { name: "Use this setup" });
+    expect(found.textContent).toContain(R.confirmRule);
+    expect(found.textContent).not.toContain("test environment below");
+    f.close();
+  });
+
+  it("a failed re-read keeps the card that was shown (only 'not found' means nothing waits)", async () => {
+    const f = mount();
+    await within(await row()).findByTestId("setup-approval");
+    f.failReads(true);
+    await f.query.invalidateQueries({ queryKey: ["onboard", "setup-agent", "web"] });
+    await new Promise(done => setTimeout(done, 100));
+    expect(screen.queryByTestId("setup-approval")).toBeTruthy();
+    f.close();
+  });
+
+  it("a decision is about one run: a later run's proposal is not hidden by an old decision", async () => {
+    const f = mount({ fresh: true, read: run({ startedAt: "2026-11-17T10:00:00.000Z", apply: apply() }) });
+    const card = await within(await row()).findByTestId("setup-approval");
+    fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
+    expect((await screen.findByTestId("setup-decided")).textContent).toBe(A.approved);
+    f.setCurrent(run({ startedAt: "2026-11-18T09:00:00.000Z", proposal: PROPOSAL, verified: true, verification: { "setup-web": "verified", "tests-web": "verified" } }));
+    await f.query.invalidateQueries({ queryKey: ["onboard", "setup-agent", "web"] });
+    expect(await within(await row()).findByRole("region", { name: "Use this setup" })).toBeTruthy();
+    expect(screen.queryByTestId("setup-decided")).toBeNull();
     f.close();
   });
 

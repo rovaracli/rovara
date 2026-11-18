@@ -6,6 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { SetupAgentView, SetupDecideReply } from "@agentx/contracts/web";
 import { useSetupAgentApi } from "../../api/setup-agent.js";
 import { useOnboardingApi } from "../../api/onboarding.js";
+import { ApiError } from "../../api/errors.js";
 import { setupChecklistKey } from "../../api/setup-checklist.js";
 import { ConfirmCard } from "./ConfirmCard.js";
 import { SetupApprovalCard } from "./SetupApprovalCard.js";
@@ -30,16 +31,22 @@ export interface SetupReviewState { stage: ReviewStage; view: SetupAgentView | u
 export function useSetupReview(project: string, enabled: boolean): SetupReviewState {
   const api = useSetupAgentApi(), client = useQueryClient();
   const query = useQuery({ queryKey: setupAgentKey(project), queryFn: () => api.read(project), retry: false, enabled, refetchInterval: setupAgentRefetch });
-  const [decided, setDecided] = useState<SetupReviewState["decided"]>();
-  const view = enabled && !query.isError ? query.data : undefined;
+  // What was decided, and which run it was about: a run started later (here, on another tab or on the Setup step) is not hidden by it.
+  const [decidedAbout, setDecided] = useState<{ word: NonNullable<SetupReviewState["decided"]>; run: string | undefined }>();
+  // Only "not found" or an answer this page can't read means nothing waits; a failed re-read keeps the last good answer (the old step shows "Couldn't load" instead; here the row is already saying what the checklist knows).
+  const gone = query.error instanceof ApiError && (query.error.status === 404 || query.error.code === "INVALID_RESPONSE");
+  const view = enabled && !gone ? query.data : undefined;
+  const decided = decidedAbout !== undefined && (view?.startedAt === undefined || decidedAbout.run === view.startedAt) ? decidedAbout.word : undefined;
   function finished(reply: SetupDecideReply | "discarded") {
-    setDecided(reply === "discarded" ? "discarded" : reply.decision);
+    setDecided({ word: reply === "discarded" ? "discarded" : reply.decision, run: view?.startedAt });
+    void client.invalidateQueries({ queryKey: ["onboard", "project", project] });
+    void client.invalidateQueries({ queryKey: ["project", project] });
     void client.invalidateQueries({ queryKey: setupAgentKey(project) });
     void client.invalidateQueries({ queryKey: ["onboard", "test-environment", project] });
     void client.invalidateQueries({ queryKey: ["setup-run", project] });
     void client.invalidateQueries({ queryKey: setupChecklistKey(project) });
   }
-  return { stage: decided !== undefined && view?.apply === undefined ? "none" : reviewStageOf(view), view, decided, finished, refetch: () => { void query.refetch(); }, reset: () => { setDecided(undefined); } };
+  return { stage: decided !== undefined && view?.apply === undefined ? "none" : reviewStageOf(view), view, decided, finished, refetch: () => { void query.refetch(); }, reset: () => { setDecided(undefined); void client.invalidateQueries({ queryKey: setupAgentKey(project) }); } };
 }
 
 /** The cards themselves, for the Setup run row. */
@@ -58,5 +65,5 @@ export function SetupReview({ project, review }: { project: string; review: Setu
   if (view.proposal === undefined) return null;
   if (projectRead.isPending) return null;
   const revision = projectRead.data?.latestRevision ?? view.basedOnRevision;
-  return <ConfirmCard project={project} view={{ ...view, proposal: view.proposal }} settingsRevision={revision} onProposed={() => { void client.invalidateQueries({ queryKey: setupAgentKey(project) }); void client.invalidateQueries({ queryKey: ["onboard", "test-environment", project] }); }} />;
+  return <ConfirmCard project={project} view={{ ...view, proposal: view.proposal }} settingsRevision={revision} place="checklist" onProposed={() => { void client.invalidateQueries({ queryKey: setupAgentKey(project) }); void client.invalidateQueries({ queryKey: ["onboard", "test-environment", project] }); }} />;
 }

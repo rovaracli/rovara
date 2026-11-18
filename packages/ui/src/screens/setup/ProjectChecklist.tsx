@@ -57,7 +57,7 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
  });
  const [busy, setBusy] = useState<SetupSkippableRow | "evalNone">(), [error, setError] = useState<string>();
  // L4-T1: a setup waiting for a person is reviewed and approved in the Setup run row, not on another page. Asked only once the checklist says a run finished.
- const review = useSetupReview(project, status.data?.setupRun.status === "ready");
+ const review = useSetupReview(project, status.data?.setupRun.status === "ready" && (status.data.progress.percent < 100 || place === "onboard"));
  if (status.isError && checklistAbsent(status.error)) return null;
  if (status.isPending) return <Skeleton label="Loading the setup checklist" />;
  if (status.isError) return <section className="rv-checklist" aria-label="Finish setting up"><p role="status" data-testid="checklist-read-error"><VisibleText text={fixedSetupWords(status.error, "The project's setup couldn't be read just now. Try again.")} /></p><Button onClick={() => { void status.refetch(); }}>Try again</Button></section>;
