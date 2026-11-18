@@ -463,12 +463,12 @@ it("keeps Code's own words for any other 404 of the proof read (a task the perso
 });
 
 // Proof list (Code's GET /v1/dev/tasks/{id}/evidence): Code's items carry an id and a digest only when it kept the check's output, and (TE-A6) up to ten failing tests with their likely causes.
-const FAILURE = (index: number) => ({ check: "pytest -q", test: `tests/cart.test.ts::case ${String(index)}`, cause: index % 2 === 0 ? "likely broken by a change (commit aaaaaaa) to src/cart.ts" : "unknown (only weak evidence)" });
+const failureRow = (index: number) => ({ check: "pytest -q", test: `tests/cart.test.ts::case ${String(index)}`, cause: index % 2 === 0 ? "likely broken by a change (commit aaaaaaa) to src/cart.ts" : "unknown (only weak evidence)" });
 it("reads Code's proof index: an item keyed by its id when it has no digest, every item kept (a repeated key suffixed), and at most ten failing tests with the rest counted", () => {
-  const index = readProofIndex({ items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }, { id: "evidence:0", title: "again", kind: "test_report", verdict: "pass" }, { title: "no key", kind: "log", verdict: "pass" }], failures: Array.from({ length: 13 }, (_, index) => FAILURE(index)), failuresNotListed: 2 });
+  const index = readProofIndex({ items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }, { id: "evidence:0", title: "again", kind: "test_report", verdict: "pass" }, { title: "no key", kind: "log", verdict: "pass" }], failures: Array.from({ length: 13 }, (_, index) => failureRow(index)), failuresNotListed: 2 });
   // Every valid item is kept: a repeated key gets its own suffix (an older Code may send two checks with the same digest).
   expect(index.items.map(item => [item.id, item.sha256, item.title])).toEqual([["evidence:0", undefined, "pytest -q"], ["evidence:0#1", undefined, "again"]]);
-  expect(index.failures).toHaveLength(PROOF_FAILURES_SHOWN);expect(index.failures[0]).toEqual(FAILURE(0));
+  expect(index.failures).toHaveLength(PROOF_FAILURES_SHOWN);expect(index.failures[0]).toEqual(failureRow(0));
   expect(index.failuresNotListed).toBe(5);
   // An older Code (no failures) and odd values: no failing tests, nothing counted.
   expect(readProofIndex(PROOF)).toMatchObject({ failures: [], failuresNotListed: 0 });
@@ -478,7 +478,7 @@ it("reads Code's proof index: an item keyed by its id when it has no digest, eve
 });
 it("draws the failing tests under the proof as plain text, at most ten, and counts the rest", () => {
   const hostile = { check: "<b>suite</b>", test: "tests/<img src=x onerror=alert(1)>.test.ts::a", cause: "likely broken by a change to [x](https://evil.example) <script>alert(1)</script>\u202e" };
-  const f = wrap(h(FailingTests, { failures: [hostile, ...Array.from({ length: 11 }, (_, index) => FAILURE(index))], notListed: 3 }));
+  const f = wrap(h(FailingTests, { failures: [hostile, ...Array.from({ length: 11 }, (_, index) => failureRow(index))], notListed: 3 }));
   const list = screen.getByRole("list", { name: "Failing tests" });
   expect(within(list).getAllByRole("listitem")).toHaveLength(PROOF_FAILURES_SHOWN);
   expect(f.container.querySelector("img, script, b, a")).toBeNull();
@@ -490,7 +490,7 @@ it("draws the failing tests under the proof as plain text, at most ten, and coun
   const onlyMore = wrap(h(FailingTests, { failures: [], notListed: 1 }));expect(onlyMore.container.textContent).toContain("and 1 more failing test not listed");onlyMore.unmount();
 });
 it("the Proof tab shows Code's items and failing tests from the proof read", async () => {
-  const proof = { status: 200, body: { taskId: ID.merge, items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }, { id: "review:code", title: "Code review", kind: "review", verdict: "pass", criterionIds: [] }], failures: [FAILURE(0), FAILURE(1)] } };
+  const proof = { status: 200, body: { taskId: ID.merge, items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }, { id: "review:code", title: "Code review", kind: "review", verdict: "pass", criterionIds: [] }], failures: [failureRow(0), failureRow(1)] } };
   const f = screenSetup({ proof, path: `/app/live?task=${ID.merge}` });
   const failing = await screen.findByTestId("failing-tests");
   expect(failing.textContent).toContain("tests/cart.test.ts::case 0");expect(failing.textContent).toContain("likely broken by a change (commit aaaaaaa) to src/cart.ts");expect(failing.textContent).toContain("unknown (only weak evidence)");
