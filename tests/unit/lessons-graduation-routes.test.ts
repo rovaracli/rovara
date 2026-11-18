@@ -101,6 +101,12 @@ describe("the graduation read", () => {
     expect(graduationView("nope", "web")).toEqual({ project: "web", canDecide: false, drafts: [], rules: [] });
   });
 
+  it("leaves out a card whose only paths use characters a path never holds, even with braces or brackets around them", () => {
+    for (const path of ["src/$(x)/[id].ts", "src/{a};b.ts", "src/<x>/{id}.ts", "src/a b/[id].ts", "{id}/../x.ts", "/src/[id].ts"]) {
+      expect(graduationView({ canDecide: true, card: { lessonId: "les_aaaa", version: 1, title: "T", target: "rule", targets: ["rule"], paths: [path] } }, "web")).not.toHaveProperty("card");
+    }
+  });
+
   it("keeps a card with dynamic paths and offers only targets that do not make a rule", () => {
     const card = graduationView({ canDecide: true, card: { lessonId: "les_aaaa", version: 1, title: "T", target: "rule", targets: ["rule", "check", "skill"], paths: ["src/{area}/[id].ts"] } }, "web")["card"] as Record<string, unknown>;
     expect(card).toMatchObject({ paths: ["src/{area}/[id].ts"], target: "check", targets: ["check", "skill"] });
