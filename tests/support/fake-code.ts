@@ -1372,7 +1372,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: { project: found.name, mode: lessonMode, effective: lessonMode, lockedByCompany: false, canChange: true } };
     },
     // L4-EGR: Rovara's outbound addresses, the same for every company (the install's); only an owner or admin reads them.
-    "company.egressAddresses.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : !person.administrator ? failure(403, "FORBIDDEN", "Only a company owner or admin can see Rovara's outbound addresses.") : { body: { addresses: EGRESS_ADDRESSES.slice(), requestId: "req-egress-1" } }),
+    "company.egressAddresses.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : !person.administrator ? failure(403, "FORBIDDEN", "Only a company owner or admin can see Rovara's outbound addresses.") : { body: { addresses: EGRESS_ADDRESSES.slice(), requestId: "JBnQ5hKvIAMEJ-Q=" } }),
     // Any member reads; an owner or admin sets a model from the offered list.
     "company.engineModel.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : { body: engineView() }),
     "company.engineModel.put": ({ person, body }) => {

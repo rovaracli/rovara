@@ -37,14 +37,14 @@ function nonPublic(address: string): boolean {
   return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
 }
 
-/** Code's `/v1/dev/*` answers carry the request's own id in every object body (the broker's json(), `requestId`); it is a short log token, not part of the contract, and is dropped before the strict check. */
-const REQUEST_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
+/** Code's `/v1/dev/*` answers carry the request's own id in every object body (the broker's json(), `requestId`); it is a log token (API Gateway's own id such as `JBnQ5hKvIAMEJ-Q=`, or a UUID), not part of the contract, and is dropped before the strict check. Its content is never read or forwarded; only its type and length are checked. */
+const REQUEST_ID_MAX = 200;
 
 /** Code's answer, strictly: exactly `{ addresses }` (plus Code's own `requestId` token, which is dropped) with up to EGRESS_ADDRESSES_MAX distinct public IPv4 addresses (an empty list is a real answer: this install has none yet). Undefined when anything is off. */
 export function egressAddressesView(value: unknown): { addresses: string[] } | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) return undefined;
   const { requestId, ...rest } = value as { requestId?: unknown };
-  if (requestId !== undefined && !(typeof requestId === "string" && REQUEST_ID.test(requestId))) return undefined;
+  if (requestId !== undefined && !(typeof requestId === "string" && requestId.length <= REQUEST_ID_MAX)) return undefined;
   const keys = Object.keys(rest);
   if (keys.length !== 1 || keys[0] !== "addresses") return undefined;
   const addresses = (value as { addresses: unknown }).addresses;
