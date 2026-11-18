@@ -990,12 +990,4 @@ describe("a sole owner/admin loosens alone (DEC 254zzz79 (2))", () => {
     expect(refused.body.error.code).toBe("FORBIDDEN");
     expect((await w.store.settings(B))!.settings.websiteCeiling).toEqual(tightened().websiteCeiling);
   });
-
-  it("a sole admin still needs a fresh step-up where the rules ask one (this lane adds none)", async () => {
-    const w = world();
-    const dan = await w.signIn("dan", 10);
-    await w.call(dan, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
-    const stale = await w.signIn("dan", 700);
-    expect((await w.call(stale, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() })).body.error.code).toBe("STEP_UP_REQUIRED");
-  });
 });

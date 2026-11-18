@@ -4,7 +4,7 @@
 // Save writes the limit and the source only when they changed but the model ALWAYS (explicitly, so a new company never depends on the install
 // default). A plain member sees it read only. Refusals are the server's fixed sentences. The project part keeps "Same as company" picked.
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
@@ -190,8 +190,10 @@ describe("the company step, AI and spending", () => {
   const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
    await screen.findByLabelText("Model");
-   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-   expect((await screen.findByRole("alert")).textContent).toContain("Only a company admin can do this.");
+   // The page also carries the learning-model and per-step model cards (#209, #219): read the company step's own save and alert.
+   const step = within(screen.getByTestId("ai-spend-step"));
+   fireEvent.click(step.getByRole("button", { name: "Save" }));
+   expect((await step.findByTestId("ai-spend-error")).textContent).toContain("Only a company admin can do this.");
    expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
    expect(c.writes.map(w => w.path)).toEqual(["/v1/app/org/settings"]);
    expect(c.state).toEqual({ cap: null, source: null, model: null });
