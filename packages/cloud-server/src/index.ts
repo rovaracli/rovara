@@ -47,6 +47,7 @@ export { AGENT_AI_CHOOSABLE, AGENT_AI_ROUTES } from "./agent-ai-routes.js";
 export { agentAiConnected } from "./agent-ai-presence.js";
 export { AI_SPEND_ANSWERS, AI_SPEND_ROUTES, AI_SPEND_WORDS, ENGINE_MODEL_CODE_PATH, PER_TASK_FIELD, PER_TASK_USD_MAX, engineModelRefusal, engineModelView, projectSettingsOf, projectSettingsRefusal } from "./ai-spend-routes.js";
 export { LEARNING_MODEL_ANSWERS, LEARNING_MODEL_CODE_PATH, LEARNING_MODEL_ROUTES, LEARNING_MODEL_WORDS, learningModelRefusal, learningModelView } from "./learning-model-routes.js";
+export { AGENT_MODELS_ANSWERS, AGENT_MODELS_CODE_PATH, AGENT_MODELS_ROUTES, AGENT_MODELS_WORDS, AGENT_MODEL_STAGES, agentModelsChange, agentModelsRefusal, agentModelsView, modelIdentityOf, modelNameOf } from "./agent-models-routes.js";
 export { EGRESS_ADDRESSES_CODE_PATH, EGRESS_ADDRESSES_ROUTES, EGRESS_ANSWERS, EGRESS_WORDS, egressAddressesView } from "./egress-addresses-routes.js";
 export { SPEND_LIMIT_ROUTES, SPEND_LIMIT_WORDS, dollarsToMicros } from "./spend-limits-routes.js";
 export { BEDROCK_BYO_ROUTES, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";

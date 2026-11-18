@@ -213,7 +213,8 @@ describe("the company step, AI and spending", () => {
   try {
    expect((await screen.findByTestId("ai-spend-read-only")).textContent).toMatch(/claude-sonnet-4-5.*Only a company owner or admin can change this/u);
    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-   expect(f.request.mock.calls.map(([r]) => r.path)).toEqual(["/v1/app/org/engine-model"]);
+   // No money reads; the step models card reads the company's step models (read only for a member).
+   expect(f.request.mock.calls.map(([r]) => r.path).sort()).toEqual(["/v1/app/org/agent-models", "/v1/app/org/engine-model"]);
   } finally { f.close(); }
  });
 });
