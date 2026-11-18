@@ -18,6 +18,7 @@ import type { BillLine, Meter, MeterItem, MeterScope, Reservation } from "./mete
 import { LEARNING_PATH_PREFIX, LEARNING_STEP, type LearningKeySource, type LearningRouteFactory } from "./learning-route.js";
 import { ANSWERS_PATH_PREFIX, ANSWERS_STEP } from "./answers-route.js";
 import { isUpkeepCall, upkeepRefusal, withUpkeepCap, type UpkeepLimits } from "./upkeep-cap.js";
+import { usageEstimated } from "./price-tiers.js";
 import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceKind, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, consumeReviewerGrant, type TaskClaims, type TaskTokenVerifier } from "./token.js";
@@ -484,6 +485,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
         const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: cost });
         cost = amount.actualMicros; estimated = amount.estimated;
+        // A review is never recorded above the hold it was admitted on (the task's and the company's caps were checked for exactly that amount).
+        if (callClaims?.reviewer !== undefined && cost > reservedMicros) cost = reservedMicros;
         if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
       }
       await route.meter.settle(reservation, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === undefined ? {} : { route: route.purpose }) });
@@ -578,7 +581,9 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     // DEC 254zzz41: a review call is held at its priced worst case, which must fit the grant's ceiling and be exact (no estimated price, no unbounded input):
     // the hold below is then taken inside the task's limit AND the company's cap, so the ceiling cannot be spent beyond either.
     const grant = claims.reviewer;
-    if (grant !== undefined && (overrunCapable || estimate > Math.floor(grant.ceilingUsd * 1_000_000))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
+    // REVIEW-1 M1: nothing may settle a review above its hold: no estimated price, no tier the request can reach whose rates are derived or uncertain (usageEstimated, at the most tokens the request's bytes can be), no unbounded input, and no source
+    // whose provider reports its own cost (OpenRouter), which is a source Code never lists for reviews (reviewerProviderOf) but could be saved within the grant's 120 s.
+    if (grant !== undefined && (overrunCapable || route.provider === "openrouter" || usageEstimated(price, { input: guarded.bytes.length, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || estimate > Math.floor(grant.ceilingUsd * 1_000_000))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
     const reserved = await route.meter.reserve({ scope, caps, estimateMicros: estimate, appliedMaxOutputTokens, ...(line === undefined ? {} : { line }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });

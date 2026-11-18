@@ -4,7 +4,9 @@
 import { denyNetwork } from "./model-gateway-no-network.js";
 beforeAll(denyNetwork);
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AgentAiSource, AgentAiSourceReader, RovaraAi } from "../../packages/model-gateway/src/agent-ai.js";
 import type { Caps } from "../../packages/model-gateway/src/caps.js";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
@@ -13,6 +15,9 @@ import { StaticInstallRegistry } from "../../packages/model-gateway/src/installs
 import type { LearningKeySource } from "../../packages/model-gateway/src/learning-route.js";
 import { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import { consumeReviewerGrant, parseTaskClaims, REVIEWER_GRANT_SECONDS } from "../../packages/model-gateway/src/model-gateway-token.js";
+import { DynamoPriceSnapshotStore } from "../../packages/model-gateway/src/dynamo-prices.js";
+import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
+import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import { answerOfferedModels, reviewerProviderOf, SERVICE_TOKEN_AUDIENCE, SERVICE_TOKEN_KIND, SERVICE_TOKEN_SECONDS, SERVICE_TOKEN_TYPE, type OfferedModelsHandlerOptions } from "../../packages/model-gateway/src/offered-models.js";
 import type { ProviderRequest } from "../../packages/model-gateway/src/provider.js";
 import { companyRoomMicros, DynamoReviewerGrants, InMemoryReviewerGrants, REVIEWER_GRANT_KEEP_SECONDS, type ReviewerGrantStore } from "../../packages/model-gateway/src/reviewer-grants.js";
@@ -46,6 +51,8 @@ class Choices implements AgentAiSourceReader {
   readonly saved = new Map<string, AgentAiSource>();
   async sourceFor(cid: string): Promise<AgentAiSource | undefined> { return this.saved.get(cid); }
 }
+/** Records every claim the gateway attempts, then answers like the in-memory store. */
+function spyStore() { const inner = new InMemoryReviewerGrants(); const claimed: string[] = []; return { claimed, store: { claim: async (iss: string, cid: string, jti: string) => { claimed.push(jti); return inner.claim(iss, cid, jti); } } satisfies ReviewerGrantStore }; }
 const mutableCaps = (initial: Caps) => { const current = { ...initial }; return { current, source: { capsFor: async () => ({ ...current }) } }; };
 
 function gateway(options: { grants?: ReviewerGrantStore | false; caps?: Caps; overrides?: Partial<GatewayDependencies> } = {}) {
@@ -202,13 +209,15 @@ describe("(b) inside the task's dollar limit and the company's cap", () => {
     expect(g.keySent).toHaveLength(1);
   });
   it("refused before any hold when the call's worst case is above the grant's own ceiling", async () => {
-    const g = gateway();
+    const spy = spyStore();
+    const g = gateway({ grants: spy.store });
     const sink = await call(g.deps, requestBody, grant({ reviewer: { kind: "second_review", slot: "second_review", ceilingUsd: 0.000001 } }));
     expect(sink.status).toBe(REVIEWER_CEILING_REFUSED.status);
     expect(JSON.parse(sink.text())).toEqual({ error: { type: "budget_exceeded", message: REVIEWER_CEILING_REFUSED.message } });
     expect(g.keySent).toEqual([]);
     await nothingHeld(g.meter);
-    // Nothing was claimed either: the same grant id is still usable with room.
+    // Nothing was claimed either.
+    expect(spy.claimed).toEqual([]);
   });
   it("refused when the price is only an estimate (the hold would not be exact)", async () => {
     const g = gateway({ overrides: { prices: { priceFor: () => ({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, estimated: true, operatorReview: false }) as never } } });
@@ -249,9 +258,11 @@ describe("(c) short-lived, one task, one kind, single use", () => {
     await nothingHeld(g.meter);
   });
   it("the request's own model must be the grant's one model (another model is refused before any hold)", async () => {
-    const g = gateway();
+    const spy = spyStore();
+    const g = gateway({ grants: spy.store });
     const sink = await call(g.deps, { ...requestBody, model: "claude-opus-5-5" }, grant());
-    expect(sink.status).toBeGreaterThanOrEqual(400);
+    expect(sink.status).toBe(400);
+    expect(spy.claimed).toEqual([]);
     expect(g.keySent).toEqual([]);
     await nothingHeld(g.meter);
   });
@@ -268,6 +279,37 @@ describe("(c) short-lived, one task, one kind, single use", () => {
     const { handleGateway } = await import("../../packages/model-gateway/src/server.js");
     await handleGateway(deps, { method: "POST", url: "/v1/product/anything", headers: { "content-type": "application/json", "x-api-key": grant() }, body: (async function* () { yield Buffer.from(JSON.stringify(requestBody)); })() }, sink);
     expect(sink.status).toBe(401);
+    expect(g.keySent).toEqual([]);
+    await nothingHeld(g.meter);
+  });
+  it("REVIEW-1 M1: refused (nothing held, nothing claimed) on a source that reports its own cost, on a partly derived or uncertain price, and on unbounded input", async () => {
+    const spy = spyStore();
+    const g = gateway({ grants: spy.store });
+    g.choices.saved.set(cidA, "openrouter_key");
+    const sentRouter: ProviderRequest[] = [];
+    g.deps.agentAi = { ...g.deps.agentAi!, switchedOn: new Set(["openrouter"]), openrouter: { transport: async (request) => { sentRouter.push(request); return { status: 200, body: answer() }; } } };
+    expect((await call(g.deps, requestBody, grant())).status).toBe(422);
+    g.choices.saved.delete(cidA);
+    const priced = (extra: Record<string, unknown>) => ({ priceFor: () => ({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, ...extra }) as never });
+    for (const extra of [{ derived: [{ aboveTokens: 0, keys: ["outputMicrosPerMTok"] }] }, { uncertain: [{ aboveTokens: 0, keys: ["outputMicrosPerMTok"] }] }, { operatorReview: true }]) {
+      g.deps.prices = priced(extra);
+      expect((await call(g.deps, requestBody, grant())).status).toBe(422);
+    }
+    g.deps.prices = priced({});
+    const cached = { ...requestBody, messages: [{ role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }] }] };
+    expect((await call(g.deps, cached, grant())).status).toBe(422);
+    expect(spy.claimed).toEqual([]);
+    expect([g.keySent, sentRouter]).toEqual([[], []]);
+    await nothingHeld(g.meter);
+    expect((await call(g.deps, requestBody, grant())).status).toBe(200);
+  });
+  it("a grant for an ended task is refused before anything is held or claimed", async () => {
+    const spy = spyStore();
+    const g = gateway({ grants: spy.store });
+    g.ended.end(claims.iss, cidA, claims.tid);
+    const sink = await call(g.deps, requestBody, grant());
+    expect(sink.status).toBe(403);
+    expect(spy.claimed).toEqual([]);
     expect(g.keySent).toEqual([]);
     await nothingHeld(g.meter);
   });
@@ -418,4 +460,67 @@ describe("reviewerAccess on the offered-models answer, from the company's real c
     expect(reviewerProviderOf("rovara", "mistral.devstral-2-123b")).toBe("mistral");
     expect(reviewerProviderOf("rovara", "us.moonshotai.kimi-k3")).toBe("moonshot");
   });
+});
+
+class FakeResponse extends EventEmitter {
+  statusCode = 0; headers: Record<string, string> = {}; chunks: Buffer[] = []; headersSent = false; destroyed = false;
+  writeHead(status: number, headers: Record<string, string>) { this.statusCode = status; this.headers = headers; this.headersSent = true; return this; }
+  text() { return Buffer.concat(this.chunks).toString(); }
+  write(bytes: Uint8Array) { this.chunks.push(Buffer.from(bytes)); return true; }
+  end(bytes?: Uint8Array | string) { if (bytes !== undefined) this.chunks.push(Buffer.from(bytes)); this.emit("finish"); this.emit("close"); return this; }
+  destroy() { this.destroyed = true; this.emit("close"); return this; }
+}
+const running: RunningGateway[] = [];
+afterEach(async () => { for (const gateway of running.splice(0)) await gateway.drain(); });
+
+describe("the deployed process wires the durable store", () => {
+  const T = { meter: "gw-meter", ledger: "gw-ledger", markers: "gw-markers", prices: "gw-prices", companies: "cloud-companies" };
+  const ENV = {
+    [GATEWAY_ENV.mode]: "serve", AWS_REGION: "us-west-2", [GATEWAY_ENV.port]: "8080",
+    [GATEWAY_ENV.installIssuer]: claims.iss, [GATEWAY_ENV.installJwksUrl]: `${claims.iss}/.well-known/jwks.json`, [GATEWAY_ENV.installTaskKids]: kid,
+    [GATEWAY_ENV.meterTable]: T.meter, [GATEWAY_ENV.ledgerTable]: T.ledger, [GATEWAY_ENV.markersTable]: T.markers, [GATEWAY_ENV.pricesTable]: T.prices, [GATEWAY_ENV.companyTable]: T.companies,
+    [GATEWAY_ENV.anthropicKeySecret]: "arn:aws:secretsmanager:us-west-2:944937319445:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf",
+  };
+  async function serve(wire: WireDynamo, mode: "company" | "install", sent: ProviderRequest[]) {
+    const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
+    await db.put(T.companies, { pk: `COMPANY#${cidA}`, sk: "SETTINGS", companyId: cidA, version: 1, settings: { budgets: { companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } } });
+    // One exact price row, so a review (which needs an exact price) is admitted; the deployed price source reads this table.
+    await new DynamoPriceSnapshotStore(db, T.prices).save({ version: 1, sources: { litellm: { fetchedAt: now, count: 1, entries: [{ provider: "anthropic", model: MODEL, kind: "chat", inputMicrosPerMTok: 3_000_000, outputMicrosPerMTok: 15_000_000, cacheReadMicrosPerMTok: 300_000, cacheWrite5mMicrosPerMTok: 3_750_000, cacheWrite1hMicrosPerMTok: 6_000_000 }] } } } as never, 0);
+    const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0, ...(mode === "company" ? { agentKeys: "company" as const } : {}) };
+    const gateway = await startServe(config, {
+      db, fetch: async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }), now: () => now, listen: false, log: () => undefined,
+      keys: { keyFor: async () => "rovara-install-key" }, transport: async (request) => { sent.push(request); return { status: 200, body: answer() }; },
+      ...(mode === "company" ? { agentKeys: new CompanyKeys() } : {}),
+    });
+    running.push(gateway);
+    return gateway;
+  }
+  function post(server: RunningGateway["server"], token: string): Promise<FakeResponse> {
+    const req = Object.assign(Readable.from([Buffer.from(JSON.stringify(requestBody))]), { method: "POST", url: "/v1/messages", headers: { "content-type": "application/json", "x-api-key": token } });
+    const res = new FakeResponse();
+    const done = new Promise<FakeResponse>((resolve) => res.once("close", () => resolve(res)));
+    server.emit("request", req, res);
+    return done;
+  }
+  it("company-key mode: a grant is served once and a restarted process (same tables) refuses it; the claim is in the markers table", async () => {
+    const wire = new WireDynamo(Object.values(T), { namespaceTables: true });
+    const sent: ProviderRequest[] = [];
+    const token = grant();
+    const first = await post((await serve(wire, "company", sent)).server, token);
+    expect([first.statusCode, first.text()]).toEqual([200, expect.any(String)]);
+    const items = wire.items(T.markers).filter((item) => String(item.sk).startsWith("REVGRANT#"));
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ pk: companyPartition(claims.iss, cidA), expiresAt: secs + REVIEWER_GRANT_SECONDS + REVIEWER_GRANT_KEEP_SECONDS });
+    expect((await post((await serve(wire, "company", sent)).server, token)).statusCode).toBe(401);
+    expect(sent).toHaveLength(1);
+  });
+  it("install-key mode builds no grant store: a grant is refused and an ordinary token still works", async () => {
+    const wire = new WireDynamo(Object.values(T), { namespaceTables: true });
+    const sent: ProviderRequest[] = [];
+    const gateway = await serve(wire, "install", sent);
+    expect((await post(gateway.server, grant())).statusCode).toBe(401);
+    expect(sent).toEqual([]);
+    expect((await post(gateway.server, mint())).statusCode).toBe(200);
+  });
+  it("keeps the config reader unchanged (no new setting)", () => { expect(() => readGatewayConfig(ENV)).not.toThrow(GatewayConfigError); });
 });
