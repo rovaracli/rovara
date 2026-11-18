@@ -55,7 +55,7 @@ describe("code contract v0 tables", () => {
     // Plus the Cost and time report (Feature A, slice A3): the report and a feature's page: 2 rows.
     // Plus the company's one control over nightly upkeep (L4-P3): read and change: 2 rows.
     // Plus the "Setup needs repair" card and its "Re-check setup" button (L4-U5): read and recheck: 2 rows.
-    expect(counts.appCloudServerToday).toBe(130);
+    expect(counts.appCloudServerToday).toBe(131);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

@@ -926,6 +926,7 @@ GET /v1/app/live | c | later | tasks.list | live |
 GET /v1/app/sessions | c | home | tasks.list | work-list |
 GET /v1/app/inbox | k | later | | inbox | T
 POST /v1/app/inbox/read | k | later | | inbox | T
+GET /v1/app/inbox/project-notices | k | later | | inbox | T
 GET /v1/app/sessions/{id} | c | session | tasks.get,tasks.people.get | sessions | T
 GET /v1/app/sessions/{id}/events | k | session | tasks.events | sessions | T
 GET /v1/app/sessions/{id}/messages | k | session | tasks.messages.list | sessions | T

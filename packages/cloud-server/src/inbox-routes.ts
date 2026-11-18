@@ -116,7 +116,46 @@ function readQuery(query: URLSearchParams): { limit: number; cursor?: string } |
   return { limit, ...(cursor === null ? {} : { cursor }) };
 }
 
+/** L4-U5b: one of Code's project notices, in the shape Cloud expects (only the named fields are kept), or undefined. */
+const NOTICE_ID = /^[a-z_]{1,20}\.[0-9]{1,16}\.[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
+const PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
+function projectNotice(value: unknown): { id: string; kind: string; project: string; status: string; at: string } | undefined {
+  if (!isObj(value)) return undefined;
+  const { id, kind, project, status, at } = value;
+  // A kind a newer Code adds is passed on (the app reads it as a plain update), so one new kind never fails the whole list.
+  if (typeof kind !== "string" || !KIND.test(kind) || typeof id !== "string" || !NOTICE_ID.test(id) || typeof project !== "string" || !PROJECT_NAME.test(project) || !id.startsWith(`${kind}.`) || !id.endsWith(`.${project}`)) return undefined;
+  if (typeof status !== "string" || status.length < 1 || status.length > 500) return undefined;
+  const time = typeof at === "string" ? Date.parse(at) : Number.NaN;
+  if (Number.isNaN(time)) return undefined;
+  return { id, kind, project, status, at: new Date(time).toISOString() };
+}
+/** The most project notices one read holds (Code checks at most 50 rows). */
+const NOTICES_MAX = 50;
+
 export const INBOX_ROUTES: Route[] = [
+  {
+    // GET /v1/app/inbox/project-notices: the notices about a project that Code keeps in the person's own inbox (an admin told by neither chat nor email still finds them here). Code shows one only while the person still
+    // administers the project; Cloud sends no query and no body, keeps the named fields only, and reads a Code with no such route (or no inbox) as nothing to show.
+    method: "GET", path: /^\/inbox\/project-notices$/u,
+    answer: async (context) => {
+      if ([...context.query.keys()].length > 0) return badRequest;
+      let raw: unknown;
+      try {
+        raw = await context.client.json<unknown>(context.session, "/v1/app/inbox/project-notices");
+      } catch (error) {
+        if (error instanceof CodeError && (error.status === 404 || error.status === 501)) return { status: 200, body: { items: [] } };
+        throw error;
+      }
+      if (!isObj(raw) || !Array.isArray(raw["items"]) || raw["items"].length > NOTICES_MAX) return unreadable;
+      const items: NonNullable<ReturnType<typeof projectNotice>>[] = [];
+      for (const entry of raw["items"] as unknown[]) {
+        const notice = projectNotice(entry);
+        if (notice === undefined) return unreadable;
+        items.push(notice);
+      }
+      return { status: 200, body: { items } };
+    },
+  },
   {
     // GET /v1/app/inbox?limit=&cursor=: the person's own rows, newest first (Code's page), each with where it opens in this app.
     method: "GET", path: /^\/inbox$/u,
