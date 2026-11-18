@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
-import { screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import type { ApiResponse } from "../../packages/ui/src/host.js";
 import { liveFixture } from "./support/live-fixture.js";
 import { renderAgents } from "./support/agent-render.js";
@@ -103,3 +103,12 @@ it("subscribes current work only after its successful read, refreshes on notices
 });
 
 it("links an older visible version to the actual current-versus-selected comparison and keeps hidden origin anonymous",async()=>{const f=renderAgents({path,versions:[{version:2,note:"Earlier checks",origin:{kind:"session",visible:false}}]});await screen.findByRole("heading",{name:"Payments Expert"});fireEvent.click(screen.getByText("Sharing and versions"));const link=await screen.findByRole("link",{name:"Version 2"});expect(link.getAttribute("href")).toBe("/app/agents/agt_aaaaaaaaaaaaaaaaaaaa/edit?from=3&to=2");expect(screen.getByText("Made from a session",{exact:true})).toBeTruthy();f.close();});
+it("a plain member who manages the agent opens Change owner without an alert and without asking for the admin-only people list", async () => {
+ const f = renderAgents({ path, role: "member" });
+ await screen.findByRole("heading", { name: "Payments Expert" });fireEvent.click(screen.getByText("Sharing and versions"));fireEvent.click(await screen.findByRole("button", { name: "Change owner" }));
+ const dialog = await screen.findByRole("dialog", { name: "Change owner" });
+ expect(await within(dialog).findByText(/Only owners and admins can choose a person/)).toBeTruthy();
+ expect(within(dialog).queryByRole("alert")).toBeNull();expect(within(dialog).getByRole<HTMLButtonElement>("button", { name: "Save owner" }).disabled).toBe(true);
+ expect(f.request.mock.calls.some(([request]) => request.path === "/v1/app/org/members")).toBe(false);f.close();
+});
+

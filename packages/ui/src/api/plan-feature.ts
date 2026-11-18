@@ -1,7 +1,8 @@
-import { CreatePlanFeatureResponseSchema, PlanFeatureChoicesResponseSchema, SetTaskFeatureResponseSchema, type PlanFeatureChoicesResponse } from "@agentx/contracts/web";
+import { PlanFeatureChoicesResponseSchema, type PlanFeatureChoicesResponse } from "@agentx/contracts/web";
 import type { AppHost } from "../host.js";
 import { ApiError } from "./errors.js";
 import { createApiClient } from "./client.js";
+import { createReportActions } from "./admin-report.js";
 
 const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const taskPath = (taskId: string): string => { if (!TASK_ID.test(taskId)) throw new ApiError(400, "CONFIG_INVALID", "This task can't be changed from here."); return "/v1/app/tasks/" + taskId.toLowerCase(); };
@@ -12,11 +13,12 @@ const taskPath = (taskId: string): string => { if (!TASK_ID.test(taskId)) throw 
  */
 export function createPlanFeatureApi(host: AppHost) {
  const api = createApiClient(host);
+ const report = createReportActions(host);
  return {
   choices: (taskId: string): Promise<PlanFeatureChoicesResponse> => api.get(taskPath(taskId) + "/feature-choices", PlanFeatureChoicesResponseSchema),
-  /** `null` files the task under "No feature" on purpose. */
-  set: async (taskId: string, feature: string | null): Promise<void> => { await api.sendAnswer("POST", taskPath(taskId) + "/feature", { feature }, SetTaskFeatureResponseSchema, { retry: "never" }); },
-  /** Makes a feature (a company owner or admin) and answers its id. */
-  create: async (name: string): Promise<string> => (await api.sendAnswer("POST", "/v1/app/org/report/features", { name }, CreatePlanFeatureResponseSchema, { retry: "never" })).feature.id,
+  /** Uses Cost and time's existing action and its answer reader; `null` files under "No feature". */
+  set: async (taskId: string, feature: string | null): Promise<void> => { await report.moveTask(taskId, feature); },
+  /** Uses Cost and time's existing create action, which also reads Code's `feature.state` answer. */
+  create: async (name: string): Promise<string> => (await report.create(name)).feature.id,
  };
 }

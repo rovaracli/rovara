@@ -3,8 +3,8 @@
 // rebuilt from the fields the page reads. Making a feature is refused here, in fixed words, for anyone who is not a company owner or admin.
 import { describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
-import { PLAN_FEATURE_WORDS, inertName, projectChoices, projectFiled, projectMade } from "../../packages/cloud-server/src/plan-feature-routes.js";
-import { CreatePlanFeatureResponseSchema, PlanFeatureChoicesResponseSchema, SetTaskFeatureResponseSchema } from "../../packages/contracts/src/app-plan-feature.js";
+import { PLAN_FEATURE_WORDS, projectChoices } from "../../packages/cloud-server/src/plan-feature-routes.js";
+import { PlanFeatureChoicesResponseSchema } from "../../packages/contracts/src/app-plan-feature.js";
 
 const CODE = "https://code.example.test";
 const ADA = "a".repeat(64), CAL = "c".repeat(64), DEE = "d".repeat(64), BEA = "b".repeat(64);
@@ -25,7 +25,7 @@ interface Call { method: string; path: string; token: string; body?: unknown }
 /** A pretend Code: tasks of two companies (A's started by Ada, B's by Bea); the choices and the filing are for the task's person or a company admin; making a feature is for admins. */
 function fakeCode() {
   const calls: Call[] = [];
-  const flags = { choices: "ok" as "ok" | "garbage" | "huge", filed: "ok" as "ok" | "garbage" | "other-task", made: "ok" as "ok" | "garbage" };
+  const flags = { choices: "ok" as "ok" | "garbage" | "huge" };
   const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const refuse = (status: number, code: string, message: string) => respond(status, { error: { code, message } });
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -41,25 +41,14 @@ function fakeCode() {
     if (me === undefined) return respond(401, { error: { code: "AUTH_REQUIRED" } });
     if (url.pathname === "/v1/dev/access") return respond(200, { developerId: me.developerId, displayName: me.name, administrator: false, companyId: me.company === "A" ? COMPANY_A : COMPANY_B, companyRole: me.role, projects: [{ name: "payments", access: "developer" }], notices: [] });
     calls.push({ method, path: url.pathname + url.search, token: me.token, ...(bodyText === "" ? {} : { body: JSON.parse(bodyText) as unknown }) });
-    const task = /^\/v1\/app\/tasks\/([^/]+)\/(feature-choices|feature)$/u.exec(url.pathname);
-    if (task !== null) {
+    const task = method === "GET" && /^\/v1\/app\/tasks\/([^/]+)\/feature-choices$/u.exec(url.pathname);
+    if (task) {
       const taskId = task[1]!;
       const mine = (taskId === TASK_A && me.company === "A" && (me.developerId === ADA || me.role !== "member")) || (taskId === TASK_B && me.company === "B");
       if (!mine) return refuse(404, "NOT_FOUND", "task not found");
-      if (task[2] === "feature-choices") {
-        if (flags.choices === "garbage") return respond(200, { features: "nope", canCreate: "yes" });
-        if (flags.choices === "huge") return respond(200, { features: Array.from({ length: 51 }, (_, n) => ({ id: FT(String(n % 10)), name: "x" })), canCreate: false });
-        return respond(200, { features: me.company === "A" ? [{ id: F_CHECKOUT, name: "Checkout v2", state: "open", secret: "x" }, { id: F_BILLING, name: "Billing\u0007\n team" }, { id: "not-an-id", name: "Bad id" }, { id: FT("3"), name: " " }] : [{ id: F_SECRET, name: "Other company secret" }], canCreate: me.role !== "member" });
-      }
-      const sent = JSON.parse(bodyText || "{}") as { feature?: string | null };
-      if (flags.filed === "garbage") return respond(200, { task: "nope" });
-      return respond(200, { task: { taskId: flags.filed === "other-task" ? TASK_B : taskId, feature: sent.feature === null ? null : { id: sent.feature, source: "chosen", extra: "x" } } });
-    }
-    if (url.pathname === "/v1/app/org/report/features" && method === "POST") {
-      if (me.role === "member") return refuse(403, "FORBIDDEN", "Only an owner or admin of the company can change features.");
-      if (flags.made === "garbage") return respond(201, { feature: { id: "bad" } });
-      const name = (JSON.parse(bodyText) as { name: string }).name;
-      return respond(201, { feature: { id: FT("4"), name, state: "open", createdAt: "x", updatedAt: "x", secret: "x" } });
+      if (flags.choices === "garbage") return respond(200, { features: "nope", canCreate: "yes" });
+      if (flags.choices === "huge") return respond(200, { features: Array.from({ length: 51 }, (_, n) => ({ id: FT(String(n % 10)), name: "x" })), canCreate: false });
+      return respond(200, { features: me.company === "A" ? [{ id: F_CHECKOUT, name: "Checkout v2", state: "open", secret: "x" }, { id: F_BILLING, name: "Billing\u0007\n team" }, { id: "not-an-id", name: "Bad id" }, { id: FT("3"), name: " " }] : [{ id: F_SECRET, name: "Other company secret" }], canCreate: me.role !== "member" });
     }
     return refuse(404, "NOT_FOUND", "route not found");
   }) as typeof fetch;
@@ -148,97 +137,9 @@ describe("the plan card's choices (GET /v1/web/tasks/{task}/feature-choices)", (
   });
 });
 
-describe("filing (POST /v1/web/tasks/{task}/feature)", () => {
-  it("sends Code only the one field the page sends, and answers the feature and its source", async () => {
-    const w = await base();
-    const filed = await send(w, w.ada, "POST", `/v1/web/tasks/${TASK_A}/feature`, { feature: F_BILLING });
-    expect(filed.status).toBe(200);
-    expect(SetTaskFeatureResponseSchema.parse(parse(filed))).toEqual({ task: { taskId: TASK_A, feature: { id: F_BILLING, source: "chosen" } } });
-    expect(filed.body).not.toContain("extra");
-    const none = await send(w, w.ada, "POST", `/v1/web/tasks/${TASK_A}/feature`, { feature: null });
-    expect(SetTaskFeatureResponseSchema.parse(parse(none)).task.feature).toBeNull();
-    expect(codeCalls(w)).toEqual([
-      { method: "POST", path: `/v1/app/tasks/${TASK_A}/feature`, token: "ada-access", body: { feature: F_BILLING } },
-      { method: "POST", path: `/v1/app/tasks/${TASK_A}/feature`, token: "ada-access", body: { feature: null } },
-    ]);
-  });
-
-  it("refuses a body that is not exactly { feature: id | null }, without asking Code, and does not echo it", async () => {
-    const w = await base();
-    for (const bad of [{}, { feature: "x" }, { feature: F_BILLING, company: COMPANY_B }, { feature: F_BILLING, actor: "x" }, { feature: 7 }, { feature: F_BILLING.toUpperCase() }, [], "canary", null]) {
-      const answer = await send(w, w.ada, "POST", `/v1/web/tasks/${TASK_A}/feature`, bad);
-      expect(answer.status, JSON.stringify(bad)).toBe(400);
-      expect(answer.body).not.toContain("canary");
-    }
-    expect(codeCalls(w)).toEqual([]);
-  });
-
-  it("needs the page's CSRF header; Code's refusals (not the starter, another company's task) reach the app unchanged", async () => {
-    const w = await base();
-    const noCsrf = await send(w, w.ada, "POST", `/v1/web/tasks/${TASK_A}/feature`, { feature: null }, null);
-    expect([401, 403]).toContain(noCsrf.status);
-    expect(codeCalls(w)).toEqual([]);
-    for (const [who, task] of [[w.dee, TASK_A], [w.bea, TASK_A], [w.ada, TASK_B]] as const) expect((await send(w, who, "POST", `/v1/web/tasks/${task}/feature`, { feature: F_BILLING })).status).toBe(404);
-  });
-
-  it("refuses an answer that is not a filing, or that names another task, in fixed words", async () => {
-    const w = await base();
-    for (const flag of ["garbage", "other-task"] as const) {
-      w.code.flags.filed = flag;
-      const answer = await send(w, w.ada, "POST", `/v1/web/tasks/${TASK_A}/feature`, { feature: F_BILLING });
-      expect(answer.status).toBe(502);
-      expect(parse(answer)).toEqual(PLAN_FEATURE_WORDS.unreadable.body);
-    }
-  });
-});
-
-describe("making a feature (POST /v1/web/org/report/features)", () => {
-  it("is for a company owner or admin: a member is refused here in fixed words, and Code is not asked", async () => {
-    const w = await base();
-    const answer = await send(w, w.ada, "POST", "/v1/web/org/report/features", { name: "Checkout v3" });
-    expect(answer.status).toBe(403);
-    expect(parse(answer)).toEqual(PLAN_FEATURE_WORDS.notAdmin.body);
-    expect(codeCalls(w)).toEqual([]);
-    const made = await send(w, w.cal, "POST", "/v1/web/org/report/features", { name: "  Checkout\u0007 v3  " });
-    expect(made.status).toBe(201);
-    expect(CreatePlanFeatureResponseSchema.parse(parse(made))).toEqual({ feature: { id: FT("4"), name: "Checkout v3" } });
-    expect(made.body).not.toContain("secret");
-    expect(codeCalls(w)).toEqual([{ method: "POST", path: "/v1/app/org/report/features", token: "cal-access", body: { name: "Checkout v3" } }]);
-  });
-
-  it("takes exactly { name } of one to 80 characters; anything else is refused before Code", async () => {
-    const w = await base();
-    for (const bad of [{}, { name: "" }, { name: "   " }, { name: "x".repeat(81) }, { name: "x", trackerLink: { tracker: "linear" } }, { name: 5 }, { name: "x", company: COMPANY_B }, "canary"]) {
-      const answer = await send(w, w.cal, "POST", "/v1/web/org/report/features", bad);
-      expect(answer.status, JSON.stringify(bad)).toBe(400);
-      expect(answer.body).not.toContain("canary");
-    }
-    expect(codeCalls(w)).toEqual([]);
-    expect((await send(w, w.cal, "POST", "/v1/web/org/report/features", { name: "x".repeat(80) })).status).toBe(201);
-  });
-
-  it("refuses an answer that is not a feature in fixed words", async () => {
-    const w = await base();
-    w.code.flags.made = "garbage";
-    const answer = await send(w, w.cal, "POST", "/v1/web/org/report/features", { name: "x" });
-    expect(answer.status).toBe(502);
-    expect(parse(answer)).toEqual(PLAN_FEATURE_WORDS.unreadable.body);
-  });
-});
-
-describe("what Cloud reads of Code's answers", () => {
-  it("makes a name one plain line, cut at 80 characters, and refuses a name with nothing readable", () => {
-    expect(inertName("a\u0000b\nc‮d")).toBe("a b c d");
-    expect(inertName("x".repeat(200))).toHaveLength(80);
-    expect(inertName("\u0007 ​")).toBeUndefined();
-    expect(inertName(5)).toBeUndefined();
-  });
-  it("reads choices, a filing and a made feature strictly; anything of another shape is refused whole", () => {
-    expect(projectChoices({ features: [], canCreate: true })).toEqual({ features: [], canCreate: true });
+describe("what Cloud reads of Code's choices", () => {
+  it("keeps only readable feature choices and rejects a malformed list", () => {
+    expect(projectChoices({ features: [{ id: F_BILLING, name: "Billing" }, { id: "bad", name: "Hidden" }], canCreate: true })).toEqual({ features: [{ id: F_BILLING, name: "Billing" }], canCreate: true });
     for (const bad of [null, [], {}, { features: [] }, { features: [], canCreate: "yes" }, { features: {}, canCreate: true }]) expect(projectChoices(bad), JSON.stringify(bad)).toBeUndefined();
-    expect(projectFiled({ task: { taskId: TASK_A, feature: null } }, TASK_A)).toEqual({ task: { taskId: TASK_A, feature: null } });
-    for (const bad of [null, { task: null }, { task: { taskId: TASK_B, feature: null } }, { task: { taskId: TASK_A, feature: { id: "x", source: "chosen" } } }, { task: { taskId: TASK_A, feature: { id: F_BILLING, source: "invented" } } }, { task: { taskId: TASK_A } }]) expect(projectFiled(bad, TASK_A), JSON.stringify(bad)).toBeUndefined();
-    expect(projectMade({ feature: { id: F_BILLING, name: "Billing" } })).toEqual({ feature: { id: F_BILLING, name: "Billing" } });
-    for (const bad of [null, { feature: null }, { feature: { id: "x", name: "a" } }, { feature: { id: F_BILLING, name: " " } }]) expect(projectMade(bad), JSON.stringify(bad)).toBeUndefined();
   });
 });

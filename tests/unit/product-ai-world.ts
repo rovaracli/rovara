@@ -29,7 +29,7 @@ const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url")
 export type Body = Record<string, unknown> & { error?: { code: string; message: string } };
 export const write = (expectedRevision: number, more: Record<string, unknown> = {}) => ({ requestId: randomUUID(), expectedRevision, ...more });
 
-export interface WorldOptions { vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck; bedrock?: BedrockBackend; beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; company?: boolean; /** DEC 254t: the install's switched-on AI source kinds (company backend). */ aiSourceKinds?: ReadonlySet<string>; /** Code's access check takes this long (the clock moves while it runs). */ accessMs?: number; /** Code's answer to a member change (default 200), and what happens while Code makes it. */ memberStatus?: number; duringMemberChange?: () => Promise<void> }
+export interface WorldOptions { /** More of Code's routes, answered as the signed-in person (the person's company is Code's live answer); undefined means Code has no such route. */ code?: (call: { method: string; pathname: string; body: unknown }, person: Person) => Response | undefined; vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck; bedrock?: BedrockBackend; beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; company?: boolean; /** DEC 254t: the install's switched-on AI source kinds (company backend). */ aiSourceKinds?: ReadonlySet<string>; /** DEC 254zzz3(1): the operator's exempt (pilot) companies (company backend). */ rovaraAiExempt?: ReadonlySet<string>; /** Code's access check takes this long (the clock moves while it runs). */ accessMs?: number; /** Code's answer to a member change (default 200), and what happens while Code makes it. */ memberStatus?: number; duringMemberChange?: () => Promise<void> }
 
 export function world(options: WorldOptions = {}) {
   const clock = { at: START }; let tokens = 0;
@@ -49,6 +49,8 @@ export function world(options: WorldOptions = {}) {
       if (options.memberStatus !== undefined && options.memberStatus !== 200) return new Response(JSON.stringify({ error: { code: "FORBIDDEN", message: "no" } }), { status: options.memberStatus, headers: { "content-type": "application/json" } });
       return new Response(JSON.stringify({ developerId: decodeURIComponent(member[2]!), outcome: "revoked" }), { status: 200, headers: { "content-type": "application/json" } });
     }
+    const more = options.code?.({ method: init?.method ?? "GET", pathname: url.pathname, body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined }, person);
+    if (more !== undefined) return more;
     return new Response("{}", { status: 404 });
   }) as typeof fetch;
   const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: `${ORIGIN}/callback`, scopes: "", fetch: fetchImpl });
@@ -62,7 +64,7 @@ export function world(options: WorldOptions = {}) {
   const handler = createCloudHandler({
     client, store: sessions, org: { orgId: "rovara", name: "Rovara", plan: "cloud" }, callbackPath: "/callback", secureCookies: false, work: new LocalWorkSessionStore(), origin: ORIGIN,
     now: () => new Date(clock.at), log: (event) => { logs.push(JSON.stringify(event)); }, audit, productAi: { store: typed, issuer: ISS, ...(options.bedrock === undefined ? {} : { bedrock: options.bedrock }) },
-    ...(options.company === true ? { company: { store: companies, log: (event: Record<string, unknown>) => { logs.push(JSON.stringify(event)); }, ...(options.aiSourceKinds === undefined ? {} : { aiSourceKinds: options.aiSourceKinds }) } } : {}),
+    ...(options.company === true ? { company: { store: companies, log: (event: Record<string, unknown>) => { logs.push(JSON.stringify(event)); }, ...(options.aiSourceKinds === undefined ? {} : { aiSourceKinds: options.aiSourceKinds }), ...(options.rovaraAiExempt === undefined ? {} : { rovaraAiExempt: options.rovaraAiExempt }) } } : {}),
   });
   const signIn = async (who: string, stepUpAge?: number) => {
     const person = PEOPLE[who]!; tokens += 1;

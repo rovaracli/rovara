@@ -69,12 +69,15 @@ export interface ReportFilters { from?: string; to?: string; project?: string; o
 
 const INSTANT = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z)?$/u;
 /** Code's feature ids (FeatureIdSchema) and task ids (uuids). */
-const FEATURE_ID = /^ft_[a-f0-9]{20}$/u;
-const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const NAME_UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+export const FEATURE_ID = /^ft_[a-f0-9]{20}$/u;
+export const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+/** Code's own task page for one task (`taskPage` in Code's report rows, TASK_PAGE_PATH_PATTERN in its contracts): `/review/<taskId>/task`. Cloud's handler sends a browser that follows it to Code, which asks for sign-in and checks access itself. */
+export const TASK_PAGE_PATH = /^\/review\/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\/task$/u;
+export const NAME_UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 /** One task's cost can be at most $1,000,000: with at most 5,000 tasks the sum stays a safe integer. */
 const MAX_TASK_MICROS = 1_000_000_000_000;
-const TITLE_MAX = 120, FEATURE_NAME_MAX = 80, PROJECT_MAX = 200;
+const TITLE_MAX = 120, PROJECT_MAX = 200;
+export const FEATURE_NAME_MAX = 80;
 
 const oneOf = <T extends string>(list: readonly T[], value: unknown): value is T => typeof value === "string" && (list as readonly string[]).includes(value);
 const plain = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
@@ -106,6 +109,8 @@ export function parseReportFilters(query: URLSearchParams): ReportFilters | unde
 /** One task, as the report reads it. Only what the pages draw: no person, no wait split. */
 export interface ReportTask {
   taskId: string; project: string; title: string; origin: Origin; path?: TaskPath; state: TaskState;
+  /** Code's reference to this task's own page, as Code gave it and only when it names this very task. Absent: the title is plain text. */
+  taskPage?: string;
   feature?: { id: string; source: FeatureSource };
   startedAt: number; firstPrAt?: number; endedAt?: number;
   prsOpened: number; prsMerged: number; prLinks: string[];
@@ -157,14 +162,16 @@ export function readRow(raw: unknown, companyId: string): ReportTask | undefined
     if (!plain(found) || typeof found["id"] !== "string" || !FEATURE_ID.test(found["id"]) || found["id"] === NO_FEATURE_ID || !oneOf(FEATURE_SOURCES, found["source"])) return undefined;
     feature = { id: found["id"], source: found["source"] };
   }
+  // The reference is Code's, passed on as it stands and only when it is exactly the page of THIS row's task: any other value (another task, an address, a longer path) is dropped and the title stays text. Never built here.
+  const taskPage = typeof raw["taskPage"] === "string" && TASK_PAGE_PATH.test(raw["taskPage"]) && raw["taskPage"].toLowerCase() === `/review/${taskId}/task`.toLowerCase() ? raw["taskPage"] : undefined;
   const links = Array.isArray(raw["prLinks"]) ? (raw["prLinks"] as unknown[]).slice(0, 20).flatMap((link) => { const good = plainHttpsLink(link); return good === undefined ? [] : [good]; }) : [];
   return {
-    taskId, project, title: title ?? "Untitled task", origin, ...(path === undefined ? {} : { path }), state, ...(feature === undefined ? {} : { feature }), startedAt, ...(firstPrAt === undefined ? {} : { firstPrAt }), ...(endedAt === undefined ? {} : { endedAt }),
+    taskId, project, title: title ?? "Untitled task", origin, ...(path === undefined ? {} : { path }), state, ...(taskPage === undefined ? {} : { taskPage }), ...(feature === undefined ? {} : { feature }), startedAt, ...(firstPrAt === undefined ? {} : { firstPrAt }), ...(endedAt === undefined ? {} : { endedAt }),
     prsOpened: raw["prsOpened"], prsMerged: raw["prsMerged"], prLinks: links, costMicros: raw["costMicros"], unpricedCalls: raw["unpricedCalls"],
   };
 }
 
-function readFeature(raw: unknown): ReportFeature | undefined {
+export function readFeature(raw: unknown): ReportFeature | undefined {
   if (!plain(raw) || typeof raw["id"] !== "string" || !FEATURE_ID.test(raw["id"]) || raw["id"] === NO_FEATURE_ID) return undefined;
   const name = inert(raw["name"], FEATURE_NAME_MAX);
   if (name === undefined) return undefined;
@@ -283,9 +290,10 @@ const centsOf = (micros: number): number => Math.round(micros / MICROS_PER_CENT)
  * Whole cents for each amount, summing exactly to the whole's cents (largest remainder), so a table's rows always add up to its total. Integers only: the
  * amounts are integer micro-dollars and nothing here is a float of dollars.
  */
-export function allocateCents(microsList: readonly number[]): number[] {
+export function allocateCents(microsList: readonly number[], wholeCents?: number): number[] {
   const total = microsList.reduce((sum, micros) => sum + micros, 0);
-  const target = centsOf(total);
+  // `wholeCents`: the cents the caller already settled for the whole (a table row, for the tasks under it), so the parts add up to exactly that. It must be the whole's own rounding or the table's one-cent adjustment of it (within the sum of the floors plus the number of parts); the table row always is. Without it, the whole's own rounding.
+  const target = wholeCents ?? centsOf(total);
   const floors = microsList.map((micros) => Math.floor(micros / MICROS_PER_CENT));
   const order = microsList.map((micros, at) => ({ at, rest: micros - floors[at]! * MICROS_PER_CENT })).sort((a, b) => b.rest - a.rest || a.at - b.at);
   let missing = target - floors.reduce((sum, cents) => sum + cents, 0);
@@ -366,19 +374,25 @@ export function applyOwnFilters(rows: readonly ReportTask[], filters: ReportFilt
     && (filters.state === undefined || (filters.state === "closed" ? row.state === "closed" || row.state === "failed" : row.state === filters.state)));
 }
 
+/**
+ * The By feature table's groups, in the order the table is allocated: each feature with a task, then No feature last. One function for the table AND a feature's page, so the page's total
+ * is allocated against the very same groups as its row (row 3672: they never differ by a cent).
+ */
+function featureGroupsOf(rows: readonly ReportTask[], features: ReadonlyMap<string, ReportFeature>): Array<{ key: string; name: string; state?: "open" | "done"; tasks: ReportTask[] }> {
+  const byFeature = new Map<string, ReportTask[]>(), none: ReportTask[] = [];
+  for (const row of rows) if (row.feature === undefined) none.push(row); else byFeature.set(row.feature.id, [...(byFeature.get(row.feature.id) ?? []), row]);
+  const featureGroups = [...byFeature].map(([id, tasks]) => { const known = features.get(id); return { key: id, name: known?.name ?? UNNAMED_FEATURE, ...(known?.state === undefined ? {} : { state: known.state }), tasks }; });
+  return none.length === 0 ? featureGroups : [...featureGroups, { key: NO_FEATURE_ID, name: NO_FEATURE_NAME, tasks: none }];
+}
+
 /** The whole report from the rows. Pure: the clock is the caller's. */
 export function buildReport(rows: readonly ReportTask[], features: ReadonlyMap<string, ReportFeature>, filters: ReportFilters, now: Date): CostReport {
   const nowMs = now.getTime();
-  const byFeature = new Map<string, ReportTask[]>(), byProject = new Map<string, ReportTask[]>(), none: ReportTask[] = [];
-  for (const row of rows) {
-    if (row.feature === undefined) none.push(row); else byFeature.set(row.feature.id, [...(byFeature.get(row.feature.id) ?? []), row]);
-    byProject.set(row.project, [...(byProject.get(row.project) ?? []), row]);
-  }
-  const featureGroups = [...byFeature].map(([id, tasks]) => { const known = features.get(id); return { key: id, name: known?.name ?? UNNAMED_FEATURE, ...(known?.state === undefined ? {} : { state: known.state }), tasks }; });
+  const byProject = new Map<string, ReportTask[]>();
+  for (const row of rows) byProject.set(row.project, [...(byProject.get(row.project) ?? []), row]);
   const projectGroups = [...byProject].map(([name, tasks]) => ({ key: name, name, tasks }));
   // The no-feature group is always the last row, with its own numbers; the cents of the whole table still add up to the total.
-  const withNone = none.length === 0 ? featureGroups : [...featureGroups, { key: NO_FEATURE_ID, name: NO_FEATURE_NAME, tasks: none }];
-  const featureTable = tableOf(withNone, nowMs);
+  const featureTable = tableOf(featureGroupsOf(rows, features), nowMs);
   const noneAt = featureTable.findIndex((group) => group.key === NO_FEATURE_ID);
   if (noneAt >= 0) featureTable.push(...featureTable.splice(noneAt, 1));
   const totalNumbers = numbersOf(rows, nowMs);
@@ -403,6 +417,8 @@ export interface FeatureDetail {
   tasks: Array<{
     taskId: string; title: string; project: string; origin: Origin; path?: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number;
     prsOpened: number; prsMerged: number; prLinks: string[]; wallMs?: number; wallSoFar?: boolean;
+    /** Code's reference to the task's own page (see `readRow`): the title links to it. Absent: plain text. */
+    taskPage?: string;
   }>;
   tasksTotal: number;
   unreadableTasks?: number;
@@ -418,19 +434,21 @@ export function buildFeatureDetail(id: string, rows: readonly ReportTask[], feat
   const totalMicros = numbers.costMicros, rest = withoutMicros(numbers);
   const ordered = [...mine].sort((a, b) => b.startedAt - a.startedAt || a.taskId.localeCompare(b.taskId));
   const shown = ordered.slice(0, FEATURE_TASKS_MAX);
+  // The feature's cents are its row in the By feature table (the same allocation over the same groups), so the page and the table always agree; a feature with no task in the range has no row and costs nothing.
+  const featureCents = tableOf(featureGroupsOf(rows, features), nowMs).find((group) => group.key === id)?.costCents ?? centsOf(totalMicros);
   // Each task's cents, summing to the feature's cents (the list shows at most FEATURE_TASKS_MAX of them, so the sum is of all and the shown ones are a part).
-  const cents = allocateCents(ordered.map((task) => task.costMicros));
+  const cents = allocateCents(ordered.map((task) => task.costMicros), featureCents);
   const sources = FEATURE_SOURCES.map((source) => ({ source, count: mine.filter((task) => task.feature?.source === source).length })).filter((entry) => entry.count > 0);
   return {
     feature: { id, name: isNone ? NO_FEATURE_NAME : known?.name ?? UNNAMED_FEATURE, ...(known?.state === undefined ? {} : { state: known.state }), ...(known?.trackerLink === undefined ? {} : { trackerLink: known.trackerLink }), none: isNone },
     range: { ...(filters.from === undefined ? {} : { from: filters.from }), ...(filters.to === undefined ? {} : { to: filters.to }) },
     asOf: now.toISOString(),
-    totals: { ...rest, costCents: centsOf(totalMicros) },
+    totals: { ...rest, costCents: featureCents },
     sources,
     tasks: shown.map((task, at) => {
       const end = task.state === "open" ? nowMs : task.endedAt;
       return {
-        taskId: task.taskId, title: task.title, project: task.project, origin: task.origin, ...(task.path === undefined ? {} : { path: task.path }), state: task.state, startedAt: new Date(task.startedAt).toISOString(),
+        taskId: task.taskId, title: task.title, project: task.project, origin: task.origin, ...(task.path === undefined ? {} : { path: task.path }), state: task.state, ...(task.taskPage === undefined ? {} : { taskPage: task.taskPage }), startedAt: new Date(task.startedAt).toISOString(),
         costCents: cents[at]!, unpricedCalls: task.unpricedCalls, prsOpened: task.prsOpened, prsMerged: task.prsMerged, prLinks: task.prLinks,
         ...(end !== undefined && end >= task.startedAt ? { wallMs: end - task.startedAt, ...(task.state === "open" ? { wallSoFar: true } : {}) } : {}),
       };
@@ -443,11 +461,17 @@ export function buildFeatureDetail(id: string, rows: readonly ReportTask[], feat
 // The routes
 
 /** The caller, or the refusal. Cloud's own check first; Code checks again on its own route. */
-async function adminOnly(context: RouteContext): Promise<{ companyId: string } | RouteAnswer> {
+async function adminOnly(context: RouteContext): Promise<{ companyId: string; developerId: string } | RouteAnswer> {
   const who = await companyCaller(context);
   if (refused(who)) return who;
   if (!isCompanyAdmin(who.companyRole)) return REPORT_WORDS.notAdmin;
-  return { companyId: who.companyId };
+  return { companyId: who.companyId, developerId: who.developerId };
+}
+
+/** The features for the pickers (Move to feature, Merge into), by name: id, name and state only. */
+function pickerOf(features: ReadonlyMap<string, ReportFeature>): Array<{ id: string; name: string; state?: "open" | "done" }> {
+  return [...features.values()].sort((a, b) => a.name.localeCompare(b.name, "en") || a.id.localeCompare(b.id)).slice(0, 500)
+    .map((feature) => ({ id: feature.id, name: feature.name, ...(feature.state === undefined ? {} : { state: feature.state }) }));
 }
 
 async function read(context: RouteContext, featureId: string | undefined): Promise<RouteAnswer> {
@@ -460,9 +484,12 @@ async function read(context: RouteContext, featureId: string | undefined): Promi
     const rows = applyOwnFilters(fetched.rows, filters);
     const features = await fetchFeatures(context);
     const unreadable = fetched.unreadable > 0 ? { unreadableTasks: fetched.unreadable } : {};
-    if (featureId === undefined) return { status: 200, body: { ...buildReport(rows, features, filters, context.now()), ...unreadable } };
+    // `canChange`: the person is a company owner or admin by Code's access answer made just now, the same decision Code makes again on each change. The page draws an action only when it is true.
+    const may = { canChange: true as const, features: pickerOf(features) };
+    if (featureId === undefined) return { status: 200, body: { ...buildReport(rows, features, filters, context.now()), ...may, ...unreadable } };
     const detail = buildFeatureDetail(featureId, rows, features, filters, context.now());
-    return detail === undefined ? REPORT_WORDS.notFound : { status: 200, body: { ...detail, ...unreadable } };
+    if (detail === undefined) return REPORT_WORDS.notFound;
+    return { status: 200, body: { ...detail, ...may, ...unreadable } };
   } catch (error) {
     if (error instanceof ReportRefused) return error.answer;
     // Code's access check failing is Code's refusal too: fixed words, never what Code said. An ended sign-in is the handler's.

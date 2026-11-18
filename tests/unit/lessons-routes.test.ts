@@ -71,6 +71,10 @@ describe("the Learned lists, the mode and retiring", () => {
     expect((await priya.get<{ lessons: Lesson[] }>("/projects/web/lessons?list=retired")).body.lessons.map((lesson) => lesson.id)).toEqual(["les_semis0001"]);
     expect((await priya.get("/projects/web/lessons?list=everything")).status).toBe(400);
     expect((await priya.get("/projects/web/lessons?limit=500")).status).toBe(400);
+    // A page is at most 50 lessons (lessons are read a few at a time, never in bulk): 51 is refused here, before Code is asked.
+    expect((await priya.get("/projects/web/lessons?limit=51")).status).toBe(400);
+    expect((await priya.get("/projects/web/lessons?limit=100")).status).toBe(400);
+    expect((await priya.get("/projects/web/lessons?limit=50")).status).toBe(200);
     fake.setLessons(false);
     expect(await priya.get("/projects/web/lessons")).toEqual({ status: 404, body: { error: { code: "LESSONS_SWITCHED_OFF", message: "Lessons are off." } } });
     expect((await priya.get("/projects/web/lessons/mode")).status).toBe(404);
@@ -150,11 +154,24 @@ describe("the shapes Cloud keeps", () => {
     expect(view?.["counters"]).toEqual({ loaded: 0, helpful: 2, harmful: 0 });
     expect(lessonItem({ id: "x" })).toBeUndefined();
     // A duplicate or contradiction is named by id (never free text), and the distinct-task count passes through only when Code sends it.
-    expect(lessonItem({ id: "les_cccc", version: 1, expiresAt: 5, title: "T", possibleDuplicate: "les_dddd", contradicts: "<b>no</b>", mergeBlocked: true, usedInTasks: 4 })).toMatchObject({ possibleDuplicate: "les_dddd", mergeBlocked: true, usedInTasks: 4 });
+    const olderCodeLesson = lessonItem({ id: "les_cccc", version: 1, expiresAt: 5, title: "T", possibleDuplicate: "les_dddd", contradicts: "<b>no</b>", mergeBlocked: true, usedInTasks: 4 });
+    expect(olderCodeLesson).toMatchObject({ possibleDuplicate: "les_dddd", usedInTasks: 4 });
+    expect(olderCodeLesson).not.toHaveProperty("mergeBlocked");
     expect(lessonItem({ id: "les_cccc", version: 1, expiresAt: 5, title: "T", contradicts: "<b>no</b>" })).not.toHaveProperty("contradicts");
     expect(lessonItem({ id: "les_cccc", version: 1, expiresAt: 5, title: "T" })).not.toHaveProperty("usedInTasks");
     // No lapse time: left out, never shown as "lapses now".
     expect(lessonItem({ id: "les_bbbb", version: 1, title: "T" })).toBeUndefined();
+  });
+  it("keeps a lesson whose citation kind, tier, count of people or source kinds Code added later: an unknown kind is an `other` reference, never dropped, never read as a known kind", () => {
+    const row = { id: "les_aaaa", version: 1, expiresAt: 5, title: "T", sourceKinds: ["plan_comment", "design_comment", "other", "made_up_future_kind"], provenance: { sourceKinds: ["plan_comment"] }, newerField: { deep: 1 } };
+    const view = lessonItem({ ...row, citations: [{ kind: "wiki", page: "p" }, { kind: "pr", url: "https://github.com/x/y/pull/1" }, { kind: "task", taskId: "t1" }, 7, { kind: "code", repo: "r" }], needs: { required: 3, have: 1, groups: [] } });
+    expect(view).not.toHaveProperty("sourceKinds");
+    expect(view).not.toHaveProperty("provenance");
+    // A known kind with a bad body is still dropped; a non-object is dropped; only an unknown kind of an object becomes `other`.
+    expect(view?.["citations"]).toEqual([{ kind: "other" }, { kind: "pr", url: "https://github.com/x/y/pull/1" }, { kind: "task", taskId: "t1" }]);
+    expect(view?.["needs"]).toMatchObject({ required: 2, have: 1 });
+    expect(lessonItem({ ...row, needs: { required: 1, have: 0 } })?.["needs"]).toMatchObject({ required: 1 });
+    expect(lessonItem({ ...row, needs: { required: "many", have: 0 } })?.["needs"]).toMatchObject({ required: 1 });
   });
   it("tells Code's off refusal from any other 404", () => {
     expect(lessonsOff(new CodeError(404, { error: { code: "LESSONS_SWITCHED_OFF", message: "Lessons are off." } }))).toBe(true);

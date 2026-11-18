@@ -15,7 +15,7 @@ import { createGeminiTransport } from "./product-gemini.js";
 import { createVertexTransport } from "./product-vertex.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
 import { awsKms } from "./aws-kms.js";
-import { CompanyAgentAiSource, parseAiSourceKinds, parseRovaraAiExempt, parseRovaraAiModels, storedBedrock, type AgentAiSourceReader, type ByoBedrock } from "./agent-ai.js";
+import { CompanyAgentAiSource, parseAiSourceKinds, parseRovaraAiExempt, parseRovaraAiModels, storedBedrock, type AgentAiSourceReader, type ByoBedrock, type RovaraAi } from "./agent-ai.js";
 import { BedrockExternalIds, type MacGenerator } from "./bedrock-byo.js";
 import { BedrockSessions } from "./bedrock-byo-sessions.js";
 import { createBedrockTransport } from "./bedrock-transport.js";
@@ -34,6 +34,7 @@ import { createSignedTokenVerifier } from "./token.js";
 import { createEvalAuthorityHandler, EVAL_AUTHORITY_PATH, EVAL_AUTHORITY_TOKEN_KIND } from "./eval-authority.js";
 import { createEvalCapHandler, EVAL_CAP_PATH, EVAL_CAP_TOKEN_KIND } from "./eval-cap.js";
 import { createOfferedModelsHandler, OFFERED_MODELS_PATH, parseDisabledAgentModels, SERVICE_TOKEN_KIND } from "./offered-models.js";
+import { createUpkeepCapReadHandler, UPKEEP_CAP_READ_PATH, UPKEEP_CAP_READ_TOKEN_KIND } from "./upkeep-cap-read.js";
 import { BEDROCK_CHECK_PATH, BEDROCK_SETUP_PATH, createBedrockServiceHandlers, createVertexCheckHandler, VERTEX_CHECK_PATH, type MacVerifier } from "./service-call.js";
 import { Dynamo } from "./dynamo.js";
 import { DynamoEndedTasks, DynamoMeter } from "./dynamo-meter.js";
@@ -310,7 +311,15 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const meter = new DynamoMeter({ db, tables: config.tables, now });
   const modelLimits = deps.modelLimits ?? modelLimitsFrom(prices);
   const transport = deps.transport ?? createAnthropicTransport();
+  // DEC 254zzz3(1): the exempt companies' default on Rovara's AI, for the learning and answers routes too (only where Rovara's AI is on, in company-key mode).
+  const agentAiSources = deps.agentAiSources ?? new CompanyAgentAiSource(db, config.tables.companies);
+  const rovaraBedrock: RovaraAi | undefined = config.rovaraAi === undefined ? undefined : {
+    models: config.rovaraAi.models, exempt: config.rovaraAi.exempt,
+    transport: deps.bedrockTransport ?? createBedrockTransport({ region: config.region, credentials, now }), maxOutputTokens: (id: string) => prices.maxOutputTokens("bedrock", id),
+  };
+  const rovaraDefault = companyKeys === undefined || rovaraBedrock === undefined ? {} : { rovaraDefault: { ai: rovaraBedrock, sources: agentAiSources, ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }) } };
   const learning = deps.learning === undefined ? undefined : createLearningRoutes({
+    ...rovaraDefault,
     keys: deps.learning.keys, meter: deps.learning.meter, companyCaps: caps, lessons: new CompanyLessonsSwitch(db, config.tables.companies), transport,
     // Anthropic keeps the agent route's ceilings; the other providers' guards read their own price rows (and fall back to their own defaults).
     modelLimits: { maxOutputTokens: (provider, model) => provider === "anthropic" ? modelLimits.maxOutputTokens(provider, model) : prices.maxOutputTokens(provider, model) },
@@ -319,6 +328,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   });
   const upkeepLimits = deps.upkeepLimits ?? new CompanyUpkeepLimits(db, config.tables.companies);
   const answers = deps.answers === undefined ? undefined : createAnswersRoutes({
+    ...rovaraDefault,
     keys: deps.answers.keys, meter: deps.answers.meter, companyCaps: caps, limits: deps.answersLimits ?? new CompanyAnswersLimits(db, config.tables.companies), transport,
     modelLimits: { maxOutputTokens: (provider, model) => provider === "anthropic" ? modelLimits.maxOutputTokens(provider, model) : prices.maxOutputTokens(provider, model) },
     transports: deps.answers.transports ?? { gemini: createGeminiTransport(), vertex: createVertexTransport(), openai: createOpenAiTransport() },
@@ -335,8 +345,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(companyKeys === undefined ? {} : { agentKeys: companyKeys }),
     // DEC 240: in company-key mode each company's saved choice picks its agents' source; Rovara's AI only when configured.
     ...(companyKeys === undefined ? {} : { agentAi: {
-      sources: deps.agentAiSources ?? new CompanyAgentAiSource(db, config.tables.companies),
-      ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt, transport: deps.bedrockTransport ?? createBedrockTransport({ region: config.region, credentials, now }), maxOutputTokens: (id: string) => prices.maxOutputTokens("bedrock", id) } }),
+      sources: agentAiSources,
+      ...(rovaraBedrock === undefined ? {} : { rovara: rovaraBedrock }),
       // DEC 238: only when configured (a company that chose its own Bedrock is refused otherwise, never sent elsewhere).
       ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }),
       // DEC 254t: the kinds the owner switched on (none when unset).
@@ -364,7 +374,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const offeredModels = companyKeys === undefined || handlerDeps.agentAi === undefined ? undefined : createOfferedModelsHandler({
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, SERVICE_TOKEN_KIND),
     sources: handlerDeps.agentAi.sources, disabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined),
-    ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models } }),
+    ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt }, keys: companyKeys }),
     ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }), now,
     switchedOn: config.aiSourceKinds ?? new Set<string>(), chat: { openai: true, openrouter: true },
     // The endpoint's registered model names, from the company's sealed endpoint account (this company only).
@@ -384,6 +394,11 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, EVAL_CAP_TOKEN_KIND),
     caps, now,
   });
+  // L4-CAPR: Code's read of one project's nightly upkeep cap (upkeep-cap-read.ts), over the SAME limits the agent route enforces and the agent meter, signed with the task key.
+  const upkeepCapRead = createUpkeepCapReadHandler({
+    verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, UPKEEP_CAP_READ_TOKEN_KIND),
+    limits: upkeepLimits, meter, now,
+  });
   const inFlight = new Set<Promise<void>>();
   let draining = false;
   const refuse = (res: ServerResponse) => { res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store", connection: "close" }); res.end(UNAVAILABLE); };
@@ -394,6 +409,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     const service = vertexCheck !== undefined && path === VERTEX_CHECK_PATH ? vertexCheck
       : bedrockCalls !== undefined && (path === BEDROCK_SETUP_PATH || path === BEDROCK_CHECK_PATH) ? bedrockCalls[path]
       : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels
+      : UPKEEP_CAP_READ_PATH.test(req.url ?? "") ? upkeepCapRead
       : evalAuthority !== undefined && path === EVAL_AUTHORITY_PATH ? evalAuthority
       : path === EVAL_CAP_PATH ? evalCap : undefined;
     const running = (service !== undefined ? service(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });

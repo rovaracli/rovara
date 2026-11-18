@@ -20,21 +20,22 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { projectFixture } from "./support/project-fixture.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
-import { commitOf, wikiIndex, wikiPage, wikiSources, type WikiFixtureOptions } from "./support/wiki-fixture.js";
+import { commitOf, wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./support/wiki-fixture.js";
 
 const LEAK = "SENSITIVE-SERVER-DETAIL";
 const WORDS = WIKI_WORDS;
 const json = (status: number, body: unknown): ApiResponse => ({ status, body });
 const refusal = (status: number, code: string, message: string) => json(status, { error: { code, message } });
 
-interface Options { state?: WikiFixtureOptions["state"]; index?: () => ApiResponse; page?: (id: string) => ApiResponse | undefined; sources?: () => ApiResponse; initial?: string; repositories?: Array<{ name?: string; fullName: string; defaultBranch: string }> }
+interface Options { state?: WikiFixtureOptions["state"]; agentsEnabled?: boolean; index?: () => ApiResponse; page?: (id: string) => ApiResponse | undefined; sources?: () => ApiResponse; initial?: string; repositories?: Array<{ name?: string; fullName: string; defaultBranch: string }> }
 function Where() { const location = useLocation(); return h("output", { "data-testid": "where" }, location.pathname + location.search); }
 function mount(options: Options = {}, element: "tab" | "screen" = "tab") {
   const overview = projectFixture();
   overview.project.repositories = options.repositories ?? [{ name: "beacon-api", fullName: "acme/beacon-api", defaultBranch: "main" }];
   const f = fakeHost(async (request: ApiRequest) => {
     const path = request.path;
-    if (path === "/v1/app/projects/payments/wiki") return options.index?.() ?? json(200, wikiIndex("payments", { ...(options.state === undefined ? {} : { state: options.state }) }));
+    if (path === "/v1/app/projects/payments/wiki") return options.index?.() ?? json(200, wikiIndex("payments", { ...(options.state === undefined ? {} : { state: options.state }), ...(options.agentsEnabled === undefined ? {} : { agentsEnabled: options.agentsEnabled }) }));
+    if (path.startsWith("/v1/app/projects/payments/wiki/search?")) return json(200, wikiSearch("payments", new URLSearchParams(path.split("?")[1]).get("q") ?? ""));
     const page = /^\/v1\/app\/projects\/payments\/wiki\/pages\/([^/]+)$/u.exec(path);
     if (page !== null) return options.page?.(page[1]!) ?? (() => { const one = wikiPage("payments", page[1]!); return one === undefined ? refusal(404, "NOT_FOUND", WORDS.noPage) : json(200, one); })();
     const sources = /^\/v1\/app\/projects\/payments\/wiki\/pages\/([^/]+)\/sources$/u.exec(path);
@@ -254,18 +255,30 @@ describe("wiki text is untrusted", () => {
 });
 
 describe("search", () => {
-  it("looks through titles and summaries, shows the match, opens the page and clears itself", async () => {
+  it("searches title, summary and page text through Code, shows the match, opens the page and clears itself", async () => {
     const f = mount();
     await article();
     const box = screen.getByRole("searchbox", { name: "Search the wiki" });
     fireEvent.change(box, { target: { value: "refund" } });
     const results = within(await screen.findByTestId("wiki-results"));
     expect(results.getByRole("heading", { level: 2, name: "refund" })).toBeTruthy();
-    const hit = results.getByRole("button", { name: /beacon-api \/ billing/u });
+    const hit = await results.findByRole("button", { name: /beacon-api \/ billing/u });
     expect(hit.querySelector("mark")?.textContent?.toLowerCase()).toBe("refund");
     fireEvent.click(hit);
     await waitFor(() => expect(screen.getByTestId("wiki-page").getAttribute("data-page")).toBe("beacon-api--billing"));
     expect((screen.getByRole<HTMLInputElement>("searchbox", { name: "Search the wiki" })).value).toBe("");
+    f.close();
+  });
+
+  it("waits for two characters before searching", async () => {
+    const f = mount();
+    await article();
+    const box = screen.getByRole("searchbox", { name: "Search the wiki" });
+    fireEvent.change(box, { target: { value: "r" } });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(f.calls("/search?q=r")).toHaveLength(0);
+    fireEvent.change(box, { target: { value: "re" } });
+    await waitFor(() => expect(f.calls("/search?q=re")).toHaveLength(1), { timeout: 1_000 });
     f.close();
   });
 
@@ -274,6 +287,13 @@ describe("search", () => {
     await article();
     fireEvent.change(screen.getByRole("searchbox", { name: "Search the wiki" }), { target: { value: "zzzqqq" } });
     expect((await screen.findByText("No page mentions that. The wiki does not guess. Try another word.")).textContent).toBeTruthy();
+    f.close();
+  });
+
+  it("shows the fixed agents-off banner when the project switch is off", async () => {
+    const f = mount();
+    await article();
+    expect(screen.getByText("Agents do not get the wiki right now")).toBeTruthy();
     f.close();
   });
 });
@@ -360,10 +380,11 @@ describe("review fixes", () => {
     const f = mount();
     await article();
     const box = screen.getByRole("searchbox", { name: "Search the wiki" });
-    fireEvent.change(box, { target: { value: "(" } });
+    fireEvent.change(box, { target: { value: "a+b" } });
     expect((await screen.findByText("No page mentions that. The wiki does not guess. Try another word.")).textContent).toBeTruthy();
     expect(within(screen.getByTestId("wiki-results")).getByRole("status").textContent).toBe("0 pages match");
     fireEvent.change(box, { target: { value: "REFUND" } });
+    await waitFor(() => expect(f.calls("/search?q=REFUND")).toHaveLength(1), { timeout: 1_000 });
     await waitFor(() => expect(within(screen.getByTestId("wiki-results")).getByRole("status").textContent).toMatch(/^\d+ pages? match(es)?$/u));
     expect(within(screen.getByTestId("wiki-results")).getByRole("status").textContent).not.toBe("0 pages match");
     f.close();

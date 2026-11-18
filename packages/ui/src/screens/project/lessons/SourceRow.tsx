@@ -12,7 +12,7 @@ import { useSourceWrite } from "./use-source-write.js";
 type Row = SourcesAdminViewData["sources"][number];
 const RANK: Readonly<Record<string, number>> = { A: 0, B: 1, C: 2, D: 3 };
 /** The retention the server offers for a kind (a code-host row is offered what `codehost` is). */
-export const offeredFor = (offered: SourcesAdminViewData["offered"], kind: string): readonly string[] => offered[kind] ?? offered[kind.split(":")[0]!] ?? [];
+export const offeredFor = (offered: SourcesAdminViewData["offered"], kind: string): readonly string[] => (offered[kind] ?? offered[kind.split(":")[0]!] ?? []).filter(mode => mode !== "unknown");
 /** The Public notes line: what Rovara keeps, with "Slack's API terms" as a real link (design 4.3), opened in a new tab and without the opener. The sentence itself is one constant (`T.SRC_NOTES_NOTE`). */
 export function NotesNote() {
  const at = T.SRC_NOTES_NOTE.indexOf(T.SRC_NOTES_LINK_TEXT);

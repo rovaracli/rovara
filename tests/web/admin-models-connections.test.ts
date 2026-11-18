@@ -63,6 +63,19 @@ for (const role of ["owner", "admin", "member"] as const) it(`preserves the auth
  await screen.findByRole("heading", { name: "Waiting for people" });await screen.findByText("Approval");if (role === "member") { expect(screen.queryByRole("link", { name: "AI models" })).toBeNull();expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/org/model-sources")).toBe(false); }f.close();
 });
 
+for (const [status, code] of [[501, "NOT_ON_CODE_YET"], [404, "NOT_FOUND"]] as const) it(`shows a calm "Nothing waiting." per panel, never an alert or Try again, when approvals and spending requests answer ${String(status)}`, async () => {
+ const f = mount({ path: "/app/admin/waiting", role: "member", respond: async r => r.path === "/v1/app/approvals?status=PENDING" || r.path === "/v1/app/spend-requests" ? { status, body: { error: { code, message: r.path + " isn't connected to Rovara Code yet." } } } : { status: 200, body: r.path === "/v1/app/me" ? { developer: { id: "a".repeat(64), name: "Priya", orgRole: "member" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } : {} } });
+ await screen.findByRole("heading", { name: "Waiting for people" });
+ await waitFor(() => expect(screen.getAllByText("Nothing waiting.")).toHaveLength(2));
+ for (const panel of [screen.getByRole("region", { name: "Approvals" }), screen.getByRole("region", { name: "Spending requests" })]) { expect(within(panel).getByRole("status").textContent).toBe("Nothing waiting.");expect(within(panel).queryByRole("alert")).toBeNull();expect(within(panel).queryByRole("button")).toBeNull(); }
+ expect(screen.queryByRole("alert")).toBeNull();expect(screen.queryByText(/Couldn't load/)).toBeNull();expect(screen.queryByRole("button", { name: /^Retry/ })).toBeNull();expect(screen.queryByText(/isn't connected to Rovara Code yet/)).toBeNull();f.close();
+});
+it("still shows the alert and Retry for any other approvals error (400)", async () => {
+ const f = mount({ path: "/app/admin/waiting", respond: async r => r.path === "/v1/app/approvals?status=PENDING" ? { status: 400, body: { error: { code: "CONFIG_INVALID", message: "boom" } } } : { status: 200, body: r.path === "/v1/app/me" ? { developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } : bodies[r.path] ?? {} } });
+ const panel = await screen.findByRole("region", { name: "Approvals" });
+ expect((await within(panel).findByRole("alert")).textContent).toContain("Couldn't load this information");expect(within(panel).getByRole("button", { name: "Retry approvals" })).toBeTruthy();f.close();
+});
+
 it("shows pending GitHub install requests separately from installed health", async () => { const f = area("/app/admin/connections");await screen.findByText(/Pending organization/);expect(screen.getByText(/Waiting for GitHub admin/)).toBeTruthy();f.close(); });
 it("preserves the exact Bedrock warning and strips setup identities", async () => {
  const f = mount({ path: "/app/admin/models/sources", respond: async r => ({ status: 200, body: r.path.endsWith("model-sources") ? { sources: [{ ...source, kind: "bedrock", externalId: "synthetic-private-value" }], order: [] } : { developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } }) });

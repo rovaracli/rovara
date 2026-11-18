@@ -27,7 +27,8 @@ export class UnavailablePage {
   /** Within the expect timeout the screen stops loading and says plainly that Code does not offer this yet. */
   async expectNotAvailableYet(): Promise<void> {
     await expect(this.message).toBeVisible();
-    await expect(this.message).toContainText("isn't connected to Rovara Code yet");
+    // The agent directory has a forwarder now (L4-MF3): a Code that does not serve it answers 501 and Cloud words it as the directory's own sentence.
+    await expect(this.message).toContainText(/Not available yet\.|isn't available on this Rovara yet/u);
     await expect(this.loading).toHaveCount(0);
   }
 }

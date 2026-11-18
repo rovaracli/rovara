@@ -33,6 +33,11 @@ export function readsAsUnknown(schema: z.ZodType, value: unknown): boolean {
     case "union": {
       const options = def.options as z.ZodType[];
       if (typeof def.discriminator === "string") return isRecord(value) && value[def.discriminator] === UNKNOWN;
+      // A union of literals (a tier 0 | 1 | 2): the reader writes the marker for a value of the same kind that none of them names.
+      if (options.length > 1 && options.every((option) => defOf(option).type === "literal")) {
+        const values = options.flatMap((option) => [...((option as unknown as z.ZodLiteral).values as Set<unknown>)]);
+        return value === UNKNOWN && !values.includes(UNKNOWN);
+      }
       return options.some((option) => readsAsUnknown(option, value));
     }
     default:

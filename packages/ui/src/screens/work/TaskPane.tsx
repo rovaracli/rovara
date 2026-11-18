@@ -27,6 +27,12 @@ export function SectionError({ error, retry, label }: { error: unknown; retry: (
  return <div role="alert" className="rv-section-error" data-testid="section-error"><p><VisibleText text={error instanceof ApiError ? error.message : `Couldn't load ${label}. Try again.`} /></p><Button onClick={retry}>Try again</Button></div>;
 }
 
+/**
+ * Code has no proof index route yet (walkthrough 2026-11-17 item 3): Cloud forwards the read and Code answers its unknown-route 404 ("route not found"), or Cloud answers 501.
+ * Either means "nothing to show yet", never an error with the route's words. Any other 404 (a task the person can no longer read) stays SectionError's.
+ */
+const proofNotServed = (error: unknown): boolean => error instanceof ApiError && (error.status === 501 || (error.status === 404 && error.code === "NOT_FOUND" && error.message === "route not found"));
+
 /** The quiet card: a task that asks nothing of the person says why, in fixed words. */
 export function QuietCard({ row, decisionsError, wide = false }: { row: WorkRow; decisionsError: unknown; /** On the task's own page "the full page" is where the person already is. */ wide?: boolean }) {
  let title: string, body: ReactNode;
@@ -69,7 +75,8 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
   return {
    ...base,
    ...(design === undefined ? {} : { design }),
-   onApprove: async (tab, reason) => { const result = await base.onApprove(tab, reason);if (result.kind === "decided") onDecided(row.id);return result; },
+   onApprove: async (tab, reason, extras) => { const result = await (extras === undefined ? base.onApprove(tab, reason) : base.onApprove(tab, reason, extras));if (result.kind === "decided") onDecided(row.id);return result; },
+   onRequestChanges: async (reason, includedCommentIds) => { const result = await (includedCommentIds === undefined ? base.onRequestChanges(reason) : base.onRequestChanges(reason, includedCommentIds));if (result.kind === "decided") onDecided(row.id);return result; },
    onReject: async reason => { const result = await base.onReject(reason);if (result.kind === "decided") onDecided(row.id);return result; },
    onChoose: async action => { await base.onChoose(action);onDecided(row.id); },
   };
@@ -81,25 +88,25 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
   onDecided(row.id);
  }
  const question = decision?.card.kind === "answer_question" ? plan.data?.questions.find(candidate => decision.card.id.endsWith(candidate.questionId)) ?? plan.data?.questions[0] : undefined;
- const failedEval = decision?.card.kind === "choose_checks" ? proof.data?.find(item => item.kind === "eval" && item.verdict === "fail" && item.passed !== undefined && item.total !== undefined) : undefined;
+ const failedEval = decision?.card.kind === "choose_checks" ? proof.data?.items.find(item => item.kind === "eval" && item.verdict === "fail" && item.passed !== undefined && item.total !== undefined) : undefined;
  const pane: DecisionPane | undefined = decision === undefined ? undefined : {
   answers: question === undefined || question.options.length === 0 ? undefined : { options: question.options.map(option => ({ id: option.optionId, label: option.label })), onAnswer: optionId => answer(question.questionId, optionId) },
   evalResult: failedEval === undefined ? undefined : { passed: failedEval.passed!, total: failedEval.total!, bar: failedEval.bar },
   quickChange: row.path === "Quick spec" && ["approve_plan", "approve_requirements", "approve_design"].includes(decision.card.kind) && decision.card.risk === "low",
  };
- const rows = plan.data === undefined ? [] : proofRows(plan.data.requirements, proof.data ?? [], plan.data.tasks);
+ const rows = plan.data === undefined ? [] : proofRows(plan.data.requirements, proof.data?.items ?? [], plan.data.tasks);
  const openAnswers = (questionId: string, optionId: string) => answer(questionId, optionId);
  const retryPlan = () => { void plan.refetch(); };
  const planNote = plan.isError ? <SectionError error={plan.error} label="this task's plan" retry={retryPlan} /> : null;
- const proofBody = proof.isError ? <SectionError error={proof.error} label="the proof" retry={() => { void proof.refetch(); }} /> : null;
+ const proofBody = proof.isError ? (proofNotServed(proof.error) ? <p className="rv-muted" role="status" data-testid="proof-not-yet">Proof will appear here.</p> : <SectionError error={proof.error} label="the proof" retry={() => { void proof.refetch(); }} />) : null;
  const stageBody = (): ReactNode => {
   const pulls = row.task.pullRequests;
   // Only the spec and the task list need the plan: the proof and the activity are drawn from their own reads, so one failed read does not hide the others.
   if (stage === "spec") return plan.isPending ? <Skeleton label="Loading the task" /> : plan.data === undefined ? planNote : <><SpecStep plan={plan.data} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} />{plan.data.tasks.length > 0 && <BuildStep heading="Tasks" tasks={plan.data.tasks} events={[]} />}</>;
   if (stage === "request") return <RequestStep row={row} plan={plan.data} />;
   if (stage === "build") return <>{plan.isPending ? <Skeleton label="Loading the task" /> : plan.data === undefined ? planNote : <BuildStep tasks={plan.data.tasks} events={events.data ?? []} steer={row.group === "run" ? steer : undefined} />}{events.isError && <SectionError error={events.error} label="the build activity" retry={() => { void events.refetch(); }} />}
-   <div className="rv-pane-gap">{proofBody ?? <ProofStep heading="Proof so far" rows={rows} items={proof.data ?? []} />}</div></>;
-  const proofPart = <>{plan.isError && planNote}{proofBody ?? <ProofStep rows={rows} items={proof.data ?? []} />}</>;
+   <div className="rv-pane-gap">{proofBody ?? <ProofStep heading="Proof so far" rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />}</div></>;
+  const proofPart = <>{plan.isError && planNote}{proofBody ?? <ProofStep rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />}</>;
   if (stage === "proof") return proofPart;
   return <>{proofPart}<div className="rv-pane-gap">{pulls.length === 0 ? <p className="rv-muted" data-testid="no-pull-request">No pull request yet. Rovara opens it once the proof passes.</p> : pulls.map((pull, index) => <PullRequestCard key={index} pullRequest={pull} />)}</div></>;
  };

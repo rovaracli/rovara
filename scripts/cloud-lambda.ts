@@ -15,7 +15,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
 import {
-  CodeClient, DynamoCloudAuditStore, DynamoCompanyStore, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, EnvelopeSealer, KmsKeyService, cloudConfigReader, cloudDocumentClient, createCloudHandler, parseAiSourceKinds,
+  CodeClient, DynamoCloudAuditStore, DynamoCompanyStore, DynamoGatewayMeterReader, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, EnvelopeSealer, KmsKeyService, cloudConfigReader, cloudDocumentClient, createCloudHandler, parseAiSourceKinds, parseRovaraAiExempt,
   type CloudRequest, type CloudResponse,
 } from "../packages/cloud-server/src/index.js";
 import { createAppHandler } from "../packages/web/src/server/handler.js";
@@ -137,7 +137,13 @@ function build() {
   const companyTable = process.env.COMPANY_TABLE;
   // DEC 254t: the AI source kinds this install's owner switched on (none when unset); a malformed setting stops the server here.
   const aiSourceKinds = parseAiSourceKinds(process.env.CLOUD_AI_SOURCE_KINDS);
-  const company = companyTable ? { store: new DynamoCompanyStore(db, companyTable), aiSourceKinds } : undefined;
+  // DEC 254zzz3(1): the operator's exempt (pilot) companies, for the settings screen only; the gateway decides every call. Absent: none.
+  const rovaraAiExempt = parseRovaraAiExempt(process.env.CLOUD_ROVARA_AI_EXEMPT);
+  // People and limits (cost report slice A6): the model gateway's meter table, read only. Unset: that page answers "not set up" (501). It needs a read grant on the gateway's
+  // meter table (leading keys CO#*) that the stacks do not give yet: an owner decision before it is set.
+  const meterTable = process.env.CLOUD_GATEWAY_METER_TABLE;
+  const peopleSpend = companyTable && meterTable ? new DynamoGatewayMeterReader(db, meterTable, `${required("ROVARA_CODE_URL")}/v1/auth`) : undefined;
+  const company = companyTable ? { store: new DynamoCompanyStore(db, companyTable), aiSourceKinds, rovaraAiExempt, ...(peopleSpend === undefined ? {} : { peopleSpend }) } : undefined;
   const productStore = productAiStore(process.env);
   const bedrock = productStore === undefined ? undefined : bedrockBackend(process.env);
   const productAi = productStore === undefined ? undefined : { store: productStore, issuer: `${required("ROVARA_CODE_URL")}/v1/auth`, ...(bedrock === undefined ? {} : { bedrock }) };
@@ -156,6 +162,8 @@ function build() {
         key,
         handle: createCloudHandler({
           client, store, work, presence, audit, origin, callbackPath: "/callback", secureCookies: true, ...(company === undefined ? {} : { company }), ...(productAi === undefined ? {} : { productAi }),
+          // Lead 4 J3: the smart Just answer's Ask boxes. Off unless this is exactly "1": set it only after the gateway's answers purpose (L4-E) is merged AND deployed, and Code's answers are set up.
+          ...(process.env.ROVARA_ANSWERS_ENABLED === "1" ? { answersEnabled: true } : {}),
           org: { orgId: "rovara", name: process.env.CLOUD_ORG_NAME ?? "Rovara", plan: "cloud" },
         }),
       };

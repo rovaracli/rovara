@@ -307,7 +307,7 @@ const running: RunningGateway[] = [];
 afterEach(async () => { for (const g of running.splice(0)) await g.drain(); });
 
 describe("gateway process: two companies, one server", () => {
-  async function serve(extraEnv: Record<string, string> = {}, rovaraAi = true) {
+  async function serve(extraEnv: Record<string, string> = {}, rovaraAi = true, keyConnected = true) {
     const wire = new WireDynamo(Object.values(TABLES), { namespaceTables: true });
     const db = new Dynamo({ region: "us-west-2", credentials, transport: wire.transport });
     for (const [cid, source] of [[cidA, "rovara"], [cidB, "anthropic_key"]] as const) {
@@ -316,7 +316,7 @@ describe("gateway process: two companies, one server", () => {
     const env = { ...ENV, ...(rovaraAi ? { [GATEWAY_ENV.rovaraAiModels]: `${ROVARA_AI_US_MODELS},${ROVARA_AI_US_CONVERSE_MODELS}` } : {}), ...extraEnv };
     const gateway = await startServe({ ...(readGatewayConfig(env) as ServeConfig), port: 0 }, {
       db, fetch: async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }), now: () => now, listen: false, log: () => undefined,
-      keys: { keyFor: async () => "never" }, agentKeys: { connected: async () => true, keyFor: async () => "k" },
+      keys: { keyFor: async () => "never" }, agentKeys: { connected: async () => keyConnected, keyFor: async () => "k" },
       transport: async () => { throw new Error("no model call in this test"); }, bedrockTransport: async () => { throw new Error("no model call in this test"); },
     });
     running.push(gateway);
@@ -363,6 +363,18 @@ describe("gateway process: two companies, one server", () => {
       if (status === 403) expect(JSON.parse(answer.text())).toEqual({ error: { type: off.code, message: off.message } });
       else expect(names(JSON.parse(answer.text()))).toEqual([...OPENAI_KEY_AGENT_MODELS]);
     }
+  });
+  it("L4-AIDEF: the deployed handler offers an exempt company with no saved choice the same list the agent route serves it (Rovara's AI unless its own key is connected); anyone else the Anthropic list", async () => {
+    const cidC = `org_${"c".repeat(20)}`;
+    const exemptEnv = { [GATEWAY_ENV.rovaraAiExempt]: `${cidA},${cidC}` };
+    // C: exempt, nothing saved, no key connected: Rovara's AI.
+    const none = await serve(exemptEnv, true, false);
+    expect(names(JSON.parse((await ask(none.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
+    // C with its own key connected: the Anthropic list. A non-exempt company with no key and nothing saved: also today's Anthropic list.
+    const keyed = await serve(exemptEnv, true, true);
+    expect(names(JSON.parse((await ask(keyed.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
+    const notExempt = await serve({}, true, false);
+    expect(names(JSON.parse((await ask(notExempt.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
   });
   it("task tokens and service tokens are not interchangeable between the two routes", async () => {
     const s = await serve();

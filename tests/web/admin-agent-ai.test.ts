@@ -44,7 +44,7 @@ describe("AI for your agents page", () => {
  });
  it("reads only the shape it expects", () => {
   expect(readAgentAi({ ...view("rovara", 3), choices: [{ source: "rovara", available: true }, { source: "bedrock_byo", available: "yes" }, { source: "<b>", available: true }], anthropicKeyConnected: "no" }))
-   .toEqual({ source: "rovara", version: 3, available: { rovara: true, anthropic_key: false, bedrock_byo: false, openai_key: false, openrouter_key: false, custom_endpoint: false }, anthropicKeyConnected: null, listed: ["rovara", "anthropic_key", "bedrock_byo"], openaiKeyConnected: null, openrouterKeyConnected: null, endpointConnected: null, keysRevision: null });
+   .toEqual({ source: "rovara", effectiveSource: null, sourceIsDefault: false, version: 3, available: { rovara: true, anthropic_key: false, bedrock_byo: false, openai_key: false, openrouter_key: false, custom_endpoint: false }, anthropicKeyConnected: null, listed: ["rovara", "anthropic_key", "bedrock_byo"], openaiKeyConnected: null, openrouterKeyConnected: null, endpointConnected: null, keysRevision: null });
   expect(() => readAgentAi({ source: "openai", version: 1 })).toThrow();
   expect(() => readAgentAi({ source: null })).toThrow();
  });
@@ -61,6 +61,44 @@ describe("AI for your agents page", () => {
    // Before the fresh sign-in: no save.
    expect(screen.getByTestId("fresh-sign-in")).toBeTruthy();
    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  } finally { f.close(); }
+ });
+ it("reads the default only for a company with nothing saved, and only a real source", () => {
+  expect(readAgentAi({ ...view(null, 0), effectiveSource: "rovara", sourceIsDefault: true })).toMatchObject({ source: null, effectiveSource: "rovara", sourceIsDefault: true });
+  // A saved choice, a missing flag, or a made-up source never reads as a default.
+  expect(readAgentAi({ ...view("anthropic_key", 1), effectiveSource: "rovara", sourceIsDefault: true })).toMatchObject({ effectiveSource: null, sourceIsDefault: false });
+  expect(readAgentAi({ ...view(null, 0), effectiveSource: "rovara" })).toMatchObject({ effectiveSource: null, sourceIsDefault: false });
+  expect(readAgentAi({ ...view(null, 0), effectiveSource: "<b>", sourceIsDefault: true })).toMatchObject({ effectiveSource: null, sourceIsDefault: false });
+ });
+ it("an exempt company on the default sees Rovara's AI as its source with a Use your own key action, and saving Rovara's AI is explicit", async () => {
+  const sent: ApiRequest[] = [];
+  const f = mount(confirmedPath("/app/admin/agent-ai"), (r) => { if (r.method === "PUT") sent.push(r); return { status: 200, body: { ...view(null, 0, false), effectiveSource: "rovara", sourceIsDefault: true } }; });
+  try {
+   expect((await screen.findByTestId("agent-ai-default")).textContent).toMatch(/Rovara's AI by default/u);
+   expect(screen.queryByTestId("agent-ai-unset")).toBeNull();
+   expect(document.body.textContent).toMatch(/Rovara's AI \(the default for your company\)/u);
+   // No key yet: the action leads to the key page.
+   expect(screen.getByTestId("agent-ai-use-own-key").getAttribute("href")).toBe("/app/admin/learning-ai");
+   expect(((await screen.findByTestId("agent-ai-rovara")).querySelector("input") as HTMLInputElement).checked).toBe(true);
+   const save = await screen.findByRole("button", { name: "Save" });
+   expect((save as HTMLButtonElement).disabled).toBe(false);
+   fireEvent.click(save);
+   await waitFor(() => expect(sent).toHaveLength(1));
+   expect(sent[0]!.body).toEqual({ expectedVersion: 0, source: "rovara" });
+  } finally { f.close(); }
+ });
+ it("with a key connected, Use your own key picks the own-key choice", async () => {
+  const f = mount(confirmedPath("/app/admin/agent-ai"), () => ({ status: 200, body: { ...view(null, 0, true), effectiveSource: "rovara", sourceIsDefault: true } }));
+  try {
+   fireEvent.click(await screen.findByRole("button", { name: "Use your own key" }));
+   await waitFor(() => expect(((screen.getByTestId("agent-ai-anthropic_key")).querySelector("input") as HTMLInputElement).checked).toBe(true));
+  } finally { f.close(); }
+ });
+ it("a company not on the default sees today's words (no default line)", async () => {
+  const f = mount("/app/admin/agent-ai", () => ({ status: 200, body: view(null, 0, false) }));
+  try {
+   expect(await screen.findByTestId("agent-ai-unset")).toBeTruthy();
+   expect(screen.queryByTestId("agent-ai-default")).toBeNull();
   } finally { f.close(); }
  });
  it("saves the picked source with the version read", async () => {

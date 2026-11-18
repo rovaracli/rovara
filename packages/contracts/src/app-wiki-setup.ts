@@ -47,6 +47,25 @@ export const WikiRequestBodySchema = z.object({ requestId: z.string().uuid() }).
 export type WikiRequestBody = z.infer<typeof WikiRequestBodySchema>;
 export const WikiSwitchBodySchema = z.object({ requestId: z.string().uuid(), on: z.boolean() }).strict();
 export type WikiSwitchBody = z.infer<typeof WikiSwitchBodySchema>;
+/** `PUT .../upkeep` (L4-W6b, DEC 254zzt option A): the project switch, plus `allowSystemRuns` on the setup step (one company owner or admin act: the company's consent AND the project switch). `allowSystemRuns: false` with `on: true` is not a request. */
+export const WikiUpkeepBodySchema = z.object({ requestId: z.string().uuid(), on: z.boolean(), allowSystemRuns: z.boolean().optional() }).strict()
+  .refine((body) => !(body.allowSystemRuns === false && body.on), { message: "the request is not valid" });
+export type WikiUpkeepBody = z.infer<typeof WikiUpkeepBodySchema>;
+
+// ---- The company's one control over nightly upkeep (L4-P3, owner 2026-11-17; Code `GET`/`PUT /v1/app/company/system-runs`) ---------------------------------------------------------------------
+
+/** The company-level route (the app calls it as `/v1/app/company/system-runs`; Code serves the same path). A company owner or admin only. */
+export const SYSTEM_RUNS_PATH = "/v1/app/company/system-runs" as const;
+/**
+ * `PUT`: allow (`allowed: true`, which Code only accepts right after a fresh sign-in: the answer is 403 `REAUTH_REQUIRED` otherwise) or withdraw (`allowed: false`, no fresh sign-in needed). Withdrawing stops nightly
+ * runs for every project at once and leaves each project's own switch as it is.
+ */
+export const SystemRunsBodySchema = z.object({ requestId: z.string().uuid(), allowed: z.boolean() }).strict();
+export type SystemRunsBody = z.infer<typeof SystemRunsBodySchema>;
+/** `available`: nightly runs can happen on this Rovara; `allowed`: the company's own consent; `systemRunsOn`: both (what actually runs). */
+export const SystemRunsViewSchema = z.object({ available: z.boolean(), allowed: z.boolean(), systemRunsOn: z.boolean() }).strict()
+  .refine((view) => view.systemRunsOn === (view.available && view.allowed), { message: "systemRunsOn is available and allowed" });
+export type SystemRunsView = z.infer<typeof SystemRunsViewSchema>;
 
 // ---- Words ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -90,6 +109,11 @@ export const WIKI_SETUP_WORDS = Object.freeze({
   upkeepNotAllowed: "Only company owners and admins, or this project's admins, can change nightly upkeep.",
   upkeepNotYet: "Nightly upkeep isn't available on this Rovara yet.",
   upkeepUnavailable: "Nightly upkeep could not be read or changed just now. Try again.",
+  upkeepNeedsConsent: "A company admin must allow nightly upkeep first.",
+  upkeepConsentNotAllowed: "Only company owners and admins can allow nightly upkeep for the company.",
+  // L4-P3 (owner 2026-11-17): allowing needs a fresh sign-in (Code's step-up); the company's own control is for owners and admins.
+  needsSignIn: "Confirm it's you again, then try once more.",
+  systemRunsNotAllowed: "Only company owners and admins can see or change nightly upkeep for the company.",
 });
 export const WIKI_SETUP_SENTENCES: ReadonlySet<string> = new Set([...Object.values(WIKI_SETUP_CODE_WORDS), ...Object.values(WIKI_SETUP_WORDS)]);
 
@@ -170,6 +194,29 @@ export type WikiSetupDeleteAnswer = z.infer<typeof WikiSetupDeleteAnswerSchema>;
 
 // ---- Nightly upkeep --------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-/** `GET` and `PUT /v1/app/projects/{p}/upkeep`: the one switch. Off until a person turns it on. `canManage`: this person may turn it on or off. */
-export const WikiSetupUpkeepSchema = z.object({ enabled: z.boolean(), canManage: z.boolean() }).strict();
+/**
+ * The monthly cap as Code states it (L4-W6b): `monthlyUsd` is the number Code read from the gateway, or `null` where Code has no read (the page then says "Set in Spending limits" and invents no figure);
+ * `canRaise` is true only for a live company owner or admin.
+ */
+export const WikiSetupUpkeepCapSchema = z.object({ monthlyUsd: z.number().min(0).max(1_000_000).nullable(), canRaise: z.boolean() }).strict();
+export type WikiSetupUpkeepCap = z.infer<typeof WikiSetupUpkeepCapSchema>;
+
+/**
+ * `GET` and `PUT /v1/app/projects/{p}/upkeep` (Code L4-P2, DEC 254zzt option A "two locks"): the one switch and the consent behind it. Off until a person turns it on.
+ *   enabled              the PROJECT's switch.
+ *   canManage            this person may turn the project switch on or off.
+ *   available            (DEC 254zzl P0) the operator's ceiling covers this company; the switch and its cap show only when it is true (absent or false: only the "isn't available" line is drawn).
+ *   systemRunsOn         EFFECTIVE system runs: the ceiling AND the company's consent (what really runs). The project switch counts only while this is true.
+ *   canEnableSystemRuns  a live company owner or admin, with the ceiling on: this person may give the company's consent (the one setup choice).
+ *   cap                  the monthly cap as Code states it.
+ *   spend                (L4-CAPR, Code L4-SR1) what nightly upkeep spent on this project this UTC month, for people who manage the project only. `spentUsd` counts the runs whose cost is known; `unknownRuns` are runs whose cost
+ *                        Code could not state (counted, adding nothing), so with any the dollar figure is "at least". Absent: the page draws no spend line.
+ * The last three are absent from a Code that has the project switch only (L4-N1): the page then shows the plain switch to whoever `canManage`, as before.
+ */
+export const WikiSetupUpkeepSpendSchema = z.object({ month: z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/u), spentUsd: z.number().min(0).max(100_000_000), runs: z.number().int().min(0).max(10_000_000), unknownRuns: z.number().int().min(0).max(10_000_000) }).strict();
+export type WikiSetupUpkeepSpend = z.infer<typeof WikiSetupUpkeepSpendSchema>;
+export const WikiSetupUpkeepSchema = z.object({
+  enabled: z.boolean(), canManage: z.boolean(), available: z.boolean().optional(),
+  systemRunsOn: z.boolean().optional(), canEnableSystemRuns: z.boolean().optional(), cap: WikiSetupUpkeepCapSchema.optional(), spend: WikiSetupUpkeepSpendSchema.optional(),
+}).strict();
 export type WikiSetupUpkeep = z.infer<typeof WikiSetupUpkeepSchema>;

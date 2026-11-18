@@ -16,6 +16,7 @@ import { Skeleton } from "../../../design/Skeleton.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { useAdminContext } from "../AdminLayout.js";
+import { CompanyUpkeep } from "../../setup/wiki/CompanyUpkeep.js";
 import { ReadSection, useAdminRead } from "../models/read.js";
 import { GatewayReadinessBanner } from "../spending/GatewayReadiness.js";
 import { AdminSection, FreshSignIn, NotConnected, forgetConfirmed, useJustConfirmed } from "../parts.js";
@@ -32,6 +33,7 @@ export function SettingsScreen() {
   {read.isPending ? <Skeleton label="Loading company settings" />
    : read.isError && isNotConnected(read.error) ? <AdminSection title="Company rules"><NotConnected what="Company settings">The pages for projects and how we work are below.</NotConnected></AdminSection>
    : <ReadSection read={read} label="Company settings">{settings => <Settings settings={settings} reload={() => { void read.refetch(); }} />}</ReadSection>}
+  <AdminSection title="Nightly upkeep for the company" note="One choice for every project"><CompanyUpkeep /></AdminSection>
   <AdminSection title="Project setup and defaults" note="Each has its own page">
    <ul className="rv-passkeys"><li><span><Link to="/app/admin/projects">Projects</Link><small>Project setup, working branches, allowed websites and archiving.</small></span></li><li><span><Link to="/app/admin/how-we-work">How we work</Link><small>Company defaults for models, locks, learning and design review.</small></span></li></ul>
   </AdminSection>

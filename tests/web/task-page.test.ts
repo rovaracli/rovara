@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -117,7 +118,7 @@ function pageSetup(options: Setup) {
     if (path === "/v1/app/decisions") return { status: 200, body: options.cards ?? decisionsView() };
     if (path === "/v1/app/nav") return { status: 200, body: navFixture({ projects: [] }) };
     if (path === `/v1/app/tasks/${ID.plan}/lessons`) return { status: 200, body: { lessons: [], ...(options.wikiUse === undefined ? {} : { wikiUse: options.wikiUse }) } };
-    if (path === "/v1/app/projects/web/wiki") return { status: 200, body: { project: "web", state: "ready", pages: [{ pageId: "wiki-overview", kind: "overview", title: "<img src=x onerror=alert(1)>\u0001", summary: "", order: 0, repos: [], writtenAt: "2026-01-01T00:00:00.000Z", claims: { found: 0, changed: 0 }, flagged: false }] } };
+    if (path === "/v1/app/projects/web/wiki") return { status: 200, body: { project: "web", state: "ready", agentsEnabled: true, pages: [{ pageId: "wiki-overview", kind: "overview", title: "<img src=x onerror=alert(1)>\u0001", summary: "", order: 0, repos: [], writtenAt: "2026-01-01T00:00:00.000Z", claims: { found: 0, changed: 0 }, flagged: false }] } };
     if (path.startsWith("/v1/app/sessions/ses_")) return path.endsWith("/events") || path.endsWith("/messages") ? { status: 200, body: path.endsWith("/events") ? { events: [] } : { messages: [] } } : options.sessionStatus !== undefined && options.sessionStatus !== 200 ? { status: options.sessionStatus, body: { error: { code: "NOT_FOUND", message: "That session isn't here." } } } : { status: 200, body: { session: options.session } };
     if (path.endsWith("/documents/plan")) return { status: 200, body: PLAN };
     if (path.endsWith("/evidence")) return { status: 200, body: PROOF };
@@ -215,7 +216,7 @@ it("says a task is not found for an address nobody has, an unlisted task id, or 
 });
 it("says plainly when the task list is not connected, never a spinner, and offers another try", async () => {
   const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasksResponse: { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/sessions isn't connected to Rovara Code yet." } } } });
-  expect((await screen.findByTestId("load-error")).textContent).toContain("isn't connected to Rovara Code yet");expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();expect(screen.queryByRole("progressbar")).toBeNull();
+  expect((await screen.findByTestId("load-error")).textContent).toContain("Not available yet.");expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();expect(screen.queryByRole("progressbar")).toBeNull();
   f.close();
 });
 it("says Continue in my tool is not connected yet when Code does not serve it, and Cloud's words for a refused comment", async () => {
@@ -237,6 +238,34 @@ it("keeps Design first on the plan card of the page, and the decision card is dr
   expect(within(card).getByRole("button", { name: "Design first" })).toBeTruthy();expect(screen.getByRole("region", { name: "Design review actions" })).toBeTruthy();
   const more = document.querySelector<HTMLDetailsElement>("details.rv-task-more")!;expect(within(more).queryByRole("region", { name: "Your decision" })).toBeNull();expect(screen.getAllByRole("region", { name: "Your decision" })).toHaveLength(1);
   f.close();
+});
+// L4-DCS: the plan card on the task page (the "Your decision" variant) carries Code's plan choices, a run limit and Request changes, through TaskPane's wrappers.
+it("draws a plan card's choices on the task page, sends only what changed with Approve, and sends Request changes with the ticked comments", async () => {
+  const planView = JSON.parse(readFileSync("tests/fixtures/code-decision-cards.json", "utf8").replaceAll("approve_plan:plan2", `approve_plan:${ID.plan}`).replaceAll("approve_plan/plan2", `approve_plan/${ID.plan}`).replaceAll("11111111-1111-4111-8111-111111111111", ID.plan)) as { views: Record<string, unknown> };
+  const sent: ApiRequest[] = [];
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, cards: planView.views["approve_plan_with_choices"], send: async request => { sent.push(request);return { status: 200, body: { cardId: `approve_plan:${ID.plan}`, outcome: request.path.endsWith("/request-changes") ? "rejected" : "approved", remainingTabs: [] } }; } });
+  const card = await screen.findByRole("region", { name: "Your decision" });
+  expect(within(card).getByTestId("plan-choices")).toBeTruthy();
+  const approve = within(card).getByRole<HTMLButtonElement>("button", { name: "Approve" });
+  expect(approve.disabled).toBe(true);
+  fireEvent.click(within(card).getByRole("radio", { name: /A new gateway/u }));
+  fireEvent.click(within(card).getByRole("checkbox", { name: "What about timeouts?" }));
+  fireEvent.click(within(card).getByRole("checkbox", { name: /I agree Rovara may spend up to \$5.00/u }));
+  fireEvent.click(approve);
+  await waitFor(() => expect(sent.filter(request => request.path.endsWith("/approve"))).toHaveLength(1));
+  const approved = sent.find(request => request.path.endsWith("/approve"))!;
+  expect(approved.path).toBe(`/v1/app/decisions/approve_plan/${ID.plan}/approve`);
+  expect(approved.body).toMatchObject({ answers: [{ decisionId: "q1", optionId: "b", opened: true }], includedCommentIds: ["33333333-3333-4333-8333-333333333333"], acknowledgedRunLimitUsd: 5 });
+  f.close();
+  const g = pageSetup({ path: `/app/sessions/${ID.plan}`, cards: planView.views["approve_plan_with_choices"], send: async request => { sent.push(request);return { status: 200, body: { cardId: `approve_plan:${ID.plan}`, outcome: "rejected", remainingTabs: [] } }; } });
+  const again = await screen.findByRole("region", { name: "Your decision" });
+  fireEvent.click(within(again).getByRole("checkbox", { name: "Please cover the refund path" }));
+  fireEvent.change(within(again).getByRole("textbox", { name: "What should change?" }), { target: { value: "Cover timeouts too." } });
+  fireEvent.click(within(again).getByRole("button", { name: "Send back for changes" }));
+  await waitFor(() => expect(sent.filter(request => request.path.endsWith("/request-changes"))).toHaveLength(1));
+  expect(sent.find(request => request.path.endsWith("/request-changes"))!.body).toMatchObject({ reason: "Cover timeouts too.", includedCommentIds: ["44444444-4444-4444-8444-444444444444"] });
+  await expectNoAxeViolations(g.container);
+  g.close();
 });
 it("opens the earlier tabs by themselves when a task waits on a person and has no decision card", async () => {
   const f = pageSetup({ path: `/app/sessions/${SESSION}`, session: workspaceFixture({}, { title: "Add a retry to the billing webhook" }), cards: decisionsView([]) });

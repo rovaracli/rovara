@@ -37,7 +37,7 @@ test("Spending says it is not connected yet when Cloud has no spending read", as
   await admin.expectNotConnected("Company spending");
 });
 
-test("Spending shows real amounts, by project and by person, and the over-budget state", async ({ page }) => {
+test("Spending shows real amounts, by project (people are on their own page), and the over-budget state", async ({ page }) => {
   await serve(page, "/org/spend", SPEND);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.spending);
@@ -47,7 +47,10 @@ test("Spending shows real amounts, by project and by person, and the over-budget
   await expect(stats).toContainText("$549.20");
   await expect(admin.table("Spending by project")).toContainText("evals-api");
   await expect(admin.table("Spending by project")).toContainText("$0.40 left");
-  await expect(admin.table("Spending by person")).toContainText("Sam Okoye");
+  // Per-person spending is on People and limits only (owner rule D2): a link here, no table, no names.
+  await expect(page.getByRole("table", { name: "Spending by person" })).toHaveCount(0);
+  await expect(page.getByText("Sam Okoye")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "People and limits" }).first()).toHaveAttribute("href", "/app/admin/money/people");
   await expect(page.getByText("This month's budget is used up")).toHaveCount(0);
   // Over budget: Rovara says so, by how much, and where to raise the limit.
   await page.unroute("**/v1/web/org/spend");
@@ -156,11 +159,14 @@ test("Sign-in factors lists people and shows the fresh sign-in step before any c
   expect(decodeURIComponent(url)).toMatch(/confirmed=[0-9a-f-]{36}/u);
 });
 
-test("Your account says passkeys are not connected yet", async ({ page }) => {
+test("Your account hides the confirmation email and passkeys while sign-in factors are not connected yet", async ({ page }) => {
   const account = new AccountPage(page);
   await account.open();
-  await expect(page.getByTestId("not-connected").first()).toContainText("isn't connected to Rovara Code yet");
+  await expect(page.getByRole("heading", { name: "Your account" })).toBeVisible();
   await expect(page.getByRole("progressbar")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Confirmation email" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Passkeys" })).toHaveCount(0);
+  await expect(page.getByText("Passkeys isn't connected to Rovara Code yet.")).toHaveCount(0);
 });
 
 test("removing a passkey asks for the fresh sign-in first, then offers the removal after coming back", async ({ page }) => {
@@ -186,7 +192,7 @@ test("removing a passkey asks for the fresh sign-in first, then offers the remov
 test("the account menu leads to the account page", async ({ page }) => {
   await page.goto(ROUTES.home);
   await page.getByTestId("account-menu").click();
-  await page.getByRole("link", { name: "Passkeys and confirmation email" }).click();
+  await page.getByRole("link", { name: "Your account page" }).click();
   await expect(page).toHaveURL(/\/app\/account/u);
 });
 

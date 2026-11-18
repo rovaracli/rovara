@@ -145,7 +145,31 @@ it("offers no Close for a task the person does not own, and says so when none ca
 
 it("shows the confirmed effective spending stop before work starts", async () => {
  const f = setup(undefined, { preview: async () => ({ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "captured", effectiveStopMicrousd: 750000 } }) });
- try { await box();expect(await screen.findByText(/Effective spending stop: \$0.75/)).toBeTruthy();expect(posts(f)).toHaveLength(0); } finally { f.close(); }
+ try { fireEvent.change(await box(), { target: { value: "Fix it" } });expect(await screen.findByText(/Effective spending stop: \$0.75/)).toBeTruthy();expect(posts(f)).toHaveLength(0); } finally { f.close(); }
+});
+const previews = (f: ReturnType<typeof setup>) => f.request.mock.calls.map(([request]) => request).filter(request => request.path.endsWith("/start-preview"));
+it("sends no start-preview POST when the page loads, only after the person starts typing, and once", async () => {
+ const f = setup();
+ try {
+  const field = await box();await screen.findByRole("heading", { name: "payments" });await new Promise(resolve => setTimeout(resolve, 50));
+  expect(previews(f)).toHaveLength(0);
+  fireEvent.change(field, { target: { value: "F" } });await waitFor(() => expect(previews(f)).toHaveLength(1));
+  fireEvent.change(field, { target: { value: "Fi" } });await new Promise(resolve => setTimeout(resolve, 50));
+  expect(previews(f)).toHaveLength(1);expect(previews(f)[0]?.method).toBe("POST");
+ } finally { f.close(); }
+});
+it("says plainly that the spending stop is not shown yet when the preview answers unknown, and still starts work", async () => {
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "unknown" } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  expect((await screen.findByText("Spending stop: not shown yet. It is checked when work starts.")).className).toContain("rv-muted");
+  expect(screen.queryByText(/Effective spending stop:/)).toBeNull();expect(screen.queryByRole("alert")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1));
+ } finally { f.close(); }
+});
+it("an unknown preview for another project shows nothing", async () => {
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "other", kind: "unknown" } }) });
+ try { fireEvent.change(await box(), { target: { value: "Fix it" } });await new Promise(resolve => setTimeout(resolve, 50));expect(screen.queryByText(/Spending stop:/)).toBeNull(); } finally { f.close(); }
 });
 for (const result of [{ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "disabled" } }, { status: 503, body: {} }, { status: 200, body: { kind: "captured", effectiveStopMicrousd: "bad" } }]) it(`unclear preview ${JSON.stringify(result)} never blocks Start`, async () => {
  const f = setup(undefined, { preview: async () => result });

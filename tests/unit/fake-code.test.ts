@@ -125,18 +125,18 @@ describe("fake Code answers contract v0", () => {
 
   it("lists decision cards with a digest, and refuses to act on a card whose digest changed", async () => {
     const priya = (await (await signIn(fake.url)).token.json() as { access_token: string }).access_token;
-    const view = (await call("/v1/dev/client/decisions", priya)).body as { cards: Array<{ id: string }>; digests: Record<string, string> };
+    const view = (await call("/v1/app/decisions", priya)).body as { cards: Array<{ id: string }>; digests: Record<string, string> };
     expect(view.cards.map((card) => card.id)).toContain(`merge:${TASK_IDS.pullRequest}`);
-    const stale = await call(`/v1/dev/client/decisions/merge/${TASK_IDS.pullRequest}/approve`, priya, { method: "POST", body: { requestId: randomUUID(), shownDigest: "0".repeat(64) } });
+    const stale = await call(`/v1/app/decisions/merge/${TASK_IDS.pullRequest}/approve`, priya, { method: "POST", body: { requestId: randomUUID(), shownDigest: "0".repeat(64) } });
     expect(stale.status).toBe(409);
     // A medium card (merge) is refused until its evidence was opened with the digest shown; then it is merged and leaves the list.
     const shownDigest = view.digests[`merge:${TASK_IDS.pullRequest}`]!;
-    const early = await call(`/v1/dev/client/decisions/merge/${TASK_IDS.pullRequest}/approve`, priya, { method: "POST", body: { requestId: randomUUID(), shownDigest } });
+    const early = await call(`/v1/app/decisions/merge/${TASK_IDS.pullRequest}/approve`, priya, { method: "POST", body: { requestId: randomUUID(), shownDigest } });
     expect(early.status).toBe(409);
-    expect((await call(`/v1/dev/client/decisions/merge/${TASK_IDS.pullRequest}/evidence-opened`, priya, { method: "POST", body: { requestId: randomUUID(), shownDigest } })).body).toMatchObject({ opened: true, recorded: true });
-    const merged = await call(`/v1/dev/client/decisions/merge/${TASK_IDS.pullRequest}/approve`, priya, { method: "POST", body: { requestId: randomUUID(), shownDigest } });
+    expect((await call(`/v1/app/decisions/merge/${TASK_IDS.pullRequest}/evidence-opened`, priya, { method: "POST", body: { requestId: randomUUID(), shownDigest } })).body).toMatchObject({ opened: true, recorded: true });
+    const merged = await call(`/v1/app/decisions/merge/${TASK_IDS.pullRequest}/approve`, priya, { method: "POST", body: { requestId: randomUUID(), shownDigest } });
     expect(merged.body).toMatchObject({ cardId: `merge:${TASK_IDS.pullRequest}`, outcome: "approved", remainingTabs: [] });
-    const after = (await call("/v1/dev/client/decisions", priya)).body as { cards: Array<{ id: string }> };
+    const after = (await call("/v1/app/decisions", priya)).body as { cards: Array<{ id: string }> };
     expect(after.cards.map((card) => card.id)).not.toContain(`merge:${TASK_IDS.pullRequest}`);
   });
 });
@@ -208,8 +208,8 @@ describe("Cloud's server on the fake Code", () => {
       const session = await call2("GET", `/v1/web/sessions/${sessionId}`, { cookie });
       expect(session.status).toBe(200);
       expect((session.body as { session: { title: string } }).session.title).toBe("Add dark mode");
-      // A route Code does not serve yet answers 501 through Cloud, not an error page.
-      expect((await call2("GET", "/v1/web/projects/web/how-we-work", { cookie })).status).toBe(501);
+      // A route Code does not serve yet answers 501 through Cloud, not an error page (How we work is forwarded since walkthrough item 4, the saved environment image since L4-MF1; the test environment is not on Code).
+      expect((await call2("GET", "/v1/web/projects/web/test-environment", { cookie })).status).toBe(501);
       // Home reads the person's own sessions: the one just started shows (no card yet), and the call works.
       expect((await call2("GET", "/v1/web/home", { cookie })).status).toBe(200);
       expect((await call2("GET", "/v1/web/nav", { cookie })).status).toBe(200);

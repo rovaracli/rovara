@@ -12,9 +12,11 @@ export function openEnum<const T extends readonly [string, ...string[]]>(values:
   return z.string().transform((value): T[number] | typeof UNKNOWN => ((values as readonly string[]).includes(value) ? value : UNKNOWN));
 }
 
-/** What a reader gives for a strict type: objects keep unknown fields, and a string-literal union may read as "unknown". */
+/** What a reader gives for a strict type: objects keep unknown fields, and a string-literal or number-literal union may read as "unknown". */
 export type ForwardReader<T> = T extends string
   ? string extends T ? T : T | typeof UNKNOWN
+  : T extends number
+    ? number extends T ? T : T | typeof UNKNOWN
   : T extends readonly (infer Item)[]
     ? Array<ForwardReader<Item>>
     : T extends object
@@ -46,8 +48,21 @@ export function readerOf(schema: z.ZodType): z.ZodType {
       return z.array(readerOf(def.element as z.ZodType));
     case "optional":
       return readerOf(def.innerType as z.ZodType).optional();
+    case "record": {
+      // Only a record keyed by plain strings with no checks of its own is rebuilt (its values are read like any other value: an enum in a record's list is open). An enum-keyed or partial record, or one with a
+      // refinement, stays as the schema has it: rebuilding it would make it exhaustive or drop the refinement.
+      const keyDef = defOf(def.keyType as z.ZodType);
+      if (keyDef.type !== "string" || def.partial === true || ((def.checks as unknown[] | undefined)?.length ?? 0) > 0) return schema;
+      return z.record(def.keyType as z.ZodType<string>, readerOf(def.valueType as z.ZodType));
+    }
     case "union": {
       const options = def.options as z.ZodType[];
+      if (typeof def.discriminator !== "string" && options.length > 1 && options.every((option) => defOf(option).type === "literal")) {
+        // A union of literals (a tier 0 | 1 | 2, a count of people 1 | 2): a value of the same kind that none of them names reads as "unknown". A value of another kind, or a missing one, stays an error.
+        const values = options.flatMap((option) => [...((option as unknown as z.ZodLiteral).values as Set<unknown>)]);
+        const kind = values.every((value) => typeof value === "string") ? z.string() : values.every((value) => typeof value === "number") ? z.number() : undefined;
+        if (kind !== undefined) return z.union([...options, kind.transform((): typeof UNKNOWN => UNKNOWN)] as unknown as [z.ZodType, z.ZodType]);
+      }
       if (typeof def.discriminator !== "string") {
         // RULING Q41: an open enum must not swallow a valid sibling ID or another known enum value.
         const known = options.map(option => defOf(option).type === "enum" ? option : readerOf(option));

@@ -20,11 +20,13 @@ import type { SessionStore } from "./sessions.js";
 import { StoreConflict, companyScopedWork, type WorkSessionStore } from "./work-sessions.js";
 import { companyOf } from "./company-caller.js";
 import { JOIN_UNUSABLE, inviteTokenHash, linkToken, openSecret, sealSecret, ticketKey, usableInvite } from "./onboarding-routes.js";
+import { createGithubLink } from "./github-link.js";
 import { GITHUB_APP_PATHS, GITHUB_CALLBACK_PATH, GITHUB_DISCONNECT_PATH, GITHUB_CONNECT_COOKIE, createGithubConnect, type GithubAnswer } from "./github-connect.js";
 import { connectCookieName } from "./connect-flow.js";
 import { SLACK_CALLBACK_PATH, createSlackConnect } from "./slack-connect.js";
 import { LINEAR_CALLBACK_PATH, createLinearConnect } from "./linear-connect.js";
 import { createSignInLinks } from "./sign-in-links.js";
+import { createSignInFactors } from "./sign-in-factors.js";
 
 export interface CloudRequest {
   method: string;
@@ -58,6 +60,11 @@ export interface CloudHandlerOptions {
   audit?: CloudAuditStore;
   /** The project's product AI settings over the gateway's write-only key store: adds those routes (product-ai-routes.ts). Absent: 501, as before. */
   productAi?: ProductAiBackend;
+  /**
+   * Lead 4 J3: this deployment's setting for the smart Just answer (the Ask boxes and the start box's suggestion). Off by default: it is turned on only once the gateway's answers purpose (L4-E) is merged AND
+   * deployed. Off: the nav says `answers: false` (so the app draws no Ask box) and the two routes answer "not available on this Rovara yet" without asking Code.
+   */
+  answersEnabled?: boolean;
   /** Lane H: the policy hook's answering route (`createPolicyHookRoute`), served at `POLICY_HOOK_PATH`. Absent: that path is not Cloud's, as before. */
   policyHook?: (request: CloudRequest) => Promise<CloudResponse>;
   now?: () => Date;
@@ -123,12 +130,16 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
   const unusable = (status = 404) => json(status, { error: { code: "INVITE_UNUSABLE", message: JOIN_UNUSABLE } });
   const appOrigin = new URL(options.origin).origin;
   // Guided onboarding PR 2: Connect GitHub (github-connect.ts).
-  const github = createGithubConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, ...(options.company === undefined ? {} : { companies: options.company.store }) });
+  // L4-GH: the person's own GitHub account link; its return comes through the same callback (the cookie's binding names the flow).
+  const githubLink = createGithubLink({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies });
+  const github = createGithubConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, link: githubLink, ...(options.company === undefined ? {} : { companies: options.company.store }) });
   // Guided onboarding PR 11: Add to Slack, the channel picker, Connect Linear and the team pick (slack-connect.ts, linear-connect.ts).
   const slack = createSlackConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, origin: options.origin });
   const linear = createLinearConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, origin: options.origin });
   // DEC 254w: Connected sign-ins (sign-in-links.ts). Its return arrives at the registered sign-in callback, so the callback below asks `isReturn` first.
   const signInLinks = createSignInLinks({ client: options.client, store: options.store, now, log, expiredCookie: cookie("", 0) });
+  // L4-MF4: the person's own confirmation email (masked) and passkeys for the account page (sign-in-factors.ts).
+  const signInFactors = createSignInFactors({ client: options.client, log });
 
   /**
    * The join page's lookup (onboarding-routes.ts): same origin only (a page elsewhere can't start a join for someone), JSON, small. A usable
@@ -301,7 +312,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
               // Guided onboarding PR 12b: disconnect one of the company's GitHub accounts (owner + fresh step-up).
               : method === "DELETE" && GITHUB_DISCONNECT_PATH.test(apiPath) ? () => github.disconnect(session!, GITHUB_DISCONNECT_PATH.exec(apiPath)![1]!, parsedBody(request.body)) : undefined;
     // Guided onboarding PR 11: Slack and Linear (the start and result routes need this sign-in's cookie, as GitHub's).
-    const connectRoute = githubCall === undefined ? slack.route(method, apiPath, request.query) ?? linear.route(method, apiPath) ?? signInLinks.route(method, apiPath) : undefined;
+    const connectRoute = githubCall === undefined ? slack.route(method, apiPath, request.query) ?? linear.route(method, apiPath) ?? signInLinks.route(method, apiPath) ?? signInFactors.route(method, apiPath) ?? githubLink.route(method, apiPath) : undefined;
     const connectCall = githubCall ?? (connectRoute === undefined ? undefined : () => connectRoute(session!, id, parsedBody(request.body)));
     if (connectCall !== undefined) {
       try {
@@ -354,6 +365,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
               // sign-in, and every route that shows or changes a session's data asks Code for its task first (Code checks the company live).
               work: companyScopedWork(options.work, () => companyOf(using.access)?.companyId), origin: options.origin, presence, ...(options.audit === undefined ? {} : { audit: options.audit }), ...(options.company === undefined ? {} : { company: options.company }),
               ...(options.productAi === undefined ? {} : { productAi: options.productAi }),
+              ...(options.answersEnabled === true ? { answersEnabled: true } : {}),
             });
           } catch (error) {
             if (attempt >= REQUEST_ATTEMPTS) throw error;

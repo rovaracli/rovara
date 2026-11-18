@@ -227,8 +227,10 @@ export interface UnderstandingQuestion { questionId: string; text: string; optio
 
 /** The proof index of one task (UX audit 2026-11-15): every item of evidence and what it proves, so the proof page can answer "which of the things I asked for are proven?". */
 export interface ProofItem {
-  /** Read it with `tasks.evidence.get`. */
-  sha256: string;
+  /** The item's id in the index (Code's `check:<n>`, `evidence:<n>`, `review:code`, `review:security`). Optional: an older Code sends none, and the digest is the key then. */
+  id?: string;
+  /** The digest of the check's stored output; read it with `tasks.evidence.get`. Code sends it only when it kept the output. */
+  sha256?: string;
   title: string;
   kind: string /* known: test_report, screenshot, log, diff, check_result, eval */;
   verdict: "pass" | "fail" | "unknown";
@@ -242,7 +244,10 @@ export interface ProofItem {
   total?: number;
   bar?: number;
 }
-export interface ProofIndexResponse { taskId: TaskId; items: ProofItem[] }
+/** TE-A6 (DEC 254zt/254zzf): one failing test of a failed check, as Code words it (plain text): the check, the test, and "likely broken by a change ... to <files>" or "unknown (<why>)". */
+export interface ProofFailure { check: string; test: string; cause: string }
+/** `failures` (at most ten) and `failuresNotListed` (how many more) are optional: a Code without TE-A6, or a task with no failing test that has a cause, sends neither. */
+export interface ProofIndexResponse { taskId: TaskId; items: ProofItem[]; failures?: ProofFailure[]; failuresNotListed?: number }
 
 /** Cloud's own `GET /v1/app/org/spend` gains two optional numbers (no Code route behind it): what the company spent this month and what is left of its budget (absent when there is no budget). */
 export interface OrgSpendSummaryAddition { spentThisMonthUsd?: number; remainingUsd?: number }
@@ -458,12 +463,12 @@ export interface CompanyAuditQuery { from?: Iso; to?: Iso; person?: DeveloperId;
 /** The reply to `GET /v1/app/company/audit` (admin only): the merged list, `next` (pass back as `cursor` with the same filters) while there may be more, and the engine's status. A page may be short while `next` is present. */
 export interface CompanyAuditPage { records: CompanyAuditEntry[]; next?: string; engine: CompanyAuditEngineStatus }
 
-export interface ScriptToken { tokenId: string; label: string; createdAt: Iso; lastUsedAt?: Iso; expiresAt?: Iso }
+export interface ScriptToken { tokenId: string; name: string; hint: string; projects: string[]; permissions: Array<"read" | "start" | "lessons" | "wiki">; createdAt: Iso; expiresAt: Iso; lastUsedAt?: Iso; revokedAt?: Iso; status: "active" | "expired" | "revoked"; mine: boolean; createdBy?: string }
 export interface ScriptTokensResponse { tokens: ScriptToken[] }
-export interface CreateScriptTokenRequest { requestId: string; label: string; expiresInDays?: number }
+export interface CreateScriptTokenRequest { requestId: string; name: string; projects: string[]; permissions: Array<"read" | "start" | "lessons">; days?: number }
 /** The secret is shown once, in this answer only. */
 export interface CreateScriptTokenResponse { token: ScriptToken; secret: string }
-export interface RevokeScriptTokenResponse { revoked: boolean }
+export interface RevokeScriptTokenResponse { token: ScriptToken }
 
 /** Guided onboarding PR 16/17 (Code #839): a reviewed archive or restore names the preview's revisions and acknowledges what it does (Code's ReviewedProject*Body). */
 export interface ArchiveProjectRequest { requestId: string; expectedOrgId?: string; expectedRevision: number; expectedProjectRevision: number; acknowledgeNewWorkStops?: true; acknowledgeNewWorkAllowed?: true }
@@ -507,7 +512,9 @@ export type LessonCitation =
   | { kind: "code"; repo: string; path: string; startLine: number; endLine: number; check: string /* known: valid, moved, stale, unchecked */; checkedAt?: number }
   | { kind: "pr"; url: string }
   | { kind: "task"; taskId: string }
-  | { kind: "record" };
+  | { kind: "record" }
+  /** A kind a newer Code added: Cloud keeps it as this (it never reads it as a known kind). */
+  | { kind: "other" };
 /** What a lesson waiting for people still needs: people in all (1, or 2 for reviewer, check and security lessons) and how many approved. */
 export interface LessonNeeds { required: 1 | 2; have: number; first?: LessonPerson; firstAt?: number; groups: string[] }
 /** One lesson as Code's list sends it (contracts `LessonViewSchema`; Cloud keeps the fields its screens draw). Times are milliseconds. */
@@ -538,8 +545,6 @@ export interface LessonItem {
   possibleDuplicate?: string;
   /** The lesson this one contradicts. */
   contradicts?: string;
-  /** A possible duplicate that cannot be merged into the other (it came only from the repository's own reviews). */
-  mergeBlocked?: true;
   /** How many distinct tasks were given it. Not sent by Code yet (being added); shown only when present. */
   usedInTasks?: number;
   canApprove: boolean; canReject: boolean; canRetire: boolean;
@@ -572,6 +577,14 @@ export interface TaskLessonsResponse { project: string; taskId: string; lessons:
 export interface NotHelpfulResponse { project: string; taskId: string; lessonId: string; marked: "not_helpful" }
 /** The project's own mode, the mode in force (the stricter of it and the company's), whether the company is the reason, and whether this person may change it. */
 export interface LessonModeResponse { project: string; mode: LessonMode; effective: LessonMode; lockedByCompany: boolean; canChange: boolean }
+/** Code's counts only phase 0 measurement, returned only to a project maintainer or company owner/admin. */
+export interface LessonMeasureResponse {
+  project: string; windowDays: number; floor: number; loads: number; lessonsInUse: number | null; loadedLessons: number; loadedBelowFloor: number;
+  loadsWithBelowFloor: number; loadedNoMatch: number; meanWordsLoaded: number | null; meanWordsLeftOut: number | null; loadsCapBound: number;
+  leftOutAtOrAboveFloor: number; meanFitLoaded: number | null; meanFitLeftOut: number | null;
+  cleanMerge: { merged: number; reverted: number; clean: number; rate: number | null };
+  revertDetection: "not_wired"; truncated: boolean; unreadable: number;
+}
 export interface PutLessonModeRequest { mode: LessonMode }
 /** Cloud's inbox read (`GET /v1/app/lessons/inbox`): one batch per project with proposed lessons the person can decide, theirs first. */
 export interface LessonInboxBatch { project: string; lessons: LessonItem[]; fromYou: number; partial?: true }
@@ -694,6 +707,7 @@ export interface CodeRouteTypes {
   "lessons.notHelpful": { request: JsonObject; response: NotHelpfulResponse };
   "lessons.mode.get": { request: void; response: LessonModeResponse };
   "lessons.mode.put": { request: PutLessonModeRequest; response: LessonModeResponse };
+  "lessons.measure": { request: void; response: LessonMeasureResponse };
   "company.engineModel.get": { request: void; response: CompanyEngineModelView };
   "company.engineModel.put": { request: PutCompanyEngineModelRequest; response: CompanyEngineModelView };
   "projects.settings.get": { request: void; response: ProjectSettingsView };
@@ -859,9 +873,9 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.linear.team.clear", "DELETE", "/v1/dev/company/linear/projects/{project}", "Clear a project's Linear team", "full", ["admin"], "no", false, "none", true),
   spec("company.audit.records", "GET", "/v1/dev/client/company/audit/records", "Engine audit records, for a company administrator (lane AU)", "full", ["admin"], "no", false, "none"),
   // Settings: the person's script tokens
-  spec("scriptTokens.list", "GET", "/v1/dev/script-tokens", "The person's script tokens", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:94")),
-  spec("scriptTokens.create", "POST", "/v1/dev/script-tokens", "Make a script token; the secret is shown once", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:97")),
-  spec("scriptTokens.revoke", "DELETE", "/v1/dev/script-tokens/{tokenId}", "Revoke one", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:99")),
+  spec("scriptTokens.list", "GET", "/v1/app/script-tokens", "The caller's tokens, or company tokens Code lets them manage", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
+  spec("scriptTokens.create", "POST", "/v1/app/script-tokens", "Make a script token with a fresh step-up; secret shown once", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
+  spec("scriptTokens.revoke", "POST", "/v1/app/script-tokens/{tokenId}/revoke", "Revoke one", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
   // Lessons (PrepLabsAI/Rovara#713, LM8 part 1): served by code/next once merged and wired (its Step 6); until then every route answers 404 LESSONS_SWITCHED_OFF "Lessons are off."
   spec("lessons.list", "GET", `${DP}/lessons`, "One page of a project's lessons (query: list=proposed|approved|retired, since, limit 1..100, cursor)", "full", ["home", "how-we-work"], "no", false, "none", true),
   spec("lessons.approve", "POST", `${DP}/lessons/{lessonId}/approve`, "Keep a proposed lesson: the version read, or an edit of it", "full", ["how-we-work"], "no", false, "none", true),
@@ -874,6 +888,7 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.notHelpful", "POST", `${DP}/tasks/{taskId}/lessons/{lessonId}/not-helpful`, "Mark a lesson the task was given as not helpful", "full", ["session"], "no", false, "none", true),
   spec("lessons.mode.get", "GET", `${DP}/lessons/mode`, "The project's learning mode, the mode in force and whether the company locks it", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.mode.put", "PUT", `${DP}/lessons/mode`, "Set the learning mode (a project admin, or a company owner or admin)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.measure", "GET", `${DP}/lessons/measure`, "Counts only lesson fit, below-floor loads, clean merges and revert detection (maintainer or company owner/admin)", "full", ["how-we-work"], "no", false, "none", true),
   // Guided onboarding PR 15 (DEC 254l item 7, 254n item 1): the company's AI model (Code #835, not on code/next yet) and a project's per-task model budget (Code's M4a settings).
   spec("company.engineModel.get", "GET", "/v1/dev/company/engine-model", "The company's engine model, the models the gateway offers it now, and the one to preselect (any member)", "full", ["later"], "no", false, "none", true),
   spec("company.engineModel.put", "PUT", "/v1/dev/company/engine-model", "Set or clear the company's engine model, only from its offered list (owner or admin)", "full", ["later"], "no", false, "none", true),
@@ -912,6 +927,10 @@ PUT /v1/app/me/name | k | shell | me.setName | shell/NameForm | T
 GET /v1/app/me/sign-ins | k | later | | sign-ins | T
 POST /v1/app/me/sign-ins/link | k | later | | sign-ins | T
 DELETE /v1/app/me/sign-ins/{method} | k | later | | sign-ins | T
+GET /v1/app/me/sign-in-factors | k | later | | admin-company | T
+GET /v1/app/me/github | k | later | | github-link | T
+POST /v1/app/me/github/link | k | later | | github-link | T
+DELETE /v1/app/me/github | k | later | | github-link | T
 GET /v1/app/nav | c | shell | access.check,tasks.list,decisions.list | nav | T
 GET /v1/app/home | c | home | tasks.list,tasks.get,decisions.list | home | T
 POST /v1/app/home/cards/{card}/dismiss | c | home | | work-list |
@@ -928,6 +947,7 @@ GET /v1/app/inbox | k | later | | inbox | T
 POST /v1/app/inbox/read | k | later | | inbox | T
 GET /v1/app/sessions/{id} | c | session | tasks.get,tasks.people.get | sessions | T
 GET /v1/app/sessions/{id}/events | k | session | tasks.events | sessions | T
+GET /v1/app/sessions/{id}/log | k | later | | screens/session/DecisionsCard | T
 GET /v1/app/sessions/{id}/messages | k | session | tasks.messages.list | sessions | T
 POST /v1/app/sessions/{id}/messages | k | session | tasks.messages.send | sessions | T
 PATCH /v1/app/sessions/{id}/messages/{messageId} | k | session | tasks.messages.send | sessions | T
@@ -996,8 +1016,8 @@ POST /v1/app/tasks/{t}/review/claim | k | later | | review-groups |
 POST /v1/app/tasks/{t}/review/release | k | later | | review-groups |
 POST /v1/app/tasks/{t}/review/reassign | k | later | | review-groups |
 POST /v1/app/projects/{p}/code | k | request | tasks.start | code | T
-POST /v1/app/projects/{p}/code/suggest | k | request | | code |
-POST /v1/app/projects/{p}/start-preview | k | later | | code |
+POST /v1/app/projects/{p}/code/suggest | k | request | | code | T
+POST /v1/app/projects/{p}/start-preview | c | later | | code | T
 GET /v1/app/projects | k | admin | access.check,client.projects.get | projects | T
 POST /v1/app/projects | k | admin | client.projects.create,client.projects.bulk | onboarding | T
 GET /v1/app/projects/{p} | k | admin | access.check,client.projects.get | onboarding | T
@@ -1010,7 +1030,7 @@ PUT /v1/app/projects/{p}/people/{who} | k | admin | client.members.put | project
 DELETE /v1/app/projects/{p}/people/{who} | k | admin | client.members.remove | project-people |
 GET /v1/app/projects/{p}/code-settings | k | admin | client.projects.codeSettings.get | project-people |
 PUT /v1/app/projects/{p}/code-settings | k | admin | client.projects.codeSettings.put | project-people |
-GET /v1/app/projects/{p}/how-we-work | k | how-we-work | howWeWork.get | how-we-work | L
+GET /v1/app/projects/{p}/how-we-work | k | how-we-work | howWeWork.get | how-we-work | LT
 POST /v1/app/projects/{p}/playbook/process | k | how-we-work | playbook.process | how-we-work |
 GET /v1/app/projects/{p}/playbook | k | how-we-work | playbook.get | how-we-work | L
 PUT /v1/app/projects/{p}/playbook | k | how-we-work | playbook.put | how-we-work | L
@@ -1057,6 +1077,7 @@ POST /v1/app/projects/{p}/setup-agent/stop | k | later | | setup-agent | LT
 GET /v1/app/projects/{p}/setup-status | k | later | client.projects.setupStatus | setup-status | T
 PUT /v1/app/projects/{p}/setup-status/skips | k | later | client.projects.setupSkips | setup-status | T
 GET /v1/app/projects/{p}/wiki | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/search | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId} | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId}/corrections | k | later | | wiki | T
@@ -1078,6 +1099,10 @@ POST /v1/app/projects/{p}/wiki-build/agents | k | later | | wiki-setup | T
 POST /v1/app/projects/{p}/wiki-build/delete | k | later | | wiki-setup | T
 GET /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 PUT /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/answers | k | later | | answers | T
+POST /v1/app/projects/{p}/answers/{a}/not-right | k | later | | answers | T
+GET /v1/app/company/system-runs | k | later | | wiki-setup | T
+PUT /v1/app/company/system-runs | k | later | | wiki-setup | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | LT
 POST /v1/app/projects/{p}/setup-agent/discard | k | later | | setup-agent | LT
@@ -1087,7 +1112,7 @@ GET /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 PUT /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 GET /v1/app/projects/{p}/setup-recipe | k | later | | setup-recipes |
 POST /v1/app/projects/{p}/setup-recipe | k | later | | setup-recipes |
-GET /v1/app/projects/{p}/environment-image | k | later | | saved-env |
+GET /v1/app/projects/{p}/environment-image | k | later | | saved-env | T
 POST /v1/app/projects/{p}/environment-image | k | later | | saved-env |
 PUT /v1/app/projects/{p}/environment-image/setting | k | later | | saved-env |
 GET /v1/app/projects/{p}/test-environment | k | later | | test-environment |
@@ -1121,6 +1146,7 @@ POST /v1/app/projects/{p}/lessons/{lessonId}/retire-request | k | how-we-work | 
 GET /v1/app/projects/{p}/lessons/retire-requests | k | how-we-work | lessons.retireRequests | learned | T
 POST /v1/app/projects/{p}/lessons/decisions | k | home | lessons.decisions | learned | T
 GET /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.get | learned | T
+GET /v1/app/projects/{p}/lessons/measure | k | how-we-work | lessons.measure | learned | T
 PUT /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.put | learned | T
 GET /v1/app/projects/{p}/tasks/{t}/lessons | k | session | lessons.task | learned | T
 POST /v1/app/projects/{p}/tasks/{t}/lessons/{lessonId}/not-helpful | k | session | lessons.notHelpful | learned | T
@@ -1132,8 +1158,6 @@ POST /v1/app/projects/{p}/lessons/preset/approve | k | later | | lessons |
 POST /v1/app/projects/{p}/lessons/preset/cancel | k | later | | lessons |
 GET /v1/app/projects/{p}/lessons/local-tools | k | later | | lessons-local-tools | L
 POST /v1/app/projects/{p}/lessons/local-tools | k | later | | lessons-local-tools | L
-GET /v1/app/projects/{p}/lessons/repo | k | later | | lessons-repo-file | L
-POST /v1/app/projects/{p}/lessons/repo | k | later | | lessons-repo-file | L
 GET /v1/app/projects/{p}/learning | k | later | | learning |
 POST /v1/app/projects/{p}/learning/suggestions/{suggestionId}/accept | k | later | | learning |
 POST /v1/app/projects/{p}/learning/suggestions/{suggestionId}/dismiss | k | later | | learning |
@@ -1207,8 +1231,11 @@ GET /v1/app/org/spend | g | budgets | | spending |
 GET /v1/app/org/report | c | admin | | admin/report | T
 GET /v1/app/org/report/features/{featureId} | c | admin | | admin/report | T
 GET /v1/app/tasks/{t}/feature-choices | k | later | | design/PlanFeature | T
-POST /v1/app/tasks/{t}/feature | k | later | | design/PlanFeature | T
-POST /v1/app/org/report/features | k | later | | design/PlanFeature | T
+POST /v1/app/org/report/features | c | admin | | admin/report | T
+POST /v1/app/org/report/features/{featureId}/rename | c | admin | | admin/report | T
+POST /v1/app/org/report/features/{featureId}/merge | c | admin | | admin/report | T
+POST /v1/app/org/report/features/{featureId}/state | c | admin | | admin/report | T
+POST /v1/app/tasks/{taskId}/feature | c | admin | | admin/report | T
 GET /v1/app/spend-requests | g | budgets | | spending |
 GET /v1/app/org/budget-settings | g | budgets | | spending |
 GET /v1/app/org/engine-model | k | later | company.engineModel.get | setup/AiSpendStep | T
@@ -1230,9 +1257,9 @@ PUT /v1/app/org/model-selection-policy | g | later | | company-model-policy |
 POST /v1/app/org/model-selection-policy/preview | g | later | | company-model-policy |
 GET /v1/app/me/notifications | c | settings | | notifications |
 PUT /v1/app/me/notifications | c | settings | | notifications | L
-GET /v1/app/script-tokens | k | settings | scriptTokens.list | script-tokens | L
-POST /v1/app/script-tokens | k | settings | scriptTokens.create | script-tokens | L
-DELETE /v1/app/script-tokens/{tokenId} | k | settings | scriptTokens.revoke | script-tokens | L
+GET /v1/app/script-tokens | k | settings | scriptTokens.list | script-tokens | T
+POST /v1/app/script-tokens | k | settings | scriptTokens.create | script-tokens | T
+POST /v1/app/script-tokens/{tokenId}/revoke | k | settings | scriptTokens.revoke | script-tokens | T
 POST /v1/app/me/identities/slack | k | settings | | shell/SlackLink |
 DELETE /v1/app/me/identities/slack | k | settings | channelLinks.remove | shell/SlackLink |
 POST /v1/app/me/identities/github | k | settings | | shell/GithubLink |

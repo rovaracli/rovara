@@ -45,7 +45,8 @@ export function citationWords(citation: LessonCitation): { text: string; href?: 
  if (citation.kind === "code") return { text: `${citation.path}:${String(citation.startLine)}${citation.endLine > citation.startLine ? "-" + String(citation.endLine) : ""} (${CHECK[citation.check] ?? "not checked yet"})` };
  if (citation.kind === "pr") return { text: "The pull request it came from", href: citation.url };
  if (citation.kind === "task") return { text: "The task it came from" };
- return { text: "The team record" };
+ if (citation.kind === "record") return { text: "The team record" };
+ return { text: "Another kind of reference" };
 }
 const plural = (n: number, one: string, many = one + "s") => `${String(n)} ${n === 1 ? one : many}`;
 /** What Code counted, honestly: loads, helpful and not helpful marks, and the tasks that back it. Never "used in N tasks" (Code has no such count yet). */
@@ -75,10 +76,10 @@ export function expiryWords(expiresAt: number, now: number): { text: string; soo
  return { text: `Lapses on ${new Date(expiresAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })} if nobody decides`, soon: false };
 }
 /** What else a lesson touches, so Keep is never silent: a possible duplicate or a contradiction, named by title when the other lesson is in view. */
-export function relationWords(lesson: Pick<LessonItem, "possibleDuplicate" | "contradicts" | "mergeBlocked">, titleOf: (id: string) => string | undefined): string[] {
+export function relationWords(lesson: Pick<LessonItem, "possibleDuplicate" | "contradicts">, titleOf: (id: string) => string | undefined): string[] {
  const name = (id: string) => { const title = titleOf(id); return title === undefined ? "another lesson" : `"${title}"`; };
  const out: string[] = [];
- if (lesson.possibleDuplicate !== undefined) out.push(`May duplicate ${name(lesson.possibleDuplicate)}. Keep keeps both${lesson.mergeBlocked === true ? " (they can't be merged)" : ""}; Drop if it repeats it.`);
+ if (lesson.possibleDuplicate !== undefined) out.push(`May duplicate ${name(lesson.possibleDuplicate)}. Keep keeps both; Drop if it repeats it.`);
  if (lesson.contradicts !== undefined) out.push(`Contradicts ${name(lesson.contradicts)}. Keep only the one that is right.`);
  return out;
 }

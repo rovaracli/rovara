@@ -97,6 +97,7 @@ const RETENTION: Readonly<Record<string, string>> = { A: "Nothing; read live", B
 export const retentionWords = (retention: string): string => Object.hasOwn(RETENTION, retention) ? RETENTION[retention]! : "Unknown";
 const KINDS: Readonly<Record<string, string>> = { slack: "Slack", github: "GitHub", linear: "Linear", jira: "Jira", sim: "SIM", taskei: "Taskei", mcp: "Connected tool", rovara: "Rovara" };
 export const kindWords = (kind: string): string => Object.hasOwn(KINDS, kind) ? KINDS[kind]! : kind.startsWith("codehost:") ? "Code host" : "Other source";
+export const audienceWords = (audience: string): string => audience === "project" ? "Everyone on this project" : audience === "maintainers" ? "Maintainers only" : "Other";
 export const healthWords = (health: string): string => health === "ok" ? "Working" : health === "failing" ? "Not working" : "Not checked yet";
 
 /** What a failed call says: the server's own fixed sentence for a refusal, a fixed line for anything else. */

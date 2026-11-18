@@ -7,7 +7,7 @@ import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { ageLabel, involvedRows, nextNeedsYou, proofRows, provenCount, readEvents, readPlan, readProof, readTaskList, sortRows, stepOf, workRows, type ReadProofItem } from "../../packages/ui/src/api/work.js";
+import { PROOF_FAILURES_SHOWN, ageLabel, involvedRows, nextNeedsYou, proofRows, provenCount, readEvents, readPlan, readProof, readProofIndex, readTaskList, sortRows, stepOf, workRows, type ReadProofItem } from "../../packages/ui/src/api/work.js";
 import { readDecisions } from "../../packages/ui/src/api/decisions.js";
 import { DecisionCardsViewReaderSchema } from "@agentx/contracts/web";
 import { BudgetBanner } from "../../packages/ui/src/design/BudgetBanner.js";
@@ -15,7 +15,7 @@ import { EvalResult } from "../../packages/ui/src/design/EvalResult.js";
 import { StepMini, StepRail } from "../../packages/ui/src/design/StepRail.js";
 import { BuildStep } from "../../packages/ui/src/screens/session/BuildStep.js";
 import { CriterionRow } from "../../packages/ui/src/screens/session/CriterionRow.js";
-import { ProofStep } from "../../packages/ui/src/screens/session/ProofStep.js";
+import { FailingTests, ProofStep } from "../../packages/ui/src/screens/session/ProofStep.js";
 import { PullRequestCard } from "../../packages/ui/src/screens/session/PullRequestCard.js";
 import { SpecStep } from "../../packages/ui/src/screens/session/SpecStep.js";
 import { HomeScreen } from "../../packages/ui/src/screens/home/HomeScreen.js";
@@ -82,7 +82,7 @@ it("reads each answer defensively: an answer that is not the shape is refused, a
   expect(readEvents({ events: [{ at: "x" }, { at: "2026", kind: "status" }] })).toHaveLength(1);
 });
 it("proves a criterion only when every check that speaks to it passed on current code", () => {
-  const plan = readPlan(PLAN), item = (patch: Partial<ReadProofItem>): ReadProofItem => ({ sha256: "a", title: "t", kind: "test_report", verdict: "pass", criterionIds: ["R1.1"], commit: undefined, stale: false, passed: undefined, total: undefined, bar: undefined, ...patch });
+  const plan = readPlan(PLAN), item = (patch: Partial<ReadProofItem>): ReadProofItem => ({ id: "a", sha256: "a", title: "t", kind: "test_report", verdict: "pass", criterionIds: ["R1.1"], commit: undefined, stale: false, passed: undefined, total: undefined, bar: undefined, ...patch });
   const state = (items: ReadProofItem[]) => proofRows(plan.requirements, items, plan.tasks).map(row => row.state);
   expect(state([])).toEqual(["not_run", "running"]);
   expect(state([item({})])).toEqual(["pass", "running"]);
@@ -250,7 +250,7 @@ it("answers a question from the card; a route Code does not serve says so, never
   const f = screenSetup({ send, path: `/app/live?task=${ID.question}`, plan: { status: 200, body: { ...PLAN, questions: [{ ...PLAN.questions[0], criterionId: undefined }] } } });
   const card = await screen.findByRole("region", { name: "Question for you" });
   fireEvent.click(await within(card).findByRole("button", { name: /Yes, behind a flag/u }));
-  expect((await screen.findByTestId("decision-error")).textContent).toContain("isn't connected to Rovara Code yet");
+  expect((await screen.findByTestId("decision-error")).textContent).toContain("Not available yet.");
   const call = send.mock.calls[0]![0];expect(call.path).toBe(`/v1/app/sessions/${QUESTION_SESSION}/answers`);expect(call.body).toMatchObject({ round: 2, revision: 2, answers: [{ questionId: "Q1", optionId: "yes" }] });
   expect(call.path).not.toContain(ID.question);
   expect(screen.queryByRole("progressbar")).toBeNull();
@@ -268,7 +268,7 @@ it.each(["no Cloud session", "no round from Code"])("a question on a task with %
 });
 it("says Work isn't connected yet, plainly, when Code does not serve the list", async () => {
   const f = screenSetup({ tasks: NOT_YET });
-  const error = await screen.findByTestId("load-error");expect(error.textContent).toContain("isn't connected to Rovara Code yet");expect(screen.queryByRole("progressbar")).toBeNull();
+  const error = await screen.findByTestId("load-error");expect(error.textContent).toContain("Work isn't available yet.");expect(error.textContent).not.toContain("Not available yet.");expect(error.textContent).not.toContain("/v1/");expect(screen.queryByRole("progressbar")).toBeNull();
   f.answerTasks({ status: 200, body: { tasks: TASKS } });fireEvent.click(within(error).getByRole("button", { name: "Try again" }));await screen.findByRole("heading", { name: /Needs you/u });
   f.close();
 });
@@ -288,8 +288,8 @@ it("says nothing needs you inside the Needs you group when it is empty but work 
 });
 it("says decisions aren't connected yet in the pane of a task that needs a person but has no card", async () => {
   const f = screenSetup({ tasks: { status: 200, body: { tasks: [task(ID.checks, "Stopped one", { status: "FAILED", workflow: { stage: "IMPLEMENT", state: "BLOCKED", revision: 1, blockReason: "The coding step could not finish." } }, "IMPLEMENT", "BLOCKED")] }, }, decisions: { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/decisions isn't connected to Rovara Code yet." } } } });
-  expect((await screen.findByTestId("decisions-unavailable")).textContent).toContain("isn't connected to Rovara Code yet");
-  expect((await screen.findByTestId("decision-quiet")).textContent).toContain("isn't connected to Rovara Code yet");
+  expect((await screen.findByTestId("decisions-unavailable")).textContent).toContain("Not available yet.");
+  expect((await screen.findByTestId("decision-quiet")).textContent).toContain("Not available yet.");
   f.close();
 });
 it("shows the budget banner when the company's budget is used up, and the agents row says it is not connected yet", async () => {
@@ -436,3 +436,65 @@ for (const theme of ["light", "dark"] as const) it("has no accessibility violati
   document.documentElement.setAttribute("data-theme", theme);await expectNoAxeViolations(f.container);f.close();
 });
 void act;
+
+// Staging walkthrough 2026-11-17 item 3: Code has no proof index route yet, so the proof read answers Code's unknown-route 404 ("route not found") or Cloud's 501.
+// The pane says "Proof will appear here." in plain words, never the route text; any other failure still offers Try again.
+it.each([
+ ["Code's unknown-route 404", { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } }],
+ ["Cloud's 501", { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/tasks/x/evidence isn't connected to Rovara Code yet." } } }],
+])("says proof will appear here, plainly, when the proof read is not served (%s)", async (_label, proof) => {
+  const f = screenSetup({ proof, path: `/app/live?task=${ID.merge}` });
+  expect((await screen.findByTestId("proof-not-yet")).textContent).toBe("Proof will appear here.");
+  const pane = screen.getByRole("region", { name: "Selected task" });
+  expect(pane.textContent).not.toContain("route not found");expect(pane.textContent).not.toContain("/v1/");
+  expect(within(pane).queryByRole("button", { name: "Try again" })).toBeNull();
+  f.close();
+});
+it("still offers Try again when the proof read fails for another reason", async () => {
+  const f = screenSetup({ proof: { status: 500, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara Code didn't answer." } } }, path: `/app/live?task=${ID.merge}` });
+  // The client tries a 500 again before it gives up, so the error shows after its back-off.
+  expect(await screen.findByTestId("section-error", {}, { timeout: 5000 })).toBeTruthy();expect(screen.queryByTestId("proof-not-yet")).toBeNull();
+  f.close();
+});
+it("keeps Code's own words for any other 404 of the proof read (a task the person can no longer read)", async () => {
+  const f = screenSetup({ proof: { status: 404, body: { error: { code: "NOT_FOUND", message: "task not found" } } }, path: `/app/live?task=${ID.merge}` });
+  expect((await screen.findByTestId("not-connected")).textContent).toBe("task not found");expect(screen.queryByTestId("proof-not-yet")).toBeNull();
+  f.close();
+});
+
+// Proof list (Code's GET /v1/dev/tasks/{id}/evidence): Code's items carry an id and a digest only when it kept the check's output, and (TE-A6) up to ten failing tests with their likely causes.
+const failureRow = (index: number) => ({ check: "pytest -q", test: `tests/cart.test.ts::case ${String(index)}`, cause: index % 2 === 0 ? "likely broken by a change (commit aaaaaaa) to src/cart.ts" : "unknown (only weak evidence)" });
+it("reads Code's proof index: an item keyed by its id when it has no digest, every item kept (a repeated key suffixed), and at most ten failing tests with the rest counted", () => {
+  const index = readProofIndex({ items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }, { id: "evidence:0", title: "again", kind: "test_report", verdict: "pass" }, { title: "no key", kind: "log", verdict: "pass" }], failures: Array.from({ length: 13 }, (_, index) => failureRow(index)), failuresNotListed: 2 });
+  // Every valid item is kept: a repeated key gets its own suffix (an older Code may send two checks with the same digest).
+  expect(index.items.map(item => [item.id, item.sha256, item.title])).toEqual([["evidence:0", undefined, "pytest -q"], ["evidence:0#1", undefined, "again"]]);
+  expect(index.failures).toHaveLength(PROOF_FAILURES_SHOWN);expect(index.failures[0]).toEqual(failureRow(0));
+  expect(index.failuresNotListed).toBe(5);
+  // An older Code (no failures) and odd values: no failing tests, nothing counted.
+  expect(readProofIndex(PROOF)).toMatchObject({ failures: [], failuresNotListed: 0 });
+  expect(readProofIndex({ items: [], failures: [{ check: 1, test: "t", cause: "c" }, "x"], failuresNotListed: -4 })).toMatchObject({ failures: [], failuresNotListed: 0 });
+  // The fake Code's items have no id: the digest is the key.
+  expect(readProof(PROOF).map(item => item.id)).toEqual(PROOF.items.map(item => item.sha256));
+});
+it("draws the failing tests under the proof as plain text, at most ten, and counts the rest", () => {
+  const hostile = { check: "<b>suite</b>", test: "tests/<img src=x onerror=alert(1)>.test.ts::a", cause: "likely broken by a change to [x](https://evil.example) <script>alert(1)</script>\u202e" };
+  const f = wrap(h(FailingTests, { failures: [hostile, ...Array.from({ length: 11 }, (_, index) => failureRow(index))], notListed: 3 }));
+  const list = screen.getByRole("list", { name: "Failing tests" });
+  expect(within(list).getAllByRole("listitem")).toHaveLength(PROOF_FAILURES_SHOWN);
+  expect(f.container.querySelector("img, script, b, a")).toBeNull();
+  expect(list.textContent).toContain("tests/<img src=x onerror=alert(1)>.test.ts::a");expect(list.textContent).toContain("(<b>suite</b>)");expect(list.textContent).toContain("[U+202E]");
+  expect(f.container.textContent).toContain("and 5 more failing tests not listed");
+  f.unmount();
+  // Nothing to show: no section at all.
+  const none = wrap(h(FailingTests, { failures: [] }));expect(none.container.textContent).toBe("");none.unmount();
+  const onlyMore = wrap(h(FailingTests, { failures: [], notListed: 1 }));expect(onlyMore.container.textContent).toContain("and 1 more failing test not listed");onlyMore.unmount();
+});
+it("the Proof tab shows Code's items and failing tests from the proof read", async () => {
+  const proof = { status: 200, body: { taskId: ID.merge, items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }, { id: "review:code", title: "Code review", kind: "review", verdict: "pass", criterionIds: [] }], failures: [failureRow(0), failureRow(1)] } };
+  const f = screenSetup({ proof, path: `/app/live?task=${ID.merge}` });
+  const failing = await screen.findByTestId("failing-tests");
+  expect(failing.textContent).toContain("tests/cart.test.ts::case 0");expect(failing.textContent).toContain("likely broken by a change (commit aaaaaaa) to src/cart.ts");expect(failing.textContent).toContain("unknown (only weak evidence)");
+  const pane = screen.getByRole("region", { name: "Selected task" });expect(pane.textContent).toContain("Also checked.");expect(pane.textContent).toContain("pytest -q (failed)");expect(pane.textContent).toContain("Code review");
+  expect(screen.queryByTestId("proof-not-yet")).toBeNull();
+  f.close();
+});

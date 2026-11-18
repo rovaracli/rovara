@@ -32,6 +32,7 @@ export const AI_SPEND_STEP_WORDS = Object.freeze({
  title: "AI and spending",
  intro: "Choose who pays for the AI, the model Rovara uses, and the most the company spends on AI in a month. Setup runs use AI, so this comes first.",
  rovara: "Rovara's AI",
+ defaultNote: "Rovara's AI is on for your company by default. It counts under the monthly limit. Choose your own provider below if you would rather use your own key.",
  rovaraText: "Nothing to connect. Charged per use on the company's bill, inside the monthly limit.",
  own: "Your own provider",
  ownText: "Your company's own AI account pays the provider directly. Rovara still counts it under the monthly limit.",
@@ -82,8 +83,10 @@ type Notice = { ok: boolean; text: string } | undefined;
 function Form({ developerId, model, source, settings, setNotice, reload, onSaved }: { developerId: string; model: EngineModelRead; source: AgentAiRead; settings: CompanySettingsRead; setNotice: (notice: Notice) => void; reload: () => void; onSaved: () => void }) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
  const confirmed = useJustConfirmed(developerId);
- const [choice, setChoice] = useState<Choice>(source.source === null || source.source === "rovara" ? "rovara" : "own");
- const [own, setOwn] = useState<Exclude<AgentAiSource, "rovara">>(source.source === "bedrock_byo" ? "bedrock_byo" : "anthropic_key");
+ // DEC 254zzz3(1): what the company's agents use now (a saved choice, else the default it is on), never a guess.
+ const shown = source.source ?? source.effectiveSource;
+ const [choice, setChoice] = useState<Choice>(shown === null || shown === "rovara" ? "rovara" : "own");
+ const [own, setOwn] = useState<Exclude<AgentAiSource, "rovara">>(shown === "bedrock_byo" ? "bedrock_byo" : "anthropic_key");
  const [picked, setPicked] = useState(model.preselect);
  const savedCap = typeof settings.monthlyCapUsd === "number" ? settings.monthlyCapUsd : undefined;
  const [cap, setCap] = useState(usdText(savedCap ?? COMPANY_MONTHLY_DEFAULT_USD));
@@ -124,6 +127,7 @@ function Form({ developerId, model, source, settings, setNotice, reload, onSaved
 
  return <>
   {!ready && <FreshSignIn action={W.action} refused={stale} />}
+  {source.sourceIsDefault && source.effectiveSource === "rovara" && <p data-testid="ai-spend-default">{W.defaultNote}</p>}
   <fieldset disabled={busy} aria-label="Who pays for the AI"><legend>Who pays for the AI</legend>
    <p><label data-testid="ai-spend-rovara"><input type="radio" name="ai-spend-source" value="rovara" checked={choice === "rovara"} disabled={!source.available.rovara} onChange={() => setChoice("rovara")} /> <b>{W.rovara}</b>: {W.rovaraText}</label></p>
    <p><label data-testid="ai-spend-own"><input type="radio" name="ai-spend-source" value="own" checked={choice === "own"} onChange={() => setChoice("own")} /> <b>{W.own}</b>: {W.ownText}</label></p>

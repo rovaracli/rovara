@@ -12,11 +12,13 @@ import {
   matchCodeRoute,
   type AccessResponse, type CodeRequest, type CodeResponse, type CodeRouteId, type CompanyMember, type DecisionCard, type ErrorBody, type HowWeWorkView,
   type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
-  type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
+  type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMeasureResponse, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
-import { wikiIndex, wikiPage, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
+import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
+import { wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
 import { wikiMapOf, wikiSetupBuildView, type FakeWikiSetup } from "./wiki-setup-fixture.js";
 import { WIKI_SETUP_CODE_WORDS } from "../../packages/contracts/src/app-wiki-setup.js";
+import { CreateScriptTokenBodySchema } from "../../packages/contracts/src/script-tokens.js";
 
 export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
 
@@ -110,6 +112,13 @@ type Handler<K extends CodeRouteId> = (context: Context<K>) => Answer<K> | Promi
 type Handlers = { [K in CodeRouteId]: Handler<K> };
 
 const failure = (status: number, code: string, message: string): { status: number; body: ErrorBody } => ({ status, body: { error: { code, message } } });
+/** Code's events limit check (`whole`: one to three digits, then the range): absent is its default, anything else outside 1..DEVELOPER_EVENTS_MAX is refused with Code's 400. */
+const eventsLimitRefused = (query: URLSearchParams): { status: number; body: ErrorBody } | undefined => {
+  const raw = query.get("limit");
+  if (raw === null) return undefined;
+  const limit = /^\d{1,3}$/u.test(raw) ? Number(raw) : Number.NaN;
+  return limit >= 1 && limit <= DEVELOPER_EVENTS_MAX ? undefined : failure(400, "CONFIG_INVALID", `limit must be a whole number from 1 to ${String(DEVELOPER_EVENTS_MAX)}`);
+};
 const notFound = (what = "route") => failure(404, "NOT_FOUND", `${what} not found`);
 
 export async function startFakeCode(options: FakeCodeOptions = {}): Promise<FakeCode> {
@@ -147,6 +156,25 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const entry = project(name);
     if (entry === undefined || companyless.has(person.developerId) || (entry.companyId ?? FAKE_COMPANY_ID) !== companyOfPerson(person)) return false;
     return person.administrator || roleIn(person, name) !== undefined;
+  };
+  type SavedEnvMode = "off" | "route-missing" | "core-off" | "never" | "healthy" | "broken" | "extra-field" | "501";
+  // L4-MF1: Code's saved environment panel read on its own /v1/app path (core host, read only), per project (set by the specs through /__fake/saved-env). The default is `off`, as a hosted
+  // Code answers today (no image registry): a plain 404 "Saved environments are off for this install". `route-missing` is an older Code's unknown-route 404, `core-off` the core host's
+  // "not on the core engine" 404, `broken` an answer that does not read, `extra-field` one with a field this file does not know.
+  const savedEnvModes = new Map<string, SavedEnvMode>();
+  const savedEnvAnswer = (method: string, path: string, person: Person): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/environment-image$/u.exec(path);
+    if (match === null || method !== "GET") return undefined;
+    const name = decodeURIComponent(match[1]!), mode = savedEnvModes.get(name) ?? "off";
+    if (mode === "route-missing") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    if (mode === "core-off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "That is not on the core engine on this install yet." } } };
+    // Code's rule (canReadProject, checked before the switch): anyone who may not read the project, or another company's, gets the one 404.
+    if (!wikiReads(person, name)) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    if (mode === "501") return { status: 501, body: { error: { code: "NOT_IMPLEMENTED", message: "not served" } } };
+    if (mode === "off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "Saved environments are off for this install" } } };
+    if (mode === "broken") return { status: 200, body: { health: "fine", canReset: "yes" } };
+    const panel = { health: mode === "healthy" ? "healthy" : "never_proved", ...(mode === "healthy" ? { image: { builtAt: "2026-11-16T10:00:00.000Z", ageDays: 1, status: "ready" } } : {}), canReset: false, enabled: true, canChangeSetting: false };
+    return { status: 200, body: mode === "extra-field" ? { ...panel, digest: "sha256:abc" } : panel };
   };
   // Lead 4 C1: the pretend corrections, per project and page (reset whenever a spec sets the wiki): notes added and approved here, claims marked wrong, notes removed.
   interface Corrections { added: Array<{ noteId: string; text: string; author: string; authorKey: string; createdAt: string; approval: "pending" | "approved"; file?: { repo: string; path: string } }>; approved: Set<string>; removed: Set<string>; marked: Set<string> }
@@ -192,10 +220,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return undefined;
   };
   /** Code's wiki read routes (W2; `/v1/app/projects/{p}/wiki`, `.../pages/{id}`, `.../pages/{id}/sources`), as the person; every refusal is Code's one 404. */
-  const wikiAnswer = (method: string, path: string, person: Person, body: unknown = {}): { status: number; body: unknown } | undefined => {
+  const wikiAnswer = (method: string, path: string, person: Person, body: unknown = {}, search: URLSearchParams = new URLSearchParams()): { status: number; body: unknown } | undefined => {
     const done = corrected(method, path, person, body);
     if (done !== undefined) return done;
-    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/pages\/([^/]+)(\/sources)?)?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/(search|pages\/([^/]+)(\/sources)?))?$/u.exec(path);
     if (match === null || method !== "GET") return undefined;
     const name = decodeURIComponent(match[1]!), set = wikis.get(name) ?? {};
     if (set.off) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
@@ -203,8 +231,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (!wikiReads(person, name)) return refuse;
     if (set.broken) return { status: 200, body: { project: "elsewhere" } };
     if (match[2] === undefined) return { status: 200, body: wikiIndex(name, set) };
-    const id = decodeURIComponent(match[2]);
-    const answered = match[3] === undefined ? withCorrections(name, id, wikiPage(name, id, set)) : wikiSources(name, id, set);
+    if (match[2] === "search") return { status: 200, body: wikiSearch(name, search.get("q") ?? "") };
+    const id = decodeURIComponent(match[3]!);
+    const answered = match[4] === undefined ? withCorrections(name, id, wikiPage(name, id, set)) : wikiSources(name, id, set);
     return answered === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "page not found" } } } : { status: 200, body: answered };
   };
   // L4-D2 (Code #899): the candidate waiting for a decision on a project (set by the specs through /__fake/setup-apply), and what decide does with it.
@@ -220,6 +249,49 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   // Lead 4 W6 (Code W0's wiki-map, W4's wiki-build controls, and the nightly upkeep seam): each project's pretend wiki build, set by the specs through /__fake/wiki-setup. `off` makes Code answer its unknown-route 404.
   const wikiSetups = new Map<string, FakeWikiSetup>();
   const wikiSetupOf = (name: string): FakeWikiSetup => { let one = wikiSetups.get(name); if (one === undefined) { one = { status: "none", pages: 0, refreshPages: 0, agentsOn: false, aiKey: "connected", mapMade: false, planned: 0, written: 0, upkeepOn: false }; wikiSetups.set(name, one); } return one; };
+  // L4-P2 (Code's two locks): the company's consent to Rovara's automatic runs is the company's, not a project's. It starts off; only a company owner or admin sets it, in the one PUT that also switches the project on.
+  const upkeepConsent = new Map<string, boolean>();
+  const companyKeyOf = (name: string) => project(name)?.companyId ?? "main";
+  // L4-P3 (owner 2026-11-17): ALLOWING the consent needs a fresh step-up; the pretend Code says so unless a spec sets `stepUp: "stale"` off again (the next /__fake/wiki-setup call resets it). Withdrawing never needs one.
+  let stepUpStale = false;
+  const NEEDS_SIGN_IN = "Rovara's automatic runs are allowed right after you confirm it's you on the sign-in page: a tool that holds an API token cannot allow them. Confirm it's you, then try again within a few minutes.";
+  const companyConsentKey = (person: Person) => (companyOfPerson(person) === FAKE_COMPANY_ID ? "main" : companyOfPerson(person));
+  /** Code's `GET`/`PUT /v1/app/company/system-runs`: a live company owner or admin only (a member is 403, a person with no company is not served). */
+  const systemRunsAnswer = (method: string, person: Person, body: unknown): { status: number; body: unknown } => {
+    const admin = person.administrator && !companyless.has(person.developerId);
+    if (!admin) return failure(403, "FORBIDDEN", "Only company owners and admins can see or change whether Rovara's automatic runs are allowed for the company.");
+    const key = companyConsentKey(person);
+    const available = [...wikiSetups.values()].every((entry) => entry.ceilingOff !== true);
+    const view = () => ({ available, allowed: upkeepConsent.get(key) === true, systemRunsOn: available && upkeepConsent.get(key) === true });
+    if (method === "GET") return { status: 200, body: view() };
+    const given = body as { requestId?: unknown; allowed?: unknown } | undefined;
+    if (typeof given?.requestId !== "string" || typeof given.allowed !== "boolean") return failure(400, "CONFIG_INVALID", "the request is not valid");
+    if (given.allowed) {
+      if (!available) return failure(404, "NOT_AVAILABLE_HERE", "Rovara's automatic runs aren't available on this Rovara yet");
+      if (stepUpStale) return failure(403, "REAUTH_REQUIRED", NEEDS_SIGN_IN);
+    }
+    upkeepConsent.set(key, given.allowed);
+    return { status: 200, body: view() };
+  };
+  const upkeepView = (name: string, one: FakeWikiSetup, person: Person, manage: boolean) => {
+    if (one.legacyUpkeep === true) return { enabled: one.upkeepOn, canManage: manage, available: true };
+    const available = one.ceilingOff !== true, admin = person.administrator && !companyless.has(person.developerId);
+    return { enabled: one.upkeepOn, canManage: manage, available, systemRunsOn: available && upkeepConsent.get(companyKeyOf(name)) === true, canEnableSystemRuns: available && admin, cap: { monthlyUsd: one.capUsd ?? null, canRaise: admin } };
+  };
+  const upkeepPut = (name: string, one: FakeWikiSetup, person: Person, manage: boolean, given: { on?: unknown; allowSystemRuns?: unknown }) => {
+    if (one.legacyUpkeep === true) { one.upkeepOn = given.on === true; return { status: 200, body: upkeepView(name, one, person, manage) }; }
+    if (one.ceilingOff === true) return failure(409, "NOT_AVAILABLE_HERE", "Nightly upkeep isn't available on this Rovara yet.");
+    if (given.allowSystemRuns !== undefined) {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only company owners and admins can allow or stop Rovara's automatic runs for the company.");
+      if (given.allowSystemRuns === false && given.on === true) return failure(400, "CONFIG_INVALID", "the request is not valid");
+      if (given.allowSystemRuns === true && stepUpStale) return failure(403, "REAUTH_REQUIRED", NEEDS_SIGN_IN);
+      upkeepConsent.set(companyKeyOf(name), given.allowSystemRuns === true);
+    } else if (given.on === true && upkeepConsent.get(companyKeyOf(name)) !== true) {
+      return failure(403, "FORBIDDEN", "A company owner or admin has to allow Rovara's automatic runs for the company first.");
+    }
+    one.upkeepOn = given.on === true;
+    return { status: 200, body: upkeepView(name, one, person, manage) };
+  };
   const wikiSetupAnswer = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
     const match = /^\/v1\/app\/projects\/([^/]+)\/(wiki-map|wiki-build(?:\/(?:continue|stop|refresh|agents|delete))?|upkeep)$/u.exec(path);
     if (match === null) return undefined;
@@ -228,12 +300,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (project(name) === undefined || companyless.has(person.developerId) || (!manage && grant === undefined) || !wikiReads(person, name)) return failure(404, "NOT_FOUND", "project not found");
     const view = (): { status: number; body: unknown } => ({ status: 200, body: wikiSetupBuildView(one, manage) });
-    if (method === "GET") return tail === "wiki-map" ? { status: 200, body: one.mapMade ? { status: "ready", canManage: manage, map: wikiMapOf(name) } : { status: "none", canManage: manage } } : tail === "upkeep" ? { status: 200, body: { enabled: one.upkeepOn, canManage: manage } } : view();
+    if (method === "GET") return tail === "wiki-map" ? { status: 200, body: one.mapMade ? { status: "ready", canManage: manage, map: wikiMapOf(name) } : { status: "none", canManage: manage } } : tail === "upkeep" ? { status: 200, body: upkeepView(name, one, person, manage) } : view();
     if (!manage) return failure(403, "FORBIDDEN", tail === "wiki-map" ? WIKI_SETUP_CODE_WORDS.mapNotAllowed : WIKI_SETUP_CODE_WORDS.notAllowed);
-    const given = body as { requestId?: unknown; on?: unknown } | undefined;
+    const given = body as { requestId?: unknown; on?: unknown; allowSystemRuns?: unknown } | undefined;
     if (tail === "wiki-map") { one.mapMade = true; return { status: 200, body: { status: "ready", canManage: true, map: wikiMapOf(name) } }; }
     if (typeof given?.requestId !== "string") return failure(400, "CONFIG_INVALID", "the request is not valid");
-    if (tail === "upkeep") { one.upkeepOn = given.on === true; return { status: 200, body: { enabled: one.upkeepOn, canManage: true } }; }
+    if (tail === "upkeep") return upkeepPut(name, one, person, manage, given);
     if (tail === "wiki-build/agents") { one.agentsOn = given.on === true; return view(); }
     if (tail === "wiki-build/delete") {
       if (one.status === "running") return failure(409, "WORKSPACE_BUSY", WIKI_SETUP_CODE_WORDS.deleteWhileRunning);
@@ -264,6 +336,45 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     delete one.stop;
     return { status: 202, body: wikiSetupBuildView(one, true) };
   };
+  type HowWeWorkMode = "on" | "off" | "core-off" | "broken" | "501" | "403";
+  // Walkthrough 2026-11-17 item 4: Code's How we work read on its own /v1/app path (core host, read only), per project (set by the specs through /__fake/how-we-work).
+  // `off` is an older Code's unknown-route 404, `core-off` the core host's "not on the core engine" 404, `broken` an answer for another project.
+  const howWeWorkModes = new Map<string, HowWeWorkMode>();
+  const howWeWorkAnswer = (method: string, path: string, person: Person): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/how-we-work$/u.exec(path);
+    if (match === null || method !== "GET") return undefined;
+    const name = decodeURIComponent(match[1]!), mode = howWeWorkModes.get(name) ?? "on";
+    if (mode === "off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    if (mode === "core-off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "That is not on the core engine on this install yet." } } };
+    // Code's rule (canReadProject: the person's own grant row on the project, in the project's own company; no company-administrator shortcut); anyone else gets the one 404.
+    const entry = project(name);
+    if (entry === undefined || companyless.has(person.developerId) || (entry.companyId ?? FAKE_COMPANY_ID) !== companyOfPerson(person) || roleIn(person, name) === undefined) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    if (mode === "501") return { status: 501, body: { error: { code: "NOT_IMPLEMENTED", message: "not served" } } };
+    if (mode === "403") return { status: 403, body: { error: { code: "FORBIDDEN", message: "This sign-in can't read projects." } } };
+    if (mode === "broken") return { status: 200, body: { project: "elsewhere", playbookRevision: 1, process: { kind: "builtin", agentId: "rovara-standard" }, stages: [], rules: [], modelsEditable: false } };
+    return { status: 200, body: { project: name, playbookRevision: 3, process: { kind: "builtin", agentId: "rovara-standard" }, stages: [], rules: [], modelsEditable: false, requestId: "req-fake" } };
+  };
+  // Lead 4 J3 (Code J1 and its start-suggest route): the pretend answer service, per project (set by the specs through /__fake/answers). Default is a Code with no model set up: every answer is the fixed
+  // "not set up" outcome and the suggestion says the classifier is unavailable. `off` makes Code answer its unknown-route 404. Who may ask is Code's rule for the wiki (a role on the project in its own company).
+  const answerSets = new Map<string, { answers?: "answered" | "not_set_up" | "off"; suggest?: Record<string, unknown> }>();
+  const ANSWER_SHA = "a".repeat(40);
+  const answersAnswer = (method: string, path: string, person: Person, given: unknown): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/(answers|code\/suggest)$/u.exec(path);
+    if (match === null || method !== "POST") return undefined;
+    const name = decodeURIComponent(match[1]!), set = answerSets.get(name) ?? {};
+    if (set.answers === "off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    if (!wikiReads(person, name)) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    if (match[2] === "code/suggest") return { status: 200, body: set.suggest ?? { kind: "unknown", classifier: "unavailable", pick: "answer" } };
+    const asked = (given as { question?: unknown }).question;
+    if (typeof asked !== "string" || asked.trim() === "") return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "An answer needs a request ID and a question of 1 to 1,000 characters." } } };
+    if (set.answers !== "answered") return { status: 200, body: { threadId: "t-fake0001", outcome: "not_set_up", text: "", honesty: "Answers are not set up here yet.", unconfirmed: [], sources: [], wikiPages: [] } };
+    return { status: 200, body: {
+      answerId: "a-fake0001", threadId: "t-fake0001", outcome: "answered", text: "Refunds go out to the payment provider and come back by webhook. [1] Only full refunds work today. [2]", unconfirmed: [],
+      honesty: "I checked the code: the wiki was out of date here.", wikiPages: [{ pageId: "beacon-api--billing", title: "billing" }],
+      sources: [{ n: 1, repo: "beacon-api", path: "src/billing/refund.ts", line: 12, lineEnd: 40, commit: ANSWER_SHA }, { n: 2, repo: "beacon-api", path: "src/billing/webhooks.ts", line: 104, lineEnd: 139, commit: ANSWER_SHA }],
+      action: { kind: "quick_task", label: "Start a Quick task", title: "Support partial refunds" },
+    } };
+  };
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
@@ -280,6 +391,24 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   ];
   const companyOfPerson = (person: Person) => person.company?.id ?? FAKE_COMPANY_ID;
   const project = (name: string) => projects.find((entry) => entry.name === name);
+  const ticketUpdates = new Map<string, { comments: boolean; changeStatus: boolean; statuses: Record<string, string>; level?: "status_only" | "decisions" | "plan_decisions" | "full" }>();
+  const ticketUpdatesAnswer = (method: string, path: string, who: Person, body: unknown) => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/intake\/updates$/u.exec(path);
+    if (match === null) return undefined;
+    const name = decodeURIComponent(match[1]!);
+    const selected = project(name);
+    if (selected === undefined || companyOfPerson(who) !== (selected.companyId ?? FAKE_COMPANY_ID) || (!who.administrator && !selected.members.has(who.developerId))) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    const canEdit = who.administrator || selected.members.get(who.developerId) === "administrator";
+    const key = `${selected.companyId ?? FAKE_COMPANY_ID}:${name}`;
+    const settings = ticketUpdates.get(key) ?? { comments: true, changeStatus: false, statuses: { started: "In Progress", pr_opened: "In Review", merged: "Done" } };
+    if (method === "GET") return { status: 200, body: { settings, canEdit, access: [] } };
+    if (method !== "PUT") return { status: 405, body: { error: { code: "METHOD_NOT_ALLOWED", message: "method not allowed" } } };
+    if (!canEdit) return { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a project admin can change these settings." } } };
+    if (typeof body !== "object" || body === null || !("requestId" in body) || !((body as { requestId?: unknown }).requestId) || !("settings" in body)) return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Send valid ticket update settings." } } };
+    const next = (body as { settings: typeof settings }).settings;
+    ticketUpdates.set(key, next);
+    return { status: 200, body: { settings: next, canEdit, access: [] } };
+  };
   const linearRedirectUri = options.linearRedirectUri ?? "http://127.0.0.1:8787/api/connect/linear/callback";
   const linkNotAllowed = "Only a company owner or admin, or this project's admin, can link or unlink its Slack channel.";
   /** Link (or ask for the /invite: a private channel needs Check after /invite, which the fake takes as done). */
@@ -486,6 +615,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const comments = new Map<string, PlanComment[]>();
   const playbooks = new Map<string, PlaybookView>();
   const scriptTokens = new Map<string, ScriptToken[]>();
+  const scriptTokenKey = (person: Person) => `${person.company?.id ?? FAKE_COMPANY_ID}:${person.developerId}`;
+  const scriptTokenRequests = new Set<string>();
   const decided = new Set<string>();
   const companyMembers: CompanyMember[] = PEOPLE.map((person, index) => ({ developerId: person.developerId, name: person.name, email: person.email, role: person.administrator ? "owner" : "member", joinedAt: `2026-10-0${String(index + 1)}T09:00:00.000Z` }));
   let preApproved: string[] = ["new.hire@example.test"];
@@ -829,7 +960,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: { involved: true, tasks: [...tasks.values()].filter((entry) => involved.get(entry.task.taskId)?.has(person.developerId) === true && entry.owner.developerId !== person.developerId).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } as never };
     },
     "tasks.get": (context) => taskOr404(context, ({ task }) => ({ body: { task } })),
-    "tasks.events": (context) => taskOr404(context, ({ task }) => ({ body: { events: [{ seq: 1, at: task.createdAt, kind: "status", text: "Task started" }, { seq: 2, at: task.updatedAt, kind: "progress", text: `Now at ${task.workflow?.stage ?? "start"}`, taskItemId: "T2", attempt: 1 }] } })),
+    // Code's own bound (packages/broker/src/aws/developer-tasks.ts taskEvents): the task is read first (its 404), then a limit outside 1..DEVELOPER_EVENTS_MAX is a 400.
+    "tasks.events": (context) => taskOr404(context, ({ task }) => eventsLimitRefused(context.query) ?? ({ body: { events: [{ seq: 1, at: task.createdAt, kind: "status", text: "Task started" }, { seq: 2, at: task.updatedAt, kind: "progress", text: `Now at ${task.workflow?.stage ?? "start"}`, taskItemId: "T2", attempt: 1 }] } })),
     "tasks.plan": (context) => taskOr404(context, ({ task }) => ({ body: planOf(task) })),
     "tasks.cancel": (context) => ownerTask(context, ({ task }) => { touch(task, { status: "CANCELLED" }); return { body: { task } }; }),
     "tasks.close": (context) => ownerTask(context, ({ task }) => { touch(task, { status: "CLOSED" }); return { body: { task, closed: true } }; }),
@@ -1097,7 +1229,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       const state = randomBytes(32).toString("base64url");
       connectStates.set(state, { developerId: person.developerId, spent: false, provider: "linear" });
       const authorize = new URL("https://linear.app/oauth/authorize");
-      for (const [key, value] of Object.entries({ client_id: "fakelinearclient", redirect_uri: linearRedirectUri, response_type: "code", scope: "read,comments:create,issues:create", state, actor: "app", prompt: "consent", code_challenge: "c".repeat(43), code_challenge_method: "S256" })) authorize.searchParams.set(key, value);
+      for (const [key, value] of Object.entries({ client_id: "fakelinearclient", redirect_uri: linearRedirectUri, response_type: "code", scope: "read,write,comments:create,issues:create", state, actor: "app", prompt: "consent", code_challenge: "c".repeat(43), code_challenge_method: "S256" })) authorize.searchParams.set(key, value);
       return { body: { state, expiresAt: new Date(now().getTime() + 600_000).toISOString(), authorizeUrl: authorize.toString() } };
     },
     "company.linear.complete": ({ body, person }) => {
@@ -1143,12 +1275,23 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "company.audit.records": ({ person }) => person.administrator
       ? { body: { records: [{ at: "2026-11-14T10:00:00.000Z", actor: { developerId: PRIYA.developerId, name: "Priya" }, action: "task.start", subject: TASK_IDS.running, outcome: "ok" }] } }
       : failure(403, "FORBIDDEN", "Only an administrator can read the audit."),
-    "scriptTokens.list": ({ person }) => ({ body: { tokens: scriptTokens.get(person.developerId) ?? [] } }),
+    "scriptTokens.list": ({ person }) => {
+      const own = scriptTokenKey(person), company = `${person.company?.id ?? FAKE_COMPANY_ID}:`;
+      const tokens = [...scriptTokens].filter(([creator]) => creator === own || person.administrator && creator.startsWith(company))
+        .flatMap(([creator, list]) => list.map(token => ({ ...token, status: token.status === "active" && Date.parse(token.expiresAt) <= Date.now() ? "expired" as const : token.status, mine: creator === own, ...(creator === own ? {} : { createdBy: "A teammate" }) })));
+      return { body: { tokens, canCreate: person.administrator } };
+    },
     "scriptTokens.create": ({ body, person }) => {
-      if (body.label.trim() === "") return failure(400, "CONFIG_INVALID", "Name the token.");
-      const token: ScriptToken = { tokenId: randomUUID(), label: body.label.trim(), createdAt: iso() };
-      scriptTokens.set(person.developerId, [...(scriptTokens.get(person.developerId) ?? []), token]);
-      return { status: 201, body: { token, secret: `fake-script-${randomBytes(8).toString("hex")}` } };
+      const parsed = CreateScriptTokenBodySchema.safeParse(body);
+      if (!parsed.success) return failure(400, "CONFIG_INVALID", "That automation key request isn't valid.");
+      const own = scriptTokenKey(person), request = `${own}:${parsed.data.requestId}`;
+      if (scriptTokenRequests.has(request)) return failure(409, "CONFLICT", "This request was already used. The key is shown only once.");
+      if (parsed.data.projects.some(name => project(name) === undefined)) return failure(404, "NOT_FOUND", "project not found");
+      scriptTokenRequests.add(request);
+      const tokenPart = randomBytes(10).toString("hex");
+      const token: ScriptToken = { tokenId: `stk_${tokenPart}`, name: parsed.data.name, hint: `rvst_…${tokenPart.slice(-8)}`, projects: parsed.data.projects, permissions: parsed.data.permissions, createdAt: iso(), expiresAt: new Date(Date.now() + (parsed.data.days ?? 30) * 86400000).toISOString(), status: "active", mine: true };
+      scriptTokens.set(own, [...(scriptTokens.get(own) ?? []), token]);
+      return { status: 201, body: { token, secret: `rvst_${randomBytes(10).toString("hex")}_${tokenPart}_${randomBytes(32).toString("base64url")}` } };
     },
     "lessons.list": (context) => {
       const found = lessonsProject(context);
@@ -1235,6 +1378,18 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       if ("refused" in found) return found.refused;
       return { body: { project: found.name, mode: lessonMode, effective: lessonMode, lockedByCompany: false, canChange: found.decides } };
     },
+    "lessons.measure": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      if (!found.decides) return failure(403, "FORBIDDEN", "Only an admin of this project, or an owner or admin of the company, can see how lessons are loaded.");
+      const body: LessonMeasureResponse = {
+        project: found.name, windowDays: 30, floor: 0.35, loads: 7, lessonsInUse: 12, loadedLessons: 21, loadedBelowFloor: 3,
+        loadsWithBelowFloor: 2, loadedNoMatch: 1, meanWordsLoaded: 0.42, meanWordsLeftOut: 0.3, loadsCapBound: 1,
+        leftOutAtOrAboveFloor: 4, meanFitLoaded: 0.61, meanFitLeftOut: 0.39,
+        cleanMerge: { merged: 5, reverted: 0, clean: 5, rate: 1 }, revertDetection: "not_wired", truncated: false, unreadable: 0,
+      };
+      return { body };
+    },
     "lessons.mode.put": (context) => {
       const found = lessonsProject(context);
       if ("refused" in found) return found.refused;
@@ -1265,10 +1420,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: settingsView(name) };
     },
     "scriptTokens.revoke": ({ params, person }) => {
-      const list = scriptTokens.get(person.developerId) ?? [];
-      const next = list.filter((entry) => entry.tokenId !== params["tokenId"]);
-      scriptTokens.set(person.developerId, next);
-      return { body: { revoked: next.length !== list.length } };
+      const own = scriptTokenKey(person), company = `${person.company?.id ?? FAKE_COMPANY_ID}:`;
+      for (const [creator, tokens] of scriptTokens) {
+        const token = tokens.find(entry => entry.tokenId === params["tokenId"]);
+        if (token === undefined || creator !== own && !(person.administrator && creator.startsWith(company))) continue;
+        token.status = "revoked"; token.revokedAt ??= iso();
+        return { body: { token: { ...token, mine: creator === own } } };
+      }
+      return failure(404, "NOT_FOUND", "That automation key doesn't exist, or you can't manage it.");
     },
   };
 
@@ -1381,6 +1540,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (taskId !== undefined) involved.set(taskId, new Set([...(involved.get(taskId) ?? []), added.developerId]));
           return send(200, { mode: involvedMode, ...(taskId === undefined ? {} : { taskId }) });
         }
+        if (method === "POST" && url.pathname === "/__fake/saved-env") {
+          const given = JSON.parse(await readBody(request)) as { project?: unknown; mode?: unknown };
+          if (typeof given.project !== "string" || !["off", "route-missing", "core-off", "never", "healthy", "broken", "extra-field", "501"].includes(given.mode as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and mode" } });
+          savedEnvModes.set(given.project, given.mode as SavedEnvMode);
+          return send(200, { mode: given.mode });
+        }
         if (method === "POST" && url.pathname === "/__fake/wiki") {
           const given = JSON.parse(await readBody(request)) as { project?: unknown; state?: unknown; off?: unknown; broken?: unknown };
           if (typeof given.project !== "string" || project(given.project) === undefined || (given.state !== undefined && !["ready", "none", "building", "stopped"].includes(given.state as string))) return send(400, { error: { code: "CONFIG_INVALID", message: "project, and state ready, none, building or stopped" } });
@@ -1392,6 +1557,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const given = JSON.parse(await readBody(request)) as Record<string, unknown>;
           if (typeof given["project"] !== "string" || project(given["project"]) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project" } });
           wikiSetups.delete(given["project"]);
+          upkeepConsent.set(companyKeyOf(given["project"]), given["consent"] === true);
+          stepUpStale = given["stepUp"] === "stale";
           const one = wikiSetupOf(given["project"]);
           const status = given["status"];
           if (status === "built" || status === "stopped" || status === "running") { Object.assign(one, { status, pages: 24, refreshPages: 2, mapMade: true, planned: 24, written: status === "built" ? 24 : 12 }); if (status === "stopped") one.stop = (given["stop"] as FakeWikiSetup["stop"] | undefined) ?? "stopped_by_person"; }
@@ -1402,7 +1569,22 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (given["upkeepOn"] === true) one.upkeepOn = true;
           if (given["off"] === true) one.off = true;
           if (given["upkeepOff"] === true) one.upkeepOff = true;
+          if (given["ceilingOff"] === true) one.ceilingOff = true;
+          if (given["legacyUpkeep"] === true) one.legacyUpkeep = true;
+          if (typeof given["capUsd"] === "number") one.capUsd = given["capUsd"];
           return send(200, { project: given["project"] });
+        }
+        if (method === "POST" && url.pathname === "/__fake/how-we-work") {
+          const given = JSON.parse(await readBody(request)) as { project?: unknown; mode?: unknown };
+          if (typeof given.project !== "string" || !["on", "off", "core-off", "broken", "501", "403"].includes(given.mode as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and mode" } });
+          howWeWorkModes.set(given.project, given.mode as HowWeWorkMode);
+          return send(200, { mode: given.mode });
+        }
+        if (method === "POST" && url.pathname === "/__fake/answers") {
+          const given = JSON.parse(await readBody(request)) as { project?: unknown; answers?: unknown; suggest?: unknown };
+          if (typeof given.project !== "string" || project(given.project) === undefined || (given.answers !== undefined && !["answered", "not_set_up", "off"].includes(given.answers as string))) return send(400, { error: { code: "CONFIG_INVALID", message: "project and answers" } });
+          answerSets.set(given.project, { ...(given.answers === undefined ? {} : { answers: given.answers as "answered" }), ...(given.suggest === undefined ? {} : { suggest: given.suggest as Record<string, unknown> }) });
+          return send(200, { project: given.project });
         }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
@@ -1440,36 +1622,70 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (typeof given.filed === "object" && given.filed !== null) { const filed = given.filed as { taskId: string; featureId: string | null; source: string }; planFiled.set(filed.taskId, { featureId: filed.featureId, source: filed.source }); }
           return send(200, { ok: true });
         }
-        // Lead 4 PCF: the plan card's three calls (Code's core-host/report-routes.ts): the choices and the filing are for the task's own person or an administrator, and a task of another company is a missing one.
-        const planTask = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/(feature-choices|feature)$/u.exec(url.pathname);
-        const planMake = method === "POST" && url.pathname === "/v1/app/org/report/features";
-        if (planTask !== null || planMake) {
+        // The plan card's feature-choice read is Code's own gate; its writes use the report actions below.
+        const planTask = method === "GET" && /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/feature-choices$/u.exec(url.pathname);
+        if (planTask) {
           const who = access.get(/^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1] ?? "");
           if (who === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
-          const text = await readBody(request);
-          let parsed: Record<string, unknown> = {};
-          try { parsed = text === "" ? {} : JSON.parse(text) as Record<string, unknown>; } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "The request is not valid." } }); }
-          const company = companyIdOf(who);
-          if (planMake) {
-            if (!who.administrator) return send(403, { error: { code: "FORBIDDEN", message: "Only an owner or admin of the company can change features." } });
-            const name = typeof parsed["name"] === "string" ? parsed["name"].trim() : "";
-            if (name === "" || name.length > 80 || Object.keys(parsed).some((key) => key !== "name")) return send(400, { error: { code: "CONFIG_INVALID", message: "The request is not valid." } });
-            const made = { id: `ft_${String((planChoices.get(company)?.length ?? 0) + 1).padStart(20, "d")}`, name };
-            planChoices.set(company, [...(planChoices.get(company) ?? []), made]);
-            return send(201, { feature: { ...made, state: "open", createdAt: "2026-11-17T10:00:00.000Z", updatedAt: "2026-11-17T10:00:00.000Z" } });
-          }
-          const taskId = planTask![1]!;
+          const taskId = planTask[1]!;
           const found = tasks.get(taskId);
-          const mine = found !== undefined && (found.owner.developerId === who.developerId || who.administrator) && companyIdOf(found.owner) === company;
+          const mine = found !== undefined && (found.owner.developerId === who.developerId || who.administrator) && companyIdOf(found.owner) === companyIdOf(who);
           if (!mine) return send(404, { error: { code: "NOT_FOUND", message: "task not found" } });
-          if (planTask![2] === "feature-choices") return method === "GET" ? send(200, { features: planChoices.get(company) ?? [], canCreate: who.administrator }) : send(405, { error: { code: "NOT_FOUND", message: "route not found" } });
-          if (method !== "POST" || Object.keys(parsed).some((key) => key !== "feature") || !(parsed["feature"] === null || (typeof parsed["feature"] === "string" && /^ft_[a-f0-9]{20}$/u.test(parsed["feature"])))) return send(400, { error: { code: "CONFIG_INVALID", message: "The request is not valid." } });
-          const own = planFiled.get(taskId);
-          if (!(own === undefined || own.source === "tracker" || who.administrator)) return send(403, { error: { code: "FORBIDDEN", message: "Only a project maintainer, owner or admin can move a task that already has a feature." } });
-          const chosen = parsed["feature"];
-          if (chosen !== null && !(planChoices.get(company) ?? []).some((item) => item.id === chosen)) return send(404, { error: { code: "NOT_FOUND", message: "That feature does not exist." } });
-          planFiled.set(taskId, { featureId: chosen, source: who.administrator ? "moved" : "chosen" });
-          return send(200, { task: { taskId, feature: chosen === null ? null : { id: chosen, source: who.administrator ? "moved" : "chosen" } } });
+          return send(200, { features: planChoices.get(companyIdOf(who)) ?? [], canCreate: who.administrator });
+        }
+        // The Cost and time actions (lane L4-CR4), with Code's own rules and fixed sentences (Code PR #913): company owners and admins change features; the report's rows and features are the ones the specs set.
+        const featureAction = /^\/v1\/app\/org\/report\/features(?:\/(ft_[a-f0-9]{20})\/(rename|merge|state))?$/u.exec(url.pathname);
+        const taskMove = /^\/v1\/app\/tasks\/([^/]+)\/feature$/u.exec(url.pathname);
+        if (method === "POST" && (featureAction !== null || taskMove !== null)) {
+          const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
+          const who = bearer === undefined ? undefined : access.get(bearer);
+          if (who === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (reportData === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
+          if (!who.administrator) return send(403, { error: { code: "FORBIDDEN", message: "Only an owner or admin of the company can change features." } });
+          const given = JSON.parse(await readBody(request) || "{}") as Record<string, unknown>;
+          const features = reportData.features as Array<{ id: string; name: string; state: string }>;
+          const tasks = reportData.tasks as Array<Record<string, unknown>>;
+          const refuse = (status: number, code: string, message: string) => send(status, { error: { code, message } });
+          const view = (feature: { id: string; name: string; state: string }) => ({ ...feature, createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-17T00:00:00.000Z" });
+          if (taskMove !== null) {
+            const task = tasks.find((entry) => entry["taskId"] === taskMove[1]);
+            if (task === undefined) return refuse(404, "NOT_FOUND", "task not found");
+            const target = given["feature"];
+            if (target !== null && typeof target !== "string") return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            const into = target === null ? undefined : features.find((entry) => entry.id === target);
+            if (target !== null && into === undefined) return refuse(404, "NOT_FOUND", "That feature does not exist.");
+            if (into?.state === "done") return refuse(400, "CONFIG_INVALID", "That feature is done. Reopen it first.");
+            if (into === undefined) delete task["feature"]; else task["feature"] = { id: into.id, source: "moved" };
+            return send(200, { task: { taskId: task["taskId"], feature: into === undefined ? null : { id: into.id, source: "moved" } } });
+          }
+          if (featureAction![1] === undefined) {
+            const name = typeof given["name"] === "string" ? given["name"].trim() : "";
+            if (name === "" || [...name].length > 80) return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            if (features.some((entry) => entry.name === name)) return refuse(400, "CONFIG_INVALID", "A feature with that name already exists.");
+            const made = { id: `ft_${(features.length + 1 + 0xe0).toString(16).padStart(20, "0")}`, name, state: "open" };
+            features.push(made);
+            return send(201, { feature: view(made) });
+          }
+          const feature = features.find((entry) => entry.id === featureAction![1]);
+          if (feature === undefined) return refuse(404, "NOT_FOUND", "That feature does not exist.");
+          if (featureAction![2] === "rename") {
+            const name = typeof given["name"] === "string" ? given["name"].trim() : "";
+            if (name === "" || [...name].length > 80) return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            if (features.some((entry) => entry.name === name && entry.id !== feature.id)) return refuse(400, "CONFIG_INVALID", "A feature with that name already exists.");
+            feature.name = name;
+            return send(200, { feature: view(feature) });
+          }
+          if (featureAction![2] === "state") {
+            if (given["state"] !== "open" && given["state"] !== "done") return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            feature.state = given["state"];
+            return send(200, { feature: view(feature) });
+          }
+          const into = features.find((entry) => entry.id === given["into"]);
+          if (into === undefined) return refuse(404, "NOT_FOUND", "That feature does not exist.");
+          if (into.id === feature.id) return refuse(400, "CONFIG_INVALID", "A feature cannot be merged into itself or into one already merged away.");
+          for (const task of tasks) { const filed = task["feature"] as { id: string } | undefined; if (filed?.id === feature.id) task["feature"] = { id: into.id, source: "moved" }; }
+          features.splice(features.indexOf(feature), 1);
+          return send(200, { feature: view(into) });
         }
         const raw = await readBody(request);
         if (method === "POST" && url.pathname === "/v1/auth/token") {
@@ -1503,17 +1719,35 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           }
           return send(200, { ok: true });
         }
+        if (url.pathname === "/v1/app/company/system-runs" && (method === "GET" || method === "PUT")) {
+          const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
+          const who = bearer === undefined ? undefined : access.get(bearer);
+          if (who === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          let parsed: unknown = {};
+          if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
+          const answered = systemRunsAnswer(method, who, parsed);
+          return send(answered.status, answered.body);
+        }
         if (url.pathname.startsWith("/v1/app/projects/")) {
           const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? savedEnvAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? answersAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          if (who === undefined && /\/(?:answers|code\/suggest)$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (who === undefined && /\/how-we-work$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/(?:wiki(?:[-/]|$)|upkeep$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (who === undefined && /\/environment-image$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal|confirm|discard|decide))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          const updateAnswer = who === undefined ? undefined : ticketUpdatesAnswer(method, url.pathname, who, parsed);
+          if (who === undefined && /\/intake\/updates$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (updateAnswer !== undefined) return send(updateAnswer.status, updateAnswer.body);
           if (answer !== undefined) return send(answer.status, answer.body);
         }
-        const matched = matchCodeRoute(method, url.pathname);
+        // Code serves its decision cards on its own `/v1/app/decisions...` (core host, L4-MF1); the contract rows still carry the historical `/v1/dev/client/decisions...`, which real Code never served and
+        // Cloud no longer asks. The fake answers the real path with the same cards, and the contract path too (the "answers every route in the contract" test reads the rows as they are); a spec that wants to
+        // prove Cloud never asks the old path reads the fake's log.
+        const matched = matchCodeRoute(method, /^\/v1\/app\/decisions(?:\/|$)/u.test(url.pathname) ? `/v1/dev/client${url.pathname.slice("/v1/app".length)}` : url.pathname);
         if (matched === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
         const id = matched.route.id;
         let person: Person | undefined = current;

@@ -1,0 +1,58 @@
+// The model gateway's person-month spend rows, read for People and limits (people-limits-routes.ts). READ ONLY: batch reads of exact keys, no Scan, no Query,
+// no write. The gateway writes these rows (packages/model-gateway/src/dynamo-meter.ts targetsFor) and nothing here changes them:
+//
+//   meter table   pk = "CO#" + JSON.stringify([issuer, companyId])    sk = "ROW#" + JSON.stringify(["person", personId, "YYYY-MM"])
+//                 { item: "person", company, spentMicros, estimatedMicros, reservedMicros, committed, overrun }
+//
+// The issuer is the Code install the gateway trusts (`<ROVARA_CODE_URL>/v1/auth`, the same one the product AI store names). A missing row is a person
+// who spent nothing this month. A row that is not exactly this company's person row, or whose amount is not a whole number, fails the whole read
+// (the route then refuses; a person is never drawn as $0 because their row did not read). Every key is built from the caller's company, so another
+// company's row cannot be asked for, and one that comes back anyway is refused.
+import { BatchGetCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import type { PersonSpendReader } from "./people-limits-routes.js";
+
+type Db = Pick<DynamoDBDocumentClient, "send">;
+const COMPANY_KEY_PREFIX = "CO#";
+const COMPANY_ID = /^org_[a-z0-9]{20}$/u;
+const PERSON_ID = /^[a-f0-9]{64}$/u;
+const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/u;
+/** DynamoDB's BatchGetItem takes at most 100 keys. */
+const BATCH = 100;
+const ATTEMPTS = 4;
+const whole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+export const meterPartition = (issuer: string, companyId: string): string => `${COMPANY_KEY_PREFIX}${JSON.stringify([issuer, companyId])}`;
+export const personMonthSort = (personId: string, month: string): string => `ROW#${JSON.stringify(["person", personId, month])}`;
+
+export class DynamoGatewayMeterReader implements PersonSpendReader {
+  constructor(private readonly db: Db, private readonly table: string, private readonly issuer: string) {
+    if (table === "" || issuer === "" || issuer.length > 2048) throw new Error("gateway meter settings: a table and the install issuer are both needed");
+  }
+
+  async monthSpend(companyId: string, month: string, personIds: readonly string[]): Promise<ReadonlyMap<string, number>> {
+    if (!COMPANY_ID.test(companyId) || !MONTH.test(month) || !personIds.every((id) => PERSON_ID.test(id))) throw new Error("meter unavailable");
+    const pk = meterPartition(this.issuer, companyId);
+    const bySort = new Map(personIds.map((id) => [personMonthSort(id, month), id]));
+    const spent = new Map<string, number>();
+    const sorts = [...bySort.keys()];
+    for (let from = 0; from < sorts.length; from += BATCH) {
+      let pending: Array<{ pk: string; sk: string }> = sorts.slice(from, from + BATCH).map((sk) => ({ pk, sk }));
+      for (let attempt = 0; pending.length > 0; attempt += 1) {
+        if (attempt >= ATTEMPTS) throw new Error("meter unavailable");
+        // Throttled keys come back unprocessed: a short jittered pause before asking again, as the gateway's own meter does.
+        if (attempt > 0) await new Promise<void>((resolve) => { setTimeout(resolve, Math.floor(Math.random() * 25 * 2 ** attempt)); });
+        const answer = await this.db.send(new BatchGetCommand({ RequestItems: { [this.table]: { Keys: pending, ConsistentRead: true } } }));
+        for (const item of (answer.Responses?.[this.table] ?? []) as Array<Record<string, unknown>>) {
+          const sk = item["sk"];
+          const id = typeof sk === "string" ? bySort.get(sk) : undefined;
+          // Exactly the row asked for: this company's partition, a person row, this company named in it, a whole amount.
+          if (id === undefined || item["pk"] !== pk || item["item"] !== "person" || item["company"] !== companyId || !whole(item["spentMicros"])) throw new Error("meter unavailable");
+          spent.set(id, item["spentMicros"]);
+        }
+        const left = answer.UnprocessedKeys?.[this.table]?.Keys;
+        pending = left === undefined ? [] : left.map((key) => ({ pk: String(key["pk"]), sk: String(key["sk"]) }));
+      }
+    }
+    return spent;
+  }
+}

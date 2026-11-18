@@ -10,7 +10,7 @@ import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { InboxReader, batchTitle, relationWords, expiryWords, fromWords, resultWords, usageWords } from "../../packages/ui/src/api/learned.js";
+import { InboxReader, batchTitle, citationWords, relationWords, expiryWords, fromWords, resultWords, usageWords } from "../../packages/ui/src/api/learned.js";
 import { WorkScreen } from "../../packages/ui/src/screens/work/WorkScreen.js";
 import { LearnedSection } from "../../packages/ui/src/screens/project/LearnedSection.js";
 import { LessonsUsedCard } from "../../packages/ui/src/screens/session/LessonsUsedCard.js";
@@ -64,6 +64,11 @@ it("words the expiry, the counts, who it came from and the batch honestly", () =
   expect(batchTitle({ lessons: [lesson("a", { createdAt: NOW - 9 * DAY })] }, NOW)).toBe("1 lesson from recent corrections");
   expect(resultWords({ lessonId: "a", ok: true, status: "pending" }, "keep")).toMatch(/one more person/u);
   expect(resultWords({ lessonId: "a", ok: false, code: "FORBIDDEN", message: "No." }, "keep")).toBe("No.");
+});
+it("words a citation of a kind it does not know as another reference, never as the team record", () => {
+  expect(citationWords({ kind: "record" })).toEqual({ text: "The team record" });
+  expect(citationWords({ kind: "other" })).toEqual({ text: "Another kind of reference" });
+  expect(citationWords({ kind: "wiki", page: "p" } as never)).toEqual({ text: "Another kind of reference" });
 });
 it("reads the inbox and leaves out a batch with nothing in it, or a lesson that is not a lesson", () => {
   const read = InboxReader.parse({ state: "on", batches: [BATCH, { project: "api", lessons: [{ id: "x" }] }], unavailable: ["ops"] });
@@ -303,7 +308,8 @@ it("names the projects whose lessons could not be read, instead of implying noth
 it("says when a lesson may duplicate or contradicts another, so Keep is never silent, and shows a distinct-task count only when Code sends one", async () => {
   const titleOf = (id: string) => (id === "les_mine0001" ? "Wrap webhook calls in withRetry" : undefined);
   expect(relationWords({ possibleDuplicate: "les_mine0001" }, titleOf)).toEqual(['May duplicate "Wrap webhook calls in withRetry". Keep keeps both; Drop if it repeats it.']);
-  expect(relationWords({ possibleDuplicate: "les_x", mergeBlocked: true, contradicts: "les_y" }, titleOf)).toEqual(["May duplicate another lesson. Keep keeps both (they can't be merged); Drop if it repeats it.", "Contradicts another lesson. Keep only the one that is right."]);
+  expect(relationWords({ possibleDuplicate: "les_x", contradicts: "les_y" }, titleOf)).toEqual(["May duplicate another lesson. Keep keeps both; Drop if it repeats it.", "Contradicts another lesson. Keep only the one that is right."]);
+  expect(relationWords({ possibleDuplicate: "les_x", mergeBlocked: true } as Parameters<typeof relationWords>[0], titleOf)).toEqual(["May duplicate another lesson. Keep keeps both; Drop if it repeats it."]);
   expect(relationWords({}, titleOf)).toEqual([]);
   expect(usageWords({ counters: { loaded: 3, helpful: 0, harmful: 0 }, supportTasks: 0, usedInTasks: 2 })).toBe("Loaded 3 times · used in 2 tasks");
   const batch = { ...BATCH, lessons: [BATCH.lessons[0]!, lesson("les_dup00001", { title: "Retry webhook calls", possibleDuplicate: "les_mine0001" })] };

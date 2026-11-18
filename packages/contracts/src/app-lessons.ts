@@ -165,6 +165,17 @@ export const LessonRetireBodySchema = z.object({ reason: Reason.optional() }).st
 export const LessonRollbackBodySchema = z.object({ targetSetVersion: z.number().int().min(0), expectedSetVersion: z.number().int().min(0) }).strict();
 export const LessonFeedbackBodySchema = z.object({ kind: z.enum(["helpful", "wrong_here"]) }).strict();
 
+/** Code's counts only lessons measure; the response has exactly the fields Code documents. */
+export const LessonMeasureResponseSchema = z.object({
+  project: z.string(), windowDays: z.number().int(), floor: z.number(), loads: z.number().int(), lessonsInUse: z.number().int().nullable(), loadedLessons: z.number().int(),
+  loadedBelowFloor: z.number().int(), loadsWithBelowFloor: z.number().int(), loadedNoMatch: z.number().int(), meanWordsLoaded: z.number().nullable(), meanWordsLeftOut: z.number().nullable(),
+  loadsCapBound: z.number().int(), leftOutAtOrAboveFloor: z.number().int(), meanFitLoaded: z.number().nullable(), meanFitLeftOut: z.number().nullable(),
+  cleanMerge: z.object({ merged: z.number().int(), reverted: z.number().int(), clean: z.number().int(), rate: z.number().nullable() }).strict(),
+  revertDetection: z.literal("not_wired"), truncated: z.boolean(), unreadable: z.number().int(),
+}).strict();
+export const LessonMeasureResponseReaderSchema = forwardReader(LessonMeasureResponseSchema);
+export type LessonMeasureResponse = z.infer<typeof LessonMeasureResponseSchema>;
+
 export const LessonApproveAnswerSchema = z.object({ status: z.enum(["active", "pending"]), needs: z.enum(["nothing", "second_person", "group_member"]) }).strict();
 export const LessonApproveAnswerReaderSchema = forwardReader(LessonApproveAnswerSchema);
 export const LessonDoneAnswerSchema = z.object({ done: z.literal(true) }).strict();

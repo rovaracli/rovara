@@ -2,7 +2,8 @@
 // proof index, events and comments. Each answer keeps only what the page draws, and a task the person may not read is Code's own 404.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
-import { WORK_READS, WORK_TASKS_MAX, workPlan, workTask } from "../../packages/cloud-server/src/work-reads.js";
+import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
+import { EVENTS_MAX, WORK_READS, WORK_TASKS_MAX, workPlan, workTask } from "../../packages/cloud-server/src/work-reads.js";
 import type { RouteContext } from "../../packages/cloud-server/src/routes.js";
 import { PRIYA, SAM, TASK_IDS, startFakeCode, type FakeCode, type Person } from "../support/fake-code.js";
 
@@ -68,6 +69,17 @@ describe("the Work page's reads", () => {
     expect(events.body.events[1]).toMatchObject({ seq: 2, taskItemId: "T2", attempt: 1 });
     const comments = await call<{ comments: unknown[] }>(`/tasks/${TASK_IDS.planReview}/comments`);
     expect(comments.body).toEqual({ comments: [] });
+  });
+
+  it("asks Code for no more events than Code's own maximum (DEVELOPER_EVENTS_MAX), so the Build tab's activity never gets Code's 400", async () => {
+    expect(EVENTS_MAX).toBe(DEVELOPER_EVENTS_MAX);
+    const before = fake.log.length;
+    const events = await call<EventsBody>(`/tasks/${TASK_IDS.planReview}/events?limit=500`);
+    expect(events.status).toBe(200);
+    const sent = fake.log.slice(before).filter((entry) => entry.path.endsWith("/events"));
+    // One call, with Cloud's own fixed limit: the browser's limit never reaches Code.
+    expect(sent.map((entry) => entry.query)).toEqual([`?limit=${String(DEVELOPER_EVENTS_MAX)}`]);
+    expect(sent[0]!.status).toBe(200);
   });
 
   it("answers Code's refusal for a task that is not there, and refuses a path that is not a task id", async () => {
@@ -186,5 +198,40 @@ describe("the Work page's involved tasks (web task channel K4)", () => {
   it("bounds the list to WORK_TASKS_MAX and keeps nothing from a body that is not the involved list or a task", () => {
     expect(WORK_TASKS_MAX).toBe(100);
     expect(workTask({ title: "no id", project: "api" })).toBeUndefined();
+  });
+});
+
+describe("the proof index's failing tests (TE-A6) and Code's own access rule", () => {
+  const evidenceRoute = WORK_READS.find((route) => route.method === "GET" && route.path.test(`/tasks/${TASK_IDS.planReview}/evidence`))!;
+  const seen: string[] = [];
+  const answerFrom = (body: unknown) => evidenceRoute.answer({ client: { json: async (_session: unknown, path: string) => { seen.push(path); return body; } }, session: { access: { developerId: "d".repeat(64) } }, params: [TASK_IDS.planReview], query: new URLSearchParams("company=other&developerId=x") } as unknown as RouteContext);
+  const rows = (count: number) => Array.from({ length: count }, (_, index) => ({ check: "pytest -q", test: `tests/a.test.ts::case ${String(index)}`, cause: "unknown (only weak evidence)" }));
+
+  it("passes on the item ids and at most ten failing tests, counting the rest; one call, with nothing of the browser's query", async () => {
+    seen.length = 0;
+    const answer = await answerFrom({ taskId: TASK_IDS.planReview, items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }], failures: rows(12), failuresNotListed: 5 });
+    const body = answer.body as { items: Array<Record<string, unknown>>; failures: unknown[]; failuresNotListed: number };
+    expect(body.items).toEqual([{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }]);
+    expect(body.failures).toEqual(rows(10));
+    expect(body.failuresNotListed).toBe(7);
+    expect(seen).toEqual([`/v1/dev/tasks/${TASK_IDS.planReview}/evidence`]);
+  });
+
+  it("drops a failure that is not three strings, bounds each text, and adds no failures key when Code sent none (an older Code)", async () => {
+    const odd = await answerFrom({ items: [], failures: [{ check: "c", test: 5, cause: "x" }, "text", null, { check: "c".repeat(400), test: "t".repeat(400), cause: "u".repeat(900) }], failuresNotListed: "3" });
+    const body = odd.body as { failures: Array<{ check: string; test: string; cause: string }> };
+    expect(body.failures).toHaveLength(1);
+    expect([body.failures[0]!.check.length, body.failures[0]!.test.length, body.failures[0]!.cause.length]).toEqual([200, 300, 500]);
+    expect(Object.keys(odd.body as object)).not.toContain("failuresNotListed");
+    const older = await answerFrom({ taskId: TASK_IDS.planReview, items: [] });
+    expect(older.body).toEqual({ taskId: TASK_IDS.planReview, items: [] });
+  });
+
+  it("a person Code does not let read the task gets Code's own 404, and nothing of the task's proof", async () => {
+    const sam = await signInAs(SAM);
+    const refused = await sam<{ error?: { code: string }; items?: unknown }>(`/tasks/${TASK_IDS.planReview}/evidence`);
+    expect(refused.status).toBe(404);
+    expect(refused.body.items).toBeUndefined();
+    expect(JSON.stringify(refused.body)).not.toContain("Unit tests");
   });
 });

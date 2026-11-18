@@ -436,7 +436,80 @@ describe("a feature's page", () => {
   });
 });
 
+// Row 3672 (L4-CR3): the feature page's total is the feature's own row in the table (same allocation, so the two never differ by a cent).
+describe("a feature's page total is its row in the table, to the cent", () => {
+  // Two features of half a cent each (the table gives the one cent of their 1-cent total to the first by largest remainder; rounding each on its own would give both a cent), a third with
+  // thirds, and a task with no feature.
+  const rows = [
+    row(1, { feature: feat(F1), costMicros: 5_000 }),
+    row(2, { feature: feat(F2), costMicros: 5_000 }),
+    row(3, { feature: feat(FA), costMicros: 333_333 }),
+    row(4, { feature: feat(FA), costMicros: 333_333 }),
+    row(5, { feature: feat(FA), costMicros: 333_334 }),
+    row(6, { feature: undefined, costMicros: 4_999 }),
+    row(7, { feature: undefined, costMicros: 4_999 }),
+    row(8, { feature: undefined, costMicros: 4_999 }),
+  ];
+  const features = [{ id: F1, name: "One", state: "open" }, { id: F2, name: "Two", state: "open" }, { id: FA, name: "Thirds", state: "open" }];
+  const world = () => setUp({ [ACME]: { rows, features } });
+
+  it("matches the table row for every feature and for No feature, on the same 1-cent split", async () => {
+    const w = world();
+    const { body: report } = await w.get(REPORT, "ada-token");
+    const table = report.byFeature as Array<{ key: string; costCents: number }>;
+    // The fixture really splits a cent: the table rows are not each feature's own rounding.
+    expect(table.find((g) => g.key === F1)!.costCents).not.toBe(table.find((g) => g.key === F2)!.costCents);
+    for (const group of table) {
+      const { body: detail } = await w.get(FEATURE(group.key === "none" ? "none" : group.key), "ada-token");
+      expect(detail.totals.costCents, `feature ${group.key}`).toBe(group.costCents);
+    }
+  });
+
+  it("gives the half-cent features their table cents (1 and 0), not a cent each", async () => {
+    const w = world();
+    expect((await w.get(FEATURE(F1), "ada-token")).body.totals.costCents).toBe(1);
+    expect((await w.get(FEATURE(F2), "ada-token")).body.totals.costCents).toBe(0);
+  });
+
+  it("keeps the shown tasks' cents adding up to the page total", async () => {
+    const w = world();
+    for (const id of [F1, F2, FA, "none"]) {
+      const { body } = await w.get(FEATURE(id), "ada-token");
+      expect(body.tasks.reduce((sum: number, t: { costCents: number }) => sum + t.costCents, 0), id).toBe(body.totals.costCents);
+    }
+  });
+
+  it("still agrees with the table under a filter (both use the filtered rows)", async () => {
+    // One task of the thirds feature is closed, so the filter really changes the row set (and the thirds' cents).
+    const filtered = rows.map((r, at) => (at === 3 ? { ...r, state: "closed", prsMerged: 0, prsOpened: 0 } : r));
+    const w = setUp({ [ACME]: { rows: filtered, features } });
+    const query = "?state=merged";
+    const { body: report } = await w.get(REPORT + query, "ada-token");
+    for (const group of report.byFeature as Array<{ key: string; costCents: number }>) {
+      expect((await w.get(FEATURE(group.key) + query, "ada-token")).body.totals.costCents).toBe(group.costCents);
+    }
+  });
+
+  it("gives a feature with no task in the range zero cents, and leaves the other pages alone", async () => {
+    const w = setUp({ [ACME]: { rows: [row(1, { feature: feat(F1), costMicros: 5_000 })], features } });
+    expect((await w.get(FEATURE(F2), "ada-token")).body.totals.costCents).toBe(0);
+    expect((await w.get(FEATURE(F1), "ada-token")).body.totals.costCents).toBe(1);
+  });
+
+  it("shows one company's page the cents of its own table only (a second company's rows change nothing)", async () => {
+    const other = [row(21, { feature: feat(F1), costMicros: 9_999_999 }), row(22, { feature: feat(F2), costMicros: 5_000 })];
+    const w = setUp({ [ACME]: { rows, features }, [GLOBEX]: { rows: other, features } });
+    expect((await w.get(FEATURE(F1), "ada-token")).body.totals.costCents).toBe(1);
+    expect((await w.get(FEATURE(F2), "ada-token")).body.totals.costCents).toBe(0);
+  });
+});
+
 describe("allocating cents", () => {
+  it("allocates to a target the caller names (the table's row), summing to exactly that", () => {
+    expect(allocateCents([5_000, 5_000], 1)).toEqual([1, 0]);
+    expect(allocateCents([5_000, 5_000], 0)).toEqual([0, 0]);
+    expect(allocateCents([333_333, 333_333, 333_334], 100).reduce((a, b) => a + b, 0)).toBe(100);
+  });
   it("keeps whole cents summing to the total's cents", () => {
     for (const list of [[333_333, 333_333, 333_334], [4_999, 4_999, 4_999], [0, 0], [], [10_000, 5_000, 5_000, 5_000]]) {
       const cents = allocateCents(list);

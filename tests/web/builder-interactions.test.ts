@@ -17,3 +17,17 @@ for(const theme of ["light","dark"] as const)it("has accessible builder structur
 
 it("does not request a draft for a view-only profile",async()=>{const profile=agentProfile();profile.agent.access="view";const f=renderBuilder({profile});const heading=await screen.findByRole("heading",{name:"Payments Expert"});expect(document.activeElement).toBe(heading);expect(f.request.mock.calls.some(([request])=>request.path.endsWith("/draft"))).toBe(false);f.close();});
 it("lets a view-only teammate inspect published versions without reading or editing a draft",async()=>{const profile=agentProfile();profile.agent.access="view";const f=renderBuilder({profile,path:"/app/agents/agt_aaaaaaaaaaaaaaaaaaaa/edit?from=3&to=2"});await screen.findByText("Review now uses claude-sonnet-4-6 instead of gpt-5.4");expect(screen.queryByRole("option",{name:"Draft"})).toBeNull();expect(screen.queryByRole("button",{name:"Publish"})).toBeNull();expect(screen.queryByRole("button",{name:"Test draft"})).toBeNull();expect(f.request.mock.calls.some(([request])=>request.path.endsWith("/draft"))).toBe(false);f.close();});
+it("says plainly, with no alert, that the company's settings aren't available yet when the guardrails route answers 501 or 404", async () => {
+ for (const status of [501, 404]) {
+  const f = renderBuilder({ guardrails: { status, body: { error: { code: status === 501 ? "NOT_ON_CODE_YET" : "NOT_FOUND", message: "not served" } } } });
+  fireEvent.click(await screen.findByRole("button", { name: "Whole-agent settings" }));
+  expect(await screen.findByText("The company's settings aren't available yet. Your draft is preserved.")).toBeTruthy();
+  expect(screen.queryByText(/Couldn't read the company's settings/)).toBeNull();expect(screen.queryByRole("alert")).toBeNull();f.close();
+ }
+});
+it("still alerts when the company's settings fail to read for any other reason", async () => {
+ const f = renderBuilder({ guardrails: { status: 400, body: { error: { code: "CONFIG_INVALID", message: "boom" } } } });
+ fireEvent.click(await screen.findByRole("button", { name: "Whole-agent settings" }));
+ expect((await screen.findByRole("alert")).textContent).toContain("Couldn't read the company's settings.");f.close();
+});
+

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Lead 4 W6: the wiki row of the project's setup checklist (Code W0's file map, W4's build controls and the nightly upkeep seam, through Cloud). The row shows pages and never a dollar figure; every
+// Lead 4 W6: the wiki row of the project's setup checklist (Code W0's file map, W4's build controls and the nightly upkeep seam, through Cloud). The row shows pages and never a dollar figure (the nightly upkeep cap and this month's upkeep spend are the two it names); every
 // control is Code's call (a person who may not manage sees where the wiki stands and nothing to press); a refusal shows only a fixed sentence; one request id per action until it succeeds.
 import { describe, expect, it } from "vitest";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -55,8 +55,8 @@ function mount(element: ReturnType<typeof h>, options: Options = {}) {
     if (path === ROOT + "/wiki-build" && request.method === "GET") return options.build?.() ?? { status: 200, body: build() };
     if (path === ROOT + "/wiki-map" && request.method === "GET") return options.map?.() ?? { status: 200, body: { status: "ready", canManage: true, map: map() } };
     if (path === ROOT + "/wiki-map") return options.post?.(request) ?? { status: 200, body: { status: "ready", canManage: true, map: map() } };
-    if (path === ROOT + "/upkeep" && request.method === "GET") return options.upkeep?.() ?? { status: 200, body: { enabled: false, canManage: true } };
-    if (path === ROOT + "/upkeep") return options.put?.(request) ?? { status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true } };
+    if (path === ROOT + "/upkeep" && request.method === "GET") return options.upkeep?.() ?? { status: 200, body: { enabled: false, canManage: true, available: true } };
+    if (path === ROOT + "/upkeep") return options.put?.(request) ?? { status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true, available: true } };
     if (path === "/v1/app/org/spend-limits" && request.method === "GET") return options.cap?.() ?? { status: 200, body: { companyId: "org_aaaaaaaaaaaaaaaaaaaa", defaults: { upkeepMonthlyUsd: 25 }, upkeep: [] } };
     if (path.startsWith("/v1/app/org/spend-limits/upkeep/")) return options.capPut?.(request) ?? { status: 200, body: {} };
     if (path.startsWith(ROOT + "/wiki-build")) return options.post?.(request) ?? { status: 200, body: build() };
@@ -156,7 +156,7 @@ describe("before a build", () => {
   });
 
   it("a person who may not manage sees the state and no control; Code said so (canManage false)", async () => {
-    const f = mount(row(false), { build: () => ({ status: 200, body: built({ canManage: false, agents: { on: true } }) }), upkeep: () => ({ status: 200, body: { enabled: true, canManage: false } }) });
+    const f = mount(row(false), { build: () => ({ status: 200, body: built({ canManage: false, agents: { on: true } }) }), upkeep: () => ({ status: 200, body: { enabled: true, canManage: false, available: true } }) });
     const li = await open();
     expect((await screen.findByTestId("wiki-setup-read-only")).textContent).toContain("Only project admins can build the wiki");
     expect(li.textContent).toContain("Wiki built.");
@@ -355,7 +355,7 @@ describe("small behaviours the review asked for", () => {
 
 describe("nightly upkeep", () => {
   it("one switch, off by default; turning it on sends the request id and the choice; each part names its limit", async () => {
-    const f = mount(row(), { put: (request) => ({ status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true } }) });
+    const f = mount(row(), { put: (request) => ({ status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true, available: true } }) });
     await open();
     const toggle = await screen.findByRole("switch", { name: "Nightly upkeep" });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
@@ -384,6 +384,30 @@ describe("nightly upkeep", () => {
     expect((await screen.findByTestId("wiki-setup-upkeep-absent", {}, { timeout: 5_000 })).textContent).toBe("That could not be done just now. Try again.");
     expect(document.body.textContent).not.toContain(LEAK);
     g.close();
+  });
+
+  it("until Code says its nightly runs are available (false or absent), no switch, state or cap is drawn; only the not-yet line", async () => {
+    for (const body of [{ enabled: false, canManage: true, available: false }, { enabled: false, canManage: true }]) {
+      const f = mount(row(true), { upkeep: () => ({ status: 200, body }) });
+      await open();
+      expect((await screen.findByTestId("wiki-setup-upkeep-absent")).textContent).toBe(WIKI_SETUP_WORDS.upkeepNotYet);
+      expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-upkeep-state")).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-upkeep-limits")).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-cap")).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-cap-ask")).toBeNull();
+      f.close();
+    }
+  });
+
+  it("a PUT answer that omits available keeps the switch and its state visible (the switch was only drawn because Code said it was available)", async () => {
+    const f = mount(row(), { put: (request) => ({ status: 200, body: { enabled: (request.body as { on: boolean }).on, canManage: true } }) });
+    await open();
+    fireEvent.click(await screen.findByRole("switch", { name: "Nightly upkeep" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
+    expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is on.");
+    expect(screen.queryByTestId("wiki-setup-upkeep-absent")).toBeNull();
+    f.close();
   });
 
   it("a refused switch shows fixed words only", async () => {
@@ -458,6 +482,261 @@ describe("nightly upkeep", () => {
   });
 });
 
+// ---- L4-W6b: the company's choice (DEC 254zzt option A, two locks) -------------------------------------------------------------------------------------------------------------------
+// Mutants (each killed by the named test, run by hand): U1 offer drawn without canEnableSystemRuns; U2 offer drawn while system runs are on; U3 a maintainer's switch drawn while consent is off; U4 a reader's switch drawn;
+// U5 controls drawn when available is false; U6 the confirm sends without allowSystemRuns; U7 "on" shown for a project switch that is on while consent is off; U8 raise link without canRaise; U9 a made-up number for a null cap;
+// U10 a plain switch sends allowSystemRuns; U11 the "allow first" line shown to a reader; U12 the offer sends before the confirm; U13 a failed confirm shows Code's own text; U14 legacy Code (no systemRunsOn) gets the offer.
+const VIEW = { enabled: false, canManage: true, available: true, systemRunsOn: false, canEnableSystemRuns: true, cap: { monthlyUsd: null, canRaise: true } };
+const upkeepIs = (extra: Record<string, unknown>) => () => ({ status: 200, body: { ...VIEW, ...extra } });
+const OFFER = "Keep this project healthy every night";
+const noControls = () => {
+  expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
+  expect(screen.queryByTestId("wiki-setup-upkeep-offer")).toBeNull();
+  expect(screen.queryByTestId("wiki-setup-upkeep-confirm")).toBeNull();
+};
+
+// ---- L4-P3 (owner 2026-11-17): allowing needs a fresh sign-in; the company's one control is linked from here ---------------------------------------------------------------------------------
+// Mutants (each killed by the named test, run by hand): V1 a step-up answer shown as an error sentence instead of the sign-in step; V2 the request id replaced after a step-up refusal (the retry is a new act);
+// V3 the sign-in step drawn for any other refusal; V4 the company link drawn for a maintainer or while consent is off; V5 Confirm it's you does not ask Code for a step-up.
+describe("nightly upkeep: the fresh sign-in step and the company control's link (L4-P3)", () => {
+  it("Code asks for a fresh sign-in on the choice: the page shows the sign-in step (not an error), Confirm it's you asks Code for a step-up, and the same press afterwards is the retry with the same request id (V1, V2, V5)", async () => {
+    let step = true;
+    let state = { ...VIEW } as Record<string, unknown>;
+    const f = mount(row(true), { upkeep: () => ({ status: 200, body: state }), put: () => {
+      if (step) return err(403, "REAUTH_REQUIRED", WIKI_SETUP_WORDS.needsSignIn);
+      state = { ...state, enabled: true, systemRunsOn: true };
+      return { status: 200, body: state };
+    } });
+    await open();
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
+    const fresh = await screen.findByTestId("fresh-sign-in");
+    expect(fresh.getAttribute("data-state")).toBe("needed");
+    expect(fresh.textContent).toContain("allow nightly upkeep for the company");
+    expect(screen.queryByTestId("wiki-setup-upkeep-error")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
+    await expectNoAxeViolations(document.body);
+    fireEvent.click(within(fresh).getByTestId("fresh-sign-in-start"));
+    expect(f.host.signIn).toHaveBeenCalledTimes(1);
+    expect((f.host.signIn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![1]).toMatchObject({ stepUp: true });
+    // Back from the sign-in, the person presses again: the same request id, and now it works.
+    step = false;
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
+    const sent = calls(f, "PUT", ROOT + "/upkeep");
+    expect(sent).toHaveLength(2);
+    expect((sent[1]!.body as { requestId: string }).requestId).toBe((sent[0]!.body as { requestId: string }).requestId);
+    expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+    f.close();
+  });
+
+  it("any other refusal is an error sentence, never the sign-in step (V3)", async () => {
+    const f = mount(row(true), { upkeep: upkeepIs({}), put: () => err(403, "FORBIDDEN", WIKI_SETUP_WORDS.upkeepConsentNotAllowed) });
+    await open();
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
+    expect((await screen.findByTestId("wiki-setup-upkeep-error")).textContent).toBe(WIKI_SETUP_WORDS.upkeepConsentNotAllowed);
+    expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+    f.close();
+  });
+
+  it("an owner or admin with consent on sees where to withdraw it; a maintainer and anyone while consent is off do not (V4)", async () => {
+    const on = upkeepIs({ enabled: true, systemRunsOn: true, canEnableSystemRuns: true });
+    const a = mount(row(true), { upkeep: on });
+    await open();
+    const line = await screen.findByTestId("wiki-setup-upkeep-company-link");
+    expect(line.textContent).toBe("Withdraw nightly upkeep for the whole company in Company settings.");
+    expect(within(line).getByRole("link", { name: "Company settings" }).getAttribute("href")).toBe("/app/admin/settings");
+    a.close();
+    const m = mount(row(false), { upkeep: upkeepIs({ enabled: true, systemRunsOn: true, canEnableSystemRuns: false }) });
+    await open();
+    await screen.findByTestId("wiki-setup-upkeep-state");
+    expect(screen.queryByTestId("wiki-setup-upkeep-company-link")).toBeNull();
+    m.close();
+    const off = mount(row(true), { upkeep: upkeepIs({}) });
+    await open();
+    await screen.findByTestId("wiki-setup-upkeep-offer");
+    expect(screen.queryByTestId("wiki-setup-upkeep-company-link")).toBeNull();
+    off.close();
+  });
+});
+
+describe("nightly upkeep: the company's choice", () => {
+  it("a company owner or admin, consent off: one choice, then one confirm that says what runs and the cap; yes sends the consent and the switch in one act (U1, U6, U12, U14)", async () => {
+    let state = { ...VIEW } as Record<string, unknown>;
+    const f = mount(row(true), { upkeep: () => ({ status: 200, body: state }), put: () => { state = { ...state, enabled: true, systemRunsOn: true }; return { status: 200, body: state }; } });
+    await open();
+    const offer = await screen.findByTestId("wiki-setup-upkeep-offer");
+    expect(offer.textContent).toBe(OFFER);
+    noControlsExceptOffer();
+    expect(screen.queryByTestId("wiki-setup-upkeep-limits")).toBeNull();
+    expect(screen.queryByTestId("wiki-setup-cap")).toBeNull();
+    expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is off.");
+    fireEvent.click(offer);
+    const confirm = await screen.findByTestId("wiki-setup-upkeep-confirm");
+    expect(calls(f, "PUT", ROOT + "/upkeep")).toHaveLength(0);
+    expect(screen.getByRole("group", { name: OFFER })).toBe(confirm);
+    expect(confirm.textContent).toContain("Setup check and mock checks: no AI. Wiki refresh: AI, uses your key.");
+    // Code has no read of the cap: the page says where it is set and invents no figure.
+    const line = within(confirm).getByTestId("wiki-setup-upkeep-cap-line");
+    expect(line.textContent).toBe("Monthly cap: set in Spending limits.");
+    expect(within(line).getByRole("link", { name: "Spending limits" }).getAttribute("href")).toBe("/app/admin/money/limits");
+    expect(confirm.textContent).not.toMatch(/\$/u);
+    await expectNoAxeViolations(document.body);
+    fireEvent.click(within(confirm).getByTestId("wiki-setup-upkeep-yes"));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
+    const sent = calls(f, "PUT", ROOT + "/upkeep");
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body as { requestId: string; on: boolean; allowSystemRuns: boolean };
+    expect(Object.keys(body).sort()).toEqual(["allowSystemRuns", "on", "requestId"]);
+    expect(RID.test(body.requestId)).toBe(true);
+    expect([body.on, body.allowSystemRuns]).toEqual([true, true]);
+    expect(screen.queryByTestId("wiki-setup-upkeep-offer")).toBeNull();
+    expect(screen.queryByTestId("wiki-setup-upkeep-confirm")).toBeNull();
+    expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is on.");
+    expect(screen.getByTestId("wiki-setup-upkeep-limits")).toBeTruthy();
+    await screen.findByTestId("wiki-setup-cap");
+    f.close();
+  });
+
+  it("the confirm shows the cap Code states, and a raise link only when Code says the person can raise it (U8, U9)", async () => {
+    for (const [canRaise, link] of [[true, true], [false, false]] as const) {
+      const f = mount(row(true), { upkeep: upkeepIs({ cap: { monthlyUsd: 40, canRaise } }) });
+      await open();
+      fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+      const line = await screen.findByTestId("wiki-setup-upkeep-cap-line");
+      expect(line.textContent?.startsWith("Monthly cap: $40.00.")).toBe(true);
+      expect(line.textContent).not.toContain("25");
+      expect(within(line).queryAllByRole("link").length).toBe(link ? 1 : 0);
+      if (link) expect(within(line).getByRole("link", { name: "Raise the cap" }).getAttribute("href")).toBe("/app/admin/money/limits");
+      f.close();
+    }
+    const g = mount(row(true), { upkeep: upkeepIs({ cap: { monthlyUsd: null, canRaise: false } }) });
+    await open();
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+    const none = await screen.findByTestId("wiki-setup-upkeep-cap-line");
+    expect(none.textContent).toBe("Monthly cap: set in Spending limits.");
+    expect(within(none).queryAllByRole("link")).toHaveLength(0);
+    g.close();
+  });
+
+  it("cancel sends nothing; a refused confirm shows Cloud's fixed words and never Code's text, and the choice is still there (U13)", async () => {
+    const f = mount(row(true), { upkeep: upkeepIs({}) });
+    await open();
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-no"));
+    expect(screen.queryByTestId("wiki-setup-upkeep-confirm")).toBeNull();
+    expect(screen.getByTestId("wiki-setup-upkeep-offer")).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByTestId("wiki-setup-upkeep-offer"));
+    expect(calls(f, "PUT", ROOT + "/upkeep")).toHaveLength(0);
+    f.close();
+    for (const [answer, words] of [
+      [err(403, "FORBIDDEN", WIKI_SETUP_WORDS.upkeepConsentNotAllowed), WIKI_SETUP_WORDS.upkeepConsentNotAllowed],
+      [err(403, "FORBIDDEN", LEAK), "That could not be done just now. Try again."],
+      [err(501, "NOT_ON_CODE_YET", WIKI_SETUP_WORDS.upkeepNotYet), WIKI_SETUP_WORDS.upkeepNotYet],
+    ] as const) {
+      const g = mount(row(true), { upkeep: upkeepIs({}), put: () => answer });
+      await open();
+      fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
+      fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
+      expect((await screen.findByTestId("wiki-setup-upkeep-error")).textContent).toBe(words);
+      expect(document.body.textContent).not.toContain(LEAK);
+      expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
+      g.close();
+    }
+  });
+
+  it("a maintainer (may manage, may not give the consent): no choice and no switch while consent is off, only who must act first (U1, U3)", async () => {
+    const f = mount(row(false), { upkeep: upkeepIs({ canEnableSystemRuns: false, cap: { monthlyUsd: 40, canRaise: false } }) });
+    await open();
+    expect((await screen.findByTestId("wiki-setup-upkeep-needs-admin")).textContent).toBe("A company admin must allow nightly upkeep first.");
+    noControls();
+    expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is off.");
+    expect(screen.queryByTestId("wiki-setup-upkeep-limits")).toBeNull();
+    expect(screen.queryByRole("link", { name: /Raise the cap|Spending limits/u })).toBeNull();
+    expect(document.body.textContent).not.toContain("$40");
+    f.close();
+  });
+
+  it("a maintainer, consent on: the project switch, which sends only the id and the choice, never the consent (U10)", async () => {
+    let state = { ...VIEW, canEnableSystemRuns: false, systemRunsOn: true, cap: { monthlyUsd: 40, canRaise: false } } as Record<string, unknown>;
+    const f = mount(row(false), { upkeep: () => ({ status: 200, body: state }), put: (request) => { state = { ...state, enabled: (request.body as { on: boolean }).on }; return { status: 200, body: state }; } });
+    await open();
+    const toggle = await screen.findByRole("switch", { name: "Nightly upkeep" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(screen.queryByTestId("wiki-setup-upkeep-offer")).toBeNull();
+    expect(screen.queryByTestId("wiki-setup-upkeep-needs-admin")).toBeNull();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
+    const sent = calls(f, "PUT", ROOT + "/upkeep");
+    expect(Object.keys(sent[0]!.body as object).sort()).toEqual(["on", "requestId"]);
+    expect(sent[0]!.body).toMatchObject({ on: true });
+    expect(screen.getByTestId("wiki-setup-upkeep-state").textContent).toContain("Nightly upkeep is on.");
+    expect(screen.getByTestId("wiki-setup-cap-ask").textContent).toBe("A company owner or admin sets the monthly cap.");
+    expect(screen.queryByRole("link", { name: /Raise the cap|Spending limits/u })).toBeNull();
+    f.close();
+  });
+
+  it("an owner or admin, consent on: the plain project switch and the cap editor, not the choice (U2)", async () => {
+    const f = mount(row(true), { upkeep: upkeepIs({ systemRunsOn: true, enabled: true }) });
+    await open();
+    expect((await screen.findByRole("switch", { name: "Nightly upkeep" })).getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByTestId("wiki-setup-upkeep-offer")).toBeNull();
+    await screen.findByTestId("wiki-setup-cap");
+    f.close();
+  });
+
+  it("a reader sees where it stands and nothing to press or ask for, with consent off or on (U4, U11)", async () => {
+    for (const [systemRunsOn, enabled, on] of [[false, false, false], [true, true, true], [true, false, false]] as const) {
+      const f = mount(row(false), { upkeep: upkeepIs({ canManage: false, canEnableSystemRuns: false, systemRunsOn, enabled, cap: { monthlyUsd: 40, canRaise: false } }) });
+      await open();
+      const state = await screen.findByTestId("wiki-setup-upkeep-state");
+      expect(state.textContent).toContain(on ? "Nightly upkeep is on." : "Nightly upkeep is off.");
+      noControls();
+      expect(screen.queryByTestId("wiki-setup-upkeep-needs-admin")).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-cap")).toBeNull();
+      expect(screen.queryByTestId("wiki-setup-cap-ask")).toBeNull();
+      expect(screen.queryByRole("link", { name: /Raise the cap|Spending limits/u })).toBeNull();
+      f.close();
+    }
+  });
+
+  it("the project switch counts only while the company consent is on: a project switch left on with consent off reads as off (U7)", async () => {
+    const f = mount(row(true), { upkeep: upkeepIs({ enabled: true, systemRunsOn: false }) });
+    await open();
+    expect((await screen.findByTestId("wiki-setup-upkeep-state")).textContent).toContain("Nightly upkeep is off.");
+    expect(screen.getByTestId("wiki-setup-upkeep-offer")).toBeTruthy();
+    f.close();
+  });
+
+  it("not available on this Rovara (the ceiling is off): one muted line and no controls for anyone (U5)", async () => {
+    for (const [admin, extra] of [[true, {}], [false, { canEnableSystemRuns: false }], [false, { canManage: false, canEnableSystemRuns: false }], [true, { systemRunsOn: true, enabled: true }]] as const) {
+      const f = mount(row(admin), { upkeep: upkeepIs({ available: false, ...extra }) });
+      await open();
+      expect((await screen.findByTestId("wiki-setup-upkeep-absent")).textContent).toBe("Nightly upkeep isn't available on this Rovara yet.");
+      noControls();
+      for (const id of ["wiki-setup-upkeep-state", "wiki-setup-upkeep-limits", "wiki-setup-cap", "wiki-setup-cap-ask", "wiki-setup-upkeep-needs-admin", "wiki-setup-upkeep-cap-line"]) expect(screen.queryByTestId(id), id).toBeNull();
+      expect(screen.queryByRole("link", { name: /Raise the cap|Spending limits/u })).toBeNull();
+      f.close();
+    }
+  });
+
+  it("a Code with the project switch only (no consent members) keeps the plain switch and offers no choice (U14)", async () => {
+    const f = mount(row(true), { upkeep: () => ({ status: 200, body: { enabled: false, canManage: true, available: true } }) });
+    await open();
+    expect(await screen.findByRole("switch", { name: "Nightly upkeep" })).toBeTruthy();
+    expect(screen.queryByTestId("wiki-setup-upkeep-offer")).toBeNull();
+    expect(screen.queryByTestId("wiki-setup-upkeep-needs-admin")).toBeNull();
+    f.close();
+  });
+});
+
+function noControlsExceptOffer() {
+  expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
+  expect(screen.queryByTestId("wiki-setup-upkeep-confirm")).toBeNull();
+  expect(screen.queryByTestId("wiki-setup-upkeep-needs-admin")).toBeNull();
+}
+
 describe("in the checklist", () => {
   it("it is one more row, not counted in the progress Code computes, and the other rows are unchanged", async () => {
     const f = mount(h(ProjectChecklist, { project: "web" }));
@@ -523,5 +802,72 @@ describe("small helpers", () => {
   it("parseUsd", () => {
     expect(["5", "$1,200", "12.50", "0"].map(parseUsd)).toEqual([5, 1200, 12.5, 0]);
     expect(["", "-1", "1.234", "1000001", "1e3", "abc"].map(parseUsd)).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+  });
+});
+
+// L4-CAPR: "Nightly upkeep this month: $X of $Y" for people who manage the project (Code's `spend`, passed through Cloud). Each mutant is killed by the named test: U1 the line drawn for a reader (canManage false);
+// U2 the cap invented when Code states none ("of $25"); U3 unknown runs not counted in words; U4 dollars drawn as exact when a run's cost is unknown (no "at least"); U5 spend drawn while the page says upkeep is not available.
+const THIS_MONTH = new Date().toISOString().slice(0, 7);
+describe("nightly upkeep spend line (L4-CAPR)", () => {
+  const view = (extra: Record<string, unknown> = {}) => ({ enabled: true, canManage: true, available: true, systemRunsOn: true, canEnableSystemRuns: true, cap: { monthlyUsd: 25, canRaise: true }, spend: { month: THIS_MONTH, spentUsd: 3.5, runs: 4, unknownRuns: 0 }, ...extra });
+  it("a manager sees what was spent against the cap, in dollars and no counts when every run's cost is known", async () => {
+    const f = mount(row(), { upkeep: () => ({ status: 200, body: view() }) });
+    await open();
+    const line = await screen.findByTestId("wiki-setup-upkeep-spend");
+    expect(line.textContent).toBe("Nightly upkeep this month: $3.50 of $25.00");
+    expect(screen.queryByTestId("wiki-setup-upkeep-spend-unknown")).toBeNull();
+    f.close();
+  });
+  it("runs with an unknown cost are counted in words and the dollars are 'at least' (U3, U4); one run reads in the singular", async () => {
+    const f = mount(row(), { upkeep: () => ({ status: 200, body: view({ spend: { month: THIS_MONTH, spentUsd: 2, runs: 5, unknownRuns: 2 } }) }) });
+    await open();
+    expect((await screen.findByTestId("wiki-setup-upkeep-spend")).textContent).toBe("Nightly upkeep this month: at least $2.00 of $25.00 (2 runs with unknown cost)");
+    f.close();
+    const g = mount(row(), { upkeep: () => ({ status: 200, body: view({ spend: { month: THIS_MONTH, spentUsd: 0, runs: 1, unknownRuns: 1 } }) }) });
+    await open();
+    expect((await screen.findByTestId("wiki-setup-upkeep-spend")).textContent).toBe("Nightly upkeep this month: at least $0.00 of $25.00 (1 run with unknown cost)");
+    g.close();
+  });
+  it("a cap Code does not state is not made up: only what was spent is shown (U2); a $0 cap is shown as $0", async () => {
+    const f = mount(row(), { upkeep: () => ({ status: 200, body: view({ cap: { monthlyUsd: null, canRaise: true } }) }) });
+    await open();
+    expect((await screen.findByTestId("wiki-setup-upkeep-spend")).textContent).toBe("Nightly upkeep this month: $3.50");
+    f.close();
+    const g = mount(row(), { upkeep: () => ({ status: 200, body: view({ cap: { monthlyUsd: 0, canRaise: true }, spend: { month: THIS_MONTH, spentUsd: 0, runs: 0, unknownRuns: 0 } }) }) });
+    await open();
+    expect((await screen.findByTestId("wiki-setup-upkeep-spend")).textContent).toBe("Nightly upkeep this month: $0.00 of $0.00");
+    g.close();
+  });
+  it("no spend from Code, no line; a reader gets none even if the answer carried one (U1); nothing is drawn while upkeep is not available (U5)", async () => {
+    const none = mount(row(), { upkeep: () => ({ status: 200, body: view({ spend: undefined }) }) });
+    await open(); await screen.findByTestId("wiki-setup-upkeep-state");
+    expect(screen.queryByTestId("wiki-setup-upkeep-spend")).toBeNull();
+    none.close();
+    const reader = mount(row(false), { build: () => ({ status: 200, body: build({ canManage: false, agents: { on: true } }) }), upkeep: () => ({ status: 200, body: view({ canManage: false }) }) });
+    await open(); await screen.findByTestId("wiki-setup-upkeep-state");
+    expect(screen.queryByTestId("wiki-setup-upkeep-spend")).toBeNull();
+    reader.close();
+    const off = mount(row(), { upkeep: () => ({ status: 200, body: view({ available: false }) }) });
+    await open(); await screen.findByTestId("wiki-setup-upkeep-absent");
+    expect(screen.queryByTestId("wiki-setup-upkeep-spend")).toBeNull();
+    off.close();
+  });
+  it("a total for another month is not called 'this month' (not drawn), and under half a cent says so instead of $0.00", async () => {
+    const f = mount(row(), { upkeep: () => ({ status: 200, body: view({ spend: { month: "2001-01", spentUsd: 3.5, runs: 4, unknownRuns: 0 } }) }) });
+    await open(); await screen.findByTestId("wiki-setup-upkeep-state");
+    expect(screen.queryByTestId("wiki-setup-upkeep-spend")).toBeNull();
+    f.close();
+    const g = mount(row(), { upkeep: () => ({ status: 200, body: view({ spend: { month: THIS_MONTH, spentUsd: 0.002, runs: 1, unknownRuns: 0 } }) }) });
+    await open();
+    expect((await screen.findByTestId("wiki-setup-upkeep-spend")).textContent).toBe("Nightly upkeep this month: less than $0.01 of $25.00");
+    g.close();
+  });
+  it("a switch change keeps the spend line the answer carries", async () => {
+    const f = mount(row(), { upkeep: () => ({ status: 200, body: view({ enabled: false }) }), put: (request) => ({ status: 200, body: view({ enabled: (request.body as { on: boolean }).on }) }) });
+    await open();
+    fireEvent.click(await screen.findByRole("switch", { name: "Nightly upkeep" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
+    expect(screen.getByTestId("wiki-setup-upkeep-spend").textContent).toBe("Nightly upkeep this month: $3.50 of $25.00");
+    f.close();
   });
 });

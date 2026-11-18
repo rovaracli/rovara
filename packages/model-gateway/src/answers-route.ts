@@ -4,7 +4,8 @@
 //
 //   Token    the TC-1 task token with `stp` = ANSWERS_STEP. That step is accepted on this route only, and this route accepts no other step
 //            (server.ts checks both directions with the fixed 401, before anything is read, held or sent). A learning token is refused here too.
-//   Key      LearningKeySource only (the company's own connected account). This route is never handed the gateway's ProviderKeys.
+//   Key      LearningKeySource only (the company's own connected account). This route is never handed the gateway's ProviderKeys. One exception (DEC 254zzz3(1)):
+//            a company the operator named exempt, with no connected account and Rovara's AI as its effective source, is served by Rovara's AI (`rovaraDefault`).
 //   Paths    /v1/answers/messages (Anthropic Messages), /v1/answers/gemini/..., /v1/answers/vertex/..., /v1/answers/openai/chat/completions: the same
 //            provider paths as the learning route under their own prefix. The company must have THAT provider connected.
 //   Money    its OWN meter (separate tables), combined with the agent meter's company row exactly as learning's is (DEC 228c): one hold takes the answers
@@ -14,6 +15,7 @@
 //            ANSWERS_DEFAULT_MONTH_MICROS. $0 pauses answers. An item that does not read refuses the call.
 //   Pause    every refusal Code should turn into "answers are paused" is `answers_paused` with a fixed message and the reason in ANSWERS_PAUSE_HEADER.
 //            Faults (an unreadable limit or budget) are errors, never a pause.
+//   Cost     a complete non-streaming success carries ANSWERS_COST_HEADER: the amount the same settle wrote to the meter (see GatewayRoute.costHeader).
 import type { Caps } from "./caps.js";
 import { createLearningRoutes, type CompanyKeyFlavor, type LearningPauseReason, type LearningRouteFactory, type LearningRouteOptions } from "./learning-route.js";
 import type { RouteRefusal } from "./server.js";
@@ -25,6 +27,8 @@ export const ANSWERS_PATH = "/v1/answers/messages";
 /** $20 a month per company, in micro-dollars: the answers month when the company has no answers limit of its own. A placeholder until the first dry run (the owner confirms). Cloud's company-store.ts holds the same number. */
 export const ANSWERS_DEFAULT_MONTH_MICROS = 20_000_000;
 export const ANSWERS_PAUSE_HEADER = "x-rovara-answers-pause";
+/** The settled cost of THIS call in US dollars (a plain decimal, six places), on a complete non-streaming success with an exact price; absent when unknown (L4-E2). Code's AnswersGateway reads it for the per-answer ceiling. */
+export const ANSWERS_COST_HEADER = "x-rovara-cost-usd";
 export const ANSWERS_PAUSE_REASONS = ["no_provider", "monthly_limit", "no_budget", "cost_too_high"] as const;
 export type AnswersPauseReason = typeof ANSWERS_PAUSE_REASONS[number];
 export const ANSWERS_PAUSE_MESSAGES: Readonly<Record<AnswersPauseReason, string>> = Object.freeze({
@@ -40,7 +44,7 @@ const learningReason = (reason: LearningPauseReason): AnswersPauseReason => {
   if (reason === "lessons_off") throw new Error("the answers route has no lessons switch");
   return reason;
 };
-export const ANSWERS_FLAVOR: CompanyKeyFlavor = Object.freeze({ purpose: "answers", pathPrefix: ANSWERS_PATH_PREFIX, paused: (reason: LearningPauseReason) => answersPaused(learningReason(reason)) });
+export const ANSWERS_FLAVOR: CompanyKeyFlavor = Object.freeze({ purpose: "answers", pathPrefix: ANSWERS_PATH_PREFIX, paused: (reason: LearningPauseReason) => answersPaused(learningReason(reason)), costHeader: ANSWERS_COST_HEADER });
 
 /** The company's own answers limit, micro-dollars: undefined when it has none (the default applies), null when the stored item does not read (the call is refused). A failed read throws. */
 export interface AnswersLimits { limitFor(cid: string, signal?: AbortSignal): Promise<number | null | undefined> }
