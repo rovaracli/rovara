@@ -31,7 +31,7 @@ export const DECISIONS_MAX = 20;
 /** How many of the person's projects the inbox reads, and how many proposed lessons per project. */
 export const INBOX_PROJECTS_MAX = 20;
 const INBOX_LESSONS_MAX = 20;
-const LESSONS_MAX = 100;
+const LESSONS_MAX = 50;
 
 const dev = (project: string) => `/v1/dev/projects/${encodeURIComponent(project)}`;
 const person = (raw: unknown) => (isRecord(raw) && typeof raw["name"] === "string" ? some({ name: raw["name"].slice(0, 80), you: raw["you"] === true ? true : undefined }) : undefined);
@@ -165,7 +165,7 @@ export const LESSONS_ROUTES: Route[] = [
       if (listed === undefined) return badRequest("list is proposed, approved or retired.");
       forward.set("list", listed);
       const limit = context.query.get("limit"), since = context.query.get("since"), cursor = context.query.get("cursor");
-      if (limit !== null) { if (!/^[1-9][0-9]{0,2}$/u.test(limit) || Number(limit) > LESSONS_MAX) return badRequest("limit is 1 to 100."); forward.set("limit", limit); }
+      if (limit !== null) { if (!/^[1-9][0-9]{0,2}$/u.test(limit) || Number(limit) > LESSONS_MAX) return badRequest("limit is 1 to 50."); forward.set("limit", limit); }
       if (since !== null) { if (!/^[0-9]{1,16}$/u.test(since)) return badRequest("since is a time in milliseconds."); forward.set("since", since); }
       if (cursor !== null) { if (!/^[A-Za-z0-9_-]{1,400}$/u.test(cursor)) return badRequest("That cursor isn't one this list gave."); forward.set("cursor", cursor); }
       const project = context.params[0]!;

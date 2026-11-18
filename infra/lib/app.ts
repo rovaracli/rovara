@@ -34,6 +34,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       environmentName: cloudAppEnv,
       ...(productAiOn(app.node.tryGetContext(MODEL_GATEWAY_PRODUCT_CONTEXT_KEY), MODEL_GATEWAY_PRODUCT_CONTEXT_KEY) ? { productAi: true } : {}),
       ...aiSourceKindsContext(app.node.tryGetContext(AI_SOURCE_KINDS_CONTEXT_KEY)),
+      ...rovaraAiExemptContext(app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY)),
     });
     Tags.of(cloudWeb).add(ENVIRONMENT_TAG_KEY, cloudAppEnv);
     const cloudApp = new CloudAppStack(app, "RovaraCloudApp", {
@@ -104,6 +105,18 @@ export function aiSourceKindsContext(value: unknown): { aiSourceKinds?: string }
   if (typeof value !== "string") throw new Error(`${AI_SOURCE_KINDS_CONTEXT_KEY} must be AI source kinds, comma-separated`);
   try { parseSourceKindsSwitch(value); } catch { throw new Error(`${AI_SOURCE_KINDS_CONTEXT_KEY} must be AI source kinds, comma-separated (anthropic, openai, openrouter, bedrock, endpoint)`); }
   return { aiSourceKinds: value };
+}
+
+/**
+ * DEC 254zzz3(1): the SAME `-c rovaraModelGatewayRovaraAiExempt=<org ids>` also goes to Cloud's server (CLOUD_ROVARA_AI_EXEMPT), words only. Absent or empty: nothing.
+ * Company ids (org_ and 20 of a-z0-9), at most ten, no repeats; anything else stops the synth.
+ */
+export function rovaraAiExemptContext(value: unknown): { rovaraAiExempt?: string } {
+  if (value === undefined || value === "") return {};
+  if (typeof value !== "string") throw new Error(`${MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY} must be company ids`);
+  const ids = value.split(",");
+  if (ids.length > 10 || ids.some((id) => !/^org_[0-9a-z]{20}$/u.test(id)) || new Set(ids).size !== ids.length) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY}: give company ids (org_...), comma-separated`);
+  return { rovaraAiExempt: value };
 }
 
 /** Rovara's AI for agents (DEC 240): absent is off; a non-empty string is the allow-list; the exempt list never alone. */

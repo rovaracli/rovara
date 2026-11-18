@@ -4,6 +4,7 @@
 // switches to another one by itself.
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router";
 import { AGENT_AI_ENDPOINT_PATH, AGENT_AI_PATH, readAgentAi, type AgentAiRead, type AgentAiSource } from "../../../api/admin-agent-ai.js";
 import { TextField } from "../../../design/TextField.js";
 import { isNotConnected, needsStepUp } from "../../../api/admin-company.js";
@@ -50,7 +51,7 @@ export function AgentAiScreen() {
 function Choice({ settings, reload }: { settings: AgentAiRead; reload: () => void }) {
  const { developerId } = useAdminContext(), host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
  const confirmed = useJustConfirmed(developerId);
- const [picked, setPicked] = useState<AgentAiSource | undefined>(settings.source ?? undefined);
+ const [picked, setPicked] = useState<AgentAiSource | undefined>(settings.source ?? settings.effectiveSource ?? undefined);
  const [stale, setStale] = useState(false), [busy, setBusy] = useState(false), [notice, setNotice] = useState<{ ok: boolean; text: string }>();
  const ready = confirmed && !stale;
  async function save(source: AgentAiSource) {
@@ -64,12 +65,16 @@ function Choice({ settings, reload }: { settings: AgentAiRead; reload: () => voi
    else setNotice({ ok: false, text: error instanceof ApiError ? error.message : "Couldn't save that. Try again." });
   } finally { setBusy(false); }
  }
- const current = settings.source === null ? "Not chosen yet" : CHOICE[settings.source].label;
+ const current = settings.source !== null ? CHOICE[settings.source].label : settings.effectiveSource !== null ? `${CHOICE[settings.effectiveSource].label} (the default for your company)` : "Not chosen yet";
  return <>
   {notice !== undefined && <p role={notice.ok ? "status" : "alert"}><VisibleText text={notice.text} /></p>}
   {!ready && <FreshSignIn action="change the AI the company's agents use" refused={stale} />}
   <AdminSection title="AI for your agents" note={current}>
-   {settings.source === null && <p data-testid="agent-ai-unset">No choice is saved yet, so agents use the company's own Anthropic key when one is connected.</p>}
+   {settings.source === null && settings.effectiveSource === null && <p data-testid="agent-ai-unset">No choice is saved yet, so agents use the company's own Anthropic key when one is connected.</p>}
+   {settings.source === null && settings.effectiveSource === "rovara" && <p data-testid="agent-ai-default">Your agents use Rovara's AI by default. There is nothing to connect, and it counts under your company's limits. {settings.available.anthropic_key && settings.anthropicKeyConnected === true
+    ? <Button onClick={() => setPicked("anthropic_key")}>Use your own key</Button>
+    : <Link className="rv-admin-b1-link" to="/app/admin/learning-ai" data-testid="agent-ai-use-own-key">Use your own key</Link>}</p>}
+   {settings.source === null && settings.effectiveSource !== null && settings.effectiveSource !== "rovara" && <p data-testid="agent-ai-default-own">Your agents use {CHOICE[settings.effectiveSource].label} because it is connected. To use Rovara's AI instead, choose it below and save.</p>}
    <fieldset aria-label="AI for your agents" disabled={!ready || busy}><legend>Choose one</legend>
     {settings.listed.map(source => <label key={source} data-testid={`agent-ai-${source}`}>
      <input type="radio" name="agent-ai" value={source} checked={picked === source} disabled={!settings.available[source]} onChange={() => setPicked(source)} />

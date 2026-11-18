@@ -100,6 +100,19 @@ describe("the company step, AI and spending", () => {
   } finally { f.close(); }
  });
 
+ it("an exempt company on the default shows Rovara's AI with the default note; with its own key connected the step shows the own key, never a guess", async () => {
+  for (const [effective, own] of [["rovara", false], ["anthropic_key", true]] as const) {
+   const c = company({ cap: null, source: null, model: null });
+   const f = mountRoute("/app/admin/ai-spending", (r) => (r.path === "/v1/app/org/agent-ai" && r.method === "GET" ? { status: 200, body: { ...(agentAi(null, 0) as object), effectiveSource: effective, sourceIsDefault: true } } : c.respond(r)));
+   try {
+    await screen.findByLabelText("Model");
+    expect(screen.queryByTestId("ai-spend-default") !== null).toBe(!own);
+    expect((screen.getByTestId("ai-spend-rovara").querySelector("input") as HTMLInputElement).checked).toBe(!own);
+    expect((screen.getByTestId("ai-spend-own").querySelector("input") as HTMLInputElement).checked).toBe(own);
+   } finally { f.close(); }
+  }
+ });
+
  it("one Save writes the limit, the source and the preselected model explicitly, in that order", async () => {
   const c = company({ cap: null, source: null, model: null });
   const f = mountRoute(confirmedPath("/app/admin/ai-spending"), c.respond);

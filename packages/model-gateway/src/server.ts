@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { AGENT_AI_SOURCES, agentSourceSwitchedOn, type AgentAiSourceReader, type ByoBedrock, type CompanyChatAi, type CompanyEndpointAi, type RovaraAi } from "./agent-ai.js";
+import { AGENT_AI_SOURCES, agentSourceSwitchedOn, resolveAgentSource, type AgentSourceVia, type AgentAiSourceReader, type ByoBedrock, type CompanyChatAi, type CompanyEndpointAi, type RovaraAi } from "./agent-ai.js";
 import { endpointTarget, ENDPOINT_ADDRESS_REFUSED, type EndpointTarget } from "./endpoint-guard.js";
 import { parseEndpointConnect, type EndpointConnection, type EndpointModel } from "./endpoint-source.js";
 import { OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS, OPENAI_AGENT_MODEL, OPENAI_AGENT_UPSTREAM, toChatCompletions, type OpenAiAgentProvider } from "./agent-openai.js";
 import type { AwsCredentials } from "./aws.js";
 import { BEDROCK_MODEL_ACCESS_WORDS } from "./bedrock-byo-sessions.js";
-import { CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS, REASONING_CARRYOVER_MODEL, toConverse } from "./bedrock-converse.js";
-import { BEDROCK_CLAUDE_ID, bedrockConversePath, bedrockInvokePath } from "./bedrock-transport.js";
+import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
+import { invokeCall, PROVIDER_ERROR, rovaraGuard, rovaraProviderFailure } from "./rovara-ai-call.js";
+export { BEDROCK_ANTHROPIC_VERSION, ROVARA_AI_FEATURE, ROVARA_AI_MODEL, ROVARA_AI_MODEL_NOT_ENABLED, ROVARA_AI_UNAVAILABLE } from "./rovara-ai-call.js";
 import { validCaps, type Caps, type CapsSource } from "./caps.js";
 import type { EndedTasks } from "./ended.js";
 import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS, type MediaEstimate } from "./estimate.js";
@@ -27,7 +28,7 @@ import type { TokenUsage } from "./usage.js";
 import { UsageCollector } from "./usage.js";
 export interface GatewayRequest { method: string; url: string; headers: Readonly<Record<string, string | undefined>>; body: AsyncIterable<Uint8Array>; signal?: AbortSignal }
 export interface GatewaySink { head(status: number, headers: Readonly<Record<string, string>>): void; write(bytes: Uint8Array): Promise<void>; end(): void; destroy(): void }
-export type GatewayLogEvent = { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "settle_failed" | "refused" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
+export type GatewayLogEvent = { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | { event: "settle_failed" | "refused" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
 export interface GatewayDependencies {
   verifyToken: TaskTokenVerifier; ended: EndedTasks; meter: Meter; caps: CapsSource; prices?: PriceSource;
   metrics: { overrunBusy(issuer: string, company: string): void };
@@ -179,19 +180,6 @@ export const BYO_BEDROCK_REFUSED: RouteRefusal = Object.freeze({ ok: false as co
 export const BYO_BEDROCK_MODEL_NOT_ENABLED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "model_not_enabled", message: "This model is not enabled yet in your company's AWS account. An AWS admin opens it once in the Bedrock console, then try again." });
 /** DEC 240: the company chose Rovara's AI, and this gateway does not offer it. Nothing held or sent; no fallback to its key. */
 export const ROVARA_AI_OFF: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: Rovara's AI is not available on this install." });
-/** DEC 240: a model that is not on Rovara's AI allow-list. Before any hold. */
-export const ROVARA_AI_MODEL: GuardFailure = Object.freeze({ ok: false as const, status: 400, code: "invalid_request", message: "This model is not offered on Rovara's AI." });
-/** DEC 243c: a request a non-Claude model is not offered with on Rovara's AI (images, documents, thinking blocks, tool_choice none). */
-export const ROVARA_AI_FEATURE: GuardFailure = Object.freeze({ ok: false as const, status: 400, code: "invalid_request", message: "This request uses something Rovara's AI does not offer for this model (only text and tools)." });
-/** DEC 243: the model is on the allow-list but not enabled yet in Rovara's account (its one-time Marketplace enable). Free. */
-export const ROVARA_AI_MODEL_NOT_ENABLED: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "model_not_enabled", message: "This model is not enabled yet on Rovara's AI. Choose another model, or try again after Rovara enables it." });
-/** Bedrock's words for "the account has no access to this model yet" (a Marketplace agreement or model access), read only to classify. */
-const MODEL_ACCESS_WORDS = BEDROCK_MODEL_ACCESS_WORDS;
-/** DEC 240: Bedrock refused Rovara's own role. Free: the customer is never charged for it. */
-export const ROVARA_AI_UNAVAILABLE: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "unavailable", message: "Rovara's AI is unavailable right now. Try again later." });
-const PROVIDER_ERROR: RouteRefusal = Object.freeze({ ok: false as const, status: 502, code: "provider_error", message: "provider unavailable" });
-/** Bedrock's InvokeModel body version for Anthropic models. */
-export const BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31";
 /** The agent route: Anthropic Messages, the R3a behaviour exactly; on the company's own key when `agentKeys` is set (DEC 236). */
 export function agentRoute(deps: GatewayDependencies): GatewayRoute {
   return deps.agentKeys !== undefined ? companyKeyAgentRoute(deps, deps.agentKeys) : installKeyAgentRoute(deps);
@@ -238,9 +226,13 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     async admit(claims, signal) {
       claimsOf = claims;
       const choice = deps.agentAi;
+      let via: AgentSourceVia = "none";
       if (choice !== undefined) {
         let source;
-        try { source = await choice.sources.sourceFor(claims.cid, signal); } catch { return AGENT_UNAVAILABLE; }
+        // DEC 254zzz3(1): no saved choice + an exempt company: its own key, its own Bedrock, else Rovara's AI (agent-ai.ts resolveAgentSource).
+        try { ({ source, via } = await resolveAgentSource({ sources: choice.sources, ...(choice.rovara === undefined ? {} : { exempt: choice.rovara.exempt }), keys, ...(choice.byo === undefined ? {} : { byo: choice.byo }) }, claims.iss, claims.cid, signal)); } catch { return AGENT_UNAVAILABLE; }
+        // The source this call is admitted on, once, for the audit: ids and words only.
+        const accept = () => { admitted = true; deps.log({ event: "agent_source", company: claims.cid, source: source ?? "company_key", via }); };
         if (source !== undefined && !agentSourceSwitchedOn(source, choice.switchedOn ?? NOTHING_SWITCHED_ON)) return AGENT_SOURCE_SWITCHED_OFF;
         // A source this route does not serve is never sent on another one's key (no fallback to the company's Anthropic key).
         if (source !== undefined && !(AGENT_AI_SOURCES as readonly string[]).includes(source)) return AGENT_UNAVAILABLE;
@@ -254,7 +246,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
           // The transport signs with the session `key` assumed (after the hold); without one, nothing is sent.
           state.transport = choice.byo.transport(found.connection.region, async () => { if (state.credentials === undefined) throw new Error("no session"); return state.credentials; });
           byo = state;
-          admitted = true;
+          accept();
           return undefined;
         }
         if (source === "custom_endpoint") {
@@ -274,7 +266,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
           const state = { ai, connection, target } as NonNullable<typeof endpoint>;
           state.transport = ai.transport(target, (reason) => { state.refused = reason; }, claims.cid);
           endpoint = state;
-          admitted = true;
+          accept();
           return undefined;
         }
         if (source === "openai_key" || source === "openrouter_key") {
@@ -285,20 +277,21 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
           try { if ((await keys.connected(claims.iss, claims.cid, provider, signal)) !== true) return AGENT_KEY_MISSING; }
           catch { return AGENT_UNAVAILABLE; }
           chat = { provider, ai };
-          admitted = true;
+          accept();
           return undefined;
         }
         if (source === "rovara") {
           if (choice.rovara === undefined) return ROVARA_AI_OFF;
           // A per-call marker stands in for a key: the transport signs with the task role, and no key exists to leak.
           rovara = { ai: choice.rovara, marker: `rovara-ai-${randomUUID()}` };
-          admitted = true;
+          accept();
           return undefined;
         }
       }
       try { if ((await keys.connected(claims.iss, claims.cid, "anthropic", signal)) !== true) return AGENT_KEY_MISSING; }
       catch { return AGENT_UNAVAILABLE; }
       admitted = true;
+      deps.log({ event: "agent_source", company: claims.cid, source: "company_key", via });
       return undefined;
     },
     guard(bytes, headers, claims) {
@@ -338,17 +331,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         return invokeCall(checked, id);
       }
       if (rovara === undefined || !checked.ok) return checked;
-      const id = rovara.ai.models.get(checked.model);
-      if (id === undefined) return ROVARA_AI_MODEL;
-      if (!BEDROCK_CLAUDE_ID.test(id)) {
-        // DEC 243c: any other model through Converse, held to at most its own output limit.
-        const limit = rovara.ai.maxOutputTokens?.(id);
-        const maxTokens = Math.min(checked.maxTokens, typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS);
-        const converse = toConverse(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>, maxTokens, REASONING_CARRYOVER_MODEL.test(id));
-        if (converse === undefined) return ROVARA_AI_FEATURE;
-        return { ...checked, model: id, maxTokens, bytes: Buffer.from(JSON.stringify(converse)), headers: { "content-type": "application/json" }, path: bedrockConversePath(id, checked.streaming) };
-      }
-      return invokeCall(checked, id);
+      return rovaraGuard(checked, rovara.ai);
     },
     // DEC 238: the company's own Bedrock is priced at the dearer of its Bedrock row and the Anthropic row of the model it stands for
     // (like Vertex's), so the cap never counts less than either list price.
@@ -408,29 +391,11 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         if (status === 401 || status === 403) { byo.deps.sessions.forget(byo.row); void byo.deps.refused?.(byo.row.iss, byo.row.cid, byo.row).catch(() => undefined); return { charged: false, refusal: BYO_BEDROCK_REFUSED }; }
         return { charged: false, refusal: PROVIDER_ERROR };
       }
-      if (rovara !== undefined) {
-        // A Bedrock error answer carries no output and no token counts: nothing the company used, so it is never charged (DEC 240b
-        // charges from Bedrock's token counts). This includes 5xx and model timeouts on Rovara's own account, and an exception that
-        // arrives as the stream's first frame (bedrock-transport.ts answers that as its error status). A stream that breaks AFTER
-        // output started keeps the core's rule (charged). Its refusal of Rovara's own role is Rovara's to fix.
-        if (status === 403 && body !== undefined && MODEL_ACCESS_WORDS.test(Buffer.from(body).toString("utf8"))) return { charged: false, refusal: ROVARA_AI_MODEL_NOT_ENABLED };
-        if (status === 401 || status === 403) return { charged: false, refusal: ROVARA_AI_UNAVAILABLE };
-        return { charged: false, refusal: PROVIDER_ERROR };
-      }
+      if (rovara !== undefined) return rovaraProviderFailure(status, body);
       // The provider refused the company's key: an explicit rejection before any generation, free; the company must connect a working key.
       return status === 401 || status === 403 ? { charged: false, refusal: AGENT_KEY_REFUSED } : base.providerFailure(status, body);
     },
   };
-}
-/**
- * The checked Anthropic body as Bedrock's InvokeModel takes it for a Claude id: no model or stream field (the path says both),
- * Bedrock's version, the allowed beta flags as a body field, and no metadata (Bedrock's Anthropic body has none).
- */
-function invokeCall(checked: RouteCall, id: string): RouteCall {
-  const rest = Object.fromEntries(Object.entries(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>).filter(([name]) => !["model", "stream", "metadata"].includes(name)));
-  const beta = checked.headers["anthropic-beta"];
-  const body = { anthropic_version: BEDROCK_ANTHROPIC_VERSION, ...rest, ...(beta === undefined ? {} : { anthropic_beta: beta.split(",").map((flag) => flag.trim()) }) };
-  return { ...checked, model: id, bytes: Buffer.from(JSON.stringify(body)), headers: { "content-type": "application/json" }, path: bedrockInvokePath(id, checked.streaming) };
 }
 /** The purpose a step reserves (learning, answers), or undefined for any task step. */
 const tokenPurpose = (step: string): "learning" | "answers" | undefined => step === LEARNING_STEP ? "learning" : step === ANSWERS_STEP ? "answers" : undefined;
