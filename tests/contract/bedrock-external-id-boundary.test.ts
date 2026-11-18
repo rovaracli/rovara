@@ -138,6 +138,7 @@ describe("Bedrock external ids: one scheme, and the boundary ceiling is exactly 
     expect(conditionWithin({ StringNotEquals: { k: ["x", "y"] } }, { StringNotEquals: { k: ["x"] } })).toBe(true);
     expect(conditionWithin({ StringNotEquals: { k: ["y"] } }, { StringNotEquals: { k: ["x"] } })).toBe(false);
     expect(() => conditionWithin({}, { ArnLike: { k: ["x"] } })).toThrow(/not supported/);
+    expect(() => conditionWithin({ StringLike: { k: ["a-b"] } }, { StringLike: { k: ["a?b"] } })).toThrow(/uses \? in a StringLike value/);
   });
 
   it("the shipped customer role template names the same scheme: rvb- external id parameter, the broker role pattern, session name = company id", () => {

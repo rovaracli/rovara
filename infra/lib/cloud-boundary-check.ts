@@ -238,6 +238,8 @@ export function conditionWithin(own: ResolvedCondition | undefined, required: Re
   for (const [operator, keys] of Object.entries(required)) {
     if (operator !== "StringLike" && operator !== "StringEquals" && operator !== "StringNotEquals") throw new Error(`the boundary condition operator ${operator} is not supported by this check`);
     for (const [key, wanted] of Object.entries(keys)) {
+      // Glob containment below is sound for `*`-only boundary patterns; a `?` in a boundary value is not handled yet (review L4-HARD 4): an error, never a guess.
+      if (operator === "StringLike" && wanted.some((w) => w.includes("?"))) throw new Error(`the boundary condition ${key} uses ? in a StringLike value, which this check does not support`);
       const given = own?.[operator]?.[key];
       if (given === undefined) return false;
       if (operator === "StringNotEquals") { if (!wanted.every((w) => given.includes(w))) return false; }
