@@ -2,7 +2,6 @@
 // A paused source holds new suggestions until it is resumed: nothing is deleted. Code decides who may pause; this only shows the control when it says so. Every word is Cloud's own.
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { LearningSourceKey } from "@agentx/contracts/code-contract-v0";
 import { areasAbsent, SOURCE_FAILED, useLearnedAreasApi, useLearningSources, type LearningSourcesAnswer } from "../../../api/learned-areas.js";
 import { learnedKey } from "../../../api/learned.js";
 import { ApiError } from "../../../api/errors.js";
@@ -26,7 +25,7 @@ function SourceRow({ project, row, canPause, onExample }: { project: string; row
  async function set(paused: boolean) {
   if (busy) return;
   setBusy(true);setError(undefined);
-  try { await api.setPaused(project, row.key as LearningSourceKey, paused);await query.invalidateQueries({ queryKey: [...learnedKey(project), "learning-sources"] }); }
+  try { await api.setPaused(project, row.key, paused);await query.invalidateQueries({ queryKey: [...learnedKey(project), "learning-sources"] }); }
   catch (failure) { setError(failure instanceof ApiError && failure.status === 403 ? "Only an admin of this project, or an owner or admin of the company, can pause a source." : SOURCE_FAILED); }
   finally { setBusy(false); }
  }

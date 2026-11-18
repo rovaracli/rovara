@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment -- the tests break a plain JSON answer at a path, which a typed answer would not allow */
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument -- the tests break a plain JSON answer at a path, which a typed answer would not allow */
 // Lead 4 L4-LP3W: Cloud's three new reads and one write, answered from Code as the signed-in person: the approved lessons by code area, "Where Rovara learns from" (and its Pause), and the wiki page's
 // "Team lessons for this area". Cloud must forward only what Code takes, put the project only into Code's path, rebuild every answer field by field (an answer that does not read is refused whole on the wiki
 // route and trimmed on the lessons routes), use its own words, and never echo input or Code's text. Two companies and two projects never meet (the pretend Code applies Code's rule).
@@ -52,7 +52,7 @@ function setUp(onCode: (call: CodeCall, person: Person) => Response | undefined 
   const handler = createCloudHandler({ client, store, work: new LocalWorkSessionStore(), origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(Date.UTC(2026, 10, 17)) });
   const made = new Set<string>();
   const as = async (token: string) => {
-    const person = PEOPLE[token]!;
+    const person = PEOPLE[token];
     const access = { developerId: person.id, displayName: "Someone", administrator: false, companyId: A, companyRole: "owner", projects: [], notices: [] } as CodeSession["access"];
     if (!made.has(token)) { made.add(token);await store.create(`cookie-${token}`, { accessToken: token, refreshToken: `r-${token}`, csrf: "csrf", signedInAt: "2026-11-17T00:00:00.000Z", access }); }
     return { cookie: `rovara_cloud_session=cookie-${token}`, "x-rovara-csrf": "csrf", "content-type": "application/json" };
@@ -61,7 +61,7 @@ function setUp(onCode: (call: CodeCall, person: Person) => Response | undefined 
     const url = new URL(target, "http://127.0.0.1:8787");
     const request: CloudRequest = { method, path: url.pathname, query: url.searchParams, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) };
     const answered = await handler(request);
-    return { status: answered!.status, body: (answered!.body === "" ? undefined : JSON.parse(answered!.body)) as any, text: answered!.body };
+    return { status: answered!.status, body: answered.body === "" ? undefined : JSON.parse(answered.body), text: answered.body };
   };
   return { as, send, calls, codeCalls: () => calls.filter((call) => call.path !== "/v1/dev/access") };
 }
@@ -172,7 +172,7 @@ describe("where Rovara learns from", () => {
   });
 
   it("takes no query, and a bad example id is dropped", async () => {
-    const w = setUp((call) => json(200, code({ sources: [{ key: "ci", example: { lessonId: "bad id!", title: "x" } }] })));
+    const w = setUp(() => json(200, code({ sources: [{ key: "ci", example: { lessonId: "bad id!", title: "x" } }] })));
     const h = await w.as("pam-token");
     expect((await w.send("GET", `${P}/lessons/learning-sources?x=1`, h)).status).toBe(400);
     expect((await w.send("GET", `${P}/lessons/learning-sources`, h)).body.sources.find((s: any) => s.key === "ci").example).toBeUndefined();
@@ -257,7 +257,7 @@ describe("the wiki page's team lessons", () => {
   });
 
   it("another company's project and a malformed page id never reach Code with the text", async () => {
-    const w = setUp((call) => json(200, teamAnswer("payments", "p1")));
+    const w = setUp(() => json(200, teamAnswer("payments", "p1")));
     const h = await w.as("pam-token");
     expect((await w.send("GET", "/v1/web/projects/ledger/wiki/pages/p1/lessons", h)).status).toBe(404);
     const before = w.codeCalls().length;

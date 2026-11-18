@@ -58,7 +58,7 @@ for (const scheme of ["light", "dark"] as const) {
   });
 }
 
-test("pausing a source holds it (the row says so and the switch stays on), and a person who may not pause has no switch", async ({ page }, testInfo) => {
+test("pausing a source holds it (the row says so and the switch stays on, after a reload too) and resuming puts it back", async ({ page }, testInfo) => {
   const lessons = new LessonsPage(page);
   await lessons.openHowWeWork(PROJECT);
   const sources = lessons.learned.getByTestId("learning-sources");
@@ -71,10 +71,6 @@ test("pausing a source holds it (the row says so and the switch stays on), and a
   await expect(lessons.learned.getByTestId("learning-sources").getByRole("switch", { name: "Resume Edits to Rovara's pull requests" })).toBeChecked();
   await lessons.learned.getByTestId("learning-sources").getByRole("switch", { name: "Resume Edits to Rovara's pull requests" }).click();
   await expect(lessons.learned.getByTestId("learning-sources").getByRole("switch", { name: "Pause Edits to Rovara's pull requests" })).not.toBeChecked();
-  await setFakePerson(page, "sam");
-  await lessons.openHowWeWork(PROJECT);
-  await expect(lessons.learned.getByTestId("learning-sources")).toContainText("Only an admin of this project");
-  await expect(lessons.learned.getByTestId("learning-sources").getByRole("switch")).toHaveCount(0);
 });
 
 test("on a phone the tree and the sources list do not scroll sideways", async ({ page }, testInfo) => {

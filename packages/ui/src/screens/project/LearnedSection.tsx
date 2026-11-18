@@ -227,7 +227,7 @@ function RetireRequests({ project }: { project: string }) {
 export function LearnedSection({ project }: { project: string }) {
  const [tab, setTab] = useState<LessonList>("approved"), [off, setOff] = useState(false), markOff = useCallback(() => setOff(true), [setOff]);
  const [view, setView] = useState<"area" | "all">("area"), [focus, setFocus] = useState<string>();
- const showExample = useCallback((lessonId: string) => { setTab("approved");setView("all");setFocus(lessonId); }, []);
+ const showExample = useCallback((lessonId: string) => { setTab("approved");setView("all");setFocus(lessonId); }, [setTab, setView, setFocus]);
  const mode = useLessonMode(project), isOff = off || (mode.isError && lessonsOff(mode.error));
  return <section className="rv-learned" aria-labelledby="learned-title" data-testid="learned">
   <header><h2 id="learned-title">Learned</h2><p className="rv-muted">Lessons Rovara learned from this project's corrections. Approved lessons are given to future tasks where they fit.</p></header>

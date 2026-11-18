@@ -271,7 +271,9 @@ export const LESSONS_ROUTES: Route[] = [
       if (typeof raw["paused"] !== "boolean" || Object.keys(raw).length !== 1) return badRequest("Pause takes paused: true or false.");
       const project = context.params[0]!;
       const answer = await context.client.json<unknown>(context.session, `${dev(project)}/lessons/learning-sources/${key}`, { method: "PUT", body: { paused: raw["paused"] } });
-      return ok({ project, key, paused: isRecord(answer) && typeof answer["paused"] === "boolean" ? answer["paused"] : raw["paused"] });
+      // Said only as Code confirmed it: an answer with no boolean is unreadable, never the requested state.
+      if (!isRecord(answer) || typeof answer["paused"] !== "boolean") return { status: 502, body: { error: { code: "INVALID_RESPONSE", message: "Rovara returned an unreadable response. Reload this page." } } };
+      return ok({ project, key, paused: answer["paused"] });
     },
   },
   {
