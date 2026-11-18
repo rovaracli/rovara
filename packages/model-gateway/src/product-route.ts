@@ -12,7 +12,7 @@ import type { ProductProvider, ProductSourceResolution } from "./product-keys.js
 import { EVAL_HOLD_PATH, EVAL_RELEASE_PATH, EVAL_SCOPE_HEADER, EVAL_STAGE_SPENT, EvalEventSink, type EvalStage, type ProductEvalStages, type StageSettle } from "./product-eval.js";
 import type { GatewayRoute, GatewaySink, ProductControl, ProductRouteResolver, RouteCall, RouteRefusal } from "./server.js";
 import type { MediaPriceSource } from "./media-price.js";
-import { guardVertex, parseVertexPath, type VertexPath, type VertexTarget } from "./product-vertex.js";
+import { EVAL_VERTEX_PLACEHOLDER, guardVertex, parseVertexPath, type VertexPath, type VertexTarget } from "./product-vertex.js";
 import { parseStoredVertexCredential } from "./product-vertex-credential.js";
 import type { VertexTokenSource } from "./product-vertex-token.js";
 import type { ProductKeyRow } from "./product-seal.js";
@@ -142,12 +142,14 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
    * location (another one is refused even if the token could reach it), and mint the company's token. A refused credential is
    * the key-refused answer (free, marked for Settings); an outage is 503. Nothing is held or sent in either case.
    */
-  async function admitVertex(claims: TaskClaims, resolution: ProductSourceResolution, path: VertexPath, signal: AbortSignal): Promise<RouteRefusal | { row: ProductKeyRow; target: VertexTarget; token: string }> {
+  async function admitVertex(claims: TaskClaims, resolution: ProductSourceResolution, path: VertexPath, signal: AbortSignal, evalStage: boolean): Promise<RouteRefusal | { row: ProductKeyRow; target: VertexTarget; token: string }> {
     let text: string | undefined;
     try { text = await options.keys.useKey(claims.iss, claims.cid, resolution); } catch { return unavailable; }
     const credential = text === undefined ? undefined : parseStoredVertexCredential(text);
     if (credential === undefined || options.vertex === undefined) return unavailable;
-    if (path.project !== credential.projectId || path.location !== credential.location) return { ok: false, status: 400, code: "not_allowed", message: PRODUCT_VERTEX_NOT_CONNECTED };
+    // An eval stage's call may name Rovara's placeholder pair instead (the worker does not know the connected one); nothing else, and no call outside a found stage (L4-EVV).
+    const placeholder = evalStage && path.project === EVAL_VERTEX_PLACEHOLDER.projectId && path.location === EVAL_VERTEX_PLACEHOLDER.location;
+    if (!placeholder && (path.project !== credential.projectId || path.location !== credential.location)) return { ok: false, status: 400, code: "not_allowed", message: PRODUCT_VERTEX_NOT_CONNECTED };
     const row: ProductKeyRow = { iss: claims.iss, cid: claims.cid, owner: resolution.owner, sourceId: resolution.sourceId, versionId: resolution.versionId };
     let minted: Awaited<ReturnType<VertexTokenSource["token"]>>;
     try { minted = await options.vertex.tokens.token(row, credential, signal); } catch { return unavailable; }
@@ -239,7 +241,7 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
             callMeter = stages.callMeter(stage);
           }
           if (vertexPath !== undefined) {
-            const refused = await admitVertex(claims, resolution, vertexPath, signal);
+            const refused = await admitVertex(claims, resolution, vertexPath, signal, stage !== undefined);
             if (refused !== undefined && "ok" in refused) return refused;
             vertex = refused;
           }
