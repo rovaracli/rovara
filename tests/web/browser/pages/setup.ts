@@ -4,8 +4,9 @@ import { FAKE_CODE_URL } from "./lessons.js";
 import { ROUTES } from "./routes.js";
 
 /** Sets a project's hosted setup run on the pretend Code (none, running, ready or failed) and clears its skipped rows (guided onboarding PR 9). */
-export async function setSetupRun(page: Page, project: string, status: "none" | "running" | "ready" | "failed"): Promise<void> {
-  const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/setup-run`, { data: { project, status } });
+export async function setSetupRun(page: Page, project: string, status: "none" | "running" | "ready" | "failed", approved = false): Promise<void> {
+  // L4-T2: a ready run is Done only when its setup was approved and checked (`approved`); otherwise the row says Needs you.
+  const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/setup-run`, { data: { project, status, ...(approved ? { approved: true } : {}) } });
   expect(answer.status()).toBe(200);
 }
 

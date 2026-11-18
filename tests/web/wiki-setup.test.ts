@@ -39,7 +39,7 @@ const built = (extra: Record<string, unknown> = {}) => build({
 });
 const checklist = (extra: Record<string, unknown> = {}) => ({
   project: "web", viewer: { companyRole: "owner", projectAdmin: false, canSkip: true }, progress: { done: 2, total: 8, percent: 25, nextRequired: "setupRun" },
-  repos: { state: "done", count: 1, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }] }, setupRun: { state: "needs_you", status: "none" }, evalConfirm: { state: "needs_you", report: "none", blockedBy: "setupRun" },
+  repos: { state: "done", count: 1, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }] }, setupRun: { state: "needs_you", status: "none", approval: "none" }, evalConfirm: { state: "needs_you", report: "none", blockedBy: "setupRun" },
   aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null }, slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" },
   firstTask: { state: "needs_you", hasTask: false, canStart: false }, ...extra,
 });

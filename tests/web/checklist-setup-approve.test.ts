@@ -33,11 +33,11 @@ const apply = (over: Record<string, unknown> = {}) => ({
   approval: { requestId: `setup-${DIGEST.slice(0, 40)}-4`, revision: 4, artifactDigest: DIGEST, kind: "setup", risk: "low" }, ...over,
 });
 const run = (over: Record<string, unknown> = {}) => ({ status: "ready", basedOnRevision: 3, limits: LIMITS, canManage: true, stop: "proposed", ...over });
-/** The checklist read of a run that finished and, by today's rule, already counts as Done. */
-const checklist = (state = "done") => ({
+/** The checklist read of a run that finished (L4-T2: Code says Needs you until the setup is approved and checked; "done" is that approved state). */
+const checklist = (state = "needs_you") => ({
   project: "web", viewer: { companyRole: "owner", projectAdmin: false, canSkip: true }, progress: { done: 3, total: 8, percent: 37, nextRequired: "evalConfirm" },
   repos: { state: "done", count: 1, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }] },
-  setupRun: { state, status: "ready", startedAt: "2026-11-17T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "passed" },
+  setupRun: { state, status: "ready", approval: state === "done" ? "approved" : "none", ...(state === "done" ? { check: { status: "ready" }, approvedAt: "2026-11-12T10:00:00.000Z" } : {}), startedAt: "2026-11-17T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "passed" },
   evalConfirm: { state: "needs_you", report: "none", blockedBy: "setupRun" }, aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
   slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: { state: "needs_you", hasTask: false, canStart: false },
 });
@@ -229,7 +229,7 @@ describe("approving a setup from the checklist", () => {
     const body = await row();
     expect(within(body).getByText("Rovara found how to set the project up.")).toBeTruthy();
     expect(screen.queryByTestId("setup-approval")).toBeNull();
-    expect(rowItem().getAttribute("data-state")).toBe("done");
+    expect(rowItem().getAttribute("data-state")).toBe("needs_you");
     f.close();
   });
 });

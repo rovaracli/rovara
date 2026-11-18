@@ -35,7 +35,7 @@ const approved = (over: Record<string, unknown> = {}) => card({ state: "approved
 const checklist = (evalConfirm: Record<string, unknown> = { state: "needs_you", report: "reported", suites: [{ selection: "npm run evals", questions: 12 }] }, canSkip = true) => ({
   project: "web", viewer: { companyRole: "owner", projectAdmin: false, canSkip }, progress: { done: 3, total: 8, percent: 38, nextRequired: "evalConfirm" },
   repos: { state: "done", count: 1, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }] },
-  setupRun: { state: "done", status: "ready", startedAt: "2026-11-18T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "passed" },
+  setupRun: { state: "done", status: "ready", approval: "approved", check: { status: "ready" }, startedAt: "2026-11-18T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "passed" },
   evalConfirm,
   aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
   slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: { state: "needs_you", hasTask: false, canStart: false },

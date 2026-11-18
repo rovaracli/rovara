@@ -32,7 +32,7 @@ function checklist(project: string, extra: Record<string, unknown> = {}) {
     viewer: { companyRole: "owner", projectAdmin: false, canSkip: true },
     progress: { done: 3, total: 8, percent: 38, nextRequired: "setupRun" },
     repos: { state: "done", count: 1, items: [{ name: "payments", fullName: "acme/payments", defaultBranch: "main" }] },
-    setupRun: { state: "failed", status: "failed", startedAt: "2026-11-17T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed", failure: "A test command failed.", failedCommand: { n: 2, command: "npm test", exitCode: 1, timedOut: false, lastLines: ["FAIL x", ""] } },
+    setupRun: { state: "failed", status: "failed", approval: "none", startedAt: "2026-11-17T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed", failure: "A test command failed.", failedCommand: { n: 2, command: "npm test", exitCode: 1, timedOut: false, lastLines: ["FAIL x", ""] } },
     evalConfirm: { state: "needs_you", report: "none", blockedBy: "setupRun" },
     aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
     slackChannel: { state: "skipped", channels: [] },
@@ -177,10 +177,10 @@ describe("the checklist read", () => {
   it("an answer for another project, or with a field off, is not shown at all", async () => {
     const answers = [
       checklist("ledger"),
-      checklist("payments", { setupRun: { state: "weird", status: "none" } }),
+      checklist("payments", { setupRun: { state: "weird", status: "none", approval: "none" } }),
       checklist("payments", { progress: { done: 9, total: 8, percent: 100, nextRequired: null } }),
       checklist("payments", { slackChannel: { state: "done", channels: [{ channelId: "C1\u0007" }] } }),
-      checklist("payments", { setupRun: { state: "failed", status: "failed", failedCommand: { n: 1, command: "x", exitCode: 1, timedOut: false, lastLines: Array(21).fill("l") } } }),
+      checklist("payments", { setupRun: { state: "failed", status: "failed", approval: "none", failedCommand: { n: 1, command: "x", exitCode: 1, timedOut: false, lastLines: Array(21).fill("l") } } }),
       checklist("payments", { firstTask: { state: "done", hasTask: "yes", canStart: true } }),
       [checklist("payments")],
     ];
