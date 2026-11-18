@@ -10,7 +10,7 @@
 //   POST /v1/app/projects/{p}/wiki-build/refresh      { requestId }       Refresh now
 //   POST /v1/app/projects/{p}/wiki-build/agents       { requestId, on }   "Give the wiki to agents"
 //   POST /v1/app/projects/{p}/wiki-build/delete       { requestId }       Delete wiki
-//   GET  /v1/app/projects/{p}/upkeep                  { enabled, canManage, available?, systemRunsOn?, canEnableSystemRuns?, cap? }  (Code L4-N1 + L4-P2)
+//   GET  /v1/app/projects/{p}/upkeep                  { enabled, canManage, available?, systemRunsOn?, canEnableSystemRuns?, cap?, spend? }  (Code L4-N1 + L4-P2 + L4-SR1; spend: managers only)
 //   PUT  /v1/app/projects/{p}/upkeep                  { requestId, on, allowSystemRuns? }                                       (allowSystemRuns: the company's consent, Code decides who may)
 //
 // Rules:
@@ -280,14 +280,28 @@ function capAnswer(value: unknown): Record<string, unknown> {
   need(usd === null || (typeof usd === "number" && Number.isFinite(usd) && usd >= 0 && usd <= 1_000_000), usd);
   return { monthlyUsd: usd, canRaise: flag(c["canRaise"]) };
 }
+/**
+ * L4-CAPR: what nightly upkeep spent on the project this UTC month (Code's `UpkeepSpendSchema`), field by field: the month, a dollar figure that is never negative, and two counts. `unknownRuns` are runs whose
+ * cost Code could not state (they add nothing to `spentUsd`, so with any the figure is "at least"); nothing is made up here and no other member passes.
+ */
+function spendAnswer(value: unknown): Record<string, unknown> {
+  const s = rec(value);
+  const spent = s["spentUsd"];
+  need(typeof s["month"] === "string" && /^\d{4}-(?:0[1-9]|1[0-2])$/u.test(s["month"]), s["month"]);
+  need(typeof spent === "number" && Number.isFinite(spent) && spent >= 0 && spent <= 100_000_000, spent);
+  return { month: s["month"], spentUsd: spent, runs: count(s["runs"]), unknownRuns: count(s["unknownRuns"]) };
+}
 export function upkeepAnswer(value: unknown): Record<string, unknown> {
   const v = rec(value);
+  const canManage = flag(v["canManage"]);
   return {
-    enabled: flag(v["enabled"]), canManage: flag(v["canManage"]),
+    enabled: flag(v["enabled"]), canManage,
     ...(v["available"] === undefined ? {} : { available: flag(v["available"]) }),
     ...(v["systemRunsOn"] === undefined ? {} : { systemRunsOn: flag(v["systemRunsOn"]) }),
     ...(v["canEnableSystemRuns"] === undefined ? {} : { canEnableSystemRuns: flag(v["canEnableSystemRuns"]) }),
     ...(v["cap"] === undefined ? {} : { cap: capAnswer(v["cap"]) }),
+    // Only a person who manages the project is shown the spend (Code sends it to no one else; a copy that reaches a reader anyway is dropped here).
+    ...(v["spend"] === undefined || !canManage ? {} : { spend: spendAnswer(v["spend"]) }),
   };
 }
 

@@ -209,10 +209,14 @@ export type WikiSetupUpkeepCap = z.infer<typeof WikiSetupUpkeepCapSchema>;
  *   systemRunsOn         EFFECTIVE system runs: the ceiling AND the company's consent (what really runs). The project switch counts only while this is true.
  *   canEnableSystemRuns  a live company owner or admin, with the ceiling on: this person may give the company's consent (the one setup choice).
  *   cap                  the monthly cap as Code states it.
+ *   spend                (L4-CAPR, Code L4-SR1) what nightly upkeep spent on this project this UTC month, for people who manage the project only. `spentUsd` counts the runs whose cost is known; `unknownRuns` are runs whose cost
+ *                        Code could not state (counted, adding nothing), so with any the dollar figure is "at least". Absent: the page draws no spend line.
  * The last three are absent from a Code that has the project switch only (L4-N1): the page then shows the plain switch to whoever `canManage`, as before.
  */
+export const WikiSetupUpkeepSpendSchema = z.object({ month: z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/u), spentUsd: z.number().min(0).max(100_000_000), runs: z.number().int().min(0).max(10_000_000), unknownRuns: z.number().int().min(0).max(10_000_000) }).strict();
+export type WikiSetupUpkeepSpend = z.infer<typeof WikiSetupUpkeepSpendSchema>;
 export const WikiSetupUpkeepSchema = z.object({
   enabled: z.boolean(), canManage: z.boolean(), available: z.boolean().optional(),
-  systemRunsOn: z.boolean().optional(), canEnableSystemRuns: z.boolean().optional(), cap: WikiSetupUpkeepCapSchema.optional(),
+  systemRunsOn: z.boolean().optional(), canEnableSystemRuns: z.boolean().optional(), cap: WikiSetupUpkeepCapSchema.optional(), spend: WikiSetupUpkeepSpendSchema.optional(),
 }).strict();
 export type WikiSetupUpkeep = z.infer<typeof WikiSetupUpkeepSchema>;

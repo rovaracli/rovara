@@ -103,6 +103,12 @@ describe("the answer: the limit the agent route enforces and the meter's own upk
     if (!held.ok) throw new Error("not held"); await w.meter.settle(held.reservation, 3_000_000);
     expect(await get(w.opts, pathOf(A, "web"))).toEqual(ok(UPKEEP_DEFAULT_MONTH_MICROS, 0));
   });
+  it("an open hold is not spend: spentMicros is the settled amount only (the row's spentMicros, never committed)", async () => {
+    const w = world(); await w.setLimit(A, "web", 50_000_000);
+    const held = await w.meter.reserve({ scope: { iss: ISS, cid: A, pid: "web", tid: "task_1" }, caps: { task: 1e12, projectMonth: 1e12, companyMonth: 1e12, upkeepMonth: 50_000_000 }, estimateMicros: 9_000_000 });
+    expect(held.ok).toBe(true);
+    expect(await get(w.opts, pathOf(A, "web"))).toEqual(ok(50_000_000, 0));
+  });
   it("Code's schema parses the answer, and the answer is exactly its seven members", async () => {
     const w = world(); await w.setLimit(A, "web", 12_345_678); await w.spend(A, "web", 1_000_001);
     const got = await get(w.opts, pathOf(A, "web"));
@@ -110,6 +116,17 @@ describe("the answer: the limit the agent route enforces and the meter's own upk
     expect(CodeUpkeepCapReadSchema.safeParse(JSON.parse(JSON.stringify(got.body))).success).toBe(true);
     expect(Object.keys(got.body as object)).toEqual(["version", "company", "project", "month", "enforced", "limitMicros", "spentMicros"]);
     expect(CODE_AUDIENCE).toBe(UPKEEP_CAP_READ_AUDIENCE);
+  });
+  it("is exact and fresh on every call, never cached: a later spend and a changed limit show in the very next read (room = limit - spent is current)", async () => {
+    const w = world(); await w.setLimit(A, "web", 10_000_000);
+    expect(await get(w.opts, pathOf(A, "web"))).toEqual(ok(10_000_000, 0));
+    await w.spend(A, "web", 2_000_001);
+    expect(await get(w.opts, pathOf(A, "web"))).toEqual(ok(10_000_000, 2_000_001));
+    await w.spend(A, "web", 1_999_999);
+    await w.setLimit(A, "web", 6_000_000);
+    expect(await get(w.opts, pathOf(A, "web"))).toEqual(ok(6_000_000, 4_000_000));
+    await w.setLimit(A, "web", 0);
+    expect(await get(w.opts, pathOf(A, "web"))).toEqual(ok(0, 4_000_000));
   });
   it("the month is the UTC month of the gateway's clock", async () => {
     let t = Date.UTC(2027, 1, 1, 0, 0, 0);
@@ -146,6 +163,13 @@ describe("unreadable is 503, never enforced: true", () => {
     const got = await get(w.opts, pathOf(A, "web"));
     expect(got).toEqual(UNAVAILABLE);
     expect(JSON.stringify(got)).not.toContain("CANARY");
+  });
+  it("a limit that is not a whole number of micro-dollars is 503 (a source that answers 1.5, NaN, a negative or an unsafe number)", async () => {
+    for (const amount of [1.5, Number.NaN, -1, Number.MAX_SAFE_INTEGER + 2, Infinity]) {
+      const w = world();
+      w.opts.limits = { limitFor: async () => amount };
+      expect(await get(w.opts, pathOf(A, "web")), String(amount)).toEqual(UNAVAILABLE);
+    }
   });
   it("a failed meter read is 503", async () => {
     const w = world(); await w.setLimit(A, "web", 1_000_000);
@@ -383,6 +407,20 @@ describe("gateway process: the upkeep cap read", () => {
     const s = await serve(0);
     expect((await s.read()).json()).toMatchObject({ enforced: true, limitMicros: 0, spentMicros: 0 });
     expect((await s.nightly()).statusCode).toBe(422);
+  });
+  it("the gateway does not whitelist token steps: a nightly call on ANY step (Code's repair_draft, wiki_build, setup_agent) is held to the same upkeep cap, and its spend shows in the read", async () => {
+    const s = await serve(90_000_000);
+    for (const stp of ["repair_draft", "wiki_build", "setup_agent"]) {
+      const before = ((await s.read()).json() as { spentMicros: number }).spentMicros;
+      const res = await request(s.gateway.server, "POST", "/v1/messages", { "content-type": "application/json", "x-api-key": mint({ src: "nightly", stp }) }, { model: claims.mdl[0], messages: [{ role: "user", content: "hello" }], max_tokens: 10, stream: true });
+      expect(res.statusCode, stp).toBe(200);
+      await settleAll();
+      expect(((await s.read()).json() as { spentMicros: number }).spentMicros, stp).toBeGreaterThan(before);
+    }
+    const zero = await serve(0);
+    const paused = await request(zero.gateway.server, "POST", "/v1/messages", { "content-type": "application/json", "x-api-key": mint({ src: "nightly", stp: "repair_draft" }) }, { model: claims.mdl[0], messages: [{ role: "user", content: "hello" }], max_tokens: 10, stream: true });
+    expect(paused.statusCode).toBe(422);
+    expect(paused.headers["x-rovara-upkeep-pause"]).toBe("no_budget");
   });
   it("an unsigned call, another company's token and an agent task token never read", async () => {
     const s = await serve(1_000_000);

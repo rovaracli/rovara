@@ -463,6 +463,50 @@ describe("the setup choice's fresh step-up (L4-P3, owner 2026-11-17)", () => {
   });
 });
 
+// L4-CAPR: Code's new `spend` ({month, spentUsd, runs, unknownRuns}) passes through, rebuilt field by field, for a person who manages the project only. Mutants (each killed by the named test): S1 Code's extra
+// spend members passed; S2 spend passed to a reader; S3 a bad spend (negative dollars, a bad month, fractional runs) passed on; S4 a missing spend invented; S5 spend members renamed or coerced.
+describe("the upkeep spend pass-through (L4-CAPR)", () => {
+  const SPEND = { month: "2026-11", spentUsd: 3.5, runs: 4, unknownRuns: 1 };
+  it("passes the four members for a manager and nothing else Code adds (S1, S5)", async () => {
+    const w = upkeepWorld(() => json(200, { ...VIEW, spend: { ...SPEND, taskId: "task-secret", ledger: "SECRET-LEDGER" } }));
+    const res = await w.send("GET", P("payments", "upkeep"), await w.as("ada-token"));
+    expect(res.status).toBe(200);
+    expect(res.body.spend).toEqual(SPEND);
+    expect(WikiSetupUpkeepSchema.parse(res.body)).toEqual(res.body);
+    expect(res.text).not.toMatch(/SECRET|task-secret/u);
+    // The PUT answer carries it the same way.
+    const put = upkeepWorld(() => json(200, { ...VIEW, spend: SPEND }));
+    expect((await put.send("PUT", P("payments", "upkeep"), await put.as("ada-token"), { requestId: RID, on: true })).body.spend).toEqual(SPEND);
+  });
+  it("zero spend and zero runs are real answers, not absent (S5)", async () => {
+    const zero = { month: "2026-11", spentUsd: 0, runs: 0, unknownRuns: 0 };
+    const w = upkeepWorld(() => json(200, { ...VIEW, spend: zero }));
+    expect((await w.send("GET", P("payments", "upkeep"), await w.as("ada-token"))).body.spend).toEqual(zero);
+  });
+  it("a reader never gets the spend, even if Code sent it (S2), and a reader's answer is otherwise as before", async () => {
+    const w = upkeepWorld(() => json(200, { ...VIEW, canManage: false, spend: SPEND }));
+    const res = await w.send("GET", P("payments", "upkeep"), await w.as("ada-token"));
+    expect(res.status).toBe(200);
+    expect("spend" in res.body).toBe(false);
+    expect(res.body).toEqual({ ...VIEW, canManage: false });
+  });
+  it("no spend from Code, none made up (S4)", async () => {
+    const w = upkeepWorld(() => json(200, VIEW));
+    expect("spend" in (await w.send("GET", P("payments", "upkeep"), await w.as("ada-token"))).body).toBe(false);
+  });
+  it("a spend that does not read is 'couldn't be read', in fixed words (S3)", async () => {
+    const bad: unknown[] = [
+      null, "3.5", [], {}, { ...SPEND, spentUsd: -0.01 }, { ...SPEND, spentUsd: "3.5" }, { ...SPEND, spentUsd: 1e12 }, { ...SPEND, spentUsd: null }, { ...SPEND, month: "2026-13" }, { ...SPEND, month: "2026-1" }, { ...SPEND, month: 202611 },
+      { ...SPEND, runs: 1.5 }, { ...SPEND, runs: -1 }, { ...SPEND, unknownRuns: "1" }, { ...SPEND, runs: undefined }, { month: SPEND.month, spentUsd: 1, runs: 1 },
+    ];
+    for (const one of bad) {
+      const w = upkeepWorld(() => json(200, { ...VIEW, spend: one }));
+      const res = await w.send("GET", P("payments", "upkeep"), await w.as("ada-token"));
+      expect(asRefusal(res), JSON.stringify(one)).toEqual(refusal("upkeepUnavailable"));
+    }
+  });
+});
+
 describe("the upkeep consent step (L4-W6b)", () => {
   it("GET rebuilds Code's answer field by field: the three new members pass, anything else Code adds does not (R4, R9)", async () => {
     const w = upkeepWorld(() => json(200, { ...VIEW, secretBalanceUsd: 4242, taskId: "task-secret", cap: { monthlyUsd: 25, canRaise: false, ledger: "SECRET-LEDGER" } }));
