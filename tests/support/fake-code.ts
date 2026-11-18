@@ -2048,8 +2048,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
         }
         if (method === "POST" && url.pathname === "/__fake/eval-card") {
           const given = JSON.parse(raw) as { project?: unknown; state?: unknown; health?: unknown };
-          if (typeof given.project !== "string" || project(given.project) === undefined || !["none", "propose", "waiting", "approved", "rejected"].includes(given.state as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and state" } });
+          if (typeof given.project !== "string" || project(given.project) === undefined || !["default", "none", "propose", "waiting", "approved", "rejected"].includes(given.state as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and state" } });
           const wrapper = (given as { wrapper?: unknown }).wrapper;
+          // "default": forget the set card, so the project's card follows its setup run again (a spec's afterEach puts it back this way).
+          if (given.state === "default") { evalCards.delete(given.project);return send(200, { ok: true }); }
           evalCards.set(given.project, { state: given.state as FakeEval["state"], health: ["requested", "finished"].includes(given.health as string) ? given.health as FakeEval["health"] : "none", ...(typeof wrapper === "string" && ["needs_file", "pull_request_open", "file_found", "dismissed", "not_offered", "custom"].includes(wrapper) ? { wrapper: wrapper as FakeWrapperStep } : {}) });
           return send(200, { ok: true });
         }

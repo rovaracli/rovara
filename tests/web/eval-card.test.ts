@@ -32,20 +32,21 @@ const waiting = (over: Record<string, unknown> = {}) => card({ state: "waiting",
 const health = (state: "none" | "requested" | "running" | "finished" | "not_run", extra: Record<string, unknown> = {}) => ({ state, label: "Check my evals now (about $2.40)", cost: "$2.40", seenCostMicros: 2_400_777, ...extra });
 const finishedResult = (over: Record<string, unknown> = {}) => ({ at: "2026-11-18T05:00:00.000Z", questionCount: 3, passedAnswers: 5, totalAnswers: 9, differing: 1, saved: true, reused: false, cases: [{ id: "refund-window", passes: 3 }, { id: "tone", passes: 2 }, { id: "leak", passes: 0 }], ...over });
 const approved = (over: Record<string, unknown> = {}) => card({ state: "approved", suites: [], spend: { state: "approved", perPr: "$0.50-$1.20", monthly: "$41.00" }, health: health("none"), ...over });
-const checklist = () => ({
-  project: "web", viewer: { companyRole: "owner", projectAdmin: false, canSkip: true }, progress: { done: 3, total: 8, percent: 38, nextRequired: "evalConfirm" },
+const checklist = (evalConfirm: Record<string, unknown> = { state: "needs_you", report: "reported", suites: [{ selection: "npm run evals", questions: 12 }] }, canSkip = true) => ({
+  project: "web", viewer: { companyRole: "owner", projectAdmin: false, canSkip }, progress: { done: 3, total: 8, percent: 38, nextRequired: "evalConfirm" },
   repos: { state: "done", count: 1, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }] },
   setupRun: { state: "done", status: "ready", startedAt: "2026-11-18T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "passed" },
-  evalConfirm: { state: "needs_you", report: "reported", suites: [{ selection: "npm run evals", questions: 12 }] },
+  evalConfirm,
   aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
   slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: { state: "needs_you", hasTask: false, canStart: false },
 });
 
-interface Options { read?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse; fresh?: boolean }
+interface Options { read?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse; fresh?: boolean; status?: () => unknown; put?: (request: ApiRequest) => ApiResponse }
 function mount(options: Options = {}) {
   let current: ApiResponse = options.read?.() ?? { status: 200, body: card() };
   const f = fakeHost(async (request) => {
-    if (request.path === "/v1/app/projects/web/setup-status") return { status: 200, body: checklist() };
+    if (request.path === "/v1/app/projects/web/setup-status") return { status: 200, body: options.status?.() ?? checklist() };
+    if (request.path === "/v1/app/projects/web/setup-status/eval-none" && request.method === "PUT") return options.put?.(request) ?? { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
     if (request.path === "/v1/app/projects/web/setup-agent/eval" && request.method === "GET") return options.read === undefined ? current : options.read();
     if (request.path.startsWith("/v1/app/projects/web/setup-agent/eval-") && request.method === "POST") return options.post?.(request) ?? { status: 200, body: { project: "web", state: "approved", decision: "approved", requested: true, requestId: "gw" } };
     if (request.path === "/v1/app/projects/web/setup-agent") return { status: 200, body: { status: "ready", basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, canManage: true } };
@@ -481,4 +482,38 @@ describe("two projects", () => {
     expect(paths).toEqual(["/v1/app/projects/web/setup-agent/eval"]);
     f.close();
   });
+});
+
+// Batch 12 review L2: #187's "This project has no evals" stays open while Code's eval card shows (in any state), as a quiet button right under the card: the same PUT and the same undo.
+describe("This project has no evals, while the eval card shows", () => {
+  const NO_EVALS = { state: "done", report: "no_evals", noEvals: { confirmedAt: "2026-11-18T12:00:00.000Z" } };
+  for (const [state, view] of [["propose", card()], ["waiting", waiting()], ["approved", approved()], ["rejected", card({ state: "rejected", suites: [] })]] as const) {
+    it(`on a ${state} card: marks the project, and the undo puts it back`, async () => {
+      let noEvals = false;
+      const f = mount({ read: () => ({ status: 200, body: view }), status: () => checklist(noEvals ? NO_EVALS : undefined), put: (request) => { noEvals = (request.body as { noEvals: boolean }).noEvals;return { status: 200, body: { project: "web", noEvals, taskId: "11111111-1111-4111-8111-111111111111" } }; } });
+      await theCard();
+      fireEvent.click(within(screen.getByTestId("checklist-row-evalConfirm")).getByTestId("checklist-eval-no-evals-card"));
+      expect(await screen.findByTestId("checklist-eval-no-evals-set")).toBeTruthy();
+      const puts = () => f.request.mock.calls.map(([r]) => r).filter(r => r.method === "PUT" && r.path.endsWith("/setup-status/eval-none"));
+      expect(puts().map(r => r.body)).toEqual([{ noEvals: true }]);
+      fireEvent.click(screen.getByTestId("checklist-eval-no-evals-undo"));
+      await theCard();
+      expect(puts().map(r => r.body)).toEqual([{ noEvals: true }, { noEvals: false }]);
+      expect(posts(f)).toHaveLength(0);
+      f.close();
+    });
+  }
+  it("is not offered to someone who can't change the project", async () => {
+    const f = mount({ status: () => checklist(undefined, false) });
+    await theCard();
+    expect(screen.queryByTestId("checklist-eval-no-evals-card")).toBeNull();
+    f.close();
+  });
+});
+
+// Batch 12 review L1: #179's deliberate wording in the reported fallback (41be75c3a).
+it("the reported fallback says approving, as #179 worded it", async () => {
+  const f = mount({ read: () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } }) });
+  expect((await screen.findByTestId("checklist-eval-not-yet")).textContent).toBe("Approving these checks from the web isn't connected yet; a company owner or admin, or this project's admin, approves them where Rovara asks.");
+  f.close();
 });

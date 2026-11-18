@@ -29,6 +29,17 @@ const stage = (state: string, health?: string, wrapper?: string) => fetch(`${fak
 const BASE = "/v1/app/projects/web/setup-agent";
 
 describe("the fake eval card", () => {
+  it("'default' forgets a staged card, so the card follows the setup run again (specs reset it in afterEach)", async () => {
+    const priya = await tokenFor(PRIYA);
+    const state = async () => EvalCardViewSchema.parse((await call(`${BASE}/eval`, priya)).body).state;
+    const before = await state();
+    await stage(before === "approved" ? "rejected" : "approved");
+    expect(await state()).not.toBe(before);
+    expect((await stage("default")).status).toBe(200);
+    expect(await state()).toBe(before);
+    expect((await stage("nonsense")).status).toBe(400);
+  });
+
   it("reads in the app's schema; a manager approves with the dollars the read showed, a different figure is refused, a reader cannot act", async () => {
     const priya = await tokenFor(PRIYA);
     await stage("propose");

@@ -759,6 +759,21 @@ export const ROUTES: Route[] = [
     answer: openTaskByCodeId,
   },
   {
+    // POST /v1/app/tasks/{taskId}/answers: Understand's questions answered from the Work list or Home (Code #1057 puts the round on the list row), for a task with or without a
+    // Cloud session. The body is the session page's answer form's, checked the same way (answers.ts: request id, round, the revision the row read, one to three answers); only the
+    // request id, round and answers go to Code's POST /v1/dev/tasks/{taskId}/answers, as the signed-in person. Cloud adds no reach: it keeps no record of the task and
+    // decides nothing; Code decides who may answer (another company's task and one the person may not act on read as no such task) and its refusals pass through unchanged.
+    // The answer says only that Code took them: the page reads its list again.
+    method: "POST", path: /^\/tasks\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})\/answers$/u,
+    answer: async (context) => {
+      const input = parseAnswersBody(context.body);
+      if (!input.ok) return badRequest(input.message);
+      const taskId = context.params[0]!.toLowerCase();
+      await context.client.json(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}/answers`, { method: "POST", headers: TASK_VIEW, body: input.value });
+      return ok({ taskId, answered: true });
+    },
+  },
+  {
     // GET /v1/app/sessions/{id}: Cloud's session around Code's task.
     method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})$/u,
     answer: async (context) => {

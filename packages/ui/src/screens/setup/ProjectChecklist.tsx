@@ -76,6 +76,8 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
   finally { setBusy(undefined); }
  }
  const noEvalsButton = canChange ? <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals" onClick={() => { void evalNone(true); }}>This project has no evals</Button> : null;
+ // The same choice while Code's eval card shows (in any state): a quiet button right under the card, the same POST and the same undo, so marking "no evals" never needs the card rejected first.
+ const noEvalsOnCard = canChange ? <p className="rv-muted"><Button variant="quiet" busy={busy === "evalNone"} data-testid="checklist-eval-no-evals-card" onClick={() => { void evalNone(true); }}>This project has no evals</Button></p> : null;
  const next = data.progress.nextRequired;
  const open = (row: SetupStatusRow) => row === next || (OPTIONAL.has(row) && data[row].state === "optional" && canChange);
  const skipButton = (row: SetupSkippableRow) => canChange && data[row].state === "optional" ? <Button busy={busy === row} data-testid={`checklist-skip-${row}`} onClick={() => { void skip(row, true); }}>Set up later</Button> : null;
@@ -98,8 +100,8 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
    <Row name="evalConfirm" state={data.evalConfirm.state} open={open("evalConfirm")}>
     {data.evalConfirm.blockedBy === "setupRun" ? <p>After the setup run, Rovara proposes how it checks work here.</p>
      : data.evalConfirm.report === "no_evals" ? <><p data-testid="checklist-eval-no-evals-set">No evals for this project: Rovara checks work with the project's own tests.</p>{canChange && <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals-undo" onClick={() => { void evalNone(false); }}>This project has evals after all</Button>}</>
-     : <EvalCard project={project} fallback={data.evalConfirm.report === "confirmed" ? <p>Rovara runs <code><VisibleText text={data.evalConfirm.confirmedSelection ?? "the confirmed checks"} /></code> before every pull request.</p>
-      : data.evalConfirm.report === "reported" ? <>{(data.evalConfirm.suites ?? []).map(suite => <p key={suite.selection}>Rovara will run <code><VisibleText text={suite.selection} /></code> before every pull request.</p>)}<p className="rv-muted" data-testid="checklist-eval-not-yet">Confirming these checks from the web isn't connected yet; a company owner or admin, or this project's admin, confirms them where Rovara asks.</p>{noEvalsButton}</>
+     : <EvalCard project={project} secondary={noEvalsOnCard} fallback={data.evalConfirm.report === "confirmed" ? <p>Rovara runs <code><VisibleText text={data.evalConfirm.confirmedSelection ?? "the confirmed checks"} /></code> before every pull request.</p>
+      : data.evalConfirm.report === "reported" ? <>{(data.evalConfirm.suites ?? []).map(suite => <p key={suite.selection}>Rovara will run <code><VisibleText text={suite.selection} /></code> before every pull request.</p>)}<p className="rv-muted" data-testid="checklist-eval-not-yet">Approving these checks from the web isn't connected yet; a company owner or admin, or this project's admin, approves them where Rovara asks.</p>{noEvalsButton}</>
       : <><p data-testid="checklist-eval-none">The setup run found no checks to confirm yet. Run setup again, or edit the test commands.</p>{noEvalsButton}</>} />}
    </Row>
    <Row name="aiAndSpend" state={data.aiAndSpend.state} open={open("aiAndSpend")}>

@@ -4,7 +4,8 @@
 import { expect, test } from "@playwright/test";
 import { HomePage, PROJECT, ROUTES, SetupChecklistPage, setEvalCard, setSetupRun } from "./pages/index.js";
 
-test.afterEach(async ({ page }) => { await setSetupRun(page, PROJECT, "none"); });
+// The setup run and the eval card both go back to the pretend Code's defaults, so no spec depends on the order they run in (batch 12 review L3).
+test.afterEach(async ({ page }) => { await setSetupRun(page, PROJECT, "none");await setEvalCard(page, PROJECT, "default"); });
 
 test("the owner works through the project checklist: a failed run, Run again, Stop, Set up later", async ({ page }, testInfo) => {
   await setSetupRun(page, PROJECT, "failed");

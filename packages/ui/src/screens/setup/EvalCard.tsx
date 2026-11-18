@@ -53,9 +53,10 @@ type Problem = { message: string; moved: boolean };
  * The setup flow's ONE eval card (L4-EVC, DEC 254zzz20 D5, D6, D8). Eval spending is approved once, on one card, in plain dollars. The server decides everything (who may approve, the dollars held
  * against its own figures); this card only asks. An approval needs a fresh sign-in, as the setup approval does: the first press sends the person to confirm it's them, the next one decides. The `seen` dollars
  * are copied from the read, never worked out here. The health check is OPT-IN: it is only ever sent from a click, never on load, and only for a person who may approve.
- * `fallback` is shown when Code has no eval card yet or there is nothing to approve.
+ * `fallback` is shown when Code has no eval card yet or there is nothing to approve. `secondary` is a quieter choice of the page's own shown right under the card (the checklist's
+ * "This project has no evals", so it stays open while Code's card shows).
  */
-export function EvalCard({ project, fallback }: { project: string; fallback: ReactNode }) {
+export function EvalCard({ project, fallback, secondary }: { project: string; fallback: ReactNode; secondary?: ReactNode }) {
   const api = useEvalCardApi(), host = useAppHost(), query = useQueryClient();
   const who = useNav()?.me.developerId;
   const confirmed = useJustConfirmed(who);
@@ -110,7 +111,7 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
   const spend = data.spend;
   const health = data.health;
 
-  return <section aria-label={EVAL_CARD_WORDS.heading} className="rv-approval" data-testid="eval-card" data-state={data.state}>
+  return <><section aria-label={EVAL_CARD_WORDS.heading} className="rv-approval" data-testid="eval-card" data-state={data.state}>
     <h4>{EVAL_CARD_WORDS.heading}</h4>
     {(data.wrappers ?? []).length > 0 && <div data-testid="eval-wrappers" aria-label={EVAL_CARD_WORDS.wrapperHeading}>
       {(data.wrappers ?? []).map((wrapper: EvalWrapperCard) => <EvalWrapperCardView key={`${wrapper.selection}:${wrapper.language}`} project={project} card={wrapper} canManage={data.canApprove} onChanged={reread} />)}
@@ -139,7 +140,7 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
     {!data.canApprove && (data.state === "propose" || data.state === "waiting" || data.state === "renew") && <p className="rv-muted" data-testid="eval-who">{EVAL_CARD_WORDS.noOne}</p>}
     {askStepUp && !done && <p className="rv-muted" data-testid="eval-fresh" role="status">{stale ? EVAL_CARD_WORDS.stepUpOld : fresh ? EVAL_CARD_WORDS.stepUpDone : EVAL_CARD_WORDS.stepUp}</p>}
     {problem !== undefined && <div role="alert" data-testid="eval-problem"><p><VisibleText text={problem.message} /></p>{problem.moved && <Button data-testid="eval-refresh" onClick={refresh}>Refresh</Button>}</div>}
-  </section>;
+  </section>{secondary}</>;
 }
 
 type Health = NonNullable<EvalCardView["health"]>;

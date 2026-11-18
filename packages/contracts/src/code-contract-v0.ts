@@ -1069,6 +1069,7 @@ GET /v1/app/sessions/{id}/sections/{n}/task | k | later | tasks.get | screens/se
 POST /v1/app/sessions/{id}/ask | k | later | | session-ask | L
 GET /v1/app/sessions/{id}/asks/{askId} | k | later | | session-ask | L
 POST /v1/app/tasks/{t}/continue-as-task | k | session | tasks.continue | sessions |
+POST /v1/app/tasks/{t}/answers | k | home | tasks.answers | work | T
 POST /v1/app/tasks/{t}/continue/publish-branch | k | later | tasks.continue | continue-loop |
 POST /v1/app/tasks/{t}/continue/recheck | k | later | tasks.continue | continue-loop |
 GET /v1/app/tasks/{t}/documents/{document} | k | plan | tasks.plan | plan-panel |

@@ -36,7 +36,7 @@ const PULL_STATE: Readonly<Record<string, string>> = Object.freeze({ OPEN: "open
 
 /**
  * One row of Code's detailed list as Code's task view would say the same parts: the pull requests in the view's words, the cost as `spent.usd`, the limit as `runLimit.limitUsd`.
- * The rest of the row is passed on as it is. Code's detailed row names no workflow outcome and no Understand round, so neither is said.
+ * The rest of the row is passed on as it is, Code #1057's `round` (Understand's current round) and `outcome` (the workflow's) included; `workTask` checks them.
  */
 export function detailedRow(raw: unknown): unknown {
   if (!isRecord(raw)) return raw;
@@ -75,7 +75,43 @@ const bool = (value: unknown): boolean | undefined => (typeof value === "boolean
 const some = (entries: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== undefined));
 const list = (value: unknown, max: number): unknown[] => (Array.isArray(value) ? value.slice(0, max) : []);
 
-/** One task as the list draws it: the workflow's stage and state, the pull requests, what it has cost and its limit. */
+/** Code's question ids (q1 to q3) and option ids (a to d), as the answers route takes them (answers.ts). */
+const QUESTION_ID = /^q[1-3]$/u, OPTION_ID = /^[a-d]$/u;
+/** Code's workflow outcomes (WorkflowSnapshotShapeSchema's `outcome`); any other word is left out. */
+const OUTCOMES: ReadonlySet<string> = new Set(["PASSED", "SKIPPED", "CHANGES_REQUESTED", "REJECTED", "MERGED", "CLOSED", "ANSWERED"]);
+
+/**
+ * Understand's current round on a detailed list row (Code #1057, DeveloperTaskListRoundSchema): `{ round, questions: [{ id, text, options?, recommended?, answered }] }`, one to three questions.
+ * Code gives it only to someone its own task read would show the task. Anything not in that shape is no round at all (never part of one): the page then sends the person to the task's own page.
+ */
+export function roundOf(raw: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const round = num(raw["round"]);
+  if (round === undefined || !Number.isInteger(round) || round < 1 || round > 1_000_000 || !Array.isArray(raw["questions"])) return undefined;
+  const sent = raw["questions"] as unknown[];
+  if (sent.length < 1 || sent.length > 3) return undefined;
+  const questions: Array<Record<string, unknown>> = [];
+  for (const question of sent) {
+    if (!isRecord(question)) return undefined;
+    const id = question["id"], words = question["text"], answered = question["answered"], options = question["options"], recommended = question["recommended"];
+    if (typeof id !== "string" || !QUESTION_ID.test(id) || typeof words !== "string" || words.length < 1 || words.length > 300 || typeof answered !== "boolean") return undefined;
+    let kept: Array<{ id: string; label: string }> | undefined;
+    if (options !== undefined) {
+      if (!Array.isArray(options) || options.length < 2 || options.length > 4) return undefined;
+      kept = [];
+      for (const option of options as unknown[]) {
+        if (!isRecord(option) || typeof option["id"] !== "string" || !OPTION_ID.test(option["id"]) || typeof option["label"] !== "string" || option["label"].length < 1 || option["label"].length > 80) return undefined;
+        kept.push({ id: option["id"], label: option["label"] });
+      }
+    }
+    if (recommended !== undefined && (typeof recommended !== "string" || kept === undefined || !kept.some((option) => option.id === recommended))) return undefined;
+    questions.push(some({ id, text: words, options: kept, recommended, answered }));
+  }
+  if (new Set(questions.map((question) => question["id"])).size !== questions.length) return undefined;
+  return { round, questions };
+}
+
+/** One task as the list draws it: the workflow's stage and state, the pull requests, what it has cost and its limit, and (Code #1057) Understand's current round and the workflow's outcome. */
 export function workTask(raw: unknown): Record<string, unknown> | undefined {
   if (!isRecord(raw) || typeof raw["taskId"] !== "string" || typeof raw["title"] !== "string" || typeof raw["project"] !== "string") return undefined;
   const workflow = isRecord(raw["workflow"]) ? raw["workflow"] : undefined;
@@ -91,6 +127,8 @@ export function workTask(raw: unknown): Record<string, unknown> | undefined {
     spent: spent === undefined ? undefined : some({ usd: num(spent["usd"]) }),
     runLimit: limit === undefined ? undefined : some({ limitUsd: num(limit["limitUsd"]) }),
     createdAt: text(raw["createdAt"], 40), updatedAt: text(raw["updatedAt"], 40),
+    round: roundOf(raw["round"]),
+    outcome: typeof raw["outcome"] === "string" && OUTCOMES.has(raw["outcome"]) ? raw["outcome"] : undefined,
   });
 }
 

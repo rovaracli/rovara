@@ -153,12 +153,14 @@
     "tests/unit/cloud-lambda.test.ts": 0.007,
     "tests/unit/cloud-server-core-answers.test.ts": 1,
     "tests/unit/cloud-server-core-task-actions.test.ts": 0.046,
+    "tests/unit/cloud-server-core-task-routes.test.ts": 0.043,
     "tests/unit/cloud-server-cost-report.test.ts": 1,
     "tests/unit/cloud-server-entry.test.ts": 1.717,
     "tests/unit/cloud-server-eval-card.test.ts": 0.027,
     "tests/unit/cloud-server-eval-check.test.ts": 0.035,
     "tests/unit/cloud-server-eval-confirm.test.ts": 0.03,
     "tests/unit/cloud-server-inbox.test.ts": 1,
+    "tests/unit/cloud-server-inline-understand.test.ts": 0.021,
     "tests/unit/cloud-server-machine-size.test.ts": 1,
     "tests/unit/cloud-server-open-task.test.ts": 1,
     "tests/unit/cloud-server-people.test.ts": 1,
@@ -452,6 +454,7 @@
     "tests/web/wiki-corrections.test.ts": 1,
     "tests/web/wiki-setup.test.ts": 1,
     "tests/web/wiki-tab.test.ts": 1,
+    "tests/web/work-inline-understand.test.ts": 0.358,
     "tests/web/work.test.ts": 1
   }
 }
