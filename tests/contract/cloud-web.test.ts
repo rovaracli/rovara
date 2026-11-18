@@ -9,6 +9,10 @@ import { CLOUD_TABLE, COMPANY_TABLE } from "../../packages/cloud-server/src/inde
 import { CLOUD_WEB_STARTED_BY_INDEX, CLOUD_WEB_TABLE_ACCESS, CloudWebStack, cloudWebStackName } from "../../infra/lib/cloud-web.js";
 import { CLOUD_APP_CLIENT_ID } from "../../infra/lib/cloud-app.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
+import { DynamoCompanyStore } from "../../packages/cloud-server/src/company-dynamo.js";
+import { DynamoCloudAuditStore } from "../../packages/cloud-server/src/dynamo-stores.js";
+import { recordCloudAction } from "../../packages/cloud-server/src/audit-log.js";
 
 // A built app with one page shell and one asset, as packages/web/dist/app has.
 const built = (() => {
@@ -158,11 +162,70 @@ describe("Rovara Cloud on CloudFront, Lambda and DynamoDB (Rovara-cloud#11)", ()
     // DEC 253z: the company comes only from Code's access check. No deployment-wide company setting, and no parameter to pass one.
     expect(Object.keys(variables)).not.toContain("CLOUD_COMPANY_ID");
     expect(Object.keys((template.toJSON() as { Parameters: Record<string, unknown> }).Parameters)).not.toContain("CompanyId");
-    // Every statement naming the company table: exactly the store's four item actions, nothing wider.
-    const statements = Object.values(template.findResources("AWS::IAM::Policy")).flatMap((policy) => (policy.Properties as { PolicyDocument: { Statement: Array<{ Action: string | string[]; Resource: unknown }> } }).PolicyDocument.Statement);
+    // DEC 254zzz27: exactly five actions, on this table only, attached to the web server role.
+    type Statement = { Effect: string; Action: string | string[]; Resource: unknown; Condition?: unknown };
+    const policies = Object.values(template.findResources("AWS::IAM::Policy"));
+    const statements = policies.flatMap((policy) => (policy.Properties as { PolicyDocument: { Statement: Statement[] } }).PolicyDocument.Statement);
     const onCompanies = statements.filter((statement) => JSON.stringify(statement.Resource).includes(companies));
-    expect(onCompanies).toHaveLength(1);
-    expect([onCompanies[0]!.Action].flat().sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"]);
+    const expected = { Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:ConditionCheckItem"], Resource: { "Fn::GetAtt": [companies, "Arn"] } };
+    expect(onCompanies).toEqual([expected]);
+    const companyPolicies = policies.filter((policy) => (policy.Properties as { PolicyDocument: { Statement: Statement[] } }).PolicyDocument.Statement.includes(onCompanies[0]!));
+    expect(companyPolicies).toHaveLength(1);
+    expect((companyPolicies[0]!.Properties as { Roles: unknown }).Roles).toEqual([{ Ref: (server().Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0] }]);
+    // The existing boundary already permits this action; no other identity-policy statement may gain it.
+    expect(statements.filter((statement) => [statement.Action].flat().includes("dynamodb:ConditionCheckItem"))).toEqual([expected]);
+  });
+
+  it.each(["project_month", "person_month"] as const)("covers every actual %s save, replacement, removal and audit transaction item", async (kind) => {
+    const variables = (server().Environment as { Variables: Record<string, { Ref: string }> }).Variables;
+    const companies = variables.COMPANY_TABLE!.Ref;
+    const state = variables.CLOUD_TABLE!.Ref;
+    const role = (server().Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
+    type Statement = { Effect: string; Action: string | string[]; Resource: unknown; Condition?: unknown };
+    const statements = Object.values(template.findResources("AWS::IAM::Policy"))
+      .filter((policy) => (policy.Properties as { Roles: Array<{ Ref: string }> }).Roles.some((r) => r.Ref === role))
+      .flatMap((policy) => (policy.Properties as { PolicyDocument: { Statement: Statement[] } }).PolicyDocument.Statement);
+    const transactions: TransactWriteCommandInput[] = [];
+    const db = { send: async (command: TransactWriteCommand) => {
+      expect(command).toBeInstanceOf(TransactWriteCommand);
+      transactions.push(command.input);
+      return {};
+    } };
+    const store = new DynamoCompanyStore(db as never, companies);
+    const companyId = `org_${"a".repeat(20)}`;
+    const id = kind === "project_month" ? "example" : `dev_${"b".repeat(20)}`;
+    const limit = { companyId, kind, id, monthlyUsdMicros: 10_000_000, updatedAt: "2026-11-18T12:00:00.000Z", updatedBy: "admin" };
+    await store.putSpendLimit(limit, { override: undefined, settingsVersion: 0 });
+    const basis = { override: { version: 1, monthlyUsdMicros: 10_000_000 }, settingsVersion: 2 };
+    await store.putSpendLimit({ ...limit, monthlyUsdMicros: 5_000_000 }, basis);
+    await store.removeSpendLimit(companyId, kind, id, basis);
+    await recordCloudAction(new DynamoCloudAuditStore(db as never, state), {
+      companyId, actor: { developerId: "admin", name: "Admin", type: "person" }, action: "company.budget.changed", via: "web", subject: `spend_limit:${kind}:${id}`,
+    }, () => new Date(limit.updatedAt));
+    expect(transactions).toHaveLength(4);
+    const actions = { Put: "dynamodb:PutItem", Update: "dynamodb:UpdateItem", Delete: "dynamodb:DeleteItem", ConditionCheck: "dynamodb:ConditionCheckItem" } as const;
+    for (const transaction of transactions) {
+      expect(transaction.TransactItems).toHaveLength(2);
+      for (const item of transaction.TransactItems!) {
+        expect(Object.keys(item)).toHaveLength(1);
+        const operation = Object.keys(item)[0] as keyof typeof actions;
+        expect(actions[operation]).toBeDefined();
+        const write = item[operation]!;
+        expect([companies, state]).toContain(write.TableName);
+        const key = "Item" in write ? write.Item : "Key" in write ? write.Key : undefined;
+        expect(typeof key?.pk).toBe("string");
+        const grants = statements.filter((statement) => statement.Effect === "Allow"
+          && [statement.Action].flat().includes(actions[operation])
+          && JSON.stringify(statement.Resource) === JSON.stringify({ "Fn::GetAtt": [write.TableName, "Arn"] }));
+        const covered = grants.some((statement) => {
+          if (write.TableName === companies) return statement.Condition === undefined;
+          // State writes must also satisfy the same LeadingKeys and non-null conditions the role carries.
+          const prefix = (key!.pk as string).split("#")[0];
+          return JSON.stringify(statement.Condition) === JSON.stringify({ "ForAllValues:StringLike": { "dynamodb:LeadingKeys": `${prefix}#*` }, Null: { "dynamodb:LeadingKeys": "false" } });
+        });
+        expect(covered, `${operation} on ${write.TableName}/${key!.pk as string} needs ${actions[operation]}`).toBe(true);
+      }
+    }
   });
 
   it("lets the function read its address by name, so its role doesn't wait for the distribution that waits for it", () => {
