@@ -44,3 +44,8 @@ it("keeps newer access values readable without granting any action", async () =>
 });
 
 it("uses profile permissions even when the retained directory summary had stronger access", async () => { const base = agentProfile(), f = renderAgents({ profile: agentProfile({ agent: { ...base.agent, access: "view" } }) });fireEvent.click(await screen.findByRole("link", { name: "Payments Expert" }));await screen.findByRole("dialog", { name: "Payments Expert" });expect(screen.queryByRole("button", { name: "Review update" })).toBeNull();expect(screen.queryByRole("link", { name: "Edit" })).toBeNull();expect(screen.queryByRole("button", { name: "Share" })).toBeNull();f.close(); });
+
+it("says next to an agent what Code says it can't do yet (a custom agent can't run on hosted)", async () => {
+ const first = agentDirectory().agents[0]!, f = renderAgents({ directory: { agents: [{ ...first, needsLaterConnectors: "Can't run on hosted yet." }] } });
+ expect(await screen.findByText("Can't run on hosted yet.")).toBeTruthy();f.close();
+});

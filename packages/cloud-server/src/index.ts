@@ -69,3 +69,4 @@ export { CODE_REPORT_FEATURES_PATH, CODE_REPORT_TASKS_PATH, FEATURE_TASKS_MAX, N
 export { ANSWERS_ANSWERS, ANSWERS_ROUTES, ANSWERS_WORDS, answerObject, answersRefusal, notRightObject, suggestObject } from "./answers-routes.js";
 export { PEOPLE_LIMITS_ROUTES, PEOPLE_LIMITS_WORDS, type PersonSpendReader } from "./people-limits-routes.js";
 export { DynamoGatewayMeterReader, meterPartition, personMonthSort } from "./gateway-meter-read.js";
+export { AGENT_DIRECTORY_ANSWERS, AGENT_DIRECTORY_LIMIT, AGENT_DIRECTORY_ROUTES, AGENT_DIRECTORY_WORDS, AGENT_LIMITS, AGENT_SCOPES, agentDirectoryRefusal, directoryAnswer } from "./agent-directory-routes.js";

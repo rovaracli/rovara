@@ -24,6 +24,7 @@ import { SAVED_ENV_ROUTES } from "./saved-env-routes.js";
 import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
 import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
 import { ANSWERS_ROUTES } from "./answers-routes.js";
+import { AGENT_DIRECTORY_ROUTES } from "./agent-directory-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { HOW_WE_WORK_ROUTES } from "./how-we-work-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
@@ -925,4 +926,6 @@ export const ROUTES: Route[] = [
   // Its actions (lane L4-CR4): new feature, rename, merge, mark done or reopen, move a task. Code decides; Cloud checks the body and words the refusals.
   ...REPORT_ACTION_ROUTES,
   ...INTAKE_UPDATES_ROUTES,
+  // The company-wide agent directory (lead 4 L4-MF3): only a company owner or administrator; Code decides again on its live membership.
+  ...AGENT_DIRECTORY_ROUTES,
 ];

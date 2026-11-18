@@ -1,3 +1,4 @@
-// The sidebar's "Agent directory" link opens /app/agents, which reads `/v1/app/agents`: a route neither Cloud nor Rovara Code serves yet (Cloud answers 501 NOT_ON_CODE_YET).
-// Until it does the link is not shown. Turn this on in the same change that adds the route. The screen and its address stay; `Sidebar` takes `agentDirectoryOffered` so a test can show the link.
-export const AGENT_DIRECTORY_OFFERED = false;
+// The sidebar's "Agent directory" link opens /app/agents, which reads `/v1/app/agents` (Cloud's agent-directory-routes.ts, answered from Rovara Code's directory route).
+// Owner decision (2026-11-17): only a company owner or administrator may read it, so the link is shown to them only (`Sidebar` checks `nav.me.orgRole`); a member who types the address gets the
+// route's fixed refusal. `Sidebar` still takes `agentDirectoryOffered` so a test can hide the link, as the route's own answers would if Code stopped serving it.
+export const AGENT_DIRECTORY_OFFERED = true;
