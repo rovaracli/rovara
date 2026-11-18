@@ -51,9 +51,9 @@ test("the spec shows its criteria with ids, asks its question in place, and says
   await work.open();
   await work.select(PLAN_TASK);
   const spec = work.pane.getByRole("region", { name: "Spec" });
-  await expect(spec).toContainText("R1.1");
+  await expect(spec).toContainText("1.1");
   await expect(spec).toContainText("Question for you.");
-  await spec.getByRole("button", { name: /Yes, behind a flag/u }).click();
+  await spec.getByRole("button", { name: /Three times/u }).click();
   // This task has no Cloud session yet (K0b): nothing is sent, and the question says where to answer, plainly.
   await expect(page.getByTestId("answer-error").first()).toContainText("Answer this question on the task's session page.");
   await expect(page.getByRole("progressbar")).toHaveCount(0);
@@ -65,7 +65,7 @@ test("a click on a step shows that stage: build activity, then proof per criteri
   await work.select(PLAN_TASK);
   await work.step("Build").click();
   const build = work.pane.getByRole("region", { name: "Build" });
-  await expect(build).toContainText("T2");
+  // Code's plan names no task list of its own, so the build activity shows the latest lines together.
   await expect(build.getByRole("log")).toContainText("Now at");
   await work.step("Proof").click();
   const proof = work.pane.getByRole("region", { name: "Proof", exact: true });

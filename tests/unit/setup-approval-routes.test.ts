@@ -197,7 +197,7 @@ describe("Use this setup (confirm)", () => {
     const bodies: unknown[] = [
       {}, { requestId: UUID1 }, { expectedRevision: 1 }, { requestId: "not-a-uuid", expectedRevision: 1 }, { requestId: UUID1, expectedRevision: -1 }, { requestId: UUID1, expectedRevision: 1.5 }, { requestId: UUID1, expectedRevision: "1" },
       { requestId: UUID1, expectedRevision: 1, company: B }, { requestId: UUID1, expectedRevision: 1, itemIds: "setup-1" }, { requestId: UUID1, expectedRevision: 1, itemIds: [1] }, { requestId: UUID1, expectedRevision: 1, itemIds: [""] },
-      { requestId: UUID1, expectedRevision: 1, itemIds: Array(65).fill("a") }, [], null, '"text"',
+      { requestId: UUID1, expectedRevision: 1, itemIds: Array(129).fill("a") }, [], null, '"text"',
     ];
     for (const body of bodies) {
       const res = await w.send("POST", "/v1/web/projects/payments/setup-agent/confirm", ada, body);

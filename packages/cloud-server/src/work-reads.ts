@@ -2,7 +2,7 @@
 // Each is one call to Rovara Code as the signed-in person (contract v0: tasks.list, tasks.plan, tasks.evidence.list, tasks.events, tasks.comments.list),
 // kept to the fields the page draws. Code decides who may read a task; its refusal, a 404 included, reaches the app as Code worded it. Nothing here
 // writes, and nothing is invented: a field Code did not send is left out.
-import { CodeError } from "./code-client.js";
+import { CodeError, SignInEnded } from "./code-client.js";
 import type { Route, RouteAnswer } from "./routes.js";
 
 /** Code's task view, version 2. */
@@ -23,6 +23,15 @@ const INVOLVED_PAGE = 50;
 /** Code's answers for "not deployed yet" (an older Code has no involved list, or does not know the query): the page shows nothing extra and no error. */
 const INVOLVED_NOT_YET: ReadonlySet<number> = new Set([400, 404, 501]);
 const TASK_ID = "([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})";
+
+/** Code's list page (DEVELOPER_TASK_LIST_MAX) and how many pages one list read follows: WORK_TASKS_MAX tasks at most. */
+const LIST_PAGE = 50;
+const LIST_PAGES_MAX = 2;
+/** How many of the newest open tasks one list read asks Code for one by one (their stage, pull requests, cost and limit), and how many of those reads run at once. */
+export const WORK_DETAILS_MAX = 30;
+const DETAIL_READS_AT_ONCE = 5;
+/** A closed or cancelled task needs no stage: the list says what it is from its status alone. */
+const NO_DETAIL: ReadonlySet<string> = new Set(["CLOSED", "CANCELLED"]);
 
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -52,31 +61,119 @@ export function workTask(raw: unknown): Record<string, unknown> | undefined {
   });
 }
 
-/** The plan as the spec screen draws it: the one-line summary, the estimate and limit, and the structured spec (requirements, tasks, questions) when Code sends it. */
+/** Code's claim ids ("1", "1.1", "2.3.1") and decision/option ids, as its plan contract has them (workflow-plan-document.ts); anything else is left out. */
+const PLAN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,59}$/u;
+const planId = (value: unknown): string | undefined => (typeof value === "string" && PLAN_ID.test(value) ? value : undefined);
+const PLAN_CLAIMS_SHOWN = 50;
+
+/**
+ * One top-level claim of Code's plan as a requirement: its sub-claims are its criteria (a claim with none is its own one criterion). A claim's text is the criterion's "then"; Code
+ * has no "when". `under` maps every claim id in it (the deeper ones Code allows too) to the criterion the screen shows it beside: itself, the sub-claim it is under, or, for the
+ * top-level claim, its first criterion.
+ */
+function requirementOf(claim: Record<string, unknown>): { requirement: Record<string, unknown>; under: Array<[string, string]> } | undefined {
+  const id = planId(claim["id"]), title = text(claim["text"], 300);
+  if (id === undefined || title === undefined) return undefined;
+  const under: Array<[string, string]> = [];
+  const descendants = (node: Record<string, unknown>, criterion: string, depth: number): void => {
+    if (depth > 3) return;
+    for (const child of list(node["children"], PLAN_CLAIMS_SHOWN).filter(isRecord)) {
+      const childId = planId(child["id"]);
+      if (childId !== undefined) under.push([childId, criterion]);
+      descendants(child, criterion, depth + 1);
+    }
+  };
+  const children = list(claim["children"], PLAN_CLAIMS_SHOWN).filter(isRecord).flatMap((child) => {
+    const childId = planId(child["id"]), then = text(child["text"], 300);
+    if (childId === undefined || then === undefined) return [];
+    under.push([childId, childId]);
+    descendants(child, childId, 3);
+    return [{ id: childId, when: "", then, taskIds: [] }];
+  });
+  const criteria = children.length > 0 ? children : [{ id, when: "", then: title, taskIds: [] }];
+  under.push([id, criteria[0]!.id]);
+  return { requirement: { id, title, criteria }, under };
+}
+
+/**
+ * The plan as the spec screen draws it, from Code's answer to `GET /v1/dev/tasks/{t}/plan` (PLANFULLDOC, `aws/task-plan-document.ts`): `{ plan: { taskId, document, version, sha256, approved,
+ * current, versions, content, summary } }`. The headline is the plan's title; the checks are the summary's check labels; the requirements are the plan's claims (sub-claims as criteria); the
+ * questions are the plan's decisions with their options and Code's recommended one. Code's plan names no estimate, run limit or task status, so none is shown. A field Code did not send is left out.
+ */
 export function workPlan(raw: unknown): Record<string, unknown> {
-  const plan = isRecord(raw) ? raw : {};
+  const plan = isRecord(raw) && isRecord(raw["plan"]) ? raw["plan"] : {};
+  const content = isRecord(plan["content"]) ? plan["content"] : undefined;
+  const read = content === undefined ? undefined : list(content["claims"], PLAN_CLAIMS_SHOWN).filter(isRecord).flatMap((claim) => { const one = requirementOf(claim); return one === undefined ? [] : [one]; });
+  const requirements = read?.map((one) => one.requirement);
+  // A decision may name any claim (a parent, or one deeper than a criterion); the screen asks it beside the criterion that claim is shown under.
+  const criterionOf = new Map<string, string>();
+  for (const one of read ?? []) for (const [claim, criterion] of one.under) if (!criterionOf.has(claim)) criterionOf.set(claim, criterion);
   const summary = isRecord(plan["summary"]) ? plan["summary"] : undefined;
+  const checks = summary === undefined ? undefined : list(summary["checks"], 20).filter(isRecord).flatMap((check) => { const label = text(check["label"], 300); return label === undefined ? [] : [label]; });
   return some({
     taskId: text(plan["taskId"], 80), document: text(plan["document"], 40), version: num(plan["version"]), approved: bool(plan["approved"]), current: bool(plan["current"]),
-    summary: summary === undefined ? undefined : some({ headline: text(summary["headline"]), checks: list(summary["checks"], 20).flatMap((item) => (typeof item === "string" ? [item.slice(0, 300)] : [])) }),
-    estimate: text(plan["estimate"], 300), runLimitUsd: num(plan["runLimitUsd"]),
-    requirements: Array.isArray(plan["requirements"]) ? list(plan["requirements"], 50) : undefined,
-    tasks: Array.isArray(plan["tasks"]) ? list(plan["tasks"], 100) : undefined,
-    questions: Array.isArray(plan["questions"]) ? list(plan["questions"], 20) : undefined,
+    summary: content === undefined && summary === undefined ? undefined : some({ headline: content === undefined ? undefined : text(content["title"], 300), checks: checks ?? [] }),
+    requirements,
+    questions: content === undefined ? undefined : list(content["decisions"], 20).filter(isRecord).flatMap((decision) => {
+      const questionId = planId(decision["id"]), question = text(decision["question"], 300);
+      if (questionId === undefined || question === undefined) return [];
+      const options = list(decision["options"], 4).filter(isRecord).flatMap((option) => { const optionId = planId(option["id"]), label = text(option["label"], 80); return optionId === undefined || label === undefined ? [] : [{ optionId, label }]; });
+      const recommended = planId(decision["recommended"]);
+      return [some({ questionId, text: question, options, criterionId: ((claim) => (claim === undefined ? undefined : criterionOf.get(claim)))(planId(decision["claimId"])), defaultOptionId: options.some((option) => option.optionId === recommended) ? recommended : undefined })];
+    }),
   });
+}
+
+/**
+ * Fills each open task (the newest WORK_DETAILS_MAX) with what Code's own task view says of its workflow, pull requests, cost and run limit. A read Code refuses, or that
+ * fails, leaves that row as the list had it, marked `detail: "unread"`; an ended sign-in is not swallowed. The rows are changed in place.
+ */
+async function withDetails(views: Array<Record<string, unknown>>, read: (taskId: string) => Promise<{ task?: unknown }>): Promise<void> {
+  const open = views.filter((view) => !NO_DETAIL.has(String(view["status"])));
+  const asked = open.slice(0, WORK_DETAILS_MAX);
+  for (const view of open.slice(WORK_DETAILS_MAX)) view["detail"] = "unread";
+  for (let at = 0; at < asked.length; at += DETAIL_READS_AT_ONCE) {
+    await Promise.all(asked.slice(at, at + DETAIL_READS_AT_ONCE).map(async (view) => {
+      let detail: Record<string, unknown> | undefined;
+      try {
+        const answer = await read(view["taskId"] as string);
+        detail = isRecord(answer) ? workTask(answer.task) : undefined;
+      } catch (error) {
+        if (error instanceof SignInEnded) throw error;
+      }
+      // Only the same task's view counts; its list row keeps the title, project and status the list gave.
+      if (detail === undefined || detail["taskId"] !== view["taskId"]) { view["detail"] = "unread"; return; }
+      for (const key of ["workflow", "pullRequests", "spent", "runLimit"] as const) if (detail[key] !== undefined) view[key] = detail[key];
+      if (typeof detail["status"] === "string") view["status"] = detail["status"];
+      if (typeof detail["updatedAt"] === "string") view["updatedAt"] = detail["updatedAt"];
+    }));
+  }
 }
 
 const WORK_READS: Route[] = [
   {
     // GET /v1/app/sessions (contract v0 `tasks.list`): the person's tasks, newest first, for the Work page's list.
+    // Code's list rows hold only id, title, project, status, shared and times (DeveloperTaskListItemSchema), 20 by default and at most 50 a page with a `nextCursor`. So the
+    // list asks for full pages (up to WORK_TASKS_MAX tasks), and the open tasks among the newest WORK_DETAILS_MAX are read one by one (Code's own task view, as the person)
+    // for their workflow stage, pull requests, cost and run limit. A task whose view could not be read is marked `detail: "unread"` (the page never calls it finished).
     method: "GET", path: /^\/sessions$/u,
     answer: async ({ client, session, work }) => {
-      const answer = await client.json<{ tasks?: unknown[] }>(session, "/v1/dev/tasks", { headers: TASK_VIEW });
+      const rows: unknown[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < LIST_PAGES_MAX && rows.length < WORK_TASKS_MAX; page += 1) {
+        const query = new URLSearchParams({ limit: String(LIST_PAGE), ...(cursor === undefined ? {} : { cursor }) });
+        const answer = await client.json<{ tasks?: unknown[]; nextCursor?: unknown }>(session, `/v1/dev/tasks?${query.toString()}`, { headers: TASK_VIEW });
+        rows.push(...list(answer.tasks, WORK_TASKS_MAX - rows.length));
+        cursor = typeof answer.nextCursor === "string" && answer.nextCursor !== "" && answer.nextCursor.length <= 2_000 ? answer.nextCursor : undefined;
+        if (cursor === undefined) break;
+      }
+      const views = rows.flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [view]; });
+      await withDetails(views, (taskId) => client.json<{ task?: unknown }>(session, `/v1/dev/tasks/${encodeURIComponent(taskId)}?events=0`, { headers: TASK_VIEW }));
       // The tasks the person started in Cloud carry Cloud's session id: the task page's steer, stop and comment routes are the session's. A task started elsewhere has none.
       // A session store that cannot be read costs the page those links, never the list.
       const sessions = new Map<string, string>();
       try { for (const record of (await work.startedBy(session.access.developerId)).slice(0, SESSIONS_LOOKED_AT)) if (!sessions.has(record.taskId)) sessions.set(record.taskId, record.sessionId); } catch { /* the list still answers */ }
-      return ok({ tasks: list(answer.tasks, WORK_TASKS_MAX).flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [{ ...view, ...(sessions.has(view["taskId"] as string) ? { sessionId: sessions.get(view["taskId"] as string) } : {}) }]; }) });
+      return ok({ tasks: views.map((view) => ({ ...view, ...(sessions.has(view["taskId"] as string) ? { sessionId: sessions.get(view["taskId"] as string) } : {}) })) });
     },
   },
   {
@@ -89,7 +186,8 @@ const WORK_READS: Route[] = [
       try {
         const answer = await client.json<{ involved?: unknown; tasks?: unknown[] }>(session, `/v1/dev/tasks?involved=1&limit=${String(INVOLVED_PAGE)}`, { headers: TASK_VIEW });
         if (!isRecord(answer) || answer["involved"] !== true) return ok({ tasks: [] });
-        return ok({ tasks: list(answer["tasks"], WORK_TASKS_MAX).flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [view]; }) });
+        // Code's list rows carry no workflow: such a row is marked unread, so a task between steps is never shown as finished (its own page reads the stage).
+        return ok({ tasks: list(answer["tasks"], WORK_TASKS_MAX).flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [view["workflow"] === undefined ? { ...view, detail: "unread" } : view]; }) });
       } catch (error) {
         if (error instanceof CodeError && INVOLVED_NOT_YET.has(error.status)) return ok({ tasks: [] });
         throw error;

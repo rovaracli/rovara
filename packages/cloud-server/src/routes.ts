@@ -19,7 +19,7 @@ import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
 import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./project-create-routes.js";
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
-import { openTaskByCodeId } from "./open-task.js";
+import { codeOwnerOf, openTaskByCodeId } from "./open-task.js";
 import { WIKI_ROUTES } from "./wiki-routes.js";
 import { SAVED_ENV_ROUTES } from "./saved-env-routes.js";
 import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
@@ -151,7 +151,23 @@ async function readTask(context: RouteContext, taskId: string): Promise<CodeTask
 async function sessionAndTask(context: RouteContext): Promise<{ record: WorkSession; task: CodeTask } | undefined> {
   const record = await context.work.get(context.params[0]!);
   if (record === undefined) return undefined;
-  return { record, task: await readTask(context, record.taskId) };
+  const task = await readTask(context, record.taskId);
+  return { record: await ownerFromCode(context, record, task), task };
+}
+
+/**
+ * Code names the task's owner (`task.owner`, open-task.ts codeOwnerOf). When that is the person reading and the session still names someone else (a take-over the
+ * person confirmed on Code's page after Code answered PENDING), the session now names them. Only ever the reader, only on Code's own word; best effort (a race keeps the record).
+ */
+async function ownerFromCode(context: RouteContext, record: WorkSession, task: CodeTask): Promise<WorkSession> {
+  const owner = codeOwnerOf(task);
+  const me = context.session.access.developerId;
+  if (owner === undefined || owner.developerId !== me || record.owner.developerId === me) return record;
+  const updated: WorkSession = { ...record, owner: { developerId: me, name: context.session.access.displayName }, revision: record.revision + 1 };
+  delete updated.ownerUnresolved;
+  // Best effort: a store that cannot be written now (a race, throttling) keeps the record and never costs the read.
+  try { await context.work.put(updated); } catch (error) { if (error instanceof SignInEnded) throw error; return record; }
+  return updated;
 }
 
 /** The reader, with the name they signed in with now: their own name on a session is always current (Rovara-cloud#39). */
@@ -842,7 +858,18 @@ export const ROUTES: Route[] = [
       if (typeof requestId !== "string" || !UUID.test(requestId)) return badRequest("requestId must be a UUID.");
       const path = `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/people`;
       const { view } = await context.client.json<{ view: { revision: number } }>(context.session, path);
-      await context.client.json(context.session, `${path}/take-ownership`, { method: "POST", body: { requestId, expectedPeopleRevision: view.revision } });
+      const answer = await context.client.json<unknown>(context.session, `${path}/take-ownership`, { method: "POST", body: { requestId, expectedPeopleRevision: view.revision } });
+      // Code's answer (TaskPeopleChangeResultSchema): COMMITTED made the person the owner now; PENDING waits for them to confirm on Code's page, and until then the
+      // old owner stays the owner, in Code and here. Anything else is not a take-over Cloud records.
+      const change = typeof answer === "object" && answer !== null && typeof (answer as { change?: unknown }).change === "object" ? (answer as { change: Record<string, unknown> }).change : undefined;
+      if (change?.["status"] === "PENDING") {
+        const pending = change["requestId"];
+        if (typeof pending !== "string" || !UUID.test(pending) || pending.toLowerCase() !== requestId.toLowerCase() || !UUID.test(record.taskId)) return { status: 502, body: { error: { code: "INVALID_RESPONSE", message: "Rovara Code's answer couldn't be read. Refresh to check who owns this task." } } };
+        // Where to confirm is Cloud's own build of Code's confirm page (as the People panel's), never Code's text passed on.
+        const confirmUrl = `${context.client.baseUrl}/review/${record.taskId.toLowerCase()}/task/people/confirm/${pending.toLowerCase()}`;
+        return { status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl, changes: ["Make you the owner of this task"] } };
+      }
+      if (change?.["status"] !== "COMMITTED") return { status: 502, body: { error: { code: "INVALID_RESPONSE", message: "Rovara Code's answer couldn't be read. Refresh to check who owns this task." } } };
       const updated: WorkSession = { ...record, owner: { developerId: context.session.access.developerId, name: context.session.access.displayName }, revision: record.revision + 1 };
       delete updated.ownerUnresolved;
       await context.work.put(updated);

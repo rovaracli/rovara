@@ -43,7 +43,7 @@ function peopleOf(answer: unknown): PeopleEntry[] | undefined {
 
 /** Code's task view names the task's own person (`task.owner`, Q7), checked strictly: a sign-in id and a readable name, or no owner (an older Code, or a task with no person owner). Never guessed from anything else. */
 const SIGN_IN_ID = /^[0-9a-f]{64}$/u;
-function codeOwnerOf(task: unknown): { developerId: string; name: string } | undefined {
+export function codeOwnerOf(task: unknown): { developerId: string; name: string } | undefined {
   const owner = (task as { owner?: unknown } | undefined)?.owner;
   if (typeof owner !== "object" || owner === null || Array.isArray(owner) || Object.keys(owner).length !== 2) return undefined;
   const { developerId, name } = owner as { developerId?: unknown; name?: unknown };

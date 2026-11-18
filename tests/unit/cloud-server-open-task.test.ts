@@ -48,7 +48,7 @@ function setUp(options: Options = {}) {
       const status = options.taskStatus?.(who) ?? (who === "eve" ? 404 : who === "zed" ? 403 : 200);
       return status === 200 ? json(200, { task: options.task?.(who) ?? task }) : json(status, refusal);
     }
-    if (url.pathname === `/v1/dev/tasks/${TASK}/people/take-ownership` && init?.method === "POST") return json(200, { ok: true });
+    if (url.pathname === `/v1/dev/tasks/${TASK}/people/take-ownership` && init?.method === "POST") return json(200, { change: { status: "COMMITTED", view: { revision: 2 } } });
     if (url.pathname === `/v1/dev/tasks/${TASK}/people`) {
       const status = options.peopleStatus?.(who) ?? 200;
       return status === 200 ? json(200, options.people?.(who) ?? peopleFor(who)) : json(status, refusal);

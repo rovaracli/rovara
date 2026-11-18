@@ -3,6 +3,7 @@
 //
 //   GET  /v1/app/projects/{p}/setup-status              -> Code GET  /v1/dev/client/projects/{p}/setup-status          (#841; any member of the company)
 //   PUT  /v1/app/projects/{p}/setup-status/skips        -> Code PUT  /v1/dev/client/projects/{p}/setup-status/skips    (#841; owner/admin or project admin)
+//   PUT  /v1/app/projects/{p}/setup-status/eval-none    -> Code PUT  /v1/dev/client/projects/{p}/setup-status/eval-none (L2-5 c; the same people: "this project runs no evals")
 //   GET  /v1/app/projects/{p}/setup-agent               -> Code GET  /v1/app/projects/{p}/setup-agent                  (#844; owner/admin or project admin manage, a project user reads)
 //   POST /v1/app/projects/{p}/setup-agent   {requestId} -> Code POST /v1/app/projects/{p}/setup-agent                  (start, or Re-run setup: a re-run only proposes)
 //   POST /v1/app/projects/{p}/setup-agent/stop {requestId} -> Code POST .../setup-agent/stop
@@ -63,6 +64,8 @@ const ROWS = ["repos", "setupRun", "evalConfirm", "aiAndSpend", "slackChannel", 
 const SKIPPABLE = ["slackChannel", "linear", "invites"] as const;
 const REPOSITORY_ACCESS = ["transferred", "removed"] as const;
 const RUN_STATUSES = ["none", "running", "ready", "failed"] as const;
+/** Code's eval row report (project-setup-status.ts): `no_evals` is a person's "this project runs no evals" for the latest finished setup run (L2-5 c). */
+const EVAL_REPORTS = ["none", "reported", "confirmed", "no_evals"] as const;
 
 type Plain = Record<string, unknown>;
 const plain = (value: unknown): value is Plain => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
@@ -70,6 +73,8 @@ const whole = (value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): value is
 const oneOf = <T extends string>(value: unknown, words: readonly T[]): value is T => typeof value === "string" && (words as readonly string[]).includes(value);
 /** A bounded, one-line string with no control or format characters. */
 const text = (value: unknown, max: number, min = 1): value is string => typeof value === "string" && value.length >= min && value.length <= max && !CONTROL.test(value);
+/** One line of a failed command's output, as Code's journal keeps it: like `text`, but a TAB is part of real output (Code allows it), so it is kept; any other control or format character is still refused. */
+const outputLine = (value: unknown, max: number): value is string => typeof value === "string" && value.length <= max && !CONTROL.test(value.replaceAll("\t", " "));
 
 /** Not a readable answer: the whole read is refused, never a part of it. */
 class Unreadable extends Error {}
@@ -92,7 +97,7 @@ function setupRunRow(row: Plain): Plain {
     ...optional<string>(row["failure"], (one) => text(one, 1_000), "failure"),
     ...(failed === undefined ? {} : {
       failedCommand: need(plain(failed) && whole(failed["n"], 1) && text(failed["command"], 2_000) && (failed["exitCode"] === null || whole(failed["exitCode"], -1, 255)) && typeof failed["timedOut"] === "boolean"
-        && Array.isArray(failed["lastLines"]) && failed["lastLines"].length <= 20 && failed["lastLines"].every((line) => text(line, 300, 0)),
+        && Array.isArray(failed["lastLines"]) && failed["lastLines"].length <= 20 && failed["lastLines"].every((line) => outputLine(line, 300)),
       { n: (failed as Plain)["n"], command: (failed as Plain)["command"], exitCode: (failed as Plain)["exitCode"], timedOut: (failed as Plain)["timedOut"], lastLines: [...((failed as Plain)["lastLines"] as string[])] }),
     }),
   };
@@ -109,7 +114,8 @@ export function checklistAnswer(value: unknown, project: string): Plain {
     && (progress["nextRequired"] === null || oneOf(progress["nextRequired"], ROWS)), undefined);
   const repos = rows.repos, evalRow = rows.evalConfirm, ai = rows.aiAndSpend, slack = rows.slackChannel, linear = rows.linear, first = rows.firstTask;
   need(whole(repos["count"], 0, 32) && Array.isArray(repos["items"]) && repos["items"].length <= 32 && repos["items"].every((item) => plain(item) && text(item["name"], 128) && text(item["defaultBranch"], 256) && (item["fullName"] === undefined || text(item["fullName"], 256)) && (item["access"] === undefined || oneOf(item["access"], REPOSITORY_ACCESS))), undefined);
-  need(oneOf(evalRow["report"], ["none", "reported", "confirmed"]) && (evalRow["blockedBy"] === undefined || evalRow["blockedBy"] === "setupRun")
+  const noEvals = evalRow["noEvals"];
+  need(oneOf(evalRow["report"], EVAL_REPORTS) && (noEvals === undefined || (plain(noEvals) && text(noEvals["confirmedAt"], 40))) && (evalRow["blockedBy"] === undefined || evalRow["blockedBy"] === "setupRun")
     && (evalRow["suites"] === undefined || (Array.isArray(evalRow["suites"]) && evalRow["suites"].length <= 4 && evalRow["suites"].every((suite) => plain(suite) && text(suite["selection"], 512) && whole(suite["questions"]))))
     && (evalRow["confirmedSelection"] === undefined || text(evalRow["confirmedSelection"], 512)), undefined);
   need(oneOf(ai["source"], ["project", "company", "default"]) && typeof ai["companyModelSaved"] === "boolean" && (ai["modelBudgetUsd"] === null || (typeof ai["modelBudgetUsd"] === "number" && Number.isFinite(ai["modelBudgetUsd"]) && ai["modelBudgetUsd"] >= 0)), undefined);
@@ -127,6 +133,7 @@ export function checklistAnswer(value: unknown, project: string): Plain {
       state: evalRow["state"], report: evalRow["report"], ...(evalRow["blockedBy"] === undefined ? {} : { blockedBy: "setupRun" }),
       ...(evalRow["suites"] === undefined ? {} : { suites: (evalRow["suites"] as Plain[]).map((suite) => ({ selection: suite["selection"], questions: suite["questions"] })) }),
       ...(evalRow["confirmedSelection"] === undefined ? {} : { confirmedSelection: evalRow["confirmedSelection"] }),
+      ...(evalRow["noEvals"] === undefined ? {} : { noEvals: { confirmedAt: (evalRow["noEvals"] as Plain)["confirmedAt"] } }),
     },
     aiAndSpend: { state: ai["state"], source: ai["source"], companyModelSaved: ai["companyModelSaved"], modelBudgetUsd: ai["modelBudgetUsd"] },
     slackChannel: { state: slack["state"], channels: (slack["channels"] as Plain[]).map((one) => ({ channelId: one["channelId"], ...(one["name"] === undefined ? {} : { name: one["name"] }), ...(one["isPrivate"] === undefined ? {} : { isPrivate: one["isPrivate"] }) })) },
@@ -221,7 +228,10 @@ export const SETUP_APPROVAL_WORDS = Object.freeze({
 const AW = SETUP_APPROVAL_WORDS;
 
 const RISKS = ["low", "medium", "high"] as const;
-const AREAS = ["setup_commands", "test_commands", "test_mocks", "websites", "registries", "integrations", "dev_container", "other"] as const;
+/** Code's setup change areas (core/setup-agent/setup-risk.ts AREA_ORDER; `prompt_locations` since L4-EVP). */
+const AREAS = ["setup_commands", "test_commands", "test_mocks", "prompt_locations", "websites", "registries", "integrations", "dev_container", "other"] as const;
+/** The most item ids one "Use this setup" names, and its answer lists (Code's SetupConfirmRequestSchema / SetupConfirmReplySchema: 128). */
+const CONFIRM_IDS_MAX = 128;
 const CHECK_STATES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
 const APPROVERS = ["maintainer", "admin"] as const;
 const LEFT_OUT = ["unverified", "refused_command", "not_a_command_item", "too_many", "invalid_command"] as const;
@@ -236,6 +246,9 @@ export function applyAnswer(value: unknown): Plain {
   need(plain(value), undefined);
   const v = value as Plain, check = v["check"], approval = v["approval"], changes = v["changes"];
   need(whole(v["candidateRevision"], 1) && whole(v["baseRevision"], 0) && lines(v["setup"], 64) && lines(v["readiness"], 64), undefined);
+  // L4-EVP: the prompt locations the candidate adds, one plain line each ("repo/path: function Name"), as Code words them; at most Code's PROMPT_LOCATIONS_MAX.
+  const locations = v["promptLocations"];
+  need(locations === undefined || (Array.isArray(locations) && locations.length <= 40 && locations.every((one) => text(one, 1_100))), undefined);
   need(plain(check) && oneOf(check["status"], CHECK_STATES) && (check["failedStep"] === undefined || text(check["failedStep"], 1_000)), undefined);
   need(oneOf(v["risk"], RISKS) && oneOf(v["approver"], APPROVERS) && typeof v["canApprove"] === "boolean" && typeof v["canReject"] === "boolean", undefined);
   need(Array.isArray(changes) && changes.length <= 16 && changes.every((one) => plain(one) && oneOf(one["area"], AREAS) && oneOf(one["risk"], RISKS)), undefined);
@@ -244,6 +257,7 @@ export function applyAnswer(value: unknown): Plain {
   const c = check as Plain, a = approval as Plain | undefined;
   return {
     candidateRevision: v["candidateRevision"], baseRevision: v["baseRevision"], setup: [...(v["setup"] as string[])], readiness: [...(v["readiness"] as string[])],
+    ...(locations === undefined ? {} : { promptLocations: [...(locations as string[])] }),
     check: { status: c["status"], ...(c["failedStep"] === undefined ? {} : { failedStep: c["failedStep"] }) },
     risk: v["risk"], changes: (changes as Plain[]).map((one) => ({ area: one["area"], risk: one["risk"] })), approver: v["approver"], canApprove: v["canApprove"], canReject: v["canReject"],
     ...(a === undefined ? {} : { approval: { requestId: a["requestId"], revision: a["revision"], artifactDigest: a["artifactDigest"], kind: "setup", risk: a["risk"] } }),
@@ -255,7 +269,7 @@ export function confirmBody(value: unknown): { requestId: string; expectedRevisi
   if (!plain(value) || Object.keys(value).some((key) => key !== "requestId" && key !== "expectedRevision" && key !== "itemIds")) return undefined;
   const ids = value["itemIds"];
   if (typeof value["requestId"] !== "string" || !UUID.test(value["requestId"]) || !whole(value["expectedRevision"], 0, 1_000_000_000)) return undefined;
-  if (ids !== undefined && !(Array.isArray(ids) && ids.length <= 64 && ids.every((id) => text(id, 100)))) return undefined;
+  if (ids !== undefined && !(Array.isArray(ids) && ids.length <= CONFIRM_IDS_MAX && ids.every((id) => text(id, 100)))) return undefined;
   return { requestId: value["requestId"], expectedRevision: value["expectedRevision"], ...(ids === undefined ? {} : { itemIds: [...ids] }) };
 }
 
@@ -274,7 +288,7 @@ export function decideBody(value: unknown): DecideBody | undefined {
 function confirmAnswer(value: unknown): Plain {
   need(plain(value), undefined);
   const v = value as Plain, left = v["left"];
-  need(HEX64.test(typeof v["digest"] === "string" ? v["digest"] : "") && Array.isArray(v["used"]) && v["used"].length <= 64 && v["used"].every((id) => text(id, 100)) && Array.isArray(v["unchecked"]) && v["unchecked"].length <= 64 && v["unchecked"].every((id) => text(id, 100)), undefined);
+  need(HEX64.test(typeof v["digest"] === "string" ? v["digest"] : "") && Array.isArray(v["used"]) && v["used"].length <= CONFIRM_IDS_MAX && v["used"].every((id) => text(id, 100)) && Array.isArray(v["unchecked"]) && v["unchecked"].length <= CONFIRM_IDS_MAX && v["unchecked"].every((id) => text(id, 100)), undefined);
   need(Array.isArray(left) && left.length <= 200 && left.every((one) => plain(one) && text(one["id"], 100) && oneOf(one["reason"], LEFT_OUT)) && typeof v["proved"] === "boolean" && v["next"] === "check" && (v["candidateRevision"] === undefined || whole(v["candidateRevision"], 1)), undefined);
   return {
     digest: v["digest"], used: [...(v["used"] as string[])], unchecked: [...(v["unchecked"] as string[])], left: (left as Plain[]).map((one) => ({ id: one["id"], reason: one["reason"] })),
@@ -328,6 +342,28 @@ const skipRoute: Route = {
     if (!plain(v) || v["project"] !== at.project || v["row"] !== given.row || v["skipped"] !== given.skipped || !Array.isArray(v["skippedRows"]) || v["skippedRows"].length > SKIPPABLE.length
       || !v["skippedRows"].every((row) => oneOf(row, SKIPPABLE))) return A.unavailable;
     return { status: 200, body: { project: at.project, row: given.row, skipped: given.skipped, skippedRows: [...(v["skippedRows"] as string[])] } };
+  },
+};
+
+/** The browser's "no evals" choice, strictly: `{noEvals}` (true sets it for the latest finished setup run, false takes it back) and nothing else (Code's ProjectSetupEvalNoneBodySchema). */
+export function evalNoneBody(value: unknown): { noEvals: boolean } | undefined {
+  if (!plain(value) || Object.keys(value).length !== 1 || typeof value["noEvals"] !== "boolean") return undefined;
+  return { noEvals: value["noEvals"] };
+}
+
+const evalNoneRoute: Route = {
+  method: "PUT", path: /^\/projects\/([^/]+)\/setup-status\/eval-none$/u,
+  answer: async (context) => {
+    const at = await scope(context);
+    if ("refusal" in at) return at.refusal;
+    const given = evalNoneBody(context.body);
+    if (given === undefined) return A.invalid;
+    // Code decides who may (a company owner or admin, or the project's admin: the same people as a skip) and against which setup run.
+    const got = await fromCode(context, "skip", `${statusPath(at.project)}/eval-none`, { method: "PUT", body: given });
+    if ("refusal" in got) return got.refusal;
+    const v = got.value;
+    if (!plain(v) || v["project"] !== at.project || v["noEvals"] !== given.noEvals || !(v["taskId"] === null || text(v["taskId"], 160))) return A.unavailable;
+    return { status: 200, body: { project: at.project, noEvals: given.noEvals, taskId: v["taskId"] } };
   },
 };
 
@@ -412,4 +448,4 @@ const journalRoute: Route = {
   },
 };
 
-export const SETUP_CHECKLIST_ROUTES: Route[] = [statusRoute, skipRoute, runReadRoute, runChangeRoute(""), runChangeRoute("/stop"), journalRoute, confirmRoute, discardRoute, decideRoute];
+export const SETUP_CHECKLIST_ROUTES: Route[] = [statusRoute, skipRoute, evalNoneRoute, runReadRoute, runChangeRoute(""), runChangeRoute("/stop"), journalRoute, confirmRoute, discardRoute, decideRoute];

@@ -243,8 +243,8 @@ describe("a project's per-task limit", () => {
     const pam = await w.as("pam"), cal = await w.as("cal"), ada = await w.as("ada"), bea = await w.as("bea");
     expect((await w.send("GET", LIMITS("payments"), pam)).body).toEqual({ project: "payments", revision: 2, perTask: { sameAsCompany: true, usd: null }, appliedUsd: A_TASK_LIMIT_USD, canChange: true });
     expect((await w.send("GET", LIMITS("payments"), cal)).body).toMatchObject({ canChange: false });
-    // Code lets only the project's administrator change it, so a company owner who isn't one is not offered the change.
-    expect((await w.send("GET", LIMITS("payments"), ada)).body).toMatchObject({ canChange: false });
+    // Code lets a live company owner or admin change a project's per-task limit (project-settings.ts, L2-5 b), and this page changes only that: they are offered it (audit 12d).
+    expect((await w.send("GET", LIMITS("payments"), ada)).body).toMatchObject({ canChange: true });
     const foreign = await w.send("GET", LIMITS("payments"), bea);
     expect(foreign).toMatchObject({ status: 404, body: AI_SPEND_ANSWERS.projectNotFound.body });
     expect(foreign.text).not.toContain(LEAK);

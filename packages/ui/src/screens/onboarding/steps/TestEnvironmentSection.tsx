@@ -98,7 +98,7 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
 
     {proposal === undefined && shown.draft.status === "ready" && <Button busy={busy === "propose"} onClick={() => { void act("propose", () => api.propose(project), take); }}>Propose a test environment</Button>}
     {proposal === undefined && shown.draft.status === "stale" && <p>The setup draft is older than the project's settings. Ask Rovara to propose the setup again, above.</p>}
-    {proposal === undefined && shown.draft.status === "none" && !shown.approved && <p>Ask Rovara to propose the setup above first. The test environment is drafted from that look at your default branch.</p>}
+    {proposal === undefined && shown.draft.status === "none" && !shown.approved && shown.draft.notes.length === 0 && <p>Ask Rovara to propose the setup above first. The test environment is drafted from that look at your default branch.</p>}
 
     {proposal !== undefined && <ProposalView
       proposal={proposal} approvedRevision={approvedRevision} busy={busy} confirmUrl={confirmUrl} origin={host.origin} applied={applied}

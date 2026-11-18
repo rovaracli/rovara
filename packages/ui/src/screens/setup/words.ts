@@ -41,7 +41,7 @@ export const APPROVAL_WORDS = {
     medium: "It changes test mocks, the stand-in services the tests use.",
     highUnknown: "Rovara could not tell what it changes, so it is treated as high risk.",
   },
-  area: { setup_commands: "setup commands", test_commands: "test commands", test_mocks: "test mocks", websites: "allowed websites", registries: "package registries", integrations: "integrations", dev_container: "the dev container", other: "something Rovara does not recognise" },
+  area: { setup_commands: "setup commands", test_commands: "test commands", test_mocks: "test mocks", prompt_locations: "where the AI prompts live", websites: "allowed websites", registries: "package registries", integrations: "integrations", dev_container: "the dev container", other: "something Rovara does not recognise" },
   who: { maintainer: "A project maintainer, or a company owner or admin, approves this.", admin: "A company owner or admin approves high-risk changes." },
   check: {
     checking: "Rovara is checking it on a fresh workspace. This can take a few minutes.",

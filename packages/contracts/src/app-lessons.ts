@@ -171,7 +171,7 @@ export const LessonMeasureResponseSchema = z.object({
   loadedBelowFloor: z.number().int(), loadsWithBelowFloor: z.number().int(), loadedNoMatch: z.number().int(), meanWordsLoaded: z.number().nullable(), meanWordsLeftOut: z.number().nullable(),
   loadsCapBound: z.number().int(), leftOutAtOrAboveFloor: z.number().int(), meanFitLoaded: z.number().nullable(), meanFitLeftOut: z.number().nullable(),
   cleanMerge: z.object({ merged: z.number().int(), reverted: z.number().int(), clean: z.number().int(), rate: z.number().nullable() }).strict(),
-  revertDetection: z.literal("not_wired"), truncated: z.boolean(), unreadable: z.number().int(),
+  revertDetection: z.enum(["not_wired", "wired"]), truncated: z.boolean(), unreadable: z.number().int(),
 }).strict();
 export const LessonMeasureResponseReaderSchema = forwardReader(LessonMeasureResponseSchema);
 export type LessonMeasureResponse = z.infer<typeof LessonMeasureResponseSchema>;
