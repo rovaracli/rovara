@@ -26,6 +26,7 @@ import {
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import { withdrawForMember } from "./product-ai-routes.js";
+import { SELF_APPROVED_ONLY_ADMIN, isSoleCompanyAdmin } from "./sole-admin.js";
 import { LINK_TOKEN } from "./onboarding-routes.js";
 import type { PersonSpendReader } from "./people-limits-routes.js";
 
@@ -98,10 +99,10 @@ const log = (who: Caller, event: Record<string, unknown>) => (who.backend.log ??
  * Writes Cloud's audit record of a change already saved (plan v3.2 7.5; audit-log.ts), when this Cloud keeps audit records. Recorded after the
  * change, so a failed write can't undo it: the failure is logged (fixed words) and the answer stands.
  */
-async function audited(context: RouteContext, who: Caller, action: CloudAuditAction, subject?: string): Promise<void> {
+async function audited(context: RouteContext, who: Caller, action: CloudAuditAction, subject?: string, detail?: string): Promise<void> {
   if (context.audit === undefined) return;
   try {
-    await recordCloudAction(context.audit, { companyId: who.companyId, actor: { developerId: who.developerId, name: who.name, type: "person" }, action, via: "web", ...(subject === undefined ? {} : { subject }) }, context.now);
+    await recordCloudAction(context.audit, { companyId: who.companyId, actor: { developerId: who.developerId, name: who.name, type: "person" }, action, via: "web", ...(subject === undefined ? {} : { subject }), ...(detail === undefined ? {} : { detail }) }, context.now);
   } catch {
     log(who, { event: "cloud.audit_failed", action });
   }
@@ -137,12 +138,14 @@ async function changeSettings(context: RouteContext): Promise<RouteAnswer> {
   // The company's current rules decide: a second admin approves (the proposer need not be a decider) or this admin decides now.
   const required = settingsDecision(current.settings, loosening, "requirement", who.developerId);
   if (!required.allow) return WORDS.ruled;
-  const decision = required.secondPerson ? required : settingsDecision(current.settings, loosening, "verdict", who.developerId);
+  // DEC 254zzz79 (2): a company with ONE live owner/admin has no second person, so that person decides now (the verdict stage still checks `deciders`).
+  const alone = required.secondPerson && await isSoleCompanyAdmin(context, who);
+  const decision = required.secondPerson && !alone ? required : settingsDecision(current.settings, loosening, "verdict", who.developerId);
   if (!decision.allow) return WORDS.ruled;
   if (current.version !== body["expectedVersion"]) return WORDS.conflict;
   if (canonical(next) === canonical(current.settings)) return ok({ companyId: who.companyId, version: current.version, settings: current.settings });
   const at = context.now().toISOString();
-  if (decision.secondPerson) {
+  if (decision.secondPerson && !alone) {
     const change: PendingSettingsChange = {
       companyId: who.companyId, changeId: newChangeId(), settings: next, baseVersion: current.version, proposedBy: who.developerId, proposedAt: at,
       expiresAt: new Date(context.now().getTime() + PENDING_CHANGE_DAYS * DAY_MS).toISOString(),
@@ -163,8 +166,8 @@ async function changeSettings(context: RouteContext): Promise<RouteAnswer> {
     if (error instanceof CompanyStoreConflict) return WORDS.conflict;
     throw error;
   }
-  log(who, { event: "cloud.company_settings_changed", version, loosening });
-  await audited(context, who, canonical(next.budgets) === canonical(current.settings.budgets) ? "company.rules.changed" : "company.budget.changed");
+  log(who, { event: "cloud.company_settings_changed", version, loosening, ...(alone ? { selfApproved: true } : {}) });
+  await audited(context, who, canonical(next.budgets) === canonical(current.settings.budgets) ? "company.rules.changed" : "company.budget.changed", undefined, alone ? SELF_APPROVED_ONLY_ADMIN : undefined);
   return ok({ companyId: who.companyId, version, settings: next });
 }
 
@@ -175,7 +178,9 @@ async function approveChange(context: RouteContext): Promise<RouteAnswer> {
   const store = who.backend.store;
   const change = await store.pendingChange(who.companyId, context.now().getTime());
   if (change === undefined || change.changeId !== changeId || change.companyId !== who.companyId) return WORDS.noChange;
-  if (change.proposedBy === who.developerId) return WORDS.secondPerson;
+  // The proposer may approve their own change only as the company's one live owner/admin (DEC 254zzz79 (2): read now, never from the proposal).
+  const own = change.proposedBy === who.developerId;
+  if (own && !(await isSoleCompanyAdmin(context, who))) return WORDS.secondPerson;
   const current = await companySettings(store, who.companyId);
   if (current === undefined) return WORDS.unreadable;
   const read = validateCompanySettings(change.settings);
@@ -193,8 +198,8 @@ async function approveChange(context: RouteContext): Promise<RouteAnswer> {
     if (error instanceof CompanyStoreConflict) return WORDS.conflict;
     throw error;
   }
-  log(who, { event: "cloud.company_settings_approved", changeId, version, proposedBy: change.proposedBy });
-  await audited(context, who, canonical(read.settings.budgets) === canonical(current.settings.budgets) ? "company.rules.changed" : "company.budget.changed", `change:${changeId}`);
+  log(who, { event: "cloud.company_settings_approved", changeId, version, proposedBy: change.proposedBy, ...(own ? { selfApproved: true } : {}) });
+  await audited(context, who, canonical(read.settings.budgets) === canonical(current.settings.budgets) ? "company.rules.changed" : "company.budget.changed", `change:${changeId}`, own ? SELF_APPROVED_ONLY_ADMIN : undefined);
   return ok({ companyId: who.companyId, version, settings: read.settings });
 }
 

@@ -706,3 +706,64 @@ describe("the upkeep and answers limits", () => {
     expect((await w.companies.spendLimit(A, "project_month", "api"))?.monthlyUsdMicros).toBe(3 * MICROS);
   });
 });
+
+// DEC 254zzz79 (2): with the DEFAULT rules (a second person for a loosening), a company with ONE live owner/admin has no second person, so that person raises a limit
+// themselves, audited as "self-approved: only owner/admin". Company B has one owner (Bea); company A has an owner and an admin (Ada, Ann).
+describe("a sole owner/admin raises a limit alone (DEC 254zzz79 (2))", () => {
+  const SELF = "self-approved: only owner/admin";
+  const withDefaultRules = async () => {
+    const w = world();
+    for (const company of [A, B]) await w.settings(company, {}, (s) => { s.decisions = [{ what: "setting.loosen", secondPerson: true }]; });
+    await w.seed(A, "project_month", "web", 10 * MICROS); await w.seed(B, "project_month", "web", 10 * MICROS);
+    return w;
+  };
+  const details = async (w: World, companyId: string) => (await w.auditRows(companyId)).map((row) => row.detail ?? "");
+
+  it("the one owner raises it, the limit really changes, and the audit line says it was self-approved", async () => {
+    const w = await withDefaultRules();
+    const bea = await w.signIn("bea", 5);
+    expect((await w.call(bea, "PUT", project("web"), put(1, 25))).status).toBe(200);
+    expect((await stored(w, "project_month", "web", B))?.monthlyUsdMicros).toBe(25 * MICROS);
+    const lines = await details(w, B);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("raised");
+    expect(lines[0]).toContain(SELF);
+  });
+
+  it("lowering a limit is not a self-approval: no audit mark", async () => {
+    const w = await withDefaultRules();
+    expect((await w.call(await w.signIn("bea", 5), "PUT", project("web"), put(1, 4))).status).toBe(200);
+    expect((await details(w, B))[0]).not.toContain(SELF);
+  });
+
+  it("with two owners/admins a raise stays refused (the second person approves through Company settings)", async () => {
+    const w = await withDefaultRules();
+    const answer = await w.call(await w.signIn("ada", 5), "PUT", project("web"), put(1, 25));
+    expect(answer.body.error?.code).toBe("SECOND_PERSON_REQUIRED");
+    expect((await stored(w, "project_month", "web", A))?.monthlyUsdMicros).toBe(10 * MICROS);
+    expect(await details(w, A)).toEqual([]);
+  });
+
+  it("two companies: B's sole owner changes only B's limit; A's admins gain nothing from it", async () => {
+    const w = await withDefaultRules();
+    expect((await w.call(await w.signIn("bea", 5), "PUT", project("web"), put(1, 25))).status).toBe(200);
+    expect((await stored(w, "project_month", "web", A))?.monthlyUsdMicros).toBe(10 * MICROS);
+    expect((await w.call(await w.signIn("ann", 5), "PUT", project("web"), put(1, 25))).body.error?.code).toBe("SECOND_PERSON_REQUIRED");
+  });
+
+  it("fails closed: a member list that does not read, or holds another company's person, keeps the second-person rule", async () => {
+    for (const members of ["outage", "garbled", "foreign"] as const) {
+      const w = world({ members }); await w.settings(B, {}, (s) => { s.decisions = [{ what: "setting.loosen", secondPerson: true }]; }); await w.seed(B, "project_month", "web", 10 * MICROS);
+      expect((await w.call(await w.signIn("bea", 5), "PUT", project("web"), put(1, 25))).body.error?.code, members).toBe("SECOND_PERSON_REQUIRED");
+      expect((await stored(w, "project_month", "web", B))?.monthlyUsdMicros, members).toBe(10 * MICROS);
+    }
+  });
+
+  it("a rule that forbids loosening still refuses a sole owner; a rule that names other deciders still refuses them", async () => {
+    const w = world(); await w.settings(B, {}, (s) => { s.decisions = [{ what: "setting.loosen", allow: false }]; }); await w.seed(B, "project_month", "web", 10 * MICROS);
+    expect((await w.call(await w.signIn("bea", 5), "PUT", project("web"), put(1, 25))).body.error?.code).toBe("FORBIDDEN");
+    const d = world(); await d.settings(B, {}, (s) => { s.decisions = [{ what: "setting.loosen", secondPerson: true }, { what: "setting.loosen", deciders: [DEV.ada] }]; }); await d.seed(B, "project_month", "web", 10 * MICROS);
+    expect((await d.call(await d.signIn("bea", 5), "PUT", project("web"), put(1, 25))).body.error?.code).toBe("FORBIDDEN");
+    expect((await stored(d, "project_month", "web", B))?.monthlyUsdMicros).toBe(10 * MICROS);
+  });
+});

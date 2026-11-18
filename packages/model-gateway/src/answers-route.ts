@@ -6,7 +6,7 @@
 //            (server.ts checks both directions with the fixed 401, before anything is read, held or sent). A learning token is refused here too.
 //   Key      LearningKeySource only (the company's own connected account). This route is never handed the gateway's ProviderKeys. One exception (DEC 254zzz3(1)):
 //            a company the operator named exempt, with no connected account and Rovara's AI as its effective source, is served by Rovara's AI (`rovaraDefault`).
-//   Paths    /v1/answers/messages (Anthropic Messages), /v1/answers/gemini/..., /v1/answers/vertex/..., /v1/answers/openai/chat/completions: the same
+//   Paths    /v1/answers/messages (Anthropic Messages; also /v1/answers/v1/messages, where an Anthropic client's base URL is /v1/answers: Slack chat and routing, DEC 254zzz79 (3)), /v1/answers/gemini/..., /v1/answers/vertex/..., /v1/answers/openai/chat/completions: the same
 //            provider paths as the learning route under their own prefix. The company must have THAT provider connected.
 //   Money    its OWN meter (separate tables), combined with the agent meter's company row exactly as learning's is (DEC 228c): one hold takes the answers
 //            month row (the meter's company row: min(the company's answers limit, its monthly cap)) AND the combined company row. Task and project rows
@@ -24,6 +24,8 @@ import type { RouteRefusal } from "./server.js";
 export const ANSWERS_STEP = "rovara-answers-call";
 export const ANSWERS_PATH_PREFIX = "/v1/answers/";
 export const ANSWERS_PATH = "/v1/answers/messages";
+/** DEC 254zzz79 (3): the same route under the path an Anthropic client builds from the base URL `<gateway>/v1/answers` (Rovara's Slack chat and message router). Same token purpose, key, meter and caps. */
+export const ANSWERS_CLIENT_PATH = "/v1/answers/v1/messages";
 /** $20 a month per company, in micro-dollars: the answers month when the company has no answers limit of its own. A placeholder until the first dry run (the owner confirms). Cloud's company-store.ts holds the same number. */
 export const ANSWERS_DEFAULT_MONTH_MICROS = 20_000_000;
 export const ANSWERS_PAUSE_HEADER = "x-rovara-answers-pause";
@@ -44,7 +46,7 @@ const learningReason = (reason: LearningPauseReason): AnswersPauseReason => {
   if (reason === "lessons_off") throw new Error("the answers route has no lessons switch");
   return reason;
 };
-export const ANSWERS_FLAVOR: CompanyKeyFlavor = Object.freeze({ purpose: "answers", pathPrefix: ANSWERS_PATH_PREFIX, paused: (reason: LearningPauseReason) => answersPaused(learningReason(reason)), costHeader: ANSWERS_COST_HEADER });
+export const ANSWERS_FLAVOR: CompanyKeyFlavor = Object.freeze({ purpose: "answers", pathPrefix: ANSWERS_PATH_PREFIX, paused: (reason: LearningPauseReason) => answersPaused(learningReason(reason)), costHeader: ANSWERS_COST_HEADER, clientBasePath: true });
 
 /** The company's own answers limit, micro-dollars: undefined when it has none (the default applies), null when the stored item does not read (the call is refused). A failed read throws. */
 export interface AnswersLimits { limitFor(cid: string, signal?: AbortSignal): Promise<number | null | undefined> }
