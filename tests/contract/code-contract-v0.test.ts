@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { APP_ROUTES, CODE_ROUTES, contractCounts, matchCodeRoute, pathParamNames, pathPattern } from "../../packages/contracts/src/code-contract-v0.js";
+import { DEFAULT_TICKET_UPDATES, NEW_HOSTED_TICKET_UPDATES, TICKET_UPDATE_LEVELS, TICKET_UPDATE_LEVEL_WORDS, TicketStatusNameSchema } from "../../packages/contracts/src/ticket-updates.js";
 
 describe("code contract v0 tables", () => {
   it("has one entry per Code route id and one per method and path", () => {
@@ -94,5 +95,13 @@ describe("code contract v0 tables", () => {
     const text = readFileSync(new URL("../../packages/contracts/src/code-contract-v0.ts", import.meta.url), "utf8");
     expect(/^\s*(import\s|export\s.*\sfrom\s)/mu.test(text)).toBe(false);
     expect(text).not.toMatch(/require\(|process\.|node:/u);
+  });
+
+  it("pins ticket update settings to Code contract 5d7b2e934", () => {
+    expect(TICKET_UPDATE_LEVELS).toEqual(["status_only", "decisions", "plan_decisions", "full"]);
+    expect(NEW_HOSTED_TICKET_UPDATES).toEqual({ comments: true, changeStatus: false, statuses: { started: "In Progress", pr_opened: "In Review", merged: "Done" }, level: "full" });
+    expect(DEFAULT_TICKET_UPDATES).toEqual({ comments: true, changeStatus: false, statuses: { started: "In Progress", pr_opened: "In Review", merged: "Done" } });
+    expect(Object.keys(TICKET_UPDATE_LEVEL_WORDS)).toEqual(TICKET_UPDATE_LEVELS);
+    expect(TicketStatusNameSchema.safeParse("project-1").success).toBe(true);
   });
 });

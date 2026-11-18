@@ -87,6 +87,7 @@ export * from "./reviewed-project-archive.js";
 // Lane B reviewed restore boundary.
 export * from "./reviewed-project-restore.js";
 export * from "./project-lifecycle.js";
+export * from "./ticket-updates.js";
 export * from "./project-setup-status.js";
 export * from "./app-wiki.js";
 export * from "./app-wiki-corrections.js";
