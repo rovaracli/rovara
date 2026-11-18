@@ -597,7 +597,8 @@ export interface LessonInboxResponse { state: "on" | "off"; batches: LessonInbox
 // Lessons phase 4 (L4-LP4G, lead 4): graduation and tidy. For the people who decide lessons only (Code refuses everyone else, a script token included, in its
 // own fixed sentences, which Cloud passes through). A proven lesson gets at most one "Make this permanent?" card a week; the target is inside Rovara.
 export type GraduationTarget = "rule" | "check" | "skill";
-export interface GraduationNeeds { required: 1 | 2; have: number; you: boolean }
+/** `first`: what the first person asked for (set once someone has asked; the card's target and paths then follow it). */
+export interface GraduationNeeds { required: 1 | 2; have: number; you: boolean; first?: { target: GraduationTarget; paths: string[] } }
 /** The week's one card. `target` is the suggestion and one of `targets`; `paths` prefill a team rule's code area (none: the whole project). */
 export interface GraduationCard {
   lessonId: string; version: number; title: string; description: string; type: string; tier: 0 | 1 | 2;

@@ -24,7 +24,7 @@ export function ThisWeek({ project }: { project: string }) {
   if (!decides || (card === undefined && tidy === undefined && drafts.length === 0)) return null;
   return <section className="rv-thisweek" aria-labelledby="this-week-title" data-testid="this-week">
     <h3 id="this-week-title">This week</h3>
-    {card !== undefined && <GraduationCardView key={card.lessonId + ":" + String(card.version)} project={project} card={card} />}
+    {card !== undefined && <GraduationCardView key={card.lessonId + ":" + String(card.version) + ":" + card.target + ":" + String(card.needs.have)} project={project} card={card} />}
     {tidy !== undefined && <TidyCardView project={project} tidy={tidy} />}
     <DraftTasks project={project} drafts={drafts} />
   </section>;

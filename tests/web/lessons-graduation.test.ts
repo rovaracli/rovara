@@ -206,6 +206,12 @@ it("says how many people it needs, who has asked, and disables the button for a 
   expect((await screen.findByTestId("permanent-needs")).textContent).toBe("One person asked; needs one more");
   expect(screen.getByTestId("permanent-same-choice").textContent).toBe(SAME_CHOICE_WORDS);
   f.close();
+  f = mount({ graduation: { card: { ...CARD, tier: 2, target: "check", needs: { required: 2, have: 1, you: false, first: { target: "rule", paths: ["src/logging/**"] } } } } });
+  expect((await screen.findByTestId("permanent-same-choice")).textContent).toBe(`${SAME_CHOICE_WORDS} The first person chose: A team rule for this code area. Code paths: src/logging/**`);
+  f.close();
+  f = mount({ graduation: { card: { ...CARD, tier: 2, needs: { required: 2, have: 1, you: false, first: { target: "skill", paths: [] } } } } });
+  expect((await screen.findByTestId("permanent-same-choice")).textContent).toBe(`${SAME_CHOICE_WORDS} The first person chose: A skill`);
+  f.close();
   f = mount({ graduation: { card: { ...CARD, tier: 2, needs: { required: 2, have: 1, you: true } } } });
   const card = await screen.findByTestId("permanent-card");
   const button = within(card).getByRole("button", { name: "You already asked" });

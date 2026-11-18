@@ -83,6 +83,15 @@ const n = (value: unknown) => (fin(value) && value > 0 ? Math.floor(value) : 0);
 const strs = (value: unknown) => (Array.isArray(value) ? value.filter(str) : []);
 const target = (value: unknown): GraduationTarget | undefined => GRADUATION_TARGETS.find(one => one === value);
 
+function readFirst(raw: unknown): { target: GraduationTarget; paths: string[] } | undefined {
+  if (!isRecord(raw)) return undefined;
+  const aimed = target(raw["target"]);
+  return aimed === undefined ? undefined : { target: aimed, paths: [...new Set(strs(raw["paths"]))] };
+}
+/** What the first person chose, in words (the second person must choose the same). */
+export function firstChoiceWords(first: { target: GraduationTarget; paths: string[] }): string {
+  return `The first person chose: ${TARGET_WORDS[first.target]}${first.target === "rule" ? ". " + whereWords(first.paths) : ""}`;
+}
 function readCard(raw: unknown): GraduationCard | undefined {
   if (!isRecord(raw) || !str(raw["lessonId"]) || !fin(raw["version"]) || !str(raw["title"])) return undefined;
   const offered = [...new Set((Array.isArray(raw["targets"]) ? raw["targets"] : []).flatMap(one => { const known = target(one); return known === undefined ? [] : [known]; }))];
@@ -92,7 +101,7 @@ function readCard(raw: unknown): GraduationCard | undefined {
   return {
     lessonId: raw["lessonId"], version: raw["version"], title: raw["title"], description: str(raw["description"]) ? raw["description"] : "", type: str(raw["type"]) ? raw["type"] : "",
     tier: raw["tier"] === 0 || raw["tier"] === 2 ? raw["tier"] : 1, target: suggested, targets: [suggested, ...offered.filter(one => one !== suggested)], paths: [...new Set(strs(raw["paths"]))], tasks: n(raw["tasks"]), days: n(raw["days"]),
-    needs: { required: fin(needs["required"]) && needs["required"] >= 2 ? 2 : 1, have: n(needs["have"]), you: needs["you"] === true },
+    needs: { required: fin(needs["required"]) && needs["required"] >= 2 ? 2 : 1, have: n(needs["have"]), you: needs["you"] === true, ...(readFirst(needs["first"]) === undefined ? {} : { first: readFirst(needs["first"])! }) },
   };
 }
 function readTidy(raw: unknown): TidyCard | undefined {

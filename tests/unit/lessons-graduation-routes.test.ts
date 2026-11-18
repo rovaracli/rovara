@@ -358,6 +358,20 @@ describe("what review found", () => {
     expect(graduationView({ canDecide: true, rules: [rule, { ...rule, text: "Again" }] }, "web")["rules"]).toEqual([expect.objectContaining({ text: "Words" })]);
   });
 
+  it("keeps what the first person asked for (a known target and plain paths) on a tier-2 card, and nothing from a value it cannot read", () => {
+    const base = { lessonId: "les_aaaa", version: 1, title: "T", target: "rule", targets: ["rule"], needs: { required: 2, have: 1, you: false } };
+    const needsOf = (first: unknown) => ((graduationView({ canDecide: true, card: { ...base, needs: { ...base.needs, first } } }, "web")["card"] as { needs: Record<string, unknown> }).needs);
+    expect(needsOf({ target: "rule", paths: ["src/**", "src/**", "../x"], extra: 1 })["first"]).toEqual({ target: "rule", paths: ["src/**"] });
+    expect(needsOf({ target: "check", paths: [] })["first"]).toEqual({ target: "check", paths: [] });
+    for (const bad of [{ target: "wiki", paths: ["a"] }, "rule", null, 4]) expect(needsOf(bad), JSON.stringify(bad)).not.toHaveProperty("first");
+  });
+
+  it("keeps a rule of exactly Code's 700 characters whole and cuts nothing shorter", () => {
+    const rule = { id: "rule_0123456789abcdef", text: "w".repeat(800) };
+    expect(((graduationView({ canDecide: true, rules: [rule] }, "web")["rules"] as Array<{ text: string }>)[0]!).text).toHaveLength(700);
+    expect(((graduationView({ canDecide: true, rules: [{ ...rule, text: "Removed." }] }, "web")["rules"] as Array<{ text: string }>)[0]!).text).toBe("Removed.");
+  });
+
   it("reads a time a date cannot hold as no time, so a screen never throws drawing it", () => {
     const row = { id: "les_aaaa", version: 1, expiresAt: 5, title: "T" };
     for (const at of [1e18, 8.64e15 + 1, -5, Number.NaN, "5"]) expect(lessonItem({ ...row, became: { kind: "rule", ref: "r", at } })?.["became"], String(at)).toMatchObject({ at: 0 });
@@ -377,10 +391,10 @@ describe("live team rules", () => {
 
   it("keeps a rule to the fields drawn: a bad id, empty words or a path that is not plain is left out, text and lists are bounded, and at most 50 are listed", () => {
     const row = { id: RULE, text: "Use withRetry.", paths: ["src/**"], repos: ["a/b"], fromLesson: "les_aaaa", createdAt: 5 };
-    const read = graduationView({ canDecide: true, rules: [{ ...row, secret: 1, text: "t".repeat(700), paths: ["src/**", "../x", "a b"], repos: Array.from({ length: 14 }, () => "r"), fromLesson: "x" }, { ...row, id: "rule_bad" }, { ...row, text: "" }, { ...row, id: 4 }, "nope", ...Array.from({ length: 60 }, (_, index) => ({ ...row, id: `rule_${String(index).padStart(16, "0")}` }))] }, "web")["rules"] as Array<Record<string, unknown>>;
+    const read = graduationView({ canDecide: true, rules: [{ ...row, secret: 1, text: "t".repeat(800), paths: ["src/**", "../x", "a b"], repos: Array.from({ length: 14 }, () => "r"), fromLesson: "x" }, { ...row, id: "rule_bad" }, { ...row, text: "" }, { ...row, id: 4 }, "nope", ...Array.from({ length: 60 }, (_, index) => ({ ...row, id: `rule_${String(index).padStart(16, "0")}` }))] }, "web")["rules"] as Array<Record<string, unknown>>;
     // The first 50 entries are read; the 4 unreadable ones among them are left out.
     expect(read).toHaveLength(46);
-    expect(read[0]).toEqual({ id: RULE, text: "t".repeat(600), paths: ["src/**"], repos: Array.from({ length: 10 }, () => "r"), fromLesson: "", createdAt: 5 });
+    expect(read[0]).toEqual({ id: RULE, text: "t".repeat(700), paths: ["src/**"], repos: Array.from({ length: 10 }, () => "r"), fromLesson: "", createdAt: 5 });
     expect(graduationView({ canDecide: true, rules: "nope" }, "web")["rules"]).toEqual([]);
     expect(graduationView({ canDecide: true }, "web")["rules"]).toEqual([]);
   });

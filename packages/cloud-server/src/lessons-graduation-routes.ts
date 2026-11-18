@@ -17,6 +17,8 @@ const LESSON_RE = new RegExp(`^${LESSON_ID}$`, "u");
 const DRAFT_ID = "(chk_[0-9a-f]{16})";
 const RULE_ID = "(rule_[0-9a-f]{16})";
 const RULES_MAX = 50;
+/** Code's rule text limit (title 80 + body 600 + 2). */
+export const RULE_TEXT_MAX = 700;
 const RULE_RE = new RegExp(`^${RULE_ID}$`, "u");
 const DRAFT_RE = new RegExp(`^${DRAFT_ID}$`, "u");
 const TASK_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
@@ -55,8 +57,15 @@ function card(raw: unknown): Record<string, unknown> | undefined {
     target, targets: [target, ...targets.filter((one) => one !== target)],
     paths, tasks: count(raw["tasks"]), days: count(raw["days"]),
     // 2 or more people reads as 2: a count a newer Code raised is never shown as one person.
-    needs: { required: typeof needs["required"] === "number" && needs["required"] >= 2 ? 2 : 1, have: count(needs["have"]), you: needs["you"] === true },
+    needs: some({ required: typeof needs["required"] === "number" && needs["required"] >= 2 ? 2 : 1, have: count(needs["have"]), you: needs["you"] === true, first: firstChoice(needs["first"]) }),
   };
+}
+
+/** What the first person asked for: a known target and plain paths; anything else is no choice shown. */
+function firstChoice(raw: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const target = fixed(raw["target"], GRADUATION_TARGETS);
+  return target === undefined ? undefined : { target, paths: [...new Set(strings(raw["paths"], PATHS_MAX, PATH_MAX).filter(plainGlob))] };
 }
 
 function tidy(raw: unknown): Record<string, unknown> | undefined {
@@ -85,7 +94,7 @@ function drafts(raw: unknown): Array<Record<string, unknown>> {
 function rules(raw: unknown): Array<Record<string, unknown>> {
   const seen = new Set<string>();
   return list(raw, RULES_MAX).filter(isRecord).flatMap((one) => {
-    const id = text(one["id"], 40), words = text(one["text"], 600);
+    const id = text(one["id"], 40), words = text(one["text"], RULE_TEXT_MAX);
     if (id === undefined || !RULE_RE.test(id) || words === undefined || words === "" || seen.has(id)) return [];
     seen.add(id);
     return [{ id, text: words, paths: strings(one["paths"], PATHS_MAX, PATH_MAX).filter(plainGlob), repos: strings(one["repos"], 10, 200), fromLesson: lessonId(one["fromLesson"]) ?? "", createdAt: num(one["createdAt"]) ?? 0 }];

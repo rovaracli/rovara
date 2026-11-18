@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { GraduationCard, GraduationTarget } from "../../../api/graduation.js";
-import { GRADUATION_TITLE, NOT_NOW, PATHS_HELP, SAME_CHOICE_WORDS, TARGET_BUTTON_WORDS, TARGET_WORDS, WAITING_WORDS, graduatedWords, needsWords, parsePaths, plainPath, provenWords, whereWords } from "../../../api/graduation.js";
+import { GRADUATION_TITLE, NOT_NOW, PATHS_HELP, SAME_CHOICE_WORDS, TARGET_BUTTON_WORDS, TARGET_WORDS, WAITING_WORDS, firstChoiceWords, graduatedWords, needsWords, parsePaths, plainPath, provenWords, whereWords } from "../../../api/graduation.js";
 import { useLearnedApi } from "../../../api/learned.js";
 import { useAnnounce } from "../../../design/Announcer.js";
 import { Button } from "../../../design/Button.js";
@@ -56,7 +56,7 @@ export function GraduationCardView({ project, card }: { project: string; card: G
       {target === "skill" && <TextField label="Skill name (optional)" hint="Lowercase letters, numbers and hyphens." value={name} disabled={busy} {...(nameError === undefined ? {} : { error: nameError })} onChange={event => setName(event.target.value)} />}
       {target === "check" && <p className="rv-muted">Rovara writes a draft task you start yourself. Nothing starts by itself.</p>}
       {asked && <p className="rv-muted" data-testid="permanent-you-asked">{WAITING_WORDS}.</p>}
-      {!asked && card.needs.required >= 2 && card.needs.have >= 1 && <p className="rv-muted" data-testid="permanent-same-choice">{SAME_CHOICE_WORDS}</p>}
+      {!asked && card.needs.required >= 2 && card.needs.have >= 1 && <p className="rv-muted" data-testid="permanent-same-choice">{SAME_CHOICE_WORDS}{card.needs.first !== undefined && <> <VisibleText text={firstChoiceWords(card.needs.first)} /></>}</p>}
       <div className="rv-lesson-actions">
         <Button variant="primary" busy={busy} disabled={asked || pathsError !== undefined || nameError !== undefined} onClick={() => { void make(); }}>{asked ? "You already asked" : TARGET_BUTTON_WORDS[target]}</Button>
         <Button variant="quiet" disabled={busy} onClick={() => { void later(); }}>{NOT_NOW}</Button>
