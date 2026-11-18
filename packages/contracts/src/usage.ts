@@ -1,3 +1,4 @@
+import { RunUsageCallSchema, type RunUsageCallV1 } from "./run-usage.js";
 import { z } from "zod";
 import { isKeyedModelProvider } from "./model-providers.js";
 import { ThinkingLevelSchema } from "./models.js";
@@ -7,6 +8,8 @@ export type PiCacheRetention = "short" | "long";
 export type TaskUsageOutcome = "SUCCEEDED" | "FAILED" | "CANCELLED";
 
 export interface TaskUsageTelemetry {
+  /** Optional unit history; strict readers accept it before workers emit it. */
+  calls?: RunUsageCallV1[];
   schemaVersion: 1;
   outcome: TaskUsageOutcome;
   provider: string;
@@ -36,6 +39,7 @@ const TokenCount = z.number().int().nonnegative();
 
 export const TaskUsageTelemetrySchema = z.object({
   schemaVersion: z.literal(1),
+  calls: z.array(RunUsageCallSchema).max(2000).optional(),
   outcome: z.enum(["SUCCEEDED", "FAILED", "CANCELLED"]),
   provider: z.string().min(1).max(128),
   modelId: z.string().min(1).max(256),

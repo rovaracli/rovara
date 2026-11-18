@@ -12,7 +12,7 @@ import { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import { LITELLM_URL } from "../../packages/model-gateway/src/price-sources.js";
 import type { ProductRouteResolver } from "../../packages/model-gateway/src/server.js";
 import { GatewayConfigError, readGatewayConfig, runGateway, runPriceFetch, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
-import { caps, claims, jwk, kid, mint, now, requestBody, scope, sse } from "./model-gateway-fixture.js";
+import { caps, claims, jwk, keys, kid, mint, now, requestBody, scope, sse } from "./model-gateway-fixture.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 
 const TABLES = { meter: "gw-meter", ledger: "gw-ledger", markers: "gw-markers", prices: "gw-prices", companies: "cloud-companies" };
@@ -281,4 +281,21 @@ describe("gateway process: price fetch", () => {
     expect(await runPriceFetch({ mode: "price-fetch", region: "us-west-2", tables: { prices: TABLES.prices } }, { db: emptyDb, fetch: fakeFetch(false), log: (line) => lines.push(line), now: () => now })).toBe(1);
     expect(empty.items(TABLES.prices)).toEqual([]);
   });
+});
+
+it("registers the signed company price read in the serving route table", async () => {
+  const { RATE_QUOTE_AUDIENCE } = await import("../../packages/model-gateway/src/rate-quote.js");
+  const wire = new WireDynamo(Object.values(TABLES));
+  const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "a", secretAccessKey: "b" }), transport: wire.transport });
+  const config = { ...(readGatewayConfig(ENV) as ServeConfig), agentKeys: "company" as const };
+  const gateway = await startServe(config, { db, now: () => now, fetch: jwksFetch, listen: false, log: () => undefined, agentKeys: { connected: async () => true, keyFor: async () => { throw new Error("must not open a key"); }, identityFor: async () => ({ sourceId: "own", versionId: "1" }) }, agentAiSources: { sourceFor: async () => "anthropic_key" } });
+  running.push(gateway);
+  const path = `/v1/service/companies/${claims.cid}/rate-quote?model=claude-test`;
+  expect((await request(gateway.server, "GET", path)).statusCode).toBe(401);
+  const input = [JSON.stringify({ alg: "RS256", typ: "rovara-service+jwt", kid }), JSON.stringify({ iss: claims.iss, aud: RATE_QUOTE_AUDIENCE, cid: claims.cid, jti: "00000000-0000-4000-8000-000000000001", iat: now / 1000, nbf: now / 1000 - 30, exp: now / 1000 + 60 })].map((v) => Buffer.from(v).toString("base64url")).join(".");
+  const token = `${input}.${sign("RSA-SHA256", Buffer.from(input), keys.privateKey).toString("base64url")}`;
+  const answer = await request(gateway.server, "GET", path, { authorization: `Bearer ${token}` });
+  expect(answer.statusCode).toBe(200);
+  expect(answer.headers["cache-control"]).toBe("no-store");
+  expect(JSON.parse(answer.text())).toEqual({ state: "unavailable", reason: "missing_price" });
 });

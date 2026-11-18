@@ -90,6 +90,8 @@ export interface LessonsSwitch { isOn(cid: string, signal?: AbortSignal): Promis
  * `connected` is read at admission (before any hold); `keyFor` just before sending; undefined there means "not sent" ($0).
  */
 export interface LearningKeySource {
+  /** Read-only connection identity for signed price quotes; never opens a key. */
+  identityFor?(iss: string, cid: string, provider: "anthropic" | "openai" | "openrouter"): Promise<{ sourceId: string; versionId: string } | undefined>;
   /** Whether the company has this provider connected. `provider` is the route's: a company with only Gemini connected is not connected for OpenAI. */
   connected(iss: string, cid: string, provider: CompanyKeyProvider, signal?: AbortSignal): Promise<boolean>;
   /** The secret to send: the API key, or for Vertex the short-lived Google bearer token the adapter minted for this company. */
