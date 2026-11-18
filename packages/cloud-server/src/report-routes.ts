@@ -284,9 +284,10 @@ const centsOf = (micros: number): number => Math.round(micros / MICROS_PER_CENT)
  * Whole cents for each amount, summing exactly to the whole's cents (largest remainder), so a table's rows always add up to its total. Integers only: the
  * amounts are integer micro-dollars and nothing here is a float of dollars.
  */
-export function allocateCents(microsList: readonly number[]): number[] {
+export function allocateCents(microsList: readonly number[], wholeCents?: number): number[] {
   const total = microsList.reduce((sum, micros) => sum + micros, 0);
-  const target = centsOf(total);
+  // `wholeCents`: the cents the caller already settled for the whole (a table row, for the tasks under it), so the parts add up to exactly that. Without it, the whole's own rounding.
+  const target = wholeCents ?? centsOf(total);
   const floors = microsList.map((micros) => Math.floor(micros / MICROS_PER_CENT));
   const order = microsList.map((micros, at) => ({ at, rest: micros - floors[at]! * MICROS_PER_CENT })).sort((a, b) => b.rest - a.rest || a.at - b.at);
   let missing = target - floors.reduce((sum, cents) => sum + cents, 0);
@@ -367,19 +368,25 @@ export function applyOwnFilters(rows: readonly ReportTask[], filters: ReportFilt
     && (filters.state === undefined || (filters.state === "closed" ? row.state === "closed" || row.state === "failed" : row.state === filters.state)));
 }
 
+/**
+ * The By feature table's groups, in the order the table is allocated: each feature with a task, then No feature last. One function for the table AND a feature's page, so the page's total
+ * is allocated against the very same groups as its row (row 3672: they never differ by a cent).
+ */
+function featureGroupsOf(rows: readonly ReportTask[], features: ReadonlyMap<string, ReportFeature>): Array<{ key: string; name: string; state?: "open" | "done"; tasks: ReportTask[] }> {
+  const byFeature = new Map<string, ReportTask[]>(), none: ReportTask[] = [];
+  for (const row of rows) if (row.feature === undefined) none.push(row); else byFeature.set(row.feature.id, [...(byFeature.get(row.feature.id) ?? []), row]);
+  const featureGroups = [...byFeature].map(([id, tasks]) => { const known = features.get(id); return { key: id, name: known?.name ?? UNNAMED_FEATURE, ...(known?.state === undefined ? {} : { state: known.state }), tasks }; });
+  return none.length === 0 ? featureGroups : [...featureGroups, { key: NO_FEATURE_ID, name: NO_FEATURE_NAME, tasks: none }];
+}
+
 /** The whole report from the rows. Pure: the clock is the caller's. */
 export function buildReport(rows: readonly ReportTask[], features: ReadonlyMap<string, ReportFeature>, filters: ReportFilters, now: Date): CostReport {
   const nowMs = now.getTime();
-  const byFeature = new Map<string, ReportTask[]>(), byProject = new Map<string, ReportTask[]>(), none: ReportTask[] = [];
-  for (const row of rows) {
-    if (row.feature === undefined) none.push(row); else byFeature.set(row.feature.id, [...(byFeature.get(row.feature.id) ?? []), row]);
-    byProject.set(row.project, [...(byProject.get(row.project) ?? []), row]);
-  }
-  const featureGroups = [...byFeature].map(([id, tasks]) => { const known = features.get(id); return { key: id, name: known?.name ?? UNNAMED_FEATURE, ...(known?.state === undefined ? {} : { state: known.state }), tasks }; });
+  const byProject = new Map<string, ReportTask[]>();
+  for (const row of rows) byProject.set(row.project, [...(byProject.get(row.project) ?? []), row]);
   const projectGroups = [...byProject].map(([name, tasks]) => ({ key: name, name, tasks }));
   // The no-feature group is always the last row, with its own numbers; the cents of the whole table still add up to the total.
-  const withNone = none.length === 0 ? featureGroups : [...featureGroups, { key: NO_FEATURE_ID, name: NO_FEATURE_NAME, tasks: none }];
-  const featureTable = tableOf(withNone, nowMs);
+  const featureTable = tableOf(featureGroupsOf(rows, features), nowMs);
   const noneAt = featureTable.findIndex((group) => group.key === NO_FEATURE_ID);
   if (noneAt >= 0) featureTable.push(...featureTable.splice(noneAt, 1));
   const totalNumbers = numbersOf(rows, nowMs);
@@ -419,14 +426,16 @@ export function buildFeatureDetail(id: string, rows: readonly ReportTask[], feat
   const totalMicros = numbers.costMicros, rest = withoutMicros(numbers);
   const ordered = [...mine].sort((a, b) => b.startedAt - a.startedAt || a.taskId.localeCompare(b.taskId));
   const shown = ordered.slice(0, FEATURE_TASKS_MAX);
+  // The feature's cents are its row in the By feature table (the same allocation over the same groups), so the page and the table always agree; a feature with no task in the range has no row and costs nothing.
+  const featureCents = tableOf(featureGroupsOf(rows, features), nowMs).find((group) => group.key === id)?.costCents ?? centsOf(totalMicros);
   // Each task's cents, summing to the feature's cents (the list shows at most FEATURE_TASKS_MAX of them, so the sum is of all and the shown ones are a part).
-  const cents = allocateCents(ordered.map((task) => task.costMicros));
+  const cents = allocateCents(ordered.map((task) => task.costMicros), featureCents);
   const sources = FEATURE_SOURCES.map((source) => ({ source, count: mine.filter((task) => task.feature?.source === source).length })).filter((entry) => entry.count > 0);
   return {
     feature: { id, name: isNone ? NO_FEATURE_NAME : known?.name ?? UNNAMED_FEATURE, ...(known?.state === undefined ? {} : { state: known.state }), ...(known?.trackerLink === undefined ? {} : { trackerLink: known.trackerLink }), none: isNone },
     range: { ...(filters.from === undefined ? {} : { from: filters.from }), ...(filters.to === undefined ? {} : { to: filters.to }) },
     asOf: now.toISOString(),
-    totals: { ...rest, costCents: centsOf(totalMicros) },
+    totals: { ...rest, costCents: featureCents },
     sources,
     tasks: shown.map((task, at) => {
       const end = task.state === "open" ? nowMs : task.endedAt;
