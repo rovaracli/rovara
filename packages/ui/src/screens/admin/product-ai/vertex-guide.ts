@@ -49,7 +49,7 @@ export function vertexGuide(input: { projectId: string; setup: ProductAiRead["ve
           `gcloud iam service-accounts create ${VERTEX_SERVICE_ACCOUNT_NAME} --project="$PROJECT_ID" --display-name="Rovara Vertex AI"`,
           `gcloud projects add-iam-policy-binding "$PROJECT_ID" \\\n  --member="serviceAccount:${serviceAccount}" \\\n  --role="roles/aiplatform.user"`,
           `gcloud iam service-accounts add-iam-policy-binding "${serviceAccount}" --project="$PROJECT_ID" \\\n  --role="roles/iam.workloadIdentityUser" \\\n  --member="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/${VERTEX_POOL_ID}/subject/${sessionArn}"`].join("\n") },
-      { n: 3, title: "Paste three values into Rovara", why: `Prints the provider's full name. Then enter it below with your project id, a location such as us-central1, and the service account ${serviceAccount}. Rovara tests the connection before it saves anything.`,
+      { n: 3, title: "Paste the values into Rovara", why: `Prints the provider's full name. Then enter it below with your project id, a location such as us-central1, and the service account ${serviceAccount}. Rovara tests the connection before it saves anything.`,
         command: [head, `echo "//iam.googleapis.com/$(gcloud iam workload-identity-pools providers describe ${VERTEX_PROVIDER_ID} ${providerFlags} --format="value(name)")"`].join("\n") },
     ],
   };

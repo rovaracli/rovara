@@ -72,7 +72,7 @@ describe("the Vertex guide panel", () => {
       --role="roles/aiplatform.user"
     gcloud iam service-accounts add-iam-policy-binding "rovara-vertex@PROJECT_DOMAIN" --project="$PROJECT_ID" \\
       --role="roles/iam.workloadIdentityUser" \\
-      --member="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/rovara/subject/arn:aws:sts::111122223333:assumed-role/RovaraProductAiFederation/org_aaaaaaaaaaaaaaaaaaaa"Copy commandStep 3: Paste three values into RovaraPrints the provider's full name. Then enter it below with your project id, a location such as us-central1, and the service account rovara-vertex@PROJECT_DOMAIN. Rovara tests the connection before it saves anything.PROJECT_ID="acme-evals"
+      --member="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/rovara/subject/arn:aws:sts::111122223333:assumed-role/RovaraProductAiFederation/org_aaaaaaaaaaaaaaaaaaaa"Copy commandStep 3: Paste the values into RovaraPrints the provider's full name. Then enter it below with your project id, a location such as us-central1, and the service account rovara-vertex@PROJECT_DOMAIN. Rovara tests the connection before it saves anything.PROJECT_ID="acme-evals"
     echo "//iam.googleapis.com/$(gcloud iam workload-identity-pools providers describe rovara-aws --project="$PROJECT_ID" --location="global" --workload-identity-pool="rovara" --format="value(name)")"Copy commandIf this project's tests use workload identity themselves, set GOOGLE_CLOUD_PROJECT to the project id above."
   `);
   expect(panel.querySelectorAll("ol > li")).toHaveLength(3);
@@ -86,6 +86,10 @@ describe("the Vertex guide panel", () => {
   renderGuide({ setup: undefined });
   expect(screen.getByTestId("vertex-guide-incomplete")).toBeTruthy();
   expect(screen.getByTestId("vertex-step-1").textContent).toContain(`--account-id="${ACCOUNT_PLACEHOLDER}"`);
+ });
+ it("the subject Google sees (the whole session ARN) stays within google.subject's 127 characters for the staging role name", () => {
+  const long = { awsAccountId: "944937319445", roleName: "rovara-cloud-staging-gateway-VertexFederationRole-ABCDEFGHIJKL", companyId: company };
+  expect(vertexGuide({ projectId: "acme-evals", setup: long }).sessionArn.length).toBeLessThanOrEqual(127);
  });
  it("puts only a valid project id into a command: anything else stays a placeholder", () => {
   for (const typed of ["", "Acme Evals", 'x"; rm -rf ~ #', "acme$(id)", "a--"]) {
