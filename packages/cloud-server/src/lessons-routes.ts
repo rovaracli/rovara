@@ -114,7 +114,7 @@ export function lessonItem(raw: unknown): Record<string, unknown> | undefined {
     citations: list(raw["citations"], 8).flatMap((one) => { const view = citation(one); return view === undefined ? [] : [view]; }),
     from: people(raw["from"], 20), measured: raw["measured"] === true, supportTasks: count(raw["supportTasks"]),
     needs: needs(raw["needs"]), rejectedReason: text(raw["rejectedReason"], 40), trial: text(raw["trial"], 20),
-    possibleDuplicate: lessonRef(raw["possibleDuplicate"]), contradicts: lessonRef(raw["contradicts"]), mergeBlocked: raw["mergeBlocked"] === true ? true : undefined,
+    possibleDuplicate: lessonRef(raw["possibleDuplicate"]), contradicts: lessonRef(raw["contradicts"]),
     usedInTasks: num(raw["usedInTasks"]) === undefined ? undefined : count(raw["usedInTasks"]),
     canApprove: raw["canApprove"] === true, canReject: raw["canReject"] === true, canRetire: raw["canRetire"] === true,
   });
