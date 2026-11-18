@@ -124,13 +124,32 @@ export const EvalCardSuiteSchema = z.object({
   monthly: z.string().min(1).max(100),
   /** What the person's yes echoes back; copied from here, never computed by the page. */
   seen: z.object({ perCheckHighMicros: microDollars, monthlyCapMicros: microDollars }).strict(),
+  /** L4-EVW2 (DEC 254zzz20 D2): false when Rovara cannot read this eval's results yet (a small file it proposed as a pull request is merged first). Absent (an older Code): readable. */
+  readable: z.boolean().optional(),
+  needsFile: z.string().min(1).max(600).optional(),
 }).passthrough();
+/** L4-EVW2: Rovara's proposed wrapper file, one per repository and language: a pull request a person reviews and merges (Rovara never merges it). Every sentence is Code's own. */
+export const EVAL_WRAPPER_STATES = ["opening", "open", "merged", "closed", "failed"] as const;
+export const EvalWrapperViewSchema = z.object({
+  repository: z.string().min(1).max(200),
+  language: z.enum(["python", "node"]),
+  state: z.enum(EVAL_WRAPPER_STATES),
+  /** "Rovara proposed a small file so it can read your eval results: review PR #12" */
+  line: z.string().min(1).max(600),
+  number: z.string().min(1).max(40).optional(),
+  /** The pull request's address on the code host (https only; the page links to it). */
+  url: z.string().min(1).max(500).optional(),
+  /** The pull request is merged: setup should read the eval again. */
+  rediscover: z.boolean().optional(),
+}).passthrough();
+export type EvalWrapperView = z.infer<typeof EvalWrapperViewSchema>;
 export const EvalCardViewSchema = z.object({
   project: z.string().min(1).max(100).optional(),
   state: z.enum(EVAL_CARD_STATES),
   canApprove: z.boolean(),
   report: z.object({ taskId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-]+$/u), reportDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).passthrough().optional(),
   suites: z.array(EvalCardSuiteSchema).max(16),
+  wrappers: z.array(EvalWrapperViewSchema).max(8).optional(),
   spend: z.object({
     state: z.string().min(1).max(60),
     perPr: z.string().min(1).max(100).optional(),
@@ -152,3 +171,10 @@ export const EvalApproveRequestSchema = z.object({
   seen: z.object({ perCheckHighMicros: microDollars, monthlyCapMicros: microDollars }).strict(),
 }).strict();
 export const EvalApproveReplySchema = z.object({ project: z.string().min(1).max(100), state: z.string().max(60).optional(), perPr: z.string().max(100).optional(), monthly: z.string().max(100).optional(), carried: z.boolean().optional() }).passthrough();
+
+/** L4-EVW2: "Try again" for the proposed wrapper file. The body is the request id and nothing else. */
+export const EvalWrapperRetryRequestSchema = z.object({ requestId: z.string().uuid() }).strict();
+export const EvalWrapperRetryReplySchema = z.object({
+  project: z.string().min(1).max(100),
+  proposals: z.array(z.object({ selection: z.string().max(512), state: z.string().max(40), failure: z.string().max(40).optional(), number: z.string().max(40).optional(), url: z.string().max(500).optional() }).passthrough()).max(8),
+}).passthrough();

@@ -4,7 +4,7 @@
 // and a step-up refusal keeps its code REAUTH_REQUIRED in Cloud's own words.
 import { describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type CodeSession } from "../../packages/cloud-server/src/index.js";
-import { EVAL_APPROVE_KEYS } from "../../packages/cloud-server/src/routes.js";
+import { EVAL_APPROVE_KEYS, EVAL_WRAPPER_KEYS } from "../../packages/cloud-server/src/routes.js";
 import { APP_ROUTES } from "../../packages/contracts/src/code-contract-v0.js";
 
 const CODE = "https://code.example.test";
@@ -14,7 +14,8 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const NO_ROUTE = { error: { code: "NOT_FOUND", message: "route not found" } };
 const UUID = "6f9d0c1e-2b3a-4c5d-8e7f-001122334455";
 const APPROVE = { taskId: UUID, reportDigest: "d".repeat(64), selection: "npm test", paths: ["evals/a.yaml"], approve: true, seen: { perCheckHighMicros: 1_500_000, monthlyCapMicros: 40_000_000 } };
-const TAILS = { get: "eval", approve: "eval-approve" } as const;
+const WRAPPER = { requestId: UUID };
+const TAILS = { get: "eval", approve: "eval-approve", wrapper: "eval-wrapper" } as const;
 const codePath = (tail: string, project = "payments") => `/v1/app/projects/${project}/setup-agent/${tail}`;
 const webPath = (tail: string, project = "payments") => `/v1/web/projects/${project}/setup-agent/${tail}`;
 
@@ -28,7 +29,7 @@ function setUp(answer: Answer = (call) => json(200, { from: call.authorization, 
     const call: CodeCall = { method: init?.method ?? "GET", path: url.pathname, search: url.search, authorization: headers["authorization"], headers, body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined };
     calls.push(call);
     if (url.pathname === "/v1/auth/token") return json(400, { error: "invalid_grant" });
-    if (/\/setup-agent\/eval(?:-approve)?$/u.test(url.pathname)) return answer(call);
+    if (/\/setup-agent\/eval(?:-approve|-wrapper)?$/u.test(url.pathname)) return answer(call);
     return json(404, NO_ROUTE);
   }) as typeof fetch;
   const store = new LocalSessionStore(undefined, { environment: {} });
@@ -55,7 +56,7 @@ const admin = (w: W) => w.signIn("ada-token", { developerId: ADA, displayName: "
 const owner = (w: W) => w.signIn("own-token", { developerId: ADA, displayName: "Own", administrator: false, companyId: COMPANY, companyRole: "owner", projects: [], notices: [] });
 const maintainer = (w: W) => w.signIn("pam-token", { developerId: PAM, displayName: "Pam", administrator: false, companyId: COMPANY, companyRole: "member", projects: [{ name: "payments", access: "administrator" }], notices: [] });
 const member = (w: W) => w.signIn("dev-token", { developerId: DEV, displayName: "Dev", administrator: false, companyId: COMPANY, companyRole: "member", projects: [{ name: "payments", access: "developer" }, { name: "other", access: "administrator" }], notices: [] });
-const posts: Array<[keyof typeof TAILS, unknown]> = [["approve", APPROVE]];
+const posts: Array<[keyof typeof TAILS, unknown]> = [["approve", APPROVE], ["wrapper", WRAPPER]];
 const REFUSED = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer can answer for the eval's spend." } } };
 
 describe("each route is forwarded to Code's own path as the signed-in person", () => {
@@ -132,6 +133,7 @@ describe("who may ask", () => {
 describe("the body", () => {
   it("names each route's own keys and nothing else", () => {
     expect([...EVAL_APPROVE_KEYS]).toEqual(["taskId", "reportDigest", "selection", "paths", "approve", "seen"]);
+    expect([...EVAL_WRAPPER_KEYS]).toEqual(["requestId"]);
   });
   const extra = { company: OTHER, companyId: OTHER, role: "owner", payer: "someone", approver: "x", maxCostMicros: 1, __proto__x: 1 };
   for (const [name, body] of posts) {
@@ -165,7 +167,7 @@ describe("the body", () => {
 });
 
 describe("Code's answer", () => {
-  const routes: Array<[string, "GET" | "POST", unknown]> = [["eval", "GET", undefined], ["eval-approve", "POST", APPROVE]];
+  const routes: Array<[string, "GET" | "POST", unknown]> = [["eval", "GET", undefined], ["eval-approve", "POST", APPROVE], ["eval-wrapper", "POST", WRAPPER]];
   for (const [tail, method, body] of routes) {
     it(`${method} ${tail}: Code's fixed unknown-route 404 reads 501 NOT_ON_CODE_YET; Code's other 404s are its own (mutant: the route-not-found match)`, async () => {
       const w = setUp(() => json(404, NO_ROUTE));
@@ -176,6 +178,8 @@ describe("Code's answer", () => {
       expect(await other.send(method, webPath(tail), await admin(other), body)).toMatchObject({ status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } });
       const off = setUp(() => json(404, { error: { code: "NOT_FOUND", message: "Approving an eval's spend isn't available on this install yet." } }));
       expect((await off.send(method, webPath(tail), await admin(off), body)).status).toBe(501);
+      const noHost = setUp(() => json(404, { error: { code: "NOT_FOUND", message: "Proposing a file for your eval isn't available on this install yet." } }));
+      expect((await noHost.send(method, webPath(tail), await admin(noHost), body)).status).toBe(501);
     });
   }
   for (const [tail, body] of [["eval-approve", APPROVE]] as const) {
@@ -220,8 +224,8 @@ describe("two companies", () => {
 });
 
 describe("contract v0", () => {
-  it("lists the two routes as Code's, answered by cloud-server today", () => {
-    for (const [method, tail] of [["GET", "eval"], ["POST", "eval-approve"]] as const) {
+  it("lists the three routes as Code's, answered by cloud-server today", () => {
+    for (const [method, tail] of [["GET", "eval"], ["POST", "eval-approve"], ["POST", "eval-wrapper"]] as const) {
       const row = APP_ROUTES.find((route) => route.method === method && route.path === `/v1/app/projects/{p}/setup-agent/${tail}`);
       expect(row, tail).toMatchObject({ owner: "code", screen: "later", codeRoutes: [], source: "setup-agent", cloudServerToday: true });
     }

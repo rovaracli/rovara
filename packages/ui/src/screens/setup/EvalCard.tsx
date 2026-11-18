@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { EvalCardSuite, EvalCardView } from "@agentx/contracts/web";
+import type { EvalCardSuite, EvalCardView, EvalWrapperView } from "@agentx/contracts/web";
 import { evalCardKey, useEvalCardApi } from "../../api/eval-card.js";
 import { setupChecklistKey } from "../../api/setup-checklist.js";
 import { ApiError } from "../../api/errors.js";
@@ -26,6 +26,10 @@ export const EVAL_CARD_WORDS = {
   carried: "Your eval cases changed and stayed inside what you approved.",
   readError: "Your evals couldn't be read just now. Try again.",
   sendError: "Couldn't send that. Try again.",
+  wrapperHeading: "A file Rovara proposed",
+  wrapperReview: "Review the pull request",
+  wrapperRetry: "Try again",
+  wrapperNote: "Rovara never merges it. A person on your team reads it, merges it, and then runs setup again.",
 } as const;
 
 const cases = (n: number) => `${String(n)} eval ${n === 1 ? "case" : "cases"}`;
@@ -42,7 +46,7 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
   const confirmed = useJustConfirmed(who);
   const read = useQuery({ queryKey: evalCardKey(project), queryFn: () => api.read(project), retry: false });
   const [stale, setStale] = useState(false), [busy, setBusy] = useState<string>(), [problem, setProblem] = useState<Problem>(), [done, setDone] = useState(false);
-  const sending = useRef(false);
+  const sending = useRef(false), proposing = useRef(false);
   const fresh = confirmed && !stale;
   if (read.isPending) return <Skeleton label="Loading your evals" />;
   if (read.isError) {
@@ -67,6 +71,14 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
       else setProblem({ message: EVAL_CARD_WORDS.sendError, moved: false });
     } finally { sending.current = false; setBusy(undefined); }
   }
+  /** L4-EVW2: asks Rovara to propose its file again (a pull request; spends nothing, so no fresh sign-in). The latch keeps a second press from sending a second request. */
+  async function tryAgain() {
+    if (proposing.current) return;
+    proposing.current = true; setBusy("wrapper"); setProblem(undefined);
+    try { await api.proposeWrapper(project, crypto.randomUUID()); reread(); }
+    catch (caught) { setProblem({ message: caught instanceof ApiError ? caught.message : EVAL_CARD_WORDS.sendError, moved: false }); }
+    finally { proposing.current = false; setBusy(undefined); }
+  }
   const approve = (suite: EvalCardSuite) => {
     const report = data.report;
     if (report === undefined || done) return;
@@ -74,15 +86,23 @@ export function EvalCard({ project, fallback }: { project: string; fallback: Rea
     // The dollars are the ones this suite showed, passed back exactly as the read sent them.
     void act(`approve:${suite.selection}`, () => api.approve(project, { taskId: report.taskId, reportDigest: report.reportDigest, selection: suite.selection, paths: [...suite.files], approve: true, seen: { perCheckHighMicros: suite.seen.perCheckHighMicros, monthlyCapMicros: suite.seen.monthlyCapMicros } }));
   };
-  const askStepUp = data.canApprove && data.state === "propose" && data.suites.length > 0;
+  const askStepUp = data.canApprove && data.state === "propose" && data.suites.some(suite => suite.readable !== false);
   const spend = data.spend;
 
   return <section aria-label={EVAL_CARD_WORDS.heading} className="rv-approval" data-testid="eval-card" data-state={data.state}>
     <h4>{EVAL_CARD_WORDS.heading}</h4>
+    {(data.wrappers ?? []).length > 0 && <div data-testid="eval-wrappers" aria-label={EVAL_CARD_WORDS.wrapperHeading}>
+      {(data.wrappers ?? []).map((wrapper: EvalWrapperView) => <div key={`${wrapper.repository}:${wrapper.language}`} data-testid="eval-wrapper" data-state={wrapper.state}>
+        <p><VisibleText text={wrapper.line} /></p>
+        {wrapper.url !== undefined && wrapper.url.startsWith("https://") && <p><a href={wrapper.url} target="_blank" rel="noopener noreferrer" data-testid="eval-wrapper-link">{EVAL_CARD_WORDS.wrapperReview}</a></p>}
+        {wrapper.state === "failed" && data.canApprove && <div className="rv-connect-actions rv-approval-actions"><Button busy={busy === "wrapper"} disabled={busy !== undefined} data-testid="eval-wrapper-retry" onClick={() => { void tryAgain(); }}>{EVAL_CARD_WORDS.wrapperRetry}</Button></div>}
+        {wrapper.state === "open" && <p className="rv-muted">{EVAL_CARD_WORDS.wrapperNote}</p>}
+      </div>)}
+    </div>}
     {data.state === "propose" && data.suites.map(suite => <div key={suite.selection} data-testid="eval-suite">
       <p><strong><VisibleText text={suite.selection} /></strong>: {cases(suite.cases)}</p>
-      <p data-testid="eval-sentence"><VisibleText text={suite.sentence} /></p>
-      {data.canApprove && <div className="rv-connect-actions rv-approval-actions"><Button variant="primary" busy={busy === `approve:${suite.selection}`} disabled={busy !== undefined || done} data-testid="eval-approve" onClick={() => { approve(suite); }}>Approve</Button></div>}
+      {suite.readable === false ? <p data-testid="eval-needs-file"><VisibleText text={suite.needsFile ?? "Rovara can't read this eval's results yet."} /></p> : <p data-testid="eval-sentence"><VisibleText text={suite.sentence} /></p>}
+      {data.canApprove && suite.readable !== false && <div className="rv-connect-actions rv-approval-actions"><Button variant="primary" busy={busy === `approve:${suite.selection}`} disabled={busy !== undefined || done} data-testid="eval-approve" onClick={() => { approve(suite); }}>Approve</Button></div>}
     </div>)}
     {data.state === "propose" && data.suites.length === 0 && <p>{EVAL_CARD_WORDS.waiting}</p>}
     {(data.state === "waiting" || data.state === "renew") && <div data-testid="eval-waiting">

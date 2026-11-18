@@ -488,6 +488,11 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     }
     if (!manage) return failure(403, "FORBIDDEN", "Only a company owner, admin or project maintainer can answer for the eval's spend.");
     const given = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+    // L4-EVW2: "Try again" for Rovara's proposed wrapper file: exactly a request id; the pull request opens on the code host and nothing here merges it.
+    if (tail === "eval-wrapper") {
+      if (Object.keys(given).length !== 1 || typeof given["requestId"] !== "string" || !/^[0-9a-f-]{36}$/u.test(given["requestId"])) return failure(400, "CONFIG_INVALID", "requestId: invalid");
+      return { status: 200, body: { project: name, proposals: [{ selection: "npm run evals", state: "open", number: "12", url: "https://github.com/acme/web/pull/12" }] } };
+    }
     const seen = given["seen"] as Record<string, unknown> | undefined;
     if (tail !== "eval-approve" || card.state !== "propose" || given["approve"] !== true || seen?.["perCheckHighMicros"] !== EVAL_SEEN.perCheckHighMicros || seen["monthlyCapMicros"] !== EVAL_SEEN.monthlyCapMicros) return failure(409, "CHANGE_STALE", "Your evals changed. Look again.");
     evalCards.set(name, { state: "approved" });
@@ -495,14 +500,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   };
   /** The hosted setup run's answer (Code #844 serves the laptop's /v1/app path), or undefined when the path is not one of its four. */
   const setupRunAnswer = (method: string, path: string, query: URLSearchParams, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
-    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide|eval|eval-approve))?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide|eval|eval-approve|eval-wrapper))?$/u.exec(path);
     if (match === null) return undefined;
     const tail = match[2];
     if (!((method === "GET" && (tail === undefined || tail === "journal" || tail === "eval")) || (method === "POST" && tail !== "journal" && tail !== "eval"))) return undefined;
     const name = decodeURIComponent(match[1]!), entry = project(name), grant = roleIn(person, name);
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (entry === undefined || companyless.has(person.developerId) || (!manage && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
-    if (tail === "eval" || tail === "eval-approve") return evalCardAnswer(method, tail, name, manage, body);
+    if (tail === "eval" || tail === "eval-approve" || tail === "eval-wrapper") return evalCardAnswer(method, tail, name, manage, body);
     if (method === "GET" && tail === undefined) return { status: 200, body: setupRunView(name, manage) };
     if (method === "GET") {
       const run = runOf(name), after = Number(query.get("after") ?? "0");

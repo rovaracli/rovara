@@ -3,7 +3,7 @@
 // `requestId` in every answer and the contracts are strict, so it is set aside first.
 import { useMemo } from "react";
 import {
-  EvalApproveReplySchema, EvalApproveRequestSchema, EvalCardViewSchema, ProjectOverviewProjectSchema,
+  EvalApproveReplySchema, EvalApproveRequestSchema, EvalCardViewSchema, EvalWrapperRetryReplySchema, EvalWrapperRetryRequestSchema, ProjectOverviewProjectSchema,
 } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
@@ -19,6 +19,8 @@ export function createEvalCardApi(host: AppHost) {
     read: (name: string) => api.get(base(name) + "/eval", exactAnswer(EvalCardViewSchema)),
     /** ONE act: confirm the eval and approve its spend. Needs a fresh sign-in; never sent twice by the client. */
     approve: (name: string, body: ReturnType<typeof EvalApproveRequestSchema.parse>) => api.sendAnswer("POST", base(name) + "/eval-approve", EvalApproveRequestSchema.parse(body), exactAnswer(EvalApproveReplySchema), { retry: "never" }),
+    /** L4-EVW2: "Try again" for Rovara's proposed wrapper file (a pull request a person merges). Needs no fresh sign-in: it proposes, it spends nothing. */
+    proposeWrapper: (name: string, requestId: string) => api.sendAnswer("POST", base(name) + "/eval-wrapper", EvalWrapperRetryRequestSchema.parse({ requestId }), exactAnswer(EvalWrapperRetryReplySchema), { retry: "never" }),
   };
 }
 export function useEvalCardApi() { const host = useAppHost(); return useMemo(() => createEvalCardApi(host), [host]); }

@@ -2,7 +2,7 @@
 // echoes must be the ones the read showed, and each answer is dollars-only. Browser specs stage it through /__fake/eval-card.
 import { createHash, randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { EvalCardViewSchema, EvalApproveReplySchema } from "../../packages/contracts/src/setup-agent-web.js";
+import { EvalCardViewSchema, EvalApproveReplySchema, EvalWrapperRetryReplySchema } from "../../packages/contracts/src/setup-agent-web.js";
 import { PRIYA, SAM, startFakeCode, type FakeCode } from "../support/fake-code.js";
 
 let fake: FakeCode;
@@ -55,5 +55,17 @@ describe("the fake eval card", () => {
     expect(waiting).toMatchObject({ state: "waiting", spend: { needsApproval: "Needs approval: your eval set grew past the approved $1.20", perPr: "$0.90-$2.40" } });
     expect(waiting.spend).not.toHaveProperty("approval");
     expect(waiting).not.toHaveProperty("health");
+  });
+
+  it("L4-EVW2: a manager can ask again for Rovara's proposed file with exactly a request id; a reader is refused and any other body is invalid", async () => {
+    const priya = await tokenFor(PRIYA);
+    const sam = await tokenFor(SAM);
+    await stage("propose");
+    const id = "6f9d0c1e-2b3a-4c5d-8e7f-001122334455";
+    const done = await call(`${BASE}/eval-wrapper`, priya, { method: "POST", body: { requestId: id } });
+    expect(done.status).toBe(200);
+    expect(EvalWrapperRetryReplySchema.parse(done.body)).toMatchObject({ proposals: [{ state: "open", number: "12" }] });
+    expect((await call(`${BASE}/eval-wrapper`, sam, { method: "POST", body: { requestId: id } })).status).toBe(403);
+    for (const body of [{}, { requestId: "x" }, { requestId: id, repository: "other" }]) expect((await call(`${BASE}/eval-wrapper`, priya, { method: "POST", body })).status).toBe(400);
   });
 });
