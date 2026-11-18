@@ -61,10 +61,10 @@ it("overflow floors hold and settle the largest safe amount, flag review, and st
   expect(f.logs).toContainEqual({ event: "price_operator_review" });
   const capped = setup({ prices }); expect((await call(capped.deps)).status).toBe(422); expect(capped.calls).toHaveLength(0);
 });
-it("known-price post-send faults retain the full hold without an estimated label", async () => {
+it("known-price post-send faults retain the full hold provisionally", async () => {
   const f = setup({ transport: async () => { throw new Error("secret-upstream"); } });
   expect((await call(f.deps)).status).toBe(502);
-  expect(costView(await f.meter.read(scope)).every((r) => r.spentMicros > 0 && !r.estimated)).toBe(true);
+  expect(costView(await f.meter.read(scope)).every((r) => r.spentMicros > 0 && r.estimated)).toBe(true);
   expect(JSON.stringify(f.logs)).not.toContain("secret-upstream");
 });
 async function add(meter: InMemoryMeter, settledAt: number, limit = caps) {

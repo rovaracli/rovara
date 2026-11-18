@@ -282,3 +282,28 @@ describe("gateway process: price fetch", () => {
     expect(empty.items(TABLES.prices)).toEqual([]);
   });
 });
+
+it("the deployed process writes revision-one receipts bound to the connected source and its saved revision", async () => {
+  const wire = new WireDynamo(Object.values(TABLES));
+  const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "TEST", secretAccessKey: "not-real" }), transport: wire.transport });
+  const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), agentKeys: "company", port: 0 };
+  const source = { kind: "company_key" as const, id: "saved-source-1", name: "Company anthropic", provider: "anthropic", connectionRevision: "saved-version-7" };
+  const gateway = await startServe(config, {
+    db, fetch: jwksFetch, now: () => now, listen: false, log: () => undefined,
+    caps: new FixedCapsSource(caps), agentAiSources: { sourceFor: async () => "anthropic_key" },
+    agentKeys: {
+      connected: async () => true,
+      keyFor: async () => { throw new Error("unbound credential read"); },
+      resolveForCharge: async () => ({ source, key: async () => "fixture-provider-key" }),
+    },
+    transport: async () => ({ status: 200, body: (async function* () { yield sse("message_start", { message: {} }); })() }),
+  });
+  running.push(gateway);
+  const response = await request(gateway.server, "POST", "/v1/messages", callHeaders(), requestBody);
+  expect(response.statusCode).toBe(200);
+  await gateway.drain();
+  const calls = wire.items(TABLES.ledger).filter(row => String(row.sk).startsWith("CALL#"));
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatchObject({ revision: 1, chargeStatus: "awaiting_usage", receipt: { source, billing: "external_provider", status: "awaiting_usage", usageComplete: false } });
+  expect(wire.items(TABLES.ledger).some(row => String(row.sk).startsWith("ADJUST#"))).toBe(true);
+});

@@ -54,7 +54,7 @@ class Racing extends LocalCompanyStore {
   override async removeSpendLimit(companyId: string, kind: SpendLimitKind, id: string, basis: SpendLimitBasis) { if (this.breakWith !== undefined) throw new Error(this.breakWith); return super.removeSpendLimit(companyId, kind, id, basis); }
 }
 
-function world(options: { company?: boolean; codeProject?: "ok" | "outage"; members?: "ok" | "outage" | "pages" | "foreign" | "garbled"; pageSize?: number } = {}) {
+function world(options: { provisional?: (company: string, month: string) => Promise<number | undefined>; company?: boolean; codeProject?: "ok" | "outage"; members?: "ok" | "outage" | "pages" | "foreign" | "garbled"; pageSize?: number } = {}) {
   const clock = { at: START }; let tokens = 0;
   const nowS = () => Math.floor(clock.at / 1000);
   const byToken = new Map<string, Person>();
@@ -91,7 +91,7 @@ function world(options: { company?: boolean; codeProject?: "ok" | "outage"; memb
   const handler = createCloudHandler({
     client, store: sessions, org: { orgId: "rovara", name: "Rovara", plan: "cloud" }, callbackPath: "/callback", secureCookies: false, work: new LocalWorkSessionStore(), origin: ORIGIN,
     now: () => new Date(clock.at), log: (event) => { logs.push(JSON.stringify(event)); }, audit,
-    ...(options.company === false ? {} : { company: { store: companies, log: (event: Record<string, unknown>) => { logs.push(JSON.stringify(event)); } } }),
+    ...(options.company === false ? {} : { company: { store: companies, ...(options.provisional === undefined ? {} : { peopleSpend: { monthSpend: async () => new Map<string, number>(), provisionalTotal: options.provisional } }), log: (event: Record<string, unknown>) => { logs.push(JSON.stringify(event)); } } }),
   });
   const signIn = async (who: string, stepUpAge?: number) => {
     const person = PEOPLE[who]!; tokens += 1;
@@ -702,4 +702,24 @@ describe("the upkeep and answers limits", () => {
     expect((await w.companies.spendLimit(A, "upkeep_month", "api"))?.monthlyUsdMicros).toBe(7 * MICROS);
     expect((await w.companies.spendLimit(A, "project_month", "api"))?.monthlyUsdMicros).toBe(3 * MICROS);
   });
+});
+
+
+it("adds the company's optional gateway provisional total to the existing admin limits read", async () => {
+  const reads: string[] = [];
+  const w = world({ provisional: async (company, month) => { reads.push(`${company}/${month}`); return company === A ? 42 : 7; } });
+  await w.settings(A, {}); await w.settings(B, {});
+  expect((await w.call(await w.signIn("ada"), "GET", PATH)).body["provisionalMicros"]).toBe(42);
+  expect((await w.call(await w.signIn("bea"), "GET", PATH)).body["provisionalMicros"]).toBe(7);
+  expect((await w.call(await w.signIn("pam"), "GET", PATH)).status).toBe(403);
+  expect(reads).toEqual([`${A}/2026-11`, `${B}/2026-11`]);
+  const legacy = await READY();
+  expect((await legacy.call(await legacy.signIn("ada"), "GET", PATH)).body).not.toHaveProperty("provisionalMicros");
+  const broken = world({ provisional: async () => { throw new Error("private details"); } });
+  await broken.settings(A, {});
+  const refused = await broken.call(await broken.signIn("ada"), "GET", PATH);
+  expect(refused.status).toBe(200);
+  expect(refused.body).toHaveProperty("defaults");
+  expect(refused.body).not.toHaveProperty("provisionalMicros");
+  expect(refused.raw).not.toContain("private details");
 });

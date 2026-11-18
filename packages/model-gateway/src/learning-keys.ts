@@ -11,6 +11,15 @@ const connectable = (provider: CompanyKeyProvider): provider is LearningKeyProvi
 
 export function storedLearningKeys(store: Pick<ProductKeyStore, "learningSource" | "useKey" | "recordWarning">): LearningKeySource {
   return {
+    async resolveForCharge(iss, cid, provider) {
+      if (!connectable(provider)) return undefined;
+      const saved = await store.learningSource(iss, cid, provider);
+      if (saved === undefined) return undefined;
+      return {
+        source: { kind: "company_key", id: saved.sourceId, name: `Company ${provider}`, provider, connectionRevision: saved.versionId },
+        key: () => store.useKey(iss, cid, saved),
+      };
+    },
     async connected(iss, cid, provider) { return connectable(provider) && (await store.learningSource(iss, cid, provider)) !== undefined; },
     async keyFor(iss, cid, provider) {
       if (!connectable(provider)) return undefined;

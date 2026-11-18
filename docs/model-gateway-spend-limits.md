@@ -104,3 +104,18 @@ server sends no other, and Spending carries no per-person table any more.
   page says "not connected yet". **Infrastructure not in this change (owner decision):** the Cloud server's role needs `dynamodb:BatchGetItem` on that table, conditioned on
   `dynamodb:LeadingKeys` `CO#*` (the pattern `productAi()` in `infra/lib/cloud-web.ts` uses for the product key table), plus the table name as a stack parameter and the env var. Until it is granted nothing reads the table.
 - Changing a limit stays on Spending limits (B1): each row links to `/app/admin/money/limits?person=<id>`, which opens that person's add or edit form.
+
+
+## Missing-usage holds (DEC 254zzz69/70)
+
+Receipt-bound token calls save the exact forwarded request byte count and the admitted price on the existing HOLD item. At cut-off, the existing CALL row records an `estimateStatus: estimated` amount E, while its receipt remains `awaiting_usage` and retains the original reservation R for compatibility. E remains reserved, rather than spent, and replaces R in committed cap exposure in the same conditional transaction.
+
+The output estimate is nearest-rank p90 of the gateway's recorded, complete usage counts for that issuer, company, provider and model. Fewer than 20 samples keeps R (`estimateBasis: reservation`, `outputEstimateBasis: max_output`). Otherwise the input count is the provider's measured prompt total, including caches (`input_actual`), or the exact forwarded bytes (`input_bytes_bound`); a synthetic stream-start zero supplies no evidence. Both input and output use the dearest applicable reservation rates, and E is capped at R. The row records `outputEstimateBasis: p90_history`.
+
+At 24 hours after cut-off, the bounded existing open-hold sweep atomically moves E from reserved to estimated spend, closes the hold and writes an immutable revision adjustment. Its receipt is `estimated`, reason `missing_usage`, with optional `neverConfirmed: true`; time never makes it final. Late real usage goes through the existing receipt revision transaction, using the saved original periods and E as the adjustment baseline. Concurrent late usage fences off the clock settlement through receipt revision and hold conditions.
+
+The company-month meter row's optional `provisionalMicros` sums cut-off holds and settled, never-confirmed estimates. Clock settlement leaves that sum unchanged; real usage removes the call's provisional contribution once. The existing admin `GET /org/spend-limits` exposes this optional total through the existing exact-key BatchGet reader. A deployment without the reader or an older row without the counter omits it; an unreadable counter is omitted as unavailable while settings and overrides still read. No route, table, index or IAM grant is added. The canonical receipt schema and both repos’ strict readers accept the optional never-confirmed marker before production.
+
+The previously deferred source/receipt coverage, authenticated gateway-to-Code delivery and historical backfill remain separate work; legacy adapters retain their existing behavior. Existing rows without the saved request context are not re-estimated by this change.
+
+Round 4: missing-usage history reads one reverse CALL-key window of at most 200 rows, filtered to the same company, provider and model. A sparse window retains the full reservation; the reader never pages through the ledger. The provisional context stores the body size after OpenAI/Converse translation and the same 4,096-token tool allowance used for reservation (only the unknown-input bytes bound adds the allowance).

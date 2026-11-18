@@ -339,6 +339,9 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(deps.answers.monthDefaultMicros === undefined ? {} : { monthDefaultMicros: deps.answers.monthDefaultMicros }),
   });
   const handlerDeps: GatewayDependencies = {
+    // Only the route's admitted, revision-bound source can produce a receipt. Older adapters
+    // without that evidence keep legacy provisional settlement; nothing is inferred from a token.
+    chargeReceipts: { source: (_claims, _model, resolved) => resolved },
     verifyToken: createTaskTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }),
     ended: new DynamoEndedTasks(db, config.tables.markers), meter, caps, prices, now,
     // The busy answer is counted from its log line (overrun_busy); the process needs no metrics permission.

@@ -87,3 +87,13 @@ describe("DynamoGatewayMeterReader", () => {
     expect(meterPartition(ISS, A)).toBe(companyPartition(ISS, A));
   });
 });
+
+it("reads the company's optional provisional total with the existing exact-key BatchGet and rejects cross-company or invalid rows", async () => {
+  const sk = `ROW#${JSON.stringify(["company", "2026-11"])}`;
+  const row = { pk: meterPartition(ISS, A), sk, item: "company", company: A, provisionalMicros: 42 };
+  const f = fake([row]);
+  expect(await new DynamoGatewayMeterReader(f.db, TABLE, ISS).provisionalTotal(A, "2026-11")).toBe(42);
+  expect(f.commands[0]!.input.RequestItems![TABLE]!.Keys).toEqual([{ pk: row.pk, sk }]);
+  expect(await new DynamoGatewayMeterReader(fake([{ ...row, provisionalMicros: undefined }]).db, TABLE, ISS).provisionalTotal(A, "2026-11")).toBeUndefined();
+  for (const bad of [{ ...row, company: B }, { ...row, provisionalMicros: -1 }, { ...row, provisionalMicros: 0.5 }]) await expect(new DynamoGatewayMeterReader(fake([bad]).db, TABLE, ISS).provisionalTotal(A, "2026-11")).rejects.toThrow();
+});

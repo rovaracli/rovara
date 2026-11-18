@@ -302,3 +302,18 @@ describe("DynamoEndedTasks", () => {
     await expect(ended.isEnded(scope.iss, scope.cid, "task_9")).rejects.toThrow();
   });
 });
+
+it("retains missing usage durably, never re-prices it from zero tokens or finalizes it by age", async () => {
+  const { db } = table();
+  const meter = new DynamoMeter({ db, tables: TABLES, now: () => T0 });
+  const r = await meter.reserve({ scope, caps, estimateMicros: 80 }); if (!r.ok) throw new Error("reserve");
+  await meter.settle(r.reservation, 80, { provider: "anthropic", model: "claude-x", kind: "chat", settledAt: T0 });
+  const restarted = new DynamoMeter({ db, tables: TABLES, now: () => T0 });
+  const call = (await restarted.pendingFor({ provider: "anthropic", model: "claude-x" }, 10)).items[0];
+  expect(call).toMatchObject({ settledMicros: 80, chargeStatus: "awaiting_usage" });
+  if (!call) return;
+  expect((await restarted.correct({ callKey: call.callKey, realMicros: 1, caps, priceVersion: 1, estimated: false, priceSource: { source: "aws", fetchedAt: T0 }, runId: "price-only", now: T0 })).status).toBe("busy");
+  await restarted.expire({ callKey: call.callKey, runId: "age", now: T0 + 100 * DAY_MS });
+  expect((await restarted.pendingFor({ provider: "anthropic", model: "claude-x" }, 10)).items).toHaveLength(1);
+  expect((await restarted.read(scope)).every(r => r.spentMicros === 80 && r.estimatedMicros === 80 && r.reservedMicros === 0 && r.committed === 80)).toBe(true);
+});

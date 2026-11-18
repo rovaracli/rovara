@@ -29,6 +29,19 @@ export class DynamoGatewayMeterReader implements PersonSpendReader {
     if (table === "" || issuer === "" || issuer.length > 2048) throw new Error("gateway meter settings: a table and the install issuer are both needed");
   }
 
+  /** Existing BatchGet permission, same company partition; missing rollout field stays unknown. */
+  async provisionalTotal(companyId: string, month: string): Promise<number | undefined> {
+    if (!COMPANY_ID.test(companyId) || !MONTH.test(month)) throw new Error("meter unavailable");
+    const pk = meterPartition(this.issuer, companyId), sk = `ROW#${JSON.stringify(["company", month])}`;
+    const answer = await this.db.send(new BatchGetCommand({ RequestItems: { [this.table]: { Keys: [{ pk, sk }], ConsistentRead: true } } }));
+    if ((answer.UnprocessedKeys?.[this.table]?.Keys?.length ?? 0) > 0) throw new Error("meter unavailable");
+    const rows = answer.Responses?.[this.table] ?? [];
+    if (rows.length === 0) return undefined;
+    const row = rows[0]!;
+    if (rows.length !== 1 || row["pk"] !== pk || row["sk"] !== sk || row["company"] !== companyId || row["item"] !== "company" || (row["provisionalMicros"] !== undefined && !whole(row["provisionalMicros"]))) throw new Error("meter unavailable");
+    return row["provisionalMicros"] as number | undefined;
+  }
+
   async monthSpend(companyId: string, month: string, personIds: readonly string[]): Promise<ReadonlyMap<string, number>> {
     if (!COMPANY_ID.test(companyId) || !MONTH.test(month) || !personIds.every((id) => PERSON_ID.test(id))) throw new Error("meter unavailable");
     const pk = meterPartition(this.issuer, companyId);

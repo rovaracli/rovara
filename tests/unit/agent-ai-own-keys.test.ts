@@ -71,6 +71,10 @@ describe("own OpenAI / OpenRouter keys for agents (Cloud)", () => {
     const keys = storedLearningKeys(w.store);
     expect(await keys.keyFor(ISS, A, "openrouter")).toBe(key);
     expect(await keys.connected(ISS, A, "openrouter")).toBe(true);
+    const saved = await w.store.learningSource(ISS, A, "openrouter");
+    const bound = await keys.resolveForCharge!(ISS, A, "openrouter");
+    expect(bound?.source).toMatchObject({ id: saved?.sourceId, connectionRevision: saved?.versionId, provider: "openrouter" });
+    expect(await bound?.key()).toBe(key);
     expect(await keys.keyFor(ISS, B, "openrouter")).toBeUndefined();
     expect((await w.audit.read(A, { max: 50 })).rows.map((r) => [r.action, r.subject])).toEqual(expect.arrayContaining([["learning_ai.key.connected", "learning_ai:openrouter"]]));
     for (const text of [JSON.stringify(await w.audit.read(A, { max: 50 })), ...w.logs]) expect(text).not.toContain(key);
@@ -79,6 +83,7 @@ describe("own OpenAI / OpenRouter keys for agents (Cloud)", () => {
     // Removed: no longer choosable.
     expect((await w.call(ada, "DELETE", `${KEYS}/key`, write(1, { provider: "openrouter" }))).status).toBe(200);
     expect(await keys.keyFor(ISS, A, "openrouter")).toBeUndefined();
+    expect(await bound?.key()).toBeUndefined();
     expect((await w.call(ada, "GET", AGENT)).body).toMatchObject({ openrouterKeyConnected: false });
   });
 
