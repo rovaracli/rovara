@@ -47,6 +47,16 @@ it.each([
  const f = setup("POST", "/script-tokens", {}, true, input);
  expect(await f.answer()).toMatchObject({ status: 400 }); expect(f.json).not.toHaveBeenCalled();
 });
+it("B14: creates a wiki-permission key, forwarded to Code as asked", async () => {
+ const wikiBody = { ...body, permissions: ["wiki"] };
+ const f = setup("POST", "/script-tokens", { token: { ...token, permissions: ["wiki"] }, secret }, true, wikiBody);
+ expect(await f.answer()).toEqual({ status: 201, body: { token: { ...token, permissions: ["wiki"] }, secret } });
+ expect(f.json).toHaveBeenCalledWith(expect.anything(), "/v1/app/script-tokens", { method: "POST", body: wikiBody });
+ const all = setup("POST", "/script-tokens", { token, secret }, true, { ...body, permissions: ["read", "start", "lessons", "wiki"] });
+ expect(await all.answer()).toMatchObject({ status: 201 });
+ const five = setup("POST", "/script-tokens", {}, true, { ...body, permissions: ["read", "start", "lessons", "wiki", "admin"] });
+ expect(await five.answer()).toMatchObject({ status: 400 }); expect(five.json).not.toHaveBeenCalled();
+});
 it("forwards confirmed revoke with no browser body and metadata-only answer", async () => {
  const f = setup("POST", "/script-tokens/stk_aaaaaaaaaaaaaaaaaaaa/revoke", { token: { ...token, status: "revoked" }, secret }, false, {});
  expect(await f.answer()).toEqual({ status: 200, body: { token: { ...token, status: "revoked" } } });

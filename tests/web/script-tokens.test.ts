@@ -108,6 +108,18 @@ it("shows the creation secret once, copies on request, never stores/caches/logs 
  f.close();
 });
 
+it("B14: offers a read-only Wiki permission and sends it when ticked", async () => {
+ const f = mount(() => ({ status: 201, body: { token, secret } }), true, true);
+ fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "Nightly CI" } });
+ fireEvent.change(screen.getByLabelText("Projects (one name per line)"), { target: { value: "web" } });
+ fireEvent.click(screen.getByLabelText("Wiki (read only)"));
+ expect(screen.getByText(/can't change them/)).toBeTruthy();
+ fireEvent.click(screen.getByRole("button", { name: "Create automation key" }));
+ await screen.findByText(secret);
+ expect(f.request.mock.calls[0]?.[0]).toMatchObject({ method: "POST", path: "/v1/app/script-tokens", body: { permissions: ["read", "wiki"] } });
+ f.close();
+});
+
 it("dismisses the secret without offering to show it again", async () => {
  const f = mount(() => ({ status: 201, body: { token, secret } }), true, true);
  await fill(); await screen.findByText(secret);

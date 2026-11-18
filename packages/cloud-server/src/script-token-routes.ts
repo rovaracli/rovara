@@ -30,7 +30,7 @@ function createBody(raw: unknown): Obj | undefined {
  if (!obj(raw) || Object.keys(raw).some(key => !["requestId", "name", "projects", "permissions", "days"].includes(key))
   || typeof raw["requestId"] !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(raw["requestId"])
   || typeof raw["name"] !== "string" || !name(raw["name"].trim()) || !list(raw["projects"], 20, project) || raw["projects"].length === 0
-  || new Set(raw["projects"]).size !== raw["projects"].length || !list(raw["permissions"], 3, v => ["read", "start", "lessons"].includes(v as string))
+  || new Set(raw["projects"]).size !== raw["projects"].length || !list(raw["permissions"], 4, permission)
   || raw["permissions"].length === 0 || new Set(raw["permissions"]).size !== raw["permissions"].length
   || raw["days"] !== undefined && !(typeof raw["days"] === "number" && Number.isInteger(raw["days"]) && raw["days"] >= 1 && raw["days"] <= 90)) return undefined;
  return { requestId: raw["requestId"], name: raw["name"].trim(), projects: raw["projects"], permissions: raw["permissions"], ...(raw["days"] === undefined ? {} : { days: raw["days"] }) };

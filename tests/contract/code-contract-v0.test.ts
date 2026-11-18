@@ -81,7 +81,8 @@ describe("code contract v0 tables", () => {
     // Plus Rovara's outbound addresses for company owners and admins (L4-EGR): the read, passed to Code as the person: 1 row.
     // Plus Rovara's proposed wrapper file (L4-EVW2): "Try again", passed to Code's own route as the person: 1 row.
     // Plus answering Understand's questions from the Work list and Home (Code #1057's round on the list row): the task's answers, passed to Code as the person: 1 row.
-    expect(counts.appCloudServerToday).toBe(177);
+    // Plus the wiki's "questions the wiki could not answer" and acknowledging a note whose file changed (journey audit B17), passed to Code's own routes as the person: 2 rows.
+    expect(counts.appCloudServerToday).toBe(179);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

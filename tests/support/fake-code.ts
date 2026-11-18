@@ -1552,7 +1552,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       const entry = mayRead(context.person, context.params["taskId"] ?? "");
       if (entry === undefined || entry.task.project !== found.name) return failure(404, "TASK_NOT_FOUND", "No such task.");
       const rows = (taskLessons.get(entry.task.taskId) ?? []).map((row) => ({ ...row, harmful: row.harmful === undefined ? undefined : row.harmful + (notHelpful.has(`${entry.task.taskId}:${row.lessonId}`) ? 1 : 0), canMark: row.canMark && !notHelpful.has(`${entry.task.taskId}:${row.lessonId}`) }));
-      return { body: { project: found.name, taskId: entry.task.taskId, lessons: rows.map((row) => JSON.parse(JSON.stringify(row)) as TaskLesson) } };
+      return { body: { project: found.name, taskId: entry.task.taskId, lessons: rows.map((row) => JSON.parse(JSON.stringify(row)) as TaskLesson), ...(entry.task.taskId === TASK_IDS.pullRequest ? { wikiUse: { given: ["wiki-overview", "wiki-setup"], read: ["wiki-setup", "Bad Id!", "wiki-setup"], leaked: "kept out" } } : {}) } };
     },
     "lessons.notHelpful": (context) => {
       const found = lessonsProject(context);

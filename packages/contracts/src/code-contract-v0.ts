@@ -464,7 +464,7 @@ export interface CompanyAuditPage { records: CompanyAuditEntry[]; next?: string;
 
 export interface ScriptToken { tokenId: string; name: string; hint: string; projects: string[]; permissions: Array<"read" | "start" | "lessons" | "wiki">; createdAt: Iso; expiresAt: Iso; lastUsedAt?: Iso; revokedAt?: Iso; status: "active" | "expired" | "revoked"; mine: boolean; createdBy?: string }
 export interface ScriptTokensResponse { tokens: ScriptToken[] }
-export interface CreateScriptTokenRequest { requestId: string; name: string; projects: string[]; permissions: Array<"read" | "start" | "lessons">; days?: number }
+export interface CreateScriptTokenRequest { requestId: string; name: string; projects: string[]; permissions: Array<"read" | "start" | "lessons" | "wiki">; days?: number }
 /** The secret is shown once, in this answer only. */
 export interface CreateScriptTokenResponse { token: ScriptToken; secret: string }
 export interface RevokeScriptTokenResponse { token: ScriptToken }
@@ -602,7 +602,7 @@ export interface LessonAreasResponse {
   selection?: { whole?: true; repo?: string | null; folder?: string; lessons: LessonItem[]; moreLessons?: number };
 }
 /** Lead 4 L4-LP3W: "Where Rovara learns from". Counts are the last 30 days; Cloud words every row itself. */
-export type LearningSourceKey = "task_decisions" | "review_comments" | "pr_edits" | "remember" | "after_merge" | "ci";
+export type LearningSourceKey = "task_decisions" | "review_comments" | "pr_edits" | "remember" | "after_merge" | "ci" | "tickets";
 export interface LearningSourceRow { key: LearningSourceKey; label: string; detail: string; seen: number; suggested: number; kept: number; paused: boolean; example?: { lessonId: string; title: string } }
 export interface LearningSourcesResponse { project: string; windowDays: 30; canPause: boolean; sources: LearningSourceRow[]; partial?: true }
 export interface PutLearningSourceRequest { paused: boolean }
@@ -1179,10 +1179,12 @@ GET /v1/app/projects/{p}/wiki/pages/{pageId}/corrections | k | later | | wiki | 
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/approve | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/delete | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/acknowledge | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/suggest-lesson | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags/resolve | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/disputed | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/gaps | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki-map | k | later | | wiki-setup | T
 POST /v1/app/projects/{p}/wiki-map | k | later | | wiki-setup | T
 GET /v1/app/projects/{p}/wiki-build | k | later | | wiki-setup | T
