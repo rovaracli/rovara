@@ -27,6 +27,7 @@ import { Conversation, type CommentDraft } from "./Conversation.js";
 import { Composer, type MessageInput, type ComposerDrafts } from "./Composer.js";
 import { SessionControls } from "./SessionControls.js";
 import { PeoplePanel } from "./PeoplePanel.js";
+import { DecisionsCard } from "./DecisionsCard.js";
 import { Workspace } from "./Workspace.js";
 import { DesignActions, useTaskDesign } from "./DesignActions.js";
 import { usePageVisible } from "./presence.js";
@@ -133,6 +134,7 @@ export function SessionScreen() {
    : row !== undefined && <header className="rv-session-header" data-testid="session-header"><div className="rv-session-context"><span><VisibleText text={row.project} /></span></div><h1 tabIndex={-1} data-testid="session-title"><VisibleText text={row.title} /></h1><div className="rv-session-facts"><span data-testid="session-status"><ToneDot tone={row.tone} words={statusWords ?? "Status"} /> <VisibleText text={statusWords ?? ""} /></span></div><div className="rv-session-people">{controls}</div></header>}
   {controlsFailed && <div role="alert" className="rv-task-controls-error" data-testid="controls-error"><p>Couldn't load this task's controls (Stop, Share, Conversation).{read.error instanceof ApiError ? " " + read.error.message : ""}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div>}
   {session !== undefined && sessionId !== undefined && <PeoplePanel key={sessionId} id={sessionId} shareRequest={shareRequest} />}
+  {session !== undefined && sessionId !== undefined && <DecisionsCard key={sessionId} id={sessionId} />}
   {session !== undefined && <MoneyBanners session={session} />}{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}
   {conversation !== false && <div className="rv-task-bar">{conversation}</div>}
   {designTask !== undefined && <DesignActions task={designTask} sessionKey={designKey} />}

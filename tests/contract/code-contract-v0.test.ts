@@ -57,7 +57,8 @@ describe("code contract v0 tables", () => {
     // Plus How we work (walkthrough 2026-11-17 item 4): forwarded to Code's own GET /v1/app/projects/{p}/how-we-work as the person (an existing row, L to LT: +1).
     // Plus the smart Just answer's ask and the start box's suggestion, both off unless the deployment's answers setting is on (lead 4 J3), and "Not right" on an answer (lead 4 J5).
     // Plus the Cost and time actions (lane L4-CR4): a new feature, rename, merge, mark done or reopen, and move a task, each passed to Code's own route as the person (Code decides): 5 rows.
-    expect(counts.appCloudServerToday).toBe(136);
+    // Plus the session's decisions and answers (L4-B5, Code's task log read as the person): 1 row.
+    expect(counts.appCloudServerToday).toBe(137);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
