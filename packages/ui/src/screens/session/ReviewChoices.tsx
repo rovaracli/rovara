@@ -2,7 +2,7 @@
 // send the code back to coding with a note, or accept the findings (with a reason) so the pull request opens. The server works out which findings and their IDs from Code's task.
 // Accepting a SECURITY finding needs a fresh sign-in with Code's own factor (DEC 236h): the button first sends the person to confirm it's them (Code's step-up page) and back,
 // keeping their note, and the next press accepts. When the server still says the confirmation is too old, the page asks again.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
 import { createSessionActions } from "../../api/session-actions.js";
@@ -44,22 +44,24 @@ export function ReviewChoices({ session, task }: { session: ReadSession; task: R
  return findings.length === 0 ? null : <ReviewChoicesPanel sessionId={session.sessionId} findings={findings} />;
 }
 
-/** Where the note waits while the person confirms it's them (a full page round trip), per session. */
-const noteKey = (sessionId: string) => `rovara.reviewNote.${sessionId}`;
-function takeNote(storage: { get(key: string): string | undefined; set(key: string, value: string): void }, sessionId: string): string {
- try { const kept = storage.get(noteKey(sessionId)) ?? ""; if (kept !== "") storage.set(noteKey(sessionId), ""); return kept.slice(0, 1000); } catch { return ""; }
+/** Where the note waits while the person confirms it's them (a full page round trip), per person and session; forgotten once read back. */
+const noteKey = (sessionId: string, who: string | undefined) => `rovara.reviewNote.${who ?? "anyone"}.${sessionId}`;
+function keptNote(storage: { get(key: string): string | undefined }, sessionId: string, who: string | undefined): string {
+ try { return (storage.get(noteKey(sessionId, who)) ?? "").slice(0, 1000); } catch { return ""; }
 }
 
 function ReviewChoicesPanel({ sessionId, findings }: { sessionId: string; findings: Finding[] }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionActions(host), [host]);
  const who = useNav()?.me.developerId, confirmed = useJustConfirmed(who);
- const [note, setNote] = useState(() => takeNote(host.storage, sessionId)), [busy, setBusy] = useState<"send" | "accept">(), [error, setError] = useState<string>(), [done, setDone] = useState<string>();
+ const [note, setNote] = useState(() => keptNote(host.storage, sessionId, who)), [busy, setBusy] = useState<"send" | "accept">(), [error, setError] = useState<string>(), [done, setDone] = useState<string>();
  const [stale, setStale] = useState(false);
+ // The kept note is filled in once: forget it as soon as the panel has it (an effect, so a render run twice never loses it).
+ useEffect(() => { try { if ((host.storage.get(noteKey(sessionId, who)) ?? "") !== "") host.storage.set(noteKey(sessionId, who), ""); } catch { /* blocked storage */ } }, [host, sessionId, who]);
  const security = findings.some((finding) => finding.role === "SECURITY");
  /** A security finding is accepted only right after the person confirms it's them: Code's step-up page, then back here with the note kept. */
  const mustConfirm = security && (!confirmed || stale);
  function confirmItsYou() {
-  try { host.storage.set(noteKey(sessionId), note.trim()); } catch { /* blocked storage: the note is typed again */ }
+  try { host.storage.set(noteKey(sessionId, who), note.trim()); } catch { /* blocked storage: the note is typed again */ }
   host.signIn(confirmedReturn(host.currentPath(), startStepUpNonce(host.storage)), { stepUp: true });
  }
  async function run(kind: "send" | "accept") {

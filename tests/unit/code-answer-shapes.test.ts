@@ -187,6 +187,11 @@ describe("the Work list and Home rows (audit item 7)", () => {
     const served = setUp((call) => call.path === "/v1/dev/tasks" ? json(200, devAnswer({ tasks: [{ ...workflowlessRow(id(3)), status: "SUCCEEDED" }] })) : undefined);
     const servedRows = readTaskList((await served.send("GET", "/v1/web/sessions")).body);
     expect(workRow(servedRows[0]!, undefined, new Date(START))).toMatchObject({ group: "done", line: "Finished" });
+    // A SUCCEEDED row with no detail at all in a served list (Code could not read its detail): never "Finished".
+    const bare = setUp((call) => call.path === "/v1/dev/tasks" ? json(200, devAnswer({ tasks: [coreRow(id(4)), { ...plainCoreRow(id(5)), status: "SUCCEEDED" }] })) : undefined);
+    const bareTasks = (await bare.send("GET", "/v1/web/sessions")).body["tasks"] as Array<Record<string, unknown>>;
+    expect(bareTasks[1]).toMatchObject({ detail: "unread" });
+    expect(bareTasks[0]).not.toHaveProperty("detail");
   });
 
   it("another company's caller: Code lists none of the task, and Cloud adds nothing", async () => {

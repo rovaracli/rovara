@@ -162,7 +162,7 @@ function ProposalView(props: {
       <p>It needs a second person to confirm it, and you to sign in again just before you approve.</p></div>}
 
     <h4>Proof</h4>
-    {proposal.proved ? <p role="status">Proved: the check ran these commands and they passed ({proposal.proveSteps.filter((step) => step.status === "passed").map((step) => step.step.replace("_", " ")).join(", ")}).</p>
+    {proposal.proved ? <p role="status">Proved: the check ran these commands and they passed{proposal.proveSteps.some((step) => step.status === "passed") ? ` (${proposal.proveSteps.filter((step) => step.status === "passed").map((step) => step.step.replace("_", " ")).join(", ")})` : ""}.</p>
       : <p>Not proved yet. The check runs the commands above on a fresh copy of your default branch, before any of them is added to the project's settings{proposal.commandsNotInSettings > 0 ? ` (${String(proposal.commandsNotInSettings)} of them are not in the settings yet; approving adds them)` : ""}.</p>}
     {proposal.check.status === "checking" && <p role="status">The check is running.</p>}
     {proposal.check.status === "failed" && <p role="alert">The check failed{proposal.check.failedStep !== undefined && <>: <VisibleText text={proposal.check.failedStep} /></>}</p>}

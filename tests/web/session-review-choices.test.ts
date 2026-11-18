@@ -33,7 +33,7 @@ function setup(raw: unknown, respond: (request: ApiRequest) => Promise<ApiRespon
  query.setQueryData(["nav"], { me: { developerId: ME, name: "Maya", orgRole: "member" } });
  // A confirmation (Code's step-up sign-in) this person finished that long ago, as the page records it.
  if (options.confirmedAgoMs !== undefined) f.storage.set(`rovara.stepup.confirmedAt.${ME}`, String(Date.now() - options.confirmedAgoMs));
- if (options.note !== undefined) f.storage.set(`rovara.reviewNote.${SESSION_FIXTURE_ID}`, options.note);
+ if (options.note !== undefined) f.storage.set(`rovara.reviewNote.${ME}.${SESSION_FIXTURE_ID}`, options.note);
  const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session, onComment: () => undefined })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
  return { f, close() { ui.unmount(); router.dispose(); query.clear(); } };
@@ -80,7 +80,7 @@ it("a security finding without a fresh confirmation: the button sends the person
   const [path, options] = (s.f.host.signIn as unknown as { mock: { calls: Array<[string, unknown]> } }).mock.calls[0]!;
   expect(options).toEqual({ stepUp: true });
   expect(path).toMatch(/confirmed=[0-9a-f-]{36}/u);
-  expect(s.f.storage.get(`rovara.reviewNote.${SESSION_FIXTURE_ID}`)).toBe("Reviewed; not reachable.");
+  expect(s.f.storage.get(`rovara.reviewNote.${ME}.${SESSION_FIXTURE_ID}`)).toBe("Reviewed; not reachable.");
   expect(s.f.request.mock.calls.some(([request]) => request.path.endsWith("/accept-findings"))).toBe(false);
   s.close();
  }
@@ -90,7 +90,7 @@ it("back from confirming, the kept note is filled in once; a server that still f
  const fixture = workspaceFixture({ status: "needs_person" }, blockedByFindings([], SECURITY));
  const s = setup(fixture, async request => request.path.endsWith("/accept-findings") ? { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Accepting a security finding needs you to confirm it's you again. Confirm it, then try once more." } } } : { status: 404, body: { error: { code: "NOT_FOUND", message: "x" } } }, { confirmedAgoMs: 60_000, note: "Kept note." });
  expect((await screen.findByLabelText<HTMLTextAreaElement>("Your note")).value).toBe("Kept note.");
- expect(s.f.storage.get(`rovara.reviewNote.${SESSION_FIXTURE_ID}`)).toBe("");
+ expect(s.f.storage.get(`rovara.reviewNote.${ME}.${SESSION_FIXTURE_ID}`)).toBe("");
  fireEvent.click(screen.getByRole("button", { name: "Accept, including the security finding, and open the pull request" }));
  await screen.findByRole("button", { name: "Confirm it's you to accept the security finding" });
  expect(screen.getByRole("alert").textContent).toContain("confirm it's you again");

@@ -195,6 +195,13 @@ describe("2. Accepting findings that include a SECURITY finding on a core task: 
     }
   });
 
+  it("any other refusal of the workflow route reaches the owner as Code worded it, and never starts the page route", async () => {
+    const stale: Answer = { status: 409, body: { error: { code: "CONFLICT", message: "the workflow changed" } } };
+    const w = setUp(P.taskId, (call) => (call.method === "POST" && call.path.endsWith("/workflow/review-findings") ? stale : coreCode(P.accepted)(call)));
+    expect(await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, await w.signIn("ada", 30))).toEqual({ status: stale.status, body: stale.body });
+    expect(pageCalls(w)).toEqual([]);
+  });
+
   it("an answer for another task is refused in fixed words", async () => {
     const w = setUp(P.taskId, coreCode({ status: 200, body: renamed(P.accepted.body, [[P.taskId, "00000000-0000-4000-8000-000000000001"]]) }));
     expect(await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, await w.signIn("ada", 30))).toEqual({ status: 502, body: { error: { code: "RUNTIME_UNAVAILABLE", message: CORE_ACTION_WORDS.unreadable } } });
@@ -210,7 +217,10 @@ describe("2. Accepting findings that include a SECURITY finding on a core task: 
   });
 
   it("auth: a member who is not a co-owner is refused before any finding is sent (and Code's own refusal of People reads as no); another company reads no task", async () => {
-    for (const people of [peopleWith("viewer"), F.rules.samPeople, F.rules.omarPeople]) {
+    // An owner entry whose access lapsed (`effectiveRole` null) is not a co-owner now.
+    const lapsed = peopleWith("owner");
+    ((lapsed.body["view"] as { people: Obj[] }).people[1]!)["effectiveRole"] = null;
+    for (const people of [peopleWith("viewer"), lapsed, F.rules.samPeople, F.rules.omarPeople]) {
       const w = setUp(P.taskId, coreCode(P.accepted, { people }));
       const headers = await w.signIn("sam", 30);
       expect(SessionResponseReaderSchema.parse((await w.send("GET", web(""), undefined, headers)).body).session.you).not.toHaveProperty("coOwner");

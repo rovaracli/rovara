@@ -165,7 +165,9 @@ const WORK_READS: Route[] = [
     method: "GET", path: /^\/sessions$/u,
     answer: async ({ client, session, work }) => {
       const { rows, served } = await detailedTasks(client, session, LIST_PAGES_MAX, WORK_TASKS_MAX);
-      const views = rows.flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [served || NO_DETAIL.has(String(view["status"])) ? view : { ...view, detail: "unread" }]; });
+      // A SUCCEEDED row that carries no detail at all (no workflow, pull request, cost or limit) may be a task between steps whose detail Code could not read: never "Finished".
+      const bare = (view: Record<string, unknown>) => view["status"] === "SUCCEEDED" && ["workflow", "pullRequests", "spent", "runLimit"].every((key) => view[key] === undefined || (Array.isArray(view[key]) && (view[key] as unknown[]).length === 0));
+      const views = rows.flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [NO_DETAIL.has(String(view["status"])) || (served && !bare(view)) ? view : { ...view, detail: "unread" }]; });
       // The tasks the person started in Cloud carry Cloud's session id: the task page's steer, stop and comment routes are the session's. A task started elsewhere has none.
       // A session store that cannot be read costs the page those links, never the list.
       const sessions = new Map<string, string>();

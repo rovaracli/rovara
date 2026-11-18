@@ -6,7 +6,7 @@
 //   - Code's answers are read against the shape Cloud expects and projected to the fields the app reads (nothing else is passed on);
 //   - the address of Code's confirm page is built here from Code's own base address, the task id and the proposal's id, never taken from Code's answer.
 // Every write is a non-GET under /v1/web, so the handler's CSRF check (the `x-rovara-csrf` header against the sign-in's token) covers it already.
-import { CodeError } from "./code-client.js";
+import { CodeError, SignInEnded } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import type { WorkSession } from "./work-sessions.js";
 
@@ -123,11 +123,13 @@ export async function coOwnerOf(context: RouteContext, record: WorkSession): Pro
   try {
     raw = await context.client.json<unknown>(context.session, peoplePath(record));
   } catch (error) {
-    if (error instanceof CodeError) return false;
-    throw error;
+    // Only an ended sign-in is the page's to handle; any other failure of this extra read is "no" (the session view still answers).
+    if (error instanceof SignInEnded) throw error;
+    return false;
   }
   const view = isObj(raw) ? projectView(raw["view"]) : undefined;
-  return view !== undefined && view.people.some((person) => person["you"] === true && person["role"] === "owner");
+  // An owner entry that still holds owner now (`effectiveRole`): someone whose access lapsed is not offered owner moves.
+  return view !== undefined && view.people.some((person) => person["you"] === true && person["role"] === "owner" && person["effectiveRole"] === "owner");
 }
 
 export const PEOPLE_ROUTES: Route[] = [
