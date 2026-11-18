@@ -53,7 +53,8 @@ describe("code contract v0 tables", () => {
     // Plus the setup approval (L4-D2): confirm flips to answered here, discard and decide are added: 3.
     // Plus the wiki panel on the setup page: the file map, the build controls and the nightly upkeep switch (lead 4 W6): 11 rows.
     // Plus the Cost and time report (Feature A, slice A3): the report and a feature's page: 2 rows.
-    expect(counts.appCloudServerToday).toBe(126);
+    // Plus the saved environment panel read (forwarded to Code's own route) and the start preview (answered here as unknown) (L4-MF1): existing rows, now T (the start preview's owner is now Cloud: c): 2.
+    expect(counts.appCloudServerToday).toBe(128);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

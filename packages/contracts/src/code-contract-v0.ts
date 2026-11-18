@@ -997,7 +997,7 @@ POST /v1/app/tasks/{t}/review/release | k | later | | review-groups |
 POST /v1/app/tasks/{t}/review/reassign | k | later | | review-groups |
 POST /v1/app/projects/{p}/code | k | request | tasks.start | code | T
 POST /v1/app/projects/{p}/code/suggest | k | request | | code |
-POST /v1/app/projects/{p}/start-preview | k | later | | code |
+POST /v1/app/projects/{p}/start-preview | c | later | | code | T
 GET /v1/app/projects | k | admin | access.check,client.projects.get | projects | T
 POST /v1/app/projects | k | admin | client.projects.create,client.projects.bulk | onboarding | T
 GET /v1/app/projects/{p} | k | admin | access.check,client.projects.get | onboarding | T
@@ -1087,7 +1087,7 @@ GET /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 PUT /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 GET /v1/app/projects/{p}/setup-recipe | k | later | | setup-recipes |
 POST /v1/app/projects/{p}/setup-recipe | k | later | | setup-recipes |
-GET /v1/app/projects/{p}/environment-image | k | later | | saved-env |
+GET /v1/app/projects/{p}/environment-image | k | later | | saved-env | T
 POST /v1/app/projects/{p}/environment-image | k | later | | saved-env |
 PUT /v1/app/projects/{p}/environment-image/setting | k | later | | saved-env |
 GET /v1/app/projects/{p}/test-environment | k | later | | test-environment |

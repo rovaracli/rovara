@@ -148,6 +148,25 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (entry === undefined || companyless.has(person.developerId) || (entry.companyId ?? FAKE_COMPANY_ID) !== companyOfPerson(person)) return false;
     return person.administrator || roleIn(person, name) !== undefined;
   };
+  type SavedEnvMode = "off" | "route-missing" | "core-off" | "never" | "healthy" | "broken" | "extra-field" | "501";
+  // L4-MF1: Code's saved environment panel read on its own /v1/app path (core host, read only), per project (set by the specs through /__fake/saved-env). The default is `off`, as a hosted
+  // Code answers today (no image registry): a plain 404 "Saved environments are off for this install". `route-missing` is an older Code's unknown-route 404, `core-off` the core host's
+  // "not on the core engine" 404, `broken` an answer that does not read, `extra-field` one with a field this file does not know.
+  const savedEnvModes = new Map<string, SavedEnvMode>();
+  const savedEnvAnswer = (method: string, path: string, person: Person): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/environment-image$/u.exec(path);
+    if (match === null || method !== "GET") return undefined;
+    const name = decodeURIComponent(match[1]!), mode = savedEnvModes.get(name) ?? "off";
+    if (mode === "route-missing") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    if (mode === "core-off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "That is not on the core engine on this install yet." } } };
+    // Code's rule (canReadProject, checked before the switch): anyone who may not read the project, or another company's, gets the one 404.
+    if (!wikiReads(person, name)) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    if (mode === "501") return { status: 501, body: { error: { code: "NOT_IMPLEMENTED", message: "not served" } } };
+    if (mode === "off") return { status: 404, body: { error: { code: "NOT_FOUND", message: "Saved environments are off for this install" } } };
+    if (mode === "broken") return { status: 200, body: { health: "fine", canReset: "yes" } };
+    const panel = { health: mode === "healthy" ? "healthy" : "never_proved", ...(mode === "healthy" ? { image: { builtAt: "2026-11-16T10:00:00.000Z", ageDays: 1, status: "ready" } } : {}), canReset: false, enabled: true, canChangeSetting: false };
+    return { status: 200, body: mode === "extra-field" ? { ...panel, digest: "sha256:abc" } : panel };
+  };
   // Lead 4 C1: the pretend corrections, per project and page (reset whenever a spec sets the wiki): notes added and approved here, claims marked wrong, notes removed.
   interface Corrections { added: Array<{ noteId: string; text: string; author: string; authorKey: string; createdAt: string; approval: "pending" | "approved"; file?: { repo: string; path: string } }>; approved: Set<string>; removed: Set<string>; marked: Set<string> }
   const corrections = new Map<string, Corrections>();
@@ -1364,6 +1383,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (taskId !== undefined) involved.set(taskId, new Set([...(involved.get(taskId) ?? []), added.developerId]));
           return send(200, { mode: involvedMode, ...(taskId === undefined ? {} : { taskId }) });
         }
+        if (method === "POST" && url.pathname === "/__fake/saved-env") {
+          const given = JSON.parse(await readBody(request)) as { project?: unknown; mode?: unknown };
+          if (typeof given.project !== "string" || !["off", "route-missing", "core-off", "never", "healthy", "broken", "extra-field", "501"].includes(given.mode as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and mode" } });
+          savedEnvModes.set(given.project, given.mode as SavedEnvMode);
+          return send(200, { mode: given.mode });
+        }
         if (method === "POST" && url.pathname === "/__fake/wiki") {
           const given = JSON.parse(await readBody(request)) as { project?: unknown; state?: unknown; off?: unknown; broken?: unknown };
           if (typeof given.project !== "string" || project(given.project) === undefined || (given.state !== undefined && !["ready", "none", "building", "stopped"].includes(given.state as string))) return send(400, { error: { code: "CONFIG_INVALID", message: "project, and state ready, none, building or stopped" } });
@@ -1452,12 +1477,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed) ?? savedEnvAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
           if (who === undefined && /\/(?:wiki(?:[-/]|$)|upkeep$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (who === undefined && /\/environment-image$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal|confirm|discard|decide))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (answer !== undefined) return send(answer.status, answer.body);
         }
-        const matched = matchCodeRoute(method, url.pathname);
+        // Code serves its decision cards on its own `/v1/app/decisions...` (core host, L4-MF1); the contract rows still carry the historical `/v1/dev/client/decisions...`, which real Code never served and
+        // Cloud no longer asks. The fake answers the real path with the same cards, and the contract path too (the "answers every route in the contract" test reads the rows as they are); a spec that wants to
+        // prove Cloud never asks the old path reads the fake's log.
+        const matched = matchCodeRoute(method, /^\/v1\/app\/decisions(?:\/|$)/u.test(url.pathname) ? `/v1/dev/client${url.pathname.slice("/v1/app".length)}` : url.pathname);
         if (matched === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
         const id = matched.route.id;
         let person: Person | undefined = current;

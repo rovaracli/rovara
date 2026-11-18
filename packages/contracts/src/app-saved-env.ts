@@ -27,6 +27,10 @@ export const SavedEnvPanelSchema = z.object({
   lastFailure: z.object({ at: z.string().datetime(), reason: SavedEnvPanelFailureSchema }).strict().optional(),
   /** The caller may press Reset (a maintainer of the project). */
   canReset: z.boolean(),
+  /** SV-1l: the project's own on/off setting (`savedEnv.enabled`, on until a maintainer turns it off). Off: no saved copy is built or used, and every task sets up fresh. Left out by an older server. */
+  enabled: z.boolean().optional(),
+  /** SV-1l: the caller may turn the setting on or off (a maintainer of the project). The server checks the role again on every change; this only says whether to offer the control. */
+  canChangeSetting: z.boolean().optional(),
 }).strict();
 export type SavedEnvPanel = z.infer<typeof SavedEnvPanelSchema>;
 export const SavedEnvPanelReaderSchema = forwardReader(SavedEnvPanelSchema);
@@ -39,3 +43,9 @@ export type SavedEnvResetBody = z.infer<typeof SavedEnvResetBodySchema>;
  */
 export const SavedEnvResetAnswerSchema = z.object({ status: z.enum(["queued", "in_flight", "cooldown", "nothing_to_do"]), panel: SavedEnvPanelSchema }).strict();
 export const SavedEnvResetAnswerReaderSchema = forwardReader(SavedEnvResetAnswerSchema);
+
+/** SV-1l: the body of `PUT /v1/app/projects/{name}/environment-image/setting`, and its answer (`changed` is false when the project already had that value; nothing is written then). */
+export const SavedEnvSettingBodySchema = z.object({ enabled: z.boolean() }).strict();
+export type SavedEnvSettingBody = z.infer<typeof SavedEnvSettingBodySchema>;
+export const SavedEnvSettingAnswerSchema = z.object({ enabled: z.boolean(), changed: z.boolean() }).strict();
+export const SavedEnvSettingAnswerReaderSchema = forwardReader(SavedEnvSettingAnswerSchema);

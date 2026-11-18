@@ -137,6 +137,22 @@ describe("decision cards: the contract, the fake Code and Cloud agree on /v1/app
     } finally { await own.close(); }
   });
 
+  it("asks Code's own /v1/app/decisions routes for the cards and for an act, never the old /v1/dev/client/decisions path Code does not serve (L4-MF1 side finding)", async () => {
+    const own = await startFakeCode();
+    try {
+      const cloud = cloudOn(own.url);
+      const { cookie, csrf } = await signedIn(cloud, own.url);
+      const view = (await cloud.call("GET", "/v1/web/decisions", { cookie })).body;
+      expect(DecisionCardsViewReaderSchema.safeParse(view).success).toBe(true);
+      const cards = (view as { cards: Array<{ id: string }>; digests: Record<string, string> });
+      expect(cards.cards.map((card) => card.id)).toContain(`merge:${TASK_IDS.pullRequest}`);
+      const acted = await cloud.call("POST", `/v1/web/decisions/merge/${TASK_IDS.pullRequest}/evidence-opened`, { cookie, csrf, body: { requestId: randomUUID(), shownDigest: cards.digests[`merge:${TASK_IDS.pullRequest}`] } });
+      expect(acted.status).toBe(200);
+      const paths = own.log.filter((entry) => entry.path.includes("decisions")).map((entry) => `${entry.method} ${entry.path}`);
+      expect(paths).toEqual(["GET /v1/app/decisions", `POST /v1/app/decisions/merge/${TASK_IDS.pullRequest}/evidence-opened`]);
+    } finally { await own.close(); }
+  });
+
   it("forwards only ?merging=1 and ?tab=design|requirements to Code, and refuses an unknown action or a kind with a dot before Code is called", async () => {
     const own = await startFakeCode();
     try {
@@ -144,7 +160,7 @@ describe("decision cards: the contract, the fake Code and Cloud agree on /v1/app
       const seen: string[] = [];
       const recording: typeof fetch = async (input, init) => {
         const target = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-        if (new URL(target).pathname.startsWith("/v1/dev/client/decisions")) seen.push(new URL(target).pathname + new URL(target).search);
+        if (new URL(target).pathname.startsWith("/v1/app/decisions")) seen.push(new URL(target).pathname + new URL(target).search);
         return real(input, init);
       };
       const cloud = cloudOn(own.url, { fetch: recording });
@@ -153,8 +169,8 @@ describe("decision cards: the contract, the fake Code and Cloud agree on /v1/app
       await cloud.call("POST", `/v1/web/decisions/merge/${TASK_IDS.pullRequest}/evidence-opened?merging=1&tab=design&evil=1&tab2=x`, { cookie, csrf, body });
       await cloud.call("POST", `/v1/web/decisions/merge/${TASK_IDS.pullRequest}/approve?merging=1&tab=../x`, { cookie, csrf, body });
       expect(seen).toEqual([
-        `/v1/dev/client/decisions/merge/${TASK_IDS.pullRequest}/evidence-opened?merging=1&tab=design`,
-        `/v1/dev/client/decisions/merge/${TASK_IDS.pullRequest}/approve?merging=1`,
+        `/v1/app/decisions/merge/${TASK_IDS.pullRequest}/evidence-opened?merging=1&tab=design`,
+        `/v1/app/decisions/merge/${TASK_IDS.pullRequest}/approve?merging=1`,
       ]);
       const before = seen.length;
       expect((await cloud.call("POST", `/v1/web/decisions/merge/${TASK_IDS.pullRequest}/delete`, { cookie, csrf, body })).status).toBe(501);
@@ -171,7 +187,7 @@ describe("decision cards: the contract, the fake Code and Cloud agree on /v1/app
       // Code today: no decisions route (404), as the deployed code/next answers an unknown path.
       const withoutDecisions: typeof fetch = async (input, init) => {
         const target = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-        if (new URL(target).pathname.startsWith("/v1/dev/client/decisions")) return new Response(JSON.stringify({ error: { code: "NOT_FOUND", message: "no such route" } }), { status: 404, headers: { "content-type": "application/json" } });
+        if (new URL(target).pathname.startsWith("/v1/app/decisions")) return new Response(JSON.stringify({ error: { code: "NOT_FOUND", message: "no such route" } }), { status: 404, headers: { "content-type": "application/json" } });
         return real(input, init);
       };
       const cloud = cloudOn(own.url, { fetch: withoutDecisions });
@@ -182,7 +198,7 @@ describe("decision cards: the contract, the fake Code and Cloud agree on /v1/app
       // And a 501 from Code reads the same way.
       const notImplemented: typeof fetch = async (input, init) => {
         const target = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-        if (new URL(target).pathname.startsWith("/v1/dev/client/decisions")) return new Response("{}", { status: 501, headers: { "content-type": "application/json" } });
+        if (new URL(target).pathname.startsWith("/v1/app/decisions")) return new Response("{}", { status: 501, headers: { "content-type": "application/json" } });
         return real(input, init);
       };
       const cloud2 = cloudOn(own.url, { fetch: notImplemented });
