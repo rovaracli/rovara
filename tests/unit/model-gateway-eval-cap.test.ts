@@ -14,7 +14,7 @@ import { CompanyBudgetCaps, NO_CAP } from "../../packages/model-gateway/src/comp
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { EVAL_AUTHORITY_AUDIENCE } from "../../packages/model-gateway/src/eval-authority.js";
 import {
-  answerEvalCap, createEvalCapHandler, EVAL_CAP_AUDIENCE, EVAL_CAP_BODY_MAX, EVAL_CAP_PATH, EVAL_CAP_PER_MINUTE, EVAL_CAP_TOKEN_KIND, type EvalCapHandlerOptions,
+  answerEvalCap, createEvalCapHandler, EVAL_CAP_AUDIENCE, EVAL_CAP_CONNECTION_MS, EVAL_CAP_BODY_MAX, EVAL_CAP_PATH, EVAL_CAP_PER_MINUTE, EVAL_CAP_TOKEN_KIND, type EvalCapHandlerOptions,
 } from "../../packages/model-gateway/src/eval-cap.js";
 import { StaticInstallRegistry } from "../../packages/model-gateway/src/installs.js";
 import { SERVICE_TOKEN_AUDIENCE } from "../../packages/model-gateway/src/offered-models.js";
@@ -254,6 +254,13 @@ describe("L4-T3: the cap answer says whether the project's AI key is connected",
       const out = await call({ ...w.opts, connection: source(answer) }, ask());
       expect(out).toEqual(ok(4)); expect(JSON.stringify(out)).not.toContain("private store detail");
     }
+  });
+  it("a connection read that outlasts its own bound is left out and the cap is still answered (a hung read never costs the cap)", async () => {
+    const w = world(); await w.seed(A, budgets(9, 4));
+    const hung = { connected: (_scope: unknown, signal: AbortSignal) => new Promise<boolean>((_resolve, reject) => { signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); }) };
+    const started = Date.now();
+    expect(await call({ ...w.opts, connection: hung }, ask())).toEqual(ok(4));
+    expect(Date.now() - started).toBeLessThan(EVAL_CAP_CONNECTION_MS + 1_500);
   });
   it("a refusal is still the same fixed refusal and the connection is not even read (no budget source, another company's body, a bad project)", async () => {
     const seen: Array<{ iss: string; cid: string; pid: string }> = [];

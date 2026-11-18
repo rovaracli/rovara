@@ -337,7 +337,7 @@ cap. A project with no cap of its own is held to the company cap.
 - **`connected` (L4-T3, additive, no new route)**: whether the project's own product key is connected, re-read with the same check the
   eval authority and the stage hold make. It is the one answer that says why an approved eval cannot run (the authority's `404` says
   only "no"): Code shows "connect your AI" instead of "not approved". Left out (unknown, never guessed) where the gateway holds no eval
-  stages or the connection cannot be read; the cap itself is unchanged either way.
+  stages or the connection cannot be read within one second; the cap itself is unchanged either way. It says whether a product key resolves for the project (the check the hold makes), not which provider's. The authority's `404` still hides a withdrawn approval behind "not connected" until the key is connected.
 - **Advisory bound**: this is the cap Code holds an eval spend item to at confirm. The binding check is still the gateway's own eval hold (`/v1/product/eval/hold`, the product caps), which may be lower; a hold it refuses spends nothing.
 - Mounted by `startServe` always: the company budget source (`GATEWAY_COMPANY_TABLE`) is part of every serving gateway.
 

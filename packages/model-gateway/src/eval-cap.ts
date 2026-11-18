@@ -32,6 +32,8 @@ export const EVAL_CAP_AUDIENCE = "rovara-model-gateway-eval-cap";
 /** The request body is under 300 bytes; anything over this is refused unread past it. */
 export const EVAL_CAP_BODY_MAX = 4_096;
 /** Per serving task, before any key fetch or store read (the path is on the public load balancer). */
+/** The most the connection read may take before the cap is answered without it. */
+export const EVAL_CAP_CONNECTION_MS = 1_000;
 export const EVAL_CAP_OPEN = 8;
 export const EVAL_CAP_PER_MINUTE = 600;
 
@@ -111,7 +113,11 @@ export async function answerEvalCap(options: EvalCapHandlerOptions, request: Req
   const answer: EvalCapAnswer = { company: cid, project: pid, monthlyCapMicros: Math.min(c.companyMonth, c.projectMonth) };
   if (options.connection !== undefined) {
     let connected: boolean | undefined;
-    try { connected = await options.connection.connected({ iss: claims.iss, cid, pid }, signal); } catch { connected = undefined; }
+    // Bounded on its own: a slow key read leaves `connected` out (unknown) instead of costing the cap its answer (Code waits 3 seconds for the whole reply).
+    const own = new AbortController(); const stop = (): void => own.abort(); signal.addEventListener("abort", stop, { once: true });
+    const timer = setTimeout(stop, EVAL_CAP_CONNECTION_MS);
+    try { connected = await options.connection.connected({ iss: claims.iss, cid, pid }, own.signal); } catch { connected = undefined; }
+    finally { clearTimeout(timer); signal.removeEventListener("abort", stop); }
     if (typeof connected === "boolean") answer.connected = connected;
   }
   return { status: 200, body: answer };
