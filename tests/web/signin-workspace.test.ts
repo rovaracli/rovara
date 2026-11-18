@@ -14,12 +14,12 @@ import { renderUi } from "./support/render.js";
 
 const HINT = "T0HINT0001";
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-function browser(options: { stored?: string; throwing?: boolean; answers?: Record<string, () => Response> } = {}) {
+function browser(options: { stored?: string; throwing?: boolean; readOnly?: boolean; answers?: Record<string, () => Response> } = {}) {
  const local = new Map<string, string>(options.stored === undefined ? [] : [[LAST_WORKSPACE_KEY, options.stored]]), assign = vi.fn();
  const boom = () => { throw new Error("storage blocked"); };
  const fetch = vi.fn(async (input: RequestInfo | URL) => (options.answers?.[String(typeof input === "string" ? input : input instanceof URL ? input.href : input.url)] ?? (() => json({}, 404)))());
  const win = { location: { origin: "https://cell.example", pathname: "/app/live", search: "", assign }, fetch,
-  localStorage: options.throwing === true ? { getItem: boom, setItem: boom } : { getItem: (key: string) => local.get(key) ?? null, setItem: (key: string, value: string) => { local.set(key, value); } },
+  localStorage: options.throwing === true ? { getItem: boom, setItem: boom } : options.readOnly === true ? { getItem: (key: string) => local.get(key) ?? null, setItem: boom } : { getItem: (key: string) => local.get(key) ?? null, setItem: (key: string, value: string) => { local.set(key, value); } },
   sessionStorage: { getItem: () => null, setItem: () => undefined },
  } as unknown as BrowserWindow;
  return { win, local, assign, fetch };
@@ -60,6 +60,14 @@ describe("the browser host's sign-in", () => {
   expect(target(b.assign).searchParams.has("slack_team")).toBe(false);
   expect(host.lastWorkspace?.()).toBeUndefined();
   expect(b.local.get(LAST_WORKSPACE_KEY)).toBe("");
+ });
+
+ it("a different workspace carries no hint even when the browser cannot forget it (storage that reads but will not write)", () => {
+  const b = browser({ stored: HINT, readOnly: true });
+  const host = createBrowserHost(b.win);
+  expect(host.lastWorkspace?.()).toBe(HINT);
+  host.signIn("/app", { differentWorkspace: true });
+  expect(target(b.assign).searchParams.has("slack_team")).toBe(false);
  });
 
  it("a method button names its method; GitHub never carries a Slack hint, Slack does", () => {
