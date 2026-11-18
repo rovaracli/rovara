@@ -283,6 +283,14 @@ describe("B17: acknowledge a changed-file note, and the questions the wiki could
     await screen.findByTestId("wiki-add-note");
     expect(screen.queryByRole("button", { name: /^I've checked it/u })).toBeNull();
     g.close();
+    // Code's per-note permission still controls acknowledgement when a note is stale.
+    const denied = corrections("maintainer");
+    denied.notes = [{ ...denied.notes[0]!, canDelete: false, canApprove: true, mayBeOutOfDate: true }];
+    const d = mount({ corrections: () => json(200, denied) });
+    await article();
+    await screen.findByTestId("wiki-add-note");
+    expect(screen.queryByRole("button", { name: /^I've checked it/u })).toBeNull();
+    d.close();
     // No changed-file reminder, no button, even for a maintainer.
     const n = mount();
     await article();
