@@ -2,6 +2,7 @@
 //
 //   GET  /v1/app/projects/{p}/environment-image -> Code GET /v1/app/projects/{p}/environment-image  (SavedEnvPanelSchema, contracts app-saved-env.ts), as the person
 //   GET  /v1/app/projects/{p}/test-environment  -> Code GET /v1/app/projects/{p}/test-environment (core-host dev-routes.ts, DEC 254z-amend3), as the person, read below
+//   POST /v1/app/projects/{p}/test-environment/approve -> Code POST .../test-environment/approve { requestId, revision, artifactDigest } (Code #1045 item 4), as the person, below
 //   POST /v1/app/projects/{p}/start-preview     -> answered here: 200 { orgId, project, kind: "unknown" }                       (TaskStopStartPreviewSchema)
 //
 // The saved environment image read (Code PR "l4-env-image-read"): Code decides who may read, from the person's live project grant in their company, and answers
@@ -24,7 +25,7 @@
 // cloud-server takes no package dependency, so the shapes are checked here by hand against contracts app-saved-env.ts (a unit test pins the words).
 import { CodeError } from "./code-client.js";
 import { companyCaller, refused } from "./company-caller.js";
-import type { Route, RouteAnswer } from "./routes.js";
+import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
 /** Code's project name pattern on this route (core-host dev-routes.ts SAVED_ENV_IMAGE). */
 const CODE_PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
@@ -92,18 +93,31 @@ function codeMessage(error: CodeError): { code: unknown; message: unknown } | un
   return body === undefined ? undefined : { code: body["code"], message: body["message"] };
 }
 
-// ---- The test environment read (DEC 254z-amend3) ----
+// ---- The test environment read and approve (DEC 254z-amend3; Code #1045 item 4) ----
 // Code's hosted answer is the laptop's own state view (core/test-env/local-view.ts TestEnvironmentView): `{ project, enabled, testServices, testServicesUnavailable?, approved?, proposal?,
-// serviceCatalog? }`. The app's onboarding section reads Cloud's TestEnvironmentState (contracts test-environment-wire.ts), which needs the full proposed body and the setup draft
-// that Code's hosted read does not carry. So Cloud answers what it can say truthfully: no draft, no proposal and no approved body to edit, with fixed lines naming what Code holds
-// (only Code's fixed "not available here" sentence and two whole numbers pass). The section still shows (with the machine size card) instead of "Couldn't load". Approve is not
-// forwarded: the app's approve needs a proposal, which this read never shows. With the feature off (`enabled: false`) the app gets Code's 404 words and shows nothing.
+// serviceCatalog? }`. Since Code #1045 the proposal that waits also carries its whole proposed body (`proposal.environment`, read back for exactly its digest), with `nextRevision`
+// (the revision approving it makes), `risk`, `lessSafe`, `changes` (Code's own "where: before -> after" lines) and `proved`. The app's onboarding section reads Cloud's
+// TestEnvironmentState (contracts test-environment-wire.ts), so Cloud builds it from that:
+//   - the proposal: its digest, risk, less-safe flags, whether it is proved, its body and a summary counted from the body; Code's change lines are the section's notes. Code's hosted
+//     read names no commands as run lines, prove steps or value sources, so none are shown. Approving it always needs a fresh step-up on the hosted Code (`needs.freshSignIn`),
+//     and who may approve is Code's risk rule (no second-person card on the hosted Code).
+//   - a proposal without a body that reads (an older Code, or one that could not be read back) is not offered for approval: a fixed line says one waits, as before.
+//   - an approved revision is a fixed line (Code's hosted read carries no approved body to show).
+// Approve (`POST .../test-environment/approve`, the app's `{ digest, expectedRevision, requestId }`) is forwarded as Code's `{ requestId, revision: proposal.nextRevision, artifactDigest:
+// proposal.digest }`, only when the proposal Code holds NOW is the one the person saw (the same digest, and the approved revision they saw is the one before `nextRevision`); otherwise
+// nothing is sent and the answer says it changed. Code decides who may approve and checks the step-up; its refusals become fixed words.
+// With the feature off (`enabled: false`) the app gets Code's 404 words and shows nothing.
 export const TEST_ENVIRONMENT_WORDS = Object.freeze({
   off: "The test environment is off for this install.",
   approved: (revision: number) => `An approved test environment is in place (revision ${String(revision)}).`,
   proposal: "A proposed test environment is waiting for review in Rovara Code.",
   notYet: "The test environment isn't available on this Rovara yet.",
   unreadable: "The test environment could not be read just now. Try again.",
+  approveNotYet: "Approving the test environment isn't available on this Rovara yet.",
+  stale: "It changed while you were looking. Open it again.",
+  stepUp: "Confirm it's you again, then try once more.",
+  notAllowed: "Only a company admin, or the project's maintainer for a low or medium risk change, can approve this test environment.",
+  approvedRefresh: "The test environment was approved. Refresh to see it.",
 });
 /** Code's four fixed "not available here" sentences (core/test-env/test-services-switch.ts TEST_SERVICES_UNAVAILABLE_WORDS); only an exact one is said. */
 const TEST_SERVICES_UNAVAILABLE: ReadonlySet<string> = new Set([
@@ -113,21 +127,119 @@ const TEST_SERVICES_UNAVAILABLE: ReadonlySet<string> = new Set([
   "Test services not available here: something they need is missing on this install",
 ]);
 const TEST_ENVIRONMENT_FIELDS = ["project", "enabled", "testServices", "testServicesUnavailable", "approved", "proposal", "serviceCatalog"] as const;
+const PROPOSAL_FIELDS = ["digest", "proposedAt", "risk", "lessSafe", "changes", "proved", "nextRevision", "expiresAt", "environment"] as const;
+const SHA256 = /^[a-f0-9]{64}$/u;
+/** One plain line, as the app's contract reads one (no control or format characters). */
+const LINE_OK = /^[^\p{Cc}\p{Cf}]*$/u;
+const line = (value: unknown, max: number): value is string => typeof value === "string" && value.length >= 1 && value.length <= max && LINE_OK.test(value);
+const CHANGE_LINES_SHOWN = 60;
+const REPOSITORIES_MAX = 16;
+const CHECKS_MAX = 32;
+const DEPENDENCIES_MAX = 64;
+
+/** The proposed body's summary (contracts testEnvSummaryOf), or undefined when the body does not read as a test environment. The body itself is passed on unchanged. */
+function summaryOf(body: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(body) || !oneOf(body["tier"], ["sandbox", "preview", "shared"]) || !Array.isArray(body["repos"]) || body["repos"].length > REPOSITORIES_MAX) return undefined;
+  const selection = body["selection"], nightly = body["nightly"], services = body["services"], dependencies = body["dependencies"];
+  if (!isRecord(selection) || !line(selection["method"], 40) || !Number.isSafeInteger(body["roundBudgetMin"])) return undefined;
+  if (!isRecord(nightly) || typeof nightly["enabled"] !== "boolean" || !line(nightly["cronUtc"], 64) || !line(nightly["branch"], 255) || !Array.isArray(services)) return undefined;
+  if (dependencies !== undefined && !(Array.isArray(dependencies) && dependencies.length <= DEPENDENCIES_MAX && dependencies.every(isRecord))) return undefined;
+  const repositories: Array<Record<string, unknown>> = [];
+  for (const repo of body["repos"] as unknown[]) {
+    if (!isRecord(repo) || !line(repo["repositoryId"], 200) || !Array.isArray(repo["setupCommands"]) || !Array.isArray(repo["checks"]) || repo["checks"].length > CHECKS_MAX) return undefined;
+    const checks: Array<Record<string, unknown>> = [];
+    for (const check of repo["checks"] as unknown[]) {
+      if (!isRecord(check) || !line(check["id"], 64) || !line(check["label"], 80) || !line(check["kind"], 40)) return undefined;
+      const selectArgs = check["selectArgs"];
+      if (selectArgs !== undefined && !(Array.isArray(selectArgs) && selectArgs.length <= 8 && selectArgs.every((arg) => typeof arg === "string" && arg.length >= 1 && arg.length <= 256))) return undefined;
+      checks.push({ id: check["id"], label: check["label"], kind: check["kind"], ...(selectArgs === undefined ? {} : { selectArgs }) });
+    }
+    repositories.push({ repositoryId: repo["repositoryId"], setupCommands: repo["setupCommands"].length, checks });
+  }
+  // What Rovara starts, counted as contracts testEnvStartedCount counts it: one each for local, project-image and fake backings, one shared emulator, one test-account helper.
+  const kinds = (dependencies ?? []).map((dependency) => (isRecord(dependency["backing"]) ? dependency["backing"]["kind"] : undefined));
+  const started = kinds.filter((kind) => kind === "local" || kind === "project_image" || kind === "fake").length + (kinds.includes("emulated") ? 1 : 0) + (kinds.includes("test_account") ? 1 : 0);
+  return {
+    tier: body["tier"], repositories, selectionMethod: selection["method"], roundBudgetMin: body["roundBudgetMin"],
+    nightly: { enabled: nightly["enabled"], cronUtc: nightly["cronUtc"], branch: nightly["branch"] }, services: services.length,
+    ...(dependencies === undefined || (dependencies as unknown[]).length === 0 ? {} : { dependencies: { count: (dependencies as unknown[]).length, started } }),
+  };
+}
+
+/** Code's proposal that waits, as the app's proposal (with what approving it must name); undefined when it carries no body that reads; "unreadable" for a malformed proposal (the read is refused whole). */
+function proposalOf(proposal: Record<string, unknown>): { view: Record<string, unknown>; changes: string[]; nextRevision: number; digest: string } | undefined | "unreadable" {
+  if (!exactly(proposal, PROPOSAL_FIELDS) || typeof proposal["digest"] !== "string" || !SHA256.test(proposal["digest"]) || !oneOf(proposal["risk"], ["low", "medium", "high"])) return "unreadable";
+  if (!Number.isSafeInteger(proposal["nextRevision"]) || (proposal["nextRevision"] as number) < 1 || typeof proposal["proved"] !== "boolean") return "unreadable";
+  const lessSafe = proposal["lessSafe"], changes = proposal["changes"];
+  if (!Array.isArray(lessSafe) || lessSafe.length > 20 || !lessSafe.every((flag) => line(flag, 60))) return "unreadable";
+  if (changes !== undefined && !Array.isArray(changes)) return "unreadable";
+  const summary = summaryOf(proposal["environment"]);
+  if (summary === undefined) return undefined;
+  const digest = proposal["digest"];
+  return {
+    digest, nextRevision: proposal["nextRevision"] as number,
+    // Code's own change lines (one plain line each, `shownLine`); a line that does not read as one is left out, never cut.
+    changes: ((changes ?? []) as unknown[]).filter((change): change is string => line(change, 400)).slice(0, CHANGE_LINES_SHOWN),
+    view: {
+      digest, source: "setup", risk: proposal["risk"], lessSafe, summary, environment: proposal["environment"], runs: [], valueSources: [], proved: proposal["proved"], proveSteps: [],
+      needs: { freshSignIn: true, secondPerson: false }, approval: { status: "none" }, commandsNotInSettings: 0, check: { status: proposal["proved"] === true ? "ready" : "unchecked" },
+    },
+  };
+}
 
 /** Code's hosted test environment view as Cloud's TestEnvironmentState, or undefined when it does not read (refused whole). `off` when Code says the feature is off. */
 export function testEnvironmentState(raw: unknown, project: string): Record<string, unknown> | "off" | undefined {
+  return testEnvironmentRead(raw, project)?.state;
+}
+
+/** The state, and the proposal Code holds now (what an approval must name), from Code's read. */
+function testEnvironmentRead(raw: unknown, project: string): { state: Record<string, unknown> | "off"; proposal?: { digest: string; nextRevision: number } } | undefined {
   if (!isRecord(raw) || !exactly(raw, TEST_ENVIRONMENT_FIELDS) || raw["project"] !== project || typeof raw["enabled"] !== "boolean" || typeof raw["testServices"] !== "boolean") return undefined;
   const unavailable = raw["testServicesUnavailable"], approved = raw["approved"], proposal = raw["proposal"];
   if (unavailable !== undefined && !(typeof unavailable === "string" && TEST_SERVICES_UNAVAILABLE.has(unavailable))) return undefined;
   if (approved !== undefined && !(isRecord(approved) && Number.isSafeInteger(approved["revision"]) && (approved["revision"] as number) >= 1)) return undefined;
   if (proposal !== undefined && !isRecord(proposal)) return undefined;
-  if (!raw["enabled"]) return "off";
+  if (!raw["enabled"]) return { state: "off" };
+  const waiting = proposal === undefined ? undefined : proposalOf(proposal);
+  if (waiting === "unreadable") return undefined;
   const notes = [
     ...(approved === undefined ? [] : [TEST_ENVIRONMENT_WORDS.approved(approved["revision"] as number)]),
-    ...(proposal === undefined ? [] : [TEST_ENVIRONMENT_WORDS.proposal]),
+    ...(proposal === undefined ? [] : waiting === undefined ? [TEST_ENVIRONMENT_WORDS.proposal] : waiting.changes),
     ...(unavailable === undefined ? [] : [unavailable]),
-  ];
-  return { draft: { status: "none", notes, questions: [], pendingServices: [] } };
+  ].slice(0, CHANGE_LINES_SHOWN);
+  return {
+    state: { draft: { status: "none", notes, questions: [], pendingServices: [] }, ...(waiting === undefined ? {} : { proposal: waiting.view }) },
+    ...(waiting === undefined ? {} : { proposal: { digest: waiting.digest, nextRevision: waiting.nextRevision } }),
+  };
+}
+
+/** Code's request id rule on its approve route (core-host dev-routes.ts ApproveTestEnvironmentBodySchema). */
+const APPROVE_REQUEST_ID = /^[A-Za-z0-9_-]{8,128}$/u;
+/** The app's approve body (contracts TestEnvApproveBodySchema), checked here: exactly these keys. */
+function approveBody(value: unknown): { digest: string; expectedRevision: number; requestId: string } | undefined {
+  if (!isRecord(value) || !exactly(value, ["digest", "expectedRevision", "requestId"])) return undefined;
+  const { digest, expectedRevision, requestId } = value;
+  if (typeof digest !== "string" || !SHA256.test(digest) || !Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 0 || typeof requestId !== "string" || !APPROVE_REQUEST_ID.test(requestId)) return undefined;
+  return { digest, expectedRevision: expectedRevision as number, requestId };
+}
+
+/** Code's test environment read for the project, as Cloud reads it, or the answer to give instead. */
+async function readTestEnvironment(client: RouteContext["client"], session: RouteContext["session"], project: string): Promise<{ read: NonNullable<ReturnType<typeof testEnvironmentRead>> } | { answer: RouteAnswer }> {
+  let raw: unknown;
+  try {
+    raw = await client.json<unknown>(session, `/v1/app/projects/${encodeURIComponent(project)}/test-environment`);
+  } catch (error) {
+    if (error instanceof CodeError) {
+      if (notYetFromCode(error)) return { answer: answer(501, "NOT_ON_CODE_YET", TEST_ENVIRONMENT_WORDS.notYet) };
+      // Code's own 404 (a project the person may not read, or a missing one, alike) reads as a missing project.
+      if (error.status === 404) return { answer: A.notFound };
+    }
+    throw error;
+  }
+  const read = testEnvironmentRead(raw, project);
+  if (read === undefined) return { answer: answer(502, "INVALID_RESPONSE", TEST_ENVIRONMENT_WORDS.unreadable) };
+  if (read.state === "off") return { answer: answer(404, "NOT_FOUND", TEST_ENVIRONMENT_WORDS.off) };
+  return { read };
 }
 
 export const SAVED_ENV_ROUTES: Route[] = [
@@ -136,20 +248,39 @@ export const SAVED_ENV_ROUTES: Route[] = [
     answer: async ({ client, session, params }) => {
       const project = params[0]!;
       if (!CODE_PROJECT_NAME.test(project)) return A.notFound;
-      let raw: unknown;
+      const found = await readTestEnvironment(client, session, project);
+      return "answer" in found ? found.answer : { status: 200, body: found.read.state };
+    },
+  },
+  {
+    // The app's Approve: forwarded only for the proposal Code holds now, exactly as the person saw it (see above). Code checks the step-up and who may approve.
+    method: "POST", path: /^\/projects\/([^/]+)\/test-environment\/approve$/u,
+    answer: async ({ client, session, params, body }) => {
+      const project = params[0]!;
+      if (!CODE_PROJECT_NAME.test(project)) return A.notFound;
+      const asked = approveBody(body);
+      if (asked === undefined) return A.invalid;
+      const found = await readTestEnvironment(client, session, project);
+      if ("answer" in found) return found.answer;
+      const waiting = found.read.proposal;
+      // Not the proposal the person saw (another digest, none, or the approved revision moved on): nothing is sent.
+      if (waiting === undefined || waiting.digest !== asked.digest || waiting.nextRevision !== asked.expectedRevision + 1) return answer(409, "CHANGE_STALE", TEST_ENVIRONMENT_WORDS.stale);
       try {
-        raw = await client.json<unknown>(session, `/v1/app/projects/${encodeURIComponent(project)}/test-environment`);
+        await client.json<unknown>(session, `/v1/app/projects/${encodeURIComponent(project)}/test-environment/approve`, { method: "POST", body: { requestId: asked.requestId, revision: waiting.nextRevision, artifactDigest: waiting.digest } });
       } catch (error) {
-        if (error instanceof CodeError) {
-          if (notYetFromCode(error)) return answer(501, "NOT_ON_CODE_YET", TEST_ENVIRONMENT_WORDS.notYet);
-          // Code's own 404 (a project the person may not read, or a missing one, alike) reads as a missing project.
-          if (error.status === 404) return A.notFound;
-        }
+        if (!(error instanceof CodeError)) throw error;
+        const said = codeMessage(error);
+        if (notYetFromCode(error)) return answer(501, "NOT_ON_CODE_YET", TEST_ENVIRONMENT_WORDS.approveNotYet);
+        if (error.status === 403 && said?.code === "REAUTH_REQUIRED") return answer(403, "REAUTH_REQUIRED", TEST_ENVIRONMENT_WORDS.stepUp);
+        if (error.status === 403) return answer(403, "FORBIDDEN", TEST_ENVIRONMENT_WORDS.notAllowed);
+        if (error.status === 409) return answer(409, "CHANGE_STALE", TEST_ENVIRONMENT_WORDS.stale);
+        if (error.status === 404) return A.notFound;
         throw error;
       }
-      const state = testEnvironmentState(raw, project);
-      if (state === "off") return answer(404, "NOT_FOUND", TEST_ENVIRONMENT_WORDS.off);
-      return state === undefined ? answer(502, "INVALID_RESPONSE", TEST_ENVIRONMENT_WORDS.unreadable) : { status: 200, body: state };
+      // Approved: the state as Code reads it now (a read that fails still says it was approved).
+      const after = await readTestEnvironment(client, session, project).catch(() => undefined);
+      const state = after !== undefined && !("answer" in after) ? after.read.state : { draft: { status: "none", notes: [TEST_ENVIRONMENT_WORDS.approvedRefresh], questions: [], pendingServices: [] } };
+      return { status: 200, body: { revision: waiting.nextRevision, digest: waiting.digest, replayed: false, state } };
     },
   },
   {

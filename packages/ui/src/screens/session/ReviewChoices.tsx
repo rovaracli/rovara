@@ -1,5 +1,7 @@
-// Rovara-cloud#25: what the owner of a task stopped by review findings can do from Cloud: read the findings, then send the code back to coding with a
-// note, or accept the findings (with a reason) so the pull request opens. The server works out which findings and their IDs from Code's task.
+// Rovara-cloud#25: what the owner (or a co-owner on the task's People list, DEC 254zzz39 (6)) of a task stopped by review findings can do from Cloud: read the findings, then
+// send the code back to coding with a note, or accept the findings (with a reason) so the pull request opens. The server works out which findings and their IDs from Code's task.
+// Accepting a SECURITY finding needs a fresh sign-in with Code's own factor (DEC 236h): the button first sends the person to confirm it's them (Code's step-up page) and back,
+// keeping their note, and the next press accepts. When the server still says the confirmation is too old, the page asks again.
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
@@ -8,6 +10,8 @@ import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { TextArea } from "../../design/TextArea.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { useNav } from "../account/use-nav.js";
+import { confirmedReturn, forgetConfirmed, startStepUpNonce, useJustConfirmed } from "../admin/parts.js";
 import type { ReadSession } from "./SessionHeader.js";
 import type { ReadTask } from "./workspace-types.js";
 
@@ -33,17 +37,31 @@ export function blockingFindings(task: ReadTask): Finding[] {
  return out;
 }
 
-/** Shown only to the owner of a task stopped at review with blocking findings; everyone else, and every other task, sees nothing. */
+/** Shown only to the owner (or a co-owner) of a task stopped at review with blocking findings; everyone else, and every other task, sees nothing. */
 export function ReviewChoices({ session, task }: { session: ReadSession; task: ReadTask }) {
- if (!session.you.owner || task.workflow?.stage !== "REVIEW" || task.workflow.state !== "BLOCKED") return null;
+ if (!(session.you.owner || session.you.coOwner === true) || task.workflow?.stage !== "REVIEW" || task.workflow.state !== "BLOCKED") return null;
  const findings = blockingFindings(task);
  return findings.length === 0 ? null : <ReviewChoicesPanel sessionId={session.sessionId} findings={findings} />;
 }
 
+/** Where the note waits while the person confirms it's them (a full page round trip), per session. */
+const noteKey = (sessionId: string) => `rovara.reviewNote.${sessionId}`;
+function takeNote(storage: { get(key: string): string | undefined; set(key: string, value: string): void }, sessionId: string): string {
+ try { const kept = storage.get(noteKey(sessionId)) ?? ""; if (kept !== "") storage.set(noteKey(sessionId), ""); return kept.slice(0, 1000); } catch { return ""; }
+}
+
 function ReviewChoicesPanel({ sessionId, findings }: { sessionId: string; findings: Finding[] }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionActions(host), [host]);
- const [note, setNote] = useState(""), [busy, setBusy] = useState<"send" | "accept">(), [error, setError] = useState<string>(), [done, setDone] = useState<string>();
+ const who = useNav()?.me.developerId, confirmed = useJustConfirmed(who);
+ const [note, setNote] = useState(() => takeNote(host.storage, sessionId)), [busy, setBusy] = useState<"send" | "accept">(), [error, setError] = useState<string>(), [done, setDone] = useState<string>();
+ const [stale, setStale] = useState(false);
  const security = findings.some((finding) => finding.role === "SECURITY");
+ /** A security finding is accepted only right after the person confirms it's them: Code's step-up page, then back here with the note kept. */
+ const mustConfirm = security && (!confirmed || stale);
+ function confirmItsYou() {
+  try { host.storage.set(noteKey(sessionId), note.trim()); } catch { /* blocked storage: the note is typed again */ }
+  host.signIn(confirmedReturn(host.currentPath(), startStepUpNonce(host.storage)), { stepUp: true });
+ }
  async function run(kind: "send" | "accept") {
   setBusy(kind);setError(undefined);
   try {
@@ -52,7 +70,11 @@ function ReviewChoicesPanel({ sessionId, findings }: { sessionId: string; findin
    if (result.kind !== "done") throw new ApiError(409, "PENDING", "This is waiting for confirmation. Refresh to check.");
    setDone(kind === "send" ? "Sent back to coding." : "Accepted. Rovara is opening the pull request.");
    await query.invalidateQueries();
-  } catch (failure) { setError(failure instanceof ApiError ? failure.message : "That didn't go through. Try again."); }
+  } catch (failure) {
+   // The confirmation is too old (or there was none): ask for it again, keeping the note.
+   if (failure instanceof ApiError && failure.code === "REAUTH_REQUIRED") { if (who !== undefined) forgetConfirmed(host.storage, who); setStale(true); }
+   setError(failure instanceof ApiError ? failure.message : "That didn't go through. Try again.");
+  }
   finally { setBusy(undefined); }
  }
  return <section className="rv-review-choices" aria-label="Review findings">
@@ -61,8 +83,11 @@ function ReviewChoicesPanel({ sessionId, findings }: { sessionId: string; findin
   <TextArea label="Your note" hint="For Send back: what the coding agent should do (optional). For Accept: why these are fine to ship (required)." value={note} maxLength={1000} onChange={event => setNote(event.currentTarget.value)} />
   <div className="rv-actions">
    <Button busy={busy === "send"} disabled={busy !== undefined} onClick={() => { void run("send"); }}>Send back to coding</Button>
-   <Button busy={busy === "accept"} disabled={busy !== undefined || note.trim() === "" || note.trim().length > 500} onClick={() => { void run("accept"); }}>{security ? "Accept, including the security finding, and open the pull request" : "Accept and open the pull request"}</Button>
+   {mustConfirm
+    ? <Button disabled={busy !== undefined || note.trim() === "" || note.trim().length > 500} onClick={confirmItsYou}>Confirm it's you to accept the security finding</Button>
+    : <Button busy={busy === "accept"} disabled={busy !== undefined || note.trim() === "" || note.trim().length > 500} onClick={() => { void run("accept"); }}>{security ? "Accept, including the security finding, and open the pull request" : "Accept and open the pull request"}</Button>}
   </div>
+  {mustConfirm && <p className="rv-muted">Accepting a security finding needs you to confirm it's you first. Your note is kept.</p>}
   {error && <p role="alert"><VisibleText text={error} /></p>}{done && <p role="status"><VisibleText text={done} /></p>}
  </section>;
 }

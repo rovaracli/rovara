@@ -118,7 +118,7 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
       }}>Save my edit</Button>
       <Button onClick={() => setEditing(undefined)}>Cancel</Button>
     </div>}
-    {error && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => host.signIn(host.currentPath())}>Sign in again</Button></>}</p>}
+    {error && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => host.signIn(host.currentPath(), { stepUp: true })}>Confirm it's you</Button></>}</p>}
   </section>;
 }
 

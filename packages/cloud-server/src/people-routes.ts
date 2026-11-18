@@ -114,6 +114,22 @@ async function sharedReaders(context: RouteContext, record: WorkSession): Promis
   return readers;
 }
 
+/**
+ * Whether this person is a co-owner of the session's task by Code's People list now (DEC 254zzz39 (6), 254zzz44 (3)): an `owner` entry that is them (`you`). Asked only for someone
+ * who is not the session's owner, before an owner's move Code itself checks again. A refusal or an answer that does not read is "no"; an ended sign-in is not swallowed.
+ */
+export async function coOwnerOf(context: RouteContext, record: WorkSession): Promise<boolean> {
+  let raw: unknown;
+  try {
+    raw = await context.client.json<unknown>(context.session, peoplePath(record));
+  } catch (error) {
+    if (error instanceof CodeError) return false;
+    throw error;
+  }
+  const view = isObj(raw) ? projectView(raw["view"]) : undefined;
+  return view !== undefined && view.people.some((person) => person["you"] === true && person["role"] === "owner");
+}
+
 export const PEOPLE_ROUTES: Route[] = [
   {
     // GET /v1/app/sessions/{id}/people: who is on the task, their roles, and what this person may do (Code's People view).

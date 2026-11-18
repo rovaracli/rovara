@@ -36,6 +36,8 @@ export const PEOPLE_LIMITS_WORDS = Object.freeze({
   forbidden: refusal(403, "FORBIDDEN", "Only a company owner or admin can see people's spending."),
   invalid: refusal(400, "CONFIG_INVALID", "That request isn't in the shape this page sends."),
   projectNotFound: refusal(404, "NOT_FOUND", "That project doesn't exist, or you can't use it."),
+  /** Code's own words when it refuses this person a project's members (developer-routes.ts CLIENT_MEMBERS_NOT_ALLOWED, Code #1022). */
+  membersNotAllowed: refusal(403, "FORBIDDEN", "Only a company owner or admin, or the project's admin, can see and change its members."),
   unreadable: refusal(503, "RUNTIME_UNAVAILABLE", "The company's people and limits couldn't be read just now. Try again."),
   spendUnreadable: refusal(503, "RUNTIME_UNAVAILABLE", "People's spending couldn't be read just now. Nothing is shown rather than a wrong amount. Try again."),
   tooLong: refusal(503, "RUNTIME_UNAVAILABLE", "Your company has too many members to show here."),
@@ -94,7 +96,9 @@ async function projectPeople(context: RouteContext, project: string): Promise<Se
     answer = await context.client.json<unknown>(context.session, `/v1/dev/client/projects/${encodeURIComponent(project)}/members`);
   } catch (error) {
     if (!(error instanceof CodeError)) throw error;
-    return error.status === 404 || error.status === 403 ? W.projectNotFound : W.unreadable;
+    // Code's 403 is its own refusal of this person for this project's members (Code #1022 CLIENT_MEMBERS_NOT_ALLOWED), said in Code's fixed words; never "no such project".
+    if (error.status === 403) return W.membersNotAllowed;
+    return error.status === 404 ? W.projectNotFound : W.unreadable;
   }
   if (!plain(answer) || !Array.isArray(answer["members"]) || answer["members"].length > PEOPLE_MAX) return W.unreadable;
   const ids = new Set<string>();

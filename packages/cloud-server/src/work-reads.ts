@@ -2,8 +2,8 @@
 // Each is one call to Rovara Code as the signed-in person (contract v0: tasks.list, tasks.plan, tasks.evidence.list, tasks.events, tasks.comments.list),
 // kept to the fields the page draws. Code decides who may read a task; its refusal, a 404 included, reaches the app as Code worded it. Nothing here
 // writes, and nothing is invented: a field Code did not send is left out.
-import { CodeError, SignInEnded } from "./code-client.js";
-import type { Route, RouteAnswer } from "./routes.js";
+import { CodeError } from "./code-client.js";
+import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
 /** Code's task view, version 2. */
 const TASK_VIEW = { "x-agentx-task-view": "2" };
@@ -25,13 +25,46 @@ const INVOLVED_NOT_YET: ReadonlySet<number> = new Set([400, 404, 501]);
 const TASK_ID = "([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})";
 
 /** Code's list page (DEVELOPER_TASK_LIST_MAX) and how many pages one list read follows: WORK_TASKS_MAX tasks at most. */
-const LIST_PAGE = 50;
+export const LIST_PAGE = 50;
 const LIST_PAGES_MAX = 2;
-/** How many of the newest open tasks one list read asks Code for one by one (their stage, pull requests, cost and limit), and how many of those reads run at once. */
-export const WORK_DETAILS_MAX = 30;
-const DETAIL_READS_AT_ONCE = 5;
 /** A closed or cancelled task needs no stage: the list says what it is from its status alone. */
 const NO_DETAIL: ReadonlySet<string> = new Set(["CLOSED", "CANCELLED"]);
+/** The fields `GET /v1/dev/tasks?detail=1` adds to a row (Code #1045, contracts DeveloperTaskListDetailSchema). */
+const DETAIL_FIELDS = ["workflow", "pullRequests", "costUsd", "runLimitUsd"] as const;
+/** Code's pull request states on a list row (the workflow's own, upper case) in the task view's words (lower case), which the app reads. UNKNOWN says nothing. */
+const PULL_STATE: Readonly<Record<string, string>> = Object.freeze({ OPEN: "open", CLOSED: "closed", MERGED: "merged" });
+
+/**
+ * One row of Code's detailed list as Code's task view would say the same parts: the pull requests in the view's words, the cost as `spent.usd`, the limit as `runLimit.limitUsd`.
+ * The rest of the row is passed on as it is. Code's detailed row names no workflow outcome and no Understand round, so neither is said.
+ */
+export function detailedRow(raw: unknown): unknown {
+  if (!isRecord(raw)) return raw;
+  const { costUsd, runLimitUsd, pullRequests, ...rest } = raw;
+  return {
+    ...rest,
+    ...(Array.isArray(pullRequests) ? { pullRequests: pullRequests.filter(isRecord).map((pull) => { const { state, ...other } = pull; return { ...other, ...(typeof state === "string" && PULL_STATE[state] !== undefined ? { state: PULL_STATE[state] } : {}) }; }) } : {}),
+    ...(num(costUsd) === undefined ? {} : { spent: { usd: costUsd } }),
+    ...(num(runLimitUsd) === undefined ? {} : { runLimit: { limitUsd: runLimitUsd } }),
+  };
+}
+
+/**
+ * The person's own tasks, newest first, from Code's detailed list (`GET /v1/dev/tasks?detail=1`, Code #1045): each row with its workflow stage, pull requests, cost and run limit,
+ * so no task is read one by one. Up to `pages` pages of LIST_PAGE. `served` is false when no row carries any detail at all (a Code without the detail list answers its plain rows).
+ */
+export async function detailedTasks(client: RouteContext["client"], session: RouteContext["session"], pages: number, max: number): Promise<{ rows: unknown[]; served: boolean }> {
+  const rows: unknown[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < pages && rows.length < max; page += 1) {
+    const query = new URLSearchParams({ detail: "1", limit: String(LIST_PAGE), ...(cursor === undefined ? {} : { cursor }) });
+    const answer = await client.json<{ tasks?: unknown[]; nextCursor?: unknown }>(session, `/v1/dev/tasks?${query.toString()}`, { headers: TASK_VIEW });
+    rows.push(...list(answer.tasks, max - rows.length));
+    cursor = typeof answer.nextCursor === "string" && answer.nextCursor !== "" && answer.nextCursor.length <= 2_000 ? answer.nextCursor : undefined;
+    if (cursor === undefined) break;
+  }
+  return { rows: rows.map(detailedRow), served: rows.some((row) => isRecord(row) && DETAIL_FIELDS.some((field) => row[field] !== undefined)) };
+}
 
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -124,51 +157,15 @@ export function workPlan(raw: unknown): Record<string, unknown> {
   });
 }
 
-/**
- * Fills each open task (the newest WORK_DETAILS_MAX) with what Code's own task view says of its workflow, pull requests, cost and run limit. A read Code refuses, or that
- * fails, leaves that row as the list had it, marked `detail: "unread"`; an ended sign-in is not swallowed. The rows are changed in place.
- */
-async function withDetails(views: Array<Record<string, unknown>>, read: (taskId: string) => Promise<{ task?: unknown }>): Promise<void> {
-  const open = views.filter((view) => !NO_DETAIL.has(String(view["status"])));
-  const asked = open.slice(0, WORK_DETAILS_MAX);
-  for (const view of open.slice(WORK_DETAILS_MAX)) view["detail"] = "unread";
-  for (let at = 0; at < asked.length; at += DETAIL_READS_AT_ONCE) {
-    await Promise.all(asked.slice(at, at + DETAIL_READS_AT_ONCE).map(async (view) => {
-      let detail: Record<string, unknown> | undefined;
-      try {
-        const answer = await read(view["taskId"] as string);
-        detail = isRecord(answer) ? workTask(answer.task) : undefined;
-      } catch (error) {
-        if (error instanceof SignInEnded) throw error;
-      }
-      // Only the same task's view counts; its list row keeps the title, project and status the list gave.
-      if (detail === undefined || detail["taskId"] !== view["taskId"]) { view["detail"] = "unread"; return; }
-      for (const key of ["workflow", "pullRequests", "spent", "runLimit"] as const) if (detail[key] !== undefined) view[key] = detail[key];
-      if (typeof detail["status"] === "string") view["status"] = detail["status"];
-      if (typeof detail["updatedAt"] === "string") view["updatedAt"] = detail["updatedAt"];
-    }));
-  }
-}
-
 const WORK_READS: Route[] = [
   {
     // GET /v1/app/sessions (contract v0 `tasks.list`): the person's tasks, newest first, for the Work page's list.
-    // Code's list rows hold only id, title, project, status, shared and times (DeveloperTaskListItemSchema), 20 by default and at most 50 a page with a `nextCursor`. So the
-    // list asks for full pages (up to WORK_TASKS_MAX tasks), and the open tasks among the newest WORK_DETAILS_MAX are read one by one (Code's own task view, as the person)
-    // for their workflow stage, pull requests, cost and run limit. A task whose view could not be read is marked `detail: "unread"` (the page never calls it finished).
+    // One list read: Code's detailed list (`?detail=1`, Code #1045) gives each row its workflow stage, pull requests, cost and run limit, up to WORK_TASKS_MAX tasks in pages of
+    // 50. No task is read one by one. A Code that does not serve the detail answers its plain rows: then an open row is marked `detail: "unread"` (the page never calls it finished).
     method: "GET", path: /^\/sessions$/u,
     answer: async ({ client, session, work }) => {
-      const rows: unknown[] = [];
-      let cursor: string | undefined;
-      for (let page = 0; page < LIST_PAGES_MAX && rows.length < WORK_TASKS_MAX; page += 1) {
-        const query = new URLSearchParams({ limit: String(LIST_PAGE), ...(cursor === undefined ? {} : { cursor }) });
-        const answer = await client.json<{ tasks?: unknown[]; nextCursor?: unknown }>(session, `/v1/dev/tasks?${query.toString()}`, { headers: TASK_VIEW });
-        rows.push(...list(answer.tasks, WORK_TASKS_MAX - rows.length));
-        cursor = typeof answer.nextCursor === "string" && answer.nextCursor !== "" && answer.nextCursor.length <= 2_000 ? answer.nextCursor : undefined;
-        if (cursor === undefined) break;
-      }
-      const views = rows.flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [view]; });
-      await withDetails(views, (taskId) => client.json<{ task?: unknown }>(session, `/v1/dev/tasks/${encodeURIComponent(taskId)}?events=0`, { headers: TASK_VIEW }));
+      const { rows, served } = await detailedTasks(client, session, LIST_PAGES_MAX, WORK_TASKS_MAX);
+      const views = rows.flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [served || NO_DETAIL.has(String(view["status"])) ? view : { ...view, detail: "unread" }]; });
       // The tasks the person started in Cloud carry Cloud's session id: the task page's steer, stop and comment routes are the session's. A task started elsewhere has none.
       // A session store that cannot be read costs the page those links, never the list.
       const sessions = new Map<string, string>();

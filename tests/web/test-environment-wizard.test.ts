@@ -228,15 +228,17 @@ it("never links to a confirmation address that isn't this cell's confirmation pa
   f.close();
 });
 
-it("once a second person confirmed, the asker finishes the approval; an old sign-in asks them to sign in again", async () => {
+it("once a second person confirmed, the asker finishes the approval; an old sign-in asks them to confirm it's them (Code's step-up sign-in)", async () => {
   const f = setup({ read: { status: 200, body: state({ proposal: { ...LESS_SAFE, approval: { status: "approved" } } }) }, answers: { "/approve": { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to approve this change." } } } } });
   const region = await section();
   expect(within(region).getByText(/Confirmed by a second person/)).toBeTruthy();
   fireEvent.click(within(region).getByRole("button", { name: "Approve" }));
   const alert = await within(region).findByRole("alert");
   expect(alert.textContent).toContain("Sign in again to approve this change.");
-  fireEvent.click(within(alert).getByRole("button", { name: "Sign in again" }));
+  fireEvent.click(within(alert).getByRole("button", { name: "Confirm it's you" }));
   expect(f.host.signIn).toHaveBeenCalledTimes(1);
+  // A plain sign-in sets no step-up: the button asks Code for its step-up page.
+  expect((f.host.signIn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![1]).toEqual({ stepUp: true });
   f.close();
 });
 

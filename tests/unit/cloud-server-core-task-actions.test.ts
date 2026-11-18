@@ -60,7 +60,12 @@ interface Options {
 function setUp(options: Options = {}) {
   const engine = options.engine ?? "core";
   const calls: CodeCall[] = [];
-  const task = () => ours(options.task === "plan" ? FIXTURE.planReviewTask : FIXTURE.reviewBlockedTask);
+  // Since Code #1045 a hosted core start writes the task's session and Code's task read names it; `absent` is a task started before that (no session, none named).
+  const task = () => {
+    const read: Obj = { ...ours(options.task === "plan" ? FIXTURE.planReviewTask : FIXTURE.reviewBlockedTask) };
+    delete read["sessionId"];
+    return { ...read, ...(options.session === "absent" ? {} : { sessionId: CODE_SESSION }) };
+  };
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
     const headers = (init?.headers ?? {}) as Record<string, string>;
@@ -168,12 +173,13 @@ describe("Retry reviews on a core task", () => {
     expect(w.coreSessionCalls()[0]!.body).toEqual({ requestId: UPPER_REQUEST_ID.toLowerCase() });
   });
 
-  it("a task Code holds no session for: fixed words, and nothing else is asked", async () => {
+  it("a task whose read names no session (started before Code kept one for every task): fixed words, and no session is asked about", async () => {
     const w = setUp({ session: "absent" });
     const res = await w.send("POST", RETRY, { requestId: REQUEST_ID }, await w.ada());
-    expect(res).toMatchObject({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: CORE_ACTION_WORDS.retry } } });
+    expect(res).toMatchObject({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: CORE_ACTION_WORDS.retryNoSession } } });
     expect(JSON.stringify(res.body)).not.toContain("There is no such session");
-    expect(w.calls).toHaveLength(3);
+    expect(w.coreSessionCalls()).toEqual([]);
+    expect(w.calls).toHaveLength(2);
   });
 
   it("a Code whose core serves no sessions here: the same fixed words, never Code's own", async () => {
@@ -247,9 +253,12 @@ describe("Close on a core task", () => {
     expect(w.coreSessionCalls()).toEqual([]);
   });
 
-  it("a task Code holds no session for: fixed words", async () => {
-    const w = setUp({ task: "plan", session: "absent" });
-    expect(await w.send("POST", CLOSE, { requestId: REQUEST_ID, discardUnpublished: true }, await w.ada())).toMatchObject({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: CORE_ACTION_WORDS.close } } });
+  it("a task whose read names no session: fixed words at the first ask, and no session is asked about", async () => {
+    for (const discardUnpublished of [true, undefined]) {
+      const w = setUp({ task: "plan", session: "absent" });
+      expect(await w.send("POST", CLOSE, { requestId: REQUEST_ID, ...(discardUnpublished === undefined ? {} : { discardUnpublished }) }, await w.ada())).toMatchObject({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: CORE_ACTION_WORDS.closeNoSession } } });
+      expect(w.coreSessionCalls()).toEqual([]);
+    }
   });
 
   it("a workflow task is closed on the old route only", async () => {
@@ -272,11 +281,12 @@ describe("Close on a core task", () => {
 });
 
 describe("Accept findings that include a security finding", () => {
-  it("the core never takes it from a hosted route: Cloud says so in fixed words, never Code's bare 403", async () => {
+  it("the core takes it only on the web page's own route: without a fresh step-up in Cloud's token the person is asked to confirm it's them, and the page route is not asked", async () => {
     const w = setUp({ security: "forbidden" });
     const res = await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "A test token only." }, await w.ada());
-    expect(res).toMatchObject({ status: 409, body: { error: { code: "SECURITY_ACCEPT_NOT_HERE", message: CORE_ACTION_WORDS.securityNotHere } } });
+    expect(res).toMatchObject({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: CORE_ACTION_WORDS.stepUp } } });
     expect(JSON.stringify(res.body)).not.toContain("Rovara web page");
+    expect(w.calls.some((call) => call.path.startsWith("/v1/app/tasks/"))).toBe(false);
     // The findings Cloud sent included the security review's, as the page showed them.
     const sent = w.calls.find((call) => call.path.endsWith("/workflow/review-findings"))!.body as { resolutions: unknown[] };
     expect(sent.resolutions).toHaveLength(2);

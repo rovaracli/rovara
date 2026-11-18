@@ -3,6 +3,7 @@
 // Company owners and admins only (the company and the person come from Code's access check, never from the request). No quality number, no ranking, no
 // merged count: the answer has no field to build one from. Money is whole cents. Fixed words that never echo what the request or a lower layer said.
 import { describe, expect, it } from "vitest";
+import { CORE_TASK_ROUTES } from "../fixtures/code-core-task-routes.js";
 import {
   CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, PEOPLE_LIMITS_WORDS, createCloudHandler, defaultCompanySettings,
   type CloudRequest, type PersonSpendReader, type SpendLimitKind,
@@ -59,7 +60,7 @@ class FakeSpend implements PersonSpendReader {
   }
 }
 
-function world(options: { company?: boolean; spend?: boolean; members?: "ok" | "outage" | "foreign" | "garbled" | "pages"; project?: "ok" | "outage" | "garbled" } = {}) {
+function world(options: { company?: boolean; spend?: boolean; members?: "ok" | "outage" | "foreign" | "garbled" | "pages"; project?: "ok" | "outage" | "garbled" | "refused" } = {}) {
   const clock = { at: START }; let tokens = 0;
   const nowS = () => Math.floor(clock.at / 1000);
   const byToken = new Map<string, Person>();
@@ -86,6 +87,8 @@ function world(options: { company?: boolean; spend?: boolean; members?: "ok" | "
     if (members !== null) {
       codeCalls.push(`GET ${url.pathname}`);
       if (options.project === "outage") return reply(500, { error: { code: "X", message: "secret outage text" } });
+      // Code #1022's real refusal of this person for the project's members (tests/fixtures/code-core-task-routes.json `members`).
+      if (options.project === "refused") return reply(CORE_TASK_ROUTES.members.memberRefused.status, CORE_TASK_ROUTES.members.memberRefused.body);
       const who = PROJECT_PEOPLE[person.companyId]?.[decodeURIComponent(members[1]!)];
       if (who === undefined) return reply(404, { error: { code: "NOT_FOUND", message: "no" } });
       if (options.project === "garbled") return reply(200, { members: "nope" });
@@ -134,7 +137,7 @@ function world(options: { company?: boolean; spend?: boolean; members?: "ok" | "
 interface PersonRow { developerId: string; name: string; spentCents: number; limitCents: number | null; limitSource: string }
 interface Body { error?: { code: string; message: string }; month?: string; project?: string; projects?: string[]; people?: PersonRow[]; [key: string]: unknown }
 const PATH = "/org/people-limits";
-const READY = async () => { const w = world(); await w.settings(A); await w.settings(B); return w; };
+const READY = async (options: Parameters<typeof world>[0] = {}) => { const w = world(options); await w.settings(A); await w.settings(B); return w; };
 const names = (body: Body) => (body["people"] as Array<{ name: string }>).map((row) => row.name);
 const ROW_KEYS = ["developerId", "limitCents", "limitSource", "name", "spentCents"];
 
@@ -291,6 +294,18 @@ describe("the project filter", () => {
     const before = w.codeCalls.length;
     for (const project of ["..%2Fx", "Web", "web%20x", "", "a".repeat(64)]) expect((await w.call(cookie, `${PATH}?project=${project}`)).status, project).toBe(400);
     expect(w.codeCalls.length).toBe(before);
+  });
+});
+
+describe("Code's own refusal of a project's members (Code #1022)", () => {
+  it("is said in Code's fixed words as a refusal, never as 'that project doesn't exist'; nothing else of the answer passes", async () => {
+    const w = await READY({ project: "refused" });
+    const answer = await w.call(await w.signIn("ada"), `${PATH}?project=web`);
+    expect(CORE_TASK_ROUTES.members.memberRefused.body).toEqual({ error: { code: "FORBIDDEN", message: "Only a company owner or admin, or the project's admin, can see and change its members." } });
+    expect(answer.status).toBe(403);
+    expect(answer.body.error).toEqual(PEOPLE_LIMITS_WORDS.membersNotAllowed.body.error);
+    expect(answer.body.error).toEqual(CORE_TASK_ROUTES.members.memberRefused.body["error"]);
+    expect(answer.body.error?.message).not.toBe(PEOPLE_LIMITS_WORDS.projectNotFound.body.error.message);
   });
 });
 
