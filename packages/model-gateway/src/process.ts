@@ -48,6 +48,7 @@ import { SnapshotPriceSource } from "./price-index.js";
 import { PriceRefresher } from "./price-refresh.js";
 import { fetchAWS, fetchLiteLLM, fetchTransport } from "./price-sources.js";
 import { CALL_HARD_CEILING_MS, createAnthropicTransport, type ProviderKeys, type ProviderTransport } from "./provider.js";
+import { companyRoomMicros, DynamoReviewerGrants } from "./reviewer-grants.js";
 import { createSecretsManagerKeys, ProviderKeyUnavailable } from "./secrets.js";
 import { createGatewayHandler, type GatewayDependencies, type ProductRouteResolver } from "./server.js";
 import { createTaskTokenVerifier } from "./token.js";
@@ -346,6 +347,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     // Company-key mode: the install key is never read (a call can only go out on the company's own key, `agentKeys`).
     keys: companyKeys !== undefined ? NO_INSTALL_KEY : deps.keys ?? createSecretsManagerKeys({ region: config.region, credentials, secretArns: { anthropic: config.anthropicKeySecret }, now }),
     ...(companyKeys === undefined ? {} : { agentKeys: companyKeys }),
+    // DEC 254zzz41: reviewer grants are claimed once, durably, in the markers table (company keys, TTL): company-key mode only.
+    ...(companyKeys === undefined ? {} : { reviewerGrants: new DynamoReviewerGrants(db, config.tables.markers, now) }),
     // DEC 240: in company-key mode each company's saved choice picks its agents' source; Rovara's AI only when configured.
     ...(companyKeys === undefined ? {} : { agentAi: {
       sources: agentAiSources,
@@ -380,6 +383,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt }, keys: companyKeys }),
     ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }), now,
     switchedOn: config.aiSourceKinds ?? new Set<string>(), chat: { openai: true, openrouter: true },
+    // DEC 254zzz41: what reviews may use, from the company's real connections and the room left in its one company cap (the agent meter's company row).
+    reviewer: { keys: companyKeys, companyLimitMicros: (iss: string, cid: string) => companyRoomMicros(caps, meter, iss, cid) },
     // The endpoint's registered model names, from the company's sealed endpoint account (this company only).
     endpointModels: async (iss: string, cid: string) => { const text = await companyKeys.keyFor(iss, cid, "endpoint"); const c = text === undefined ? undefined : parseEndpointConnect(text); return c?.models.map((m) => m.name); },
   });
