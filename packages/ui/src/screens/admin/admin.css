@@ -91,3 +91,5 @@
 .rv-account{max-width:920px}.rv-shell-main .rv-account h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:0;margin:0}.rv-account .rv-page-header{margin-bottom:var(--rv-space-4)}
 .rv-admin[hidden]{display:none}
 .rv-people-limits-filter{max-width:22rem;margin-block:var(--rv-space-3,12px)}
+.rv-vertex-guide pre{overflow-x:auto;background:var(--rv-bg-sunken);border:1px solid var(--rv-border-medium);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3);font-size:var(--rv-font-sm)}
+.rv-vertex-guide li[data-redo]{border-left:3px solid var(--rv-border-medium);padding-left:var(--rv-space-3)}
