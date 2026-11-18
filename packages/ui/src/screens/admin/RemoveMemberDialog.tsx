@@ -65,7 +65,7 @@ export function RemoveMemberDialog({ company, member, self, people, checking, st
    else if (code === "SUCCESSOR_INVALID") { setBlocked(true);setMessage("Pick someone who is still in the company to take over."); }
    else if (code === "LAST_OWNER") { setBlocked(true);setMessage("A company must keep at least one owner. Make someone else an owner first."); }
    else if (code === "NOT_FOUND" || code === "MEMBER_ALREADY_REMOVED") { setBlocked(true);setMessage("That person is no longer a member of this company. Close and reload."); }
-   else if (code === "CONFIG_INVALID") { setBlocked(true);setMessage("This person owns too much to hand over in one go. Hand some of it over first."); }
+   else if (code === "HANDOVER_TOO_BIG") { setBlocked(true);setMessage("This person owns too much to hand over in one go. Hand some of it over first."); }
    else if (code === "IDEMPOTENCY_CONFLICT") { setBlocked(true);setMessage("Company members changed. Close and review the removal again."); }
    else { setUnknown(true);setMessage("The outcome is unknown. The removal may not have finished. Try the removal again: it will not hand anything over twice."); }
   } finally { sending.current = false;if (alive.current) setBusy(false); }

@@ -177,7 +177,7 @@ export const REMOVAL_WORDS = Object.freeze({
   reused: refusal(409, "IDEMPOTENCY_CONFLICT", "Use a new request id for a different removal."),
   lastOwner: refusal(409, "LAST_OWNER", "A company needs at least one owner. Make someone else an owner first."),
   removed: refusal(409, "MEMBER_ALREADY_REMOVED", "That person was already removed."),
-  tooMuch: refusal(409, "CONFIG_INVALID", "This person owns too much to hand over in one go. Hand some of it over first."),
+  tooMuch: refusal(409, "HANDOVER_TOO_BIG", "This person owns too much to hand over in one go. Hand some of it over first."),
   badBody: refusal(400, "CONFIG_INVALID", "Send a request id, the person's role and who takes over."),
   badQuery: refusal(400, "CONFIG_INVALID", "Pick who takes over from the list."),
   unavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The removal couldn't be finished just now. Try the removal again: nothing is handed over twice."),
@@ -279,8 +279,10 @@ async function removeMember(context: RouteContext): Promise<RouteAnswer> {
   if (!plain(answer) || answer["state"] !== "DONE" || typeof answer["removalId"] !== "string" || answer["removalId"] !== body["requestId"].toLowerCase()
     || answer["successorId"] !== successorId || agents === undefined || chains === undefined || projects === undefined || tasks === undefined || tasksLeft === undefined) return REMOVAL_WORDS.unavailable;
   // Only after Code removed them: a removal Code refuses (an owner, a stale role, the last owner) withdraws nothing.
+  // A withdrawal that could not be saved is not a finished removal: the screen retries with the same request id, which Code answers DONE again.
   const withdrawal = await withdrawForMember(context, personId, { companyId: who.companyId });
-  if (!("status" in withdrawal)) await withdrawal.after();
+  if ("status" in withdrawal) return REMOVAL_WORDS.unavailable;
+  await withdrawal.after();
   const handed = [agents > 0 && plural(agents, "agent"), chains > 0 && plural(chains, "chain"), projects > 0 && `admin of ${plural(projects, "project")}`, tasks > 0 && plural(tasks, "open task")].filter((part): part is string => part !== false);
   const message = `Removed from the company.${handed.length === 0 ? "" : ` Handed over ${handed.join(", ")}.`}${tasksLeft > 0 ? ` ${plural(tasksLeft, "open task")} wait for someone with access to take over.` : ""}`;
   return { status: 200, body: { removalId: answer["removalId"], state: "DONE", message } };
