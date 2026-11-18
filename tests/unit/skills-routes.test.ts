@@ -1,6 +1,6 @@
 // L4-JA (journey audit B11): Rovara skills on Cloud (packages/cloud-server/src/skills-routes.ts), end to end on the fake Code: the list, one skill with its text, edit (a new version), approve by two DIFFERENT people and retire.
 // Cloud forwards only what Code takes, keeps Code's answers to the fields the screen draws and passes Code's refusals (who may decide, a stale version, the 32 KB limit) through in Code's words. No step-up anywhere.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
 import { SKILL_LIMITS, SKILL_LONG_NOTE, editBody, skillDetail, skillRow, skillsView } from "../../packages/cloud-server/src/skills-routes.js";
 import { PRIYA, SAM, ZED, startFakeCode, type FakeCode } from "../support/fake-code.js";
@@ -106,7 +106,8 @@ describe("one skill with its text", () => {
     const priya = await as("priya");
     const { status, body } = await priya.get<{ project: string; canDecide: boolean; skill: Row }>(`${P}/log-request-ids`);
     expect(status).toBe(200);
-    expect(body).toMatchObject({ project: "web", canDecide: true, skill: { name: "log-request-ids", currentVersion: 1, content: expect.stringContaining("## Steps"), form: { when: "writing an error path", steps: ["Read the id from the request.", "Add it to the log line."] } } });
+    expect(body).toMatchObject({ project: "web", canDecide: true, skill: { name: "log-request-ids", currentVersion: 1, form: { when: "writing an error path", steps: ["Read the id from the request.", "Add it to the log line."] } } });
+    expect(body.skill.content).toContain("## Steps");
     expect(sent("skills.list").at(-1)?.body).toBe("log-request-ids");
   });
 

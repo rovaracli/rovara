@@ -27,7 +27,6 @@ export const SKILL_WRITE_FAILED = "That didn't go through. Nothing was changed."
 export const SKILL_STALE_WORDS = "This skill changed. It was read again; check it and decide again.";
 export const NEEDS_TWO = "Needs two different people to approve it.";
 
-const plural = (n: number, one: string, many = one + "s") => `${String(n)} ${n === 1 ? one : many}`;
 /** Where a skill stands, in words. `retired` first, then in use / a draft / a newer draft beside the version in use. */
 export function skillStatus(skill: Pick<SkillRow, "currentVersion" | "activeVersion" | "retired">): string {
   if (skill.retired) return "Retired";

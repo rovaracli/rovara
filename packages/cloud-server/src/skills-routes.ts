@@ -94,7 +94,7 @@ export function skillsView(raw: unknown, project: string): Record<string, unknow
 /** One skill with the text of its newest version (what a person approves), or undefined when Code sent none for this name. */
 export function skillDetail(raw: unknown, project: string, name: string): Record<string, unknown> | undefined {
   if (!isRecord(raw) || !Array.isArray(raw["skills"]) || raw["skills"].length !== 1) return undefined;
-  const one = raw["skills"][0];
+  const one: unknown = raw["skills"][0];
   const row = skillRow(one);
   if (row === undefined || row["name"] !== name || !isRecord(one)) return undefined;
   const content = plainWords(one["content"], CONTENT_CHARS, true);

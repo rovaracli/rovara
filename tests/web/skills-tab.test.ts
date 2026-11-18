@@ -19,6 +19,9 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 
+const textArea = (element: HTMLElement): HTMLTextAreaElement => element as HTMLTextAreaElement;
+const button = (element: HTMLElement): HTMLButtonElement => element as HTMLButtonElement;
+
 afterEach(() => { vi.useRealTimers(); });
 const ok = (body: unknown): ApiResponse => ({ status: 200, body });
 const row = (name: string, patch: Record<string, unknown> = {}) => ({ name, description: `About ${name}`, currentVersion: 1, approvals: 0, approvedByYou: false, retired: false, bytes: 400, ...patch });
@@ -230,8 +233,8 @@ it("Edit starts from the fields Code read back, shows the size, and Save sends t
   const detail = await open("add-queue");
   fireEvent.click(within(detail).getByRole("button", { name: "Edit add-queue" }));
   const form = await within(detail).findByTestId("skill-edit-form");
-  expect((within(form).getByLabelText("When to use it") as HTMLTextAreaElement).value).toBe("adding a queue");
-  expect((within(form).getByLabelText("Step 2") as HTMLTextAreaElement).value).toBe("Register the handler.");
+  expect(textArea(within(form).getByLabelText("When to use it")).value).toBe("adding a queue");
+  expect(textArea(within(form).getByLabelText("Step 2")).value).toBe("Register the handler.");
   expect(within(form).getByTestId("skill-size").textContent).toContain("KB of 32 KB");
   fireEvent.change(within(form).getByLabelText("Step 2"), { target: { value: "Register the handler and add an alarm." } });
   fireEvent.click(within(form).getByRole("button", { name: "Add a step" }));
@@ -252,7 +255,7 @@ it("a skill whose fields Code could not read back opens an empty form with a pla
   fireEvent.click(within(detail).getByRole("button", { name: "Edit add-queue" }));
   const form = await within(detail).findByTestId("skill-edit-form");
   expect(within(form).getByTestId("skill-edit-blank")).toBeTruthy();
-  const save = within(form).getByRole("button", { name: "Save as a new version" }) as HTMLButtonElement;
+  const save = button(within(form).getByRole("button", { name: "Save as a new version" }));
   expect(save.disabled).toBe(true);
   fireEvent.change(within(form).getByLabelText("When to use it"), { target: { value: "adding a queue" } });
   fireEvent.change(within(form).getByLabelText("Step 1"), { target: { value: "Create it." } });
@@ -266,7 +269,7 @@ it("over 8 KB the person sees the 'consider splitting' note; over 32 KB Save is 
   const detail = await open("add-queue");
   fireEvent.click(within(detail).getByRole("button", { name: "Edit add-queue" }));
   const form = await within(detail).findByTestId("skill-edit-form");
-  const save = within(form).getByRole("button", { name: "Save as a new version" }) as HTMLButtonElement;
+  const save = button(within(form).getByRole("button", { name: "Save as a new version" }));
   expect(within(form).queryByTestId("skill-edit-long")).toBeNull();
   fireEvent.change(within(form).getByLabelText("Step 1"), { target: { value: "x".repeat(4_000) } });
   fireEvent.click(within(form).getByRole("button", { name: "Add a step" }));
@@ -278,7 +281,7 @@ it("over 8 KB the person sees the 'consider splitting' note; over 32 KB Save is 
   for (let index = 5; index <= 12; index += 1) { fireEvent.click(within(form).getByRole("button", { name: "Add a step" }));fireEvent.change(within(form).getByLabelText(`Step ${String(index)}`), { target: { value: "w".repeat(4_000) } }); }
   expect(within(form).getByTestId("skill-size").textContent).toContain("Too long: a skill is at most 32 KB.");
   expect(save.disabled).toBe(true);
-  expect((within(form).getByRole("button", { name: "Add a step" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(button(within(form).getByRole("button", { name: "Add a step" })).disabled).toBe(true);
   fireEvent.submit(form);
   expect(w.sends).toEqual([]);
   f.close();
@@ -290,7 +293,7 @@ it("an empty step keeps Save off, a step can be removed, and Cancel closes the f
   const detail = await open("add-queue");
   fireEvent.click(within(detail).getByRole("button", { name: "Edit add-queue" }));
   const form = await within(detail).findByTestId("skill-edit-form");
-  const save = within(form).getByRole("button", { name: "Save as a new version" }) as HTMLButtonElement;
+  const save = button(within(form).getByRole("button", { name: "Save as a new version" }));
   fireEvent.click(within(form).getByRole("button", { name: "Add a step" }));
   expect(save.disabled).toBe(true);
   fireEvent.click(within(form).getByRole("button", { name: "Remove step 3" }));
@@ -310,7 +313,7 @@ it("Code's 32 KB refusal is shown in Code's words and the form stays open with w
   fireEvent.change(within(form).getByLabelText("Step 1"), { target: { value: "Create it twice." } });
   fireEvent.click(within(form).getByRole("button", { name: "Save as a new version" }));
   expect((await within(form).findByTestId("skill-edit-error")).textContent).toBe("That skill is too long. A skill is at most 32 KB.");
-  expect((within(form).getByLabelText("Step 1") as HTMLTextAreaElement).value).toBe("Create it twice.");
+  expect(textArea(within(form).getByLabelText("Step 1")).value).toBe("Create it twice.");
   expect(w.sends).toHaveLength(1);
   f.close();
 });
