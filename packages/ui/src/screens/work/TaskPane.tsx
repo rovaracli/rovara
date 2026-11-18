@@ -88,13 +88,13 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
   onDecided(row.id);
  }
  const question = decision?.card.kind === "answer_question" ? plan.data?.questions.find(candidate => decision.card.id.endsWith(candidate.questionId)) ?? plan.data?.questions[0] : undefined;
- const failedEval = decision?.card.kind === "choose_checks" ? proof.data?.find(item => item.kind === "eval" && item.verdict === "fail" && item.passed !== undefined && item.total !== undefined) : undefined;
+ const failedEval = decision?.card.kind === "choose_checks" ? proof.data?.items.find(item => item.kind === "eval" && item.verdict === "fail" && item.passed !== undefined && item.total !== undefined) : undefined;
  const pane: DecisionPane | undefined = decision === undefined ? undefined : {
   answers: question === undefined || question.options.length === 0 ? undefined : { options: question.options.map(option => ({ id: option.optionId, label: option.label })), onAnswer: optionId => answer(question.questionId, optionId) },
   evalResult: failedEval === undefined ? undefined : { passed: failedEval.passed!, total: failedEval.total!, bar: failedEval.bar },
   quickChange: row.path === "Quick spec" && ["approve_plan", "approve_requirements", "approve_design"].includes(decision.card.kind) && decision.card.risk === "low",
  };
- const rows = plan.data === undefined ? [] : proofRows(plan.data.requirements, proof.data ?? [], plan.data.tasks);
+ const rows = plan.data === undefined ? [] : proofRows(plan.data.requirements, proof.data?.items ?? [], plan.data.tasks);
  const openAnswers = (questionId: string, optionId: string) => answer(questionId, optionId);
  const retryPlan = () => { void plan.refetch(); };
  const planNote = plan.isError ? <SectionError error={plan.error} label="this task's plan" retry={retryPlan} /> : null;
@@ -105,8 +105,8 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
   if (stage === "spec") return plan.isPending ? <Skeleton label="Loading the task" /> : plan.data === undefined ? planNote : <><SpecStep plan={plan.data} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} />{plan.data.tasks.length > 0 && <BuildStep heading="Tasks" tasks={plan.data.tasks} events={[]} />}</>;
   if (stage === "request") return <RequestStep row={row} plan={plan.data} />;
   if (stage === "build") return <>{plan.isPending ? <Skeleton label="Loading the task" /> : plan.data === undefined ? planNote : <BuildStep tasks={plan.data.tasks} events={events.data ?? []} steer={row.group === "run" ? steer : undefined} />}{events.isError && <SectionError error={events.error} label="the build activity" retry={() => { void events.refetch(); }} />}
-   <div className="rv-pane-gap">{proofBody ?? <ProofStep heading="Proof so far" rows={rows} items={proof.data ?? []} />}</div></>;
-  const proofPart = <>{plan.isError && planNote}{proofBody ?? <ProofStep rows={rows} items={proof.data ?? []} />}</>;
+   <div className="rv-pane-gap">{proofBody ?? <ProofStep heading="Proof so far" rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />}</div></>;
+  const proofPart = <>{plan.isError && planNote}{proofBody ?? <ProofStep rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />}</>;
   if (stage === "proof") return proofPart;
   return <>{proofPart}<div className="rv-pane-gap">{pulls.length === 0 ? <p className="rv-muted" data-testid="no-pull-request">No pull request yet. Rovara opens it once the proof passes.</p> : pulls.map((pull, index) => <PullRequestCard key={index} pullRequest={pull} />)}</div></>;
  };
