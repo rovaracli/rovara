@@ -33,6 +33,7 @@ import { kmsProductKeyService, ProductKeySealer, type KmsLike, type ProductKeyFi
 import { createSignedTokenVerifier } from "./token.js";
 import { createEvalAuthorityHandler, EVAL_AUTHORITY_PATH, EVAL_AUTHORITY_TOKEN_KIND } from "./eval-authority.js";
 import { createEvalCapHandler, EVAL_CAP_PATH, EVAL_CAP_TOKEN_KIND } from "./eval-cap.js";
+import { COMPANY_INSTRUCTIONS_PATH, COMPANY_INSTRUCTIONS_TOKEN_KIND, CompanyStoredInstructions, createCompanyInstructionsHandler, type CompanyInstructionsSource } from "./company-instructions.js";
 import { createOfferedModelsHandler, OFFERED_MODELS_PATH, parseDisabledAgentModels, SERVICE_TOKEN_KIND } from "./offered-models.js";
 import { createUpkeepCapReadHandler, UPKEEP_CAP_READ_PATH, UPKEEP_CAP_READ_TOKEN_KIND } from "./upkeep-cap-read.js";
 import { BEDROCK_CHECK_PATH, BEDROCK_SETUP_PATH, createBedrockServiceHandlers, createVertexCheckHandler, VERTEX_CHECK_PATH, type MacVerifier } from "./service-call.js";
@@ -239,6 +240,8 @@ export interface ServeDependencies {
   answers?: { keys: LearningKeySource; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; monthDefaultMicros?: number; transports?: NonNullable<LearningRouteOptions["transports"]> };
   /** Nightly upkeep's per-project limits and the company's answers limit (default: the Companies table, company-caps.ts). */
   upkeepLimits?: UpkeepLimits; answersLimits?: AnswersLimits;
+  /** L4-HW3c: the company's approved rules for Code's hosted broker (company-instructions.ts). Default: Cloud's Companies table. */
+  companyInstructions?: CompanyInstructionsSource;
   /**
    * DEC 236, with config.agentKeys "company": the company's OWN connected key for the agent route (default: the company source of the
    * product key store, the one the learning route reads). Never the install key (`keys`), which is then not read at all.
@@ -399,6 +402,11 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, UPKEEP_CAP_READ_TOKEN_KIND),
     limits: upkeepLimits, meter, now,
   });
+  // L4-HW3c: the company's approved rules for Code's hosted broker (company-instructions.ts), from Cloud's Companies table (the same read-only grant as the budgets), signed with the task key.
+  const companyInstructions = createCompanyInstructionsHandler({
+    verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, COMPANY_INSTRUCTIONS_TOKEN_KIND),
+    rules: deps.companyInstructions ?? new CompanyStoredInstructions(db, config.tables.companies), now,
+  });
   const inFlight = new Set<Promise<void>>();
   let draining = false;
   const refuse = (res: ServerResponse) => { res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store", connection: "close" }); res.end(UNAVAILABLE); };
@@ -411,6 +419,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
       : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels
       : UPKEEP_CAP_READ_PATH.test(req.url ?? "") ? upkeepCapRead
       : evalAuthority !== undefined && path === EVAL_AUTHORITY_PATH ? evalAuthority
+      : path === COMPANY_INSTRUCTIONS_PATH ? companyInstructions
       : path === EVAL_CAP_PATH ? evalCap : undefined;
     const running = (service !== undefined ? service(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
     inFlight.add(running); void running.finally(() => inFlight.delete(running));
