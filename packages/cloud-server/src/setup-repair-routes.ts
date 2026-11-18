@@ -39,8 +39,8 @@ export const SETUP_REPAIR_ANSWERS = Object.freeze({
 const A = SETUP_REPAIR_ANSWERS;
 
 /** Code's card sentence (`setupRepairCardOf` body): the template Cloud matches, with the step in the middle. */
-const BODY = /^The project's setup stopped working after recent code changes \(([^()\p{Cc}\p{Cf}]|\([^()\p{Cc}\p{Cf}]*\)){1,300}\)\. Rovara cannot build on this project until it is fixed\.$/u;
-const BODY_STEP = /^The project's setup stopped working after recent code changes \((.*)\)\. Rovara cannot build on this project until it is fixed\.$/u;
+/** Code cuts the check's failing step at a fixed length, so it can end inside a bracket or hold a lone one: the step is whatever sits between the template's fixed words (one line, no control characters, at most 300 characters). */
+const BODY_STEP = /^The project's setup stopped working after recent code changes \(([^\p{Cc}\p{Cf}]{1,300})\)\. Rovara cannot build on this project until it is fixed\.$/u;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const PROJECT_FOR_PATH = /^[a-z][a-z0-9-]{0,62}$/u;
 const STATES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
@@ -54,9 +54,8 @@ function repairAnswer(value: unknown): Record<string, unknown> {
   need(Object.keys(r).every((key) => ["title", "body", "changed", "at", "fixReady", "actions"].includes(key)), r);
   need(r["title"] === "Setup needs repair", r["title"]);
   const body = r["body"];
-  need(typeof body === "string" && BODY.test(body), body);
-  const step = BODY_STEP.exec(body as string)?.[1];
-  need(step !== undefined && text(step, 300), step);
+  const step = typeof body === "string" ? BODY_STEP.exec(body)?.[1] : undefined;
+  need(step !== undefined && text(step, 300), body);
   need(r["changed"] === undefined || text(r["changed"], 160), r["changed"]);
   need(when(r["at"]), r["at"]);
   const fixReady = flag(r["fixReady"]);

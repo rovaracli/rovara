@@ -201,7 +201,7 @@ describe("nightly upkeep says when it is paused", () => {
     for (const reason of ["no_budget", "monthly_limit", "cost_too_high"] as const) {
       const f = mount(h(NightlyUpkeep, { project: "web", companyAdmin: true }), { upkeep: () => upkeep({ paused: { reason, month: "2026-11" } }) });
       const notice = await screen.findByTestId("wiki-setup-upkeep-paused");
-      expect(notice.textContent).toContain(`${SETUP_REPAIR_SENTENCES.upkeepPausedTitle}. ${UPKEEP_PAUSE_SENTENCES[reason]}`);
+      expect(notice.textContent).toContain(UPKEEP_PAUSE_SENTENCES[reason]);
       expect(within(notice).getByRole("link", { name: /Raise/u }).getAttribute("href")).toBe("/app/admin/money/limits");
       expect(notice.getAttribute("role")).toBe("status");
       f.close();

@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { expect, test, type Page } from "@playwright/test";
-import { PROJECT, ROUTES, setFakePerson, setSetupRun, setWikiSetup } from "./pages/index.js";
+import { PROJECT, ROUTES, WikiSetupPanel, setFakePerson, setSetupRun, setWikiSetup } from "./pages/index.js";
 
 const STEP = "setup: npm ci - setup step 0 (npm ci) failed: exit 1";
 test.afterEach(async ({ page }) => { await setWikiSetup(page, PROJECT); await setSetupRun(page, PROJECT, "none"); await setFakePerson(page, "priya"); });
@@ -62,7 +62,7 @@ test("a developer reads the same card and the line that the admins were asked, w
 
 test("there is no card while the setup works, and none for a Code with no such read", async ({ page }) => {
   await page.goto(ROUTES.project(PROJECT));
-  await expect(page.getByTestId("project-checklist").or(page.getByRole("heading", { level: 1 }))).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await expect(page.getByTestId("setup-repair-card")).toHaveCount(0);
   await setWikiSetup(page, PROJECT, { repair: { step: STEP, fixReady: false }, setupCheckOff: true });
   await page.goto(ROUTES.project(PROJECT));
@@ -74,7 +74,7 @@ for (const scheme of ["light", "dark"] as const) {
   test(`nightly upkeep says on the setup page that it is paused, in Code's sentence (${scheme})`, async ({ page }, testInfo) => {
     await page.emulateMedia({ colorScheme: scheme });
     await setWikiSetup(page, PROJECT, { mapMade: true, upkeepOn: true, consent: true, paused: "monthly_limit" });
-    await page.goto(ROUTES.project(PROJECT));
+    await new WikiSetupPanel(page).open(PROJECT);
     const upkeep = page.getByTestId("wiki-setup-upkeep");
     await expect(upkeep).toBeVisible();
     await expect(upkeep.getByTestId("wiki-setup-upkeep-paused")).toContainText("Nightly upkeep is paused: this month's upkeep limit is used up.");

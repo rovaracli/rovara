@@ -188,6 +188,21 @@ describe("reading the card", () => {
     }
   });
 
+  it("reads a step Code cut in the middle of a bracket, one with a lone bracket and one at the longest, and still refuses a step with a control character or past the limit", async () => {
+    const steps = ["setup: npm ci - setup step 0 (npm ci", "setup: echo ) done", "setup: ((( nested", "x".repeat(300)];
+    for (const step of steps) {
+      const s = setUp((call, person) => (call.method === "GET" && call.path.endsWith("/setup-check") && person.id === ID("a") ? json(200, { status: "failed", canManage: true, repair: CARD({ body: SETUP_REPAIR_SENTENCES.body(step) }) }) : undefined));
+      const answer = await s.send("GET", READ, await s.as("ada-token"));
+      expect(answer.status, step).toBe(200);
+      expect(answer.body.repair.step).toBe(step);
+      expect(SETUP_REPAIR_SENTENCES.body(answer.body.repair.step)).toBe(SETUP_REPAIR_SENTENCES.body(step));
+    }
+    for (const step of ["x".repeat(301), "line\u0007bell", "two\nlines", ""]) {
+      const s = setUp((call, person) => (call.method === "GET" && call.path.endsWith("/setup-check") && person.id === ID("a") ? json(200, { status: "failed", canManage: true, repair: CARD({ body: SETUP_REPAIR_SENTENCES.body(step) }) }) : undefined));
+      expect((await s.send("GET", READ, await s.as("ada-token"))).status, JSON.stringify(step)).toBe(503);
+    }
+  });
+
   it("keeps a fix that waits as 'Approve new setup' and does not pass Code's other setup facts on", async () => {
     const s = setUp((call) => (call.method === "GET" && call.path.endsWith("/setup-check") ? json(200, { status: "failed", canManage: true, checkedRevision: 3, failedStep: "secret step", repair: CARD({ fixReady: true, actions: [{ id: "approve_new_setup", label: "Approve new setup" }] }) }) : undefined));
     const answer = await s.send("GET", READ, await s.as("ada-token"));
