@@ -480,6 +480,8 @@ export interface ArchiveProjectResponse { receipt: JsonObject; replayed: boolean
  * Guided onboarding PR 14/15 (Code #835, DEC 254n item 1): the company's engine model. `model` is what the company's tasks resolve to now (its own, else the
  * install default, null where there is none); `offered` is the gateway's live list for THIS company; `preselect` is `model` when offered, else the first offered.
  */
+/** `GET /v1/dev/company/egress-addresses` (L4-EGR; Code company-egress-addresses.ts): Rovara's outbound addresses, up to 4 distinct public IPv4 addresses, empty where this install has none yet. */
+export interface CompanyEgressAddressesView { addresses: string[] }
 export interface CompanyEngineModelView { model: string | null; source: "company" | "install"; offered: string[]; preselect: string }
 /** A model id, or null to clear the company's own (the install default applies again). Nothing else. */
 export interface PutCompanyEngineModelRequest { model: string | null }
@@ -780,6 +782,7 @@ export interface CodeRouteTypes {
   "lessons.areas": { request: void; response: LessonAreasResponse };
   "lessons.learningSources.get": { request: void; response: LearningSourcesResponse };
   "lessons.learningSources.put": { request: PutLearningSourceRequest; response: PutLearningSourceResponse };
+  "company.egressAddresses.get": { request: void; response: CompanyEgressAddressesView };
   "company.engineModel.get": { request: void; response: CompanyEngineModelView };
   "company.engineModel.put": { request: PutCompanyEngineModelRequest; response: CompanyEngineModelView };
   "projects.settings.get": { request: void; response: ProjectSettingsView };
@@ -975,6 +978,8 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.learningSources.get", "GET", `${DP}/lessons/learning-sources`, "Where Rovara learns from: a row per kind of source with seen, suggested and kept counts (30 days), one example and whether it is paused", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.learningSources.put", "PUT", `${DP}/lessons/learning-sources/{source}`, "Pause or resume one source (a project admin, or a company owner or admin; recorded first)", "full", ["how-we-work"], "no", false, "none", true),
   // Guided onboarding PR 15 (DEC 254l item 7, 254n item 1): the company's AI model (Code #835, not on code/next yet) and a project's per-task model budget (Code's M4a settings).
+  // L4-EGR: Rovara's fixed outbound addresses (owner or admin), shown read-only in company settings. Code company-egress-routes.ts.
+  spec("company.egressAddresses.get", "GET", "/v1/dev/company/egress-addresses", "Rovara's outbound addresses (the same for every company on this Rovara), for a company owner or admin", "full", ["admin"], "no", false, "none", true),
   spec("company.engineModel.get", "GET", "/v1/dev/company/engine-model", "The company's engine model, the models the gateway offers it now, and the one to preselect (any member)", "full", ["later"], "no", false, "none", true),
   spec("company.engineModel.put", "PUT", "/v1/dev/company/engine-model", "Set or clear the company's engine model, only from its offered list (owner or admin)", "full", ["later"], "no", false, "none", true),
   spec("projects.settings.get", "GET", `${DP}/settings`, "A project's cost and approval settings (preset, overrides, what applies)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
@@ -1347,6 +1352,7 @@ POST /v1/app/org/report/features/{featureId}/state | c | admin | | admin/report 
 POST /v1/app/tasks/{taskId}/feature | c | admin | | admin/report | T
 GET /v1/app/spend-requests | g | budgets | | spending |
 GET /v1/app/org/budget-settings | g | budgets | | spending |
+GET /v1/app/org/egress-addresses | k | admin | company.egressAddresses.get | admin/settings/OutboundAddresses | T
 GET /v1/app/org/engine-model | k | later | company.engineModel.get | setup/AiSpendStep | T
 PUT /v1/app/org/engine-model | k | later | company.engineModel.put | setup/AiSpendStep | T
 GET /v1/app/projects/{p}/spend-limits | k | later | projects.settings.get | setup/ProjectSpendLimits | T

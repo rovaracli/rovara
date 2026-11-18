@@ -649,6 +649,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return { body: outcome };
   };
   // Guided onboarding PR 15: the company's engine model (Code #835) and each project's cost settings (Code's M4a), small.
+  /** Rovara's outbound addresses as the fake Code holds them (documentation-range style public addresses, not real ones). */
+  const EGRESS_ADDRESSES = ["198.51.100.10", "198.51.100.20"];
   const OFFERED_MODELS = ["zai.glm-4.7", "claude-sonnet-4-5", "zai.glm-4.6"];
   let companyModel: string | undefined;
   const engineView = () => { const model = companyModel ?? "zai.glm-4.6"; return { model, source: companyModel === undefined ? "install" as const : "company" as const, offered: [...OFFERED_MODELS], preselect: OFFERED_MODELS.includes(model) ? model : OFFERED_MODELS[0]! }; };
@@ -1638,6 +1640,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       draft.status = "dismissed";
       return { body: { project, draftId: draft.id, status: "dismissed" } };
     }),
+    // L4-EGR: Rovara's outbound addresses, the same for every company (the install's); only an owner or admin reads them.
+    "company.egressAddresses.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : !person.administrator ? failure(403, "FORBIDDEN", "Only a company owner or admin can see Rovara's outbound addresses.") : { body: { addresses: EGRESS_ADDRESSES.slice(), requestId: "JBnQ5hKvIAMEJ-Q=" } }),
     // Any member reads; an owner or admin sets a model from the offered list.
     "company.engineModel.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : { body: engineView() }),
     "company.engineModel.put": ({ person, body }) => {
