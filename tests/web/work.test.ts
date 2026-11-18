@@ -464,7 +464,7 @@ it("keeps Code's own words for any other 404 of the proof read (a task the perso
 
 // Proof list (Code's GET /v1/dev/tasks/{id}/evidence): Code's items carry an id and a digest only when it kept the check's output, and (TE-A6) up to ten failing tests with their likely causes.
 const FAILURE = (index: number) => ({ check: "pytest -q", test: `tests/cart.test.ts::case ${String(index)}`, cause: index % 2 === 0 ? "likely broken by a change (commit aaaaaaa) to src/cart.ts" : "unknown (only weak evidence)" });
-it("reads Code's proof index: an item keyed by its id when it has no digest, each id once, and at most ten failing tests with the rest counted", () => {
+it("reads Code's proof index: an item keyed by its id when it has no digest, every item kept (a repeated key suffixed), and at most ten failing tests with the rest counted", () => {
   const index = readProofIndex({ items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }, { id: "evidence:0", title: "again", kind: "test_report", verdict: "pass" }, { title: "no key", kind: "log", verdict: "pass" }], failures: Array.from({ length: 13 }, (_, index) => FAILURE(index)), failuresNotListed: 2 });
   // Every valid item is kept: a repeated key gets its own suffix (an older Code may send two checks with the same digest).
   expect(index.items.map(item => [item.id, item.sha256, item.title])).toEqual([["evidence:0", undefined, "pytest -q"], ["evidence:0#1", undefined, "again"]]);
