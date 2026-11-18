@@ -142,11 +142,14 @@ function confirmsEval(access: CodeAccess, companyRole: CompanyRole, project: str
   return entry !== undefined && roleOf(entry.access) === "maintainer";
 }
 
-// L4-EVC (DEC 254zzz20 D8), slice 1: the setup flow's ONE eval card. Code serves two hosted routes under /v1/app/projects/{p}/setup-agent/ (the card's read and ONE approval); Cloud forwards each as the
-// signed-in person. The POST names only its own keys (Code validates them strictly): nothing that names a company, a role or a payer is ever forwarded, at the top or inside `seen`.
+// L4-EVC (DEC 254zzz20 D5, D6, D8): the setup flow's ONE eval card. Code serves four hosted routes under /v1/app/projects/{p}/setup-agent/ (the card's read, ONE approval, a decision on a waiting spend
+// item, and the opt-in health check); Cloud forwards each as the signed-in person. Each POST names only its own keys (Code validates them strictly): nothing that names a company, a role or a payer is
+// ever forwarded, at the top or inside `seen`.
 export const EVAL_APPROVE_KEYS = ["taskId", "reportDigest", "selection", "paths", "approve", "seen"] as const;
-/** The members of `seen` that are passed on: the dollars the person was shown. */
-const EVAL_SEEN_KEYS = ["perCheckHighMicros", "monthlyCapMicros"] as const;
+export const EVAL_DECIDE_KEYS = ["requestId", "outcome", "seen"] as const;
+export const EVAL_HEALTH_KEYS = ["requestId", "seenCostMicros"] as const;
+/** The members of `seen` that are passed on: the dollars the person was shown (approve), or the offer's revision and digest (decide). */
+const EVAL_SEEN_KEYS = { approve: ["perCheckHighMicros", "monthlyCapMicros"], decide: ["revision", "artifactDigest"] } as const;
 const evalCardNotOnCode: RouteAnswer = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "The eval card isn't connected to Rovara Code yet." } } };
 const evalCardStepUp: RouteAnswer = { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } };
 const evalCardRefused: RouteAnswer = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer can answer for the eval's spend." } } };
@@ -170,8 +173,8 @@ function evalSeen(value: unknown, keys: readonly string[]): unknown {
   return kept;
 }
 
-/** The eval card's read or its one act, forwarded to Code's own path as the person. A POST is for a company owner or admin, or the project's maintainer (Code re-checks live); the read is for anyone in the company. */
-function evalCardRoute(method: "GET" | "POST", tail: "eval" | "eval-approve", keys: readonly string[], seenKeys?: readonly string[]): Route {
+/** The eval card's read or one of its three acts, forwarded to Code's own path as the person. A POST is for a company owner or admin, or the project's maintainer (Code re-checks live); the read is for anyone in the company. */
+function evalCardRoute(method: "GET" | "POST", tail: "eval" | "eval-approve" | "eval-decide" | "eval-health", keys: readonly string[], seenKeys?: readonly string[]): Route {
   return {
     method, path: new RegExp(`^/projects/${PROJECT_IN_PATH}/setup-agent/${tail}$`, "u"),
     answer: async ({ client, session, params, body }) => {
@@ -197,7 +200,9 @@ function evalCardRoute(method: "GET" | "POST", tail: "eval" | "eval-approve", ke
 }
 const EVAL_CARD_ROUTES: Route[] = [
   evalCardRoute("GET", "eval", []),
-  evalCardRoute("POST", "eval-approve", EVAL_APPROVE_KEYS, EVAL_SEEN_KEYS),
+  evalCardRoute("POST", "eval-approve", EVAL_APPROVE_KEYS, EVAL_SEEN_KEYS.approve),
+  evalCardRoute("POST", "eval-decide", EVAL_DECIDE_KEYS, EVAL_SEEN_KEYS.decide),
+  evalCardRoute("POST", "eval-health", EVAL_HEALTH_KEYS),
 ];
 
 async function readTask(context: RouteContext, taskId: string): Promise<CodeTask> {
