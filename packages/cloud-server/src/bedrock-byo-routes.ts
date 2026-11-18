@@ -13,7 +13,7 @@
 //
 // Who: company admins only (Code's access check made now), reads included. A change goes through the
 // app's signed-write path. Each saved change is audited. The agents use the connection only when the admin also picks "your own
-// Bedrock" under AI for your agents (agent-ai-routes.ts): one active source, never an automatic fallback.
+// Bedrock" under AI for your agents (agent-ai-routes.ts): one first choice; the only fallback is the company's own saved order (DEC 254zzz84(4), model-sources-routes.ts).
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import type { ProductAiErrorCode, ProductAiView } from "./product-ai-routes.js";
