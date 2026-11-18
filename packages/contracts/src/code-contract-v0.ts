@@ -61,6 +61,8 @@ export interface AccessResponse {
   companyName?: string;
   /** True only when this session's sign-in spent an invite secret or a pre-approval for the session's company (Code PR #826); absent otherwise. */
   joinedByInvite?: boolean;
+  /** L4-SIGNIN: the Slack workspace id of the person's own Slack sign-in (a "T" and 6 to 15 capitals or digits); absent for any other sign-in. */
+  slackTeamId?: string;
   projects: Array<{ name: string; access: string /* known: administrator, developer */ }>;
   notices: string[];
 }

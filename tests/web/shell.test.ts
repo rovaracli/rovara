@@ -55,7 +55,7 @@ it("opens the workspace menu and returns focus when it closes", async () => {
 });
 it("signs out through the host and begins a deliberate sign in", async () => {
  const f = shell();await screen.findByRole("heading", { name: "Home" });fireEvent.click(screen.getByRole("button", { name: "Open account menu" }));fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
- await waitFor(() => expect(f.host.signIn).toHaveBeenCalledWith("/app"));expect(f.host.signOut).toHaveBeenCalledTimes(1);f.close();
+ await waitFor(() => expect(f.host.signIn).toHaveBeenCalledWith("/app", { differentWorkspace: true }));expect(f.host.signOut).toHaveBeenCalledTimes(1);f.close();
 });
 it("uses exact trial guidance", () => {
  const f = fakeHost();const { unmount } = renderUi(h(AppHostProvider, { host: f.host, children: h(MemoryRouter, { children: h(TrialBanner, { state: "locked" }) }) }));expect(screen.getByText("Connect GitHub to start your free trial.")).toBeTruthy();expect(screen.getByRole("link", { name: "Connect GitHub" }).getAttribute("href")).toBe("/app/onboard");unmount();

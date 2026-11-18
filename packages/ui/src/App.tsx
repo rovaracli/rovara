@@ -21,6 +21,9 @@ function Startup({ createRouter }: { createRouter: AppRouterFactory }) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
  const standalone = /^\/app\/(?:signup|welcome|signed-out|no-company|create-company|join)\/?(?:\?|$)/u.test(host.currentPath());
  const nav = useQuery({ queryKey: ["nav"], queryFn: () => api.get("/v1/app/nav", AppNavReaderSchema), enabled: !standalone });
+ // L4-SIGNIN: signed in (the app's nav answered, or this is a page only a signed-in person reaches), the browser keeps this sign-in's Slack workspace as its last workspace (a hint for the next sign-in).
+ const signedIn = nav.data !== undefined || /^\/app\/(?:welcome|no-company|create-company)\/?(?:\?|$)/u.test(host.currentPath());
+ useEffect(() => { if (signedIn) void host.rememberSignInWorkspace?.(); }, [host, signedIn]);
  const features = nav.data?.features;
  const router = useMemo(() => standalone || features !== undefined ? createRouter(appRoutes(features ?? EMPTY_FEATURES)) : undefined, [createRouter, features, standalone]);
  useEffect(() => () => { router?.dispose(); }, [router]);

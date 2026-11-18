@@ -9,6 +9,10 @@ import type { GithubPending } from "./github-connect.js";
 import type { ConnectPending } from "./connect-flow.js";
 import type { LinkPending } from "./sign-in-links.js";
 
+/** L4-SIGNIN: a Slack workspace id as Slack names one (a "T", then 6 to 15 capital letters or digits). The one shape the hint may have, here, in Code and in the browser. */
+const SLACK_WORKSPACE_HINT = /^T[A-Z0-9]{6,15}$/u;
+export const slackWorkspaceHint = (value: unknown): string | undefined => (typeof value === "string" && SLACK_WORKSPACE_HINT.test(value) ? value : undefined);
+
 export interface CodeClientOptions {
   /** The Code install's API, such as https://abc.execute-api.us-east-1.amazonaws.com. */
   baseUrl: string;
@@ -38,6 +42,8 @@ export interface CodeAccess {
   companyName?: string;
   /** True only when this session's sign-in spent an invite secret or a pre-approval for the session's company (Code PR #826). */
   joinedByInvite?: boolean;
+  /** L4-SIGNIN: the Slack workspace id of this person's own Slack sign-in (Code's record), for the browser's "last workspace" hint. Absent on a sign-in that was not Slack's, or an older Code. */
+  slackTeamId?: string;
   projects: Array<{ name: string; access: string }>;
   notices: string[];
 }
@@ -79,6 +85,9 @@ export interface PendingSignIn {
 
 /** How long a call to Code's token or revoke endpoint may take: well inside a refresh's hold on the session. */
 const TOKEN_CALL_MS = 10_000;
+/** The sign-in page's offer: how long an answer is kept, and how long Code gets to give it (a slow Code must not hold the page). */
+const OFFER_TTL_MS = 30_000;
+const OFFER_CALL_MS = 3_000;
 
 export class CodeClient {
   private readonly base: string;
@@ -134,7 +143,7 @@ export class CodeClient {
    * Step 1 of sign-in: the URL to send the browser to, and what to keep until it comes back. `stepUp` asks Code for a fresh step-up with
    * a factor Code owns (`acr_values=step-up`), which a sensitive change in Cloud needs.
    */
-  startSignIn(returnTo: string, now: number, options: { stepUp?: boolean; company?: string; invite?: string; inviteSecret?: string } = {}): { url: string; state: string; pending: PendingSignIn } {
+  startSignIn(returnTo: string, now: number, options: { stepUp?: boolean; company?: string; invite?: string; inviteSecret?: string; slackTeam?: string; method?: string } = {}): { url: string; state: string; pending: PendingSignIn } {
     const verifier = randomBytes(32).toString("base64url");
     const state = randomBytes(24).toString("base64url");
     const url = new URL(`${this.base}/v1/auth/authorize`);
@@ -147,8 +156,41 @@ export class CodeClient {
       // DEC 254h: Code's single-use invite secret, from Cloud's server (the join ticket), with the invite's company. Code checks it is live,
       // bound to that company and unspent, and spends it with the membership. Only on Code's own authorize URL; never kept on the sign-in.
       ...(options.company === undefined || options.inviteSecret === undefined ? {} : { invite: options.inviteSecret }),
+      // L4-SIGNIN: the Slack workspace the browser remembers, as Slack's `team` hint (Code passes it on to Slack only), and the method a button already named.
+      // Both are re-checked here (a workspace id, or exactly slack or github), whatever the browser sent; Code checks them again, and the callback never reads either.
+      ...(slackWorkspaceHint(options.slackTeam) === undefined ? {} : { slack_team: options.slackTeam! }),
+      ...(options.method === "slack" || options.method === "github" ? { method: options.method } : {}),
     }).toString();
     return { url: url.toString(), state, pending: { verifier, returnTo, at: now, ...(options.invite === undefined ? {} : { invite: options.invite }) } };
+  }
+
+  /**
+   * L4-SIGNIN: which sign-in buttons the sign-in page may show: what Code's own sign-in configuration (its public discovery document) says is on. Only two
+   * booleans leave; anything that does not read, or Code not answering, is "none", and the page then shows its one plain Sign in button.
+   */
+  async signInOffer(): Promise<{ slack: boolean; github: boolean }> {
+    // One answer per half minute for everyone (and one call at a time): the page asks before anyone is signed in, so each hit must not become a call to Code.
+    const nowMs = Date.now();
+    if (this.offer !== undefined && nowMs - this.offer.at < OFFER_TTL_MS) return this.offer.answer;
+    this.offerPending ??= this.readOffer().then((answer) => { this.offer = { at: Date.now(), answer }; return answer; }).finally(() => { this.offerPending = undefined; });
+    return this.offerPending;
+  }
+
+  private offer: { at: number; answer: { slack: boolean; github: boolean } } | undefined;
+  private offerPending: Promise<{ slack: boolean; github: boolean }> | undefined;
+
+  private async readOffer(): Promise<{ slack: boolean; github: boolean }> {
+    const none = { slack: false, github: false };
+    try {
+      const response = await this.fetchImpl(`${this.base}/v1/auth/.well-known/agentx-configuration`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(OFFER_CALL_MS) });
+      if (!response.ok) return none;
+      const methods = (await response.json() as { methods?: unknown } | null)?.methods;
+      if (methods === null || typeof methods !== "object") return none;
+      const { slack, github } = methods as { slack?: unknown; github?: unknown };
+      return { slack: slack === true, github: github !== null && typeof github === "object" };
+    } catch {
+      return none;
+    }
   }
 
   /** Step 2: the code Code sent back, exchanged for the person's tokens, and who they are. */

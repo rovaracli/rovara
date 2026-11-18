@@ -8,7 +8,7 @@ import { renameInSessions } from "./rename.js";
 import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
 import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 import type { PresenceBoard } from "./presence.js";
-import { CodeError, SignInEnded } from "./code-client.js";
+import { CodeError, SignInEnded, slackWorkspaceHint } from "./code-client.js";
 import type { CloudAuditStore } from "./audit-log.js";
 import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, parseCompanyAuditQuery } from "./company-audit.js";
 import { WORK_READS } from "./work-reads.js";
@@ -396,6 +396,16 @@ export const ROUTES: Route[] = [
         org: { orgId: who.companyId, name: companyNameOf(who), plan: org.plan },
         identities: [{ provider: "oidc", linkedAt: session.signedInAt, lastSignInAt: session.signedInAt }],
       });
+    },
+  },
+  {
+    // GET /v1/app/me/sign-in-workspace (L4-SIGNIN): the Slack workspace id of THIS sign-in, when it was a Slack sign-in, so the browser can remember it as
+    // "the last workspace" (a localStorage hint for the next Sign in with Slack). From the sign-in's own access check (Code's record, kept on the session);
+    // no call to Code, no company needed. Only a workspace id leaves, and only for the signed-in browser's own sign-in.
+    method: "GET", path: /^\/me\/sign-in-workspace$/u,
+    answer: async ({ session }) => {
+      const slackTeamId = slackWorkspaceHint((session.access as { slackTeamId?: unknown } | undefined)?.slackTeamId);
+      return ok(slackTeamId === undefined ? {} : { slackTeamId });
     },
   },
   {

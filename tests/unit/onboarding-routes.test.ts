@@ -164,6 +164,18 @@ describe("joining from an invite link", () => {
     expect(looked).toEqual([hash("a".repeat(43))]);
   });
 
+  it("L4-SIGNIN: a join may carry the browser's remembered Slack workspace as a hint (checked), and the company still comes only from the ticket", async () => {
+    const w = world();
+    const first = await w.lookUp((await w.invite(A)).token);
+    const hinted = new URL((await w.raw("GET", `/v1/auth/browser/authorize?join=1&company=${B}&slack_team=T0HINT0001`, { cookie: `rovara_cloud_join=${w.ticketOf(first)!}` })).headers.location!);
+    expect(hinted.searchParams.get("slack_team")).toBe("T0HINT0001");
+    expect(hinted.searchParams.getAll("company")).toEqual([A]);
+    const second = await w.lookUp((await w.invite(A)).token);
+    const bad = new URL((await w.raw("GET", "/v1/auth/browser/authorize?join=1&slack_team=T0HINT0001%26company%3Dorg_x", { cookie: `rovara_cloud_join=${w.ticketOf(second)!}` })).headers.location!);
+    expect(bad.searchParams.has("slack_team")).toBe(false);
+    expect(bad.searchParams.getAll("company")).toEqual([A]);
+  });
+
   it("starts a join only from a ticket the lookup kept, never from another kind of pending sign-in under that name", async () => {
     const w = world();
     const { record } = await w.invite(A);
