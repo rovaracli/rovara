@@ -10,7 +10,7 @@
 //   POST /v1/app/projects/{p}/wiki-build/refresh      { requestId }       Refresh now
 //   POST /v1/app/projects/{p}/wiki-build/agents       { requestId, on }   "Give the wiki to agents"
 //   POST /v1/app/projects/{p}/wiki-build/delete       { requestId }       Delete wiki
-//   GET  /v1/app/projects/{p}/upkeep                  { enabled, canManage }          SEAM (L4-N1)
+//   GET  /v1/app/projects/{p}/upkeep                  { enabled, canManage, available? }  SEAM (L4-N1)
 //   PUT  /v1/app/projects/{p}/upkeep                  { requestId, on }               SEAM (L4-N1)
 //
 // Rules:
@@ -247,7 +247,7 @@ export function deleteAnswer(value: unknown): Record<string, unknown> {
 }
 export function upkeepAnswer(value: unknown): Record<string, unknown> {
   const v = rec(value);
-  return { enabled: flag(v["enabled"]), canManage: flag(v["canManage"]) };
+  return { enabled: flag(v["enabled"]), canManage: flag(v["canManage"]), ...(v["available"] === undefined ? {} : { available: flag(v["available"]) }) };
 }
 
 // ---- The routes ------------------------------------------------------------------------------------------------------------------------------------------------------------------

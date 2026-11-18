@@ -387,6 +387,15 @@ describe("Code's failures (M11, M13, M14)", () => {
     expect(asRefusal(await noStarter.send("POST", P("payments", "wiki-build"), await noStarter.as("mia-token"), { requestId: RID }))).toEqual(refusal("notSetUp"));
   });
 
+  it("the upkeep answer passes Code's `available` through when it is sent, and leaves it out when it is not (DEC 254zzl P0)", async () => {
+    const yes = setUp((call) => (call.path.endsWith("/upkeep") ? json(200, { enabled: false, canManage: true, available: true }) : undefined));
+    expect(WikiSetupUpkeepSchema.parse((await yes.send("GET", P("payments", "upkeep"), await yes.as("ada-token"))).body)).toEqual({ enabled: false, canManage: true, available: true });
+    const no = setUp((call) => (call.path.endsWith("/upkeep") ? json(200, { enabled: false, canManage: true, available: false }) : undefined));
+    expect(WikiSetupUpkeepSchema.parse((await no.send("GET", P("payments", "upkeep"), await no.as("ada-token"))).body)).toEqual({ enabled: false, canManage: true, available: false });
+    const absent = setUp((call) => (call.path.endsWith("/upkeep") ? json(200, { enabled: false, canManage: true }) : undefined));
+    expect((await absent.send("GET", P("payments", "upkeep"), await absent.as("ada-token"))).body).toEqual({ enabled: false, canManage: true });
+  });
+
   it("the upkeep seam answers Cloud's own words for Code's refusals, never Code's text", async () => {
     for (const [status, key] of [[403, "upkeepNotAllowed"], [404, "notFound"], [400, "invalid"], [500, "upkeepUnavailable"], [409, "upkeepUnavailable"]] as const) {
       const w = setUp((call) => (call.path.endsWith("/upkeep") ? err(status, "X", LEAK) : undefined));
