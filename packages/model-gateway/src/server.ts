@@ -30,7 +30,17 @@ import type { TokenUsage } from "./usage.js";
 import { UsageCollector } from "./usage.js";
 export interface GatewayRequest { method: string; url: string; headers: Readonly<Record<string, string | undefined>>; body: AsyncIterable<Uint8Array>; signal?: AbortSignal }
 export interface GatewaySink { head(status: number, headers: Readonly<Record<string, string>>): void; write(bytes: Uint8Array): Promise<void>; end(): void; destroy(): void }
-export type GatewayLogEvent = { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | { event: "settle_failed" | "refused" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
+/**
+ * The reason a call was refused (lead 4 TA12): the fixed refusal code and HTTP status, plus where it was refused. `cap` is the meter row whose cap was reached
+ * (task, person, project, upkeep, company), `route` the route that answered and `payer` who pays for the call's AI (the source word, set once the company's choice
+ * is read). Fixed words and numbers only: never a token, key, prompt, provider text, company or task id.
+ */
+export interface RefusedLog { event: "refused"; code: string; status: number; cap?: MeterItem; route?: "agent" | "product" | "learning" | "answers"; payer?: string }
+const REFUSAL_CODE = /^[a-z0-9_]{1,64}$/u;
+/** A refusal code as it is logged: a fixed lower-case word, or "other" for anything else (a code never carries provider text). */
+export const logCode = (code: string): string => REFUSAL_CODE.test(code) ? code : "other";
+const PAYER = /^[a-z0-9_]{1,32}$/u;
+export type GatewayLogEvent = { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "settle_failed" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
 export interface GatewayDependencies {
   verifyToken: TaskTokenVerifier; ended: EndedTasks; meter: Meter; caps: CapsSource; prices?: PriceSource;
   metrics: { overrunBusy(issuer: string, company: string): void };
@@ -127,6 +137,8 @@ export interface GatewayRoute {
    * Absent: a reviewer grant is refused on this route (401), so none can reach the product, learning, answers or install-key routes.
    */
   readonly reviewerGrants?: true;
+  /** Who pays for this call's AI, as a fixed lower-case word (the company's source: rovara, anthropic_key, bedrock_byo, ...), for the refusal log only. Absent: the route's kind says it. */
+  readonly payer?: string | undefined;
   /**
    * The response header that carries this call's settled cost (US dollars, a plain decimal of six places: whole micro-dollars). Set only on the answers route (L4-E2).
    * Sent on a complete NON-streaming success only, and only when the figure is exact: the core settles first, then sends the head, so the figure is the amount
@@ -234,6 +246,8 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
   return {
     ...base,
     reviewerGrants: true as const,
+    // The source word this call was admitted on (log only); nothing before admit has chosen one.
+    get payer() { return !admitted ? undefined : rovara !== undefined ? "rovara" : byo !== undefined ? "bedrock_byo" : chat !== undefined ? `${chat.provider}_key` : endpoint !== undefined ? "custom_endpoint" : "anthropic_key"; },
     // An endpoint call is priced as the catalog model each registered model stands for.
     get provider() { return endpoint !== undefined ? endpoint.model?.catalog.provider ?? "endpoint" : chat !== undefined ? chat.provider : rovara === undefined && byo === undefined ? base.provider : "bedrock"; },
     get transport() { return endpoint !== undefined ? endpoint.transport : chat !== undefined ? chat.ai.transport : byo !== undefined ? byo.transport : rovara === undefined ? base.transport : rovara.ai.transport; },
@@ -504,11 +518,17 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     return settled;
   };
   let events: (GatewaySink & { finish(outcome: { completed: boolean; code?: string }): Promise<void> }) | undefined;
+  // The cap row a cap refusal is about, set just before it is answered (the reason code alone says "budget_exceeded" for every row).
+  let refusedCap: MeterItem | undefined;
+  const refusedLine = (type: string, status: number): RefusedLog => {
+    const payer = route?.payer;
+    return { event: "refused", code: logCode(type), status, ...(refusedCap === undefined ? {} : { cap: refusedCap }), ...(route === undefined ? {} : { route: route.purpose ?? (route.product ? "product" as const : "agent" as const) }), ...(payer !== undefined && PAYER.test(payer) ? { payer } : {}) };
+  };
   const respond = async (status: number, type: string, message: string, extra: Readonly<Record<string, string>> = {}) => {
     refusedCode = type;
     if (head) { sink.destroy(); return; }
     head = true; sink.head(status, { ...JSON_HEADERS, ...extra });
-    await wait(sink.write(Buffer.from(JSON.stringify(route?.refusalBody?.(type, message) ?? { error: { type, message } })))); sink.end(); log({ event: "refused" });
+    await wait(sink.write(Buffer.from(JSON.stringify(route?.refusalBody?.(type, message) ?? { error: { type, message } })))); sink.end(); log(refusedLine(type, status));
   };
   try {
     if (request.method === "GET" && request.url === "/healthz") { head = true; sink.head(200, JSON_HEADERS); await wait(sink.write(Buffer.from('{"ok":true}'))); sink.end(); return; }
@@ -611,9 +631,9 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         await respond(429, "busy", OVERRUN_BUSY_MESSAGE, { "retry-after": String(OVERRUN_BUSY_RETRY_SECONDS) });
       } else if (reserved.reason === "busy") await respond(503, "unavailable", "model access unavailable");
       else if (reserved.held) await respond(429, "budget_held", "budget is held by another call", { "retry-after": "2" });
-      else if (route.capRefusal !== undefined) { const refused = await wait(route.capRefusal({ reason: reserved.reason, item: reserved.item }, scope, caps, estimate, controller.signal)); await respond(refused.status, refused.code, refused.message, refused.headers); }
-      else if (upkeep && reserved.item === "upkeep") { const refused = upkeepRefusal(caps, estimate); await respond(refused.status, refused.code, refused.message, refused.headers); }
-      else await respond(422, "budget_exceeded", route.prefix[reserved.item]);
+      else if (route.capRefusal !== undefined) { const refused = await wait(route.capRefusal({ reason: reserved.reason, item: reserved.item }, scope, caps, estimate, controller.signal)); refusedCap = reserved.item; await respond(refused.status, refused.code, refused.message, refused.headers); }
+      else if (upkeep && reserved.item === "upkeep") { refusedCap = reserved.item; const refused = upkeepRefusal(caps, estimate); await respond(refused.status, refused.code, refused.message, refused.headers); }
+      else { refusedCap = reserved.item; await respond(422, "budget_exceeded", route.prefix[reserved.item]); }
       return;
     }
     if (grant === undefined) reservation = reserved.reservation; else held = reserved.reservation;
