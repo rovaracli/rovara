@@ -157,7 +157,7 @@ function world() {
       if (!isAdmin) return forbidden(LINEAR_WORDS.adminOnly);
       const state = mint("linear");
       const authorize = new URL("https://linear.app/oauth/authorize");
-      for (const [key, value] of Object.entries({ client_id: "linclient1", redirect_uri: LINEAR_REDIRECT, response_type: "code", scope: "read,comments:create,issues:create", state, actor: "app", prompt: "consent", code_challenge: "c".repeat(43), code_challenge_method: "S256" })) authorize.searchParams.set(key, value);
+      for (const [key, value] of Object.entries({ client_id: "linclient1", redirect_uri: LINEAR_REDIRECT, response_type: "code", scope: "read,write,comments:create,issues:create", state, actor: "app", prompt: "consent", code_challenge: "c".repeat(43), code_challenge_method: "S256" })) authorize.searchParams.set(key, value);
       return respond(200, { state, expiresAt: new Date(clock + 600_000).toISOString(), authorizeUrl: authorize.toString() });
     }
     if (p === "/v1/dev/company/linear/complete" && method === "POST") {
