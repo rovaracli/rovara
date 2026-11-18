@@ -18,6 +18,7 @@ import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tas
 import { wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
 import { wikiMapOf, wikiSetupBuildView, type FakeWikiSetup } from "./wiki-setup-fixture.js";
 import { WIKI_SETUP_CODE_WORDS } from "../../packages/contracts/src/app-wiki-setup.js";
+import { CreateScriptTokenBodySchema } from "../../packages/contracts/src/script-tokens.js";
 
 export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
 
@@ -552,6 +553,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const comments = new Map<string, PlanComment[]>();
   const playbooks = new Map<string, PlaybookView>();
   const scriptTokens = new Map<string, ScriptToken[]>();
+  const scriptTokenKey = (person: Person) => `${person.company?.id ?? FAKE_COMPANY_ID}:${person.developerId}`;
+  const scriptTokenRequests = new Set<string>();
   const decided = new Set<string>();
   const companyMembers: CompanyMember[] = PEOPLE.map((person, index) => ({ developerId: person.developerId, name: person.name, email: person.email, role: person.administrator ? "owner" : "member", joinedAt: `2026-10-0${String(index + 1)}T09:00:00.000Z` }));
   let preApproved: string[] = ["new.hire@example.test"];
@@ -1193,12 +1196,23 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "company.audit.records": ({ person }) => person.administrator
       ? { body: { records: [{ at: "2026-11-14T10:00:00.000Z", actor: { developerId: PRIYA.developerId, name: "Priya" }, action: "task.start", subject: TASK_IDS.running, outcome: "ok" }] } }
       : failure(403, "FORBIDDEN", "Only an administrator can read the audit."),
-    "scriptTokens.list": ({ person }) => ({ body: { tokens: scriptTokens.get(person.developerId) ?? [] } }),
+    "scriptTokens.list": ({ person }) => {
+      const own = scriptTokenKey(person), company = `${person.company?.id ?? FAKE_COMPANY_ID}:`;
+      const tokens = [...scriptTokens].filter(([creator]) => creator === own || person.administrator && creator.startsWith(company))
+        .flatMap(([creator, list]) => list.map(token => ({ ...token, status: token.status === "active" && Date.parse(token.expiresAt) <= Date.now() ? "expired" as const : token.status, mine: creator === own, ...(creator === own ? {} : { createdBy: "A teammate" }) })));
+      return { body: { tokens, canCreate: person.administrator } };
+    },
     "scriptTokens.create": ({ body, person }) => {
-      if (body.label.trim() === "") return failure(400, "CONFIG_INVALID", "Name the token.");
-      const token: ScriptToken = { tokenId: randomUUID(), label: body.label.trim(), createdAt: iso() };
-      scriptTokens.set(person.developerId, [...(scriptTokens.get(person.developerId) ?? []), token]);
-      return { status: 201, body: { token, secret: `fake-script-${randomBytes(8).toString("hex")}` } };
+      const parsed = CreateScriptTokenBodySchema.safeParse(body);
+      if (!parsed.success) return failure(400, "CONFIG_INVALID", "That automation key request isn't valid.");
+      const own = scriptTokenKey(person), request = `${own}:${parsed.data.requestId}`;
+      if (scriptTokenRequests.has(request)) return failure(409, "CONFLICT", "This request was already used. The key is shown only once.");
+      if (parsed.data.projects.some(name => project(name) === undefined)) return failure(404, "NOT_FOUND", "project not found");
+      scriptTokenRequests.add(request);
+      const tokenPart = randomBytes(10).toString("hex");
+      const token: ScriptToken = { tokenId: `stk_${tokenPart}`, name: parsed.data.name, hint: `rvst_…${tokenPart.slice(-8)}`, projects: parsed.data.projects, permissions: parsed.data.permissions, createdAt: iso(), expiresAt: new Date(Date.now() + (parsed.data.days ?? 30) * 86400000).toISOString(), status: "active", mine: true };
+      scriptTokens.set(own, [...(scriptTokens.get(own) ?? []), token]);
+      return { status: 201, body: { token, secret: `rvst_${randomBytes(10).toString("hex")}_${tokenPart}_${randomBytes(32).toString("base64url")}` } };
     },
     "lessons.list": (context) => {
       const found = lessonsProject(context);
@@ -1315,10 +1329,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: settingsView(name) };
     },
     "scriptTokens.revoke": ({ params, person }) => {
-      const list = scriptTokens.get(person.developerId) ?? [];
-      const next = list.filter((entry) => entry.tokenId !== params["tokenId"]);
-      scriptTokens.set(person.developerId, next);
-      return { body: { revoked: next.length !== list.length } };
+      const own = scriptTokenKey(person), company = `${person.company?.id ?? FAKE_COMPANY_ID}:`;
+      for (const [creator, tokens] of scriptTokens) {
+        const token = tokens.find(entry => entry.tokenId === params["tokenId"]);
+        if (token === undefined || creator !== own && !(person.administrator && creator.startsWith(company))) continue;
+        token.status = "revoked"; token.revokedAt ??= iso();
+        return { body: { token: { ...token, mine: creator === own } } };
+      }
+      return failure(404, "NOT_FOUND", "That automation key doesn't exist, or you can't manage it.");
     },
   };
 

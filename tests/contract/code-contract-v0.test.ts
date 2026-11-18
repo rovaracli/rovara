@@ -58,24 +58,25 @@ describe("code contract v0 tables", () => {
     // Plus the smart Just answer's ask and the start box's suggestion, both off unless the deployment's answers setting is on (lead 4 J3), and "Not right" on an answer (lead 4 J5).
     // Plus the Cost and time actions (lane L4-CR4): a new feature, rename, merge, mark done or reopen, and move a task, each passed to Code's own route as the person (Code decides): 5 rows.
     // Plus the session's decisions and answers (L4-B5, Code's task log read as the person): 1 row.
-    expect(counts.appCloudServerToday).toBe(137);
+    // Plus script-token list, create and revoke, mirrored from Code's app routes: 3 rows.
+    expect(counts.appCloudServerToday).toBe(140);
   });
 
-  it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
+  it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
     expect(CODE_ROUTES.every((route) => route.awsApi === "yes" || route.awsApi === "no")).toBe(true);
     const e2 = CODE_ROUTES.filter((route) => route.arrivesWith !== undefined).map((route) => route.id).sort();
-    expect(e2).toEqual(["decisions.act", "decisions.list", "howWeWork.get", "playbook.get", "playbook.put", "scriptTokens.create", "scriptTokens.list", "scriptTokens.revoke", "tasks.answers", "tasks.evidence.get"].sort());
+    expect(e2).toEqual(["decisions.act", "decisions.list", "howWeWork.get", "playbook.get", "playbook.put", "tasks.answers", "tasks.evidence.get"].sort());
     for (const route of CODE_ROUTES.filter((entry) => entry.arrivesWith !== undefined)) {
       expect(route.awsApi).toBe("no");
       expect(route.mainline).toBe(false);
       expect(route.evidence).toBe("none");
       expect(route.arrivesWith).toMatch(/^E2 \(core on AWS\); laptop core: /u);
     }
-    expect(contractCounts().neededArrivesWithE2).toBe(10);
+    expect(contractCounts().neededArrivesWithE2).toBe(7);
   });
 
-  it("keeps Code's routes under /v1/dev (and sign-in under /v1/auth), and Cloud's decision routes on the app side", () => {
-    for (const route of CODE_ROUTES) expect(route.path.startsWith("/v1/dev/") || route.path.startsWith("/v1/auth/"), route.id).toBe(true);
+  it("keeps Code's routes under /v1/dev, sign-in under /v1/auth and script tokens on Code's /v1/app routes", () => {
+    for (const route of CODE_ROUTES) expect(route.path.startsWith("/v1/dev/") || route.path.startsWith("/v1/auth/") || route.id.startsWith("scriptTokens.") && route.path.startsWith("/v1/app/script-tokens"), route.id).toBe(true);
     const decisions = APP_ROUTES.filter((route) => route.path.startsWith("/v1/app/decisions"));
     expect(decisions).toHaveLength(5);
     for (const route of decisions) expect(route.cloudServerToday).toBe(true);
@@ -90,6 +91,18 @@ describe("code contract v0 tables", () => {
     expect(matchCodeRoute("DELETE", "/v1/dev/tasks/abc")).toBeUndefined();
     expect(pathParamNames("/v1/dev/tasks/{taskId}/readers/{developerId}")).toEqual(["taskId", "developerId"]);
     expect(pathPattern("/v1/auth/.well-known/jwks.json").test("/v1/auth/xwell-known/jwks.json")).toBe(false);
+  });
+
+  it("mirrors Code's script-token app routes, full scope and POST revoke", () => {
+    for (const [method, path, id] of [
+      ["GET", "/v1/app/script-tokens", "scriptTokens.list"],
+      ["POST", "/v1/app/script-tokens", "scriptTokens.create"],
+      ["POST", "/v1/app/script-tokens/stk_aaaaaaaaaaaaaaaaaaaa/revoke", "scriptTokens.revoke"],
+    ] as const) {
+      expect(matchCodeRoute(method, path)?.route).toMatchObject({ id, scope: "full", cloudCallsToday: true, awsApi: "yes" });
+      expect(APP_ROUTES.find(row => row.codeRoutes.includes(id))?.cloudServerToday).toBe(true);
+    }
+    expect(matchCodeRoute("DELETE", "/v1/app/script-tokens/stk_aaaaaaaaaaaaaaaaaaaa")).toBeUndefined();
   });
 
   it("has no imports, so it can be copied byte for byte into Rovara Code", () => {

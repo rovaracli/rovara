@@ -21,6 +21,7 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  { path: "agents/:id?", lazy: async () => ({ Component: (await import("./screens/agents/DirectoryScreen.js")).DirectoryScreen }) }, { path: "agents/new", lazy: async () => ({ Component: (await import("./screens/builder/NewAgentScreen.js")).NewAgentScreen }) },
  { path: "agents/:id/edit", lazy: async () => ({ Component: (await import("./screens/builder/BuilderScreen.js")).BuilderScreen }) },
  { path: "account", lazy: async () => ({ Component: (await import("./screens/account/AccountScreen.js")).AccountScreen }) },
+ { path: "account/automation-keys", lazy: async () => ({ Component: (await import("./screens/account/AutomationKeysScreen.js")).AutomationKeysScreen }) },
  { path: "onboard", lazy: async () => ({ Component: (await import("./screens/onboarding/OnboardScreen.js")).OnboardScreen }) },
  ];
  // Lane C: waiting is caller-scoped, independent of the company-admin navigation flag.
