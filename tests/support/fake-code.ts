@@ -879,6 +879,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   lessonPeople.set("les_logs00001", [SAM.developerId]);
   let lessonMode: LessonMode = "suggest";
   const pausedSources = new Set<LearningSourceKey>();
+  // L4-JA7: Knowledge stays in Rovara (the company) and a project's own local coding tools choice.
+  let knowledgeStays = false;
+  const localToolsOwn = new Map<string, boolean>();
+  const localToolsState = (name: string, decides: boolean) => { const own = localToolsOwn.get(name); return { enabled: !knowledgeStays && own !== false, ...(own === undefined ? {} : { own }), ...(knowledgeStays ? { reason: "company_stays" as const } : own === false ? { reason: "project_setting" as const } : {}), preset: "standard" as const, companyStays: knowledgeStays, canChange: decides }; };
   const retireAsks = new Map<string, { by: string; at: number }>();
   const taskLessons = new Map<string, TaskLesson[]>([
     [TASK_IDS.pullRequest, [
@@ -1596,6 +1600,25 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       if (typeof context.body.paused !== "boolean") return failure(400, "CONFIG_INVALID", "pause takes paused: true or false");
       if (context.body.paused) pausedSources.add(key); else pausedSources.delete(key);
       return { body: { project: found.name, key, paused: context.body.paused } };
+    },
+    "company.knowledgeStays.get": ({ person }) => (!person.administrator || companyless.has(person.developerId) ? failure(403, "FORBIDDEN", "Only an owner or admin of the company can change whether knowledge stays in Rovara.") : { body: { stays: knowledgeStays } }),
+    "company.knowledgeStays.put": ({ person, body }) => {
+      if (!person.administrator || companyless.has(person.developerId)) return failure(403, "FORBIDDEN", "Only an owner or admin of the company can change whether knowledge stays in Rovara.");
+      if (typeof body.stays !== "boolean") return failure(400, "CONFIG_INVALID", "the switch takes stays: true or false");
+      knowledgeStays = body.stays;
+      return { body: { stays: knowledgeStays } };
+    },
+    "lessons.localTools.get": (context) => {
+      const found = lessonsProject(context);
+      return "refused" in found ? found.refused : { body: localToolsState(found.name, found.decides) };
+    },
+    "lessons.localTools.put": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      if (!found.decides) return failure(403, "FORBIDDEN", "Only an admin of this project, or an owner or admin of the company, can change this.");
+      if (typeof context.body.enabled !== "boolean") return failure(400, "CONFIG_INVALID", "the switch takes enabled: true or false");
+      localToolsOwn.set(found.name, context.body.enabled);
+      return { body: localToolsState(found.name, true) };
     },
     "lessons.mode.get": (context) => {
       const found = lessonsProject(context);
