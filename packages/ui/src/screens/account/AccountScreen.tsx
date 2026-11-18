@@ -2,7 +2,7 @@
 // The email is set by a company admin (Sign-in factors); a passkey is yours to list and remove. Removing one is sensitive, so it shows the fresh sign-in step first.
 // Cloud passes these reads through once Code's sign-in service serves them; until then each part says "not connected yet" (proposed routes in api/admin-company.ts).
 import { useMemo, useState } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { isPlaceholderDisplayName } from "@agentx/contracts/web";
 import { MY_FACTORS_PATH, isNotConnected, needsStepUp, passkeyPath, readMyFactors, type Passkey } from "../../api/admin-company.js";
@@ -59,6 +59,7 @@ export function AccountScreen() {
     : <ul className="rv-passkeys" aria-label="Your passkeys">{factors.data.passkeys.map(key => <li key={key.credentialId}><span>Passkey added {when(key.createdAt)}<small>{key.lastUsedAt === undefined ? "Not used yet" : `Last used ${when(key.lastUsedAt)}`}</small></span><Button aria-label={`Remove the passkey added ${when(key.createdAt)}`} onClick={() => { setResult(undefined); setRemoved(false); setParams({ remove: key.credentialId }, { replace: true }); }}>Remove</Button></li>)}</ul>}
   </AdminSection>
   <ConnectedSignIns confirmed={confirmed} who={nav?.me.developerId} />
+  <AdminSection title="Automation keys"><p>Manage keys for your scripts and CI.</p><Link to="/app/account/automation-keys">Automation keys</Link></AdminSection>
   <Dialog title="Remove this passkey?" description="You can still confirm with a code sent to your confirmation email." open={target !== undefined} onOpenChange={next => { if (!next) { setResult(undefined); setParams({}, { replace: true }); } }}>
    {!ready ? <FreshSignIn action="remove a passkey" refused={stale} /> : <><FreshSignIn action="remove a passkey" done /><Button variant="danger" busy={busy} onClick={() => { void remove(); }}>Remove passkey</Button></>}
    {result?.kind === "failed" && <p role="alert"><VisibleText text={result.text} /></p>}

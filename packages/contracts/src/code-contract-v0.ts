@@ -458,12 +458,12 @@ export interface CompanyAuditQuery { from?: Iso; to?: Iso; person?: DeveloperId;
 /** The reply to `GET /v1/app/company/audit` (admin only): the merged list, `next` (pass back as `cursor` with the same filters) while there may be more, and the engine's status. A page may be short while `next` is present. */
 export interface CompanyAuditPage { records: CompanyAuditEntry[]; next?: string; engine: CompanyAuditEngineStatus }
 
-export interface ScriptToken { tokenId: string; label: string; createdAt: Iso; lastUsedAt?: Iso; expiresAt?: Iso }
+export interface ScriptToken { tokenId: string; name: string; hint: string; projects: string[]; permissions: Array<"read" | "start" | "lessons" | "wiki">; createdAt: Iso; expiresAt: Iso; lastUsedAt?: Iso; revokedAt?: Iso; status: "active" | "expired" | "revoked"; mine: boolean; createdBy?: string }
 export interface ScriptTokensResponse { tokens: ScriptToken[] }
-export interface CreateScriptTokenRequest { requestId: string; label: string; expiresInDays?: number }
+export interface CreateScriptTokenRequest { requestId: string; name: string; projects: string[]; permissions: Array<"read" | "start" | "lessons">; days?: number }
 /** The secret is shown once, in this answer only. */
 export interface CreateScriptTokenResponse { token: ScriptToken; secret: string }
-export interface RevokeScriptTokenResponse { revoked: boolean }
+export interface RevokeScriptTokenResponse { token: ScriptToken }
 
 /** Guided onboarding PR 16/17 (Code #839): a reviewed archive or restore names the preview's revisions and acknowledges what it does (Code's ReviewedProject*Body). */
 export interface ArchiveProjectRequest { requestId: string; expectedOrgId?: string; expectedRevision: number; expectedProjectRevision: number; acknowledgeNewWorkStops?: true; acknowledgeNewWorkAllowed?: true }
@@ -859,9 +859,9 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.linear.team.clear", "DELETE", "/v1/dev/company/linear/projects/{project}", "Clear a project's Linear team", "full", ["admin"], "no", false, "none", true),
   spec("company.audit.records", "GET", "/v1/dev/client/company/audit/records", "Engine audit records, for a company administrator (lane AU)", "full", ["admin"], "no", false, "none"),
   // Settings: the person's script tokens
-  spec("scriptTokens.list", "GET", "/v1/dev/script-tokens", "The person's script tokens", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:94")),
-  spec("scriptTokens.create", "POST", "/v1/dev/script-tokens", "Make a script token; the secret is shown once", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:97")),
-  spec("scriptTokens.revoke", "DELETE", "/v1/dev/script-tokens/{tokenId}", "Revoke one", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:99")),
+  spec("scriptTokens.list", "GET", "/v1/app/script-tokens", "The caller's tokens, or company tokens Code lets them manage", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
+  spec("scriptTokens.create", "POST", "/v1/app/script-tokens", "Make a script token with a fresh step-up; secret shown once", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
+  spec("scriptTokens.revoke", "POST", "/v1/app/script-tokens/{tokenId}/revoke", "Revoke one", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
   // Lessons (PrepLabsAI/Rovara#713, LM8 part 1): served by code/next once merged and wired (its Step 6); until then every route answers 404 LESSONS_SWITCHED_OFF "Lessons are off."
   spec("lessons.list", "GET", `${DP}/lessons`, "One page of a project's lessons (query: list=proposed|approved|retired, since, limit 1..100, cursor)", "full", ["home", "how-we-work"], "no", false, "none", true),
   spec("lessons.approve", "POST", `${DP}/lessons/{lessonId}/approve`, "Keep a proposed lesson: the version read, or an edit of it", "full", ["how-we-work"], "no", false, "none", true),
@@ -1227,9 +1227,9 @@ PUT /v1/app/org/model-selection-policy | g | later | | company-model-policy |
 POST /v1/app/org/model-selection-policy/preview | g | later | | company-model-policy |
 GET /v1/app/me/notifications | c | settings | | notifications |
 PUT /v1/app/me/notifications | c | settings | | notifications | L
-GET /v1/app/script-tokens | k | settings | scriptTokens.list | script-tokens | L
-POST /v1/app/script-tokens | k | settings | scriptTokens.create | script-tokens | L
-DELETE /v1/app/script-tokens/{tokenId} | k | settings | scriptTokens.revoke | script-tokens | L
+GET /v1/app/script-tokens | k | settings | scriptTokens.list | script-tokens | T
+POST /v1/app/script-tokens | k | settings | scriptTokens.create | script-tokens | T
+POST /v1/app/script-tokens/{tokenId}/revoke | k | settings | scriptTokens.revoke | script-tokens | T
 POST /v1/app/me/identities/slack | k | settings | | shell/SlackLink |
 DELETE /v1/app/me/identities/slack | k | settings | channelLinks.remove | shell/SlackLink |
 POST /v1/app/me/identities/github | k | settings | | shell/GithubLink |
