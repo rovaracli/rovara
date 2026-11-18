@@ -16,7 +16,7 @@ export function CompanyUpkeep() {
   const id = useRef<string | undefined>(undefined), group = useRef<HTMLDivElement>(null), button = useRef<HTMLButtonElement>(null), cancelled = useRef(false);
   // Focus follows the person: into the confirm when it opens, back to Withdraw when it is cancelled.
   useEffect(() => { if (asking) group.current?.focus(); else if (cancelled.current) { cancelled.current = false; button.current?.focus(); } }, [asking]);
-  const frame = (children: React.ReactNode) => <section className="rv-wikis-upkeep" aria-label={T.COMPANY_TITLE} data-testid="company-upkeep">{children}</section>;
+  const frame = (children: React.ReactNode) => <div className="rv-wikis-upkeep" data-testid="company-upkeep">{children}</div>;
   if (read.isPending) return frame(<Skeleton label="Loading nightly upkeep for the company" />);
   if (read.isError || read.data === undefined) {
     return frame(<p className="rv-muted" data-testid="company-upkeep-absent">{wikiSetupAbsent(read.error) ? T.COMPANY_NOT_AVAILABLE : fixedWikiSetupWords(read.error, T.COMPANY_UNREADABLE)}</p>);
