@@ -154,7 +154,9 @@ describe("the shapes Cloud keeps", () => {
     expect(view?.["counters"]).toEqual({ loaded: 0, helpful: 2, harmful: 0 });
     expect(lessonItem({ id: "x" })).toBeUndefined();
     // A duplicate or contradiction is named by id (never free text), and the distinct-task count passes through only when Code sends it.
-    expect(lessonItem({ id: "les_cccc", version: 1, expiresAt: 5, title: "T", possibleDuplicate: "les_dddd", contradicts: "<b>no</b>", mergeBlocked: true, usedInTasks: 4 })).toMatchObject({ possibleDuplicate: "les_dddd", mergeBlocked: true, usedInTasks: 4 });
+    const olderCodeLesson = lessonItem({ id: "les_cccc", version: 1, expiresAt: 5, title: "T", possibleDuplicate: "les_dddd", contradicts: "<b>no</b>", mergeBlocked: true, usedInTasks: 4 });
+    expect(olderCodeLesson).toMatchObject({ possibleDuplicate: "les_dddd", usedInTasks: 4 });
+    expect(olderCodeLesson).not.toHaveProperty("mergeBlocked");
     expect(lessonItem({ id: "les_cccc", version: 1, expiresAt: 5, title: "T", contradicts: "<b>no</b>" })).not.toHaveProperty("contradicts");
     expect(lessonItem({ id: "les_cccc", version: 1, expiresAt: 5, title: "T" })).not.toHaveProperty("usedInTasks");
     // No lapse time: left out, never shown as "lapses now".
