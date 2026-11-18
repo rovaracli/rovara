@@ -77,7 +77,7 @@ describe("the fake eval card", () => {
   it("L4-EVW4: the wrapper card is one per eval with the file for everyone; a manager acts, a member may only check, and a body is exactly a request id, an act and (to open) the eval", async () => {
     const priya = await tokenFor(PRIYA);
     const sam = await tokenFor(SAM);
-    await stage("propose", "needs_file");
+    await stage("propose", undefined, "needs_file");
     const id = "6f9d0c1e-2b3a-4c5d-8e7f-001122334455";
     const read = EvalCardViewSchema.parse((await call(`${BASE}/eval`, sam)).body);
     expect(read.wrappers?.[0]).toMatchObject({ step: "needs_file", path: "rovara/eval-wrapper.py", canOpenPullRequest: false });
