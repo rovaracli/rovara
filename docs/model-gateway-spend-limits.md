@@ -60,6 +60,16 @@ AI that a project's nightly upkeep spends by itself (repair drafts, mock drafts,
 - The admin notice (inbox) is not here: the gateway holds no inbox. Code's nightly upkeep turns `upkeep_paused` into the admins' notice, once per pause.
 - Corrections: a price correction moves the upkeep row like the others; a correction pushing it past its cap only sets the ledger's `capExceeded` flag (the corrections source has no `src`, so it passes no upkeep cap), and the next reserve is refused by the row's own committed total.
 
+### The upkeep cap read (L4-CAPR)
+
+Code's nightly wiki refresh starts AI by itself only while the gateway itself says the project's upkeep cap is enforced (Code's `UpkeepCapReadSchema`, `contracts/upkeep.ts`). `src/upkeep-cap-read.ts`:
+
+- `GET /v1/service/companies/<company>/upkeep/<project>` answers exactly `{ version: 1, company, project, month, enforced: true, limitMicros, spentMicros }`; no body, no query (a query is the 404). `month` is the UTC month of the gateway's clock.
+- Token: the install's task key signs a service token, verified as the offered-models token is: header `typ` `rovara-service+jwt`, audience `rovara-model-gateway-upkeep-cap`, claims exactly `iss/aud/jti/iat/nbf/exp/cid`, at most 60 seconds of life, pinned issuer and key ids. The company in the path must be the token's `cid` (else the fixed 401, so another company's token learns nothing); the project is the path's own name (Code's name pattern). A task token, the offered-models token or any `x-api-key` never opens it.
+- `limitMicros` is read through the same `UpkeepLimits` the agent route's upkeep call uses: the project's own `upkeep_month` item, else `UPKEEP_DEFAULT_MONTH_MICROS` (the route enforces that default for a project with no item, so the read states it); a `$0` item answers `limitMicros: 0` (enforced, no upkeep spend). `spentMicros` is the meter's own `upkeep` row for that company, project and month (settled spend; open holds are not in it).
+- Fail closed: a limit item that does not read, a failed read of either store, a meter row that is missing, another company's or not a whole number, or a month change while reading is `503 unavailable`. `enforced: true` appears only in a 200. Code reads every non-200 as "not known" and starts nothing.
+- Needs no new IAM, secret or parameter: it reads the Companies and meter tables the serving role already reads for the agent route. It is mounted on every serving process, before the agent route's fallthrough. Rate limit as the other service reads (8 at once, 600 a minute per serving task).
+
 ### The contract for callers (Code's nightly jobs and answer services)
 
 Names the callers build on (all in `packages/model-gateway/src`; nothing here changes without a new decision):
