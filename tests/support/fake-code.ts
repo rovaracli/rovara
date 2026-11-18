@@ -447,7 +447,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       : run.status === "ready" ? { state: "done" as const, status: "ready" as const, startedAt: run.startedAt, elapsedMs: 412_000, costCents: 48, commandsRun: 9, commandsFound: { setup: 2, tests: 1 }, testOutcome: "passed" as const }
       : { state: "failed" as const, status: "failed" as const, startedAt: run.startedAt, elapsedMs: 300_000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed" as const, ...(run.stop === undefined ? {} : { stop: run.stop }), failure: "A test command failed.", failedCommand: FAILED_COMMAND };
     const setupDone = runRow.state === "done";
-    const evalRow = setupDone ? { state: "needs_you" as const, report: "reported" as const, suites: [{ selection: "npm test", questions: 3 }] } : { state: "needs_you" as const, report: "none" as const, blockedBy: "setupRun" as const };
+    const evalRow = setupDone && evalOf(name).state === "approved" ? { state: "done" as const, report: "confirmed" as const, confirmedSelection: "npm run evals" } : setupDone ? { state: "needs_you" as const, report: "reported" as const, suites: [{ selection: "npm test", questions: 3 }] } : { state: "needs_you" as const, report: "none" as const, blockedBy: "setupRun" as const };
     const channels = [...slackLinks].filter(([, linked]) => linked === name).map(([channelId]) => ({ channelId, name: slackChannels.find((one) => one.id === channelId)?.name ?? channelId }));
     const team = linearPicks.get(name);
     const optional = (set: boolean, row: "slackChannel" | "linear" | "invites") => set ? "done" as const : skips.has(row) ? "skipped" as const : "optional" as const;
@@ -469,15 +469,52 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const run = runOf(name);
     return { status: run.status, basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, ...(run.taskId === undefined ? {} : { taskId: run.taskId }), ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }), ...(run.status === "failed" ? { failure: "A test command failed.", ...(run.stop === undefined ? {} : { stop: run.stop }) } : {}), canManage: manage, ...(setupApplies.has(name) ? { apply: applyView(setupApplies.get(name)!) } : {}) };
   };
+  // L4-EVC (DEC 254zzz20): the setup flow's ONE eval card, in dollars (Code's hosted eval routes, small). A project with a finished setup run has an eval to approve; the specs set the stage through /__fake/eval-card.
+  type FakeEval = { state: "none" | "propose" | "waiting" | "approved" | "rejected"; health: "none" | "requested" | "finished" };
+  const evalCards = new Map<string, FakeEval>();
+  const EVAL_SEEN = { perCheckHighMicros: 1_200_000, monthlyCapMicros: 41_000_000 };
+  const EVAL_OFFER = { requestId: `eval-${"e".repeat(40)}-3`, revision: 3, artifactDigest: "cd34".repeat(16) };
+  const evalOf = (name: string): FakeEval => evalCards.get(name) ?? { state: runOf(name).status === "ready" ? "propose" : "none", health: "none" };
+  const evalCardAnswer = (method: string, tail: string, name: string, manage: boolean, body: unknown): { status: number; body: unknown } => {
+    const card = evalOf(name);
+    if (method === "GET") {
+      const sentence = "Running your evals on each AI change will cost about $0.50-$1.20 per PR, at most $41.00 a month. Approve?";
+      return { status: 200, body: {
+        project: name, state: card.state, canApprove: manage,
+        ...(card.state === "none" ? {} : { report: { taskId: "task_fake-eval", reportDigest: "ab12".repeat(16) } }),
+        suites: card.state === "propose" ? [{ selection: "npm run evals", files: ["evals/a.yaml", "evals/b.yaml"], cases: 12, sentence, perPr: "$0.50-$1.20", monthly: "$41.00", seen: EVAL_SEEN }] : [],
+        ...(card.state === "waiting" ? { spend: { state: "waiting", perPr: "$0.90-$2.40", monthly: "$41.00", needsApproval: "Needs approval: your eval set grew past the approved $1.20", approval: EVAL_OFFER } }
+          : card.state === "approved" || card.state === "rejected" ? { spend: { state: card.state, perPr: "$0.50-$1.20", monthly: "$41.00" } } : {}),
+        ...(card.state === "approved" ? { health: { state: card.health, label: "Check my evals now (about $2.40)", cost: "$2.40", seenCostMicros: 2_400_000 } } : {}),
+      } };
+    }
+    if (!manage) return failure(403, "FORBIDDEN", "Only a company owner, admin or project maintainer can answer for the eval's spend.");
+    const given = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+    if (tail === "eval-approve") {
+      const seen = given["seen"] as Record<string, unknown> | undefined;
+      if (card.state !== "propose" || given["approve"] !== true || seen?.["perCheckHighMicros"] !== EVAL_SEEN.perCheckHighMicros || seen["monthlyCapMicros"] !== EVAL_SEEN.monthlyCapMicros) return failure(409, "CHANGE_STALE", "Your evals changed. Look again.");
+      evalCards.set(name, { state: "approved", health: "none" });
+      return { status: 200, body: { project: name, state: "approved", perPr: "$0.50-$1.20", monthly: "$41.00", carried: false } };
+    }
+    if (tail === "eval-decide") {
+      if (card.state !== "waiting" || given["requestId"] !== EVAL_OFFER.requestId) return failure(409, "CHANGE_STALE", "Your evals changed. Look again.");
+      evalCards.set(name, { state: given["outcome"] === "approve" ? "approved" : "rejected", health: "none" });
+      return { status: 200, body: { project: name, decision: given["outcome"] === "approve" ? "approved" : "rejected" } };
+    }
+    if (card.state !== "approved" || typeof given["requestId"] !== "string" || given["seenCostMicros"] !== 2_400_000) return failure(409, "CHANGE_STALE", "Your evals changed. Look again.");
+    evalCards.set(name, { ...card, health: "requested" });
+    return { status: 200, body: { project: name, requested: true, duplicate: false, cost: "$2.40" } };
+  };
   /** The hosted setup run's answer (Code #844 serves the laptop's /v1/app path), or undefined when the path is not one of its four. */
   const setupRunAnswer = (method: string, path: string, query: URLSearchParams, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
-    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide))?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide|eval|eval-approve|eval-decide|eval-health))?$/u.exec(path);
     if (match === null) return undefined;
     const tail = match[2];
-    if (!((method === "GET" && (tail === undefined || tail === "journal")) || (method === "POST" && tail !== "journal"))) return undefined;
+    if (!((method === "GET" && (tail === undefined || tail === "journal" || tail === "eval")) || (method === "POST" && tail !== "journal" && tail !== "eval"))) return undefined;
     const name = decodeURIComponent(match[1]!), entry = project(name), grant = roleIn(person, name);
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (entry === undefined || companyless.has(person.developerId) || (!manage && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
+    if (tail === "eval" || tail === "eval-approve" || tail === "eval-decide" || tail === "eval-health") return evalCardAnswer(method, tail, name, manage, body);
     if (method === "GET" && tail === undefined) return { status: 200, body: setupRunView(name, manage) };
     if (method === "GET") {
       const run = runOf(name), after = Number(query.get("after") ?? "0");
@@ -1672,6 +1709,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           setupRuns.set(given.project, status === "none" ? { status } : { status, startedAt: iso(), taskId: randomUUID() });
           setupSkips.delete(given.project);
           return send(200, { status });
+        }
+        if (method === "POST" && url.pathname === "/__fake/eval-card") {
+          const given = JSON.parse(raw) as { project?: unknown; state?: unknown; health?: unknown };
+          if (typeof given.project !== "string" || project(given.project) === undefined || !["none", "propose", "waiting", "approved", "rejected"].includes(given.state as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and state" } });
+          evalCards.set(given.project, { state: given.state as FakeEval["state"], health: ["requested", "finished"].includes(given.health as string) ? given.health as FakeEval["health"] : "none" });
+          return send(200, { ok: true });
         }
         if (method === "POST" && url.pathname === "/__fake/setup-apply") {
           const given = JSON.parse(raw) as { project?: unknown; apply?: Partial<FakeApply> | null };

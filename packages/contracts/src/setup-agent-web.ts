@@ -109,3 +109,58 @@ export const SetupConfirmReplySchema = z.object({
   next: z.literal("check"),
 }).passthrough();
 export type SetupConfirmReply = z.infer<typeof SetupConfirmReplySchema>;
+
+// L4-EVC (DEC 254zzz20 D5, D6, D8): the setup flow's ONE eval card, in plain dollars. Code serves the read and three acts (setup-run-routes.ts, eval-card.ts); Cloud passes them on as the person. Every sentence
+// the card shows comes from Code (dollars, never counts or micro-dollar words). The whole-number `seen` figures travel as data only: they are copied from the read into the act that follows, never worked out here.
+export const EVAL_CARD_STATES = ["none", "propose", "waiting", "approved", "renew", "rejected"] as const;
+const microDollars = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
+export const EvalCardSuiteSchema = z.object({
+  selection: z.string().min(1).max(512),
+  files: z.array(z.string().min(1).max(500)).max(200),
+  cases: z.number().int().min(0).max(1_000_000),
+  /** "Running your evals on each AI change will cost about $A-$B per PR, at most $X a month. Approve?" */
+  sentence: z.string().min(1).max(600),
+  perPr: z.string().min(1).max(100),
+  monthly: z.string().min(1).max(100),
+  /** What the person's yes echoes back; copied from here, never computed by the page. */
+  seen: z.object({ perCheckHighMicros: microDollars, monthlyCapMicros: microDollars }).strict(),
+  versusApproved: z.object({ within: z.boolean(), words: z.string().min(1).max(600) }).passthrough().optional(),
+}).passthrough();
+export const EvalCardViewSchema = z.object({
+  project: z.string().min(1).max(100).optional(),
+  state: z.enum(EVAL_CARD_STATES),
+  canApprove: z.boolean(),
+  report: z.object({ taskId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-]+$/u), reportDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).passthrough().optional(),
+  suites: z.array(EvalCardSuiteSchema).max(16),
+  spend: z.object({
+    state: z.string().min(1).max(60),
+    perPr: z.string().min(1).max(100).optional(),
+    monthly: z.string().min(1).max(100).optional(),
+    needsApproval: z.string().min(1).max(600).optional(),
+    carried: z.boolean().optional(),
+    approval: z.object({ requestId: z.string().regex(/^eval-[a-f0-9]{40}-[0-9]{1,15}$/u), revision: z.number().int().min(1), artifactDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).passthrough().optional(),
+  }).passthrough().optional(),
+  /** The opt-in health run, shown only once the spend is approved. */
+  health: z.object({ state: z.enum(["none", "requested", "finished"]), label: z.string().min(1).max(200), cost: z.string().min(1).max(100), seenCostMicros: microDollars }).passthrough().optional(),
+  unavailable: z.string().min(1).max(600).optional(),
+}).passthrough();
+export type EvalCardView = z.infer<typeof EvalCardViewSchema>;
+export type EvalCardSuite = z.infer<typeof EvalCardSuiteSchema>;
+
+export const EvalApproveRequestSchema = z.object({
+  taskId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-]+$/u),
+  reportDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+  selection: z.string().min(1).max(512),
+  paths: z.array(z.string().min(1).max(500)).min(1).max(200),
+  approve: z.literal(true),
+  seen: z.object({ perCheckHighMicros: microDollars, monthlyCapMicros: microDollars }).strict(),
+}).strict();
+export const EvalApproveReplySchema = z.object({ project: z.string().min(1).max(100), state: z.string().max(60).optional(), perPr: z.string().max(100).optional(), monthly: z.string().max(100).optional(), carried: z.boolean().optional() }).passthrough();
+export const EvalDecideRequestSchema = z.object({
+  requestId: z.string().regex(/^eval-[a-f0-9]{40}-[0-9]{1,15}$/u),
+  outcome: z.enum(["approve", "reject"]),
+  seen: z.object({ revision: z.number().int().min(1), artifactDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).strict(),
+}).strict();
+export const EvalDecideReplySchema = z.object({ project: z.string().min(1).max(100), decision: z.enum(["approved", "rejected"]) }).passthrough();
+export const EvalHealthRequestSchema = z.object({ requestId: z.string().uuid(), seenCostMicros: microDollars }).strict();
+export const EvalHealthReplySchema = z.object({ project: z.string().min(1).max(100), requested: z.literal(true), duplicate: z.boolean().optional(), cost: z.string().max(100).optional() }).passthrough();

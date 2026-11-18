@@ -140,6 +140,69 @@ function confirmsEval(access: CodeAccess, companyRole: CompanyRole, project: str
   return entry !== undefined && roleOf(entry.access) === "maintainer";
 }
 
+// L4-EVC (DEC 254zzz20 D5, D6, D8): the setup flow's ONE eval card. Code serves four hosted routes under /v1/app/projects/{p}/setup-agent/ (the card's read, ONE approval, a decision on a waiting spend
+// item, and the opt-in health check); Cloud forwards each as the signed-in person. Each POST names only its own keys (Code validates them strictly): nothing that names a company, a role or a payer is
+// ever forwarded, at the top or inside `seen`.
+export const EVAL_APPROVE_KEYS = ["taskId", "reportDigest", "selection", "paths", "approve", "seen"] as const;
+export const EVAL_DECIDE_KEYS = ["requestId", "outcome", "seen"] as const;
+export const EVAL_HEALTH_KEYS = ["requestId", "seenCostMicros"] as const;
+/** The members of `seen` that are passed on: the dollars the person was shown (approve), or the offer's revision and digest (decide). */
+const EVAL_SEEN_KEYS = { approve: ["perCheckHighMicros", "monthlyCapMicros"], decide: ["revision", "artifactDigest"] } as const;
+const evalCardNotOnCode: RouteAnswer = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "The eval card isn't connected to Rovara Code yet." } } };
+const evalCardStepUp: RouteAnswer = { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } };
+const evalCardRefused: RouteAnswer = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer can answer for the eval's spend." } } };
+const EVAL_UNAVAILABLE_ON_INSTALL = "Approving an eval's spend isn't available on this install yet.";
+
+/** Code's fixed refusals the eval card turns into Cloud's own: not served yet (its unknown-route 404, or the install has no eval approval) and a step-up that is not fresh. Any other refusal is Code's own. */
+function evalCardRefusal(error: unknown): RouteAnswer | undefined {
+  if (!(error instanceof CodeError)) return undefined;
+  const answered = (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+  if (error.status === 404 && answered?.code === "NOT_FOUND" && (answered.message === "route not found" || answered.message === EVAL_UNAVAILABLE_ON_INSTALL)) return evalCardNotOnCode;
+  if (error.status === 403 && answered?.code === "REAUTH_REQUIRED") return evalCardStepUp;
+  return undefined;
+}
+
+/** One member of the browser's `seen` handed on: only the named keys of a plain object; anything else goes as sent (Code refuses it). */
+function evalSeen(value: unknown, keys: readonly string[]): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const given = value as Record<string, unknown>;
+  const kept: Record<string, unknown> = {};
+  for (const key of keys) if (Object.hasOwn(given, key)) kept[key] = given[key];
+  return kept;
+}
+
+/** The eval card's read or one of its three acts, forwarded to Code's own path as the person. A POST is for a company owner or admin, or the project's maintainer (Code re-checks live); the read is for anyone in the company. */
+function evalCardRoute(method: "GET" | "POST", tail: "eval" | "eval-approve" | "eval-decide" | "eval-health", keys: readonly string[], seenKeys?: readonly string[]): Route {
+  return {
+    method, path: new RegExp(`^/projects/${PROJECT_IN_PATH}/setup-agent/${tail}$`, "u"),
+    answer: async ({ client, session, params, body }) => {
+      const project = params[0]!;
+      const membership = companyOf(session.access);
+      if (membership === undefined) return NOT_IN_COMPANY;
+      const path = `/v1/app/projects/${encodeURIComponent(project)}/setup-agent/${tail}`;
+      try {
+        if (method === "GET") return ok(await client.json<unknown>(session, path));
+        if (!confirmsEval(session.access, membership.companyRole, project)) return evalCardRefused;
+        if (body === null || typeof body !== "object" || Array.isArray(body)) return badRequest("Send the eval answer as a JSON object.");
+        const given = body as Record<string, unknown>;
+        const forwarded: Record<string, unknown> = {};
+        for (const key of keys) if (Object.hasOwn(given, key)) forwarded[key] = key === "seen" ? evalSeen(given[key], seenKeys ?? []) : given[key];
+        return ok(await client.json<unknown>(session, path, { method: "POST", body: forwarded }));
+      } catch (error) {
+        const refusal = evalCardRefusal(error);
+        if (refusal !== undefined) return refusal;
+        throw error;
+      }
+    },
+  };
+}
+const EVAL_CARD_ROUTES: Route[] = [
+  evalCardRoute("GET", "eval", []),
+  evalCardRoute("POST", "eval-approve", EVAL_APPROVE_KEYS, EVAL_SEEN_KEYS.approve),
+  evalCardRoute("POST", "eval-decide", EVAL_DECIDE_KEYS, EVAL_SEEN_KEYS.decide),
+  evalCardRoute("POST", "eval-health", EVAL_HEALTH_KEYS),
+];
+
 async function readTask(context: RouteContext, taskId: string): Promise<CodeTask> {
   return (await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}`, { headers: TASK_VIEW })).task;
 }
@@ -907,6 +970,7 @@ export const ROUTES: Route[] = [
   ...INBOX_ROUTES,
   // The project setup checklist and the hosted setup run (guided onboarding PR 9): Code decides who may; Cloud passes the person's token and fixed words.
   ...SETUP_CHECKLIST_ROUTES,
+  ...EVAL_CARD_ROUTES,
   ...PEOPLE_ROUTES,
   // The admin's People and limits read (cost report slice A6): each member's spend this month against their limit, by name, company owners and admins only.
   ...PEOPLE_LIMITS_ROUTES,
