@@ -9,7 +9,7 @@ import { createLearningRoutes, type LearningKeySource, type LearningRouteOptions
 import { createAnswersRoutes, type AnswersLimits } from "./answers-route.js";
 import { createOpenAiTransport } from "./learning-openai.js";
 import { createChatCompletionsTransport } from "./agent-openai.js";
-import type { EndpointTarget } from "./endpoint-guard.js";
+import { endpointTarget, type EndpointTarget } from "./endpoint-guard.js";
 import { createEndpointTransport, parseEndpointConnect } from "./endpoint-source.js";
 import { createGeminiTransport } from "./product-gemini.js";
 import { createVertexTransport } from "./product-vertex.js";
@@ -388,7 +388,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     // DEC 254zzz41: what reviews may use, from the company's real connections and the room left in its one company cap (the agent meter's company row).
     reviewer: { keys: companyKeys, companyLimitMicros: (iss: string, cid: string) => companyRoomMicros(caps, meter, iss, cid) },
     // The endpoint's registered model names, from the company's sealed endpoint account (this company only).
-    endpointModels: async (iss: string, cid: string) => { const text = await companyKeys.keyFor(iss, cid, "endpoint"); const c = text === undefined ? undefined : parseEndpointConnect(text); return c?.models.map((m) => m.name); },
+    endpointModels: async (iss: string, cid: string) => { const text = await companyKeys.keyFor(iss, cid, "endpoint"); const c = text === undefined ? undefined : parseEndpointConnect(text); // An endpoint whose address the agent route's guard refuses offers nothing (the route would refuse it: review 1, Low 1).
+      return c === undefined || endpointTarget(c.baseUrl) === undefined ? undefined : c.models.map((m) => m.name); },
   });
   // DEC 253k: Code's eval spend authority (eval-authority.ts), answered from the product route's eval stages (the stored approval,
   // the approver's role and the project's own key connection), signed by the install's broker with its task key. Only where the

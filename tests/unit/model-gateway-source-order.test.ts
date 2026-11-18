@@ -256,6 +256,13 @@ describe("offered models over the saved order", () => {
     g.keys.fail = true;
     expect((await offered(g, cidA)).status).toBe(503);
   });
+  it("a single own key with no fallback is listed as before, connected or not (the key check is only for a saved order)", async () => {
+    const g = gateway();
+    g.orders.saved.set(cidA, { source: "anthropic_key", fallback: [] });
+    const out = await offered(g, cidA);
+    expect(out.status).toBe(200);
+    expect(names(out)).toEqual(["claude-haiku-4-5", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"]);
+  });
   it("no usable source at all: the first source's refusal", async () => {
     const g = gateway();
     g.orders.saved.set(cidA, { source: "bedrock_byo", fallback: ["rovara"] });

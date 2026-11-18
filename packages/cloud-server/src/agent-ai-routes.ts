@@ -13,7 +13,7 @@
 // order (DEC 254zzz84(4), model-sources-routes.ts): a change here keeps the sources after the first choice, minus the new first choice.
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction } from "./audit-log.js";
-import { AGENT_AI_SOURCES, agentSourceSwitchedOn, CompanyStoreConflict, effectiveAgentSource, type AgentAiSource } from "./company-store.js";
+import { AGENT_AI_SOURCES, agentSourceSwitchedOn, CompanyStoreConflict, effectiveAgentSource, type AgentAiChoice, type AgentAiSource } from "./company-store.js";
 import { bedrockConnected } from "./bedrock-byo-routes.js";
 import { LEARNING_AI_OWNER } from "./learning-ai-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
@@ -150,14 +150,15 @@ async function putAgentAi(context: RouteContext): Promise<RouteAnswer> {
   const provider = KEY_OF[source];
   if (provider !== undefined && (await keyConnected(context, who.companyId, provider)) !== true) return WORDS.keyFirst;
   const store = context.company!.store;
+  let kept: AgentAiChoice["fallback"];
   try {
     // DEC 254zzz84(4): the saved order's later sources stay, without the new first choice (the version check below refuses a change made meanwhile).
-    const kept = (await store.agentAi(who.companyId))?.fallback?.filter((other) => other !== source);
+    kept = (await store.agentAi(who.companyId))?.fallback?.filter((other) => other !== source);
     await store.putAgentAi({ companyId: who.companyId, source, updatedAt: context.now().toISOString(), updatedBy: who.developerId, ...(kept === undefined || kept.length === 0 ? {} : { fallback: kept }) }, body.expectedVersion);
   } catch (error) { return error instanceof CompanyStoreConflict ? WORDS.stale : WORDS.unavailable; }
   if (context.audit !== undefined) {
     try {
-      await recordCloudAction(context.audit, { companyId: who.companyId, actor: { developerId: who.developerId, name: who.name, type: "person" }, action: "agent_ai.source.changed", via: "web", subject: `agent_ai:${source}` }, context.now);
+      await recordCloudAction(context.audit, { companyId: who.companyId, actor: { developerId: who.developerId, name: who.name, type: "person" }, action: "agent_ai.source.changed", via: "web", subject: `agent_ai:${source}`, detail: `order:${[source, ...(kept ?? [])].join(",")}` }, context.now);
     } catch { console.log(JSON.stringify({ event: "cloud.audit_failed", action: "agent_ai.source.changed", companyId: who.companyId })); }
   }
   return answer(context, who);

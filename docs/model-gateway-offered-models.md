@@ -62,7 +62,8 @@ A company can save an ORDER of AI sources for its agents (Cloud's Settings, AI m
   hold or send: one call goes out on one source, and a provider's answer (an error included) never moves it to another. A read that fails (a store or a
   connection that does not answer) refuses the call at once (503): it is never slid onto the next source or onto Rovara's AI. When no source can take the
   call, the first source's refusal is answered. The `agent_source` log line says `via: "fallback"` when the call was admitted on a later source.
-  A fallback to Rovara's AI is charged to the company like any Rovara's AI call, inside the same caps.
+  A fallback to Rovara's AI is charged like any Rovara's AI call, inside the same caps: to the company, except for a company the operator named exempt
+  (`RovaraAi.exempt`), whose Rovara's AI calls are written as exempt as before.
 - **Offered models**: with a saved fallback, the list is the models of every usable source of the order, in order, each once (at most 64); a failed read anywhere
   is the fixed 503. Without one, the answer is the first choice's, byte for byte. `reviewerAccess` lists each model under the source that offers it.
 - Learning and answers keep using the first choice only.
