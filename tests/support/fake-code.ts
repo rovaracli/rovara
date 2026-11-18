@@ -1708,6 +1708,30 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
           const who = bearer === undefined ? undefined : access.get(bearer);
           if (who === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (reportData === undefined && (planChoices.size > 0 || planFiled.size > 0)) {
+            // Lead 4 PCF: the plan card's Change, No feature and "make a new one" use these same two Cost and time actions; with no report seeded they act on the plan-feature state the spec set.
+            const planGiven = JSON.parse(await readBody(request) || "{}") as Record<string, unknown>;
+            const choices = planChoices.get(companyIdOf(who)) ?? [];
+            const planRefuse = (status: number, code: string, message: string) => send(status, { error: { code, message } });
+            if (taskMove !== null) {
+              const taskId = taskMove[1]!;
+              if (!planFeatureView(who, taskId).canChange) return planRefuse(403, "FORBIDDEN", "You can't change this task's feature.");
+              const target = planGiven["feature"];
+              if (target !== null && typeof target !== "string") return planRefuse(400, "CONFIG_INVALID", "The request is not valid.");
+              const into = target === null ? undefined : choices.find((entry) => entry.id === target);
+              if (target !== null && into === undefined) return planRefuse(404, "NOT_FOUND", "That feature does not exist.");
+              planFiled.set(taskId, { featureId: into?.id ?? null, source: "chosen" });
+              return send(200, { task: { taskId, feature: into === undefined ? null : { id: into.id, source: "moved" } } });
+            }
+            if (featureAction![1] !== undefined) return planRefuse(404, "NOT_FOUND", "route not found");
+            if (!who.administrator) return planRefuse(403, "FORBIDDEN", "Only an owner or admin of the company can change features.");
+            const name = typeof planGiven["name"] === "string" ? planGiven["name"].trim() : "";
+            if (name === "" || [...name].length > 80) return planRefuse(400, "CONFIG_INVALID", "The request is not valid.");
+            if (choices.some((entry) => entry.name === name)) return planRefuse(400, "CONFIG_INVALID", "A feature with that name already exists.");
+            const made = { id: `ft_${(choices.length + 1 + 0xe0).toString(16).padStart(20, "0")}`, name };
+            planChoices.set(companyIdOf(who), [...choices, made]);
+            return send(201, { feature: { ...made, state: "open", createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-17T00:00:00.000Z" } });
+          }
           if (reportData === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
           if (!who.administrator) return send(403, { error: { code: "FORBIDDEN", message: "Only an owner or admin of the company can change features." } });
           const given = JSON.parse(await readBody(request) || "{}") as Record<string, unknown>;
