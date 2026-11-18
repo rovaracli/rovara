@@ -23,6 +23,16 @@ export type SetupRowState = (typeof SETUP_ROW_STATES)[number];
 const State = z.enum(SETUP_ROW_STATES);
 
 /**
+ * L4-T2 (setup review D1, G1), Code's SETUP_APPROVALS: where the project's setup stands in the approval. none: no setup of Rovara's has been made a candidate (no run, a run going, a proposal nobody used, or a rejected or
+ * discarded one). candidate: a candidate waits for a person's decision (its check is ready, failed or stale: `check` says which). checking: its check is going on a fresh machine. approved: a person approved it; the row is
+ * done only when its check is also ready.
+ */
+export const SETUP_APPROVALS = ["none", "candidate", "checking", "approved"] as const;
+export type SetupApproval = (typeof SETUP_APPROVALS)[number];
+/** Code's SETUP_CHECK_STATUSES: the status of a setup check. */
+export const SETUP_CHECK_STATUSES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
+
+/**
  * DEC 254zc(1) (Code's contracts project-setup-status.ts): what GitHub's signed webhooks said about a repository since the project was set up. transferred: it moved to another owner.
  * removed: it left the GitHub App's repository list (a transfer out looks the same, so the word stays "removed" unless GitHub said "transferred"). Absent: GitHub said nothing.
  */
@@ -55,6 +65,12 @@ export const ProjectSetupChecklistSchema = z.object({
     stop: z.string().max(60).optional(),
     /** Code's fixed sentence (never a log line or a model's words). */
     failure: z.string().max(1_000).optional(),
+    /** L4-T2: the approval. The row is `done` only with `approved` and a `ready` check; a proposal nobody used, a candidate waiting for a decision and a failed check are `needs_you`; a check going is `running`. */
+    approval: z.enum(SETUP_APPROVALS),
+    /** The check of the waiting candidate or of the approved revision (absent with approval `none`); `failedStep` is Code's one-line, redacted, bounded failing step. */
+    check: z.object({ status: z.enum(SETUP_CHECK_STATUSES), failedStep: z.string().max(300).optional() }).passthrough().optional(),
+    /** With approval `approved`: when the person approved it. */
+    approvedAt: z.string().max(40).optional(),
     failedCommand: z.object({ n: z.number().int().min(1), command: z.string().max(2_000), exitCode: z.number().int().nullable(), timedOut: z.boolean(), lastLines: z.array(z.string().max(300)).max(20) }).passthrough().optional(),
   }).passthrough(),
   evalConfirm: z.object({
@@ -72,6 +88,8 @@ export const ProjectSetupChecklistSchema = z.object({
     source: z.enum(["project", "company", "default"]),
     companyModelSaved: z.boolean(),
     modelBudgetUsd: z.number().min(0).nullable(),
+    /** L4-T2 (G6): `none`: the company cannot run a model call (the row is `needs_you`). `possible`: it can. `unknown`: not known. Absent: Code has no gateway to ask. */
+    modelCall: z.enum(["possible", "none", "unknown"]).optional(),
   }).passthrough(),
   slackChannel: z.object({ state: State, channels: z.array(Channel).max(32) }).passthrough(),
   linear: z.object({ state: State, team: z.object({ id: z.string().min(1).max(100), name: z.string().min(1).max(200).optional() }).passthrough().nullable() }).passthrough(),

@@ -24,6 +24,7 @@
 //     serves a route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
 // cloud-server takes no package dependency, so the shapes are checked here by hand against Code's contract (project-setup-status.ts on #841, setup-run-routes.ts on #844).
 import { CodeError } from "./code-client.js";
+import { agentAiConnected } from "./agent-ai-presence.js";
 import { companyCaller, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
@@ -64,6 +65,12 @@ const ROWS = ["repos", "setupRun", "evalConfirm", "aiAndSpend", "slackChannel", 
 const SKIPPABLE = ["slackChannel", "linear", "invites"] as const;
 const REPOSITORY_ACCESS = ["transferred", "removed"] as const;
 const RUN_STATUSES = ["none", "running", "ready", "failed"] as const;
+/** L4-T2 (Code's SETUP_APPROVALS and SETUP_CHECK_STATUSES). */
+const APPROVALS = ["none", "candidate", "checking", "approved"] as const;
+const CHECK_STATUSES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
+const MODEL_CALLS = ["possible", "none", "unknown"] as const;
+/** The rows that must be done before the first task (the same list Code's progress uses). */
+const REQUIRED_ROWS = ["repos", "setupRun", "evalConfirm", "aiAndSpend", "firstTask"] as const;
 /** Code's eval row report (project-setup-status.ts): `no_evals` is a person's "this project runs no evals" for the latest finished setup run (L2-5 c). */
 const EVAL_REPORTS = ["none", "reported", "confirmed", "no_evals"] as const;
 
@@ -82,10 +89,13 @@ function need<T>(ok: boolean, value: T): T { if (!ok) throw new Unreadable(); re
 const optional = <T>(value: unknown, check: (one: unknown) => boolean, key: string): Record<string, T> => (value === undefined ? {} : { [key]: need(check(value), value as T) });
 
 function setupRunRow(row: Plain): Plain {
-  need(oneOf(row["state"], ROW_STATES) && oneOf(row["status"], RUN_STATUSES), undefined);
-  const found = row["commandsFound"], failed = row["failedCommand"];
+  // L4-T2: the approval is part of the row; an answer without it is not one this Cloud can read (land with Code's change).
+  need(oneOf(row["state"], ROW_STATES) && oneOf(row["status"], RUN_STATUSES) && oneOf(row["approval"], APPROVALS), undefined);
+  const found = row["commandsFound"], failed = row["failedCommand"], check = row["check"];
   return {
-    state: row["state"], status: row["status"],
+    state: row["state"], status: row["status"], approval: row["approval"],
+    ...(check === undefined ? {} : { check: need(plain(check) && oneOf(check["status"], CHECK_STATUSES) && (check["failedStep"] === undefined || text(check["failedStep"], 300)), { status: (check as Plain)["status"], ...((check as Plain)["failedStep"] === undefined ? {} : { failedStep: (check as Plain)["failedStep"] }) }) }),
+    ...optional<string>(row["approvedAt"], (one) => text(one, 40), "approvedAt"),
     ...optional<string>(row["startedAt"], (one) => text(one, 40), "startedAt"),
     ...optional<number>(row["elapsedMs"], (one) => whole(one), "elapsedMs"),
     ...optional<number>(row["costCents"], (one) => whole(one), "costCents"),
@@ -118,7 +128,7 @@ export function checklistAnswer(value: unknown, project: string): Plain {
   need(oneOf(evalRow["report"], EVAL_REPORTS) && (noEvals === undefined || (plain(noEvals) && text(noEvals["confirmedAt"], 40))) && (evalRow["blockedBy"] === undefined || evalRow["blockedBy"] === "setupRun")
     && (evalRow["suites"] === undefined || (Array.isArray(evalRow["suites"]) && evalRow["suites"].length <= 4 && evalRow["suites"].every((suite) => plain(suite) && text(suite["selection"], 512) && whole(suite["questions"]))))
     && (evalRow["confirmedSelection"] === undefined || text(evalRow["confirmedSelection"], 512)), undefined);
-  need(oneOf(ai["source"], ["project", "company", "default"]) && typeof ai["companyModelSaved"] === "boolean" && (ai["modelBudgetUsd"] === null || (typeof ai["modelBudgetUsd"] === "number" && Number.isFinite(ai["modelBudgetUsd"]) && ai["modelBudgetUsd"] >= 0)), undefined);
+  need((ai["modelCall"] === undefined || oneOf(ai["modelCall"], MODEL_CALLS)) && oneOf(ai["source"], ["project", "company", "default"]) && typeof ai["companyModelSaved"] === "boolean" && (ai["modelBudgetUsd"] === null || (typeof ai["modelBudgetUsd"] === "number" && Number.isFinite(ai["modelBudgetUsd"]) && ai["modelBudgetUsd"] >= 0)), undefined);
   need(Array.isArray(slack["channels"]) && slack["channels"].length <= 32 && slack["channels"].every((one) => plain(one) && text(one["channelId"], 64) && (one["name"] === undefined || text(one["name"], 200)) && (one["isPrivate"] === undefined || typeof one["isPrivate"] === "boolean")), undefined);
   const team = linear["team"];
   need(team === null || (plain(team) && text(team["id"], 100) && (team["name"] === undefined || text(team["name"], 200))), undefined);
@@ -135,12 +145,26 @@ export function checklistAnswer(value: unknown, project: string): Plain {
       ...(evalRow["confirmedSelection"] === undefined ? {} : { confirmedSelection: evalRow["confirmedSelection"] }),
       ...(evalRow["noEvals"] === undefined ? {} : { noEvals: { confirmedAt: (evalRow["noEvals"] as Plain)["confirmedAt"] } }),
     },
-    aiAndSpend: { state: ai["state"], source: ai["source"], companyModelSaved: ai["companyModelSaved"], modelBudgetUsd: ai["modelBudgetUsd"] },
+    aiAndSpend: { state: ai["state"], source: ai["source"], companyModelSaved: ai["companyModelSaved"], modelBudgetUsd: ai["modelBudgetUsd"], ...(ai["modelCall"] === undefined ? {} : { modelCall: ai["modelCall"] }) },
     slackChannel: { state: slack["state"], channels: (slack["channels"] as Plain[]).map((one) => ({ channelId: one["channelId"], ...(one["name"] === undefined ? {} : { name: one["name"] }), ...(one["isPrivate"] === undefined ? {} : { isPrivate: one["isPrivate"] }) })) },
     linear: { state: linear["state"], team: team === null ? null : { id: (team as Plain)["id"], ...((team as Plain)["name"] === undefined ? {} : { name: (team as Plain)["name"] }) } },
     invites: { state: rows.invites["state"] },
     firstTask: { state: first["state"], hasTask: first["hasTask"], canStart: first["canStart"] },
   };
+}
+
+/**
+ * L4-T2 (G6): the AI row is done only while the company can run a model call. Cloud knows that (the same one yes/no the wiki's controls use: `agentAiConnected`, from the company's saved choice and its key store); Code
+ * has no gateway to ask. Only a definite "no" changes anything: the AI row becomes needs_you with `modelCall: "none"`, the first task cannot start, and the progress counts and the next required row follow from it.
+ * Every other row is as Code sent it. Unknown (null) and yes leave Code's answer exactly as it is.
+ */
+export function withModelCallFact(answer: Plain, connected: boolean | null): Plain {
+  const ai = answer["aiAndSpend"] as Plain, progress = answer["progress"] as Plain, first = answer["firstTask"] as Plain;
+  if (connected !== false || ai["state"] !== "done") return answer;
+  const next = { ...answer, aiAndSpend: { ...ai, state: "needs_you", modelCall: "none" }, firstTask: { ...first, canStart: false } } as Plain;
+  const done = ROWS.filter((row) => { const state = (next[row] as Plain)["state"]; return state === "done" || state === "skipped"; }).length;
+  const total = progress["total"] as number;
+  return { ...next, progress: { done, total, percent: Math.round((100 * done) / total), nextRequired: REQUIRED_ROWS.find((row) => (next[row] as Plain)["state"] !== "done") ?? null } };
 }
 
 /** The browser's skip change, strictly: `{row, skipped}` and nothing else. */
@@ -179,7 +203,7 @@ async function fromCode(context: RouteContext, kind: Kind, path: string, init: {
 }
 
 /** The project in the path, after Code's access check names the person's company now; or the route's refusal. */
-async function scope(context: RouteContext): Promise<{ project: string } | { refusal: RouteAnswer }> {
+async function scope(context: RouteContext): Promise<{ project: string; companyId: string } | { refusal: RouteAnswer }> {
   const project = context.params[0];
   if (project === undefined || !PROJECT_NAME.test(project)) return { refusal: A.notFound };
   let who: Awaited<ReturnType<typeof companyCaller>>;
@@ -189,7 +213,7 @@ async function scope(context: RouteContext): Promise<{ project: string } | { ref
     if (error instanceof CodeError) return { refusal: A.unavailable };
     throw error;
   }
-  return refused(who) ? { refusal: who } : { project };
+  return refused(who) ? { refusal: who } : { project, companyId: who.companyId };
 }
 
 const statusPath = (project: string) => `/v1/dev/client/projects/${encodeURIComponent(project)}/setup-status`;
@@ -325,7 +349,11 @@ const statusRoute: Route = {
     if ("refusal" in at) return at.refusal;
     const got = await fromCode(context, "checklist", statusPath(at.project));
     if ("refusal" in got) return got.refusal;
-    try { return { status: 200, body: checklistAnswer(got.value, at.project) }; } catch (error) { if (error instanceof Unreadable) return A.unavailable; throw error; }
+    let rebuilt: Plain;
+    try { rebuilt = checklistAnswer(got.value, at.project); } catch (error) { if (error instanceof Unreadable) return A.unavailable; throw error; }
+    // The company is Code's live access check's, never the browser's. A read that throws is "cannot tell" (null), which changes nothing.
+    const connected = await agentAiConnected(context, at.companyId).catch(() => null);
+    return { status: 200, body: withModelCallFact(rebuilt, connected) };
   },
 };
 

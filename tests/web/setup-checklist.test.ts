@@ -28,7 +28,7 @@ function checklist(extra: Record<string, unknown> = {}) {
     viewer: { companyRole: "owner", projectAdmin: false, canSkip: true },
     progress: { done: 2, total: 8, percent: 25, nextRequired: "setupRun" },
     repos: { state: "done", count: 2, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }, { name: "api", fullName: "acme/api", defaultBranch: "main" }] },
-    setupRun: { state: "failed", status: "failed", startedAt: "2026-11-17T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed", failure: "A test command failed.", failedCommand: { n: 2, command: "npm test", exitCode: 1, timedOut: false, lastLines: ["FAIL src/app.test.ts", "expected 2"] } },
+    setupRun: { state: "failed", status: "failed", approval: "none", startedAt: "2026-11-17T10:00:00.000Z", elapsedMs: 300000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed", failure: "A test command failed.", failedCommand: { n: 2, command: "npm test", exitCode: 1, timedOut: false, lastLines: ["FAIL src/app.test.ts", "expected 2"] } },
     evalConfirm: { state: "needs_you", report: "none", blockedBy: "setupRun" },
     aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
     slackChannel: { state: "optional", channels: [] },
@@ -70,7 +70,9 @@ describe("the project checklist", () => {
     await screen.findByTestId("project-checklist");
     expect(screen.getByTestId("checklist-progress").textContent).toContain("25% done (2 of 8)");
     const state = (row: string) => screen.getByTestId(`checklist-row-${row}`).getAttribute("data-state");
-    expect(["repos", "setupRun", "evalConfirm", "aiAndSpend", "slackChannel", "linear", "invites", "firstTask"].map(state)).toEqual(["done", "failed", "needs_you", "done", "optional", "optional", "optional", "needs_you"]);
+    // L4-T2 (D10): the AI row is not shown while an AI can be called (its state is done here).
+    expect(screen.queryByTestId("checklist-row-aiAndSpend")).toBeNull();
+    expect(["repos", "setupRun", "evalConfirm", "slackChannel", "linear", "invites", "firstTask"].map(state)).toEqual(["done", "failed", "needs_you", "optional", "optional", "optional", "needs_you"]);
     const open = (row: string) => (screen.getByTestId(`checklist-row-${row}`).querySelector("details") as HTMLDetailsElement).open;
     expect(open("setupRun")).toBe(true);
     expect(open("repos")).toBe(false);
@@ -186,7 +188,7 @@ describe("Home", () => {
     const f = mount(h(FinishSetup, {}));
     const card = await screen.findByTestId("home-finish-setup");
     expect(card.textContent).toContain("Finish setting up web");
-    expect(card.textContent).toContain("25% done. Next: the setup run.");
+    expect(card.textContent).toContain("25% done. Next: review and approve the setup.");
     f.close();
   });
 

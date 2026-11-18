@@ -28,9 +28,11 @@ export const ROW_STATE_WORDS: Readonly<Record<SetupRowState, { label: string; to
  optional: { label: "Optional", tone: "idle" }, skipped: { label: "Skipped (optional)", tone: "idle" }, failed: { label: "Failed", tone: "bad" },
 });
 const ROW_TITLES: Readonly<Record<SetupStatusRow, string>> = Object.freeze({
- repos: "Repos", setupRun: "Setup run", evalConfirm: "Confirm how work is checked", aiAndSpend: "AI and spend limit",
+ repos: "Repos", setupRun: "Setup run", evalConfirm: "Confirm how work is checked", aiAndSpend: "AI for your agents",
  slackChannel: "Slack channel", linear: "Linear", invites: "Invite teammates", firstTask: "Start your first task",
 });
+/** What the AI row says while no AI can be called (setup review G6). */
+export const AI_NEEDS_YOU = "Needs you: connect an AI key or choose Rovara's AI";
 const OPTIONAL: ReadonlySet<SetupStatusRow> = new Set(["slackChannel", "linear", "invites"]);
 
 function Row({ name, state, open, children }: { name: SetupStatusRow; state: SetupRowState; open: boolean; children: ReactNode }) {
@@ -95,6 +97,7 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
    <Row name="repos" state={data.repos.state} open={open("repos")}>
     {data.repos.items.length === 0 ? <p>No repos in this project yet.</p> : <ul className="rv-checklist-chips" aria-label="Repos in this project">{data.repos.items.map(repo => <li key={repo.name}><VisibleText text={repo.fullName ?? repo.name} /></li>)}</ul>}
    </Row>
+   {/* L4-T2: Code says the truth: Done only with an approved setup whose check is ready, Needs you while a proposal or a candidate waits or the check failed, Running while the check goes. The review read below is only ever fresher (it is asked again every 5 s while the check goes), so what it says about a waiting setup wins. */}
    <Row name="setupRun" state={review.stage === "none" ? runRow.state : review.stage === "checking" ? "running" : "needs_you"} open={open("setupRun") || runRow.state === "running" || runRow.state === "failed" || review.stage !== "none"}>
     <SetupRunRow project={project} row={runRow} onChanged={refresh} review={review} />
    </Row>
@@ -105,10 +108,11 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
       : data.evalConfirm.report === "reported" ? <>{(data.evalConfirm.suites ?? []).map(suite => <p key={suite.selection}>Rovara will run <code><VisibleText text={suite.selection} /></code> before every pull request.</p>)}<p className="rv-muted" data-testid="checklist-eval-not-yet">Confirming these checks from the web isn't connected yet; a company owner or admin, or this project's admin, confirms them where Rovara asks.</p>{noEvalsButton}</>
       : <><p data-testid="checklist-eval-none">The setup run found no checks to confirm yet. Run setup again, or edit the test commands.</p>{noEvalsButton}</>} />}
    </Row>
-   <Row name="aiAndSpend" state={data.aiAndSpend.state} open={open("aiAndSpend")}>
-    <p>{data.aiAndSpend.source === "project" && data.aiAndSpend.modelBudgetUsd !== null ? `This project's per-task limit: $${data.aiAndSpend.modelBudgetUsd.toFixed(2)}.` : "Same as company."}</p>
-    {canChange && <p><Link to={`/app/projects/${encodeURIComponent(project)}?tab=settings`}>Change in Project settings</Link></p>}
-   </Row>
+   {/* L4-T2 (D10): the project's "AI and spend limit" row is gone. This row shows only when no AI can be called (Code's or Cloud's `needs_you`), and says what to do about it. */}
+   {data.aiAndSpend.state !== "done" && <Row name="aiAndSpend" state={data.aiAndSpend.state} open={open("aiAndSpend")}>
+    <p data-testid="checklist-ai-needs-you"><strong>{AI_NEEDS_YOU}</strong></p>
+    {admin ? <p><Link className="rv-button rv-button-primary" to="/app/admin/agent-ai">Connect an AI</Link></p> : <p className="rv-muted">Ask your company's admins to connect an AI key or choose Rovara's AI.</p>}
+   </Row>}
    {/* Lead 4 W6: the project wiki is one more row here, not a second setup page. It is not counted in the progress above (Code computes that) and is absent while Code has no wiki build. */}
    <WikiChecklistRow project={project} companyAdmin={admin} />
    {/* L4-EVCI2: "Eval check from your CI" is one more row, not counted in the progress above (Code computes that) and absent while Code does not serve it. */}

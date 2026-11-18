@@ -30,6 +30,10 @@ test("a finished run, Project settings with Re-run setup, and Home's Finish sett
   await setSetupRun(page, PROJECT, "ready");
   const screen = new SetupChecklistPage(page);
   await screen.open(PROJECT);
+  // L4-T2: a run that ended with a proposal nobody approved is not Done.
+  await expect(screen.row("setupRun")).toHaveAttribute("data-state", "needs_you");
+  await setSetupRun(page, PROJECT, "ready", true);
+  await screen.open(PROJECT);
   await expect(screen.row("setupRun")).toHaveAttribute("data-state", "done");
   // L4-EVC: a finished run brings the eval card; with no card, the row keeps the checks the run reported.
   await expect(screen.row("evalConfirm")).toContainText("Approve the cost of running your evals");

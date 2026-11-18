@@ -154,7 +154,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const linearPicks = new Map<string, string>();
   // Guided onboarding PR 9 (Code #841, #844): each project's skipped optional rows and its hosted setup run (set by the specs through /__fake/setup-run).
   const setupSkips = new Map<string, Set<"slackChannel" | "linear" | "invites">>();
-  type FakeRun = { status: "none" | "running" | "ready" | "failed"; startedAt?: string; taskId?: string; stop?: "stopped_by_person" | "proposed" };
+  type FakeRun = { status: "none" | "running" | "ready" | "failed"; startedAt?: string; taskId?: string; stop?: "stopped_by_person" | "proposed"; /** L4-T2: a person approved the setup and its check is ready (Code's rule for Done). A ready run is not approved until a spec says so. */ approved?: boolean };
   const setupRuns = new Map<string, FakeRun>();
   // Lead 4 W5 (Code W2): the pretend wiki, per project (set by the specs through /__fake/wiki); `off` makes Code answer its unknown-route 404, as a Code without the wiki does.
   const wikis = new Map<string, WikiFixtureOptions & { off?: boolean; broken?: boolean }>();
@@ -509,11 +509,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const run = runOf(name), skips = setupSkips.get(name) ?? new Set();
     const grant = entry.members.get(person.developerId);
     const companyRole = person.administrator ? "owner" as const : "member" as const;
-    const runRow = run.status === "none" ? { state: "needs_you" as const, status: "none" as const }
-      : run.status === "running" ? { state: "running" as const, status: "running" as const, startedAt: run.startedAt, elapsedMs: 95_000, costCents: 12, commandsRun: 3 }
-      : run.status === "ready" ? { state: "done" as const, status: "ready" as const, startedAt: run.startedAt, elapsedMs: 412_000, costCents: 48, commandsRun: 9, commandsFound: { setup: 2, tests: 1 }, testOutcome: "passed" as const }
-      : { state: "failed" as const, status: "failed" as const, startedAt: run.startedAt, elapsedMs: 300_000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed" as const, ...(run.stop === undefined ? {} : { stop: run.stop }), failure: "A test command failed.", failedCommand: FAILED_COMMAND };
-    const setupDone = runRow.state === "done";
+    const baseRow = run.status === "none" ? { state: "needs_you" as const, status: "none" as const, approval: "none" as const }
+      : run.status === "running" ? { state: "running" as const, status: "running" as const, approval: "none" as const, startedAt: run.startedAt, elapsedMs: 95_000, costCents: 12, commandsRun: 3 }
+      : run.status === "ready" ? { state: run.approved === true ? "done" as const : "needs_you" as const, status: "ready" as const, ...(run.approved === true ? { approval: "approved" as const, check: { status: "ready" as const }, approvedAt: "2026-11-12T10:00:00.000Z" } : { approval: "none" as const }), startedAt: run.startedAt, elapsedMs: 412_000, costCents: 48, commandsRun: 9, commandsFound: { setup: 2, tests: 1 }, testOutcome: "passed" as const }
+      : { state: "failed" as const, status: "failed" as const, approval: "none" as const, startedAt: run.startedAt, elapsedMs: 300_000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed" as const, ...(run.stop === undefined ? {} : { stop: run.stop }), failure: "A test command failed.", failedCommand: FAILED_COMMAND };
+    // L4-T2: a candidate waiting for a decision (/__fake/setup-apply) is Needs you (its check ready or failed) or Running (its check going), as Code says.
+    const waiting = setupApplies.get(name);
+    const runRow = waiting === undefined || run.status === "running" || run.status === "failed" ? baseRow
+      : { ...baseRow, state: waiting.check === "checking" ? "running" as const : "needs_you" as const, approval: waiting.check === "checking" ? "checking" as const : "candidate" as const,
+        check: { status: waiting.check, ...(waiting.failedStep === undefined ? {} : { failedStep: waiting.failedStep }) } };
+    const setupDone = run.status === "ready";
     const evalRow = setupDone && evalOf(name).state === "approved" ? { state: "done" as const, report: "confirmed" as const, confirmedSelection: "npm run evals" } : setupDone ? { state: "needs_you" as const, report: "reported" as const, suites: [{ selection: "npm test", questions: 3 }] } : { state: "needs_you" as const, report: "none" as const, blockedBy: "setupRun" as const };
     const channels = [...slackLinks].filter(([, linked]) => linked === name).map(([channelId]) => ({ channelId, name: slackChannels.find((one) => one.id === channelId)?.name ?? channelId }));
     const team = linearPicks.get(name);
@@ -599,6 +604,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       if (waiting === undefined || waiting.check !== "ready") return failure(409, "CHANGE_STALE", "There is no setup waiting for a decision. Open the project's setup again.");
       if (waiting.moved || asked.seen?.artifactDigest !== APPLY_DIGEST || asked.seen?.revision !== waiting.revision) return failure(409, "CHANGE_STALE", "The setup moved.");
       setupApplies.delete(name);
+      // L4-T2: an approved setup (its check was ready) makes the checklist's Setup run row Done.
+      if (asked.outcome === "approve") setupRuns.set(name, { ...runOf(name), approved: true });
       return { status: 200, body: { project: name, decision: asked.outcome === "approve" ? "approved" : "rejected", risk: waiting.risk, revision: waiting.revision, replayed: false } };
     }
     if (tail === "confirm") return failure(409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Decide it, or discard it, first.");
@@ -2005,10 +2012,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (answered !== undefined) return send(answered.status, answered.body);
         }
         if (method === "POST" && url.pathname === "/__fake/setup-run") {
-          const given = JSON.parse(raw) as { project?: unknown; status?: unknown };
+          const given = JSON.parse(raw) as { project?: unknown; status?: unknown; approved?: unknown };
           if (typeof given.project !== "string" || project(given.project) === undefined || !["none", "running", "ready", "failed"].includes(given.status as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and status" } });
           const status = given.status as FakeRun["status"];
-          setupRuns.set(given.project, status === "none" ? { status } : { status, startedAt: iso(), taskId: randomUUID() });
+          setupRuns.set(given.project, status === "none" ? { status } : { status, startedAt: iso(), taskId: randomUUID(), ...(status === "ready" && given.approved === true ? { approved: true } : {}) });
           setupSkips.delete(given.project);
           return send(200, { status });
         }
