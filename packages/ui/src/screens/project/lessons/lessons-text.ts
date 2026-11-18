@@ -117,3 +117,10 @@ export function sourceFailureText(error: unknown): string {
  return error instanceof ApiError && Object.hasOwn(SOURCE_FAILURES, error.code) ? SOURCE_FAILURES[error.code]! : T.SRC_ERR_OTHER;
 }
 export const sourceChangeIsStale = (error: unknown): boolean => error instanceof ApiError && (error.code === "CHANGE_STALE" || error.code === "NOT_FOUND" || error.code === "PROJECT_NOT_FOUND");
+export const EXTRAS_TEXT = {
+ keep: "Keep it?", keepWhy: "No task has needed this lesson for a long time.", noAnswer: "If nobody answers, Rovara stops giving it to tasks.",
+ kept: "Kept. Rovara will keep giving it to tasks where it fits.", conflict: "Someone already answered this.",
+ summary: "Weekly summary in chat", summaryOn: "On. Once a week, the people who decide this project's lessons get a short message: what is waiting, what expires soon, what is fading. Sent only when there is something to say.",
+ summaryOff: "Off. Nobody gets a weekly message. Suggestions still wait here.",
+ checks: "Check how lessons are doing", replay: "Replay check", tuning: "Suggested settings",
+};
