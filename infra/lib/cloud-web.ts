@@ -239,8 +239,8 @@ export class CloudWebStack extends Stack {
     // prefixes it writes or reads: no Scan, no batch actions, no stream reads, and Query only within one SESSION#/PRESENCE# partition or
     // on the startedBy index (which holds META items only). A TransactWriteItems is allowed item by item by the PutItem rights below.
     for (const statement of cloudWebTableStatements(table.tableArn)) server.addToRolePolicy(statement);
-    // Exactly what DynamoCompanyStore sends (a transaction is authorized by each of its writes): no Scan, no batch, no table changes.
-    companies.grant(server, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query");
+    // Exactly what DynamoCompanyStore sends: a transaction's ConditionCheck needs ConditionCheckItem; no Scan, no batch, no table changes.
+    companies.grant(server, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:ConditionCheckItem");
     clientSecret.grantRead(server);
     // Sign-ins are sealed with this stack's own key, which only the function's role may use (migration plan v3.2, 7.2 change 4).
     const sessionKey = signInKey(this, `Rovara Cloud ${env} (web): seals people's sign-ins (Code tokens) in the State table`, server.role!);

@@ -23,7 +23,9 @@ const synth = (environmentName: string, productAi?: boolean) => Template.fromSta
 /** The Cloud web templates at cloud/next d7d1edbb8, before this change (same stand-in app and code): SHA-256 of their JSON. */
 // 2026-11-17 (role boundary): the one other change is the BucketDeployment function's own log group (AppFilesLogs, cloud-web.ts):
 // with that line removed these were f01b90f0... (production) and bfcde946... (staging), the hashes from d7d1edbb8.
-const BEFORE = { production: "db67fcbbc888b0f1d83f7fa6f6fd9796c1dd0f0ab90452a75121897886898dbf", staging: "2520e7cd7500cad24785df29bfcb000c1a1839f9fbf9d75574dbab9b44cbed85" };
+const BEFORE_CONDITION_CHECK = { production: "db67fcbbc888b0f1d83f7fa6f6fd9796c1dd0f0ab90452a75121897886898dbf", staging: "2520e7cd7500cad24785df29bfcb000c1a1839f9fbf9d75574dbab9b44cbed85" };
+// DEC 254zzz27: only ConditionCheckItem was added to the Companies-table grant; the test below proves the old digests too.
+const BEFORE = { production: "ae8e407d00367b254cbb58aed6a81396aac3fcedced39c3c44749eb9a4caab55", staging: "67347f5063fa512907cdaac2a1f73d6598c269d10c479b3a249733b084e6ec03" };
 // Less the role boundary (2026-11-17), which every template now carries (tests/contract/cloud-role-boundary.test.ts).
 const sha = (value: Parameters<typeof withoutRoleBoundary>[0]) => createHash("sha256").update(JSON.stringify(withoutRoleBoundary(value))).digest("hex");
 /**
@@ -55,6 +57,21 @@ describe("Cloud web: product AI settings grants (B7)", () => {
     expect(sha(withOldCompanySetting(synth("staging")))).toBe(BEFORE.staging);
     expect(sha(withOldCompanySetting(synth("staging", false)))).toBe(BEFORE.staging);
     expect(Object.keys(synth("staging").Parameters)).not.toContain("CompanyId");
+  });
+  it.each(["production", "staging"] as const)("%s: removing only the approved Companies ConditionCheckItem restores the previous template digest", (env) => {
+    const t = withOldCompanySetting(synth(env));
+    let changed = 0;
+    for (const resource of Object.values(t.Resources)) {
+      if (resource.Type !== "AWS::IAM::Policy") continue;
+      for (const statement of (resource.Properties.PolicyDocument as { Statement: Statement[] }).Statement) {
+        if (!JSON.stringify(statement.Resource).includes("Companies")) continue;
+        expect(statement.Action).toContain("dynamodb:ConditionCheckItem");
+        statement.Action = (statement.Action as string[]).filter((action) => action !== "dynamodb:ConditionCheckItem");
+        changed++;
+      }
+    }
+    expect(changed).toBe(1);
+    expect(sha(t)).toBe(BEFORE_CONDITION_CHECK[env]);
   });
   it("is refused for production, and by the app only when the switch is exactly on", () => {
     expect(() => synth("production", true)).toThrow(/named test environments/u);
