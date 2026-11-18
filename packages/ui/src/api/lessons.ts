@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   DeveloperTaskViewSchema, LessonApproveAnswerReaderSchema, LessonApproveBodySchema, LessonDoneAnswerReaderSchema, LessonFeedbackBodySchema, LessonHistoryReaderSchema, LessonRejectBodySchema,
-  LessonRetireBodySchema, LessonRollbackAnswerReaderSchema, LessonRollbackBodySchema, LessonSourcesReaderSchema, LessonsDigestReaderSchema, LessonsViewReaderSchema, LoadedLessonsReaderSchema,
+  LessonMeasureResponseReaderSchema, LessonRetireBodySchema, LessonRollbackAnswerReaderSchema, LessonRollbackBodySchema, LessonSourcesReaderSchema, LessonsDigestReaderSchema, LessonsViewReaderSchema, LoadedLessonsReaderSchema,
   ProjectOverviewProjectSchema,
 } from "@agentx/contracts/web";
 import type { z } from "zod";
@@ -32,6 +32,7 @@ export function createLessonsApi(host: AppHost) {
  const api = createApiClient(host), one = (id: string) => encodeURIComponent(id);
  return {
   view: (project: string) => api.get(base(project), LessonsViewReaderSchema),
+  measure: (project: string) => api.get(base(project) + "/measure", LessonMeasureResponseReaderSchema),
   digest: (project: string) => api.get(base(project) + "/digest", LessonsDigestReaderSchema),
   sources: (project: string) => api.get(base(project) + "/sources", LessonSourcesReaderSchema),
   history: (project: string, id: string) => api.get(base(project) + "/" + one(id) + "/history", LessonHistoryReaderSchema),
@@ -46,6 +47,7 @@ export function createLessonsApi(host: AppHost) {
 export function useLessonsApi() { const host = useAppHost();return useMemo(() => createLessonsApi(host), [host]); }
 export const lessonsKey = (project: string) => ["lessons", project] as const;
 export function useLessons(project: string) { const api = useLessonsApi();return useQuery({ queryKey: [...lessonsKey(project), "view"], queryFn: () => api.view(project) }); }
+export function useLessonMeasure(project: string) { const api = useLessonsApi();return useQuery({ queryKey: [...lessonsKey(project), "measure"], retry: false, queryFn: () => api.measure(project) }); }
 export function useLessonsDigest(project: string, enabled: boolean) { const api = useLessonsApi();return useQuery({ queryKey: [...lessonsKey(project), "digest"], enabled, queryFn: () => api.digest(project) }); }
 export function useLessonSources(project: string) { const api = useLessonsApi();return useQuery({ queryKey: [...lessonsKey(project), "sources"], queryFn: () => api.sources(project) }); }
 export function useLessonHistory(project: string, id: string, enabled: boolean) { const api = useLessonsApi();return useQuery({ queryKey: [...lessonsKey(project), "history", id], enabled, queryFn: () => api.history(project, id) }); }
