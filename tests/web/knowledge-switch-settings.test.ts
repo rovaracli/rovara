@@ -129,6 +129,16 @@ describe("Local coding tools can fetch lessons on Project settings", () => {
   } finally { f.close(); }
  });
 
+ it("says the saved choice is held shut, not that coding tools can fetch lessons, while the company keeps knowledge in Rovara", async () => {
+  const f = mountProject(r => (r.method === "PUT" ? ok(view({ enabled: false, own: true, reason: "company_stays", companyStays: true })) : ok(view({ enabled: false, own: false, reason: "project_setting" }))));
+  try {
+   const s = within(await screen.findByTestId("local-tools-setting"));
+   fireEvent.click(sw());
+   await waitFor(() => expect(s.getByRole("status").textContent).toBe(LOCAL_TOOLS_WORDS.HELD));
+   expect(s.getByRole("status").textContent).not.toContain("can fetch");
+  } finally { f.close(); }
+ });
+
  it("says why when the company or the preset keeps knowledge in Rovara, and keeps the project's own choice underneath", async () => {
   const company = mountProject(() => ok(view({ enabled: false, own: true, reason: "company_stays", companyStays: true })));
   try {

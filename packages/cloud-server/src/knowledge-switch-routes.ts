@@ -8,7 +8,7 @@
 //
 // Rules:
 //   - Code decides who the person is (their company from live membership), their role and who may change what; Cloud adds no rule that could widen it. Cloud sends no company, person, role or query: the path names
-//     the project (a name Code's own grammar accepts, else Code is not asked), the body is checked here and only `{ stays }` or `{ enabled }` goes on (a body with anything else is refused without asking Code).
+//     the project (a name in Cloud's shared project grammar; Code checks its own and answers 404 for any other), the body is checked here and only `{ stays }` or `{ enabled }` goes on (a body with anything else is refused without asking Code).
 //   - Code's answer is rebuilt in this fixed shape: a missing or wrongly typed field makes the whole read unreadable (503), never a guess. A `reason` a newer Code added is left out (the screen then says nothing about why).
 //   - Code's own words never reach the browser: every refusal is Cloud's fixed sentence. Code answers 404 "route not found", 405 or 501 while it does not serve the routes: that is "not connected yet" (501 NOT_ON_CODE_YET),
 //     which the settings screens read as "hide the setting".

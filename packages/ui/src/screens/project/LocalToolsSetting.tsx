@@ -16,7 +16,7 @@ export const LOCAL_TOOLS_WORDS = {
  WHY_REGULATED: "This project follows the Regulated preset, which keeps team knowledge inside Rovara, so coding tools get nothing.",
  ONLY_ADMINS: "Only this project's admins, and company owners and admins, can change this.",
  LOADING: "Loading the coding tools setting", SAVE_FAILED: "Couldn't confirm it saved. Reload this page to check.",
- ON: "Saved. Coding tools can fetch this project's lessons.", OFF: "Saved. Coding tools get no lessons from this project.",
+ ON: "Saved. Coding tools can fetch this project's lessons.", HELD: "Saved. Your choice is kept, but coding tools get nothing while knowledge stays in Rovara.", OFF: "Saved. Coding tools get no lessons from this project.",
 } as const;
 
 /** A project's own switch on Project settings. Hidden while Code serves no such route or the setting cannot be read; Code decides who may change it. */
@@ -30,7 +30,8 @@ export function LocalToolsSetting({ project }: { project: string }) {
   try {
    const saved = await api.sendAnswer("PUT", path, { enabled }, { parse: readLocalTools }, { retry: "never" });
    await client.invalidateQueries({ queryKey: key });
-   setMessage({ kind: "status", text: saved.own === false ? LOCAL_TOOLS_WORDS.OFF : LOCAL_TOOLS_WORDS.ON });
+   // The sentence follows what really holds now: off by the project's own choice, on, or kept but held shut by the company or the preset.
+   setMessage({ kind: "status", text: saved.own === false ? LOCAL_TOOLS_WORDS.OFF : saved.enabled ? LOCAL_TOOLS_WORDS.ON : LOCAL_TOOLS_WORDS.HELD });
   } catch { setMessage({ kind: "alert", text: LOCAL_TOOLS_WORDS.SAVE_FAILED }); } finally { setBusy(false); }
  }
  if (current.isPending) return <Skeleton label={LOCAL_TOOLS_WORDS.LOADING} />;
