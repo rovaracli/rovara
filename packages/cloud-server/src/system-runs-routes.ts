@@ -14,7 +14,7 @@
 import { CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
-import { CODE_CONSENT_WORDS, WIKI_SETUP_ANSWERS as A } from "./wiki-setup-routes.js";
+import { WIKI_SETUP_ANSWERS as A } from "./wiki-setup-routes.js";
 import { Unreadable, need, plain, rec } from "./wiki-routes.js";
 
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
@@ -42,8 +42,9 @@ export function systemRunsAnswer(value: unknown): { available: boolean; allowed:
 /** Code's refusal in Cloud's fixed words: the step-up answer keeps its code, a 404 (unknown route, not wired, or the operator's ceiling off) reads "not available yet", anything else is Cloud's own sentence. */
 export function systemRunsRefusal(error: CodeError): RouteAnswer {
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
-  const message = typeof body?.["message"] === "string" ? body["message"] : undefined, code = typeof body?.["code"] === "string" ? body["code"] : undefined;
-  if (error.status === 403) return code === "REAUTH_REQUIRED" && message === CODE_CONSENT_WORDS.needsSignIn ? A.needsSignIn : A.systemRunsNotAllowed;
+  const code = typeof body?.["code"] === "string" ? body["code"] : undefined;
+  // Code's 403 REAUTH_REQUIRED only ever means "confirm it's you again" (the code alone decides, as on Cloud's other step-up routes); its sentence is never passed on.
+  if (error.status === 403) return code === "REAUTH_REQUIRED" ? A.needsSignIn : A.systemRunsNotAllowed;
   if (error.status === 404) return A.upkeepNotYet;
   if (error.status === 400) return A.invalid;
   return A.upkeepUnavailable;

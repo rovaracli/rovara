@@ -13,12 +13,15 @@ export function CompanyUpkeep() {
   const api = useWikiSetupApi(), query = useQueryClient();
   const read = useQuery({ queryKey: systemRunsKey, queryFn: () => api.systemRuns(), retry: false, gcTime: 0, refetchOnWindowFocus: false });
   const [asking, setAsking] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState(false);
-  const id = useRef<string | undefined>(undefined), group = useRef<HTMLDivElement>(null), button = useRef<HTMLButtonElement>(null), cancelled = useRef(false);
+  const id = useRef<string | undefined>(undefined), group = useRef<HTMLDivElement>(null), button = useRef<HTMLButtonElement>(null), result = useRef<HTMLParagraphElement>(null), cancelled = useRef(false);
   // Focus follows the person: into the confirm when it opens, back to Withdraw when it is cancelled.
   useEffect(() => { if (asking) group.current?.focus(); else if (cancelled.current) { cancelled.current = false; button.current?.focus(); } }, [asking]);
+  // After a withdrawal the confirm is gone: focus moves to the result line, which is also announced (role "status").
+  useEffect(() => { if (done) result.current?.focus(); }, [done]);
   const frame = (children: React.ReactNode) => <div className="rv-wikis-upkeep" data-testid="company-upkeep">{children}</div>;
-  if (read.isPending) return frame(<Skeleton label="Loading nightly upkeep for the company" />);
-  if (read.isError || read.data === undefined) {
+  // What was read (or just answered by the withdrawal) is drawn even if a later re-read fails: a withdrawal that worked never flips to "could not be read".
+  if (read.data === undefined && read.isPending) return frame(<Skeleton label="Loading nightly upkeep for the company" />);
+  if (read.data === undefined) {
     return frame(<p className="rv-muted" data-testid="company-upkeep-absent">{wikiSetupAbsent(read.error) ? T.COMPANY_NOT_AVAILABLE : fixedWikiSetupWords(read.error, T.COMPANY_UNREADABLE)}</p>);
   }
   const view = read.data;
@@ -29,8 +32,8 @@ export function CompanyUpkeep() {
     try {
       const answer = await api.setSystemRuns(requestId, false);
       query.setQueryData(systemRunsKey, answer);
-      // The project pages read the company's choice too: they must not keep showing the old answer.
-      void query.invalidateQueries({ queryKey: ["wiki-setup"] });
+      // The project pages read the company's choice too (a project's upkeep view): they must not keep showing the old answer for the next 15 seconds.
+      void query.invalidateQueries({ predicate: (entry) => entry.queryKey[0] === "wiki-setup" && entry.queryKey[1] !== "company" });
       id.current = undefined; setAsking(false); setDone(true);
     } catch (caught) { setError(fixedWikiSetupWords(caught, T.ACT_FAILED)); void query.invalidateQueries({ queryKey: systemRunsKey }); }
     finally { setBusy(false); }
@@ -42,10 +45,10 @@ export function CompanyUpkeep() {
       <p>{T.COMPANY_WITHDRAW_ASK}</p>
       <div className="rv-wikis-actions">
         <Button variant="primary" busy={busy} data-testid="company-upkeep-yes" onClick={() => { void withdraw(); }}>{T.COMPANY_WITHDRAW_YES}</Button>
-        <Button disabled={busy} data-testid="company-upkeep-no" onClick={() => { cancelled.current = true; setAsking(false); }}>{T.CANCEL}</Button>
+        <Button disabled={busy} data-testid="company-upkeep-no" onClick={() => { cancelled.current = true; id.current = undefined; setAsking(false); }}>{T.CANCEL}</Button>
       </div>
     </div>}
-    {!view.allowed && <p className="rv-muted" data-testid="company-upkeep-allow-where">{done ? T.COMPANY_WITHDRAWN : T.COMPANY_ALLOW_WHERE}</p>}
+    {!view.allowed && <p ref={result} tabIndex={-1} role={done ? "status" : undefined} className="rv-muted" data-testid="company-upkeep-allow-where">{done ? T.COMPANY_WITHDRAWN : T.COMPANY_ALLOW_WHERE}</p>}
     {error !== undefined && <p role="alert" data-testid="company-upkeep-error"><VisibleText text={error} /></p>}
   </>);
 }

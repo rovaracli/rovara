@@ -101,8 +101,8 @@ export function NightlyUpkeep({ project, companyAdmin }: { project: string; comp
     id.current = requestId;
     try { { const answer = await api.setUpkeep(project, requestId, on, allowSystemRuns); query.setQueryData(wikiSetupKey(project, "upkeep"), { ...answer, available: answer.available ?? true }); } id.current = undefined; }
     catch (caught) {
-      // L4-P3: allowing the company's nightly runs needs a fresh sign-in (Code's step-up, the same as making a script token). Nothing was changed, so the same request id is kept: after the person confirms it's them
-      // and comes back to this step, the same press is the retry.
+      // L4-P3: allowing the company's nightly runs needs a fresh sign-in (Code's step-up, the same as making a script token). Nothing was changed, so the request id is kept (harmless either way: the sign-in step
+      // is a full page round trip, after which the same press is the retry).
       if (needsStepUp(caught)) setStepUp(true);
       else { setError(fixedWikiSetupWords(caught, T.ACT_FAILED)); void query.invalidateQueries({ queryKey: wikiSetupKey(project, "upkeep") }); }
     }

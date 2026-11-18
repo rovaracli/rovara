@@ -146,11 +146,14 @@ describe("allowing needs Code's fresh step-up; withdrawing needs none", () => {
     expect(s.consent.get(A)).toBeUndefined();
   });
 
-  it("a REAUTH_REQUIRED that is not Code's exact sentence is not read as the step-up (Cloud's 'not allowed' instead)", async () => {
+  // MUTANT S5b: the step-up is recognised only by Code's exact sentence (a one-character difference would turn the sign-in step into "not allowed").
+  it("any 403 REAUTH_REQUIRED from Code is the step-up, in Cloud's sentence, whatever words Code used; any other 403 is 'not allowed'", async () => {
     const s = setUp((call) => (call.method === "PUT" ? err(403, "REAUTH_REQUIRED", `other ${LEAK}`) : undefined));
     const answer = await s.send("PUT", PATH, await s.as("ada-token"), { requestId: RID, allowed: true });
-    expect(asRefusal(answer)).toEqual(refusal("systemRunsNotAllowed"));
+    expect(asRefusal(answer)).toEqual(refusal("needsSignIn"));
     expect(answer.text).not.toContain(LEAK);
+    const forbidden = setUp((call) => (call.method === "PUT" ? err(403, "FORBIDDEN", NEEDS_SIGN_IN) : undefined));
+    expect(asRefusal(await forbidden.send("PUT", PATH, await forbidden.as("ada-token"), { requestId: RID, allowed: true }))).toEqual(refusal("systemRunsNotAllowed"));
   });
 
   // MUTANT S7: Cloud asks for a step-up on a withdrawal (here: a person whose step-up is stale is refused by Cloud itself).

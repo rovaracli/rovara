@@ -451,11 +451,14 @@ describe("the setup choice's fresh step-up (L4-P3, owner 2026-11-17)", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toEqual({ code: "REAUTH_REQUIRED", message: APP_WORDS.needsSignIn });
     expect(res.text).not.toContain("API token");
-    // The same code with other words is not the step-up: Cloud's "not allowed".
+    // The code alone is the step-up (Code's words may differ); only Cloud's sentence reaches the app. Any other 403 stays "not allowed".
     const other = setUp((call) => (call.path.endsWith("/upkeep") && call.method === "PUT" ? err(403, "REAUTH_REQUIRED", LEAK) : undefined));
     const odd = await other.send("PUT", P("payments", "upkeep"), await other.as("ada-token"), { requestId: RID, on: true, allowSystemRuns: true });
-    expect(odd.body.error).toEqual({ code: "FORBIDDEN", message: APP_WORDS.upkeepNotAllowed });
+    expect(odd.body.error).toEqual({ code: "REAUTH_REQUIRED", message: APP_WORDS.needsSignIn });
     expect(odd.text).not.toContain(LEAK);
+    const plainForbidden = setUp((call) => (call.path.endsWith("/upkeep") && call.method === "PUT" ? err(403, "FORBIDDEN", SIGN_IN) : undefined));
+    const no = await plainForbidden.send("PUT", P("payments", "upkeep"), await plainForbidden.as("ada-token"), { requestId: RID, on: true, allowSystemRuns: true });
+    expect(no.body.error).toEqual({ code: "FORBIDDEN", message: APP_WORDS.upkeepNotAllowed });
   });
 });
 

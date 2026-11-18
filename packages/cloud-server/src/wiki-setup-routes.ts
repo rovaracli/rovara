@@ -103,8 +103,6 @@ const PROJECT_FOR_PATH = /^[a-z][a-z0-9-]{0,62}$/u;
 export const CODE_CONSENT_WORDS = Object.freeze({
   notAllowed: "Only company owners and admins can allow or stop Rovara's automatic runs for the company.",
   needsConsent: "A company owner or admin has to allow Rovara's automatic runs for the company first.",
-  // L4-P3: Code's fixed sentence when ALLOWING is asked without a fresh step-up (403 REAUTH_REQUIRED), answered in Cloud's own words with the same code, which the app turns into the sign-in step.
-  needsSignIn: "Rovara's automatic runs are allowed right after you confirm it's you on the sign-in page: a tool that holds an API token cannot allow them. Confirm it's you, then try again within a few minutes.",
 });
 type Kind = "map" | "build" | "upkeep";
 /** Code's refusal in fixed words. Only Code's exact unknown-route 404 means "not on Code yet". */
@@ -115,7 +113,7 @@ export function wikiSetupRefusal(kind: Kind, error: CodeError): RouteAnswer {
   if (kind === "upkeep") {
     // Code's fixed words of the consent step (its SYSTEM_RUNS_CONSENT_WORDS) and its "not available here" (the ceiling is off) are matched exactly and answered in Cloud's own words.
     if (code === "NOT_AVAILABLE_HERE") return A.upkeepNotYet;
-    if (error.status === 403 && code === "REAUTH_REQUIRED" && message === CODE_CONSENT_WORDS.needsSignIn) return A.needsSignIn;
+    if (error.status === 403 && code === "REAUTH_REQUIRED") return A.needsSignIn;
     if (error.status === 403 && message === CODE_CONSENT_WORDS.needsConsent) return A.upkeepNeedsConsent;
     if (error.status === 403 && message === CODE_CONSENT_WORDS.notAllowed) return A.upkeepConsentNotAllowed;
   }

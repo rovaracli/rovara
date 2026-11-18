@@ -34,7 +34,7 @@ function mount(role: "owner" | "admin" | "member", respond: (r: ApiRequest) => A
   const query = createQueryClient(); query.setQueryData(["nav"], nav); f.storage.set("rovara.theme", "light");
   const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/settings"] });
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
-  return { ...f, ...ui, close: () => { ui.unmount(); router.dispose(); query.clear(); } };
+  return { ...f, ...ui, queryClient: query, close: () => { ui.unmount(); router.dispose(); query.clear(); } };
 }
 const calls = (f: ReturnType<typeof mount>, method: string) => f.request.mock.calls.map(([request]) => request).filter((request) => request.method === method && request.path === PATH);
 const section = async () => screen.findByTestId("company-upkeep");
@@ -73,6 +73,26 @@ describe("Nightly upkeep for the company, on Company settings", () => {
     expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
     expect(screen.queryByTestId("company-upkeep-withdraw")).toBeNull();
     expect(screen.getByTestId("company-upkeep-allow-where").textContent).toBe("Withdrawn. Nightly runs stopped for every project. Projects keep their switch.");
+    f.close();
+  });
+
+  // MUTANT W11 (project pages not re-read: the app's query cache keeps a project's upkeep view fresh for 15 seconds) and W12 (focus is lost when the confirm goes away) and W13 (a re-read after the withdrawal flips it to "could not be read").
+  it("after Yes: a project's cached upkeep view is marked stale, focus lands on the announced result line, and no second read can turn the withdrawal into an error", async () => {
+    let allowed = true;
+    const f = mount("owner", (r) => (r.method === "PUT" ? ((allowed = false), view(false)) : view(allowed)));
+    const projectKey = ["wiki-setup", "web", "upkeep"];
+    f.queryClient.setQueryData(projectKey, { enabled: true, canManage: true, available: true, systemRunsOn: true });
+    expect(f.queryClient.getQueryState(projectKey)?.isInvalidated).toBe(false);
+    fireEvent.click(await screen.findByTestId("company-upkeep-withdraw"));
+    fireEvent.click(await screen.findByTestId("company-upkeep-yes"));
+    const status = await screen.findByTestId("company-upkeep-allow-where");
+    await waitFor(() => expect(status.getAttribute("role")).toBe("status"));
+    expect(status.textContent).toBe("Withdrawn. Nightly runs stopped for every project. Projects keep their switch.");
+    await waitFor(() => expect(document.activeElement).toBe(status));
+    expect(f.queryClient.getQueryState(projectKey)?.isInvalidated).toBe(true);
+    expect(calls(f, "GET")).toHaveLength(1);
+    expect(screen.queryByTestId("company-upkeep-absent")).toBeNull();
+    await expectNoAxeViolations(document.body);
     f.close();
   });
 
