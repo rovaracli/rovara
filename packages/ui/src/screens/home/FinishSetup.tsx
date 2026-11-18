@@ -31,4 +31,4 @@ export function FinishSetup() {
   <p className="rv-attention-reason">{data.progress.percent}% done.{data.progress.nextRequired === null ? "" : " Next: " + NEXT_WORDS[data.progress.nextRequired] + "."}</p>
  </div><div className="rv-attention-actions"><Link className="rv-attention-open" to={"/app/projects/" + encodeURIComponent(project)}>Open checklist</Link></div></article></li>)}</ol>;
 }
-const NEXT_WORDS: Readonly<Record<string, string>> = Object.freeze({ repos: "add a repo", setupRun: "review and approve the setup", evalConfirm: "confirm how work is checked", aiAndSpend: "connect an AI key or choose Rovara's AI", firstTask: "start your first task" });
+const NEXT_WORDS: Readonly<Record<string, string>> = Object.freeze({ repos: "add a repo", setupRun: "review and approve the setup", evalConfirm: "review your AI evals", aiAndSpend: "connect an AI key or choose Rovara's AI", firstTask: "start your first task" });
