@@ -101,7 +101,7 @@ export interface GatewayRoute {
   /**
    * The response header that carries this call's settled cost (US dollars, a plain decimal of six places: whole micro-dollars). Set only on the answers route (L4-E2).
    * Sent on a complete NON-streaming success only, and only when the figure is exact: the core settles first, then sends the head, so the figure is the amount
-   * the same settle wrote to the meter. Absent (never 0, never a guess) when the price is estimated, the provider reported no usage, or the meter could not settle.
+   * the same settle wrote to the meter. Absent (never 0, never a guess) when the price is estimated, the provider reported no usage, or the meter could not settle, and it is lost if the response head is never sent. A slow meter delays the head for that route (no separate time limit, as the settle was never bounded).
    */
   readonly costHeader?: string;
   /** false: the task-ended record does not stop this route's calls (learning runs after its task ended). Absent: it does. */

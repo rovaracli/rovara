@@ -150,7 +150,28 @@ describe("answers cost header: absent when the cost is not known (never 0, never
     expect(JSON.parse(sink.text())).toMatchObject({ id: "msg_1" });
     expect(g.settles.count).toBe(1);
     expect(g.logs).toContainEqual({ event: "settle_failed" });
-    expect(g.logs.filter((e) => e.event === "settled")).toHaveLength(0);
+    expect(g.logs.filter((e) => (e as { event?: string }).event === "settled")).toHaveLength(0);
+  });
+
+  it("a usage block the gateway cannot read still settles at the hold (as before), and sends no header", async () => {
+    const g = gateway({ transport: async () => bodyOf(Buffer.from(JSON.stringify({ content: [], usage: { input_tokens: "many" } }))) });
+    let estimate = 0;
+    const reserve = g.answersMeter.reserve.bind(g.answersMeter);
+    g.answersMeter.reserve = async (input) => { estimate = input.estimateMicros; return reserve(input); };
+    const sink = await ask(g.deps);
+    expect(sink.headers[ANSWERS_COST_HEADER]).toBeUndefined();
+    expect(estimate).toBeGreaterThan(0);
+    expect(await spent(g.answersMeter)).toBe(estimate);
+    expect(g.settles.count).toBe(1);
+  });
+
+  it("the client's connection fails after the settle: exactly one settle, at the real usage, and the call is torn down", async () => {
+    const g = gateway();
+    const sink = new (class extends MemorySink { override async write(): Promise<void> { throw new Error("response unavailable"); } })();
+    await ask(g.deps, {}, jsonBody, sink);
+    expect(g.settles.count).toBe(1);
+    expect(await spent(g.answersMeter)).toBe(6_000);
+    expect(sink.destroyed).toBe(true);
   });
 
   it("a streamed answer (the head is sent before the cost is known): no header, settled as before", async () => {
@@ -199,7 +220,7 @@ describe("answers cost header: success responses only", () => {
     }
   });
 
-  it("a transport that throws, and a task that ended mid-call, carry no cost header", async () => {
+  it("a transport that throws carries no cost header", async () => {
     const g = gateway({ transport: async () => { throw new Error("down"); } });
     const sink = await ask(g.deps); expect(sink.status).toBe(502); none(sink);
   });
@@ -224,7 +245,7 @@ describe("answers cost header: a non-streaming answer on the agent route is unto
     expect(sink.status).toBe(200);
     expect(Object.keys(sink.headers).sort()).toEqual(["cache-control", "content-type", "x-content-type-options"]);
     expect(sink.ended).toBe(true);
-    expect(g.logs.filter((e) => e.event === "settled")).toHaveLength(1);
+    expect(g.logs.filter((e) => (e as { event?: string }).event === "settled")).toHaveLength(1);
     expect((await g.agentMeter.read(agentScope)).find((r) => r.item === "company")?.spentMicros).toBe(6_000);
   });
 });
