@@ -1,10 +1,10 @@
-// L4-EVC (DEC 254zzz20 D5, D6, D8): the setup flow's ONE eval card through Cloud's handler. Code serves four hosted routes (setup-run-routes.ts); Cloud forwards each to Code's own
+// L4-EVC (DEC 254zzz20 D5, D6, D8): the setup flow's ONE eval card through Cloud's handler. Code serves two hosted routes in slice 1 (setup-run-routes.ts); Cloud forwards each to Code's own
 // path as the signed-in person (their own bearer token), the same way as eval-confirm: only a company owner or admin, or the project's maintainer, may POST (the read is open to anyone in the
 // company; Code decides `canApprove`), only an object body, only each route's own keys (nothing that names a company, a role or a payer), Code's fixed unknown-route 404 reads 501 NOT_ON_CODE_YET,
 // and a step-up refusal keeps its code REAUTH_REQUIRED in Cloud's own words.
 import { describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type CodeSession } from "../../packages/cloud-server/src/index.js";
-import { EVAL_APPROVE_KEYS, EVAL_DECIDE_KEYS, EVAL_HEALTH_KEYS } from "../../packages/cloud-server/src/routes.js";
+import { EVAL_APPROVE_KEYS } from "../../packages/cloud-server/src/routes.js";
 import { APP_ROUTES } from "../../packages/contracts/src/code-contract-v0.js";
 
 const CODE = "https://code.example.test";
@@ -14,9 +14,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const NO_ROUTE = { error: { code: "NOT_FOUND", message: "route not found" } };
 const UUID = "6f9d0c1e-2b3a-4c5d-8e7f-001122334455";
 const APPROVE = { taskId: UUID, reportDigest: "d".repeat(64), selection: "npm test", paths: ["evals/a.yaml"], approve: true, seen: { perCheckHighMicros: 1_500_000, monthlyCapMicros: 40_000_000 } };
-const DECIDE = { requestId: `eval-${"a".repeat(40)}-3`, outcome: "approve", seen: { revision: 3, artifactDigest: "e".repeat(64) } };
-const HEALTH = { requestId: UUID, seenCostMicros: 2_400_000 };
-const TAILS = { get: "eval", approve: "eval-approve", decide: "eval-decide", health: "eval-health" } as const;
+const TAILS = { get: "eval", approve: "eval-approve" } as const;
 const codePath = (tail: string, project = "payments") => `/v1/app/projects/${project}/setup-agent/${tail}`;
 const webPath = (tail: string, project = "payments") => `/v1/web/projects/${project}/setup-agent/${tail}`;
 
@@ -30,7 +28,7 @@ function setUp(answer: Answer = (call) => json(200, { from: call.authorization, 
     const call: CodeCall = { method: init?.method ?? "GET", path: url.pathname, search: url.search, authorization: headers["authorization"], headers, body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined };
     calls.push(call);
     if (url.pathname === "/v1/auth/token") return json(400, { error: "invalid_grant" });
-    if (/\/setup-agent\/eval(?:-approve|-decide|-health)?$/u.test(url.pathname)) return answer(call);
+    if (/\/setup-agent\/eval(?:-approve)?$/u.test(url.pathname)) return answer(call);
     return json(404, NO_ROUTE);
   }) as typeof fetch;
   const store = new LocalSessionStore(undefined, { environment: {} });
@@ -57,7 +55,7 @@ const admin = (w: W) => w.signIn("ada-token", { developerId: ADA, displayName: "
 const owner = (w: W) => w.signIn("own-token", { developerId: ADA, displayName: "Own", administrator: false, companyId: COMPANY, companyRole: "owner", projects: [], notices: [] });
 const maintainer = (w: W) => w.signIn("pam-token", { developerId: PAM, displayName: "Pam", administrator: false, companyId: COMPANY, companyRole: "member", projects: [{ name: "payments", access: "administrator" }], notices: [] });
 const member = (w: W) => w.signIn("dev-token", { developerId: DEV, displayName: "Dev", administrator: false, companyId: COMPANY, companyRole: "member", projects: [{ name: "payments", access: "developer" }, { name: "other", access: "administrator" }], notices: [] });
-const posts: Array<[keyof typeof TAILS, unknown]> = [["approve", APPROVE], ["decide", DECIDE], ["health", HEALTH]];
+const posts: Array<[keyof typeof TAILS, unknown]> = [["approve", APPROVE]];
 const REFUSED = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer can answer for the eval's spend." } } };
 
 describe("each route is forwarded to Code's own path as the signed-in person", () => {
@@ -125,7 +123,7 @@ describe("who may ask", () => {
     const cookie = await admin(w);
     for (const name of ["-x", "a%2Fb", "p".repeat(101)]) {
       expect((await w.send("GET", webPath("eval", name), cookie)).status).toBe(501);
-      for (const [tail, body] of [["eval-approve", APPROVE], ["eval-decide", DECIDE], ["eval-health", HEALTH]] as const) expect((await w.send("POST", webPath(tail, name), cookie, body)).status).toBe(501);
+      expect((await w.send("POST", webPath("eval-approve", name), cookie, APPROVE)).status).toBe(501);
     }
     expect(w.toCode()).toHaveLength(0);
   });
@@ -134,8 +132,6 @@ describe("who may ask", () => {
 describe("the body", () => {
   it("names each route's own keys and nothing else", () => {
     expect([...EVAL_APPROVE_KEYS]).toEqual(["taskId", "reportDigest", "selection", "paths", "approve", "seen"]);
-    expect([...EVAL_DECIDE_KEYS]).toEqual(["requestId", "outcome", "seen"]);
-    expect([...EVAL_HEALTH_KEYS]).toEqual(["requestId", "seenCostMicros"]);
   });
   const extra = { company: OTHER, companyId: OTHER, role: "owner", payer: "someone", approver: "x", maxCostMicros: 1, __proto__x: 1 };
   for (const [name, body] of posts) {
@@ -161,15 +157,15 @@ describe("the body", () => {
   it("a key the browser leaves out is not invented; a seen that is not an object goes to Code as sent (Code refuses it)", async () => {
     const w = setUp();
     const cookie = await admin(w);
-    await w.send("POST", webPath("eval-decide"), cookie, { requestId: DECIDE.requestId });
+    await w.send("POST", webPath("eval-approve"), cookie, { taskId: UUID });
     await w.send("POST", webPath("eval-approve"), cookie, { ...APPROVE, seen: "1500000" });
-    expect(w.toCode()[0]!.body).toEqual({ requestId: DECIDE.requestId });
+    expect(w.toCode()[0]!.body).toEqual({ taskId: UUID });
     expect(w.toCode()[1]!.body).toEqual({ ...APPROVE, seen: "1500000" });
   });
 });
 
 describe("Code's answer", () => {
-  const routes: Array<[string, "GET" | "POST", unknown]> = [["eval", "GET", undefined], ["eval-approve", "POST", APPROVE], ["eval-decide", "POST", DECIDE], ["eval-health", "POST", HEALTH]];
+  const routes: Array<[string, "GET" | "POST", unknown]> = [["eval", "GET", undefined], ["eval-approve", "POST", APPROVE]];
   for (const [tail, method, body] of routes) {
     it(`${method} ${tail}: Code's fixed unknown-route 404 reads 501 NOT_ON_CODE_YET; Code's other 404s are its own (mutant: the route-not-found match)`, async () => {
       const w = setUp(() => json(404, NO_ROUTE));
@@ -182,7 +178,7 @@ describe("Code's answer", () => {
       expect((await off.send(method, webPath(tail), await admin(off), body)).status).toBe(501);
     });
   }
-  for (const [tail, body] of [["eval-approve", APPROVE], ["eval-decide", DECIDE]] as const) {
+  for (const [tail, body] of [["eval-approve", APPROVE]] as const) {
     it(`POST ${tail}: Code's REAUTH_REQUIRED keeps its code in Cloud's own words (never Code's sentence); Code's other refusals pass as they are (mutant: the step-up pass-through)`, async () => {
       const w = setUp(() => json(403, { error: { code: "REAUTH_REQUIRED", message: "A tool that holds an API token cannot approve: SENSITIVE-CODE-SENTENCE" } }));
       const res = await w.send("POST", webPath(tail), await admin(w), body);
@@ -210,9 +206,9 @@ describe("two companies", () => {
     expect((again.body as { state: string }).state).toBe("propose");
     expect(w.toCode().map((call) => [call.authorization, call.path, call.search])).toEqual([["Bearer ada-token", codePath("eval"), ""], ["Bearer bob-token", codePath("eval"), ""], ["Bearer ada-token", codePath("eval"), ""]]);
     for (const call of w.calls) { expect(JSON.stringify(call.headers)).not.toContain(OTHER); expect(call.search).not.toContain(OTHER); }
-    await w.send("POST", `${webPath("eval-health")}?company=${OTHER}`, { ...ada, ...hint }, { ...HEALTH, company: OTHER });
+    await w.send("POST", `${webPath("eval-approve")}?company=${OTHER}`, { ...ada, ...hint }, { ...APPROVE, company: OTHER });
     const sent = w.toCode().at(-1)!;
-    expect(sent).toMatchObject({ authorization: "Bearer ada-token", body: HEALTH, search: "" });
+    expect(sent).toMatchObject({ authorization: "Bearer ada-token", body: APPROVE, search: "" });
     expect(JSON.stringify(sent.headers)).not.toContain(OTHER);
   });
   it("a person of company B who holds no entry for the project, and is a plain member there, is refused on every POST without reaching Code", async () => {
@@ -224,8 +220,8 @@ describe("two companies", () => {
 });
 
 describe("contract v0", () => {
-  it("lists the four routes as Code's, answered by cloud-server today", () => {
-    for (const [method, tail] of [["GET", "eval"], ["POST", "eval-approve"], ["POST", "eval-decide"], ["POST", "eval-health"]] as const) {
+  it("lists the two routes as Code's, answered by cloud-server today", () => {
+    for (const [method, tail] of [["GET", "eval"], ["POST", "eval-approve"]] as const) {
       const row = APP_ROUTES.find((route) => route.method === method && route.path === `/v1/app/projects/{p}/setup-agent/${tail}`);
       expect(row, tail).toMatchObject({ owner: "code", screen: "later", codeRoutes: [], source: "setup-agent", cloudServerToday: true });
     }

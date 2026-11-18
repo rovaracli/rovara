@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
-// L4-EVC (DEC 254zzz20 D5, D6, D8): the setup flow's ONE eval card, in plain dollars, on the checklist's "Confirm how work is checked" row. It shows what was found with Code's own sentence and ONE Approve
-// (after a fresh sign-in); a changed eval set that grew past the approved dollars asks again (Approve / Not now); once approved it says what a PR costs and offers the OPT-IN health check, which is
-// never sent without a click. The dollars a person saw (`seen`) are copied from the read, never worked out here. No tokens, counts or micro-dollar words reach the page. The server decides everything;
+// L4-EVC slice 1 (DEC 254zzz20 D8): the setup flow's ONE eval card, in plain dollars, on the checklist's "Confirm how work is checked" row. It shows what was found with Code's own sentence and ONE Approve
+// (after a fresh sign-in); a cost that is waiting or needs renewing is shown as text only (the decision and the opt-in health check come in the next slice). The dollars a person saw (`seen`) are copied from the read, never worked out here. No tokens, counts or micro-dollar words reach the page. The server decides everything;
 // these tests watch what the page asks and says.
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -20,17 +19,15 @@ import { expectNoAxeViolations } from "./support/axe.js";
 
 afterEach(cleanup);
 const ME = "a".repeat(64), NONCE_KEY = "rovara.stepup.nonce";
-const TASK = "task_0123-abc", DIGEST = "ab12".repeat(16), OFFER_DIGEST = "cd34".repeat(16), OFFER_ID = `eval-${"e".repeat(40)}-3`;
+const TASK = "task_0123-abc", DIGEST = "ab12".repeat(16);
 const LEAK = "SENSITIVE-SERVER-DETAIL";
 // Whole-number figures chosen so that no formula in the page could reproduce them by accident.
 const SEEN = { perCheckHighMicros: 1_234_567, monthlyCapMicros: 41_000_000 };
 const SENTENCE = "Running your evals on each AI change will cost about $0.50-$1.20 per PR, at most $41.00 a month. Approve?";
 const suite = (over: Record<string, unknown> = {}) => ({ selection: "npm run evals", files: ["evals/a.yaml", "evals/b.yaml"], cases: 12, sentence: SENTENCE, perPr: "$0.50-$1.20", monthly: "$41.00", seen: SEEN, ...over });
 const card = (over: Record<string, unknown> = {}) => ({ project: "web", state: "propose", canApprove: true, report: { taskId: TASK, reportDigest: DIGEST }, suites: [suite()], ...over });
-const offer = { requestId: OFFER_ID, revision: 3, artifactDigest: OFFER_DIGEST };
-const waiting = (over: Record<string, unknown> = {}) => card({ state: "waiting", suites: [], spend: { state: "waiting", perPr: "$0.90-$2.40", monthly: "$41.00", needsApproval: "Needs approval: your eval set grew past the approved $1.20", approval: offer }, ...over });
-const health = (state: "none" | "requested" | "finished") => ({ state, label: "Check my evals now (about $2.40)", cost: "$2.40", seenCostMicros: 2_400_777 });
-const approved = (over: Record<string, unknown> = {}) => card({ state: "approved", suites: [], spend: { state: "approved", perPr: "$0.50-$1.20", monthly: "$41.00" }, health: health("none"), ...over });
+const waiting = (over: Record<string, unknown> = {}) => card({ state: "waiting", suites: [], spend: { state: "waiting", perPr: "$0.90-$2.40", monthly: "$41.00", needsApproval: "Needs approval: your eval set grew past the approved $1.20"}, ...over });
+const approved = (over: Record<string, unknown> = {}) => card({ state: "approved", suites: [], spend: { state: "approved", perPr: "$0.50-$1.20", monthly: "$41.00" }, ...over });
 const checklist = () => ({
   project: "web", viewer: { companyRole: "owner", projectAdmin: false, canSkip: true }, progress: { done: 3, total: 8, percent: 38, nextRequired: "evalConfirm" },
   repos: { state: "done", count: 1, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }] },
@@ -79,19 +76,6 @@ describe("what was found (state propose)", () => {
     expect(posts(f)).toHaveLength(0);
     await expectNoAxeViolations(document.body);
     f.close();
-  });
-
-  it("shows Code's words for an eval set that grew past the approved dollars, or still stands inside them", async () => {
-    const grew = "Needs approval: your eval set grew past the approved $4.00";
-    const f = mount({ read: () => ({ status: 200, body: card({ suites: [suite({ versusApproved: { within: false, words: grew } })] }) }) });
-    const c = await theCard();
-    expect(within(c).getByTestId("eval-versus").textContent).toBe(grew);
-    expect(within(c).getByTestId("eval-versus").getAttribute("data-within")).toBe("false");
-    f.close(); cleanup();
-    const still = "Still inside what you approved: no new approval needed";
-    const g = mount({ read: () => ({ status: 200, body: card({ suites: [suite({ versusApproved: { within: true, words: still } })] }) }) });
-    expect(within(await theCard()).getByTestId("eval-versus").textContent).toBe(still);
-    g.close();
   });
 
   it("a person who may not approve sees no button and who does", async () => {
@@ -184,49 +168,21 @@ describe("what was found (state propose)", () => {
   });
 });
 
-describe("a changed eval that needs approval again (state waiting)", () => {
-  it("shows Code's exact words and the dollars, with Approve and Not now for a person who may approve", async () => {
-    const f = mount({ read: () => ({ status: 200, body: waiting() }) });
-    const c = await theCard();
-    expect(within(c).getByTestId("eval-needs-approval").textContent).toBe("Needs approval: your eval set grew past the approved $1.20");
-    expect(within(c).getByTestId("eval-spend-line").textContent).toBe("About $0.90-$2.40 per PR, at most $41.00 a month.");
-    expect(within(c).getByRole("button", { name: "Approve" })).toBeTruthy();
-    expect(within(c).getByRole("button", { name: "Not now" })).toBeTruthy();
-    f.close();
+describe("a cost that is waiting or needs renewing (text only)", () => {
+  it("shows Code's exact words and the dollars, and no button, for a person who may approve and for a reader", async () => {
+    for (const canApprove of [true, false]) {
+      const f = mount({ read: () => ({ status: 200, body: waiting({ canApprove }) }) });
+      const c = await theCard();
+      expect(within(c).getByTestId("eval-needs-approval").textContent).toBe("Needs approval: your eval set grew past the approved $1.20");
+      expect(within(c).getByTestId("eval-spend-line").textContent).toBe("About $0.90-$2.40 per PR, at most $41.00 a month.");
+      expect(within(c).queryByRole("button")).toBeNull();
+      expect(posts(f)).toHaveLength(0);
+      f.close();
+      cleanup();
+    }
   });
 
-  it("Approve and Not now post eval-decide with the offer's id, revision and digest copied from the read, after a fresh sign-in", async () => {
-    const f = mount({ fresh: true, read: () => ({ status: 200, body: waiting() }) });
-    const c = await theCard();
-    fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(posts(f, "eval-decide")).toHaveLength(1));
-    expect(posts(f, "eval-decide")[0]!.body).toEqual({ requestId: OFFER_ID, outcome: "approve", seen: { revision: 3, artifactDigest: OFFER_DIGEST } });
-    expect(posts(f, "eval-decide")[0]!.retry).toBe("never");
-    f.close();
-    cleanup();
-    const g = mount({ fresh: true, read: () => ({ status: 200, body: waiting() }) });
-    fireEvent.click(within(await theCard()).getByRole("button", { name: "Not now" }));
-    await waitFor(() => expect(posts(g, "eval-decide")).toHaveLength(1));
-    expect(posts(g, "eval-decide")[0]!.body).toEqual({ requestId: OFFER_ID, outcome: "reject", seen: { revision: 3, artifactDigest: OFFER_DIGEST } });
-    g.close();
-  });
-
-  it("without a fresh sign-in the buttons send the person to confirm, and nothing is posted; a person who may not approve gets no buttons", async () => {
-    const f = mount({ read: () => ({ status: 200, body: waiting() }) });
-    const c = await theCard();
-    fireEvent.click(within(c).getByRole("button", { name: "Not now" }));
-    expect(f.host.signIn).toHaveBeenCalledTimes(1);
-    expect(posts(f)).toHaveLength(0);
-    f.close();
-    cleanup();
-    const g = mount({ read: () => ({ status: 200, body: waiting({ canApprove: false }) }) });
-    const d = await theCard();
-    expect(within(d).queryByRole("button")).toBeNull();
-    expect(within(d).getByTestId("eval-who").textContent).toBe(EVAL_CARD_WORDS.noOne);
-    g.close();
-  });
-
-  it("an approval that needs renewing says so, and offers the buttons only when Code sent an offer", async () => {
+  it("an approval that needs renewing says so in plain words, with no button", async () => {
     const f = mount({ read: () => ({ status: 200, body: waiting({ state: "renew", spend: { state: "approval needs renewing", perPr: "$0.50-$1.20", monthly: "$41.00" } }) }) });
     const c = await theCard();
     expect(c.textContent).toContain(EVAL_CARD_WORDS.renew);
@@ -252,50 +208,6 @@ describe("approved", () => {
     const f = mount({ read: () => ({ status: 200, body: card({ state: "rejected", suites: [], spend: { state: "rejected", perPr: "$0.50-$1.20", monthly: "$41.00" } }) }) });
     expect((await screen.findByTestId("eval-rejected")).textContent).toBe(EVAL_CARD_WORDS.rejected);
     f.close();
-  });
-});
-
-describe("the opt-in health check", () => {
-  it("is never sent on render, on load or after the card settles (mutant: post health on render)", async () => {
-    const f = mount({ fresh: true, read: () => ({ status: 200, body: approved() }) });
-    const c = await theCard();
-    expect(within(c).getByRole("button", { name: "Check my evals now (about $2.40)" })).toBeTruthy();
-    await waitFor(() => expect(evalReads(f)).toBeGreaterThanOrEqual(1));
-    await new Promise(resolve => setTimeout(resolve, 50));
-    expect(posts(f)).toHaveLength(0);
-    f.close();
-  });
-
-  it("a click posts eval-health with a uuid and the cost Code showed, copied from the read", async () => {
-    const f = mount({ read: () => ({ status: 200, body: approved() }) });
-    fireEvent.click(await within(await theCard()).findByRole("button", { name: "Check my evals now (about $2.40)" }));
-    await waitFor(() => expect(posts(f, "eval-health")).toHaveLength(1));
-    const sent = posts(f, "eval-health")[0]!;
-    const body = sent.body as { requestId: string; seenCostMicros: number };
-    expect(Object.keys(body).sort()).toEqual(["requestId", "seenCostMicros"]);
-    expect(body.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u);
-    expect(body.seenCostMicros).toBe(2_400_777);
-    expect(sent.retry).toBe("never");
-    expect(f.host.signIn).not.toHaveBeenCalled();
-    f.close();
-  });
-
-  it("is shown only to a person who may approve, and says the check is queued or ran", async () => {
-    const f = mount({ read: () => ({ status: 200, body: approved({ canApprove: false }) }) });
-    const c = await theCard();
-    expect(within(c).queryByRole("button")).toBeNull();
-    expect(within(c).queryByTestId("eval-health-state")).toBeNull();
-    f.close();
-    cleanup();
-    const g = mount({ read: () => ({ status: 200, body: approved({ health: health("requested") }) }) });
-    const queued = await theCard();
-    expect(within(queued).getByTestId("eval-health-state").textContent).toBe("Your eval check is queued");
-    expect(within(queued).queryByRole("button")).toBeNull();
-    g.close();
-    cleanup();
-    const k = mount({ read: () => ({ status: 200, body: approved({ health: health("finished"), canApprove: false }) }) });
-    expect((await within(await theCard()).findByTestId("eval-health-state")).textContent).toBe("Your eval check ran");
-    k.close();
   });
 });
 
@@ -334,16 +246,13 @@ describe("when there is no card", () => {
 describe("dollars only", () => {
   const states: Array<[string, Record<string, unknown>, boolean]> = [
     ["propose", card(), false],
-    ["propose, grew past", card({ suites: [suite({ versusApproved: { within: false, words: "Needs approval: your eval set grew past the approved $4.00" } })] }), false],
-    ["propose, still inside", card({ suites: [suite({ versusApproved: { within: true, words: "Still inside what you approved: no new approval needed" } })] }), false],
     ["propose, reader", card({ canApprove: false }), false],
     ["waiting", waiting(), false],
     ["waiting, reader", waiting({ canApprove: false }), false],
     ["renew", waiting({ state: "renew" }), false],
     ["approved", approved(), false],
+    ["approved, reader", approved({ canApprove: false }), false],
     ["approved, carried", approved({ spend: { state: "approved", perPr: "$0.50-$1.20", monthly: "$41.00", carried: true } }), false],
-    ["approved, health queued", approved({ health: health("requested") }), false],
-    ["approved, health ran", approved({ health: health("finished") }), false],
     ["rejected", card({ state: "rejected", suites: [], spend: { state: "rejected", perPr: "$0.50-$1.20", monthly: "$41.00" } }), false],
     ["propose, fresh", card(), true],
   ];

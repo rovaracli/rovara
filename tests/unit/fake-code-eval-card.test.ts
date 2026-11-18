@@ -1,8 +1,8 @@
-// L4-EVC: the fake Rovara Code serves the setup flow's eval card (read, one approval, a decision, the opt-in health check) with Code's rules in small: a manager acts, a reader reads, the dollars an approval
+// L4-EVC: the fake Rovara Code serves the setup flow's eval card (read and one approval) with Code's rules in small: a manager acts, a reader reads, the dollars an approval
 // echoes must be the ones the read showed, and each answer is dollars-only. Browser specs stage it through /__fake/eval-card.
 import { createHash, randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { EvalCardViewSchema, EvalApproveReplySchema, EvalDecideReplySchema, EvalHealthReplySchema } from "../../packages/contracts/src/setup-agent-web.js";
+import { EvalCardViewSchema, EvalApproveReplySchema } from "../../packages/contracts/src/setup-agent-web.js";
 import { PRIYA, SAM, startFakeCode, type FakeCode } from "../support/fake-code.js";
 
 let fake: FakeCode;
@@ -25,7 +25,7 @@ const call = async (path: string, token: string, init: { method?: string; body?:
   const response = await fetch(`${fake.url}${path}`, { method: init.method ?? "GET", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
   return { status: response.status, body: await response.json().catch(() => undefined) };
 };
-const stage = (state: string, health?: string) => fetch(`${fake.url}/__fake/eval-card`, { method: "POST", body: JSON.stringify({ project: "web", state, ...(health === undefined ? {} : { health }) }) });
+const stage = (state: string) => fetch(`${fake.url}/__fake/eval-card`, { method: "POST", body: JSON.stringify({ project: "web", state }) });
 const BASE = "/v1/app/projects/web/setup-agent";
 
 describe("the fake eval card", () => {
@@ -45,21 +45,15 @@ describe("the fake eval card", () => {
     expect(done.status).toBe(200);
     expect(EvalApproveReplySchema.parse(done.body)).toMatchObject({ state: "approved" });
     const after = EvalCardViewSchema.parse((await call(`${BASE}/eval`, priya)).body);
-    expect(after).toMatchObject({ state: "approved", spend: { perPr: "$0.50-$1.20" }, health: { state: "none" } });
+    expect(after).toMatchObject({ state: "approved", spend: { perPr: "$0.50-$1.20" } });
   });
 
-  it("a waiting item is decided with the offer the read carried; the health check is a person's yes and nothing runs without it", async () => {
+  it("a waiting item reads as text only: Code's words and the dollars, no offer to answer", async () => {
     const priya = await tokenFor(PRIYA);
     await stage("waiting");
     const waiting = EvalCardViewSchema.parse((await call(`${BASE}/eval`, priya)).body);
-    const offer = waiting.spend!.approval!;
-    const decided = await call(`${BASE}/eval-decide`, priya, { method: "POST", body: { requestId: offer.requestId, outcome: "approve", seen: { revision: offer.revision, artifactDigest: offer.artifactDigest } } });
-    expect(decided.status).toBe(200);
-    expect(EvalDecideReplySchema.parse(decided.body)).toMatchObject({ project: "web", decision: "approved" });
-    const approved = EvalCardViewSchema.parse((await call(`${BASE}/eval`, priya)).body);
-    expect(approved.health).toMatchObject({ state: "none", label: "Check my evals now (about $2.40)" });
-    const asked = await call(`${BASE}/eval-health`, priya, { method: "POST", body: { requestId: "6f9d0c1e-2b3a-4c5d-8e7f-001122334455", seenCostMicros: approved.health!.seenCostMicros } });
-    expect(EvalHealthReplySchema.parse(asked.body)).toMatchObject({ requested: true });
-    expect(EvalCardViewSchema.parse((await call(`${BASE}/eval`, priya)).body).health?.state).toBe("requested");
+    expect(waiting).toMatchObject({ state: "waiting", spend: { needsApproval: "Needs approval: your eval set grew past the approved $1.20", perPr: "$0.90-$2.40" } });
+    expect(waiting.spend).not.toHaveProperty("approval");
+    expect(waiting).not.toHaveProperty("health");
   });
 });
