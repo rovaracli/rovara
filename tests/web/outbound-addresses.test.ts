@@ -3,7 +3,7 @@
 // notice before they change. It sends one GET and nothing else, draws nothing while loading, when there are none yet, or when they can't be read (no error for a line that is only information), and never
 // draws an answer that is not exactly the contract.
 // Mutants (each killed by the named test, run by hand): O1 the line drawn for a plain member; O2 drawn with an empty list; O3 an unreadable answer drawn as a line or an error; O4 a private or malformed
-// address drawn; O5 the sentence loses "shared by all companies" or the 30 days; O6 anything but a bare GET sent; O7 the singular sentence drawn with the plural words; O8 an extra member of the answer accepted.
+// address drawn; O5 the sentence loses "shared by all companies" or the 30 days; O6 anything but a bare GET sent; O7 the singular sentence drawn with the plural words; O8 an extra member of the answer accepted; O9 the scope caveat (what does not use the addresses) dropped.
 import { describe, expect, it } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -46,6 +46,7 @@ describe("Rovara's outbound addresses, on Company settings", () => {
     const line = await screen.findByTestId("outbound-addresses");
     expect(line.textContent).toBe("Rovara's outbound addresses: 44.235.136.195, 44.226.134.187. They're shared by all companies on this Rovara, and we give 30 days' notice before they change.");
     expect(EGRESS_NOTICE_DAYS).toBe(30);
+    expect(screen.getByTestId("outbound-addresses-scope").textContent).toBe("These are the addresses the machines that run tasks connect from. A few calls, such as connector and sign-in checks, don't use them yet. Also add your host to the project's allowed websites.");
     expect(screen.getByRole("region", { name: "Rovara's outbound addresses" })).toBeTruthy();
     expect(Array.from(line.querySelectorAll("code")).map((node) => node.textContent)).toEqual(ADDRESSES);
     await expectNoAxeViolations(document.body);

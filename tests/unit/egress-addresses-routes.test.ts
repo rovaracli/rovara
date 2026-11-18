@@ -45,7 +45,8 @@ function setUp(override: Override = () => undefined) {
     if (url.pathname === "/v1/dev/company/egress-addresses") {
       if (person.company === undefined) return json(401, { error: { code: "AUTH_REQUIRED", message: LEAK } });
       if (person.role !== "owner" && person.role !== "admin") return json(403, { error: { code: "FORBIDDEN", message: "Only a company owner or admin can see Rovara's outbound addresses." } });
-      return json(200, { addresses: ADDRESSES });
+      // Code's json() adds the request's own id to every object body.
+      return json(200, { addresses: ADDRESSES, requestId: "9f1c2b7e-3d4a-4e5f-8a6b-0c1d2e3f4a5b" });
     }
     return json(404, { error: { code: "NOT_FOUND", message: "route not found" } });
   }) as typeof fetch;
@@ -94,6 +95,14 @@ describe("Rovara's outbound addresses, for company owners and admins", () => {
     const second = await w.send("GET", PATH, await w.as("bea"));
     expect(second.body).toEqual(first.body);
     expect(second.body).toEqual({ addresses: ADDRESSES });
+  });
+
+  it("passes Code's real answer, which carries its own requestId, as exactly { addresses } (the id is dropped, never forwarded)", async () => {
+    const w = setUp();
+    const read = await w.send("GET", PATH, await w.as("ada"));
+    expect(read).toMatchObject({ status: 200, body: { addresses: ADDRESSES } });
+    expect(Object.keys(read.body)).toEqual(["addresses"]);
+    expect(read.text).not.toContain("requestId");
   });
 
   it("a plain member of either company is refused by Cloud in fixed words, and Code is not asked", async () => {
@@ -150,7 +159,9 @@ describe("Code's answer is checked", () => {
     expect(egressAddressesView({ addresses: [] })).toEqual({ addresses: [] });
     expect(egressAddressesView({ addresses: ADDRESSES })).toEqual({ addresses: ADDRESSES });
     expect(egressAddressesView({ addresses: ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"] })).toBeDefined();
+    expect(egressAddressesView({ addresses: ADDRESSES, requestId: "9f1c2b7e-3d4a-4e5f-8a6b-0c1d2e3f4a5b" })).toEqual({ addresses: ADDRESSES });
     for (const bad of [
+      { addresses: ADDRESSES, requestId: 7 }, { addresses: ADDRESSES, requestId: "has a space" }, { addresses: ADDRESSES, requestId: "x".repeat(200) }, { addresses: ADDRESSES, requestId: LEAK + "<" },
       undefined, null, [], "x", {}, { addresses: "44.235.136.195" }, { addresses: [1] }, { addresses: ["1.1.1.1", "1.1.1.1"] }, { addresses: ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5"] },
       { addresses: ["44.235.136.256"] }, { addresses: ["044.235.136.195"] }, { addresses: ["44.235.136.195 "] }, { addresses: ["44.235.136.195/32"] }, { addresses: ["::1"] },
       { addresses: ["10.1.2.3"] }, { addresses: ["127.0.0.1"] }, { addresses: ["169.254.169.254"] }, { addresses: ["100.64.0.1"] }, { addresses: ["192.168.0.1"] }, { addresses: ["172.16.0.1"] },

@@ -14,5 +14,6 @@ export function OutboundAddresses() {
  const many = addresses.length > 1;
  return <AdminSection title="Rovara's outbound addresses" note="Read only">
   <p data-testid="outbound-addresses">Rovara's outbound {many ? "addresses" : "address"}: {addresses.map((address, index) => <span key={address}>{index > 0 && ", "}<code>{address}</code></span>)}. {many ? "They're" : "It's"} shared by all companies on this Rovara, and we give {EGRESS_NOTICE_DAYS} days' notice before {many ? "they change" : "it changes"}.</p>
+  <p className="rv-muted" data-testid="outbound-addresses-scope">These are the addresses the machines that run tasks connect from. A few calls, such as connector and sign-in checks, don't use them yet. Also add your host to the project's allowed websites.</p>
  </AdminSection>;
 }
