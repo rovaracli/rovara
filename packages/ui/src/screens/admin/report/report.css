@@ -14,3 +14,6 @@
 .rv-report-back{display:inline-block;margin-bottom:var(--rv-space-3);font-size:var(--rv-font-sm)}
 .rv-report-surface .rv-table td,.rv-report-surface .rv-table th{overflow-wrap:anywhere}
 .rv-report-surface .rv-num{font-variant-numeric:tabular-nums;display:grid;justify-items:start}
+.rv-report-form{display:grid;gap:var(--rv-space-3);margin-top:var(--rv-space-3)}
+.rv-report-form-buttons{display:flex;gap:var(--rv-space-3);justify-content:flex-end}
+.rv-report-surface .rv-table td:last-child .rv-button{white-space:nowrap}

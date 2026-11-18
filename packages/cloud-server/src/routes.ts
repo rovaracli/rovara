@@ -29,6 +29,7 @@ import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
 import { REPORT_ROUTES } from "./report-routes.js";
 import { PEOPLE_LIMITS_ROUTES } from "./people-limits-routes.js";
+import { REPORT_ACTION_ROUTES } from "./report-action-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
 import { NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
@@ -911,4 +912,6 @@ export const ROUTES: Route[] = [
   ...REPORT_ROUTES,
   // The smart Just answer and the start box's path suggestion (lead 4 J3): Code decides who may; Cloud passes the person's token, rebuilds each answer, and answers in fixed words. Off unless the deployment says so.
   ...ANSWERS_ROUTES,
+  // Its actions (lane L4-CR4): new feature, rename, merge, mark done or reopen, move a task. Code decides; Cloud checks the body and words the refusals.
+  ...REPORT_ACTION_ROUTES,
 ];

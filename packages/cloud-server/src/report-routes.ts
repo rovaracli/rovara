@@ -69,12 +69,13 @@ export interface ReportFilters { from?: string; to?: string; project?: string; o
 
 const INSTANT = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z)?$/u;
 /** Code's feature ids (FeatureIdSchema) and task ids (uuids). */
-const FEATURE_ID = /^ft_[a-f0-9]{20}$/u;
-const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const NAME_UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+export const FEATURE_ID = /^ft_[a-f0-9]{20}$/u;
+export const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+export const NAME_UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 /** One task's cost can be at most $1,000,000: with at most 5,000 tasks the sum stays a safe integer. */
 const MAX_TASK_MICROS = 1_000_000_000_000;
-const TITLE_MAX = 120, FEATURE_NAME_MAX = 80, PROJECT_MAX = 200;
+const TITLE_MAX = 120, PROJECT_MAX = 200;
+export const FEATURE_NAME_MAX = 80;
 
 const oneOf = <T extends string>(list: readonly T[], value: unknown): value is T => typeof value === "string" && (list as readonly string[]).includes(value);
 const plain = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
@@ -164,7 +165,7 @@ export function readRow(raw: unknown, companyId: string): ReportTask | undefined
   };
 }
 
-function readFeature(raw: unknown): ReportFeature | undefined {
+export function readFeature(raw: unknown): ReportFeature | undefined {
   if (!plain(raw) || typeof raw["id"] !== "string" || !FEATURE_ID.test(raw["id"]) || raw["id"] === NO_FEATURE_ID) return undefined;
   const name = inert(raw["name"], FEATURE_NAME_MAX);
   if (name === undefined) return undefined;
@@ -443,11 +444,32 @@ export function buildFeatureDetail(id: string, rows: readonly ReportTask[], feat
 // The routes
 
 /** The caller, or the refusal. Cloud's own check first; Code checks again on its own route. */
-async function adminOnly(context: RouteContext): Promise<{ companyId: string } | RouteAnswer> {
+async function adminOnly(context: RouteContext): Promise<{ companyId: string; developerId: string } | RouteAnswer> {
   const who = await companyCaller(context);
   if (refused(who)) return who;
   if (!isCompanyAdmin(who.companyRole)) return REPORT_WORDS.notAdmin;
-  return { companyId: who.companyId };
+  return { companyId: who.companyId, developerId: who.developerId };
+}
+
+/** How many of the person's newest Cloud sessions a feature page matches to its tasks (a bound on the store read, like the Work list's). */
+const SESSIONS_LOOKED_AT = 500;
+
+/**
+ * The page address of each shown task the signed-in person started in Cloud: Cloud's own record of their session (the company-scoped store, so another company's session never matches). A task
+ * started by someone else, or somewhere else, has no address here and its title is not a link; the task page opens only a person's own tasks and sessions. A store that fails gives no links.
+ */
+async function sessionsOf(context: RouteContext, developerId: string, taskIds: ReadonlySet<string>): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  try {
+    for (const record of (await context.work.startedBy(developerId)).slice(0, SESSIONS_LOOKED_AT)) if (taskIds.has(record.taskId) && !found.has(record.taskId)) found.set(record.taskId, record.sessionId);
+  } catch { /* the page still answers, its titles are plain text */ }
+  return found;
+}
+
+/** The features for the pickers (Move to feature, Merge into), by name: id, name and state only. */
+function pickerOf(features: ReadonlyMap<string, ReportFeature>): Array<{ id: string; name: string; state?: "open" | "done" }> {
+  return [...features.values()].sort((a, b) => a.name.localeCompare(b.name, "en") || a.id.localeCompare(b.id)).slice(0, 500)
+    .map((feature) => ({ id: feature.id, name: feature.name, ...(feature.state === undefined ? {} : { state: feature.state }) }));
 }
 
 async function read(context: RouteContext, featureId: string | undefined): Promise<RouteAnswer> {
@@ -460,9 +482,14 @@ async function read(context: RouteContext, featureId: string | undefined): Promi
     const rows = applyOwnFilters(fetched.rows, filters);
     const features = await fetchFeatures(context);
     const unreadable = fetched.unreadable > 0 ? { unreadableTasks: fetched.unreadable } : {};
-    if (featureId === undefined) return { status: 200, body: { ...buildReport(rows, features, filters, context.now()), ...unreadable } };
+    // `canChange`: the person is a company owner or admin by Code's access answer made just now, the same decision Code makes again on each change. The page draws an action only when it is true.
+    const may = { canChange: true as const, features: pickerOf(features) };
+    if (featureId === undefined) return { status: 200, body: { ...buildReport(rows, features, filters, context.now()), ...may, ...unreadable } };
     const detail = buildFeatureDetail(featureId, rows, features, filters, context.now());
-    return detail === undefined ? REPORT_WORDS.notFound : { status: 200, body: { ...detail, ...unreadable } };
+    if (detail === undefined) return REPORT_WORDS.notFound;
+    const links = await sessionsOf(context, who.developerId, new Set(detail.tasks.map((task) => task.taskId)));
+    const tasks = detail.tasks.map((task) => (links.has(task.taskId) ? { ...task, sessionId: links.get(task.taskId)! } : task));
+    return { status: 200, body: { ...detail, tasks, ...may, ...unreadable } };
   } catch (error) {
     if (error instanceof ReportRefused) return error.answer;
     // Code's access check failing is Code's refusal too: fixed words, never what Code said. An ended sign-in is the handler's.
