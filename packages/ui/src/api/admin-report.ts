@@ -44,8 +44,8 @@ export interface CostReport { range: { from?: string; to?: string }; asOf: strin
 export interface FeatureTask {
   taskId: string; title: string; project: string; origin: Origin; path?: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number;
   prsOpened: number; prsMerged: number; prLinks: string[]; wallMs?: number; wallSoFar?: boolean;
-  /** The task page, when the signed-in person started the task in Cloud. Absent: the title is not a link. */
-  sessionId?: string;
+  /** Rovara Code's reference to this task's own page (`/review/<taskId>/task`), as the server passed it on. The page checks the reader's own access. Absent: the title is plain text. */
+  taskPage?: string;
 }
 export interface FeatureDetail {
   feature: { id: string; name: string; state?: "open" | "done"; trackerLink?: { tracker: string; id: string; url?: string }; none: boolean };
@@ -80,7 +80,9 @@ function list<T>(raw: unknown, max: number, read: (item: unknown) => T): T[] {
   return raw.map(read);
 }
 
-const SESSION_ID = /^ses_[0-9a-z]{20}$/u;
+const TASK_PAGE = /^\/review\/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\/task$/u;
+/** The task page reference of a row: only exactly `/review/<this task's id>/task`, else nothing (the title is then plain text). A script address, another site or another task's page is never a link. */
+const taskPageOf = (page: unknown, taskId: unknown): string | undefined => (typeof page === "string" && typeof taskId === "string" && TASK_PAGE.test(page) && page.toLowerCase() === `/review/${taskId}/task`.toLowerCase() ? page : undefined);
 const FEATURE_ID = /^ft_[a-f0-9]{20}$/u;
 /** The pickers' features: a feature that is not the shape is left out (never shown, never offered), the rest are kept. */
 function pickers(raw: unknown): PickerFeature[] {
@@ -130,7 +132,7 @@ export const readFeatureDetail: Reader<FeatureDetail> = {
           startedAt: must(time(item["startedAt"])), costCents: must(count(item["costCents"])), unpricedCalls: must(count(item["unpricedCalls"])), prsOpened: must(count(item["prsOpened"])), prsMerged: must(count(item["prsMerged"])),
           prLinks: Array.isArray(item["prLinks"]) ? (item["prLinks"] as unknown[]).slice(0, 20).flatMap((link) => { const good = plainHttps(link); return good === undefined ? [] : [good]; }) : [],
           ...optional("wallMs", count(item["wallMs"])), ...optional("wallSoFar", soFar === true ? true : undefined),
-          ...optional("sessionId", typeof item["sessionId"] === "string" && SESSION_ID.test(item["sessionId"]) ? item["sessionId"] : undefined),
+          ...optional("taskPage", taskPageOf(item["taskPage"], item["taskId"])),
         };
       }),
       tasksTotal: must(count(body["tasksTotal"])), ...optional("unreadableTasks", count(body["unreadableTasks"])),

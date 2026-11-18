@@ -12,12 +12,11 @@ import { ApiError } from "../../../api/errors.js";
 import { AdminSection } from "../parts.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { CostCell, EndCell, FilterRow, PullRequestCell, RANGE_NOTE, REPORT_HOME, ReadState, TopNumbers, UnreadableNote, useReportFilters } from "./ReportParts.js";
-import { paths } from "../../../paths.js";
 import { MergeButton, MoveButton, RenameButton, StateButton } from "./ReportActions.js";
 import { useReportRead } from "./useReportRead.js";
 
 const columns: readonly Column<FeatureTask>[] = [
- { key: "title", title: "Task", render: t => <span>{t.sessionId === undefined ? <b><VisibleText text={t.title} /></b> : <Link to={paths.session(t.sessionId)}><b><VisibleText text={t.title} /></b></Link>}<span className="rv-report-note"><VisibleText text={t.project} /></span></span> },
+ { key: "title", title: "Task", render: t => <span>{t.taskPage === undefined ? <b><VisibleText text={t.title} /></b> : <a href={t.taskPage}><b><VisibleText text={t.title} /></b></a>}<span className="rv-report-note"><VisibleText text={t.project} /></span></span> },
  { key: "origin", title: "Started from", render: t => ORIGIN_WORDS[t.origin] },
  { key: "state", title: "State", render: t => <span className="rv-report-state" data-state={t.state}>{STATE_WORDS[t.state]}</span> },
  { key: "pr", title: "Pull request", render: t => (t.prLinks[0] !== undefined ? <a href={t.prLinks[0]} target="_blank" rel="noopener noreferrer">{t.prsMerged} merged of {t.prsOpened}</a> : <PullRequestCell merged={t.prsMerged} opened={t.prsOpened} />) },
