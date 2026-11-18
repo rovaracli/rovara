@@ -52,7 +52,7 @@ function setUp(onCode: (call: CodeCall, person: Person) => Response | undefined 
   const handler = createCloudHandler({ client, store, work: new LocalWorkSessionStore(), origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(Date.UTC(2026, 10, 17)) });
   const made = new Set<string>();
   const as = async (token: string) => {
-    const person = PEOPLE[token];
+    const person = PEOPLE[token]!;
     const access = { developerId: person.id, displayName: "Someone", administrator: false, companyId: A, companyRole: "owner", projects: [], notices: [] } as CodeSession["access"];
     if (!made.has(token)) { made.add(token);await store.create(`cookie-${token}`, { accessToken: token, refreshToken: `r-${token}`, csrf: "csrf", signedInAt: "2026-11-17T00:00:00.000Z", access }); }
     return { cookie: `rovara_cloud_session=cookie-${token}`, "x-rovara-csrf": "csrf", "content-type": "application/json" };
@@ -60,8 +60,8 @@ function setUp(onCode: (call: CodeCall, person: Person) => Response | undefined 
   const send = async (method: string, target: string, headers: Record<string, string>, body?: unknown) => {
     const url = new URL(target, "http://127.0.0.1:8787");
     const request: CloudRequest = { method, path: url.pathname, query: url.searchParams, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) };
-    const answered = await handler(request);
-    return { status: answered!.status, body: answered.body === "" ? undefined : JSON.parse(answered.body), text: answered.body };
+    const answered = (await handler(request))!;
+    return { status: answered.status, body: answered.body === "" ? undefined : JSON.parse(answered.body), text: answered.body };
   };
   return { as, send, calls, codeCalls: () => calls.filter((call) => call.path !== "/v1/dev/access") };
 }
