@@ -47,7 +47,8 @@ export function AdminLayout() {
  }, [scope, query]);
  const secondReview = useQuery({
   queryKey: secondReviewProbeKey, enabled: supported && identity.isSuccess && (identity.data?.developer.orgRole === "owner" || identity.data?.developer.orgRole === "admin"), staleTime: Infinity, gcTime: Infinity, refetchOnWindowFocus: false, retry: false,
-  queryFn: async () => { const asked = scope; const response = await host.transport.request({ method: "GET", path: SECOND_REVIEW_PATH }); if (scopeNow.current !== asked) throw new Error("The scope changed."); return response.status !== 404; },
+  queryFn: async () => { const asked = scope; const response = await host.transport.request({ method: "GET", path: SECOND_REVIEW_PATH }); if (scopeNow.current !== asked) throw new Error("The scope changed."); // 404 (an older Cloud) and Cloud's 501 (this install does not serve it) both mean the page is off.
+  return response.status !== 404 && response.status !== 501; },
  });
  const secondReviewOff = secondReview.data === false;
  const location = useLocation();
