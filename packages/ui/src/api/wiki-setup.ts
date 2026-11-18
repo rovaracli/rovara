@@ -2,14 +2,14 @@
 // A refusal is shown in fixed words (fixedWikiSetupWords), never other text. Every answer is read with a strict schema; no dollar figure is in any of them.
 import { useMemo } from "react";
 import {
-  ProjectOverviewProjectSchema, WIKI_SETUP_PATHS, WIKI_SETUP_SENTENCES, WikiRequestBodySchema, WikiSetupBuildSchema, WikiSetupDeleteAnswerSchema, WikiSetupMapViewSchema, WikiSetupUpkeepSchema, WikiStartBodySchema, WikiSwitchBodySchema, WikiUpkeepBodySchema,
+  ProjectOverviewProjectSchema, SYSTEM_RUNS_PATH, SystemRunsBodySchema, SystemRunsViewSchema, WIKI_SETUP_PATHS, WIKI_SETUP_SENTENCES, WikiRequestBodySchema, WikiSetupBuildSchema, WikiSetupDeleteAnswerSchema, WikiSetupMapViewSchema, WikiSetupUpkeepSchema, WikiStartBodySchema, WikiSwitchBodySchema, WikiUpkeepBodySchema,
   type WikiStartBody,
 } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";
 
-export type { WikiSetupBuild, WikiSetupChip, WikiSetupMap, WikiSetupMapView, WikiSetupRepo, WikiSetupUpkeep, WikiSetupUpkeepCap } from "@agentx/contracts/web";
+export type { SystemRunsView, WikiSetupBuild, WikiSetupChip, WikiSetupMap, WikiSetupMapView, WikiSetupRepo, WikiSetupUpkeep, WikiSetupUpkeepCap } from "@agentx/contracts/web";
 
 const base = (name: string, tail: string) => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(name)) + "/" + tail;
 const P = WIKI_SETUP_PATHS;
@@ -30,6 +30,9 @@ export function createWikiSetupApi(host: AppHost) {
   upkeep: (project: string) => api.get(base(project, P.upkeep), WikiSetupUpkeepSchema),
   /** The project switch (`allowSystemRuns` absent), or the setup choice: the company's consent AND the project switch in one act (`allowSystemRuns: true`, a company owner or admin; Code decides). */
   setUpkeep: (project: string, requestId: string, on: boolean, allowSystemRuns?: boolean) => api.sendAnswer("PUT", base(project, P.upkeep), WikiUpkeepBodySchema.parse({ requestId, on, ...(allowSystemRuns === undefined ? {} : { allowSystemRuns }) }), WikiSetupUpkeepSchema, NEVER),
+  /** L4-P3: the company's one control over nightly upkeep (company owners and admins only; Code decides). Allowing needs a fresh sign-in (the answer is `REAUTH_REQUIRED`); withdrawing never does. */
+  systemRuns: () => api.get(SYSTEM_RUNS_PATH, SystemRunsViewSchema),
+  setSystemRuns: (requestId: string, allowed: boolean) => api.sendAnswer("PUT", SYSTEM_RUNS_PATH, SystemRunsBodySchema.parse({ requestId, allowed }), SystemRunsViewSchema, NEVER),
   /** The company's spending limits (company owners and admins only; Cloud's `/org/spend-limits`, lead 3 B1 and lead 4 L4-E): read for the nightly upkeep cap, written with the same body the Spending page sends. */
   capRead: () => api.get(SPEND_LIMITS_PATH, { parse: (body: unknown) => body }),
   capWrite: (project: string, expectedVersion: number, monthlyUsd: number | null) => api.sendAnswer("PUT", `${SPEND_LIMITS_PATH}/upkeep/${encodeURIComponent(project)}`, { expectedVersion, monthlyUsd }, { parse: (body: unknown) => body }, NEVER),
@@ -37,6 +40,8 @@ export function createWikiSetupApi(host: AppHost) {
 }
 export function useWikiSetupApi() { const host = useAppHost(); return useMemo(() => createWikiSetupApi(host), [host]); }
 export const wikiSetupKey = (project: string, part: "map" | "build" | "upkeep" | "cap") => ["wiki-setup", project, part] as const;
+/** The company control's own read (not a project's). */
+export const systemRunsKey = ["wiki-setup", "company", "system-runs"] as const;
 
 export const SPEND_LIMITS_PATH = "/v1/app/org/spend-limits";
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);

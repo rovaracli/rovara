@@ -254,3 +254,65 @@ test("phone width and dark mode keep the panel readable", async ({ page }, testI
   await page.emulateMedia({ colorScheme: "light" });
   expect(await violations(page, true)).toEqual([]);
 });
+
+// ---- L4-P3 (owner 2026-11-17): the fresh sign-in to allow, and the company's one control to withdraw -----------------------------------------------------------------------------------------
+test("allowing nightly upkeep asks for a fresh sign-in first (the pretend Code says so), then the same choice works; nothing was changed in between", async ({ page }, testInfo) => {
+  await pretendSpendLimits(page, { usd: null, version: 0, puts: [] });
+  await setWikiSetup(page, PROJECT, { stepUp: "stale" });
+  const panel = new WikiSetupPanel(page);
+  await panel.open(PROJECT);
+  await panel.byId("wiki-setup-upkeep-offer").click();
+  const puts: unknown[] = [];
+  page.on("request", (request) => { if (request.method() === "PUT" && request.url().endsWith("/upkeep")) puts.push(request.postDataJSON()); });
+  await panel.byId("wiki-setup-upkeep-yes").click();
+  const fresh = panel.row.getByTestId("fresh-sign-in");
+  await expect(fresh).toBeVisible();
+  await expect(fresh).toHaveAttribute("data-state", "needed");
+  await expect(fresh).toContainText("allow nightly upkeep for the company");
+  await expect(panel.byId("wiki-setup-upkeep-error")).toHaveCount(0);
+  await expect(panel.upkeep).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("wiki-setup-upkeep-step-up.png"), fullPage: true });
+  expect(await violations(page, true)).toEqual([]);
+  // The person confirms it is them (the pretend Code's sign-in is not driven here); Code then accepts the same request.
+  await setWikiSetup(page, PROJECT, {});
+  await panel.byId("wiki-setup-upkeep-yes").click();
+  await expect(panel.upkeep).toBeChecked();
+  await expect(panel.row.getByTestId("fresh-sign-in")).toHaveCount(0);
+  expect(puts).toHaveLength(2);
+  expect((puts[1] as { requestId: string }).requestId).toBe((puts[0] as { requestId: string }).requestId);
+});
+
+test("Company settings: 'Nightly upkeep for the company: Allowed · Withdraw' with one confirm; withdrawing stops it for the company and the project keeps its switch; light, dark and phone", async ({ page }, testInfo) => {
+  await setWikiSetup(page, PROJECT, { consent: true, upkeepOn: true });
+  await page.goto("/app/admin/settings");
+  const box = page.getByTestId("company-upkeep");
+  await expect(box.getByTestId("company-upkeep-state")).toHaveText("Nightly upkeep for the company: Allowed");
+  await page.screenshot({ path: testInfo.outputPath("company-upkeep-allowed.png"), fullPage: true });
+  await box.getByTestId("company-upkeep-withdraw").click();
+  await expect(box.getByTestId("company-upkeep-confirm")).toContainText("Nightly runs stop for every project now. Projects keep their switch.");
+  await page.screenshot({ path: testInfo.outputPath("company-upkeep-confirm-light.png"), fullPage: true });
+  expect(await violations(page, true)).toEqual([]);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.screenshot({ path: testInfo.outputPath("company-upkeep-confirm-dark.png"), fullPage: true });
+  expect(await violations(page, true)).toEqual([]);
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("company-upkeep-confirm-phone.png"), fullPage: true });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await box.getByTestId("company-upkeep-yes").click();
+  await expect(box.getByTestId("company-upkeep-state")).toHaveText("Nightly upkeep for the company: Not allowed");
+  await expect(box.getByTestId("company-upkeep-allow-where")).toContainText("Withdrawn.");
+  await page.screenshot({ path: testInfo.outputPath("company-upkeep-withdrawn.png"), fullPage: true });
+  // The project keeps its own switch: its row still says on, but nothing runs while the company has not allowed it (the project page reads as off, and offers the choice again).
+  const panel = new WikiSetupPanel(page);
+  await panel.open(PROJECT);
+  await expect(panel.byId("wiki-setup-upkeep-state")).toContainText("Nightly upkeep is off.");
+  await expect(panel.byId("wiki-setup-upkeep-offer")).toBeVisible();
+});
+
+test("a developer (not an owner or admin) has no Company settings page and so no company control", async ({ page }) => {
+  await setFakePerson(page, "sam");
+  await page.goto("/app/admin/settings");
+  await expect(page.getByTestId("company-upkeep")).toHaveCount(0);
+});
