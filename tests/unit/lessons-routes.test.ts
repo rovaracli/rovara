@@ -71,6 +71,10 @@ describe("the Learned lists, the mode and retiring", () => {
     expect((await priya.get<{ lessons: Lesson[] }>("/projects/web/lessons?list=retired")).body.lessons.map((lesson) => lesson.id)).toEqual(["les_semis0001"]);
     expect((await priya.get("/projects/web/lessons?list=everything")).status).toBe(400);
     expect((await priya.get("/projects/web/lessons?limit=500")).status).toBe(400);
+    // A page is at most 50 lessons (lessons are read a few at a time, never in bulk): 51 is refused here, before Code is asked.
+    expect((await priya.get("/projects/web/lessons?limit=51")).status).toBe(400);
+    expect((await priya.get("/projects/web/lessons?limit=100")).status).toBe(400);
+    expect((await priya.get("/projects/web/lessons?limit=50")).status).toBe(200);
     fake.setLessons(false);
     expect(await priya.get("/projects/web/lessons")).toEqual({ status: 404, body: { error: { code: "LESSONS_SWITCHED_OFF", message: "Lessons are off." } } });
     expect((await priya.get("/projects/web/lessons/mode")).status).toBe(404);
