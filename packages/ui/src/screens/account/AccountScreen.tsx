@@ -18,6 +18,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { NameForm } from "../../shell/NameForm.js";
 import { AdminSection, FreshSignIn, NotConnected, forgetConfirmed, useJustConfirmed } from "../admin/parts.js";
 import { ConnectedSignIns } from "./ConnectedSignIns.js";
+import { SlackLearningSwitch } from "./SlackLearningSwitch.js";
 import { GithubAccount } from "./GithubAccount.js";
 import { useNav } from "./use-nav.js";
 import "../admin/admin.css";
@@ -48,6 +49,7 @@ export function AccountScreen() {
   <AdminSection title="You">
    {nav !== undefined && <NameForm key={nav.me.name} label="Your name" initial={isPlaceholderDisplayName(nav.me.name) ? "" : nav.me.name} submit="Save name" />}
    <fieldset className="rv-theme-options"><legend>Appearance</legend>{(["system", "light", "dark"] as const).map((value: ThemePreference) => <label key={value}><input type="radio" name="appearance" value={value} checked={theme.preference === value} onChange={() => theme.setPreference(value)} />{value === "system" ? "System" : value === "light" ? "Light" : "Dark"}</label>)}</fieldset>
+   <SlackLearningSwitch />
   </AdminSection>
   {factorsOffered && <>
   <AdminSection title="Confirmation email" note="Where your sign-in codes go">
