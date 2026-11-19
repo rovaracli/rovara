@@ -54,6 +54,10 @@ it("strips company numbers throughout member JSON and leaves admin and owner quo
  const numbers = (v: unknown): number[] => typeof v === "number" ? [v] : v !== null && typeof v === "object" ? Object.values(v).flatMap(numbers) : [];
  const member = await preview.answer(context({ quoteVersion: 2 }, raw));
  expect(member.status).toBe(200);
+ for (const q of (member.body as { options: Array<{ firstBindingLimit: unknown }> }).options) {
+  expect(q.firstBindingLimit).toEqual({ state: "available", value: { scope: "RESTRICTED", bindingScope: "engine_day", blocked: false } });
+  expect(numbers(q.firstBindingLimit)).toEqual([]);
+ }
  expect(numbers(JSON.parse(JSON.stringify(member.body))).filter(n => sentinels.includes(n))).toEqual([]);
  expect(PreviewV2Schema.safeParse(member.body).success).toBe(true);
  for (const role of ["owner", "admin"]) expect(await preview.answer(context({ quoteVersion: 2 }, raw, [{ name: "web" }], role))).toEqual({ status: 200, body: raw });
@@ -62,10 +66,10 @@ it("strips company numbers throughout member JSON and leaves admin and owner quo
 
 it.each([true, false, null])("accepts and preserves an already restricted Code quote (%s), strictly", async blocked => {
  const raw = quoteFixture();
- for (const q of raw.options) Object.assign(q, { initialHoldMicros: { state: "unavailable", reason: "restricted" }, firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked } } });
+ for (const q of raw.options) Object.assign(q, { initialHoldMicros: { state: "unavailable", reason: "restricted" }, firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked, bindingScope: "engine_day" } } });
  expect(PreviewV2Schema.safeParse(raw).success).toBe(true);
  expect(await preview.answer(context({ quoteVersion: 2 }, raw))).toEqual({ status: 200, body: raw });
- for (const extra of [{ availableMicros: 42 }, { requiredMicros: 42 }, { blocked: "false" }]) {
+ for (const extra of [{ availableMicros: 42 }, { requiredMicros: 42 }, { blocked: "false" }, { bindingScope: "other" }, { bindingScope: 42 }]) {
   const bad = structuredClone(raw);
   for (const q of bad.options) Object.assign(q, { firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked, ...extra } } });
   expect(PreviewV2Schema.safeParse(bad).success).toBe(false);
@@ -76,6 +80,6 @@ it.each([true, false, null])("accepts and preserves an already restricted Code q
 
 it("pins the mirrored PreviewV2 contract and member boundary", () => {
  const bytes = readFileSync("packages/contracts/src/start-estimates.ts");
- expect(createHash("sha256").update(bytes).digest("hex")).toBe("420d6c6fe174fb4dd99735bc01d417387ecb87c65ae1f1b7cb26e5888a0426a5");
+ expect(createHash("sha256").update(bytes).digest("hex")).toBe("9db6c3ee44077f81cb402cb8cd36c29f6574b6abb3da90ca5c747b4e8bb0a34c");
  expect(readFileSync("packages/cloud-server/src/start-estimates.ts")).toEqual(bytes);
 });

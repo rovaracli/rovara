@@ -29,13 +29,16 @@ export class DynamoGatewayMeterReader implements PersonSpendReader {
     if (table === "" || issuer === "" || issuer.length > 2048) throw new Error("gateway meter settings: a table and the install issuer are both needed");
   }
 
-  /** One exact company-month row. Missing or malformed totals stay unavailable, never zero. */
-  async companyMonth(companyId: string, month: string): Promise<{ spentMicros: number; reservedMicros: number; committed: number; provisionalMicros?: number }> {
+  /** One exact company-month row. An absent row is empty; failed or malformed reads throw. */
+  async companyMonth(companyId: string, month: string): Promise<{ spentMicros: number; reservedMicros: number; committed: number; provisionalMicros?: number } | undefined> {
     if (!COMPANY_ID.test(companyId) || !MONTH.test(month)) throw new Error("meter unavailable");
     const pk = meterPartition(this.issuer, companyId), sk = `ROW#${JSON.stringify(["company", month])}`;
     const answer = await this.db.send(new BatchGetCommand({ RequestItems: { [this.table]: { Keys: [{ pk, sk }], ConsistentRead: true } } }));
     if ((answer.UnprocessedKeys?.[this.table]?.Keys?.length ?? 0) > 0) throw new Error("meter unavailable");
-    const rows = answer.Responses?.[this.table] ?? [], row = rows[0];
+    const rows = answer.Responses?.[this.table];
+    if (!Array.isArray(rows)) throw new Error("meter unavailable");
+    if (rows.length === 0) return undefined;
+    const row = rows[0];
     if (rows.length !== 1 || row === undefined || row["pk"] !== pk || row["sk"] !== sk || row["company"] !== companyId || row["item"] !== "company" || !whole(row["spentMicros"]) || !whole(row["reservedMicros"]) || !whole(row["committed"]) || (row["provisionalMicros"] !== undefined && !whole(row["provisionalMicros"]))) throw new Error("meter unavailable");
     return { spentMicros: row["spentMicros"], reservedMicros: row["reservedMicros"], committed: row["committed"], ...(row["provisionalMicros"] === undefined ? {} : { provisionalMicros: row["provisionalMicros"] as number }) };
   }

@@ -1,4 +1,4 @@
-// Spending, the top of the page (Hybrid 1, DEC 223): real amounts first. Spent this month, held for running work, what is left, then by project. Per-person spending is on People and limits.
+// Spending, the top of the page (Hybrid 1, DEC 223): real amounts first. Spent this month, held for running work, what is left. Per-person spending is on People and limits.
 // The numbers are Cloud's own read (`GET /v1/app/org/spend`, contract v0 `OrgSpendSummaryAddition` plus the optional additions in api/admin-company.ts). A number Cloud
 // did not send is not drawn; a page Cloud does not serve says "not connected yet".
 import { useEffect, useMemo } from "react";
@@ -71,6 +71,7 @@ export function SpendingSummary({ read }: { read: UseQueryResult<OrgSpendRead> }
   return <><GatewayReadinessBanner readiness={readiness} /><AdminSection title="This month"><div role="alert" className="rv-banner rv-banner-danger" data-testid="spend-error"><span><b>{forbidden ? "You don't have permission to view spending." : "Couldn't load spending."}</b> No amounts are shown.</span><Button disabled={read.isFetching} onClick={() => { void read.refetch(); }}>Try again</Button></div></AdminSection></>;
  }
  const data = read.data, s = summary!, month = monthName(data.month);
+ if (data.empty === true) return <><GatewayReadinessBanner readiness={readiness} /><AdminSection title="This month"><p className="rv-muted">No AI spending recorded yet this month</p></AdminSection></>;
  if (s.state === "unknown") return <><GatewayReadinessBanner readiness={readiness} /><AdminSection title="This month"><NotConnected what="This month's spending numbers" /></AdminSection></>;
  return <>
   <GatewayReadinessBanner readiness={readiness} />
@@ -85,7 +86,7 @@ export function SpendingSummary({ read }: { read: UseQueryResult<OrgSpendRead> }
   <p>Not yet confirmed: {data.provisionalMicros === undefined ? "Unavailable" : <Money usd={data.provisionalMicros / 1_000_000} />}</p>
   <p className="rv-muted">Not yet confirmed amounts are already counted in Spent or Held.</p>
   {s.usedFraction !== undefined && <SpendMeter used={(s.spentUsd ?? 0) / (s.limitUsd ?? 1)} held={s.heldFraction ?? 0} bad={s.state === "over"} caption label={`${Math.round(s.usedFraction * 100)}% of this month's limit used or held`} />}
-  <AdminSection title="By project">{data.projects === undefined ? <NotConnected what="Spending by project" /> : data.projects.length === 0 ? <p className="rv-muted">No project has spent anything this month.</p> : <DataTable caption="Spending by project" columns={projectColumns} rows={data.projects} rowKey={row => row.name} />}</AdminSection>
+  {data.projects !== undefined && <AdminSection title="By project">{data.projects.length === 0 ? <p className="rv-muted">No project has spent anything this month.</p> : <DataTable caption="Spending by project" columns={projectColumns} rows={data.projects} rowKey={row => row.name} />}</AdminSection>}
   <AdminSection title="People and limits" note="Only owners and admins see this."><p className="rv-muted">Each person's spending this month against their own limit is on <Link to="/app/admin/money/people">People and limits</Link>.</p></AdminSection>
   <p className="rv-muted"><Link to="/app/admin/audit">Changes to limits are recorded in the audit.</Link></p>
  </>;

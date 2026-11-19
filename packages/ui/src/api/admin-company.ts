@@ -21,7 +21,7 @@ export interface ProjectSpend { name: string; spentUsd: number; heldUsd?: number
  * additions when Cloud sends them: `heldUsd`, `limitUsd`, `runsOutOn`, `costPerMergedChangeUsd`, `mergedCount`, `month`, and `byProject[]`. Per-person spending is NOT read here (owner rule, decision D2): it lives on People and limits only.
  */
 export interface OrgSpendRead {
-  provisionalMicros?: number; spentUsd?: number; remainingUsd?: number; heldUsd?: number; limitUsd?: number; runsOutOn?: string; costPerMergedChangeUsd?: number; mergedCount?: number; month?: string;
+  empty?: true; provisionalMicros?: number; spentUsd?: number; remainingUsd?: number; heldUsd?: number; limitUsd?: number; runsOutOn?: string; costPerMergedChangeUsd?: number; mergedCount?: number; month?: string;
   projects?: ProjectSpend[];
 }
 function readProject(raw: unknown): ProjectSpend | undefined {
@@ -32,6 +32,10 @@ function readProject(raw: unknown): ProjectSpend | undefined {
 }
 export function readOrgSpend(body: unknown): OrgSpendRead {
   if (!isRecord(body)) throw new Error("not a spending summary");
+  if (body["empty"] === true) {
+    if (Object.keys(body).some(key => !["empty", "month", "requestId"].includes(key)) || typeof body["month"] !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/u.test(body["month"])) throw new Error("not an empty spending summary");
+    return { empty: true, month: body["month"] };
+  }
   const projects = Array.isArray(body["byProject"]) ? body["byProject"].flatMap(raw => { const line = readProject(raw); return line === undefined ? [] : [line]; }) : undefined;
   const remaining = num(body["remainingUsd"]), runsOutOn = str(body["runsOutOn"]);
   return {

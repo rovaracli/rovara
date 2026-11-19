@@ -31,8 +31,11 @@ test("the Work pane opens the task on its own page, with the pane at full width 
   await expect(task.stepRail).toBeVisible();
   await expect(task.decision()).toBeVisible();
   await expect(task.pane.getByRole("region", { name: "Spec" })).toContainText("1.1");
-  // Code's plan names no estimate or run limit, and this task has spent nothing yet: no Cost card (nothing is made up).
-  await expect(task.pane.getByRole("region", { name: "Cost" })).toHaveCount(0);
+  // The fake Code has no measured TaskMoneyV1: show unavailable rather than inventing zero.
+  const cost = task.pane.getByRole("region", { name: "Cost", exact: true });
+  await expect(cost).toContainText("Cost unavailable");
+  await expect(cost).not.toContainText("No spend yet");
+  await expect(cost).not.toContainText("$0.00");
   const wide = await task.pane.boundingBox();
   expect(narrow !== null && wide !== null && wide.width > narrow.width).toBe(true);
   await task.backToWork.click();

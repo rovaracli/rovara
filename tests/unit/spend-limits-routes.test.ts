@@ -54,7 +54,7 @@ class Racing extends LocalCompanyStore {
   override async removeSpendLimit(companyId: string, kind: SpendLimitKind, id: string, basis: SpendLimitBasis) { if (this.breakWith !== undefined) throw new Error(this.breakWith); return super.removeSpendLimit(companyId, kind, id, basis); }
 }
 
-function world(options: { companyMonth?: (company: string, month: string) => Promise<{ spentMicros: number; reservedMicros: number; committed: number; provisionalMicros?: number }>; provisional?: (company: string, month: string) => Promise<number | undefined>; company?: boolean; codeProject?: "ok" | "outage"; members?: "ok" | "outage" | "pages" | "foreign" | "garbled"; pageSize?: number } = {}) {
+function world(options: { companyMonth?: (company: string, month: string) => Promise<{ spentMicros: number; reservedMicros: number; committed: number; provisionalMicros?: number } | undefined>; provisional?: (company: string, month: string) => Promise<number | undefined>; company?: boolean; codeProject?: "ok" | "outage"; members?: "ok" | "outage" | "pages" | "foreign" | "garbled"; pageSize?: number } = {}) {
   const clock = { at: START }; let tokens = 0;
   const nowS = () => Math.floor(clock.at / 1000);
   const byToken = new Map<string, Person>();
@@ -806,7 +806,7 @@ describe("company Spending read", () => {
  it("never invents zero for meter faults, missing settings, invalid totals or a month rollover", async () => {
   for (const row of [undefined, { spentMicros: -1, reservedMicros: 0, committed: 0 }, { spentMicros: 1, reservedMicros: 0, committed: 1, provisionalMicros: -1 }]) {
    const w = world({ companyMonth: async () => { if (row === undefined) throw new Error("private failure"); return row; } }); await w.settings(A, {});
-   const result = await w.call(await w.signIn("ada"), "GET", "/org/spend"); expect(result.status).toBe(503); expect(result.raw).not.toContain("private failure"); expect(result.body).not.toHaveProperty("spentThisMonthUsd");
+   const result = await w.call(await w.signIn("ada"), "GET", "/org/spend"); expect(result.status).toBe(503); expect(result.raw).not.toContain("private failure"); expect(result.body).not.toHaveProperty("spentThisMonthUsd"); expect(result.body).not.toHaveProperty("empty");
   }
   const missing = world(); expect((await missing.call(await missing.signIn("ada"), "GET", "/org/spend")).status).toBe(503);
   const rollover = world({ companyMonth: async () => { rollover.clock.at = Date.parse("2026-12-01T00:00:00Z"); return { spentMicros: 0, reservedMicros: 0, committed: 0 }; } }); await rollover.settings(A, {});
@@ -840,4 +840,16 @@ it.each([
  if (provisional === undefined) expect(result.body).not.toHaveProperty("provisionalMicros");
  else expect(result.body["provisionalMicros"]).toBe(provisional);
  expect(result.body).not.toHaveProperty("confirmedMicros");
+});
+
+it("answers a genuinely absent company month calmly without inventing amounts", async () => {
+ const w = world({ companyMonth: async () => undefined }); await w.settings(A, {});
+ const result = await w.call(await w.signIn("ada"), "GET", "/org/spend");
+ expect(result.status).toBe(200);
+ expect(result.body).toEqual({ month: "2026-11", empty: true });
+});
+it("keeps an absent row unavailable when its read crosses the month boundary", async () => {
+ const w = world({ companyMonth: async () => { w.clock.at = Date.parse("2026-12-01T00:00:00Z"); return undefined; } }); await w.settings(A, {});
+ const result = await w.call(await w.signIn("ada"), "GET", "/org/spend");
+ expect(result.status).toBe(503); expect(result.body).not.toHaveProperty("empty");
 });

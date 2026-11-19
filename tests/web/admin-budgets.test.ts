@@ -33,6 +33,7 @@ for (const role of ["owner", "admin"]) it(`shows ${role} the company month total
   const group = await screen.findByRole("group", { name: "Spending in November" }); expect(group.textContent).toContain("$20.00"); expect(group.textContent).toContain("$78.00");
   expect(screen.getByText(/Not yet confirmed:/).textContent).toBe("Not yet confirmed: $1.23");
   expect(screen.getByText("Not yet confirmed amounts are already counted in Spent or Held.")).toBeTruthy();
+  expect(screen.queryByText(/Spending by project/)).toBeNull(); expect(screen.queryByRole("region", { name: "By project" })).toBeNull();
   expect(screen.queryByRole("table", { name: "Monthly base budgets" })).toBeNull(); expect(screen.queryByText("Task stop")).toBeNull();
   expect(f.request.mock.calls.every(([r]) => r.method === "GET" && !/budget-settings|task-stop|enrollment/.test(r.path))).toBe(true);
  } finally { f.close(); }
@@ -67,4 +68,20 @@ it("does not ask for financial data as a member", async () => {
 });
 for (const theme of ["light", "dark"] as const) it(`has accessible spending totals in ${theme}`, async () => {
  const f = mount({ theme }); try { await screen.findByText("$20.00"); await expectNoAxeViolations(f.container); } finally { f.close(); }
+});
+
+it("shows an absent meter month calmly, with no amounts or error", async () => {
+ const f = mount({ respond: async () => ({ status: 200, body: { month: "2026-11", empty: true } }) });
+ try {
+  await screen.findByText("No AI spending recorded yet this month");
+  expect(screen.queryByTestId("spend-error")).toBeNull();
+  expect(screen.queryByText(/\$0/)).toBeNull(); expect(screen.queryByRole("group", { name: "Spending in November" })).toBeNull();
+ } finally { f.close(); }
+});
+it("shows a real meter read fault as an error, never an empty month or zero", async () => {
+ const f = mount({ respond: async () => ({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "private fault" } } }) });
+ try {
+  expect((await screen.findByTestId("spend-error")).textContent).toContain("Couldn't load spending.");
+  expect(screen.queryByText("No AI spending recorded yet this month")).toBeNull(); expect(screen.queryByText(/\$0/)).toBeNull();
+ } finally { f.close(); }
 });

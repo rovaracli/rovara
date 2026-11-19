@@ -18,7 +18,9 @@ async function spending(context: RouteContext): Promise<RouteAnswer> {
   const settings = await companySettings(backend.store, who.companyId);
   if (settings === undefined) return unavailable();
   const totals = await meter.companyMonth(who.companyId, month);
-  if (context.now().toISOString().slice(0, 7) !== month || ![totals.spentMicros, totals.reservedMicros, totals.committed].every(whole) || (totals.provisionalMicros !== undefined && !whole(totals.provisionalMicros))) return unavailable();
+  if (context.now().toISOString().slice(0, 7) !== month) return unavailable();
+  if (totals === undefined) return { status: 200, body: { month, empty: true } };
+  if (![totals.spentMicros, totals.reservedMicros, totals.committed].every(whole) || (totals.provisionalMicros !== undefined && !whole(totals.provisionalMicros))) return unavailable();
   const limit = settings.settings.budgets.companyMonthlyUsdMicros;
   // Meter-to-display mapping (dynamo-meter #close): spent includes estimatedMicros
   // settlements; estimatedMicros is a subset, not an extra charge or a confirmed total.

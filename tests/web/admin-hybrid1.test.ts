@@ -11,7 +11,7 @@ import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packag
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { lineState, readCompanySettings, readOrgSpend, spendSummary } from "../../packages/ui/src/api/admin-company.js";
-import { visibleAdminGroups } from "../../packages/ui/src/screens/admin/admin-nav.js";
+import { ADMIN_GROUPS, visibleAdminGroups } from "../../packages/ui/src/screens/admin/admin-nav.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
@@ -85,6 +85,7 @@ describe("admin navigation", () => {
   const all = groups.flatMap(group => group.links.map(link => link.label));
   expect(all).toEqual(expect.arrayContaining(["People", "Invites", "Sign-in clients", "Spending", "Company settings", "How we work", "Audit", "Health"]));
   expect(all).not.toContain("Sign-in factors");
+  expect(ADMIN_GROUPS.flatMap(g => g.links).find(l => l.label === "Spending")?.blurb).toBe("Spent this month and what is left.");
  });
  it("hides owner-only and switched-off pages, and shows a member only the waiting queue", () => {
   expect(visibleAdminGroups("admin", false).flatMap(group => group.links.map(link => link.label))).not.toContain("Company domains");
@@ -143,9 +144,9 @@ describe("Spending", () => {
    expect(screen.queryByRole("table", { name: "Spending by project" })).toBeNull();
   } finally { f.close(); }
  });
- it("says per-project amounts are not connected when only the totals are served", async () => {
+ it("omits the by-project placeholder when only the company totals are served", async () => {
   const f = mount("/app/admin/money/budgets", r => (r.path === "/v1/app/org/spend" ? ok({ spentThisMonthUsd: 12, remainingUsd: 88 }) : ok({})));
-  try { await screen.findByRole("group", { name: /Spending in/ }); expect(screen.getAllByTestId("not-connected")).toHaveLength(1); } finally { f.close(); }
+  try { await screen.findByRole("group", { name: /Spending in/ }); expect(screen.queryByText(/Spending by project/)).toBeNull(); expect(screen.queryByRole("region", { name: "By project" })).toBeNull(); } finally { f.close(); }
  });
  it("has no accessibility violations with amounts shown", async () => {
   const f = mount("/app/admin/money/budgets", r => (r.path === "/v1/app/org/spend" ? ok(spendBody) : ok({})));
@@ -326,4 +327,15 @@ describe("Your account", () => {
   const f = mount("/app/account", () => ok({}));
   try { await screen.findByRole("heading", { name: "Your account" }); await expectNoAxeViolations(f.container); } finally { f.close(); }
  });
+});
+
+it("Overview distinguishes an empty month from a fault without showing invented amounts", async () => {
+ const f = mount("/app/admin", r => r.path === "/v1/app/org/spend" ? ok({ month: "2026-11", empty: true }) : ok({ members: [maya] }));
+ try { await screen.findByText("No AI spending recorded yet this month"); expect(screen.queryByText(/\$0/)).toBeNull(); } finally { f.close(); }
+ const g = mount("/app/admin", r => r.path === "/v1/app/org/spend" ? { status: 503, body: {} } : ok({ members: [maya] }));
+ try { await screen.findByText(/Couldn't load spending/); expect(screen.queryByText("No AI spending recorded yet this month")).toBeNull(); } finally { g.close(); }
+});
+it("only accepts the explicit empty answer without contradictory amounts", () => {
+ expect(readOrgSpend({ month: "2026-11", empty: true })).toEqual({ month: "2026-11", empty: true });
+ for (const extra of [{ spentThisMonthUsd: 0 }, { provisionalMicros: 1 }, { month: "bad" }]) expect(() => readOrgSpend({ month: "2026-11", empty: true, ...extra })).toThrow();
 });

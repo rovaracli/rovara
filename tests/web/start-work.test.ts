@@ -234,7 +234,7 @@ it("starts once after refreshing an expired quote with equal ranges", async () =
 });
 
 
-it.each([[true, "Blocked by the company limit"], [false, "Fits the budget"], [null, "We'll check the budget when the task runs"]] as const)("shows restricted budget status %s without company figures", async (blocked, message) => {
+it.each([[true, "Blocked by a spending limit"], [false, "Fits the budget"], [null, "We'll check the budget when the task runs"]] as const)("shows restricted budget status %s without company figures", async (blocked, message) => {
  const { quoteFixture } = await import("./support/start-preview-fixture.js");
  const raw = quoteFixture();
  for (const q of raw.options) Object.assign(q, { initialHoldMicros: { state: "unavailable", reason: "restricted" }, firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked } } });
@@ -245,5 +245,37 @@ it.each([[true, "Blocked by the company limit"], [false, "Fits the budget"], [nu
   expect(screen.getAllByText(message)).toHaveLength(2);
   if (blocked !== false) expect(screen.queryByText("Fits the budget")).toBeNull();
   expect(screen.queryByText(/Initial hold|available;/)).toBeNull();
+ } finally { f.close(); }
+});
+
+it.each([
+ ["company_month", "company monthly limit"], ["project_month", "project monthly limit"],
+ ["project_task", "project task limit"], ["engine_task", "task limit on this install"],
+ ["engine_day", "daily limit on this install"], ["gateway_task", "AI task limit".toLowerCase()],
+])("names a member's blocking %s without budget figures", async (bindingScope, words) => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js"); const raw = quoteFixture();
+ for (const q of raw.options) Object.assign(q, { limits: [], initialHoldMicros: { state: "unavailable", reason: "restricted" }, firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked: true, bindingScope } } });
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...raw, project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  expect(screen.getAllByText("Blocked by " + words)).toHaveLength(2);
+  expect(screen.queryByText(/Initial hold|available;/)).toBeNull();
+ } finally { f.close(); }
+});
+it("reviews Full with unchanged visible ranges without claiming the estimate changed", async () => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js");
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }), send: async r => r.path.endsWith("/start-suggest") ? { status: 200, body: { kind: "large_change", classifier: "ok", pick: "full" } } : started() });
+ f.query.setQueryData(["nav"], { features: { answers: true } });
+ try {
+  fireEvent.change(await box(), { target: { value: "Rewrite the module" } }); await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  fireEvent.click(await screen.findByTestId("start-choice-full"));
+  await screen.findByText("Full path selected. Review before starting.");
+  expect(screen.queryByText(/Cost estimate changed/)).toBeNull();
+  expect(posts(f).filter(r => r.path === CODE)).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(posts(f).filter(r => r.path === CODE)).toHaveLength(1));
+  expect(posts(f).find(r => r.path === CODE)?.body).toMatchObject({ path: "full" });
  } finally { f.close(); }
 });
