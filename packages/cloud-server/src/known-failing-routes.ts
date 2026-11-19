@@ -1,4 +1,6 @@
 // Cloud forwards the website session; Code owns all role, evidence, mark and audit decisions.
+import { CodeError } from "./code-client.js";
+import type { RouteContext } from "./routes.js";
 import type { Route } from "./routes.js";
 const path = (project: string) => `/v1/app/projects/${encodeURIComponent(project)}/known-failing`;
 function record(value: unknown): Record<string, unknown> {
@@ -21,6 +23,17 @@ export function knownFailingAnswer(value: unknown, done: boolean) {
     return { name: text(mark["name"], 500), checkId: text(mark["checkId"], 64), markedBy: text(mark["markedBy"], 200), markedByName: text(mark["markedByName"], 200), markedAt: when(mark["markedAt"]), epoch: positive(mark["epoch"]), markedByYou: mark["markedByYou"] };
   });
   return { ...(done ? { status: "done" as const } : {}), max, marks };
+}
+/** Code's feature-gated read is the capability; the person's token supplies the company. */
+export async function knownFailingOverview(context: RouteContext, project: string): Promise<{ count: number } | undefined> {
+  let response: unknown;
+  try { response = await context.client.json<unknown>(context.session, path(project)); }
+  catch (error) {
+    if (error instanceof CodeError && [403, 404, 501].includes(error.status)) return undefined;
+    throw error;
+  }
+  try { return { count: knownFailingAnswer(response, false).marks.length }; }
+  catch { throw new CodeError(502, { error: { code: "CODE_UNREADABLE", message: "The known-failing marks could not be read." } }); }
 }
 export const KNOWN_FAILING_ROUTES: readonly Route[] = (["GET", "POST"] as const).map((method): Route => ({
   method, path: /^\/projects\/([^/]+)\/known-failing$/u,

@@ -79,7 +79,8 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
  const planExtras = decision.choices !== undefined || runLimitOf(card) !== undefined;
  const canRequestChanges = mayRequestChangesHere(card) && actions.onRequestChanges !== undefined;
  const canReject = card.actions.some(action => action.kind === "reject") && card.risk !== "high";
- const needsEvidence = card.friction.expandEvidenceFirst && card.risk === "medium";
+ const needsEvidence = card.friction.expandEvidenceFirst && card.risk === "medium" && !decision.detailsUnreadable;
+ const evidenceError = decision.detailsUnreadable && <p role="alert">The exact test evidence could not be read. Refresh before marking tests as already failing.</p>;
  const activeTab = tabs === undefined ? undefined : tab;
  // The requirements are approved before the design: the design tab's Approve waits for them.
  const designBlocked = (which: DecisionTabId | undefined) => which === "design" && tabs?.some(item => item.id === "requirements" && !item.approved) === true;
@@ -161,6 +162,7 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
    </div>
    {confirming && <div role="group" aria-label="Confirm merge" className="rv-decision-confirm"><p><VisibleText text={mergeQuestion(confirming.merging)} /></p>
     <div className="rv-actions"><Button variant="primary" onClick={() => { const url = confirming.url;setConfirming(undefined);setNote(<p role="status">Nothing is merged until you confirm on the next page.</p>);host.openExternal(url); }}>Confirm</Button><Button onClick={() => { setConfirming(undefined);setNote(<p role="status">Nothing was merged.</p>); }}>Cancel</Button></div></div>}
+   {evidenceError}
    {note}
    {error && <p role="alert" data-testid="decision-error"><VisibleText text={error} /></p>}
   </section>;
@@ -180,6 +182,7 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
   </div>
   {confirming && <div role="group" aria-label="Confirm merge" className="rv-decision-confirm"><p><VisibleText text={mergeQuestion(confirming.merging)} /></p>
    <div className="rv-actions"><Button variant="primary" onClick={() => { const url = confirming.url;setConfirming(undefined);setNote(<p role="status">Nothing is merged until you confirm on the next page.</p>);host.openExternal(url); }}>Confirm</Button><Button onClick={() => { setConfirming(undefined);setNote(<p role="status">Nothing was merged.</p>); }}>Cancel</Button></div></div>}
+  {evidenceError}
   {note}
   {error && <p role="alert"><VisibleText text={error} /></p>}
  </article>;
