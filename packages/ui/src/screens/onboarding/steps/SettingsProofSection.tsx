@@ -2,7 +2,6 @@ import { useState } from "react";
 import type { AppProjectDetail } from "@agentx/contracts/web";
 import { useOnboardingApi } from "../../../api/onboarding.js";
 import { ApiError } from "../../../api/errors.js";
-import { useAppHost } from "../../../host.js";
 import { Button } from "../../../design/Button.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 
@@ -21,10 +20,9 @@ const HELD_WORDS = {
  */
 export function SettingsProofSection({ project, onProject }: { project: AppProjectDetail; onProject: (project: AppProjectDetail) => void }) {
   const api = useOnboardingApi();
-  const host = useAppHost();
   const proof = project.settingsProof;
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<{ message: string; reauth: boolean }>();
+  const [error, setError] = useState<{ message: string }>();
   const [intent, setIntent] = useState(() => crypto.randomUUID());
   if (proof === undefined) return null;
   async function undo() {
@@ -35,7 +33,7 @@ export function SettingsProofSection({ project, onProject }: { project: AppProje
       setIntent(crypto.randomUUID());
       onProject(done.project);
     } catch (caught) {
-      setError(caught instanceof ApiError ? { message: caught.message, reauth: caught.code === "REAUTH_REQUIRED" } : { message: "Couldn't go back to the last proven setup.", reauth: false });
+      setError(caught instanceof ApiError ? { message: caught.message } : { message: "Couldn't go back to the last proven setup." });
     } finally {
       setBusy(false);
     }
@@ -46,7 +44,7 @@ export function SettingsProofSection({ project, onProject }: { project: AppProje
     {proof.notice && <aside role="alert"><p><VisibleText text={proof.notice.message} /></p>{proof.canUndo && project.myRole === "maintainer" && <Button variant="primary" busy={busy} onClick={() => { void undo(); }}>Undo to the last proven setup</Button>}</aside>}
     {!proof.notice && proof.canUndo && proof.status !== "proven" && project.myRole === "maintainer" && <Button busy={busy} onClick={() => { void undo(); }}>Undo to the last proven setup</Button>}
     {proof.held && <aside role="status"><p>{HELD_WORDS[proof.held.status]}</p>{proof.held.reason && <p><VisibleText text={proof.held.reason} /></p>}</aside>}
-    {error && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => host.signIn(host.currentPath())}>Sign in again</Button></>}</p>}
+    {error && <p role="alert"><VisibleText text={error.message} /></p>}
   </section>;
 }
 export default SettingsProofSection;

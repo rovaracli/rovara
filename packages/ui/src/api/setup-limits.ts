@@ -44,7 +44,7 @@ export function createSetupLimitsApi(host: AppHost) {
   locks: () => api.get(SETUP_LOCKS_PATH, CompanyLocksReader),
   /** Only what is given changes. A stricter change applies at once (200); a loosening waits for a different admin (202, `needs_second_admin`). */
   setLocks: (input: { requestId: string; expectedRevision: number | null; limits?: LimitSetting; setupAgentOff?: boolean }) => api.sendAnswer("PUT", SETUP_LOCKS_PATH, input, Written, NEVER),
-  /** A DIFFERENT admin approves exactly the revision and digest they saw; the server asks for a sign-in within the last 10 minutes (`REAUTH_REQUIRED`). */
+  /** A DIFFERENT admin approves exactly the revision and digest they saw. */
   approve: (input: { requestId: string; expectedRevision: number; expectedDigest: string }) => api.sendAnswer("POST", SETUP_LOCKS_PATH + "/approve", input, Written, NEVER),
   repair: (input: { requestId: string; expectedRevision: number | null }) => api.sendAnswer("POST", SETUP_LOCKS_PATH + "/repair", input, Written, NEVER),
  };

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// Lead 3 B1: the Spending limits admin page. Defaults read-only (changed in Company settings), a project table and a person table (add, edit, remove), the
-// "Confirm it's you" step shown only when the server asks (a raise), the per-task default shown with a link to the project pages, a member never sees it.
+// Lead 3 B1: the Spending limits admin page. Defaults read-only (changed in Company settings), a project table and a person table (add, edit, remove), no
+// step-up (owner DEC 254zzz73), the per-task default shown with a link to the project pages, a member never sees it.
 import { beforeEach, describe, expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -78,7 +78,7 @@ describe("Spending limits page", () => {
    expect(within(screen.getByTestId("spend-people-table")).getByTitle(PERSON).textContent).toBe(`${"1".repeat(12)}…`);
    // Nothing here changes a default.
    expect(screen.queryByLabelText(/company monthly/iu)).toBeNull();
-   // No fresh sign-in step until the server asks.
+   // No step-up at all (owner DEC 254zzz73).
    expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
   } finally { f.close(); }
  });
@@ -125,9 +125,9 @@ describe("Spending limits page", () => {
   } finally { f.close(); }
  });
 
- it("shows the Confirm it's you step only when the server asks for it (a raise), and not for a change it accepts", async () => {
+ it("saves a raise like any change (no step-up), and shows the company rule's refusal in its own words, never a sign-in step", async () => {
   const f = mount("/app/admin/money/limits", r => (r.method === "PUT" && (r.body as { monthlyUsd: number | null }).monthlyUsd !== null && (r.body as { monthlyUsd: number }).monthlyUsd > 40
-   ? { status: 403, body: { error: { code: "STEP_UP_REQUIRED", message: "Confirm it's you again, then try once more." } } } : { status: 200, body: body() }));
+   ? { status: 403, body: { error: { code: "FORBIDDEN", message: "Your company's rules don't allow raising a limit." } } } : { status: 200, body: body() }));
   try {
    const table = within(await screen.findByTestId("spend-projects-table"));
    fireEvent.click(table.getByRole("button", { name: "Edit" }));
@@ -138,11 +138,9 @@ describe("Spending limits page", () => {
    fireEvent.click(table.getByRole("button", { name: "Edit" }));
    fireEvent.change(table.getByLabelText(/New monthly limit/u), { target: { value: "90" } });
    fireEvent.click(table.getByRole("button", { name: "Save" }));
-   const step = await screen.findByTestId("fresh-sign-in");
-   expect(step.getAttribute("data-state")).toBe("needed");
-   expect(step.textContent).toMatch(/raise a spending limit/u);
-   fireEvent.click(screen.getByTestId("fresh-sign-in-start"));
-   expect(f.host.signIn).toHaveBeenCalled();
+   expect((await screen.findByRole("alert")).textContent).toBe("Your company's rules don't allow raising a limit.");
+   expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+   expect(f.host.signIn).not.toHaveBeenCalled();
   } finally { f.close(); }
  });
 

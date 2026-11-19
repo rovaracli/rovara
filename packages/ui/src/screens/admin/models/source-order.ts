@@ -1,13 +1,24 @@
+// Model sources (DEC 254zzz84(4)): the company's provider order for its agents' AI, as Cloud's GET /org/model-sources answers it (cloud-server
+// model-sources-routes.ts). The first source is the company's first choice; the rest are tried in order when it can't take a call.
 import { z } from "zod";
 export const modelProvider = z.string().max(100).transform(value=>value==="amazon-bedrock"?"bedrock":value);
-const catalog = z.object({provider:modelProvider,modelId:z.string().max(256)});
-export const modelSourcesSnapshot = z.object({orgId:z.string().max(100).optional(),developerId:z.string().max(100).optional(),revision:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),sources:z.array(z.object({sourceId:z.string().max(100),kind:z.enum(["anthropic","openai","openrouter","bedrock","endpoint"]),label:z.string().max(200),hasCredential:z.boolean(),inOrder:z.boolean(),models:z.array(z.object({catalog})).max(20)})).max(10),order:z.array(z.string().max(100)).max(12)});
-export const sourceOrderId = z.union([z.literal("rovara"), z.literal("personal-chatgpt"), z.string().regex(/^src_[0-9a-z]{20}$/)]);
-export const sourceOrderReceipt = z.object({ order: z.array(sourceOrderId).min(1).max(12), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) });
+export const HOSTED_SOURCE_IDS = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key", "custom_endpoint"] as const;
+export const sourceOrderId = z.enum(HOSTED_SOURCE_IDS);
+export type SourceOrderId = z.infer<typeof sourceOrderId>;
+const SOURCE_LABELS: Readonly<Record<SourceOrderId, string>> = { rovara: "Rovara's AI", anthropic_key: "Your Anthropic key", bedrock_byo: "Your Bedrock", openai_key: "Your OpenAI key", openrouter_key: "Your OpenRouter key", custom_endpoint: "Your own endpoint" };
+/** A source's readable name; anything else is "Unknown source" (never the raw text). */
+export const sourceLabel = (id: string): string => (Object.hasOwn(SOURCE_LABELS, id) ? SOURCE_LABELS[id as SourceOrderId] : "Unknown source");
+const MAX = HOSTED_SOURCE_IDS.length;
+export const modelSourcesSnapshot = z.object({
+ orgId: z.string().max(100).optional(), developerId: z.string().max(100).optional(), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), canChange: z.boolean().optional(),
+ order: z.array(sourceOrderId).max(MAX),
+ sources: z.array(z.object({ source: sourceOrderId, available: z.boolean(), connected: z.boolean().nullable(), inOrder: z.boolean() })).max(MAX),
+});
+export const sourceOrderReceipt = z.object({ order: z.array(sourceOrderId).min(1).max(MAX), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) });
 export function sourceOrderSnapshot(orgId: string, developerId: string) {
- return modelSourcesSnapshot.extend({ orgId: z.literal(orgId), developerId: z.literal(developerId), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER-1), order: z.array(sourceOrderId).min(1).max(12) }).superRefine((value, context) => {
-  const known = new Set(["rovara", "personal-chatgpt", ...value.sources.map(s=>s.sourceId)]);
-  if (new Set(value.order).size!==value.order.length || value.order.some(id=>!known.has(id))) context.addIssue({ code:"custom", message:"Source order is unavailable." });
+ return modelSourcesSnapshot.extend({ orgId: z.literal(orgId), developerId: z.literal(developerId), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER-1) }).superRefine((value, context) => {
+  const known = new Set(value.sources.map(s=>s.source));
+  if (new Set(value.order).size!==value.order.length || value.order.some(id=>!known.has(id)) || new Set(value.sources.map(s=>s.source)).size!==value.sources.length) context.addIssue({ code:"custom", message:"Source order is unavailable." });
  });
 }
 export type SourceOrderSnapshot = z.infer<ReturnType<typeof sourceOrderSnapshot>>;

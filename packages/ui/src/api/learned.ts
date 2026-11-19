@@ -138,10 +138,11 @@ const PageReader = { parse(body: unknown): ReadPage {
  const list = body["list"] === "proposed" || body["list"] === "retired" ? body["list"] : "approved";
  return { list, canDecide: body["canDecide"] === true, lessons: readLessons(body["lessons"]), next: str(body["next"]) ? body["next"] : undefined, partial: body["partial"] === true };
 } };
-const ModeReader = { parse(body: unknown): LessonModeResponse {
+const ModeReader = { parse(body: unknown): LessonModeResponse & { trialOffer?: { approvals: number; drops: number; since: number } } {
  const mode = (value: unknown): LessonMode | undefined => (value === "off" || value === "suggest" || value === "auto" ? value : undefined);
  if (!isRecord(body) || mode(body["mode"]) === undefined || !str(body["project"])) throw new Error("not a mode");
- return { project: body["project"], mode: mode(body["mode"])!, effective: mode(body["effective"]) ?? mode(body["mode"])!, lockedByCompany: body["lockedByCompany"] === true, canChange: body["canChange"] === true };
+ const offer = isRecord(body["trialOffer"]) && [body["trialOffer"]["approvals"], body["trialOffer"]["drops"], body["trialOffer"]["since"]].every(value => fin(value) && value >= 0) ? { approvals: body["trialOffer"]["approvals"] as number, drops: body["trialOffer"]["drops"] as number, since: body["trialOffer"]["since"] as number } : undefined;
+ return { project: body["project"], mode: mode(body["mode"])!, effective: mode(body["effective"]) ?? mode(body["mode"])!, lockedByCompany: body["lockedByCompany"] === true, canChange: body["canChange"] === true, ...(offer === undefined ? {} : { trialOffer: offer }) };
 } };
 const RequestsReader = { parse(body: unknown): { requests: LessonRetireRequest[]; more: boolean } {
  if (!isRecord(body) || !Array.isArray(body["requests"])) throw new Error("not requests");

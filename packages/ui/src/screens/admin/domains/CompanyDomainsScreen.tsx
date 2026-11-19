@@ -20,7 +20,7 @@ const RESULT_WORDS: Readonly<Record<string, string>> = {
  unavailable: "The record could not be looked up just now. This does not count against a verified domain. Check again later.",
 };
 const day = (value: string) => new Date(value).toLocaleDateString("en-US", { timeZone: "UTC", year: "numeric", month: "short", day: "numeric" }) + " UTC";
-const problem = (error: unknown): { message: string; reauth: boolean } => error instanceof ApiError ? { message: error.message, reauth: error.code === "REAUTH_REQUIRED" } : { message: "Rovara couldn't complete this. Try again shortly.", reauth: false };
+const problem = (error: unknown): { message: string } => error instanceof ApiError ? { message: error.message } : { message: "Rovara couldn't complete this. Try again shortly." };
 
 export function CompanyDomainsScreen() {
  const { orgId, developerId, role } = useAdminContext();
@@ -32,7 +32,7 @@ function Domains({ orgId, developerId }: { orgId: string; developerId: string })
  const host = useAppHost(), api = useMemo(() => createCompanyDomainsApi(host), [host]), query = useQueryClient();
  const key = useMemo(() => ["admin", "company-domains", orgId, developerId], [orgId, developerId]);
  const read = useQuery({ queryKey: key, queryFn: () => api.list(), gcTime: 0, refetchOnWindowFocus: false });
- const [typed, setTyped] = useState(""), [busy, setBusy] = useState<string>(), [error, setError] = useState<{ message: string; reauth: boolean }>(), [note, setNote] = useState<{ domain: string; text: string }>();
+ const [typed, setTyped] = useState(""), [busy, setBusy] = useState<string>(), [error, setError] = useState<{ message: string }>(), [note, setNote] = useState<{ domain: string; text: string }>();
  const [removing, setRemoving] = useState<CompanyDomain>(), sending = useRef(false);
  useEffect(() => () => { void query.cancelQueries({ queryKey: key }); query.removeQueries({ queryKey: key }); }, [query, key]);
 
@@ -40,7 +40,7 @@ function Domains({ orgId, developerId }: { orgId: string; developerId: string })
   if (sending.current) return;
   sending.current = true;setBusy(label);setError(undefined);setNote(undefined);
   try { await work(); await read.refetch(); }
-  catch (caught) { setError(problem(caught));if (caught instanceof ApiError && [401, 403].includes(caught.status) && caught.code !== "REAUTH_REQUIRED") void query.invalidateQueries({ queryKey: ["admin", "identity"] }); }
+  catch (caught) { setError(problem(caught));if (caught instanceof ApiError && [401, 403].includes(caught.status)) void query.invalidateQueries({ queryKey: ["admin", "identity"] }); }
   finally { sending.current = false;setBusy(undefined); }
  }
  const add = () => run("add", async () => { await api.add(typed);setTyped(""); });
@@ -54,7 +54,7 @@ function Domains({ orgId, developerId }: { orgId: string; developerId: string })
    <TextField label="Domain" hint="For example example.com, without https:// or a path." value={typed} onChange={event => { setTyped(event.target.value); }} autoComplete="off" spellCheck={false} maxLength={300} />
    <Button type="submit" variant="primary" busy={busy === "add"} disabled={busy !== undefined || typed.trim() === ""}>Add domain</Button>
   </form>
-  {error !== undefined && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>Sign in again</Button></>}</p>}
+  {error !== undefined && <p role="alert"><VisibleText text={error.message} /></p>}
   {read.isPending ? <Skeleton label="Loading company domains" /> : read.isError ? <div><p role="alert">Couldn't load the company's domains.</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div> : read.data.domains.length === 0 ? <p>No domains yet.</p> : <ul className="rv-admin-domains" aria-label="Company domains">
    {read.data.domains.map(entry => <li key={entry.domain} aria-label={entry.domain}>
     <h2><VisibleText text={entry.domain} /></h2>

@@ -275,13 +275,13 @@ describe("the company's Setup locks", () => {
   expect(section.queryByRole("button", { name: "Approve this change" })).toBeNull();
  });
 
- it("an approval without a recent sign-in shows the server's words and 'Sign in again', and changes nothing", async () => {
+ it("a refused approval shows the server's words with no sign-in step, and changes nothing", async () => {
   const f = mountCompany({ role: "admin", view: waiting(false), write: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to approve this.") });
   const section = await locksRegion();
   fireEvent.click(await section.findByRole("button", { name: "Approve this change" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Sign in again to approve this.");
-  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
-  expect(f.host.signIn).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
+  expect(f.host.signIn).not.toHaveBeenCalled();
   expect(section.getByText("Setup agent off", { selector: "strong" })).toBeTruthy();
  });
 
@@ -322,13 +322,13 @@ describe("the company's Setup locks", () => {
   expect(await section.findByText("Setup agent on", { selector: "strong" })).toBeTruthy();
  });
 
- it("a repair without a recent sign-in shows 'Sign in again'", async () => {
+ it("a refused repair shows an alert and no sign-in step (owner DEC 254zzz73)", async () => {
   const f = mountCompany({ view: unreadable, write: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to repair the locks.") });
   const section = await locksRegion();
   fireEvent.click(await section.findByRole("button", { name: "Repair the locks" }));
   expect((await screen.findByRole("alert", {}, { timeout: 2000 })).textContent).toBeTruthy();
-  fireEvent.click(await screen.findByRole("button", { name: "Sign in again" }));
-  expect(f.host.signIn).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
+  expect(f.host.signIn).not.toHaveBeenCalled();
  });
 
  it("turning setup runs off applies at once and sends only what changed", async () => {

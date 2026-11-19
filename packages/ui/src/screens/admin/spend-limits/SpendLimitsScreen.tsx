@@ -1,11 +1,11 @@
 // Spending limits (lead 3 B1, DEC 254t b): a monthly limit for one project or one person, over the company default. Company owners and admins only (the server
-// refuses everyone else, and a member never sees the link). Raising a limit needs the fresh sign-in step; lowering one does not, so the page just sends it and
-// shows the step only when the server asks. The company defaults live in Company settings; a project's per-task limit lives on its own page.
+// refuses everyone else, and a member never sees the link). The page sends each change; the server applies the company's rules
+// to a raise. The company defaults live in Company settings; a project's per-task limit lives on its own page.
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
 import { MEMBERS_PATH, SCOPE_ID, SPEND_LIMITS_PATH, SPEND_LIMIT_TABLES, limitPath, parseUsd, readPeopleNames, readSpendLimits, type PersonName, type SpendLimitRow, type SpendLimitScope, type SpendLimitTable, type SpendLimitsRead } from "../../../api/admin-spend-limits.js";
-import { isNotConnected, needsStepUp } from "../../../api/admin-company.js";
+import { isNotConnected } from "../../../api/admin-company.js";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";
@@ -16,9 +16,8 @@ import { Select } from "../../../design/Select.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { VisuallyHidden } from "../../../design/VisuallyHidden.js";
-import { useAdminContext } from "../AdminLayout.js";
 import { ReadSection, useAdminRead } from "../models/read.js";
-import { AdminSection, FreshSignIn, NotConnected, forgetConfirmed, useJustConfirmed } from "../parts.js";
+import { AdminSection, NotConnected } from "../parts.js";
 
 const reader = { parse: readSpendLimits };
 const namesReader = { parse: readPeopleNames };
@@ -42,32 +41,28 @@ export function SpendLimitsScreen() {
 }
 
 function Limits({ limits, reload }: { limits: SpendLimitsRead; reload: () => void }) {
- const { developerId } = useAdminContext(), host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
+ const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
  // The company's people, to show names. Best effort: when the list can't be read the page falls back to person IDs, and nothing else changes.
  const people = useAdminRead("spend-limits-people", MEMBERS_PATH, namesReader, { stable: true }).data;
- const confirmed = useJustConfirmed(developerId);
  // People and limits links here with `?person=<id>`: that person's add (or edit) form opens (only a well-formed id is used).
  const [params] = useSearchParams(), asked = params.get("person") ?? "", pick = SCOPE_ID.person.test(asked) ? asked : "";
- const [stepNeeded, setStepNeeded] = useState(false), [busy, setBusy] = useState(false), [notice, setNotice] = useState<{ ok: boolean; text: string }>();
- /** Sends one change. `usd` null removes the limit. The server decides whether it needs the fresh sign-in step. */
+ const [busy, setBusy] = useState(false), [notice, setNotice] = useState<{ ok: boolean; text: string }>();
+ /** Sends one change. `usd` null removes the limit. */
  async function send(table: SpendLimitTable, id: string, version: number, usd: number | null, done: string): Promise<boolean> {
   setBusy(true); setNotice(undefined);
   try {
    await api.sendAnswer("PUT", limitPath(table, id), { expectedVersion: version, monthlyUsd: usd }, { parse: answer => answer }, { retry: "never" });
-   setStepNeeded(false); setNotice({ ok: true, text: done });
+   setNotice({ ok: true, text: done });
    await query.invalidateQueries({ queryKey: ["admin", "lane-c", "spend-limits"] }); reload();
    return true;
   } catch (error) {
-   if (needsStepUp(error)) { setStepNeeded(true); forgetConfirmed(host.storage, developerId); }
-   else setNotice({ ok: false, text: error instanceof ApiError ? error.message : "Couldn't save that. Try again." });
+   setNotice({ ok: false, text: error instanceof ApiError ? error.message : "Couldn't save that. Try again." });
    return false;
   } finally { setBusy(false); }
  }
  const d = limits.defaults;
  return <>
   {notice !== undefined && <p role={notice.ok ? "status" : "alert"}><VisibleText text={notice.text} /></p>}
-  {stepNeeded && <FreshSignIn action="raise a spending limit" refused />}
-  {!stepNeeded && confirmed && <FreshSignIn action="raise a spending limit" done />}
   <AdminSection title="Company defaults" note="Change these in Company settings">
    <ul data-testid="spend-defaults">
     <li>Company, each month: {usdOrNone(d.companyMonthlyUsd)}</li>
@@ -77,7 +72,6 @@ function Limits({ limits, reload }: { limits: SpendLimitsRead; reload: () => voi
     <li data-testid="spend-answers-default">Answers, the company, each month: {usdOrNone(d.answersMonthlyUsd)}</li>
     <li data-testid="spend-task-default">Each task: {usdOrNone(d.taskUsd)}. A project's own per-task limit is set on <a href="/app/admin/projects">that project's page</a>.</li>
    </ul>
-   <p className="rv-muted">Raising a limit asks you to confirm it's you. Lowering one does not.</p>
   </AdminSection>
   {SPEND_LIMIT_TABLES.map(table => <LimitTable key={table.listKey} table={table} companyId={limits.companyId} initialId={table.scope === "person" ? pick : ""} people={people} rows={limits.lists[table.listKey] ?? []} fallback={d[table.defaultKey]} max={limits.max[table.listKey] ?? 0} partial={limits.partial} busy={busy} send={send} />)}
  </>;

@@ -1,9 +1,9 @@
 // L4-GH: "Connect your GitHub" on a person's own profile, Cloud's half (briefs/lead4/L4-GH-SCOPE.md). A signed-in person links the GitHub account that is theirs to themselves, so hosted Rovara
-// can place the author of a commit or a review as a member of the company. Rovara Code owns every rule (the person, the company, the fresh step-up, the single-use state, what GitHub proved,
+// can place the author of a commit or a review as a member of the company. Rovara Code owns every rule (the person, the company, the single-use state, what GitHub proved,
 // first link wins, one account per person); Cloud carries the browser through GitHub and shows Code's answers in its own fixed words. Cloud stores nothing about the link.
 //
 //   GET    /v1/app/me/github          Code's read as the person: { linked: false } or { linked: true, login, linkedAt }
-//   POST   /v1/app/me/github/link     Code's start as the person (a fresh step-up is needed), the cookie binding (the SAME cookie and callback as Connect GitHub: the pending row says
+//   POST   /v1/app/me/github/link     Code's start as the person, the cookie binding (the SAME cookie and callback as Connect GitHub: the pending row says
 //                                     `flow: "link"`), and GitHub's authorize address: { authorizeUrl }
 //   GET    /api/connect/github/callback   where GitHub sends the person back (the GitHub App's callback URL); github-connect.ts checks the binding and hands a LINK return to `finish`
 //   DELETE /v1/app/me/github          Code's unlink as the person
@@ -19,13 +19,12 @@ import type { CodeSession, SessionStore } from "./sessions.js";
 
 export { GITHUB_LINK_LANDING };
 /** The one word the landing carries. */
-export const GITHUB_LINK_OUTCOMES = ["linked", "cancelled", "start_again", "reauth", "taken", "exists", "not_available", "unavailable"] as const;
+export const GITHUB_LINK_OUTCOMES = ["linked", "cancelled", "start_again", "taken", "exists", "not_available", "unavailable"] as const;
 export type GithubLinkOutcome = (typeof GITHUB_LINK_OUTCOMES)[number];
 const CODE_LINK = "/v1/dev/me/github";
 
 /** Code's fixed sentences (Code's github-account-link-routes.ts), and Cloud's own. Cloud shows only these. */
 export const GITHUB_LINK_WORDS = Object.freeze({
-  reauth: "Confirm it's you first: connecting your GitHub account needs a confirmation from the last few minutes.",
   startAgain: "Start again from Rovara.",
   taken: "This GitHub account is already connected to another member of your company.",
   exists: "You already have a GitHub account connected. Disconnect it first.",
@@ -76,9 +75,9 @@ export function createGithubLink(deps: GithubLinkDeps) {
 
   /** Code's refusal in Cloud's fixed words, by status and code. */
   function refusalOf(error: CodeError, operation: "read" | "start" | "unlink"): ConnectAnswer {
-    const { code, message } = codeRefusal(error.body);
+    const { message } = codeRefusal(error.body);
     if (error.status === 401) return connectRefusal(401, "AUTH_REQUIRED", GITHUB_LINK_WORDS.signedOut);
-    if (error.status === 403) return code === "REAUTH_REQUIRED" ? connectRefusal(403, "REAUTH_REQUIRED", GITHUB_LINK_WORDS.reauth) : connectRefusal(403, "FORBIDDEN", GITHUB_LINK_WORDS.startAgain);
+    if (error.status === 403) return connectRefusal(403, "FORBIDDEN", GITHUB_LINK_WORDS.startAgain);
     if (NO_CODE_YET(error.status)) return connectRefusal(501, "NOT_ON_CODE_YET", GITHUB_LINK_WORDS.notAvailable);
     if (error.status === 503 && operation === "start" && message === GITHUB_LINK_WORDS.notSetUp) return connectRefusal(503, "RUNTIME_UNAVAILABLE", GITHUB_LINK_WORDS.notSetUp);
     return connectRefusal(503, "RUNTIME_UNAVAILABLE", operation === "read" ? GITHUB_LINK_WORDS.readUnavailable : operation === "unlink" ? GITHUB_LINK_WORDS.unlinkUnavailable : GITHUB_LINK_WORDS.unavailable);
@@ -107,7 +106,7 @@ export function createGithubLink(deps: GithubLinkDeps) {
       return unreadable(session, "read", GITHUB_LINK_WORDS.readUnavailable);
     },
 
-    /** POST /v1/app/me/github/link: Code's start as the person (Code checks the step-up), the cookie binding for the link flow, and GitHub's authorize address. */
+    /** POST /v1/app/me/github/link: Code's start as the person, the cookie binding for the link flow, and GitHub's authorize address. */
     async start(session: CodeSession, sessionCookie: string, body: unknown): Promise<ConnectAnswer> {
       // The browser sends nothing: no company, no person, no account, no return address.
       if (body !== undefined && !(isObject(body) && Object.keys(body).length === 0)) return connectRefusal(400, "CONFIG_INVALID", GITHUB_LINK_WORDS.noDetails);
@@ -179,7 +178,7 @@ export function createGithubLink(deps: GithubLinkDeps) {
         if (!(error instanceof CodeError)) throw error;
         const { code } = codeRefusal(error.body);
         deps.log({ event: "cloud.github_link_claim_refused", developerId: session.access.developerId, status: error.status });
-        if (error.status === 403) return { location: landing(code === "REAUTH_REQUIRED" ? "reauth" : "start_again") };
+        if (error.status === 403) return { location: landing("start_again") };
         if (error.status === 409) return { location: landing(code === "GITHUB_ACCOUNT_LINK_EXISTS" ? "exists" : code === "GITHUB_ACCOUNT_TAKEN" ? "taken" : "unavailable") };
         if (NO_CODE_YET(error.status)) return { location: landing("not_available") };
         return { location: landing("unavailable") };

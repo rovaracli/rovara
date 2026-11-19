@@ -6,7 +6,7 @@
 //   GET    /api/connect/slack/callback                            where Slack sends the person back (the Slack app's redirect URL)
 //   POST   /v1/app/slack/install/result                           the callback's outcome, kept server-side for this sign-in
 //   GET    /v1/app/slack                                          the company's workspace (any member)
-//   POST   /v1/app/slack/disconnect                 {}            owner + fresh step-up (the Connections page, PR 12b)
+//   POST   /v1/app/slack/disconnect                 {}            company owner only (the Connections page, PR 12b)
 //   GET    /v1/app/slack/channels?project=&cursor=                the channel picker (one Slack page)
 //   GET    /v1/app/projects/{p}/slack/channel                     the project's channel
 //   PUT    /v1/app/projects/{p}/slack/channel       {channelId}   link (or "invite_needed")
@@ -18,7 +18,7 @@
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import {
   CONNECT_SECRET, NOT_IN_COMPANY_WORDS, PROJECT_NAME, askAsBound, codeRefusal, connectCallbackPath, connectRefusal, createConnectFlow, displayName, isObject, liveMembership,
-  oneValue, ownerWithFreshStepUp, startBody, type ConnectAnswer,
+  oneValue, companyOwnerOnly, startBody, type ConnectAnswer,
 } from "./connect-flow.js";
 import type { CodeSession, SessionStore } from "./sessions.js";
 
@@ -247,14 +247,14 @@ export function createSlackConnect(deps: SlackConnectDeps) {
       });
     },
 
-    /** POST /v1/app/slack/disconnect {}: owner + fresh step-up here first, then Code's disconnect (which checks both again). */
+    /** POST /v1/app/slack/disconnect {}: company owner here first, then Code's disconnect (which checks it again). */
     async disconnect(session: CodeSession, sessionCookie: string, body: unknown): Promise<ConnectAnswer> {
       if (body !== undefined && !(isObject(body) && Object.keys(body).length === 0)) return connectRefusal(400, "CONFIG_INVALID", "Disconnecting Slack takes no details.");
-      const refused = await ownerWithFreshStepUp(deps.client, session, deps.now().getTime(), SLACK_WORDS.ownerOnly);
+      const refused = await companyOwnerOnly(deps.client, session, SLACK_WORDS.ownerOnly);
       if (refused !== undefined) return refused;
       return ask(session, `${CODE_SLACK}/disconnect`, { method: "POST", body: {} }, (error) => {
         const { code } = codeRefusal(error.body);
-        if (error.status === 403) return code === "REAUTH_REQUIRED" ? connectRefusal(403, "REAUTH_REQUIRED", "Confirm it's you again, then try once more.") : connectRefusal(403, "FORBIDDEN", SLACK_WORDS.ownerOnly);
+        if (error.status === 403) return connectRefusal(403, "FORBIDDEN", SLACK_WORDS.ownerOnly);
         if (error.status === 404 && code === "NOT_FOUND") return connectRefusal(404, "NOT_FOUND", SLACK_WORDS.notConnected);
         if (notAvailable(error.status)) return connectRefusal(404, "NOT_FOUND", SLACK_WORDS.notAvailable);
         return connectRefusal(503, "RUNTIME_UNAVAILABLE", SLACK_WORDS.disconnectUnavailable);

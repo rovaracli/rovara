@@ -30,7 +30,7 @@ export function createWikiSetupApi(host: AppHost) {
   upkeep: (project: string) => api.get(base(project, P.upkeep), WikiSetupUpkeepSchema),
   /** The project switch (`allowSystemRuns` absent), or the setup choice: the company's consent AND the project switch in one act (`allowSystemRuns: true`, a company owner or admin; Code decides). */
   setUpkeep: (project: string, requestId: string, on: boolean, allowSystemRuns?: boolean) => api.sendAnswer("PUT", base(project, P.upkeep), WikiUpkeepBodySchema.parse({ requestId, on, ...(allowSystemRuns === undefined ? {} : { allowSystemRuns }) }), WikiSetupUpkeepSchema, NEVER),
-  /** L4-P3: the company's one control over nightly upkeep (company owners and admins only; Code decides). Allowing needs a fresh sign-in (the answer is `REAUTH_REQUIRED`); withdrawing never does. */
+  /** L4-P3: the company's one control over nightly upkeep (company owners and admins only; Code decides). */
   systemRuns: () => api.get(SYSTEM_RUNS_PATH, SystemRunsViewSchema),
   setSystemRuns: (requestId: string, allowed: boolean) => api.sendAnswer("PUT", SYSTEM_RUNS_PATH, SystemRunsBodySchema.parse({ requestId, allowed }), SystemRunsViewSchema, NEVER),
   /** The company's spending limits (company owners and admins only; Cloud's `/org/spend-limits`, lead 3 B1 and lead 4 L4-E): read for the nightly upkeep cap, written with the same body the Spending page sends. */

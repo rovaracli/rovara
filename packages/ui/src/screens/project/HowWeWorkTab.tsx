@@ -14,7 +14,6 @@ import { HowWeWorkCard, stageDomId } from "./HowWeWorkCard.js";
 import { HowWeWorkHistory } from "./HowWeWorkHistory.js";
 import { DesignReviewCard } from "./DesignReviewCard.js";
 import { LearningSection } from "./LearningSection.js";
-import { LearningMeasure } from "./LearningMeasure.js";
 import { EDITABLE_KINDS, REVIEWING_KINDS, hasChanged, type Filter } from "./how-we-work-rows.js";
 import { EMPTY_RULES, UNUSED_STAGE_ID, applyRuleEdits, ruleValues, type RuleEdits } from "./how-we-work-draft.js";
 import type { Overlay } from "../builder/draft-state.js";
@@ -137,7 +136,6 @@ export function HowWeWorkTab({ project, canEdit: _canEdit, repository }: { proje
    {chooseError !== undefined && <p role="alert"><VisibleText text={chooseError} /></p>}
   </section>}
   <LearningSection project={project} />
-  <LearningMeasure project={project} canSeeLessonsOff={canEdit} />
   <ol className="rv-hww-stages" aria-label="Stages">{data.stages.map(stage => <li key={stage.id}><button type="button" className="rv-hww-stage" onClick={() => { const card = document.getElementById(stageDomId(stage.id) + "-title");card?.scrollIntoView({ block: "start" });card?.focus(); }}><VisibleText text={stage.name} />{hasChanged(stage, data) && <span className="rv-muted"> (changed here)</span>}</button></li>)}</ol>
   <div className="rv-hww-controls">
    <fieldset className="rv-hww-filter"><legend>Show</legend>{FILTERS.map(option => <label key={option.value}><input type="radio" name="hww-filter" value={option.value} checked={filter === option.value} onChange={() => setFilter(option.value)} /> {option.label}</label>)}</fieldset>

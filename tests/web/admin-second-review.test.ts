@@ -147,12 +147,12 @@ it("a request to lower that another admin made can be approved, and one of your 
   mine.close();
 });
 
-it("asks to sign in again when the approval is refused for an old sign-in", async () => {
+it("shows the server's refusal of an approval with no sign-in step (owner DEC 254zzz73)", async () => {
   const f = mount({ state: { pendingLowering: true, pending: [{ changeId: "chg_1", scope: "company", from: "on", to: "off", proposedByYou: false, expiresAt: "2026-11-09T00:00:00.000Z" }] }, respond: async request => (request.method === "POST" ? { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to do this." } } } : undefined) });
   fireEvent.click(await screen.findByRole("button", { name: "Approve lowering" }));
   await screen.findByText("Sign in again to do this.");
-  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
-  expect(f.host.signIn).toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
+  expect(f.host.signIn).not.toHaveBeenCalled();
   f.close();
 });
 

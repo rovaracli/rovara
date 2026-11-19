@@ -35,7 +35,7 @@ function Line({ text, source }: { text: string; source: Source | undefined }) {
 
 /**
  * The setup wizard's test-environment section (E4): Rovara proposes, a maintainer looks at what would run and where each value came from, runs the proposal's own check on a fresh workspace (the commands are NOT in
- * the project's settings yet), proves it from that check, and approves it; the approval adds the commands to the project's settings. With the feature off
+ * the project's settings yet), proves it from that check, and approves it; the approval adds the commands to the project's settings. A change that is less safe than the sandbox needs a second person's confirmation; this page only asks, and the server decides. With the feature off
  * the server answers "not found" and this section shows nothing.
  */
 export function TestEnvironmentSection({ project, canEditSettings, setupStatus, onSettingsChanged }: { project: string; /** The page knows the viewer may edit the project's settings (a maintainer): only then is the company-recipe share panel mounted, so a viewer's page never asks and logs a refusal. */ canEditSettings: boolean; setupStatus: string; onSettingsChanged: () => Promise<void> }) {
@@ -46,15 +46,15 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
   // While the proposal's own check runs, read again every few seconds: it is done when its workspace is.
   const query = useQuery({ queryKey: key, queryFn: () => api.read(project), retry: false, refetchInterval: (q) => (q.state.data?.proposal?.check.status === "checking" || q.state.data?.approved?.check.status === "checking" ? 5000 : false) });
   const [busy, setBusy] = useState<string>();
-  const [error, setError] = useState<{ message: string; reauth: boolean }>();
+  const [error, setError] = useState<{ message: string }>();
   const shown = query.data;
   const refetch = query.refetch;
 
   async function act<T>(name: string, run: () => Promise<T>, after?: (value: T) => void): Promise<void> {
     setBusy(name); setError(undefined);
     try { after?.(await run()); } catch (caught) {
-      if (caught instanceof ApiError) setError({ message: caught.message, reauth: caught.code === "REAUTH_REQUIRED" });
-      else setError({ message: "Couldn't finish that. Try again.", reauth: false });
+      if (caught instanceof ApiError) setError({ message: caught.message });
+      else setError({ message: "Couldn't finish that. Try again." });
     } finally { setBusy(undefined); }
   }
   const take = (value: TestEnvironmentState) => { client.setQueryData(key, value); };

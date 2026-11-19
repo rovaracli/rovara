@@ -3,7 +3,7 @@
 // decides again on every call. A refusal is shown in a fixed sentence (never the server's other text). Wiki text and people's words are drawn as plain text.
 import { useId, useState, type ReactNode } from "react";
 import { wikiNoteLooksLikeRule } from "@agentx/contracts/web";
-import { fixedCorrectionWords, useWikiApi, useWikiDisputed, useWikiRefresh, type WikiCorrectionsResponse, type WikiNoteState, type WikiPageResponse, type WikiShownNote } from "../../../api/wiki.js";
+import { fixedCorrectionWords, useWikiApi, useWikiDisputed, useWikiGaps, useWikiRefresh, type WikiCorrectionsResponse, type WikiNoteState, type WikiPageResponse, type WikiShownNote } from "../../../api/wiki.js";
 import { Button } from "../../../design/Button.js";
 import { RelativeTime } from "../../../design/RelativeTime.js";
 import { Select } from "../../../design/Select.js";
@@ -76,6 +76,7 @@ function NoteCard({ project, id, note, state }: { project: string; id: string; n
       <Failed error={act.error} />
       {(state?.canApprove === true || state?.canDelete === true) && (
         <div className="rv-wiki-row">
+          {state.canDelete && state.mayBeOutOfDate && <Button busy={act.busy} data-testid="wiki-note-acknowledge" aria-label={`${T.NOTE_ACK}: ${[...note.text.replace(/\s+/gu, " ")].slice(0, 40).join("")}`} onClick={() => { void act.run(async () => { await api.acknowledgeNote(project, id, note.noteId); }); }}>{T.NOTE_ACK}</Button>}
           {state.canApprove && <Button variant="primary" busy={act.busy} onClick={() => { void act.run(async () => { await api.approveNote(project, id, note.noteId); }); }}>{T.NOTE_APPROVE}</Button>}
           {state.canDelete && <Button variant="quiet" busy={act.busy} aria-label={`${T.NOTE_REMOVE}: ${[...note.text.replace(/\s+/gu, " ")].slice(0, 40).join("")}`} onClick={() => { void act.run(async () => { await api.deleteNote(project, id, note.noteId); }); }}>{T.NOTE_REMOVE}</Button>}
         </div>
@@ -164,6 +165,29 @@ export function DisputedList({ project, open, back }: { project: string; open: (
         </div>
       ))}
       <div className="rv-wiki-row"><Button onClick={back}>{T.DISPUTED_BACK}</Button></div>
+    </section>
+  );
+}
+
+/** The questions the wiki could not answer (maintainers): topics with how many different people asked and the day it was last asked. Nobody is named; the words are drawn as plain text. */
+export function GapsList({ project, back }: { project: string; back: () => void }) {
+  const read = useWikiGaps(project, true);
+  if (read.isPending) return <Skeleton label={T.GAPS_LOADING} />;
+  if (read.isError || read.data === undefined) return <div><p role="alert" data-testid="wiki-gaps-error"><VisibleText text={fixedCorrectionWords(read.error, T.ACTION_FAILED)} /></p><Button onClick={back}>{T.GAPS_BACK}</Button></div>;
+  return (
+    <section className="rv-wiki-art" aria-label={T.GAPS_TITLE} data-testid="wiki-gaps">
+      <p className="rv-wiki-crumb">{T.GAPS}</p>
+      <h2 className="rv-wiki-h1">{T.GAPS_TITLE}</h2>
+      <p className="rv-wiki-lede">{T.GAPS_HINT}</p>
+      {read.data.more && <p className="rv-wiki-who" data-testid="wiki-gaps-more">{T.GAPS_MORE}</p>}
+      {read.data.items.length === 0 && <p className="rv-wiki-lede" data-testid="wiki-gaps-empty">{T.GAPS_NONE}</p>}
+      <ul>{read.data.items.map((item, index) => (
+        <li key={`${String(index)}:${item.topic}`} data-kind={item.kind}>
+          <b><VisibleText text={item.topic} /></b>
+          <span className="rv-wiki-who"> {Object.hasOwn(T.GAPS_KIND, item.kind) ? T.GAPS_KIND[item.kind] : item.kind}. Asked by {String(item.people)} {item.people === 1 ? "person" : "people"}, {String(item.questions)} {item.questions === 1 ? "time" : "times"}; last on <VisibleText text={item.lastAskedAt} />.</span>
+        </li>
+      ))}</ul>
+      <div className="rv-wiki-row"><Button onClick={back}>{T.GAPS_BACK}</Button></div>
     </section>
   );
 }

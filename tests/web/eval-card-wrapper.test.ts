@@ -16,7 +16,7 @@ import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
 afterEach(cleanup);
-const ME = "a".repeat(64), NONCE_KEY = "rovara.stepup.nonce";
+const ME = "a".repeat(64);
 const TASK = "task_0123-abc", DIGEST = "ab12".repeat(16);
 // Whole-number figures chosen so that no formula in the page could reproduce them by accident.
 const SEEN = { perCheckHighMicros: 1_234_567, monthlyCapMicros: 41_000_000 };
@@ -32,7 +32,7 @@ const checklist = () => ({
   slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: { state: "needs_you", hasTask: false, canStart: false },
 });
 
-interface Options { read?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse; fresh?: boolean }
+interface Options { read?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse }
 function mount(options: Options = {}) {
   let current: ApiResponse = options.read?.() ?? { status: 200, body: card() };
   const f = fakeHost(async (request) => {
@@ -43,10 +43,9 @@ function mount(options: Options = {}) {
     if (request.path.startsWith("/v1/app/projects/web/setup-agent/journal")) return { status: 200, body: { status: "ready", entries: [], hostAsks: [] } };
     return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
   });
-  if (options.fresh === true) f.storage.set(NONCE_KEY, JSON.stringify({ nonce: "n-1", at: Date.now() }));
   const query = createQueryClient();
   query.setQueryData(["nav"], { me: { developerId: ME, name: "Maya", orgRole: "owner" } });
-  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/web" + (options.fresh === true ? "?confirmed=n-1" : "")], children: h(ProjectChecklist, { project: "web" }) }) }) }), { theme: "light" });
+  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/web"], children: h(ProjectChecklist, { project: "web" }) }) }) }), { theme: "light" });
   return { ...f, setRead(value: ApiResponse) { current = value; }, close() { ui.unmount(); query.clear(); } };
 }
 const posts = (f: ReturnType<typeof mount>, tail?: string) => f.request.mock.calls.map(([r]) => r).filter(r => r.method === "POST" && (tail === undefined ? r.path.includes("/setup-agent/eval-") : r.path.endsWith(`/setup-agent/${tail}`)));
@@ -102,7 +101,7 @@ describe("the one card", () => {
     await waitFor(() => { expect(written).toEqual([FILE]); });
   });
 
-  it("Let Rovara open a pull request sends exactly the request id, the act and the eval; a double press sends one; it needs no fresh sign-in", async () => {
+  it("Let Rovara open a pull request sends exactly the request id, the act and the eval; a double press sends one", async () => {
     let reads = 0;
     const f = mount({ read: () => { reads += 1; return unreadable(wrapper()); }, post: () => ({ status: 200, body: { project: "web", action: "open_pull_request", outcome: { selection: "npm run evals", state: "open", number: "12" }, wrappers: [wrapper({ step: "pull_request_open" })] } }) });
     const c = await theCard();

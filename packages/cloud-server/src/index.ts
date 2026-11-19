@@ -38,7 +38,7 @@ export {
   type AgentAiChoice, type CompanyTrial, type TrialUnlock, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type SpendLimit, type SpendLimitBasis, type SpendLimitKind, type SpendLimitKindDef, type SpendLimitList, type SpendLimitScope, type StoredSettings,
 } from "./company-store.js";
 export { CLOSED_INVITE_DAYS, COMPANY_TABLE, DynamoCompanyStore } from "./company-dynamo.js";
-export { CODE_MEMBERS_PATH, MEMBER_LIST_PAGES_MAX, MEMBER_ROUTES, MEMBER_WORDS, roleRefusal } from "./member-routes.js";
+export { CODE_MEMBERS_PATH, MEMBER_LIST_PAGES_MAX, MEMBER_ROUTES, MEMBER_WORDS, REMOVAL_WORDS, removalRefusal, roleRefusal } from "./member-routes.js";
 export { COMPANY_ROUTES, PREAPPROVALS_PATH, modelGatewayReadiness, preapprovalEmailHash, type CompanyBackend } from "./company-routes.js";
 export { PICKER_WORDS, PROJECT_CREATE_ROUTES, createProjects, readCreateProjectsBody, readPickerQuery } from "./project-create-routes.js";
 export { COMPANY_CREATE_PATH, CREATE_WORDS, JOIN_UNUSABLE, ONBOARDING_ROUTES, inviteTokenHash, usableInvite } from "./onboarding-routes.js";
@@ -46,11 +46,12 @@ export { PRODUCT_AI_APPROVER_PROVIDER, PRODUCT_AI_ROUTES, PRODUCT_AI_SOURCE_ID, 
 export { AGENT_AI_CHOOSABLE, AGENT_AI_ROUTES } from "./agent-ai-routes.js";
 export { agentAiConnected } from "./agent-ai-presence.js";
 export { AI_SPEND_ANSWERS, AI_SPEND_ROUTES, AI_SPEND_WORDS, ENGINE_MODEL_CODE_PATH, PER_TASK_FIELD, PER_TASK_USD_MAX, engineModelRefusal, engineModelView, projectSettingsOf, projectSettingsRefusal } from "./ai-spend-routes.js";
+export { LEARNING_MODEL_ANSWERS, LEARNING_MODEL_CODE_PATH, LEARNING_MODEL_ROUTES, LEARNING_MODEL_WORDS, learningModelRefusal, learningModelView } from "./learning-model-routes.js";
+export { AGENT_MODELS_ANSWERS, AGENT_MODELS_CODE_PATH, AGENT_MODELS_ROUTES, AGENT_MODELS_WORDS, AGENT_MODEL_STAGES, agentModelsChange, agentModelsRefusal, agentModelsView, modelIdentityOf, modelNameOf } from "./agent-models-routes.js";
 export { EGRESS_ADDRESSES_CODE_PATH, EGRESS_ADDRESSES_ROUTES, EGRESS_ANSWERS, EGRESS_WORDS, egressAddressesView } from "./egress-addresses-routes.js";
 export { SPEND_LIMIT_ROUTES, SPEND_LIMIT_WORDS, dollarsToMicros } from "./spend-limits-routes.js";
 export { BEDROCK_BYO_ROUTES, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";
 export { COMPANY_KEY_PROVIDERS, LEARNING_AI_OWNER, LEARNING_AI_PROVIDERS, LEARNING_AI_ROUTES, LEARNING_PAUSE_WORDS, learningSourceId } from "./learning-ai-routes.js";
-export { STEP_UP_ACR, STEP_UP_METHODS, STEP_UP_SKEW_SECONDS, STEP_UP_WINDOW_SECONDS, freshStepUp, stepUpClaim, type StepUp, type StepUpMethod } from "./step-up.js";
 export {
   GITHUB_CALLBACK_PATH, GITHUB_CONNECT_COOKIE, GITHUB_CONNECT_TTL_MS, GITHUB_OUTCOMES, GITHUB_WORDS, githubInUseWords, githubResultKey, githubStateKey,
   type GithubPending, type GithubResult,
@@ -58,14 +59,14 @@ export {
 export { GITHUB_LINK_LANDING, GITHUB_LINK_OUTCOMES, GITHUB_LINK_WORDS } from "./github-link.js";
 export { CONNECT_TTL_MS, connectBack, connectCallbackPath, connectCookieName, connectResultKey, connectStateKey, type ConnectPending, type ConnectProvider } from "./connect-flow.js";
 export { SLACK_CALLBACK_PATH, SLACK_OUTCOMES, SLACK_WORDS } from "./slack-connect.js";
-export { SIGN_IN_FACTOR_WORDS } from "./sign-in-factors.js";
 export { LESSONS_SLACK_WORDS } from "./lessons-slack-switch.js";
 export { LINK_FAILURES, LINK_LANDING, LINK_METHODS, LINK_TTL_MS, SIGN_IN_LINK_WORDS, linkPendingKey, type LinkPending } from "./sign-in-links.js";
 export { LINEAR_CALLBACK_PATH, LINEAR_OUTCOMES, LINEAR_WORDS } from "./linear-connect.js";
 export { SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_ANSWERS, SETUP_CHECKLIST_ROUTES, SETUP_CHECKLIST_WORDS, applyAnswer, approvalRefusal, checklistAnswer, confirmBody, decideBody, evalNoneBody, runBody, setupRefusal, skipBody, withModelCallFact } from "./setup-checklist-routes.js";
 export { LIFECYCLE_ANSWERS, LIFECYCLE_WORDS, PROJECT_LIFECYCLE_ROUTES, lifecycleBody, lifecycleRefusal } from "./project-lifecycle-routes.js";
-export { WIKI_CORRECTION_ANSWERS, WIKI_CORRECTION_ROUTES, WIKI_CORRECTION_WORDS, correctionsAnswer, disputedAnswer, markedAnswer, noteAddedAnswer, suggestedAnswer, wikiCorrectionRefusal } from "./wiki-corrections-routes.js";
+export { WIKI_CORRECTION_ANSWERS, WIKI_CORRECTION_ROUTES, WIKI_CORRECTION_WORDS, acknowledgedAnswer, correctionsAnswer, disputedAnswer, gapsAnswer, markedAnswer, noteAddedAnswer, suggestedAnswer, wikiCorrectionRefusal } from "./wiki-corrections-routes.js";
 export { SETUP_REPAIR_ANSWERS, SETUP_REPAIR_ROUTES, SETUP_REPAIR_WORDS, recheckBody, setupRepairRefusal, setupRepairView } from "./setup-repair-routes.js";
+export { KNOWLEDGE_SWITCH_ROUTES, KNOWLEDGE_SWITCH_WORDS, companyAnswer as knowledgeStaysAnswer, projectAnswer as localToolsAnswer, knowledgeSwitchRefusal } from "./knowledge-switch-routes.js";
 export { SYSTEM_RUNS_ROUTES, systemRunsAnswer, systemRunsBody, systemRunsRefusal } from "./system-runs-routes.js";
 export { WIKI_SETUP_ANSWERS, WIKI_SETUP_CODE_WORDS, WIKI_SETUP_ROUTES, WIKI_SETUP_WORDS, buildAnswer, deleteAnswer, idBody, mapViewAnswer, startBody, switchBody, upkeepAnswer, wikiSetupRefusal } from "./wiki-setup-routes.js";
 export { SAVED_ENV_ANSWERS, SAVED_ENV_ROUTES, TEST_ENVIRONMENT_WORDS, savedEnvPanel, testEnvironmentState } from "./saved-env-routes.js";

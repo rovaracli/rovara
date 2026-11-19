@@ -7,26 +7,27 @@
 //     start's own transaction, and Code's task read names it (`sessionId`). A task whose read names no session was started before that (Code has no backfill): Cloud says in fixed
 //     words that the action is not available for this task, asks Code nothing, and nothing is done. Where a session is named, Code's "There is no such session." means the person
 //     holds no level on it (core/sessions/access.ts hides a session's existence), so Cloud refuses in fixed words that say so instead.
-//   - Plan approval: the core's decision cards (`/v1/app/decisions`). A coding plan waiting on a core task is an `approve_plan` card, decided on the card with Code's own step-up,
+//   - Plan approval: the core's decision cards (`/v1/app/decisions`). A coding plan waiting on a core task is an `approve_plan` card, decided on the card with Code's own
 //     digest and risk rules (the session page and Home's "Needs you" show it). So where Code has that card, Cloud no longer links to its own approval page (approve.ts).
 //   - Accepting review findings: the core serves `workflow/review-findings` itself, but accepting a SECURITY finding there is refused (core/task-flow/security-accept.ts, DEC 236h:
 //     an API token's route). Code #1045 serves the web page's own route, `POST /v1/app/tasks/{taskId}/review-findings` (same body, `{ task }` out): only the web app's own sign-in
-//     client (`webApp`, which Code's sign-in sets from Cloud's client registration), only with a fresh step-up with Code's own factor, only for the task's owner or a People
-//     co-owner (DEC 254zzz39 (6), 254zzz44 (3)). Cloud asks it only after the workflow route said "the web page only" (FORBIDDEN), and only with a step-up in its own token that is
-//     fresh now; otherwise the person is asked to confirm it's them first (REAUTH_REQUIRED). Code's refusals become fixed words.
+//     client (`webApp`, which Code's sign-in sets from Cloud's client registration), only for the task's owner or a People co-owner (DEC 254zzz39 (6), 254zzz44 (3); owner
+//     DEC 254zzz73 removed the step-up these once needed). Cloud asks it only after the workflow route said "the web page only" (FORBIDDEN). Code's refusals become fixed words.
 // Nothing here takes an id from the request: the task id is Cloud's own session record's, and Code decides who may act; its other refusals reach the app unchanged.
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import type { CodeSession } from "./sessions.js";
 import type { CodeTask } from "./session-view.js";
 import type { RouteAnswer } from "./routes.js";
-import { STEP_UP_WINDOW_SECONDS, freshStepUp } from "./step-up.js";
 
 /** Code's words for an operation of a core task its core does not serve yet (core-host/dev-routes.ts NOT_ON_THE_CORE_YET). */
 export const CORE_NOT_YET = "That is not on the core engine on this install yet.";
 /** Code's words for a session it has not got, or one the person holds no level on (core/sessions/access.ts SESSION_NOT_FOUND_TEXT). */
 export const CODE_NO_SESSION = "There is no such session.";
-/** Code's words when a security finding is accepted anywhere but its own web page with a fresh step-up (security-accept.ts SECURITY_ACCEPT_ON_THE_PAGE, both engines). */
-export const CODE_SECURITY_ACCEPT_ON_THE_PAGE = "Accepting a security finding needs the Rovara web page with a fresh sign-in";
+/**
+ * The start of Code's words when a security finding is accepted anywhere but its own web page (security-accept.ts SECURITY_ACCEPT_ON_THE_PAGE, both engines). Matched as a
+ * prefix: owner DEC 254zzz73 removed the step-up, so Code's sentence may lose its old ending ("with a fresh sign-in"); the code (FORBIDDEN) and this start still decide.
+ */
+export const CODE_SECURITY_ACCEPT_ON_THE_PAGE = "Accepting a security finding needs the Rovara web page";
 
 export const CORE_ACTION_WORDS = Object.freeze({
   retry: "Retry reviews isn't available for this task in Rovara Cloud yet. Nothing was changed.",
@@ -40,8 +41,7 @@ export const CORE_ACTION_WORDS = Object.freeze({
   /** The page route refused: not the task's owner or a co-owner (Code reads it as no such task). */
   acceptNotYours: "Only the task's owner or a co-owner can accept these findings. Nothing was accepted.",
   unreadable: "Rovara Code sent an answer Cloud couldn't read.",
-  securityNotHere: "Rovara accepts a security finding only on its own task page, right after you confirm it's you, and that isn't available for this task in Rovara Cloud yet. Nothing was accepted. Send the work back to coding to fix it.",
-  stepUp: "Accepting a security finding needs you to confirm it's you again. Confirm it, then try once more.",
+  securityNotHere: "Rovara accepts a security finding only on its own task page, and that isn't available for this task in Rovara Cloud yet. Nothing was accepted. Send the work back to coding to fix it.",
   planOnCard: "This plan is decided on its card on the session page.",
   planNotHere: "Rovara Code runs this task on its new engine, which takes a plan decision only on the plan's decision card, and that card isn't showing for you yet. Nothing was decided. Open the session and try again in a moment.",
   closeFirstAsk: "Rovara can't check this task for unpublished work yet, so closing it now may delete work that was never published.",
@@ -134,39 +134,28 @@ export async function planDecidedOnCard(client: CodeClient, session: CodeSession
   return (await pendingPlanCards(client, session)).has(taskId.toLowerCase());
 }
 
-/**
- * Code's refusal of an accept that includes a security finding: `stepUp` (the old engine takes it from Cloud's own page with a fresh step-up, REAUTH_REQUIRED when it is stale),
- * `page` (the core takes it only on the web page's own route: FORBIDDEN), or undefined for any other error.
- */
-export function securityAcceptRefusal(error: unknown): "stepUp" | "page" | undefined {
+/** Code's refusal of an accept that includes a security finding: `page` (the core takes it only on the web page's own route: FORBIDDEN), or undefined for any other error. */
+export function securityAcceptRefusal(error: unknown): "page" | undefined {
   const refusal = refusalOf(error);
-  if (refusal === undefined || refusal.status !== 403 || refusal.message !== CODE_SECURITY_ACCEPT_ON_THE_PAGE) return undefined;
-  if (refusal.code === "REAUTH_REQUIRED") return "stepUp";
-  if (refusal.code === "FORBIDDEN") return "page";
-  return undefined;
+  if (refusal === undefined || refusal.status !== 403 || typeof refusal.message !== "string" || !refusal.message.startsWith(CODE_SECURITY_ACCEPT_ON_THE_PAGE)) return undefined;
+  return refusal.code === "FORBIDDEN" ? "page" : undefined;
 }
-
-/** "Confirm it's you" in fixed words (403 REAUTH_REQUIRED): the app sends the person to Code's step-up sign-in and back. */
-export const acceptStepUp = (): RouteAnswer => fail(403, "REAUTH_REQUIRED", CORE_ACTION_WORDS.stepUp);
 
 /** The findings accept the web page sends, exactly as the workflow route takes it (Cloud builds it from Code's task, never from the browser). */
 export interface FindingsAccept { requestId: string; expectedRevision: number; candidateDigest: string; resolutions: Array<{ findingId: string; action: "ACCEPT"; note: string }> }
 
 /**
  * The web page's own accept of review findings that include a SECURITY finding on a core task (Code #1045, `POST /v1/app/tasks/{taskId}/review-findings`), as the person with
- * Cloud's token. Asked only when that token carries a step-up that is fresh now (`nowMs`); otherwise "confirm it's you" and Code is not asked. Code's refusals become fixed words:
- * a stale step-up asks again; Cloud's client not being the web app's (FORBIDDEN) or a Code that does not serve the route says the page can't do it here; a person who is not the
+ * Cloud's token. Code's refusals become fixed words: Cloud's client not being the web app's (FORBIDDEN) or a Code that does not serve the route says the page can't do it here; a person who is not the
  * task's owner or a co-owner (Code's no-such-task) is told so. The answer's task must be the one asked about.
  */
-export async function acceptOnPage(client: CodeClient, session: CodeSession, taskId: string, body: FindingsAccept, nowMs: number): Promise<{ task: CodeTask } | { answer: RouteAnswer }> {
-  if (freshStepUp(session.accessToken, nowMs, STEP_UP_WINDOW_SECONDS) === undefined) return { answer: acceptStepUp() };
+export async function acceptOnPage(client: CodeClient, session: CodeSession, taskId: string, body: FindingsAccept): Promise<{ task: CodeTask } | { answer: RouteAnswer }> {
   let raw: unknown;
   try {
     raw = await client.json<unknown>(session, `/v1/app/tasks/${encodeURIComponent(taskId)}/review-findings`, { method: "POST", body });
   } catch (error) {
     const refusal = refusalOf(error);
     if (refusal === undefined) throw error;
-    if (refusal.status === 403 && refusal.code === "REAUTH_REQUIRED") return { answer: acceptStepUp() };
     if ((refusal.status === 403 && refusal.code === "FORBIDDEN") || (refusal.status === 404 && refusal.code === "NOT_FOUND")) return { answer: fail(409, "SECURITY_ACCEPT_NOT_HERE", CORE_ACTION_WORDS.securityNotHere) };
     if (refusal.status === 404 && refusal.code === "TASK_NOT_FOUND") return { answer: fail(403, "FORBIDDEN", CORE_ACTION_WORDS.acceptNotYours) };
     throw error;

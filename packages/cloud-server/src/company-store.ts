@@ -66,8 +66,21 @@ export interface InviteRecord {
  */
 export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key", "custom_endpoint"] as const;
 export type AgentAiSource = (typeof AGENT_AI_SOURCES)[number];
-export interface AgentAiChoice { companyId: string; source: AgentAiSource; version: number; updatedAt: string; updatedBy: string }
+/**
+ * `fallback` (DEC 254zzz84(4)): the company's saved order after its first choice (`source`), e.g. its own key first, then Rovara's AI. The gateway admits a call on
+ * the first of them that can take it (model-gateway server.ts). Absent or empty: the first choice alone, exactly as before (the row then carries no `fallback`).
+ */
+export interface AgentAiChoice { companyId: string; source: AgentAiSource; version: number; updatedAt: string; updatedBy: string; fallback?: AgentAiSource[] }
 export const validAgentAiSource = (value: unknown): value is AgentAiSource => typeof value === "string" && (AGENT_AI_SOURCES as readonly string[]).includes(value);
+/** The most sources after the first choice (the gateway's AGENT_AI_FALLBACK_MAX; a contract test holds them equal). */
+export const AGENT_AI_FALLBACK_MAX = 5;
+/** A fallback list: distinct known sources, not the first choice, at most AGENT_AI_FALLBACK_MAX (the gateway's validFallback). */
+export function validAgentAiFallback(value: unknown, source: AgentAiSource): value is AgentAiSource[] {
+  if (!Array.isArray(value) || value.length > AGENT_AI_FALLBACK_MAX) return false;
+  const seen = new Set<string>([source]);
+  for (const entry of value) { if (!validAgentAiSource(entry) || seen.has(entry)) return false; seen.add(entry); }
+  return true;
+}
 /**
  * DEC 254t (a): the company AI source kinds the code supports (the contracts' SOURCE_KINDS_AT_LAUNCH and the gateway's AI_SOURCE_KINDS;
  * a contract test holds them equal). CLOUD_AI_SOURCE_KINDS names the kinds this install's owner switched on after each real-key check
@@ -431,8 +444,10 @@ export class LocalCompanyStore implements CompanyStore {
   async agentAi(companyId: string) { const choice = this.agentAiOf.get(companyId); return choice === undefined ? undefined : copy(choice); }
 
   async putAgentAi(choice: Omit<AgentAiChoice, "version">, expectedVersion: number) {
+    if (choice.fallback !== undefined && !validAgentAiFallback(choice.fallback, choice.source)) throw new Error("invalid agent ai fallback");
     if ((this.agentAiOf.get(choice.companyId)?.version ?? 0) !== expectedVersion) throw new CompanyStoreConflict("agent ai");
-    this.agentAiOf.set(choice.companyId, { ...copy(choice), version: expectedVersion + 1 });
+    const { fallback, ...rest } = copy(choice);
+    this.agentAiOf.set(choice.companyId, { ...rest, ...(fallback === undefined || fallback.length === 0 ? {} : { fallback }), version: expectedVersion + 1 });
     return expectedVersion + 1;
   }
 

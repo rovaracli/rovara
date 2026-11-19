@@ -10,8 +10,6 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  "screens/admin/audit/audit.css",
  // Lane C12: owned Connections guidance styles.
  "screens/admin/connections/connections.css",
- // Lane C14: owned Models source guidance styles.
- "screens/admin/models/model-source-guidance.css",
  // Playbook v1.1: the company How we work page.
  "screens/admin/how-we-work/how-we-work.css",
  // v1.2 learning loop: the Suggested rules section of the project How we work tab.
@@ -39,7 +37,9 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  // Lead 4 J3: the Ask box and its answer.
  "screens/answers/answers.css",
  // Understand's questions and their answer form: the session page, the Work list and Home.
- "screens/session/answer-form.css"]) {
+ "screens/session/answer-form.css",
+ // L4-JA89: the project Skills tab (its own lazy chunk).
+ "screens/project/skills/skills.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

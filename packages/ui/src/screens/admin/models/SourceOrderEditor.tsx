@@ -8,9 +8,9 @@ import { Button } from "../../../design/Button.js";
 import { Dialog } from "../../../design/Dialog.js";
 import { VisibleText, visibleText } from "../../../design/VisibleText.js";
 import { useAdminContext } from "../AdminLayout.js";
-import { sourceOrderSnapshot, sourceOrderReceipt, sameSourceOrder, type SourceOrderSnapshot } from "./source-order.js";
+import { sourceLabel, sourceOrderSnapshot, sourceOrderReceipt, sameSourceOrder, type SourceOrderId, type SourceOrderSnapshot } from "./source-order.js";
 type Props = { available: boolean };
-type Attempt = { requestId: string; snapshot: SourceOrderSnapshot; order: string[] };
+type Attempt = { requestId: string; snapshot: SourceOrderSnapshot; order: SourceOrderId[] };
 async function bounded<T>(work: Promise<T>): Promise<T> {
  let timer: ReturnType<typeof setTimeout> | undefined;
  try { return await Promise.race([work,new Promise<T>((_,reject)=>{timer=setTimeout(()=>reject(new Error("Source operation timed out.")),30_000);})]); }finally{clearTimeout(timer);}
@@ -21,7 +21,7 @@ export function SourceOrderEditor(props: Props) {
 function OrderEditor({available}: Props) {
  const context=useAdminContext(),host=useAppHost(),query=useQueryClient(),api=useMemo(()=>createApiClient(host),[host]),unavailableId=useId();
  const schema=useMemo(()=>sourceOrderSnapshot(context.orgId,context.developerId),[context.orgId,context.developerId]);
- const [open,setOpen]=useState(false),[base,setBase]=useState<SourceOrderSnapshot>(),[draft,setDraft]=useState<string[]>([]),[attempt,setAttempt]=useState<Attempt>(),[busy,setBusy]=useState(false),[sent,setSent]=useState(false),[verified,setVerified]=useState(false),[message,setMessage]=useState<string>(),[checked,setChecked]=useState<SourceOrderSnapshot>();
+ const [open,setOpen]=useState(false),[base,setBase]=useState<SourceOrderSnapshot>(),[draft,setDraft]=useState<SourceOrderId[]>([]),[attempt,setAttempt]=useState<Attempt>(),[busy,setBusy]=useState(false),[sent,setSent]=useState(false),[verified,setVerified]=useState(false),[message,setMessage]=useState<string>(),[checked,setChecked]=useState<SourceOrderSnapshot>();
  const [announcement,setAnnouncement]=useState<string>();
  const draftList=useRef<HTMLOListElement>(null),focusMove=useRef<{index:number;direction:-1|1}|undefined>(undefined);
  useLayoutEffect(()=>{const move=focusMove.current;if(move!==undefined){focusMove.current=undefined;const item=draftList.current?.children[move.index],preferred=item?.querySelector<HTMLButtonElement>(`button[data-move="${move.direction}"]:not(:disabled)`);(preferred??item?.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();}},[draft]);
@@ -30,7 +30,7 @@ function OrderEditor({available}: Props) {
  useEffect(()=>{if(message&&!busy)notice.current?.focus();},[message,busy]);
  const valid=(ticket:number)=>alive.current&&version.current===ticket;
  const allowed=available&&!context.checking&&(context.role==="owner"||context.role==="admin");
- const changed=base!==undefined&&!sameSourceOrder(base.order,draft);
+ const changed=base!==undefined&&draft.length>0&&!sameSourceOrder(base.order,draft);
  function recheckIdentity(){void query.invalidateQueries({queryKey:["admin","identity"]});}
  async function identity(){
   const me=await api.get("/v1/app/me",AppMeResponseReaderSchema);
@@ -45,6 +45,8 @@ function OrderEditor({available}: Props) {
   const ticket=++version.current;setOpen(value);
   if(value){setAnnouncement(undefined);focusMove.current=undefined;setBase(undefined);setDraft([]);setAttempt(undefined);setMessage(undefined);setChecked(undefined);setVerified(false);setSent(false);submitted.current=false;ack.current=undefined;setBusy(true);void load(ticket);}
  }
+ function add(id:SourceOrderId){if(busy||attempt||!allowed||draft.includes(id))return;const next=[...draft,id];setDraft(next);setAnnouncement(`${label(id)} added at position ${next.length} of ${next.length}.`);}
+ function remove(index:number){if(busy||attempt||!allowed||draft.length<=1)return;const id=draft[index]!,next=draft.filter((_,i)=>i!==index);setDraft(next);setAnnouncement(`${label(id)} removed from the order.`);}
  function move(index:number,delta:-1|1){if(busy||attempt||!allowed)return;const next=[...draft],other=index+delta;if(other<0||other>=next.length)return;[next[index],next[other]]=[next[other]!,next[index]!];focusMove.current={index:other,direction:delta};setDraft(next);setAnnouncement(`${visibleText(label(next[other]))} moved to position ${other+1} of ${next.length}.`);}
  async function review(){
   if(busy||!allowed||!base||!changed)return;const ticket=version.current;setBusy(true);setMessage(undefined);
@@ -73,18 +75,20 @@ function OrderEditor({available}: Props) {
   finally{sending.current=false;if(valid(ticket))setBusy(false);}
  }
  async function manualCheck(){if(busy||!attempt)return;const ticket=version.current;setBusy(true);try{await check(ticket,attempt);}catch(error){refused(error);if(valid(ticket))setMessage("The current order could not be verified. Close and reload before another change.");}finally{if(valid(ticket))setBusy(false);}}
- const label=(id:string)=>id==="rovara"?"Rovara":id==="personal-chatgpt"?"Personal ChatGPT":base?.sources.find(s=>s.sourceId===id)?.label??"Unknown source";
+ const label=(id:string)=>sourceLabel(id);
+ const addable=base===undefined?[]:base.sources.filter(s=>s.available&&!draft.includes(s.source)).map(s=>s.source);
  const list=(ids:readonly string[])=> <ol>{ids.map(id=><li key={id}><VisibleText text={label(id)} /></li>)}</ol>;
- return <><Dialog title="Change source order" description="Reorder the sources already in use. Cancel discards the proposal." open={open} onOpenChange={changeOpen} trigger={<Button disabled={!allowed} aria-describedby={!available?unavailableId:undefined}>Change source order</Button>}>
- <div aria-busy={busy}><p>Company: <VisibleText text={context.company} /></p><p>Costs can change. Price estimates are unavailable. This does not verify provider or model access.</p><p>Applies when a new route is resolved. Running tasks keep their resolved routes.</p>
+ return <><Dialog title="Change source order" description="The first source is tried first; the others are fallbacks, in order. Cancel discards the proposal." open={open} onOpenChange={changeOpen} trigger={<Button disabled={!allowed} aria-describedby={!available?unavailableId:undefined}>Change source order</Button>}>
+ <div aria-busy={busy}><p>Company: <VisibleText text={context.company} /></p><p>Costs can change: a fallback to Rovara's AI is charged to the company per use, inside its monthly limit. Price estimates are unavailable.</p><p>Applies to the next AI call. A call already sent is not moved to another source.</p>
  {!base&&busy&&<p role="status">Loading current source order...</p>}
  {base&&busy&&<p role="status">{sent?"Checking the source-order outcome...":"Checking current source order..."}</p>}
- {base&&<><h3>Order at review</h3>{list(base.order)}<h3>Proposed order</h3>{!attempt&&<p role="status" aria-live="polite" aria-atomic="true">{announcement}</p>}{attempt?list(attempt.order):<ol ref={draftList}>{draft.map((id,index)=><li key={id}><VisibleText text={label(id)} /> <Button disabled={busy||!allowed||index===0} data-move={-1} aria-label={`Move up, ${visibleText(label(id))}`} onClick={()=>move(index,-1)}>Move up</Button> <Button disabled={busy||!allowed||index===draft.length-1} data-move={1} aria-label={`Move down, ${visibleText(label(id))}`} onClick={()=>move(index,1)}>Move down</Button></li>)}</ol>}</>}
+ {base&&<><h3>Order at review</h3>{list(base.order)}<h3>Proposed order</h3>{!attempt&&<p role="status" aria-live="polite" aria-atomic="true">{announcement}</p>}{attempt?list(attempt.order):<ol ref={draftList}>{draft.map((id,index)=><li key={id}><VisibleText text={label(id)} /> <Button disabled={busy||!allowed||index===0} data-move={-1} aria-label={`Move up, ${visibleText(label(id))}`} onClick={()=>move(index,-1)}>Move up</Button> <Button disabled={busy||!allowed||index===draft.length-1} data-move={1} aria-label={`Move down, ${visibleText(label(id))}`} onClick={()=>move(index,1)}>Move down</Button> <Button disabled={busy||!allowed||draft.length<=1} aria-label={`Remove, ${visibleText(label(id))}`} onClick={()=>remove(index)}>Remove</Button></li>)}</ol>}
+ {!attempt&&addable.length>0&&<p>{addable.map(id=><Button key={id} disabled={busy||!allowed} onClick={()=>add(id)}>{`Add ${label(id)}`}</Button>)}</p>}</>}
  {checked&&<><h3>Checked current order</h3>{list(checked.order)}</>}
  {context.checking&&<p role="status">Checking company access...</p>}
  {message&&<p ref={notice} tabIndex={-1} role={verified?"status":"alert"}>{message}</p>}
  {!sent&&(attempt?<Button disabled={busy||!allowed} onClick={()=>{void confirm();}}>Confirm source order</Button>:<Button disabled={busy||!allowed||!changed} onClick={()=>{void review();}}>Review order</Button>)}
  {sent&&!verified&&<Button disabled={busy} onClick={()=>{void manualCheck();}}>Check current order</Button>}
  <Button disabled={busy} onClick={()=>changeOpen(false)}>{sent?"Close":"Cancel"}</Button>
- </div></Dialog>{!available&&<p id={unavailableId}>Source-order editing is unavailable until a current company, sign-in and revision snapshot with at least two ordered sources is available.</p>}</>;
+ </div></Dialog>{!available&&<p id={unavailableId}>Source-order editing is unavailable until a current company, sign-in and revision snapshot with at least one usable source is available.</p>}</>;
 }

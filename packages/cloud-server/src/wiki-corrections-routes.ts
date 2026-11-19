@@ -4,10 +4,12 @@
 //   POST /v1/app/projects/{p}/wiki/pages/{id}/notes                  { text, file? }    Add a note (pending: people see it now, agents only after a maintainer approves)
 //   POST /v1/app/projects/{p}/wiki/pages/{id}/notes/{n}/approve      {}                 maintainer only
 //   POST /v1/app/projects/{p}/wiki/pages/{id}/notes/{n}/delete       {}                 the note's author or a maintainer
+//   POST /v1/app/projects/{p}/wiki/pages/{id}/notes/{n}/acknowledge  {}                 the note's author or a maintainer: clear the changed-file reminder
 //   POST /v1/app/projects/{p}/wiki/pages/{id}/notes/{n}/suggest-lesson {}               a PENDING lesson an admin approves; never approved here
 //   POST /v1/app/projects/{p}/wiki/pages/{id}/flags                  { claimId?, reason? }   Mark wrong
 //   POST /v1/app/projects/{p}/wiki/pages/{id}/flags/resolve          {}                 maintainer only
 //   GET  /v1/app/projects/{p}/wiki/disputed                                             maintainer only
+//   GET  /v1/app/projects/{p}/wiki/gaps                                                 maintainer only: the questions the wiki could not answer, as topics (never who asked)
 //
 // Rules:
 //   - Code decides who may do each: the person's LIVE role on the project, read on every call. Cloud adds no rule that could widen it and never sends a person, company, role or author (Code's bodies
@@ -55,7 +57,9 @@ const PASS_WORDS: ReadonlySet<string> = new Set([
 const PASS_CODES: ReadonlySet<string> = new Set(["NOT_FOUND", "FORBIDDEN", "CONFIG_INVALID", "IDEMPOTENCY_CONFLICT", "RUNTIME_UNAVAILABLE"]);
 const PASS_STATUSES: ReadonlySet<number> = new Set([400, 403, 404, 409, 503]);
 
-export const WIKI_CORRECTION_LIMITS = { noteChars: 2_000, reasonChars: 500, notes: 50, disputed: 100 } as const;
+export const WIKI_CORRECTION_LIMITS = { noteChars: 2_000, reasonChars: 500, notes: 50, disputed: 100, gaps: 50, topicChars: 160 } as const;
+const GAP_KINDS = ["not_found", "partly", "wiki_empty", "not_right"] as const;
+const GAP_DAY = /^\d{4}-\d\d-\d\d$/u;
 const NOTE_ID = /^[A-Za-z0-9_-]{4,64}$/u;
 
 /** Code's refusal in fixed words. Only Code's exact unknown-route 404 means "not on Code yet". */
@@ -152,6 +156,23 @@ export function suggestedAnswer(value: unknown): Record<string, unknown> {
   const v = rec(value);
   return { state: need(oneOf(v["state"], ["proposed", "already_proposed"] as const), v["state"]), lessonId: need(text(v["lessonId"], 100), v["lessonId"]) };
 }
+export const acknowledgedAnswer = (value: unknown, note: string): Record<string, unknown> => { const v = rec(value); need(v["noteId"] === note && v["acknowledged"] === true, undefined); return { noteId: note, acknowledged: true }; };
+/** The questions the wiki could not answer, for THIS project: topics and counts only (Code never sends an asker, and nothing else is kept even if it did). */
+export function gapsAnswer(value: unknown, project: string): Record<string, unknown> {
+  const v = rec(value);
+  need(v["project"] === project, undefined);
+  return {
+    project, more: flag(v["more"]),
+    items: list(v["items"], WIKI_CORRECTION_LIMITS.gaps).map((one) => {
+      const i = rec(one);
+      return {
+        topic: need(text(i["topic"], WIKI_CORRECTION_LIMITS.topicChars), i["topic"]), kind: need(oneOf(i["kind"], GAP_KINDS), i["kind"]),
+        people: need(whole(i["people"], 1, 1_000_000), i["people"]), questions: need(whole(i["questions"], 1, 1_000_000), i["questions"]),
+        lastAskedAt: need(typeof i["lastAskedAt"] === "string" && GAP_DAY.test(i["lastAskedAt"]), i["lastAskedAt"]),
+      };
+    }),
+  };
+}
 export function disputedAnswer(value: unknown, project: string): Record<string, unknown> {
   const v = rec(value);
   need(v["project"] === project, undefined);
@@ -218,6 +239,7 @@ export const WIKI_CORRECTION_ROUTES: Route[] = [
   postRoute(/^\/projects\/([^/]+)\/wiki\/pages\/([^/]+)\/notes$/u, "add_note", false, (s) => `${pageBase(s)}/notes`, noteBody, (value) => noteAddedAnswer(value)),
   postRoute(/^\/projects\/([^/]+)\/wiki\/pages\/([^/]+)\/notes\/([^/]+)\/approve$/u, "approve_note", true, (s) => `${pageBase(s)}/notes/${encodeURIComponent(s.note!)}/approve`, none, (value, s) => approvedAnswer(value, s.note!)),
   postRoute(/^\/projects\/([^/]+)\/wiki\/pages\/([^/]+)\/notes\/([^/]+)\/delete$/u, "delete_note", true, (s) => `${pageBase(s)}/notes/${encodeURIComponent(s.note!)}/delete`, none, (value) => deletedAnswer(value)),
+  postRoute(/^\/projects\/([^/]+)\/wiki\/pages\/([^/]+)\/notes\/([^/]+)\/acknowledge$/u, "acknowledge_note", true, (s) => `${pageBase(s)}/notes/${encodeURIComponent(s.note!)}/acknowledge`, none, (value, s) => acknowledgedAnswer(value, s.note!)),
   postRoute(/^\/projects\/([^/]+)\/wiki\/pages\/([^/]+)\/notes\/([^/]+)\/suggest-lesson$/u, "suggest_lesson", true, (s) => `${pageBase(s)}/notes/${encodeURIComponent(s.note!)}/suggest-lesson`, none, (value) => suggestedAnswer(value)),
   postRoute(/^\/projects\/([^/]+)\/wiki\/pages\/([^/]+)\/flags$/u, "mark_wrong", false, (s) => `${pageBase(s)}/flags`, markBody, (value, s) => markedAnswer(value, s.page)),
   postRoute(/^\/projects\/([^/]+)\/wiki\/pages\/([^/]+)\/flags\/resolve$/u, "resolve_marks", false, (s) => `${pageBase(s)}/flags/resolve`, none, (value) => resolvedAnswer(value)),
@@ -230,6 +252,17 @@ export const WIKI_CORRECTION_ROUTES: Route[] = [
       const got = await fromCode(context, `${base(at.project)}/disputed`);
       if ("refusal" in got) return got.refusal;
       return rebuilt(() => disputedAnswer(got.value, at.project));
+    },
+  },
+  {
+    method: "GET", path: /^\/projects\/([^/]+)\/wiki\/gaps$/u,
+    answer: async (context) => {
+      const at = await scope(context);
+      if ("refusal" in at) return at.refusal;
+      if ([...context.query.keys()].length > 0) return A.invalid;
+      const got = await fromCode(context, `${base(at.project)}/gaps`);
+      if ("refusal" in got) return got.refusal;
+      return rebuilt(() => gapsAnswer(got.value, at.project));
     },
   },
 ];

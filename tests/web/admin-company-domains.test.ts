@@ -114,14 +114,14 @@ describe("Company domains", () => {
   expect((await screen.findByRole("alert")).textContent).toContain("An IP address is not a company domain.");
  });
 
- it("asks for a fresh sign-in in words and offers to sign in", async () => {
+ it("shows a refusal in the server's words with no sign-in step (owner DEC 254zzz73)", async () => {
   const f = mount({ post: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to change company domains.") });
   fireEvent.change(await screen.findByLabelText("Domain"), { target: { value: "acme.example" } });
   fireEvent.click(screen.getByRole("button", { name: "Add domain" }));
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toContain("Sign in again to change company domains.");
-  fireEvent.click(within(alert).getByRole("button", { name: "Sign in again" }));
-  expect(f.host.signIn).toHaveBeenCalledTimes(1);
+  expect(within(alert).queryByRole("button", { name: "Sign in again" })).toBeNull();
+  expect(f.host.signIn).not.toHaveBeenCalled();
  });
 
  it("checks now and says what the look found", async () => {
