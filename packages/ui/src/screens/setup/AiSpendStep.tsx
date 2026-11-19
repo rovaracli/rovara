@@ -23,6 +23,7 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { TextField } from "../../design/TextField.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { StepModelsCard } from "./StepModelsCard.js";
+import { sourceLabel } from "../admin/models/source-order.js";
 
 export type CompanyRole = "owner" | "admin" | "member";
 const MICROS = 1_000_000;
@@ -39,6 +40,7 @@ export const AI_SPEND_STEP_WORDS = Object.freeze({
  anthropic: "Your own Anthropic key",
  bedrock: "Your own Bedrock",
  connectAnthropic: "Connect your Anthropic key",
+ manageSource: "Manage this AI connection",
  model: "Model",
  modelHint: "From the models your company can use now.",
  limit: "Company monthly limit (USD)",
@@ -84,15 +86,20 @@ function Form({ model, source, settings, setNotice, reload, onSaved }: { model: 
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
  // DEC 254zzz3(1): what the company's agents use now (a saved choice, else the default it is on), never a guess.
  const shown = source.source ?? source.effectiveSource;
+ const [savedSource] = useState(source.source);
+ const [loadedChoice] = useState(shown ?? "rovara");
  const [choice, setChoice] = useState<Choice>(shown === null || shown === "rovara" ? "rovara" : "own");
- const [own, setOwn] = useState<Exclude<AgentAiSource, "rovara">>(shown === "bedrock_byo" ? "bedrock_byo" : "anthropic_key");
+ const [own, setOwn] = useState<AgentAiSource>(shown !== null && shown !== "rovara" ? shown : "anthropic_key");
+ const [sourceInteracted, setSourceInteracted] = useState(false);
  const [picked, setPicked] = useState(model.preselect);
  const savedCap = typeof settings.monthlyCapUsd === "number" ? settings.monthlyCapUsd : undefined;
  const [cap, setCap] = useState(usdText(savedCap ?? COMPANY_MONTHLY_DEFAULT_USD));
  const [busy, setBusy] = useState(false);
  const chosenSource: AgentAiSource = choice === "rovara" ? "rovara" : own;
+ // Compare against the displayed starting choice, so returning to it is not a change.
+ const sourceChanged = sourceInteracted && savedSource !== chosenSource && !(savedSource === null && loadedChoice === chosenSource);
  const capUsd = dollarsOf(cap, MONTHLY_MAX_USD);
- const sourceUsable = source.available[chosenSource];
+ const sourceUsable = !sourceChanged || source.available[chosenSource];
 
  async function save() {
   if (capUsd === undefined || capUsd === 0) { setNotice({ ok: false, text: W.badLimit }); return; }
@@ -109,7 +116,7 @@ function Form({ model, source, settings, setNotice, reload, onSaved }: { model: 
     wrote = true;
     pending = typeof answer === "object" && answer !== null && "pending" in answer && !("settings" in answer);
    }
-   if (source.source !== chosenSource) await api.sendAnswer("PUT", AGENT_AI_PATH, { expectedVersion: source.version, source: chosenSource }, { parse: body => body }, { retry: "never" }).then(() => { wrote = true; });
+   if (sourceChanged && source.source !== chosenSource) await api.sendAnswer("PUT", AGENT_AI_PATH, { expectedVersion: source.version, source: chosenSource }, { parse: body => body }, { retry: "never" }).then(() => { wrote = true; });
    // Always, even when unchanged: the company's own model is saved explicitly.
    await api.sendAnswer("PUT", ENGINE_MODEL_PATH, { model: picked }, { parse: readEngineModel }, { retry: "never" });
    setNotice({ ok: true, text: pending ? W.pending : W.saved });
@@ -125,12 +132,14 @@ function Form({ model, source, settings, setNotice, reload, onSaved }: { model: 
  return <>
   {source.sourceIsDefault && source.effectiveSource === "rovara" && <p data-testid="ai-spend-default">{W.defaultNote}</p>}
   <fieldset disabled={busy} aria-label="Who pays for the AI"><legend>Who pays for the AI</legend>
-   <p><label data-testid="ai-spend-rovara"><input type="radio" name="ai-spend-source" value="rovara" checked={choice === "rovara"} disabled={!source.available.rovara} onChange={() => setChoice("rovara")} /> <b>{W.rovara}</b>: {W.rovaraText}</label></p>
-   <p><label data-testid="ai-spend-own"><input type="radio" name="ai-spend-source" value="own" checked={choice === "own"} onChange={() => setChoice("own")} /> <b>{W.own}</b>: {W.ownText}</label></p>
+   <p><label data-testid="ai-spend-rovara"><input type="radio" name="ai-spend-source" value="rovara" checked={choice === "rovara"} disabled={!source.available.rovara} onChange={() => { setSourceInteracted(true); setChoice("rovara"); }} /> <b>{W.rovara}</b>: {W.rovaraText}</label></p>
+   <p><label data-testid="ai-spend-own"><input type="radio" name="ai-spend-source" value="own" checked={choice === "own"} onChange={() => { setSourceInteracted(true); setChoice("own"); }} /> <b>{W.own}</b>: {W.ownText}</label></p>
    {choice === "own" && <div className="rv-ai-spend-own" data-testid="ai-spend-own-choices">
-    <p><label><input type="radio" name="ai-spend-own" value="anthropic_key" checked={own === "anthropic_key"} disabled={!source.available.anthropic_key} onChange={() => setOwn("anthropic_key")} /> {W.anthropic}{source.anthropicKeyConnected === false && <> <span data-testid="ai-spend-no-key">(not connected yet)</span></>}</label></p>
-    <p><label><input type="radio" name="ai-spend-own" value="bedrock_byo" checked={own === "bedrock_byo"} disabled={!source.available.bedrock_byo} onChange={() => setOwn("bedrock_byo")} /> {W.bedrock}{!source.available.bedrock_byo && " (coming soon)"}</label></p>
-    {own === "anthropic_key" && source.anthropicKeyConnected !== true && <p><Link className="rv-admin-b1-link" to="/app/admin/learning-ai" data-testid="ai-spend-connect">{W.connectAnthropic}</Link>, then come back here.</p>}
+    {own !== "anthropic_key" && own !== "bedrock_byo" ? <p data-testid="ai-spend-source-read-only">Saved source: <b>{sourceLabel(own)}</b>. <Link className="rv-admin-b1-link" to="/app/admin/models/sources">{W.manageSource}</Link></p> : <>
+     <p><label><input type="radio" name="ai-spend-own" value="anthropic_key" checked={own === "anthropic_key"} disabled={!source.available.anthropic_key} onChange={() => { setSourceInteracted(true); setOwn("anthropic_key"); }} /> {W.anthropic}{source.anthropicKeyConnected === false && <> <span data-testid="ai-spend-no-key">(not connected yet)</span></>}</label></p>
+     <p><label><input type="radio" name="ai-spend-own" value="bedrock_byo" checked={own === "bedrock_byo"} disabled={!source.available.bedrock_byo} onChange={() => { setSourceInteracted(true); setOwn("bedrock_byo"); }} /> {W.bedrock}{!source.available.bedrock_byo && " (coming soon)"}</label></p>
+     {own === "anthropic_key" && source.anthropicKeyConnected !== true && <p><Link className="rv-admin-b1-link" to="/app/admin/learning-ai" data-testid="ai-spend-connect">{W.connectAnthropic}</Link>, then come back here.</p>}
+    </>}
    </div>}
   </fieldset>
   <Select label={W.model} value={picked} onValueChange={setPicked} options={model.offered.map(id => ({ value: id, label: id }))} disabled={busy} />
