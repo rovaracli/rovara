@@ -3,6 +3,8 @@
 import { expect, it } from "vitest";
 import { screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { workspaceFixture as fixture } from "./support/workspace-fixture.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
@@ -18,7 +20,7 @@ const withFallbacks = (modelFallbacks?: unknown) => fixture({}, modelFallbacks =
 function setup(value: unknown, theme: "light" | "dark" = "light") {
  const session = SessionViewReaderSchema.parse(value), f = fakeHost();
  const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session, onComment: () => undefined })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
- const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(RouterProvider, { router }) }), { theme });
+ const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(RouterProvider, { router }) }) }), { theme }); // the Merge section (#233) reads readiness
  return { ...ui, close() { ui.unmount(); router.dispose(); } };
 }
 const notes = () => screen.queryByRole("region", { name: "Model changes" });

@@ -868,6 +868,8 @@ describe("a sole owner/admin loosens alone (DEC 254zzz79 (2))", () => {
   const SELF = "self-approved: only owner/admin";
   const looser = () => ({ ...tightened(), websiteCeiling: { mode: "any" as const } });
   /** The `detail` of each saved settings change (the order of Cloud's audit read is not the tests'), "" for none. */
+  // The stored settings are read as `unknown`; the strict check wants the one field these tests compare.
+  const ceilingOf = async (w: ReturnType<typeof world>, companyId: string) => ((await w.store.settings(companyId))!.settings as { websiteCeiling: unknown }).websiteCeiling;
   const loosenings = async (audit: LocalCloudAuditStore, companyId: string) => (await audit.read(companyId, { max: 50 })).rows.filter((row) => row.action === "company.rules.changed" || row.action === "company.budget.changed").map((row) => ({ detail: row.detail ?? "" })).sort((a, b) => a.detail.localeCompare(b.detail));
 
   it("applies a sole admin's own loosening at once and says so in the audit line; the setting is really changed", async () => {
@@ -877,7 +879,7 @@ describe("a sole owner/admin loosens alone (DEC 254zzz79 (2))", () => {
     expect((await w.call(dan, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() })).status).toBe(200);
     const loosened = await w.call(dan, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() });
     expect(loosened).toEqual({ status: 200, body: { companyId: B, version: 2, settings: looser() } });
-    expect((await w.store.settings(B))!.settings.websiteCeiling).toEqual({ mode: "any" });
+    expect(await ceilingOf(w, B)).toEqual({ mode: "any" });
     expect((await w.call(dan, "GET", "/org/settings")).body.pending).toBeUndefined();
     const rows = await loosenings(audit, B);
     expect(rows.map((row) => row.detail)).toEqual(["", SELF]);
@@ -900,7 +902,7 @@ describe("a sole owner/admin loosens alone (DEC 254zzz79 (2))", () => {
     expect(proposed.status).toBe(202);
     const id = proposed.body.pending.changeId;
     expect((await w.call(ada, "POST", `/org/settings/pending/${id}/approve`, {})).body.error.code).toBe("SECOND_PERSON_REQUIRED");
-    expect((await w.store.settings(A))!.settings.websiteCeiling).toEqual(tightened().websiteCeiling);
+    expect(await ceilingOf(w, A)).toEqual(tightened().websiteCeiling);
     // Oz, an owner, is the second person too.
     const oz = await w.signIn("oz", 5);
     expect((await w.call(oz, "POST", `/org/settings/pending/${id}/approve`, {})).status).toBe(200);
@@ -931,7 +933,7 @@ describe("a sole owner/admin loosens alone (DEC 254zzz79 (2))", () => {
     // Eve is removed from the company: Dan is the only live admin, and may approve what he proposed.
     w.removed.add(PEOPLE.eve!.developerId);
     expect((await w.call(dan, "POST", `/org/settings/pending/${id}/approve`, {})).status).toBe(200);
-    expect((await w.store.settings(B))!.settings.websiteCeiling).toEqual({ mode: "any" });
+    expect(await ceilingOf(w, B)).toEqual({ mode: "any" });
     expect((await loosenings(audit, B)).map((row) => row.detail)).toEqual(["", SELF]);
     expect(w.log).toContainEqual(expect.objectContaining({ event: "cloud.company_settings_approved", companyId: B, selfApproved: true }));
   });
@@ -962,7 +964,7 @@ describe("a sole owner/admin loosens alone (DEC 254zzz79 (2))", () => {
       await w.call(dan, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
       w.setMembers(mode);
       expect((await w.call(dan, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() })).status, mode).toBe(202);
-      expect((await w.store.settings(B))!.settings.websiteCeiling, mode).toEqual(tightened().websiteCeiling);
+      expect(await ceilingOf(w, B), mode).toEqual(tightened().websiteCeiling);
     }
   });
 
@@ -975,7 +977,7 @@ describe("a sole owner/admin loosens alone (DEC 254zzz79 (2))", () => {
     await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
     expect((await w.call(dan, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() })).status).toBe(200);
     expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() })).status).toBe(202);
-    expect((await w.store.settings(A))!.settings.websiteCeiling).toEqual(tightened().websiteCeiling);
+    expect(await ceilingOf(w, A)).toEqual(tightened().websiteCeiling);
     expect((await loosenings(audit, A)).map((row) => row.detail)).toEqual([""]);
   });
 
@@ -988,6 +990,6 @@ describe("a sole owner/admin loosens alone (DEC 254zzz79 (2))", () => {
     const refused = await w.call(dan, "PUT", "/org/settings", { expectedVersion: 2, settings: { ...looser(), decisions: [{ what: "setting.loosen", secondPerson: true }, { what: "setting.loosen", deciders: ["1".repeat(64)] }] } });
     expect(refused.status).toBe(403);
     expect(refused.body.error.code).toBe("FORBIDDEN");
-    expect((await w.store.settings(B))!.settings.websiteCeiling).toEqual(tightened().websiteCeiling);
+    expect(await ceilingOf(w, B)).toEqual(tightened().websiteCeiling);
   });
 });
