@@ -128,11 +128,11 @@ describe("the CSV export", () => {
   it("exports what the table shows, in plain numbers, with a hostile feature name made safe", () => {
     const csv = reportCsv([group("f1", "=HYPERLINK(\"http://evil\")", { costCents: 21_234, unpricedCalls: 3, costIsFloor: true }), group("none", "No feature", { state: undefined as unknown as "open" })], "feature");
     const lines = csv.trim().split("\r\n");
-    expect(lines[0]).toBe("Feature,Tasks,Pull requests opened,Pull requests merged,Cost (USD),Cost is a floor,Calls not priced,End to end (days),Still open,State");
+    expect(lines[0]).toBe("Feature,Tasks,Pull requests opened,Pull requests merged,Cost (USD),Cost is a floor,Calls not priced,End to end (days),Still open,State,Fully priced USD tasks,Foreign currency tasks,Invalid/unreadable tasks in range");
     expect(lines[1]!.startsWith("\"'=HYPERLINK(")).toBe(true);
     expect(lines[1]).toContain(",212.34,yes,3,5.0,no,Open");
     expect(csv).not.toMatch(/person|requester|waiting|send/iu);
-    expect(reportCsv([group("web", "web")], "project").split("\r\n")[0]).toBe("Project,Tasks,Pull requests opened,Pull requests merged,Cost (USD),Cost is a floor,Calls not priced,End to end (days),Still open");
+    expect(reportCsv([group("web", "web")], "project").split("\r\n")[0]).toBe("Project,Tasks,Pull requests opened,Pull requests merged,Cost (USD),Cost is a floor,Calls not priced,End to end (days),Still open,Fully priced USD tasks,Foreign currency tasks,Invalid/unreadable tasks in range");
     const tasks = featureCsv(clean(detail()).tasks);
     expect(tasks.split("\r\n")[1]).toBe("Pay with card,web,Linear,Merged,https://github.com/acme/web/pull/7,120.00,no,0,2.0,no");
   });
@@ -379,7 +379,7 @@ describe("a feature's page", () => {
       fireEvent.click(screen.getByRole("button", { name: "Download CSV" }));
       const [name, blob] = (f.host.saveFile as unknown as { mock: { calls: Array<[string, Blob]> } }).mock.calls[0]!;
       expect(name).toBe("feature-tasks.csv");
-      expect(await blob.text()).toBe(featureCsv(clean(detail()).tasks));
+      expect(await blob.text()).toBe(featureCsv(clean(detail()).tasks, clean(detail())));
     } finally { f.close(); }
   });
   it("has no accessibility violations", async () => {
@@ -389,4 +389,19 @@ describe("a feature's page", () => {
       await expectNoAxeViolations(f.container);
     } finally { f.close(); }
   });
+});
+
+
+it("shows unavailable task cost, USD coverage and foreign exceptions consistently with CSV", async () => {
+  const d = detail();
+  Object.assign(d.totals, { pricedTasks: 1, foreignCurrencyTasks: 1, costIsFloor: true });
+  Object.assign(d.tasks[1]!, { costCents: 0, costUnavailable: true });
+  const f = mount("/app/admin/money/report/features/f1", () => ok(d));
+  try {
+    await screen.findByRole("table", { name: "Tasks in this feature" });
+    expect(screen.getByText("Cost unavailable")).toBeTruthy();
+    expect(document.body.textContent).toContain("1 of 3 tasks have fully priced USD costs");
+    expect(document.body.textContent).toContain("1 foreign currency task");
+    expect(featureCsv(readFeatureDetail.parse(d).tasks)).toContain("Cost unavailable");
+  } finally { f.close(); }
 });

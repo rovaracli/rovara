@@ -1,3 +1,4 @@
+import { parseTaskMoneyV1 } from "./task-money.js";
 // A Cloud session as the app reads it (SessionViewSchema, `GET /v1/app/sessions/{id}`), built from Cloud's own session
 // record and the Rovara Code task it points at. The task goes in as Code answered it: Cloud's task view is a subset of
 // Code's, and the app reads it tolerantly. A plan waiting for the owner's review is the owner's approval. Someone the
@@ -90,6 +91,11 @@ export function freshPerson<P extends { developerId: string; name: string }>(per
 export interface SessionExtras { planOnCard?: boolean; coOwner?: boolean }
 
 export function sessionView(session: WorkSession, task: CodeTask, viewer: { developerId: string; name?: string }, origin: string, people?: SessionPeople, extras: SessionExtras = {}) {
+  const parsedMoney = parseTaskMoneyV1(task["money"]);
+  const money = parsedMoney?.taskId === task.taskId ? parsedMoney : undefined;
+  const safeTask = { ...task };
+  delete safeTask["money"];
+  if (money !== undefined) safeTask["money"] = money;
   const status = sessionStatus(task);
   const owner = viewer.developerId === session.owner.developerId;
   const ended = ENDED.has(status);
@@ -100,6 +106,7 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
   const follow = people ?? { ...followState(session, viewer.developerId), viewingNow: [] };
   return {
     contractVersion: 1,
+    ...(money === undefined ? {} : { money }),
     sessionId: session.sessionId,
     kind: "task",
     mode: "delegate",
@@ -125,7 +132,7 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
     createdAt: session.createdAt,
     updatedAt: task.updatedAt,
     ...(ended ? { endedAt: task.updatedAt } : {}),
-    body: { kind: "task", task },
+    body: { kind: "task", task: safeTask },
   };
 }
 
@@ -159,6 +166,7 @@ export function liveTile(session: WorkSession, task: CodeTask, viewer: { develop
     statusWords: blockedReview(task)?.unfinished === true ? "Review couldn't finish" : STATUS_WORDS[view.status],
     ...(step === undefined ? {} : { step }),
     ...(view.status === "failed" ? { lastRunFailed: true as const } : {}),
+    ...(view.money === undefined ? {} : { money: view.money }),
     costUsd: spentUsd(task),
     viewingNow: view.viewingNow.slice(0, 5),
     viewingNowCount: view.viewingNow.length,

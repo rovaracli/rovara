@@ -9,8 +9,8 @@ import { AccountPage, AdminPage, ROUTES } from "./pages/index.js";
 const json = (body: unknown, status = 200) => ({ status, contentType: "application/json", body: JSON.stringify(body) });
 const SPEND = {
   spentThisMonthUsd: 412.6, remainingUsd: 549.2, heldUsd: 38.2, limitUsd: 961.8, runsOutOn: "2026-11-29", costPerMergedChangeUsd: 3.84, mergedCount: 96, month: "2026-11",
-  byProject: [{ name: "evals-api", spentUsd: 201.4, heldUsd: 21, limitUsd: 400, taskStopUsd: 8, mergedCount: 52, paidFrom: "Company Gemini account" }, { name: "prompt-router", spentUsd: 171.6, heldUsd: 17.2, limitUsd: 172, taskStopUsd: 8, mergedCount: 37, paidFrom: "Company Gemini account" }],
-  byPerson: [{ name: "Priya Raman", role: "Admin", spentUsd: 148.2, allowanceUsd: 300, allowanceSource: "own", tasks: 41, mergedCount: 38 }, { name: "Sam Okoye", role: "Member", spentUsd: 139.9, allowanceUsd: 150, allowanceSource: "company_default", tasks: 36, mergedCount: 31 }],
+  provisionalMicros: 1_230_000,
+  byPerson: [{ name: "Sam Okoye", role: "Member", spentUsd: 139.9, allowanceUsd: 150, allowanceSource: "company_default", tasks: 36, mergedCount: 31 }],
 };
 
 async function serve(page: Page, path: string, body: unknown, status = 200): Promise<void> {
@@ -33,14 +33,16 @@ test("the admin area has five groups in a sidebar, not 14 flat tabs", async ({ p
   await expect(admin.link("Audit")).toHaveAttribute("aria-current", "page");
 });
 
-test("Spending says it is not connected yet when Cloud has no spending read", async ({ page }) => {
+test("Spending shows a read error without inventing amounts when Cloud has no gateway meter", async ({ page }) => {
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.spending);
   await expect(admin.heading("Spending")).toBeVisible();
-  await admin.expectNotConnected("Company spending");
+  await expect(page.getByTestId("spend-error")).toContainText("Couldn't load spending.");
+  await expect(page.getByText("No AI spending recorded yet this month")).toHaveCount(0);
+  await expect(admin.stats("Spending in November")).toHaveCount(0);
 });
 
-test("Spending shows real amounts, by project (people are on their own page), and the over-budget state", async ({ page }) => {
+test("Spending shows company totals, provisional charges, links to people, and the over-budget state", async ({ page }) => {
   await serve(page, "/org/spend", SPEND);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.spending);
@@ -48,8 +50,10 @@ test("Spending shows real amounts, by project (people are on their own page), an
   await expect(stats).toContainText("$412.60");
   await expect(stats).toContainText("$38.20");
   await expect(stats).toContainText("$549.20");
-  await expect(admin.table("Spending by project")).toContainText("evals-api");
-  await expect(admin.table("Spending by project")).toContainText("$0.40 left");
+  await expect(page.getByText("Not yet confirmed: $1.23", { exact: true })).toBeVisible();
+  await expect(page.getByText("Not yet confirmed amounts are already counted in Spent or Held.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "By project" })).toHaveCount(0);
+  await expect(page.getByText(/Spending by project isn't connected/u)).toHaveCount(0);
   // Per-person spending is on People and limits only (owner rule D2): a link here, no table, no names.
   await expect(page.getByRole("table", { name: "Spending by person" })).toHaveCount(0);
   await expect(page.getByText("Sam Okoye")).toHaveCount(0);
@@ -60,7 +64,7 @@ test("Spending shows real amounts, by project (people are on their own page), an
   await serve(page, "/org/spend", { ...SPEND, spentThisMonthUsd: 966.3, remainingUsd: -4.5, limitUsd: 961.8 });
   await page.reload();
   await expect(page.getByText("This month's budget is used up")).toBeVisible();
-  await expect(page.getByRole("link", { name: "See limits" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Raise the limit" })).toHaveAttribute("href", "/app/admin/ai-spending");
 });
 
 test("Overview shows this month's money and the people at a glance", async ({ page }) => {
@@ -73,13 +77,16 @@ test("Overview shows this month's money and the people at a glance", async ({ pa
 
 
 // Company settings is served for real: Cloud's company backend runs in memory (CLOUD_COMPANY_DATA=memory in playwright.config.ts) for the company the pretend Code's access check names.
-test("Company settings reads Cloud's company backend and says the model gateway needs a monthly cap", async ({ page }) => {
+test("Company settings shows the monthly limit read-only and links to its sole editor", async ({ page }) => {
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.settings);
   await expect(admin.heading("Company settings")).toBeVisible();
   await expect(page.getByText("No company rules yet")).toBeVisible();
-  await expect(page.getByText("Set a monthly cap to use the model gateway.")).toBeVisible();
-  await expect(page.getByText(/No monthly cap is set/u)).toBeVisible();
+  await expect(page.getByText("Set a monthly limit to use the model gateway.")).toBeVisible();
+  await expect(page.getByText(/No monthly limit is set/u)).toBeVisible();
+  const monthly = page.getByRole("region", { name: "Monthly limit", exact: true });
+  await expect(monthly.getByRole("link", { name: "AI and spending" })).toHaveAttribute("href", "/app/admin/ai-spending");
+  await expect(monthly.getByRole("textbox")).toHaveCount(0);
   await expect(admin.notConnected).toHaveCount(0);
 });
 
@@ -87,26 +94,28 @@ test("Spending and the Overview say the same, and link to where the cap is set",
   await serve(page, "/org/spend", SPEND);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.spending);
-  const banner = page.getByRole("region", { name: "Set a monthly cap to use the model gateway." });
+  const banner = page.getByRole("region", { name: "Set a monthly limit to use the model gateway." });
   await expect(banner).toBeVisible();
-  await banner.getByRole("link", { name: "Set the cap" }).click();
-  await expect(page).toHaveURL(/\/app\/admin\/settings#monthly-cap/u);
+  await banner.getByRole("link", { name: "Set the monthly limit" }).click();
+  await expect(page).toHaveURL(/\/app\/admin\/ai-spending/u);
   await admin.open(ROUTES.admin.home);
-  await expect(page.getByRole("region", { name: "Set a monthly cap to use the model gateway." })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Set a monthly limit to use the model gateway." })).toBeVisible();
 });
 
-// The settings PUTs below are answered here, never by the local Cloud: a saved cap would stay in its store and change what later specs read.
+// Settings PUTs are answered here so a saved rule cannot change what later specs read.
 async function answerSettingsWrites(page: Page): Promise<void> {
   await page.route("**/v1/web/org/settings", route => (route.request().method() === "PUT" ? route.fulfill(json({ companyId: "org_aaaaaaaaaaaaaaaaaaaa", version: 2, settings: {} })) : route.fallback()));
 }
 
-test("changing the cap needs no step-up (owner DEC 254zzz73): the editor opens at once and the change is sent", async ({ page }) => {
+test("changing company rules needs no step-up: the editor opens at once and preserves the read-only monthly limit", async ({ page }) => {
   await answerSettingsWrites(page);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.settings);
   await page.getByRole("button", { name: "Change rules" }).click();
   await expect(admin.freshSignIn).toHaveCount(0);
-  await page.getByLabel("Company monthly cap (USD)").fill("2500");
+  await expect(page.getByLabel("Company monthly limit (USD)")).toHaveCount(0);
+  await page.getByRole("button", { name: "Add a rule" }).click();
+  await page.getByLabel("Rule 1", { exact: true }).fill("Keep the tests passing.");
   await page.getByRole("button", { name: "Save rules" }).click();
   await expect(page.getByText(/Saved\. The new rules apply/u)).toBeVisible();
   await expect(admin.freshSignIn).toHaveCount(0);
@@ -120,8 +129,8 @@ test("the settings write carries the body hash like every other write", async ({
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.settings);
   await page.getByRole("button", { name: "Change rules" }).click();
-  await page.getByLabel("Company monthly cap (USD)").fill("0");
-  await expect(page.getByText("A $0 cap blocks all model gateway use.")).toBeVisible();
+  await page.getByRole("button", { name: "Add a rule" }).click();
+  await page.getByLabel("Rule 1", { exact: true }).fill("Keep the tests passing.");
   await page.getByRole("button", { name: "Save rules" }).click();
   await expect.poll(() => writes.some(write => write.method === "PUT" && write.url.endsWith("/v1/web/org/settings"))).toBe(true);
   for (const write of writes.filter(entry => entry.url.endsWith("/v1/web/org/settings"))) {
@@ -159,12 +168,13 @@ async function violations(page: Page): Promise<string[]> {
   });
 }
 for (const scheme of ["light", "dark"] as const) {
-  test(`Spending (amounts, flags, not-connected boxes) has no accessibility violations in ${scheme}`, async ({ page }) => {
+  test(`Spending (amounts and over-budget flags) has no accessibility violations in ${scheme}`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: scheme });
-    await serve(page, "/org/spend", { ...SPEND, spentThisMonthUsd: 966.3, remainingUsd: -4.5, byProject: [{ ...SPEND.byProject[0]!, spentUsd: 410 }, SPEND.byProject[1]!] });
+    await serve(page, "/org/spend", { ...SPEND, spentThisMonthUsd: 966.3, remainingUsd: -4.5 });
     const admin = new AdminPage(page);
     await admin.open(ROUTES.admin.spending);
-    await expect(admin.table("Spending by project")).toBeVisible();
+    await expect(admin.stats("Spending in November")).toBeVisible();
+    await expect(page.getByText("This month's budget is used up")).toBeVisible();
     expect(await violations(page)).toEqual([]);
   });
   test(`Account has no accessibility violations in ${scheme}`, async ({ page }) => {
@@ -175,3 +185,28 @@ for (const scheme of ["light", "dark"] as const) {
     expect(await violations(page)).toEqual([]);
   });
 }
+
+test("an absent company meter month is calm on Spending and Overview", async ({ page }) => {
+ await serve(page, "/org/spend", { month: "2026-11", empty: true });
+ const admin = new AdminPage(page);
+ for (const path of [ROUTES.admin.spending, ROUTES.admin.home]) {
+  await admin.open(path);
+  await expect(page.getByText("No AI spending recorded yet this month", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("spend-error")).toHaveCount(0);
+  await expect(page.getByText("$0.00", { exact: true })).toHaveCount(0);
+ }
+});
+
+test("the sole monthly limit editor refuses zero on AI and spending without requesting step-up", async ({ page }) => {
+ await serve(page, "/org/engine-model", { model: "zai.glm-4.7", source: "company", offered: ["zai.glm-4.7"], preselect: "zai.glm-4.7", canChange: true });
+ await serve(page, "/org/agent-ai", { source: "rovara", version: 1, canChange: true, anthropicKeyConnected: false, bedrockConnected: null, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }] });
+ await serve(page, "/org/settings", { companyId: "org_aaaaaaaaaaaaaaaaaaaa", version: 1, modelGateway: { ready: true }, settings: { instructions: [], budgets: { companyMonthlyUsdMicros: 100_000_000 } } });
+ const admin = new AdminPage(page);
+ await admin.open("/app/admin/ai-spending");
+ const limit = page.getByLabel("Company monthly limit (USD)");
+ await expect(limit).toHaveValue("100");
+ await limit.fill("0");
+ await expect(page.getByText("The monthly limit must be an amount in dollars above 0, like 500 or 1500.50, up to 1,000,000.", { exact: true })).toBeVisible();
+ await expect(page.getByTestId("ai-spend-step").getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+ await expect(admin.freshSignIn).toHaveCount(0);
+});

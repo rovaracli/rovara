@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { CORE_TASK_ROUTES } from "../fixtures/code-core-task-routes.js";
 import {
-  CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, PEOPLE_LIMITS_WORDS, createCloudHandler, defaultCompanySettings,
+  CodeClient, DynamoGatewayMeterReader, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, PEOPLE_LIMITS_WORDS, createCloudHandler, defaultCompanySettings,
   type CloudRequest, type PersonSpendReader, type SpendLimitKind,
 } from "../../packages/cloud-server/src/index.js";
 
@@ -404,4 +404,16 @@ describe("fail closed, in fixed words", () => {
       expect((await w.call(await w.signIn("ada"), PATH)).status, String(bad)).toBe(503);
     }
   });
+});
+
+
+it("shows spending unavailable through the route when the meter issuer has no verified partition", async () => {
+  const w = world();
+  await w.settings(A);
+  const reader = new DynamoGatewayMeterReader({ send: async () => ({ Responses: { meter: [] } }) } as never, "meter", "https://wrong.example/v1/auth");
+  w.spend.monthSpend = (company, month, ids) => reader.monthSpend(company, month, ids);
+  const result = await w.call(await w.signIn("ada"), "/org/people-limits");
+  expect(result.status).toBe(503);
+  expect(result.body).toEqual(PEOPLE_LIMITS_WORDS.spendUnreadable.body);
+  expect(result.raw).not.toContain("spentCents");
 });

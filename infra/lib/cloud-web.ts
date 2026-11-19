@@ -162,6 +162,12 @@ export class CloudWebStack extends Stack {
       constraintDescription: "the Rovara Code install's API address: https:// and a host, no path",
       description: "The Rovara Code install Cloud signs people in through and calls, for example https://abc.execute-api.us-east-1.amazonaws.com",
     });
+    // Like ProductKeysTableName, passed by the controller rather than a cross-stack export: the gateway deploys independently.
+    const meterTableName = new CfnParameter(this, "GatewayMeterTableName", {
+      type: "String", allowedPattern: "^[A-Za-z0-9_.-]{3,255}$",
+      description: "The model gateway's Meter table physical name (not ProductMeter or LearningMeter); its Issuer output must equal CodeUrl + /v1/auth",
+    }).valueAsString;
+    const meterTableArn = `arn:${this.partition}:dynamodb:${this.region}:${this.account}:table/${meterTableName}`;
 
     // Sign-ins, Cloud's sessions with their comments, and who is viewing (packages/cloud-server/src/dynamo-stores.ts, CLOUD_TABLE).
     const table = new dynamodb.TableV2(this, "State", {
@@ -211,6 +217,7 @@ export class CloudWebStack extends Stack {
       ROVARA_SCOPES: CLOUD_APP_SCOPES.join(" "),
       CLOUD_TABLE: table.tableName,
       COMPANY_TABLE: companies.tableName,
+      CLOUD_GATEWAY_METER_TABLE: meterTableName,
       CLOUD_ORIGIN_PARAMETER: originParameter,
       CLOUD_CLIENT_SECRET_ID: clientSecret.secretName,
       CLOUD_APP_DIRECTORY: `/var/task/${CLOUD_WEB_SHELL_DIRECTORY}`,
@@ -252,6 +259,11 @@ export class CloudWebStack extends Stack {
     for (const statement of cloudWebTableStatements(table.tableArn)) server.addToRolePolicy(statement);
     // Exactly what DynamoCompanyStore sends: a transaction's ConditionCheck needs ConditionCheckItem; no Scan, no batch, no table changes.
     companies.grant(server, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:ConditionCheckItem");
+    // People and limits: exact company item reads only. BatchGetItem is the reader's current call; GetItem is the approved item-read grant.
+    server.addToRolePolicy(new iam.PolicyStatement({
+      sid: "GatewayMeterCompanyReads", actions: ["dynamodb:GetItem", "dynamodb:BatchGetItem"], resources: [meterTableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["CO#*"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+    }));
     clientSecret.grantRead(server);
     // Sign-ins are sealed with this stack's own key, which only the function's role may use (migration plan v3.2, 7.2 change 4).
     const sessionKey = signInKey(this, `Rovara Cloud ${env} (web): seals people's sign-ins (Code tokens) in the State table`, server.role!);
@@ -343,7 +355,7 @@ export class CloudWebStack extends Stack {
     new CfnOutput(this, "CompanyTableName", { value: companies.tableName });
     if (props.productAi === true) new CfnOutput(this, "ServerRoleArn", { value: server.role!.roleArn, description: "The model gateway stack's CloudSettingsRoleArn: this role seals product keys" });
     // Last, so the template keeps its section order; the aspect puts it on every role at synth (cloud-boundary.ts).
-    applyCloudBoundary(this, env, "web");
+    applyCloudBoundary(this, env, "web", meterTableArn);
   }
 
   /** The product AI settings' grants (B7): the gateway's product key table by company keys, and the two KMS keys' sealing calls only. */

@@ -22,15 +22,25 @@ export function validUsage(value: unknown): value is TokenUsage {
   return whole(u.cacheWrite5m) && whole(u.cacheWrite1h) && u.cacheWrite5m + u.cacheWrite1h === u.cacheWrite;
 }
 export function hasUsage(usage: TokenUsage): boolean { return usage.input + usage.output + usage.cacheRead + usage.cacheWrite > 0; }
-export function settleAmount(input: { reportedCostMicros?: number; usage?: TokenUsage; price: ResolvedPrice; reservationMicros: number }): { actualMicros: number; estimated: boolean; usage?: TokenUsage } {
-  if (!validUsage(input.usage) || !hasUsage(input.usage)) return { actualMicros: input.reservationMicros, estimated: input.price.estimated };
+export function settleChargeAmount(input: { reportedCostMicros?: number; usage?: TokenUsage; price: ResolvedPrice; reservationMicros: number }): { actualMicros: number; estimated: boolean; status: "final" | "estimated" | "awaiting_usage"; reason: "rated_usage" | "reported_cost" | "derived_rate" | "missing_usage"; usage?: TokenUsage } {
+  if (!validUsage(input.usage) || !hasUsage(input.usage)) {
+    if (whole(input.reportedCostMicros) && input.reportedCostMicros > 0) return { actualMicros: input.reportedCostMicros, estimated: false, status: "final", reason: "reported_cost" };
+    return { actualMicros: input.reservationMicros, estimated: true, status: "awaiting_usage", reason: "missing_usage" };
+  }
   // Reported audio or video tokens with no price for them (REVIEW-1 M1): the cautious media rate, never below the hold, flagged
   // estimated with the usage so a correction row is written; above the hold it is an over-reservation (DEC 165).
-  if (!mediaPriced(input.usage, input.price)) return { actualMicros: Math.max(input.reservationMicros, 1, usageCost(input.usage, input.price, "cautious")), estimated: true, usage: { ...input.usage } };
+  if (!mediaPriced(input.usage, input.price)) return { actualMicros: Math.max(input.reservationMicros, 1, usageCost(input.usage, input.price, "cautious")), estimated: true, status: "estimated", reason: "derived_rate", usage: { ...input.usage } };
   const tokenCost = Math.max(1, usageCost(input.usage, input.price));
   if (whole(input.reportedCostMicros) && input.reportedCostMicros > 0) {
-    if ((!input.price.knownTokenPrice && input.price.estimated && !input.price.operatorReview) || input.reportedCostMicros >= tokenCost) return { actualMicros: input.reportedCostMicros, estimated: false };
+    if ((!input.price.knownTokenPrice && input.price.estimated && !input.price.operatorReview) || input.reportedCostMicros >= tokenCost) return { actualMicros: input.reportedCostMicros, estimated: false, status: "final", reason: "reported_cost" };
   }
   const estimated = usageEstimated(input.price, input.usage) || mediaEstimated(input.usage, input.price);
-  return { actualMicros: tokenCost, estimated, ...(estimated ? { usage: { ...input.usage } } : {}) };
+  return { actualMicros: tokenCost, estimated, status: estimated ? "estimated" : "final", reason: estimated ? "derived_rate" : "rated_usage", ...(estimated ? { usage: { ...input.usage } } : {}) };
+}
+
+/** Legacy envelope retained for strict readers; missing usage is always provisional. */
+export function settleAmount(input: Parameters<typeof settleChargeAmount>[0]): { actualMicros: number; estimated: boolean; usage?: TokenUsage } {
+  if (!validUsage(input.usage) || !hasUsage(input.usage)) return { actualMicros: input.reservationMicros, estimated: true };
+  const { actualMicros, estimated, usage } = settleChargeAmount(input);
+  return { actualMicros, estimated, ...(usage === undefined ? {} : { usage }) };
 }

@@ -30,7 +30,7 @@ export function useGatewayReadiness(): GatewayReadiness | undefined {
 export function GatewayReadinessBanner({ readiness }: { readiness: GatewayReadiness | undefined }) {
  if (readiness === undefined || readiness.ready) return null;
  const known = readiness.reason === GATEWAY_CAP_UNSET;
- return <Banner tone="warning" title={known ? GATEWAY_CAP_WORDS : "The model gateway isn't ready for this company"} action={<Link className="rv-button rv-button-secondary" to="/app/admin/settings#monthly-cap">{known ? "Set the cap" : "Open Company settings"}</Link>}>
-  <p>{known ? "Tasks can't use Rovara's model gateway until the company has a monthly cap. Rovara picks no amount for you." : <VisibleText text={readiness.message} />}</p>
+ return <Banner tone="warning" title={known ? GATEWAY_CAP_WORDS : "The model gateway isn't ready for this company"} action={<Link className="rv-button rv-button-secondary" to={known ? "/app/admin/ai-spending" : "/app/admin/settings"}>{known ? "Set the monthly limit" : "Open Company settings"}</Link>}>
+  <p>{known ? "Tasks can't use Rovara's model gateway until the company has a monthly limit. Rovara picks no amount for you." : <VisibleText text={readiness.message} />}</p>
  </Banner>;
 }

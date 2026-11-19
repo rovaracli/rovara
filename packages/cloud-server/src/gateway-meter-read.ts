@@ -5,7 +5,7 @@
 //                 { item: "person", company, spentMicros, estimatedMicros, reservedMicros, committed, overrun }
 //
 // The issuer is the Code install the gateway trusts (`<ROVARA_CODE_URL>/v1/auth`, the same one the product AI store names). A missing row is a person
-// who spent nothing this month. A row that is not exactly this company's person row, or whose amount is not a whole number, fails the whole read
+// who spent nothing this month, but only after the existing company-month row verifies the issuer/partition. A row that is not exactly this company's person row, or whose amount is not a whole number, fails the whole read
 // (the route then refuses; a person is never drawn as $0 because their row did not read). Every key is built from the caller's company, so another
 // company's row cannot be asked for, and one that comes back anyway is refused.
 import { BatchGetCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
@@ -29,28 +29,73 @@ export class DynamoGatewayMeterReader implements PersonSpendReader {
     if (table === "" || issuer === "" || issuer.length > 2048) throw new Error("gateway meter settings: a table and the install issuer are both needed");
   }
 
+  /** One exact company-month row. An absent row is empty; failed or malformed reads throw. */
+  async companyMonth(companyId: string, month: string): Promise<{ spentMicros: number; reservedMicros: number; committed: number; provisionalMicros?: number } | undefined> {
+    if (!COMPANY_ID.test(companyId) || !MONTH.test(month)) throw new Error("meter unavailable");
+    const pk = meterPartition(this.issuer, companyId), sk = `ROW#${JSON.stringify(["company", month])}`;
+    const answer = await this.db.send(new BatchGetCommand({ RequestItems: { [this.table]: { Keys: [{ pk, sk }], ConsistentRead: true } } }));
+    if ((answer.UnprocessedKeys?.[this.table]?.Keys?.length ?? 0) > 0) throw new Error("meter unavailable");
+    const rows = answer.Responses?.[this.table];
+    if (!Array.isArray(rows)) throw new Error("meter unavailable");
+    if (rows.length === 0) return undefined;
+    const row = rows[0];
+    if (rows.length !== 1 || row === undefined || row["pk"] !== pk || row["sk"] !== sk || row["company"] !== companyId || row["item"] !== "company" || !whole(row["spentMicros"]) || !whole(row["reservedMicros"]) || !whole(row["committed"]) || (row["provisionalMicros"] !== undefined && !whole(row["provisionalMicros"]))) throw new Error("meter unavailable");
+    return { spentMicros: row["spentMicros"], reservedMicros: row["reservedMicros"], committed: row["committed"], ...(row["provisionalMicros"] === undefined ? {} : { provisionalMicros: row["provisionalMicros"] as number }) };
+  }
+
+  /** Existing BatchGet permission, same company partition; missing rollout field stays unknown. */
+  async provisionalTotal(companyId: string, month: string): Promise<number | undefined> {
+    if (!COMPANY_ID.test(companyId) || !MONTH.test(month)) throw new Error("meter unavailable");
+    const pk = meterPartition(this.issuer, companyId), sk = `ROW#${JSON.stringify(["company", month])}`;
+    const answer = await this.db.send(new BatchGetCommand({ RequestItems: { [this.table]: { Keys: [{ pk, sk }], ConsistentRead: true } } }));
+    if ((answer.UnprocessedKeys?.[this.table]?.Keys?.length ?? 0) > 0) throw new Error("meter unavailable");
+    const rows = answer.Responses?.[this.table] ?? [];
+    if (rows.length === 0) return undefined;
+    const row = rows[0]!;
+    if (rows.length !== 1 || row["pk"] !== pk || row["sk"] !== sk || row["company"] !== companyId || row["item"] !== "company" || (row["provisionalMicros"] !== undefined && !whole(row["provisionalMicros"]))) throw new Error("meter unavailable");
+    return row["provisionalMicros"] as number | undefined;
+  }
+
   async monthSpend(companyId: string, month: string, personIds: readonly string[]): Promise<ReadonlyMap<string, number>> {
     if (!COMPANY_ID.test(companyId) || !MONTH.test(month) || !personIds.every((id) => PERSON_ID.test(id))) throw new Error("meter unavailable");
     const pk = meterPartition(this.issuer, companyId);
-    const bySort = new Map(personIds.map((id) => [personMonthSort(id, month), id]));
-    const spent = new Map<string, number>();
-    const sorts = [...bySort.keys()];
-    for (let from = 0; from < sorts.length; from += BATCH) {
-      let pending: Array<{ pk: string; sk: string }> = sorts.slice(from, from + BATCH).map((sk) => ({ pk, sk }));
+    const readBatch = async (sorts: readonly string[]): Promise<Array<Record<string, unknown>>> => {
+      const asked = new Set(sorts), received = new Set<string>();
+      const rows: Array<Record<string, unknown>> = [];
+      let pending = sorts.map(sk => ({ pk, sk }));
       for (let attempt = 0; pending.length > 0; attempt += 1) {
         if (attempt >= ATTEMPTS) throw new Error("meter unavailable");
-        // Throttled keys come back unprocessed: a short jittered pause before asking again, as the gateway's own meter does.
         if (attempt > 0) await new Promise<void>((resolve) => { setTimeout(resolve, Math.floor(Math.random() * 25 * 2 ** attempt)); });
         const answer = await this.db.send(new BatchGetCommand({ RequestItems: { [this.table]: { Keys: pending, ConsistentRead: true } } }));
         for (const item of (answer.Responses?.[this.table] ?? []) as Array<Record<string, unknown>>) {
           const sk = item["sk"];
-          const id = typeof sk === "string" ? bySort.get(sk) : undefined;
-          // Exactly the row asked for: this company's partition, a person row, this company named in it, a whole amount.
-          if (id === undefined || item["pk"] !== pk || item["item"] !== "person" || item["company"] !== companyId || !whole(item["spentMicros"])) throw new Error("meter unavailable");
-          spent.set(id, item["spentMicros"]);
+          if (item["pk"] !== pk || typeof sk !== "string" || !asked.has(sk) || received.has(sk)) throw new Error("meter unavailable");
+          received.add(sk);
+          rows.push(item);
         }
-        const left = answer.UnprocessedKeys?.[this.table]?.Keys;
-        pending = left === undefined ? [] : left.map((key) => ({ pk: String(key["pk"]), sk: String(key["sk"]) }));
+        const left = answer.UnprocessedKeys?.[this.table]?.Keys ?? [];
+        pending = left.map(key => {
+          if (key["pk"] !== pk || typeof key["sk"] !== "string" || !asked.has(key["sk"]) || received.has(key["sk"])) throw new Error("meter unavailable");
+          return { pk, sk: key["sk"] };
+        });
+      }
+      return rows;
+    };
+    const spent = new Map<string, number>();
+    if (personIds.length === 0) return spent;
+    // An empty lookup under a wrong issuer is indistinguishable from zero spend. Verify an existing gateway row first.
+    // A new/unused partition is unavailable until its company-month row exists; never invent a marker here.
+    const companySort = `ROW#${JSON.stringify(["company", month])}`;
+    const companyRows = await readBatch([companySort]);
+    const company = companyRows[0];
+    if (companyRows.length !== 1 || company?.["item"] !== "company" || company["company"] !== companyId || !whole(company["spentMicros"])) throw new Error("meter unavailable");
+    const bySort = new Map(personIds.map((id) => [personMonthSort(id, month), id]));
+    const sorts = [...bySort.keys()];
+    for (let from = 0; from < sorts.length; from += BATCH) {
+      for (const item of await readBatch(sorts.slice(from, from + BATCH))) {
+        const id = bySort.get(item["sk"] as string);
+        if (id === undefined || item["item"] !== "person" || item["company"] !== companyId || !whole(item["spentMicros"])) throw new Error("meter unavailable");
+        spent.set(id, item["spentMicros"]);
       }
     }
     return spent;

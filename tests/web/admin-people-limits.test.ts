@@ -75,7 +75,7 @@ describe("People and limits: the page", () => {
   const f = mount(PATH, () => ok(body()));
   try {
    const table = await screen.findByRole("table", { name: "People and limits" });
-   expect(within(table).getAllByRole("columnheader").map(cell => cell.textContent)).toEqual(["Person", "Spent this month", "Monthly limit", "Standing", "Change"]);
+   expect(within(table).getAllByRole("columnheader").map(cell => cell.textContent)).toEqual(["Person", "Spent this month (all projects)", "Monthly limit", "Standing", "Change"]);
    const lines = within(table).getAllByRole("row").slice(1);
    expect(lines.map(line => within(line).getAllByRole("cell")[0]!.textContent)).toEqual(["Al", "Bo", "Cy", "Di"]);
    expect(lines[0]!.textContent).toContain("$12.34"); expect(lines[0]!.textContent).toContain("$50.00"); expect(lines[0]!.textContent).toContain("set for this person"); expect(lines[0]!.textContent).toContain("Within the limit");
@@ -109,6 +109,7 @@ describe("People and limits: the page", () => {
    await waitFor(() => { expect(f.request.mock.calls.map(([r]) => r.path)).toContain("/v1/app/org/people-limits?project=web"); });
    await waitFor(() => { expect(within(screen.getByRole("table", { name: "People and limits" })).getAllByRole("row")).toHaveLength(2); });
    expect(document.body.textContent).toContain("not only web");
+   expect(document.body.textContent).toContain("Company-wide spend");
    // The filter stays offered with the narrower list, and back to everyone asks for the whole list.
    fireEvent.change(screen.getByLabelText("Show people on"), { target: { value: "" } });
    await waitFor(() => { expect(within(screen.getByRole("table", { name: "People and limits" })).getAllByRole("row")).toHaveLength(5); });

@@ -1,3 +1,4 @@
+import { parseTaskMoneyV1 } from "./task-money.js";
 // The Work page's reads (the split inbox, DEC 223): the person's tasks and, for the one task they select, its plan, proof index, events and plan comments.
 // Each is one call to Rovara Code as the signed-in person (contract v0: tasks.list, tasks.plan, tasks.evidence.list, tasks.events, tasks.comments.list),
 // kept to the fields the page draws. Code decides who may read a task; its refusal, a 404 included, reaches the app as Code worded it. Nothing here
@@ -30,7 +31,7 @@ const LIST_PAGES_MAX = 2;
 /** A closed or cancelled task needs no stage: the list says what it is from its status alone. */
 const NO_DETAIL: ReadonlySet<string> = new Set(["CLOSED", "CANCELLED"]);
 /** The fields `GET /v1/dev/tasks?detail=1` adds to a row (Code #1045, contracts DeveloperTaskListDetailSchema). */
-const DETAIL_FIELDS = ["workflow", "pullRequests", "costUsd", "runLimitUsd"] as const;
+const DETAIL_FIELDS = ["workflow", "pullRequests", "costUsd", "runLimitUsd", "money"] as const;
 /** Code's pull request states on a list row (the workflow's own, upper case) in the task view's words (lower case), which the app reads. UNKNOWN says nothing. */
 const PULL_STATE: Readonly<Record<string, string>> = Object.freeze({ OPEN: "open", CLOSED: "closed", MERGED: "merged" });
 
@@ -124,6 +125,7 @@ export function workTask(raw: unknown): Record<string, unknown> | undefined {
       round: isRecord(workflow["intent"]) ? num(workflow["intent"]["rounds"]) : undefined,
     }),
     pullRequests: list(raw["pullRequests"], 10).filter(isRecord).map((pull) => some({ repository: text(pull["repository"], 200), number: num(pull["number"]), url: text(pull["url"], 500), state: text(pull["state"], 40) })),
+    money: ((money) => money?.taskId === raw["taskId"] ? money : undefined)(parseTaskMoneyV1(raw["money"])),
     spent: spent === undefined ? undefined : some({ usd: num(spent["usd"]) }),
     runLimit: limit === undefined ? undefined : some({ limitUsd: num(limit["limitUsd"]) }),
     createdAt: text(raw["createdAt"], 40), updatedAt: text(raw["updatedAt"], 40),

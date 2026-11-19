@@ -1,3 +1,4 @@
+import { parsePreviewV2, type PreviewRequestV2 } from "@agentx/contracts/web";
 import { TaskStopStartPreviewSchema, PROCESS_START_REFUSED_MESSAGE, ProjectOverviewProjectSchema, SessionIdSchema, TaskResponseReaderSchema } from "@agentx/contracts/web";
 import type { AppHost } from "../host.js";
 import { createApiClient, type Reader, type SendResult } from "./client.js";
@@ -34,14 +35,18 @@ const MESSAGES: Readonly<Record<string, string>> = {
 export function createCodeApi(host: AppHost) {
  const api = createApiClient(host);
  return {
-  async previewStart(project: string, signal?: AbortSignal) {
+  async previewStart(project: string, signal?: AbortSignal, comparison?: PreviewRequestV2) {
    let timer: ReturnType<typeof setTimeout> | undefined, cancel: (() => void) | undefined;
    try {
     const name = ProjectOverviewProjectSchema.shape.name.parse(project);
-    const response = await Promise.race([host.transport.request({ method: "POST", path: "/v1/app/projects/" + encodeURIComponent(name) + "/start-preview", body: {}, retry: "never" }), new Promise<never>((_, reject) => {
+    const response = await Promise.race([host.transport.request({ method: "POST", path: "/v1/app/projects/" + encodeURIComponent(name) + "/start-preview", body: comparison ?? {}, retry: "never" }), new Promise<never>((_, reject) => {
      cancel = () => { reject(new Error("preview cancelled")); };timer = setTimeout(cancel, 30_000);
      if (signal?.aborted === true) cancel();else signal?.addEventListener("abort", cancel, { once: true });
     })]);
+    if (response.status === 200) {
+     const quote = parsePreviewV2(withoutRequestId(response.body));
+     if (quote !== undefined && comparison !== undefined && quote.project === name && Date.parse(quote.expiresAt) > Date.now() && Date.parse(quote.asOf) <= Date.now()) return quote;
+    }
     const parsed = response.status === 200 ? TaskStopStartPreviewSchema.safeParse(withoutRequestId(response.body)) : undefined;
     // "captured" carries the stop; "unknown" (Rovara Code has no per-task stop to show yet) is passed on so the page can say so plainly; "disabled" and anything unreadable show nothing.
     return parsed?.success === true && parsed.data.project === name && (parsed.data.kind === "captured" || parsed.data.kind === "unknown") ? parsed.data : undefined;

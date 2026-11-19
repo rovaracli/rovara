@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { copyRates } from "./price-tiers.js";
 import { STALE_ALARM_MS } from "./price-constants.js";
 import { type Price, type PriceKind, type PriceOrigin, type PriceSource, type ResolvedPrice } from "./price.js";
@@ -15,6 +16,7 @@ export class SnapshotPriceSource implements PriceSource {
   #expiresAt = Infinity;
   #limits = new Map<string, number>();
   #media = new Map<string, MediaRates[]>();
+  #snapshotHash: string | undefined;
   constructor(private readonly store: PriceSnapshotStore, private readonly options: { now?: () => number; overrides?: readonly unknown[] } = {}) {}
   #now(): number { return (this.options.now ?? Date.now)(); }
   async reload(): Promise<void> {
@@ -27,6 +29,7 @@ export class SnapshotPriceSource implements PriceSource {
   #build(snapshot: PriceSnapshot | undefined): void {
     const overrides = validOverrides(this.options.overrides ?? PRICE_OVERRIDES, this.#now()).map((e) => ({ ...e, origin: { source: "override" as const, fetchedAt: e.verifiedAt } }));
     this.#book = priceBook(snapshot, overrides); this.#snapshot = snapshot;
+    this.#snapshotHash = snapshot === undefined ? undefined : createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
     // Several rows can name one identity (dated and undated IDs): the smallest ceiling holds for all of them.
     const limits = new Map<string, number>();
     for (const l of snapshot?.sources.litellm?.limits ?? []) { const key = identityKey(l.provider, l.model); limits.set(key, Math.min(limits.get(key) ?? Number.MAX_SAFE_INTEGER, l.maxOutputTokens)); }
@@ -35,6 +38,13 @@ export class SnapshotPriceSource implements PriceSource {
     for (const { provider, model, ...rates } of snapshot?.sources.litellm?.media ?? []) { const key = identityKey(provider, model); media.set(key, [...(media.get(key) ?? []), rates]); }
     this.#media = media;
     this.#redundant = this.#book.redundantOverrides; this.#expiresAt = this.#book.expiresAt;
+  }
+  /** Identity of exactly the in-memory snapshot used for admission, never a second store read. */
+  quoteBasis(provider: string, model: string): { version: number; hash: string; fetchedAt: number; model: string } | undefined {
+    if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
+    const identity = this.#book.index.get(identityKey(provider, model));
+    if (this.#snapshot === undefined || identity === undefined) return undefined;
+    return { version: this.#snapshot.version, hash: this.#snapshotHash!, fetchedAt: identity.origin.fetchedAt, model: identity.model };
   }
   effectiveFor(provider: string, model: string, kind: PriceKind): ResolvedPrice {
     if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);

@@ -54,7 +54,7 @@ class Racing extends LocalCompanyStore {
   override async removeSpendLimit(companyId: string, kind: SpendLimitKind, id: string, basis: SpendLimitBasis) { if (this.breakWith !== undefined) throw new Error(this.breakWith); return super.removeSpendLimit(companyId, kind, id, basis); }
 }
 
-function world(options: { company?: boolean; codeProject?: "ok" | "outage"; members?: "ok" | "outage" | "pages" | "foreign" | "garbled"; pageSize?: number } = {}) {
+function world(options: { companyMonth?: (company: string, month: string) => Promise<{ spentMicros: number; reservedMicros: number; committed: number; provisionalMicros?: number } | undefined>; provisional?: (company: string, month: string) => Promise<number | undefined>; company?: boolean; codeProject?: "ok" | "outage"; members?: "ok" | "outage" | "pages" | "foreign" | "garbled"; pageSize?: number } = {}) {
   const clock = { at: START }; let tokens = 0;
   const nowS = () => Math.floor(clock.at / 1000);
   const byToken = new Map<string, Person>();
@@ -91,7 +91,7 @@ function world(options: { company?: boolean; codeProject?: "ok" | "outage"; memb
   const handler = createCloudHandler({
     client, store: sessions, org: { orgId: "rovara", name: "Rovara", plan: "cloud" }, callbackPath: "/callback", secureCookies: false, work: new LocalWorkSessionStore(), origin: ORIGIN,
     now: () => new Date(clock.at), log: (event) => { logs.push(JSON.stringify(event)); }, audit,
-    ...(options.company === false ? {} : { company: { store: companies, log: (event: Record<string, unknown>) => { logs.push(JSON.stringify(event)); } } }),
+    ...(options.company === false ? {} : { company: { store: companies, ...(options.provisional === undefined && options.companyMonth === undefined ? {} : { peopleSpend: { monthSpend: async () => new Map<string, number>(), ...(options.provisional === undefined ? {} : { provisionalTotal: options.provisional }), ...(options.companyMonth === undefined ? {} : { companyMonth: options.companyMonth }) } }), log: (event: Record<string, unknown>) => { logs.push(JSON.stringify(event)); } } }),
   });
   const signIn = async (who: string, stepUpAge?: number) => {
     const person = PEOPLE[who]!; tokens += 1;
@@ -102,7 +102,7 @@ function world(options: { company?: boolean; codeProject?: "ok" | "outage"; memb
     return cookie;
   };
   const call = async (cookie: string, method: string, path: string, body?: unknown, csrf = `csrf-${cookie}`) => {
-    const request: CloudRequest = { method, path: `/v1/web${path}`, query: new URLSearchParams(), headers: { cookie: `rovara_cloud_session=${cookie}`, "x-rovara-csrf": csrf, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) };
+    const request: CloudRequest = { method, path: `/v1/web${path.split("?")[0]}`, query: new URLSearchParams(path.split("?")[1]), headers: { cookie: `rovara_cloud_session=${cookie}`, "x-rovara-csrf": csrf, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) };
     const answer = (await handler(request))!;
     return { status: answer.status, body: JSON.parse(answer.body) as Record<string, unknown> & { error?: { code: string; message: string } }, raw: answer.body };
   };
@@ -707,6 +707,26 @@ describe("the upkeep and answers limits", () => {
   });
 });
 
+
+it("adds the company's optional gateway provisional total to the existing admin limits read", async () => {
+  const reads: string[] = [];
+  const w = world({ provisional: async (company, month) => { reads.push(`${company}/${month}`); return company === A ? 42 : 7; } });
+  await w.settings(A, {}); await w.settings(B, {});
+  expect((await w.call(await w.signIn("ada"), "GET", PATH)).body["provisionalMicros"]).toBe(42);
+  expect((await w.call(await w.signIn("bea"), "GET", PATH)).body["provisionalMicros"]).toBe(7);
+  expect((await w.call(await w.signIn("pam"), "GET", PATH)).status).toBe(403);
+  expect(reads).toEqual([`${A}/2026-11`, `${B}/2026-11`]);
+  const legacy = await READY();
+  expect((await legacy.call(await legacy.signIn("ada"), "GET", PATH)).body).not.toHaveProperty("provisionalMicros");
+  const broken = world({ provisional: async () => { throw new Error("private details"); } });
+  await broken.settings(A, {});
+  const refused = await broken.call(await broken.signIn("ada"), "GET", PATH);
+  expect(refused.status).toBe(200);
+  expect(refused.body).toHaveProperty("defaults");
+  expect(refused.body).not.toHaveProperty("provisionalMicros");
+  expect(refused.raw).not.toContain("private details");
+});
+
 // DEC 254zzz79 (2): with the DEFAULT rules (a second person for a loosening), a company with ONE live owner/admin has no second person, so that person raises a limit
 // themselves, audited as "self-approved: only owner/admin". Company B has one owner (Bea); company A has an owner and an admin (Ada, Ann).
 describe("a sole owner/admin raises a limit alone (DEC 254zzz79 (2))", () => {
@@ -766,4 +786,70 @@ describe("a sole owner/admin raises a limit alone (DEC 254zzz79 (2))", () => {
     expect((await d.call(await d.signIn("bea", 5), "PUT", project("web"), put(1, 25))).body.error?.code).toBe("FORBIDDEN");
     expect((await stored(d, "project_month", "web", B))?.monthlyUsdMicros).toBe(10 * MICROS);
   });
+});
+
+describe("company Spending read", () => {
+ it("serves owner/admin totals from their own current company and month without step-up", async () => {
+  const asked: string[][] = [];
+  const w = world({ companyMonth: async (company, month) => { asked.push([company, month]); return { spentMicros: company === A ? 20_000_000 : 3_000_000, reservedMicros: 2_000_000, committed: company === A ? 22_000_000 : 5_000_000, provisionalMicros: 1_230_000 }; } });
+  await w.settings(A, { company: 100_000_000 }); await w.settings(B, { company: 10_000_000 });
+  for (const who of ["ada", "ann", "bea"]) {
+   const answer = await w.call(await w.signIn(who), "GET", "/org/spend"); expect(answer.status).toBe(200);
+   expect(answer.body).toMatchObject({ spentThisMonthUsd: who === "bea" ? 3 : 20, heldUsd: 2, limitUsd: who === "bea" ? 10 : 100, remainingUsd: who === "bea" ? 5 : 78, provisionalMicros: 1_230_000, month: "2026-11" });
+  }
+  expect(asked).toEqual([[A, "2026-11"], [A, "2026-11"], [B, "2026-11"]]);
+  for (const who of ["pam", "ins", "nomad"]) expect((await w.call(await w.signIn(who), "GET", "/org/spend")).status).toBe(403);
+  const cookie = await w.signIn("ada");
+  for (const q of [`companyId=${B}`, "month=2026-10"]) expect((await w.call(cookie, "GET", `/org/spend?${q}`)).status).toBe(400);
+  expect(asked).toHaveLength(3);
+ });
+ it("never invents zero for meter faults, missing settings, invalid totals or a month rollover", async () => {
+  for (const row of [undefined, { spentMicros: -1, reservedMicros: 0, committed: 0 }, { spentMicros: 1, reservedMicros: 0, committed: 1, provisionalMicros: -1 }]) {
+   const w = world({ companyMonth: async () => { if (row === undefined) throw new Error("private failure"); return row; } }); await w.settings(A, {});
+   const result = await w.call(await w.signIn("ada"), "GET", "/org/spend"); expect(result.status).toBe(503); expect(result.raw).not.toContain("private failure"); expect(result.body).not.toHaveProperty("spentThisMonthUsd"); expect(result.body).not.toHaveProperty("empty");
+  }
+  const missing = world(); expect((await missing.call(await missing.signIn("ada"), "GET", "/org/spend")).status).toBe(503);
+  const rollover = world({ companyMonth: async () => { rollover.clock.at = Date.parse("2026-12-01T00:00:00Z"); return { spentMicros: 0, reservedMicros: 0, committed: 0 }; } }); await rollover.settings(A, {});
+  expect((await rollover.call(await rollover.signIn("ada"), "GET", "/org/spend")).status).toBe(503);
+ });
+ it("distinguishes a zero limit and an absent limit, keeping provisional absence unknown", async () => {
+  const w = world({ companyMonth: async () => ({ spentMicros: 1_000_000, reservedMicros: 2_000_000, committed: 3_000_000 }) });
+  const cookie = await w.signIn("ada"); await w.settings(A, { company: 0 }, s => { s.budgets.learningMonthlyUsdMicros = 0; });
+  expect((await w.call(cookie, "GET", "/org/spend")).body).toMatchObject({ limitUsd: 0, remainingUsd: -3 });
+  await w.settings(A, { company: null }); const result = await w.call(cookie, "GET", "/org/spend"); expect(result.status).toBe(200);
+  for (const field of ["limitUsd", "remainingUsd", "provisionalMicros"]) expect(result.body).not.toHaveProperty(field);
+ });
+});
+
+
+it.each([
+ { kind: "held call", row: { spentMicros: 0, estimatedMicros: 0, reservedMicros: 3_000_000, committed: 3_000_000, provisionalMicros: 0 }, spent: 0, held: 3, left: 97, provisional: 0 },
+ { kind: "estimated-price settlement", row: { spentMicros: 20_000_000, estimatedMicros: 4_000_000, reservedMicros: 0, committed: 20_000_000, provisionalMicros: 0 }, spent: 20, held: 0, left: 80, provisional: 0 },
+ { kind: "cut-off estimate within held work", row: { spentMicros: 20_000_000, estimatedMicros: 4_000_000, reservedMicros: 3_000_000, committed: 23_000_000, provisionalMicros: 1_250_000 }, spent: 20, held: 3, left: 77, provisional: 1_250_000 },
+ { kind: "settled provisional estimate exceeds held", row: { spentMicros: 20_000_000, estimatedMicros: 4_000_000, reservedMicros: 1_000_000, committed: 21_000_000, provisionalMicros: 1_250_000 }, spent: 20, held: 1, left: 79, provisional: 1_250_000 },
+ { kind: "confirmed settlement", row: { spentMicros: 6_000_000, estimatedMicros: 0, reservedMicros: 0, committed: 6_000_000, provisionalMicros: 0 }, spent: 6, held: 0, left: 94, provisional: 0 },
+ { kind: "absent provisional rollout field", row: { spentMicros: 20_000_000, estimatedMicros: 4_000_000, reservedMicros: 3_000_000, committed: 23_000_000 }, spent: 20, held: 3, left: 77, provisional: undefined },
+])("maps $kind without double counting or calling settled estimates confirmed", async ({ row, spent, held, left, provisional }) => {
+ // Estimated settlements are already in spent. Provisional cut-offs are already
+ // in spent or held. Neither is added again, and left subtracts committed exactly once.
+ const w = world({ companyMonth: async () => row });
+ await w.settings(A, { company: 100_000_000 });
+ const result = await w.call(await w.signIn("ada"), "GET", "/org/spend");
+ expect(result.status).toBe(200);
+ expect(result.body).toMatchObject({ spentThisMonthUsd: spent, heldUsd: held, remainingUsd: left, limitUsd: 100 });
+ if (provisional === undefined) expect(result.body).not.toHaveProperty("provisionalMicros");
+ else expect(result.body["provisionalMicros"]).toBe(provisional);
+ expect(result.body).not.toHaveProperty("confirmedMicros");
+});
+
+it("answers a genuinely absent company month calmly without inventing amounts", async () => {
+ const w = world({ companyMonth: async () => undefined }); await w.settings(A, {});
+ const result = await w.call(await w.signIn("ada"), "GET", "/org/spend");
+ expect(result.status).toBe(200);
+ expect(result.body).toEqual({ month: "2026-11", empty: true });
+});
+it("keeps an absent row unavailable when its read crosses the month boundary", async () => {
+ const w = world({ companyMonth: async () => { w.clock.at = Date.parse("2026-12-01T00:00:00Z"); return undefined; } }); await w.settings(A, {});
+ const result = await w.call(await w.signIn("ada"), "GET", "/org/spend");
+ expect(result.status).toBe(503); expect(result.body).not.toHaveProperty("empty");
 });

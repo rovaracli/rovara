@@ -1,3 +1,4 @@
+import { mergeTaskMoney } from "@agentx/contracts/web";
 import { useMemo } from "react";
 import { z } from "zod";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,8 +11,9 @@ type Principal = ReturnType<typeof AgentPrincipalSchema.parse>;
 const TASK_ID = z.string().uuid(), OpenedTaskSchema = z.object({ sessionId: SessionIdSchema, sessionUrl: z.string() });
 const sessionPath = (id: string) => "/v1/app/sessions/" + encodeURIComponent(SessionIdSchema.parse(id));
 export function acceptSessionRead(previous: ReadSession | undefined, next: ReadSession): ReadSession {
- if (previous !== undefined && (next.revision < previous.revision || Date.parse(next.updatedAt) < Date.parse(previous.updatedAt))) return previous;
- return next;
+ const view = previous !== undefined && (next.revision < previous.revision || Date.parse(next.updatedAt) < Date.parse(previous.updatedAt)) ? previous : next;
+ const money = mergeTaskMoney(previous?.money, next.money);
+ return { ...view, money, ...(view.body.kind === "task" ? { body: { ...view.body, task: { ...view.body.task, money } } } : {}) };
 }
 export function mergeSessionMessages(pages: readonly (readonly ReadMessage[])[]): ReadMessage[] {
  const byId = new Map<string, ReadMessage>();

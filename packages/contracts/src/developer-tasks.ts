@@ -1,3 +1,4 @@
+import { TaskMoneyV1Schema } from "./task-money-schema.js";
 import { z } from "zod";
 import {ModelFallbacksSchema} from "./stage-model-shared.js";
 import { DeveloperShareModeSchema } from "./project.js";
@@ -104,6 +105,7 @@ export const DeveloperTaskViewSchema = z.object({
   /** Actual audited fallback history; absent only on older servers. Current broker emits [] when none. */
   modelFallbacks:ModelFallbacksSchema.optional(),
   taskId: z.string().uuid(),
+  money: TaskMoneyV1Schema.optional(),
   title: z.string(),
   project: z.string(),
   status: DeveloperTaskStatusSchema,

@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { initialCharge, finishCharge, type ChargeSource } from "./charge-producer.js";
+import { chargeValue, type ChargeReceiptV1 } from "./charge-receipt.js";
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AGENT_AI_SOURCES, agentSourceSwitchedOn, resolveAgentSource, type AgentAiSource, type ResolvedAgentSource, type AgentSourceVia, type AgentAiSourceReader, type ByoBedrock, type CompanyChatAi, type CompanyEndpointAi, type RovaraAi } from "./agent-ai.js";
 import { endpointTarget, ENDPOINT_ADDRESS_REFUSED, type EndpointTarget } from "./endpoint-guard.js";
@@ -43,6 +45,8 @@ export const logCode = (code: string): string => REFUSAL_CODE.test(code) ? code 
 const PAYER = /^[a-z0-9_]{1,32}$/u;
 export type GatewayLogEvent = { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "settle_failed" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
 export interface GatewayDependencies {
+  /** Negotiated token-only receipts. The server supplies the actual saved source identity/revision; no inferred key identity. */
+  chargeReceipts?: { source(claims: TaskClaims, model: string, resolved?: ChargeSource): ChargeSource | undefined };
   verifyToken: TaskTokenVerifier; ended: EndedTasks; meter: Meter; caps: CapsSource; prices?: PriceSource;
   metrics: { overrunBusy(issuer: string, company: string): void };
   modelLimits: ModelLimitsSource; now?: () => number;
@@ -101,11 +105,13 @@ export interface RouteCall {
   /** The price kind of the call's model (a Titan embedding is priced as "embedding"). Absent: "chat". */
   priceKind?: PriceKind;
 }
-export interface UsageReader { push(bytes: Uint8Array): void; whole(value: unknown): void; finish(): TokenUsage | undefined }
+export interface UsageReader { actualInputTokens?(): number | undefined; push(bytes: Uint8Array): void; whole(value: unknown): void; finish(): TokenUsage | undefined }
 /** A fixed refusal a route answers before any money moves. */
 export interface RouteRefusal { ok: false; status: number; code: string; message: string; headers?: Readonly<Record<string, string>> }
 /** Everything that differs between the agent route and the product route. The money core (hold, settle, deadline, scan) is shared. */
 export interface GatewayRoute {
+  /** Saved source of this admitted call, when its adapter can pin the credential revision. */
+  readonly chargeSource?: ChargeSource | undefined;
   /** Price, ledger and log provider name. */
   readonly provider: string;
   readonly product: boolean;
@@ -220,7 +226,8 @@ function installKeyAgentRoute(deps: GatewayDependencies): GatewayRoute {
   return {
     provider: "anthropic", product: false, meter: deps.meter, prefix: PREFIX,
     guard: (bytes, headers, claims) => guardRequest(bytes, headers, claims.mdl, deps.modelLimits),
-    scope: (claims) => ({ iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid, ...(claims.per === undefined ? {} : { per: claims.per }) }),
+    // The signed payer owns the budget; `claims.per` remains the requester for audit/key lookup.
+    scope: (claims) => ({ iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid, ...(claims.pay.kind === "member" ? { per: claims.pay.developerId } : {}) }),
     caps: (scope, _claims, signal) => deps.caps.capsFor(scope, signal),
     key: (claims, signal) => deps.keys.keyFor(claims, "anthropic", signal),
     transport: deps.transport,
@@ -238,6 +245,18 @@ function installKeyAgentRoute(deps: GatewayDependencies): GatewayRoute {
 function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource): GatewayRoute {
   const base = installKeyAgentRoute(deps);
   let admitted = false;
+  let chargeSource: ChargeSource | undefined;
+  let boundKey: (() => Promise<string | undefined>) | undefined;
+  type Connection = { chargeSource?: ChargeSource; boundKey?: () => Promise<string | undefined> };
+  const connect = async (claims: TaskClaims, provider: Parameters<LearningKeySource["connected"]>[2], signal: AbortSignal): Promise<Connection | undefined> => {
+    if (deps.chargeReceipts !== undefined && keys.resolveForCharge !== undefined) {
+      const saved = await keys.resolveForCharge(claims.iss, claims.cid, provider, signal);
+      if (saved === undefined) return undefined;
+      return { chargeSource: { source: saved.source, billing: "external_provider" }, boundKey: () => saved.key() };
+    }
+    return await keys.connected(claims.iss, claims.cid, provider, signal) ? {} : undefined;
+  };
+  const bind = (connection: Connection): void => { chargeSource = connection.chargeSource; boundKey = connection.boundKey; };
   let notSent: RouteRefusal | undefined;
   // DEC 240: set by admit when the company chose Rovara's AI; then the company's key is never read.
   let rovara: { ai: RovaraAi; marker: string } | undefined;
@@ -275,16 +294,18 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         // The transport signs with the session `key` assumed (after the hold); without one, nothing is sent.
         state.transport = byoDeps.transport(connected.connection.region, async () => { if (state.credentials === undefined) throw new Error("no session"); return state.credentials; });
         byo = state;
+        chargeSource = { source: { kind: "company_key", id: connected.row.sourceId, name: "Company Bedrock", provider: "bedrock", connectionRevision: connected.row.versionId }, billing: "external_provider" };
       } };
     }
     if (source === "custom_endpoint") {
       const ai = choice.endpoint;
       if (ai === undefined) return soft(AGENT_CHAT_NOT_OFFERED);
       // Only the verified company's own endpoint account; read now because the guard needs its models (the key stays in this call's memory).
-      let text: string | undefined;
+      let text: string | undefined, connected: Connection | undefined;
       try {
-        if ((await keys.connected(claims.iss, claims.cid, "endpoint", signal)) !== true) return soft(AGENT_KEY_MISSING);
-        text = await keys.keyFor(claims.iss, claims.cid, "endpoint", signal);
+        connected = await connect(claims, "endpoint", signal);
+        if (connected === undefined) return soft(AGENT_KEY_MISSING);
+        text = await (connected.boundKey?.() ?? keys.keyFor(claims.iss, claims.cid, "endpoint", signal));
       } catch { return hard(AGENT_UNAVAILABLE); }
       if (text === undefined) return soft(AGENT_KEY_MISSING);
       const connection = parseEndpointConnect(text);
@@ -292,7 +313,9 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
       const target = endpointTarget(connection.baseUrl);
       if (target === undefined) return soft(ENDPOINT_REFUSED);
       if (!serves(checkModel, claims, (m) => connection.models.some((entry) => entry.name === m))) return soft(AGENT_MODEL_NOT_SERVED);
+      const saved = connected;
       return { admit() {
+        bind(saved);
         const state = { ai, connection, target } as NonNullable<typeof endpoint>;
         state.transport = ai.transport(target, (reason) => { state.refused = reason; }, claims.cid);
         endpoint = state;
@@ -303,27 +326,36 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
       const ai = choice[provider];
       if (ai === undefined) return soft(AGENT_CHAT_NOT_OFFERED);
       // Only the verified company's own account of THAT provider (an Anthropic key is never a stand-in).
-      try { if ((await keys.connected(claims.iss, claims.cid, provider, signal)) !== true) return soft(AGENT_KEY_MISSING); }
+      let connected: Connection | undefined;
+      try { connected = await connect(claims, provider, signal); if (connected === undefined) return soft(AGENT_KEY_MISSING); }
       catch { return hard(AGENT_UNAVAILABLE); }
       if (!serves(checkModel, claims, (m) => provider === "openai" ? OPENAI_KEY_AGENT_MODELS.includes(m) : OPENAI_AGENT_MODEL.test(m) && m.includes("/"))) return soft(AGENT_MODEL_NOT_SERVED);
-      return { admit() { chat = { provider, ai }; } };
+      const saved = connected;
+      return { admit() { bind(saved); chat = { provider, ai }; } };
     }
     if (source === "rovara") {
       const ai = choice.rovara;
       if (ai === undefined) return soft(ROVARA_AI_OFF);
       if (!serves(checkModel, claims, (m) => ai.models.has(m) && choice.rovaraDisabled?.has(m) !== true)) return soft(AGENT_MODEL_NOT_SERVED);
       // A per-call marker stands in for a key: the transport signs with the task role, and no key exists to leak.
-      return { admit() { rovara = { ai, marker: `rovara-ai-${randomUUID()}` }; } };
+      return { admit() {
+        rovara = { ai, marker: `rovara-ai-${randomUUID()}` };
+        // Rovara has no company credential: pin the offered model configuration itself.
+        chargeSource = { source: { kind: "rovara_ai", id: "rovara-ai", name: "Rovara AI", provider: "bedrock", connectionRevision: createHash("sha256").update(JSON.stringify([...ai.models].sort())).digest("hex") }, billing: ai.exempt.has(claims.cid) ? "exempt" : "customer" };
+      } };
     }
     // anthropic_key: the company's own Anthropic key (DEC 236).
-    try { if ((await keys.connected(claims.iss, claims.cid, "anthropic", signal)) !== true) return soft(AGENT_KEY_MISSING); }
+    let connected: Connection | undefined;
+    try { connected = await connect(claims, "anthropic", signal); if (connected === undefined) return soft(AGENT_KEY_MISSING); }
     catch { return hard(AGENT_UNAVAILABLE); }
     if (!serves(checkModel, claims, (m) => ANTHROPIC_KEY_AGENT_MODELS.includes(m))) return soft(AGENT_MODEL_NOT_SERVED);
-    return { admit() { /* the key is read just before sending (key below) */ } };
+    const saved = connected;
+    return { admit() { bind(saved); } };
   }
   return {
     ...base,
     reviewerGrants: true as const,
+    get chargeSource() { return chargeSource; },
     // The source word this call was admitted on (log only); nothing before admit has chosen one.
     get payer() { return !admitted ? undefined : rovara !== undefined ? "rovara" : byo !== undefined ? "bedrock_byo" : chat !== undefined ? `${chat.provider}_key` : endpoint !== undefined ? "custom_endpoint" : "anthropic_key"; },
     // An endpoint call is priced as the catalog model each registered model stands for.
@@ -363,8 +395,11 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
           return first ?? AGENT_UNAVAILABLE;
         }
       }
-      try { if ((await keys.connected(claims.iss, claims.cid, "anthropic", signal)) !== true) return AGENT_KEY_MISSING; }
-      catch { return AGENT_UNAVAILABLE; }
+      try {
+        const connected = await connect(claims, "anthropic", signal);
+        if (connected === undefined) return AGENT_KEY_MISSING;
+        bind(connected);
+      } catch { return AGENT_UNAVAILABLE; }
       admitted = true;
       deps.log({ event: "agent_source", company: claims.cid, source: "company_key", via });
       return undefined;
@@ -435,7 +470,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         return byo.marker;
       }
       let key: string | undefined;
-      try { key = await keys.keyFor(claims.iss, claims.cid, chat?.provider ?? "anthropic", signal); } catch { notSent = AGENT_UNAVAILABLE; return ""; }
+      try { key = await (boundKey?.() ?? keys.keyFor(claims.iss, claims.cid, chat?.provider ?? "anthropic", signal)); } catch { notSent = AGENT_UNAVAILABLE; return ""; }
       if (key === undefined) { notSent = AGENT_KEY_MISSING; return ""; }
       return key;
     },
@@ -525,6 +560,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let estimated = true;
   let appliedMaxOutputTokens = 0;
   let reservedMicros = 0;
+  let charge: ChargeReceiptV1 | undefined;
   // DEC 254zzz41: a review's first call holds the grant's whole ceiling (`held`) and opens the session that keeps it (`heldKept`); every call of a review debits that session
   // and holds nothing of its own (`sessionCall`: what it debited and gives back when it finishes).
   let held: Reservation | undefined; let heldKept = false; let pendingOpen: Promise<unknown> | undefined;
@@ -538,21 +574,31 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   // How the call ended, for an events route's settle: the refusal word last answered, or a complete answer.
   let refusedCode: string | undefined; let completed = false;
   let early: TokenUsage | undefined;
+  let usage: UsageReader | undefined;
   // The settle, run once: early for a route that sends its cost in the head, else in the finally. Its result says what was written.
   let settled: { ok: boolean; micros: number; estimated: boolean } | undefined; let settling = false;
   const settleOnce = async (): Promise<{ ok: boolean; micros: number; estimated: boolean } | undefined> => {
     if (settling || (reservation === undefined && sessionCall === undefined) || route === undefined) return settled;
     settling = true;
     try {
+      // Negotiated receipts may use authoritative provider money independently of token coverage.
+      if (charge !== undefined && settlementReported === undefined) {
+        try { const reported = provider?.reportedCostMicros?.(); if (typeof reported === "number" && Number.isSafeInteger(reported) && reported > 0) settlementReported = reported; } catch { /* Missing evidence remains provisional. */ }
+      }
       let estimateRecord: EstimatedSettlement | undefined;
       if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
-        const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: cost });
+        const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: reservedMicros });
         cost = amount.actualMicros; estimated = amount.estimated;
         // A review is never recorded above the hold it was admitted on (the task's and the company's caps were checked for exactly that amount).
         if (callClaims?.reviewer !== undefined && cost > reservedMicros) cost = reservedMicros;
         if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
       }
-      if (sessionCall !== undefined) await deps.reviewerGrants?.giveBack(sessionCall.claims.iss, sessionCall.claims.cid, sessionCall.claims.jti, Math.max(0, sessionCall.debited - cost)); else await route.meter.settle(reservation!, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === undefined ? {} : { route: route.purpose }) });
+      if (charge !== undefined && reservation !== undefined && route.meter.settleV2 !== undefined && settlementPrice !== undefined) {
+        const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, notSent: cost === 0, now: now() });
+        const actualInputTokens = usage?.actualInputTokens?.();
+        await route.meter.settleV2({ reservationId: reservation.id, receipt, ...(actualInputTokens === undefined ? {} : { actualInputTokens }) });
+        cost = chargeValue(receipt.amountMicros)!; estimated = receipt.status !== "final";
+      } else if (sessionCall !== undefined) await deps.reviewerGrants?.giveBack(sessionCall.claims.iss, sessionCall.claims.cid, sessionCall.claims.jti, Math.max(0, sessionCall.debited - cost)); else await route.meter.settle(reservation!, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === undefined ? {} : { route: route.purpose }) });
       settled = { ok: true, micros: cost, estimated };
       if (route.overReservation !== undefined && callClaims !== undefined && cost > reservedMicros) {
         log({ event: "product_over_reservation" });
@@ -665,7 +711,11 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     let session: Awaited<ReturnType<ReviewerGrantStore["read"]>>;
     if (grant !== undefined) { try { session = await wait(deps.reviewerGrants!.read(claims.iss, scope.cid, claims.jti, controller.signal)); } catch { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; } }
     const ceilingMicros = grant === undefined ? 0 : Math.floor(grant.ceilingUsd * 1_000_000);
-    const reserved = grant !== undefined && session !== undefined ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined ? estimate : ceilingMicros, appliedMaxOutputTokens, ...(line === undefined ? {} : { line }),
+    if (deps.chargeReceipts !== undefined && grant === undefined && guarded.media === undefined && route.meter.settleV2 !== undefined) {
+      const source = deps.chargeReceipts.source(claims, guarded.model, route.chargeSource);
+      if (source !== undefined) charge = initialCharge(claims, { provider: route.provider, modelId: guarded.model }, source, estimate, now(), price);
+    }
+    const reserved = grant !== undefined && session !== undefined ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined ? estimate : ceilingMicros, appliedMaxOutputTokens, ...(charge === undefined ? {} : { charge: { receipt: charge, requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, provisional: { requestBytes: guarded.bytes.length, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }), ...(line === undefined ? {} : { line }),
       ...(grant === undefined ? {} : { sweepAfter: now() + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS, review: { jti: claims.jti.toLowerCase() } }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });
@@ -756,7 +806,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       if (route.product && (provider.status === 401 || provider.status === 403)) log({ event: "product_key_refused" });
       await respond(failure.refusal.status, failure.refusal.code, failure.refusal.message, failure.refusal.headers); return; }
     const scanner = new SecretScanner([key, ...(typeof token === "string" ? [token] : [])]);
-    const usage = route.usage();
+    usage = route.usage();
     const output: Uint8Array[] = []; let total = 0;
     const stream = provider.body[Symbol.asyncIterator]();
     if (guarded.streaming) { head = true; sink.head(200, { ...JSON_HEADERS, "content-type": guarded.streamContentType ?? "text/event-stream; charset=utf-8" }); }

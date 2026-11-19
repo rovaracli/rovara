@@ -19,6 +19,7 @@ export class UsageCollector {
   #output = false;
   #stopped = false;
   #usage: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  #actualInput: number | undefined;
   #decoder = new TextDecoder("utf-8", { fatal: true });
   push(bytes: Uint8Array): void {
     if (this.#failed) return;
@@ -48,6 +49,8 @@ export class UsageCollector {
       if (!whole(n) || n > 1_000_000_000 || (name === "output" && n < this.#usage.output)) { this.#failed = true; return; }
       this.#usage[name] = n;
     }
+    const inputTotal = this.#usage.input + this.#usage.cacheRead + this.#usage.cacheWrite;
+    if (whole(u.input_tokens) && inputTotal > 0) this.#actualInput = inputTotal;
     if (u.cache_creation !== undefined) {
       const tiers = record(u.cache_creation);
       const five = tiers?.ephemeral_5m_input_tokens;
@@ -58,6 +61,8 @@ export class UsageCollector {
       delete this.#usage.cacheWrite5m; delete this.#usage.cacheWrite1h;
     }
   }
+  /** Start zero can be adapter-synthetic. Only positive provider input evidence survives a cut-off. */
+  actualInputTokens(): number | undefined { return this.#failed ? undefined : this.#actualInput; }
   #frame(): void {
     if (this.#data.length === 0) return;
     try {

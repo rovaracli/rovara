@@ -72,7 +72,7 @@ export function dollarsToMicros(value: unknown): number | undefined {
 }
 const usd = (micros: number | null) => (micros === null ? null : micros / 1_000_000);
 
-interface Admin { companyId: string; developerId: string; name: string; companyRole: CompanyRole; store: CompanyStore }
+interface Admin { provisional?: () => Promise<number | undefined>; companyId: string; developerId: string; name: string; companyRole: CompanyRole; store: CompanyStore }
 
 /** A company owner or admin, from Code's access check made now. A RouteAnswer when refused (no company, a plain member, no company backend). */
 async function admin(context: RouteContext): Promise<Admin | RouteAnswer> {
@@ -81,22 +81,31 @@ async function admin(context: RouteContext): Promise<Admin | RouteAnswer> {
   const who = await companyCaller(context);
   if (notCaller(who)) return who;
   if (!isCompanyAdmin(who.companyRole)) return W.forbidden;
-  return { companyId: who.companyId, developerId: who.developerId, name: who.name, companyRole: who.companyRole, store: backend.store };
+  return { ...(backend.peopleSpend?.provisionalTotal === undefined ? {} : { provisional: async () => {
+    const month = context.now().toISOString().slice(0, 7);
+    const total = await backend.peopleSpend!.provisionalTotal!(who.companyId, month);
+    if (context.now().toISOString().slice(0, 7) !== month) throw new Error("meter month changed");
+    return total;
+  } }), companyId: who.companyId, developerId: who.developerId, name: who.name, companyRole: who.companyRole, store: backend.store };
 }
 const refused = (value: Admin | RouteAnswer): value is RouteAnswer => "status" in value;
 
 const row = (limit: SpendLimit) => ({ id: limit.id, monthlyUsd: limit.monthlyUsdMicros / 1_000_000, version: limit.version, updatedAt: limit.updatedAt, updatedBy: limit.updatedBy });
 
 async function view(who: Admin): Promise<RouteAnswer> {
-  let settings, listed;
+  let settings, listed, provisionalMicros;
   try {
     settings = await companySettings(who.store, who.companyId);
     if (settings === undefined) return W.unreadable;
     listed = await who.store.spendLimits(who.companyId);
   } catch { return W.unreadable; }
+  // This optional meter is independent of the settings/overrides. Omission means
+  // unavailable, never a zero that could imply there are no provisional charges.
+  try { provisionalMicros = await who.provisional?.(); } catch { /* unavailable */ }
+  if (!whole(provisionalMicros)) provisionalMicros = undefined;
   const b = settings.settings.budgets;
   return ok({
-    companyId: who.companyId, canChange: true, settingsVersion: settings.version,
+    companyId: who.companyId, canChange: true, ...(provisionalMicros === undefined ? {} : { provisionalMicros }), settingsVersion: settings.version,
     defaults: {
       companyMonthlyUsd: usd(b.companyMonthlyUsdMicros), memberMonthlyUsd: usd(b.memberMonthlyUsdMicros), projectMonthlyUsd: usd(b.projectMonthlyUsdMicros), taskUsd: usd(b.taskUsdMicros),
       // The kinds that have a fixed default of their own (upkeep, answers): what applies without an override.

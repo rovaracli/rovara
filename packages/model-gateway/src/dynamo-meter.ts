@@ -1,3 +1,6 @@
+import { validProvisionalContext, historyOutput, neverConfirmedReceipt, provisionalEstimate, USAGE_WAIT_MS, type ProvisionalContext, type ProvisionalEstimate } from "./provisional.js";
+import { chargeValue, chargeReceiptContent, type ApplyChargeResult, type ChargeReceiptV1, type SettleV2 } from "./charge-receipt.js";
+import { checkReceiptScope, estimatedReceipt, readSettlementReceipt, receiptIdentity, receiptRevision } from "./charge-settlement.js";
 import { randomUUID } from "node:crypto";
 import { AwsNotSentError } from "./aws.js";
 import { validCaps, type Caps } from "./caps.js";
@@ -59,7 +62,7 @@ export const HOLD_SWEEP_MAX = 100;
 
 /** `combined`: the agent meter's company row (DynamoMeterOptions.combinedCompany), in the agent meter table. */
 interface Target { sk: string; item: MeterItem; cap?: number; combined?: true }
-interface Hold { scope: MeterScope; month: string; estimate: number; targets: Target[]; status: string; line?: BillLine; review?: string }
+interface Hold { provisional?: ProvisionalContext; cutoffAt?: number; charge?: ReserveInput["charge"]; scope: MeterScope; month: string; estimate: number; targets: Target[]; status: string; line?: BillLine; review?: string }
 
 function validScope(value: unknown): value is MeterScope {
   const s = record(value);
@@ -99,15 +102,17 @@ function readHold(item: Item | undefined, combined: boolean): Hold | undefined {
   const targets = readTargets(item.targets, combined);
   if (!validScope(scope) || targets === undefined || typeof item.month !== "string" || !whole(item.estimateMicros) || typeof item.status !== "string") throw new Error("settlement unavailable");
   // A billable line (DEC 240b) that does not read keeps the hold open (the sweep retries): it is never dropped from the ledger row.
+  if (item.provisional !== undefined && !validProvisionalContext(item.provisional)) throw new Error("settlement unavailable");
   if (item.line !== undefined && !validLine(item.line)) throw new Error("settlement unavailable");
   if (item.review !== undefined && !(typeof item.review === "string" && /^[0-9a-f-]{36}$/u.test(item.review))) throw new Error("settlement unavailable");
-  return { scope, month: item.month, estimate: item.estimateMicros, targets, status: item.status, ...(item.review === undefined ? {} : { review: item.review }), ...(item.line === undefined ? {} : { line: { source: item.line.source, charge: item.line.charge, model: item.line.model } }) };
+  return { ...(item.provisional === undefined ? {} : { provisional: item.provisional as unknown as ProvisionalContext }), ...(whole(item.cutoffAt) ? { cutoffAt: item.cutoffAt } : {}), ...(item.charge === undefined ? {} : { charge: JSON.parse(JSON.stringify(item.charge)) as NonNullable<ReserveInput["charge"]> }), scope, month: item.month, estimate: item.estimateMicros, targets, status: item.status, ...(item.review === undefined ? {} : { review: item.review }), ...(item.line === undefined ? {} : { line: { source: item.line.source, charge: item.line.charge, model: item.line.model } }) };
 }
 function rowOf(item: Item | undefined, target: Target, company: string): MeterRow {
   if (item === undefined) return { item: target.item, company, spentMicros: 0, estimatedMicros: 0, reservedMicros: 0, committed: 0, overrun: false };
   const row = { item: item.item, company: item.company, spentMicros: item.spentMicros, estimatedMicros: item.estimatedMicros, reservedMicros: item.reservedMicros, committed: item.committed, overrun: item.overrun };
   if (row.item !== target.item || typeof row.company !== "string" || ![row.spentMicros, row.estimatedMicros, row.reservedMicros, row.committed].every(whole) || typeof row.overrun !== "boolean") throw new Error("meter unavailable");
-  return row as MeterRow;
+  if (item.provisionalMicros !== undefined && !whole(item.provisionalMicros)) throw new Error("meter unavailable");
+  return { ...row, ...(item.provisionalMicros === undefined ? {} : { provisionalMicros: item.provisionalMicros }) } as MeterRow;
 }
 function usagePlain(usage: EstimatedSettlement["usage"] & object): Item {
   return { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, ...(usage.cacheWrite5m === undefined ? {} : { cacheWrite5m: usage.cacheWrite5m }), ...(usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: usage.cacheWrite1h }),
@@ -122,6 +127,11 @@ function toCall(item: Item): EstimatedCall {
   const call: EstimatedCall = { ...scope, callKey: item.callKey, month: item.month, provider: item.provider, model: item.model, kind: item.kind, usage: { ...(item.usage as unknown as TokenUsage) }, settledMicros: item.settledMicros, status: item.status as EstimatedCall["status"], settledAt: item.settledAt };
   for (const name of optional) { const v = item[name]; if (v !== undefined) { if (!whole(v)) throw new Error("pending unavailable"); call[name] = v; } }
   if (typeof item.deltaMicros === "number" && Number.isSafeInteger(item.deltaMicros)) call.deltaMicros = item.deltaMicros;
+  if (item.chargeStatus === "awaiting_usage" || item.chargeStatus === "estimated") call.chargeStatus = item.chargeStatus;
+  if (["input_actual", "input_bytes_bound", "reservation"].includes(item.estimateBasis as string)) call.estimateBasis = item.estimateBasis as ProvisionalEstimate["estimateBasis"];
+  if (item.outputEstimateBasis === "p90_history" || item.outputEstimateBasis === "max_output") call.outputEstimateBasis = item.outputEstimateBasis;
+  if (item.estimateStatus === "estimated") call.estimateStatus = "estimated";
+  if (item.neverConfirmed === true) call.neverConfirmed = true;
   if (item.capExceeded === true) call.capExceeded = true;
   if (typeof item.runId === "string") call.runId = item.runId;
   const origin = record(item.priceSource);
@@ -175,6 +185,7 @@ export class DynamoMeter implements Meter {
     if (record(input) === undefined || !validScope(input.scope) || !validCaps(input.caps) || !whole(input.estimateMicros)) return { ok: false, reason: "busy" };
     const { scope, caps, estimateMicros } = input;
     if (input.appliedMaxOutputTokens !== undefined && (!whole(input.appliedMaxOutputTokens) || input.appliedMaxOutputTokens < 1)) return { ok: false, reason: "busy" };
+    if (input.provisional !== undefined && !validProvisionalContext(input.provisional)) return { ok: false, reason: "busy" };
     if (input.line !== undefined && !validLine(input.line)) return { ok: false, reason: "busy" };
     if (input.review !== undefined && !(typeof input.review.jti === "string" && /^[0-9a-f-]{36}$/u.test(input.review.jti))) return { ok: false, reason: "busy" };
     // Fail closed: a combined meter without the combined company cap holds nothing.
@@ -193,7 +204,10 @@ export class DynamoMeter implements Meter {
     const pk = companyPartition(scope.iss, scope.cid);
     const month = this.#month();
     const items = targetsFor(scope, caps, month, this.#combined !== undefined);
-    const id = randomUUID();
+    const id = input.charge?.receipt.callId ?? randomUUID();
+    if (input.charge !== undefined) {
+      try { const r = readSettlementReceipt(input.charge.receipt); checkReceiptScope(r, scope, id, estimateMicros, month); if (r.status !== "awaiting_usage" || !/^[0-9a-f-]{36}$/u.test(id) || !/^[a-f0-9]{64}$/u.test(input.charge.requestFingerprint)) return { ok: false, reason: "busy" }; } catch { return { ok: false, reason: "busy" }; }
+    }
     for (let attempt = 0; attempt < 3; attempt++) {
       let stored: Array<Item | undefined>;
       try { stored = await this.#rows(pk, items); } catch { return { ok: false, reason: "busy" }; }
@@ -228,6 +242,8 @@ export class DynamoMeter implements Meter {
           condition: (e) => `${e.name("company")} = ${e.value(scope.cid)} AND ${e.name("overrun")} = ${e.value(false)} AND ${e.name("committed")} <= ${e.value(limit)}` };
       });
       actions.push({ kind: "Put", table: this.#t.meter, condition: (e) => `attribute_not_exists(${e.name("pk")})`, item: {
+        ...(input.provisional === undefined ? {} : { provisional: JSON.parse(JSON.stringify(input.provisional)) as Plain }),
+        ...(input.charge === undefined ? {} : { charge: JSON.parse(JSON.stringify(input.charge)) as Plain }),
         pk, sk: `HOLD#${id}`, status: "open", ...scopeFields(scope), month, estimateMicros, targets: targetsPlain(items), createdAt: now,
         // In the open-holds index until settled, so the sweep can close a hold whose settle failed.
         openAll: GATEWAY_OPEN_PARTITION, openAt: openAt(openFrom, pk, id), ...(openFrom === now ? {} : { openFrom }),
@@ -268,7 +284,7 @@ export class DynamoMeter implements Meter {
     return handle;
   }
 
-  async settle(reservation: Reservation, actualMicros: number, estimated?: EstimatedSettlement): Promise<void> {
+  async settle(reservation: Reservation, actualMicros: number, estimated?: EstimatedSettlement, receipt?: ChargeReceiptV1): Promise<void> {
     if (record(reservation) === undefined || typeof reservation.id !== "string") throw new Error("settlement unavailable");
     await this.#beforeWrite("settle");
     const where = this.#holds.get(reservation);
@@ -278,28 +294,41 @@ export class DynamoMeter implements Meter {
     if (hold === undefined || hold.status !== "open") return; // Already closed; ledger and rows stay untouched.
     if (!whole(actualMicros)) throw new Error("settlement unavailable");
     if (estimated !== undefined && (!validEntry({ ...estimated, inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 }) || !whole(estimated.settledAt) || (estimated.priceVersion !== undefined && !whole(estimated.priceVersion)) || (estimated.usage !== undefined && !validUsage(estimated.usage)) || actualMicros < 1)) throw new Error("settlement unavailable");
-    await this.#close(pk, id, hold, actualMicros, estimated, false);
+    if (receipt !== undefined) checkReceiptScope(receipt, hold.scope, id, hold.estimate, hold.month);
+    await this.#close(pk, id, hold, actualMicros, estimated, false, receipt);
   }
 
   /**
    * One hold to spend, in one conditional transaction (the hold must still be open). `swept`: closed by the sweep at the hold's
    * own estimate because its call's settle never landed; counted as estimated, never at $0.
    */
-  async #close(pk: string, id: string, hold: Hold, actualMicros: number, estimated: EstimatedSettlement | undefined, swept: boolean): Promise<"closed" | "already"> {
-    const extraEstimated = estimated === undefined && !swept ? 0 : actualMicros;
+  async #close(pk: string, id: string, hold: Hold, actualMicros: number, estimated: EstimatedSettlement | undefined, swept: boolean, receipt?: ChargeReceiptV1, provisional?: ProvisionalEstimate): Promise<"closed" | "already"> {
+    if (hold.charge !== undefined && receipt === undefined) {
+      if (!swept) throw new Error("charge receipt required");
+      receipt = { ...readSettlementReceipt(hold.charge.receipt), recordedAt: new Date(this.#now()).toISOString() };
+      estimated = estimatedReceipt(receipt);
+    }
+    const held = provisional !== undefined;
+    const spend = held ? 0 : actualMicros;
+    const release = hold.estimate - (held ? actualMicros : 0);
+    const extraEstimated = held || (estimated === undefined && !swept) ? 0 : actualMicros;
     const callKey = JSON.stringify([hold.scope.iss, hold.scope.cid, id]);
     const now = this.#now();
-    const pending = estimated?.usage !== undefined && hasUsage(estimated.usage);
+    const pending = estimated;
     const ledger: Item = {
+      ...(provisional === undefined ? {} : { ...provisional, estimateStatus: "estimated", provisionalHeld: true, cutoffAt: now }),
+      ...(receipt === undefined ? { chargeStatus: estimated === undefined && !swept ? "legacy_unknown" : "estimated", reason: "legacy_unknown" } : { receipt: JSON.parse(JSON.stringify(receipt)) as Plain, revision: receipt.revision, chargeStatus: receipt.status, reason: receipt.reason }),
+      ...(hold.charge === undefined ? {} : { requestFingerprint: hold.charge.requestFingerprint }),
       pk, sk: `CALL#${id}`, callKey, ...scopeFields(hold.scope), month: hold.month, settledMicros: actualMicros, estimated: estimated !== undefined || swept, targets: targetsPlain(hold.targets),
       ...(swept ? { swept: true } : {}),
       // The billable line (DEC 240b) lands with the call's settled cost, in the same transaction that closes the hold.
       ...(hold.line === undefined ? {} : { line: { source: hold.line.source, charge: hold.line.charge, model: hold.line.model } }),
-      settledAt: pending ? estimated.settledAt : now,
+      settledAt: pending === undefined ? now : pending.settledAt,
       ...(!pending ? {} : {
-        provider: estimated.provider, model: estimated.model, kind: estimated.kind, usage: usagePlain(estimated.usage!), status: "pending",
-        ...(estimated.priceVersion === undefined ? {} : { priceVersion: estimated.priceVersion }),
-        pendingAll: GATEWAY_PENDING_PARTITION, pendingKeyAt: pendingKeyAt(priceKey(estimated), estimated.settledAt, callKey), pendingAt: pendingAt(estimated.settledAt, callKey),
+        provider: pending.provider, model: pending.model, kind: pending.kind, usage: usagePlain(pending.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }), status: "pending",
+        chargeStatus: pending.usage === undefined || !hasUsage(pending.usage) ? "awaiting_usage" : "estimated",
+        ...(pending.priceVersion === undefined ? {} : { priceVersion: pending.priceVersion }),
+        pendingAll: GATEWAY_PENDING_PARTITION, pendingKeyAt: pendingKeyAt(priceKey(pending), pending.settledAt, callKey), pendingAt: pendingAt(pending.settledAt, callKey),
       }),
     };
     const holdIndex = hold.targets.length; const ledgerIndex = holdIndex + 1;
@@ -308,11 +337,11 @@ export class DynamoMeter implements Meter {
       const stored = await this.#rows(pk, hold.targets);
       const actions: TransactAction[] = hold.targets.map((target, i): TransactAction => {
         const row = rowOf(stored[i], target, hold.scope.cid);
-        if (stored[i] === undefined || row.company !== hold.scope.cid || ![row.committed - hold.estimate + actualMicros, row.spentMicros + actualMicros, row.estimatedMicros + extraEstimated].every(whole) || row.reservedMicros < hold.estimate) throw new Error("settlement unavailable");
-        const overrun = target.cap !== undefined && row.spentMicros + actualMicros > target.cap;
+        if (stored[i] === undefined || row.company !== hold.scope.cid || ![row.committed - hold.estimate + actualMicros, row.spentMicros + spend, row.estimatedMicros + extraEstimated].every(whole) || row.reservedMicros < hold.estimate) throw new Error("settlement unavailable");
+        const overrun = target.cap !== undefined && row.spentMicros + spend > target.cap;
         const delta = actualMicros - hold.estimate;
         return { kind: "Update", table: this.#table(target), key: { pk, sk: target.sk },
-          update: (e) => `SET ${e.name("spentMicros")} = ${e.name("spentMicros")} + ${e.value(actualMicros)}, ${e.name("estimatedMicros")} = ${e.name("estimatedMicros")} + ${e.value(extraEstimated)}, ${e.name("reservedMicros")} = ${e.name("reservedMicros")} - ${e.value(hold.estimate)}, ${e.name("committed")} = ${e.name("committed")} + ${e.value(delta)}${overrun ? `, ${e.name("overrun")} = ${e.value(true)}` : ""}`,
+          update: (e) => `SET ${e.name("spentMicros")} = ${e.name("spentMicros")} + ${e.value(spend)}, ${e.name("estimatedMicros")} = ${e.name("estimatedMicros")} + ${e.value(extraEstimated)}, ${e.name("reservedMicros")} = ${e.name("reservedMicros")} - ${e.value(release)}, ${e.name("committed")} = ${e.name("committed")} + ${e.value(delta)}${held && target.item === "company" ? `, ${e.name("provisionalMicros")} = if_not_exists(${e.name("provisionalMicros")}, ${e.value(0)}) + ${e.value(actualMicros)}` : ""}${overrun ? `, ${e.name("overrun")} = ${e.value(true)}` : ""}`,
           // Bounds that keep every value a whole safe integer; and, when this settle does not set the overrun flag, that a
           // concurrent settle has not pushed the row past its cap meanwhile (then this one re-reads and sets it).
           condition: (e) => [
@@ -323,9 +352,10 @@ export class DynamoMeter implements Meter {
           ].join(" AND ") };
       });
       actions.push({ kind: "Update", table: this.#t.meter, key: { pk, sk: `HOLD#${id}` },
-        update: (e) => `SET ${e.name("status")} = ${e.value("settled")}, ${e.name("actualMicros")} = ${e.value(actualMicros)}, ${e.name("closedAt")} = ${e.value(now)}${swept ? `, ${e.name("swept")} = ${e.value(true)}` : ""} REMOVE ${e.name("openAll")}, ${e.name("openAt")}`,
+        update: (e) => `SET ${e.name("status")} = ${e.value(held ? "cut_off" : "settled")}, ${e.name("actualMicros")} = ${e.value(actualMicros)}, ${e.name("closedAt")} = ${e.value(now)}${held ? `, ${e.name("cutoffAt")} = ${e.value(now)}` : ""}${swept ? `, ${e.name("swept")} = ${e.value(true)}` : ""} ${held ? "" : `REMOVE ${e.name("openAll")}, ${e.name("openAt")}`}`,
         condition: (e) => `${e.name("status")} = ${e.value("open")}` });
       actions.push({ kind: "Put", table: this.#t.ledger, item: ledger, condition: (e) => `attribute_not_exists(${e.name("pk")})` });
+      if (receipt !== undefined) actions.push({ kind: "Put", table: this.#t.ledger, item: { pk, sk: `ADJUST#${id}#${receipt.revision}`, receipt: JSON.parse(JSON.stringify(receipt)) as Plain, deltaMicros: actualMicros }, condition: e => `attribute_not_exists(${e.name("pk")})` });
       try { await this.#db.transact(actions, randomUUID()); }
       catch (error) {
         if (!(error instanceof TransactionRefused)) throw new Error("settlement unavailable", { cause: error });
@@ -337,6 +367,78 @@ export class DynamoMeter implements Meter {
       return "closed";
     }
     throw new Error("settlement unavailable");
+  }
+
+  async settleV2(input: SettleV2): Promise<void> {
+    const r = readSettlementReceipt(input.receipt);
+    if (input.reservationId !== r.callId || r.revision !== 1) throw new Error("invalid charge settlement");
+    const pk = companyPartition(r.issuer, r.companyId), key = { pk, sk: `CALL#${r.callId}` };
+    const old = await this.#db.get(this.#t.ledger, key);
+    if (old !== undefined) { receiptRevision(readSettlementReceipt(old.receipt), r); return; }
+    const hold = readHold(await this.#db.get(this.#t.meter, { pk, sk: `HOLD#${r.callId}` }), this.#combined !== undefined);
+    if (hold === undefined || hold.status !== "open") throw new Error("charge reservation missing");
+    checkReceiptScope(r, hold.scope, r.callId, hold.estimate, hold.month);
+    if (hold.charge !== undefined && receiptIdentity(hold.charge.receipt) !== receiptIdentity(r)) throw new Error("charge identity changed");
+    const outputs = r.status === "awaiting_usage" && hold.provisional !== undefined ? await this.#history(pk, r) : [];
+    const provisional = r.status === "awaiting_usage" && hold.provisional !== undefined ? provisionalEstimate(hold.estimate, hold.provisional, outputs, input.actualInputTokens) : undefined;
+    await this.#close(pk, r.callId, hold, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r), false, r, provisional);
+    // A concurrent winner must have persisted this exact receipt.
+    const after = await this.#db.get(this.#t.ledger, key);
+    if (after === undefined || chargeReceiptContent(after.receipt) !== chargeReceiptContent(r)) throw new Error("conflicting charge settlement");
+  }
+  async #history(pk: string, receipt: ChargeReceiptV1): Promise<number[]> {
+    // One bounded sample of at most 200 CALL rows, filtered to this issuer+company+provider+model.
+    // Random call IDs make this a lexical window, not the most recent calls; other
+    // models share the window. Sparse samples keep R instead of walking the ledger.
+    const outputs: number[] = [];
+    const page = await this.#db.query(this.#t.ledger, { limit: 200, descending: true, key: e => `${e.name("pk")} = ${e.value(pk)} AND ${e.name("sk")} BETWEEN ${e.value("CALL#")} AND ${e.value("CALL$")}` });
+    for (const item of page) {
+      if (item.receipt === undefined) {
+        if (item.iss === receipt.issuer && item.cid === receipt.companyId && item.provider === receipt.model.provider && item.model === receipt.model.modelId && item.chargeStatus !== "awaiting_usage" && validUsage(item.usage) && hasUsage(item.usage)) outputs.push(item.usage.output);
+        continue;
+      }
+      const r = readSettlementReceipt(item.receipt), output = historyOutput(r);
+      if (r.issuer === receipt.issuer && r.companyId === receipt.companyId && r.model.provider === receipt.model.provider && r.model.modelId === receipt.model.modelId && output !== undefined) outputs.push(output);
+    }
+    return outputs;
+  }
+  async applyChargeReceipt(input: ChargeReceiptV1): Promise<ApplyChargeResult> {
+    const r = readSettlementReceipt(input), pk = companyPartition(r.issuer, r.companyId), key = { pk, sk: `CALL#${r.callId}` };
+    for (let attempt = 0; attempt < CORRECT_ATTEMPTS; attempt++) {
+      const stored = await this.#db.get(this.#t.ledger, key);
+      if (stored === undefined) throw new Error("charge receipt missing");
+      const old = readSettlementReceipt(stored.receipt), result = receiptRevision(old, r);
+      if (result !== "applied") {
+        if (result === "older") {
+          const prior = await this.#db.get(this.#t.ledger, { pk, sk: `ADJUST#${r.callId}#${r.revision}` });
+          if (prior !== undefined && chargeReceiptContent(prior.receipt) !== chargeReceiptContent(r)) throw new Error("conflicting charge revision");
+        }
+        return { callId: r.callId, appliedRevision: old.revision, result, deltaMicros: 0 };
+      }
+      const targets = readTargets(stored.targets, this.#combined !== undefined);
+      if (targets === undefined) throw new Error("charge targets unreadable");
+      if (!whole(stored.settledMicros)) throw new Error("charge accounting unavailable");
+      const priorAmount = stored.settledMicros, amount = chargeValue(r.amountMicros)!;
+      const held = stored.provisionalHeld === true;
+      const delta = amount - priorAmount, spendDelta = held ? amount : delta, release = held ? priorAmount : 0;
+      const provisionalDelta = stored.estimateBasis === undefined ? 0 : (r.status === "final" ? 0 : amount) - (old.status === "final" ? 0 : priorAmount);
+      const estimatedDelta = (r.status === "final" ? 0 : chargeValue(r.amountMicros)!) - (old.status === "final" || held ? 0 : priorAmount);
+      const rows = await this.#rows(pk, targets);
+      const actions: TransactAction[] = targets.map((t, i) => {
+        const row = rowOf(rows[i], t, r.companyId);
+        if (row.company !== r.companyId || ![row.spentMicros + spendDelta, row.committed + delta, row.estimatedMicros + estimatedDelta, row.reservedMicros - release, ...(t.item === "company" ? [(row.provisionalMicros ?? 0) + provisionalDelta] : [])].every(whole)) throw new Error("charge accounting unavailable");
+        return { kind: "Update", table: this.#table(t), key: { pk, sk: t.sk }, condition: e => ["spentMicros", "estimatedMicros", "reservedMicros", "committed"].map(k => `${e.name(k)} = ${e.value(row[k as "spentMicros" | "estimatedMicros" | "reservedMicros" | "committed"])}`).join(" AND "),
+          update: e => `SET ${e.name("spentMicros")} = ${e.value(row.spentMicros + spendDelta)}, ${e.name("estimatedMicros")} = ${e.value(row.estimatedMicros + estimatedDelta)}, ${e.name("reservedMicros")} = ${e.value(row.reservedMicros - release)}, ${e.name("committed")} = ${e.value(row.committed + delta)},${t.item === "company" && stored.estimateBasis !== undefined ? ` ${e.name("provisionalMicros")} = ${e.value((row.provisionalMicros ?? 0) + provisionalDelta)},` : ""} ${e.name("overrun")} = ${e.value(t.cap === undefined ? row.overrun : row.spentMicros + spendDelta > t.cap)}` };
+      });
+      if (held) actions.push({ kind: "Update", table: this.#t.meter, key: { pk, sk: `HOLD#${r.callId}` }, condition: e => `${e.name("status")} = ${e.value("cut_off")}`, update: e => `SET ${e.name("status")} = ${e.value("settled")}, ${e.name("actualMicros")} = ${e.value(amount)}, ${e.name("closedAt")} = ${e.value(this.#now())} REMOVE ${e.name("openAll")}, ${e.name("openAt")}` });
+      const pending = estimatedReceipt(r);
+      const pendingFields: Item = pending === undefined ? {} : { provider: pending.provider, model: pending.model, kind: pending.kind, usage: usagePlain(pending.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }), settledAt: Date.parse(r.occurredAt), pendingAll: GATEWAY_PENDING_PARTITION, pendingKeyAt: pendingKeyAt(priceKey(pending), Date.parse(r.occurredAt), JSON.stringify([r.issuer, r.companyId, r.callId])), pendingAt: pendingAt(Date.parse(r.occurredAt), JSON.stringify([r.issuer, r.companyId, r.callId])) };
+      actions.push({ kind: "Update", table: this.#t.ledger, key, condition: e => `${e.name("revision")} = ${e.value(old.revision)}`, update: e => `SET ${e.name("provisionalHeld")} = ${e.value(false)}, ${e.name("neverConfirmed")} = ${e.value(r.neverConfirmed === true)}, ${e.name("receipt")} = ${e.value(JSON.parse(JSON.stringify(r)) as Plain)}, ${e.name("revision")} = ${e.value(r.revision)}, ${e.name("settledMicros")} = ${e.value(chargeValue(r.amountMicros)!)}, ${e.name("estimated")} = ${e.value(r.status !== "final")}, ${e.name("chargeStatus")} = ${e.value(r.status)}, ${e.name("reason")} = ${e.value(r.reason)}, ${e.name("status")} = ${e.value(r.status === "final" ? "corrected" : "pending")}${r.status === "final" ? ` ${this.#closePending(e)}` : Object.entries(pendingFields).map(([k, v]) => `, ${e.name(k)} = ${e.value(v)}`).join("")}` });
+      actions.push({ kind: "Put", table: this.#t.ledger, item: { pk, sk: `ADJUST#${r.callId}#${r.revision}`, receipt: JSON.parse(JSON.stringify(r)) as Plain, deltaMicros: delta }, condition: e => `attribute_not_exists(${e.name("pk")})` });
+      try { await this.#db.transact(actions, randomUUID()); return { callId: r.callId, appliedRevision: r.revision, result: "applied", deltaMicros: delta }; }
+      catch (error) { if (!(error instanceof TransactionRefused)) throw error; }
+    }
+    throw new Error("charge revision busy");
   }
 
   /**
@@ -367,9 +469,17 @@ export class DynamoMeter implements Meter {
         const id = item.sk.slice("HOLD#".length);
         // Re-read consistently: the index is eventually consistent, the decision is made from the table.
         const hold = readHold(await this.#db.get(this.#t.meter, { pk: item.pk, sk: item.sk }), this.#combined !== undefined);
+        if (hold?.status === "cut_off" && hold.cutoffAt !== undefined) {
+          if (now - hold.cutoffAt < USAGE_WAIT_MS) continue;
+          const call = await this.#db.get(this.#t.ledger, { pk: item.pk, sk: `CALL#${id}` });
+          if (call?.provisionalHeld !== true) { report.already++; continue; }
+          await this.applyChargeReceipt(neverConfirmedReceipt(readSettlementReceipt(call.receipt), Number(call.settledMicros), now));
+          report.swept++; continue;
+        }
         if (hold === undefined || hold.status !== "open" || companyPartition(hold.scope.iss, hold.scope.cid) !== item.pk) { report.already++; continue; }
         // A review session's hold (DEC 254zzz41) is settled at what its session really debited, never above its ceiling (the hold): only a session that cannot be read costs the whole ceiling.
-        const result = await this.#close(item.pk, id, hold, hold.review === undefined ? Math.max(1, hold.estimate) : await this.#reviewTotal(item.pk, hold.review, hold.estimate, id), undefined, true);
+        const recovery = hold.charge !== undefined && hold.provisional !== undefined ? provisionalEstimate(hold.estimate, hold.provisional, await this.#history(item.pk, hold.charge.receipt)) : undefined;
+        const result = await this.#close(item.pk, id, hold, recovery?.amountMicros ?? (hold.review === undefined ? Math.max(1, hold.estimate) : await this.#reviewTotal(item.pk, hold.review, hold.estimate, id)), undefined, true, undefined, recovery);
         if (result === "closed") report.swept++; else report.already++;
       } catch { report.failed++; report.more = true; }
     }
@@ -428,7 +538,11 @@ export class DynamoMeter implements Meter {
       try { item = await this.#db.get(this.#t.ledger, ledgerKey(where), { signal: bound.signal }); } catch { return { status: "unknown" }; }
       if (item === undefined || item.status === undefined) return { status: "missing" };
       if (item.status !== "pending") return { status: "already" };
-      if (!whole(item.settledAt) || input.now - item.settledAt <= PENDING_RETENTION_DAYS * DAY_MS) return { status: "busy" };
+      if (item.chargeStatus === "awaiting_usage") {
+        if (item.unresolvedAt === undefined) await this.#db.update(this.#t.ledger, ledgerKey(where), e => `SET ${e.name("unresolvedAt")} = ${e.value(input.now)}`, e => `${e.name("status")} = ${e.value("pending")} AND attribute_not_exists(${e.name("unresolvedAt")})`, { signal: bound.signal });
+        return { status: "busy" };
+      }
+      if (!whole(item.settledAt) || input.now - item.settledAt <= PENDING_RETENTION_DAYS * DAY_MS) return { status: item.neverConfirmed === true ? "already" : "busy" };
       const applied = await this.#db.update(this.#t.ledger, ledgerKey(where),
         (e) => `SET ${e.name("status")} = ${e.value("expired")}, ${e.name("expiredAt")} = ${e.value(input.now)}, ${e.name("runId")} = ${e.value(input.runId)} ${this.#closePending(e)}`,
         (e) => `${e.name("status")} = ${e.value("pending")}`, { signal: bound.signal });
@@ -458,6 +572,8 @@ export class DynamoMeter implements Meter {
       try { item = await this.#db.get(this.#t.ledger, ledgerKey(where), { signal: bound.signal }); } catch { return { status: "unknown" }; }
       if (item === undefined || item.status === undefined) return { status: "missing" };
       if (item.status !== "pending") return { status: "already" };
+      if (item.neverConfirmed === true) return { status: "already" };
+      if (item.chargeStatus === "awaiting_usage" || item.receipt !== undefined) return { status: "busy" };
       let call: EstimatedCall; const targets = readTargets(item.targets, this.#combined !== undefined);
       try { call = toCall(item); } catch { return { status: "busy" }; }
       if (targets === undefined || call.cid !== where.cid || call.iss !== where.iss) return { status: "busy" };

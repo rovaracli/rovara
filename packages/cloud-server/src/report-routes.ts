@@ -17,7 +17,7 @@
 //   - add a person to a row or an answer (`requesterId`, and anything not named in `readRow`, is dropped), rank people, or send a per-person number;
 //   - turn token counts into money: the cost is Code's `costMicros` from the ledger, added up as integers and sent as whole cents;
 //   - draw a missing number as zero: an unpriced call is counted (`unpricedCalls`) and the total is marked a floor (`costIsFloor`);
-//   - return part of a range: more rows than MAX_ROWS, a repeated cursor or one unreadable row refuses the whole answer, in fixed words.
+//   - return part of a range: more rows than MAX_ROWS or a repeated cursor refuses the whole answer; invalid rows are counted separately.
 // The wait split and send-backs (slice A4) are not in version 0: Code's rows may carry them, and they are dropped here.
 import { CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
@@ -114,7 +114,7 @@ export interface ReportTask {
   feature?: { id: string; source: FeatureSource };
   startedAt: number; firstPrAt?: number; endedAt?: number;
   prsOpened: number; prsMerged: number; prLinks: string[];
-  costMicros: number; unpricedCalls: number;
+  costMicros: number; unpricedCalls: number; costUnavailable?: boolean; foreignCurrency?: boolean;
 }
 export interface ReportFeature { id: string; name: string; state?: "open" | "done"; trackerLink?: { tracker: string; id: string; url?: string } }
 
@@ -138,7 +138,7 @@ export function plainHttpsLink(value: unknown): string | undefined {
 const instantOf = (value: unknown): number | undefined => (typeof value === "string" && value.length <= 40 && /^\d{4}-\d{2}-\d{2}T/u.test(value) && !Number.isNaN(Date.parse(value)) ? Date.parse(value) : undefined);
 
 /**
- * One of Code's rows, or undefined when any named field is the wrong shape (the whole answer is then refused). Dropped on purpose: `requesterId` and every
+ * One of Code's rows, or undefined when any named field is the wrong shape (counted and left out). Dropped on purpose: `requesterId` and every
  * field not named here. A row that names a company must name the caller's own.
  */
 export function readRow(raw: unknown, companyId: string): ReportTask | undefined {
@@ -153,8 +153,11 @@ export function readRow(raw: unknown, companyId: string): ReportTask | undefined
   const firstPrAt = raw["firstPrAt"] === undefined ? undefined : instantOf(raw["firstPrAt"]), endedAt = raw["endedAt"] === undefined ? undefined : instantOf(raw["endedAt"]);
   if ((raw["firstPrAt"] !== undefined && firstPrAt === undefined) || (raw["endedAt"] !== undefined && endedAt === undefined)) return undefined;
   if (!isCount(raw["prsOpened"], 1_000) || !isCount(raw["prsMerged"], 1_000) || !isCount(raw["costMicros"], MAX_TASK_MICROS) || !isCount(raw["unpricedCalls"], 100_000_000)) return undefined;
-  // Code leaves `currency` out when the ledger recorded nothing for the task (then the cost is 0 and nothing is unpriced); any other currency than USD is refused whole.
-  if (raw["currency"] === undefined ? raw["costMicros"] !== 0 || raw["unpricedCalls"] !== 0 : raw["currency"] !== "USD") return undefined;
+  // A wholly unpriced ledger has no currency. Foreign amounts stay out of the USD subtotal; no exchange rate is guessed.
+  const currency = raw["currency"];
+  if (currency === undefined ? raw["costMicros"] !== 0 : typeof currency !== "string" || !/^[A-Z]{3}$/u.test(currency)) return undefined;
+  const foreignCurrency = currency !== undefined && currency !== "USD";
+  const costUnavailable = foreignCurrency || (raw["costMicros"] === 0 && raw["unpricedCalls"] > 0);
   if ((raw["prsMerged"]) > (raw["prsOpened"])) return undefined;
   let feature: ReportTask["feature"];
   if (raw["feature"] !== undefined) {
@@ -167,7 +170,8 @@ export function readRow(raw: unknown, companyId: string): ReportTask | undefined
   const links = Array.isArray(raw["prLinks"]) ? (raw["prLinks"] as unknown[]).slice(0, 20).flatMap((link) => { const good = plainHttpsLink(link); return good === undefined ? [] : [good]; }) : [];
   return {
     taskId, project, title: title ?? "Untitled task", origin, ...(path === undefined ? {} : { path }), state, ...(taskPage === undefined ? {} : { taskPage }), ...(feature === undefined ? {} : { feature }), startedAt, ...(firstPrAt === undefined ? {} : { firstPrAt }), ...(endedAt === undefined ? {} : { endedAt }),
-    prsOpened: raw["prsOpened"], prsMerged: raw["prsMerged"], prLinks: links, costMicros: raw["costMicros"], unpricedCalls: raw["unpricedCalls"],
+    prsOpened: raw["prsOpened"], prsMerged: raw["prsMerged"], prLinks: links, costMicros: foreignCurrency ? 0 : raw["costMicros"], unpricedCalls: raw["unpricedCalls"],
+    ...(costUnavailable ? { costUnavailable: true } : {}), ...(foreignCurrency ? { foreignCurrency: true } : {}),
   };
 }
 
@@ -200,13 +204,13 @@ interface FetchedRows { rows: ReportTask[]; unreadable: number }
 
 /**
  * Every row of the range, call by call as the person (Code's `next` and `hasMore`; a call may give fewer rows than it looked at). A part of a range is never returned: too many rows or too many
- * calls, a cursor that does not move, a duplicate or an unreadable row refuses the whole answer. Rows Code says it could not read are counted and said (`unreadableTasks`), never hidden.
+ * calls, a cursor that does not move, a duplicate or a foreign company refuses the whole answer. Rows Code says it could not read are counted and said (`unreadableTasks`), never hidden.
  */
 async function fetchRows(context: RouteContext, companyId: string, filters: ReportFilters): Promise<FetchedRows> {
   const rows: ReportTask[] = [];
   const seen = new Set<string>();
   const cursors = new Set<string>();
-  let cursor: string | undefined, unreadable = 0;
+  let cursor: string | undefined, unreadable = 0, examined = 0;
   for (let call = 1; call <= REPORT_PAGES_MAX; call += 1) {
     const params = new URLSearchParams();
     // Code takes exactly one of `from` (the first call) and `cursor` (every later one); the cursor is bound to `to` and the other filters, so those go on every call as they were.
@@ -227,10 +231,17 @@ async function fetchRows(context: RouteContext, companyId: string, filters: Repo
     const bad = body["unreadable"];
     if (bad !== undefined && !isCount(bad, 100_000_000)) throw new ReportRefused(REPORT_WORDS.unreadable);
     unreadable += bad ?? 0;
+    examined += body["tasks"].length;
+    if (examined > REPORT_ROWS_MAX) throw new ReportRefused(REPORT_WORDS.tooLarge);
     for (const raw of body["tasks"] as unknown[]) {
       const row = readRow(raw, companyId);
-      if (row === undefined || seen.has(row.taskId)) throw new ReportRefused(REPORT_WORDS.unreadable);
-      seen.add(row.taskId);
+      // Tenant isolation remains a whole-answer refusal, even when another field is invalid.
+      if (plain(raw) && Object.hasOwn(raw, "companyId") && raw["companyId"] !== companyId) throw new ReportRefused(REPORT_WORDS.unreadable);
+      if (plain(raw) && typeof raw["taskId"] === "string" && TASK_ID.test(raw["taskId"])) {
+        if (seen.has(raw["taskId"])) throw new ReportRefused(REPORT_WORDS.unreadable);
+        seen.add(raw["taskId"]);
+      }
+      if (row === undefined) { unreadable += 1; continue; }
       rows.push(row);
     }
     if (rows.length > REPORT_ROWS_MAX) throw new ReportRefused(REPORT_WORDS.tooLarge);
@@ -272,6 +283,9 @@ export interface ReportNumbers {
   /** Model calls the ledger could not price. The cost is then a floor: more was spent than shown. */
   unpricedCalls: number;
   costIsFloor: boolean;
+  /** Coverage of the valid tasks, excluding partial/unpriced and non-USD costs. */
+  pricedTasks?: number;
+  foreignCurrencyTasks?: number;
   /** All cost in the group divided by merged pull requests, in cents; absent when nothing merged. */
   costPerMergedCents?: number;
   /** From the first task's start to the last merge or close; absent when a closed task has no end. */
@@ -328,7 +342,9 @@ function numbersOf(tasks: readonly ReportTask[], now: number): Omit<ReportNumber
   const endToEnd = tasks.length > 0 && endKnown && lastEnd >= firstStart ? lastEnd - firstStart : undefined;
   const medianToPr = median(toPr);
   return {
-    tasks: tasks.length, prsOpened: opened, prsMerged: merged, costMicros, unpricedCalls: unpriced, costIsFloor: unpriced > 0,
+    tasks: tasks.length, prsOpened: opened, prsMerged: merged, costMicros, unpricedCalls: unpriced, costIsFloor: unpriced > 0 || tasks.some(task => task.foreignCurrency === true),
+    pricedTasks: tasks.filter(task => task.unpricedCalls === 0 && task.foreignCurrency !== true).length,
+    foreignCurrencyTasks: tasks.filter(task => task.foreignCurrency === true).length,
     ...(merged > 0 ? { costPerMergedCents: centsOf(costMicros / merged) } : {}),
     ...(endToEnd === undefined ? {} : { endToEndMs: endToEnd, endToEndSoFar: open }),
     ...(medianToPr === undefined ? {} : { medianRequestToPrMs: medianToPr }),
@@ -415,7 +431,7 @@ export interface FeatureDetail {
   sources: Array<{ source: FeatureSource; count: number }>;
   /** Newest first, at most FEATURE_TASKS_MAX; `tasksTotal` counts them all. */
   tasks: Array<{
-    taskId: string; title: string; project: string; origin: Origin; path?: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number;
+    taskId: string; title: string; project: string; origin: Origin; path?: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number; costUnavailable?: boolean;
     prsOpened: number; prsMerged: number; prLinks: string[]; wallMs?: number; wallSoFar?: boolean;
     /** Code's reference to the task's own page (see `readRow`): the title links to it. Absent: plain text. */
     taskPage?: string;
@@ -449,7 +465,7 @@ export function buildFeatureDetail(id: string, rows: readonly ReportTask[], feat
       const end = task.state === "open" ? nowMs : task.endedAt;
       return {
         taskId: task.taskId, title: task.title, project: task.project, origin: task.origin, ...(task.path === undefined ? {} : { path: task.path }), state: task.state, ...(task.taskPage === undefined ? {} : { taskPage: task.taskPage }), startedAt: new Date(task.startedAt).toISOString(),
-        costCents: cents[at]!, unpricedCalls: task.unpricedCalls, prsOpened: task.prsOpened, prsMerged: task.prsMerged, prLinks: task.prLinks,
+        costCents: cents[at]!, unpricedCalls: task.unpricedCalls, ...(task.costUnavailable === true ? { costUnavailable: true } : {}), prsOpened: task.prsOpened, prsMerged: task.prsMerged, prLinks: task.prLinks,
         ...(end !== undefined && end >= task.startedAt ? { wallMs: end - task.startedAt, ...(task.state === "open" ? { wallSoFar: true } : {}) } : {}),
       };
     }),
@@ -486,9 +502,14 @@ async function read(context: RouteContext, featureId: string | undefined): Promi
     const unreadable = fetched.unreadable > 0 ? { unreadableTasks: fetched.unreadable } : {};
     // `canChange`: the person is a company owner or admin by Code's access answer made just now, the same decision Code makes again on each change. The page draws an action only when it is true.
     const may = { canChange: true as const, features: pickerOf(features) };
-    if (featureId === undefined) return { status: 200, body: { ...buildReport(rows, features, filters, context.now()), ...may, ...unreadable } };
+    if (featureId === undefined) {
+      const report = buildReport(rows, features, filters, context.now());
+      if (fetched.unreadable > 0) report.totals.costIsFloor = true;
+      return { status: 200, body: { ...report, ...may, ...unreadable } };
+    }
     const detail = buildFeatureDetail(featureId, rows, features, filters, context.now());
     if (detail === undefined) return REPORT_WORDS.notFound;
+    if (fetched.unreadable > 0) detail.totals.costIsFloor = true;
     return { status: 200, body: { ...detail, ...may, ...unreadable } };
   } catch (error) {
     if (error instanceof ReportRefused) return error.answer;
