@@ -31,13 +31,14 @@ type Handler = (request: ApiRequest) => ApiResponse | undefined | Promise<ApiRes
 interface ProjectView { revision: number; limits: Record<string, number>; companyLock: Record<string, number>; effective: Record<string, number> }
 const projectView = (over: Partial<ProjectView> = {}) => ({ revision: 0, limits: {}, companyLock: {}, effective: DEFAULTS, defaults: DEFAULTS, maxima: MAXIMA, ...over });
 
-function mountProject(options: { view?: ReturnType<typeof projectView>; missing?: boolean; put?: Handler; canEdit?: boolean; page?: boolean } = {}) {
+function mountProject(options: { view?: ReturnType<typeof projectView>; missing?: boolean; unavailable?: boolean; put?: Handler; canEdit?: boolean; page?: boolean } = {}) {
  let view = options.view ?? projectView();
  const f = fakeHost(async request => {
   const path = request.path.split("?")[0];
   if (path === "/v1/app/changes") return { status: 200, body: { notices: [], next: "settled" } };
   if (path === "/v1/app/projects/payments/machine-size") return { status: 501, body: { status: "not_set_up", message: "Machine size suggestions are not set up on Rovara Code yet." } };
   if (path === "/v1/app/projects/payments/overview") return { status: 200, body: projectFixture(options.canEdit === false ? { you: { role: "contributor", canStartWork: true, canEditSettings: false, canViewSpend: false } } : {}) };
+  if (path === LIMITS_PATH && options.unavailable === true) return refuse(501, "NOT_ON_CODE_YET", "Not served.");
   if (path === LIMITS_PATH && options.missing === true) return refuse(404, "NOT_FOUND", "Not found.");
   if (path === LIMITS_PATH && request.method === "GET") return { status: 200, body: view };
   if (path === LIMITS_PATH && request.method === "PUT") {
@@ -162,7 +163,7 @@ describe("the project's Setup limits", () => {
 const locksView = (over: Record<string, unknown> = {}) => ({ revision: 3, limits: {}, setupAgentOff: false, devcontainerImages: null, noSoleOwnerException: false, defaults: DEFAULTS, maxima: MAXIMA, ...over });
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 
-function mountCompany(options: { view?: unknown; missing?: boolean; role?: "owner" | "admin" | "member"; write?: Handler } = {}) {
+function mountCompany(options: { view?: unknown; missing?: boolean; unavailable?: boolean; role?: "owner" | "admin" | "member"; write?: Handler } = {}) {
  const role = options.role ?? "owner";
  const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
  const me = AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: role }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
@@ -201,4 +202,13 @@ describe("the company's Setup locks (hidden: the hosted Code does not serve them
    cleanup();
   }
  });
+});
+
+// TRIAGE-UAT-0530 item 3b: hide only the unavailable setup-limits card.
+it("keeps the project visible while hiding setup limits on Cloud's missing-route response", async () => {
+ const f = mountProject({ unavailable: true });await screen.findByRole("heading", { name: "payments" });
+ await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.path === LIMITS_PATH)).toBe(true));
+ await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+ expect(screen.queryByRole("region", { name: "Setup limits" })).toBeNull();
+ expect(screen.getByRole("tab", { name: "How we work" })).toBeTruthy();
 });

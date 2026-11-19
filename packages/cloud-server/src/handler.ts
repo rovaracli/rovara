@@ -246,6 +246,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       const refused = request.query.get("error");
       // A join Code refused (the email isn't the invited one, the invite was used or withdrawn): the one sentence, never Code's words.
       if (refused !== null && pending.invite !== undefined) return text(302, "", { location: JOIN_UNUSABLE_PAGE });
+      if (refused === "access_denied") return text(400, "You're no longer a member of this company. Ask an admin to invite you again. Sign in again at /app.");
       if (refused !== null) return text(400, `Rovara Code refused the sign-in: ${refused}`);
       try {
         const signedIn = await options.client.finishSignIn(request.query.get("code") ?? "", pending);
@@ -378,6 +379,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
               work: companyScopedWork(options.work, () => companyOf(using.access)?.companyId), origin: options.origin, presence, ...(options.audit === undefined ? {} : { audit: options.audit }), ...(options.company === undefined ? {} : { company: options.company }),
               ...(options.productAi === undefined ? {} : { productAi: options.productAi }),
               ...(options.answersEnabled === true ? { answersEnabled: true } : {}),
+              ...(options.log === undefined ? {} : { log: options.log }),
             });
           } catch (error) {
             if (attempt >= REQUEST_ATTEMPTS) throw error;

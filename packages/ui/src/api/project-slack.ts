@@ -3,7 +3,7 @@ import { OrgIdSchema, ReviewedSlackDecisionBodySchema, ProjectSlackDecisionReade
 import type { AppHost, ApiRequest, ApiResponse } from "../host.js";
 import { ApiError } from "./errors.js";
 const message = "Slack request could not be confirmed. Check its status before resending.";
-const codes = new Set(["AUTH_REQUIRED", "FORBIDDEN", "CSRF_STALE", "CHANGE_STALE", "IDEMPOTENCY_CONFLICT", "CONFIG_INVALID", "NOT_FOUND", "TOO_MANY_REQUESTS", "RUNTIME_UNAVAILABLE", "AUDIT_UNAVAILABLE", "SLACK_TEAM_NOT_BOUND"]);
+const codes = new Set(["NOT_ON_CODE_YET", "AUTH_REQUIRED", "FORBIDDEN", "CSRF_STALE", "CHANGE_STALE", "IDEMPOTENCY_CONFLICT", "CONFIG_INVALID", "NOT_FOUND", "TOO_MANY_REQUESTS", "RUNTIME_UNAVAILABLE", "AUDIT_UNAVAILABLE", "SLACK_TEAM_NOT_BOUND"]);
 export function createProjectSlackApi(host: AppHost, orgId: string, project: string) {
  let active = true, epoch = 0, redirected = false;
  const valid = (version: number) => active && epoch === version;

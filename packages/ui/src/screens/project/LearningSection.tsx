@@ -154,7 +154,7 @@ export function LearningSection({ project }: { project: string }) {
  useSuggestedRulesLink(read.data !== undefined, read.data?.suggestions.some(item => OPEN_STATUSES.has(item.status)) === true);
  if (read.isPending) return <section className="rv-learning" aria-label="Suggested rules"><Skeleton label={T.LOADING} /></section>;
  // The company has not opened the learning loop (the server answers NOT_FOUND): the feature is dormant, not broken, so nothing is shown.
- if (read.error instanceof ApiError && read.error.code === "NOT_FOUND") return null;
+ if (read.error instanceof ApiError && (read.error.code === "NOT_FOUND" || (read.error.status === 501 && read.error.code === "NOT_ON_CODE_YET"))) return null;
  if (read.isError || read.data === undefined) return <section className="rv-learning" aria-label="Suggested rules"><p role="alert"><VisibleText text={learningFailureText(read.error)} /></p><Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button></section>;
  const data = read.data, collecting = data.suggestionsState?.state === "collecting" ? data.suggestionsState : undefined, open = collecting === undefined ? data.suggestions.filter(item => OPEN_STATUSES.has(item.status)) : [], truncated = asArray(data.truncated);
  /** After a decision, the suggestions and everything How we work shows are read again (the version, the rules, the history). */

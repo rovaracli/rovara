@@ -106,7 +106,10 @@ it("learning default: untouched Save learning model is disabled; an explicit pin
 
 for (const label of ["Design review model", "Second review", "Answers and Slack chat"]) it(`${label}: unknown managed default stays unavailable and Save never writes it`, async () => {
  const f = mount(); try {
-  await ready(); const row = screen.getByRole("region", { name: label });
+  await ready();
+  // TRIAGE-UAT-0530 item 5b / DEC 254zzz150: remove the Second review row.
+  if (label === "Second review") { expect(screen.queryByRole("region", { name: label })).toBeNull();fireEvent.click(companySave());await screen.findByTestId("ai-spend-saved");expect(writes(f)).toEqual([]);return; }
+  const row = screen.getByRole("region", { name: label });
   expect(row.textContent).toContain("Rovara's default (current model can't be shown yet)");
   expect(row.textContent).toContain("unavailable");
   expect(within(row).queryByRole("combobox")).toBeNull(); expect(within(row).queryByRole("button")).toBeNull();

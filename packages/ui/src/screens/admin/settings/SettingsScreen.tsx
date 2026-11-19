@@ -97,7 +97,7 @@ function Settings({ settings, reload }: { settings: CompanySettingsRead; reload:
     <p><Button variant="primary" busy={busy} onClick={() => { void save(); }}>Save rules</Button> <Button onClick={() => { setEditing(false); reseed(); }}>Cancel</Button></p>
    </>}
   </AdminSection>
-  <AdminSection id="monthly-cap" title="Monthly limit" note="What the model gateway holds you to">
+  <AdminSection id="monthly-cap" title="Monthly limit" note="Applies to all AI use">
    {settings.monthlyCapUsd === undefined ? <NotConnected what="The monthly limit" /> : settings.monthlyCapUsd === null ? <p>No monthly limit is set.</p> : <p>The company's monthly limit is <b><Money usd={settings.monthlyCapUsd} /></b>.</p>}
    <p>Change the monthly limit in <Link to="/app/admin/ai-spending">AI and spending</Link>.</p>
   </AdminSection>

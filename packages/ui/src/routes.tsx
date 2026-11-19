@@ -37,7 +37,7 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
   { path: "admin/models/:section?", element: <ModelSettingsRedirect /> },
   { path: "admin/agent-ai", element: <ModelSettingsRedirect section="ai-connections" /> },
   { path: "admin/learning-ai", element: <ModelSettingsRedirect section="ai-connections" /> },
-  { path: "admin/second-review", element: <ModelSettingsRedirect section="second-review" /> },
+  { path: "admin/second-review", element: <ModelSettingsRedirect section="ai-models" /> },
  ] });
  // Part B owns these screen implementations. Disabled routes are absent, including direct URLs.
  if (features.usage) children.push({ path: "usage", element: <Page title="Usage" /> });

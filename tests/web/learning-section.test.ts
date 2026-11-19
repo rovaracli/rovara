@@ -583,3 +583,10 @@ describe("while the company's suggestions are off (Learning is collecting)", () 
   await expectNoAxeViolations(f.container);
  });
 });
+
+// TRIAGE-UAT-0530 item 5d: a missing learning read does not hide How we work.
+it("hides unavailable suggested rules while preserving the Build stage", async () => {
+ const f = setup({ learn: (request, url) => request.method === "GET" && url.pathname === LEARNING_PATH ? refuse("NOT_ON_CODE_YET", "Not served.", 501) : undefined });
+ await screen.findByRole("heading", { name: "Build" });await waitFor(() => expect(f.learningReads()).toBe(1));
+ expect(screen.queryByRole("region", { name: "Suggested rules" })).toBeNull();expect(screen.queryByRole("alert")).toBeNull();
+});

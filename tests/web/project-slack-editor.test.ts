@@ -55,3 +55,12 @@ it("stored-link and review states have accessible controls and one live announce
  const { expectNoAxeViolations } = await import("./support/axe.js"), f = fakeHost(async input => ({ status: 200, body: input.path.includes("/review?") ? review : inventory }));
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(SlackLinksEditor, { ...scope, enabled: true }) }));const button = await screen.findByRole("button", { name: `Review unlink ${teamId} / ${channelId}` });expect(screen.getAllByRole("status")).toHaveLength(1);await expectNoAxeViolations(view.container);fireEvent.click(button);await screen.findByRole("button", { name: "Unlink reviewed channel" });await expectNoAxeViolations(view.container);
 });
+
+// TRIAGE-UAT-0530 item 5d: replace only the unserved recorded-links card.
+it("replaces a missing Slack links route with an unavailable status and no controls", async () => {
+ const f = fakeHost(async () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Not served." } } }));
+ const view = renderUi(h(AppHostProvider, { host: f.host, children: h(SlackLinksEditor, { ...scope, enabled: true }) }));
+ await screen.findByText("Recorded Slack links aren't available on this Rovara yet.");
+ expect(screen.queryByRole("button")).toBeNull();expect(screen.queryByRole("alert")).toBeNull();expect(f.request).toHaveBeenCalledTimes(1);
+ const { expectNoAxeViolations } = await import("./support/axe.js");await expectNoAxeViolations(view.container);
+});

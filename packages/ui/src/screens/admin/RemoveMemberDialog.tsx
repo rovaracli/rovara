@@ -54,7 +54,7 @@ export function RemoveMemberDialog({ company, member, self, people, checking, st
   const requestId = attempt.current ??= globalThis.crypto.randomUUID();
   sending.current = true;setBusy(true);setSent(true);setUnknown(false);setMessage(undefined);
   try {
-   const result = await bounded(api.send("POST", `/v1/app/org/members/${member.developerId}/removal`, { requestId, expectedRole: preview.member.role, successorId: successor }, MemberRemovalStartedReaderSchema, { retry: "never" }));
+   const result = await api.send("POST", `/v1/app/org/members/${member.developerId}/removal`, { requestId, expectedRole: preview.member.role, successorId: successor }, MemberRemovalStartedReaderSchema, { retry: "never" });
    if (result.kind !== "done") { setUnknown(true);setMessage("The removal is pending. Try the removal again to check it.");return; }
    onRemoved(result.value.message);
   } catch (error) {

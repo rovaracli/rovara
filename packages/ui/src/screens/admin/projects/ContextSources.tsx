@@ -32,7 +32,7 @@ export function ContextSources({ project }: { project: string }) {
    return { sources: sources.document.sources, pending: sources.pending, servers, stdioAvailable, connections };
   },
  });
- const hidden = read.error instanceof ApiError && (read.error.status === 403 || read.error.status === 404);
+ const hidden = read.error instanceof ApiError && (read.error.status === 403 || read.error.status === 404 || (read.error.status === 501 && read.error.code === "NOT_ON_CODE_YET"));
  const data = read.data, loadError = read.error instanceof ApiError && !hidden ? read.error.message : read.isError && !hidden ? "Couldn't load sources." : undefined;
  const servers = data?.servers ?? [], connections = data?.connections ?? [];
  const choices: ServerChoice[] = [

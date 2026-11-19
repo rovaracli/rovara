@@ -292,9 +292,9 @@ it("says decisions aren't connected yet in the pane of a task that needs a perso
   expect((await screen.findByTestId("decision-quiet")).textContent).toContain("Not available yet.");
   f.close();
 });
-it("shows the budget banner when the company's budget is used up, and the agents row says it is not connected yet", async () => {
+it("shows the budget banner and hides the empty agents row", async () => {
   const f = screenSetup({ spend: { status: 200, body: { remainingUsd: 0 } } });
-  expect(await screen.findByText("This month's budget is used up")).toBeTruthy();expect(await screen.findByTestId("agents-not-connected")).toBeTruthy();
+  expect(await screen.findByText("This month's budget is used up")).toBeTruthy();expect(screen.queryByTestId("agents-not-connected")).toBeNull();expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
   f.close();
   const g = screenSetup({ nav: navFixture() });
   const row = await screen.findByRole("region", { name: "Agents" });await waitFor(() => expect(within(row).getByRole("link", { name: /Payments expert/u }).textContent).toContain("needs you"));

@@ -28,6 +28,7 @@ function waitingAge(createdAt: string, readAt: number) {
 // Cloud answers 501 NOT_ON_CODE_YET (and a Code without the route answers 404) while approvals and spending requests are not served: a designed absence, so the panel is calm, not an alert.
 const absent = (error: unknown) => error instanceof ApiError && (error.status === 501 || error.status === 404 || error.code === "NOT_ON_CODE_YET");
 function WaitingPanel<T>({ read, label, children }: { read: UseQueryResult<T>; label: string; children: (data: T) => ReactNode }) {
+ if (read.error instanceof ApiError && read.error.status === 501 && read.error.code === "NOT_ON_CODE_YET") return <section aria-label={label}><p role="status">Not available on this Rovara yet.</p></section>;
  if (read.data === undefined && absent(read.error)) return <section aria-label={label}><p role="status">Nothing waiting.</p></section>;
  return <ReadSection read={read} label={label}>{children}</ReadSection>;
 }

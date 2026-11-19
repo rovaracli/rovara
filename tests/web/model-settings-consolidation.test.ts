@@ -57,7 +57,8 @@ for (const path of ["/app/admin/ai-spending", "/app/onboard?step=ai"]) it(`uses 
   expect(within(connections).getByRole("button", { name: "Change source order" })).toBeTruthy();
   expect(card.textContent).toContain("Understand: claude-haiku-5-5");
   expect(within(card).getByRole("region", { name: "Design review model" }).compareDocumentPosition(screen.getByTestId("step-model-code_review")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(within(card).getByRole("region", { name: "Second review" }).compareDocumentPosition(screen.getByTestId("step-model-pull_request")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // TRIAGE-UAT-0530 item 5b / DEC 254zzz150: Second review stays hidden.
+  expect(within(card).queryByRole("region", { name: "Second review" })).toBeNull();
   expect(within(screen.getByTestId("step-model-code_review")).getByRole("alert").textContent).toContain("No offered model");
   expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);
   await expectNoAxeViolations(f.container);
@@ -68,12 +69,8 @@ it("keeps second review, learning and answers truthful, with no second-review or
  const f = mount();
  try {
   const card = await ready();
-  const review = within(card).getByRole("region", { name: "Second review" });
-  fireEvent.click(within(review).getByText("Second review availability"));
-  expect(review.textContent).toContain("Second review through OpenRouter is not available yet");
-  expect(review.textContent).toContain("Settings and mode could not be checked");
-  expect(within(review).queryByRole("combobox")).toBeNull();
-  expect(within(review).queryByRole("button")).toBeNull();
+  // TRIAGE-UAT-0530 item 5b / DEC 254zzz150.
+  expect(within(card).queryByRole("region", { name: "Second review" })).toBeNull();
   const answers = within(card).getByRole("region", { name: "Answers and Slack chat" });
   expect(answers.textContent).toContain("Read only");
   expect(answers.textContent).toContain("current model, source and readiness could not be checked");
@@ -85,7 +82,7 @@ it("keeps second review, learning and answers truthful, with no second-review or
 });
 
 for (const [path, hash] of [
- ["/app/admin/models", "ai-models"], ["/app/admin/models/sources", "ai-connections"], ["/app/admin/models/available", "ai-models"], ["/app/admin/models/steps", "ai-models"], ["/app/admin/agent-ai", "ai-connections"], ["/app/admin/learning-ai", "ai-connections"], ["/app/admin/second-review", "second-review"], ["/app/agents/new", "ai-models"], ["/app/agents/agt_aaaaaaaaaaaaaaaaaaaa/edit", "ai-models"],
+ ["/app/admin/models", "ai-models"], ["/app/admin/models/sources", "ai-connections"], ["/app/admin/models/available", "ai-models"], ["/app/admin/models/steps", "ai-models"], ["/app/admin/agent-ai", "ai-connections"], ["/app/admin/learning-ai", "ai-connections"], ["/app/admin/second-review", "ai-models"], ["/app/agents/new", "ai-models"], ["/app/agents/agt_aaaaaaaaaaaaaaaaaaaa/edit", "ai-models"],
 ] as const) for (const role of ["owner", "member"] as const) it(`redirects ${role} ${path} to its replacement section and focuses it after loading`, async () => {
  const scroll = vi.fn(); const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView"); HTMLElement.prototype.scrollIntoView = scroll;
  const f = mount({ path: path + "?project=web", role });
@@ -162,7 +159,8 @@ it("keeps absent task rows unavailable and automatic rows present on an older pa
    expect(row.textContent).toContain("Not available on this Rovara yet.");
    expect(within(row).queryByRole("combobox")).toBeNull();
   }
-  expect(within(card).getByRole("region", { name: "Second review" })).toBeTruthy();
+  // TRIAGE-UAT-0530 item 5b / DEC 254zzz150 applies to partial reads too.
+  expect(within(card).queryByRole("region", { name: "Second review" })).toBeNull();
   expect(within(card).getByRole("region", { name: "Design review model" })).toBeTruthy();
  } finally { f.close(); }
 });
