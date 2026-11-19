@@ -1131,11 +1131,11 @@ describe("the Merge button through Code (DEC 254zzz94)", () => {
     const { call, auth, sessionId, code } = await begin();
     const notYet = await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } });
     expect(notYet!.status).toBe(501);
-    expect(JSON.parse(notYet!.body).error.message).toContain("isn't available on this Rovara yet");
+    expect((JSON.parse(notYet!.body) as { error: { message: string } }).error.message).toContain("isn't available on this Rovara yet");
     for (const [status, codeName, message] of [[409, "MERGE_NOT_READY", "Checks haven't passed on the latest code."], [403, "FORBIDDEN", "Do this on the Rovara website: the command line and AI tools cannot make this change."], [404, "TASK_NOT_FOUND", "no such task"], [409, "IDEMPOTENCY_CONFLICT", "That request was already used by someone else."]] as const) {
       code.answerMerge("POST", status, { error: { code: codeName, message } });
       const answer = await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } });
-      expect([answer!.status, JSON.parse(answer!.body).error]).toEqual([status, { code: codeName, message }]);
+      expect([answer!.status, (JSON.parse(answer!.body) as { error: unknown }).error]).toEqual([status, { code: codeName, message }]);
     }
     // Anything else (an unexpected code, a status that does not match, a long or multi-line sentence) is Cloud's own words: nothing of Code's is echoed.
     for (const body of [{ error: { code: "INTERNAL", message: "stack at ghs_secret" } }, { error: { code: "MERGE_NOT_READY", message: "line one\nghs_secret" } }, "oops"]) {

@@ -63,13 +63,13 @@ export function mergeReadinessAnswer(value: unknown): { mayMerge: boolean; ready
 
 /** Code's merged answer, rebuilt. */
 export function mergeDoneAnswer(value: unknown): { status: "MERGED"; pullRequests: Array<{ repositoryId: string; number: number }> } {
-  need(plain(value) && (value as Record<string, unknown>)["status"] === "MERGED", value);
+  need(plain(value) && value["status"] === "MERGED", value);
   return { status: "MERGED", pullRequests: pullsOf((value as Record<string, unknown>)["pullRequests"], false) };
 }
 
 /** A sentence of Code's own fixed words: one printable line, bounded. Anything else is not passed on. */
 function sentence(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 && value.length <= 400 && !/[\u0000-\u001f\u007f<>]/u.test(value) ? value : undefined;
+  return typeof value === "string" && value.length > 0 && value.length <= 400 && ![...value].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f || ch === "<" || ch === ">") ? value : undefined;
 }
 
 /** The error codes Code's merge route answers with, and the HTTP status each keeps. */
