@@ -185,7 +185,7 @@ Cloud's side (`-c rovaraCloudApp=<env> -c rovaraModelGatewayProductAi=on`, refus
 `ConditionCheckItem` on that table by company keys, `kms:GenerateDataKey` (same purpose and install condition) and
 `kms:GenerateMac`; output `ServerRoleArn`; optional parameter `ModelGatewayUrl` (default empty: no Vertex connect from Cloud).
 The release pipeline carries each environment's switches from `CLOUD_PIPELINE_SWITCHES` (`infra/lib/cloud-release-pipeline.ts`):
-staging deploys with `-c rovaraModelGatewayProductAi=on`. Production may too (Rovara-cloud#247), once its gateway is deployed: add it to production in `CLOUD_PIPELINE_SWITCHES` then; a contract test pins both.
+staging and production deploy with `-c rovaraModelGatewayProductAi=on` (production since Rovara-cloud#247); a contract test pins both.
 
 Settings routes (B7, `packages/cloud-server/src/product-ai-routes.ts`; screen: admin area, AI and connections, Product AI
 keys): `GET /v1/app/projects/:name/product-ai`, `PUT|DELETE .../key`, `PUT .../eval-budget`, `PUT .../eval-approval`. The

@@ -59,8 +59,8 @@ describe("Rovara Cloud release pipeline", () => {
     // One command: the release check's poller runs around the deploy in the same shell (tests/contract/cloud-release-check.test.ts runs it).
     expect(phases.build!.commands).toHaveLength(1);
     expect(phases.build!.commands[0]).toContain(
-      `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`,
-    );
+      `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" -c rovaraModelGatewayProductAi=on --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`,
+    ); // production carries the product AI switch (Rovara-cloud#247, CLOUD_PIPELINE_SWITCHES)
     // Nothing of Code's: no rovara init or upgrade.
     expect(commands).not.toMatch(/\binit\b|\bupgrade\b/);
   });
