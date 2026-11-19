@@ -106,7 +106,7 @@ export class AiSpendPage {
   constructor(page: Page) {
     this.page = page;
     this.step = page.getByTestId("ai-spend-step");
-    this.model = this.step.getByLabel("Model");
+    this.model = this.step.getByLabel("Model", { exact: true });
     this.limit = this.step.getByLabel(/Company monthly limit/);
     this.rovara = page.getByTestId("ai-spend-rovara").locator("input");
     this.own = page.getByTestId("ai-spend-own").locator("input");

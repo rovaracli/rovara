@@ -37,7 +37,9 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  // Lead 4 J3: the Ask box and its answer.
  "screens/answers/answers.css",
  // Understand's questions and their answer form: the session page, the Work list and Home.
- "screens/session/answer-form.css"]) {
+ "screens/session/answer-form.css",
+ // L4-JA89: the project Skills tab (its own lazy chunk).
+ "screens/project/skills/skills.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });
