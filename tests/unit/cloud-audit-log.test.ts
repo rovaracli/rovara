@@ -254,7 +254,7 @@ describe("recording a Cloud action", () => {
       "agent_ai.bedrock.connected", "agent_ai.bedrock.recovered", "agent_ai.bedrock.removed", "agent_ai.bedrock.rotated",
       "agent_ai.endpoint.connected", "agent_ai.endpoint.removed", "agent_ai.endpoint.rotated",
       "agent_ai.source.changed",
-      "company.budget.changed", "company.invite.created", "company.invite.revoked", "company.rules.changed", "company.signin_client.changed",
+      "company.budget.changed", "company.invite.created", "company.invite.revoked", "company.rules.changed", "company.rules.proposed", "company.rules.withdrawn", "company.signin_client.changed",
       "hook.decide.answered", "hook.decide.unanswered", "hook.start.answered", "hook.start.unanswered", "hook.values.answered", "hook.values.unanswered",
       "learning_ai.key.connected", "learning_ai.key.removed", "learning_ai.key.rotated",
       "product_ai.bedrock.connected", "product_ai.bedrock.linked", "product_ai.bedrock.removed", "product_ai.bedrock.rotated",

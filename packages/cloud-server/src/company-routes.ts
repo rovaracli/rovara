@@ -157,6 +157,7 @@ async function changeSettings(context: RouteContext): Promise<RouteAnswer> {
       throw error;
     }
     log(who, { event: "cloud.company_settings_proposed", changeId: change.changeId, loosening });
+    await audited(context, who, "company.rules.proposed", `change:${change.changeId}`);
     return { status: 202, body: { companyId: who.companyId, version: current.version, pending: pendingView(change) } };
   }
   let version: number;
@@ -209,6 +210,7 @@ async function withdrawChange(context: RouteContext): Promise<RouteAnswer> {
   // Withdrawing loosens nothing, so any admin may.
   if (!(await who.backend.store.dropChange(who.companyId, context.params[0]!))) return WORDS.noChange;
   log(who, { event: "cloud.company_settings_withdrawn", changeId: context.params[0] });
+  await audited(context, who, "company.rules.withdrawn", `change:${context.params[0]}`);
   return ok({ withdrawn: true });
 }
 

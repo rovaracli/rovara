@@ -16,7 +16,6 @@ import { RemoveMemberDialog } from "./RemoveMemberDialog.js";
 import { PendingHandOvers } from "./PendingHandOvers.js";
 import { roleChangesFor, WhoCanDoWhat } from "./company-roles.js";
 const roleNames: Record<string, string> = { owner: "Owner", admin: "Admin", member: "Member", auditor: "Auditor" };
-const methodNames: Record<string, string> = { cloud: "Rovara sign-in", github: "GitHub", slack: "Slack", oidc: "Organization sign-in" };
 type Role = "owner" | "admin" | "member";
 type Receipt = { scope: string; focus: boolean } & ({ kind: "verified"; person: string; role: Role; checkedAt: string } | { kind: "denied" });
 function joinedDate(value: string) { const date = new Date(value);return Number.isFinite(date.getTime()) ? date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }) : "Date unavailable"; }
@@ -31,7 +30,7 @@ export function MembersScreen() {
  }, [receipt, role, scope]);
  const read = useQuery({ queryKey: ["admin", "members", orgId, developerId], queryFn: async () => {
   const response = await api.get("/v1/app/org/members", AppOrgMembersResponseReaderSchema);
-  return { members: response.members.map(member => ({ developerId: member.developerId, name: member.name, role: member.role, ...(member.joinedAt === undefined ? {} : { joinedAt: member.joinedAt }), ...(member.identities === undefined ? {} : { identities: member.identities }) })) };
+  return { members: response.members.map(member => ({ developerId: member.developerId, name: member.name, role: member.role, ...(member.joinedAt === undefined ? {} : { joinedAt: member.joinedAt }) })) };
  }, gcTime: 0 });
  const forbiddenRead = read.error instanceof ApiError && ([401, 403, 404].includes(read.error.status) || read.error.code === "INVALID_RESPONSE");
  const dataStale = read.isError && read.data !== undefined && !forbiddenRead, fatal = read.isError && !dataStale;
@@ -73,7 +72,6 @@ export function MembersScreen() {
     {matches.length === 0 ? <p>No matching members in this list.</p> : <DataTable caption="Company members" rows={matches} rowKey={member => member.developerId} columns={[
      { key: "name", title: "Person", render: member => <><VisibleText text={member.name} />{member.developerId === developerId && <span className="rv-muted"> (you)</span>}</> },
      { key: "role", title: "Company role", render: member => roleNames[member.role] ?? "Role unavailable" },
-     { key: "methods", title: "Sign-in methods", render: member => member.identities === undefined ? "Unavailable" : member.identities.length === 0 ? "None returned" : member.identities.map(method => methodNames[method] ?? "Other sign-in method").join(", ") },
      { key: "joined", title: "Joined (UTC)", render: member => member.joinedAt === undefined ? "Date unavailable" : joinedDate(member.joinedAt) },
      ...(role === "owner" || role === "admin" ? [{ key: "action", title: "Change role", render: action }] : []),
      ...(role === "owner" || role === "admin" ? [{ key: "remove", title: "Remove", render: removeAction }] : []),

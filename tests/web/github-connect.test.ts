@@ -9,20 +9,21 @@ import { MemoryRouter } from "react-router";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { OnboardScreen } from "../../packages/ui/src/screens/onboarding/OnboardScreen.js";
+import { expectNoAxeViolations } from "./support/axe.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 
 const STATE = "s".repeat(43);
 const me = { developer: { id: "a".repeat(64), name: "Maya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "cloud", nameIsDefault: false }, identities: [] };
-function setup(path: string, answers: { result?: unknown; choose?: { status: number; body: unknown }; connections?: unknown[]; connect?: unknown } = {}) {
+function setup(path: string, answers: { result?: unknown; choose?: { status: number; body: unknown }; connections?: unknown[]; connect?: unknown; connectError?: { status: number; code: string; message: string } } = {}) {
  const f = fakeHost(async request => {
   if (request.path === "/v1/app/me") return { status: 200, body: me };
   if (request.path === "/v1/app/github/installations") return { status: 200, body: { installations: [] } };
   if (request.path === "/v1/app/github/connections") return { status: 200, body: { installations: answers.connections ?? [] } };
   if (request.path === "/v1/app/github/connect/result") return { status: 200, body: answers.result ?? { status: "none" } };
   if (request.path === "/v1/app/github/choose") return answers.choose ?? { status: 200, body: { status: "connected", alreadyConnected: false, accountLogin: "acme", accountType: "Organization" } };
-  if (request.path === "/v1/app/github/connect") return { status: 200, body: answers.connect ?? { installUrl: `https://github.com/apps/rovara/installations/new?state=${STATE}`, authorizeUrl: `https://github.com/login/oauth/authorize?client_id=Iv1.abc&state=${STATE}`, expiresAt: "2026-11-17T12:10:00.000Z" } };
+  if (request.path === "/v1/app/github/connect") return answers.connectError === undefined ? { status: 200, body: answers.connect ?? { installUrl: `https://github.com/apps/rovara/installations/new?state=${STATE}`, authorizeUrl: `https://github.com/login/oauth/authorize?client_id=Iv1.abc&state=${STATE}`, expiresAt: "2026-11-17T12:10:00.000Z" } } : { status: answers.connectError.status, body: { error: { code: answers.connectError.code, message: answers.connectError.message } } };
   return { status: 404, body: { error: { code: "NOT_FOUND", message: "not found" } } };
  });
  const navigate = vi.fn<(url: string) => void>(); f.host.navigate = navigate; const query = createQueryClient();
@@ -139,4 +140,22 @@ it("a crafted github= word (an Object.prototype member) shows nothing and never 
   expect(screen.queryByTestId("github-refused")).toBeNull();
   f.close();
  }
+});
+
+it.each([
+ ["expired sign-in", 401, "AUTH_REQUIRED", "Your sign-in expired." , true],
+ ["not set up", 503, "CONNECT_NOT_SET_UP", "Connecting GitHub isn't set up yet. Ask the Rovara team.", false],
+ ["admin only", 403, "FORBIDDEN", "Only a company owner or admin can connect GitHub.", false],
+ ["taken", 409, "GITHUB_INSTALLATION_TAKEN", "This GitHub account is already connected to another company.", false],
+ ["other refusal", 503, "RUNTIME_UNAVAILABLE", "GitHub could not be connected just now.", false],
+ ["auth code without expiry status", 503, "AUTH_REQUIRED", "GitHub could not be connected just now.", false],
+ ["expiry status without auth code", 401, "FORBIDDEN", "GitHub could not be connected just now.", false],
+] as const)("GitHub connect error: %s", async (_kind, status, code, message, signIn) => {
+ const f = setup("/app/onboard", { connectError: { status, code, message } });
+ await screen.findByRole("button", { name: "Connect GitHub" });
+ fireEvent.click(screen.getByRole("button", { name: "Connect GitHub" }));
+ expect((await screen.findByRole("alert")).textContent).toBe(message);
+ expect(Boolean(screen.queryByRole("button", { name: "Sign in again" }))).toBe(signIn);
+ await expectNoAxeViolations(document.body);
+ f.close();
 });

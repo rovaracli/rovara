@@ -17,11 +17,11 @@ export function AgentsRow() {
  const nav = useQuery({ queryKey: ["nav"], queryFn: () => api.get("/v1/app/nav", AppNavReaderSchema) });
  if (nav.data === undefined) return null;
  const agents = nav.data.projects.flatMap(project => project.agents.map(agent => ({ ...agent, project: project.name })));
+ if (agents.length === 0) return null;
  return <section className="rv-agents-row" aria-label="Agents">
-  {agents.length === 0 ? <p className="rv-muted" data-testid="agents-not-connected">Agents aren't connected to Rovara Code yet.</p>
-   : <ul>{agents.map(agent => {
+   <ul>{agents.map(agent => {
     const tone: StatusTone = agent.needsYou > 0 ? "wait" : agent.running > 0 ? "run" : "idle", words = agent.needsYou > 0 ? "needs you" : agent.running > 0 ? `${agent.running} running` : "idle";
     return <li key={agent.agentId}><Link className="rv-agent-chip" to={paths.agent(agent.agentId)}><ToneDot tone={tone} words={words} /><b><VisibleText text={agent.name} /></b><span className="rv-muted">{words}</span></Link></li>;
-   })}</ul>}
+   })}</ul>
  </section>;
 }

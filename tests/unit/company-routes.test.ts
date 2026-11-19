@@ -363,6 +363,21 @@ describe("company settings", () => {
 });
 
 describe("Cloud's audit records", () => {
+  it("records a waiting rules proposal and its withdrawal through the existing audit path", async () => {
+    const audit = new LocalCloudAuditStore(undefined, {}), w = world({ audit }), ada = await w.signIn("ada");
+    await w.store.putSettings(A, { ...defaultCompanySettings(), websiteCeiling: { mode: "listed", hosts: ["github.com"] } }, 0, PEOPLE.ada!.developerId, new Date(START).toISOString());
+    const looser = defaultCompanySettings();
+    const proposal = await w.call(ada, "PUT", "/org/settings", { expectedVersion: 1, settings: looser });
+    expect(proposal.status).toBe(202);
+    const changeId = proposal.body.pending.changeId;
+    await w.call(ada, "POST", `/org/settings/pending/${changeId}/withdraw`, {});
+    const rows = (await audit.read(A, { max: 10 })).rows;
+    expect(rows).toHaveLength(2);
+    expect(rows.map(row => [row.action, row.subject])).toEqual(expect.arrayContaining([
+      ["company.rules.withdrawn", `change:${changeId}`], ["company.rules.proposed", `change:${changeId}`],
+    ]));
+  });
+
   it("records each saved company change in Cloud's audit, in the admin's own company", async () => {
     const audit = new LocalCloudAuditStore(undefined, {});
     const w = world({ audit });
@@ -372,10 +387,10 @@ describe("Cloud's audit records", () => {
     const made = await w.call(ada, "POST", "/org/invites/reviewed", { requestId: randomUUID(), role: "member", email: "a@example.com" });
     const inviteId = ReviewedInviteCreateResponseSchema.parse(made.body).receipt.inviteId;
     await w.call(ada, "POST", `/org/invites/${inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 0 });
-    // A change waiting for a second admin is not yet a change.
+    // A change waiting for a second admin is audited as a proposal, not as an applied rules change.
     await w.call(ada, "PUT", "/org/settings", { expectedVersion: 2, settings: defaultCompanySettings() });
     const { rows } = await audit.read(A, { max: 50 });
-    expect(rows.map((row) => row.action).sort()).toEqual(["company.budget.changed", "company.invite.created", "company.invite.revoked", "company.rules.changed"]);
+    expect(rows.map((row) => row.action).sort()).toEqual(["company.budget.changed", "company.invite.created", "company.invite.revoked", "company.rules.changed", "company.rules.proposed"]);
     expect(rows.every((row) => row.actor.developerId === PEOPLE.ada!.developerId && row.via === "web" && JSON.stringify(row).indexOf("a@example.com") === -1)).toBe(true);
     expect((await audit.read(B, { max: 50 })).rows).toEqual([]);
   });

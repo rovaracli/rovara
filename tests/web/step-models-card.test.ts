@@ -13,6 +13,7 @@ import { STEP_MODELS_WORDS, StepModelsCard } from "../../packages/ui/src/screens
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
+import { expectNoAxeViolations } from "./support/axe.js";
 
 const me = "a".repeat(64);
 const OFFERED = ["claude-sonnet-5-5", "zai.glm-5", "qwen.qwen3-coder-480b-a35b-v1:0"];
@@ -53,6 +54,8 @@ describe("the step models card", () => {
   const coding = await screen.findByLabelText("Coding");
   expect([...(coding as HTMLSelectElement).options].map(o => o.value).filter(v => v !== "")).toEqual(["@company", ...OFFERED]);
   expect(screen.getByTestId("step-model-price-build").textContent).toBe("$3 in / $15 out per million tokens");
+  expect(screen.queryByTestId("second-review-model-row")).toBeNull();
+  await expectNoAxeViolations(document.body);
   expect(screen.getByTestId("step-model-price-plan").textContent).toBe(STEP_MODELS_WORDS.noPrice);
   fireEvent.change(coding, { target: { value: "zai.glm-5" } });
   await screen.findByTestId("step-models-saved");

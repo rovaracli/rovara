@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it, vi } from "vitest";
+import { expect, it, vi, afterEach } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -14,6 +14,7 @@ import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 import { projectFixture } from "./support/project-fixture.js";
 import { taskFixture } from "./support/session-fixture.js";
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 const id = "ses_bbbbbbbbbbbbbbbbbbbb";
 // StartWorkBox asks POST .../start-preview only after the person starts typing (never on load); a project page that is not testing the spending stop answers it "disabled" and does not count it as a start or a write.
 function setup(value = projectFixture(), options: { path?: string; theme?: "light" | "dark"; send?: (request: ApiRequest) => Promise<ApiResponse> } = {}) {
@@ -25,6 +26,14 @@ function setup(value = projectFixture(), options: { path?: string; theme?: "ligh
 it("shows the actual project, workflows, budget, running work and exact visibility note", async () => {
  const f = setup();await screen.findByRole("heading", { name: "payments" });expect(screen.getByText("Keep customer payments dependable.")).toBeTruthy();expect(screen.getByText("acme/payments")).toBeTruthy();expect(screen.getByText("Setup ready")).toBeTruthy();expect(screen.getByText("Everyone on this project can see its sessions, including people who reach it through its Slack channel.")).toBeTruthy();expect(screen.getByText("$812.00")).toBeTruthy();expect(screen.getByText("$2,000.00")).toBeTruthy();expect(screen.getByText(/per merged pull request/u)).toBeTruthy();expect(screen.getByRole("heading", { name: "Fix duplicate refunds" })).toBeTruthy();expect(screen.getByRole("link", { name: "Payments expert" }).getAttribute("href")).toBe("/app/agents/agt_aaaaaaaaaaaaaaaaaaaa");f.close();
 });
+it("offers reload through the host when its overview detects a newer app", async () => {
+ const f = setup();await screen.findByRole("heading", { name: "payments" });
+ const request = f.host.transport.request.bind(f.host.transport), navigate = vi.spyOn(f.host, "navigate");
+ f.host.transport.request = async input => { if (input.path.endsWith("/overview")) throw new (await import("../../packages/ui/src/api/errors.js")).ApiError(502, "INVALID_RESPONSE", "Rovara Cloud was updated. Reload this page to continue.");return request(input); };
+ await f.query.invalidateQueries({ queryKey: ["project", "payments", "overview"] });
+ expect(await screen.findByText("Rovara Cloud was updated. Reload this page to continue.")).toBeTruthy();
+ fireEvent.click(screen.getByRole("button", { name: "Reload Rovara" }));expect(navigate).toHaveBeenCalledWith(f.host.currentPath());f.close();
+});
 it("starts the selected shared agent once and opens the actual returned session", async () => {
  let finish: ((value: ApiResponse) => void) | undefined;
  const send = vi.fn(async () => new Promise<ApiResponse>(resolve => { finish = resolve; })), f = setup(undefined, { send }), navigate = vi.spyOn(f.host, "navigate");
@@ -33,7 +42,7 @@ it("starts the selected shared agent once and opens the actual returned session"
 it("does not offer New session, settings or spend without their server capabilities", async () => {
  const f = setup(projectFixture({ you: { role: "viewer", canStartWork: false, canEditSettings: false, canViewSpend: false }, project: { ...projectFixture().project, setup: { status: "failed", failedStep: "bootstrap" } } }));await screen.findByRole("heading", { name: "payments" });expect(screen.queryByRole("button", { name: "New session" })).toBeNull();expect(screen.queryByRole("link", { name: "Setup needs attention" })).toBeNull();expect(screen.getByText("Setup needs attention")).toBeTruthy();expect(screen.queryByText("$812.00")).toBeNull();f.close();
 });
-it("links a permitted setup repair to onboarding's Setup step", async () => {
+it("links a permitted setup repair to the setup editor", async () => {
  const value = projectFixture();value.project.setup.status = "failed";const f = setup(value);expect((await screen.findByRole("link", { name: "Setup needs attention" })).getAttribute("href")).toBe("/app/onboard?project=payments&step=setup");f.close();
 });
 it("shows a budget refusal in the start dialog without claiming work started", async () => {

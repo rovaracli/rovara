@@ -5,10 +5,10 @@ import { CodeError } from "../../packages/cloud-server/src/code-client.js";
 const NOW = Date.UTC(2026, 10, 17, 18);
 const path = "/projects/payments/machine-size";
 const payload = (at: number) => `e30.${Buffer.from(JSON.stringify({ step_up_at: at, step_up_amr: "passkey" })).toString("base64url")}.sig`;
-function context(method: "GET" | "POST", token = "no-step-up", codeStatus?: number, code = "NOT_FOUND", message = "route not found", projects: Array<{ name: string; access: string }> = [{ name: "payments", access: "administrator" }]) {
+function context(method: "GET" | "POST", token = "no-step-up", codeStatus?: number, code = "NOT_FOUND", message = "route not found", projects: Array<{ name: string; access: string }> = [{ name: "payments", access: "administrator" }], liveProjects = projects) {
   const calls: Array<{ path: string; options: unknown }> = [];
   const value: RouteContext = {
-    client: { json: async (_session: unknown, requestPath: string, options: unknown) => { calls.push({ path: requestPath, options }); if (codeStatus !== undefined) throw new CodeError(codeStatus, { error: { code, message } }); return { measuredPeakMemoryMiB: 6144, testTimeMs: 120_000, suggestedSize: "arm64-4-16", currentSize: null, storedOnlyLine: "Stored only: Rovara does not launch this size yet.", choices: [] }; }, access: async () => ({ projects: [] }) } as never,
+    client: { json: async (_session: unknown, requestPath: string, options: unknown) => { calls.push({ path: requestPath, options }); if (codeStatus !== undefined) throw new CodeError(codeStatus, { error: { code, message } }); return { measuredPeakMemoryMiB: 6144, testTimeMs: 120_000, suggestedSize: "arm64-4-16", currentSize: null, storedOnlyLine: "Stored only: Rovara does not launch this size yet.", choices: [] }; }, access: async () => ({ developerId: "person", displayName: "Person", administrator: false, projects: liveProjects, notices: [] }) } as never,
     session: { accessToken: token, access: { developerId: "person", displayName: "Person", administrator: false, projects, notices: [] } } as never,
     params: ["payments"], query: new URLSearchParams(), body: { rowId: "arm64-4-16" }, org: { orgId: "acme", name: "Acme", plan: "test" }, now: () => new Date(NOW),
     work: {} as never, origin: "https://cloud.example.test", presence: {} as never,
@@ -19,6 +19,16 @@ function context(method: "GET" | "POST", token = "no-step-up", codeStatus?: numb
 }
 
 describe("Cloud machine-size route", () => {
+  it.each(["GET", "POST"] as const)("allows access granted since sign-in on %s", async (method) => {
+    const w = context(method, "no-step-up", undefined, "NOT_FOUND", "route not found", [], [{ name: "payments", access: "administrator" }]);
+    expect(await w.answer()).toMatchObject({ status: 200, body: { suggestedSize: "arm64-4-16" } });
+    expect(w.calls).toHaveLength(1);
+  });
+  it.each(["GET", "POST"] as const)("refuses access revoked since sign-in on %s without asking for measurements", async (method) => {
+    const w = context(method, "no-step-up", undefined, "NOT_FOUND", "route not found", [{ name: "payments", access: "administrator" }], []);
+    expect(await w.answer()).toMatchObject({ status: 404 });
+    expect(w.calls).toHaveLength(0);
+  });
   it("reads measurements and the stored choice from Code for a project member", async () => {
     const w = context("GET");
     const result = await w.answer();

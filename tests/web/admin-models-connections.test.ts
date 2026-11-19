@@ -78,11 +78,13 @@ for (const role of ["owner", "admin", "member"] as const) it(`preserves the auth
  await screen.findByRole("heading", { name: "Waiting for people" });await screen.findByText("Approval");if (role === "member") { expect(screen.queryByRole("link", { name: "AI models" })).toBeNull();expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/org/model-sources")).toBe(false); }f.close();
 });
 
-for (const [status, code] of [[501, "NOT_ON_CODE_YET"], [404, "NOT_FOUND"]] as const) it(`shows a calm "Nothing waiting." per panel, never an alert or Try again, when approvals and spending requests answer ${String(status)}`, async () => {
+for (const [status, code] of [[501, "NOT_ON_CODE_YET"], [404, "NOT_FOUND"]] as const) it(`shows honest availability per panel, never an alert or Try again, when approvals and spending requests answer ${String(status)}`, async () => {
  const f = mount({ path: "/app/admin/waiting", role: "member", respond: async r => r.path === "/v1/app/approvals?status=PENDING" || r.path === "/v1/app/spend-requests" ? { status, body: { error: { code, message: r.path + " isn't connected to Rovara Code yet." } } } : { status: 200, body: r.path === "/v1/app/me" ? { developer: { id: "a".repeat(64), name: "Priya", orgRole: "member" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } : {} } });
  await screen.findByRole("heading", { name: "Waiting for people" });
- await waitFor(() => expect(screen.getAllByText("Nothing waiting.")).toHaveLength(2));
- for (const panel of [screen.getByRole("region", { name: "Approvals" }), screen.getByRole("region", { name: "Spending requests" })]) { expect(within(panel).getByRole("status").textContent).toBe("Nothing waiting.");expect(within(panel).queryByRole("alert")).toBeNull();expect(within(panel).queryByRole("button")).toBeNull(); }
+ // TRIAGE-UAT-0530 item 5d: a missing route is unavailable, not an empty queue.
+ const words = status === 501 ? "Not available on this Rovara yet." : "Nothing waiting.";
+ await waitFor(() => expect(screen.getAllByText(words)).toHaveLength(2));
+ for (const panel of [screen.getByRole("region", { name: "Approvals" }), screen.getByRole("region", { name: "Spending requests" })]) { expect(within(panel).getByRole("status").textContent).toBe(words);expect(within(panel).queryByRole("alert")).toBeNull();expect(within(panel).queryByRole("button")).toBeNull(); }
  expect(screen.queryByRole("alert")).toBeNull();expect(screen.queryByText(/Couldn't load/)).toBeNull();expect(screen.queryByRole("button", { name: /^Retry/ })).toBeNull();expect(screen.queryByText(/isn't connected to Rovara Code yet/)).toBeNull();f.close();
 });
 it("still shows the alert and Retry for any other approvals error (400)", async () => {
@@ -386,4 +388,14 @@ for(const change of ["company","person","role"] as const)it(`isolates late old-s
   if(change==="company")f.liveMe.org.orgId="org_bbbbbbbbbbbbbbbbbbbb";if(change==="person")f.liveMe.developer.id="b".repeat(64);if(change==="role")f.liveMe.developer.orgRole="admin";const nextKey=["admin","lane-c","connections",f.liveMe.org.orgId,f.liveMe.developer.id,f.liveMe.developer.orgRole];expect(nextKey).not.toEqual(oldKey);f.query.setQueryData(nextKey,nextData);const nextTime=f.query.getQueryState(nextKey)?.dataUpdatedAt;expect(nextTime).toBeGreaterThan(0);holding=false;const identityStart=f.request.mock.calls.length;await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","identity"]});});await screen.findByText("Next scope tracker",{exact:true});const heading=screen.getByRole("heading",{name:"Connections"});expect(heading).not.toBe(oldHeading);await waitFor(()=>expect(document.activeElement).toBe(heading));expect(oldClear.isConnected).toBe(false);expect(screen.getByRole<HTMLInputElement>("searchbox",{name:connectionFilter}).value).toBe("");
   await act(async()=>{resolve({status:200,body:{connections:[{...filterRows[0],connectionId:"con_dddddddddddddddddddd",label:"Late old scope registry"}]}});await refresh;});expect(f.query.getQueriesData({queryKey:oldKey,exact:true})).toEqual([]);expect(f.query.getQueryData(nextKey)).toEqual(nextData);expect(f.query.getQueryState(nextKey)?.dataUpdatedAt).toBe(nextTime);const region=screen.getByRole("region",{name:"Registered connections"});expect(within(region).getByRole("status").textContent).toBe("1 of 1 registered connections shown in this returned list.");expect(within(region).getAllByRole("row")).toHaveLength(2);expect(within(region).getByText("Guidance for Next scope tracker",{selector:"summary",exact:true})).toBeTruthy();expect(region.querySelectorAll("details")).toHaveLength(1);for(const row of filterRows)expect(within(region).queryAllByText(row.label,{exact:true})).toHaveLength(0);expect(document.body.textContent).not.toContain("Late old scope registry");expect(JSON.stringify(f.query.getQueriesData({queryKey:["admin","lane-c"]}))).not.toContain("Late old scope registry");expect(f.request.mock.calls.slice(before).filter(([r])=>r.path==="/v1/app/connections")).toHaveLength(1);expect(f.request.mock.calls.slice(identityStart).filter(([r])=>r.path==="/v1/app/me")).toHaveLength(1);expect(f.request.mock.calls.slice(identityStart).some(([r])=>r.path==="/v1/app/connections")).toBe(false);expect(f.request.mock.calls.every(([r])=>r.method==="GET")).toBe(true);expect(f.host.openExternal).not.toHaveBeenCalled();
  }finally{resolve({status:200,body:{connections:filterRows}});f.close();}
+});
+
+// TRIAGE-UAT-0530 item 5d: hide only unavailable Slack evidence; supported connections remain.
+it("hides the unavailable Slack evidence card while keeping connected tools", async () => {
+ const f = slackView("owner", { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Not served." } } });
+ try {
+  await screen.findByText("Tracker");
+  await waitFor(() => expect(f.query.getQueryState([...slackKey,f.liveMe.org.orgId,f.liveMe.developer.id,"owner"])?.status).toBe("error"));
+  expect(screen.queryByRole("region", { name: "Slack workspace details" })).toBeNull();
+ } finally { f.close(); }
 });

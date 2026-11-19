@@ -22,10 +22,11 @@ const tools = [
 
 const packageRun = { ...approved, serverId: "mcppkg000001", label: "Notes", transport: { kind: "stdio", spec: { name: "@acme/wiki-mcp", version: "1.0.0", integrity: "sha512-x" } } };
 
-function sourcesHost(options: { pending?: unknown[]; sources?: unknown[]; forbidden?: boolean; servers?: unknown[]; stdioAvailable?: boolean } = {}) {
+function sourcesHost(options: { pending?: unknown[]; sources?: unknown[]; forbidden?: boolean; unavailable?: boolean; servers?: unknown[]; stdioAvailable?: boolean } = {}) {
  const posts: ApiRequest[] = [];
  const f = fakeHost(async (input: ApiRequest): Promise<ApiResponse> => {
   if (input.method === "POST") posts.push(input);
+  if (input.path === "/v1/app/projects/payments/context-sources" && options.unavailable) return { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Not served." } } };
   if (input.path === "/v1/app/projects/payments/context-sources") return options.forbidden ? { status: 403, body: { error: { code: "FORBIDDEN", message: "no" } } } : { status: 200, body: { project: "payments", document: { revision: 1, sources: options.sources ?? [] }, pending: options.pending ?? [] } };
   if (input.path === "/v1/app/org/mcp-servers") return { status: 200, body: { servers: options.servers ?? [approved], ...(options.stdioAvailable === undefined ? {} : { stdioAvailable: options.stdioAvailable }) } };
   if (input.path === "/v1/app/connections") return { status: 200, body: { connections: [{ connectionId: "con_aaaaaaaaaaaaaaaaaaaa", label: "Wiki", type: "mcp" }, { connectionId: "con_bbbbbbbbbbbbbbbbbbbb", label: "Tracker", type: "linear" }] } };
@@ -472,4 +473,12 @@ it("sends the server's token with the address, once, and offers package-run serv
    expect((await screen.findByRole("group", { name: "What Rovara will run" })).textContent).toContain("It is started with no arguments.");
   });
  });
+});
+
+// TRIAGE-UAT-0530 item 5d: hide the missing context-sources card, not the project.
+it("hides unavailable context sources on the specific Cloud 501", async () => {
+ const f = sourcesHost({ unavailable: true }), view = mountSources(f);
+ await waitFor(() => expect(f.request).toHaveBeenCalled());
+ await waitFor(() => expect(view.container.textContent).toBe(""));
+ expect(screen.queryByRole("alert")).toBeNull();
 });

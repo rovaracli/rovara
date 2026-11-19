@@ -55,11 +55,12 @@ it("AI models: company model sources not on this Rovara read as a calm status, n
  f.close();
 });
 
-it("Connections: the registry and GitHub install requests not on this Rovara are calm; GitHub's own read still shows", async () => {
+it("Connections: hides unavailable registry and install-request cards while keeping GitHub", async () => {
  const f = mount({ path: "/app/admin/connections", respond: answering(["/v1/app/connections", "/v1/app/github/requests"]) });
  await screen.findAllByText(/Example/);
- const regions = screen.getAllByRole("status").filter((node) => node.textContent === NOT_HERE);
- expect(regions.length).toBeGreaterThanOrEqual(2);
+ // TRIAGE-UAT-0530 item 5d: only these 501 cards disappear, not Connections.
+ await waitFor(() => expect(screen.queryByRole("region", { name: "Registered connections" })).toBeNull());
+ expect(screen.queryByRole("region", { name: "GitHub installation requests" })).toBeNull();
  expect(screen.queryByText(/Couldn't load/)).toBeNull();
  expect(screen.queryByRole("button", { name: /^Retry/ })).toBeNull();
  f.close();

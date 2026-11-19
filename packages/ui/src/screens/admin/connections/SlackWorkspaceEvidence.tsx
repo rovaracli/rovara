@@ -25,9 +25,10 @@ function SlackWorkspaceEvidenceRead() {
   try { return await api.get("/v1/app/org/slack-workspace-evidence", reader); }
   catch (error) {
    // Do not retain server/vendor messages in the query cache, even when rendering fixed copy.
-   throw new ApiError(error instanceof ApiError ? error.status : 0, error instanceof ApiError && error.code === "INVALID_RESPONSE" ? "INVALID_RESPONSE" : "REQUEST_FAILED", unavailable);
+   throw new ApiError(error instanceof ApiError ? error.status : 0, error instanceof ApiError && (error.code === "INVALID_RESPONSE" || (error.status === 501 && error.code === "NOT_ON_CODE_YET")) ? error.code : "REQUEST_FAILED", unavailable);
   }
  }, gcTime: 0, retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false });
+ if (read.error instanceof ApiError && read.error.status === 501 && read.error.code === "NOT_ON_CODE_YET") return null;
  const refused = read.error instanceof ApiError && ([401, 403, 404, 501, 503].includes(read.error.status) || read.error.code === "INVALID_RESPONSE");
  const data = !refused ? read.data : undefined;
  return <section aria-label="Slack workspace details" aria-busy={read.isFetching}>

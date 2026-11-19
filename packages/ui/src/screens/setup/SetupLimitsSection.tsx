@@ -18,7 +18,7 @@ const fieldsOf = (setting: LimitSetting): Record<SetupLimitName, string> => Obje
 export function SetupLimitsSection({ project }: { project: string }) {
  const api = useSetupLimitsApi(), client = useQueryClient(), key = setupLimitsKey(project);
  const read = useQuery({ queryKey: key, queryFn: () => api.project(project), retry: false, refetchOnWindowFocus: false });
- if (read.error instanceof ApiError && (read.error.status === 404 || read.error.status === 403)) return null;
+ if (read.error instanceof ApiError && (read.error.status === 404 || read.error.status === 403 || (read.error.status === 501 && read.error.code === "NOT_ON_CODE_YET"))) return null;
  // One section for every state, so a screen reader's place in it survives the load, a save and a re-read.
  const body = read.isPending ? <Skeleton label={T.LOADING} />
   : read.data === undefined ? <><p role="alert">{T.LOAD_FAILED}</p><Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button></>

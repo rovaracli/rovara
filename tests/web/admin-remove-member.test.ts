@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // Member removal (v1.1), task 5: the People screen's "Remove from company" action. A preview first (who takes over, what moves, what ends, what is left to reassign), one confirm
 // that sends the removal with a request id, and a retry that reuses that id so a repeat can never remove or hand over twice.
-import { expect, it } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { act, screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema } from "@agentx/contracts/web";
@@ -16,6 +16,7 @@ import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa", me = "a".repeat(64), ana = "b".repeat(64), sam = "c".repeat(64), cal = "d".repeat(64);
+afterEach(() => { vi.useRealTimers(); });
 const joinedAt = "2026-10-01T00:00:00.000Z";
 const members = [
  { developerId: me, name: "Priya", role: "owner", joinedAt }, { developerId: ana, name: "Ana", role: "admin", joinedAt }, { developerId: sam, name: "Sam", role: "member", joinedAt }, { developerId: cal, name: "Cal", role: "member", joinedAt },
@@ -29,7 +30,7 @@ const preview = (successorId: string, name: string) => ({
 function mount(options: { role?: "owner" | "admin"; theme?: "light" | "dark" } = {}) {
  const role = options.role ?? "owner", self = role === "owner" ? me : ana;
  const nav = AppNavSchema.parse({ me: { developerId: self, name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { admin: true, localAgents: false, usage: false, chains: false, describe: false, notices: false } });
- const state = { removed: false, postError: undefined as { status: number; code: string } | undefined, postHang: false, pending: [] as Array<{ developerId: string; name: string; removalId: string; startedAt: string }>, finishError: undefined as { status: number; code: string } | undefined };
+ const state = { removed: false, postError: undefined as { status: number; code: string } | undefined, postPending: undefined as Promise<ApiResponse> | undefined, pending: [] as Array<{ developerId: string; name: string; removalId: string; startedAt: string }>, finishError: undefined as { status: number; code: string } | undefined };
  async function respond(r: ApiRequest): Promise<ApiResponse> {
   if (r.path.endsWith("/me")) return { status: 200, body: { developer: { id: self, name: "Priya", orgRole: role }, org: { orgId, name: "Acme", plan: "team" }, identities: [] } };
   if (r.path.endsWith("/nav")) return { status: 200, body: nav };
@@ -41,6 +42,7 @@ function mount(options: { role?: "owner" | "admin"; theme?: "light" | "dark" } =
    return { status: 200, body: { removalId: "00000000-0000-4000-8000-0000000000aa", state: "DONE", message: "Hand-over finished. Handed over 2 agents." } };
   }
   if (r.method === "POST" && r.path.endsWith("/removal")) {
+   if (state.postPending !== undefined) return state.postPending;
    if (state.postError !== undefined) return { status: state.postError.status, body: { error: { code: state.postError.code, message: "private fixture" } } };
    state.removed = true;
    return { status: 200, body: { removalId: (r.body as { requestId: string }).requestId, state: "STARTED", message: "Sam's running tasks will stop after their current step. None of them will open a pull request." } };
@@ -60,6 +62,22 @@ it("shows an owner a remove action for everyone but themselves, and an admin onl
  try { await screen.findByText("Sam");expect(screen.queryByRole("button", { name: "Remove Priya from company" })).toBeNull();for (const name of ["Ana", "Sam", "Cal"]) expect(screen.getByRole("button", { name: `Remove ${name} from company` })).toBeTruthy(); } finally { owner.close(); }
  const admin = mount({ role: "admin" });
  try { await screen.findByText("Sam");expect(screen.getByRole("button", { name: "Remove Sam from company" })).toBeTruthy();expect(screen.queryByRole("button", { name: "Remove Priya from company" })).toBeNull(); } finally { admin.close(); }
+});
+
+it("waits for the removal response instead of reporting unknown at 30 seconds", async () => {
+ const f = mount();
+ try {
+  await f.open();
+  let resolve!: (value: ApiResponse) => void;
+  f.state.postPending = new Promise<ApiResponse>(done => { resolve = done; });
+  vi.useFakeTimers();
+  fireEvent.click(screen.getByRole("button", { name: "Remove Sam" }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_001); });
+  expect(screen.queryByText(/outcome is unknown/i)).toBeNull();
+  await act(async () => { resolve({ status: 200, body: { removalId: "00000000-0000-4000-8000-0000000000aa", state: "DONE", message: "Sam was removed." } }); });
+  vi.useRealTimers();
+  await screen.findByText("Sam was removed.");
+ } finally { f.close(); }
 });
 
 it("previews before anything is sent: who takes over (you by default), what moves, what ends, and what is left to reassign", async () => {

@@ -38,6 +38,7 @@ const NOT_SET_UP = { threadId: "t-1234", outcome: "not_set_up", text: "", honest
 
 function setUp(options: { enabled?: boolean; override?: Override } = {}) {
   const calls: CodeCall[] = [];
+  const logged: Array<Record<string, unknown>> = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
     const headers = { ...(init?.headers as Record<string, string> | undefined) };
@@ -46,11 +47,11 @@ function setUp(options: { enabled?: boolean; override?: Override } = {}) {
     const person = PEOPLE[(call.authorization ?? "").replace(/^Bearer /u, "")];
     if (url.pathname === "/v1/auth/token") return json(400, { error: "invalid_grant" });
     if (person === undefined) return json(401, {});
+    const replaced = options.override?.(call, person);
+    if (replaced !== undefined) return replaced;
     if (url.pathname === "/v1/dev/access") {
       return json(200, { developerId: person.id, displayName: "Someone", administrator: false, ...(person.company === undefined ? {} : { companyId: person.company, companyRole: person.role }), projects: [], notices: [] });
     }
-    const replaced = options.override?.(call, person);
-    if (replaced !== undefined) return replaced;
     // J5: "Not right": Code's rule is the same role rule here (the real route also needs the asker; the pretend Code lets any person with a role press).
     const notRight = /^\/v1\/app\/projects\/([^/]+)\/answers\/([^/]+)\/not-right$/u.exec(url.pathname);
     if (notRight !== null && call.method === "POST") {
@@ -69,7 +70,7 @@ function setUp(options: { enabled?: boolean; override?: Override } = {}) {
   const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: "http://127.0.0.1:8787/callback", scopes: "projects:members", fetch: fetchImpl });
   const handler = createCloudHandler({
     client, store, work: new LocalWorkSessionStore(), origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" },
-    callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(Date.UTC(2026, 10, 17)), ...(options.enabled === false ? {} : { answersEnabled: true }),
+    callbackPath: "/callback", secureCookies: true, log: (event) => { logged.push(event); }, now: () => new Date(Date.UTC(2026, 10, 17)), ...(options.enabled === false ? {} : { answersEnabled: true }),
   });
   const cookies = new Map<string, { cookie: string; "x-rovara-csrf": string }>();
   const as = async (token: string) => {
@@ -90,7 +91,7 @@ function setUp(options: { enabled?: boolean; override?: Override } = {}) {
     return { status: answered!.status, body: JSON.parse(answered!.body), text: answered!.body };
   };
   const codeCalls = () => calls.filter((call) => call.path !== "/v1/dev/access");
-  return { as, send, calls, codeCalls };
+  return { as, send, calls, logged, codeCalls };
 }
 const NOT_RIGHT = "/v1/web/projects/payments/answers/a1234567890/not-right";
 const ASK = "/v1/web/projects/payments/answers", SUGGEST = "/v1/web/projects/payments/code/suggest";
@@ -204,7 +205,7 @@ describe("an answer that does not read is refused whole", () => {
   const bad = (name: string, answer: Record<string, unknown>) => it(name, async () => {
     const w = setUp({ override: (call) => (/\/answers$/u.test(call.path) ? json(200, answer) : undefined) });
     const res = await w.send("POST", ASK, await w.as("pam-token"), ask());
-    expect(asFixed(res)).toEqual(fixed("unavailable"));
+    expect(asFixed(res)).toEqual(fixed("unreadable"));
     expect(res.text).not.toContain("CANARY");
   });
   bad("an extra field", goodAnswer({ cost: 12, CANARY: 1 }));
@@ -231,7 +232,7 @@ describe("an answer that does not read is refused whole", () => {
 describe("refusals are Cloud's fixed words", () => {
   const refuse = (status: number, message: string, code = "X") => (call: CodeCall) => (/\/(answers|suggest)$/u.test(call.path) ? json(status, { error: { code, message } }) : undefined);
   it.each([
-    [404, "route not found", "NOT_FOUND", "notYet"], [404, "That is not on the core engine on this install yet.", "NOT_FOUND", "notYet"], [404, `project not found ${LEAK}`, "NOT_FOUND", "notFound"], [403, `no ${LEAK}`, "FORBIDDEN", "forbidden"], [400, `bad ${LEAK}`, "CONFIG_INVALID", "invalid"],
+    [404, "route not found", "NOT_FOUND", "notYet"], [404, "That is not on the core engine on this install yet.", "NOT_FOUND", "notYet"], [404, `project not found ${LEAK}`, "NOT_FOUND", "notFound"], [401, `expired ${LEAK}`, "AUTH_REQUIRED", "signIn"], [403, `no ${LEAK}`, "FORBIDDEN", "forbidden"], [400, `bad ${LEAK}`, "CONFIG_INVALID", "invalid"],
     [429, ANSWER_WORDS.limitReached, "TOO_MANY_REQUESTS", "limitReached"], [429, ANSWER_WORDS.paused, "TOO_MANY_REQUESTS", "paused"], [429, `slow ${LEAK}`, "TOO_MANY_REQUESTS", "rate"], [500, `boom ${LEAK}`, "X", "unavailable"], [503, `down ${LEAK}`, "RUNTIME_UNAVAILABLE", "unavailable"],
   ] as const)("Code %i %s becomes the fixed '%s'", async (status, message, code, key) => {
     const w = setUp({ override: refuse(status, message, code) });
@@ -241,6 +242,41 @@ describe("refusals are Cloud's fixed words", () => {
     expect(res.text).not.toContain("request-0001");
     expect(res.text).not.toContain("refunds");
   });
+});
+
+it("logs only the upstream status when Ask is unavailable, never the question or provider text", async () => {
+  const w = setUp({ override: (call: CodeCall) => /\/(answers|suggest)$/u.test(call.path) ? json(503, { error: { code: "RUNTIME_UNAVAILABLE", message: `down ${LEAK}` } }) : undefined });
+  await w.send("POST", ASK, await w.as("pam-token"), ask({ question: `private ${LEAK}` }));
+  expect(w.logged).toContainEqual({ event: "cloud.answers_unavailable", status: 503 });
+  expect(JSON.stringify(w.logged)).not.toContain(LEAK);
+  expect(JSON.stringify(w.logged)).not.toContain("private");
+});
+
+it("distinguishes an unreadable answer from an upstream outage without exposing content", async () => {
+  const results = [];
+  for (const [status, body, key, event] of [
+    [200, goodAnswer({ text: `private ${LEAK}`, extra: LEAK }), "unreadable", { event: "cloud.answers_unreadable" }],
+    [503, { error: { code: "RUNTIME_UNAVAILABLE", message: LEAK } }, "unavailable", { event: "cloud.answers_unavailable", status: 503 }],
+  ] as const) {
+    const w = setUp({ override: call => call.path.endsWith("/answers") ? json(status, body) : undefined });
+    const res = await w.send("POST", ASK, await w.as("pam-token"), ask({ question: `private ${LEAK}` }));
+    expect(asFixed(res)).toEqual(fixed(key));
+    expect(w.logged).toEqual([event]);
+    expect(JSON.stringify(w.logged)).not.toContain(LEAK);
+    expect(res.text).not.toContain(LEAK);
+    results.push(res.body);
+  }
+  expect(results[0]).not.toEqual(results[1]);
+});
+
+it.each([403, 503])("logs only a fixed cause when the live Ask access check fails (%i)", async status => {
+  const w = setUp({ override: call => call.path === "/v1/dev/access" ? json(status, { error: { code: LEAK, message: `private ${LEAK}` } }) : undefined });
+  const res = await w.send("POST", ASK, await w.as("pam-token"), ask({ question: `private ${LEAK}` }));
+  expect(asFixed(res)).toEqual(fixed("unavailable"));
+  expect(w.codeCalls()).toEqual([]);
+  expect(w.logged).toEqual([{ event: "cloud.answers_unavailable", code: "ACCESS_CHECK_FAILED" }]);
+  expect(JSON.stringify(w.logged)).not.toContain(LEAK);
+  expect(res.text).not.toContain(LEAK);
 });
 
 describe("B8: the Ask box's edge cases", () => {
@@ -270,7 +306,7 @@ describe("B8: the Ask box's edge cases", () => {
       ["a control character", { ...base, text: "a\u0000b", sources: [] }],
     ] as const) {
       const w = setUp({ override: (call) => (/\/answers$/u.test(call.path) ? json(200, answer) : undefined) });
-      expect(asFixed(await w.send("POST", ASK, await w.as("pam-token"), ask())), name).toEqual(fixed("unavailable"));
+      expect(asFixed(await w.send("POST", ASK, await w.as("pam-token"), ask())), name).toEqual(fixed("unreadable"));
     }
   });
 
