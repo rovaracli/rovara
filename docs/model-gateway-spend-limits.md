@@ -95,14 +95,15 @@ owners and admins only; no quality or speed number, no ranking, no merged or tas
 server sends no other, and Spending carries no per-person table any more.
 
 - People: Code's company member list as the admin (current members; a row filed under another company refuses the whole answer). The project filter narrows WHICH people are listed (the people
-  Code lists on that project, intersected with the company's members). The gateway's meter has one row per person and month, not per project, so a person's spend is always their whole month.
+  Code lists on that project, intersected with the company's members). The gateway's meter has one row per person and month, not per project, so a person's spend is always their whole company-month. The column says "Company spend this month"; selecting a project changes the roster, not the spend scope.
 - Limits: the override items and `settings.budgets` above. An override list that is partial, or an item that is not exactly this company's person item, refuses the answer.
 - Spend: the gateway's person-month meter rows (`CO#[issuer,company]` / `ROW#["person",<person>,"YYYY-MM"]`, `spentMicros`) through `PersonSpendReader` (`gateway-meter-read.ts`,
   `DynamoGatewayMeterReader`: read-only `BatchGetItem` of exact keys, consistent reads, every row checked against the asked company and person). Spend rounds UP to whole cents, a limit rounds DOWN.
-  A row that does not read refuses the whole answer; nobody is drawn as $0 for a number that could not be read.
-- Setting it on: `scripts/cloud-lambda.ts` builds the reader from `CLOUD_GATEWAY_METER_TABLE` (the gateway's meter table name; the issuer is `<ROVARA_CODE_URL>/v1/auth`). The issuer must equal the gateway's `GATEWAY_INSTALL_ISSUER` exactly (check it when switching this on: a mismatch would find no rows and show everyone as $0). The amounts count finished calls only (`spentMicros`), not money held for running work. Unset, the route answers 501 and the
+  Before interpreting missing person rows as zero, the reader verifies the existing company-month row (`ROW#["company","YYYY-MM"]`) in that issuer/company partition. A missing or malformed company row refuses the read, including a new or unused monthly partition. A row that does not read refuses the whole answer; nobody is drawn as $0 for a number that could not be read.
+- Setting it on: `scripts/cloud-lambda.ts` builds the reader from `CLOUD_GATEWAY_METER_TABLE` (the gateway's meter table name; the issuer is `<ROVARA_CODE_URL>/v1/auth`). The issuer must equal the gateway's `GATEWAY_INSTALL_ISSUER` exactly (a mismatch cannot verify the company-month row and shows spending unavailable). The amounts count finished calls only (`spentMicros`), not money held for running work. Unset, the route answers 501 and the
   page says "not connected yet". **Infrastructure not in this change (owner decision):** the Cloud server's role needs `dynamodb:BatchGetItem` on that table, conditioned on
   `dynamodb:LeadingKeys` `CO#*` (the pattern `productAi()` in `infra/lib/cloud-web.ts` uses for the product key table), plus the table name as a stack parameter and the env var. Until it is granted nothing reads the table.
+- The ordinary agent route meters a person only for a signed member payer, using that payer's developer id. For project, agent and chain payers the requester stays in the signed claims for audit and key lookup, without a person-month charge. Existing historical person charges are not rewritten.
 - Changing a limit stays on Spending limits (B1): each row links to `/app/admin/money/limits?person=<id>`, which opens that person's add or edit form.
 
 
