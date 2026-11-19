@@ -40,7 +40,9 @@ describe("off unless configured", () => {
     expect(productAiOn("on", "x")).toBe(true);
     for (const bad of ["true", "1", "off", "", true]) expect(() => productAiOn(bad, "x")).toThrow(/must be "on" or absent/u);
     expect(() => synth({ [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "yes" })).toThrow(/must be "on" or absent/u);
-    expect(() => buildAgentXApp({ [MODEL_GATEWAY_CONTEXT_KEY]: "production", [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" })).toThrow(/named test environments/u);
+    // Rovara-cloud#247: production's gateway carries product AI too (its engine's models come through Rovara's AI, which needs it).
+    const production = Template.fromStack(buildAgentXApp({ [MODEL_GATEWAY_CONTEXT_KEY]: "production", agentxRegion: "us-east-1", [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" }).node.findChild("RovaraModelGateway") as Stack).toJSON() as { Parameters: Record<string, unknown> };
+    expect(production.Parameters).toHaveProperty("CloudSettingsRoleArn");
   });
   it("repeats the process's literals (deploy.ts, product-seal.ts)", () => {
     expect(MODEL_GATEWAY_EVAL_STAGE_INDEXES).toEqual(GATEWAY_EVAL_STAGE_INDEXES);

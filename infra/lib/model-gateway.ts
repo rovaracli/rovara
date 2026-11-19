@@ -64,7 +64,7 @@ export const MODEL_GATEWAY_PRODUCT_CONTEXT_KEY = "rovaraModelGatewayProductAi";
  * Rovara's AI for agents (DEC 240), only with MODEL_GATEWAY_PRODUCT_CONTEXT_KEY on (company-key mode):
  * `-c rovaraModelGatewayRovaraAi=<agent model>=<bedrock id>,...` is the allow-list (GATEWAY_ROVARA_AI_MODELS), and
  * `-c rovaraModelGatewayRovaraAiExempt=<org id>,...` the operator's explicit list of companies exempt from charges (the founders'
- * test company, DEC 240b). Refused for production at synth. Absent: the template is exactly as without it.
+ * test company, DEC 240b). Production may carry the models (Rovara-cloud#247), never exempt companies. Absent: the template is exactly as without it.
  */
 export const MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY = "rovaraModelGatewayRovaraAi";
 export const MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY = "rovaraModelGatewayRovaraAiExempt";
@@ -533,8 +533,8 @@ export class ModelGatewayStack extends Stack {
     // The price job: the prices table only (no meter, no ledger, no keys). Corrections run in the serving tasks.
     fetchRole.addToPolicy(new iam.PolicyStatement({ sid: "WritePrices", actions: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [prices.tableArn] }));
 
-    // Checked first, so this refusal stands on its own (not only behind product AI's).
-    if (props.rovaraAi !== undefined && env === "production") throw new Error("Rovara's AI is for named test environments until a Cloud release carries it");
+    // Production carries Rovara's AI (Rovara-cloud#247), but never the operator's exempt companies (charge-free use, a test-company setting).
+    if (props.rovaraAi?.exempt !== undefined && env === "production") throw new Error("Rovara's AI exempt companies are for named test environments, never production");
     const product = props.productAi === true ? this.productAi(env, issuer, serveRole, moneyActions, companyKeysOnly) : undefined;
     const rovaraAi = props.rovaraAi === undefined ? undefined : this.rovaraAi(props.rovaraAi, product !== undefined, serveRole);
     if (props.bedrockByo === true && env === "production") throw new Error("bring your own Bedrock is for named test environments until a Cloud release carries it");
@@ -851,7 +851,6 @@ export class ModelGatewayStack extends Stack {
    * and keys, pinned statement by statement in tests/contract/model-gateway-product-infra.test.ts.
    */
   private productAi(env: string, issuer: string, serveRole: iam.Role, moneyActions: string[], companyKeysOnly: Record<string, unknown>) {
-    if (env === "production") throw new Error("product AI is for named test environments until a Cloud release carries it");
     const settingsRoleArn = new CfnParameter(this, "CloudSettingsRoleArn", {
       type: "String",
       allowedPattern: "^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$",

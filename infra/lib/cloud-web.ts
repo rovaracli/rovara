@@ -57,8 +57,8 @@ export interface CloudWebProps extends StackProps {
   readonly code?: lambda.Code;
   /**
    * The project product AI settings (B7, `-c rovaraModelGatewayProductAi=on`): the server writes the gateway's product key table
-   * and seals keys with its KMS key (GenerateDataKey and GenerateMac only, never Decrypt). Never for "production" until a Cloud
-   * release carries it; absent, the template is what it was (tests/contract/cloud-web-product-ai.test.ts).
+   * and seals keys with its KMS key (GenerateDataKey and GenerateMac only, never Decrypt). Production too
+   * (Rovara-cloud#247); absent, the template is what it was (tests/contract/cloud-web-product-ai.test.ts).
    */
   readonly productAi?: boolean;
   /**
@@ -363,7 +363,6 @@ export class CloudWebStack extends Stack {
 
   /** The product AI settings' grants (B7): the gateway's product key table by company keys, and the two KMS keys' sealing calls only. */
   private productAi(env: string, server: lambda.Function, codeUrl: string): void {
-    if (env === "production") throw new Error("product AI settings are for named test environments until a Cloud release carries them");
     const param = (id: string, pattern: string, description: string) => new CfnParameter(this, id, { type: "String", allowedPattern: pattern, description }).valueAsString;
     const tableName = param("ProductKeysTableName", "^[A-Za-z0-9_.-]{3,255}$", "The model gateway's product key table (gateway output ProductKeysTableName)");
     const keyArn = param("ProductKeysKeyArn", "^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-f-]{36}$", "The gateway's product key KMS key (gateway output ProductKeysKeyArn)");
