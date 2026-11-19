@@ -26,9 +26,11 @@ test("the admin area has five groups in a sidebar, not 14 flat tabs", async ({ p
   const nav = await admin.nav.boundingBox(), main = await page.locator(".rv-admin-surface").boundingBox();
   expect(nav !== null && main !== null && main.x >= nav.x + nav.width - 1 && Math.abs(main.y - nav.y) < 80).toBe(true);
   await expect(admin.link("Sign-in factors")).toHaveCount(0);
-  await admin.link("Sign-in clients").click();
-  await expect(admin.heading("Sign-in clients")).toBeVisible();
-  await expect(admin.link("Sign-in clients")).toHaveAttribute("aria-current", "page");
+  // Pages that are not available yet are not in the sidebar (DEC 254zzz113/115/116, #235).
+  await expect(admin.link("Sign-in clients")).toHaveCount(0);
+  await admin.link("Audit").click();
+  await expect(admin.heading("Audit")).toBeVisible();
+  await expect(admin.link("Audit")).toHaveAttribute("aria-current", "page");
 });
 
 test("Spending says it is not connected yet when Cloud has no spending read", async ({ page }) => {
