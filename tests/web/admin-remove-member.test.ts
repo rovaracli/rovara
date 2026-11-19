@@ -29,11 +29,17 @@ const preview = (successorId: string, name: string) => ({
 function mount(options: { role?: "owner" | "admin"; theme?: "light" | "dark" } = {}) {
  const role = options.role ?? "owner", self = role === "owner" ? me : ana;
  const nav = AppNavSchema.parse({ me: { developerId: self, name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { admin: true, localAgents: false, usage: false, chains: false, describe: false, notices: false } });
- const state = { removed: false, postError: undefined as { status: number; code: string } | undefined, postHang: false };
+ const state = { removed: false, postError: undefined as { status: number; code: string } | undefined, postHang: false, pending: [] as Array<{ developerId: string; name: string; removalId: string; startedAt: string }>, finishError: undefined as { status: number; code: string } | undefined };
  async function respond(r: ApiRequest): Promise<ApiResponse> {
   if (r.path.endsWith("/me")) return { status: 200, body: { developer: { id: self, name: "Priya", orgRole: role }, org: { orgId, name: "Acme", plan: "team" }, identities: [] } };
   if (r.path.endsWith("/nav")) return { status: 200, body: nav };
   if (r.path.includes("/removal-preview")) { const successor = new URL(r.path, "https://x.test").searchParams.get("successorId") ?? self; return { status: 200, body: preview(successor, members.find((m) => m.developerId === successor)?.name ?? "Priya") }; }
+  if (r.path.endsWith("/org/members/handovers")) return { status: 200, body: { handovers: state.pending } };
+  if (r.method === "POST" && r.path.endsWith("/handover")) {
+   if (state.finishError !== undefined) return { status: state.finishError.status, body: { error: { code: state.finishError.code, message: "private fixture" } } };
+   state.pending = [];
+   return { status: 200, body: { removalId: "00000000-0000-4000-8000-0000000000aa", state: "DONE", message: "Hand-over finished. Handed over 2 agents." } };
+  }
   if (r.method === "POST" && r.path.endsWith("/removal")) {
    if (state.postError !== undefined) return { status: state.postError.status, body: { error: { code: state.postError.code, message: "private fixture" } } };
    state.removed = true;
@@ -114,4 +120,25 @@ it("after an unknown outcome a deliberate retry sends the same request id, so a 
 for (const theme of ["light", "dark"] as const) it(`has an accessible removal review in ${theme}`, async () => {
  const f = mount({ theme });
  try { await f.open();await expectNoAxeViolations(screen.getByRole("dialog")); } finally { f.close(); }
+});
+
+it("DEC 254zzz101: lists a removed person's stuck hand-over and finishes it to the person picked (you by default); a retry after an unknown outcome reuses the request id", async () => {
+ const f = mount();
+ f.state.pending = [{ developerId: "e".repeat(64), name: "Rae", removalId: "00000000-0000-4000-8000-0000000000aa", startedAt: "2026-11-18T11:00:00.000Z" }];
+ try {
+  await screen.findByRole("heading", { name: "Hand-overs to finish" });
+  expect(screen.getByLabelText<HTMLSelectElement>("Who takes over from Rae?").value).toBe(me);
+  fireEvent.change(screen.getByLabelText("Who takes over from Rae?"), { target: { value: cal } });
+  f.state.finishError = { status: 503, code: "RUNTIME_UNAVAILABLE" };
+  fireEvent.click(screen.getByRole("button", { name: "Finish hand-over" }));
+  await screen.findByText(/outcome is unknown/);
+  f.state.finishError = undefined;
+  fireEvent.click(screen.getByRole("button", { name: "Finish hand-over" }));
+  await screen.findByText("Hand-over finished. Handed over 2 agents.");
+  const finishes = f.posts().filter((post) => post.path.endsWith("/handover"));
+  expect(finishes.map((post) => post.path)).toEqual([`/v1/app/org/members/${"e".repeat(64)}/handover`, `/v1/app/org/members/${"e".repeat(64)}/handover`]);
+  expect(finishes[0]?.body).toMatchObject({ successorId: cal });
+  expect((finishes[1]?.body as { requestId: string }).requestId).toBe((finishes[0]?.body as { requestId: string }).requestId);
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Hand-overs to finish" })).toBeNull());
+ } finally { f.close(); }
 });

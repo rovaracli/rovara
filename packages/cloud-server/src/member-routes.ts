@@ -5,6 +5,8 @@
 //   PUT /v1/app/org/members/{personId}/role    -> PUT /v1/dev/company/members/{personId}/role  { role }
 //   GET /v1/app/org/members/{personId}/removal-preview[?successorId=]  -> GET /v1/dev/company/members/{personId}/removal-preview[?successorId=]
 //   POST /v1/app/org/members/{personId}/removal { requestId, expectedRole, successorId? }  -> POST /v1/dev/company/members/{personId}/removal (the same body)
+//   GET /v1/app/org/members/handovers           -> GET /v1/dev/company/members/handovers (DEC 254zzz101: hand-overs that did not finish)
+//   POST /v1/app/org/members/{personId}/handover { requestId, successorId }  -> POST /v1/dev/company/members/{personId}/handover (finish one, to someone now)
 //
 // Removal with a hand-over (DEC 254zzz84 (5)): an owner or admin removes a person and picks who takes over what they owned (agents, chains, open tasks
 // the successor can own); Code checks the successor, the role the screen showed and the company's last owner inside its own transaction, moves
@@ -178,6 +180,11 @@ export const REMOVAL_WORDS = Object.freeze({
   badQuery: refusal(400, "CONFIG_INVALID", "Pick who takes over from the list."),
   unavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The removal couldn't be finished just now. Try the removal again: nothing is handed over twice."),
   previewUnavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The removal couldn't be previewed just now. Try again."),
+  noPending: refusal(404, "NOT_FOUND", "There's no hand-over waiting for this person."),
+  inProgress: refusal(409, "HANDOVER_IN_PROGRESS", "This removal is still being made. Try again in a few minutes."),
+  finishBody: refusal(400, "CONFIG_INVALID", "Send a request id and who takes over."),
+  finishUnavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The hand-over couldn't be finished just now. Try again: nothing is handed over twice."),
+  pendingUnavailable: refusal(503, "RUNTIME_UNAVAILABLE", "Hand-overs waiting to be finished couldn't be read just now. Try again."),
 });
 /** Code's own fixed words for a removal that is too big to hand over (company-member-handover.ts HANDOVER_TOO_BIG, company-member-routes.ts TOO_MUCH_WORK). */
 const CODE_TOO_MUCH = new Set(["This person owns too much to hand over in one go. Hand some of it over first.", "This person has too much work to show in one preview. Hand some of it over first."]);
@@ -273,14 +280,80 @@ async function removeMember(context: RouteContext): Promise<RouteAnswer> {
   const moved = plain(answer) && plain(answer["moved"]) ? answer["moved"] : undefined;
   const agents = count(moved?.["agents"]), chains = count(moved?.["chains"]), projects = moved?.["projects"] === undefined ? 0 : count(moved["projects"]), tasks = count(moved?.["tasks"]), tasksLeft = count(moved?.["tasksLeft"]);
   if (!plain(answer) || answer["state"] !== "DONE" || typeof answer["removalId"] !== "string" || answer["removalId"] !== body["requestId"].toLowerCase()
-    || answer["successorId"] !== successorId || agents === undefined || chains === undefined || projects === undefined || tasks === undefined || tasksLeft === undefined) return REMOVAL_WORDS.unavailable;
+    || typeof answer["successorId"] !== "string" || !PERSON_ID.test(answer["successorId"]) || agents === undefined || chains === undefined || projects === undefined || tasks === undefined || tasksLeft === undefined) return REMOVAL_WORDS.unavailable;
+  // DEC 254zzz101: an owner or admin may have finished this removal's hand-over to someone else (it had stopped); that is a finished removal too.
+  const finishedElsewhere = answer["successorId"] !== successorId;
   // Only after Code removed them: a removal Code refuses (an owner, a stale role, the last owner) withdraws nothing.
   // A withdrawal that could not be saved is not a finished removal: the screen retries with the same request id, which Code answers DONE again.
   const withdrawal = await withdrawForMember(context, personId, { companyId: who.companyId });
   if ("status" in withdrawal) return REMOVAL_WORDS.unavailable;
   await withdrawal.after();
   const handed = [agents > 0 && plural(agents, "agent"), chains > 0 && plural(chains, "chain"), projects > 0 && `admin of ${plural(projects, "project")}`, tasks > 0 && plural(tasks, "open task")].filter((part): part is string => part !== false);
-  const message = `Removed from the company.${handed.length === 0 ? "" : ` Handed over ${handed.join(", ")}.`}${tasksLeft > 0 ? ` ${plural(tasksLeft, "open task")} wait for someone with access to take over.` : ""}`;
+  const message = finishedElsewhere ? "Removed from the company. Another owner or admin finished the hand-over."
+    : `Removed from the company.${handed.length === 0 ? "" : ` Handed over ${handed.join(", ")}.`}${tasksLeft > 0 ? ` ${plural(tasksLeft, "open task")} wait for someone with access to take over.` : ""}`;
+  return { status: 200, body: { removalId: answer["removalId"], state: "DONE", message } };
+}
+
+/** Code's fixed words for "nothing to finish" (company-member-routes.ts NO_PENDING_HANDOVER). */
+const CODE_NO_PENDING = "this person has no hand-over waiting to be finished";
+/** Code's fixed words for a removal still being made by its remover (company-member-routes.ts HANDOVER_IN_PROGRESS). */
+const CODE_IN_PROGRESS = "this removal is still being made; try again in a few minutes";
+
+/** `GET /org/members/handovers` (DEC 254zzz101): the removals whose hand-over is waiting, as the app's list, or a refusal of the whole list. */
+async function pendingHandOvers(context: RouteContext): Promise<RouteAnswer> {
+  const who = await companyCaller(context);
+  if (refused(who)) return who;
+  if (!isCompanyAdmin(who.companyRole)) return REMOVAL_WORDS.notAdmin;
+  let answer: unknown;
+  try {
+    answer = await context.client.json<unknown>(context.session, `${CODE_MEMBERS_PATH}/handovers`);
+  } catch (error) {
+    if (!(error instanceof CodeError)) throw error;
+    return error.status === 404 || error.status === 403 ? REMOVAL_WORDS.notAdmin : REMOVAL_WORDS.pendingUnavailable;
+  }
+  if (!plain(answer) || !Array.isArray(answer["handovers"]) || answer["handovers"].length > 100) return REMOVAL_WORDS.pendingUnavailable;
+  const handovers = [];
+  for (const row of answer["handovers"] as unknown[]) {
+    if (!plain(row) || typeof row["personId"] !== "string" || !PERSON_ID.test(row["personId"]) || typeof row["removalId"] !== "string" || !UUID.test(row["removalId"])
+      || typeof row["startedAt"] !== "string" || !Number.isFinite(Date.parse(row["startedAt"]))) return REMOVAL_WORDS.pendingUnavailable;
+    handovers.push({ developerId: row["personId"], name: shownName(row["name"]), removalId: row["removalId"], startedAt: new Date(row["startedAt"]).toISOString() });
+  }
+  return { status: 200, body: { handovers } };
+}
+
+/** `POST /org/members/{personId}/handover` with `{ requestId, successorId }` (DEC 254zzz101): finish a stuck hand-over to someone picked now. */
+async function finishHandOver(context: RouteContext): Promise<RouteAnswer> {
+  const who = await companyCaller(context);
+  if (refused(who)) return who;
+  if (!isCompanyAdmin(who.companyRole)) return REMOVAL_WORDS.notAdmin;
+  const body = context.body;
+  if (!plain(body) || !Object.keys(body).every((key) => key === "requestId" || key === "successorId")
+    || typeof body["requestId"] !== "string" || !UUID.test(body["requestId"]) || typeof body["successorId"] !== "string" || !PERSON_ID.test(body["successorId"])) return REMOVAL_WORDS.finishBody;
+  const personId = context.params[0] ?? "";
+  if (!PERSON_ID.test(personId)) return REMOVAL_WORDS.notFound;
+  if (personId === who.developerId) return REMOVAL_WORDS.self;
+  const successorId = body["successorId"];
+  if (successorId === personId) return REMOVAL_WORDS.successor;
+  let answer: unknown;
+  try {
+    answer = await context.client.json<unknown>(context.session, `${CODE_MEMBERS_PATH}/${personId}/handover`, { method: "POST", body: { requestId: body["requestId"], successorId } });
+  } catch (error) {
+    if (!(error instanceof CodeError)) throw error;
+    if (error.status === 404 && codeRefusal(error).message === CODE_NO_PENDING) return REMOVAL_WORDS.noPending;
+    if (codeRefusal(error).message === CODE_IN_PROGRESS) return REMOVAL_WORDS.inProgress;
+    const mapped = removalRefusal(error);
+    return mapped === REMOVAL_WORDS.unavailable || mapped === REMOVAL_WORDS.badBody ? (mapped === REMOVAL_WORDS.badBody ? REMOVAL_WORDS.finishBody : REMOVAL_WORDS.finishUnavailable) : mapped;
+  }
+  const moved = plain(answer) && plain(answer["moved"]) ? answer["moved"] : undefined;
+  const agents = count(moved?.["agents"]), chains = count(moved?.["chains"]), projects = moved?.["projects"] === undefined ? 0 : count(moved["projects"]), tasks = count(moved?.["tasks"]), tasksLeft = count(moved?.["tasksLeft"]);
+  if (!plain(answer) || answer["state"] !== "DONE" || typeof answer["removalId"] !== "string" || !UUID.test(answer["removalId"]) || answer["successorId"] !== successorId
+    || agents === undefined || chains === undefined || projects === undefined || tasks === undefined || tasksLeft === undefined) return REMOVAL_WORDS.finishUnavailable;
+  // The removal that stopped never reached Cloud's withdrawal: withdraw the removed person's eval approvals now.
+  const withdrawal = await withdrawForMember(context, personId, { companyId: who.companyId });
+  if ("status" in withdrawal) return REMOVAL_WORDS.finishUnavailable;
+  await withdrawal.after();
+  const handed = [agents > 0 && plural(agents, "agent"), chains > 0 && plural(chains, "chain"), projects > 0 && `admin of ${plural(projects, "project")}`, tasks > 0 && plural(tasks, "open task")].filter((part): part is string => part !== false);
+  const message = `Hand-over finished.${handed.length === 0 ? " Nothing was left to hand over." : ` Handed over ${handed.join(", ")}.`}${tasksLeft > 0 ? ` ${plural(tasksLeft, "open task")} wait for someone with access to take over.` : ""}`;
   return { status: 200, body: { removalId: answer["removalId"], state: "DONE", message } };
 }
 
@@ -290,4 +363,6 @@ export const MEMBER_ROUTES: Route[] = [
   { method: "PUT", path: /^\/org\/members\/([^/]+)\/role$/u, answer: changeRole },
   { method: "GET", path: /^\/org\/members\/([^/]+)\/removal-preview$/u, answer: removalPreview },
   { method: "POST", path: /^\/org\/members\/([^/]+)\/removal$/u, answer: removeMember },
+  { method: "GET", path: /^\/org\/members\/handovers$/u, answer: pendingHandOvers },
+  { method: "POST", path: /^\/org\/members\/([^/]+)\/handover$/u, answer: finishHandOver },
 ];

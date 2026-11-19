@@ -13,6 +13,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { useAdminContext } from "./AdminLayout.js";
 import { RoleChangeDialog } from "./RoleChangeDialog.js";
 import { RemoveMemberDialog } from "./RemoveMemberDialog.js";
+import { PendingHandOvers } from "./PendingHandOvers.js";
 import { roleChangesFor, WhoCanDoWhat } from "./company-roles.js";
 const roleNames: Record<string, string> = { owner: "Owner", admin: "Admin", member: "Member", auditor: "Auditor" };
 const methodNames: Record<string, string> = { cloud: "Rovara sign-in", github: "GitHub", slack: "Slack", oidc: "Organization sign-in" };
@@ -61,6 +62,7 @@ export function MembersScreen() {
   {!fatal && receipt?.scope === scope && <p ref={receiptElement} tabIndex={-1} role="status">{receipt.kind === "denied" ? "Role change refused. Company access was checked again." : <><VisibleText text={`${receipt.person}: company role verified: ${roleNames[receipt.role]}.`} /> Checked at <time dateTime={receipt.checkedAt}>{new Date(receipt.checkedAt).toLocaleString("en-US", { timeZone: "UTC" })}</time> UTC.</>}</p>}
   <PageHeader focusOnMount title="People" description="Company membership and sign-in methods. Project access also depends on project roles." actions={<Link to={"/app/admin/people/roles" + (search ? "?q=" + encodeURIComponent(search) : "")}>Roles explained</Link>} />
   <WhoCanDoWhat />
+  {(role === "owner" || role === "admin") && read.data !== undefined && <PendingHandOvers scope={scope} self={{ developerId, name: members.find(person => person.developerId === developerId)?.name ?? "you" }} people={members.map(person => ({ developerId: person.developerId, name: person.name }))} onFinished={text => { setRemovalReceipt(text);void read.refetch(); }} />}
   {read.isPending ? <Skeleton label="Loading company members" /> : fatal ? <div><p role="alert">{read.error instanceof ApiError && read.error.status === 403 ? "You don't have permission to view company members." : "Couldn't load company members. Try again."}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div> : <>
    {read.data !== undefined && (accessChecking || dataStale) && <p id={reasonId} role={dataStale ? "alert" : "status"}>{dataStale ? "Member list is stale. Changes are disabled until a successful check." : "Checking company access..."}</p>}
    {dataStale && <Button disabled={read.isFetching} onClick={() => { void read.refetch(); }}>Retry member list</Button>}

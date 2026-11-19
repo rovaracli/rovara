@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { CODE_MEMBERS_PATH, CodeClient, LocalSessionStore, LocalWorkSessionStore, REMOVAL_WORDS, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
-import { MemberRemovalPreviewReaderSchema, MemberRemovalStartedReaderSchema } from "../../packages/contracts/src/member-removal-web.js";
+import { MemberRemovalPreviewReaderSchema, MemberRemovalStartedReaderSchema, PendingHandOversReaderSchema } from "../../packages/contracts/src/member-removal-web.js";
 
 const CODE = "https://code.example.test";
 const ORIGIN = "https://cloud.example.test";
@@ -52,6 +52,21 @@ function world() {
     codeCalls.push({ method, path: url.pathname + url.search, ...(body === undefined ? {} : { body }) });
     if (override !== undefined) return respond(override.status, override.body);
     if (me.role !== "admin" && me.role !== "owner") return refuse("NOT_FOUND", "not found", 404);
+    if (url.pathname === `${CODE_MEMBERS_PATH}/handovers`) {
+      return respond(200, { handovers: [...members.values()].filter((m) => m.companyId === me.companyId && m.revokedAt !== undefined && m.agents > 0)
+        .map((m) => ({ personId: m.personId, name: m.name, removalId: "00000000-0000-4000-8000-0000000000aa", startedAt: "2026-11-18T11:00:00.000Z", removedBy: me.personId, successorId: me.personId })) });
+    }
+    const finishing = /^\/v1\/dev\/company\/members\/([^/]+)\/handover$/u.exec(url.pathname);
+    if (finishing !== null) {
+      const target = members.get(finishing[1]!);
+      if (target === undefined || target.companyId !== me.companyId) return refuse("NOT_FOUND", "member not found", 404);
+      if (target.revokedAt === undefined || target.agents === 0) return refuse("NOT_FOUND", "this person has no hand-over waiting to be finished", 404);
+      const successor = members.get(String(body?.["successorId"]));
+      if (successor === undefined || successor.companyId !== me.companyId || successor.revokedAt !== undefined) return refuse("SUCCESSOR_INVALID", "pick someone who is still in the company to take over", 409);
+      const answer = { removalId: "00000000-0000-4000-8000-0000000000aa", state: "DONE", successorId: successor.personId, moved: { agents: target.agents, chains: 0, projects: 0, tasks: 0, tasksLeft: 0 } };
+      successor.agents += target.agents; target.agents = 0;
+      return respond(200, answer);
+    }
     const match = /^\/v1\/dev\/company\/members\/([^/]+)\/(removal|removal-preview)$/u.exec(url.pathname);
     if (match === null) return refuse("NOT_FOUND", "not found", 404);
     const target = members.get(match[1]!);
@@ -219,9 +234,11 @@ describe("Code's refusals reach the app as fixed sentences", () => {
       const shown = await w.preview(ada, "mia");
       expect(shown.status).toBeGreaterThanOrEqual(400); expect(shown.raw).not.toContain(SECRET);
     }
-    // A DONE for another successor than the one asked for is not this removal.
+    // A DONE whose hand-over another owner or admin finished (to someone else) is a finished removal, in its own words.
     const requestId = randomUUID();
     w.setOverride({ status: 200, body: { removalId: requestId, state: "DONE", successorId: PEOPLE.otto!.personId, moved: { agents: 0, chains: 0, projects: 0, tasks: 0, tasksLeft: 0 } } });
+    expect((await w.remove(ada, "mia", { requestId })).body).toEqual({ removalId: requestId, state: "DONE", message: "Removed from the company. Another owner or admin finished the hand-over." });
+    w.setOverride({ status: 200, body: { removalId: requestId, state: "DONE", successorId: SECRET, moved: { agents: 0, chains: 0, projects: 0, tasks: 0, tasksLeft: 0 } } });
     expect(words(await w.remove(ada, "mia", { requestId }))).toEqual(words(REMOVAL_WORDS.unavailable));
     w.setOverride({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "This person owns too much to hand over in one go. Hand some of it over first." } } });
     expect(words(await w.remove(ada, "mia"))).toEqual(words(REMOVAL_WORDS.tooMuch));
@@ -235,5 +252,57 @@ describe("DEC 254zzz84 (2), (3): no self-leave and no member lookup route", () =
       const answer = await w.call(ada, "POST", path, { requestId: randomUUID(), email: "mia@example.test" });
       expect(answer.status, path).not.toBe(200);
     }
+  });
+});
+
+describe("finishing a stuck hand-over (DEC 254zzz101)", () => {
+  const stuck = (w: ReturnType<typeof world>) => { w.members.get(PEOPLE.mia!.personId)!.revokedAt = "2026-11-18T11:00:00.000Z"; };
+
+  it("lists the stuck hand-overs of the caller's company and finishes one to someone picked now; Code gets exactly the body", async () => {
+    const w = world(); const ada = await w.signIn("ada"); stuck(w);
+    const list = await w.call(ada, "GET", "/org/members/handovers");
+    expect(list.status).toBe(200);
+    expect(PendingHandOversReaderSchema.parse(list.body)).toBeDefined();
+    expect(list.body).toEqual({ handovers: [{ developerId: PEOPLE.mia!.personId, name: "Mia", removalId: "00000000-0000-4000-8000-0000000000aa", startedAt: "2026-11-18T11:00:00.000Z" }] });
+    const requestId = randomUUID();
+    const done = await w.call(ada, "POST", `/org/members/${PEOPLE.mia!.personId}/handover`, { requestId, successorId: PEOPLE.otto!.personId });
+    expect(done.status).toBe(200);
+    expect(MemberRemovalStartedReaderSchema.parse(done.body)).toBeDefined();
+    expect(done.body).toEqual({ removalId: "00000000-0000-4000-8000-0000000000aa", state: "DONE", message: "Hand-over finished. Handed over 2 agents." });
+    expect(w.codeCalls.filter((call) => call.path.endsWith("/handover"))).toEqual([{ method: "POST", path: `${CODE_MEMBERS_PATH}/${PEOPLE.mia!.personId}/handover`, body: { requestId, successorId: PEOPLE.otto!.personId } }]);
+  });
+
+  it("refuses early (Code never asked): a plain member, oneself, a bad body, the person as successor", async () => {
+    const w = world(); const mia = await w.signIn("mia"); const ada = await w.signIn("ada");
+    const path = (id: string) => `/org/members/${id}/handover`;
+    expect(words(await w.call(mia, "GET", "/org/members/handovers"))).toEqual(words(REMOVAL_WORDS.notAdmin));
+    expect(words(await w.call(mia, "POST", path(PEOPLE.ada!.personId), { requestId: randomUUID(), successorId: PEOPLE.otto!.personId }))).toEqual(words(REMOVAL_WORDS.notAdmin));
+    stuck(w);
+    expect(words(await w.call(ada, "POST", path(PEOPLE.ada!.personId), { requestId: randomUUID(), successorId: PEOPLE.otto!.personId }))).toEqual(words(REMOVAL_WORDS.self));
+    expect(words(await w.call(ada, "POST", path(PEOPLE.mia!.personId), { requestId: randomUUID(), successorId: PEOPLE.mia!.personId }))).toEqual(words(REMOVAL_WORDS.successor));
+    for (const body of [{}, [SECRET], { requestId: SECRET, successorId: PEOPLE.otto!.personId }, { requestId: randomUUID(), successorId: SECRET }, { requestId: randomUUID(), successorId: PEOPLE.otto!.personId, companyId: B }]) {
+      const answer = await w.call(ada, "POST", path(PEOPLE.mia!.personId), body);
+      expect(words(answer)).toEqual(words(REMOVAL_WORDS.finishBody)); expect(answer.raw).not.toContain(SECRET);
+    }
+    expect(w.codeCalls.filter((call) => call.path.includes("/handover"))).toEqual([]);
+  });
+
+  it("Code's refusals in fixed words: nothing pending, another company's person, a successor who left; a DONE that doesn't read is not done", async () => {
+    const w = world(); const ada = await w.signIn("ada"); const bea = await w.signIn("bea");
+    const finish = (as: { cookie: string }, successorId = PEOPLE.otto!.personId) => w.call(as, "POST", `/org/members/${PEOPLE.mia!.personId}/handover`, { requestId: randomUUID(), successorId });
+    expect(words(await finish(ada))).toEqual(words(REMOVAL_WORDS.noPending));
+    stuck(w);
+    expect(words(await finish(bea))).toEqual(words(REMOVAL_WORDS.notFound));
+    expect((await w.call(bea, "GET", "/org/members/handovers")).body).toEqual({ handovers: [] });
+    expect(words(await finish(ada, PEOPLE.bea!.personId))).toEqual(words(REMOVAL_WORDS.successor));
+    for (const answer of [{ status: 500, body: { error: { code: "X", message: SECRET } } }, { status: 200, body: { removalId: "00000000-0000-4000-8000-0000000000aa", state: "DONE", successorId: PEOPLE.olga!.personId, moved: { agents: 0, chains: 0, tasks: 0, tasksLeft: 0 } } }]) {
+      w.setOverride(answer);
+      const r = await finish(ada);
+      expect(words(r)).toEqual(words(REMOVAL_WORDS.finishUnavailable)); expect(r.raw).not.toContain(SECRET);
+    }
+    w.setOverride({ status: 409, body: { error: { code: "CHANGE_STALE", message: "this removal is still being made; try again in a few minutes" } } });
+    expect(words(await finish(ada))).toEqual(words(REMOVAL_WORDS.inProgress));
+    w.setOverride({ status: 200, body: { handovers: [{ personId: SECRET }] } });
+    expect(words(await w.call(ada, "GET", "/org/members/handovers"))).toEqual(words(REMOVAL_WORDS.pendingUnavailable));
   });
 });
