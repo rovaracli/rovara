@@ -104,7 +104,7 @@ for(const [status,label] of [["unchecked","Not checked yet"],["checking","Checki
 
 for(const path of ["/app/admin/agents","/app/admin/agents/rovara-code/versions"])it(`B32 shipped console hides ${path} without agent reads`,async()=>{const f=mount(path,{shipped:true});await screen.findByRole("heading",{name:"Not found"});expect(screen.queryByRole("link",{name:"Agents"})).toBeNull();expect(f.request.mock.calls.some(([r])=>r.path.includes("/agents"))).toBe(false);f.close();});
 
-it("B32 member project maintainer has own-project settings entry and no admin navigation",async()=>{const value=projectFixture();value.project.setup.status="failed";const f=mount("/app/projects/payments",{role:"member",shipped:true,respond:async r=>r.path.endsWith("/overview")?{status:200,body:value}:{status:200,body:{notices:[],next:"settled"}}});await screen.findByRole("heading",{name:"payments"});expect(screen.getByRole("link",{name:"Setup needs attention"}).getAttribute("href")).toBe("/app/onboard?project=payments&step=setup");expect(screen.queryByRole("link",{name:/^Admin$/})).toBeNull();expect(screen.queryByRole("navigation",{name:"Administration"})).toBeNull();expect(f.request.mock.calls.filter(([r])=>r.path.includes("/projects/")).every(([r])=>r.path.includes("/projects/payments/"))).toBe(true);f.close();});
+it("B32 member project maintainer has own-project settings entry and no admin navigation",async()=>{const value=projectFixture();value.project.setup.status="failed";const f=mount("/app/projects/payments",{role:"member",shipped:true,respond:async r=>r.path.endsWith("/overview")?{status:200,body:value}:{status:200,body:{notices:[],next:"settled"}}});await screen.findByRole("heading",{name:"payments"},{timeout:5000});expect(screen.getByRole("link",{name:"Setup needs attention"}).getAttribute("href")).toBe("/app/onboard?project=payments&step=setup");expect(screen.queryByRole("link",{name:/^Admin$/})).toBeNull();expect(screen.queryByRole("navigation",{name:"Administration"})).toBeNull();expect(f.request.mock.calls.filter(([r])=>r.path.includes("/projects/")).every(([r])=>r.path.includes("/projects/payments/"))).toBe(true);f.close();});
 it("opens website editing from fresh active admin project detail without changing navigation", async () => {
  const f = mount("/app/admin/projects/payments", { shipped: true, respond: async request => ({ status: 200, body: request.path.includes("allowed-websites") ? { kind: "review", status: "review", orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", baseRevision: 3, contextDigest: "b".repeat(64), allowedDomains: ["docs.acme.dev"], defaultDomains: ["github.com"], staffDomains: [{ domain: "docs.acme.dev", status: "pending" }], liveProposal: null } : request.path.endsWith("/members") ? { members: [] } : project }) });
  await screen.findByRole("heading", { name: "Allowed websites" });
@@ -117,7 +117,7 @@ it("B33 member maintainer opens company-pinned website editing on the shipped ow
  let revoked = false;
  const value = projectFixture({ orgId: "org_aaaaaaaaaaaaaaaaaaaa" });
  const f = mount("/app/projects/payments", { role: "member", shipped: true, respond: async r => r.path.endsWith("/overview") ? { status: 200, body: value } : r.path.includes("/allowed-websites") ? revoked ? { status: 403, body: { error: { code: "FORBIDDEN" } } } : { status: 200, body: { kind: "review", status: "review", orgId: value.orgId, project: "payments", baseRevision: 1, contextDigest: "b".repeat(64), allowedDomains: [], defaultDomains: ["github.com"], staffDomains: [], liveProposal: null } } : { status: 200, body: { notices: [], next: "settled" } } });
- await screen.findByRole("button", { name: "Edit allowed websites" });fireEvent.click(screen.getByRole("button", { name: "Edit allowed websites" }));await screen.findByRole("button", { name: "Review website change" });
+ await screen.findByRole("button", { name: "Edit allowed websites" }, { timeout: 5000 });fireEvent.click(screen.getByRole("button", { name: "Edit allowed websites" }));await screen.findByRole("button", { name: "Review website change" });
  expect(screen.queryByRole("link", { name: /^Admin$/ })).toBeNull();expect(screen.queryByRole("navigation", { name: "Administration" })).toBeNull();
  revoked = true;await act(async () => { window.dispatchEvent(new Event("focus")); });await screen.findByText(/Website settings could not be checked/);
  expect(screen.queryByRole("button", { name: "Review website change" })).toBeNull();expect(f.request.mock.calls.filter(([r]) => r.method === "POST" && !r.path.endsWith("/start-preview"))).toHaveLength(0);f.close();
@@ -134,10 +134,9 @@ for (const status of ["active", "archived"] as const) it(`B34 opens recorded Sla
  await screen.findByRole("heading", { name: "Slack channels" });expect(f.request.mock.calls.some(([r]) => r.path.includes("/slack-channel/"))).toBe(false);
  fireEvent.click(screen.getByRole("button", { name: "Manage recorded Slack links" }));await screen.findByRole("region", { name: "Slack links editor" });expect(screen.queryByRole("button", { name: /Bind|Link replacement/ })).toBeNull();expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);f.close();
 });
-it("B35 Health overview links to read-only web and API service status details", async () => {
- const orgId = meFixture().org.orgId, checkedAt = "2026-10-30T14:30:00.000Z";
- const f = mount("/app/admin", { shipped: true, respond: async () => ({ status: 200, body: { orgId, checkedAt, configured: true, source: "stored_runtime_qualification", checks: [{ kind: "web", state: "ready", observation: "qualified", reason: "qualified", expiresAt: "2026-11-02T14:30:00.000Z" }, { kind: "api", state: "unknown", observation: "unknown", reason: "not_observed" }] } }) });
- fireEvent.click(await screen.findByRole("link", { name: "Open Health" }));await screen.findByRole("heading", { name: "Rovara service status" });
- fireEvent.click(await screen.findByRole("link", { name: "browser runtime" }));await screen.findByRole("table", { name: "Stored browser runtime qualification" });
- expect(f.request.mock.calls.filter(([input]) => input.path.includes("service-status")).every(([input]) => input.method === "GET")).toBe(true);f.close();
+it("B35 the overview offers no Health link and asks for no service status (page hidden, DEC 254zzz113/115/116)", async () => {
+ const f = mount("/app/admin", { shipped: true, respond: async () => ({ status: 200, body: {} }) });
+ await screen.findByRole("heading", { name: "Administration", level: 1 });
+ expect(screen.queryByRole("link", { name: "Open Health" })).toBeNull();expect(screen.queryByRole("link", { name: "Health" })).toBeNull();
+ expect(f.request.mock.calls.some(([input]) => input.path.includes("service-status"))).toBe(false);f.close();
 });

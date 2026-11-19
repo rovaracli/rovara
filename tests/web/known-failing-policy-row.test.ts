@@ -23,7 +23,7 @@ type State = { alwaysTwoPeople: boolean; pendingLoosening: boolean; pending?: { 
 type Handler = (request: ApiRequest) => ApiResponse | undefined | Promise<ApiResponse | undefined>;
 const refuse = (status: number, code: string, message: string) => ({ status, body: { error: { code, message } } });
 
-function mount(options: { state?: State; missing?: boolean; failReadsAfterWrite?: boolean; post?: Handler; role?: "owner" | "admin"; theme?: "light" | "dark" } = {}) {
+function mount(options: { state?: State; missing?: boolean; notServed?: boolean; failReadsAfterWrite?: boolean; post?: Handler; role?: "owner" | "admin"; theme?: "light" | "dark" } = {}) {
  const role = options.role ?? "owner";
  const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
  const me = AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: role }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
@@ -36,6 +36,7 @@ function mount(options: { state?: State; missing?: boolean; failReadsAfterWrite?
   if (path === "/v1/app/org/model-selection-policy") return { status: 200, body: companyPolicyRaw() };
   if (path === "/v1/app/org/model-sources") return { status: 200, body: { sources: [], order: ["rovara"] } };
   if (path === "/v1/app/org/learning-settings") return refuse(404, "NOT_FOUND", "Not found.");
+  if (path === POLICY && options.notServed === true) return refuse(501, "NOT_ON_CODE_YET", "Not available yet.");
   if (path === POLICY && options.missing === true) return refuse(404, "NOT_FOUND", "Not found.");
   if (path === POLICY && request.method === "GET" && options.failReadsAfterWrite === true && wrote) return refuse(400, "REQUEST_FAILED", "Read failed.");
   if (path === POLICY && request.method === "GET") return { status: 200, body: state };
@@ -61,6 +62,14 @@ const row = async () => within(await screen.findByRole("region", { name: "Markin
 afterEach(() => { vi.useRealTimers(); });
 
 describe("the row", () => {
+ it("does not show a retry control for an unserved hosted policy route", async () => {
+  const f = mount({ notServed: true });
+  await screen.findByRole("heading", { name: "How we work (company)" });
+  await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.path === POLICY)).toBe(true));
+  expect(screen.queryByRole("region", { name: "Marking tests as already failing" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+  await expectNoAxeViolations(f.container);
+ });
  it("is absent while the four test results are off (the setting is not found)", async () => {
   const f = mount({ missing: true });
   await screen.findByRole("heading", { name: "How we work (company)" });
@@ -125,12 +134,12 @@ describe("the row", () => {
   expect(section.getByText("Done. One maintainer may mark again.")).toBeTruthy();
  });
 
- it("a refused approval shows the server's words with no sign-in step (owner DEC 254zzz73), and changes nothing", async () => {
+ it("an approval refusal shows the server's words without a step-up prompt", async () => {
   const f = mount({ role: "admin", state: { alwaysTwoPeople: true, pendingLoosening: true, pending: { changeId: "chg_9", proposedByYou: false, expiresAt: EXPIRES } }, post: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to approve this.") });
   const section = await row();
   fireEvent.click(await section.findByRole("button", { name: "Approve turning it off" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Sign in again to approve this.");
-  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /sign in again|confirm it's you/i })).toBeNull();
   expect(f.host.signIn).not.toHaveBeenCalled();
   expect(section.getByText("Always two people", { selector: "strong" })).toBeTruthy();
  });

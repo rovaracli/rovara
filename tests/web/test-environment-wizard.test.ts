@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
-// Setup wizard (E4): the Setup step's test-environment section. Each state it can be in: the feature off (nothing shown), loading, a failed read, no draft, a stale draft, a draft to propose, a proposal (what will
-// run with each value's source, the proof, the commands to add to the settings), the approvals (one press; a second person's confirmation; sign in again), an edit, and the approved environment.
+// Hosted test-environment view and approval remain; its unfinished mutation controls are hidden.
 import { expect, it } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -66,12 +65,34 @@ const section = async () => {
   return region;
 };
 
+it("hides hosted test-environment editing controls while keeping the read view accessible", async () => {
+  const f = setup();
+  const region = await section();
+  expect(within(region).getByText("Found a package.json.")).toBeTruthy();
+  for (const name of ["Propose a test environment", "Run the check", "Prove it", "Edit this proposal", "Ask a second person to confirm", "Apply"]) {
+    expect(within(region).queryByRole("button", { name })).toBeNull();
+  }
+  expect(f.request.mock.calls.some(([request]) => request.method !== "GET" && request.path.includes("test-environment"))).toBe(false);
+  await expectNoAxeViolations(region);
+  f.close();
+});
+
 it("shows nothing at all while the feature is off (the server answers not found)", async () => {
   const f = setup({ read: { status: 404, body: { error: { code: "NOT_FOUND", message: "This item wasn't found." } } } });
   await screen.findByRole("heading", { name: "Setup" });
   await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.path.endsWith("/test-environment"))).toBe(true));
   expect(screen.queryByRole("region", { name: "Test environment" })).toBeNull();
   expect(screen.queryByText("Test environment")).toBeNull();
+  f.close();
+});
+
+it("hides a hosted test-environment section answered with 501 without offering a retry", async () => {
+  const f = setup({ read: { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Not available yet." } } } });
+  await screen.findByRole("heading", { name: "Setup" });
+  await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/test-environment"))).toBe(true));
+  expect(screen.queryByRole("region", { name: "Test environment" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  await expectNoAxeViolations(document.body);
   f.close();
 });
 
@@ -84,38 +105,7 @@ it("shows nothing when the server answers in a shape this page can't read", asyn
   f.close();
 });
 
-it("says it is loading, and offers a retry when the read fails", async () => {
-  const f = setup({ read: { status: 403, body: { error: { code: "FORBIDDEN", message: "Not allowed." } } } });
-  expect(await screen.findByText("Couldn't load the test environment.")).toBeTruthy();
-  const region = await screen.findByRole("region", { name: "Test environment" });
-  expect(within(region).getByRole("alert").textContent).toContain("Couldn't load");
-  expect(within(region).getByRole("button", { name: "Try again" })).toBeTruthy();
-  f.close();
-});
-
-it("asks the person to have Rovara propose the setup first when there is no draft, and says a stale draft is old", async () => {
-  const none = setup({ read: { status: 200, body: state({ draft: { status: "none", notes: [], questions: [], pendingServices: [] } }) } });
-  expect(await screen.findByText(/Ask Rovara to propose the setup above first/)).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Propose a test environment" })).toBeNull();
-  none.close();
-  const stale = setup({ read: { status: 200, body: state({ draft: { status: "stale", notes: [], questions: [], pendingServices: [] } }) } });
-  expect(await screen.findByText(/older than the project's settings/)).toBeTruthy();
-  stale.close();
-});
-
-it("shows what Rovara found and proposes it with an empty request", async () => {
-  const f = setup({ read: { status: 200, body: state({ draft: { status: "ready", notes: ["Found a package.json."], questions: ["Which Node version?"], pendingServices: [] } }) }, answers: { "/propose": { status: 200, body: state({ proposal: PROPOSAL }) } } });
-  const region = await section();
-  expect(within(region).getByText("Found a package.json.")).toBeTruthy();
-  expect(within(region).getByText("Which Node version?")).toBeTruthy();
-  fireEvent.click(within(region).getByRole("button", { name: "Propose a test environment" }));
-  await waitFor(() => expect(posts(f, "/test-environment/propose")).toHaveLength(1));
-  expect(posts(f, "/test-environment/propose")[0]!.body).toEqual({});
-  await within(region).findByText("What will run");
-  f.close();
-});
-
-it("a proposal says what will run, with the arguments that narrow the tests and where each value came from, and Approve waits for the proof", async () => {
+it("keeps the proposal view and approval while hiding proposal mutations", async () => {
   const f = setup({ read: { status: 200, body: state({ proposal: PROPOSAL }) } });
   const region = await section();
   const setupList = within(region).getByRole("list", { name: "Setup commands for web" });
@@ -127,63 +117,10 @@ it("a proposal says what will run, with the arguments that narrow the tests and 
   expect(within(checks).getByText(/Found by the node detector/)).toBeTruthy();
   expect(within(region).getByText("Rovara's proposal")).toBeTruthy();
   expect(within(region).getByRole("button", { name: "Approve" })).toHaveProperty("disabled", true);
-  // TE-2: the proposal has its own check first; there is nothing to prove until it passed, and the commands are not added to the settings before approval.
-  expect(within(region).getByRole("button", { name: "Prove it" })).toHaveProperty("disabled", true);
-  expect(within(region).getByRole("button", { name: "Run the check" })).toHaveProperty("disabled", false);
-  expect(within(region).queryByRole("button", { name: "Add these commands to the project's settings" })).toBeNull();
+  for (const name of [/Propose/, /Run the check/, /Prove it/, /Edit this proposal/, /Ask a second person/, /Apply/, /Write the approved commands/]) expect(within(region).queryByRole("button", { name })).toBeNull();
+  expect(f.request.mock.calls.some(([request]) => request.method !== "GET" && request.path.includes("test-environment"))).toBe(false);
   await expectNoAxeViolations(region);
   f.close();
-});
-
-it("proves the proposal from its passed check, and says why in the server's words when it can't", async () => {
-  const f = setup({ read: { status: 200, body: state({ proposal: { ...PROPOSAL, check: { status: "ready" } } }) }, answers: { "/prove": { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Some of the proposed commands are not among the commands the check ran." } } } } });
-  const region = await section();
-  fireEvent.click(within(region).getByRole("button", { name: "Prove it" }));
-  expect((await within(region).findByRole("alert")).textContent).toContain("not among the commands the check ran");
-  expect(posts(f, "/test-environment/prove")[0]!.body).toEqual({ digest: DIGEST });
-  f.close();
-});
-
-it("runs the proposal's own check, shows it running and shows how a failed one failed, with no command added to the settings", async () => {
-  const running = { ...PROPOSAL, commandsNotInSettings: 2, check: { status: "checking" } };
-  const f = setup({ read: { status: 200, body: state({ proposal: { ...PROPOSAL, commandsNotInSettings: 2 } }) }, answers: { "/check": { status: 200, body: state({ proposal: running }) } } });
-  const region = await section();
-  expect(within(region).getByText(/2 of them are not in the settings yet; approving adds them/)).toBeTruthy();
-  fireEvent.click(within(region).getByRole("button", { name: "Run the check" }));
-  await within(region).findByText("The check is running.");
-  const [call] = posts(f, "/test-environment/check");
-  expect(call!.body).toMatchObject({ digest: DIGEST });
-  expect(Object.keys(call!.body as object).sort()).toEqual(["digest", "requestId"]);
-  expect(posts(f, "/test-environment/apply-commands")).toEqual([]);
-  f.close();
-  const failed = setup({ read: { status: 200, body: state({ proposal: { ...PROPOSAL, check: { status: "failed", failedStep: "setup: npm ci - exited 1" } } }) } });
-  const failedRegion = await section();
-  expect((await within(failedRegion).findByRole("alert")).textContent).toContain("The check failed: setup: npm ci - exited 1");
-  expect(within(failedRegion).getByRole("button", { name: "Run the check again" })).toBeTruthy();
-  failed.close();
-});
-
-it("S2: when an approved command is not in the settings, offers the check of the approved environment first, then writes exactly the approved commands, and loads the saved settings", async () => {
-  const approvedState = (missing: number, check: Record<string, unknown>) => state({ approved: { revision: 1, approvedAt: "2026-11-01T12:00:00.000Z", digest: DIGEST, summary: SUMMARY, commandsNotInSettings: missing, check } });
-  const f = setup({ read: { status: 200, body: approvedState(2, { status: "unchecked" }) }, answers: { "/check": { status: 200, body: approvedState(2, { status: "ready" }) } } });
-  const region = await section();
-  expect(within(region).getByText(/2 approved commands are not in the project's settings yet/)).toBeTruthy();
-  expect(within(region).queryByRole("button", { name: "Write the approved commands to the project's settings" })).toBeNull();
-  fireEvent.click(within(region).getByRole("button", { name: "Run the check" }));
-  await within(region).findByText("The check passed at the current settings.");
-  expect(posts(f, "/test-environment/check")[0]!.body).toMatchObject({ digest: DIGEST });
-  f.close();
-  const applied = { added: ["npm ci", "npm test"], skipped: [{ reason: "different_directory", count: 1 }], settingsRevision: 3, setupCheck: "started", state: approvedState(0, { status: "unchecked" }) };
-  const g = setup({ read: { status: 200, body: approvedState(2, { status: "ready" }) }, answers: { "/apply-commands": { status: 200, body: applied } } });
-  const again = await section();
-  fireEvent.click(within(again).getByRole("button", { name: "Write the approved commands to the project's settings" }));
-  await waitFor(() => expect(posts(g, "/test-environment/apply-commands")).toHaveLength(1));
-  const [call] = posts(g, "/test-environment/apply-commands");
-  expect(call!.body).toMatchObject({ digest: DIGEST, expectedRevision: 2 });
-  expect(Object.keys(call!.body as object).sort()).toEqual(["digest", "expectedRevision", "requestId"]);
-  await waitFor(() => expect(g.request.mock.calls.filter(([r]) => r.path === "/v1/app/projects/web" && r.method === "GET").length).toBeGreaterThan(1));
-  await waitFor(() => expect(within(again).queryByRole("button", { name: "Write the approved commands to the project's settings" })).toBeNull());
-  g.close();
 });
 
 it("a proved proposal is approved with the revision it was looked at against, and the approved environment is shown", async () => {
@@ -202,67 +139,22 @@ it("a proved proposal is approved with the revision it was looked at against, an
 
 const LESS_SAFE = { ...PROPOSAL, source: "edited", risk: "high", lessSafe: ["nightly_enabled"], proved: true, needs: { freshSignIn: true, secondPerson: true } };
 
-it("a less-safe change says so in plain words, and is not approved by one press: it asks for a second person", async () => {
-  const f = setup({ read: { status: 200, body: state({ approved: { revision: 1, approvedAt: "2026-11-01T12:00:00.000Z", digest: "b".repeat(64), summary: SUMMARY }, proposal: LESS_SAFE }) },
-    answers: { "/request-approval": { status: 200, body: { status: "pending", confirmUrl: "https://cell.example/v1/app/approve/apr_abcdefghij0123456789", state: state({ proposal: { ...LESS_SAFE, approval: { status: "pending" } } }) } } } });
-  const region = await section();
-  expect(within(region).getByText("Your edited proposal")).toBeTruthy();
-  expect(within(region).getByText(/runs the whole test suite every night, which costs money/)).toBeTruthy();
-  expect(within(region).getByText(/needs a second person to confirm it, and you to sign in again/)).toBeTruthy();
-  expect(within(region).queryByRole("button", { name: "Approve" })).toBeNull();
-  fireEvent.click(within(region).getByRole("button", { name: "Ask a second person to confirm" }));
-  await within(region).findByText("Waiting for a second person to confirm.");
-  expect(posts(f, "/test-environment/request-approval")[0]!.body).toEqual({ digest: DIGEST, expectedRevision: 1 });
-  expect(within(region).getByRole("link", { name: "Open the confirmation page" }).getAttribute("href")).toBe("https://cell.example/v1/app/approve/apr_abcdefghij0123456789");
-  expect(within(region).getByRole("button", { name: "Check again" })).toBeTruthy();
-  f.close();
-});
-
-it("never links to a confirmation address that isn't this cell's confirmation page", async () => {
-  const f = setup({ read: { status: 200, body: state({ proposal: LESS_SAFE }) },
-    answers: { "/request-approval": { status: 200, body: { status: "pending", confirmUrl: "https://evil.example/v1/app/approve/apr_abcdefghij0123456789", state: state({ proposal: { ...LESS_SAFE, approval: { status: "pending" } } }) } } } });
-  const region = await section();
-  fireEvent.click(within(region).getByRole("button", { name: "Ask a second person to confirm" }));
-  await within(region).findByText("Waiting for a second person to confirm.");
-  expect(within(region).queryByRole("link", { name: "Open the confirmation page" })).toBeNull();
-  f.close();
-});
-
-it("once a second person confirmed, the asker finishes the approval; a refusal shows the server's words with no sign-in step (owner DEC 254zzz73)", async () => {
-  const f = setup({ read: { status: 200, body: state({ proposal: { ...LESS_SAFE, approval: { status: "approved" } } }) }, answers: { "/approve": { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company admin can approve this test environment." } } } } });
+it("an already-confirmed change remains approvable without a step-up prompt", async () => {
+  const f = setup({ read: { status: 200, body: state({ proposal: { ...LESS_SAFE, approval: { status: "approved" } } }) }, answers: { "/approve": { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to approve this change." } } } } });
   const region = await section();
   expect(within(region).getByText(/Confirmed by a second person/)).toBeTruthy();
   fireEvent.click(within(region).getByRole("button", { name: "Approve" }));
-  const alert = await within(region).findByRole("alert");
-  expect(alert.textContent).toContain("Only a company admin can approve this test environment.");
-  expect(within(alert).queryByRole("button", { name: "Confirm it's you" })).toBeNull();
+  expect((await within(region).findByRole("alert")).textContent).toContain("Sign in again to approve this change.");
+  expect(within(region).queryByRole("button", { name: /confirm it's you/i })).toBeNull();
   expect(f.host.signIn).not.toHaveBeenCalled();
   f.close();
 });
 
-it("an expired or declined confirmation can be asked for again", async () => {
-  const f = setup({ read: { status: 200, body: state({ proposal: { ...LESS_SAFE, approval: { status: "expired" } } }) } });
+it("hides edit and request-approval controls for unconfirmed proposals", async () => {
+  const f = setup({ read: { status: 200, body: state({ proposal: PROPOSAL }) } });
   const region = await section();
-  expect(within(region).getByRole("button", { name: "Ask again" })).toBeTruthy();
-  f.close();
-});
-
-it("edits the proposal as JSON: a body that isn't JSON is refused here, a valid one is sent whole and becomes the proposal", async () => {
-  const edited = { ...PROPOSAL, source: "edited" };
-  const f = setup({ read: { status: 200, body: state({ proposal: PROPOSAL }) }, answers: { "/edit": { status: 200, body: state({ proposal: edited }) } } });
-  const region = await section();
-  fireEvent.click(within(region).getByRole("button", { name: "Edit this proposal" }));
-  const box = within(region).getByLabelText<HTMLTextAreaElement>("Edit the test environment");
-  expect(JSON.parse(box.value)).toMatchObject({ tier: "sandbox", roundBudgetMin: 30 });
-  fireEvent.change(box, { target: { value: "{ not json" } });
-  fireEvent.click(within(region).getByRole("button", { name: "Save my edit" }));
-  expect((await within(region).findByRole("alert")).textContent).toContain("isn't valid JSON");
-  expect(posts(f, "/test-environment/edit")).toHaveLength(0);
-  fireEvent.change(box, { target: { value: JSON.stringify({ ...ENVIRONMENT, roundBudgetMin: 45 }) } });
-  fireEvent.click(within(region).getByRole("button", { name: "Save my edit" }));
-  await within(region).findByText("Your edited proposal");
-  expect(posts(f, "/test-environment/edit")[0]!.body).toMatchObject({ environment: { roundBudgetMin: 45 } });
-  expect(within(region).queryByLabelText("Edit the test environment")).toBeNull();
+  for (const name of [/Edit/, /Propose/, /Run the check/, /Prove it/, /Ask a second person/, /Apply/]) expect(within(region).queryByRole("button", { name })).toBeNull();
+  expect(f.request.mock.calls.some(([request]) => request.method !== "GET" && request.path.includes("test-environment"))).toBe(false);
   f.close();
 });
 

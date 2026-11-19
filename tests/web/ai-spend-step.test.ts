@@ -14,7 +14,9 @@ import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packag
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { COMPANY_MONTHLY_DEFAULT_USD, dollarsOf, readEngineModel, readSpendLimits } from "../../packages/ui/src/api/ai-spend.js";
+import { AGENT_AI_SOURCES } from "../../packages/ui/src/api/admin-agent-ai.js";
 import { AiSpendStep } from "../../packages/ui/src/screens/setup/AiSpendStep.js";
+import { sourceLabel } from "../../packages/ui/src/screens/admin/models/source-order.js";
 import { ProjectSpendLimits } from "../../packages/ui/src/screens/setup/ProjectSpendLimits.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -112,22 +114,21 @@ describe("the company step, AI and spending", () => {
   }
  });
 
- it("one Save writes the limit, the source and the preselected model explicitly, in that order", async () => {
+ it("one Save writes the changed limit and preselected model when the source choice was untouched", async () => {
   const c = company({ cap: null, source: null, model: null });
   const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
    await screen.findByLabelText("Model");
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
    await screen.findByTestId("ai-spend-saved");
-   expect(c.writes.map(w => `${w.method} ${w.path}`)).toEqual(["PUT /v1/app/org/settings", "PUT /v1/app/org/agent-ai", "PUT /v1/app/org/engine-model"]);
+   expect(c.writes.map(w => `${w.method} ${w.path}`)).toEqual(["PUT /v1/app/org/settings", "PUT /v1/app/org/engine-model"]);
    const sent = c.writes[0]!.body as { expectedVersion: number; settings: { budgets: Record<string, unknown>; decisions: unknown[] } };
    expect(sent.expectedVersion).toBe(0);
    expect(sent.settings.budgets).toEqual({ companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null, learningMonthlyUsdMicros: 20_000_000 });
    // Everything else in the settings goes back as read.
    expect(sent.settings.decisions).toEqual([{ what: "setting.loosen", secondPerson: true }]);
-   expect(c.writes[1]!.body).toEqual({ expectedVersion: 0, source: "rovara" });
-   expect(c.writes[2]!.body).toEqual({ model: "zai.glm-4.7" });
-   expect(c.state).toEqual({ cap: 500_000_000, source: "rovara", model: "zai.glm-4.7" });
+   expect(c.writes[1]!.body).toEqual({ model: "zai.glm-4.7" });
+   expect(c.state).toEqual({ cap: 500_000_000, source: null, model: "zai.glm-4.7" });
   } finally { f.close(); }
  });
 
@@ -140,6 +141,104 @@ describe("the company step, AI and spending", () => {
    await screen.findByTestId("ai-spend-saved");
    expect(c.writes.map(w => `${w.method} ${w.path}`)).toEqual(["PUT /v1/app/org/engine-model"]);
    expect(c.writes[0]!.body).toEqual({ model: "zai.glm-4.7" });
+  } finally { f.close(); }
+ });
+
+ it("a refetched effective default never makes an untouched source choice save", async () => {
+  const c = company({ cap: 800_000_000, source: null, model: "zai.glm-4.7" });
+  let effective: "rovara" | "anthropic_key" = "rovara";
+  const respond: Respond = r => {
+   if (r.path === "/v1/app/org/agent-ai" && r.method === "GET") {
+    return { status: 200, body: { ...(agentAi(null, 0) as object), effectiveSource: effective, sourceIsDefault: true } };
+   }
+   if (r.path === "/v1/app/org/engine-model" && r.method === "PUT") effective = "anthropic_key";
+   return c.respond(r);
+  };
+  const f = mountRoute("/app/admin/ai-spending", respond);
+  try {
+   await screen.findByLabelText("Model");
+   expect((screen.getByTestId("ai-spend-rovara").querySelector("input") as HTMLInputElement).checked).toBe(true);
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   await screen.findByTestId("ai-spend-saved");
+   await waitFor(() => expect(screen.queryByTestId("ai-spend-default")).toBeNull());
+   expect(c.writes.map(w => w.path)).toEqual(["/v1/app/org/engine-model"]);
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   await waitFor(() => expect(c.writes.filter(w => w.path === "/v1/app/org/engine-model")).toHaveLength(2));
+   expect(c.writes.some(w => w.path === "/v1/app/org/agent-ai")).toBe(false);
+   expect(c.state.source).toBeNull();
+  } finally { f.close(); }
+ });
+
+ it("every saved source is shown by name and Save never rewrites it", async () => {
+  for (const savedSource of AGENT_AI_SOURCES) {
+   const c = company({ cap: 800_000_000, source: savedSource, model: null });
+   const f = mountRoute("/app/admin/ai-spending", c.respond);
+   try {
+    await screen.findByLabelText("Model");
+    if (savedSource === "rovara") {
+     expect((screen.getByTestId("ai-spend-rovara").querySelector("input") as HTMLInputElement).checked).toBe(true);
+    } else if (savedSource === "anthropic_key" || savedSource === "bedrock_byo") {
+     expect((screen.getByTestId("ai-spend-own-choices").querySelector(`input[value="${savedSource}"]`) as HTMLInputElement).checked).toBe(true);
+    } else {
+     expect(screen.getByTestId("ai-spend-source-read-only").textContent).toContain(sourceLabel(savedSource));
+     expect(screen.getByTestId("ai-spend-source-read-only").textContent).not.toContain(savedSource);
+     expect(screen.getByTestId("ai-spend-source-read-only").querySelector("a")?.getAttribute("href")).toBe("/app/admin/models/sources");
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByTestId("ai-spend-saved");
+    expect(c.writes.some(w => w.path === "/v1/app/org/agent-ai")).toBe(false);
+   } finally { f.close(); }
+  }
+ });
+
+ it("returning to the initial source makes no source PUT", async () => {
+  for (const initial of [
+   { cap: 800_000_000, source: "openai_key", model: null },
+   { cap: null, source: null, model: null },
+  ]) {
+   const c = company(initial);
+   const f = mountRoute("/app/admin/ai-spending", c.respond);
+   try {
+    await screen.findByLabelText("Model");
+    if (initial.source === null) {
+     fireEvent.click(screen.getByTestId("ai-spend-own").querySelector("input")!);
+     fireEvent.click(screen.getByTestId("ai-spend-rovara").querySelector("input")!);
+    } else {
+     fireEvent.click(screen.getByTestId("ai-spend-rovara").querySelector("input")!);
+     fireEvent.click(screen.getByTestId("ai-spend-own").querySelector("input")!);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByTestId("ai-spend-saved");
+    expect(c.writes.some(w => w.path === "/v1/app/org/agent-ai")).toBe(false);
+    expect(c.state.source).toBe(initial.source);
+   } finally { f.close(); }
+  }
+ });
+
+ it("the read-only source link opens the existing source-order page", async () => {
+  const c = company({ cap: 800_000_000, source: "openai_key", model: null });
+  const f = mountRoute("/app/admin/ai-spending", r => r.method === "GET" && r.path === "/v1/app/org/model-sources"
+   ? { status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", developerId: me, revision: 1, canChange: true, order: ["openai_key"], sources: [{ source: "openai_key", available: true, connected: true, inOrder: true }] } }
+   : c.respond(r));
+  try {
+   await screen.findByLabelText("Model");
+   fireEvent.click(screen.getByTestId("ai-spend-source-read-only").querySelector("a")!);
+   expect(await screen.findByText("Source order")).toBeTruthy();
+   expect(screen.getByRole("heading", { name: "Company AI sources" })).toBeTruthy();
+   expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/org/model-sources")).toBe(true);
+  } finally { f.close(); }
+ });
+
+ it("changing a saved read-only source to Rovara writes only the selected source plus the model", async () => {
+  const c = company({ cap: 800_000_000, source: "openai_key", model: null });
+  const f = mountRoute("/app/admin/ai-spending", c.respond);
+  try {
+   await screen.findByLabelText("Model");
+   fireEvent.click(screen.getByTestId("ai-spend-rovara").querySelector("input")!);
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   await screen.findByTestId("ai-spend-saved");
+   expect(c.writes.map(w => w.path)).toEqual(["/v1/app/org/agent-ai", "/v1/app/org/engine-model"]);
+   expect(c.writes[0]!.body).toEqual({ expectedVersion: 2, source: "rovara" });
   } finally { f.close(); }
  });
 
