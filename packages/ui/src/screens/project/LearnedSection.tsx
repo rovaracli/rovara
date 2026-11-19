@@ -90,7 +90,7 @@ function LearnedLesson({ project, lesson, list }: { project: string; lesson: Les
   <ul className="rv-lesson-facts">
    {list === "retired" && lesson.became !== undefined ? <li data-testid="lesson-became">{becameWords(lesson.became.kind)}{lesson.became.at > 0 && <> <span className="rv-muted"><RelativeTime at={new Date(lesson.became.at).toISOString()} /></span></>}</li>
     : list === "retired" ? <li>{RETIRED_STATUS[lesson.status] ?? "No longer used"}{reasonWords(lesson.rejectedReason) === undefined ? "" : `: ${reasonWords(lesson.rejectedReason)!.toLowerCase()}`}</li> : <li>{usageWords(lesson)}</li>}
-   {list === "proposed" && lesson.supportTasks > 0 && <p className="rv-muted">Rovara was corrected on this {lesson.supportTasks === 1 ? "once" : `${lesson.supportTasks} times`}.</p>}
+   {list === "proposed" && lesson.supportTasks > 0 && <li className="rv-muted">Rovara was corrected on this {lesson.supportTasks === 1 ? "once" : `${lesson.supportTasks} times`}.</li>}
    {lesson.trial === "trial" && <li>On trial</li>}
    {lesson.needs !== undefined && lesson.needs.required === 2 && list === "proposed" && <li>{lesson.needs.have === 1 ? "One person kept it; needs one more" : "Needs two people to keep it"}</li>}
    {lesson.citations.slice(0, 3).map((one, index) => { const words = citationWords(one); return <li key={index}>{words.href === undefined ? <span className="mono"><VisibleText text={words.text} /></span> : <a href={words.href} target="_blank" rel="noreferrer">{words.text}</a>}</li>; })}
