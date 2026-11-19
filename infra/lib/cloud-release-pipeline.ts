@@ -41,11 +41,13 @@ export const CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER = "hnb659fds";
  * The deploy switches each environment's pipeline carries into `cdk deploy` (PRODUCT-AI-PIPELINE-SWITCH): read from here when the
  * pipeline is made, never typed per run, so a release deploys an environment exactly as it was switched on by hand. Without the
  * product AI switch, a pipeline deploy of a switched-on environment would drop the Cloud server's product key grants and settings.
- * Production may carry it (Rovara-cloud#247); add it here only once production's gateway is deployed, since the web stack then needs the
- * gateway's ProductKeys* parameters, and redeploy the pipeline stack by hand.
+ * Production carries it (Rovara-cloud#247): its web stack was switched on by hand first, with the gateway's ProductKeys* parameters.
+ * A change here reaches a pipeline only when its stack is redeployed by hand.
  */
 export const CLOUD_PIPELINE_SWITCHES: Readonly<Record<string, Readonly<{ productAi?: true }>>> = Object.freeze({
   staging: Object.freeze({ productAi: true as const }),
+  // Rovara-cloud#247: production's gateway is deployed, and its web stack was switched on by hand with the gateway's ProductKeys* parameters.
+  production: Object.freeze({ productAi: true as const }),
 });
 /** The `-c` arguments the environment's deploy carries (cdk context), from CLOUD_PIPELINE_SWITCHES. */
 export function pipelineDeployContext(env: string, config: Readonly<Record<string, Readonly<{ productAi?: true }>>> = CLOUD_PIPELINE_SWITCHES): string[] {

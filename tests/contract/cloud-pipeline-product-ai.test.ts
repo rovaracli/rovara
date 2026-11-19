@@ -25,10 +25,10 @@ describe("Cloud release pipeline: per-environment deploy switches", () => {
     expect(command).toBe(`npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" ${SWITCH} --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`);
   });
 
-  it("production carries it only once the config names it (Rovara-cloud#247: not until production's gateway is deployed)", () => {
-    expect(deployCommand("production")).not.toContain(MODEL_GATEWAY_PRODUCT_CONTEXT_KEY);
-    expect(Object.hasOwn(CLOUD_PIPELINE_SWITCHES, "production")).toBe(false);
-    expect(pipelineDeployContext("production")).toEqual([]);
+  it("production's deploy carries it too, now that production's gateway is deployed (Rovara-cloud#247)", () => {
+    expect(CLOUD_PIPELINE_SWITCHES.production).toEqual({ productAi: true });
+    expect(deployCommand("production")).toContain(SWITCH);
+    expect(pipelineDeployContext("production")).toEqual([SWITCH]);
     expect(pipelineDeployContext("production", { production: { productAi: true } })).toEqual([`-c ${MODEL_GATEWAY_PRODUCT_CONTEXT_KEY}=on`]);
     expect(pipelineDeployContext("staging", {})).toEqual([]);
   });
@@ -41,5 +41,6 @@ describe("Cloud release pipeline: per-environment deploy switches", () => {
   it("the config is frozen: a run can't add a switch", () => {
     expect(Object.isFrozen(CLOUD_PIPELINE_SWITCHES)).toBe(true);
     expect(Object.isFrozen(CLOUD_PIPELINE_SWITCHES.staging)).toBe(true);
+    expect(Object.isFrozen(CLOUD_PIPELINE_SWITCHES.production)).toBe(true);
   });
 });
