@@ -1,6 +1,6 @@
 // B7's Cloud stack side: with -c rovaraModelGatewayProductAi=on (named test environments only) the server may write the gateway's
 // product key table by company keys and seal keys (GenerateDataKey, GenerateMac), never Decrypt. Off, the Cloud web template is
-// byte for byte what it was, for production and for staging.
+// byte for byte what it was, for production and for staging, apart from the approved meter reads and answers switch below.
 import { createHash } from "node:crypto";
 import { withoutRoleBoundary } from "../support/without-role-boundary.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -26,8 +26,25 @@ const synth = (environmentName: string, productAi?: boolean) => Template.fromSta
 const BEFORE_CONDITION_CHECK = { production: "db67fcbbc888b0f1d83f7fa6f6fd9796c1dd0f0ab90452a75121897886898dbf", staging: "2520e7cd7500cad24785df29bfcb000c1a1839f9fbf9d75574dbab9b44cbed85" };
 // DEC 254zzz27: only ConditionCheckItem was added to the Companies-table grant; the test below proves the old digests too.
 const BEFORE = { production: "ae8e407d00367b254cbb58aed6a81396aac3fcedced39c3c44749eb9a4caab55", staging: "67347f5063fa512907cdaac2a1f73d6598c269d10c479b3a249733b084e6ec03" };
+// cp-iam + live switches: full merged templates, INCLUDING the boundary. Removing only the meter changes and answers switch restores BEFORE.
+const METER_READ = { production: "d39d529eb3ef32bc760e0a852098da4d3fe9a7c30b671f4616bef786e400d043", staging: "4ec03c8958f8bafe96f08bb4d1aed8a8df4bca032dd808dc5866d7a51f482965" };
 // Less the role boundary (2026-11-17), which every template now carries (tests/contract/cloud-role-boundary.test.ts).
 const sha = (value: Parameters<typeof withoutRoleBoundary>[0]) => createHash("sha256").update(JSON.stringify(withoutRoleBoundary(value))).digest("hex");
+function withoutMeterRead(template: ReturnType<typeof synth>): ReturnType<typeof synth> {
+  const t = structuredClone(template);
+  expect(t.Parameters).toHaveProperty("GatewayMeterTableName");
+  delete t.Parameters.GatewayMeterTableName;
+  let grants = 0; let variables = 0;
+  for (const resource of Object.values(t.Resources)) {
+    const env = (resource.Properties.Environment as { Variables?: Record<string, unknown> } | undefined)?.Variables;
+    if (env?.CLOUD_GATEWAY_METER_TABLE !== undefined) { delete env.CLOUD_GATEWAY_METER_TABLE; variables++; }
+    if (resource.Type !== "AWS::IAM::Policy" && resource.Type !== "AWS::IAM::ManagedPolicy") continue;
+    const policy = resource.Properties.PolicyDocument as { Statement: Statement[] };
+    policy.Statement = policy.Statement.filter((s) => { if (s.Sid !== "GatewayMeterCompanyReads") return true; grants++; return false; });
+  }
+  expect(grants).toBe(2); expect(variables).toBe(1);
+  return t;
+}
 /**
  * DEC 253z removed exactly two things from the web template: the CompanyId parameter and the server's CLOUD_COMPANY_ID setting. Put back as
  * they were (same place, same words), the template must hash to BEFORE: so nothing else moved.
@@ -75,14 +92,16 @@ function withoutAnswersSwitch(template: ReturnType<typeof synth>, env: string): 
 }
 
 describe("Cloud web: product AI settings grants (B7)", () => {
-  it("off: production and staging templates are byte for byte what they were (less the company setting DEC 253z removed)", () => {
-    expect(sha(withOldCompanySetting(withoutAnswersSwitch(synth("production"), "production")))).toBe(BEFORE.production);
-    expect(sha(withOldCompanySetting(withoutAnswersSwitch(synth("staging"), "staging")))).toBe(BEFORE.staging);
-    expect(sha(withOldCompanySetting(withoutAnswersSwitch(synth("staging", false), "staging")))).toBe(BEFORE.staging);
+  it("off: only the approved meter reads and answers switch changed since the pinned templates", () => {
+    for (const [env, productAi] of [["production", undefined], ["staging", undefined], ["staging", false]] as const) {
+      const t = synth(env, productAi);
+      expect(createHash("sha256").update(JSON.stringify(t)).digest("hex")).toBe(METER_READ[env]);
+      expect(sha(withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(t), env)))).toBe(BEFORE[env]);
+    }
     expect(Object.keys(synth("staging").Parameters)).not.toContain("CompanyId");
   });
   it.each(["production", "staging"] as const)("%s: removing only the approved Companies ConditionCheckItem restores the previous template digest", (env) => {
-    const t = withOldCompanySetting(withoutAnswersSwitch(synth(env), env));
+    const t = withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(synth(env)), env));
     let changed = 0;
     for (const resource of Object.values(t.Resources)) {
       if (resource.Type !== "AWS::IAM::Policy") continue;
