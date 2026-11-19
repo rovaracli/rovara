@@ -251,7 +251,7 @@ it.each([[true, "Blocked by a spending limit"], [false, "Fits the budget"], [nul
 it.each([
  ["company_month", "company monthly limit"], ["project_month", "project monthly limit"],
  ["project_task", "project task limit"], ["engine_task", "task limit on this install"],
- ["engine_day", "daily limit on this install"], ["gateway_task", "AI task limit".toLowerCase()],
+ ["engine_day", "daily limit on this install"], ["gateway_task", "AI task limit"],
 ])("names a member's blocking %s without budget figures", async (bindingScope, words) => {
  const { quoteFixture } = await import("./support/start-preview-fixture.js"); const raw = quoteFixture();
  for (const q of raw.options) Object.assign(q, { limits: [], initialHoldMicros: { state: "unavailable", reason: "restricted" }, firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked: true, bindingScope } } });
