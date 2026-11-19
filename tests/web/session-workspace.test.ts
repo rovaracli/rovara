@@ -2,6 +2,8 @@
 import { expect, it, vi } from "vitest";
 import { screen, fireEvent } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { workspaceFixture as fixture, workspaceWorkflow as workflow } from "./support/workspace-fixture.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
@@ -14,7 +16,8 @@ import { chainRunViewOf } from "./support/chain-fixture.js";
 import { taskFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 function setup(value: unknown = fixture(), hash = "", onComment = vi.fn()) {
  const session = SessionViewReaderSchema.parse(value), f = fakeHost();const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session: SessionViewReaderSchema.parse(session), onComment })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID + hash] });
- const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(RouterProvider, { router }) }));
+ const ui = renderUi(h(AppHostProvider, { host: f.host, // The Merge section (#233) reads whether the person may merge, so the page needs a query client.
+ children: h(QueryClientProvider, { client: createQueryClient(), children: h(RouterProvider, { router }) }) }));
  return { ...ui, ...f, router, onComment, close() { ui.unmount();router.dispose(); } };
 }
 it("shows the five supported task tabs and excludes Terminal and Preview", () => {
