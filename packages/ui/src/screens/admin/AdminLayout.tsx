@@ -47,7 +47,8 @@ export function AdminLayout() {
  if (supported && identity.isPending) return <section className="rv-admin-plain" aria-label="Administration access" aria-busy="true"><Skeleton label="Checking administration access" /></section>;
  if (!allowed || identity.data === undefined) return <section className="rv-admin-plain"><PageHeader focusOnMount title="Administration unavailable" /><p>Administration is available to company owners and admins in the web app.</p>{identity.isSuccess && role === "member" && <OwnRoleReceipt key={`${location.pathname}:${identity.data.org.orgId}:${identity.data.developer.id}`} initial={ownReceipt} />}<NavLink to="/app">Go to Home</NavLink>{supported && identity.isError && <><p role="alert">{identity.dataUpdatedAt > 0 ? "Couldn't re-check your administration access. Try again." : "Couldn't verify your administration access. Try again."}</p><Button onClick={() => { void identity.refetch(); }}>Try again</Button></>}</section>;
  const outlet = <Outlet context={{ orgId: identity.data.org.orgId, company: identity.data.org.name, developerId: identity.data.developer.id, role, checking: identity.isFetching } satisfies AdminContext} />;
- if (modelOnly) return <div className="rv-admin-surface">{outlet}</div>;
+ // A member reaches only the read-only model card, without the admin menu; owners and admins keep the full layout.
+ if (modelOnly && !companyAdmin) return <div className="rv-admin-surface">{outlet}</div>;
  const groups = visibleAdminGroups(role === "owner" || role === "admin" ? role : "member", true);
  // A window that gets narrow after the page was shown (or a screenshot tool that briefly makes it narrow) must not unmount the page: the layout stays mounted, only hidden, so an
  // open dialog, a picker or a half-typed form keeps its state, and the message shows beside it. Access is decided above: losing it still leaves the page.

@@ -70,7 +70,7 @@ describe("the step models card", () => {
   const m = mount("member", c.respond);
   await screen.findByTestId("step-models-read-only");
   expect(screen.queryByLabelText("Coding")).toBeNull();
-  expect(screen.getByTestId("step-model-build").textContent).toContain("Company model");
+  expect(screen.getByTestId("step-model-build").textContent).toContain("Rovara's default (currently claude-sonnet-5-5)");
   expect(c.writes).toEqual([]);
   m.close();
  });

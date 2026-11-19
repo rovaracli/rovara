@@ -154,7 +154,7 @@ for (const [path, row] of [["/v1/app/org/agent-ai", "source"], ["/v1/app/org/set
  try {
   const error = await screen.findByTestId(`ai-spend-${row}-read-error`);
   const company = screen.getByRole("region", { name: "Company model setting" });
-  expect(company.textContent).toContain(SONNET); expect(company.textContent).toContain("company choice");
+  expect(company.textContent).toContain(SONNET); expect(company.textContent).toContain("Your choice:");
   expect(within(company).queryByRole("alert")).toBeNull(); expect(screen.queryByLabelText(/Company monthly limit/u)).toBeNull();
   expect(within(error.parentElement!).queryByRole("button", { name: "Try again" }) !== null).toBe(status !== 501);
   if (row === "settings") expect(screen.getByText("Task source: Your OpenRouter key.")).toBeTruthy();
@@ -180,25 +180,27 @@ it("refreshes source, payer, offered models and effective steps after a verified
   await screen.findByText("Source order verified."); fireEvent.click(screen.getByRole("button", { name: "Close" }));
   await screen.findByText(/Task source: Rovara's AI/);
   expect(screen.getByTestId("ai-spend-rovara").querySelector("input")).toHaveProperty("checked", true);
-  expect(screen.getByLabelText("Company model")).toHaveProperty("value", SONNET);
+  expect(screen.getByText("Your unsaved model is no longer offered. Choose another option before saving it.")).toBeTruthy();
   expect(within(screen.getByLabelText("Company model")).queryByRole("option", { name: HAIKU })).toBeNull();
   expect(f.request.mock.calls.filter(([r]) => r.path === "/v1/app/org/agent-models").length).toBeGreaterThan(1);
   expect(f.request.mock.calls.filter(([r]) => r.method !== "GET").map(([r]) => r.path)).toEqual(["/v1/app/org/model-sources-order"]);
  } finally { f.close(); }
 });
 
-for (const state of ["unavailable", "install", "unusable-source", "pending-save", "pending-cap", "gateway-unready", "task-unready", "ready"] as const) it(`setup checks persisted required AI state: ${state}, with optional rows unavailable`, async () => {
+for (const state of ["unavailable", "install", "unusable-source", "pending-save", "pending-cap", "gateway-unready", "task-unready", "default-ready", "ready"] as const) it(`setup checks persisted required AI state: ${state}, with optional rows unavailable`, async () => {
  const f = mount({ path: "/app/onboard?step=ai", ...(state === "pending-cap" ? { respond: (r: ApiRequest) => r.path === "/v1/app/org/settings" && r.method === "PUT" ? { status: 200, body: { pending: { approvalId: "pending-limit" } } } : undefined } : {}), overrides: { "/v1/app/org/learning-model": unavailable, ...(state === "unavailable" ? { "/v1/app/org/engine-model": unavailable } : {}) } });
  const taskBody = f.bodies["/v1/app/org/agent-models"] as { steps: Array<{ refused: boolean }> };
  if (state !== "task-unready") taskBody.steps.forEach(step => { step.refused = false; });
  if (state === "gateway-unready") f.bodies["/v1/app/org/settings"] = { version: 1, modelGateway: { ready: false, reason: "blocked" }, settings: { budgets: { companyMonthlyUsdMicros: 500_000_000 } } };
+ if (state === "default-ready") f.bodies["/v1/app/org/engine-model"] = { model: SONNET, source: "install", offered: [SONNET], preselect: SONNET, canChange: true };
  if (state === "install" || state === "pending-save") f.bodies["/v1/app/org/engine-model"] = { model: null, source: "install", offered: [SONNET], preselect: SONNET, canChange: true };
  if (state === "unusable-source") f.bodies["/v1/app/org/agent-ai"] = { version: 1, source: "openrouter_key", choices: [] };
  try {
   await screen.findByTestId("learning-model-read-error");
   const next = await screen.findByTestId("onboard-continue-repos");
+  if (state === "pending-save") fireEvent.change(screen.getByLabelText("Company model"), { target: { value: SONNET } });
   if (state === "pending-cap") fireEvent.change(await screen.findByLabelText(/Company monthly limit/u), { target: { value: "600" } });
-  await waitFor(() => expect(next).toHaveProperty("disabled", state !== "ready"));
+  await waitFor(() => expect(next).toHaveProperty("disabled", state !== "ready" && state !== "default-ready"));
   if (state === "pending-save" || state === "pending-cap") {
    fireEvent.click(within(screen.getByTestId("ai-spend-step")).getAllByRole("button", { name: "Save" }).at(-1)!); await screen.findByTestId("ai-spend-saved");
    // A nominal write response whose follow-up read still has no company model cannot advance.
@@ -206,7 +208,7 @@ for (const state of ["unavailable", "install", "unusable-source", "pending-save"
    expect(f.request.mock.calls.some(([r]) => r.method === "PUT" && r.path.endsWith(state === "pending-cap" ? "settings" : "engine-model"))).toBe(true);
   }
   fireEvent.click(next);
-  await waitFor(() => expect(f.router.state.location.search).toBe(state === "ready" ? "?step=repositories" : "?step=ai"));
+  await waitFor(() => expect(f.router.state.location.search).toBe((state === "ready" || state === "default-ready") ? "?step=repositories" : "?step=ai"));
  } finally { f.close(); }
 });
 
