@@ -23,8 +23,8 @@ import { createHash } from "node:crypto";
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
-  COMPANY_ID, CompanyStoreConflict, INVITES_READ_MAX, SPEND_LIMIT_KINDS, SPEND_LIMIT_SORT_PREFIX, sameInvite, validAgentAiSource, validGithubUserId, validHookInstall, validSpendLimit, type CompanyTrial, type TrialUnlock,
-  type AgentAiChoice, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type SpendLimit, type SpendLimitBasis, type SpendLimitKind, type SpendLimitList, type StoredSettings,
+  COMPANY_ID, CompanyStoreConflict, INVITES_READ_MAX, SPEND_LIMIT_KINDS, SPEND_LIMIT_SORT_PREFIX, sameInvite, validAgentAiFallback, validAgentAiSource, validGithubUserId, validHookInstall, validSpendLimit, type CompanyTrial, type TrialUnlock,
+  type AgentAiChoice, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type SpendLimit, type SpendLimitBasis, type SpendLimitKind, type SpendLimitList, type StoredSettings,
 } from "./company-store.js";
 import type { CompanySettings } from "./company-settings.js";
 
@@ -168,12 +168,17 @@ export class DynamoCompanyStore implements CompanyStore {
     if (item === undefined) return undefined;
     // A row that does not read as this company's choice is an outage, never "none saved" (which would hide it and block every save).
     if (item.companyId !== companyId || !validAgentAiSource(item.source) || typeof item.version !== "number" || typeof item.updatedAt !== "string" || typeof item.updatedBy !== "string") throw new Error("agent ai choice unreadable");
-    return { companyId, source: item.source, version: item.version, updatedAt: item.updatedAt, updatedBy: item.updatedBy };
+    // DEC 254zzz84(4): a fallback that is there but not a valid list is unreadable too (never a partial order).
+    if (item.fallback !== undefined && !validAgentAiFallback(item.fallback, item.source)) throw new Error("agent ai choice unreadable");
+    const fallback = item.fallback === undefined || item.fallback.length === 0 ? undefined : (item.fallback as string[]).slice() as AgentAiSource[];
+    return { companyId, source: item.source, version: item.version, updatedAt: item.updatedAt, updatedBy: item.updatedBy, ...(fallback === undefined ? {} : { fallback }) };
   }
 
   async putAgentAi(choice: Omit<AgentAiChoice, "version">, expectedVersion: number): Promise<number> {
+    if (choice.fallback !== undefined && !validAgentAiFallback(choice.fallback, choice.source)) throw new Error("invalid agent ai fallback");
     await guarded("agent ai", () => this.db.send(new PutCommand({
-      TableName: this.table, Item: { pk: company(choice.companyId), sk: "AGENT_AI", companyId: choice.companyId, source: choice.source, version: expectedVersion + 1, updatedAt: choice.updatedAt, updatedBy: choice.updatedBy }, ...versionCondition(expectedVersion),
+      // A row without a fallback is written exactly as before (no `fallback` attribute).
+      TableName: this.table, Item: { pk: company(choice.companyId), sk: "AGENT_AI", companyId: choice.companyId, source: choice.source, version: expectedVersion + 1, updatedAt: choice.updatedAt, updatedBy: choice.updatedBy, ...(choice.fallback === undefined || choice.fallback.length === 0 ? {} : { fallback: choice.fallback.slice() }) }, ...versionCondition(expectedVersion),
     })));
     return expectedVersion + 1;
   }

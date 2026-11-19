@@ -155,6 +155,19 @@ describe("lessons by code area", () => {
 });
 
 describe("where Rovara learns from", () => {
+  it("B15: lists the tickets source (paused or not) when Code sends it, and not when an older Code does not", async () => {
+    const sent = (extra: unknown[]) => ({ project: "payments", windowDays: 30, canPause: true, sources: [{ key: "ci", seen: 1, suggested: 0, kept: 0, paused: false }, ...extra] });
+    const withTickets = learningSourcesAnswer(sent([{ key: "tickets", seen: 4, suggested: 2, kept: 1, paused: true }]), "payments");
+    const row = LearningSourcesAnswerSchema.parse(withTickets).sources.find((s) => s.key === "tickets");
+    expect(row).toMatchObject({ label: "Ticket comments", seen: 4, suggested: 2, kept: 1, paused: true });
+    expect(LearningSourcesAnswerSchema.parse(learningSourcesAnswer(sent([]), "payments")).sources.map((s) => s.key)).not.toContain("tickets");
+  });
+  it("B15: a person can pause the tickets source (it goes to Code as asked, not a 400)", async () => {
+    const w = setUp((call) => (call.method === "PUT" ? json(200, { project: "payments", key: "tickets", paused: true }) : undefined));
+    const res = await w.send("PUT", `${P}/lessons/learning-sources/tickets`, await w.as("pam-token"), { paused: true });
+    expect(res).toMatchObject({ status: 200, body: { project: "payments", key: "tickets", paused: true } });
+    expect(w.codeCalls()).toEqual([expect.objectContaining({ method: "PUT", path: "/v1/dev/projects/payments/lessons/learning-sources/tickets", body: { paused: true } })]);
+  });
   const code = (over: Record<string, unknown> = {}) => ({ project: "payments", windowDays: 30, canPause: true, sources: [{ key: "pr_edits", label: "Code's own words", detail: "x", seen: 12, suggested: 5, kept: 3, paused: false, example: { lessonId: "les_ed000001", title: "Use withRetry" } }, { key: "ci", seen: 1, suggested: 0, kept: 0, paused: true }, { key: "unknown_new", seen: 99 }], ...over });
 
   it("answers one row per known source, in Cloud's own words and order, with a row of zeros for one Code did not send", async () => {
@@ -162,7 +175,7 @@ describe("where Rovara learns from", () => {
     const res = await w.send("GET", `${P}/lessons/learning-sources`, await w.as("pam-token"));
     expect(res.status).toBe(200);
     const parsed = LearningSourcesAnswerSchema.parse(res.body);
-    expect(parsed.sources.map((s) => s.key)).toEqual([...LEARNING_SOURCE_KEYS]);
+    expect(parsed.sources.map((s) => s.key)).toEqual(LEARNING_SOURCE_KEYS.filter((key) => key !== "tickets"));
     expect(parsed.sources.find((s) => s.key === "pr_edits")).toMatchObject({ label: LEARNING_SOURCE_WORDS.pr_edits.label, seen: 12, suggested: 5, kept: 3, paused: false, example: { lessonId: "les_ed000001", title: "Use withRetry" } });
     expect(parsed.sources.find((s) => s.key === "remember")).toMatchObject({ seen: 0, suggested: 0, kept: 0, paused: false });
     expect(parsed.sources.find((s) => s.key === "ci")?.paused).toBe(true);

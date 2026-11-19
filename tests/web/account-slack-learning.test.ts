@@ -20,7 +20,6 @@ import { expectNoAxeViolations } from "./support/axe.js";
 const me = "a".repeat(64);
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const NOT_ON_CODE = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } };
-const FACTORS = { factorEmail: "p***@acme.test", passkeys: [] };
 const ok = (body: unknown): ApiResponse => ({ status: 200, body });
 const SIGN_INS = { signIns: [{ method: "github", primary: true }], linkable: ["slack", "github"] };
 const seeded = new Map<string, string>();
@@ -29,7 +28,7 @@ beforeEach(() => { seeded.clear(); });
 function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<ApiResponse>) {
  const nav = AppNavSchema.parse({ me: { developerId: me, name: "Priya", orgRole: "owner" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
  const identity = AppMeResponseSchema.parse({ developer: { id: me, name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
- const f = fakeHost(async r => (r.path === "/v1/app/nav" ? { status: 200, body: nav } : r.path === "/v1/app/me" ? { status: 200, body: identity } : r.path === "/v1/app/me/sign-in-factors" ? ok(FACTORS) : r.path === "/v1/app/me/sign-ins" ? ok(SIGN_INS) : respond(r)));
+ const f = fakeHost(async r => (r.path === "/v1/app/nav" ? { status: 200, body: nav } : r.path === "/v1/app/me" ? { status: 200, body: identity } : r.path === "/v1/app/me/sign-ins" ? ok(SIGN_INS) : respond(r)));
  const query = createQueryClient(); query.setQueryData(["nav"], nav); f.storage.set("rovara.theme", "light");
  for (const [key, value] of seeded) f.storage.set(key, value);
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [path] });

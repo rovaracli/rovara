@@ -1,12 +1,10 @@
 // The app's company routes that Cloud answers from its own data (migration plan v3.2, 2.2 and 2.4, decision 17): the company's settings and
 // rules (with a second admin for a loosening change), its budgets as the app's Budgets screen reads them, its profile, and invites. Members
-// and roles are Code's, proxied as the person by member-routes.ts; removal is not wired yet (501 NOT_ON_CODE_YET).
+// and roles are Code's, proxied as the person by member-routes.ts, removal with a hand-over too (DEC 254zzz84 (5)).
 //
 // Who and which company: every route asks Code's access check afresh (company-caller.ts) and takes the company and the person's company role
 // from that answer (DEC 253z). A Code that names no company is refused ("You're not in a company yet."), never a fallback. A company admin is
 // a company owner or admin; Code's install `administrator` flag plays no part. Nothing a request carries ever names the company.
-//
-// Fresh step-up: changing settings and approving a change need the admin's step-up (step-up.ts) inside the company's window.
 //
 // Invites (DEC 253z): Code's own pre-approval routes, as the inviting admin with their own token: `POST /v1/dev/company/preapprovals`
 // { email, role: "member", expiresInHours } and, to withdraw, `DELETE /v1/dev/company/preapprovals/<sha256 of the normalised email>`. Code
@@ -26,9 +24,9 @@ import {
   type CompanyStore, type InviteRecord, type PendingSettingsChange,
 } from "./company-store.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
-import { freshStepUp } from "./step-up.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import { withdrawForMember } from "./product-ai-routes.js";
+import { SELF_APPROVED_ONLY_ADMIN, isSoleCompanyAdmin } from "./sole-admin.js";
 import { LINK_TOKEN } from "./onboarding-routes.js";
 import type { PersonSpendReader } from "./people-limits-routes.js";
 
@@ -51,7 +49,6 @@ const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
 const WORDS = Object.freeze({
   notAdmin: refusal(403, "FORBIDDEN", "Only a company admin can do this."),
-  stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   ruled: refusal(403, "FORBIDDEN", "Your company's rules don't allow this change."),
   secondPerson: refusal(403, "SECOND_PERSON_REQUIRED", "A different admin must approve this change."),
   conflict: refusal(409, "CONFLICT", "This changed since you opened it. Refresh and try again."),
@@ -96,19 +93,16 @@ async function admin(context: RouteContext): Promise<Caller | RouteAnswer> {
   return isCompanyAdmin(who.companyRole) ? who : WORDS.notAdmin;
 }
 
-/** The admin's step-up is inside `windowSeconds`. */
-const steppedUp = (context: RouteContext, windowSeconds: number) => freshStepUp(context.session.accessToken, context.now().getTime(), windowSeconds) !== undefined;
-
 const tooLarge = (body: unknown) => Buffer.byteLength(JSON.stringify(body) ?? "", "utf8") > COMPANY_SETTINGS_LIMITS.bodyBytesMax;
 const log = (who: Caller, event: Record<string, unknown>) => (who.backend.log ?? ((entry) => { console.log(JSON.stringify(entry)); }))({ ...event, companyId: who.companyId, developerId: who.developerId });
 /**
  * Writes Cloud's audit record of a change already saved (plan v3.2 7.5; audit-log.ts), when this Cloud keeps audit records. Recorded after the
  * change, so a failed write can't undo it: the failure is logged (fixed words) and the answer stands.
  */
-async function audited(context: RouteContext, who: Caller, action: CloudAuditAction, subject?: string): Promise<void> {
+async function audited(context: RouteContext, who: Caller, action: CloudAuditAction, subject?: string, detail?: string): Promise<void> {
   if (context.audit === undefined) return;
   try {
-    await recordCloudAction(context.audit, { companyId: who.companyId, actor: { developerId: who.developerId, name: who.name, type: "person" }, action, via: "web", ...(subject === undefined ? {} : { subject }) }, context.now);
+    await recordCloudAction(context.audit, { companyId: who.companyId, actor: { developerId: who.developerId, name: who.name, type: "person" }, action, via: "web", ...(subject === undefined ? {} : { subject }), ...(detail === undefined ? {} : { detail }) }, context.now);
   } catch {
     log(who, { event: "cloud.audit_failed", action });
   }
@@ -144,13 +138,14 @@ async function changeSettings(context: RouteContext): Promise<RouteAnswer> {
   // The company's current rules decide: a second admin approves (the proposer need not be a decider) or this admin decides now.
   const required = settingsDecision(current.settings, loosening, "requirement", who.developerId);
   if (!required.allow) return WORDS.ruled;
-  const decision = required.secondPerson ? required : settingsDecision(current.settings, loosening, "verdict", who.developerId);
+  // DEC 254zzz79 (2): a company with ONE live owner/admin has no second person, so that person decides now (the verdict stage still checks `deciders`).
+  const alone = required.secondPerson && await isSoleCompanyAdmin(context, who);
+  const decision = required.secondPerson && !alone ? required : settingsDecision(current.settings, loosening, "verdict", who.developerId);
   if (!decision.allow) return WORDS.ruled;
-  if (!steppedUp(context, decision.signInMaxAgeSeconds)) return WORDS.stepUp;
   if (current.version !== body["expectedVersion"]) return WORDS.conflict;
   if (canonical(next) === canonical(current.settings)) return ok({ companyId: who.companyId, version: current.version, settings: current.settings });
   const at = context.now().toISOString();
-  if (decision.secondPerson) {
+  if (decision.secondPerson && !alone) {
     const change: PendingSettingsChange = {
       companyId: who.companyId, changeId: newChangeId(), settings: next, baseVersion: current.version, proposedBy: who.developerId, proposedAt: at,
       expiresAt: new Date(context.now().getTime() + PENDING_CHANGE_DAYS * DAY_MS).toISOString(),
@@ -171,8 +166,8 @@ async function changeSettings(context: RouteContext): Promise<RouteAnswer> {
     if (error instanceof CompanyStoreConflict) return WORDS.conflict;
     throw error;
   }
-  log(who, { event: "cloud.company_settings_changed", version, loosening });
-  await audited(context, who, canonical(next.budgets) === canonical(current.settings.budgets) ? "company.rules.changed" : "company.budget.changed");
+  log(who, { event: "cloud.company_settings_changed", version, loosening, ...(alone ? { selfApproved: true } : {}) });
+  await audited(context, who, canonical(next.budgets) === canonical(current.settings.budgets) ? "company.rules.changed" : "company.budget.changed", undefined, alone ? SELF_APPROVED_ONLY_ADMIN : undefined);
   return ok({ companyId: who.companyId, version, settings: next });
 }
 
@@ -183,7 +178,9 @@ async function approveChange(context: RouteContext): Promise<RouteAnswer> {
   const store = who.backend.store;
   const change = await store.pendingChange(who.companyId, context.now().getTime());
   if (change === undefined || change.changeId !== changeId || change.companyId !== who.companyId) return WORDS.noChange;
-  if (change.proposedBy === who.developerId) return WORDS.secondPerson;
+  // The proposer may approve their own change only as the company's one live owner/admin (DEC 254zzz79 (2): read now, never from the proposal).
+  const own = change.proposedBy === who.developerId;
+  if (own && !(await isSoleCompanyAdmin(context, who))) return WORDS.secondPerson;
   const current = await companySettings(store, who.companyId);
   if (current === undefined) return WORDS.unreadable;
   const read = validateCompanySettings(change.settings);
@@ -194,7 +191,6 @@ async function approveChange(context: RouteContext): Promise<RouteAnswer> {
   }
   const decision = settingsDecision(current.settings, loosens(current.settings, read.settings), "verdict", who.developerId);
   if (!decision.allow) return WORDS.ruled;
-  if (!steppedUp(context, decision.signInMaxAgeSeconds)) return WORDS.stepUp;
   let version: number;
   try {
     version = await store.applyChange({ ...change, settings: read.settings }, who.developerId, context.now().toISOString());
@@ -202,15 +198,15 @@ async function approveChange(context: RouteContext): Promise<RouteAnswer> {
     if (error instanceof CompanyStoreConflict) return WORDS.conflict;
     throw error;
   }
-  log(who, { event: "cloud.company_settings_approved", changeId, version, proposedBy: change.proposedBy });
-  await audited(context, who, canonical(read.settings.budgets) === canonical(current.settings.budgets) ? "company.rules.changed" : "company.budget.changed", `change:${changeId}`);
+  log(who, { event: "cloud.company_settings_approved", changeId, version, proposedBy: change.proposedBy, ...(own ? { selfApproved: true } : {}) });
+  await audited(context, who, canonical(read.settings.budgets) === canonical(current.settings.budgets) ? "company.rules.changed" : "company.budget.changed", `change:${changeId}`, own ? SELF_APPROVED_ONLY_ADMIN : undefined);
   return ok({ companyId: who.companyId, version, settings: read.settings });
 }
 
 async function withdrawChange(context: RouteContext): Promise<RouteAnswer> {
   const who = await admin(context);
   if ("status" in who) return who;
-  // Withdrawing loosens nothing, so any admin may, without a step-up.
+  // Withdrawing loosens nothing, so any admin may.
   if (!(await who.backend.store.dropChange(who.companyId, context.params[0]!))) return WORDS.noChange;
   log(who, { event: "cloud.company_settings_withdrawn", changeId: context.params[0] });
   return ok({ withdrawn: true });

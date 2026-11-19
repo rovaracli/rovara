@@ -26,7 +26,7 @@ export type { OrgId } from "./org.js";
 export * from "./app-nav.js";
 
 export { TICKET_PATTERN } from "./confirmation.js";
-export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, OrgMemberLookupBodySchema, OrgMemberLookupResponseSchema, OrgMemberLookupResponseReaderSchema, SetMyNameBodySchema, type SetMyNameBody, SetMyNameResponseSchema, type SetMyNameResponse, SetMyNameResponseReaderSchema } from "./developer-web.js";
+export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, SetMyNameBodySchema, type SetMyNameBody, SetMyNameResponseSchema, type SetMyNameResponse, SetMyNameResponseReaderSchema } from "./developer-web.js";
 export { SessionMessageReaderSchema, SessionMessagePageReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema } from "./session-views.js";
 export { SessionMessageIdSchema, SessionAnchorInputSchema, type SessionAnchorInput, type SessionAnchorRef } from "./agent-sessions.js";
 export { DeveloperTaskViewSchema } from "./developer-tasks.js";
@@ -51,7 +51,7 @@ export { ChainRunViewReaderSchema } from "./chain-session.js";
 
 export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
 
-export { MemberRemovalBodySchema, MemberRemovalPreviewSchema, MemberRemovalPreviewReaderSchema, MemberRemovalStartedSchema, MemberRemovalStartedReaderSchema, MemberRemovalStatusSchema, MemberRemovalStatusReaderSchema } from "./member-removal-web.js";
+export { MemberRemovalBodySchema, MemberRemovalPreviewSchema, MemberRemovalPreviewReaderSchema, MemberRemovalStartedSchema, MemberRemovalStartedReaderSchema, MemberRemovalStatusSchema, MemberRemovalStatusReaderSchema, PendingHandOversSchema, PendingHandOversReaderSchema, FinishHandOverBodySchema } from "./member-removal-web.js";
 
 export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";
 
@@ -159,6 +159,7 @@ export { SetupDraftResponseSchema, type SetupDraftResponse, SetupDraftResponseRe
 // Learning v2 L3b: the Lessons tab, the Sources tab and the task page's lessons list.
 export * from "./app-lessons.js";
 export * from "./app-lessons-areas.js";
+export * from "./app-lessons-extras.js";
 // Team record source rows (learning v2): the Sources tab editor's bodies and views.
 export * from "./team-record-sources.js";
 

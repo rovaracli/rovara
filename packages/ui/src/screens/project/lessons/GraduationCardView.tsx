@@ -17,8 +17,10 @@ const PATHS_MAX = 20;
 /** The week's one "Make this permanent?" card: why it is proven, where it applies, where it can go, and what each answer does. Only shown for people who decide. */
 export function GraduationCardView({ project, card }: { project: string; card: GraduationCard }) {
   const api = useLearnedApi(), query = useQueryClient(), announce = useAnnounce();
+  const dynamicPaths = card.paths.some(one => /[{}[\]]/u.test(one));
+  const targets = dynamicPaths ? card.targets.filter(one => one !== "rule") : card.targets;
   // A rule can only narrow the lesson's own paths: they are offered as chips, all chosen. Only a lesson with no paths gets a free field (it may be narrowed to any).
-  const [target, setTarget] = useState<GraduationTarget>(card.target), [pathsText, setPathsText] = useState(""), [kept, setKept] = useState<ReadonlySet<string>>(new Set(card.paths)), [name, setName] = useState("");
+  const [target, setTarget] = useState<GraduationTarget>(targets.includes(card.target) ? card.target : targets[0] ?? "check"), [pathsText, setPathsText] = useState(""), [kept, setKept] = useState<ReadonlySet<string>>(new Set(card.paths)), [name, setName] = useState("");
   const [state, setState] = useState<{ kind: "idle" } | { kind: "busy" } | { kind: "done"; text: string } | { kind: "waiting"; text: string } | { kind: "error"; text: string }>({ kind: "idle" });
   const own = card.paths.length > 0, paths = own ? card.paths.filter(one => kept.has(one)) : parsePaths(pathsText);
   const pathsError = target !== "rule" ? undefined : own ? (paths.length === 0 ? "Keep at least one path, or choose another place." : undefined) : paths.length > PATHS_MAX ? `At most ${String(PATHS_MAX)} paths.` : paths.some(one => !plainPath(one)) ? "Use plain paths such as src/billing/**, with no leading slash and no \"..\"." : undefined;
@@ -47,8 +49,9 @@ export function GraduationCardView({ project, card }: { project: string; card: G
     {closed ? <p role="status" className="rv-learned-note" data-testid="permanent-result"><VisibleText text={state.text} /></p> : <>
       <fieldset className="rv-permanent-targets" disabled={busy}>
         <legend>Where should it go?</legend>
-        <div className="rv-choices">{card.targets.map(one => <label key={one} className="rv-choice"><input type="radio" name={"permanent-target-" + project} value={one} checked={target === one} onChange={() => setTarget(one)} /><span>{TARGET_WORDS[one]}{one === card.target ? " (suggested)" : ""}</span></label>)}</div>
+        <div className="rv-choices">{targets.map(one => <label key={one} className="rv-choice"><input type="radio" name={"permanent-target-" + project} value={one} checked={target === one} onChange={() => setTarget(one)} /><span>{TARGET_WORDS[one]}{one === card.target ? " (suggested)" : ""}</span></label>)}</div>
       </fieldset>
+      {dynamicPaths && <p className="rv-muted">Team rules need plain file paths, so this one can't become a rule.</p>}
       {target === "rule" && own && <fieldset className="rv-permanent-paths" disabled={busy}><legend>Code paths it applies to</legend>
         <ul className="rv-tidy-list" aria-label="Code paths">{card.paths.map(path => <li key={path}><Checkbox label={visibleText(path)} checked={kept.has(path)} disabled={busy} onCheckedChange={value => setKept(old => { const next = new Set(old); if (value === true) next.add(path); else next.delete(path); return next; })} /></li>)}</ul>
         <p className="rv-muted">A rule can only keep some of the lesson's own paths. It can't widen them.</p>{pathsError !== undefined && <p role="alert" className="rv-lesson-failed">{pathsError}</p>}</fieldset>}

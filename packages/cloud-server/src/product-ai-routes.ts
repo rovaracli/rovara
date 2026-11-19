@@ -21,7 +21,7 @@
 // made here, and Cloud withdraws a person's approvals when it changes their membership (withdrawForMember, below).
 //
 // Who: the project's admin (Code's access check made now: the project's access is "administrator") or a company admin; anyone
-// else is refused, and a project the person can't see is not found. Every write needs a fresh step-up, and goes through the
+// else is refused, and a project the person can't see is not found. Every write goes through the
 // app's signed-write path (CSRF in handler.ts, the body hash at CloudFront). The store is the gateway's write-only product key
 // store (scripts/cloud-lambda.ts wires ProductKeyStore over the gateway's product key table and KMS keys); it seals the key in
 // one transaction with its own receipt and audit row, and Cloud records its own audit record after the change is saved.
@@ -30,7 +30,6 @@ import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import { COMPANY_ID } from "./company-store.js";
 import { BEDROCK_ANSWERS, BEDROCK_ROLE_ARN, BEDROCK_WORDS, choiceKeys, choiceOf, connectionKey, type BedrockBackend } from "./bedrock-byo-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
-import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
 /** The store's error codes (product-keys.ts ProductKeyErrorCode), answered in this module's own fixed words. */
 export type ProductAiErrorCode = "invalid" | "stale" | "not_found" | "in_recovery" | "forbidden" | "unavailable" | "too_open" | "refused" | "aws_too_open" | "aws_refused" | "role_in_use";
@@ -95,7 +94,6 @@ const WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "Product AI settings aren't set up on this Cloud."),
   notFound: refusal(404, "PROJECT_NOT_FOUND", "That project doesn't exist, or you can't use it."),
   forbidden: refusal(403, "FORBIDDEN", "Only the project's admin or a company admin can change its product AI settings."),
-  stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   invalid: refusal(400, "CONFIG_INVALID", "These product AI settings are not valid."),
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
   stale: refusal(409, "CONFLICT", "Product AI settings changed. Refresh and try again."),
@@ -120,7 +118,7 @@ const whole = (v: unknown): v is number => typeof v === "number" && Number.isSaf
 interface Who { backend: ProductAiBackend; companyId: string; developerId: string; name: string; role: ProductAiActor["role"]; project: string; /** When Code's access check began (an approval counts from then). */ checkedAt: number }
 
 /** The person, their company and their role in this project, from Code's access check made now. A RouteAnswer when refused. */
-async function who(context: RouteContext, write: boolean): Promise<Who | RouteAnswer> {
+async function who(context: RouteContext): Promise<Who | RouteAnswer> {
   const backend = context.productAi;
   if (backend === undefined) return WORDS.off;
   const project = context.params[0] ?? "";
@@ -137,7 +135,6 @@ async function who(context: RouteContext, write: boolean): Promise<Who | RouteAn
   if (mine === undefined && !companyAdmin) return WORDS.notFound;
   if (role === undefined) return WORDS.forbidden;
   if (!/^[a-f0-9]{64}$/u.test(access.developerId)) return WORDS.forbidden;
-  if (write && freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return WORDS.stepUp;
   return { backend, companyId, developerId: access.developerId, name: access.displayName, role, project, checkedAt };
 }
 
@@ -209,14 +206,14 @@ async function audited(context: RouteContext, w: Who, action: CloudAuditAction):
 const changeOf = (w: Who, e: { requestId: string; expectedRevision: number }): Change => ({ iss: w.backend.issuer, cid: w.companyId, owner: w.project, requestId: e.requestId, expectedRevision: e.expectedRevision, actor: { id: w.developerId, role: w.role } });
 
 async function readProductAi(context: RouteContext): Promise<RouteAnswer> {
-  const w = await who(context, false);
+  const w = await who(context);
   if ("status" in w) return w;
   const v = await guarded(w, () => w.backend.store.view(w.backend.issuer, w.companyId, w.project));
   return "status" in v ? v : ok(view(v, w));
 }
 
 async function putKey(context: RouteContext): Promise<RouteAnswer> {
-  const w = await who(context, true);
+  const w = await who(context);
   if ("status" in w) return w;
   const e = envelope(context, ["key"]);
   if ("status" in e) return e;
@@ -234,7 +231,7 @@ async function putKey(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function removeKey(context: RouteContext): Promise<RouteAnswer> {
-  const w = await who(context, true);
+  const w = await who(context);
   if ("status" in w) return w;
   const e = envelope(context, []);
   if ("status" in e) return e;
@@ -245,7 +242,7 @@ async function removeKey(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function putEvalBudget(context: RouteContext): Promise<RouteAnswer> {
-  const w = await who(context, true);
+  const w = await who(context);
   if ("status" in w) return w;
   const e = envelope(context, ["calls", "costMicros"]);
   if ("status" in e) return e;
@@ -258,7 +255,7 @@ async function putEvalBudget(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function putEvalApproval(context: RouteContext): Promise<RouteAnswer> {
-  const w = await who(context, true);
+  const w = await who(context);
   if ("status" in w) return w;
   const e = envelope(context, ["approval"]);
   if ("status" in e) return e;
@@ -288,7 +285,7 @@ const VERTEX_FORM = Object.freeze({
 const VERTEX_ANSWERS: Partial<Record<ProductAiErrorCode, RouteAnswer>> = { refused: WORDS.vertexRefused, too_open: WORDS.vertexTooOpen, unavailable: WORDS.vertexUnavailable };
 
 async function putVertex(context: RouteContext): Promise<RouteAnswer> {
-  const w = await who(context, true);
+  const w = await who(context);
   if ("status" in w) return w;
   const e = envelope(context, ["projectId", "location", "audience", "serviceAccount"]);
   if ("status" in e) return e;
@@ -309,7 +306,7 @@ async function putVertex(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function removeVertex(context: RouteContext): Promise<RouteAnswer> {
-  const w = await who(context, true);
+  const w = await who(context);
   if ("status" in w) return w;
   const e = envelope(context, []);
   if ("status" in e) return e;
@@ -324,7 +321,7 @@ export const PRODUCT_AI_BEDROCK_SOURCE_ID = "src_bedrock";
 const bedrockOff = (w: Who): RouteAnswer | undefined => (w.backend.bedrock === undefined ? BEDROCK_WORDS.off : undefined);
 
 async function putBedrockOwn(context: RouteContext): Promise<RouteAnswer> {
-  const w = await who(context, true);
+  const w = await who(context);
   if ("status" in w) return w;
   const off = bedrockOff(w); if (off !== undefined) return off;
   const e = envelope(context, ["roleArn", "region", "models", "allowGlobal"], ["productModels"]);
@@ -346,7 +343,7 @@ async function putBedrockOwn(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function linkBedrock(context: RouteContext): Promise<RouteAnswer> {
-  const w = await who(context, true);
+  const w = await who(context);
   if ("status" in w) return w;
   const off = bedrockOff(w); if (off !== undefined) return off;
   const e = envelope(context, []);
@@ -358,7 +355,7 @@ async function linkBedrock(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function removeBedrockSource(context: RouteContext): Promise<RouteAnswer> {
-  const w = await who(context, true);
+  const w = await who(context);
   if ("status" in w) return w;
   const off = bedrockOff(w); if (off !== undefined) return off;
   const e = envelope(context, []);
@@ -371,7 +368,7 @@ async function removeBedrockSource(context: RouteContext): Promise<RouteAnswer> 
 
 /** The one CloudShell command that creates the role (the company's external id and Rovara's broker role come from the gateway). */
 async function postBedrockSetup(context: RouteContext): Promise<RouteAnswer> {
-  const w = await who(context, false);
+  const w = await who(context);
   if ("status" in w) return w;
   const bedrock = w.backend.bedrock;
   if (bedrock === undefined) return BEDROCK_WORDS.off;

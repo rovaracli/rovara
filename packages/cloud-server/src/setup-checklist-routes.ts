@@ -10,7 +10,7 @@
 //   GET  /v1/app/projects/{p}/setup-agent/journal?after=n  -> Code GET .../setup-agent/journal?after=n
 //   POST /v1/app/projects/{p}/setup-agent/confirm {requestId, expectedRevision, itemIds?} -> Code POST .../setup-agent/confirm  ("Use this setup": a candidate and its check; L4-D, Code #899)
 //   POST /v1/app/projects/{p}/setup-agent/discard {requestId}                              -> Code POST .../setup-agent/discard  (drop the waiting candidate)
-//   POST /v1/app/projects/{p}/setup-agent/decide {requestId, outcome, seen, reason?}       -> Code POST .../setup-agent/decide   (approve or reject: a fresh step-up, then Code's risk-based approver rule)
+//   POST /v1/app/projects/{p}/setup-agent/decide {requestId, outcome, seen, reason?}       -> Code POST .../setup-agent/decide   (approve or reject: Code's risk-based approver rule)
 //   The setup-run read also carries Code's `apply` (the waiting candidate: risk, changes, who approves, the check, the approval binding), rebuilt field by field (L4-D2).
 //
 // Rules:
@@ -67,6 +67,8 @@ const REPOSITORY_ACCESS = ["transferred", "removed"] as const;
 const RUN_STATUSES = ["none", "running", "ready", "failed"] as const;
 /** L4-T2 (Code's SETUP_APPROVALS and SETUP_CHECK_STATUSES). */
 const APPROVALS = ["none", "candidate", "checking", "approved"] as const;
+/** L4-T2c (Code's SETUP_NEWER_PROPOSALS): a newer proposal beside an approved setup. */
+const NEWER_PROPOSALS = ["needs_you", "checking", "rejected"] as const;
 const CHECK_STATUSES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
 const MODEL_CALLS = ["possible", "none", "unknown"] as const;
 /** The rows that must be done before the first task (the same list Code's progress uses). */
@@ -91,11 +93,14 @@ const optional = <T>(value: unknown, check: (one: unknown) => boolean, key: stri
 function setupRunRow(row: Plain): Plain {
   // L4-T2: the approval is part of the row; an answer without it is not one this Cloud can read (land with Code's change).
   need(oneOf(row["state"], ROW_STATES) && oneOf(row["status"], RUN_STATUSES) && oneOf(row["approval"], APPROVALS), undefined);
+  // L4-T2c: a newer proposal is only ever beside an approved setup, and is one of Code's three words; an answer without it (an older Code) reads as none.
+  need(row["newerProposal"] === undefined || (row["approval"] === "approved" && oneOf(row["newerProposal"], NEWER_PROPOSALS)), undefined);
   const found = row["commandsFound"], failed = row["failedCommand"], check = row["check"];
   return {
     state: row["state"], status: row["status"], approval: row["approval"],
     ...(check === undefined ? {} : { check: need(plain(check) && oneOf(check["status"], CHECK_STATUSES) && (check["failedStep"] === undefined || text(check["failedStep"], 300)), { status: (check as Plain)["status"], ...((check as Plain)["failedStep"] === undefined ? {} : { failedStep: (check as Plain)["failedStep"] }) }) }),
     ...optional<string>(row["approvedAt"], (one) => text(one, 40), "approvedAt"),
+    ...(row["newerProposal"] === undefined ? {} : { newerProposal: row["newerProposal"] }),
     ...optional<string>(row["startedAt"], (one) => text(one, 40), "startedAt"),
     ...optional<number>(row["elapsedMs"], (one) => whole(one), "elapsedMs"),
     ...optional<number>(row["costCents"], (one) => whole(one), "costCents"),
@@ -233,8 +238,14 @@ export const SETUP_APPROVAL_CODE_WORDS: readonly string[] = Object.freeze([
   "None of the suggestions can be used: each one failed its check, or is a command Rovara does not carry into a project's setup.",
   "That suggestion is not part of this setup.",
   "The setup has no test command to prove, so there is nothing to use yet.",
+  // L4-T5: Code's own sentence now says what to do next (the one above is an older Code's).
+  "The setup has no test command to prove, so there is nothing to use yet. Add a test command to the project's setup, or run the setup again.",
   "The commands could not be made into the project's setup.",
-  "Another setup is waiting for your approval. Decide it, or discard it, first.",
+  // L4-T5: what a person can really do with the waiting setup, by where its check stands. (An older Code's "Decide it, or discard it, first." is not passed on: a failed check could only be discarded.)
+  "Another setup is waiting for your approval. Approve or reject it, or discard it, first.",
+  "Another setup is still being checked on a fresh machine. Wait for the check to finish, or discard it, first.",
+  "Another setup can't be approved: its check on a fresh machine did not pass. Discard it, then use this one.",
+  "Another setup is waiting. If its check passed, approve or reject it; otherwise discard it. Then use this one.",
   "A command in this setup is too long to show whole, so it cannot be approved.",
   "There is no setup waiting for a decision. Open the project's setup again.",
   "This setup change reaches outside the project's commands (a website, a secret, a registry, an integration or something Rovara does not recognise), so a company owner or admin must approve it.",
@@ -244,7 +255,6 @@ export const SETUP_APPROVAL_CODE_WORDS: readonly string[] = Object.freeze([
 export const SETUP_APPROVAL_WORDS = Object.freeze({
   stale: "This setup changed or is no longer waiting for a decision. Refresh to see where it stands.",
   conflict: "This was already sent. Refresh to see where the setup stands.",
-  stepUp: "Confirm it's you again, then try once more.",
   cannotDecide: "Only the project's maintainers, or a company owner or admin, can decide this setup.",
   approvalNotYet: "Approving a setup isn't available on this Rovara yet.",
   audit: "The record of this change could not be written, so nothing was done. Try again.",
@@ -330,7 +340,6 @@ export function approvalRefusal(kind: ApprovalKind, error: CodeError): RouteAnsw
     if (code === "NOT_FOUND" && body?.["message"] === "Approving a project's setup isn't available on this install yet.") return answer(501, "NOT_ON_CODE_YET", AW.approvalNotYet);
     return A.notFound;
   }
-  if (code === "REAUTH_REQUIRED") return answer(403, "REAUTH_REQUIRED", AW.stepUp);
   if (error.status === 403) return said !== undefined ? answer(403, "FORBIDDEN", said) : kind === "decide" ? answer(403, "FORBIDDEN", AW.cannotDecide) : A.runNotAllowed;
   if (error.status === 400) return said !== undefined ? answer(400, "CONFIG_INVALID", said) : A.invalid;
   if (error.status === 409) {

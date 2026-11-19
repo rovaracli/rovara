@@ -6,7 +6,7 @@
 //   GET    /api/connect/linear/callback                   where Linear sends the person back (the redirect URL in Code's Linear app secret)
 //   POST   /v1/app/linear/connect/result                  the callback's outcome, kept server-side for this sign-in
 //   GET    /v1/app/linear                                 the company's connection (any member)
-//   DELETE /v1/app/linear                                 owner + fresh step-up (the Connections page, PR 12b)
+//   DELETE /v1/app/linear                                 company owner only (the Connections page, PR 12b)
 //   GET    /v1/app/projects/{p}/linear                    the project's team and the teams the company's token sees
 //   PUT    /v1/app/projects/{p}/linear      {teamId}      pick the project's team
 //   DELETE /v1/app/projects/{p}/linear                    clear it
@@ -16,7 +16,7 @@
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import {
   CONNECT_SECRET, NOT_IN_COMPANY_WORDS, PROJECT_NAME, askAsBound, codeRefusal, connectCallbackPath, connectRefusal, createConnectFlow, displayName, isObject, liveMembership,
-  oneValue, ownerWithFreshStepUp, startBody, STEP_UP_WORDS, type ConnectAnswer,
+  oneValue, companyOwnerOnly, startBody, type ConnectAnswer,
 } from "./connect-flow.js";
 import type { CodeSession, SessionStore } from "./sessions.js";
 
@@ -191,14 +191,14 @@ export function createLinearConnect(deps: LinearConnectDeps) {
       });
     },
 
-    /** DELETE /v1/app/linear: owner + fresh step-up here first, then Code's disconnect (which checks both again). */
+    /** DELETE /v1/app/linear: company owner here first, then Code's disconnect (which checks it again). */
     async disconnect(session: CodeSession): Promise<ConnectAnswer> {
-      const refused = await ownerWithFreshStepUp(deps.client, session, deps.now().getTime(), LINEAR_WORDS.ownerOnly);
+      const refused = await companyOwnerOnly(deps.client, session, LINEAR_WORDS.ownerOnly);
       if (refused !== undefined) return refused;
       const failed = connectRefusal(503, "RUNTIME_UNAVAILABLE", LINEAR_WORDS.disconnectUnavailable);
       const answer = await ask(session, CODE_LINEAR, { method: "DELETE" }, (error) => {
         const { code } = codeRefusal(error.body);
-        if (error.status === 403) return code === "REAUTH_REQUIRED" ? connectRefusal(403, "REAUTH_REQUIRED", STEP_UP_WORDS) : connectRefusal(403, "FORBIDDEN", LINEAR_WORDS.ownerOnly);
+        if (error.status === 403) return connectRefusal(403, "FORBIDDEN", LINEAR_WORDS.ownerOnly);
         if (error.status === 409 && code === "LINEAR_NOT_CONNECTED") return connectRefusal(409, "LINEAR_NOT_CONNECTED", LINEAR_WORDS.notConnected);
         if (notAvailable(error.status)) return connectRefusal(404, "NOT_FOUND", LINEAR_WORDS.notAvailable);
         return failed;

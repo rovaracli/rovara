@@ -21,7 +21,7 @@ export const VERDICT_WORDS = {
 
 export const CONFIRM_WORDS = {
   rule: "Using this setup saves it as a proposal in the test environment below; it does not change the project's settings. You approve it there, after a passing proof.",
-  next: "Saved as a proposal. In the test environment below, run its check, prove it, then approve it with a fresh sign-in; approving adds the commands to the settings.",
+  next: "Saved as a proposal. In the test environment below, run its check, prove it, then approve it; approving adds the commands to the settings.",
   checking: "Rovara is still checking where each suggestion came from.",
   leftOut: { unverified: "left out: it does not match the code", refused_command: "left out: it downloads and runs code, or holds a secret", not_a_command_item: "left out: not a command", too_many: "left out: too many commands", invalid_command: "left out: it could not be read as a command" },
 } as const;
@@ -49,9 +49,6 @@ export const APPROVAL_WORDS = {
     failed: "The check on a fresh workspace failed. Nothing was applied.",
     stale: "The check has not run on this setup yet.",
   },
-  stepUp: "Approving or rejecting asks you to confirm it's you first.",
-  stepUpDone: "You confirmed it's you. This stays open for a few minutes.",
-  stepUpOld: "Your last confirmation is too old. Confirm it's you again, then choose.",
   approved: "Approved. The project now uses this setup.",
   rejected: "Rejected. The project keeps its current setup.",
   discarded: "Discarded. The project keeps its current setup.",
@@ -65,6 +62,6 @@ export const REVIEW_WORDS = {
   approve: "Needs you: approve",
   /** What "Use this setup" says on the checklist, where the check starts by itself and the approval is on the same card (the Setup step's words point at a test environment section the checklist doesn't have). */
   confirmRule: "Using this setup saves it as a proposal and checks it on a fresh machine. It does not change the project's settings. You approve it here once the check has passed.",
-  confirmNext: "Saved as a proposal. Rovara is checking it on a fresh machine. When the check passes, approve it here with a fresh sign-in.",
+  confirmNext: "Saved as a proposal. Rovara is checking it on a fresh machine. When the check passes, approve it here.",
   readOnly: "Rovara has a setup waiting. A project admin, or a company owner or admin, reviews and approves it.",
 } as const;

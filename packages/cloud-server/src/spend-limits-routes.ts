@@ -5,21 +5,21 @@
 //   PUT /org/spend-limits/people/{developer id}    the same, for one person
 // The kinds (and their paths and list members) come from one table, SPEND_LIMIT_KINDS (company-store.ts): a new kind is an entry there, not new code here.
 //
-// The defaults are `settings.budgets` (PUT /org/settings writes them: a fresh step-up on EVERY write, and the company's decision rules for a
+// The defaults are `settings.budgets` (PUT /org/settings writes them, with the company's decision rules for a
 // loosening one). An override is one item per project or person in the Companies table (company-store.ts SpendLimit); the model gateway
 // reads it on every call and holds the call to it (model-gateway company-caps.ts). The company's monthly cap stays the outer bound.
 //
 // Who: a company owner or admin (Code's company role from its access check made now, company-caller.ts; never Code's install `administrator` flag),
 // reads included. Never a plain member. The company is the one Code names for the person: nothing the browser sends and no deployment-wide
 // default ever names it.
-// Step-up: only when the change RAISES what the project or person may spend. Raising means the new effective limit (the override, or the
-// default when the override is removed; no limit counts as the highest) is above the current effective limit. Lowering needs none. The
+// Raising: the company's loosening rules apply only when the change RAISES what the project or person may spend. Raising means the new effective limit (the override, or the
+// default when the override is removed; no limit counts as the highest) is above the current effective limit. Lowering is free. The
 // decision is made on a fresh read, and the write is conditional on exactly what was read (the override's version and amount, and the
 // settings version the default came from), so a change that races is refused, never decided on stale data. A raise also honours the
 // company's own rules for a loosening, asked as PUT /org/settings asks them: a company that forbids it (`setting.loosen` with allow false) cannot raise
 // a limit here either; one that needs a second person or two approvals (the DEFAULT rules do) cannot raise one here, so the raise is refused in fixed words
-// (raise the company default in Company settings, which has the second-admin flow; lowering stays free); its `deciders` are enforced (the verdict stage);
-// its sign-in window applies.
+// (raise the company default in Company settings, which has the second-admin flow; lowering stays free); its `deciders` are enforced (the verdict stage).
+// Owner DEC 254zzz73 removed the step-up a raise once needed; the admin role and these rules stay.
 // Two kinds are not about a project's or person's agents (lead 4 L4-E): `upkeep` (a project's monthly cap on nightly upkeep AI, default $25, $0 = none) and
 // `answers` (the company's monthly limit on answers on its own AI key, default $20; its id is the company's own). Both are enforced only by the gateway, which can
 // only tighten the project and company caps; raising either above its default follows the same loosening rules as any other raise.
@@ -29,15 +29,15 @@
 // No answer ever echoes what the browser sent or what a lower layer said.
 import { recordCloudAction } from "./audit-log.js";
 import { CodeError } from "./code-client.js";
-import { companyCaller, isCompanyAdmin, refused as notCaller } from "./company-caller.js";
+import { companyCaller, isCompanyAdmin, refused as notCaller, type CompanyRole } from "./company-caller.js";
 import { plainObject, settingsDecision } from "./company-settings.js";
 import {
   CompanyStoreConflict, SPEND_LIMIT_KINDS, SPEND_LIMIT_SCOPES, SPEND_LIMIT_MICROS_MAX, companySettings, spendLimitDef,
   type CompanyStore, type SpendLimit, type SpendLimitKind, type SpendLimitScope,
 } from "./company-store.js";
 import { CODE_MEMBERS_PATH, MEMBER_LIST_PAGES_MAX } from "./member-routes.js";
+import { SELF_APPROVED_ONLY_ADMIN, isSoleCompanyAdmin } from "./sole-admin.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
-import { freshStepUp } from "./step-up.js";
 
 const BODY_BYTES_MAX = 1_024;
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
@@ -45,7 +45,6 @@ const refusal = (status: number, code: string, message: string): RouteAnswer => 
 export const SPEND_LIMIT_WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "Spending limits aren't set up on this Cloud."),
   forbidden: refusal(403, "FORBIDDEN", "Only a company admin can see or change spending limits."),
-  stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   ruled: refusal(403, "FORBIDDEN", "Your company's rules don't allow raising a limit."),
   secondPerson: refusal(403, "SECOND_PERSON_REQUIRED", "Raising this limit needs a second admin under your company's rules. Ask an owner to change the rules, or raise the company default in Company settings."),
   invalid: refusal(400, "CONFIG_INVALID", "Send the amount in dollars, from 0 to 1,000,000 with at most two decimals, or null to remove the limit."),
@@ -73,7 +72,7 @@ export function dollarsToMicros(value: unknown): number | undefined {
 }
 const usd = (micros: number | null) => (micros === null ? null : micros / 1_000_000);
 
-interface Admin { companyId: string; developerId: string; name: string; store: CompanyStore }
+interface Admin { companyId: string; developerId: string; name: string; companyRole: CompanyRole; store: CompanyStore }
 
 /** A company owner or admin, from Code's access check made now. A RouteAnswer when refused (no company, a plain member, no company backend). */
 async function admin(context: RouteContext): Promise<Admin | RouteAnswer> {
@@ -82,7 +81,7 @@ async function admin(context: RouteContext): Promise<Admin | RouteAnswer> {
   const who = await companyCaller(context);
   if (notCaller(who)) return who;
   if (!isCompanyAdmin(who.companyRole)) return W.forbidden;
-  return { companyId: who.companyId, developerId: who.developerId, name: who.name, store: backend.store };
+  return { companyId: who.companyId, developerId: who.developerId, name: who.name, companyRole: who.companyRole, store: backend.store };
 }
 const refused = (value: Admin | RouteAnswer): value is RouteAnswer => "status" in value;
 
@@ -195,16 +194,20 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
   const raises = after > before;
   // Nothing changes (same effective limit, same override or none): answered without a write.
   if (after === before && (current !== undefined) === (asked !== null)) return view(who);
+  let selfApproved = false;
   if (raises) {
     // The company's own rules for a loosening, asked as PUT /org/settings asks them (company-routes.ts changeSettings): a company that forbids it can't
     // have a limit raised; one that needs a second person (or two approvals) can't have it raised here (a raise waits for a second admin only through
-    // the company default in Company settings); the `deciders` are enforced by asking for the verdict; and its sign-in window applies.
+    // the company default in Company settings); the `deciders` are enforced by asking for the verdict.
     const required = settingsDecision(settings.settings, true, "requirement", who.developerId);
     if (!required.allow) return W.ruled;
-    if (required.secondPerson) return W.secondPerson;
+    // DEC 254zzz79 (2): a company with ONE live owner/admin has no second person: that person raises it themselves (audited). With two or more, a raise here stays refused.
+    if (required.secondPerson) {
+      if (!(await isSoleCompanyAdmin(context, who))) return W.secondPerson;
+      selfApproved = true;
+    }
     const decision = settingsDecision(settings.settings, true, "verdict", who.developerId);
     if (!decision.allow) return W.ruled;
-    if (freshStepUp(context.session.accessToken, context.now().getTime(), decision.signInMaxAgeSeconds) === undefined) return W.stepUp;
   }
   if (current === undefined) {
     // A new override: only while the company is under the bound for this kind.
@@ -222,7 +225,7 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
       await recordCloudAction(context.audit, {
         companyId: who.companyId, actor: { developerId: who.developerId, name: who.name, type: "person" }, action: "company.budget.changed", via: "web",
         subject: `spend_limit:${kind}:${id}`, ...(def.scope === "project" ? { project: id } : {}),
-        detail: `${asked === null ? (raises ? AUDIT_WORD.removedRaised : AUDIT_WORD.removedLowered) : raises ? AUDIT_WORD.raised : AUDIT_WORD.lowered} from=${micros(before)} to=${micros(after)}`,
+        detail: `${asked === null ? (raises ? AUDIT_WORD.removedRaised : AUDIT_WORD.removedLowered) : raises ? AUDIT_WORD.raised : AUDIT_WORD.lowered} from=${micros(before)} to=${micros(after)}${selfApproved ? ` ${SELF_APPROVED_ONLY_ADMIN}` : ""}`,
       }, context.now);
     } catch { console.log(JSON.stringify({ event: "cloud.audit_failed", action: "company.budget.changed", companyId: who.companyId })); }
   }

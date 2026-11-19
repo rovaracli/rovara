@@ -9,7 +9,7 @@ import { Dialog } from "../../../design/Dialog.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { useAdminContext } from "../admin-context.js";
 // Only recognized application refusals are definitive; an unknown proxy response stays unknown.
-const refusalCodes = new Set(["AUTH_REQUIRED", "FORBIDDEN", "CSRF_STALE", "REAUTH_REQUIRED", "NOT_FOUND", "CONFIG_INVALID", "TOO_MANY_REQUESTS"]);
+const refusalCodes = new Set(["AUTH_REQUIRED", "FORBIDDEN", "CSRF_STALE", "NOT_FOUND", "CONFIG_INVALID", "TOO_MANY_REQUESTS"]);
 // Guided onboarding PR 17: Cloud's fixed "not on Code yet" and "not on the engine" refusals also record nothing.
 const notServed = new Set(["NOT_ON_CODE_YET", "ARCHIVE_NOT_AVAILABLE"]);
 const definiteRefusal = (error: unknown) => error instanceof ApiError && ((error.status >= 400 && error.status < 500 && refusalCodes.has(error.code)) || ((error.status === 501 || error.status === 503) && notServed.has(error.code)));

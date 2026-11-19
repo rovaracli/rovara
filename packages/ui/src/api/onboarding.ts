@@ -23,7 +23,7 @@ export function createOnboardingApi(host: AppHost) {
  githubResult:()=>api.sendAnswer("POST","/v1/app/github/connect/result",{},GithubConnectResultReaderSchema,{retry:"never"}),
  githubChoose:(installationId:number)=>api.sendAnswer("POST","/v1/app/github/choose",GithubChooseBodySchema.parse({installationId}),GithubChooseResponseReaderSchema,{retry:"never"}),
  githubConnections:()=>api.get("/v1/app/github/connections",GithubConnectionsResponseReaderSchema),
- // Guided onboarding PR 12b: a company owner with a fresh step-up disconnects one GitHub account (Code #832; refused while projects use it).
+ // Guided onboarding PR 12b: a company owner disconnects one GitHub account (Code #832; refused while projects use it).
  githubDisconnect:(installationId:number)=>api.sendAnswer("DELETE","/v1/app/github/connections/"+String(Math.trunc(installationId)),undefined,GithubDisconnectResponseReaderSchema,{retry:"never"}),
  repositories:(installation:number)=>api.get("/v1/app/github/repositories?"+new URLSearchParams({installation:String(installation)}).toString(),GithubRepositoriesResponseReaderSchema),
  create:async(body:ReturnType<typeof CreateProjectBodySchema.parse>)=>completed(await api.send("POST","/v1/app/projects",CreateProjectBodySchema.parse(body),CloudProjectCreatedResponseReaderSchema)),

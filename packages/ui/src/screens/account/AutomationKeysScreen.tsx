@@ -44,6 +44,6 @@ export function AutomationKeysScreen() {
    <Button variant="danger" busy={busy} onClick={() => { void revoke(); }}>Revoke key</Button><Button disabled={busy} onClick={() => setRevoking(undefined)}>Keep key</Button>
    {problem && <p role="alert">{problem}</p>}
   </Dialog>
-  {canCreate && creating && nav !== undefined && <Dialog title="Create automation key" open onOpenChange={setCreating}><CreateAutomationKey who={nav.me.developerId} onCreated={() => { void keys.refetch(); }} /></Dialog>}
+  {canCreate && creating && nav !== undefined && <Dialog title="Create automation key" open onOpenChange={setCreating}><CreateAutomationKey onCreated={() => { void keys.refetch(); }} /></Dialog>}
  </section>;
 }

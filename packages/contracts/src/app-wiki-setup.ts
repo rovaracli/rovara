@@ -57,7 +57,7 @@ export type WikiUpkeepBody = z.infer<typeof WikiUpkeepBodySchema>;
 /** The company-level route (the app calls it as `/v1/app/company/system-runs`; Code serves the same path). A company owner or admin only. */
 export const SYSTEM_RUNS_PATH = "/v1/app/company/system-runs" as const;
 /**
- * `PUT`: allow (`allowed: true`, which Code only accepts right after a fresh sign-in: the answer is 403 `REAUTH_REQUIRED` otherwise) or withdraw (`allowed: false`, no fresh sign-in needed). Withdrawing stops nightly
+ * `PUT`: allow (`allowed: true`) or withdraw (`allowed: false`). Withdrawing stops nightly
  * runs for every project at once and leaves each project's own switch as it is.
  */
 export const SystemRunsBodySchema = z.object({ requestId: z.string().uuid(), allowed: z.boolean() }).strict();
@@ -112,8 +112,6 @@ export const WIKI_SETUP_WORDS = Object.freeze({
   upkeepUnavailable: "Nightly upkeep could not be read or changed just now. Try again.",
   upkeepNeedsConsent: "A company admin must allow nightly upkeep first.",
   upkeepConsentNotAllowed: "Only company owners and admins can allow nightly upkeep for the company.",
-  // L4-P3 (owner 2026-11-17): allowing needs a fresh sign-in (Code's step-up); the company's own control is for owners and admins.
-  needsSignIn: "Confirm it's you again, then try once more.",
   systemRunsNotAllowed: "Only company owners and admins can see or change nightly upkeep for the company.",
 });
 export const WIKI_SETUP_SENTENCES: ReadonlySet<string> = new Set([...Object.values(WIKI_SETUP_CODE_WORDS), ...Object.values(WIKI_SETUP_WORDS)]);

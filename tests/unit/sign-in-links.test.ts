@@ -48,7 +48,6 @@ function world() {
     if (who === undefined || ended.has(who.developerId)) return respond(401, { error: { code: "AUTH_REQUIRED" } });
     const p = url.pathname;
     const mine = () => { let m = linked.get(who.developerId); if (m === undefined) { m = new Map(); linked.set(who.developerId, m); } return m; };
-    const fresh = () => token !== undefined && who.token === token && /step_up_at/u.test(Buffer.from(token.split(".")[1]!, "base64url").toString());
     if (p === "/v1/dev/access") return respond(200, { developerId: who.developerId, displayName: who.key, administrator: false, projects: [], notices: [] });
     if (p === "/v1/dev/me/sign-ins" && method === "GET") {
       return respond(200, { signIns: [{ method: who.primary, primary: true, secret: "x" }, ...[...mine()].map(([m, at]) => ({ method: m, primary: false, linkedAt: at }))] });
@@ -56,7 +55,6 @@ function world() {
     if (p === "/v1/dev/me/sign-ins/link" && method === "POST") {
       const keys = Object.keys(body ?? {}).sort().join(",");
       if (keys !== "challenge,method,returnTo,state" || !/^[A-Za-z0-9_-]{43,128}$/u.test(String(body!.challenge)) || !/^[A-Za-z0-9_-]{16,128}$/u.test(String(body!.state)) || !["slack", "github"].includes(String(body!.method))) return respond(400, { error: { code: "CONFIG_INVALID", message: "bad" } });
-      if (!fresh()) return respond(403, { error: { code: "REAUTH_REQUIRED", message: "stale" } });
       if (body!.returnTo !== REDIRECT || body!.method === who.primary || mine().has(String(body!.method))) return forbidden(WORDS.codeRefused);
       const id = `lnk_${randomBytes(32).toString("base64url")}`;
       links.set(id, { developerId: who.developerId, method: String(body!.method), challenge: String(body!.challenge), state: String(body!.state), code: `lnc_${randomBytes(32).toString("base64url")}`, finished: false });
@@ -71,7 +69,6 @@ function world() {
     }
     const del = /^\/v1\/dev\/me\/sign-ins\/([a-z]+)$/u.exec(p);
     if (del !== null && method === "DELETE") {
-      if (!fresh()) return respond(403, { error: { code: "REAUTH_REQUIRED", message: "stale" } });
       if (del[1] === who.primary) return forbidden(WORDS.codeLast);
       if (!mine().delete(del[1]!)) return respond(404, { error: { code: "NOT_FOUND", message: WORDS.codeNotConnected } });
       ended.add(who.developerId); // Code ends every sign-in of the person
@@ -158,12 +155,15 @@ describe("connect a sign-in: start (POST /v1/app/me/sign-ins/link)", () => {
     expect(w.pendingWrites).toEqual([]);
   });
 
-  it("passes Code's need for a fresh sign-in on (REAUTH_REQUIRED) and keeps nothing", async () => {
+  it("starts with a plain sign-in (no step-up since owner DEC 254zzz73); any 403 from Code is the fixed refusal and keeps nothing", async () => {
     const w = world();
     const plain = await w.signIn(NOVA_PLAIN);
-    const answer = await w.api(plain, "POST", "/me/sign-ins/link", { method: "slack" });
-    expect(answer).toMatchObject({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: SIGN_IN_LINK_WORDS.reauth } } });
-    expect(w.pendingWrites).toEqual([]);
+    expect((await w.api(plain, "POST", "/me/sign-ins/link", { method: "slack" })).status).toBe(200);
+    const other = world();
+    other.overrides.set("POST /v1/dev/me/sign-ins/link", () => respond(403, { error: { code: "REAUTH_REQUIRED", message: "stale" } }));
+    const answer = await other.api(await other.signIn(NOVA_PLAIN), "POST", "/me/sign-ins/link", { method: "slack" });
+    expect(answer).toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN", message: SIGN_IN_LINK_WORDS.refused } } });
+    expect(other.pendingWrites).toEqual([]);
   });
 
   it("says Code's refusal in fixed words only, 501 when Code does not serve the routes, and keeps nothing", async () => {
@@ -412,10 +412,10 @@ describe("connected sign-ins: unlink (DELETE /v1/app/me/sign-ins/{method})", () 
     expect(await w.sessions.get(nova.cookie)).toBeUndefined();
   });
 
-  it("passes REAUTH_REQUIRED, the first-method refusal and not-connected as Cloud's fixed words", async () => {
+  it("passes the first-method refusal and not-connected as Cloud's fixed words; a plain sign-in reaches Code (no step-up)", async () => {
     const w = world();
     const plain = await w.signIn(NOVA_PLAIN);
-    expect(await w.api(plain, "DELETE", "/me/sign-ins/slack")).toMatchObject({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: SIGN_IN_LINK_WORDS.reauth } } });
+    expect(await w.api(plain, "DELETE", "/me/sign-ins/slack")).toMatchObject({ status: 404, body: { error: { code: "SIGN_IN_NOT_CONNECTED", message: SIGN_IN_LINK_WORDS.notConnected } } });
     const nova = await w.signIn(NOVA);
     expect(await w.api(nova, "DELETE", "/me/sign-ins/github")).toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN", message: SIGN_IN_LINK_WORDS.lastMethod } } });
     expect(await w.api(nova, "DELETE", "/me/sign-ins/slack")).toMatchObject({ status: 404, body: { error: { code: "SIGN_IN_NOT_CONNECTED", message: SIGN_IN_LINK_WORDS.notConnected } } });

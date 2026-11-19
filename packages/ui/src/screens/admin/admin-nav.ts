@@ -6,7 +6,6 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
   { to: "/app/admin/people", label: "People", blurb: "Who is in the company, their roles and how they sign in." },
   { to: "/app/admin/invites", label: "Invites", blurb: "Invites and pre-approved emails: who may join." },
   { to: "/app/admin/sign-in-clients", label: "Sign-in clients", blurb: "The apps and company logins that can sign people in." },
-  { to: "/app/admin/sign-in-factors", label: "Sign-in factors", blurb: "Confirmation emails and passkeys, for fresh sign-ins." },
   { to: "/app/admin/domains", label: "Company domains", blurb: "Verify the email domains that belong to the company.", ownerOnly: true },
  ] },
  { id: "money", title: "Money", links: [
@@ -18,7 +17,7 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
  { id: "work", title: "Work and rules", links: [
   { to: "/app/admin/projects", label: "Projects", blurb: "Project setup, working branches and archiving." },
   { to: "/app/admin/how-we-work", label: "How we work", blurb: "Company defaults for models, locks and learning." },
-  { to: "/app/admin/settings", label: "Company settings", blurb: "Company rules, the approval window and who may start work." },
+  { to: "/app/admin/settings", label: "Company settings", blurb: "Company rules and who may start work." },
  ] },
  { id: "ai", title: "AI and connections", links: [
   { to: "/app/admin/ai-spending", label: "AI and spending", blurb: "Who pays for the AI, the model Rovara uses, and the company's monthly limit." },

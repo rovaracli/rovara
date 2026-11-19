@@ -10,7 +10,7 @@ import { CORE_TASK_ROUTES, renamed } from "../fixtures/code-core-task-routes.js"
 import { ProjectSetupChecklistSchema, SetupAgentViewSchema, SetupConfirmReplySchema, TestEnvironmentStateSchema } from "../../packages/contracts/src/web.js";
 import { readPlan, readTaskList, workRow } from "../../packages/ui/src/api/work.js";
 import {
-  ENGINE_MODEL_READ, ENGINE_MODEL_SAVED, LESSON_MEASURE, SETUP_AGENT_WITH_PROMPT_LOCATIONS, SETUP_EVAL_NONE_ANSWER, SETUP_STATUS_FAILED_WITH_TABS, SETUP_STATUS_NO_EVALS,
+  ENGINE_MODEL_READ, ENGINE_MODEL_SAVED, LEARNING_MODEL_CLEARED, LEARNING_MODEL_NONE_OFFERED, LEARNING_MODEL_READ_INSTALL, LEARNING_MODEL_SAVED, LESSON_MEASURE, SETUP_AGENT_WITH_PROMPT_LOCATIONS, SETUP_EVAL_NONE_ANSWER, SETUP_STATUS_FAILED_WITH_TABS, SETUP_STATUS_NO_EVALS,
   TEST_ENVIRONMENT_HOSTED, WIKI_UPKEEP_PAUSED, archiveOutcome, archivePreview, devAnswer, restoreOutcome, restorePreview, takeOwnershipPending, taskListRow, taskPlanAnswer,
 } from "../fixtures/code-answers.js";
 import { wikiSetupBuildView } from "../support/wiki-setup-fixture.js";
@@ -75,6 +75,18 @@ describe("Code's broker trace id is set aside once (audit items 2 and 3)", () =>
     const w = setUp((call) => call.path === "/v1/dev/company/engine-model" ? json(200, devAnswer(call.method === "GET" ? ENGINE_MODEL_READ : ENGINE_MODEL_SAVED)) : undefined);
     expect(await w.send("GET", "/v1/web/org/engine-model")).toEqual({ status: 200, body: { ...ENGINE_MODEL_READ, canChange: true } });
     expect(await w.send("PUT", "/v1/web/org/engine-model", { model: "zai.glm-5" })).toEqual({ status: 200, body: { ...ENGINE_MODEL_SAVED, canChange: true } });
+  });
+
+  it("the company lessons learning-model card reads Code's real read, save, clear and no-Claude-model answers (DEC 254zzz63)", async () => {
+    let next: Record<string, unknown> = LEARNING_MODEL_READ_INSTALL;
+    const w = setUp((call) => call.path === "/v1/dev/company/learning-model" ? json(200, devAnswer(next as object)) : undefined);
+    expect(await w.send("GET", "/v1/web/org/learning-model")).toEqual({ status: 200, body: { ...LEARNING_MODEL_READ_INSTALL, canChange: true } });
+    next = LEARNING_MODEL_SAVED;
+    expect(await w.send("PUT", "/v1/web/org/learning-model", { model: "claude-sonnet-5-5" })).toEqual({ status: 200, body: { ...LEARNING_MODEL_SAVED, canChange: true } });
+    next = LEARNING_MODEL_CLEARED;
+    expect(await w.send("PUT", "/v1/web/org/learning-model", { model: null })).toEqual({ status: 200, body: { ...LEARNING_MODEL_CLEARED, canChange: true } });
+    next = LEARNING_MODEL_NONE_OFFERED;
+    expect(await w.send("GET", "/v1/web/org/learning-model")).toEqual({ status: 200, body: { ...LEARNING_MODEL_NONE_OFFERED, canChange: true } });
   });
 
   it("archive and restore: the previews, the lifecycle read and both outcomes read Code's real answers", async () => {

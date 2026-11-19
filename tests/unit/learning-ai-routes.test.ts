@@ -14,7 +14,7 @@ const PATH = "/org/learning-ai";
 const anthropicKey = () => ["sk", "ant", randomBytes(16).toString("hex")].join("-");
 const openaiKey = () => ["sk", "proj", randomBytes(16).toString("hex")].join("-");
 
-describe("Learning AI key: company admins, fresh step-up, write-only, audited", () => {
+describe("Learning AI key: company admins, write-only, audited", () => {
   it("an admin connects Anthropic, then OpenAI; the gateway's learning source answers each path with its own key only", async () => {
     const w = world();
     const ada = await w.signIn("ada", 30);
@@ -55,18 +55,20 @@ describe("Learning AI key: company admins, fresh step-up, write-only, audited", 
     expect(await w.store.resolve(ISS, A, "web", "gemini")).toBeUndefined();
   });
 
-  it("refuses anyone but a company admin (reads too), and every write without a fresh step-up", async () => {
+  it("refuses anyone but a company admin (reads too), with or without a step-up; an admin needs none (owner DEC 254zzz73)", async () => {
     const w = world();
     for (const who of ["pam", "cal"]) {
-      const cookie = await w.signIn(who, 30);
-      expect((await w.call(cookie, "GET", PATH)).status).toBe(403);
-      expect((await w.call(cookie, "PUT", `${PATH}/key`, write(0, { provider: "anthropic", key: anthropicKey() }))).status).toBe(403);
+      for (const age of [30, undefined]) {
+        const cookie = await w.signIn(who, age);
+        expect((await w.call(cookie, "GET", PATH)).status).toBe(403);
+        expect((await w.call(cookie, "PUT", `${PATH}/key`, write(0, { provider: "anthropic", key: anthropicKey() }))).status).toBe(403);
+        expect((await w.call(cookie, "DELETE", `${PATH}/key`, write(0, { provider: "anthropic" }))).status).toBe(403);
+      }
     }
     for (const age of [undefined, 3600]) {
-      const ada = await w.signIn("ada", age);
-      const r = await w.call(ada, "PUT", `${PATH}/key`, write(0, { provider: "anthropic", key: anthropicKey() }));
-      expect(r.body.error?.code).toBe("STEP_UP_REQUIRED");
-      expect((await w.call(ada, "DELETE", `${PATH}/key`, write(0, { provider: "anthropic" }))).body.error?.code).toBe("STEP_UP_REQUIRED");
+      // Past the role check with no fresh step-up: a malformed write is the store's own refusal (400), never a step-up answer.
+      const r = await w.call(await w.signIn("ada", age), "PUT", `${PATH}/key`, { ...write(0, { provider: "anthropic", key: anthropicKey() }), extra: 1 });
+      expect([r.status, r.body.error?.code]).toEqual([400, "CONFIG_INVALID"]);
     }
     expect((await w.store.view(ISS, A, LEARNING_OWNER)).revision).toBe(0);
     // The CSRF token is still required.

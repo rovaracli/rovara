@@ -4,7 +4,7 @@ import { CLOUD_PIPELINE_CONTEXT_KEY, CloudReleasePipelineStack } from "./cloud-r
 import { CLOUD_APP_CONTEXT_KEY, CloudAppStack, cloudAppStackName } from "./cloud-app.js";
 import { CloudWebStack, cloudWebStackName } from "./cloud-web.js";
 import { RequireCloudBoundary } from "./cloud-boundary.js";
-import { MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ModelGatewayImagesStack, ModelGatewayStack, modelGatewayImagesStackName, modelGatewayStackName, providerSecretNamesMode } from "./model-gateway.js";
+import { MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_OFFERED_PRICES_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ModelGatewayImagesStack, ModelGatewayStack, modelGatewayImagesStackName, modelGatewayStackName, providerSecretNamesMode } from "./model-gateway.js";
 
 /**
  * Rovara Cloud's CDK app. What it makes is chosen by context:
@@ -85,6 +85,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       ...rovaraAiContext(app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY), app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY), app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY)),
       ...(productAiOn(app.node.tryGetContext(MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY), MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY) ? { bedrockByo: true } : {}),
       ...aiSourceKindsContext(app.node.tryGetContext(AI_SOURCE_KINDS_CONTEXT_KEY)),
+      ...(productAiOn(app.node.tryGetContext(MODEL_GATEWAY_OFFERED_PRICES_CONTEXT_KEY), MODEL_GATEWAY_OFFERED_PRICES_CONTEXT_KEY) ? { offeredPrices: true } : {}),
       providerSecretNames: providerSecretNamesMode(app.node.tryGetContext(MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY)),
     });
     Tags.of(gateway).add(ENVIRONMENT_TAG_KEY, gatewayEnv);

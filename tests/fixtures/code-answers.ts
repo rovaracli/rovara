@@ -19,6 +19,37 @@ export const ENGINE_MODEL_READ = { model: "claude-sonnet-5-5", source: "install"
 export const ENGINE_MODEL_SAVED = { model: "zai.glm-5", source: "company", offered: ["claude-sonnet-5-5", "zai.glm-5", "qwen.qwen3-coder-480b-a35b-v1:0"], preselect: "zai.glm-5" } as const;
 
 /**
+ * `GET|PUT /v1/dev/company/learning-model` (Code #1075, DEC 254zzz63): Code's CompanyLearningModelView and its refusals. REAL answers: produced by Code's own route handler
+ * (packages/broker/src/aws/company-learning-model-routes.ts) through Code's real developer dispatcher, membership reader and SDK double (tests/support/company-route-harness.ts),
+ * in a fresh clone of PrepLabsAI/Rovara at 5b79579a3 (the head of #1075), by running that file's own `world()` scenarios and writing each raw answer down; not written by hand.
+ * The harness answers its own trace id ("company-test"), which is taken off here; `devAnswer` adds one the way the deployed broker does. Two companies: A's gateway lists
+ * Sonnet 5.5 and Haiku 5.5 (plus models that are not Claude, which Code leaves out), B's lists Haiku 4.5 and Sonnet 5.5. The install default is Claude Haiku 5.5.
+ * Regenerate from Code's code when the route changes, never edit to make a Cloud test pass.
+ */
+export const LEARNING_MODEL_READ_INSTALL = {"model": "claude-haiku-5-5", "source": "install", "offered": ["claude-sonnet-5-5", "claude-haiku-5-5"], "preselect": "claude-haiku-5-5"} as const;
+export const LEARNING_MODEL_SAVED = {"model": "claude-sonnet-5-5", "source": "company", "offered": ["claude-sonnet-5-5", "claude-haiku-5-5"], "preselect": "claude-sonnet-5-5"} as const;
+export const LEARNING_MODEL_CLEARED = {"model": "claude-haiku-5-5", "source": "install", "offered": ["claude-sonnet-5-5", "claude-haiku-5-5"], "preselect": "claude-haiku-5-5"} as const;
+/** The default is not offered to the company (only Sonnet is): the first offered model is preselected. */
+export const LEARNING_MODEL_DEFAULT_NOT_OFFERED = {"model": "claude-haiku-5-5", "source": "install", "offered": ["claude-sonnet-5-5"], "preselect": "claude-sonnet-5-5"} as const;
+/** No Claude model is offered at all: `offered` is empty and `preselect` is null. */
+export const LEARNING_MODEL_NONE_OFFERED = {"model": "claude-haiku-5-5", "source": "install", "offered": [], "preselect": null} as const;
+/** The install's own setting is broken: `model` is null. */
+export const LEARNING_MODEL_INSTALL_BROKEN = {"model": null, "source": "install", "offered": ["claude-sonnet-5-5"], "preselect": "claude-sonnet-5-5"} as const;
+/** Company B (its own gateway list) reading, and then saving Haiku 4.5, while company A had saved Sonnet 5.5. */
+export const LEARNING_MODEL_OTHER_COMPANY_READ = {"model": "claude-haiku-5-5", "source": "install", "offered": ["claude-haiku-4-5", "claude-sonnet-5-5"], "preselect": "claude-haiku-4-5"} as const;
+export const LEARNING_MODEL_OTHER_COMPANY_SAVED = {"model": "claude-haiku-4-5", "source": "company", "offered": ["claude-haiku-4-5", "claude-sonnet-5-5"], "preselect": "claude-haiku-4-5"} as const;
+/** Code's refusals, as `{ status, body }` (the body is Code's `{ error: { code, message } }`). */
+export const LEARNING_MODEL_REFUSALS = {
+  notOffered: { status: 400, body: {"error": {"code": "CONFIG_INVALID", "message": "That model isn't a Claude model offered to this company now. Pick one from the list."}} },
+  bodyInvalid: { status: 400, body: {"error": {"code": "CONFIG_INVALID", "message": "Send the Claude model lessons should learn with, as { \"model\": \"<model id>\" }, or { \"model\": null } to use this Rovara's default."}} },
+  member: { status: 403, body: {"error": {"code": "FORBIDDEN", "message": "Only a company owner or admin can change the model lessons learn with."}} },
+  listUnavailable: { status: 503, body: {"error": {"code": "RUNTIME_UNAVAILABLE", "message": "The AI models this company can use could not be read just now; nothing was changed. Try again in a moment."}} },
+  settingUnavailable: { status: 503, body: {"error": {"code": "RUNTIME_UNAVAILABLE", "message": "The company's learning model setting could not be read or saved just now; try again."}} },
+  notWired: { status: 404, body: {"error": {"code": "NOT_FOUND", "message": "route not found"}} },
+  signedOut: { status: 401, body: {"error": {"code": "AUTH_REQUIRED", "message": "your AgentX sign-in has ended; run agentx login <url> again"}} },
+} as const;
+
+/**
  * `GET .../archive-preview`, `POST .../archive`, `GET .../restore-preview`, `POST .../restore` on `/v1/dev/client/projects/{p}`: copied from Code's
  * tests/contract/project-lifecycle-routes.test.ts (its `toEqual` answers; the company and the time are that test's, the company id is a parameter here).
  */

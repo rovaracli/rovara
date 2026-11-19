@@ -101,7 +101,7 @@ export const T = {
   LIMIT_CAP: "Wiki refresh and repair drafts: your AI key, held by the nightly upkeep cap below.",
   LIMIT_MANUAL: "Build wiki and Refresh now, when you press them: your AI key, held by this project's monthly limit and the build's own limit.",
   CAP: "Monthly cap on nightly upkeep",
-  CAP_HINT: "The most nightly upkeep may spend on AI in a month. $0 stops it spending. A lower cap saves at once; a higher one asks you to confirm it's you.",
+  CAP_HINT: "The most nightly upkeep may spend on AI in a month. $0 stops it spending.",
   CAP_DEFAULT: "This is the standard cap for nightly upkeep. Saving gives this project its own cap.",
   CAP_OWN: "This project has its own cap.",
   CAP_NONE: "No cap is set.",

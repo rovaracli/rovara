@@ -37,7 +37,6 @@ function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<A
  return { ...f, ...view, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
 const view = (vertexSetup: unknown) => ({ project: "web", revision: 3, canChange: true, key: { connected: false }, removedUntil: null, vertex: { connected: false }, evalBudget: { calls: 400, costMicros: 4_000_000 }, evalApproval: null, vertexSetup });
-function confirmedPath(path: string): string { seeded.set("rovara.stepup.nonce", JSON.stringify({ nonce: "n-1", at: Date.now() })); return `${path}?confirmed=n-1`; }
 async function openVertex() {
  fireEvent.change(await screen.findByLabelText("Project"), { target: { value: "web" } });
  fireEvent.click(screen.getByRole("button", { name: "Open" }));
@@ -100,16 +99,16 @@ describe("the Vertex guide panel", () => {
   expect(vertexGuide({ projectId: "acme-evals", setup }).steps[0].command.startsWith('PROJECT_ID="acme-evals"')).toBe(true);
  });
  it("follows the project id typed in the form", async () => {
-  const f = mount(confirmedPath("/app/admin/product-ai"), () => ({ status: 200, body: view(setup) }));
+  const f = mount("/app/admin/product-ai", () => ({ status: 200, body: view(setup) }));
   try {
    await openVertex();
    fireEvent.change(await screen.findByLabelText("Google Cloud project ID"), { target: { value: "acme-evals" } });
    expect(screen.getByTestId("vertex-step-2").textContent).toContain(`rovara-vertex${ACCOUNT_DOMAIN}`);
   } finally { f.close(); }
  });
- it("is shown before the fresh sign-in (it is only instructions)", async () => {
+ it("is shown with the form (no step-up since owner DEC 254zzz73)", async () => {
   const f = mount("/app/admin/product-ai", () => ({ status: 200, body: view(setup) }));
-  try { await openVertex(); expect(screen.getByTestId("fresh-sign-in")).toBeTruthy(); expect(screen.getByTestId("vertex-step-1")).toBeTruthy(); } finally { f.close(); }
+  try { await openVertex(); expect(screen.queryByTestId("fresh-sign-in")).toBeNull(); expect(screen.getByTestId("vertex-step-1")).toBeTruthy(); } finally { f.close(); }
  });
 });
 
@@ -165,7 +164,7 @@ describe("each refusal names the step that fixes it", () => {
   for (const bad of [42, "Vertex Refused", "x".repeat(60), undefined, { a: 1 }]) expect(apiError(400, body(bad), "https://cell.example").reason).toBeUndefined();
  });
  for (const reason of VERTEX_REFUSAL_REASONS) it(`on the page, ${reason} marks step ${String(STEP[reason])} and only it`, async () => {
-  const f = mount(confirmedPath("/app/admin/product-ai"), r => (r.method === "PUT" ? { status: reason === "vertex_unavailable" ? 503 : 400, body: { error: { code: reason === "vertex_unavailable" ? "RUNTIME_UNAVAILABLE" : "CONFIG_INVALID", message: "Cloud's sentence.", reason } } } : { status: 200, body: view(setup) }));
+  const f = mount("/app/admin/product-ai", r => (r.method === "PUT" ? { status: reason === "vertex_unavailable" ? 503 : 400, body: { error: { code: reason === "vertex_unavailable" ? "RUNTIME_UNAVAILABLE" : "CONFIG_INVALID", message: "Cloud's sentence.", reason } } } : { status: 200, body: view(setup) }));
   try {
    await openVertex();
    fireEvent.change(await screen.findByLabelText("Google Cloud project ID"), { target: { value: "acme-evals" } });
@@ -178,7 +177,7 @@ describe("each refusal names the step that fixes it", () => {
   } finally { f.close(); }
  });
  it("with a service account typed, a Google refusal marks steps 1 and 2", async () => {
-  const f = mount(confirmedPath("/app/admin/product-ai"), r => (r.method === "PUT" ? { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Cloud's sentence.", reason: "vertex_refused" } } } : { status: 200, body: view(setup) }));
+  const f = mount("/app/admin/product-ai", r => (r.method === "PUT" ? { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Cloud's sentence.", reason: "vertex_refused" } } } : { status: 200, body: view(setup) }));
   try {
    await openVertex();
    fireEvent.change(await screen.findByLabelText("Google Cloud project ID"), { target: { value: "acme-evals" } });
@@ -190,7 +189,7 @@ describe("each refusal names the step that fixes it", () => {
   } finally { f.close(); }
  });
  it("a refusal with no Vertex reason (a stale revision) marks no step", async () => {
-  const f = mount(confirmedPath("/app/admin/product-ai"), r => (r.method === "PUT" ? { status: 409, body: { error: { code: "CONFLICT", message: "Product AI settings changed. Refresh and try again." } } } : { status: 200, body: view(setup) }));
+  const f = mount("/app/admin/product-ai", r => (r.method === "PUT" ? { status: 409, body: { error: { code: "CONFLICT", message: "Product AI settings changed. Refresh and try again." } } } : { status: 200, body: view(setup) }));
   try {
    await openVertex();
    fireEvent.change(await screen.findByLabelText("Google Cloud project ID"), { target: { value: "acme-evals" } });

@@ -125,13 +125,13 @@ describe("the row", () => {
   expect(section.getByText("Done. One maintainer may mark again.")).toBeTruthy();
  });
 
- it("an approval without a recent sign-in shows the server's words and a way to sign in again, and changes nothing", async () => {
+ it("a refused approval shows the server's words with no sign-in step (owner DEC 254zzz73), and changes nothing", async () => {
   const f = mount({ role: "admin", state: { alwaysTwoPeople: true, pendingLoosening: true, pending: { changeId: "chg_9", proposedByYou: false, expiresAt: EXPIRES } }, post: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to approve this.") });
   const section = await row();
   fireEvent.click(await section.findByRole("button", { name: "Approve turning it off" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Sign in again to approve this.");
-  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
-  expect(f.host.signIn).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
+  expect(f.host.signIn).not.toHaveBeenCalled();
   expect(section.getByText("Always two people", { selector: "strong" })).toBeTruthy();
  });
 

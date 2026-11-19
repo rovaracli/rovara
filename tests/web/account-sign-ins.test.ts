@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // "Connected sign-ins" on Your account (DEC 254w): the person's sign-in methods (the first one marked and never removable), Connect for each linkable method not yet
-// connected, Unlink for a connected one, the fresh sign-in step in front of both, "not connected yet" while Code serves no such route, and fixed words for what a link
+// connected, Unlink for a connected one (no step-up in front of either since owner DEC 254zzz73), "not connected yet" while Code serves no such route, and fixed words for what a link
 // return says. Removing one ends every sign-in, and the page says so.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
@@ -20,20 +20,17 @@ import { expectNoAxeViolations } from "./support/axe.js";
 const me = "a".repeat(64);
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const NOT_ON_CODE = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } };
-const FACTORS = { factorEmail: "p***@acme.test", passkeys: [] };
 const ok = (body: unknown): ApiResponse => ({ status: 200, body });
 const github = { signIns: [{ method: "github", primary: true }], linkable: ["slack", "github"] };
 const slackFirst = { signIns: [{ method: "slack", primary: true }], linkable: ["slack", "github"] };
 const both = { signIns: [{ method: "github", primary: true }, { method: "slack", primary: false, linkedAt: "2026-11-10T00:00:00Z" }], linkable: ["slack", "github"] };
 const seeded = new Map<string, string>();
 beforeEach(() => { seeded.clear(); });
-const NONCE_KEY = "rovara.stepup.nonce";
-function confirmedPath(path: string, nonce = "n-1"): string { seeded.set(NONCE_KEY, JSON.stringify({ nonce, at: Date.now() })); return path + (path.includes("?") ? "&" : "?") + "confirmed=" + nonce; }
 
 function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<ApiResponse>) {
  const nav = AppNavSchema.parse({ me: { developerId: me, name: "Priya", orgRole: "owner" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
  const identity = AppMeResponseSchema.parse({ developer: { id: me, name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
- const f = fakeHost(async r => (r.path === "/v1/app/nav" ? { status: 200, body: nav } : r.path === "/v1/app/me" ? { status: 200, body: identity } : r.path === "/v1/app/me/sign-in-factors" ? ok(FACTORS) : respond(r)));
+ const f = fakeHost(async r => (r.path === "/v1/app/nav" ? { status: 200, body: nav } : r.path === "/v1/app/me" ? { status: 200, body: identity } : respond(r)));
  const query = createQueryClient(); query.setQueryData(["nav"], nav); f.storage.set("rovara.theme", "light");
  for (const [key, value] of seeded) f.storage.set(key, value);
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [path] });
@@ -91,18 +88,18 @@ describe("Connected sign-ins section", () => {
    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeTruthy();
   } finally { f.close(); }
  });
- it("asks for the fresh sign-in before connecting, and writes nothing until it is done", async () => {
+ it("offers Continue straight away (no step-up), and writes nothing until it is pressed", async () => {
   const f = mount("/app/account", r => (r.path === "/v1/app/me/sign-ins" ? ok(github) : ok({})));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Connect Slack" }));
    const dialog = await screen.findByRole("dialog", { name: "Connect Slack?" });
-   expect(within(dialog).getByTestId("fresh-sign-in").getAttribute("data-state")).toBe("ask");
-   expect(within(dialog).queryByRole("button", { name: /Continue to/ })).toBeNull();
+   expect(within(dialog).queryByTestId("fresh-sign-in")).toBeNull();
+   expect(within(dialog).getByRole("button", { name: "Continue to Slack" })).toBeTruthy();
    expect(writes(f)).toHaveLength(0);
   } finally { f.close(); }
  });
- it("starts the connect after the confirmation and sends the browser to the provider's address", async () => {
-  const f = mount(confirmedPath("/app/account?connect=slack"), r => (r.method === "POST" && r.path === "/v1/app/me/sign-ins/link" ? ok({ authorizeUrl: "https://slack.com/openid/connect/authorize?state=lnk_x" }) : r.path === "/v1/app/me/sign-ins" ? ok(github) : ok({})));
+ it("starts the connect and sends the browser to the provider's address", async () => {
+  const f = mount("/app/account?connect=slack", r => (r.method === "POST" && r.path === "/v1/app/me/sign-ins/link" ? ok({ authorizeUrl: "https://slack.com/openid/connect/authorize?state=lnk_x" }) : r.path === "/v1/app/me/sign-ins" ? ok(github) : ok({})));
   const navigate = vi.spyOn(f.host, "navigate");
   try {
    const dialog = await screen.findByRole("dialog", { name: "Connect Slack?" });
@@ -112,7 +109,7 @@ describe("Connected sign-ins section", () => {
   } finally { f.close(); }
  });
  it("does not go anywhere when the answer is not the method's own provider page", async () => {
-  const f = mount(confirmedPath("/app/account?connect=slack"), r => (r.method === "POST" ? ok({ authorizeUrl: "https://evil.example/x" }) : r.path === "/v1/app/me/sign-ins" ? ok(github) : ok({})));
+  const f = mount("/app/account?connect=slack", r => (r.method === "POST" ? ok({ authorizeUrl: "https://evil.example/x" }) : r.path === "/v1/app/me/sign-ins" ? ok(github) : ok({})));
   const navigate = vi.spyOn(f.host, "navigate");
   try {
    const dialog = await screen.findByRole("dialog", { name: "Connect Slack?" });
@@ -121,27 +118,28 @@ describe("Connected sign-ins section", () => {
    expect(navigate).not.toHaveBeenCalled();
   } finally { f.close(); }
  });
- it("goes back to the fresh sign-in step when Code says the confirmation is too old", async () => {
-  const f = mount(confirmedPath("/app/account?connect=slack"), r => (r.method === "POST" ? { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "stale words" } } } : r.path === "/v1/app/me/sign-ins" ? ok(github) : ok({})));
+ it("shows Cloud's refusal in its own words, with no step-up to go back to", async () => {
+  const f = mount("/app/account?connect=slack", r => (r.method === "POST" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "That sign-in can't be connected to your account." } } } : r.path === "/v1/app/me/sign-ins" ? ok(github) : ok({})));
   try {
    const dialog = await screen.findByRole("dialog", { name: "Connect Slack?" });
    fireEvent.click(within(dialog).getByRole("button", { name: "Continue to Slack" }));
-   await waitFor(() => expect(within(dialog).getByTestId("fresh-sign-in").getAttribute("data-state")).toBe("needed"));
-   expect(within(dialog).queryByText(/stale words/)).toBeNull();
+   expect((await within(dialog).findByRole("alert")).textContent).toContain("That sign-in can't be connected to your account.");
+   expect(within(dialog).queryByTestId("fresh-sign-in")).toBeNull();
+   expect(f.host.signIn).not.toHaveBeenCalled();
   } finally { f.close(); }
  });
- it("asks for the fresh sign-in before unlinking", async () => {
+ it("offers Unlink straight away (no step-up) and writes nothing until it is pressed", async () => {
   const f = mount("/app/account", r => (r.path === "/v1/app/me/sign-ins" ? ok(both) : ok({})));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Unlink Slack" }));
    const dialog = await screen.findByRole("dialog", { name: "Unlink Slack?" });
-   expect(within(dialog).getByTestId("fresh-sign-in").getAttribute("data-state")).toBe("ask");
-   expect(within(dialog).queryByRole("button", { name: "Unlink Slack" })).toBeNull();
+   expect(within(dialog).queryByTestId("fresh-sign-in")).toBeNull();
+   expect(within(dialog).getByRole("button", { name: "Unlink Slack" })).toBeTruthy();
    expect(writes(f)).toHaveLength(0);
   } finally { f.close(); }
  });
- it("unlinks after the confirmation, says every sign-in ended, and offers to sign in again without asking the server more", async () => {
-  const f = mount(confirmedPath("/app/account?unlink=slack"), r => (r.method === "DELETE" ? ok({ removed: true }) : r.path === "/v1/app/me/sign-ins" ? ok(both) : ok({})));
+ it("unlinks, says every sign-in ended, and offers to sign in again without asking the server more", async () => {
+  const f = mount("/app/account?unlink=slack", r => (r.method === "DELETE" ? ok({ removed: true }) : r.path === "/v1/app/me/sign-ins" ? ok(both) : ok({})));
   try {
    const dialog = await screen.findByRole("dialog", { name: "Unlink Slack?" });
    fireEvent.click(within(dialog).getByRole("button", { name: "Unlink Slack" }));
@@ -158,7 +156,7 @@ describe("Connected sign-ins section", () => {
   } finally { f.close(); }
  });
  it("says Code's first-method refusal in Cloud's words and keeps the list", async () => {
-  const f = mount(confirmedPath("/app/account?unlink=slack"), r => (r.method === "DELETE" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "This is the first way this person signs in, so it can't be removed." } } } : r.path === "/v1/app/me/sign-ins" ? ok(both) : ok({})));
+  const f = mount("/app/account?unlink=slack", r => (r.method === "DELETE" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "This is the first way this person signs in, so it can't be removed." } } } : r.path === "/v1/app/me/sign-ins" ? ok(both) : ok({})));
   try {
    const dialog = await screen.findByRole("dialog", { name: "Unlink Slack?" });
    fireEvent.click(within(dialog).getByRole("button", { name: "Unlink Slack" }));
