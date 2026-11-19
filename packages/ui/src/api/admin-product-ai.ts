@@ -10,6 +10,8 @@ export interface ProductAiRead {
   /** The project's Vertex AI federation setup: never a secret (there is none: Google trusts Rovara's AWS role for this company). */
   vertex: { connected: boolean; connectedAt?: number; updatedAt?: number; refusedAt?: number; projectId?: string; location?: string; serviceAccount?: string };
   vertexRemovedUntil?: number;
+  /** What Rovara knows for the Vertex guide (L4-T4): its AWS account and federation role name, and this company's id. Absent: this install does not know them yet. */
+  vertexSetup?: { awsAccountId: string; roleName: string; companyId: string };
   evalBudget: { calls: number; costMicros: number };
   /** state: "current" counts at the stage hold now; "stale" (over 15 minutes) and "withdrawn" (the approver's membership changed) must be approved again. */
   evalApproval?: { selection: string; inputsDigest: string; maxCalls: number; maxCostMicros: number; model?: string; approvedAt: number; approvedByYou: boolean; state: "current" | "stale" | "withdrawn" };
@@ -26,6 +28,14 @@ export const VERTEX_FORM = Object.freeze({
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const opt = <K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } => (value === undefined ? {} : ({ [key]: value } as { [P in K]?: V }));
+const VERTEX_SETUP = Object.freeze({ awsAccountId: /^[0-9]{12}$/u, roleName: /^[\w+=,.@-]{1,64}$/u, companyId: /^org_[a-z0-9]{20}$/u });
+/** All three values or none: a half-known setup would print a command that trusts the wrong thing. */
+function readVertexSetup(value: unknown): ProductAiRead["vertexSetup"] {
+  if (!isRecord(value)) return undefined;
+  const { awsAccountId, roleName, companyId } = value;
+  return typeof awsAccountId === "string" && VERTEX_SETUP.awsAccountId.test(awsAccountId) && typeof roleName === "string" && VERTEX_SETUP.roleName.test(roleName) && typeof companyId === "string" && VERTEX_SETUP.companyId.test(companyId)
+    ? { awsAccountId, roleName, companyId } : undefined;
+}
 export function readProductAi(body: unknown): ProductAiRead {
   if (!isRecord(body) || typeof body["project"] !== "string" || !whole(body["revision"]) || !isRecord(body["key"])) throw new Error("not product AI settings");
   const key = body["key"], budget = isRecord(body["evalBudget"]) ? body["evalBudget"] : {}, a = isRecord(body["evalApproval"]) ? body["evalApproval"] : undefined;
@@ -45,6 +55,7 @@ export function readProductAi(body: unknown): ProductAiRead {
       ...opt("projectId", text(v["projectId"], VERTEX_FORM.projectId)), ...opt("location", text(v["location"], VERTEX_FORM.location)), ...opt("serviceAccount", text(v["serviceAccount"], VERTEX_FORM.serviceAccount)),
     },
     ...opt("vertexRemovedUntil", whole(body["vertexRemovedUntil"]) ? body["vertexRemovedUntil"] : undefined),
+    ...opt("vertexSetup", readVertexSetup(body["vertexSetup"])),
     evalBudget: { calls: whole(budget["calls"]) ? budget["calls"] : 400, costMicros: whole(budget["costMicros"]) ? budget["costMicros"] : 4_000_000 },
     ...opt("evalApproval", approval),
   };

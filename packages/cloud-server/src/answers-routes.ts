@@ -28,6 +28,7 @@ export const ANSWERS_WORDS = Object.freeze({
   unavailable: "Couldn't answer that just now.",
   rate: "You've asked a lot of questions lately. Try again a little later.",
   limitReached: "This project has reached its spending limit for now.",
+  paused: "Answers are paused for this month.",
   suggestUnavailable: "Couldn't suggest a path just now.",
   suggestRate: "You've asked for a lot of suggestions lately. Try again a little later.",
   answerGone: "That answer is not there.",
@@ -46,6 +47,7 @@ export const ANSWERS_ANSWERS = Object.freeze({
   unavailable: answer(503, "RUNTIME_UNAVAILABLE", W.unavailable),
   rate: answer(429, "TOO_MANY_REQUESTS", W.rate),
   limitReached: answer(429, "TOO_MANY_REQUESTS", W.limitReached),
+  paused: answer(429, "TOO_MANY_REQUESTS", W.paused),
   suggestUnavailable: answer(503, "RUNTIME_UNAVAILABLE", W.suggestUnavailable),
   suggestRate: answer(429, "TOO_MANY_REQUESTS", W.suggestRate),
   answerGone: answer(404, "NOT_FOUND", W.answerGone),
@@ -88,7 +90,11 @@ export function answerObject(value: unknown): Plain {
   const v = rec(value);
   keysOnly(v, ["answerId", "threadId", "outcome", "text", "honesty", "unconfirmed", "sources", "wikiPages", "action"]);
   const outcome = need(oneOf(v["outcome"], OUTCOMES), v["outcome"]);
-  const text = need(typeof v["text"] === "string" && (v["text"] === "" || prose(v["text"], LIMITS.answer)), v["text"] as string);
+  let text = need(typeof v["text"] === "string" && (v["text"] === "" || prose(v["text"], LIMITS.answer)), v["text"] as string);
+  // A repeat of a question whose answer was "not found" comes from Code's record as words in `text` (older Code; today's Code says them as `honesty`): the same one fixed line, kept as the honesty it always was
+  // (B8). Nothing else about "not found" is relaxed: no sources, no other words, no second line.
+  let words = v["honesty"];
+  if (outcome === "not_found" && text !== "" && words === undefined && prose(text, 300)) { words = text; text = ""; }
   const rawSources = need(Array.isArray(v["sources"]) && v["sources"].length <= LIMITS.sources, v["sources"] as unknown[]);
   const sources = rawSources.map((one, index) => {
     const s = rec(one);
@@ -100,7 +106,7 @@ export function answerObject(value: unknown): Plain {
     };
   });
   // Every `[n]` marker in the text names a source of this answer.
-  for (const marker of text.matchAll(/\[(\d{1,3})\]/gu)) need(Number(marker[1]) >= 1 && Number(marker[1]) <= sources.length, undefined);
+  for (const marker of `${text}\n${typeof words === "string" ? words : ""}`.matchAll(/\[(\d{1,3})\]/gu)) need(Number(marker[1]) >= 1 && Number(marker[1]) <= sources.length, undefined);
   const unconfirmed = need(Array.isArray(v["unconfirmed"]) && v["unconfirmed"].length <= LIMITS.unconfirmed, v["unconfirmed"] as unknown[]).map((one) => need(prose(one, 200), one));
   const rawPages = need(Array.isArray(v["wikiPages"]) && v["wikiPages"].length <= LIMITS.wikiPages, v["wikiPages"] as unknown[]);
   const wikiPages = rawPages.map((one) => { const p = rec(one); keysOnly(p, ["pageId", "title"]); return { pageId: need(typeof p["pageId"] === "string" && PAGE_ID.test(p["pageId"]), p["pageId"]), title: need(line(p["title"], 120), p["title"]) }; });
@@ -116,7 +122,7 @@ export function answerObject(value: unknown): Plain {
   return {
     ...(v["answerId"] === undefined ? {} : { answerId: need(typeof v["answerId"] === "string" && ANSWER_ID.test(v["answerId"]), v["answerId"]) }),
     threadId: need(typeof v["threadId"] === "string" && THREAD_ID.test(v["threadId"]), v["threadId"]), outcome, text,
-    ...(v["honesty"] === undefined ? {} : { honesty: need(prose(v["honesty"], 300), v["honesty"]) }), unconfirmed, sources, wikiPages, ...(action === undefined ? {} : { action }),
+    ...(words === undefined ? {} : { honesty: need(prose(words, 300), words) }), unconfirmed, sources, wikiPages, ...(action === undefined ? {} : { action }),
   };
 }
 
@@ -148,7 +154,8 @@ export function answersRefusal(kind: Kind, error: CodeError): RouteAnswer {
   if (kind === "notRight") return error.status === 403 ? A.forbidden : error.status === 400 ? A.invalid : A.notRightFailed;
   if (error.status === 403) return A.forbidden;
   if (error.status === 400) return A.invalid;
-  if (error.status === 429) return kind === "suggest" ? A.suggestRate : body?.["message"] === W.limitReached ? A.limitReached : A.rate;
+  // Code's three 429s for an answer, each in Cloud's own fixed words: the project's limit, the company's month paused (B8: it is not "you've asked a lot"), and the person's real rate limit (anything else).
+  if (error.status === 429) return kind === "suggest" ? A.suggestRate : body?.["message"] === W.limitReached ? A.limitReached : body?.["message"] === W.paused ? A.paused : A.rate;
   return kind === "suggest" ? A.suggestUnavailable : A.unavailable;
 }
 

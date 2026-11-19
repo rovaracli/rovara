@@ -79,6 +79,11 @@ export interface CompanyKeyFlavor {
   paused(reason: LearningPauseReason): RouteRefusal;
   /** The response header that carries the call's settled cost (see GatewayRoute.costHeader). Absent: the purpose sends none (learning). */
   readonly costHeader?: string;
+  /**
+   * DEC 254zzz79 (3): also serve the Anthropic Messages path an Anthropic client builds from a base URL of `<prefix without the trailing slash>`
+   * (`/v1/answers` + `/v1/messages`), so Rovara's Slack chat (Pi's Anthropic client) reaches the SAME route, token purpose, key, meter and caps.
+   */
+  readonly clientBasePath?: boolean;
 }
 /** The default refusal words per meter row (unused in practice: `capRefusal` answers every permanent cap refusal). */
 const prefixOf = (text: string): Readonly<Record<MeterItem, string>> => ({ task: text, person: text, project: text, company: text, upkeep: text });
@@ -138,8 +143,8 @@ export interface LearningRouteOptions {
 export interface LearningRouteFactory { route(path: string, query: string): GatewayRoute | undefined }
 
 /** Which provider a learning path belongs to, and (Gemini, Vertex) the product-shaped path its parser reads. Pure path parsing. */
-export function parseLearningPath(path: string, query: string, prefix: string = LEARNING_PATH_PREFIX): { provider: "anthropic" | "openai" } | { provider: "gemini" | "vertex"; productPath: string } | undefined {
-  if (path === `${prefix}messages`) return query === "" ? { provider: "anthropic" } : undefined;
+export function parseLearningPath(path: string, query: string, prefix: string = LEARNING_PATH_PREFIX, clientBasePath = false): { provider: "anthropic" | "openai" } | { provider: "gemini" | "vertex"; productPath: string } | undefined {
+  if (path === `${prefix}messages` || (clientBasePath && path === `${prefix}v1/messages`)) return query === "" ? { provider: "anthropic" } : undefined;
   if (path === `${prefix}openai/chat/completions`) return query === "" ? { provider: "openai" } : undefined;
   for (const provider of ["gemini", "vertex"] as const) {
     const own = `${prefix}${provider}/`;
@@ -187,7 +192,7 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
   return {
     caps: learningCaps,
     route(path, query) {
-      const parsed = parseLearningPath(path, query, flavor.pathPrefix);
+      const parsed = parseLearningPath(path, query, flavor.pathPrefix, flavor.clientBasePath === true);
       if (parsed === undefined) return undefined;
       const provider = parsed.provider;
       const transport = provider === "anthropic" ? options.transport : options.transports?.[provider];

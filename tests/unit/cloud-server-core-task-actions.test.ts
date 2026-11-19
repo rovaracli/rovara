@@ -3,7 +3,7 @@
 // on the core engine on this install yet." to a person the core lets read the task; Cloud then uses the core's own route for the same act, as the same person:
 //   - Retry reviews and Close: `POST /v1/app/sessions/{codeSession}/retry|close`; a task Code holds no session for gets fixed words, and nothing is done;
 //   - plan approval: Code's `approve_plan` decision card, so Cloud's approval page, banner and Home card stop pointing at a page the core does not take;
-//   - accepting a security finding: Code's refusal (its web page with a fresh step-up only) becomes fixed words, never Code's bare 403.
+//   - accepting a security finding: Code's refusal (its web page only) sends Cloud to that page route (no step-up since owner DEC 254zzz73), never Code's bare 403.
 // Every action has its auth negatives: a member of the company without access to the task, and a person of another company.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -19,7 +19,6 @@ interface Fixture {
   noSession: { status: number; body: Obj };
   sessionLevel: { status: number; body: Obj };
   securityRefusal: { status: number; body: Obj };
-  securityStale: { status: number; body: Obj };
   reviewBlockedTask: Obj;
   planReviewTask: Obj;
   retry: { status: number; body: Obj };
@@ -52,7 +51,9 @@ interface Options {
   task?: "review" | "plan";
   /** Who Code lets read the task (core: and act on its session). */
   session?: "present" | "absent" | "level" | "foreign" | "unwired";
-  security?: "forbidden" | "stale";
+  security?: "forbidden";
+  /** Code's web page route for the accept (Code #1045): "ok" accepts for the task's owner; absent: not served (404). */
+  page?: "ok";
   cards?: "this" | "other" | "off" | "not-plan" | "decided";
   retryAnswer?: Obj;
 }
@@ -93,10 +94,10 @@ function setUp(options: Options = {}) {
       return json(200, url.pathname.endsWith("/close") ? { task: { ...task(), status: "CLOSED" }, closed: true } : { task: task() });
     }
     if (url.pathname === `/v1/dev/tasks/${TASK}/workflow/review-findings` && call.method === "POST") {
-      if (options.security === "stale") return json(FIXTURE.securityStale.status, FIXTURE.securityStale.body);
       if (options.security === "forbidden") return json(FIXTURE.securityRefusal.status, FIXTURE.securityRefusal.body);
       return json(200, { task: task() });
     }
+    if (url.pathname === `/v1/app/tasks/${TASK}/review-findings` && call.method === "POST" && options.page === "ok") return json(200, { task: task() });
     if ((url.pathname === `/v1/app/sessions/${CODE_SESSION}/retry` || url.pathname === `/v1/app/sessions/${CODE_SESSION}/close`) && call.method === "POST") {
       if (options.session === "absent") return json(FIXTURE.noSession.status, FIXTURE.noSession.body);
       // A Code whose core serves no sessions on this install (no members wiring) says its own core-404 words.
@@ -281,32 +282,36 @@ describe("Close on a core task", () => {
 });
 
 describe("Accept findings that include a security finding", () => {
-  it("the core takes it only on the web page's own route: without a fresh step-up in Cloud's token the person is asked to confirm it's them, and the page route is not asked", async () => {
-    const w = setUp({ security: "forbidden" });
+  it("the core takes it only on the web page's own route: Cloud asks that route next with the same body, with no step-up (owner DEC 254zzz73)", async () => {
+    const w = setUp({ security: "forbidden", page: "ok" });
     const res = await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "A test token only." }, await w.ada());
-    expect(res).toMatchObject({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: CORE_ACTION_WORDS.stepUp } } });
+    expect(res.status).toBe(200);
     expect(JSON.stringify(res.body)).not.toContain("Rovara web page");
-    expect(w.calls.some((call) => call.path.startsWith("/v1/app/tasks/"))).toBe(false);
-    // The findings Cloud sent included the security review's, as the page showed them.
     const sent = w.calls.find((call) => call.path.endsWith("/workflow/review-findings"))!.body as { resolutions: unknown[] };
     expect(sent.resolutions).toHaveLength(2);
+    // The page route got exactly the same accept, as the same person.
+    const page = w.calls.find((call) => call.path === `/v1/app/tasks/${TASK}/review-findings`)!;
+    expect(page.body).toEqual(sent);
+    expect(page.token).toBe(w.calls.find((call) => call.path.endsWith("/workflow/review-findings"))!.token);
   });
 
-  it("a stale step-up on the old engine asks the person to confirm it's them again", async () => {
-    const w = setUp({ security: "stale" });
-    expect(await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "A test token only." }, await w.ada())).toMatchObject({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: CORE_ACTION_WORDS.stepUp } } });
+  it("a Code without the page route says it can't be done here, in fixed words, and nothing is accepted", async () => {
+    const w = setUp({ security: "forbidden" });
+    expect(await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "A test token only." }, await w.ada())).toMatchObject({ status: 409, body: { error: { code: "SECURITY_ACCEPT_NOT_HERE", message: CORE_ACTION_WORDS.securityNotHere } } });
   });
 
   it("auth: a member without access and another company are refused before any finding is sent", async () => {
     for (const who of ["sam", "eve"] as const) {
-      const w = setUp({ security: "forbidden" });
+      const w = setUp({ security: "forbidden", page: "ok" });
       expect((await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, await w[who]())).status).toBe(404);
+      expect(w.calls.some((call) => call.path.startsWith("/v1/app/tasks/"))).toBe(false);
       expect(w.calls.some((call) => call.path.endsWith("/workflow/review-findings"))).toBe(false);
     }
     // A reader of the task who is not its owner: Cloud refuses before Code is asked to act.
-    const reader = setUp({ security: "forbidden", session: "level" });
+    const reader = setUp({ security: "forbidden", session: "level", page: "ok" });
     expect((await reader.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, await reader.sam())).status).toBe(403);
     expect(reader.calls.some((call) => call.path.endsWith("/workflow/review-findings"))).toBe(false);
+    expect(reader.calls.some((call) => call.path.startsWith("/v1/app/tasks/"))).toBe(false);
   });
 });
 

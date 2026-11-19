@@ -32,9 +32,6 @@
 .rv-spend-flag[data-tone=bad]{background:var(--rv-status-failed-bg);color:var(--rv-status-failed)}
 .rv-not-connected{border:1px dashed var(--rv-border-medium);border-radius:var(--rv-radius-sm);background:var(--rv-bg-sunken);padding:var(--rv-space-3) var(--rv-space-4);font-size:var(--rv-font-sm)}
 .rv-not-connected b{display:block;margin-bottom:2px}.rv-not-connected p{color:var(--rv-text-muted)}
-.rv-fresh{display:flex;justify-content:space-between;align-items:center;gap:var(--rv-space-4);flex-wrap:wrap;border:1px solid var(--rv-accent);box-shadow:0 0 0 3px var(--rv-accent-soft);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised);padding:var(--rv-space-3) var(--rv-space-4)}
-.rv-fresh[data-state=done]{border-color:var(--rv-status-done);box-shadow:0 0 0 3px var(--rv-status-done-bg)}.rv-fresh[data-state=needed]{border-color:var(--rv-status-needs-you);box-shadow:0 0 0 3px var(--rv-status-needs-you-bg)}
-.rv-fresh p{font-size:var(--rv-font-sm);color:var(--rv-text-muted);max-width:60ch}
 .rv-admin-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--rv-space-3);margin-block:var(--rv-space-4)}
 .rv-admin-groups .rv-admin-card{margin:0}.rv-admin-groups ul{list-style:none;margin:var(--rv-space-2) 0 0;padding:0;display:grid;gap:var(--rv-space-2)}
 .rv-admin-groups li a{font-weight:500}.rv-admin-groups li span{display:block;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
@@ -86,8 +83,10 @@
 .rv-admin-card .rv-section-head>span{font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
 .rv-admin-card .rv-table-wrap{border:0;background:none;padding:0}
 .rv-admin-card .rv-table caption{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.rv-admin-card .rv-fresh{margin-bottom:var(--rv-space-3)}.rv-admin-card .rv-field{margin-bottom:var(--rv-space-2)}
+.rv-admin-card .rv-field{margin-bottom:var(--rv-space-2)}
 .rv-meter-caption{font-size:var(--rv-font-xs);color:var(--rv-text-muted);margin:0 0 var(--rv-space-2)}
 .rv-account{max-width:920px}.rv-shell-main .rv-account h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:0;margin:0}.rv-account .rv-page-header{margin-bottom:var(--rv-space-4)}
 .rv-admin[hidden]{display:none}
 .rv-people-limits-filter{max-width:22rem;margin-block:var(--rv-space-3,12px)}
+.rv-vertex-guide pre{overflow-x:auto;background:var(--rv-bg-sunken);border:1px solid var(--rv-border-medium);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3);font-size:var(--rv-font-sm)}
+.rv-vertex-guide li[data-redo]{border-left:3px solid var(--rv-border-medium);padding-left:var(--rv-space-3)}

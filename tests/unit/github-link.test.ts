@@ -1,4 +1,4 @@
-// L4-GH, Cloud's half of "Connect your GitHub" (github-link.ts) on a pretend Rovara Code that keeps Code's rules (a start needs a fresh step-up; a claim needs the single-use state, the same
+// L4-GH, Cloud's half of "Connect your GitHub" (github-link.ts) on a pretend Rovara Code that keeps Code's rules (a start needs only the signed-in person, no step-up since owner DEC 254zzz73; a claim needs the single-use state, the same
 // sign-in, GitHub's code; first link wins, one account per person). The return arrives at the SAME callback as Connect GitHub, so it is told apart by the cookie's binding (`flow: "link"`):
 // it may finish a link only for the browser and sign-in that started it, once, with the state it was started with, and it never reaches the company connect. Fixed words only.
 import { createHash, randomBytes } from "node:crypto";
@@ -43,7 +43,6 @@ function world() {
     const who = PEOPLE.find((one) => one.token === token);
     if (who === undefined) return respond(401, { error: { code: "AUTH_REQUIRED" } });
     const p = url.pathname;
-    const fresh = () => /step_up_at/u.test(Buffer.from(token!.split(".")[1]!, "base64url").toString());
     if (p === "/v1/dev/access") return respond(200, { developerId: who.developerId, displayName: who.key, administrator: false, projects: [], notices: [], companyId: "org_aaaaaaaaaaaaaaaaaaaa", companyRole: "member" });
     if (p === "/v1/dev/me/github" && method === "GET") {
       const mine = links.get(who.developerId);
@@ -51,14 +50,13 @@ function world() {
     }
     if (p === "/v1/dev/me/github" && method === "DELETE") return respond(200, { unlinked: links.delete(who.developerId) });
     if (p === "/v1/dev/me/github/link" && method === "POST") {
-      if (!fresh()) return respond(403, { error: { code: "REAUTH_REQUIRED", message: "stale" } });
       const state = randomBytes(32).toString("base64url");
       states.set(state, { developerId: who.developerId, used: false });
       return respond(200, { state, expiresAt: new Date(clock + 600_000).toISOString(), authorizeUrl: `https://github.com/login/oauth/authorize?client_id=Iv1.client&state=${state}` });
     }
     if (p === "/v1/dev/me/github/link/claim" && method === "POST") {
       const state = states.get(String(body?.state));
-      if (Object.keys(body ?? {}).sort().join() !== "code,state" || state === undefined || state.used || state.developerId !== who.developerId || !fresh()) return respond(403, { error: { code: "FORBIDDEN", message: "Start again from Rovara." } });
+      if (Object.keys(body ?? {}).sort().join() !== "code,state" || state === undefined || state.used || state.developerId !== who.developerId) return respond(403, { error: { code: "FORBIDDEN", message: "Start again from Rovara." } });
       state.used = true;
       const owner = owners.get(who.github.id);
       if (owner !== undefined && owner !== who.developerId) return respond(409, { error: { code: "GITHUB_ACCOUNT_TAKEN", message: "x" } });
@@ -141,11 +139,13 @@ describe("start (POST /v1/app/me/github/link)", () => {
     expect((await w.raw("POST", "/v1/web/me/github/link", { cookie: `rovara_cloud_session=${nova.cookie}` }, "{}")).status).toBe(403);
     expect(w.codeCalls("/v1/dev/me/github/link")).toEqual([]);
   });
-  it("says Cloud's own words for Code's refusals (a stale step-up, no routes, an App not set up, a fault), never Code's", async () => {
+  it("says Cloud's own words for Code's refusals (any 403, no routes, an App not set up, a fault), never Code's; a sign-in with an old step-up starts (owner DEC 254zzz73)", async () => {
+    const plain = world();
+    expect((await plain.api(await plain.signIn(NOVA_STALE), "POST", "/me/github/link", {})).status).toBe(200);
     const w = world();
-    const stale = await w.signIn(NOVA_STALE);
-    expect(await w.api(stale, "POST", "/me/github/link", {})).toMatchObject({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: GITHUB_LINK_WORDS.reauth } } });
     const nova = await w.signIn(NOVA);
+    w.overrides.set("POST /v1/dev/me/github/link", () => respond(403, { error: { code: "REAUTH_REQUIRED", message: "secret detail" } }));
+    expect(await w.api(nova, "POST", "/me/github/link", {})).toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN", message: GITHUB_LINK_WORDS.startAgain } } });
     w.overrides.set("POST /v1/dev/me/github/link", () => respond(404, { error: { code: "NOT_FOUND", message: "route not found" } }));
     expect(await w.api(nova, "POST", "/me/github/link", {})).toMatchObject({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: GITHUB_LINK_WORDS.notAvailable } } });
     w.overrides.set("POST /v1/dev/me/github/link", () => respond(503, { error: { code: "RUNTIME_UNAVAILABLE", message: WORDS.notSetUp } }));
@@ -229,7 +229,7 @@ describe("the return (GET /api/connect/github/callback, a link flow)", () => {
     }
     expect(w.codeCalls("/v1/dev/me/github/link/claim")).toEqual([]);
   });
-  it("says Code's refusals as one fixed word each: taken, a stale step-up, anything else Code refuses, no routes, a fault, an answer that does not read", async () => {
+  it("says Code's refusals as one fixed word each: taken, anything else Code refuses (any 403 is start again), no routes, a fault, an answer that does not read", async () => {
     const w = world(); const nova = await w.signIn(NOVA);
     const run = async (response: () => Response) => {
       w.overrides.set("POST /v1/dev/me/github/link/claim", response);
@@ -239,7 +239,7 @@ describe("the return (GET /api/connect/github/callback, a link flow)", () => {
     expect(await run(() => respond(409, { error: { code: "GITHUB_ACCOUNT_TAKEN", message: "x" } }))).toBe(`${LANDING}taken`);
     expect(await run(() => respond(409, { error: { code: "GITHUB_ACCOUNT_LINK_EXISTS", message: "x" } }))).toBe(`${LANDING}exists`);
     expect(await run(() => respond(409, { error: { code: "SOMETHING_ELSE", message: "x" } }))).toBe(`${LANDING}unavailable`);
-    expect(await run(() => respond(403, { error: { code: "REAUTH_REQUIRED", message: "x" } }))).toBe(`${LANDING}reauth`);
+    expect(await run(() => respond(403, { error: { code: "REAUTH_REQUIRED", message: "x" } }))).toBe(`${LANDING}start_again`);
     expect(await run(() => respond(403, { error: { code: "FORBIDDEN", message: "Start again from Rovara." } }))).toBe(`${LANDING}start_again`);
     expect(await run(() => respond(404, { error: { code: "NOT_FOUND", message: "route not found" } }))).toBe(`${LANDING}not_available`);
     expect(await run(() => respond(500, { error: "boom" }))).toBe(`${LANDING}unavailable`);

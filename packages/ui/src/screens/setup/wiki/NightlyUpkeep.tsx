@@ -1,12 +1,11 @@
 // "Nightly upkeep" (setup-upkeep-plan.md decision 2; lead 4 W6): the ONE switch, off by default, and its monthly cap. The switch is Code's (a seam the nightly runner supplies: until Code serves it this says so and
-// draws no dead switch). The cap is a spend limit of the company (`upkeep_month`, L4-E): a company owner or admin reads and changes it here with the same body the Spending page sends; a lower cap saves at once, a
-// higher one asks for a fresh sign-in (the server decides, this page only asks). Anyone else is told who sets it. The panel says which limit each part uses.
+// draws no dead switch). The cap is a spend limit of the company (`upkeep_month`, L4-E): a company owner or admin reads and changes it here with the same body the Spending page sends; the server decides
+// who may raise it (this page only asks). Anyone else is told who sets it. The panel says which limit each part uses.
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { UPKEEP_PAUSE_SENTENCES } from "@agentx/contracts/web";
 import { fixedWikiSetupWords, parseUsd, readUpkeepCap, useWikiSetupApi, wikiSetupAbsent, wikiSetupKey, type UpkeepCap, type WikiSetupUpkeepCap, type WikiSetupUpkeepSpend } from "../../../api/wiki-setup.js";
-import { needsStepUp } from "../../../api/admin-company.js";
 import { ApiError } from "../../../api/errors.js";
 import { Button } from "../../../design/Button.js";
 import { Money } from "../../../design/Money.js";
@@ -14,20 +13,18 @@ import { Skeleton } from "../../../design/Skeleton.js";
 import { Switch } from "../../../design/Switch.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
-import { FreshSignIn } from "../../admin/parts.js";
 import { CAP_SENTENCES, T } from "./wiki-setup-text.js";
 
 function CapField({ project, cap, onSaved, onEdit }: { project: string; cap: UpkeepCap; onSaved: () => void; onEdit: () => void }) {
   const api = useWikiSetupApi();
-  const [text, setText] = useState(cap.usd === null ? "" : cap.usd.toFixed(2)), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [stepUp, setStepUp] = useState(false);
+  const [text, setText] = useState(cap.usd === null ? "" : cap.usd.toFixed(2)), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
   const typed = parseUsd(text);
   async function save() {
     if (typed === undefined) { setError(T.CAP_INVALID); return; }
-    setBusy(true); setError(undefined); onEdit(); setStepUp(false);
+    setBusy(true); setError(undefined); onEdit();
     try { await api.capWrite(project, cap.version, typed); onSaved(); }
     catch (caught) {
-      if (needsStepUp(caught)) setStepUp(true);
-      else setError(caught instanceof ApiError && CAP_SENTENCES.has(caught.message) ? caught.message : T.CAP_FAILED);
+      setError(caught instanceof ApiError && CAP_SENTENCES.has(caught.message) ? caught.message : T.CAP_FAILED);
     } finally { setBusy(false); }
   }
   return <div className="rv-wikis-cap" data-testid="wiki-setup-cap">
@@ -35,7 +32,6 @@ function CapField({ project, cap, onSaved, onEdit }: { project: string; cap: Upk
     <p className="rv-muted">{cap.usd === null ? T.CAP_NONE : <>Now: <Money usd={cap.usd} /> a month. </>}{cap.own ? T.CAP_OWN : T.CAP_DEFAULT}</p>
     <Button busy={busy} disabled={text.trim() === ""} data-testid="wiki-setup-cap-save" onClick={() => { void save(); }}>{T.CAP_SAVE}</Button>
     {error !== undefined && <p role="alert" data-testid="wiki-setup-cap-error"><VisibleText text={error} /></p>}
-    {stepUp && <FreshSignIn action="raise the nightly upkeep cap" refused />}
   </div>;
 }
 
@@ -98,7 +94,7 @@ function Offer({ cap, busy, onYes }: { cap: WikiSetupUpkeepCap | undefined; busy
 export function NightlyUpkeep({ project, companyAdmin }: { project: string; companyAdmin: boolean }) {
   const api = useWikiSetupApi(), query = useQueryClient();
   const read = useQuery({ queryKey: wikiSetupKey(project, "upkeep"), queryFn: () => api.upkeep(project), retry: false });
-  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [stepUp, setStepUp] = useState(false), id = useRef<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), id = useRef<string | undefined>(undefined);
   if (read.isPending) return null;
   if (read.isError || read.data === undefined) {
     return <section className="rv-wikis-upkeep" aria-label={T.UPKEEP} data-testid="wiki-setup-upkeep"><h3>{T.UPKEEP}</h3>
@@ -111,15 +107,12 @@ export function NightlyUpkeep({ project, companyAdmin }: { project: string; comp
       <p className="rv-muted" data-testid="wiki-setup-upkeep-absent">{T.UPKEEP_NOT_YET}</p></section>;
   }
   async function send(on: boolean, allowSystemRuns?: boolean) {
-    setBusy(true); setError(undefined); setStepUp(false);
+    setBusy(true); setError(undefined);
     const requestId = id.current ?? crypto.randomUUID();
     id.current = requestId;
     try { { const answer = await api.setUpkeep(project, requestId, on, allowSystemRuns); query.setQueryData(wikiSetupKey(project, "upkeep"), { ...answer, available: answer.available ?? true }); } id.current = undefined; }
     catch (caught) {
-      // L4-P3: allowing the company's nightly runs needs a fresh sign-in (Code's step-up, the same as making a script token). Nothing was changed, so the request id is kept (harmless either way: the sign-in step
-      // is a full page round trip, after which the same press is the retry).
-      if (needsStepUp(caught)) setStepUp(true);
-      else { setError(fixedWikiSetupWords(caught, T.ACT_FAILED)); void query.invalidateQueries({ queryKey: wikiSetupKey(project, "upkeep") }); }
+      setError(fixedWikiSetupWords(caught, T.ACT_FAILED)); void query.invalidateQueries({ queryKey: wikiSetupKey(project, "upkeep") });
     }
     finally { setBusy(false); }
   }
@@ -142,7 +135,6 @@ export function NightlyUpkeep({ project, companyAdmin }: { project: string; comp
     {offer && <Offer cap={upkeep.cap} busy={busy} onYes={() => { void send(true, true); }} />}
     {needsAdmin && <p className="rv-muted" data-testid="wiki-setup-upkeep-needs-admin">{T.NEEDS_ADMIN}</p>}
     {error !== undefined && <p role="alert" data-testid="wiki-setup-upkeep-error"><VisibleText text={error} /></p>}
-    {stepUp && <FreshSignIn action="allow nightly upkeep for the company" refused />}
     {companyAdmin && gated && consent && <p className="rv-muted" data-testid="wiki-setup-upkeep-company-link">{T.COMPANY_LINK_LINE} <Link to="/app/admin/settings">{T.COMPANY_LINK}</Link>.</p>}
     {settled && <div data-testid="wiki-setup-upkeep-limits"><h4>{T.UPKEEP_LIMITS}</h4><ul><li>{T.LIMIT_FREE}</li><li>{T.LIMIT_CAP}</li><li>{T.LIMIT_MANUAL}</li></ul></div>}
     {settled && upkeep.canManage && (companyAdmin ? <Cap project={project} /> : <p className="rv-muted" data-testid="wiki-setup-cap-ask">{T.CAP_ASK_ADMIN}</p>)}

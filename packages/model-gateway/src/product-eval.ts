@@ -325,6 +325,15 @@ export class ProductEvalStages {
     return { role };
   }
 
+  /**
+   * L4-T3: is the project's own product key connected right now? (eval-cap.ts adds it to Code's cap read, so a card can say "connect your AI" instead of "not approved".) The same re-read the authority and the hold
+   * make (`context.connected`), for this install, company and project only. Undefined when the stages are not bound; a read that fails or is aborted throws (the caller leaves the answer out).
+   */
+  async connected(scope: { iss: string; cid: string; pid: string }, signal: AbortSignal): Promise<boolean | undefined> {
+    const context = this.#context; if (context === undefined) return undefined;
+    return (await raced(context.connected({ iss: scope.iss, cid: scope.cid, pid: scope.pid }, signal), signal)) === true;
+  }
+
   async hold(claims: TaskClaims, body: unknown, signal: AbortSignal): Promise<{ status: number; body: Record<string, unknown> }> {
     const context = this.#context; if (context === undefined) return UNAVAILABLE;
     if (this.#pendingHolds >= EVAL_OPEN_STAGES_MAX) return BUSY;

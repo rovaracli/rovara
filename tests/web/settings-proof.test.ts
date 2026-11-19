@@ -62,12 +62,12 @@ it("offers no way back when nothing was ever proved, or to someone who cannot ch
   expect(screen.queryByRole("button", { name: "Undo to the last proven setup" })).toBeNull();
 });
 
-it("asks for a new sign-in when the server says the sign-in is too old", async () => {
-  const view = mount(base(FAILED), { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to go back to the last proved setup." } } });
+it("shows a refusal in the server's words with no sign-in step (owner DEC 254zzz73)", async () => {
+  const view = mount(base(FAILED), { status: 403, body: { error: { code: "FORBIDDEN", message: "Only the project's maintainers can do this." } } });
   fireEvent.click(await screen.findByRole("button", { name: "Undo to the last proven setup" }));
-  expect(await screen.findByRole("button", { name: "Sign in again" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
-  expect(view.host.signIn).toHaveBeenCalled();
+  expect(await screen.findByText("Only the project's maintainers can do this.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
+  expect(view.host.signIn).not.toHaveBeenCalled();
   expect(view.onProject).not.toHaveBeenCalled();
 });
 

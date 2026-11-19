@@ -1,5 +1,5 @@
 {
- "_about": "Generated 2026-11-18 by running Rovara Code's own handlers (not written by hand), in clones made for this purpose (not the live worktrees): PrepLabsAI/Rovara #1052 head 1ec1226db (stacked on #1045 a91ae12dd and mega17) for page, sessions, rules, testenv and list; PrepLabsAI/Rovara #1022 head f47ce5acb for members. Each section came from a generator appended to Code's own test file, over that file's own harness: page and sessions from tests/unit/core-host-task-web-routes.test.ts (sessions: a core runtime whose start extras are aws/hosted-intake.ts ticketSessionStartExtras, so every person's start writes its session; a second app without them for a task started before that); rules from tests/contract/core-task-rule-routes.test.ts (through the AWS developer API, engine boundary and core; People switched on, but this harness has no People person check, so People answers are Code's own refusals); testenv from tests/unit/core-host-test-environment-approval.test.ts (with the read wired too); list from tests/contract/aws-engine-boundary.test.ts (the core task's record given one pull request); members from tests/contract/project-setup-status-routes.test.ts. The developer API answers had the broker's requestId taken off by those harnesses (Cloud's CodeClient drops it anyway). Regenerate from Code's code; never edit a value to make a Cloud test pass.",
+ "_about": "Generated 2026-11-18 by running Rovara Code's own handlers (not written by hand), in clones made for this purpose (not the live worktrees): PrepLabsAI/Rovara #1052 head 1ec1226db (stacked on #1045 a91ae12dd and mega17) for page, sessions, rules, testenv and list; PrepLabsAI/Rovara #1022 head f47ce5acb for members. Each section came from a generator appended to Code's own test file, over that file's own harness: page and sessions from tests/unit/core-host-task-web-routes.test.ts (sessions: a core runtime whose start extras are aws/hosted-intake.ts ticketSessionStartExtras, so every person's start writes its session; a second app without them for a task started before that); rules from tests/contract/core-task-rule-routes.test.ts (through the AWS developer API, engine boundary and core; People switched on, but this harness has no People person check, so People answers are Code's own refusals); testenv from tests/unit/core-host-test-environment-approval.test.ts (with the read wired too); list from tests/contract/aws-engine-boundary.test.ts (the core task's record given one pull request); members from tests/contract/project-setup-status-routes.test.ts. The developer API answers had the broker's requestId taken off by those harnesses (Cloud's CodeClient drops it anyway). Regenerate from Code's code; never edit a value to make a Cloud test pass. Owner DEC 254zzz73 removed step-up: the three REAUTH_REQUIRED answers (page.noStepUp, page.staleStepUp, testenv.approveNoStepUp) were taken out, not edited.",
  "page": {
   "taskId": "244bed8a-4806-4367-adf5-2cf9fe551236",
   "revision": 6,
@@ -133,24 +133,6 @@
    "body": {
     "error": {
      "code": "FORBIDDEN",
-     "message": "Accepting a security finding needs the Rovara web page with a fresh sign-in"
-    }
-   }
-  },
-  "noStepUp": {
-   "status": 403,
-   "body": {
-    "error": {
-     "code": "REAUTH_REQUIRED",
-     "message": "Accepting a security finding needs the Rovara web page with a fresh sign-in"
-    }
-   }
-  },
-  "staleStepUp": {
-   "status": 403,
-   "body": {
-    "error": {
-     "code": "REAUTH_REQUIRED",
      "message": "Accepting a security finding needs the Rovara web page with a fresh sign-in"
     }
    }
@@ -1259,15 +1241,6 @@
     "error": {
      "code": "NOT_FOUND",
      "message": "project not found"
-    }
-   }
-  },
-  "approveNoStepUp": {
-   "status": 403,
-   "body": {
-    "error": {
-     "code": "REAUTH_REQUIRED",
-     "message": "A decision is made right after you confirm it's you on the sign-in page: a tool that holds an API token cannot approve or reject. Confirm it's you, then try again within a few minutes."
     }
    }
   },

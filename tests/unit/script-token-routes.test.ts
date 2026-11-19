@@ -29,10 +29,15 @@ it.each([false, undefined])("preserves a false or absent canCreate signal (%s)",
 it.each(["true", 1, null])("refuses a non-boolean canCreate signal (%s)", async canCreate => {
  expect(await setup("GET", "/script-tokens", { tokens: [token], canCreate }).answer()).toMatchObject({ status: 502 });
 });
-it("requires fresh session step-up before forwarding create", async () => {
+it("forwards create with no step-up in the session (owner DEC 254zzz73); Code alone decides who may, and its refusal is fixed words", async () => {
  const f = setup("POST", "/script-tokens", { token, secret }, false);
- expect(await f.answer()).toMatchObject({ status: 403, body: { error: { code: "REAUTH_REQUIRED" } } });
- expect(f.json).not.toHaveBeenCalled();
+ expect(await f.answer()).toEqual({ status: 201, body: { token, secret } });
+ expect(f.json).toHaveBeenCalledWith(expect.anything(), "/v1/app/script-tokens", { method: "POST", body });
+ // The wrong person (Code's role or company check) is refused by Code; Cloud passes only its fixed words, whatever Code's code was.
+ for (const code of ["FORBIDDEN", "REAUTH_REQUIRED"]) {
+  const refused = setup("POST", "/script-tokens", new CodeError(403, { error: { code, message: secret } }), false);
+  expect(await refused.answer()).toEqual({ status: 403, body: { error: { code: "FORBIDDEN", message: "You can't manage these automation keys." } } });
+ }
 });
 it("returns create secret only in its 201 and never in a later list", async () => {
  const f = setup("POST", "/script-tokens", { token, secret, extra: secret });
@@ -47,6 +52,16 @@ it.each([
  const f = setup("POST", "/script-tokens", {}, true, input);
  expect(await f.answer()).toMatchObject({ status: 400 }); expect(f.json).not.toHaveBeenCalled();
 });
+it("B14: creates a wiki-permission key, forwarded to Code as asked", async () => {
+ const wikiBody = { ...body, permissions: ["wiki"] };
+ const f = setup("POST", "/script-tokens", { token: { ...token, permissions: ["wiki"] }, secret }, true, wikiBody);
+ expect(await f.answer()).toEqual({ status: 201, body: { token: { ...token, permissions: ["wiki"] }, secret } });
+ expect(f.json).toHaveBeenCalledWith(expect.anything(), "/v1/app/script-tokens", { method: "POST", body: wikiBody });
+ const all = setup("POST", "/script-tokens", { token, secret }, true, { ...body, permissions: ["read", "start", "lessons", "wiki"] });
+ expect(await all.answer()).toMatchObject({ status: 201 });
+ const five = setup("POST", "/script-tokens", {}, true, { ...body, permissions: ["read", "start", "lessons", "wiki", "admin"] });
+ expect(await five.answer()).toMatchObject({ status: 400 }); expect(five.json).not.toHaveBeenCalled();
+});
 it("forwards confirmed revoke with no browser body and metadata-only answer", async () => {
  const f = setup("POST", "/script-tokens/stk_aaaaaaaaaaaaaaaaaaaa/revoke", { token: { ...token, status: "revoked" }, secret }, false, {});
  expect(await f.answer()).toEqual({ status: 200, body: { token: { ...token, status: "revoked" } } });
@@ -56,7 +71,6 @@ it.each([
  [501, "NOT_AVAILABLE_HERE", "anything", 501, "Automation keys are not available yet."],
  [404, "NOT_FOUND", "route not found", 501, "Automation keys are not available yet."],
  [403, "FORBIDDEN", secret, 403, "You can't manage these automation keys."],
- [403, "REAUTH_REQUIRED", secret, 403, "Confirm it's you again, then try once more."],
  [500, "INTERNAL", secret, 503, "Couldn't finish that automation key request. Try again."],
 ])("replaces Code refusal %s/%s with fixed words", async (status, code, message, expected, words) => {
  const f = setup("GET", "/script-tokens", new CodeError(status, { error: { code, message } }));

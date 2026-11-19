@@ -10,13 +10,13 @@ const outcomes = { refuse_next_admission: "Refused at next admission", new_windo
 export function TaskStopEnforcement({ orgId, checking }: { orgId: string; checking: boolean }) {
  const host = useAppHost(), api = useMemo(() => createTaskStopEnrollmentApi(host, orgId), [host, orgId]);
  const [context, setContext] = useState<Awaited<ReturnType<typeof api.get>>>(), [review, setReview] = useState<TaskStopReview>(), [busy, setBusy] = useState(true);
- const [error, setError] = useState<{ text: string; signIn: boolean }>(), [message, setMessage] = useState("");
- function failure(caught: unknown) { setReview(undefined);setError({ text: caught instanceof ApiError ? caught.message : "Could not verify enforcement. Reload the review before trying again.", signIn: caught instanceof ApiError && caught.code === "REAUTH_REQUIRED" }); }
+ const [error, setError] = useState<{ text: string }>(), [message, setMessage] = useState("");
+ function failure(caught: unknown) { setReview(undefined);setError({ text: caught instanceof ApiError ? caught.message : "Could not verify enforcement. Reload the review before trying again." }); }
  useEffect(() => {
   let live = true;api.setScopeActive(true);
   void (async () => {
    try { const value = await api.get();if (!live) return;setContext(value);if (value.state !== "enabled") { const captured = await api.review(value.revision);if (live) setReview(captured); } }
-   catch (caught) { if (live) { setError({ text: caught instanceof ApiError ? caught.message : "Could not verify enforcement. Reload the review before trying again.", signIn: caught instanceof ApiError && caught.code === "REAUTH_REQUIRED" }); } }
+   catch (caught) { if (live) { setError({ text: caught instanceof ApiError ? caught.message : "Could not verify enforcement. Reload the review before trying again." }); } }
    finally { if (live) setBusy(false); }
   })();
   return () => { live = false;api.setScopeActive(false); };
@@ -41,7 +41,7 @@ export function TaskStopEnforcement({ orgId, checking }: { orgId: string; checki
  return <section className="rv-admin-section" aria-busy={locked} aria-label="Company enforcement">
   <h3>Company enforcement</h3><p>Only a company owner can change enforcement. Turning it off requires a recent sign-in.</p>
   {busy && <p role="status">Checking enforcement...</p>}{message && <p role="status">{message}</p>}
-  {error !== undefined && <p role="alert"><VisibleText text={error.text} />{error.signIn && <> <Button disabled={locked} onClick={() => { host.signIn(host.currentPath()); }}>Sign in again</Button></>}</p>}
+  {error !== undefined && <p role="alert"><VisibleText text={error.text} /></p>}
   {context !== undefined && <p>Current enforcement: {context.state}. Revision {context.revision}.</p>}
   {review !== undefined && <><h4>Review enforcement impacts</h4><p>As of {new Date(review.capturedAt).toLocaleString("en-US", { timeZone: "UTC" })} UTC. Work can start or finish after this preview.</p>
    <p>Running tasks keep their existing window and customer limits until their next admission. Enabling adds company stops to future admissions. This preview does not stop any task.</p>

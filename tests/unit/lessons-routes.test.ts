@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
 import { CodeError } from "../../packages/cloud-server/src/code-client.js";
-import { lessonItem, lessonsOff } from "../../packages/cloud-server/src/lessons-routes.js";
+import { lessonItem, lessonsOff, wikiUse } from "../../packages/cloud-server/src/lessons-routes.js";
 import { PRIYA, SAM, TASK_IDS, startFakeCode, type FakeCode } from "../support/fake-code.js";
 
 interface Answer<T = Record<string, unknown>> { status: number; body: T }
@@ -138,6 +138,9 @@ describe("Lessons used", () => {
     expect(read.body.lessons).toHaveLength(3);
     expect(read.body.lessons[0]).toMatchObject({ lessonId: "les_logs00001", why: "scope", citation: "valid", helpful: 3, harmful: 1, canMark: true });
     expect(read.body.lessons[2]).toEqual({ stage: "REVIEW", round: 1, lessonId: "les_hidden001", version: 2, why: "similar", citation: "unchecked", visible: false, canMark: false });
+    // B13: the wiki pages the task was given and read come through (page ids in the wiki's own pattern, once each; nothing else of Code's record).
+    expect((read.body as { wikiUse?: unknown }).wikiUse).toEqual({ given: ["wiki-overview", "wiki-setup"], read: ["wiki-setup"] });
+    expect(JSON.stringify(read.body)).not.toContain("kept out");
     const path = `/projects/web/tasks/${TASK_IDS.pullRequest}/lessons/les_logs00001/not-helpful`;
     expect((await priya.send("POST", path, { extra: true })).body).toEqual({ project: "web", taskId: TASK_IDS.pullRequest, lessonId: "les_logs00001", marked: "not_helpful" });
     expect((await priya.send("POST", path)).status).toBe(409);
@@ -146,6 +149,13 @@ describe("Lessons used", () => {
 });
 
 describe("the shapes Cloud keeps", () => {
+  it("B13: keeps a task's wiki use to page ids, bounded, or nothing", () => {
+    expect(wikiUse(undefined)).toBeUndefined();
+    expect(wikiUse("x")).toBeUndefined();
+    expect(wikiUse({ given: [], read: [] })).toEqual({ given: [], read: [] });
+    expect(wikiUse({ given: Array.from({ length: 200 }, (_, i) => `p${String(i)}`), read: [1, null, "A"] })?.given).toHaveLength(80);
+    expect(wikiUse({ given: [], read: [1, null, "A"] })?.read).toEqual([]);
+  });
   it("keeps a lesson to the fields the screens draw and drops a citation that is not https", () => {
     const view = lessonItem({ id: "les_aaaa", version: 1, expiresAt: 5, title: "T", body: "B", secret: "kept out", citations: [{ kind: "pr", url: "http://insecure.example" }, { kind: "pr", url: "https://github.com/x/y/pull/1" }], from: [{ name: "Ann", you: true, email: "a@x" }], counters: { loaded: -3, helpful: 2.7 } });
     expect(view).not.toHaveProperty("secret");

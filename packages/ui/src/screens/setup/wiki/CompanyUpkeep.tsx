@@ -1,5 +1,5 @@
 // "Nightly upkeep for the company" (L4-P3, owner 2026-11-17): the company's one control, for owners and admins (the page that shows it decides who sees it; Code decides again). It says whether nightly upkeep is allowed
-// for the company and, when it is, offers Withdraw with ONE confirm ("Nightly runs stop for every project now. Projects keep their switch."). Withdrawing needs no fresh sign-in. Allowing happens on a project's
+// for the company and, when it is, offers Withdraw with ONE confirm ("Nightly runs stop for every project now. Projects keep their switch."). Allowing happens on a project's
 // setup page (the offer there), which is where a person says what runs and what it costs; this control only withdraws. Every sentence is one of the fixed wiki sentences.
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";

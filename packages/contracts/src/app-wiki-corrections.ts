@@ -43,6 +43,9 @@ export type WikiCorrectionsResponse = z.infer<typeof WikiCorrectionsResponseSche
 export const WikiNoteAddedResponseSchema = z.object({ note: WikiShownNoteSchema }).strict();
 export const WikiNoteApprovedResponseSchema = z.object({ noteId: WikiIdSchema, approval: z.literal("approved") }).strict();
 export const WikiNoteDeletedResponseSchema = z.object({ deleted: z.literal(true) }).strict();
+/** Clear the changed-file reminder on a note (the note's author, or a maintainer). */
+export const WikiNoteAcknowledgedResponseSchema = z.object({ noteId: WikiIdSchema, acknowledged: z.literal(true) }).strict();
+export type WikiNoteAcknowledgedResponse = z.infer<typeof WikiNoteAcknowledgedResponseSchema>;
 export const WikiMarkedResponseSchema = z.object({ flagId: WikiIdSchema, pageId: WikiPageIdSchema, claimId: WikiIdSchema.optional() }).strict();
 export const WikiResolvedResponseSchema = z.object({ resolved: z.number().int().min(0) }).strict();
 export const WikiSuggestedResponseSchema = z.object({ state: z.enum(["proposed", "already_proposed"]), lessonId: z.string() }).strict();
@@ -53,6 +56,18 @@ export const WikiDisputedItemSchema = z.object({
 /** `more`: Code cut the list (at most 100 marks an answer): close some and read again. */
 export const WikiDisputedResponseSchema = z.object({ project: z.string(), items: z.array(WikiDisputedItemSchema).max(WIKI_CORRECTION_LIMITS.disputed), more: z.boolean() }).strict();
 export type WikiDisputedResponse = z.infer<typeof WikiDisputedResponseSchema>;
+
+/**
+ * "Questions the wiki could not answer" (maintainers only; Code's `answer-feedback.ts`, `GET /v1/app/projects/{p}/wiki/gaps`): topics, never the asker. A topic is the question's words made short, how many
+ * different people asked it (never who) and the day it was last asked (a day, not a moment).
+ */
+export const ANSWER_GAP_KINDS = ["not_found", "partly", "wiki_empty", "not_right"] as const;
+export const ANSWER_GAP_LIMITS = { gaps: 50, topicChars: 160 } as const;
+export const AnswerGapSchema = z.object({
+  topic: z.string().min(1).max(ANSWER_GAP_LIMITS.topicChars), kind: z.enum(ANSWER_GAP_KINDS), people: z.number().int().min(1), questions: z.number().int().min(1), lastAskedAt: z.string().regex(/^\d{4}-\d\d-\d\d$/u),
+}).strict();
+export const AnswerGapsResponseSchema = z.object({ project: z.string(), items: z.array(AnswerGapSchema).max(ANSWER_GAP_LIMITS.gaps), more: z.boolean() }).strict();
+export type AnswerGapsResponse = z.infer<typeof AnswerGapsResponseSchema>;
 
 /** Code's fixed refusal words for the corrections (the same texts), plus Cloud's own. A refusal shows one of these and nothing the server or the browser sent. */
 export const WIKI_CORRECTION_WORDS = Object.freeze({

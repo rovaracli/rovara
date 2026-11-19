@@ -1,10 +1,10 @@
 // "Your GitHub account" (L4-GH): link the GitHub account that is yours, so Rovara knows which commits and pull requests are yours. It is not a way to sign in (that is "Connected
-// sign-ins" above). Connecting needs a fresh sign-in first, then you go to GitHub and come back here; Cloud's server keeps the state, the browser only gets GitHub's address.
+// sign-ins" above). Connecting sends you to GitHub and back here; Cloud's server keeps the state, the browser only gets GitHub's address.
 // The page shows the linked login and an Unlink. Words come from this app, never from GitHub or Code.
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { isNotConnected, needsStepUp } from "../../api/admin-company.js";
+import { isNotConnected } from "../../api/admin-company.js";
 import { createApiClient } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";
 import { MY_GITHUB_LINK_PATH, MY_GITHUB_PATH, githubLinkNotice, readGithubLinkStart, readMyGithub } from "../../api/github-link.js";
@@ -13,26 +13,24 @@ import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
-import { AdminSection, FreshSignIn, NotConnected, forgetConfirmed } from "../admin/parts.js";
+import { AdminSection, NotConnected } from "../admin/parts.js";
 
 const when = (value: string) => new Date(value).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
 
-export function GithubAccount({ confirmed, who }: { confirmed: boolean; who: string | undefined }) {
+export function GithubAccount() {
  const host = useAppHost(), api = createApiClient(host), query = useQueryClient(), [params, setParams] = useSearchParams();
  const connecting = params.get("github") === "connect", [notice, setNotice] = useState(() => githubLinkNotice(params.get("github_link")));
- const [busy, setBusy] = useState(false), [stale, setStale] = useState(false), [problem, setProblem] = useState<string>(), [unlinking, setUnlinking] = useState(false);
+ const [busy, setBusy] = useState(false), [problem, setProblem] = useState<string>(), [unlinking, setUnlinking] = useState(false);
  // The landing word is read once, then the address is cleaned so a reload never says it again.
  useEffect(() => {
   if (params.get("github_link") === null) return;
   const next = new URLSearchParams(params); next.delete("github_link"); setParams(next, { replace: true });
  }, []); // eslint-disable-line react-hooks/exhaustive-deps
  const link = useQuery({ queryKey: ["account", "github"], queryFn: () => api.get(MY_GITHUB_PATH, { parse: readMyGithub }), retry: false, gcTime: 0 });
- const ready = confirmed && !stale;
- const close = () => { setProblem(undefined); setStale(false); const next = new URLSearchParams(params); next.delete("github"); setParams(next, { replace: true }); };
+ const close = () => { setProblem(undefined); const next = new URLSearchParams(params); next.delete("github"); setParams(next, { replace: true }); };
  const open = () => { setProblem(undefined); setNotice(undefined); const next = new URLSearchParams(params); next.set("github", "connect"); setParams(next, { replace: true }); };
  function failed(error: unknown, fallback: string) {
-  if (needsStepUp(error)) { setStale(true); if (who !== undefined) forgetConfirmed(host.storage, who); setProblem(undefined); }
-  else setProblem(error instanceof ApiError && !isNotConnected(error) ? error.message : fallback);
+  setProblem(error instanceof ApiError && !isNotConnected(error) ? error.message : fallback);
  }
  async function start() {
   setBusy(true); setProblem(undefined);
@@ -53,7 +51,7 @@ export function GithubAccount({ confirmed, who }: { confirmed: boolean; who: str
    : <div className="rv-connect-actions"><p>No GitHub account connected.</p><Button onClick={open}>Connect your GitHub</Button></div>}
   <p className="rv-muted">This does not sign you in with GitHub. It only lets Rovara match your commits and reviews to you. Only you can connect or remove your own account.</p>
   <Dialog title="Connect your GitHub?" description="You go to GitHub to prove the account is yours, then come back here." open={connecting} onOpenChange={next => { if (!next) close(); }}>
-   {!ready ? <FreshSignIn action="connect your GitHub account" refused={stale} /> : <><FreshSignIn action="connect your GitHub account" done /><Button variant="primary" busy={busy} onClick={() => { void start(); }}>Continue to GitHub</Button></>}
+   <Button variant="primary" busy={busy} onClick={() => { void start(); }}>Continue to GitHub</Button>
    {problem !== undefined && <p role="alert"><VisibleText text={problem} /></p>}
   </Dialog>
   <Dialog title="Unlink your GitHub account?" description="Rovara will stop matching commits and reviews to you. You can connect it again later." open={unlinking} onOpenChange={next => { if (!next) { setUnlinking(false); setProblem(undefined); } }}>

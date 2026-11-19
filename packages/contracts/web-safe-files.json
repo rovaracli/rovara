@@ -13,6 +13,7 @@
   "packages/contracts/src/app-inbox.ts",
   "packages/contracts/src/app-known-failing.ts",
   "packages/contracts/src/app-lessons-areas.ts",
+  "packages/contracts/src/app-lessons-extras.ts",
   "packages/contracts/src/app-lessons.ts",
   "packages/contracts/src/app-nav.ts",
   "packages/contracts/src/app-plan-feature.ts",

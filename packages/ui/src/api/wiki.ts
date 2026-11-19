@@ -3,14 +3,14 @@
 import { useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
- ProjectOverviewProjectSchema, WIKI_CORRECTION_SENTENCES, WIKI_ID_PATTERN, WIKI_PAGE_ID_PATTERN, WIKI_SENTENCES, WikiAddNoteBodySchema, WikiCorrectionsResponseSchema, WikiDisputedResponseSchema, WikiIndexResponseSchema,
- WikiMarkWrongBodySchema, WikiMarkedResponseSchema, WikiNoteAddedResponseSchema, WikiNoteApprovedResponseSchema, WikiNoteDeletedResponseSchema, WikiPageResponseSchema, WikiResolvedResponseSchema, WikiSearchResponseSchema, WikiSourcesResponseSchema, WikiSuggestedResponseSchema,
+ AnswerGapsResponseSchema, ProjectOverviewProjectSchema, WIKI_CORRECTION_SENTENCES, WIKI_ID_PATTERN, WIKI_PAGE_ID_PATTERN, WIKI_SENTENCES, WikiAddNoteBodySchema, WikiCorrectionsResponseSchema, WikiDisputedResponseSchema, WikiIndexResponseSchema,
+ WikiMarkWrongBodySchema, WikiMarkedResponseSchema, WikiNoteAddedResponseSchema, WikiNoteAcknowledgedResponseSchema, WikiNoteApprovedResponseSchema, WikiNoteDeletedResponseSchema, WikiPageResponseSchema, WikiResolvedResponseSchema, WikiSearchResponseSchema, WikiSourcesResponseSchema, WikiSuggestedResponseSchema,
 } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";
 
-export type { WikiAddNoteBody, WikiCorrectionsResponse, WikiDisputedResponse, WikiMarkWrongBody, WikiNoteState, WikiSuggestedResponse, WikiYouCan } from "@agentx/contracts/web";
+export type { AnswerGapsResponse, WikiAddNoteBody, WikiCorrectionsResponse, WikiDisputedResponse, WikiMarkWrongBody, WikiNoteState, WikiSuggestedResponse, WikiYouCan } from "@agentx/contracts/web";
 export type { WikiBlock, WikiIndexEntry, WikiIndexResponse, WikiLastBuild, WikiPageResponse, WikiSearchResponse, WikiShownClaim, WikiShownNote, WikiSourceState, WikiSourcesResponse } from "@agentx/contracts/web";
 
 const base = (name: string) => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(name)) + "/wiki";
@@ -35,6 +35,10 @@ export function createWikiApi(host: AppHost) {
   markWrong: (project: string, id: string, body: { claimId?: string; reason?: string }) => api.sendAnswer("POST", base(project) + "/pages/" + pageId(id) + "/flags", WikiMarkWrongBodySchema.parse(body), WikiMarkedResponseSchema, NEVER),
   resolveMarks: (project: string, id: string) => api.sendAnswer("POST", base(project) + "/pages/" + pageId(id) + "/flags/resolve", {}, WikiResolvedResponseSchema, NEVER),
   disputed: (project: string) => api.get(base(project) + "/disputed", WikiDisputedResponseSchema),
+  /** The note's author or a maintainer says they checked the file that changed: the reminder clears. */
+  acknowledgeNote: (project: string, id: string, note: string) => api.sendAnswer("POST", base(project) + "/pages/" + pageId(id) + "/notes/" + noteId(note) + "/acknowledge", {}, WikiNoteAcknowledgedResponseSchema, NEVER),
+  /** Questions the wiki could not answer (maintainers only), as topics: never who asked. */
+  gaps: (project: string) => api.get(base(project) + "/gaps", AnswerGapsResponseSchema),
  };
 }
 export function useWikiApi() { const host = useAppHost(); return useMemo(() => createWikiApi(host), [host]); }
@@ -77,6 +81,11 @@ export function useWikiCorrections(project: string, id: string | undefined) {
 export function useWikiDisputed(project: string, enabled: boolean) {
  const api = useWikiApi();
  return useQuery({ queryKey: [...wikiKey(project), "disputed"], enabled, queryFn: () => api.disputed(project), staleTime: 15_000, retry: false });
+}
+/** The questions the wiki could not answer (maintainers only: others are not asked). */
+export function useWikiGaps(project: string, enabled: boolean) {
+ const api = useWikiApi();
+ return useQuery({ queryKey: [...wikiKey(project), "gaps"], enabled, queryFn: () => api.gaps(project), staleTime: 15_000, retry: false });
 }
 /** After a correction: the page, its list, its corrections and the disputed list are read again. */
 export function useWikiRefresh(project: string) {

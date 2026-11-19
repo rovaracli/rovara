@@ -2,20 +2,25 @@ import { TaskMoney } from "../../design/TaskMoney.js";
 import { useRef, useState, type KeyboardEvent } from "react";
 import type { LessonInboxBatch } from "@agentx/contracts/code-contract-v0";
 import { batchTitle, soonCount } from "../../api/learned.js";
-import { GROUPS, type WorkRow } from "../../api/work.js";
+import { GROUPS, OUTCOME_WORDS, type WorkRow } from "../../api/work.js";
 import { StepMini } from "../../design/StepRail.js";
 import { ToneDot } from "../../design/StatusDot.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { InlineQuestions } from "./InlineQuestions.js";
 
-/** One task in the list: its tone, title, what is asked of the person (or what Rovara is doing), the project, its age and five small bars for its steps. */
+/**
+ * One task in the list: its tone, title, what is asked of the person (or what Rovara is doing), the project, its age, how the workflow ended (a short label) and five small bars for its steps.
+ * Under it, Understand's questions when they wait on the person (answered right here), except on a task the person was only added to (its owner answers).
+ */
 export function InboxRow({ row, selected, onSelect, buttonRef }: { row: WorkRow; selected: boolean; onSelect: (id: string) => void; buttonRef?: (element: HTMLButtonElement | null) => void }) {
  return <li>
   <button type="button" ref={buttonRef} className="rv-inbox-row" data-task-id={row.id} aria-current={selected ? "true" : undefined} onClick={() => onSelect(row.id)}>
    <ToneDot tone={row.tone} words={row.need ?? row.line} />
    <span className="rv-inbox-main"><b><VisibleText text={row.title} /></b>
     <small>{row.need !== undefined && <><span className="rv-inbox-need" data-tone={row.tone}>{row.need}</span> · </>}<VisibleText text={row.line} /> · <VisibleText text={row.project} /></small></span>
-   <span className="rv-inbox-meta"><TaskMoney money={row.task.money} /><span className="mono">{row.age}{row.stale ? " · waiting" : ""}</span><StepMini step={row.step} tone={row.tone} /></span>
+   <span className="rv-inbox-meta"><TaskMoney money={row.task.money} />{row.task.outcome !== undefined && OUTCOME_WORDS[row.task.outcome] !== undefined && <span className="rv-inbox-outcome" data-outcome={row.task.outcome}>{OUTCOME_WORDS[row.task.outcome]}</span>}<span className="mono">{row.age}{row.stale ? " · waiting" : ""}</span><StepMini step={row.step} tone={row.tone} /></span>
   </button>
+  {row.group !== "involved" && <InlineQuestions task={row.task} />}
  </li>;
 }
 
@@ -37,7 +42,7 @@ export function LessonBatchRow({ batch, selected, onSelect, buttonRef, now }: { 
 
 /**
  * The dense work list, grouped by who owns the next move. `j` and `k` (or the arrow keys) move the selection and `o` opens the task on its own page, while focus is in the list, so the shortcuts never
- * take a key from a text field or from the rest of the page (the list holds only buttons).
+ * take a key from the rest of the page, nor from the answer fields of a row's inline questions.
  */
 export function WorkList({ rows, selectedId, onSelect, onOpen, decisionsFailed = false, lessonBatches = [] }: { rows: readonly WorkRow[]; selectedId: string | undefined; onSelect: (id: string) => void; /** `o` opens the selected task on its own page. */ onOpen?: ((id: string) => void) | undefined; /** The decision cards could not be read: "Needs you" cannot claim that nothing needs the person. */ decisionsFailed?: boolean; /** The projects' lesson batches, at the end of "Needs you". */ lessonBatches?: readonly LessonInboxBatch[] }) {
  const buttons = useRef(new Map<string, HTMLButtonElement>()), [now] = useState(() => Date.now());
@@ -45,6 +50,8 @@ export function WorkList({ rows, selectedId, onSelect, onOpen, decisionsFailed =
  const order = GROUPS.flatMap(entry => [...rows.filter(row => row.group === entry.group).map(row => row.id), ...(entry.group === "you" ? lessonBatches.map(batch => batchId(batch.project)) : [])]);
  function onKeyDown(event: KeyboardEvent<HTMLElement>) {
   if (event.metaKey || event.ctrlKey || event.altKey) return;
+  // Understand's questions are answered inside the list: a key typed or pressed anywhere in their form (a field or its buttons) is the form's, never a move.
+  if (event.target instanceof HTMLElement && event.target.closest("form, input, textarea, select, [contenteditable]") !== null) return;
   const key = event.key.toLowerCase(), down = key === "j" || key === "arrowdown", up = key === "k" || key === "arrowup";
   if (key === "o" && onOpen !== undefined && selectedId !== undefined && !selectedId.startsWith("lessons:")) { event.preventDefault();onOpen(selectedId);return; }
   if (!down && !up) return;

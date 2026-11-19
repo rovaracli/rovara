@@ -33,7 +33,7 @@ export type FeatureSource = (typeof FEATURE_SOURCES)[number];
 export const SOURCE_WORDS: Record<FeatureSource, string> = { chosen: "chosen by a person", tracker: "from the tracker", inherited: "inherited from a related task", confirmed_at_plan: "confirmed at plan", moved: "moved by an admin" };
 
 export interface ReportNumbers {
-  tasks: number; prsOpened: number; prsMerged: number; costCents: number; unpricedCalls: number; costIsFloor: boolean;
+  tasks: number; prsOpened: number; prsMerged: number; costCents: number; unpricedCalls: number; costIsFloor: boolean; pricedTasks?: number; foreignCurrencyTasks?: number;
   costPerMergedCents?: number; endToEndMs?: number; endToEndSoFar?: boolean; medianRequestToPrMs?: number;
 }
 export interface ReportGroup extends ReportNumbers { key: string; name: string; state?: "open" | "done" }
@@ -42,7 +42,7 @@ export interface PickerFeature { id: string; name: string; state?: "open" | "don
 /** `canChange`: Cloud says the person is a company owner or admin (Code's access answer, made for this read); the pages draw an action only when it is true. Absent (an older Cloud) is false. */
 export interface CostReport { range: { from?: string; to?: string }; asOf: string; totals: ReportNumbers; projects: string[]; byFeature: ReportGroup[]; byProject: ReportGroup[]; unreadableTasks?: number; canChange: boolean; features: PickerFeature[] }
 export interface FeatureTask {
-  taskId: string; title: string; project: string; origin: Origin; path?: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number;
+  taskId: string; title: string; project: string; origin: Origin; path?: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number; costUnavailable?: boolean;
   prsOpened: number; prsMerged: number; prLinks: string[]; wallMs?: number; wallSoFar?: boolean;
   /** Rovara Code's reference to this task's own page (`/review/<taskId>/task`), as the server passed it on. The page checks the reader's own access. Absent: the title is plain text. */
   taskPage?: string;
@@ -61,8 +61,14 @@ function numbers(raw: unknown): ReportNumbers {
   const flag = raw["costIsFloor"];
   if (typeof flag !== "boolean") throw new Error("unreadable report");
   const soFar = raw["endToEndSoFar"];
+  const tasks = must(count(raw["tasks"]));
+  const priced = raw["pricedTasks"] === undefined ? undefined : must(count(raw["pricedTasks"]));
+  const foreign = raw["foreignCurrencyTasks"] === undefined ? undefined : must(count(raw["foreignCurrencyTasks"]));
+  if ((priced ?? 0) + (foreign ?? 0) > tasks) throw new Error("unreadable report");
   return {
-    tasks: must(count(raw["tasks"])), prsOpened: must(count(raw["prsOpened"])), prsMerged: must(count(raw["prsMerged"])), costCents: must(count(raw["costCents"])), unpricedCalls: must(count(raw["unpricedCalls"])), costIsFloor: flag,
+    tasks, prsOpened: must(count(raw["prsOpened"])), prsMerged: must(count(raw["prsMerged"])), costCents: must(count(raw["costCents"])), unpricedCalls: must(count(raw["unpricedCalls"])), costIsFloor: flag,
+    ...optional("pricedTasks", priced),
+    ...optional("foreignCurrencyTasks", foreign),
     ...optional("costPerMergedCents", count(raw["costPerMergedCents"])), ...optional("endToEndMs", count(raw["endToEndMs"])), ...optional("endToEndSoFar", typeof soFar === "boolean" ? soFar : undefined), ...optional("medianRequestToPrMs", count(raw["medianRequestToPrMs"])),
   };
 }
@@ -127,10 +133,12 @@ export const readFeatureDetail: Reader<FeatureDetail> = {
       tasks: list(body["tasks"], 500, (item): FeatureTask => {
         if (!isRecord(item)) throw new Error("unreadable report");
         const soFar = item["wallSoFar"];
+        if ((item["costUnavailable"] !== undefined && typeof item["costUnavailable"] !== "boolean") || (item["costUnavailable"] === true && item["costCents"] !== 0)) throw new Error("unreadable report");
         return {
           taskId: must(text(item["taskId"], 128)), title: must(text(item["title"], 200)), project: must(text(item["project"], 200)), origin: must(oneOf(ORIGINS, item["origin"])), ...optional("path", oneOf(PATHS, item["path"])), state: must(oneOf(TASK_STATES, item["state"])),
           startedAt: must(time(item["startedAt"])), costCents: must(count(item["costCents"])), unpricedCalls: must(count(item["unpricedCalls"])), prsOpened: must(count(item["prsOpened"])), prsMerged: must(count(item["prsMerged"])),
           prLinks: Array.isArray(item["prLinks"]) ? (item["prLinks"] as unknown[]).slice(0, 20).flatMap((link) => { const good = plainHttps(link); return good === undefined ? [] : [good]; }) : [],
+          ...optional("costUnavailable", item["costUnavailable"] === true ? true : undefined),
           ...optional("wallMs", count(item["wallMs"])), ...optional("wallSoFar", soFar === true ? true : undefined),
           ...optional("taskPage", taskPageOf(item["taskPage"], item["taskId"])),
         };
@@ -162,6 +170,7 @@ export function dollars(cents: number): string {
 }
 /** A cost, with the floor marked: "$12.00 or more" when calls could not be priced. */
 export function costWords(cents: number, floor: boolean): string { return floor ? `${dollars(cents)} or more` : dollars(cents); }
+export const coverageWords = (numbers: ReportNumbers): string | undefined => numbers.pricedTasks === undefined ? undefined : `${numbers.pricedTasks} of ${numbers.tasks} tasks have fully priced USD costs. ${numbers.foreignCurrencyTasks ?? 0} foreign currency ${(numbers.foreignCurrencyTasks ?? 0) === 1 ? "task" : "tasks"} excluded from the USD subtotal.`;
 export const unreadableWords = (tasks: number): string => `${tasks.toLocaleString("en-US")} ${tasks === 1 ? "task" : "tasks"} couldn't be read and ${tasks === 1 ? "is" : "are"} left out of these numbers.`;
 export const unpricedWords = (calls: number): string => `${calls.toLocaleString("en-US")} ${calls === 1 ? "call" : "calls"} not priced`;
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
@@ -189,14 +198,14 @@ export function csvOf(header: readonly string[], rows: ReadonlyArray<ReadonlyArr
 const dollarsCsv = (cents: number | undefined): string => (cents === undefined ? "" : (cents / 100).toFixed(2));
 const days = (ms: number | undefined): string => (ms === undefined ? "" : (ms / DAY).toFixed(1));
 /** The export of the table on screen: what the filters show, the same columns, plain numbers (dollars with cents, days). */
-export function reportCsv(groups: readonly ReportGroup[], by: "feature" | "project"): string {
-  const header = [by === "feature" ? "Feature" : "Project", "Tasks", "Pull requests opened", "Pull requests merged", "Cost (USD)", "Cost is a floor", "Calls not priced", "End to end (days)", "Still open", ...(by === "feature" ? ["State"] : [])];
-  return csvOf(header, groups.map((g) => [g.name, g.tasks, g.prsOpened, g.prsMerged, dollarsCsv(g.costCents), g.costIsFloor ? "yes" : "no", g.unpricedCalls, days(g.endToEndMs), g.endToEndSoFar === true ? "yes" : "no", ...(by === "feature" ? [g.state === undefined ? "" : g.state === "done" ? "Done" : "Open"] : [])]));
+export function reportCsv(groups: readonly ReportGroup[], by: "feature" | "project", unreadableTasks = 0): string {
+  const header = [by === "feature" ? "Feature" : "Project", "Tasks", "Pull requests opened", "Pull requests merged", "Cost (USD)", "Cost is a floor", "Calls not priced", "End to end (days)", "Still open", ...(by === "feature" ? ["State"] : []), "Fully priced USD tasks", "Foreign currency tasks", "Invalid/unreadable tasks in range"];
+  return csvOf(header, groups.map((g) => [g.name, g.tasks, g.prsOpened, g.prsMerged, dollarsCsv(g.costCents), g.costIsFloor ? "yes" : "no", g.unpricedCalls, days(g.endToEndMs), g.endToEndSoFar === true ? "yes" : "no", ...(by === "feature" ? [g.state === undefined ? "" : g.state === "done" ? "Done" : "Open"] : []), g.pricedTasks, g.foreignCurrencyTasks, unreadableTasks]));
 }
 /** The export of a feature's tasks. */
-export function featureCsv(tasks: readonly FeatureTask[]): string {
-  return csvOf(["Task", "Project", "Started from", "State", "Pull request", "Cost (USD)", "Cost is a floor", "Calls not priced", "End to end (days)", "Still open"],
-    tasks.map((t) => [t.title, t.project, ORIGIN_WORDS[t.origin], STATE_WORDS[t.state], t.prLinks[0] ?? "", dollarsCsv(t.costCents), t.unpricedCalls > 0 ? "yes" : "no", t.unpricedCalls, days(t.wallMs), t.wallSoFar === true ? "yes" : "no"]));
+export function featureCsv(tasks: readonly FeatureTask[], context?: Pick<FeatureDetail, "totals" | "unreadableTasks">): string {
+  return csvOf(["Task", "Project", "Started from", "State", "Pull request", "Cost (USD)", "Cost is a floor", "Calls not priced", "End to end (days)", "Still open", ...(context === undefined ? [] : ["Fully priced USD tasks in feature", "Foreign currency tasks in feature", "Invalid/unreadable tasks in range"])],
+    tasks.map((t) => [t.title, t.project, ORIGIN_WORDS[t.origin], STATE_WORDS[t.state], t.prLinks[0] ?? "", t.costUnavailable === true ? "Cost unavailable" : dollarsCsv(t.costCents), t.unpricedCalls > 0 || t.costUnavailable === true ? "yes" : "no", t.unpricedCalls, days(t.wallMs), t.wallSoFar === true ? "yes" : "no", ...(context === undefined ? [] : [context.totals.pricedTasks, context.totals.foreignCurrencyTasks, context.unreadableTasks ?? 0])]));
 }
 
 // ---- The date range ----

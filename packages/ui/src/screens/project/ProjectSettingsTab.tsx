@@ -17,6 +17,7 @@ import { SetupRunControls } from "../setup/SetupRunRow.js";
 import { RecheckSetupRow } from "../setup/SetupRepairCard.js";
 import { setupChecklistKey } from "../../api/setup-checklist.js";
 import { TicketUpdatesSettings } from "./TicketUpdatesSettings.js";
+import { LocalToolsSetting } from "./LocalToolsSetting.js";
 
 const lifecycleReader = { parse(value: unknown) { return AppProjectLifecycleSchema.parse(value); } };
 
@@ -52,6 +53,7 @@ export function ProjectSettingsTab({ project, canEdit }: { project: string; canE
   <Lifecycle project={project} scope={scope} />
   <ProjectIntegrations project={project} canEdit={canEdit} />
   <TicketUpdatesSettings project={project} />
+  <LocalToolsSetting key={`local-tools:${scope.orgId}:${scope.developerId}:${project}`} project={project} />
   <ProjectSpendLimits key={`spend:${scope.orgId}:${scope.developerId}:${project}`} project={project} developerId={scope.developerId} />
  </div></ProjectScopeContext.Provider>;
 }

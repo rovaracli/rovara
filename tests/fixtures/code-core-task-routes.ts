@@ -12,7 +12,7 @@ export interface CoreTaskRoutesFixture {
   /** `POST /v1/app/tasks/{taskId}/review-findings` (Code #1045 item 2) and the workflow route's refusal of the same accept on a core task. */
   page: {
     taskId: string; revision: number; candidateDigest: string; findingId: string; blockedTask: Obj;
-    tokenRoute: Answer; notWebApp: Answer; noStepUp: Answer; staleStepUp: Answer; member: Answer; otherCompany: Answer; accepted: Answer; notOnCore: Answer;
+    tokenRoute: Answer; notWebApp: Answer; member: Answer; otherCompany: Answer; accepted: Answer; notOnCore: Answer;
   };
   /** A hosted core start writes the task's session (Code #1045 item 1); the session controls on it; a task started before that names no session. */
   sessions: {
@@ -29,7 +29,7 @@ export interface CoreTaskRoutesFixture {
   /** `GET .../test-environment` with the proposal's body, and `POST .../test-environment/approve` (Code #1045 item 4). */
   testenv: {
     seen: { digest: string; revision: number }; read: Answer; readOther: Answer; readNoGrant: Answer;
-    approveNoStepUp: Answer; approveDeveloper: Answer; approveNoGrant: Answer; approveOtherCompany: Answer; approveStale: Answer; approved: Answer; readAfter: Answer;
+    approveDeveloper: Answer; approveNoGrant: Answer; approveOtherCompany: Answer; approveStale: Answer; approved: Answer; readAfter: Answer;
   };
   /** `GET /v1/dev/tasks?detail=1` (Code #1045 item 5), the plain list, another company's caller, and a plain (non-workflow) task's detailed row. */
   list: { taskId: string; detailed: Answer; plain: Answer; omarDetailed: Answer; workflowTaskId: string; workflowDetailed: Answer };

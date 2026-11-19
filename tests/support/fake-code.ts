@@ -12,7 +12,7 @@ import {
   matchCodeRoute,
   type AccessResponse, type CodeRequest, type CodeResponse, type CodeRouteId, type CompanyMember, type DecisionCard, type ErrorBody, type HowWeWorkView,
   type PlaybookView, type PlanComment, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
-  type DecisionsResponse, type DecisionOutcome, type GraduationResponse, type LearningSourceKey, type LessonItem, type LessonMeasureResponse, type LessonMode, type TaskLesson,
+  type DecisionsResponse, type DecisionOutcome, type GraduationResponse, type SkillsResponse, type LearningSourceKey, type LessonItem, type LessonMeasureResponse, type LessonMode, type TaskLesson, type WeeklySummaryResponse, type LessonTuningResponse,
 } from "../../packages/contracts/src/code-contract-v0.js";
 import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
 import { taskPlanAnswer } from "../fixtures/code-answers.js";
@@ -154,7 +154,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const linearPicks = new Map<string, string>();
   // Guided onboarding PR 9 (Code #841, #844): each project's skipped optional rows and its hosted setup run (set by the specs through /__fake/setup-run).
   const setupSkips = new Map<string, Set<"slackChannel" | "linear" | "invites">>();
-  type FakeRun = { status: "none" | "running" | "ready" | "failed"; startedAt?: string; taskId?: string; stop?: "stopped_by_person" | "proposed" };
+  type FakeRun = { status: "none" | "running" | "ready" | "failed"; startedAt?: string; taskId?: string; stop?: "stopped_by_person" | "proposed"; /** L4-T2: a person approved the setup and its check is ready (Code's rule for Done). A ready run is not approved until a spec says so. */ approved?: boolean };
   const setupRuns = new Map<string, FakeRun>();
   // Lead 4 W5 (Code W2): the pretend wiki, per project (set by the specs through /__fake/wiki); `off` makes Code answer its unknown-route 404, as a Code without the wiki does.
   const wikis = new Map<string, WikiFixtureOptions & { off?: boolean; broken?: boolean }>();
@@ -271,9 +271,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   // L4-P2 (Code's two locks): the company's consent to Rovara's automatic runs is the company's, not a project's. It starts off; only a company owner or admin sets it, in the one PUT that also switches the project on.
   const upkeepConsent = new Map<string, boolean>();
   const companyKeyOf = (name: string) => project(name)?.companyId ?? "main";
-  // L4-P3 (owner 2026-11-17): ALLOWING the consent needs a fresh step-up; the pretend Code says so unless a spec sets `stepUp: "stale"` off again (the next /__fake/wiki-setup call resets it). Withdrawing never needs one.
-  let stepUpStale = false;
-  const NEEDS_SIGN_IN = "Rovara's automatic runs are allowed right after you confirm it's you on the sign-in page: a tool that holds an API token cannot allow them. Confirm it's you, then try again within a few minutes.";
+  // L4-P3 (owner 2026-11-17): allowing or withdrawing the consent is a company owner's or admin's (no step-up since owner DEC 254zzz73).
   const companyConsentKey = (person: Person) => (companyOfPerson(person) === FAKE_COMPANY_ID ? "main" : companyOfPerson(person));
   /** Code's `GET`/`PUT /v1/app/company/system-runs`: a live company owner or admin only (a member is 403, a person with no company is not served). */
   const systemRunsAnswer = (method: string, person: Person, body: unknown): { status: number; body: unknown } => {
@@ -287,7 +285,6 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (typeof given?.requestId !== "string" || typeof given.allowed !== "boolean") return failure(400, "CONFIG_INVALID", "the request is not valid");
     if (given.allowed) {
       if (!available) return failure(404, "NOT_AVAILABLE_HERE", "Rovara's automatic runs aren't available on this Rovara yet");
-      if (stepUpStale) return failure(403, "REAUTH_REQUIRED", NEEDS_SIGN_IN);
     }
     upkeepConsent.set(key, given.allowed);
     return { status: 200, body: view() };
@@ -303,7 +300,6 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (given.allowSystemRuns !== undefined) {
       if (!person.administrator) return failure(403, "FORBIDDEN", "Only company owners and admins can allow or stop Rovara's automatic runs for the company.");
       if (given.allowSystemRuns === false && given.on === true) return failure(400, "CONFIG_INVALID", "the request is not valid");
-      if (given.allowSystemRuns === true && stepUpStale) return failure(403, "REAUTH_REQUIRED", NEEDS_SIGN_IN);
       upkeepConsent.set(companyKeyOf(name), given.allowSystemRuns === true);
     } else if (given.on === true && upkeepConsent.get(companyKeyOf(name)) !== true) {
       return failure(403, "FORBIDDEN", "A company owner or admin has to allow Rovara's automatic runs for the company first.");
@@ -509,11 +505,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const run = runOf(name), skips = setupSkips.get(name) ?? new Set();
     const grant = entry.members.get(person.developerId);
     const companyRole = person.administrator ? "owner" as const : "member" as const;
-    const runRow = run.status === "none" ? { state: "needs_you" as const, status: "none" as const }
-      : run.status === "running" ? { state: "running" as const, status: "running" as const, startedAt: run.startedAt, elapsedMs: 95_000, costCents: 12, commandsRun: 3 }
-      : run.status === "ready" ? { state: "done" as const, status: "ready" as const, startedAt: run.startedAt, elapsedMs: 412_000, costCents: 48, commandsRun: 9, commandsFound: { setup: 2, tests: 1 }, testOutcome: "passed" as const }
-      : { state: "failed" as const, status: "failed" as const, startedAt: run.startedAt, elapsedMs: 300_000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed" as const, ...(run.stop === undefined ? {} : { stop: run.stop }), failure: "A test command failed.", failedCommand: FAILED_COMMAND };
-    const setupDone = runRow.state === "done";
+    const baseRow = run.status === "none" ? { state: "needs_you" as const, status: "none" as const, approval: "none" as const }
+      : run.status === "running" ? { state: "running" as const, status: "running" as const, approval: "none" as const, startedAt: run.startedAt, elapsedMs: 95_000, costCents: 12, commandsRun: 3 }
+      : run.status === "ready" ? { state: run.approved === true ? "done" as const : "needs_you" as const, status: "ready" as const, ...(run.approved === true ? { approval: "approved" as const, check: { status: "ready" as const }, approvedAt: "2026-11-12T10:00:00.000Z" } : { approval: "none" as const }), startedAt: run.startedAt, elapsedMs: 412_000, costCents: 48, commandsRun: 9, commandsFound: { setup: 2, tests: 1 }, testOutcome: "passed" as const }
+      : { state: "failed" as const, status: "failed" as const, approval: "none" as const, startedAt: run.startedAt, elapsedMs: 300_000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed" as const, ...(run.stop === undefined ? {} : { stop: run.stop }), failure: "A test command failed.", failedCommand: FAILED_COMMAND };
+    // L4-T2: a candidate waiting for a decision (/__fake/setup-apply) is Needs you (its check ready or failed) or Running (its check going), as Code says.
+    const waiting = setupApplies.get(name);
+    const runRow = waiting === undefined || run.status === "running" || run.status === "failed" ? baseRow
+      : { ...baseRow, state: waiting.check === "checking" ? "running" as const : "needs_you" as const, approval: waiting.check === "checking" ? "checking" as const : "candidate" as const,
+        check: { status: waiting.check, ...(waiting.failedStep === undefined ? {} : { failedStep: waiting.failedStep }) } };
+    const setupDone = run.status === "ready";
     const evalRow = setupDone && evalOf(name).state === "approved" ? { state: "done" as const, report: "confirmed" as const, confirmedSelection: "npm run evals" } : setupDone ? { state: "needs_you" as const, report: "reported" as const, suites: [{ selection: "npm test", questions: 3 }] } : { state: "needs_you" as const, report: "none" as const, blockedBy: "setupRun" as const };
     const channels = [...slackLinks].filter(([, linked]) => linked === name).map(([channelId]) => ({ channelId, name: slackChannels.find((one) => one.id === channelId)?.name ?? channelId }));
     const team = linearPicks.get(name);
@@ -537,11 +538,32 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return { status: run.status, basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, ...(run.taskId === undefined ? {} : { taskId: run.taskId }), ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }), ...(run.status === "failed" ? { failure: "A test command failed.", ...(run.stop === undefined ? {} : { stop: run.stop }) } : {}), canManage: manage, ...(setupApplies.has(name) ? { apply: applyView(setupApplies.get(name)!) } : {}) };
   };
   // L4-EVC (DEC 254zzz20): the setup flow's ONE eval card, in dollars (Code's hosted eval routes, small). A project with a finished setup run has an eval to approve; the specs set the stage through /__fake/eval-card.
-  type FakeEval = { state: "none" | "propose" | "waiting" | "approved" | "rejected"; health: "none" | "requested" | "finished" };
+  type FakeWrapperStep = "needs_file" | "pull_request_open" | "file_found" | "dismissed" | "not_offered" | "custom";
+  type FakeEval = { state: "none" | "propose" | "waiting" | "approved" | "rejected"; health: "none" | "requested" | "finished"; wrapper?: FakeWrapperStep };
   const evalCards = new Map<string, FakeEval>();
   const EVAL_SEEN = { perCheckHighMicros: 1_200_000, monthlyCapMicros: 41_000_000 };
   const EVAL_OFFER = { requestId: `eval-${"e".repeat(40)}-3`, revision: 3, artifactDigest: "cd34".repeat(16) };
   const evalOf = (name: string): FakeEval => evalCards.get(name) ?? { state: runOf(name).status === "ready" ? "propose" : "none", health: "none" };
+  /** L4-EVW4 (DEC 254zzz43): Code's wrapper card, small: the file's path and text for everyone, the pull request only for a manager. */
+  const WRAPPER_FILE = "#!/usr/bin/env python3\n# Made by Rovara so it can read the results of your eval.\n# rovara-eval-wrapper-template: 1\nimport json\n";
+  const wrapperCard = (step: FakeWrapperStep, manage: boolean) => {
+    const custom = step === "custom", shown = step === "dismissed" ? "dismissed" : step === "custom" ? "needs_file" : step;
+    const lines: Record<string, string> = {
+      needs_file: "Rovara needs a small file in your repository to read this eval's results. Add it yourself, or let Rovara open a pull request for it.",
+      pull_request_open: "Rovara opened PR #12 with the file. Review and merge it; Rovara notices it on your default branch by itself.",
+      file_found: "The file is on your default branch. Approve a test run (its cost is shown) so Rovara can check it reads your results.",
+      dismissed: "Set aside for now. Pull requests will say the eval was not read until it is set up.",
+      not_offered: "Rovara could not check a file for this eval, so it is not offering one. If you add your own file at the place Rovara looks, Rovara will find it.",
+    };
+    return {
+      selection: "npm run evals", language: "python", kind: custom ? "custom" : "template", path: "rovara/eval-wrapper.py", content: step === "not_offered" ? "" : WRAPPER_FILE,
+      title: "Rovara can't read the results of npm run evals yet", step: shown, line: lines[shown]!, offered: step !== "not_offered",
+      canOpenPullRequest: manage && step === "needs_file",
+      ...(custom ? { copyOnly: { reason: "custom", text: "A file Rovara's setup agent wrote itself is copy-only: copy it into your repository." } } : {}),
+      ...(step === "pull_request_open" ? { pullRequest: { number: "12", url: "https://github.com/acme/web/pull/12", state: "open" } } : {}),
+      ...(step === "file_found" ? { fileStatus: "same" } : {}), dismissed: step === "dismissed",
+    };
+  };
   const evalCardAnswer = (method: string, tail: string, name: string, manage: boolean, body: unknown): { status: number; body: unknown } => {
     const card = evalOf(name);
     if (method === "GET") {
@@ -549,14 +571,27 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { status: 200, body: {
         project: name, state: card.state, canApprove: manage,
         ...(card.state === "none" ? {} : { report: { taskId: "task_fake-eval", reportDigest: "ab12".repeat(16) } }),
-        suites: card.state === "propose" ? [{ selection: "npm run evals", files: ["evals/a.yaml", "evals/b.yaml"], cases: 12, sentence, perPr: "$0.50-$1.20", monthly: "$41.00", seen: EVAL_SEEN }] : [],
+        suites: card.state === "propose" ? [{ selection: "npm run evals", files: ["evals/a.yaml", "evals/b.yaml"], cases: 12, sentence, perPr: "$0.50-$1.20", monthly: "$41.00", seen: EVAL_SEEN, ...(card.wrapper !== undefined && card.wrapper !== "file_found" ? { readable: false, needsFile: "Rovara can't read this eval's results yet. It needs a small file in your repository. Add it yourself or let Rovara open a pull request for it; once the file is on your default branch, approve a test run." } : {}) }] : [],
+        ...(card.wrapper === undefined ? {} : { wrappers: [wrapperCard(card.wrapper, manage)] }),
         ...(card.state === "waiting" ? { spend: { state: "waiting", perPr: "$0.90-$2.40", monthly: "$41.00", needsApproval: "Needs approval: your eval set grew past the approved $1.20", approval: EVAL_OFFER } }
           : card.state === "approved" || card.state === "rejected" ? { spend: { state: card.state, perPr: "$0.50-$1.20", monthly: "$41.00" } } : {}),
         ...(card.state === "approved" ? { health: { state: card.health, label: "Check my evals now (about $2.40)", cost: "$2.40", seenCostMicros: 2_400_000 } } : {}),
       } };
     }
-    if (!manage) return failure(403, "FORBIDDEN", "Only a company owner, admin or project maintainer can answer for the eval's spend.");
     const given = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+    // L4-EVW4: a person's act on the wrapper card: exactly a request id, an act and (to open a pull request) the eval. "Check now" only reads, so a project member may ask it; every other act is for a manager.
+    if (tail === "eval-wrapper") {
+      const keys = Object.keys(given), action = given["action"];
+      const known = ["open_pull_request", "dismiss", "reopen", "check"];
+      if (typeof given["requestId"] !== "string" || !/^[0-9a-f-]{36}$/u.test(given["requestId"]) || typeof action !== "string" || !known.includes(action) || keys.some((key) => !["requestId", "action", "selection"].includes(key)) || (action === "open_pull_request" && typeof given["selection"] !== "string")) return failure(400, "CONFIG_INVALID", "requestId: invalid");
+      if (action !== "check" && !manage) return failure(403, "FORBIDDEN", "Only a company owner, admin or project maintainer can ask Rovara to open a pull request for the eval's file, set it aside, or approve its test run.");
+      const at = card.wrapper;
+      if (at === undefined) return failure(404, "NOT_FOUND", "There is no eval report for this project's latest setup run.");
+      const next: FakeWrapperStep = action === "open_pull_request" ? (at === "needs_file" ? "pull_request_open" : at) : action === "dismiss" ? "dismissed" : action === "reopen" ? "needs_file" : at;
+      evalCards.set(name, { ...card, wrapper: next });
+      return { status: 200, body: { project: name, action, ...(action === "open_pull_request" ? { outcome: { selection: given["selection"], state: next === "pull_request_open" ? "open" : "failed", ...(next === "pull_request_open" ? { number: "12", url: "https://github.com/acme/web/pull/12" } : { failure: "copy_only" }) } } : {}), wrappers: [wrapperCard(next, manage)] } };
+    }
+    if (!manage) return failure(403, "FORBIDDEN", "Only a company owner, admin or project maintainer can answer for the eval's spend.");
     if (tail === "eval-approve") {
       const seen = given["seen"] as Record<string, unknown> | undefined;
       if (card.state !== "propose" || given["approve"] !== true || seen?.["perCheckHighMicros"] !== EVAL_SEEN.perCheckHighMicros || seen["monthlyCapMicros"] !== EVAL_SEEN.monthlyCapMicros) return failure(409, "CHANGE_STALE", "Your evals changed. Look again.");
@@ -574,14 +609,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   };
   /** The hosted setup run's answer (Code #844 serves the laptop's /v1/app path), or undefined when the path is not one of its four. */
   const setupRunAnswer = (method: string, path: string, query: URLSearchParams, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
-    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide|eval|eval-approve|eval-decide|eval-health))?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide|eval|eval-approve|eval-decide|eval-health|eval-wrapper))?$/u.exec(path);
     if (match === null) return undefined;
     const tail = match[2];
     if (!((method === "GET" && (tail === undefined || tail === "journal" || tail === "eval")) || (method === "POST" && tail !== "journal" && tail !== "eval"))) return undefined;
     const name = decodeURIComponent(match[1]!), entry = project(name), grant = roleIn(person, name);
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (entry === undefined || companyless.has(person.developerId) || (!manage && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
-    if (tail === "eval" || tail === "eval-approve" || tail === "eval-decide" || tail === "eval-health") return evalCardAnswer(method, tail, name, manage, body);
+    if (tail === "eval" || tail === "eval-approve" || tail === "eval-decide" || tail === "eval-health" || tail === "eval-wrapper") return evalCardAnswer(method, tail, name, manage, body);
     if (method === "GET" && tail === undefined) return { status: 200, body: setupRunView(name, manage) };
     if (method === "GET") {
       const run = runOf(name), after = Number(query.get("after") ?? "0");
@@ -599,6 +634,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       if (waiting === undefined || waiting.check !== "ready") return failure(409, "CHANGE_STALE", "There is no setup waiting for a decision. Open the project's setup again.");
       if (waiting.moved || asked.seen?.artifactDigest !== APPLY_DIGEST || asked.seen?.revision !== waiting.revision) return failure(409, "CHANGE_STALE", "The setup moved.");
       setupApplies.delete(name);
+      // L4-T2: an approved setup (its check was ready) makes the checklist's Setup run row Done.
+      if (asked.outcome === "approve") setupRuns.set(name, { ...runOf(name), approved: true });
       return { status: 200, body: { project: name, decision: asked.outcome === "approve" ? "approved" : "rejected", risk: waiting.risk, revision: waiting.revision, replayed: false } };
     }
     if (tail === "confirm") return failure(409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Decide it, or discard it, first.");
@@ -653,6 +690,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const EGRESS_ADDRESSES = ["198.51.100.10", "198.51.100.20"];
   const OFFERED_MODELS = ["zai.glm-4.7", "claude-sonnet-4-5", "zai.glm-4.6"];
   let companyModel: string | undefined;
+  /** DEC 254zzz63 (Code #1075): the company's lessons learning model; the install default is Claude Haiku 5.5, only Claude models are offered. */
+  const LEARNING_OFFERED = ["claude-sonnet-5-5", "claude-haiku-5-5"];
+  let learningModel: string | undefined;
+  const learningView = () => { const model = learningModel ?? "claude-haiku-5-5"; return { model, source: learningModel === undefined ? "install" as const : "company" as const, offered: [...LEARNING_OFFERED], preselect: LEARNING_OFFERED.includes(model) ? model : LEARNING_OFFERED[0]! }; };
   const engineView = () => { const model = companyModel ?? "zai.glm-4.6"; return { model, source: companyModel === undefined ? "install" as const : "company" as const, offered: [...OFFERED_MODELS], preselect: OFFERED_MODELS.includes(model) ? model : OFFERED_MODELS[0]! }; };
   const projectSettings = new Map<string, { overrides: Record<string, unknown>; revision: number }>();
   const settingsView = (name: string) => {
@@ -838,6 +879,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   lessonPeople.set("les_logs00001", [SAM.developerId]);
   let lessonMode: LessonMode = "suggest";
   const pausedSources = new Set<LearningSourceKey>();
+  // L4-JA7: Knowledge stays in Rovara (the company) and a project's own local coding tools choice.
+  let knowledgeStays = false;
+  const localToolsOwn = new Map<string, boolean>();
+  const localToolsState = (name: string, decides: boolean) => { const own = localToolsOwn.get(name); return { enabled: !knowledgeStays && own !== false, ...(own === undefined ? {} : { own }), ...(knowledgeStays ? { reason: "company_stays" as const } : own === false ? { reason: "project_setting" as const } : {}), preset: "standard" as const, companyStays: knowledgeStays, canChange: decides }; };
   const retireAsks = new Map<string, { by: string; at: number }>();
   const taskLessons = new Map<string, TaskLesson[]>([
     [TASK_IDS.pullRequest, [
@@ -857,13 +902,23 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const teamRules = new Map<string, { id: string; text: string; paths: string[]; repos: string[]; fromLesson: string; createdAt: number; status: "live" | "retired" }>();
   const CARD_PATHS = ["src/logging/**"];
   const graduationLater = new Set<string>();
+  // --- Rovara skills (L4-JA): Priya decides; Sam reads. Two approvals by two DIFFERENT deciders make a version live; an edit is a new version with none. Only project "web" has any.
+  interface FakeSkill { name: string; description: string; currentVersion: number; activeVersion?: number; approvers: string[]; retired: boolean; form: { description: string; when: string; steps: string[]; doneWhen?: string; why?: string } | undefined; content: string; bytes: number }
+  const SKILL_SEED = (): Map<string, FakeSkill> => new Map<string, FakeSkill>([
+    ["add-queue-handler", { name: "add-queue-handler", description: "Add a queue and its handler", currentVersion: 2, activeVersion: 2, approvers: ["zoe", "yan"], retired: false, bytes: 410,
+      form: { description: "Add a queue and its handler", when: "adding a queue", steps: ["Create the queue and its dead-letter queue.", "Register the handler."], why: "The alarm needs the dead-letter queue." }, content: "---\nname: add-queue-handler\ndescription: Add a queue and its handler\n---\n\n## When to use\nadding a queue\n\n## Steps\n1. Create the queue and its dead-letter queue.\n2. Register the handler.\n\n## Why this order\nThe alarm needs the dead-letter queue.\n" }],
+    ["log-request-ids", { name: "log-request-ids", description: "Log request ids with every error", currentVersion: 1, approvers: ["zoe"], retired: false, bytes: 9_000,
+      form: { description: "Log request ids with every error", when: "writing an error path", steps: ["Read the id from the request.", "Add it to the log line."] }, content: "---\nname: log-request-ids\ndescription: Log request ids with every error\n---\n\n## When to use\nwriting an error path\n\n## Steps\n1. Read the id from the request.\n2. Add it to the log line.\n" }],
+    ["old-hand-written", { name: "old-hand-written", description: "Written by hand", currentVersion: 1, approvers: [], retired: false, bytes: 100, form: undefined, content: "Just some words a person wrote.\n" }],
+  ]);
+  let skillStore = SKILL_SEED();
   let tidyClosed = false;
   const initialLessons = [...lessonStore.entries()].map(([id, lesson]) => [id, JSON.parse(JSON.stringify(lesson)) as LessonItem] as const);
   const initialDrafts = [...checkDrafts.entries()].map(([id, draft]) => [id, { ...draft }] as const);
   const resetLessons = () => {
     lessonStore.clear(); for (const [id, lesson] of initialLessons) lessonStore.set(id, JSON.parse(JSON.stringify(lesson)) as LessonItem);
     checkDrafts.clear(); for (const [id, draft] of initialDrafts) checkDrafts.set(id, { ...draft });
-    teamRules.clear(); graduationLater.clear(); tidyClosed = false; retireAsks.clear(); lessonMode = "suggest";
+    teamRules.clear(); graduationLater.clear(); skillStore = SKILL_SEED(); tidyClosed = false; retireAsks.clear(); lessonMode = "suggest";
   };
   const GRADUATION_REFUSED = "Only a maintainer of this project, or an admin, can decide what becomes permanent.";
   /** One of the phase 4 routes: record the call, apply an override, refuse a non-decider in Code's words, else run `run`. */
@@ -876,6 +931,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (!found.decides) return failure(403, "FORBIDDEN", GRADUATION_REFUSED);
     return run(context, found.name);
   };
+  const skillRowOf = (skill: FakeSkill, person: Person) => ({
+    name: skill.name, description: skill.description, currentVersion: skill.currentVersion, ...(skill.activeVersion === undefined ? {} : { activeVersion: skill.activeVersion }), approvals: skill.approvers.length,
+    approvedByYou: skill.approvers.includes(person.key), retired: skill.retired, bytes: skill.bytes, ...(skill.bytes > 8_192 ? { note: "This skill is long. Consider splitting it into smaller skills." } : {}),
+  });
   const lessonsOff = () => failure(404, "LESSONS_SWITCHED_OFF", "Lessons are off.");
   const LIST_STATUSES: Record<string, string[]> = { proposed: ["pending"], approved: ["active", "stale"], retired: ["retired", "expired", "rejected"] };
   /** The project, if lessons are on and the person is on its roster (Code answers the same "No such project." for both). */
@@ -1511,7 +1570,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       const entry = mayRead(context.person, context.params["taskId"] ?? "");
       if (entry === undefined || entry.task.project !== found.name) return failure(404, "TASK_NOT_FOUND", "No such task.");
       const rows = (taskLessons.get(entry.task.taskId) ?? []).map((row) => ({ ...row, harmful: row.harmful === undefined ? undefined : row.harmful + (notHelpful.has(`${entry.task.taskId}:${row.lessonId}`) ? 1 : 0), canMark: row.canMark && !notHelpful.has(`${entry.task.taskId}:${row.lessonId}`) }));
-      return { body: { project: found.name, taskId: entry.task.taskId, lessons: rows.map((row) => JSON.parse(JSON.stringify(row)) as TaskLesson) } };
+      return { body: { project: found.name, taskId: entry.task.taskId, lessons: rows.map((row) => JSON.parse(JSON.stringify(row)) as TaskLesson), ...(entry.task.taskId === TASK_IDS.pullRequest ? { wikiUse: { given: ["wiki-overview", "wiki-setup"], read: ["wiki-setup", "Bad Id!", "wiki-setup"], leaked: "kept out" } } : {}) } };
     },
     "lessons.notHelpful": (context) => {
       const found = lessonsProject(context);
@@ -1556,11 +1615,39 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       if (context.body.paused) pausedSources.add(key); else pausedSources.delete(key);
       return { body: { project: found.name, key, paused: context.body.paused } };
     },
+    "company.knowledgeStays.get": ({ person }) => (!person.administrator || companyless.has(person.developerId) ? failure(403, "FORBIDDEN", "Only an owner or admin of the company can change whether knowledge stays in Rovara.") : { body: { stays: knowledgeStays } }),
+    "company.knowledgeStays.put": ({ person, body }) => {
+      if (!person.administrator || companyless.has(person.developerId)) return failure(403, "FORBIDDEN", "Only an owner or admin of the company can change whether knowledge stays in Rovara.");
+      if (typeof body.stays !== "boolean") return failure(400, "CONFIG_INVALID", "the switch takes stays: true or false");
+      knowledgeStays = body.stays;
+      return { body: { stays: knowledgeStays } };
+    },
+    "lessons.localTools.get": (context) => {
+      const found = lessonsProject(context);
+      return "refused" in found ? found.refused : { body: localToolsState(found.name, found.decides) };
+    },
+    "lessons.localTools.put": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      if (!found.decides) return failure(403, "FORBIDDEN", "Only an admin of this project, or an owner or admin of the company, can change this.");
+      if (typeof context.body.enabled !== "boolean") return failure(400, "CONFIG_INVALID", "the switch takes enabled: true or false");
+      localToolsOwn.set(found.name, context.body.enabled);
+      return { body: localToolsState(found.name, true) };
+    },
     "lessons.mode.get": (context) => {
       const found = lessonsProject(context);
       if ("refused" in found) return found.refused;
       return { body: { project: found.name, mode: lessonMode, effective: lessonMode, lockedByCompany: false, canChange: found.decides } };
     },
+    "lessons.weeklySummary.get": (context) => { lessonCalls.push({ id: "lessons.weeklySummary.get", params: { ...context.params }, body: null, person: context.person.key });const override = lessonOverrides.get("lessons.weeklySummary.get");if (override !== undefined) return { status: override.status ?? 200, body: override.body as WeeklySummaryResponse };const found = lessonsProject(context);if ("refused" in found) return found.refused;return { body: { project: found.name, on: true, source: "chosen", canChange: found.decides } }; },
+    "lessons.weeklySummary.put": (context) => { lessonCalls.push({ id: "lessons.weeklySummary.put", params: { ...context.params }, body: JSON.parse(JSON.stringify(context.body)) as unknown, person: context.person.key });const found = lessonsProject(context);if ("refused" in found) return found.refused;if (!found.decides) return failure(403, "FORBIDDEN", "Only an admin of this project can change weekly summary.");return { body: { project: found.name, on: context.body.on === true, source: "chosen", canChange: true } }; },
+    "lessons.weekly": graduationRoute("lessons.weekly", (_context, project) => ({ body: { project, weekly: { needLook: [], picks: [] } } })),
+    "lessons.keep": graduationRoute("lessons.keep", (context, project) => ({ body: { project, lessonId: context.params["lessonId"], kept: true } })),
+    "lessons.trialOffer": graduationRoute("lessons.trialOffer", (_context, project) => ({ body: { project, mode: lessonMode } })),
+    "lessons.replay": graduationRoute("lessons.replay", (_context, project) => ({ body: { project, tasks: [], totals: { changedTasks: 0, lessonsGained: 0, lessonsLost: 0 } } })),
+    "lessons.tuning": graduationRoute("lessons.tuning", (_context, project) => { const override = lessonOverrides.get("lessons.tuning");if (override !== undefined) return { status: override.status ?? 200, body: override.body as LessonTuningResponse };return { body: { project, windowDays: 30, ready: false, message: "Not enough evidence yet.", evidence: {}, suggestions: [], note: "" } }; }),
+    "lessons.repeats": graduationRoute("lessons.repeats", (_context, project) => ({ body: { project, month: "2026-11", repeated: 0, corrections: 21, enoughData: true, split: { lessonLoaded: 0, lessonNotLoaded: 0, noLesson: 0 }, unjudged: 0, truncated: false } })),
+    "lessons.repeats.company": () => ({ body: { scope: "company", month: "2026-11", projects: [], repeated: 0, corrections: 0, enoughData: false } }),
     "lessons.measure": (context) => {
       const found = lessonsProject(context);
       if ("refused" in found) return found.refused;
@@ -1643,6 +1730,52 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       rule.status = "retired";
       return { body: { project, ruleId: rule.id, status: "retired" } };
     }),
+    // Rovara skills (L4-JA). Everyone on the roster reads; only a decider writes, in Code's words; an override answers instead.
+    "skills.list": (context) => {
+      lessonCalls.push({ id: "skills.list", params: { ...context.params }, body: context.query.get("name"), person: context.person.key });
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      const override = lessonOverrides.get("skills.list");
+      if (override !== undefined) return { status: override.status ?? 200, body: override.body as SkillsResponse };
+      const all = found.name === "web" ? [...skillStore.values()] : [];
+      const named = context.query.get("name");
+      if (named !== null) {
+        const one = all.find((skill) => skill.name === named);
+        if (one === undefined) return failure(404, "NOT_FOUND", "That skill is no longer there.");
+        return { body: { project: found.name, canDecide: found.decides, skills: [{ ...skillRowOf(one, context.person), content: one.content, ...(one.form === undefined ? {} : { form: one.form }) }] } };
+      }
+      return { body: { project: found.name, canDecide: found.decides, skills: all.map((skill) => skillRowOf(skill, context.person)) } };
+    },
+    "skills.edit": graduationRoute("skills.edit", (context, project) => {
+      const skill = skillStore.get(context.params["skill"] ?? "");
+      if (skill === undefined || project !== "web") return failure(404, "NOT_FOUND", "That skill is no longer there.");
+      if (skill.retired) return failure(409, "IDEMPOTENCY_CONFLICT", "That skill was retired.");
+      if (context.body.expectedVersion !== skill.currentVersion) return failure(409, "IDEMPOTENCY_CONFLICT", "This skill changed since you read it. Read it again and decide again.");
+      if (context.body.steps.join("").length > 20_000) return failure(400, "CONFIG_INVALID", "That skill is too long. A skill is at most 32 KB.");
+      skill.currentVersion += 1; skill.approvers = []; skill.description = context.body.description;
+      skill.form = { description: context.body.description, when: context.body.when, steps: context.body.steps, ...(context.body.doneWhen === undefined ? {} : { doneWhen: context.body.doneWhen }), ...(context.body.why === undefined ? {} : { why: context.body.why }) };
+      skill.content = `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n## When to use\n${context.body.when}\n\n## Steps\n${context.body.steps.map((step, index) => `${String(index + 1)}. ${step}`).join("\n")}\n`;
+      skill.bytes = skill.content.length;
+      return { body: { project, name: skill.name, version: skill.currentVersion } };
+    }),
+    "skills.approve": graduationRoute("skills.approve", (context, project) => {
+      const skill = skillStore.get(context.params["skill"] ?? "");
+      if (skill === undefined || project !== "web") return failure(404, "NOT_FOUND", "That skill is no longer there.");
+      if (skill.retired) return failure(409, "IDEMPOTENCY_CONFLICT", "That skill was retired.");
+      if (context.body.version !== skill.currentVersion) return failure(409, "IDEMPOTENCY_CONFLICT", "This skill changed since you read it. Read it again and decide again.");
+      if (skill.activeVersion === skill.currentVersion) return failure(409, "IDEMPOTENCY_CONFLICT", "That version is already in use.");
+      if (skill.approvers.includes(context.person.key)) return failure(409, "IDEMPOTENCY_CONFLICT", "You already approved this version.");
+      skill.approvers.push(context.person.key);
+      const live = skill.approvers.length >= 2;
+      if (live) skill.activeVersion = skill.currentVersion;
+      return { body: { project, name: skill.name, version: skill.currentVersion, approvals: skill.approvers.length, live } };
+    }),
+    "skills.retire": graduationRoute("skills.retire", (context, project) => {
+      const skill = skillStore.get(context.params["skill"] ?? "");
+      if (skill === undefined || project !== "web") return failure(404, "NOT_FOUND", "That skill is no longer there.");
+      skill.retired = true;
+      return { body: { project, name: skill.name, retired: true } };
+    }),
     "lessons.tidy.later": graduationRoute("lessons.tidy.later", (_context, project) => { tidyClosed = true; return { body: { project, closed: true } }; }),
     "lessons.checkDraft.started": graduationRoute("lessons.checkDraft.started", (context, project) => {
       const draft = checkDrafts.get(context.params["draftId"] ?? "");
@@ -1669,7 +1802,18 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       companyModel = body.model ?? undefined;
       return { body: engineView() };
     },
-    // Members of the project read; its administrator changes (revision-checked). The pretend Code sets no step-up, so it checks none here.
+    // Any member reads; an owner or admin sets a Claude model from the offered list (null puts the install default back).
+    "company.learningModel.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : { body: learningView() }),
+    "company.learningModel.put": ({ person, body }) => {
+      if (companyless.has(person.developerId)) return failure(401, "AUTH_REQUIRED", "sign in again");
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can change the model lessons learn with.");
+      // Code's body schema takes only Claude ids (its own words); a Claude id the gateway doesn't offer is the "not offered" answer.
+      if (body.model !== null && !(typeof body.model === "string" && body.model.startsWith("claude-"))) return failure(400, "CONFIG_INVALID", "Send the Claude model lessons should learn with, as { \"model\": \"<model id>\" }, or { \"model\": null } to use this Rovara's default.");
+      if (body.model !== null && !LEARNING_OFFERED.includes(body.model)) return failure(400, "CONFIG_INVALID", "That model isn't a Claude model offered to this company now. Pick one from the list.");
+      learningModel = body.model ?? undefined;
+      return { body: learningView() };
+    },
+    // Members of the project read; its administrator changes (revision-checked). No step-up (owner DEC 254zzz73).
     "projects.settings.get": ({ params, person }) => (roleIn(person, params["project"] ?? "") === undefined ? notFound("project") : { body: settingsView(params["project"] ?? "") }),
     "projects.settings.put": ({ params, person, body }) => {
       const name = params["project"] ?? "";
@@ -1833,7 +1977,6 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (typeof given["project"] !== "string" || project(given["project"]) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project" } });
           wikiSetups.delete(given["project"]);
           upkeepConsent.set(companyKeyOf(given["project"]), given["consent"] === true);
-          stepUpStale = given["stepUp"] === "stale";
           const one = wikiSetupOf(given["project"]);
           const status = given["status"];
           if (status === "built" || status === "stopped" || status === "running") { Object.assign(one, { status, pages: 24, refreshPages: 2, mapMade: true, planned: 24, written: status === "built" ? 24 : 12 }); if (status === "stopped") one.stop = (given["stop"] as FakeWikiSetup["stop"] | undefined) ?? "stopped_by_person"; }
@@ -2005,17 +2148,20 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (answered !== undefined) return send(answered.status, answered.body);
         }
         if (method === "POST" && url.pathname === "/__fake/setup-run") {
-          const given = JSON.parse(raw) as { project?: unknown; status?: unknown };
+          const given = JSON.parse(raw) as { project?: unknown; status?: unknown; approved?: unknown };
           if (typeof given.project !== "string" || project(given.project) === undefined || !["none", "running", "ready", "failed"].includes(given.status as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and status" } });
           const status = given.status as FakeRun["status"];
-          setupRuns.set(given.project, status === "none" ? { status } : { status, startedAt: iso(), taskId: randomUUID() });
+          setupRuns.set(given.project, status === "none" ? { status } : { status, startedAt: iso(), taskId: randomUUID(), ...(status === "ready" && given.approved === true ? { approved: true } : {}) });
           setupSkips.delete(given.project);
           return send(200, { status });
         }
         if (method === "POST" && url.pathname === "/__fake/eval-card") {
           const given = JSON.parse(raw) as { project?: unknown; state?: unknown; health?: unknown };
-          if (typeof given.project !== "string" || project(given.project) === undefined || !["none", "propose", "waiting", "approved", "rejected"].includes(given.state as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and state" } });
-          evalCards.set(given.project, { state: given.state as FakeEval["state"], health: ["requested", "finished"].includes(given.health as string) ? given.health as FakeEval["health"] : "none" });
+          if (typeof given.project !== "string" || project(given.project) === undefined || !["default", "none", "propose", "waiting", "approved", "rejected"].includes(given.state as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and state" } });
+          const wrapper = (given as { wrapper?: unknown }).wrapper;
+          // "default": forget the set card, so the project's card follows its setup run again (a spec's afterEach puts it back this way).
+          if (given.state === "default") { evalCards.delete(given.project);return send(200, { ok: true }); }
+          evalCards.set(given.project, { state: given.state as FakeEval["state"], health: ["requested", "finished"].includes(given.health as string) ? given.health as FakeEval["health"] : "none", ...(typeof wrapper === "string" && ["needs_file", "pull_request_open", "file_found", "dismissed", "not_offered", "custom"].includes(wrapper) ? { wrapper: wrapper as FakeWrapperStep } : {}) });
           return send(200, { ok: true });
         }
         if (method === "POST" && url.pathname === "/__fake/setup-apply") {

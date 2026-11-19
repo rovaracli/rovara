@@ -1,7 +1,7 @@
 // The app's company routes on Cloud's own data (company-routes.ts), through the real handler and a fake Code that issues JWT access tokens
-// carrying Code's step-up claims. Covers: the company comes from Code's access check (never the request), company isolation, admin-only
-// routes checked against Code live, the fresh step-up on every settings change (refused when stale, missing, of a factor Code doesn't own,
-// or past the company's own window), a second admin for a loosening change, invites told to Code first (501 while Code lacks the route),
+// (some still carrying Code's old step-up claims, which no longer matter: owner DEC 254zzz73). Covers: the company comes from Code's access
+// check (never the request), company isolation, admin-only routes checked against Code live, no step-up on a settings change (an admin with
+// none, an old one or a foreign one changes them; a member with none is still refused), a second admin for a loosening change, invites told to Code first (501 while Code lacks the route),
 // the app's reader schemas, and the policy hook answering from the same store with its install allow-list.
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -51,6 +51,10 @@ function world(options: { codeHasPreApprovals?: boolean; audit?: LocalCloudAudit
   const live = new Map<string, { email: string; companyId: unknown }>();
   const preApproved: Array<{ method: string; token: string; path: string; body?: unknown }> = [];
   const demoted = new Set<string>();
+  /** Code's member list (DEC 254zzz79 (2): the live owner/admin count): people it lists as removed, role changes, and how its list answers. */
+  const removed = new Set<string>();
+  const roles = new Map<string, string>();
+  let membersMode: "ok" | "outage" | "foreign" = "ok";
   let codeHasPreApprovals = options.codeHasPreApprovals ?? true;
   let codeFails = false;
   /** When set, Code's answer to a withdrawal (DELETE), whatever it holds. */
@@ -72,6 +76,14 @@ function world(options: { codeHasPreApprovals?: boolean; audit?: LocalCloudAudit
         ...(person.companyId === undefined ? {} : { companyId: person.companyId, companyRole: person.companyRole ?? (admin ? "admin" : "member"), ...(person.companyName === undefined ? {} : { companyName: person.companyName }) }),
         ...(joined.has(person.developerId) ? { joinedByInvite: true } : {}),
       });
+    }
+    if (url.pathname === "/v1/dev/company/members") {
+      if (membersMode === "outage") return respond(503, { error: { code: "RUNTIME_UNAVAILABLE", message: "down" } });
+      const roleOf = (p: Person) => roles.get(p.developerId) ?? p.companyRole ?? (p.administrator && !demoted.has(p.developerId) ? "admin" : "member");
+      const rows = Object.values(PEOPLE).filter((p) => p.companyId === person.companyId).map((p) => ({
+        companyId: membersMode === "foreign" ? (person.companyId === A ? B : A) : p.companyId, personId: p.developerId, role: roleOf(p), name: p.name, ...(removed.has(p.developerId) ? { revokedAt: "2026-11-15T00:00:00.000Z" } : {}),
+      }));
+      return respond(200, { members: rows, more: false });
     }
     if (url.pathname === PREAPPROVALS_PATH || url.pathname.startsWith(`${PREAPPROVALS_PATH}/`)) {
       // Code's routes (developer-routes.ts companyPreapprovalRoute): unknown before Code serves them; every refusal NOT_FOUND.
@@ -128,7 +140,8 @@ function world(options: { codeHasPreApprovals?: boolean; audit?: LocalCloudAudit
     return { status: answer!.status, body: JSON.parse(answer!.body) as Answer };
   };
   return {
-    handler, store, signIn, call, preApproved, live, demoted, log, joined,
+    handler, store, signIn, call, preApproved, live, demoted, log, joined, removed, roles,
+    setMembers: (mode: "ok" | "outage" | "foreign") => { membersMode = mode; },
     setMint: (value: (() => unknown) | undefined) => { mint = value; },
     advance: (ms: number) => { clock += ms; }, now: () => clock,
     setDeleteAnswer: (answer: { status: number; body: unknown } | undefined) => { deleteAnswer = answer; },
@@ -150,7 +163,7 @@ describe("company settings", () => {
     expect((await w.call(cal, "GET", "/org/budget-settings")).status).toBe(403);
   });
 
-  it("saves a tightening change straight away with a fresh step-up, and only for the admin's own company", async () => {
+  it("saves a tightening change straight away, and only for the admin's own company", async () => {
     const w = world();
     const ada = await w.signIn("ada", 30);
     const saved = await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
@@ -171,30 +184,35 @@ describe("company settings", () => {
     expect((await w.store.settings(B))!.version).toBe(1);
   });
 
-  const refusedStepUps: Array<[string, number | undefined, string?]> = [
+  // Owner DEC 254zzz73: no step-up. Each sign-in that once was refused now changes the settings, while the wrong role (a member) and the wrong
+  // company (another company's admin) with the same sign-in still change nothing of company A's.
+  const formerlyRefused: Array<[string, number | undefined, string?]> = [
     ["no step-up in this sign-in", undefined],
-    ["a step-up older than Code's window", 601],
+    ["a step-up older than Code's old window", 601],
     ["a factor Code doesn't own (a Slack round trip)", 10, "slack"],
     ["a step-up time from the future", -120],
   ];
-  for (const [name, age, method] of refusedStepUps) {
-    it(`refuses a settings change with ${name}, and saves nothing`, async () => {
+  for (const [name, age, method] of formerlyRefused) {
+    it(`saves a settings change with ${name}; a member and another company's admin with the same sign-in change nothing of A's`, async () => {
       const w = world();
-      const ada = await w.signIn("ada", age, method);
-      const answer = await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
-      expect(answer).toEqual({ status: 403, body: { error: { code: "STEP_UP_REQUIRED", message: "Confirm it's you again, then try once more." } } });
+      const cal = await w.signIn("cal", age, method);
+      expect((await w.call(cal, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() })).body.error.code).toBe("FORBIDDEN");
+      expect((await w.call(cal, "POST", "/org/settings/pending/chg_aaaaaaaaaaaaaaaaaaaa/approve", {})).status).toBe(403);
+      const dan = await w.signIn("dan", age, method);
+      expect((await w.call(dan, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() })).body.companyId).toBe(B);
       expect(await w.store.settings(A)).toBeUndefined();
+      const ada = await w.signIn("ada", age, method);
+      expect(await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() })).toEqual({ status: 200, body: { companyId: A, version: 1, settings: tightened() } });
     });
   }
 
-  it("goes stale as time passes, and follows the company's own shorter window", async () => {
+  it("still reads an older app's document that carries the removed step-up window, and never keeps it", async () => {
     const w = world();
-    const ada = await w.signIn("ada", 0);
-    expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: { ...tightened(), freshSignInSeconds: 120 } })).status).toBe(200);
-    w.advance(121_000);
-    expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 1, settings: { ...tightened(), freshSignInSeconds: 120, evalBudgetUsdMicros: 1 } })).body.error.code).toBe("STEP_UP_REQUIRED");
-    const again = await w.signIn("ada", 119);
-    expect((await w.call(again, "PUT", "/org/settings", { expectedVersion: 1, settings: { ...tightened(), freshSignInSeconds: 120, evalBudgetUsdMicros: 1 } })).status).toBe(200);
+    const ada = await w.signIn("ada");
+    expect(await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: { ...tightened(), freshSignInSeconds: 120 } })).toEqual({ status: 200, body: { companyId: A, version: 1, settings: tightened() } });
+    w.advance(3_600_000);
+    expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 1, settings: { ...tightened(), evalBudgetUsdMicros: 1 } })).status).toBe(200);
+    expect(JSON.stringify((await w.call(ada, "GET", "/org/settings")).body)).not.toContain("freshSignInSeconds");
   });
 
   it("asks Code afresh: an admin Code has demoted since sign-in is refused", async () => {
@@ -215,7 +233,7 @@ describe("company settings", () => {
     expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: { ...tightened(), instructions: Array.from({ length: 30 }, () => ({ text: "x".repeat(4000), priority: "required" })) } })).status).toBe(413);
   });
 
-  it("holds a loosening change for a different admin, each with a fresh step-up", async () => {
+  it("holds a loosening change for a different admin (no step-up for either)", async () => {
     const w = world();
     const ada = await w.signIn("ada", 10);
     await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
@@ -236,10 +254,9 @@ describe("company settings", () => {
     // A member can't approve.
     const cal = await w.signIn("cal", 10);
     expect((await w.call(cal, "POST", `/org/settings/pending/${changeId}/approve`, {})).status).toBe(403);
-    // The second admin needs a fresh step-up of their own.
-    const staleBea = await w.signIn("bea", 700);
-    expect((await w.call(staleBea, "POST", `/org/settings/pending/${changeId}/approve`, {})).body.error.code).toBe("STEP_UP_REQUIRED");
-    const bea = await w.signIn("bea", 5);
+    // A member with no step-up claim still can't approve; the second admin approves with an old step-up (owner DEC 254zzz73).
+    expect((await w.call(await w.signIn("cal"), "POST", `/org/settings/pending/${changeId}/approve`, {})).status).toBe(403);
+    const bea = await w.signIn("bea", 700);
     expect(await w.call(bea, "POST", `/org/settings/pending/${changeId}/approve`, {})).toEqual({ status: 200, body: { companyId: A, version: 2, settings: looser } });
     expect((await w.call(ada, "GET", "/org/settings")).body).toMatchObject({ version: 2, settings: looser });
     expect((await w.call(ada, "GET", "/org/settings")).body.pending).toBeUndefined();
@@ -305,7 +322,7 @@ describe("company settings", () => {
     expect(await w.store.pendingChange(B, w.now())).toBeUndefined();
     // Tightening still works, so the settings are never frozen.
     expect((await w.call(dan, "PUT", "/org/settings", { expectedVersion: 1, settings: { ...defaultCompanySettings(), decisions: forbid, evalBudgetUsdMicros: 1 } })).status).toBe(200);
-    // Through the app, too: the rule saves with a fresh step-up (a second admin agrees, as for any new rule on settings).
+    // Through the app, too: the rule saves (a second admin agrees, as for any new rule on settings).
     const ada = await w.signIn("ada", 10);
     const bea = await w.signIn("bea", 10);
     const proposed = await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: { ...defaultCompanySettings(), decisions: [...defaultCompanySettings().decisions, ...forbid] } });
@@ -398,10 +415,10 @@ describe("which company", () => {
     expect((await w.store.settings(A))!.version).toBe(1);
   });
 
-  it("leaves removal on Code: that route still answers 501 (members and roles: member-role-routes.test.ts)", async () => {
+  it("removal is served now (DEC 254zzz84 (5); member-removal-routes.test.ts): an empty body is refused in fixed words, never 501", async () => {
     const w = world();
     const ada = await w.signIn("ada", 10);
-    expect((await w.call(ada, "POST", `/org/members/${"b".repeat(64)}/removal`, {})).body.error.code).toBe("NOT_ON_CODE_YET");
+    expect((await w.call(ada, "POST", `/org/members/${"b".repeat(64)}/removal`, {})).body.error.code).toBe("CONFIG_INVALID");
   });
 
   it("serves no company routes on a Cloud without company data", async () => {
@@ -706,13 +723,13 @@ describe("invites", () => {
   });
 });
 
-describe("the step-up sign-in", () => {
-  it("asks Code for a step-up only when the app asks for one", async () => {
+describe("sign-in never asks Code for a step-up (owner DEC 254zzz73)", () => {
+  it("sends no acr_values, even when an older app still asks with step_up=1", async () => {
     const w = world();
     const plain = await w.handler({ method: "GET", path: "/v1/auth/browser/authorize", query: new URLSearchParams("return_to=/app"), headers: {} });
     expect(new URL(plain!.headers.location!).searchParams.get("acr_values")).toBeNull();
-    const stepUp = await w.handler({ method: "GET", path: "/v1/auth/browser/authorize", query: new URLSearchParams("return_to=/app&step_up=1"), headers: {} });
-    expect(new URL(stepUp!.headers.location!).searchParams.get("acr_values")).toBe("step-up");
+    const old = await w.handler({ method: "GET", path: "/v1/auth/browser/authorize", query: new URLSearchParams("return_to=/app&step_up=1"), headers: {} });
+    expect(new URL(old!.headers.location!).searchParams.get("acr_values")).toBeNull();
   });
 });
 
@@ -842,5 +859,135 @@ describe("invites carrying Code's invite secret (DEC 254h)", () => {
     // Joined by some invite this sign-in, in the invite's company: still not this route's to take.
     expect((await w.call(cal, "POST", "/org/invites/accept", { invite: secret })).status).toBe(404);
     expect((await lookUp(w, secret))!.status).toBe(200);
+  });
+});
+
+// DEC 254zzz79 (2): the second-person rule for loosening applies only with TWO OR MORE live owners/admins; a sole owner/admin approves their own,
+// audited as "self-approved: only owner/admin". Company A has three admins (Ada, Bea, Oz); company B has one (Dan, with a plain member Eve).
+describe("a sole owner/admin loosens alone (DEC 254zzz79 (2))", () => {
+  const SELF = "self-approved: only owner/admin";
+  const looser = () => ({ ...tightened(), websiteCeiling: { mode: "any" as const } });
+  /** The `detail` of each saved settings change (the order of Cloud's audit read is not the tests'), "" for none. */
+  const loosenings = async (audit: LocalCloudAuditStore, companyId: string) => (await audit.read(companyId, { max: 50 })).rows.filter((row) => row.action === "company.rules.changed" || row.action === "company.budget.changed").map((row) => ({ detail: row.detail ?? "" })).sort((a, b) => a.detail.localeCompare(b.detail));
+
+  it("applies a sole admin's own loosening at once and says so in the audit line; the setting is really changed", async () => {
+    const audit = new LocalCloudAuditStore(undefined, {});
+    const w = world({ audit });
+    const dan = await w.signIn("dan", 10);
+    expect((await w.call(dan, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() })).status).toBe(200);
+    const loosened = await w.call(dan, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() });
+    expect(loosened).toEqual({ status: 200, body: { companyId: B, version: 2, settings: looser() } });
+    expect((await w.store.settings(B))!.settings.websiteCeiling).toEqual({ mode: "any" });
+    expect((await w.call(dan, "GET", "/org/settings")).body.pending).toBeUndefined();
+    const rows = await loosenings(audit, B);
+    expect(rows.map((row) => row.detail)).toEqual(["", SELF]);
+    expect(w.log).toContainEqual(expect.objectContaining({ event: "cloud.company_settings_changed", companyId: B, version: 2, loosening: true, selfApproved: true }));
+  });
+
+  it("a tightening change is not a self-approval: no audit line, whoever the admin is", async () => {
+    const audit = new LocalCloudAuditStore(undefined, {});
+    const w = world({ audit });
+    await w.call(await w.signIn("dan", 10), "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
+    expect((await loosenings(audit, B)).map((row) => row.detail)).toEqual([""]);
+  });
+
+  it("with two or more owners/admins, a different person must approve: the proposer cannot, the other one can (and it is not a self-approval)", async () => {
+    const audit = new LocalCloudAuditStore(undefined, {});
+    const w = world({ audit });
+    const ada = await w.signIn("ada", 10);
+    await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
+    const proposed = await w.call(ada, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() });
+    expect(proposed.status).toBe(202);
+    const id = proposed.body.pending.changeId;
+    expect((await w.call(ada, "POST", `/org/settings/pending/${id}/approve`, {})).body.error.code).toBe("SECOND_PERSON_REQUIRED");
+    expect((await w.store.settings(A))!.settings.websiteCeiling).toEqual(tightened().websiteCeiling);
+    // Oz, an owner, is the second person too.
+    const oz = await w.signIn("oz", 5);
+    expect((await w.call(oz, "POST", `/org/settings/pending/${id}/approve`, {})).status).toBe(200);
+    expect((await loosenings(audit, A)).map((row) => row.detail)).toEqual(["", ""]);
+  });
+
+  it("two owners (no plain admin) need each other", async () => {
+    const w = world();
+    // Company A as two owners: Bea and Oz are the only owners/admins left; Ada is a member now.
+    w.roles.set(PEOPLE.ada!.developerId, "member"); w.roles.set(PEOPLE.bea!.developerId, "owner");
+    w.demoted.add(PEOPLE.ada!.developerId);
+    const bea = await w.signIn("bea", 10);
+    await w.call(bea, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
+    expect((await w.call(bea, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() })).status).toBe(202);
+  });
+
+  it("the count is read when the decision is made: a second admin who joins takes the self-approval away, one who is removed gives it", async () => {
+    const audit = new LocalCloudAuditStore(undefined, {});
+    const w = world({ audit });
+    const dan = await w.signIn("dan", 10);
+    await w.call(dan, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
+    // Eve is promoted: two admins now, so Dan's loosening waits for her.
+    w.roles.set(PEOPLE.eve!.developerId, "admin");
+    const proposed = await w.call(dan, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() });
+    expect(proposed.status).toBe(202);
+    const id = proposed.body.pending.changeId;
+    expect((await w.call(dan, "POST", `/org/settings/pending/${id}/approve`, {})).body.error.code).toBe("SECOND_PERSON_REQUIRED");
+    // Eve is removed from the company: Dan is the only live admin, and may approve what he proposed.
+    w.removed.add(PEOPLE.eve!.developerId);
+    expect((await w.call(dan, "POST", `/org/settings/pending/${id}/approve`, {})).status).toBe(200);
+    expect((await w.store.settings(B))!.settings.websiteCeiling).toEqual({ mode: "any" });
+    expect((await loosenings(audit, B)).map((row) => row.detail)).toEqual(["", SELF]);
+    expect(w.log).toContainEqual(expect.objectContaining({ event: "cloud.company_settings_approved", companyId: B, selfApproved: true }));
+  });
+
+  it("the one listed admin must be the caller: a caller Code's list does not show as an admin (changed since sign-in) gets no self-approval", async () => {
+    const w = world();
+    const dan = await w.signIn("dan", 10);
+    await w.call(dan, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
+    // The list shows Eve as the only admin and Dan as a member; Dan's own access answer still says admin.
+    w.roles.set(PEOPLE.eve!.developerId, "admin"); w.roles.set(PEOPLE.dan!.developerId, "member");
+    expect((await w.call(dan, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() })).status).toBe(202);
+  });
+
+  it("a removed person does not count: with the others gone, the last live admin loosens alone, audited", async () => {
+    const audit = new LocalCloudAuditStore(undefined, {});
+    const w = world({ audit });
+    const ada = await w.signIn("ada", 10);
+    await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
+    w.removed.add(PEOPLE.bea!.developerId); w.removed.add(PEOPLE.oz!.developerId);
+    expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() })).status).toBe(200);
+    expect((await loosenings(audit, A)).map((row) => row.detail)).toEqual(["", SELF]);
+  });
+
+  it("fails closed: a member list that does not read, or holds another company's person, keeps the second-person rule", async () => {
+    for (const mode of ["outage", "foreign"] as const) {
+      const w = world();
+      const dan = await w.signIn("dan", 10);
+      await w.call(dan, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
+      w.setMembers(mode);
+      expect((await w.call(dan, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() })).status, mode).toBe(202);
+      expect((await w.store.settings(B))!.settings.websiteCeiling, mode).toEqual(tightened().websiteCeiling);
+    }
+  });
+
+  it("two companies: one company's sole admin never gives another company's admins a self-approval, and the other way round", async () => {
+    const audit = new LocalCloudAuditStore(undefined, {});
+    const w = world({ audit });
+    const dan = await w.signIn("dan", 10);
+    const ada = await w.signIn("ada", 10);
+    await w.call(dan, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
+    await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
+    expect((await w.call(dan, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() })).status).toBe(200);
+    expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 1, settings: looser() })).status).toBe(202);
+    expect((await w.store.settings(A))!.settings.websiteCeiling).toEqual(tightened().websiteCeiling);
+    expect((await loosenings(audit, A)).map((row) => row.detail)).toEqual([""]);
+  });
+
+  it("a rule that names deciders is still enforced for a sole admin: not a decider, no change", async () => {
+    const w = world();
+    const dan = await w.signIn("dan", 10);
+    await w.call(dan, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() });
+    // Only a person who is not in the company may decide: the sole admin is no decider.
+    await w.store.putSettings(B, { ...tightened(), decisions: [{ what: "setting.loosen", secondPerson: true }, { what: "setting.loosen", deciders: ["1".repeat(64)] }] }, 1, PEOPLE.dan!.developerId, new Date(START).toISOString());
+    const refused = await w.call(dan, "PUT", "/org/settings", { expectedVersion: 2, settings: { ...looser(), decisions: [{ what: "setting.loosen", secondPerson: true }, { what: "setting.loosen", deciders: ["1".repeat(64)] }] } });
+    expect(refused.status).toBe(403);
+    expect(refused.body.error.code).toBe("FORBIDDEN");
+    expect((await w.store.settings(B))!.settings.websiteCeiling).toEqual(tightened().websiteCeiling);
   });
 });

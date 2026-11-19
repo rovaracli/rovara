@@ -1,0 +1,339 @@
+{
+ "_about": "Generated 2026-11-18 by running Rovara Code's own handlers (not written by hand), in a fresh clone made for this purpose (not a live worktree): PrepLabsAI/Rovara #1057 head 2a81b106c (Task list detail: Understand's current round and the workflow outcome on each row). The generator was appended to Code's own tests/contract/aws-engine-boundary.test.ts, over that file's harness (coreWorld: a core task through the AWS developer API, engine boundary and core; MAYA owns the task, OMAR is another company's owner). Understand asked two questions (q1 with options and a recommended one, q2 free text) as its callback records them. waitingList/answeredList/closedList: GET /v1/dev/tasks?detail=1 as MAYA (waiting, after her answers, and a task Understand stopped: outcome CLOSED). otherCompanyList/otherCompanyAnswer: OMAR's list and his POST /v1/dev/tasks/{id}/answers on MAYA's task. accepted: MAYA's answers (requestId, round, answers). staleAnswer: the same round again with a new request; wrongRound: round 2. noAccessList/noAccessAnswer: a core whose rules let the caller neither read, act on nor own the task (a member with no access). The broker's requestId was taken off by the harness (Cloud's CodeClient drops it anyway). Regenerate from Code's code; never edit a value to make a Cloud test pass.",
+ "taskId": "9adf4689-edc1-49eb-9a23-3c210a46943a",
+ "waitingList": {
+  "status": 200,
+  "body": {
+   "tasks": [
+    {
+     "taskId": "9adf4689-edc1-49eb-9a23-3c210a46943a",
+     "title": "Core work",
+     "project": "payments",
+     "status": "RUNNING",
+     "shared": false,
+     "createdAt": "2026-11-15T00:00:00.000Z",
+     "updatedAt": "2026-11-15T00:00:00.000Z",
+     "workflow": {
+      "stage": "UNDERSTAND",
+      "state": "WAITING",
+      "revision": 3,
+      "path": "QUICK"
+     },
+     "round": {
+      "round": 1,
+      "questions": [
+       {
+        "id": "q1",
+        "text": "Which path should the health check answer on?",
+        "options": [
+         {
+          "id": "a",
+          "label": "/health"
+         },
+         {
+          "id": "b",
+          "label": "/healthz"
+         }
+        ],
+        "recommended": "b",
+        "answered": false
+       },
+       {
+        "id": "q2",
+        "text": "Anything the check must not touch?",
+        "answered": false
+       }
+      ]
+     }
+    }
+   ]
+  }
+ },
+ "revision": 3,
+ "round": 1,
+ "otherCompanyList": {
+  "status": 200,
+  "body": {
+   "tasks": []
+  }
+ },
+ "otherCompanyAnswer": {
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "TASK_NOT_FOUND",
+    "message": "no task 9adf4689-edc1-49eb-9a23-3c210a46943a of yours"
+   }
+  }
+ },
+ "requestId": "22222222-2222-4222-8222-222222222222",
+ "accepted": {
+  "status": 200,
+  "body": {
+   "task": {
+    "taskId": "9adf4689-edc1-49eb-9a23-3c210a46943a",
+    "owner": {
+     "developerId": "local-owner",
+     "name": "Local owner"
+    },
+    "title": "Add a /health endpoint",
+    "project": "payments",
+    "status": "STARTING",
+    "startingRevision": 1,
+    "client": "an AI tool",
+    "shared": false,
+    "createdAt": "2026-11-15T10:00:00.000Z",
+    "updatedAt": "2026-11-15T10:00:00.000Z",
+    "events": [],
+    "workflow": {
+     "schemaVersion": 1,
+     "definitionId": "agentx-task-to-pr",
+     "definitionVersion": "1.1.0",
+     "taskId": "9adf4689-edc1-49eb-9a23-3c210a46943a",
+     "ownerId": "e449b4b16f6cd27906b47b9ff54c4ac36e0ee135f3069e26880254fe481a3735",
+     "path": "QUICK",
+     "revision": 4,
+     "stage": "UNDERSTAND",
+     "state": "READY",
+     "createdAt": "2026-11-15T10:00:00.000Z",
+     "updatedAt": "2026-11-15T10:00:00.000Z",
+     "artifacts": [],
+     "decisions": [],
+     "checkPolicy": {
+      "required": [],
+      "optional": [],
+      "selectedOptionalIds": [],
+      "proposed": []
+     },
+     "program": {
+      "steps": [
+       {
+        "id": "plan",
+        "kind": "plan"
+       },
+       {
+        "id": "plan_critic",
+        "kind": "plan_critic"
+       },
+       {
+        "id": "build",
+        "kind": "build"
+       },
+       {
+        "id": "check",
+        "kind": "check"
+       },
+       {
+        "id": "review",
+        "kind": "review",
+        "reviewers": [
+         "code",
+         "security"
+        ]
+       },
+       {
+        "id": "pull_request",
+        "kind": "pull_request"
+       }
+      ]
+     },
+     "programStepId": "plan",
+     "intent": {
+      "rounds": 1,
+      "pathFrom": "understand",
+      "assessment": {
+       "kind": "questions",
+       "restatement": "Add a health endpoint.",
+       "questions": [
+        {
+         "id": "q1",
+         "text": "Which path should the health check answer on?",
+         "options": [
+          {
+           "id": "a",
+           "label": "/health"
+          },
+          {
+           "id": "b",
+           "label": "/healthz"
+          }
+         ],
+         "recommended": "b"
+        },
+        {
+         "id": "q2",
+         "text": "Anything the check must not touch?"
+        }
+       ]
+      },
+      "answers": [
+       {
+        "round": 1,
+        "by": {
+         "actorId": "e449b4b16f6cd27906b47b9ff54c4ac36e0ee135f3069e26880254fe481a3735",
+         "name": "Local owner"
+        },
+        "source": "cli",
+        "answers": [
+         {
+          "questionId": "q1",
+          "optionId": "b"
+         },
+         {
+          "questionId": "q2",
+          "text": "Leave the database alone."
+         }
+        ],
+        "questions": [
+         {
+          "id": "q1",
+          "text": "Which path should the health check answer on?",
+          "options": [
+           {
+            "id": "a",
+            "label": "/health"
+           },
+           {
+            "id": "b",
+            "label": "/healthz"
+           }
+          ],
+          "recommended": "b"
+         },
+         {
+          "id": "q2",
+          "text": "Anything the check must not touch?"
+         }
+        ],
+        "at": "2026-11-15T10:00:00.000Z"
+       }
+      ]
+     }
+    }
+   }
+  }
+ },
+ "answeredList": {
+  "status": 200,
+  "body": {
+   "tasks": [
+    {
+     "taskId": "9adf4689-edc1-49eb-9a23-3c210a46943a",
+     "title": "Core work",
+     "project": "payments",
+     "status": "RUNNING",
+     "shared": false,
+     "createdAt": "2026-11-15T00:00:00.000Z",
+     "updatedAt": "2026-11-15T00:00:00.000Z",
+     "workflow": {
+      "stage": "UNDERSTAND",
+      "state": "READY",
+      "revision": 4,
+      "path": "QUICK"
+     },
+     "round": {
+      "round": 1,
+      "questions": [
+       {
+        "id": "q1",
+        "text": "Which path should the health check answer on?",
+        "options": [
+         {
+          "id": "a",
+          "label": "/health"
+         },
+         {
+          "id": "b",
+          "label": "/healthz"
+         }
+        ],
+        "recommended": "b",
+        "answered": true
+       },
+       {
+        "id": "q2",
+        "text": "Anything the check must not touch?",
+        "answered": true
+       }
+      ]
+     }
+    }
+   ]
+  }
+ },
+ "staleAnswer": {
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INTENT_NOT_WAITING",
+    "message": "This task isn't waiting for answers."
+   }
+  }
+ },
+ "wrongRound": {
+  "status": 409,
+  "body": {
+   "error": {
+    "code": "INTENT_NOT_WAITING",
+    "message": "This task isn't waiting for answers."
+   }
+  }
+ },
+ "closedTaskId": "b9077ba9-20ff-40c5-834e-d9afadaba1e1",
+ "closedList": {
+  "status": 200,
+  "body": {
+   "tasks": [
+    {
+     "taskId": "b9077ba9-20ff-40c5-834e-d9afadaba1e1",
+     "title": "Core work",
+     "project": "payments",
+     "status": "RUNNING",
+     "shared": false,
+     "createdAt": "2026-11-15T00:00:00.000Z",
+     "updatedAt": "2026-11-15T00:00:00.000Z",
+     "workflow": {
+      "stage": "CLOSED",
+      "state": "COMPLETE",
+      "revision": 4,
+      "path": "QUICK",
+      "blockReason": "I couldn't finish understanding this task in time, so I stopped it. Start it again."
+     },
+     "outcome": "CLOSED"
+    }
+   ]
+  }
+ },
+ "noAccessTaskId": "00000000-0000-4000-8000-000000000a11",
+ "noAccessList": {
+  "status": 200,
+  "body": {
+   "tasks": [
+    {
+     "taskId": "00000000-0000-4000-8000-000000000a11",
+     "title": "Core work",
+     "project": "payments",
+     "status": "RUNNING",
+     "shared": false,
+     "createdAt": "2026-11-15T00:00:00.000Z",
+     "updatedAt": "2026-11-15T00:00:00.000Z",
+     "workflow": {
+      "stage": "UNDERSTAND",
+      "state": "WAITING",
+      "revision": 3,
+      "path": "QUICK"
+     }
+    }
+   ]
+  }
+ },
+ "noAccessAnswer": {
+  "status": 404,
+  "body": {
+   "error": {
+    "code": "TASK_NOT_FOUND",
+    "message": "no task 00000000-0000-4000-8000-000000000a11 of yours"
+   }
+  }
+ }
+}

@@ -1,6 +1,6 @@
 // DEC 238 slice 2 in Cloud: a project's tests call Bedrock on the project's OWN role, or on the company's it links to. The project's
 // admin (or a company admin) connects, links, removes and gets the setup command; the gateway tests the role for THIS company; two
-// companies never meet; changes need a fresh step-up and are audited.
+// companies never meet; changes are audited (no step-up since owner DEC 254zzz73).
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { BedrockBackend } from "../../packages/cloud-server/src/index.js";
@@ -97,16 +97,18 @@ describe("Cloud: a project's own Bedrock role", () => {
     }
   });
 
-  it("only the project's admin or a company admin; changes need a fresh step-up; bad input is refused; off without the backend", async () => {
+  it("only the project's admin or a company admin, with or without a step-up; bad input is refused; off without the backend", async () => {
     const { w } = bedrockWorld();
     const cal = await w.signIn("cal", 30);
     for (const [method, path, body] of [["PUT", `${PROJECT}/bedrock`, write(0, FORM(A))], ["PUT", `${PROJECT}/bedrock/link`, write(0)], ["DELETE", `${PROJECT}/bedrock`, write(0)]] as const) {
       expect((await w.call(cal, method, path, body)).status, `${method} ${path}`).toBe(403);
     }
-    const stale = await w.signIn("pam", 3600);
+    // The wrong role with no step-up claim is still refused; the project admin with an old one gets past the role check (a bad body is the 400).
+    const calNoStepUp = await w.signIn("cal");
     for (const [method, path, body] of [["PUT", `${PROJECT}/bedrock`, write(0, FORM(A))], ["PUT", `${PROJECT}/bedrock/link`, write(0)], ["DELETE", `${PROJECT}/bedrock`, write(0)]] as const) {
-      expect((await w.call(stale, method, path, body)).body.error?.code, `${method} ${path}`).toBe("STEP_UP_REQUIRED");
+      expect((await w.call(calNoStepUp, method, path, body)).status, `${method} ${path}`).toBe(403);
     }
+    expect((await w.call(await w.signIn("pam", 3600), "PUT", `${PROJECT}/bedrock`, write(0, { ...FORM(A), extra: 1 }))).status).toBe(400);
     const pam = await w.signIn("pam", 30);
     for (const body of [
       write(0, FORM(A, { roleArn: "arn:aws:iam::111111111111:role/Admin" })), write(0, FORM(A, { region: "us-gov-west-1" })), write(0, FORM(A, { productModels: [] })), write(0, FORM(A, { productModels: ["arn:aws:bedrock:us-west-2:1:provisioned-model/x"] })),

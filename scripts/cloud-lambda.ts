@@ -146,7 +146,9 @@ function build() {
   const company = companyTable ? { store: new DynamoCompanyStore(db, companyTable), aiSourceKinds, rovaraAiExempt, ...(peopleSpend === undefined ? {} : { peopleSpend }) } : undefined;
   const productStore = productAiStore(process.env);
   const bedrock = productStore === undefined ? undefined : bedrockBackend(process.env);
-  const productAi = productStore === undefined ? undefined : { store: productStore, issuer: `${required("ROVARA_CODE_URL")}/v1/auth`, ...(bedrock === undefined ? {} : { bedrock }) };
+  const productAi = productStore === undefined ? undefined : { store: productStore, issuer: `${required("ROVARA_CODE_URL")}/v1/auth`, ...(bedrock === undefined ? {} : { bedrock }),
+    // L4-T4: Rovara's Vertex federation role (the gateway stack's VertexFederationRoleArn output), so the Vertex form's guide names Rovara's AWS account and role. Optional; unset: the guide shows placeholders. A name, not a secret.
+    ...(process.env.CLOUD_VERTEX_FEDERATION_ROLE_ARN === undefined || process.env.CLOUD_VERTEX_FEDERATION_ROLE_ARN === "" ? {} : { vertexFederationRoleArn: process.env.CLOUD_VERTEX_FEDERATION_ROLE_ARN }) };
   const app = createAppHandler({ appDirectory: required("CLOUD_APP_DIRECTORY"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
   // One Cloud handler per address and secret: a new pair (a rotated secret) gets a new client.
   let current: { key: string; handle: ReturnType<typeof createCloudHandler> } | undefined;

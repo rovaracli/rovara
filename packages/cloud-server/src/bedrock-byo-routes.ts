@@ -11,14 +11,13 @@
 //   DELETE /org/bedrock                    {requestId, expectedRevision}: remove (7-day recovery window in the store)
 //   POST   /org/bedrock/recover            {requestId, expectedRevision}: undo a removal inside that window (same role, same claim)
 //
-// Who: company admins only (Code's access check made now), reads included. A change needs a fresh step-up and goes through the
+// Who: company admins only (Code's access check made now), reads included. A change goes through the
 // app's signed-write path. Each saved change is audited. The agents use the connection only when the admin also picks "your own
-// Bedrock" under AI for your agents (agent-ai-routes.ts): one active source, never an automatic fallback.
+// Bedrock" under AI for your agents (agent-ai-routes.ts): one first choice; the only fallback is the company's own saved order (DEC 254zzz84(4), model-sources-routes.ts).
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import type { ProductAiErrorCode, ProductAiView } from "./product-ai-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
-import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
 /** The company document of the product key store (model-gateway product-keys.ts PRODUCT_COMPANY_OWNER) and its one Bedrock source. */
 export const BEDROCK_OWNER = "_company";
@@ -52,7 +51,6 @@ export const BEDROCK_NOT_ENABLED_STEPS = "Model not enabled yet in your AWS acco
 export const BEDROCK_WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "Your own Bedrock isn't set up on this Cloud."),
   forbidden: refusal(403, "FORBIDDEN", "Only a company admin can see or change the company's Bedrock connection."),
-  stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   invalid: refusal(400, "CONFIG_INVALID", "This Bedrock connection is not valid. Check the role ARN, the Region and the models."),
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
   stale: refusal(409, "CONFLICT", "The Bedrock connection changed. Refresh and try again."),
@@ -73,14 +71,13 @@ const whole = (v: unknown): v is number => typeof v === "number" && Number.isSaf
 const exactly = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 
 interface Admin { companyId: string; developerId: string; name: string }
-async function admin(context: RouteContext, write: boolean): Promise<Admin | RouteAnswer> {
+async function admin(context: RouteContext): Promise<Admin | RouteAnswer> {
   const backend = context.productAi;
   if (backend?.bedrock === undefined) return BEDROCK_WORDS.off;
   const who = await companyCaller(context);
   if (refused(who)) return who;
   // A company owner or admin (Code's company role, never its install administrator flag).
   if (!isCompanyAdmin(who.companyRole)) return BEDROCK_WORDS.forbidden;
-  if (write && freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return BEDROCK_WORDS.stepUp;
   return { companyId: who.companyId, developerId: who.developerId, name: who.name };
 }
 async function guarded<T>(run: () => Promise<T>): Promise<T | RouteAnswer> {
@@ -139,7 +136,7 @@ export function connectionKey(roleArn: string, choice: BedrockChoice): string {
 export const BEDROCK_ROLE_ARN = ROLE_ARN;
 
 async function readBedrock(context: RouteContext): Promise<RouteAnswer> {
-  const who = await admin(context, false);
+  const who = await admin(context);
   if ("status" in who) return who;
   const backend = context.productAi!;
   const v = await guarded(() => backend.store.view(backend.issuer, who.companyId, BEDROCK_OWNER));
@@ -147,7 +144,7 @@ async function readBedrock(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function readSetup(context: RouteContext): Promise<RouteAnswer> {
-  const who = await admin(context, false);
+  const who = await admin(context);
   if ("status" in who) return who;
   const region = context.params[0] ?? "";
   if (!REGION.test(region)) return BEDROCK_WORDS.invalid;
@@ -158,7 +155,7 @@ async function readSetup(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function postSetup(context: RouteContext): Promise<RouteAnswer> {
-  const who = await admin(context, false);
+  const who = await admin(context);
   if ("status" in who) return who;
   if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return BEDROCK_WORDS.tooLarge;
   const body = record(context.body);
@@ -173,7 +170,7 @@ async function postSetup(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function putBedrock(context: RouteContext): Promise<RouteAnswer> {
-  const who = await admin(context, true);
+  const who = await admin(context);
   if ("status" in who) return who;
   if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return BEDROCK_WORDS.tooLarge;
   const body = record(context.body);
@@ -195,7 +192,7 @@ async function putBedrock(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function removeBedrock(context: RouteContext): Promise<RouteAnswer> {
-  const who = await admin(context, true);
+  const who = await admin(context);
   if ("status" in who) return who;
   if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return BEDROCK_WORDS.tooLarge;
   const body = record(context.body);
@@ -208,7 +205,7 @@ async function removeBedrock(context: RouteContext): Promise<RouteAnswer> {
 }
 
 async function recoverBedrock(context: RouteContext): Promise<RouteAnswer> {
-  const who = await admin(context, true);
+  const who = await admin(context);
   if ("status" in who) return who;
   if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return BEDROCK_WORDS.tooLarge;
   const body = record(context.body);

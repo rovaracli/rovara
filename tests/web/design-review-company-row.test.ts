@@ -113,13 +113,13 @@ describe("allowing design review", () => {
   await waitFor(() => expect(section.getByRole("switch", { name: "Allow design review in this company" }).getAttribute("aria-checked")).toBe("true"));
  });
 
- it("a confirmation without a recent sign-in shows the server's words and a way to sign in again, and changes nothing", async () => {
+ it("a refused confirmation shows the server's words with no sign-in step (owner DEC 254zzz73), and changes nothing", async () => {
   const f = mount({ role: "admin", state: { ...OFF, pending: { changeId: "chg_9", kind: "allowed", proposedByYou: false, expiresAt: EXPIRES } }, post: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to confirm this.") });
   const section = await card();
   fireEvent.click(await section.findByRole("button", { name: "Confirm allowing design review" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Sign in again to confirm this.");
-  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
-  expect(f.host.signIn).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
+  expect(f.host.signIn).not.toHaveBeenCalled();
   expect(section.getByRole("switch", { name: "Allow design review in this company" }).getAttribute("aria-checked")).toBe("false");
  });
 

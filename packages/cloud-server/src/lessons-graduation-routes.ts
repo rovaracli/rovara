@@ -26,6 +26,8 @@ const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 /** A plain relative glob: no leading slash, no `..` step, and only the characters Code takes in a rule's path (letters, digits and . _ - / * ? @ + ~). */
 const GLOB_CHARS = /^[A-Za-z0-9._@+~*?/-]+$/u;
 export const plainGlob = (value: unknown): value is string => typeof value === "string" && value.length >= 1 && value.length <= PATH_MAX && GLOB_CHARS.test(value) && !value.startsWith("/") && !value.split("/").includes("..");
+const cardGlob = (value: unknown): value is string => plainGlob(value) || (typeof value === "string" && value.length >= 1 && value.length <= PATH_MAX && /^[A-Za-z0-9._@+~*?/{}[\]-]+$/u.test(value) && !value.startsWith("/") && !value.split("/").includes(".."));
+const hasDynamicPath = (paths: readonly string[]) => paths.some((path) => /[{}[\]]/u.test(path));
 const lessonId = (value: unknown): string | undefined => (typeof value === "string" && LESSON_RE.test(value) ? value : undefined);
 const tier = (value: unknown): 0 | 1 | 2 => (value === 0 || value === 1 || value === 2 ? value : 1);
 
@@ -50,11 +52,14 @@ function card(raw: unknown): Record<string, unknown> | undefined {
   if (target === undefined) return undefined;
   const needs = isRecord(raw["needs"]) ? raw["needs"] : {};
   // The lesson's own paths, each once. A card whose paths Code sent but none of which can be drawn is left out, never shown as "the whole project".
-  const sentPaths = strings(raw["paths"], PATHS_MAX, PATH_MAX), paths = [...new Set(sentPaths.filter(plainGlob))];
+  const sentPaths = strings(raw["paths"], PATHS_MAX, PATH_MAX), paths = [...new Set(sentPaths.filter(cardGlob))];
   if (sentPaths.length > 0 && paths.length === 0) return undefined;
+  const choices = hasDynamicPath(paths) ? targets.filter((one) => one !== "rule") : targets;
+  const safeTargets = choices.length > 0 ? choices : ["check", "skill"] as Target[];
+  const safeTarget = safeTargets.includes(target) ? target : safeTargets[0]!;
   return {
     lessonId: id, version: at, title, description: text(raw["description"], 160) ?? "", type: text(raw["type"], 40) ?? "", tier: tier(raw["tier"]),
-    target, targets: [target, ...targets.filter((one) => one !== target)],
+    target: safeTarget, targets: [safeTarget, ...safeTargets.filter((one) => one !== safeTarget)],
     paths, tasks: count(raw["tasks"]), days: count(raw["days"]),
     // 2 or more people reads as 2: a count a newer Code raised is never shown as one person.
     needs: some({ required: typeof needs["required"] === "number" && needs["required"] >= 2 ? 2 : 1, have: count(needs["have"]), you: needs["you"] === true, first: firstChoice(needs["first"]) }),
@@ -160,6 +165,13 @@ export const GRADUATION_ROUTES: Route[] = [
       const input = body(context), target = fixed(input["target"], GRADUATION_TARGETS);
       if (target === undefined) return badRequest("Make it a rule, a draft task or a skill.");
       const payload: Record<string, unknown> = { target };
+      if (target === "rule") {
+        const [project, id] = lessonPath(context);
+        const current = await context.client.json<unknown>(context.session, `${dev(project)}/lessons/graduation`);
+        const currentCard = isRecord(current) && isRecord(current["card"]) ? current["card"] : undefined;
+        const cardPaths = currentCard !== undefined && currentCard["lessonId"] === id ? strings(currentCard["paths"], PATHS_MAX, PATH_MAX) : [];
+        if (hasDynamicPath(cardPaths)) return badRequest("Team rules need plain file paths, so this one can't become a rule.");
+      }
       if (input["paths"] !== undefined) {
         const paths = pathList(input["paths"]);
         if (target !== "rule" || paths === undefined) return badRequest(`Paths are for a rule: 1 to ${String(PATHS_MAX)} plain relative paths, each up to ${String(PATH_MAX)} characters.`);

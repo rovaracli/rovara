@@ -1,5 +1,5 @@
 // Guided onboarding PR 12b: disconnecting a GitHub account from the Connections page (DELETE /v1/app/github/connections/{installationId} -> Code #832
-// DELETE /v1/dev/company/github/{id}). A company OWNER with a fresh step-up only, checked by Cloud before Code is asked (Code checks both again); the browser
+// DELETE /v1/dev/company/github/{id}). A company OWNER only (no step-up since owner DEC 254zzz73), checked by Cloud before Code is asked (Code checks it again); the browser
 // names only the installation; another company's installation is "not connected"; refused while projects use its repos (Cloud rebuilds Code's sentence from
 // project names it can read); Code's answer is checked; refusals are fixed words. Also: #832's health on the connections read. Two companies throughout.
 import { createHash, randomBytes } from "node:crypto";
@@ -110,7 +110,7 @@ describe("disconnecting a GitHub account", () => {
     expect(w.installations.has(12)).toBe(true);
   });
 
-  it("an owner with a fresh step-up disconnects the company's own installation; Code gets only the id in its path and the person's own token", async () => {
+  it("an owner disconnects the company's own installation; Code gets only the id in its path and the person's own token", async () => {
     const w = world();
     const nova = await w.signIn(NOVA);
     const answer = await w.api(nova, "DELETE", "/github/connections/12");
@@ -119,15 +119,20 @@ describe("disconnecting a GitHub account", () => {
     expect(w.logs).toContainEqual({ event: "cloud.github_disconnected", developerId: NOVA.developerId, installationId: 12 });
   });
 
-  it("a member, an admin, an owner with no step-up and one with an old step-up are refused before Code is asked", async () => {
+  it("a member and an admin are refused before Code is asked; an owner with no step-up, or an old one, disconnects (owner DEC 254zzz73)", async () => {
     const w = world();
-    for (const [who, code, message] of [[MAX, "FORBIDDEN", GITHUB_WORDS.ownerOnly], [ADA, "FORBIDDEN", GITHUB_WORDS.ownerOnly], [NOVA_PLAIN, "REAUTH_REQUIRED", "Confirm it's you again, then try once more."], [NOVA_OLD, "REAUTH_REQUIRED", "Confirm it's you again, then try once more."]] as const) {
+    for (const who of [MAX, ADA]) {
       const answer = await w.api(await w.signIn(who), "DELETE", "/github/connections/12");
       expect(answer.status, who.key).toBe(403);
-      expect(answer.body.error, who.key).toEqual({ code, message });
+      expect(answer.body.error, who.key).toEqual({ code: "FORBIDDEN", message: GITHUB_WORDS.ownerOnly });
     }
     expect(w.deletes()).toEqual([]);
     expect(w.installations.has(12)).toBe(true);
+    for (const owner of [NOVA_PLAIN, NOVA_OLD]) {
+      const fresh = world();
+      expect((await fresh.api(await fresh.signIn(owner), "DELETE", "/github/connections/12")).status, owner.key).toBe(200);
+      expect(fresh.installations.has(12), owner.key).toBe(false);
+    }
   });
 
   it("refuses without the CSRF header, a body with any detail, and an id that isn't one, without asking Code", async () => {
@@ -164,11 +169,11 @@ describe("disconnecting a GitHub account", () => {
     expect(w.installations.has(11)).toBe(true);
   });
 
-  it("Code's other refusals read fixed words: step-up, owner, not served, failure", async () => {
+  it("Code's other refusals read fixed words: any 403 is the owner sentence, not served, failure", async () => {
     const w = world();
     const nova = await w.signIn(NOVA);
     const cases: Array<[Response, number, string, string]> = [
-      [respond(403, { error: { code: "REAUTH_REQUIRED", message: LEAK } }), 403, "REAUTH_REQUIRED", "Confirm it's you again, then try once more."],
+      [respond(403, { error: { code: "REAUTH_REQUIRED", message: LEAK } }), 403, "FORBIDDEN", GITHUB_WORDS.ownerOnly],
       [respond(403, { error: { code: "FORBIDDEN", message: LEAK } }), 403, "FORBIDDEN", GITHUB_WORDS.ownerOnly],
       [respond(404, { error: { code: "NOT_FOUND", message: "route not found" } }), 501, "NOT_ON_CODE_YET", GITHUB_WORDS.notAvailable],
       [respond(404, { error: { code: "SOMETHING_ELSE", message: LEAK } }), 501, "NOT_ON_CODE_YET", GITHUB_WORDS.notAvailable],

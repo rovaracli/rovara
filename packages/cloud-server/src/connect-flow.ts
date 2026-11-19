@@ -11,7 +11,6 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { SignInEnded, type CodeClient } from "./code-client.js";
 import { companyOf, type CompanyMembership } from "./company-caller.js";
 import { sessionKey, type CodeSession, type SessionStore } from "./sessions.js";
-import { STEP_UP_WINDOW_SECONDS, freshStepUp } from "./step-up.js";
 
 export type ConnectProvider = "slack" | "linear";
 export const CONNECT_TTL_MS = 10 * 60_000;
@@ -159,22 +158,17 @@ export const isObject = (value: unknown): value is Record<string, unknown> => ty
 export interface ConnectAnswer { status: number; body: unknown; setCookie?: string }
 export const connectRefusal = (status: number, code: string, message: string): ConnectAnswer => ({ status, body: { error: { code, message } } });
 export const NOT_IN_COMPANY_WORDS = "You're not in a company yet.";
-export const STEP_UP_WORDS = "Confirm it's you again, then try once more.";
 
 /** The live company and role of the person (Code's access check, asked now), or undefined. */
 export async function liveMembership(client: CodeClient, session: CodeSession): Promise<CompanyMembership | undefined> {
   return companyOf(await client.access(session));
 }
 
-/**
- * A disconnect's own check before Code is asked (Code checks both again): the person is an OWNER of their company now, and their sign-in carries a fresh step-up
- * (a passkey or an emailed code within the window; a Slack, Google or GitHub round trip never sets one).
- */
-export async function ownerWithFreshStepUp(client: CodeClient, session: CodeSession, nowMs: number, ownerOnly: string): Promise<ConnectAnswer | undefined> {
+/** A disconnect's own check before Code is asked (Code checks it again): the person is an OWNER of their company now (Code's access check, asked now). */
+export async function companyOwnerOnly(client: CodeClient, session: CodeSession, ownerOnly: string): Promise<ConnectAnswer | undefined> {
   const membership = await liveMembership(client, session);
   if (membership === undefined) return connectRefusal(403, "NO_COMPANY", NOT_IN_COMPANY_WORDS);
   if (membership.companyRole !== "owner") return connectRefusal(403, "FORBIDDEN", ownerOnly);
-  if (freshStepUp(session.accessToken, nowMs, STEP_UP_WINDOW_SECONDS) === undefined) return connectRefusal(403, "REAUTH_REQUIRED", STEP_UP_WORDS);
   return undefined;
 }
 

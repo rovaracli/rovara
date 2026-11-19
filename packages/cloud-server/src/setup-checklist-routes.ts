@@ -10,7 +10,7 @@
 //   GET  /v1/app/projects/{p}/setup-agent/journal?after=n  -> Code GET .../setup-agent/journal?after=n
 //   POST /v1/app/projects/{p}/setup-agent/confirm {requestId, expectedRevision, itemIds?} -> Code POST .../setup-agent/confirm  ("Use this setup": a candidate and its check; L4-D, Code #899)
 //   POST /v1/app/projects/{p}/setup-agent/discard {requestId}                              -> Code POST .../setup-agent/discard  (drop the waiting candidate)
-//   POST /v1/app/projects/{p}/setup-agent/decide {requestId, outcome, seen, reason?}       -> Code POST .../setup-agent/decide   (approve or reject: a fresh step-up, then Code's risk-based approver rule)
+//   POST /v1/app/projects/{p}/setup-agent/decide {requestId, outcome, seen, reason?}       -> Code POST .../setup-agent/decide   (approve or reject: Code's risk-based approver rule)
 //   The setup-run read also carries Code's `apply` (the waiting candidate: risk, changes, who approves, the check, the approval binding), rebuilt field by field (L4-D2).
 //
 // Rules:
@@ -24,6 +24,7 @@
 //     serves a route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
 // cloud-server takes no package dependency, so the shapes are checked here by hand against Code's contract (project-setup-status.ts on #841, setup-run-routes.ts on #844).
 import { CodeError } from "./code-client.js";
+import { agentAiConnected } from "./agent-ai-presence.js";
 import { companyCaller, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
@@ -64,6 +65,14 @@ const ROWS = ["repos", "setupRun", "evalConfirm", "aiAndSpend", "slackChannel", 
 const SKIPPABLE = ["slackChannel", "linear", "invites"] as const;
 const REPOSITORY_ACCESS = ["transferred", "removed"] as const;
 const RUN_STATUSES = ["none", "running", "ready", "failed"] as const;
+/** L4-T2 (Code's SETUP_APPROVALS and SETUP_CHECK_STATUSES). */
+const APPROVALS = ["none", "candidate", "checking", "approved"] as const;
+/** L4-T2c (Code's SETUP_NEWER_PROPOSALS): a newer proposal beside an approved setup. */
+const NEWER_PROPOSALS = ["needs_you", "checking", "rejected"] as const;
+const CHECK_STATUSES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
+const MODEL_CALLS = ["possible", "none", "unknown"] as const;
+/** The rows that must be done before the first task (the same list Code's progress uses). */
+const REQUIRED_ROWS = ["repos", "setupRun", "evalConfirm", "aiAndSpend", "firstTask"] as const;
 /** Code's eval row report (project-setup-status.ts): `no_evals` is a person's "this project runs no evals" for the latest finished setup run (L2-5 c). */
 const EVAL_REPORTS = ["none", "reported", "confirmed", "no_evals"] as const;
 
@@ -82,10 +91,16 @@ function need<T>(ok: boolean, value: T): T { if (!ok) throw new Unreadable(); re
 const optional = <T>(value: unknown, check: (one: unknown) => boolean, key: string): Record<string, T> => (value === undefined ? {} : { [key]: need(check(value), value as T) });
 
 function setupRunRow(row: Plain): Plain {
-  need(oneOf(row["state"], ROW_STATES) && oneOf(row["status"], RUN_STATUSES), undefined);
-  const found = row["commandsFound"], failed = row["failedCommand"];
+  // L4-T2: the approval is part of the row; an answer without it is not one this Cloud can read (land with Code's change).
+  need(oneOf(row["state"], ROW_STATES) && oneOf(row["status"], RUN_STATUSES) && oneOf(row["approval"], APPROVALS), undefined);
+  // L4-T2c: a newer proposal is only ever beside an approved setup, and is one of Code's three words; an answer without it (an older Code) reads as none.
+  need(row["newerProposal"] === undefined || (row["approval"] === "approved" && oneOf(row["newerProposal"], NEWER_PROPOSALS)), undefined);
+  const found = row["commandsFound"], failed = row["failedCommand"], check = row["check"];
   return {
-    state: row["state"], status: row["status"],
+    state: row["state"], status: row["status"], approval: row["approval"],
+    ...(check === undefined ? {} : { check: need(plain(check) && oneOf(check["status"], CHECK_STATUSES) && (check["failedStep"] === undefined || text(check["failedStep"], 300)), { status: (check as Plain)["status"], ...((check as Plain)["failedStep"] === undefined ? {} : { failedStep: (check as Plain)["failedStep"] }) }) }),
+    ...optional<string>(row["approvedAt"], (one) => text(one, 40), "approvedAt"),
+    ...(row["newerProposal"] === undefined ? {} : { newerProposal: row["newerProposal"] }),
     ...optional<string>(row["startedAt"], (one) => text(one, 40), "startedAt"),
     ...optional<number>(row["elapsedMs"], (one) => whole(one), "elapsedMs"),
     ...optional<number>(row["costCents"], (one) => whole(one), "costCents"),
@@ -118,7 +133,7 @@ export function checklistAnswer(value: unknown, project: string): Plain {
   need(oneOf(evalRow["report"], EVAL_REPORTS) && (noEvals === undefined || (plain(noEvals) && text(noEvals["confirmedAt"], 40))) && (evalRow["blockedBy"] === undefined || evalRow["blockedBy"] === "setupRun")
     && (evalRow["suites"] === undefined || (Array.isArray(evalRow["suites"]) && evalRow["suites"].length <= 4 && evalRow["suites"].every((suite) => plain(suite) && text(suite["selection"], 512) && whole(suite["questions"]))))
     && (evalRow["confirmedSelection"] === undefined || text(evalRow["confirmedSelection"], 512)), undefined);
-  need(oneOf(ai["source"], ["project", "company", "default"]) && typeof ai["companyModelSaved"] === "boolean" && (ai["modelBudgetUsd"] === null || (typeof ai["modelBudgetUsd"] === "number" && Number.isFinite(ai["modelBudgetUsd"]) && ai["modelBudgetUsd"] >= 0)), undefined);
+  need((ai["modelCall"] === undefined || oneOf(ai["modelCall"], MODEL_CALLS)) && oneOf(ai["source"], ["project", "company", "default"]) && typeof ai["companyModelSaved"] === "boolean" && (ai["modelBudgetUsd"] === null || (typeof ai["modelBudgetUsd"] === "number" && Number.isFinite(ai["modelBudgetUsd"]) && ai["modelBudgetUsd"] >= 0)), undefined);
   need(Array.isArray(slack["channels"]) && slack["channels"].length <= 32 && slack["channels"].every((one) => plain(one) && text(one["channelId"], 64) && (one["name"] === undefined || text(one["name"], 200)) && (one["isPrivate"] === undefined || typeof one["isPrivate"] === "boolean")), undefined);
   const team = linear["team"];
   need(team === null || (plain(team) && text(team["id"], 100) && (team["name"] === undefined || text(team["name"], 200))), undefined);
@@ -135,12 +150,26 @@ export function checklistAnswer(value: unknown, project: string): Plain {
       ...(evalRow["confirmedSelection"] === undefined ? {} : { confirmedSelection: evalRow["confirmedSelection"] }),
       ...(evalRow["noEvals"] === undefined ? {} : { noEvals: { confirmedAt: (evalRow["noEvals"] as Plain)["confirmedAt"] } }),
     },
-    aiAndSpend: { state: ai["state"], source: ai["source"], companyModelSaved: ai["companyModelSaved"], modelBudgetUsd: ai["modelBudgetUsd"] },
+    aiAndSpend: { state: ai["state"], source: ai["source"], companyModelSaved: ai["companyModelSaved"], modelBudgetUsd: ai["modelBudgetUsd"], ...(ai["modelCall"] === undefined ? {} : { modelCall: ai["modelCall"] }) },
     slackChannel: { state: slack["state"], channels: (slack["channels"] as Plain[]).map((one) => ({ channelId: one["channelId"], ...(one["name"] === undefined ? {} : { name: one["name"] }), ...(one["isPrivate"] === undefined ? {} : { isPrivate: one["isPrivate"] }) })) },
     linear: { state: linear["state"], team: team === null ? null : { id: (team as Plain)["id"], ...((team as Plain)["name"] === undefined ? {} : { name: (team as Plain)["name"] }) } },
     invites: { state: rows.invites["state"] },
     firstTask: { state: first["state"], hasTask: first["hasTask"], canStart: first["canStart"] },
   };
+}
+
+/**
+ * L4-T2 (G6): the AI row is done only while the company can run a model call. Cloud knows that (the same one yes/no the wiki's controls use: `agentAiConnected`, from the company's saved choice and its key store); Code
+ * has no gateway to ask. Only a definite "no" changes anything: the AI row becomes needs_you with `modelCall: "none"`, the first task cannot start, and the progress counts and the next required row follow from it.
+ * Every other row is as Code sent it. Unknown (null) and yes leave Code's answer exactly as it is.
+ */
+export function withModelCallFact(answer: Plain, connected: boolean | null): Plain {
+  const ai = answer["aiAndSpend"] as Plain, progress = answer["progress"] as Plain, first = answer["firstTask"] as Plain;
+  if (connected !== false || ai["state"] !== "done") return answer;
+  const next = { ...answer, aiAndSpend: { ...ai, state: "needs_you", modelCall: "none" }, firstTask: { ...first, canStart: false } } as Plain;
+  const done = ROWS.filter((row) => { const state = (next[row] as Plain)["state"]; return state === "done" || state === "skipped"; }).length;
+  const total = progress["total"] as number;
+  return { ...next, progress: { done, total, percent: Math.round((100 * done) / total), nextRequired: REQUIRED_ROWS.find((row) => (next[row] as Plain)["state"] !== "done") ?? null } };
 }
 
 /** The browser's skip change, strictly: `{row, skipped}` and nothing else. */
@@ -179,7 +208,7 @@ async function fromCode(context: RouteContext, kind: Kind, path: string, init: {
 }
 
 /** The project in the path, after Code's access check names the person's company now; or the route's refusal. */
-async function scope(context: RouteContext): Promise<{ project: string } | { refusal: RouteAnswer }> {
+async function scope(context: RouteContext): Promise<{ project: string; companyId: string } | { refusal: RouteAnswer }> {
   const project = context.params[0];
   if (project === undefined || !PROJECT_NAME.test(project)) return { refusal: A.notFound };
   let who: Awaited<ReturnType<typeof companyCaller>>;
@@ -189,7 +218,7 @@ async function scope(context: RouteContext): Promise<{ project: string } | { ref
     if (error instanceof CodeError) return { refusal: A.unavailable };
     throw error;
   }
-  return refused(who) ? { refusal: who } : { project };
+  return refused(who) ? { refusal: who } : { project, companyId: who.companyId };
 }
 
 const statusPath = (project: string) => `/v1/dev/client/projects/${encodeURIComponent(project)}/setup-status`;
@@ -209,8 +238,14 @@ export const SETUP_APPROVAL_CODE_WORDS: readonly string[] = Object.freeze([
   "None of the suggestions can be used: each one failed its check, or is a command Rovara does not carry into a project's setup.",
   "That suggestion is not part of this setup.",
   "The setup has no test command to prove, so there is nothing to use yet.",
+  // L4-T5: Code's own sentence now says what to do next (the one above is an older Code's).
+  "The setup has no test command to prove, so there is nothing to use yet. Add a test command to the project's setup, or run the setup again.",
   "The commands could not be made into the project's setup.",
-  "Another setup is waiting for your approval. Decide it, or discard it, first.",
+  // L4-T5: what a person can really do with the waiting setup, by where its check stands. (An older Code's "Decide it, or discard it, first." is not passed on: a failed check could only be discarded.)
+  "Another setup is waiting for your approval. Approve or reject it, or discard it, first.",
+  "Another setup is still being checked on a fresh machine. Wait for the check to finish, or discard it, first.",
+  "Another setup can't be approved: its check on a fresh machine did not pass. Discard it, then use this one.",
+  "Another setup is waiting. If its check passed, approve or reject it; otherwise discard it. Then use this one.",
   "A command in this setup is too long to show whole, so it cannot be approved.",
   "There is no setup waiting for a decision. Open the project's setup again.",
   "This setup change reaches outside the project's commands (a website, a secret, a registry, an integration or something Rovara does not recognise), so a company owner or admin must approve it.",
@@ -220,7 +255,6 @@ export const SETUP_APPROVAL_CODE_WORDS: readonly string[] = Object.freeze([
 export const SETUP_APPROVAL_WORDS = Object.freeze({
   stale: "This setup changed or is no longer waiting for a decision. Refresh to see where it stands.",
   conflict: "This was already sent. Refresh to see where the setup stands.",
-  stepUp: "Confirm it's you again, then try once more.",
   cannotDecide: "Only the project's maintainers, or a company owner or admin, can decide this setup.",
   approvalNotYet: "Approving a setup isn't available on this Rovara yet.",
   audit: "The record of this change could not be written, so nothing was done. Try again.",
@@ -306,7 +340,6 @@ export function approvalRefusal(kind: ApprovalKind, error: CodeError): RouteAnsw
     if (code === "NOT_FOUND" && body?.["message"] === "Approving a project's setup isn't available on this install yet.") return answer(501, "NOT_ON_CODE_YET", AW.approvalNotYet);
     return A.notFound;
   }
-  if (code === "REAUTH_REQUIRED") return answer(403, "REAUTH_REQUIRED", AW.stepUp);
   if (error.status === 403) return said !== undefined ? answer(403, "FORBIDDEN", said) : kind === "decide" ? answer(403, "FORBIDDEN", AW.cannotDecide) : A.runNotAllowed;
   if (error.status === 400) return said !== undefined ? answer(400, "CONFIG_INVALID", said) : A.invalid;
   if (error.status === 409) {
@@ -325,7 +358,11 @@ const statusRoute: Route = {
     if ("refusal" in at) return at.refusal;
     const got = await fromCode(context, "checklist", statusPath(at.project));
     if ("refusal" in got) return got.refusal;
-    try { return { status: 200, body: checklistAnswer(got.value, at.project) }; } catch (error) { if (error instanceof Unreadable) return A.unavailable; throw error; }
+    let rebuilt: Plain;
+    try { rebuilt = checklistAnswer(got.value, at.project); } catch (error) { if (error instanceof Unreadable) return A.unavailable; throw error; }
+    // The company is Code's live access check's, never the browser's. A read that throws is "cannot tell" (null), which changes nothing.
+    const connected = await agentAiConnected(context, at.companyId).catch(() => null);
+    return { status: 200, body: withModelCallFact(rebuilt, connected) };
   },
 };
 

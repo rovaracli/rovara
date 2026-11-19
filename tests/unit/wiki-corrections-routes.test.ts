@@ -10,7 +10,7 @@ import {
 import { CodeError } from "../../packages/cloud-server/src/code-client.js";
 import {
   WIKI_CORRECTION_LIMITS, WIKI_CORRECTION_SENTENCES, WIKI_CORRECTION_WORDS as APP_WORDS, WikiCorrectionsResponseSchema, WikiDisputedResponseSchema, WikiMarkedResponseSchema, WikiNoteAddedResponseSchema,
-  WikiNoteApprovedResponseSchema, WikiNoteDeletedResponseSchema, WikiResolvedResponseSchema, WikiSuggestedResponseSchema,
+  AnswerGapsResponseSchema, WikiNoteAcknowledgedResponseSchema, WikiNoteApprovedResponseSchema, WikiNoteDeletedResponseSchema, WikiResolvedResponseSchema, WikiSuggestedResponseSchema,
 } from "../../packages/contracts/src/app-wiki-corrections.js";
 import { WIKI_WORDS } from "../../packages/contracts/src/app-wiki.js";
 
@@ -54,11 +54,13 @@ function setUp(override: Override = () => undefined) {
     if (url.pathname === "/v1/dev/access") return json(200, { developerId: person.id, displayName: "Someone", administrator: false, ...(person.company === undefined ? {} : { companyId: person.company, companyRole: person.role }), projects: [], notices: [] });
     const replaced = override(call, person);
     if (replaced !== undefined) return replaced;
-    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki\/(?:pages\/([^/]+)\/(corrections|notes|flags)(?:\/([^/]+)\/(approve|delete|suggest-lesson)|\/(resolve))?|(disputed))$/u.exec(url.pathname);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki\/(?:pages\/([^/]+)\/(corrections|notes|flags)(?:\/([^/]+)\/(approve|delete|suggest-lesson|acknowledge)|\/(resolve))?|(disputed|gaps))$/u.exec(url.pathname);
     if (match === null) return err(404, "NOT_FOUND", "route not found");
     const project = decodeURIComponent(match[1]!), role = roleOf(person, project);
     if (role === undefined) return err(404, "NOT_FOUND", `project not found ${LEAK}`);
     const page = match[2] === undefined ? undefined : decodeURIComponent(match[2]);
+    if (match[7] === "gaps") return role === "maintainer" ? json(200, { project, more: false, items: [{ topic: "How do refunds work", kind: "partly", people: 2, questions: 3, lastAskedAt: "2026-11-17", asker: "Pam", [LEAK]: LEAK }] }) : err(403, "FORBIDDEN", WIKI_CORRECTION_WORDS.needsMaintainer);
+    if (match[5] === "acknowledge") return role === "viewer" ? err(403, "FORBIDDEN", WIKI_CORRECTION_WORDS.needsWorkingRole) : json(200, { noteId: decodeURIComponent(match[4]!), acknowledged: true });
     if (match[7] !== undefined) return role === "maintainer" ? json(200, { project, more: false, items: [{ flagId: "flag0001", pageId: "overview", pageTitle: "Overview", claimId: "c0001", claimText: "A claim", markedBy: "Pam", markedAt: "2026-11-17T10:00:00.000Z", reason: "It moved" }] }) : err(403, "FORBIDDEN", WIKI_CORRECTION_WORDS.needsMaintainer);
     if (match[3] === "corrections") return json(200, { project, pageId: page, you: { role, addNote: role !== "viewer", markWrong: role !== "viewer", approveNotes: role === "maintainer", resolveMarks: role === "maintainer", seeDisputed: role === "maintainer" }, notes: [{ noteId: "note0001", mine: false, canDelete: role === "maintainer", canApprove: role === "maintainer", canSuggestLesson: false, mayBeOutOfDate: false }] });
     if (role === "viewer") return err(403, "FORBIDDEN", WIKI_CORRECTION_WORDS.needsWorkingRole);
@@ -104,6 +106,47 @@ describe("the fixed words and limits", () => {
     expect({ ...WIKI_CORRECTION_WORDS }).toEqual({ ...APP_WORDS });
     expect(WIKI_CORRECTION_SENTENCES.size).toBe(Object.keys(APP_WORDS).length);
     expect(WIKI_CORRECTION_LIMITS).toMatchObject({ noteChars: 2_000, reasonChars: 500, notesPerPage: 50, disputed: 100 });
+  });
+});
+
+describe("B17: questions the wiki could not answer, and acknowledging a note", () => {
+  const GAPS = "/v1/web/projects/payments/wiki/gaps";
+  it("a maintainer reads the topics (no asker, nothing else of Code's), as their own token, to Code's own path", async () => {
+    const w = setUp();
+    const read = await w.send("GET", GAPS, await w.as("mia-token"));
+    expect(AnswerGapsResponseSchema.parse(read.body)).toEqual({ project: "payments", more: false, items: [{ topic: "How do refunds work", kind: "partly", people: 2, questions: 3, lastAskedAt: "2026-11-17" }] });
+    expect(read.text).not.toContain("Pam");
+    expect(read.text).not.toContain(LEAK);
+    expect(w.codeCalls().map((c) => [c.method, c.path, c.search, c.authorization])).toEqual([["GET", "/v1/app/projects/payments/wiki/gaps", "", "Bearer mia-token"]]);
+  });
+  it("a contributor is refused in the maintainer words, a person off the project and another company's maintainer get the one 404, and a query is refused before Code", async () => {
+    const w = setUp();
+    expect(error(await w.send("GET", GAPS, await w.as("pam-token"))).message).toBe(WIKI_CORRECTION_WORDS.needsMaintainer);
+    const other = await w.send("GET", "/v1/web/projects/billing/wiki/gaps", await w.as("pam-token"));
+    expect({ status: other.status, error: error(other) }).toEqual({ status: 404, error: { code: "NOT_FOUND", message: WIKI_WORDS.notFound } });
+    expect(other.text).not.toContain(LEAK);
+    expect((await w.send("GET", GAPS, await w.as("bob-token"))).status).toBe(404);
+    const before = w.codeCalls().length;
+    expect((await w.send("GET", `${GAPS}?x=1`, await w.as("mia-token"))).status).toBe(400);
+    expect(w.codeCalls()).toHaveLength(before);
+  });
+  it("an answer for another project, a bad kind, a count of zero or a time instead of a day is refused whole", async () => {
+    const one = { topic: "t", kind: "partly", people: 1, questions: 1, lastAskedAt: "2026-11-17" };
+    for (const answer of [{ project: "ledger", more: false, items: [] }, { project: "payments", more: false, items: [{ ...one, kind: "weird" }] }, { project: "payments", more: false, items: [{ ...one, people: 0 }] }, { project: "payments", more: false, items: [{ ...one, lastAskedAt: "2026-11-17T10:00:00Z" }] }, { project: "payments", items: [] }]) {
+      const w = setUp((call) => (call.path.endsWith("/gaps") ? json(200, answer) : undefined));
+      expect((await w.send("GET", GAPS, await w.as("mia-token"))).status).toBe(503);
+    }
+  });
+  it("acknowledge goes to Code's note path as the person, with no body, and answers the one note; a viewer gets Code's working-role words", async () => {
+    const w = setUp();
+    expect(WikiNoteAcknowledgedResponseSchema.parse((await w.send("POST", `${NOTE}/acknowledge`, await w.as("pam-token"), {})).body)).toEqual({ noteId: "note0001", acknowledged: true });
+    expect(w.codeCalls().map((c) => [c.method, c.path, c.authorization, c.body])).toEqual([["POST", "/v1/app/projects/payments/wiki/pages/overview/notes/note0001/acknowledge", "Bearer pam-token", {}]]);
+    expect(error(await w.send("POST", `${NOTE}/acknowledge`, await w.as("vic-token"), {})).message).toBe(WIKI_CORRECTION_WORDS.needsWorkingRole);
+    const bad = setUp((call) => (call.path.endsWith("/acknowledge") ? json(200, { noteId: "other000", acknowledged: true }) : undefined));
+    expect((await bad.send("POST", `${NOTE}/acknowledge`, await bad.as("pam-token"), {})).status).toBe(503);
+    const before = w.codeCalls().length;
+    expect((await w.send("POST", `${NOTE}/acknowledge`, await w.as("pam-token"), { extra: 1 })).status).toBe(400);
+    expect(w.codeCalls()).toHaveLength(before);
   });
 });
 

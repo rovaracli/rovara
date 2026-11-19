@@ -2,9 +2,12 @@ import { denyNetwork } from "./model-gateway-no-network.js";
 beforeAll(denyNetwork);
 import { beforeAll, expect, it } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
+import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
+import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import { NotSentError } from "../../packages/model-gateway/src/provider.js";
-import { call, setup, scope, caps, mint, answer, sse, requestBody, MemorySink } from "./model-gateway-fixture.js";
+import { call, setup, scope, caps, mint, answer, sse, requestBody, MemorySink, now } from "./model-gateway-fixture.js";
 it("R3 streams while held, settles usage, refuses the next call without sending, and prices unknown above zero", async () => {
   let release!: () => void; let opened!: () => void;
   const pause = new Promise<void>((r) => { release = r; }); const start = new Promise<void>((r) => { opened = r; });
@@ -81,15 +84,31 @@ it("keeps a failed settle reserved, handles key-port failures and strips all pro
     if (status === 429) expect(spent).toBe(0); else expect(spent).toBeGreaterThan(0);
   }
 });
-it("uses person caps only when the claim exists, refuses ambiguous auth, and isolates companies through the full handler", async () => {
+it("uses person caps for member payers, refuses ambiguous auth, and isolates companies through the full handler", async () => {
   const f = setup({ caps: new FixedCapsSource({ ...caps, personMonth: 0 }) });
   expect((await call(f.deps)).status).toBe(422);
-  expect((await call(f.deps, requestBody, mint({ per: undefined }))).status).toBe(200);
+  expect((await call(f.deps, requestBody, mint({ per: undefined, pay: { kind: "project", project: scope.pid } }))).status).toBe(200);
   const bad = await call(f.deps, requestBody, mint(), new MemorySink(), { authorization: "Bearer different" }); expect(bad.status).toBe(401);
   const g = setup(); const other = `org_${"b".repeat(20)}`;
   await call(g.deps, requestBody, mint({ cid: other }));
   expect((await g.meter.read(scope))[0]?.spentMicros).toBe(0);
   expect((await g.meter.read({ ...scope, cid: other }))[0]?.spentMicros).toBe(23);
+});
+it("charges a member payer's person row when requester differs", async () => {
+  const requester = "c".repeat(64); const payer = "d".repeat(64);
+  const f = setup();
+  const result = await call(f.deps, requestBody, mint({ per: requester, pay: { kind: "member", developerId: payer } }));
+  expect(result.status).toBe(200);
+  expect((await f.meter.read({ ...scope, per: payer })).find(row => row.item === "person")?.spentMicros).toBe(23);
+  expect((await f.meter.read({ ...scope, per: requester })).find(row => row.item === "person")?.spentMicros ?? 0).toBe(0);
+});
+it("caps a member payer's person row when requester is absent", async () => {
+  const payer = "d".repeat(64);
+  const f = setup({ caps: new FixedCapsSource({ ...caps, personMonth: 0 }) });
+  const result = await call(f.deps, requestBody, mint({ per: undefined, pay: { kind: "member", developerId: payer } }));
+  expect(result.status).toBe(422);
+  expect(result.text()).toContain("ExceededBudget: User=");
+  expect((await f.meter.read({ ...scope, per: payer })).find(row => row.item === "person")?.spentMicros ?? 0).toBe(0);
 });
 it("rejects response byte overflow and malformed usage, and never follows a redirect or retries", async () => {
   for (const body of [(async function* () { yield Buffer.alloc(10 * 1024 * 1024 + 1); })(), (async function* () { yield sse("message_start", { message: { usage: { input_tokens: 2 } } }); yield Buffer.from("data: broken\n\n"); })()]) {
@@ -128,4 +147,21 @@ it("ADDENDUM-2 src is reporting-only: present and absent reserve and settle iden
     expect(capInput).not.toHaveProperty("src"); spends.push((await f.meter.read(scope))[0]!.spentMicros);
   }
   expect(spends).toEqual([23, 23]);
+});
+
+
+it.each(["memory", "dynamo"])("charges only a signed member payer with %s: two project requesters with zero personal caps both succeed", async adapter => {
+  const f = setup({ caps: new FixedCapsSource({ ...caps, personMonth: 0 }) });
+  const tables = { meter: "meter", ledger: "ledger", markers: "markers" };
+  const wire = new WireDynamo(Object.values(tables));
+  const meter = adapter === "memory" ? f.meter : new DynamoMeter({ tables, now: () => now, db: new Dynamo({ region: "us-east-1", credentials: async () => ({ accessKeyId: "test", secretAccessKey: "test" }), transport: wire.transport }) });
+  f.deps.meter = meter;
+  for (const per of ["a".repeat(64), "b".repeat(64)]) {
+    for (const pay of [{ kind: "project", project: scope.pid }, { kind: "agent", agentId: "rovara-code" }, { kind: "chain", chainId: `chn_${"a".repeat(20)}` }]) {
+      expect((await call(f.deps, requestBody, mint({ per, pay }))).status).toBe(200);
+      expect((await meter.read({ ...scope, per })).find(row => row.item === "person")?.spentMicros).toBe(0);
+    }
+  }
+  expect((await meter.read(scope)).find(row => row.item === "project")?.spentMicros).toBeGreaterThan(0);
+  expect((await call(f.deps)).status).toBe(422);
 });

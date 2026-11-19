@@ -49,3 +49,21 @@ Second review and design review run as one model call each, made with a 120 seco
   through the `review` jti stored on the hold, and only a session that cannot be read costs the whole ceiling). A replay of the same grant is therefore a continuation of its
   review until the ceiling, the session or the grant's own 120 seconds end (the owner decision's "replay refused" holds once the session is exhausted, ended or closed). A mismatch, an exhausted ceiling, an ended or closed session, a
   grant past its 120 seconds or a store that does not answer gives the fixed 401 and spends nothing.
+
+## The company's source order (DEC 254zzz84(4))
+
+A company can save an ORDER of AI sources for its agents (Cloud's Settings, AI models, Sources: `GET /org/model-sources`, `PUT /org/model-sources-order`,
+`packages/cloud-server/src/model-sources-routes.ts`; owners and admins change it, any member reads it). It is the same `COMPANY#<org>` / `AGENT_AI` row:
+`source` is the first choice and the optional `fallback` holds the sources after it, in order (distinct, never the first choice, at most 5). A row without
+`fallback` is exactly the single saved choice of before, and `PUT /org/agent-ai` keeps the later sources (minus the new first choice).
+
+- **Agent route** (`src/server.ts`, the company-key route's `admit`): with a saved fallback, the call is admitted on the FIRST source of the order that is
+  switched on, offered by this gateway, connected for the token's verified company, and serves every model the token allows. This is decided before any
+  hold or send: one call goes out on one source, and a provider's answer (an error included) never moves it to another. A read that fails (a store or a
+  connection that does not answer) refuses the call at once (503): it is never slid onto the next source or onto Rovara's AI. When no source can take the
+  call, the first source's refusal is answered. The `agent_source` log line says `via: "fallback"` when the call was admitted on a later source.
+  A fallback to Rovara's AI is charged like any Rovara's AI call, inside the same caps: to the company, except for a company the operator named exempt
+  (`RovaraAi.exempt`), whose Rovara's AI calls are written as exempt as before.
+- **Offered models**: with a saved fallback, the list is the models of every usable source of the order, in order, each once (at most 64); a failed read anywhere
+  is the fixed 503. Without one, the answer is the first choice's, byte for byte. `reviewerAccess` lists each model under the source that offers it.
+- Learning and answers keep using the first choice only.

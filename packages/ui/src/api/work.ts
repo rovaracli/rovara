@@ -49,7 +49,51 @@ export interface ReadTask {
  sessionId: string | undefined;
  /** The list could not read this task's own view (its stage, pull requests and cost): the row says nothing it cannot know, and never "Finished". */
  detailUnread?: true;
+ /** Understand's current round on the list row (Code #1057, through Cloud): its questions, each with whether this round's answers cover it. Absent when Code gave none. */
+ round?: ReadRound;
+ /** How the workflow ended (Code #1057's `outcome` on the list row), one of OUTCOME_WORDS' keys. */
+ outcome?: string;
 }
+export interface ReadRoundQuestion { id: string; text: string; options?: ReadonlyArray<{ id: string; label: string }>; recommended?: string; answered: boolean }
+export interface ReadRound { round: number; questions: readonly ReadRoundQuestion[] }
+/** The workflow's outcomes as a short status label (Code's WorkflowSnapshot `outcome`); any other word shows no label. */
+export const OUTCOME_WORDS: Readonly<Record<string, string>> = Object.freeze({ PASSED: "Passed", SKIPPED: "Skipped", CHANGES_REQUESTED: "Changes requested", REJECTED: "Rejected", MERGED: "Merged", CLOSED: "Closed", ANSWERED: "Answered" });
+const QUESTION_ID = /^q[1-3]$/u, OPTION_ID = /^[a-d]$/u;
+/** A round as Cloud passes it on; anything not in that shape is no round (the row then sends the person to the task's page). */
+export function readRound(raw: unknown): ReadRound | undefined {
+ if (!isRecord(raw) || !Array.isArray(raw["questions"])) return undefined;
+ const round = num(raw["round"]), sent = raw["questions"] as unknown[];
+ if (round === undefined || !Number.isInteger(round) || round < 1 || sent.length < 1 || sent.length > 3) return undefined;
+ const questions: ReadRoundQuestion[] = [];
+ for (const question of sent) {
+  if (!isRecord(question)) return undefined;
+  const id = str(question["id"]), text = str(question["text"]), answered = bool(question["answered"]), recommended = question["recommended"];
+  if (id === undefined || !QUESTION_ID.test(id) || text === undefined || text.length === 0 || text.length > 300 || answered === undefined) return undefined;
+  let options: Array<{ id: string; label: string }> | undefined;
+  if (question["options"] !== undefined) {
+   if (!Array.isArray(question["options"]) || question["options"].length < 2 || question["options"].length > 4) return undefined;
+   options = [];
+   for (const option of question["options"] as unknown[]) { const optionId = isRecord(option) ? str(option["id"]) : undefined, label = isRecord(option) ? str(option["label"]) : undefined;if (optionId === undefined || !OPTION_ID.test(optionId) || label === undefined || label.length === 0 || label.length > 80) return undefined;options.push({ id: optionId, label }); }
+  }
+  if (recommended !== undefined && (typeof recommended !== "string" || !(options ?? []).some(option => option.id === recommended))) return undefined;
+  questions.push({ id, text, ...(options === undefined ? {} : { options }), ...(typeof recommended === "string" ? { recommended } : {}), answered });
+ }
+ return new Set(questions.map(question => question.id)).size === questions.length ? { round, questions } : undefined;
+}
+/** Statuses of a task that has ended: nothing on it waits for answers, whatever its row still carries. */
+const ENDED: ReadonlySet<string> = new Set(["CLOSED", "CANCELLED", "FAILED", "INTERRUPTED"]);
+/**
+ * The round a list row can answer inline: Understand waits (stage UNDERSTAND, state WAITING) on a task that has not ended, a question is still unanswered, and the row names the
+ * workflow revision it read (the answers route checks it and the round). Undefined otherwise.
+ */
+export function openRoundOf(task: Pick<ReadTask, "round" | "workflow" | "status">): { round: number; revision: number; questions: readonly ReadRoundQuestion[] } | undefined {
+ const round = task.round, revision = task.workflow?.revision;
+ if (round === undefined || revision === undefined || task.workflow?.stage !== "UNDERSTAND" || task.workflow.state !== "WAITING" || (task.status !== undefined && ENDED.has(task.status))) return undefined;
+ if (!round.questions.some(question => !question.answered)) return undefined;
+ return { round: round.round, revision, questions: round.questions };
+}
+/** Understand waits on the person but the row carries no round to answer (an older Code, or one that would not show it): the task's own page asks them. */
+export const asksOnItsPage = (task: Pick<ReadTask, "round" | "workflow" | "status">): boolean => task.round === undefined && task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "WAITING" && !(task.status !== undefined && ENDED.has(task.status));
 export function readTask(raw: unknown): ReadTask | undefined {
  if (!isRecord(raw)) return undefined;
  const taskId = str(raw["taskId"]), title = str(raw["title"]), project = str(raw["project"]), updatedAt = str(raw["updatedAt"]);
@@ -65,6 +109,8 @@ export function readTask(raw: unknown): ReadTask | undefined {
   workflow: workflow === undefined ? undefined : { ...opt("stage", str(workflow["stage"])), ...opt("state", str(workflow["state"])), ...opt("revision", num(workflow["revision"])), ...opt("path", str(workflow["path"])), ...opt("outcome", str(workflow["outcome"])), ...opt("blockReason", str(workflow["blockReason"])), ...opt("round", num(workflow["round"])) },
   pullRequests: records(raw["pullRequests"]).map(pull => ({ ...opt("repository", str(pull["repository"])), ...opt("number", num(pull["number"])), ...opt("url", str(pull["url"])), ...opt("state", str(pull["state"])) })),
   spentUsd: spent, runLimitUsd: limit, createdAt: str(raw["createdAt"]) ?? updatedAt, updatedAt,
+  ...opt("round", readRound(raw["round"])),
+  ...opt("outcome", ((outcome) => (outcome !== undefined && OUTCOME_WORDS[outcome] !== undefined ? outcome : undefined))(str(raw["outcome"]))),
  };
 }
 function opt<K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } { return value === undefined ? {} : { [key]: value } as { [P in K]?: V }; }
@@ -192,7 +238,9 @@ export function workRow(task: ReadTask, decision: ReadDecision | undefined, now:
   return { ...base, group: "you", tone: kind === "merge" ? "ok" : kind === "choose_checks" || kind === "approve_spend" ? "bad" : "wait", need: needWords(decision, path), line: decision.card.next.text, waitingSince, stale };
  }
  const none = { need: undefined, waitingSince, stale: false };
- if (step === "merged" || stage === "MERGED" || task.workflow?.outcome === "MERGED") return { ...base, ...none, group: "done", tone: "ok", line: "Merged" };
+ // Understand asked the person questions (Code #1057's round on the row, one still unanswered): the row asks for them, and the list answers them inline.
+ if (openRoundOf(task) !== undefined) return { ...base, group: "you", tone: "wait", need: "Answer questions", line: STAGE_WORDS["UNDERSTAND"]!, waitingSince, stale: now.getTime() - Date.parse(waitingSince) >= DAY_MS };
+ if (step === "merged" || stage === "MERGED" || task.workflow?.outcome === "MERGED" || task.outcome === "MERGED") return { ...base, ...none, group: "done", tone: "ok", line: "Merged" };
  if (task.status === "CLOSED" || task.status === "CANCELLED") return { ...base, ...none, group: "done", tone: "idle", line: task.status === "CLOSED" ? "Closed" : "Stopped" };
  if (task.status === "FAILED" || task.status === "INTERRUPTED" || state === "BLOCKED") {
   const waited = now.getTime() - Date.parse(waitingSince);
@@ -296,6 +344,11 @@ export function useWorkApi() {
     * Answers the understanding questions on Cloud's session route (`POST /v1/app/sessions/{sessionId}/answers`, which Cloud sends to Code for the session's task). It needs
     * Cloud's session id (`ses_...`) and the round Code says is asked; without either, nothing is sent and the card says to answer on the task's session page.
     */
+   /**
+    * Answers Understand's questions from the list or Home (`POST /v1/app/tasks/{taskId}/answers`; Cloud sends them to Code's own answers route as the person, and Code decides who may).
+    * The body is the session page's answer form's: the request id, the round and the workflow revision the row read, and the answers.
+    */
+   answerRound: (taskId: string, body: { requestId: string; round: number; revision: number; answers: Array<{ questionId: string; optionId?: string; text?: string }> }) => api.send("POST", taskPath(taskId) + "/answers", body, { parse: (raw: unknown) => raw }),
    answer: (task: Pick<ReadTask, "sessionId" | "workflow">, questionId: string, optionId: string) => task.sessionId === undefined || task.workflow?.round === undefined
     ? Promise.reject(new ApiError(409, "ANSWER_ON_SESSION_PAGE", "Answer this question on the task's session page."))
     : api.send("POST", "/v1/app/sessions/" + encodeURIComponent(task.sessionId) + "/answers", { requestId: crypto.randomUUID(), round: task.workflow.round, ...(task.workflow.revision === undefined ? {} : { revision: task.workflow.revision }), answers: [{ questionId, optionId }] }, { parse: (body: unknown) => body }, { retry: "never" }),
