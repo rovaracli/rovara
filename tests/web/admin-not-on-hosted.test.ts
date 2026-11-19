@@ -49,9 +49,9 @@ function calm(region: HTMLElement) {
 
 it("AI models: company model sources not on this Rovara read as a calm status, never an alert or Retry", async () => {
  const f = mount({ path: "/app/admin/models/sources", respond: answering(["/v1/app/org/model-sources"]) });
- const region = await screen.findByRole("region", { name: "Model sources" });
+ const region = await screen.findByRole("region", { name: "AI source order" });
  await waitFor(() => calm(region));
- expect(screen.queryByText(/Couldn't load/)).toBeNull();
+ expect(within(region).queryByText(/Couldn't load/)).toBeNull();
  f.close();
 });
 
@@ -72,17 +72,17 @@ for (const [label, answer] of [
  ["a 409", { status: 409, body: { error: { code: "CONFLICT", message: "x" } } }],
 ] as const) it(`AI models: ${label} still shows the alert and Retry`, async () => {
  const f = mount({ path: "/app/admin/models/sources", respond: answering([], { "/v1/app/org/model-sources": answer }) });
- const region = await screen.findByRole("region", { name: "Model sources" });
+ const region = await screen.findByRole("region", { name: "AI source order" });
  expect((await within(region).findByRole("alert")).textContent).toContain("Couldn't load this information");
- expect(within(region).getByRole("button", { name: "Retry model sources" })).toBeTruthy();
+ expect(within(region).getByRole("button", { name: "Retry ai source order" })).toBeTruthy();
  expect(within(region).queryByText(NOT_HERE)).toBeNull();
  f.close();
 });
 
-for (const [status, code, shown] of [[501, "NOT_ON_CODE_YET", false], [404, "NOT_FOUND", false], [200, "", true]] as const) it(`the Second opinion link is ${shown ? "shown" : "hidden"} when its probe answers ${String(status)}`, async () => {
- const f = mount({ path: "/app/admin/people", respond: answering([], { "/v1/app/org/second-review": status === 200 ? { status, body: {} } : { status, body: { error: { code, message: "/v1/app/org/second-review isn't connected to Rovara Code yet." } } } }) });
+for (const status of [501, 404, 200]) it(`never exposes a standalone second-review editor when the old probe would answer ${String(status)}`, async () => {
+ const f = mount({ path: "/app/admin/people", respond: answering([], { "/v1/app/org/second-review": { status, body: {} } }) });
  await screen.findByRole("link", { name: "People" });
- await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/org/second-review")).toBe(true));
- await waitFor(() => expect(screen.queryByRole("link", { name: "Second opinion" }) !== null).toBe(shown));
+ expect(screen.queryByRole("link", { name: "Second opinion" })).toBeNull();
+ expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/org/second-review")).toBe(false);
  f.close();
 });

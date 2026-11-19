@@ -1,3 +1,4 @@
+import { Link } from "react-router";
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBuilderApi } from "../../api/builder.js";
@@ -123,6 +124,7 @@ export function HowWeWorkTab({ project, canEdit: _canEdit, repository }: { proje
   finally { setChoosing(false); }
  }
  return <section className="rv-hww" aria-label="How we work">
+  <p><Link to="/app/admin/ai-spending#ai-models">AI models for each step</Link> are managed for the company. Project model settings are read only.</p>
   <p>{repository === undefined ? "To change these, edit .rovara/playbook.yaml in your repo" : <>To change these, <a href={`https://github.com/${repository.fullName}/blob/${encodeURIComponent(repository.defaultBranch)}/.rovara/playbook.yaml`} target="_blank" rel="noopener noreferrer">edit .rovara/playbook.yaml in your repo</a></>}</p>
   {data.process.update !== undefined && <NewerRovaraCodeNotice update={data.process.update} agentId={layerId} canEdit={canEdit} disabled={dirty || saving || draft.data === undefined} onMoved={async () => { await query.invalidateQueries({ queryKey: howWeWorkKey(project) });setReviewRequest(count => count + 1); }} />}
   <p className="rv-muted">How Rovara Code works in this project, stage by stage. Every setting says where it comes from.</p>

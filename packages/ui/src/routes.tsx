@@ -1,5 +1,5 @@
 import { HomeScreen } from "./screens/home/HomeScreen.js";
-import { useSearchParams, type RouteObject } from "react-router";
+import { Navigate, useLocation, useParams, useSearchParams, type RouteObject } from "react-router";
 import { type AppNav } from "@agentx/contracts/web";
 import { SignInChoices } from "./screens/signed-out/SignInChoices.js";
 import { AppShell } from "./shell/AppShell.js";
@@ -11,31 +11,43 @@ function SignedOut() {
  const reason = params.get("reason"), message = reason === "removed" ? "Your access to this organization ended." : reason === "failed" ? "We couldn't finish signing you in. Try again." : reason === "cancelled" ? "Sign-in was cancelled." : "You've signed out.";
  return <main className="rv-entry" data-testid="signed-out"><h1 tabIndex={-1}>Sign in to Rovara</h1><p data-testid="signed-out-message">{message}</p><SignInChoices returnPath="/app" /></main>;
 }
+// Preserve supported URL context while retiring the competing editors.
+function ModelSettingsRedirect({ section }: { section?: string }) {
+ const { section: oldSection } = useParams(), location = useLocation();
+ const target = section ?? (oldSection === "sources" ? "ai-connections" : "ai-models");
+ return <Navigate to={{ pathname: "/app/admin/ai-spending", search: location.search, hash: `#${target}` }} replace />;
+}
 export function appRoutes(features: AppNav["features"]): RouteObject[] {
  const children: RouteObject[] = [
  { index: true, element: <HomeScreen /> }, // Work (the route stays /app/live): the split inbox. The shell lets it run edge to edge.
  { path: "live", handle: { bleed: true }, lazy: async () => ({ Component: (await import("./screens/work/WorkScreen.js")).WorkScreen }) },
  { path: "inbox", lazy: async () => ({ Component: (await import("./screens/inbox/InboxScreen.js")).InboxScreen }) },
  { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/project/ProjectScreen.js")).ProjectScreen }) }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },
- { path: "agents/:id?", lazy: async () => ({ Component: (await import("./screens/agents/DirectoryScreen.js")).DirectoryScreen }) }, { path: "agents/new", lazy: async () => ({ Component: (await import("./screens/builder/NewAgentScreen.js")).NewAgentScreen }) },
- { path: "agents/:id/edit", lazy: async () => ({ Component: (await import("./screens/builder/BuilderScreen.js")).BuilderScreen }) },
+ { path: "agents/:id?", lazy: async () => ({ Component: (await import("./screens/agents/DirectoryScreen.js")).DirectoryScreen }) }, { path: "agents/new", element: <ModelSettingsRedirect section="ai-models" /> },
+ { path: "agents/:id/edit", element: <ModelSettingsRedirect section="ai-models" /> },
  { path: "account", lazy: async () => ({ Component: (await import("./screens/account/AccountScreen.js")).AccountScreen }) },
  { path: "account/automation-keys", lazy: async () => ({ Component: (await import("./screens/account/AutomationKeysScreen.js")).AutomationKeysScreen }) },
  { path: "onboard", lazy: async () => ({ Component: (await import("./screens/onboarding/OnboardScreen.js")).OnboardScreen }) },
  ];
  // Lane C: waiting is caller-scoped, independent of the company-admin navigation flag.
  children.push({ path: "admin/waiting", handle: { webOnly: true, bleed: true }, lazy: async () => ({ Component: (await import("./screens/admin/AdminLayout.js")).AdminLayout }), children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/admin/waiting/WaitingScreen.js")).WaitingScreen }) }] });
+ // The canonical card and its narrow legacy redirects are available without admin navigation.
+ children.push({ handle: { webOnly: true, bleed: true }, lazy: async () => ({ Component: (await import("./screens/admin/AdminLayout.js")).AdminLayout }), children: [
+  { path: "admin/ai-spending", lazy: async () => ({ Component: (await import("./screens/admin/ai-spending/AiSpendingScreen.js")).AiSpendingScreen }) },
+  { path: "admin/models/:section?", element: <ModelSettingsRedirect /> },
+  { path: "admin/agent-ai", element: <ModelSettingsRedirect section="ai-connections" /> },
+  { path: "admin/learning-ai", element: <ModelSettingsRedirect section="ai-connections" /> },
+  { path: "admin/second-review", element: <ModelSettingsRedirect section="second-review" /> },
+ ] });
  // Part B owns these screen implementations. Disabled routes are absent, including direct URLs.
  if (features.usage) children.push({ path: "usage", element: <Page title="Usage" /> });
- if (features.admin) children.push({ path: "admin/*", handle: { webOnly: true, bleed: true }, lazy: async () => { const { AdminLayout } = await import("./screens/admin/AdminLayout.js");return { Component: AdminLayout }; }, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/admin/AdminOverview.js")).AdminOverview }) }, { path: "money/budgets", lazy: async () => ({ Component: (await import("./screens/admin/BudgetsScreen.js")).BudgetsScreen }) }, { path: "money/limits", lazy: async () => ({ Component: (await import("./screens/admin/spend-limits/SpendLimitsScreen.js")).SpendLimitsScreen }) }, { path: "money/people", lazy: async () => ({ Component: (await import("./screens/admin/people-limits/PeopleLimitsScreen.js")).PeopleLimitsScreen }) }, { path: "money/report", lazy: async () => ({ Component: (await import("./screens/admin/report/CostReportScreen.js")).CostReportScreen }) }, { path: "money/report/features/:id", lazy: async () => ({ Component: (await import("./screens/admin/report/FeatureDetailScreen.js")).FeatureDetailScreen }) }, { path: "settings", lazy: async () => ({ Component: (await import("./screens/admin/settings/SettingsScreen.js")).SettingsScreen }) }, { path: "product-ai", lazy: async () => ({ Component: (await import("./screens/admin/product-ai/ProductAiScreen.js")).ProductAiScreen }) }, { path: "learning-ai", lazy: async () => ({ Component: (await import("./screens/admin/learning-ai/LearningAiScreen.js")).LearningAiScreen }) }, { path: "agent-ai", lazy: async () => ({ Component: (await import("./screens/admin/agent-ai/AgentAiScreen.js")).AgentAiScreen }) }, { path: "ai-spending", lazy: async () => ({ Component: (await import("./screens/admin/ai-spending/AiSpendingScreen.js")).AiSpendingScreen }) },
+ if (features.admin) children.push({ path: "admin/*", handle: { webOnly: true, bleed: true }, lazy: async () => { const { AdminLayout } = await import("./screens/admin/AdminLayout.js");return { Component: AdminLayout }; }, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/admin/AdminOverview.js")).AdminOverview }) }, { path: "money/budgets", lazy: async () => ({ Component: (await import("./screens/admin/BudgetsScreen.js")).BudgetsScreen }) }, { path: "money/limits", lazy: async () => ({ Component: (await import("./screens/admin/spend-limits/SpendLimitsScreen.js")).SpendLimitsScreen }) }, { path: "money/people", lazy: async () => ({ Component: (await import("./screens/admin/people-limits/PeopleLimitsScreen.js")).PeopleLimitsScreen }) }, { path: "money/report", lazy: async () => ({ Component: (await import("./screens/admin/report/CostReportScreen.js")).CostReportScreen }) }, { path: "money/report/features/:id", lazy: async () => ({ Component: (await import("./screens/admin/report/FeatureDetailScreen.js")).FeatureDetailScreen }) }, { path: "settings", lazy: async () => ({ Component: (await import("./screens/admin/settings/SettingsScreen.js")).SettingsScreen }) }, { path: "product-ai", lazy: async () => ({ Component: (await import("./screens/admin/product-ai/ProductAiScreen.js")).ProductAiScreen }) },
  { path: "invites", lazy: async () => ({ Component: (await import("./screens/admin/InvitesScreen.js")).InvitesScreen }) }, { path: "people", lazy: async () => ({ Component: (await import("./screens/admin/MembersScreen.js")).MembersScreen }) }, { path: "people/roles", lazy: async () => ({ Component: (await import("./screens/admin/RolesScreen.js")).RolesScreen }) }, // Lane B: projects and working branches (Agents screens stay held: no route, deep link falls to NotFound).
   { path: "projects", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectsScreen.js")).ProjectsScreen }) },
   { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectDetailScreen.js")).ProjectDetailScreen }) },
   // Lane C: read-only company models, connections and permitted waiting items.
  { path: "how-we-work", lazy: async () => ({ Component: (await import("./screens/admin/how-we-work/HowWeWorkCompanyScreen.js")).HowWeWorkCompanyScreen }) },
- { path: "how-we-work/recipes", lazy: async () => ({ Component: (await import("./screens/admin/how-we-work/SetupRecipesScreen.js")).SetupRecipesScreen }) }, { path: "models/:section?", lazy: async () => ({ Component: (await import("./screens/admin/models/ModelsScreen.js")).ModelsScreen }) }, { path: "connections", lazy: async () => ({ Component: (await import("./screens/admin/connections/ConnectionsScreen.js")).ConnectionsScreen }) },
- // Lane C2: read-only company audit.
- { path: "second-review", lazy: async () => ({ Component: (await import("./screens/admin/second-review/SecondReviewScreen.js")).SecondReviewScreen }) },
+ { path: "how-we-work/recipes", lazy: async () => ({ Component: (await import("./screens/admin/how-we-work/SetupRecipesScreen.js")).SetupRecipesScreen }) }, { path: "connections", lazy: async () => ({ Component: (await import("./screens/admin/connections/ConnectionsScreen.js")).ConnectionsScreen }) },
  // Lane C2: read-only company audit.
  { path: "audit", lazy: async () => ({ Component: (await import("./screens/admin/audit/AuditScreen.js")).AuditScreen }) }, { path: "*", element: <NotFound /> }] });
  if (features.chains) children.push({ path: "chains/*", element: <Page title="Chains" /> });

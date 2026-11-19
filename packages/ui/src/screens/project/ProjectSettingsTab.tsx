@@ -1,6 +1,7 @@
 // Guided onboarding PR 9 (DEC 254k, 254n item 3): Project settings on the project's own page, reachable by the people Code lets change the project: company
 // owners and admins AND the project's admins (the admin area is company admins only). Re-run setup, Archive and Restore (preview first), Slack and Linear, and
 // the AI and spend limit. Code decides who may do each; every control shows only what Code offers this person.
+import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { AppProjectLifecycleSchema, PROJECT_LIFECYCLE_WORDS } from "@agentx/contracts/web";
 import { useOnboardingApi } from "../../api/onboarding.js";
@@ -54,6 +55,6 @@ export function ProjectSettingsTab({ project, canEdit }: { project: string; canE
   <ProjectIntegrations project={project} canEdit={canEdit} />
   <TicketUpdatesSettings project={project} />
   <LocalToolsSetting key={`local-tools:${scope.orgId}:${scope.developerId}:${project}`} project={project} />
-  <ProjectSpendLimits key={`spend:${scope.orgId}:${scope.developerId}:${project}`} project={project} developerId={scope.developerId} />
+  <p><Link to="/app/admin/ai-spending#ai-models">AI models for each step</Link> are managed for the company.</p><ProjectSpendLimits key={`spend:${scope.orgId}:${scope.developerId}:${project}`} project={project} developerId={scope.developerId} />
  </div></ProjectScopeContext.Provider>;
 }

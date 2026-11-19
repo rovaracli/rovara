@@ -73,27 +73,28 @@ describe("readers", () => {
 });
 
 describe("Company settings, AI", () => {
- it("the card sits on the page beside the engine model card", async () => {
+ it("the learning row sits inside the company model card", async () => {
   const c = cloud({ model: null });
   const f = mountPage(c.respond);
   try {
    expect((await screen.findByTestId("learning-model-card")).textContent).toContain(W.title);
+   expect(screen.getByTestId("step-models").contains(screen.getByTestId("learning-model-card"))).toBe(true);
    expect(c.reads.length).toBeGreaterThan(0);
   } finally { f.close(); }
  });
 });
 
 describe("an owner or admin", () => {
- it("sees the default (Claude Haiku 5.5), the offered models with the preselected one picked, and no Use the default while on the default", async () => {
+ it("sees the served default and offered models, with no save or clear action until a choice", async () => {
   const c = cloud({ model: null });
   const f = mountCard("owner", c.respond);
   try {
-   expect((await screen.findByTestId("learning-model-current")).textContent).toBe(`Model: Claude Haiku 5.5 (${W.installDefault})`);
+   expect((await screen.findByTestId("learning-model-current")).textContent).toBe("Rovara's default (currently Claude Haiku 5.5)");
    const select = screen.getByLabelText<HTMLSelectElement>(W.pick);
-   expect(select.value).toBe(HAIKU);
-   expect([...select.options].map(o => o.value).filter(Boolean)).toEqual([SONNET, HAIKU]);
+   expect(select.value).toBe("@default");
+   expect([...select.options].map(o => o.value).filter(Boolean)).toEqual(["@default", SONNET, HAIKU]);
    expect(screen.queryByRole("button", { name: W.useDefault })).toBeNull();
-   expect(screen.getByRole("button", { name: W.save }).hasAttribute("disabled")).toBe(false);
+   expect(screen.getByRole("button", { name: "Save learning model" }).hasAttribute("disabled")).toBe(true);
   } finally { f.close(); }
  });
 
@@ -103,25 +104,26 @@ describe("an owner or admin", () => {
   try {
    await screen.findByTestId("learning-model-current");
    fireEvent.change(screen.getByLabelText(W.pick), { target: { value: SONNET } });
-   fireEvent.click(screen.getByRole("button", { name: W.save }));
+   fireEvent.click(screen.getByRole("button", { name: "Save learning model" }));
    expect((await screen.findByTestId("learning-model-saved")).textContent).toBe(W.saved);
    expect(c.writes.map(w => [w.method, w.path, w.body])).toEqual([["PUT", LEARNING_MODEL_PATH, { model: SONNET }]]);
-   await waitFor(() => { expect(screen.getByTestId("learning-model-current").textContent).toBe(`Model: Claude Sonnet 5.5 (${W.companyChoice})`); });
+   await waitFor(() => { expect(screen.getByTestId("learning-model-current").textContent).toBe("Your choice: Claude Sonnet 5.5"); });
    // Already the company's choice: nothing to save until another is picked.
-   expect(screen.getByRole("button", { name: W.save }).hasAttribute("disabled")).toBe(true);
+   expect(screen.getByRole("button", { name: "Save learning model" }).hasAttribute("disabled")).toBe(true);
    fireEvent.click(screen.getByRole("button", { name: W.useDefault }));
    await waitFor(() => { expect(screen.getByTestId("learning-model-saved").textContent).toBe(W.savedDefault); });
    expect(c.writes.map(w => w.body)).toEqual([{ model: SONNET }, { model: null }]);
-   await waitFor(() => { expect(screen.getByTestId("learning-model-current").textContent).toBe(`Model: Claude Haiku 5.5 (${W.installDefault})`); });
+   await waitFor(() => { expect(screen.getByTestId("learning-model-current").textContent).toBe("Rovara's default (currently Claude Haiku 5.5)"); });
   } finally { f.close(); }
  });
 
- it("keeping the default but choosing it explicitly is a save (it becomes the company's own choice)", async () => {
+ it("explicitly picking the model currently used by default pins it", async () => {
   const c = cloud({ model: null });
   const f = mountCard("owner", c.respond);
   try {
    await screen.findByTestId("learning-model-current");
-   fireEvent.click(screen.getByRole("button", { name: W.save }));
+   fireEvent.change(screen.getByLabelText(W.pick), { target: { value: HAIKU } });
+   fireEvent.click(screen.getByRole("button", { name: "Save learning model" }));
    await screen.findByTestId("learning-model-saved");
    expect(c.writes.map(w => w.body)).toEqual([{ model: HAIKU }]);
    await waitFor(() => { expect(screen.getByTestId("learning-model-current").textContent).toContain(W.companyChoice); });
@@ -134,7 +136,8 @@ describe("an owner or admin", () => {
    const f = mountCard("owner", r => (r.method === "PUT" ? { status, body: { error: { code: "X", message } } } : c.respond(r)));
    try {
     await screen.findByTestId("learning-model-current");
-    fireEvent.click(screen.getByRole("button", { name: W.save }));
+    fireEvent.change(screen.getByLabelText(W.pick), { target: { value: HAIKU } });
+    fireEvent.click(screen.getByRole("button", { name: "Save learning model" }));
     expect((await screen.findByTestId("learning-model-error")).textContent).toBe(message);
    } finally { f.close(); }
   }
@@ -147,7 +150,8 @@ describe("an owner or admin", () => {
   try {
    await screen.findByTestId("learning-model-current");
    const before = c.reads.length;
-   fireEvent.click(screen.getByRole("button", { name: W.save }));
+   fireEvent.change(screen.getByLabelText(W.pick), { target: { value: SONNET } });
+   fireEvent.click(screen.getByRole("button", { name: "Save learning model" }));
    expect((await screen.findByTestId("learning-model-error")).textContent).toBe("That model isn't offered to this company now. Pick one from the list.");
    await waitFor(() => { expect(c.reads.length).toBeGreaterThan(before); });
   } finally { f.close(); }
@@ -157,12 +161,12 @@ describe("an owner or admin", () => {
   const stale = mountCard("owner", () => ({ status: 200, body: view(HAIKU, "company", { offered: [SONNET] }) }));
   try {
    expect((await screen.findByTestId("learning-model-stale")).textContent).toBe(W.notOffered);
-   expect(screen.getByLabelText<HTMLSelectElement>(W.pick).value).toBe(SONNET);
+   expect(screen.getByLabelText<HTMLSelectElement>(W.pick).value).toBe(HAIKU);
   } finally { stale.close(); }
   const none = mountCard("owner", () => ({ status: 200, body: view(HAIKU, "install", { offered: [] }) }));
   try {
    expect((await screen.findByTestId("learning-model-none-offered")).textContent).toBe(W.noneOffered);
-   expect(screen.queryByRole("button", { name: W.save })).toBeNull();
+   expect(screen.queryByRole("button", { name: "Save learning model" })).toBeNull();
    expect(screen.queryByLabelText(W.pick)).toBeNull();
    expect(screen.queryByRole("button", { name: W.useDefault })).toBeNull();
   } finally { none.close(); }
@@ -183,7 +187,7 @@ describe("an owner or admin", () => {
 
  it("says plainly when this Rovara has no default", async () => {
   const f = mountCard("owner", () => ({ status: 200, body: view(null, "install", { offered: [SONNET] }) }));
-  try { expect((await screen.findByTestId("learning-model-current")).textContent).toBe(`Model: ${W.noDefault}`); } finally { f.close(); }
+  try { expect((await screen.findByTestId("learning-model-current")).textContent).toBe("Rovara's default (current model can't be shown yet)"); } finally { f.close(); }
  });
 });
 
@@ -192,10 +196,10 @@ describe("everyone else", () => {
   const c = cloud({ model: SONNET }, { canChange: false });
   const f = mountCard("member", c.respond);
   try {
-   expect((await screen.findByTestId("learning-model-current")).textContent).toBe(`Model: Claude Sonnet 5.5 (${W.companyChoice})`);
+   expect((await screen.findByTestId("learning-model-current")).textContent).toBe("Your choice: Claude Sonnet 5.5");
    expect(screen.getByTestId("learning-model-read-only").textContent).toBe(W.readOnly);
    expect(screen.queryByLabelText(W.pick)).toBeNull();
-   expect(screen.queryByRole("button", { name: W.save })).toBeNull();
+   expect(screen.queryByRole("button", { name: "Save learning model" })).toBeNull();
    expect(screen.queryByRole("button", { name: W.useDefault })).toBeNull();
    expect(f.request.mock.calls.map(([r]) => `${r.method} ${r.path}`)).toEqual([`GET ${LEARNING_MODEL_PATH}`]);
   } finally { f.close(); }
@@ -205,7 +209,7 @@ describe("everyone else", () => {
   const f = mountCard("owner", () => ({ status: 200, body: view(HAIKU, "install", { canChange: false }) }));
   try {
    await screen.findByTestId("learning-model-read-only");
-   expect(screen.queryByRole("button", { name: W.save })).toBeNull();
+   expect(screen.queryByRole("button", { name: "Save learning model" })).toBeNull();
   } finally { f.close(); }
  });
 });

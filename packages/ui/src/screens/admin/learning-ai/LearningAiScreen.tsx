@@ -10,7 +10,6 @@ import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";
 import { Button } from "../../../design/Button.js";
 import { Money } from "../../../design/Money.js";
-import { PageHeader } from "../../../design/PageHeader.js";
 import { SecretField } from "../../../design/SecretField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ReadSection, useAdminRead } from "../models/read.js";
@@ -19,11 +18,11 @@ import { AdminSection, NotConnected } from "../parts.js";
 const reader = { parse: readLearningAi };
 const when = (ms: number) => new Date(ms).toLocaleString("en-US", { timeZone: "UTC", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) + " UTC";
 
-export function LearningAiScreen() {
+export function CompanyKeyConnections() {
  const read = useAdminRead("learning-ai", LEARNING_AI_PATH, reader, { stable: true });
- return <section><PageHeader focusOnMount title="Learning AI key" description="The company's own AI provider account that lessons learn on. It is never a project's key. Keys are write-only: Rovara uses them but never shows them." />
+ return <section><p>Company AI keys are write-only. They are never project test keys. Task work can use connected providers; hosted learning and answers currently require Anthropic, with a restricted Rovara fallback for eligible exempt companies.</p>
   {read.isError && isNotConnected(read.error) && read.error instanceof ApiError && read.error.status === 501 ? <AdminSection title="Learning AI key"><NotConnected what="Learning AI keys" /></AdminSection>
-   : <ReadSection read={read} label="Learning AI key">{settings => <Settings settings={settings} reload={() => { void read.refetch(); }} />}</ReadSection>}
+   : <ReadSection read={read} label="Company AI keys">{settings => <Settings settings={settings} reload={() => { void read.refetch(); }} />}</ReadSection>}
  </section>;
 }
 
@@ -43,7 +42,7 @@ function Settings({ settings, reload }: { settings: LearningAiRead; reload: () =
  const reasons = new Map(settings.pauseReasons.map(r => [r.reason, r.message]));
  return <>
   {notice !== undefined && <p role={notice.ok ? "status" : "alert"}><VisibleText text={notice.text} /></p>}
-  <AdminSection title="Lessons" note={settings.pausedNow.length === 0 ? "Learning" : "Paused"}>
+  <AdminSection title="Lessons" note={settings.pausedNow.length === 0 ? "No pause reported; model readiness is checked separately" : "Paused"}>
    {settings.learningCap === undefined ? <p>The learning cap isn't readable here.</p>
     : <p>Lessons may spend up to <b><Money usd={settings.learningCap.monthlyUsdMicros / 1_000_000} /></b> a month on learning{settings.learningCap.companyMonthlyUsdMicros === undefined ? "" : <>, inside the company's monthly cap of <Money usd={settings.learningCap.companyMonthlyUsdMicros / 1_000_000} /></>}. Change it in the company's budgets.</p>}
    {settings.pausedNow.length > 0 && <ul data-testid="paused-now">{settings.pausedNow.map(reason => <li key={reason}><VisibleText text={reasons.get(reason) ?? "Lessons are paused."} /></li>)}</ul>}

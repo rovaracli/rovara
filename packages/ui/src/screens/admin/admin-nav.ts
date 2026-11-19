@@ -14,17 +14,13 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
  ] },
  { id: "work", title: "Work and rules", links: [
   { to: "/app/admin/projects", label: "Projects", blurb: "Project setup, working branches and archiving." },
-  { to: "/app/admin/how-we-work", label: "How we work", blurb: "Company defaults for models, locks and learning." },
+  { to: "/app/admin/how-we-work", label: "How we work", blurb: "Company policy for marking tests as already failing." },
   { to: "/app/admin/settings", label: "Company settings", blurb: "Company rules and who may start work." },
  ] },
  { id: "ai", title: "AI and connections", links: [
   { to: "/app/admin/ai-spending", label: "AI and spending", blurb: "Who pays for the AI, the model Rovara uses, and the company's monthly limit." },
-  { to: "/app/admin/models/sources", label: "AI models", blurb: "Which model providers the company pays for." },
   { to: "/app/admin/product-ai", label: "Product AI keys", blurb: "A project's own AI key for its tests, and what its evals may spend." },
-  { to: "/app/admin/agent-ai", label: "AI for your agents", blurb: "Rovara's AI, the company's own Anthropic key, or (soon) its own Bedrock.", ownerOnly: true },
-  { to: "/app/admin/learning-ai", label: "Learning AI key", blurb: "The company's own AI account that lessons learn on, and its monthly learning cap.", ownerOnly: true },
   { to: "/app/admin/connections", label: "Connections", blurb: "Slack, GitHub, Jira and other connected tools." },
-  { to: "/app/admin/second-review", label: "Second opinion", blurb: "A second review of risky changes.", key: "second-review" },
  ] },
  { id: "oversight", title: "Oversight", links: [
   { to: "/app/admin/audit", label: "Audit", blurb: "Who did what, and when." },

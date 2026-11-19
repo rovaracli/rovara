@@ -33,6 +33,7 @@ describe("model rows (read only: editing is hidden, DEC 254zzz113/115/116)", () 
  it("shows a maintainer no model or effort picker, no switch and no Save draft, and sends no draft read", async () => {
   const f = await open();
   await waitFor(() => expect(within(card("Build")).getByText("Opus 5.5", { selector: "[data-stage='build'] *" })).toBeTruthy());
+  expect(screen.getByRole("link", { name: "AI models for each step" }).getAttribute("href")).toBe("/app/admin/ai-spending#ai-models");
   expect(screen.queryByRole("combobox")).toBeNull();
   expect(screen.queryByRole("switch")).toBeNull();
   expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();

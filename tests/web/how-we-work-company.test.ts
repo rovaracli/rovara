@@ -14,7 +14,7 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { h } from "./support/h.js";
 
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
-it("shows only known-failing policy and leaves model defaults under Agent models", async () => {
+it("shows only known-failing policy and leaves model defaults in the consolidated card", async () => {
  const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
  const me = AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
  const f = fakeHost(async request => request.path === "/v1/app/nav" ? { status: 200, body: nav } : request.path === "/v1/app/me" ? { status: 200, body: me } : request.path === "/v1/app/org/known-failing-policy" ? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } } : { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } });
@@ -26,7 +26,7 @@ it("shows only known-failing policy and leaves model defaults under Agent models
  expect(screen.queryByRole("region", { name: "Build" })).toBeNull();
  expect(screen.queryByRole("region", { name: "Plan check" })).toBeNull();
  expect(screen.queryByRole("region", { name: "Marking tests as already failing" })).toBeNull();
- expect(screen.getByRole("link", { name: "Back to AI models" }).getAttribute("href")).toBe("/app/admin/models/steps");
+ expect(screen.getByRole("link", { name: "Back to AI models" }).getAttribute("href")).toBe("/app/admin/ai-spending#ai-models");
  expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/org/model-selection-policy")).toBe(false);
  await expectNoAxeViolations(ui.container);
  ui.unmount();router.dispose();query.clear();

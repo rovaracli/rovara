@@ -58,7 +58,14 @@ function OrderEditor({available}: Props) {
   const key=["admin","lane-c","sources",context.orgId,context.developerId,context.role];
   await query.cancelQueries({queryKey:key,exact:true});if(!valid(ticket))return;
   query.setQueryData(key,snapshot);setChecked(snapshot);
-  if(ack.current&&snapshot.revision===ack.current.revision&&sameSourceOrder(snapshot.order,current.order)){setVerified(true);setMessage("Source order verified.");}
+  if(ack.current&&snapshot.revision===ack.current.revision&&sameSourceOrder(snapshot.order,current.order)){setVerified(true);setMessage("Source order verified.");
+   // The first source also changes AGENT_AI. Refresh only this identity's dependent reads after verification.
+   await Promise.all([
+    query.invalidateQueries({queryKey:["ai-spend",context.orgId,context.developerId,context.role,"agent-ai"],exact:true}),
+    query.invalidateQueries({queryKey:["ai-spend",context.orgId,context.developerId,context.role,"engine-model"],exact:true}),
+    query.invalidateQueries({queryKey:["step-models",context.orgId,context.developerId,context.role],exact:true}),
+    query.invalidateQueries({queryKey:["admin","lane-c","agent-connection",context.orgId,context.developerId,context.role],exact:true}),
+   ]);}
   else setMessage(ack.current?"Current source state differs from the response. Close and reload before another change.":"Current source order checked. The request outcome remains unconfirmed.");
  }
  async function confirm(){

@@ -106,11 +106,11 @@ export class AiSpendPage {
   constructor(page: Page) {
     this.page = page;
     this.step = page.getByTestId("ai-spend-step");
-    this.model = this.step.getByLabel("Model", { exact: true });
+    this.model = this.step.getByLabel("Company model", { exact: true });
     this.limit = this.step.getByLabel(/Company monthly limit/);
     this.rovara = page.getByTestId("ai-spend-rovara").locator("input");
     this.own = page.getByTestId("ai-spend-own").locator("input");
-    this.save = this.step.getByRole("button", { name: "Save" });
+    this.save = this.step.getByRole("button", { name: "Save", exact: true });
     this.saved = page.getByTestId("ai-spend-saved");
     this.freshSignIn = page.getByTestId("fresh-sign-in");
     this.projectLimits = page.getByTestId("project-spend-limits");
