@@ -13,6 +13,7 @@ import { screen } from "@testing-library/react";
 import { acceptSessionRead } from "../../packages/ui/src/api/sessions.js";
 import { acceptLivePage, mergeLiveTiles } from "../../packages/ui/src/api/live.js";
 import * as work from "../../packages/ui/src/api/work.js";
+import { SessionHeader } from "../../packages/ui/src/screens/session/SessionHeader.js";
 import { TaskSideCards } from "../../packages/ui/src/screens/session/TaskSideCards.js";
 import { WorkList } from "../../packages/ui/src/screens/work/WorkList.js";
 import { renderUi } from "./support/render.js";
@@ -96,3 +97,42 @@ it("keeps the outcome beside the receipt on a completed work row", () => {
  expect(view.container.textContent).not.toContain("$999.00");
  view.unmount();
 });
+
+for (const terminal of [false, true]) for (const state of ["empty", "unmeasured", "partial-zero", "lower-bound"] as const) {
+ it(`keeps ${state} money honest on every task surface (terminal=${String(terminal)})`, () => {
+  const snapshot = money(0), zero = { state: "available", value: 0 } as const;
+  snapshot.terminal = terminal;
+  let words: string;
+  if (state === "lower-bound") {
+   snapshot.spentMicros = { state: "available", value: 1_230_000 };
+   snapshot.estimatedMicros = { state: "available", value: 1_230_000 };
+   words = terminal ? "About $1.23 (not yet confirmed)" : "About $1.23 so far";
+  } else {
+   snapshot.coverage = { ...snapshot.coverage, finalCalls: 0, estimatedCalls: 0, awaitingUsageCalls: 0 };
+   snapshot.awaitingUsageCalls = zero;
+   snapshot.awaitingUsageMicros = zero;
+   snapshot.finalMicros = zero; snapshot.estimatedMicros = zero;
+   if (state === "unmeasured") {
+    snapshot.state = "unavailable"; snapshot.finality = "unavailable";
+    snapshot.spentMicros = { state: "unavailable", reason: "not_measured" };
+    words = "Cost unavailable";
+   } else {
+    snapshot.spentMicros = zero;
+    if (state === "empty") {
+     snapshot.state = "current"; snapshot.heldMicros = zero; snapshot.coverage.expectedCalls = zero;
+     words = "No spend yet";
+    } else words = "Cost unavailable";
+   }
+  }
+  const header = renderUi(h(SessionHeader, { session: sessionFixture({ money: snapshot }), onAction: () => undefined }));
+  expect(screen.getByText(words)).toBeTruthy(); header.unmount();
+  const task = work.readTask({ taskId: snapshot.taskId, title: "Task", project: "payments", status: terminal ? "CLOSED" : "RUNNING", updatedAt: snapshot.asOf, money: snapshot, spent: { usd: 999 } })!;
+  const cards = renderUi(h(TaskSideCards, { task, plan: undefined, events: [] }));
+  expect(screen.getByText(words)).toBeTruthy(); cards.unmount();
+  const list = renderUi(h(AppHostProvider, { host: fakeHost().host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(WorkList, { rows: [work.workRow(task, undefined, new Date(snapshot.asOf))], selectedId: undefined, onSelect: () => undefined }) }) }));
+  expect(screen.getByText(words)).toBeTruthy(); list.unmount();
+  const router = createMemoryRouter([{ path: "/", element: h(SessionTile, { tile: liveFixture({ money: snapshot }), onChanged: () => Promise.resolve() }) }], { initialEntries: ["/"] });
+  const tile = renderUi(h(AppHostProvider, { host: fakeHost().host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(RouterProvider, { router }) }) }));
+  expect(screen.getByText(words)).toBeTruthy(); tile.unmount();
+ });
+}

@@ -110,7 +110,7 @@ it("refuses an unverified issuer/partition instead of interpreting every missing
 });
 
 it("reads the company-month totals with exact keys and refuses foreign, missing, malformed or unfinished reads", async () => {
- const row = companyRow(A, "2026-11", { spentMicros: 20_000_000, reservedMicros: 2_000_000, committed: 22_000_000, provisionalMicros: 1_230_000 });
+ const row = companyRow(A, "2026-11", { spentMicros: 20_000_000, estimatedMicros: 4_000_000, reservedMicros: 2_000_000, committed: 22_000_000, provisionalMicros: 1_230_000 });
  const f = fake([row], { noPartition: true });
  expect(await new DynamoGatewayMeterReader(f.db, TABLE, ISS).companyMonth(A, "2026-11")).toEqual({ spentMicros: 20_000_000, reservedMicros: 2_000_000, committed: 22_000_000, provisionalMicros: 1_230_000 });
  expect(f.commands[0]!.input.RequestItems![TABLE]).toEqual({ Keys: [{ pk: meterPartition(ISS, A), sk: `ROW#["company","2026-11"]` }], ConsistentRead: true });

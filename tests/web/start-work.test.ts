@@ -232,3 +232,18 @@ it("starts once after refreshing an expired quote with equal ranges", async () =
   expect(screen.queryByText(/Cost estimate changed/)).toBeNull();
  } finally { clock.mockRestore(); f.close(); }
 });
+
+
+it.each([[true, "Blocked by the company limit"], [false, "Fits the budget"], [null, "We'll check the budget when the task runs"]] as const)("shows restricted budget status %s without company figures", async (blocked, message) => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js");
+ const raw = quoteFixture();
+ for (const q of raw.options) Object.assign(q, { initialHoldMicros: { state: "unavailable", reason: "restricted" }, firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked } } });
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...raw, project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  expect(screen.getAllByText(message)).toHaveLength(2);
+  if (blocked !== false) expect(screen.queryByText("Fits the budget")).toBeNull();
+  expect(screen.queryByText(/Initial hold|available;/)).toBeNull();
+ } finally { f.close(); }
+});

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { PreviewV2Schema, PreviewRequestV2Schema, TaskStopStartPreviewSchema } from "../../packages/contracts/src/task-stop-start-preview.js";
 import { describe, expect, it, vi } from "vitest";
 import { SAVED_ENV_ROUTES } from "../../packages/cloud-server/src/saved-env-routes.js";
@@ -5,9 +7,9 @@ import type { RouteContext } from "../../packages/cloud-server/src/routes.js";
 import { quoteFixture } from "../support/start-preview-fixture.js";
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa";
 const preview = SAVED_ENV_ROUTES.find(r => r.path.test("/projects/web/start-preview"))!;
-function context(body: unknown, raw: unknown = quoteFixture(), projects = [{ name: "web" }]) {
+function context(body: unknown, raw: unknown = quoteFixture(), projects = [{ name: "web" }], role = "member") {
  const json = vi.fn(async () => raw);
- return { jsonMock: json, params: ["web"], body, now: () => new Date("2026-11-18T12:00:00.000Z"), client: { access: async () => ({ companyId: orgId, companyRole: "member", developerId: "a".repeat(64), displayName: "Ada", projects }), json }, session: {} } as unknown as RouteContext & { jsonMock: typeof json };
+ return { jsonMock: json, params: ["web"], body, now: () => new Date("2026-11-18T12:00:00.000Z"), client: { access: async () => ({ companyId: orgId, companyRole: role, developerId: "a".repeat(64), displayName: "Ada", projects }), json }, session: {} } as unknown as RouteContext & { jsonMock: typeof json };
 }
 describe("negotiated start preview", () => {
  it.each([{}, { path: "QUICK" }, { requestId: "11111111-1111-4111-8111-111111111111", path: "FULL" }])("keeps old request bytes unchanged for %j", async body => {
@@ -18,7 +20,7 @@ describe("negotiated start preview", () => {
  });
  it("forwards only the opt-in body as the person and refuses wrong-company or malformed quotes", async () => {
   const body = { quoteVersion: 2, inputText: "Fix it", options: { eval: true } };
-  const c = context(body);
+  const c = context(body, quoteFixture(), [{ name: "web" }], "admin");
   const r = await preview.answer(c);
   expect(r).toEqual({ status: 200, body: quoteFixture() });
   expect(c.jsonMock).toHaveBeenCalledWith(c.session, "/v1/dev/projects/web/start-estimates", { method: "POST", body });
@@ -38,4 +40,42 @@ it("keeps strict legacy and negotiated schemas separate and rejects invalid mone
  expect(PreviewRequestV2Schema.safeParse({ quoteVersion: 2, options: { secondReview: true } }).success).toBe(true);
  expect(PreviewRequestV2Schema.safeParse({ quoteVersion: 2, inputText: "x".repeat(4001) }).success).toBe(false);
  expect(PreviewV2Schema.safeParse({ ...q, options: q.options.map(o => ({ ...o, initialHoldMicros: { state: "available", value: 0.1 } })) }).success).toBe(false);
+});
+
+it("strips company numbers throughout member JSON and leaves admin and owner quotes unchanged", async () => {
+ const raw = quoteFixture();
+ const sentinels = [9100011, 8100013, 7100017, 6100019];
+ for (const q of raw.options) Object.assign(q, {
+  initialHoldMicros: { state: "available", value: 6100019 },
+  planningAllowanceMicros: { state: "available", value: 10000000 },
+  limits: [{ scope: "engine_day", maximumMicros: { state: "available", value: 9100011 }, availableMicros: { state: "available", value: 8100013 }, heldMicros: { state: "available", value: 7100017 }, resetAt: { state: "unavailable", reason: "not_measured" } }],
+  firstBindingLimit: { state: "available", value: { scope: "engine_day", appliesAt: "start", requiredMicros: { state: "available", value: 6100019 }, availableMicros: 8100013, blocked: false, reason: "tightest_known" } },
+ });
+ const numbers = (v: unknown): number[] => typeof v === "number" ? [v] : v !== null && typeof v === "object" ? Object.values(v).flatMap(numbers) : [];
+ const member = await preview.answer(context({ quoteVersion: 2 }, raw));
+ expect(member.status).toBe(200);
+ expect(numbers(JSON.parse(JSON.stringify(member.body))).filter(n => sentinels.includes(n))).toEqual([]);
+ expect(PreviewV2Schema.safeParse(member.body).success).toBe(true);
+ for (const role of ["owner", "admin"]) expect(await preview.answer(context({ quoteVersion: 2 }, raw, [{ name: "web" }], role))).toEqual({ status: 200, body: raw });
+});
+
+
+it.each([true, false, null])("accepts and preserves an already restricted Code quote (%s), strictly", async blocked => {
+ const raw = quoteFixture();
+ for (const q of raw.options) Object.assign(q, { initialHoldMicros: { state: "unavailable", reason: "restricted" }, firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked } } });
+ expect(PreviewV2Schema.safeParse(raw).success).toBe(true);
+ expect(await preview.answer(context({ quoteVersion: 2 }, raw))).toEqual({ status: 200, body: raw });
+ for (const extra of [{ availableMicros: 42 }, { requiredMicros: 42 }, { blocked: "false" }]) {
+  const bad = structuredClone(raw);
+  for (const q of bad.options) Object.assign(q, { firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked, ...extra } } });
+  expect(PreviewV2Schema.safeParse(bad).success).toBe(false);
+  expect((await preview.answer(context({ quoteVersion: 2 }, bad))).status).toBe(502);
+ }
+});
+
+
+it("pins the mirrored PreviewV2 contract and member boundary", () => {
+ const bytes = readFileSync("packages/contracts/src/start-estimates.ts");
+ expect(createHash("sha256").update(bytes).digest("hex")).toBe("420d6c6fe174fb4dd99735bc01d417387ecb87c65ae1f1b7cb26e5888a0426a5");
+ expect(readFileSync("packages/cloud-server/src/start-estimates.ts")).toEqual(bytes);
 });

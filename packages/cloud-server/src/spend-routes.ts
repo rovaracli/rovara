@@ -20,6 +20,11 @@ async function spending(context: RouteContext): Promise<RouteAnswer> {
   const totals = await meter.companyMonth(who.companyId, month);
   if (context.now().toISOString().slice(0, 7) !== month || ![totals.spentMicros, totals.reservedMicros, totals.committed].every(whole) || (totals.provisionalMicros !== undefined && !whole(totals.provisionalMicros))) return unavailable();
   const limit = settings.settings.budgets.companyMonthlyUsdMicros;
+  // Meter-to-display mapping (dynamo-meter #close): spent includes estimatedMicros
+  // settlements; estimatedMicros is a subset, not an extra charge or a confirmed total.
+  // Provisional cut-offs remain in reservedMicros, not spentMicros. "Not yet confirmed"
+  // is that provisionalMicros subset of held, shown separately without adding it again.
+  // committed already contains spent + reserved: left = limit - committed, once.
   return { status: 200, body: {
    month, spentThisMonthUsd: totals.spentMicros / 1_000_000, heldUsd: totals.reservedMicros / 1_000_000,
    ...(limit === null ? {} : { limitUsd: limit / 1_000_000, remainingUsd: (limit - totals.committed) / 1_000_000 }),

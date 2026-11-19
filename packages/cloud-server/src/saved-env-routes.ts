@@ -1,4 +1,4 @@
-import { parsePreviewRequestV2, parsePreviewV2 } from "./start-estimates.js";
+import { parsePreviewRequestV2, parsePreviewV2, restrictPreviewV2 } from "./start-estimates.js";
 // L4-MF1 (lead 4, missing Code features the Cloud website calls): two reads of the project page that had no route at all and answered 501 NOT_ON_CODE_YET.
 //
 //   GET  /v1/app/projects/{p}/environment-image -> Code GET /v1/app/projects/{p}/environment-image  (SavedEnvPanelSchema, contracts app-saved-env.ts), as the person
@@ -320,7 +320,7 @@ export const SAVED_ENV_ROUTES: Route[] = [
           const raw = await context.client.json<unknown>(context.session, `/v1/dev/projects/${encodeURIComponent(project)}/start-estimates`, { method: "POST", body: v2 });
           const quote = parsePreviewV2(raw);
           if (quote === undefined || quote.orgId !== who.companyId || quote.project !== project || Date.parse(quote.expiresAt) <= context.now().getTime() || Date.parse(quote.asOf) > context.now().getTime()) return answer(502, "RUNTIME_UNAVAILABLE", "The cost comparison could not be read just now.");
-          return { status: 200, body: quote };
+          return { status: 200, body: who.companyRole === "owner" || who.companyRole === "admin" ? quote : restrictPreviewV2(quote) };
         } catch (error) {
           if (error instanceof CodeError && error.status === 404 && !notYetFromCode(error)) return A.projectNotFound;
           return answer(502, "RUNTIME_UNAVAILABLE", "The cost comparison is unavailable. It does not reserve money or authorize spending.");

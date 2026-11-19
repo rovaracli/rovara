@@ -32,6 +32,7 @@ for (const role of ["owner", "admin"]) it(`shows ${role} the company month total
  const f = mount({ role }); try {
   const group = await screen.findByRole("group", { name: "Spending in November" }); expect(group.textContent).toContain("$20.00"); expect(group.textContent).toContain("$78.00");
   expect(screen.getByText(/Not yet confirmed:/).textContent).toBe("Not yet confirmed: $1.23");
+  expect(screen.getByText("Spent includes estimated charges. Not yet confirmed shows estimated amounts still held, already included in Held for running work.")).toBeTruthy();
   expect(screen.queryByRole("table", { name: "Monthly base budgets" })).toBeNull(); expect(screen.queryByText("Task stop")).toBeNull();
   expect(f.request.mock.calls.every(([r]) => r.method === "GET" && !/budget-settings|task-stop|enrollment/.test(r.path))).toBe(true);
  } finally { f.close(); }
