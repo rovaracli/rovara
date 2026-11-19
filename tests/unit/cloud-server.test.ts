@@ -31,6 +31,8 @@ function fakeCode() {
   let refreshable = true;
   // Code rotates refresh tokens: each one works once.
   let generation = 1;
+  let projectNames = ["payments"];
+  let projectRevision = 3;
   let decisionRefusal: string | undefined;
   // DEC 254zzz94: what Code answers on the task's merge route, by method (unset: Code's unknown-route 404).
   const mergeAnswers = new Map<string, { status: number; body: unknown }>();
@@ -76,8 +78,8 @@ function fakeCode() {
     if (call.authorization !== `Bearer ${validToken}` && !grace) return respond(401, { error: { code: "AUTH_REQUIRED" } });
     if (url.pathname === "/v1/dev/access") {
       return respond(200, grace
-        ? { developerId: GRACE, displayName: graceName ?? "Grace", nameChosen: graceName !== undefined, administrator: false, projects: [{ name: "payments", access: "developer" }], notices: [], ...companies.get(GRACE) }
-        : { developerId: ADA, displayName: adaName, administrator: true, projects: [{ name: "payments", access: "administrator" }], notices: [], ...companies.get(ADA) });
+        ? { developerId: GRACE, displayName: graceName ?? "Grace", nameChosen: graceName !== undefined, administrator: false, projects: projectNames.map(name => ({ name, access: "developer" })), notices: [], ...companies.get(GRACE) }
+        : { developerId: ADA, displayName: adaName, administrator: true, projects: projectNames.map(name => ({ name, access: "administrator" })), notices: [], ...companies.get(ADA) });
     }
     if (url.pathname === "/v1/dev/me/name" && call.method === "PUT") {
       const raw = (JSON.parse(call.body ?? "{}") as { name?: unknown }).name;
@@ -101,7 +103,9 @@ function fakeCode() {
       return respond(200, { reader: readers.get(GRACE), already });
     }
     if (reader !== null && call.method === "DELETE") return respond(200, { developerId: reader[1], removed: readers.delete(reader[1]!) });
-    if (url.pathname === "/v1/dev/client/projects/payments") return respond(200, { name: "payments", latestRevision: 3, access: "administrator", repositories: [{ name: "api", url: "https://github.com/acme/payments-api.git", defaultBranch: "main", fullName: "acme/payments-api" }] });
+    if (url.pathname === "/v1/dev/client/projects/payments") return respond(200, { name: "payments", latestRevision: projectRevision, access: "administrator", repositories: [{ name: "api", url: "https://github.com/acme/payments-api.git", defaultBranch: "main", fullName: "acme/payments-api" }] });
+    const machineSize = /^\/v1\/dev\/projects\/([a-z][a-z0-9-]{0,62})\/machine-size$/u.exec(url.pathname);
+    if (machineSize !== null && projectNames.includes(machineSize[1]!)) return respond(200, { project: machineSize[1], rows: [] });
     if (url.pathname.startsWith("/v1/dev/client/projects/") && url.pathname.endsWith("/members")) return respond(200, { project: "payments", members });
     if (url.pathname === "/v1/dev/client/projects" && call.method === "POST") return respond(200, { name: "web-app", latestRevision: 1, access: "administrator", repositories: [] });
     if (url.pathname === "/v1/dev/tasks" && call.method === "POST") return respond(200, { task });
@@ -144,9 +148,11 @@ function fakeCode() {
   }) as typeof fetch;
   return {
     fetchImpl, calls, taskId: TASK_ID,
+    setProjectRevision: (revision: number) => { projectRevision = revision; },
     setTask: (change: Record<string, unknown>) => { task = { ...task, ...change }; },
     /** Ada's name in Code from now on (her next sign-in reads it). */
     setAdaName: (name: string) => { adaName = name; },
+    addProject: (name: string) => { projectNames = [...projectNames, name]; },
     /** What Code's access check says of this person's company from now on (undefined: none). */
     setCompany: (developerId: string, company: Record<string, unknown> | undefined) => { companies.set(developerId, company); },
     refuseDecisions: (message: string) => { decisionRefusal = message; },
@@ -213,6 +219,19 @@ describe("signing in through Rovara Code", () => {
     expect((await call("GET", `/callback?code=good-code&state=${state}`))!.status).toBe(400);
   });
 
+  it("shows a fixed removed-member page for access_denied", async () => {
+    const { call } = setUp();
+    const start = await call("GET", "/v1/auth/browser/authorize");
+    const state = new URL(start!.headers.location!).searchParams.get("state")!;
+    const answer = await call("GET", `/callback?error=access_denied&state=${state}`);
+    expect(answer!.status).toBe(400);
+    expect(answer!.body).toContain("You're no longer a member of this company.");
+    expect(answer!.body).toContain("Ask an admin to invite you again.");
+    expect(answer!.headers["content-type"]).toBe("text/html; charset=utf-8");
+    expect(answer!.body).toContain('<a href="/app">Sign in again</a>');
+    for (const privateText of ["access_denied", state, "Acme", ACME, "payments", ADA]) expect(answer!.body).not.toContain(privateText);
+  });
+
   it("returns only to an app path", () => {
     expect(returnPath("/app/projects/payments")).toBe("/app/projects/payments");
     for (const outside of ["https://evil.example", "//evil.example", "/app/../admin", "/v1/web/me", null]) expect(returnPath(outside)).toBe("/app");
@@ -256,6 +275,26 @@ describe("the app's API, answered from Code as the person", () => {
     expect(JSON.parse((await call("GET", "/v1/web/projects", { cookie }))!.body)).toEqual({ projects: [{ name: "payments", status: "active", latestRevision: 3, myRole: "maintainer", setup: { status: "unchecked" }, repositories: [{ name: "api", fullName: "acme/payments-api", defaultBranch: "main" }] }] });
     expect(JSON.parse((await call("GET", "/v1/web/projects/payments/overview", { cookie }))!.body)).toMatchObject({ project: { name: "payments", latestRevision: 3, repositories: [{ fullName: "acme/payments-api" }] }, you: { role: "maintainer", canEditSettings: true } });
     expect((await call("GET", "/v1/web/projects/ledger", { cookie }))!.status).toBe(404);
+  });
+
+  it("logs invalid overview schema fields on the server without response data", async () => {
+    const { call, signIn, code, logged } = setUp();const { cookie } = await signIn();
+    code.setProjectRevision(0);
+    await call("GET", "/v1/web/projects/payments/overview", { cookie });
+    const events = logged.filter(event => event.event === "cloud.response_shape_failure");
+    expect(events).toEqual([{ event: "cloud.response_shape_failure", fields: ["project"] }]);
+    expect(JSON.stringify(events)).not.toContain("payments");
+  });
+
+  it("checks machine-size access against Code's live project list after sign-in", async () => {
+    const { call, signIn, code } = setUp();
+    const { cookie, csrf } = await signIn();
+    code.addProject("new-project");
+    const get = await call("GET", "/v1/web/projects/new-project/machine-size", { cookie });
+    expect([get!.status, JSON.parse(get!.body)]).toEqual([200, { project: "new-project", rows: [] }]);
+    const post = await call("POST", "/v1/web/projects/new-project/machine-size", { cookie, csrf, body: { rowId: "small" } });
+    expect(post!.status).toBe(200);
+    expect(code.calls.filter(entry => entry.path === "/v1/dev/access")).toHaveLength(4);
   });
 
   it("names the company and role from Code's access check now: a company admin is owner or admin, never Code's install administrator", async () => {

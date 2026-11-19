@@ -1,3 +1,4 @@
+import { ProjectOverviewReaderSchema } from "@agentx/contracts/web";
 import { parseTaskMoneyV1 } from "./task-money.js";
 // The web app's API routes (/v1/app/*, which the browser calls as /v1/web/*) that Cloud answers from Rovara Code, as
 // the signed-in person. Each entry shapes Code's answer into the reader schema the app expects. The migration tracker
@@ -81,6 +82,8 @@ export interface RouteContext {
   productAi?: ProductAiBackend;
   /** Lead 4 J3: the deployment setting for the smart Just answer (handler.ts `answersEnabled`). Absent: off. */
   answersEnabled?: boolean;
+  /** Fixed-shape server events; never log request bodies or answer content. */
+  log?: (event: Record<string, unknown>) => void;
 }
 
 export interface RouteAnswer { status: number; body: unknown }
@@ -439,7 +442,7 @@ export const ROUTES: Route[] = [
     method: "GET", path: /^\/projects\/([^/]+)\/machine-size$/u,
     answer: async (context) => {
       const project = context.params[0]!;
-      if (mine(context.session.access, project) === undefined) return projectNotFound;
+      if (mine(await context.client.access(context.session), project) === undefined) return projectNotFound;
       try { return ok(await context.client.json<Record<string, unknown>>(context.session, `/v1/dev/projects/${encodeURIComponent(project)}/machine-size`)); }
       catch (error) {
         if (error instanceof CodeError) {
@@ -455,7 +458,7 @@ export const ROUTES: Route[] = [
     method: "POST", path: /^\/projects\/([^/]+)\/machine-size$/u,
     answer: async (context) => {
       const project = context.params[0]!;
-      if (mine(context.session.access, project) === undefined) return projectNotFound;
+      if (mine(await context.client.access(context.session), project) === undefined) return projectNotFound;
       const rowId = (context.body as { rowId?: unknown } | undefined)?.rowId;
       if (typeof rowId !== "string") return badRequest("Choose one of the listed machine sizes.");
       try { return ok(await context.client.json<Record<string, unknown>>(context.session, `/v1/dev/projects/${encodeURIComponent(project)}/machine-size`, { method: "POST", body: { rowId } })); }
@@ -625,7 +628,7 @@ export const ROUTES: Route[] = [
       const membership = companyOf(access);
       const canEditSettings = role === "maintainer" || isCompanyAdmin(membership?.companyRole);
       const knownFailing = membership !== undefined && canEditSettings ? await knownFailingOverview(context, name) : undefined;
-      return ok({
+      const overview = {
         project: {
           name, status: "active", ...(code === undefined ? {} : { latestRevision: code.latestRevision }),
           repositories: (code?.repositories ?? []).slice(0, 20).map((repository) => ({ fullName: repository.fullName ?? repository.name, defaultBranch: repository.defaultBranch })),
@@ -635,7 +638,13 @@ export const ROUTES: Route[] = [
         ...(knownFailing === undefined ? {} : { knownFailing }),
         agents: [],
         running: await runningInProject(context, name),
-      });
+      };
+      const parsed = ProjectOverviewReaderSchema.safeParse(overview);
+      if (!parsed.success) {
+        const fields = [...new Set(parsed.error.issues.map(issue => issue.path[0]).filter((field): field is string => typeof field === "string" && ["project", "you", "agents", "running", "budget", "learning", "orgId", "knownFailing"].includes(field)))];
+        context.log?.({ event: "cloud.response_shape_failure", fields });
+      }
+      return ok(overview);
     },
   },
   {

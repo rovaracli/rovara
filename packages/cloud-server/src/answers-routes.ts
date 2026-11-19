@@ -26,6 +26,7 @@ export const ANSWERS_WORDS = Object.freeze({
   notSetUp: "Answers are not set up here yet.",
   forbidden: "You can't ask about this project.",
   unavailable: "Couldn't answer that just now.",
+  unreadable: "The answer couldn't be read. Try asking again.",
   rate: "You've asked a lot of questions lately. Try again a little later.",
   limitReached: "This project has reached its spending limit for now.",
   paused: "Answers are paused for this month.",
@@ -44,7 +45,9 @@ export const ANSWERS_ANSWERS = Object.freeze({
   invalid: answer(400, "CONFIG_INVALID", W.invalid),
   notYet: answer(501, "NOT_ON_CODE_YET", W.notYet),
   forbidden: answer(403, "FORBIDDEN", W.forbidden),
+  signIn: answer(401, "AUTH_REQUIRED", "Your Rovara sign-in ended. Sign in again."),
   unavailable: answer(503, "RUNTIME_UNAVAILABLE", W.unavailable),
+  unreadable: answer(503, "RUNTIME_UNAVAILABLE", W.unreadable),
   rate: answer(429, "TOO_MANY_REQUESTS", W.rate),
   limitReached: answer(429, "TOO_MANY_REQUESTS", W.limitReached),
   paused: answer(429, "TOO_MANY_REQUESTS", W.paused),
@@ -152,6 +155,7 @@ export function answersRefusal(kind: Kind, error: CodeError): RouteAnswer {
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
   if (error.status === 404) return body?.["code"] === "NOT_FOUND" && (body["message"] === "route not found" || body["message"] === CORE_NOT_YET) ? A.notYet : kind === "notRight" ? A.answerGone : A.notFound;
   if (kind === "notRight") return error.status === 403 ? A.forbidden : error.status === 400 ? A.invalid : A.notRightFailed;
+  if (error.status === 401) return A.signIn;
   if (error.status === 403) return A.forbidden;
   if (error.status === 400) return A.invalid;
   // Code's three 429s for an answer, each in Cloud's own fixed words: the project's limit, the company's month paused (B8: it is not "you've asked a lot"), and the person's real rate limit (anything else).
@@ -167,7 +171,10 @@ async function scope(context: RouteContext, kind: Kind): Promise<{ project: stri
   try {
     who = await companyCaller(context);
   } catch (error) {
-    if (error instanceof CodeError) return { refusal: kind === "suggest" ? A.suggestUnavailable : kind === "notRight" ? A.notRightFailed : A.unavailable };
+    if (error instanceof CodeError) {
+      (context.log ?? ((event) => { console.log(JSON.stringify(event)); }))({ event: "cloud.answers_unavailable", code: "ACCESS_CHECK_FAILED" });
+      return { refusal: kind === "suggest" ? A.suggestUnavailable : kind === "notRight" ? A.notRightFailed : A.unavailable };
+    }
     throw error;
   }
   return refused(who) ? { refusal: who } : { project };
@@ -179,10 +186,13 @@ async function viaCode(context: RouteContext, kind: Kind, path: string, body: Pl
     got = await context.client.json<unknown>(context.session, path, { method: "POST", body });
   } catch (error) {
     // An ended sign-in (SignInEnded) is not a CodeError: it reaches the handler, which signs the person out.
-    if (error instanceof CodeError) return answersRefusal(kind, error);
+    if (error instanceof CodeError) {
+      if (error.status >= 500) (context.log ?? ((event) => { console.log(JSON.stringify(event)); }))({ event: "cloud.answers_unavailable", status: error.status });
+      return answersRefusal(kind, error);
+    }
     throw error;
   }
-  try { return { status: 200, body: build(got) }; } catch (error) { if (error instanceof Unreadable) return kind === "suggest" ? A.suggestUnavailable : kind === "notRight" ? A.notRightFailed : A.unavailable; throw error; }
+  try { return { status: 200, body: build(got) }; } catch (error) { if (error instanceof Unreadable) { (context.log ?? ((event) => { console.log(JSON.stringify(event)); }))({ event: "cloud.answers_unreadable" });return kind === "suggest" ? A.suggestUnavailable : kind === "notRight" ? A.notRightFailed : A.unreadable; } throw error; }
 }
 
 const projectPath = (project: string, tail: string) => `/v1/app/projects/${encodeURIComponent(project)}${tail}`;

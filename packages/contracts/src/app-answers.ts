@@ -152,6 +152,7 @@ export const ANSWERS_WORDS = Object.freeze({
   notSetUp: ANSWER_WORDS.notSetUp,
   forbidden: "You can't ask about this project.",
   unavailable: ANSWER_WORDS.unavailable,
+  unreadable: "The answer couldn't be read. Try asking again.",
   rate: ANSWER_WORDS.rate,
   limitReached: ANSWER_WORDS.limitReached,
   paused: ANSWER_WORDS.paused,

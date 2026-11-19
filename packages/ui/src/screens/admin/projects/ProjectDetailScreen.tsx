@@ -5,24 +5,19 @@ import { AllowedWebsites } from "./AllowedWebsites.js";
 import { ContextSources } from "./ContextSources.js";
 import { WorkingBranches } from "./WorkingBranches.js";
 import { RestoreProject } from "./RestoreProject.js";
+import { ProjectPeople } from "./ProjectPeople.js";
 import { ArchiveProject } from "./ArchiveProject.js";
 import { ProjectSpendLimits } from "../../setup/ProjectSpendLimits.js";
 import { useAdminContext } from "../AdminLayout.js";
-import { projectRoleLabel, projectSetupLabel } from "./labels.js";
+import { projectSetupLabel } from "./labels.js";
 import { Link, useParams, useSearchParams } from "react-router";
-import { AppProjectDetailSchema, AppProjectLifecycleSchema, PROJECT_LIFECYCLE_WORDS, ProjectMembersResponseSchema, type AppProjectDetail } from "@agentx/contracts/web";
+import { AppProjectDetailSchema, AppProjectLifecycleSchema, PROJECT_LIFECYCLE_WORDS, type AppProjectDetail } from "@agentx/contracts/web";
 import { ApiError } from "../../../api/errors.js";
-import { DataTable } from "../../../design/DataTable.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ReadState, useAdminRead } from "./read.js";
 const detailReader = { parse(value: unknown) { const p = AppProjectDetailSchema.parse(value);return { name: p.name, description: p.description, status: p.status, latestRevision: p.latestRevision, repositories: p.repositories, savedWorkingBranches:p.savedWorkingBranches, myRole: p.myRole, setup: { status: p.setup.status, checkedRevision: p.setup.checkedRevision, checkedAt: p.setup.checkedAt }, settings: { setupCommandCount: p.settings.setupCommands.length, testCommandCount: p.settings.testCommands.length, devcontainer: p.settings.devcontainer, allowedDomains: p.settings.allowedDomains.map(d => ({ domain: d.domain, status: d.status })) } }; } };
 const lifecycleReader = { parse(value: unknown) { return AppProjectLifecycleSchema.parse(value); } };
-const peopleReader = { parse(value: unknown) { return { members: ProjectMembersResponseSchema.parse(value).members.map(p => ({ developerId:p.developerId,name:p.name,role:p.role,source:p.source })) }; } };
-function ProjectPeople({ name }: { name: string }) {
- const read = useAdminRead("project-members", name, `/v1/app/projects/${encodeURIComponent(name)}/members`, peopleReader);
- return <section><h2>Project people</h2><p>Company owners and admins maintain every project. This roster shows project grants and company roles; channel-derived access is not a complete roster here.</p><ReadState read={read} label="project people">{data => data.members.length === 0 ? <p>No project people were returned.</p> : <DataTable caption="Project people" rows={data.members} rowKey={p=>p.developerId} columns={[{key:"name",title:"Person",render:p=><VisibleText text={p.name} />},{key:"role",title:"Project role",render:p=>projectRoleLabel[p.role]},{key:"source",title:"Access source",render:p=>p.source === "grant" ? "Project grant" : "Company role"}]} />}</ReadState></section>;
-}
 function SavedWorkingBranchSummary({saved}:{saved:NonNullable<AppProjectDetail["savedWorkingBranches"]>}){
  const signature=saved.map(item=>`${item.repository}:${item.branch}:${item.commit}`).join("\n"),previous=useRef(signature),status=useRef<HTMLParagraphElement>(null);
  useEffect(()=>{if(previous.current!==signature&&signature!=="")status.current?.focus();previous.current=signature;},[signature]);
@@ -37,7 +32,7 @@ export function ProjectDetailScreen() {
  const settled = !read.isFetching && !read.isError && !lifecycle.isFetching && !lifecycle.isError && !context.checking;
  const notYet = lifecycle.error instanceof ApiError && lifecycle.error.code === "NOT_ON_CODE_YET";
  return <section><Link className="rv-admin-b1-link" to={`/app/admin/projects${params.size ? "?" + params.toString() : ""}`}>Back to projects</Link><PageHeader focusOnMount title={name} /><ReadState read={read} label="project details">{p => <>
- <p><VisibleText text={p.description ?? "No description returned"} /></p><p>Status: {(lifecycle.data?.status ?? p.status) === "archived" ? "Archived" : "Active"} · Revision {p.latestRevision}</p>{(lifecycle.data?.status ?? p.status) === "archived" && <p>Archived projects stop new work. Existing work continues.</p>}
+ <p><VisibleText text={p.description ?? "No description returned"} /></p><p>Status: {(lifecycle.data?.status ?? p.status) === "archived" ? "Archived" : "Active"} · Revision {p.latestRevision}</p>{(lifecycle.data?.status ?? p.status) === "archived" && <p>Archived projects stop new work. Running tasks stop at their next step. Nothing is deleted.</p>}
  {notYet && <p className="rv-muted">{PROJECT_LIFECYCLE_WORDS.notYet}</p>}
  <ArchiveProject key={`${context.orgId}:${context.developerId}:${name}`} name={name} observedStatus={lifecycle.data?.status ?? p.status} available={p.name === name && settled && lifecycle.data?.status === "active" && lifecycle.data.actions.includes("archive")} />
  <RestoreProject key={`restore:${context.orgId}:${context.developerId}:${name}`} name={name} observedStatus={lifecycle.data?.status ?? p.status} available={p.name === name && settled && lifecycle.data?.status === "archived" && lifecycle.data.actions.includes("restore")} />

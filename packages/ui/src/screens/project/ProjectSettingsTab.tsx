@@ -18,6 +18,7 @@ import { SetupRunControls } from "../setup/SetupRunRow.js";
 import { RecheckSetupRow } from "../setup/SetupRepairCard.js";
 import { setupChecklistKey } from "../../api/setup-checklist.js";
 import { TicketUpdatesSettings } from "./TicketUpdatesSettings.js";
+import { ProjectPeople } from "../admin/projects/ProjectPeople.js";
 import { LocalToolsSetting } from "./LocalToolsSetting.js";
 
 const lifecycleReader = { parse(value: unknown) { return AppProjectLifecycleSchema.parse(value); } };
@@ -29,7 +30,7 @@ function Lifecycle({ project, scope }: { project: string; scope: AdminContext })
  const status = lifecycle.data?.status;
  return <section className="rv-project-section" aria-label="Archive or restore" data-testid="project-settings-lifecycle">
   <h2>Archive or restore</h2>
-  {status === "archived" ? <p>This project is archived. New work stops; existing work continues.</p> : <p>Archiving stops new work in this project. Nothing is deleted, and it can be restored.</p>}
+  {status === "archived" ? <p>This project is archived. New work stops. Running tasks stop at their next step.</p> : <p>Archiving stops new work in this project. Nothing is deleted, and it can be restored.</p>}
   {notYet && <p className="rv-muted">{PROJECT_LIFECYCLE_WORDS.notYet}</p>}
   {lifecycle.data !== undefined && lifecycle.data.actions.length === 0 && <p className="rv-muted" data-testid="project-settings-lifecycle-none">Only company owners and admins, or this project's admins, can archive or restore it.</p>}
   {status !== undefined && <>
@@ -51,6 +52,7 @@ export function ProjectSettingsTab({ project, canEdit }: { project: string; canE
    <SetupRunControls project={project} againLabel="Re-run setup" onChanged={() => { void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); }} />
    <RecheckSetupRow project={project} />
   </section>
+  <ProjectPeople key={`people:${scope.orgId}:${scope.developerId}:${project}`} name={project} />
   <Lifecycle project={project} scope={scope} />
   <ProjectIntegrations project={project} canEdit={canEdit} />
   <TicketUpdatesSettings project={project} />

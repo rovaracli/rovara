@@ -11,13 +11,14 @@ import type { ApiRequest } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { AddToSlackStep, SlackConnectResult } from "../../packages/ui/src/screens/connect/SlackConnect.js";
-import { LinearConnectResult } from "../../packages/ui/src/screens/connect/LinearConnect.js";
+import { LinearConnectButton, LinearConnectResult } from "../../packages/ui/src/screens/connect/LinearConnect.js";
 import { SlackChannelRow } from "../../packages/ui/src/screens/connect/SlackChannelRow.js";
 import { LinearTeamRow } from "../../packages/ui/src/screens/connect/LinearTeamRow.js";
 import { isLinearAuthorizeUrl, isSlackAuthorizeUrl } from "../../packages/ui/src/text/links.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
+import { expectNoAxeViolations } from "./support/axe.js";
 
 const STATE = "s".repeat(43);
 const APP = "https://cell.example";
@@ -59,6 +60,38 @@ it("Add to Slack (optional): opens Slack's page from Cloud's answer, with this p
  await waitFor(() => expect(f.navigate).toHaveBeenCalledWith(slackUrl()));
  // fakeHost's current page is /app/live: the start names it as the way back, and nothing else.
  expect(f.calls("/v1/app/slack/install")[0]).toMatchObject({ method: "POST", body: { back: "/app/live" } });
+ f.close();
+});
+
+const connectFailures = [
+ ["expired sign-in", 401, "AUTH_REQUIRED", "Your sign-in expired.", true],
+ ["not set up", 503, "CONNECT_NOT_SET_UP", "Adding Rovara to Slack isn't set up yet. Ask the Rovara team.", false],
+ ["admin only", 403, "FORBIDDEN", "Only a company owner or admin can add Rovara to Slack.", false],
+ ["taken", 409, "SLACK_WORKSPACE_TAKEN", "This Slack workspace is already connected to another company.", false],
+ ["other refusal", 503, "RUNTIME_UNAVAILABLE", "Slack could not be connected just now.", false],
+ ["auth code without expiry status", 503, "AUTH_REQUIRED", "Slack could not be connected just now.", false],
+ ["expiry status without auth code", 401, "FORBIDDEN", "Slack could not be connected just now.", false],
+] as const;
+
+it.each(connectFailures)("Slack connect error: %s", async (_kind, status, code, message, signIn) => {
+ const f = setup(h(AddToSlackStep, {}), { "/v1/app/slack": { status: 200, body: { workspace: null } }, "/v1/app/slack/install": err(status, code, message) });
+ fireEvent.click(await screen.findByTestId("slack-add"));
+ expect((await screen.findByTestId("slack-add-error")).textContent).toBe(message);
+ const signInButton = screen.queryByRole("button", { name: "Sign in again" });
+ expect(Boolean(signInButton)).toBe(signIn);
+ if (signInButton) { fireEvent.click(signInButton);expect(f.host.signIn).toHaveBeenCalledWith("/app/live"); }
+ await expectNoAxeViolations(document.body);
+ f.close();
+});
+
+it.each(connectFailures)("Linear connect error: %s", async (_kind, status, code, message, signIn) => {
+ const f = setup(h(LinearConnectButton), { "/v1/app/linear/connect": err(status, code, message) });
+ fireEvent.click(screen.getByTestId("linear-connect"));
+ expect((await screen.findByTestId("linear-connect-error")).textContent).toBe(message);
+ const signInButton = screen.queryByRole("button", { name: "Sign in again" });
+ expect(Boolean(signInButton)).toBe(signIn);
+ if (signInButton) { fireEvent.click(signInButton);expect(f.host.signIn).toHaveBeenCalledWith("/app/live"); }
+ await expectNoAxeViolations(document.body);
  f.close();
 });
 

@@ -1,3 +1,4 @@
+import { logResponseShapeFailure } from "../../ui/src/api/response-shape.js";
 import { AppMeResponseReaderSchema, INVITE_LINK_TOKEN, RealtimeTokenResponseReaderSchema, SessionIdSchema } from "@agentx/contracts/web";
 import type { ApiRequest, ApiResponse, AppHost, RealtimeSocket } from "@agentx/ui";
 import { ApiError, createApiClient, SIGN_IN_REPEAT_GUARD_MS } from "@agentx/ui";
@@ -69,6 +70,18 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   refreshing ??= (async () => { const response = await fetchJson("/v1/web/me", { method: "GET", headers: { accept: "application/json" } });const pending = noCompanyCsrf(response);if (pending !== undefined) { csrf = pending;return; }if (response.status !== 200) throw new ApiError(response.status, "AUTH_REQUIRED", "Sign in to continue.");const me = AppMeResponseReaderSchema.safeParse(response.body);if (!me.success || me.data.csrf === undefined) throw new ApiError(401, "AUTH_REQUIRED", "Sign in to continue.");csrf = me.data.csrf; })().finally(() => { refreshing = undefined; });
   return refreshing;
  }
+ // A stale bundle cannot parse a newer overview. Compare with the no-store shell inside the browser bridge.
+ const loadedApp = (win.document as Partial<Document> | undefined)?.querySelector?.('script[type="module"][src]')?.getAttribute("src");
+ async function newerAppAvailable(): Promise<boolean> {
+  if (loadedApp === null || loadedApp === undefined) return false;
+  const controller = new AbortController(), timer = setTimeout(() => { controller.abort(); }, 5000);
+  try {
+   const shell = await win.fetch("/app", { cache: "no-store", credentials: "same-origin", redirect: "error", signal: controller.signal });
+   if (!shell.ok) return false;
+   const html = await shell.text(), current = /<meta\s+name=["']rovara-cloud-app["']\s+content=["']([A-Za-z0-9._-]+\.js)["']/i.exec(html)?.[1];
+   return current !== undefined && !loadedApp.endsWith(`/app/assets/${current}`);
+  } catch { return false; } finally { clearTimeout(timer); }
+ }
  const transport = { async request(input: ApiRequest): Promise<ApiResponse> {
   const path = apiPath(input.path), write = input.method !== "GET" && input.method !== "HEAD", headers = new Headers({ accept: "application/json" });
   for (const [name, value] of Object.entries(input.headers ?? {})) { if (name.toLowerCase() === "authorization") throw new Error("Browser requests use your sign-in.");headers.set(name, value); }
@@ -78,6 +91,15 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   let response = await send();
   if (write && input.retry !== "never" && response.status === 403 && typeof response.body === "object" && response.body !== null && "error" in response.body && typeof response.body.error === "object" && response.body.error !== null && "code" in response.body.error && response.body.error.code === "CSRF_STALE") { await refresh();response = await send(); }
   if (input.method === "GET" && input.path === "/v1/app/me" && response.status === 200) { const me = AppMeResponseReaderSchema.safeParse(response.body);if (me.success) csrf = me.data.csrf; }
+  if (input.method === "GET" && /^\/v1\/app\/projects\/[^/]+\/overview$/u.test(input.path) && response.status >= 200 && response.status < 300) {
+   // Overview contracts belong to the lazy project route, not every app startup.
+   const { ProjectOverviewReaderSchema } = await import("./overview-reader.js");
+   const overview = ProjectOverviewReaderSchema.safeParse(response.body);
+   if (!overview.success && await newerAppAvailable()) {
+    logResponseShapeFailure(overview.error);
+    throw new ApiError(502, "INVALID_RESPONSE", "Rovara Cloud was updated. Reload this page to continue.");
+   }
+  }
   return response;
  } };
  const host: AppHost = {

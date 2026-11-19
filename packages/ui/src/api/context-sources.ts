@@ -54,8 +54,8 @@ export function createContextSourcesApi(host: AppHost) {
     let response: ApiResponse;
     try { response = await host.transport.request({ ...request, retry: "never" }); } catch { throw new ApiError(0, "NETWORK_ERROR", "Couldn't reach Rovara. Check your connection and try again."); }
     if (!accept.includes(response.status)) {
-      const error = z.object({ error: z.object({ message: z.string().max(400) }) }).safeParse(response.body);
-      throw new ApiError(response.status, response.status === 403 ? "FORBIDDEN" : response.status === 404 ? "NOT_FOUND" : "REFUSED", error.success ? error.data.error.message : "Rovara couldn't do that. Try again.");
+      const error = z.object({ error: z.object({ message: z.string().max(400), code: z.string().max(80).optional() }) }).safeParse(response.body);
+      throw new ApiError(response.status, response.status === 403 ? "FORBIDDEN" : response.status === 404 ? "NOT_FOUND" : response.status === 501 && error.success && error.data.error.code === "NOT_ON_CODE_YET" ? "NOT_ON_CODE_YET" : "REFUSED", error.success ? error.data.error.message : "Rovara couldn't do that. Try again.");
     }
     try { return reader.parse(response.body); } catch { throw new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response. Reload this page."); }
   }

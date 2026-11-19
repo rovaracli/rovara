@@ -216,6 +216,7 @@ describe("the Ask box on the wiki tab", () => {
 
   it.each([
     [429, ANSWERS_WORDS.limitReached, ANSWERS_WORDS.limitReached], [429, ANSWERS_WORDS.rate, ANSWERS_WORDS.rate], [404, ANSWERS_WORDS.notFound, ANSWERS_WORDS.notFound],
+    [503, ANSWERS_WORDS.unreadable, ANSWERS_WORDS.unreadable], [503, ANSWERS_WORDS.unavailable, ANSWERS_WORDS.unavailable],
     [503, LEAK, ANSWERS_WORDS.unavailable], [429, LEAK, ANSWERS_WORDS.unavailable],
   ] as const)("a refusal (%i, %s) shows only Cloud's fixed words", async (status, message, shown) => {
     const f = mount({ ask: () => refusal(status, "X", message) });

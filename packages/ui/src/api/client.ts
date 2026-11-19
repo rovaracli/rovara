@@ -1,3 +1,4 @@
+import { logResponseShapeFailure } from "./response-shape.js";
 import { PendingAdminApprovalReaderSchema, PendingConfirmationReaderSchema, type SoleOwnerConfirmationSchema } from "@agentx/contracts/web";
 import type { z } from "zod";
 import type { ApiMethod, ApiRequest, ApiResponse, AppHost } from "../host.js";
@@ -35,7 +36,12 @@ export function createApiClient(host: AppHost) {
    return response;
   }
  }
- function read<T>(body: unknown, schema: Reader<T>): T { try { return schema.parse(body); } catch { throw new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response. Reload this page."); } }
+ function read<T>(body: unknown, schema: Reader<T>): T {
+  try { return schema.parse(body); } catch (error) {
+   logResponseShapeFailure(error);
+   throw new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response. Reload this page.");
+  }
+ }
  return {
   async get<T>(path: string, schema: Reader<T>, headers?: Record<string, string>, options?: { retry: "never" }): Promise<T> { return read((await request({ method: "GET", path, ...(headers === undefined ? {} : { headers }), ...options })).body, schema); },
   async send<T>(method: Exclude<ApiMethod, "GET" | "HEAD">, path: string, body: unknown, schema: Reader<T>, options?: { retry: "never" }): Promise<SendResult<T>> {

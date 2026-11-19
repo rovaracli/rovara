@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HomeResponseReaderSchema } from "@agentx/contracts/web";
+import { HomeResponseReaderSchema, ProjectOverviewReaderSchema } from "@agentx/contracts/web";
 import { createApiClient } from "../../packages/ui/src/api/client.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -224,4 +224,41 @@ describe("onboarding in the browser host (DEC 253z)", () => {
   const other = browser(async (path) => path.endsWith("/me") ? json({ error: { code: "FORBIDDEN", message: "x" }, csrf: CSRF }, 403) : json({}));
   await expect(createBrowserHost(other.win).transport.request({ method: "POST", path: "/v1/app/companies", body: {} })).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
  });
+});
+
+// TRIAGE-UAT-0530 item 2: deployment skew is detected by the browser bridge, not shared UI I/O.
+it("offers reload for an invalid overview only when the no-store shell names a newer app", async () => {
+ const b = browser(async path => path === "/app" ? new Response('<meta name="rovara-cloud-app" content="main-new.js">') : json({ project: { name: "payments" } }));
+ Object.assign(b.win, { document: { querySelector: () => ({ getAttribute: () => "/app/assets/main-old.js" }) } });
+ const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+ const host = createBrowserHost(b.win);
+ await expect(host.transport.request({ method: "GET", path: "/v1/app/projects/payments/overview" })).rejects.toMatchObject({ code: "INVALID_RESPONSE", message: "Rovara Cloud was updated. Reload this page to continue." });
+ expect(b.fetch.mock.calls.find(([path]) => path === "/app")?.[1]).toMatchObject({ cache: "no-store", credentials: "same-origin" });
+ expect(JSON.stringify(warning.mock.calls)).toContain("fields");
+ host.navigate(host.currentPath());expect(b.assign).toHaveBeenCalledWith("/app/live");
+});
+
+it("never logs dynamic record keys or response values in schema diagnostics", async () => {
+ const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+ const f = fakeHost(async () => ({ status: 200, body: { privateValue: "response-value-canary" } }));
+ const schema = { parse(): never { throw Object.assign(new Error("Invalid response"), { issues: [{ path: ["private_customer_key"] }, { path: ["project", "another_private_key"] }, { path: ["budget", "name"] }] }); } };
+ await expect(createApiClient(f.host).get("/v1/app/home", schema)).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+ expect(warning).toHaveBeenCalledWith("cloud.response_shape_failure", { fields: ["project", "budget"] });
+ expect(JSON.stringify(warning.mock.calls)).not.toMatch(/private|canary/);
+});
+for (const current of ["main-old.js", undefined]) it(`keeps an invalid overview retryable when the shell has no newer app (${String(current)})`, async () => {
+ const b = browser(async path => path === "/app" ? new Response(current ? `<meta name="rovara-cloud-app" content="${current}">` : "<head></head>") : json({ project: {} }));
+ Object.assign(b.win, { document: { querySelector: () => ({ getAttribute: () => "/app/assets/main-old.js" }) } });
+ vi.spyOn(console, "warn").mockImplementation(() => undefined);
+ await expect(createApiClient(createBrowserHost(b.win)).get("/v1/app/projects/payments/overview", ProjectOverviewReaderSchema)).rejects.toMatchObject({ code: "INVALID_RESPONSE", message: "Rovara returned an unreadable response. Reload this page." });
+});
+
+it("falls back to the readable overview error when the shell version probe stalls", async () => {
+ vi.useFakeTimers();
+ const b = browser(async (path, init) => path === "/app" ? new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))); }) : json({ project: {} }));
+ Object.assign(b.win, { document: { querySelector: () => ({ getAttribute: () => "/app/assets/main-old.js" }) } });
+ vi.spyOn(console, "warn").mockImplementation(() => undefined);
+ const request = createApiClient(createBrowserHost(b.win)).get("/v1/app/projects/payments/overview", ProjectOverviewReaderSchema);
+ const failed = expect(request).rejects.toMatchObject({ code: "INVALID_RESPONSE", message: "Rovara returned an unreadable response. Reload this page." });
+ await vi.advanceTimersByTimeAsync(5000);await failed;
 });

@@ -8,7 +8,7 @@ import { createProjectSlackApi } from "../../../api/project-slack.js";
 import { readSlackRequests, retainSlackRequest, selectSlackRequest, slackRequestCanResend, type SlackRequest } from "./project-slack-history.js";
 type Props = { orgId: string; developerId: string; project: string; enabled: boolean };
 type Inventory = Awaited<ReturnType<ReturnType<typeof createProjectSlackApi>["list"]>>;
-type Phase = "loading" | "editing" | "reviewing" | "ready" | "sending" | "unknown" | "checking" | "absent" | "expired" | "done" | "refused" | "failed";
+type Phase = "unavailable" | "loading" | "editing" | "reviewing" | "ready" | "sending" | "unknown" | "checking" | "absent" | "expired" | "done" | "refused" | "failed";
 export function SlackLinksEditor(props: Props) { return props.enabled ? <ScopedSlackLinks key={`${props.orgId}:${props.developerId}:${props.project}`} {...props} /> : null; }
 function ScopedSlackLinks({ orgId, developerId, project }: Props) {
  const host = useAppHost(), api = useMemo(() => createProjectSlackApi(host, orgId, project), [host, orgId, project]);
@@ -24,7 +24,7 @@ function ScopedSlackLinks({ orgId, developerId, project }: Props) {
    if (!alive.current) return;
    try { const saved = readSlackRequests(host.storage, scope), request = saved.requests[saved.selectedIndex];setInventory(value);setHistory(saved);setAttempt(request);setPhase(request ? "unknown" : "editing");if (request) setMessage("A saved Slack request is available. Check its status; nothing was resent."); }
    catch { setPhase("failed");setMessage("Saved Slack requests could not be verified. Nothing was sent."); }
-  }).catch(() => { if (alive.current) { setPhase("failed");setMessage("Slack links could not be checked. Refresh project access."); } });
+  }).catch((error: unknown) => { if (alive.current) { setPhase(error instanceof ApiError && error.status === 501 && error.code === "NOT_ON_CODE_YET" ? "unavailable" : "failed");setMessage("Slack links could not be checked. Refresh project access."); } });
   return () => { alive.current = false;api.setScopeActive(false); };
  }, [api, host.storage, scope]);
  async function load(cursor?: string) {
@@ -33,7 +33,7 @@ function ScopedSlackLinks({ orgId, developerId, project }: Props) {
    const value = await api.list(cursor);if (!alive.current) return;
    focusHeading.current = cursor === undefined && inventory !== undefined && JSON.stringify(value.bindings) !== JSON.stringify(inventory.bindings);
    setInventory(value);setAttempt(undefined);setPhase("editing");setMessage("Recorded Slack links refreshed. Review a fresh request before sending.");
-  } catch { if (alive.current) { setInventory(undefined);setAttempt(undefined);setPhase("failed");setMessage("Slack links could not be checked. Refresh project access."); } }
+  } catch (error) { if (alive.current) { setInventory(undefined);setAttempt(undefined);setPhase(error instanceof ApiError && error.status === 501 && error.code === "NOT_ON_CODE_YET" ? "unavailable" : "failed");setMessage("Slack links could not be checked. Refresh project access."); } }
   finally { busy.current = false; }
  }
  async function prepare(teamId: string, channelId: string) {
@@ -71,6 +71,7 @@ function ScopedSlackLinks({ orgId, developerId, project }: Props) {
    else { setPhase(error instanceof ApiError && error.status === 404 ? "absent" : "unknown");setMessage("No receipt confirmed. The original request may still complete. Nothing was resent."); }
   } finally { busy.current = false; }
  }
+ if (phase === "unavailable") return <section aria-label="Slack links editor"><p role="status">Recorded Slack links aren't available on this Rovara yet.</p></section>;
  return <section aria-label="Slack links editor">
   <p>Recorded channel links only. Bot membership not verified. Channel-path access currently uses each person's linked Slack workspace.</p>
   <h3 ref={heading} tabIndex={-1}>Current recorded Slack links</h3>

@@ -2,7 +2,7 @@
 // Meta repo lane B, task B4: onboarding's Setup step asks Rovara to propose the setup (it closes Task 18b), shows each suggestion with where it came from, never ticks
 // or replaces what a person typed, and gives every risky suggestion its own approval card. "Start from a meta repo" is on the repositories step.
 import { expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import type { ReactElement } from "react";
@@ -46,7 +46,7 @@ const REVIEW = [
 ];
 const READY = { status: "ready", basedOnRevision: 2, proposal: PROPOSAL, review: REVIEW };
 
-interface Options { draft?: unknown; applied?: Record<string, unknown>; sequence?: Array<Record<string, unknown>>; startStatus?: number; path?: string; theme?: "light" | "dark" }
+interface Options { unavailable?: boolean; draft?: unknown; applied?: Record<string, unknown>; sequence?: Array<Record<string, unknown>>; startStatus?: number; path?: string; theme?: "light" | "dark" }
 function setup(element: ReactElement, options: Options = {}) {
   let draft: unknown = options.draft ?? { status: "none", basedOnRevision: 2 };
   const sequence = [...(options.sequence ?? [])];
@@ -56,6 +56,7 @@ function setup(element: ReactElement, options: Options = {}) {
     if (request.path.startsWith("/v1/app/github/repositories")) return { status: 200, body: { repositories: [{ fullName: "acme/web", githubRepositoryId: 101, private: true, defaultBranch: "main" }, { fullName: "acme/meta", githubRepositoryId: 102, private: true, defaultBranch: "main" }, { fullName: "acme/api", githubRepositoryId: 103, private: true, defaultBranch: "main" }] } };
     if (request.path.startsWith("/v1/app/github/repository-choices")) return { status: 200, body: { repositories: ["web", "meta", "api"].map((name, index) => ({ installationId: 55, accountLogin: "acme", fullName: `acme/${name}`, githubRepositoryId: 101 + index, private: true, defaultBranch: "main", projects: [] })), incomplete: false } };
     if (request.path === "/v1/app/projects/web") return { status: 200, body: project() };
+    if (request.path === "/v1/app/projects/web/setup-draft" && options.unavailable) return { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Not served." } } };
     if (request.path === "/v1/app/projects/web/setup-draft" && request.method === "GET") return { status: 200, body: { ...(draft as object), requestId: "gateway-1" } };
     if (request.path === "/v1/app/projects/web/setup-draft" && request.method === "POST") { draft = { status: "drafting", basedOnRevision: 2 }; return { status: options.startStatus ?? 202, body: { ...(draft as object), requestId: "gateway-2" } }; }
     if (request.path === "/v1/app/projects/web/setup-draft/apply") return { status: 200, body: { project: project({ setupCommands: ["npm ci"] }, 3), warnings: [], setupCheck: "started", results: [], ...(sequence.length > 0 ? sequence.shift() : options.applied), requestId: "gateway-3" } };
@@ -65,7 +66,7 @@ function setup(element: ReactElement, options: Options = {}) {
   });
   const query = createQueryClient();
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [options.path ?? "/app/onboard?project=web&step=setup"], children: element }) }) }), { theme: options.theme ?? "light" });
-  return { ...f, setDraft(next: unknown) { draft = next; }, close() { ui.unmount(); query.clear(); } };
+  return { ...f, query, container: ui.container, setDraft(next: unknown) { draft = next; }, close() { ui.unmount(); query.clear(); } };
 }
 const posts = (f: ReturnType<typeof setup>, suffix: string) => f.request.mock.calls.map(([r]) => r).filter((r) => r.method === "POST" && r.path.endsWith(suffix));
 
@@ -313,3 +314,26 @@ for (const theme of ["light", "dark"] as const) it("keeps the proposal page acce
 });
 
 vi.setConfig({ testTimeout: 20_000 });
+
+// TRIAGE-UAT-0530 item 5d: unavailable proposals cannot hide manual setup.
+it("hides only the unavailable proposal card and keeps the setup editor", async () => {
+ const f = setup(h(OnboardScreen, {}), { unavailable: true });
+ await screen.findByRole("textbox", { name: "Setup commands" });
+ await waitFor(() => expect(screen.queryByRole("region", { name: "Rovara's suggestions" })).toBeNull());
+ expect(screen.getByRole("button", { name: "Check setup" })).toBeTruthy();
+ expect(screen.queryByRole("button", { name: "Ask Rovara to propose the setup" })).toBeNull();
+ await expectNoAxeViolations(f.container);f.close();
+});
+
+it("stops polling an in-flight setup proposal when its route becomes unavailable", async () => {
+ const options: Options = { draft: { status: "drafting", basedOnRevision: 2 } }, f = setup(h(OnboardScreen), options);
+ try {
+  await screen.findByText(/Rovara is reading your repositories/);options.unavailable = true;
+  await act(async () => { await f.query.invalidateQueries({ queryKey: ["onboard", "setup-draft", "web"] }); });
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Rovara's suggestions" })).toBeNull());
+  const calls = f.request.mock.calls.filter(([r]) => r.path.endsWith("/setup-draft")).length;
+  vi.useFakeTimers();await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+  expect(f.request.mock.calls.filter(([r]) => r.path.endsWith("/setup-draft"))).toHaveLength(calls);
+  expect(screen.getByRole("textbox", { name: "Setup commands" })).toBeTruthy();
+ } finally { vi.useRealTimers();f.close(); }
+});

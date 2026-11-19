@@ -25,6 +25,7 @@ describe("the cell app shell and its immutable files", () => {
   for (const path of ["/app", "/app/", "/app/live", "/app/projects/web/agents", "/s/ses_aaaaaaaaaaaaaaaaaaaa", "/t/6f9d0c1e-2b3a-4c5d-8e7f-001122334455"]) {
    const response = await app()(event(path));expect(response.statusCode).toBe(200);expect(response.isBase64Encoded ?? false).toBe(false);
    const nonce = /<meta name="csp-nonce" content="([A-Za-z0-9_-]+)">/.exec(response.body)?.[1];expect(nonce).toBeTruthy();
+   expect(response.body).toContain('<meta name="rovara-cloud-app" content="main-fixture.js">');
    expect(response.headers).toEqual({ ...appHeaders({ assetOrigin: CDN, realtimeHttpHost: HTTP, realtimeWsHost: WS }, nonce!), "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
    expect(response.headers["content-security-policy"]).toBe(`default-src 'none'; script-src 'self' ${CDN}; style-src 'self' ${CDN} 'nonce-${nonce}'; style-src-attr 'unsafe-hashes' 'sha256-3oFxofzq3N//6J8H86e9ul4WT2OkJrtonB66gn/TLJw='; img-src 'self' data: ${CDN}; font-src ${CDN}; connect-src 'self' https://${HTTP} wss://${WS}; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'`);
    expect(response.headers["x-frame-options"]).toBe("DENY");expect(response.headers["x-content-type-options"]).toBe("nosniff");expect(response.headers["referrer-policy"]).toBe("same-origin");expect(response.headers["permissions-policy"]).toBe("camera=(), microphone=(), geolocation=()");

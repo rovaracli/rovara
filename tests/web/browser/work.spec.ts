@@ -110,9 +110,13 @@ test("loading, could not load and empty are each said in the list", async ({ pag
   await expect(work.loadError.getByRole("button", { name: "Try again" })).toBeVisible();
 });
 
-test("the agents row says agents are not connected yet while Code serves none", async ({ page }) => {
-  await new WorkPage(page).open();
-  await expect(page.getByTestId("agents-not-connected")).toBeVisible();
+test("with no agents, Work shows no agents row and never says agents aren't connected (UAT A5)", async ({ page }) => {
+  const work = new WorkPage(page);
+  await work.open();
+  await work.expectLoaded();
+  await expect(page.getByRole("region", { name: "Agents" })).toHaveCount(0);
+  await expect(page.getByTestId("agents-not-connected")).toHaveCount(0);
+  await expect(page.getByText(/aren't connected/u)).toHaveCount(0);
 });
 
 const axeSource = readFileSync(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
