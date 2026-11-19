@@ -43,11 +43,6 @@ export const AppMeResponseReaderSchema = forwardReader(AppMeResponseSchema);
 export const AppOrgMembersResponseSchema = z.object({ members: z.array(z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string(), email: z.string().optional(), role: z.enum(["owner", "admin", "member", "auditor", "unknown"]), joinedAt: z.string().optional(), identities: z.array(DeveloperSignInMethodSchema).optional() }).strict()) }).strict();
 export const AppOrgMembersResponseReaderSchema = forwardReader(AppOrgMembersResponseSchema);
 
-/** Lookup is exact and org scoped. Input is a body, never a URL query or a list filter. */
-export const OrgMemberLookupBodySchema = z.object({ email: z.string().trim().max(254).email().refine(value => !value.includes("*"), "Enter a complete email address.") }).strict();
-export const OrgMemberLookupResponseSchema = z.object({ match: z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string() }).strict().nullable() }).strict();
-
-export const OrgMemberLookupResponseReaderSchema = forwardReader(OrgMemberLookupResponseSchema);
 
 /** Optional expectedRole selects the reviewed console path; omitted preserves released CLI requests. */
 export const OrgMemberRoleChangeBodySchema = z.object({ requestId: z.string().uuid(), role: OrgRoleSchema, expectedRole: OrgRoleSchema.optional() }).strict();

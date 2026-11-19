@@ -23,7 +23,8 @@ const RemovalDutiesSchema = z.object({
 export const MemberRemovalPreviewSchema = z.object({
   member: MemberRemovalPersonSchema.extend({ role: OrgRoleSchema }).strict(),
   successor: MemberRemovalPersonSchema,
-  moves: z.object({ agents: RemovalCountSchema, skills: RemovalCountSchema, chains: RemovalCountSchema, triggers: RemovalCountSchema, approvals: RemovalCountSchema, spendRequests: RemovalCountSchema }).strict(),
+  // DEC 254zzz84 (5): `tasks` and `projects`, the open tasks and the projects they administer that go to the successor (optional: an older Cloud sends none).
+  moves: z.object({ agents: RemovalCountSchema, skills: RemovalCountSchema, chains: RemovalCountSchema, triggers: RemovalCountSchema, approvals: RemovalCountSchema, spendRequests: RemovalCountSchema, tasks: RemovalCountSchema.optional(), projects: RemovalCountSchema.optional() }).strict(),
   ends: z.array(z.string().max(300)).max(20),
   duties: RemovalDutiesSchema,
   warnings: z.array(z.string().max(300)).max(10),
@@ -41,6 +42,14 @@ export type MemberRemovalBody = z.infer<typeof MemberRemovalBodySchema>;
 /** `POST /v1/app/org/members/{id}/removal`. */
 export const MemberRemovalStartedSchema = z.object({ removalId: z.string().uuid(), state: z.enum(["STARTED", "DONE", "CANCELLED_REJOINED"]), message: z.string().max(500) }).strict();
 export const MemberRemovalStartedReaderSchema = forwardReader(MemberRemovalStartedSchema);
+
+/** DEC 254zzz101: `GET /v1/app/org/members/handovers`, the removals whose hand-over did not finish after the membership ended (an owner or admin finishes each to someone now). */
+export const PendingHandOversSchema = z.object({
+  handovers: z.array(z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string().max(200), removalId: z.string().uuid(), startedAt: z.string().datetime() }).strict()).max(100),
+}).strict();
+export const PendingHandOversReaderSchema = forwardReader(PendingHandOversSchema);
+/** DEC 254zzz101: the body of `POST /v1/app/org/members/{id}/handover`; the answer is MemberRemovalStartedSchema (`removalId` is the removal's own id). */
+export const FinishHandOverBodySchema = z.object({ requestId: z.string().uuid(), successorId: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 
 /** `GET /v1/app/org/removals/{removalId}`. */
 export const MemberRemovalStatusSchema = z.object({

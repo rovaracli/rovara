@@ -110,12 +110,12 @@ describe("the screen", () => {
   expect(f.posts()[0]!.retry).toBe("never");
   await screen.findByText("Every project of the company");
  });
- it("asks for a new sign-in in the server's words when the sign-in is old", async () => {
+ it("shows a refusal in the server's words with no sign-in step (owner DEC 254zzz73)", async () => {
   const f = mount({ state: initial([recipe()]), post: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to confirm this company change.") });
   fireEvent.click(await screen.findByRole("button", { name: "Approve this recipe" }));
   await screen.findByText("Sign in again to confirm this company change.");
-  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
-  expect(f.host.signIn).toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
+  expect(f.host.signIn).not.toHaveBeenCalled();
  });
  it("reads the list again and says so when the recipe changed meanwhile", async () => {
   const f = mount({ state: initial([recipe()]), post: () => refuse(409, "CHANGE_STALE", "That recipe changed. Refresh before continuing.") });

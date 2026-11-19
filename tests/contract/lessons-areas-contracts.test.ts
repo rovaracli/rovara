@@ -21,8 +21,8 @@ describe("team lessons", () => {
 
 describe("where Rovara learns from", () => {
   const source = (key: string) => ({ key, ...LEARNING_SOURCE_WORDS[key as keyof typeof LEARNING_SOURCE_WORDS], seen: 1, suggested: 1, kept: 1, paused: false });
-  it("has the six keys in order, each with its own words, and a strict answer", () => {
-    expect([...LEARNING_SOURCE_KEYS]).toEqual(["task_decisions", "review_comments", "pr_edits", "remember", "after_merge", "ci"]);
+  it("has the seven keys in order, each with its own words, and a strict answer", () => {
+    expect([...LEARNING_SOURCE_KEYS]).toEqual(["task_decisions", "review_comments", "pr_edits", "remember", "after_merge", "ci", "tickets"]);
     const answer = { project: "payments", windowDays: 30, canPause: true, sources: LEARNING_SOURCE_KEYS.map(source) };
     expect(LearningSourcesAnswerSchema.parse(answer)).toEqual(answer);
     for (const bad of [{ ...answer, windowDays: 7 }, { ...answer, extra: 1 }, { ...answer, sources: [{ ...source("ci"), key: "nope" }] }, { ...answer, sources: [{ ...source("ci"), seen: -1 }] }, { ...answer, sources: [{ ...source("ci"), example: { lessonId: "bad id", title: "x" } }] }]) {

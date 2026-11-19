@@ -536,24 +536,28 @@ describe("the company's Slack workspace and disconnect", () => {
     expect((await w.api(nova, "GET", "/slack")).body).toEqual({ error: { code: "RUNTIME_UNAVAILABLE", message: SLACK_WORDS.readUnavailable } });
   });
 
-  it("disconnect: an owner with a fresh step-up only; member, admin, no step-up and an old step-up are refused before Code is asked", async () => {
+  it("disconnect: an owner only (no step-up since owner DEC 254zzz73); a member and an admin are refused before Code is asked; another company's owner never reaches A's", async () => {
     const w = world();
     w.slackOf.set(A, { teamId: "TNOVA1", teamName: "Acme" });
     w.links.get(A)!.set("CWEB00001", "web");
-    for (const [who, code] of [[MAX, "FORBIDDEN"], [ADA, "FORBIDDEN"], [NOVA_PLAIN, "REAUTH_REQUIRED"], [NOVA_OLD, "REAUTH_REQUIRED"]] as const) {
+    for (const who of [MAX, ADA]) {
       const answer = await w.api(await w.signIn(who), "POST", "/slack/disconnect", {});
       expect(answer.status, who.key).toBe(403);
-      expect(answer.body.error?.code, who.key).toBe(code);
+      expect(answer.body.error?.code, who.key).toBe("FORBIDDEN");
     }
     expect(w.codeCalls("/v1/dev/company/slack/disconnect")).toEqual([]);
-    const nova = await w.signIn(NOVA);
+    // B's owner disconnects only B's (none here): A's workspace stays.
+    expect((await w.api(await w.signIn(BOB), "POST", "/slack/disconnect", {})).body).toEqual({ error: { code: "NOT_FOUND", message: SLACK_WORDS.notConnected } });
+    expect(w.slackOf.get(A)).toBeDefined();
+    const nova = await w.signIn(NOVA_PLAIN);
     expect((await w.api(nova, "POST", "/slack/disconnect", { companyId: B })).status).toBe(400);
     const answer = await w.api(nova, "POST", "/slack/disconnect", {});
     expect(answer.body).toEqual({ status: "disconnected", workspaceName: "Acme", projectsLosingChannel: ["web"] });
-    expect(w.codeCalls("/v1/dev/company/slack/disconnect")).toEqual([{ method: "POST", path: "/v1/dev/company/slack/disconnect", search: "", token: NOVA.token, body: {} }]);
+    expect(w.codeCalls("/v1/dev/company/slack/disconnect").filter((c) => c.token === NOVA_PLAIN.token)).toEqual([{ method: "POST", path: "/v1/dev/company/slack/disconnect", search: "", token: NOVA_PLAIN.token, body: {} }]);
     expect((await w.api(nova, "POST", "/slack/disconnect", {})).body).toEqual({ error: { code: "NOT_FOUND", message: SLACK_WORDS.notConnected } });
+    // Any 403 from Code is the owner-only sentence now (there is no step-up answer).
     w.overrides.set("POST /v1/dev/company/slack/disconnect", () => respond(403, { error: { code: "REAUTH_REQUIRED", message: "Code words" } }));
-    expect((await w.api(nova, "POST", "/slack/disconnect", {})).body.error?.code).toBe("REAUTH_REQUIRED");
+    expect((await w.api(nova, "POST", "/slack/disconnect", {})).body.error).toEqual({ code: "FORBIDDEN", message: SLACK_WORDS.ownerOnly });
   });
 });
 
@@ -725,15 +729,17 @@ describe("the company's Linear connection, disconnect, and a project's team", ()
     expect((await w.api(bob, "GET", "/linear")).body).toEqual({ status: "disconnected" });
   });
 
-  it("disconnect: an owner with a fresh step-up only, checked before Code is asked", async () => {
+  it("disconnect: an owner only (no step-up since owner DEC 254zzz73), checked before Code is asked; another company's owner never reaches A's", async () => {
     const w = world();
     w.linearOf.set(A, { id: "lin-a", name: "Acme Linear", urlKey: "acme" });
     w.picks.get(A)!.set("web", "team-a1");
-    for (const [who, code] of [[MAX, "FORBIDDEN"], [ADA, "FORBIDDEN"], [NOVA_PLAIN, "REAUTH_REQUIRED"], [NOVA_OLD, "REAUTH_REQUIRED"]] as const) {
-      expect((await w.api(await w.signIn(who), "DELETE", "/linear")).body.error?.code, who.key).toBe(code);
+    for (const who of [MAX, ADA]) {
+      expect((await w.api(await w.signIn(who), "DELETE", "/linear")).body.error?.code, who.key).toBe("FORBIDDEN");
     }
     expect(w.calls.filter((c) => c.method === "DELETE")).toEqual([]);
-    const nova = await w.signIn(NOVA);
+    expect((await w.api(await w.signIn(BOB), "DELETE", "/linear")).body).toEqual({ error: { code: "LINEAR_NOT_CONNECTED", message: LINEAR_WORDS.notConnected } });
+    expect(w.linearOf.get(A)).toBeDefined();
+    const nova = await w.signIn(NOVA_OLD);
     expect((await w.api(nova, "DELETE", "/linear")).body).toEqual({ status: "disconnected", workspaceName: "Acme Linear", projects: ["web"] });
     expect((await w.api(nova, "DELETE", "/linear")).body).toEqual({ error: { code: "LINEAR_NOT_CONNECTED", message: LINEAR_WORDS.notConnected } });
   });

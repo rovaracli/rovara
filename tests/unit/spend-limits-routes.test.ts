@@ -1,6 +1,6 @@
-// Lead 3 B1 (DEC 254t b): GET /org/spend-limits and PUT /org/spend-limits/projects/{p} | /people/{id}. Company admins only (reads too); a fresh
-// step-up ONLY when a change raises what a project or person may spend (removing an override counts when the default is higher, and no limit is
-// the highest); a write conditional on what was read; every change audited; fixed words that never echo the request; two companies never meet.
+// Lead 3 B1 (DEC 254t b): GET /org/spend-limits and PUT /org/spend-limits/projects/{p} | /people/{id}. Company admins only (reads too); no step-up
+// (owner DEC 254zzz73): the company's loosening rules judge a change that raises what a project or person may spend (removing an override counts
+// when the default is higher, and no limit is the highest); a write conditional on what was read; every change audited; fixed words that never echo the request; two companies never meet.
 import { describe, expect, it } from "vitest";
 import {
   CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, SPEND_LIMITS_MAX, SPEND_LIMIT_KINDS, createCloudHandler, defaultCompanySettings,
@@ -244,8 +244,12 @@ describe("a person's limit names a member of the company", () => {
   });
 });
 
-describe("step-up: only when a limit goes up", () => {
-  it("lowering a project's limit needs no step-up (a new override under the default, and a lower amount than the current override)", async () => {
+describe("a raise and a lowering, with no step-up (owner DEC 254zzz73)", () => {
+  /** A company that forbids loosening: a raise is refused by its own rule, a lowering is not, so a raise stays observable without a step-up. */
+  const RATCHET = async () => { const w = await READY(); await w.settings(A, {}, (s) => { s.decisions = [{ what: "setting.loosen", allow: false }]; }); return w; };
+  const RULED = "Your company's rules don't allow raising a limit.";
+
+  it("lowering a project's limit (a new override under the default, and a lower amount than the current override)", async () => {
     const w = await READY(); const ada = await w.signIn("ada");
     const first = await w.call(ada, "PUT", project("web"), put(0, 10));
     expect(first.status).toBe(200);
@@ -255,45 +259,44 @@ describe("step-up: only when a limit goes up", () => {
     expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 4_500_000, version: 2 });
   });
 
-  it("raising needs a fresh step-up: none, an old one and a fresh one (the refused ones change nothing)", async () => {
+  it("raising needs no step-up: an admin with none, an old one or a fresh one raises; a plain member and another company's owner with none change nothing of A's", async () => {
     const w = await READY(); await w.seed(A, "project_month", "web", 10 * MICROS);
-    for (const age of [undefined, 3600, 601]) {
-      const answer = await w.call(await w.signIn("ada", age), "PUT", project("web"), put(1, 25));
-      expect(answer.status, String(age)).toBe(403);
-      expect(answer.body.error?.code).toBe("STEP_UP_REQUIRED");
-      expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 10 * MICROS, version: 1 });
+    expect((await w.call(await w.signIn("pam"), "PUT", project("web"), put(1, 25))).body.error?.code).toBe("FORBIDDEN");
+    expect((await w.call(await w.signIn("bea"), "PUT", project("web"), put(0, 40))).status).toBe(200);
+    expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 10 * MICROS, version: 1 });
+    let version = 1, amount = 10;
+    for (const age of [undefined, 3600, 601, 30]) {
+      amount += 5;
+      const answer = await w.call(await w.signIn("ada", age), "PUT", project("web"), put(version, amount));
+      expect(answer.status, String(age)).toBe(200);
+      version += 1;
+      expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: amount * MICROS, version });
     }
-    const fresh = await w.call(await w.signIn("ada", 30), "PUT", project("web"), put(1, 25));
-    expect(fresh.status).toBe(200);
-    expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 25 * MICROS, version: 2 });
   });
 
   it("a new override above the company default is a raise; at or below it is not", async () => {
-    const w = await READY(); // project default $30, member default $20
+    const w = await RATCHET(); // project default $30, member default $20
     const bare = await w.signIn("ada");
-    expect((await w.call(bare, "PUT", project("web"), put(0, 31))).body.error?.code).toBe("STEP_UP_REQUIRED");
-    expect((await w.call(bare, "PUT", person(DEV.pam), put(0, 21))).body.error?.code).toBe("STEP_UP_REQUIRED");
+    expect((await w.call(bare, "PUT", project("web"), put(0, 31))).body.error?.message).toBe(RULED);
+    expect((await w.call(bare, "PUT", person(DEV.pam), put(0, 21))).body.error?.message).toBe(RULED);
     expect((await w.call(bare, "PUT", project("web"), put(0, 30))).status).toBe(200);
     expect((await w.call(bare, "PUT", person(DEV.pam), put(0, 0))).status).toBe(200);
     expect(await stored(w, "person_month", DEV.pam)).toMatchObject({ monthlyUsdMicros: 0 });
   });
 
-  it("removing an override is a raise when the default is higher (step-up), lowering when the default is lower (none), and a raise when there is no default limit", async () => {
-    const w = await READY(); // project default $30
+  it("removing an override is a raise when the default is higher, lowering when the default is lower, and a raise when there is no default limit", async () => {
+    const w = await RATCHET(); // project default $30
     await w.seed(A, "project_month", "web", 10 * MICROS); await w.seed(A, "project_month", "api", 50 * MICROS);
     const bare = await w.signIn("ada");
-    expect((await w.call(bare, "PUT", project("web"), put(1, null))).body.error?.code).toBe("STEP_UP_REQUIRED");
+    expect((await w.call(bare, "PUT", project("web"), put(1, null))).body.error?.message).toBe(RULED);
     expect(await stored(w, "project_month", "web")).toBeDefined();
     expect((await w.call(bare, "PUT", project("api"), put(1, null))).status).toBe(200);
     expect(await stored(w, "project_month", "api")).toBeUndefined();
-    expect((await w.call(await w.signIn("ada", 30), "PUT", project("web"), put(1, null))).status).toBe(200);
-    expect(await stored(w, "project_month", "web")).toBeUndefined();
     // No default limit at all: no limit is the highest, so removing an override raises, and setting one lowers.
-    const open = await READY(); await open.settings(A, { project: null, member: null });
+    const open = await READY(); await open.settings(A, { project: null, member: null }, (s) => { s.decisions = [{ what: "setting.loosen", allow: false }]; });
     await open.seed(A, "project_month", "web", 10 * MICROS);
-    expect((await open.call(await open.signIn("ada"), "PUT", project("web"), put(1, null))).body.error?.code).toBe("STEP_UP_REQUIRED");
+    expect((await open.call(await open.signIn("ada"), "PUT", project("web"), put(1, null))).body.error?.message).toBe(RULED);
     expect((await open.call(await open.signIn("ada"), "PUT", project("api"), put(0, 999_999))).status).toBe(200);
-    expect((await open.call(await open.signIn("ada", 30), "PUT", project("web"), put(1, null))).status).toBe(200);
   });
 
   it("an unchanged limit writes nothing (no new version, no audit record)", async () => {
@@ -306,9 +309,8 @@ describe("step-up: only when a limit goes up", () => {
     expect(await w.auditRows(A)).toEqual([]);
   });
 
-  it("the company's own rules apply to a raise: a company that forbids loosening cannot raise a limit (lowering still works), and its sign-in window is its own", async () => {
-    const w = await READY();
-    await w.settings(A, {}, (s) => { s.decisions = [{ what: "setting.loosen", allow: false }]; });
+  it("the company's own rules apply to a raise: a company that forbids loosening cannot raise a limit (lowering still works)", async () => {
+    const w = await RATCHET();
     await w.seed(A, "project_month", "web", 10 * MICROS);
     const ada = await w.signIn("ada", 5);
     const raise = await w.call(ada, "PUT", project("web"), put(1, 25));
@@ -316,11 +318,6 @@ describe("step-up: only when a limit goes up", () => {
     expect(raise.body.error?.code).toBe("FORBIDDEN");
     expect((await stored(w, "project_month", "web"))?.monthlyUsdMicros).toBe(10 * MICROS);
     expect((await w.call(ada, "PUT", project("web"), put(1, 5))).status).toBe(200);
-    // A short sign-in window: a step-up older than it is refused.
-    const short = await READY(); await short.settings(A, {}, (s) => { s.freshSignInSeconds = 60; });
-    await short.seed(A, "project_month", "web", 10 * MICROS);
-    expect((await short.call(await short.signIn("ada", 120), "PUT", project("web"), put(1, 25))).body.error?.code).toBe("STEP_UP_REQUIRED");
-    expect((await short.call(await short.signIn("ada", 30), "PUT", project("web"), put(1, 25))).status).toBe(200);
   });
 });
 
@@ -343,7 +340,7 @@ describe("a raise follows the company's rules for a loosening", () => {
     expect(await w.auditRows(A)).toEqual([]);
   };
 
-  it("the company's DEFAULT rules (a second person for a loosening) refuse a raise here, with a fresh step-up, and a removal that raises; lowering still works", async () => {
+  it("the company's DEFAULT rules (a second person for a loosening) refuse a raise here, and a removal that raises; lowering still works", async () => {
     const w = world(); await w.signIn("ada"); // the stock defaults, not the test helper's
     const settings = defaultCompanySettings();
     settings.budgets = { ...settings.budgets, companyMonthlyUsdMicros: 100 * MICROS, memberMonthlyUsdMicros: 20 * MICROS, projectMonthlyUsdMicros: 30 * MICROS };
@@ -363,11 +360,10 @@ describe("a raise follows the company's rules for a loosening", () => {
     await mustRefuse(w, await w.signIn("ada", 5));
   });
 
-  it("rules that let a single admin loosen allow the raise (with the step-up), so the refusal is the rule's and nothing else's", async () => {
+  it("rules that let a single admin loosen allow the raise (no step-up), so the refusal is the rule's and nothing else's", async () => {
     for (const decisions of [[], [{ what: "setting.loosen" }], [{ what: "setting.loosen", secondPerson: false }], [{ what: "setting.loosen", minApprovers: 1 }]]) {
       const w = await withRules(decisions);
-      expect((await w.call(await w.signIn("ann"), "PUT", project("web"), put(1, 500))).body.error?.code, JSON.stringify(decisions)).toBe("STEP_UP_REQUIRED");
-      expect((await w.call(await w.signIn("ann", 5), "PUT", project("web"), put(1, 500))).status, JSON.stringify(decisions)).toBe(200);
+      expect((await w.call(await w.signIn("ann"), "PUT", project("web"), put(1, 500))).status, JSON.stringify(decisions)).toBe(200);
       expect((await w.call(await w.signIn("ann", 5), "PUT", person(DEV.pam), put(1, 500))).status, JSON.stringify(decisions)).toBe(200);
     }
   });
@@ -381,7 +377,7 @@ describe("a raise follows the company's rules for a loosening", () => {
       expect(answer.body.error?.message).toBe("Your company's rules don't allow raising a limit.");
     }
     expect((await stored(w, "project_month", "web"))?.monthlyUsdMicros).toBe(10 * MICROS);
-    // The decider, with a fresh step-up, may; and lowering needs no decider.
+    // The decider may; and lowering needs no decider.
     const ada = await w.signIn("ada", 5);
     expect((await w.call(ada, "PUT", project("web"), put(1, 500))).status).toBe(200);
     expect((await w.call(ann, "PUT", project("web"), put(2, 1))).status).toBe(200);
@@ -578,9 +574,9 @@ describe("every change is audited", () => {
   });
 
   it("a refused change leaves no record, and a failed audit write does not undo the change", async () => {
-    const w = await READY(); const ada = await w.signIn("ada");
+    const w = await READY();
     await w.seed(A, "project_month", "web", 10 * MICROS);
-    await w.call(ada, "PUT", project("web"), put(1, 25));
+    expect((await w.call(await w.signIn("pam"), "PUT", project("web"), put(1, 25))).status).toBe(403);
     expect(await w.auditRows(A)).toEqual([]);
     const failing = world(); await failing.settings(A, {});
     (failing.audit as unknown as { append: () => Promise<never> }).append = () => Promise.reject(new Error("audit store down"));
@@ -592,14 +588,15 @@ describe("every change is audited", () => {
 });
 
 describe("the company default is still PUT /org/settings", () => {
-  it("raising a default there needs a step-up like any settings write; this route never writes the default", async () => {
+  it("raising a default there follows the settings route's own rules (an admin, no step-up; a member never); this route never writes the default", async () => {
     const w = await READY();
     const current = await w.companies.settings(A);
     const next = { ...(current!.settings as ReturnType<typeof defaultCompanySettings>) };
     next.budgets = { ...next.budgets, projectMonthlyUsdMicros: 999 * MICROS };
-    const bare = await w.signIn("ada");
-    expect((await w.call(bare, "PUT", "/org/settings", { expectedVersion: current!.version, settings: next })).body.error?.code).toBe("STEP_UP_REQUIRED");
+    expect((await w.call(await w.signIn("pam"), "PUT", "/org/settings", { expectedVersion: current!.version, settings: next })).status).toBe(403);
     expect((await w.companies.settings(A))?.version).toBe(current!.version);
+    expect((await w.call(await w.signIn("ada"), "PUT", "/org/settings", { expectedVersion: current!.version, settings: next })).status).toBe(200);
+    expect((await w.companies.settings(A))?.version).toBe(current!.version + 1);
     // Nothing in this route's own PUT body can name a default.
     expect((await w.call(await w.signIn("ada", 30), "PUT", project("web"), { expectedVersion: 0, monthlyUsd: 1, defaults: { projectMonthlyUsd: 999 } })).status).toBe(400);
   });
@@ -627,17 +624,20 @@ describe("every kind in the table, through the routes", () => {
         expect((await w.companies.spendLimit(A, def.kind, id))?.companyId).toBe(A);
       });
 
-      it("needs a step-up to raise and none to lower, and a plain member is refused", async () => {
+      it("raises and lowers with no step-up (owner DEC 254zzz73); a raise is still what the company's loosening rule judges; a plain member is refused", async () => {
         const w = await READY();
         const bare = await w.signIn("ada");
         expect((await w.call(bare, "PUT", path, put(0, 1))).status).toBe(200);
-        expect((await w.call(bare, "PUT", path, put(1, 1000))).body.error?.code).toBe("STEP_UP_REQUIRED");
-        expect((await w.companies.spendLimit(A, def.kind, id))?.monthlyUsdMicros).toBe(MICROS);
-        expect((await w.call(await w.signIn("ada", 30), "PUT", path, put(1, 1000))).status).toBe(200);
+        expect((await w.call(bare, "PUT", path, put(1, 1000))).status).toBe(200);
         expect((await w.call(bare, "PUT", path, put(2, 2))).status).toBe(200);
-        const pam = await w.signIn("pam", 30);
+        // A company that forbids loosening: the raise is refused by its rule, the lowering is not.
+        await w.settings(A, {}, (s) => { s.decisions = [{ what: "setting.loosen", allow: false }]; });
+        expect((await w.call(bare, "PUT", path, put(3, 1000))).body.error?.message).toBe("Your company's rules don't allow raising a limit.");
+        expect((await w.companies.spendLimit(A, def.kind, id))?.monthlyUsdMicros).toBe(2 * MICROS);
+        expect((await w.call(bare, "PUT", path, put(3, 1))).status).toBe(200);
+        const pam = await w.signIn("pam");
         expect((await w.call(pam, "GET", PATH)).status).toBe(403);
-        expect((await w.call(pam, "PUT", path, put(3, 1))).status).toBe(403);
+        expect((await w.call(pam, "PUT", path, put(4, 0))).status).toBe(403);
       });
 
       it("is audited under its own name, and an item that does not read answers 503 and changes nothing", async () => {
@@ -652,10 +652,11 @@ describe("every kind in the table, through the routes", () => {
 
       it("takes its default from the company's budgets when no override exists (a raise is judged against it)", async () => {
         const w = await READY(); // project default $30, member default $20, task $2
+        await w.settings(A, {}, (s) => { s.decisions = [{ what: "setting.loosen", allow: false }]; });
         const fallback = def.defaultOf({ companyMonthlyUsdMicros: 100 * MICROS, memberMonthlyUsdMicros: 20 * MICROS, projectMonthlyUsdMicros: 30 * MICROS, taskUsdMicros: 2 * MICROS, learningMonthlyUsdMicros: 1 });
         const bare = await w.signIn("ada");
         if (fallback === null) { expect((await w.call(bare, "PUT", path, put(0, 999_999))).status).toBe(200); return; }
-        expect((await w.call(bare, "PUT", path, put(0, fallback / MICROS + 1))).body.error?.code).toBe("STEP_UP_REQUIRED");
+        expect((await w.call(bare, "PUT", path, put(0, fallback / MICROS + 1))).body.error?.message).toBe("Your company's rules don't allow raising a limit.");
         expect((await w.call(bare, "PUT", path, put(0, fallback / MICROS))).status).toBe(200);
       });
     });
@@ -684,14 +685,16 @@ describe("the upkeep and answers limits", () => {
     // A second one cannot be added under another id (the bound is one), and company B sees none of A's.
     expect((await w.call(await w.signIn("bea", 30), "GET", PATH)).body.answers).toEqual([]);
   });
-  it("$0 is allowed for both (no upkeep spend, no answers), lowering needs no step-up, and removing returns to the default", async () => {
+  it("$0 is allowed for both (no upkeep spend, no answers), and removing returns to the default (a raise, which the company's rule judges)", async () => {
     const w = await READY(); const bare = await w.signIn("ada");
     expect((await w.call(bare, "PUT", upkeep("api"), put(0, 0))).status).toBe(200);
     expect((await w.call(bare, "PUT", answers(A), put(0, 0))).status).toBe(200);
     expect((await w.companies.spendLimit(A, "upkeep_month", "api"))?.monthlyUsdMicros).toBe(0);
-    // Raising back above the default needs the fresh step-up; removing (back to the default, $25) is a raise from $0, so it needs it too.
-    expect((await w.call(bare, "PUT", upkeep("api"), put(1, null))).body.error?.code).toBe("STEP_UP_REQUIRED");
-    expect((await w.call(await w.signIn("ada", 30), "PUT", upkeep("api"), put(1, null))).status).toBe(200);
+    // Removing (back to the default, $25) is a raise from $0: a company that forbids loosening refuses it; one that allows it removes it, with no step-up.
+    await w.settings(A, {}, (s) => { s.decisions = [{ what: "setting.loosen", allow: false }]; });
+    expect((await w.call(bare, "PUT", upkeep("api"), put(1, null))).body.error?.message).toBe("Your company's rules don't allow raising a limit.");
+    await w.settings(A, {});
+    expect((await w.call(bare, "PUT", upkeep("api"), put(1, null))).status).toBe(200);
     expect(await w.companies.spendLimit(A, "upkeep_month", "api")).toBeUndefined();
   });
   it("an upkeep limit names a project Code knows, and a project's upkeep and project limits are separate items", async () => {
@@ -722,4 +725,65 @@ it("adds the company's optional gateway provisional total to the existing admin 
   expect(refused.body).toHaveProperty("defaults");
   expect(refused.body).not.toHaveProperty("provisionalMicros");
   expect(refused.raw).not.toContain("private details");
+});
+
+// DEC 254zzz79 (2): with the DEFAULT rules (a second person for a loosening), a company with ONE live owner/admin has no second person, so that person raises a limit
+// themselves, audited as "self-approved: only owner/admin". Company B has one owner (Bea); company A has an owner and an admin (Ada, Ann).
+describe("a sole owner/admin raises a limit alone (DEC 254zzz79 (2))", () => {
+  const SELF = "self-approved: only owner/admin";
+  const withDefaultRules = async () => {
+    const w = world();
+    for (const company of [A, B]) await w.settings(company, {}, (s) => { s.decisions = [{ what: "setting.loosen", secondPerson: true }]; });
+    await w.seed(A, "project_month", "web", 10 * MICROS); await w.seed(B, "project_month", "web", 10 * MICROS);
+    return w;
+  };
+  const details = async (w: World, companyId: string) => (await w.auditRows(companyId)).map((row) => row.detail ?? "");
+
+  it("the one owner raises it, the limit really changes, and the audit line says it was self-approved", async () => {
+    const w = await withDefaultRules();
+    const bea = await w.signIn("bea", 5);
+    expect((await w.call(bea, "PUT", project("web"), put(1, 25))).status).toBe(200);
+    expect((await stored(w, "project_month", "web", B))?.monthlyUsdMicros).toBe(25 * MICROS);
+    const lines = await details(w, B);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("raised");
+    expect(lines[0]).toContain(SELF);
+  });
+
+  it("lowering a limit is not a self-approval: no audit mark", async () => {
+    const w = await withDefaultRules();
+    expect((await w.call(await w.signIn("bea", 5), "PUT", project("web"), put(1, 4))).status).toBe(200);
+    expect((await details(w, B))[0]).not.toContain(SELF);
+  });
+
+  it("with two owners/admins a raise stays refused (the second person approves through Company settings)", async () => {
+    const w = await withDefaultRules();
+    const answer = await w.call(await w.signIn("ada", 5), "PUT", project("web"), put(1, 25));
+    expect(answer.body.error?.code).toBe("SECOND_PERSON_REQUIRED");
+    expect((await stored(w, "project_month", "web", A))?.monthlyUsdMicros).toBe(10 * MICROS);
+    expect(await details(w, A)).toEqual([]);
+  });
+
+  it("two companies: B's sole owner changes only B's limit; A's admins gain nothing from it", async () => {
+    const w = await withDefaultRules();
+    expect((await w.call(await w.signIn("bea", 5), "PUT", project("web"), put(1, 25))).status).toBe(200);
+    expect((await stored(w, "project_month", "web", A))?.monthlyUsdMicros).toBe(10 * MICROS);
+    expect((await w.call(await w.signIn("ann", 5), "PUT", project("web"), put(1, 25))).body.error?.code).toBe("SECOND_PERSON_REQUIRED");
+  });
+
+  it("fails closed: a member list that does not read, or holds another company's person, keeps the second-person rule", async () => {
+    for (const members of ["outage", "garbled", "foreign"] as const) {
+      const w = world({ members }); await w.settings(B, {}, (s) => { s.decisions = [{ what: "setting.loosen", secondPerson: true }]; }); await w.seed(B, "project_month", "web", 10 * MICROS);
+      expect((await w.call(await w.signIn("bea", 5), "PUT", project("web"), put(1, 25))).body.error?.code, members).toBe("SECOND_PERSON_REQUIRED");
+      expect((await stored(w, "project_month", "web", B))?.monthlyUsdMicros, members).toBe(10 * MICROS);
+    }
+  });
+
+  it("a rule that forbids loosening still refuses a sole owner; a rule that names other deciders still refuses them", async () => {
+    const w = world(); await w.settings(B, {}, (s) => { s.decisions = [{ what: "setting.loosen", allow: false }]; }); await w.seed(B, "project_month", "web", 10 * MICROS);
+    expect((await w.call(await w.signIn("bea", 5), "PUT", project("web"), put(1, 25))).body.error?.code).toBe("FORBIDDEN");
+    const d = world(); await d.settings(B, {}, (s) => { s.decisions = [{ what: "setting.loosen", secondPerson: true }, { what: "setting.loosen", deciders: [DEV.ada] }]; }); await d.seed(B, "project_month", "web", 10 * MICROS);
+    expect((await d.call(await d.signIn("bea", 5), "PUT", project("web"), put(1, 25))).body.error?.code).toBe("FORBIDDEN");
+    expect((await stored(d, "project_month", "web", B))?.monthlyUsdMicros).toBe(10 * MICROS);
+  });
 });

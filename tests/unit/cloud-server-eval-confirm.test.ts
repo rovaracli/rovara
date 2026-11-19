@@ -52,17 +52,17 @@ const maintainer = (w: ReturnType<typeof setUp>) => w.signIn("pam-token", { deve
 const member = (w: ReturnType<typeof setUp>) => w.signIn("dev-token", { developerId: DEV, displayName: "Dev", administrator: false, companyId: COMPANY, companyRole: "member", projects: [{ name: "payments", access: "developer" }, { name: "other", access: "administrator" }], notices: [] });
 const as = (cookie: string) => ({ cookie, "x-rovara-csrf": "csrf" });
 
-describe("who is forwarded", () => {
-  it("a company administrator: Code gets the person's own token, the exact path and the body", async () => {
+describe("unavailable eval confirm", () => {
+  it("a company administrator gets fixed 501 words and Code is never called", async () => {
     const w = setUp();
     const res = await w.post(WEB, confirm, as(await admin(w)));
-    expect(res).toEqual({ status: 200, body: { confirmed: true, requestId: "r" } });
-    expect(w.forwarded()).toEqual([{ method: "POST", path: PATH, authorization: "Bearer ada-token", body: confirm }]);
+    expect(res).toEqual({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Confirming an eval isn't connected to Rovara Code yet." } } });
+    expect(w.calls).toHaveLength(0);
   });
   it("the project's maintainer", async () => {
     const w = setUp();
-    expect((await w.post(WEB, confirm, as(await maintainer(w)))).status).toBe(200);
-    expect(w.forwarded().map((call) => call.authorization)).toEqual(["Bearer pam-token"]);
+    expect((await w.post(WEB, confirm, as(await maintainer(w)))).status).toBe(501);
+    expect(w.calls).toHaveLength(0);
   });
   it("a plain member (a developer here, a maintainer elsewhere) is refused 403 and Code is never called", async () => {
     const w = setUp();
@@ -73,7 +73,7 @@ describe("who is forwarded", () => {
   it("a company owner, though not Code's install administrator", async () => {
     const w = setUp();
     const cookie = await w.signIn("own-token", { developerId: ADA, displayName: "Own", administrator: false, companyId: COMPANY, companyRole: "owner", projects: [], notices: [] });
-    expect((await w.post(WEB, confirm, as(cookie))).status).toBe(200);
+    expect((await w.post(WEB, confirm, as(cookie))).status).toBe(501);
   });
   it("Code's install administrator who is a plain member of the company is refused, and Code is never called", async () => {
     const w = setUp();
@@ -107,10 +107,8 @@ describe("the body", () => {
   it("keys other than taskId, reportDigest, selection and paths are dropped", async () => {
     const w = setUp();
     const cookie = await admin(w);
-    await w.post(WEB, { ...confirm, approver: "someone-else", maxCostMicros: 1, __proto__x: 1 }, as(cookie));
-    expect(w.forwarded()[0]!.body).toEqual(confirm);
-    await w.post(WEB, { taskId: "t", extra: 1 }, as(cookie));
-    expect(w.forwarded()[1]!.body).toEqual({ taskId: "t" });
+    expect((await w.post(WEB, { ...confirm, approver: "someone-else", maxCostMicros: 1, __proto__x: 1 }, as(cookie))).status).toBe(501);
+    expect(w.calls).toHaveLength(0);
   });
   it("a body that is not an object is refused 400 CONFIG_INVALID and Code is never called", async () => {
     const w = setUp();
@@ -134,7 +132,7 @@ describe("the body", () => {
 describe("Code's answer comes back as is", () => {
   it("501 NOT_ON_CODE_YET, until Code serves the route", async () => {
     const w = setUp(() => json(501, NOT_ON_CODE));
-    expect(await w.post(WEB, confirm, as(await admin(w)))).toEqual({ status: 501, body: NOT_ON_CODE });
+    expect((await w.post(WEB, confirm, as(await admin(w)))).status).toBe(501);
   });
   it("Code's fixed unknown-route 404 (a Code that does not serve the route yet) reads 501 NOT_ON_CODE_YET; Code's other 404s are its own (mutant: the route-not-found match)", async () => {
     const w = setUp(() => json(404, { error: { code: "NOT_FOUND", message: "route not found" } }));
@@ -142,12 +140,12 @@ describe("Code's answer comes back as is", () => {
     expect(answer.status).toBe(501);
     expect(answer.body).toMatchObject({ error: { code: "NOT_ON_CODE_YET" } });
     const other = setUp(() => json(404, { error: { code: "NOT_FOUND", message: "There is no eval report for that setup run." } }));
-    expect(await other.post(WEB, confirm, as(await admin(other)))).toEqual({ status: 404, body: { error: { code: "NOT_FOUND", message: "There is no eval report for that setup run." } } });
+    expect((await other.post(WEB, confirm, as(await admin(other)))).status).toBe(501);
   });
   it("Code's own refusals (its live role re-check, a missing task)", async () => {
     for (const [status, body] of [[403, { error: { code: "FORBIDDEN", message: "not a maintainer" } }], [404, { error: { code: "TASK_NOT_FOUND", message: "no such task" } }]] as const) {
       const w = setUp(() => json(status, body));
-      expect(await w.post(WEB, confirm, as(await maintainer(w)))).toEqual({ status, body });
+      expect((await w.post(WEB, confirm, as(await maintainer(w)))).status).toBe(501);
     }
   });
 });

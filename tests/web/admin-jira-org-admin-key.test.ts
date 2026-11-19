@@ -105,16 +105,16 @@ it("with two Jira connections the person picks which one", async () => {
   f.close();
 });
 
-it("says a sign-in is needed for a stale sign-in and offers to sign in again; the refusal words never repeat what was typed", async () => {
+it("an old REAUTH_REQUIRED refusal is a plain fixed refusal with no sign-in step (owner DEC 254zzz73); the words never repeat what was typed", async () => {
   const f = mount();
   await screen.findByRole("heading", { name: "Jira organization admin key" });
   f.request.mockImplementation(async request => (request.method === "POST" ? { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: `Sign in again ${KEY}` } } } : { status: 200, body: { connections: [row(JIRA, "jira", "Company Jira")] } }));
   fill();
   fireEvent.click(screen.getByRole("button", { name: "Save key" }));
-  await screen.findByText(/Sign in again to change the key/);
+  await screen.findByText("That change was not made. Try again.");
   expect(f.container.textContent).not.toContain(KEY);
-  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
-  expect(f.host.signIn).toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
+  expect(f.host.signIn).not.toHaveBeenCalled();
   f.close();
 });
 

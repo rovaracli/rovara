@@ -15,6 +15,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { SlackChannelRow } from "../connect/SlackChannelRow.js";
 import { LinearTeamRow } from "../connect/LinearTeamRow.js";
 import { SetupRunRow } from "./SetupRunRow.js";
+import { useSetupReview } from "./SetupReview.js";
 import { WikiChecklistRow } from "./wiki/WikiChecklistRow.js";
 import { CompanySetupLine } from "./CompanySetupLine.js";
 import { EvalCard } from "./EvalCard.js";
@@ -27,9 +28,14 @@ export const ROW_STATE_WORDS: Readonly<Record<SetupRowState, { label: string; to
  optional: { label: "Optional", tone: "idle" }, skipped: { label: "Skipped (optional)", tone: "idle" }, failed: { label: "Failed", tone: "bad" },
 });
 const ROW_TITLES: Readonly<Record<SetupStatusRow, string>> = Object.freeze({
- repos: "Repos", setupRun: "Setup run", evalConfirm: "Confirm how work is checked", aiAndSpend: "AI and spend limit",
+ repos: "Repos", setupRun: "Setup run", evalConfirm: "AI evals", aiAndSpend: "AI for your agents",
  slackChannel: "Slack channel", linear: "Linear", invites: "Invite teammates", firstTask: "Start your first task",
 });
+/** What the AI row says while no AI can be called (setup review G6). */
+export const AI_NEEDS_YOU = "Needs you: connect an AI key or choose Rovara's AI";
+/** L4-T2c: a newer proposal beside the approved setup: the row keeps what Code says about the approved setup (Done while its check is ready); the waiting proposal is named and its cards are shown. */
+const hasNewer = (run: ProjectSetupChecklist["setupRun"]): boolean => run.approval === "approved" && run.newerProposal !== undefined;
+const waitingNewer = (run: ProjectSetupChecklist["setupRun"]): boolean => run.approval === "approved" && (run.newerProposal === "needs_you" || run.newerProposal === "checking");
 const OPTIONAL: ReadonlySet<SetupStatusRow> = new Set(["slackChannel", "linear", "invites"]);
 
 function Row({ name, state, open, children }: { name: SetupStatusRow; state: SetupRowState; open: boolean; children: ReactNode }) {
@@ -52,16 +58,19 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
  const api = useSetupChecklistApi(), query = useQueryClient();
  const status = useQuery({
   queryKey: setupChecklistKey(project), queryFn: () => api.status(project), retry: false,
-  refetchInterval: current => (current.state.data?.setupRun.state === "running" ? 5000 : false),
+  refetchInterval: current => (current.state.data?.setupRun.state === "running" || current.state.data?.setupRun.newerProposal === "checking" ? 5000 : false),
  });
  const [busy, setBusy] = useState<SetupSkippableRow | "evalNone">(), [error, setError] = useState<string>();
+ // L4-T1: a setup waiting for a person is reviewed and approved in the Setup run row, not on another page. Asked only once the checklist says a run finished.
+ const review = useSetupReview(project, status.data?.setupRun.status === "ready" && (status.data.progress.percent < 100 || place === "onboard" || waitingNewer(status.data.setupRun)));
  if (status.isError && checklistAbsent(status.error)) return null;
  if (status.isPending) return <Skeleton label="Loading the setup checklist" />;
  if (status.isError) return <section className="rv-checklist" aria-label="Finish setting up"><p role="status" data-testid="checklist-read-error"><VisibleText text={fixedSetupWords(status.error, "The project's setup couldn't be read just now. Try again.")} /></p><Button onClick={() => { void status.refetch(); }}>Try again</Button></section>;
  const data: ProjectSetupChecklist = status.data;
  const canChange = data.viewer.canSkip, admin = data.viewer.companyRole === "owner" || data.viewer.companyRole === "admin";
+ // L4-T2c: a finished checklist whose approved setup has a newer proposal waiting (or being checked) stays, so the proposal can be reviewed where it is named; a rejected one needs no decision, and a person who cannot change the project has nothing to do about one, so they leave with the rest. It is read again every 5 s while its check goes (Code keeps the row Done meanwhile).
  // A finished checklist leaves the project page, but the wiki's controls (Refresh now, the agents switch, Delete, nightly upkeep) stay reachable for the people who may use them (lead 4 W6).
- if (data.progress.percent >= 100 && place === "project") return canChange ? <><WikiChecklistRow project={project} companyAdmin={admin} alone /><EvalCheckRow project={project} alone /></> : null;
+ if (data.progress.percent >= 100 && place === "project" && !(canChange && waitingNewer(data.setupRun))) return canChange ? <><WikiChecklistRow project={project} companyAdmin={admin} alone /><EvalCheckRow project={project} alone /></> : null;
  const refresh = () => { void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); };
  async function skip(row: SetupSkippableRow, skipped: boolean) {
   setBusy(row); setError(undefined);
@@ -75,7 +84,9 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
   catch (caught) { setError(fixedSetupWords(caught, "That couldn't be saved just now. Try again.")); }
   finally { setBusy(undefined); }
  }
- const noEvalsButton = canChange ? <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals" onClick={() => { void evalNone(true); }}>This project has no evals</Button> : null;
+ const noEvalsButton = canChange ? <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals" onClick={() => { void evalNone(true); }}>This project has no AI evals</Button> : null;
+ // The same choice while Code's eval card shows (in any state): a quiet button right under the card, the same POST and the same undo, so marking "no evals" never needs the card rejected first.
+ const noEvalsOnCard = canChange ? <p className="rv-muted"><Button variant="quiet" busy={busy === "evalNone"} data-testid="checklist-eval-no-evals-card" onClick={() => { void evalNone(true); }}>This project has no AI evals</Button></p> : null;
  const next = data.progress.nextRequired;
  const open = (row: SetupStatusRow) => row === next || (OPTIONAL.has(row) && data[row].state === "optional" && canChange);
  const skipButton = (row: SetupSkippableRow) => canChange && data[row].state === "optional" ? <Button busy={busy === row} data-testid={`checklist-skip-${row}`} onClick={() => { void skip(row, true); }}>Set up later</Button> : null;
@@ -92,20 +103,23 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
    <Row name="repos" state={data.repos.state} open={open("repos")}>
     {data.repos.items.length === 0 ? <p>No repos in this project yet.</p> : <ul className="rv-checklist-chips" aria-label="Repos in this project">{data.repos.items.map(repo => <li key={repo.name}><VisibleText text={repo.fullName ?? repo.name} /></li>)}</ul>}
    </Row>
-   <Row name="setupRun" state={runRow.state} open={open("setupRun") || runRow.state === "running" || runRow.state === "failed"}>
-    <SetupRunRow project={project} row={runRow} onChanged={refresh} />
+   {/* L4-T2: Code says the truth: Done only with an approved setup whose check is ready, Needs you while a proposal or a candidate waits or the check failed, Running while the check goes. The review read below is only ever fresher (it is asked again every 5 s while the check goes), so what it says about a waiting setup wins. */}
+   <Row name="setupRun" state={review.stage === "none" || hasNewer(runRow) ? runRow.state : review.stage === "checking" ? "running" : "needs_you"} open={open("setupRun") || waitingNewer(runRow) || runRow.state === "running" || runRow.state === "failed" || review.stage !== "none"}>
+    <SetupRunRow project={project} row={runRow} onChanged={refresh} review={review} />
    </Row>
-   <Row name="evalConfirm" state={data.evalConfirm.state} open={open("evalConfirm")}>
-    {data.evalConfirm.blockedBy === "setupRun" ? <p>After the setup run, Rovara proposes how it checks work here.</p>
-     : data.evalConfirm.report === "no_evals" ? <><p data-testid="checklist-eval-no-evals-set">No evals for this project: Rovara checks work with the project's own tests.</p>{canChange && <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals-undo" onClick={() => { void evalNone(false); }}>This project has evals after all</Button>}</>
-     : <EvalCard project={project} fallback={data.evalConfirm.report === "confirmed" ? <p>Rovara runs <code><VisibleText text={data.evalConfirm.confirmedSelection ?? "the confirmed checks"} /></code> before every pull request.</p>
-      : data.evalConfirm.report === "reported" ? <>{(data.evalConfirm.suites ?? []).map(suite => <p key={suite.selection}>Rovara will run <code><VisibleText text={suite.selection} /></code> before every pull request.</p>)}<p className="rv-muted" data-testid="checklist-eval-not-yet">Confirming these checks from the web isn't connected yet; a company owner or admin, or this project's admin, confirms them where Rovara asks.</p>{noEvalsButton}</>
-      : <><p data-testid="checklist-eval-none">The setup run found no checks to confirm yet. Run setup again, or edit the test commands.</p>{noEvalsButton}</>} />}
-   </Row>
-   <Row name="aiAndSpend" state={data.aiAndSpend.state} open={open("aiAndSpend")}>
-    <p>{data.aiAndSpend.source === "project" && data.aiAndSpend.modelBudgetUsd !== null ? `This project's per-task limit: $${data.aiAndSpend.modelBudgetUsd.toFixed(2)}.` : "Same as company."}</p>
-    {canChange && <p><Link to={`/app/projects/${encodeURIComponent(project)}?tab=settings`}>Change in Project settings</Link></p>}
-   </Row>
+   {/* L4-T5 (owner D9): the AI evals row shows only when the setup run found evals. A finished run that found none leaves nothing to confirm: Code marks the row done by itself, and nothing is shown here. */}
+   {!(data.evalConfirm.state === "done" && data.evalConfirm.report === "none") && <Row name="evalConfirm" state={data.evalConfirm.state} open={open("evalConfirm")}>
+    {data.evalConfirm.blockedBy === "setupRun" ? <p>After the setup run, Rovara looks for AI evals in your repos.</p>
+     : data.evalConfirm.report === "no_evals" ? <><p data-testid="checklist-eval-no-evals-set">No AI evals for this project: Rovara checks work with the project's own tests.</p>{canChange && <Button busy={busy === "evalNone"} data-testid="checklist-eval-no-evals-undo" onClick={() => { void evalNone(false); }}>This project has AI evals after all</Button>}</>
+     : <EvalCard project={project} secondary={noEvalsOnCard} fallback={data.evalConfirm.report === "confirmed" ? <p>Rovara runs <code><VisibleText text={data.evalConfirm.confirmedSelection ?? "the confirmed checks"} /></code> before every pull request.</p>
+      : data.evalConfirm.report === "reported" ? <>{(data.evalConfirm.suites ?? []).map(suite => <p key={suite.selection}>Rovara will run <code><VisibleText text={suite.selection} /></code> before every pull request.</p>)}<p className="rv-muted" data-testid="checklist-eval-not-yet">Approving these checks from the web isn't connected yet; a company owner or admin, or this project's admin, approves them where Rovara asks.</p>{noEvalsButton}</>
+      : <><p data-testid="checklist-eval-none">Rovara has not found AI evals in this project yet. Run setup again, or edit the test commands.</p>{noEvalsButton}</>} />}
+   </Row>}
+   {/* L4-T2 (D10): the project's "AI and spend limit" row is gone. This row shows only when no AI can be called (Code's or Cloud's `needs_you`), and says what to do about it. */}
+   {data.aiAndSpend.state !== "done" && <Row name="aiAndSpend" state={data.aiAndSpend.state} open={open("aiAndSpend")}>
+    <p data-testid="checklist-ai-needs-you"><strong>{AI_NEEDS_YOU}</strong></p>
+    {admin ? <p><Link className="rv-button rv-button-primary" to="/app/admin/agent-ai">Connect an AI</Link></p> : <p className="rv-muted">Ask your company's admins to connect an AI key or choose Rovara's AI.</p>}
+   </Row>}
    {/* Lead 4 W6: the project wiki is one more row here, not a second setup page. It is not counted in the progress above (Code computes that) and is absent while Code has no wiki build. */}
    <WikiChecklistRow project={project} companyAdmin={admin} />
    {/* L4-EVCI2: "Eval check from your CI" is one more row, not counted in the progress above (Code computes that) and absent while Code does not serve it. */}

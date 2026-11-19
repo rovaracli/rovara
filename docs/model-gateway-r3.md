@@ -158,7 +158,7 @@ Absent (or `install`): the install-key route exactly as before.
 ## Rovara's AI for agents (DEC 240)
 
 In company-key mode each company's admin picks "AI for your agents" in Cloud (`/app/admin/agent-ai`, route
-`/org/agent-ai`: company admins, fresh step-up, audited as `agent_ai.source.changed`). Cloud saves it in its Companies table
+`/org/agent-ai`: company admins, audited as `agent_ai.source.changed`). Cloud saves it in its Companies table
 (`COMPANY#<org>` / `AGENT_AI`); the gateway reads it on every agent call (`agent-ai.ts`, strongly consistent, fail closed):
 
 - `rovara`: Rovara's AI. The call goes to Bedrock in Rovara's OWN account with the gateway task role (no customer role, no

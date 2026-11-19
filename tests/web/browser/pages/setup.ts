@@ -4,13 +4,14 @@ import { FAKE_CODE_URL } from "./lessons.js";
 import { ROUTES } from "./routes.js";
 
 /** Sets a project's hosted setup run on the pretend Code (none, running, ready or failed) and clears its skipped rows (guided onboarding PR 9). */
-export async function setSetupRun(page: Page, project: string, status: "none" | "running" | "ready" | "failed"): Promise<void> {
-  const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/setup-run`, { data: { project, status } });
+export async function setSetupRun(page: Page, project: string, status: "none" | "running" | "ready" | "failed", approved = false): Promise<void> {
+  // L4-T2: a ready run is Done only when its setup was approved and checked (`approved`); otherwise the row says Needs you.
+  const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/setup-run`, { data: { project, status, ...(approved ? { approved: true } : {}) } });
   expect(answer.status()).toBe(200);
 }
 
-/** Sets a project's eval card on the pretend Code (L4-EVC: a finished setup run proposes one by default; "none" shows the checklist's own words instead). */
-export async function setEvalCard(page: Page, project: string, state: "none" | "propose" | "waiting" | "approved" | "rejected"): Promise<void> {
+/** Sets a project's eval card on the pretend Code (L4-EVC: a finished setup run proposes one by default; "none" shows the checklist's own words instead; "default" puts the default back). */
+export async function setEvalCard(page: Page, project: string, state: "default" | "none" | "propose" | "waiting" | "approved" | "rejected"): Promise<void> {
   const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/eval-card`, { data: { project, state } });
   expect(answer.status()).toBe(200);
 }
@@ -73,12 +74,11 @@ export class SetupApprovalPage {
     this.problem = this.card.getByTestId("setup-approval-problem");
     this.decided = page.getByTestId("setup-decided");
   }
-  /** Opens the Setup step. `confirmed` seeds the step-up nonce the way a return from Code's sign-in page does. */
-  async open(project: string, confirmed?: string): Promise<void> {
+  /** Opens the Setup step. */
+  async open(project: string): Promise<void> {
     // The first address opened signs the person in through Code (a redirect chain), so settle on a page of the app before touching its storage.
     await this.page.goto(ROUTES.home);
     await new HomePage(this.page).expectLoaded();
-    if (confirmed !== undefined) await this.page.evaluate((nonce) => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce, at: Date.now() })), confirmed);
-    await this.page.goto(`${ROUTES.firstDay}?project=${encodeURIComponent(project)}&step=setup${confirmed === undefined ? "" : `&confirmed=${confirmed}`}`);
+    await this.page.goto(`${ROUTES.firstDay}?project=${encodeURIComponent(project)}&step=setup`);
   }
 }

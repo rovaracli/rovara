@@ -80,3 +80,52 @@ it.each(["openai", "converse"] as const)("%s binds the translated wire bytes and
   expect(reserved?.provisional).toMatchObject({ requestBytes: forwarded!.length, toolInputAllowanceTokens: 4096 });
   expect(reserved?.charge?.requestFingerprint).toBe(createHash("sha256").update(forwarded!).digest("hex"));
 });
+
+it.each(["anthropic", "openai", "openrouter"] as const)("%s receipts keep the admitted credential revision and bound key", async provider => {
+  const model = provider === "anthropic" ? "claude-sonnet-5-5" : provider === "openai" ? "gpt-5-mini" : "openai/gpt-5-mini";
+  const meter = new InMemoryMeter(() => now);
+  let reserved: ReserveInput | undefined;
+  const reserve = meter.reserve.bind(meter);
+  meter.reserve = async input => { reserved = input; return reserve(input); };
+  const sent: string[] = [];
+  const transport: ProviderTransport = async request => { sent.push(request.key); return { status: 200, body: (async function* () {})() }; };
+  const source = { kind: "company_key" as const, id: `saved_${provider}`, name: "Company key", provider, connectionRevision: "revision_7" };
+  const f = setup({ meter, transport, agentKeys: {
+    connected: async () => true,
+    keyFor: async () => { throw new Error("must use the pinned credential"); },
+    resolveForCharge: async (_iss, _cid, actualProvider) => { expect(actualProvider).toBe(provider); return { source, key: async () => "pinned-key" }; },
+  }, agentAi: {
+    sources: { sourceFor: async () => `${provider}_key` }, switchedOn: new Set([provider]),
+    ...(provider === "anthropic" ? {} : { [provider]: { transport } }),
+  }, chargeReceipts: { source: (_claims, _model, resolved) => resolved } });
+  expect((await call(f.deps, { model, max_tokens: 10, messages: [{ role: "user", content: "hello" }], stream: true }, mint({ mdl: [model] }))).status).toBe(200);
+  expect(sent).toEqual(["pinned-key"]);
+  expect(reserved?.charge?.receipt.source).toEqual(source);
+});
+
+it.each(["anthropic_key", "rovara"] as const)("fallback to %s binds only the winning source's receipt", async winner => {
+  const meter = new InMemoryMeter(() => now);
+  let reserved: ReserveInput | undefined;
+  const reserve = meter.reserve.bind(meter);
+  meter.reserve = async input => { reserved = input; return reserve(input); };
+  const model = "claude-sonnet-5-5";
+  const used: string[] = [];
+  const resolvedProviders: string[] = [];
+  const transport: ProviderTransport = async request => { used.push(request.key); return { status: 200, body: (async function* () {})() }; };
+  const f = setup({ meter, transport, agentKeys: {
+    connected: async () => true, keyFor: async () => { throw new Error("unpinned key"); },
+    resolveForCharge: async (_iss, _cid, provider) => {
+      resolvedProviders.push(provider);
+      return { source: { kind: "company_key", id: `saved_${provider}`, name: "Company key", provider, connectionRevision: "revision_7" }, key: async () => { used.push(`${provider}-key-read`); return `${provider}-pinned`; } };
+    },
+  }, agentAi: {
+    sources: { sourceFor: async () => "openai_key", orderFor: async () => ({ source: "openai_key", fallback: [winner] }) },
+    switchedOn: new Set(["openai"]), openai: { transport }, rovara: { transport, models: new Map([[model, "us.anthropic.claude-sonnet-5-5-v1:0"]]), exempt: new Set<string>() },
+  }, chargeReceipts: { source: (_claims, _model, resolved) => resolved } });
+  expect((await call(f.deps, { model, max_tokens: 10, messages: [{ role: "user", content: "hello" }], stream: true }, mint({ mdl: [model] }))).status).toBe(200);
+  expect(reserved?.charge?.receipt.source).toMatchObject(winner === "rovara" ? { kind: "rovara_ai", id: "rovara-ai", provider: "bedrock", connectionRevision: createHash("sha256").update(JSON.stringify([[model, "us.anthropic.claude-sonnet-5-5-v1:0"]])).digest("hex") } : { id: "saved_anthropic", provider: "anthropic", connectionRevision: "revision_7" });
+  expect(used).not.toContain("openai-key-read");
+  expect(resolvedProviders).toEqual(winner === "rovara" ? ["openai"] : ["openai", "anthropic"]);
+  if (winner === "anthropic_key") expect(used).toEqual(["anthropic-key-read", "anthropic-pinned"]);
+  expect(f.logs).toContainEqual({ event: "agent_source", company: claims.cid, source: winner === "rovara" ? "rovara" : "company_key", via: "fallback" });
+});

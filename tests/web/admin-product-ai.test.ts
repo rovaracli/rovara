@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// B7: the Product AI keys page in the Hybrid 1 admin area. The key is write-only (sent once, never shown, never in the page after), every change waits
-// for the fresh sign-in step, writes carry a request id and the revision read, and "not connected yet" when Cloud has no product AI settings.
+// B7: the Product AI keys page in the Hybrid 1 admin area. The key is write-only (sent once, never shown, never in the page after), every change is sent at
+// once (no step-up since owner DEC 254zzz73), writes carry a request id and the revision read, and "not connected yet" when Cloud has no product AI settings.
 import { beforeEach, describe, expect, it } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -30,7 +30,6 @@ function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<A
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  return { ...f, ...view, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
-function confirmedPath(path: string, nonce = "n-1"): string { seeded.set("rovara.stepup.nonce", JSON.stringify({ nonce, at: Date.now() })); return `${path}?confirmed=${nonce}`; }
 const view = (connected: boolean) => ({ project: "web", revision: 3, canChange: true, key: connected ? { connected: true, updatedAt: Date.UTC(2026, 10, 15) } : { connected: false }, removedUntil: null, evalBudget: { calls: 400, costMicros: 4_000_000 }, evalApproval: null });
 async function open(project = "web") {
  fireEvent.change(await screen.findByLabelText("Project"), { target: { value: project } });
@@ -46,19 +45,37 @@ describe("product AI keys page", () => {
   expect(() => readProductAi({ project: "web" })).toThrow();
   expect(usdToMicros("4.5")).toBe(4_500_000); expect(usdToMicros("x")).toBeUndefined(); expect(usdToMicros("1.1234567")).toBeUndefined();
  });
- it("asks for the fresh sign-in before any change, and shows no key field until then", async () => {
+ it("L4-T3: opens a project named in the link (`?project=`), with the field filled in, and reads only that project", async () => {
+  const f = mount("/app/admin/product-ai?project=web", () => ({ status: 200, body: view(false) }));
+  try {
+   expect(await screen.findByText(/No key is connected/u)).toBeTruthy();
+   expect(screen.getByLabelText("Project").getAttribute("value")).toBe("web");
+   expect(f.request.mock.calls.map(([r]) => r.path).filter(path => path.includes("product-ai"))).toEqual(["/v1/app/projects/web/product-ai"]);
+  } finally { f.close(); }
+ });
+ it("L4-T3: a project in the link that is not a project name is ignored (nothing is read), and the page asks as before", async () => {
+  for (const given of ["Bad%20Name", "..%2Fx", "web%0A", ""]) {
+   const f = mount(`/app/admin/product-ai?project=${given}`, () => ({ status: 200, body: view(false) }));
+   try {
+    expect(await screen.findByLabelText("Project")).toBeTruthy();
+    expect(screen.getByLabelText("Project").getAttribute("value") ?? "").toBe(given === "web%0A" ? "web" : "");
+    expect(f.request.mock.calls.map(([r]) => r.path).filter(path => path.includes("/projects/"))).toEqual(given === "web%0A" ? ["/v1/app/projects/web/product-ai"] : []);
+   } finally { f.close(); }
+  }
+ });
+ it("shows the key field at once (no step-up since owner DEC 254zzz73)", async () => {
   const f = mount("/app/admin/product-ai", () => ({ status: 200, body: view(false) }));
   try {
    await open();
    expect(await screen.findByText(/No key is connected/u)).toBeTruthy();
-   expect(screen.getByTestId("fresh-sign-in")).toBeTruthy();
-   expect(screen.queryByLabelText("Paste the AI Studio key")).toBeNull();
+   expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+   expect(screen.getByLabelText("Paste the AI Studio key")).toBeTruthy();
   } finally { f.close(); }
  });
  it("sends the key once with a request id and the revision read, and never shows it back", async () => {
   const sent: ApiRequest[] = [];
   let connected = false;
-  const f = mount(confirmedPath("/app/admin/product-ai"), (r) => { if (r.method === "PUT") { sent.push(r); connected = true; } return { status: 200, body: view(connected) }; });
+  const f = mount("/app/admin/product-ai", (r) => { if (r.method === "PUT") { sent.push(r); connected = true; } return { status: 200, body: view(connected) }; });
   try {
    await open();
    const field = await screen.findByLabelText("Paste the AI Studio key");
@@ -78,7 +95,7 @@ describe("product AI keys page", () => {
   const sent: ApiRequest[] = [];
   let vertex = false;
   const body = () => ({ ...view(false), vertex: vertex ? { connected: true, projectId: "acme-evals", location: "us-central1", updatedAt: Date.UTC(2026, 10, 15) } : { connected: false } });
-  const f = mount(confirmedPath("/app/admin/product-ai"), (r) => { if (r.method === "PUT") { sent.push(r); vertex = true; } return { status: 200, body: body() }; });
+  const f = mount("/app/admin/product-ai", (r) => { if (r.method === "PUT") { sent.push(r); vertex = true; } return { status: 200, body: body() }; });
   try {
    await open();
    fireEvent.change(await screen.findByLabelText("AI provider"), { target: { value: "vertex" } });

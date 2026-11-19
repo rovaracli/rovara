@@ -573,7 +573,9 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
       ],
     },
     // A bounded role may be granted `sts:AssumeRole` into a customer's role in ANOTHER account, with an external id that names a Rovara org (the broker's CloudWatch
-    // connector, Plan 4 Task 16, and the model proxy's Bedrock sources, Plan 3): a boundary only caps, so without this the grants could never take effect.
+    // connector, Plan 4 Task 16, the test accounts, and the old model proxy's Bedrock sources, Plan 3): a boundary only caps, so without this the grants could never take effect.
+    // The company's own Bedrock for its agents is NOT here: its broker is `RovaraBedrockBroker-<env>` in the gateway stack, which carries Cloud's boundary (cloud-boundary.ts
+    // AssumeCustomerBedrockRoles) with the ONE Bedrock external id scheme (`rvb-*`, an HMAC), never this `rovara-org_*` form (tests/contract/bedrock-external-id-boundary.test.ts).
     // Owner decision A narrows it twice. The ceiling is raised for the three roles that hold such a grant and no other principal (ArnLike on aws:PrincipalArn), so a
     // future broad sts:AssumeRole on some other role gains no cross-account reach. And the resource is never a role of this account, nor of any account of Rovara's own
     // AWS Organization when its id is configured (aws:ResourceOrgID; a customer account outside any organization has no such key, and a negated condition passes when

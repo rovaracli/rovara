@@ -10,7 +10,7 @@ import { EmptyState } from "../../../design/EmptyState.js";
 import { Skeleton } from "../../../design/Skeleton.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { WikiPageView } from "./WikiPageView.js";
-import { DisputedList } from "./WikiCorrections.js";
+import { DisputedList, GapsList } from "./WikiCorrections.js";
 import { useProject } from "../../../api/projects.js";
 import { useAnswersEnabled } from "../../../api/answers.js";
 import { AnswerBox } from "../../answers/AnswerBox.js";
@@ -46,6 +46,13 @@ function DisputedEntry({ project, pageId, active, onOpen }: { project: string; p
   const read = useWikiCorrections(project, pageId);
   if (read.data?.you.seeDisputed !== true) return null;
   return <p className="rv-wiki-small"><button type="button" className="rv-wiki-disputed-link" data-testid="wiki-disputed-link" {...(active ? { "aria-current": "page" as const } : {})} onClick={onOpen}>{T.DISPUTED}</button></p>;
+}
+
+/** "Questions it couldn't answer" in the navigation, for the same people (maintainers). The read is the page's own corrections read. */
+function GapsEntry({ project, pageId, active, onOpen }: { project: string; pageId: string | undefined; active: boolean; onOpen: () => void }) {
+  const read = useWikiCorrections(project, pageId);
+  if (read.data?.you.seeDisputed !== true) return null;
+  return <p className="rv-wiki-small"><button type="button" className="rv-wiki-disputed-link" data-testid="wiki-gaps-link" {...(active ? { "aria-current": "page" as const } : {})} onClick={onOpen}>{T.GAPS}</button></p>;
 }
 
 function SearchResults({ index, q, search, open }: { index: WikiIndexResponse; q: string; search: ReturnType<typeof useWikiSearch>; open: (id: string) => void }) {
@@ -98,16 +105,18 @@ export function WikiTab({ project }: { project: string }) {
   }
   const q = draft.trim();
   const wanted = params.get("page"), current = index.pages.find((page) => page.pageId === wanted) ?? index.pages.find((page) => page.kind === "overview") ?? index.pages[0];
-  const disputed = params.get("view") === "disputed";
-  const showDisputed = () => {
+  const disputed = params.get("view") === "disputed", gaps = params.get("view") === "gaps";
+  const showView = (view: "disputed" | "gaps") => {
     setDraft("");
     setNavOpen(false);
     const next = new URLSearchParams(params);
     next.set("tab", "wiki");
-    next.set("view", "disputed");
+    next.set("view", view);
     next.delete("page");
     setParams(next);
   };
+  const showDisputed = () => { showView("disputed"); };
+  const showGaps = () => { showView("gaps"); };
   const open = (id: string) => {
     setDraft("");
     setNavOpen(false);
@@ -127,12 +136,13 @@ export function WikiTab({ project }: { project: string }) {
           <label htmlFor={searchId} className="rv-visually-hidden">{T.SEARCH}</label>
           <input id={searchId} className="rv-input rv-wiki-search" type="search" placeholder={T.SEARCH_PLACEHOLDER} value={draft} maxLength={80} onChange={(event) => { setDraft(event.target.value); }} />
           {notice !== undefined && <p className="rv-muted rv-wiki-small" data-testid="wiki-build-notice">{notice}</p>}
-          <Tree index={index} current={current?.pageId} searching={q !== "" || disputed} open={open} />
+          <Tree index={index} current={current?.pageId} searching={q !== "" || disputed || gaps} open={open} />
           <DisputedEntry project={project} pageId={current?.pageId} active={disputed} onOpen={showDisputed} />
+          <GapsEntry project={project} pageId={current?.pageId} active={gaps} onOpen={showGaps} />
         </div>
       </nav>
       <div className="rv-wiki-main">
-        {agentsBanner}{q !== "" ? <SearchResults index={index} q={q} search={search} open={open} /> : disputed ? <DisputedList project={project} open={open} back={() => { open(current?.pageId ?? ""); }} /> : current === undefined ? <p className="rv-muted">{T.NO_PAGE}</p> : <WikiPageView key={current.pageId} project={project} id={current.pageId} entry={current} pages={index.pages} focusTitle={opened} />}
+        {agentsBanner}{q !== "" ? <SearchResults index={index} q={q} search={search} open={open} /> : disputed ? <DisputedList project={project} open={open} back={() => { open(current?.pageId ?? ""); }} /> : gaps ? <GapsList project={project} back={() => { open(current?.pageId ?? ""); }} /> : current === undefined ? <p className="rv-muted">{T.NO_PAGE}</p> : <WikiPageView key={current.pageId} project={project} id={current.pageId} entry={current} pages={index.pages} focusTitle={opened} />}
         {ask}
       </div>
     </section>

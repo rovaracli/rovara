@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // PRODUCT-LEARNING-CONNECT-ROUTE: the Learning AI key page in the Hybrid 1 admin area (company admins). The key is write-only (sent once, never
-// shown, never in the page after), every change waits for the fresh sign-in step, writes carry the provider, a request id and the revision read;
+// shown, never in the page after), every change is sent at once (no step-up since owner DEC 254zzz73), writes carry the provider, a request id and the revision read;
 // the learning cap and the lessons-paused reasons are shown; "not connected yet" when Cloud has no product AI settings.
 import { beforeEach, describe, expect, it } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
@@ -31,7 +31,6 @@ function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<A
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  return { ...f, ...view, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
-function confirmedPath(path: string, nonce = "n-1"): string { seeded.set("rovara.stepup.nonce", JSON.stringify({ nonce, at: Date.now() })); return `${path}?confirmed=${nonce}`; }
 const reasons = [{ reason: "lessons_off", message: "Lessons are switched off for this company, so no learning call is made." }, { reason: "no_provider", message: "Learning calls need the company's own connected AI provider account, and none is usable." }];
 const view = (connected: boolean) => ({ revision: 2, canChange: true, accounts: { anthropic: connected ? { connected: true, updatedAt: Date.UTC(2026, 10, 15) } : { connected: false }, openai: { connected: false }, gemini: { connected: false } }, removed: [], learningCap: { monthlyUsdMicros: 20_000_000, companyMonthlyUsdMicros: 500_000_000 }, lessonsOn: true, pausedNow: connected ? [] : ["no_provider"], pauseReasons: reasons });
 
@@ -48,19 +47,19 @@ describe("learning AI key page", () => {
   expect(readLearningAi(view(true)).listed).toEqual(["anthropic", "openai", "gemini"]);
   expect(readLearningAi({ ...view(true), accounts: { ...view(true).accounts, openrouter: { connected: true } } }).listed).toEqual(["anthropic", "openai", "gemini", "openrouter"]);
  });
- it("shows the cap and why lessons are paused; asks for the fresh sign-in before any key field", async () => {
+ it("shows the cap and why lessons are paused; the key field is there at once (no step-up)", async () => {
   const f = mount("/app/admin/learning-ai", () => ({ status: 200, body: view(false) }));
   try {
    expect(await screen.findByText(/a month on learning/u)).toBeTruthy();
    expect((await screen.findByTestId("paused-now")).textContent).toMatch(/none is usable/u);
-   expect(screen.getByTestId("fresh-sign-in")).toBeTruthy();
-   expect(screen.queryByLabelText("Paste the Anthropic key")).toBeNull();
+   expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+   expect(screen.getByLabelText("Paste the Anthropic key")).toBeTruthy();
   } finally { f.close(); }
  });
  it("sends the key once with the provider, a request id and the revision read, and never shows it back", async () => {
   const sent: ApiRequest[] = [];
   let connected = false;
-  const f = mount(confirmedPath("/app/admin/learning-ai"), (r) => { if (r.method === "PUT") { sent.push(r); connected = true; } return { status: 200, body: view(connected) }; });
+  const f = mount("/app/admin/learning-ai", (r) => { if (r.method === "PUT") { sent.push(r); connected = true; } return { status: 200, body: view(connected) }; });
   try {
    const field = await screen.findByLabelText("Paste the Anthropic key");
    const secret = ["sk", "ant", "x".repeat(32)].join("-");

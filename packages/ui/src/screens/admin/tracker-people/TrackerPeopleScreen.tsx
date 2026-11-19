@@ -26,7 +26,7 @@ const reasonWords: Record<string, string> = {
   no_matching_member: "No company member has this exact verified sign-in email.",
 };
 const whyWords: Record<string, string> = { domain_company_account_exact_email: "Verified domain, company-controlled account, exact email match" };
-type Failure = { message: string; reauth: boolean };
+type Failure = { message: string };
 
 /**
  * The Linear and Jira people Rovara could not match to a company member by themselves. An admin maps each to a member of this company (or takes a mapping away). The page shows the name the tool showed and
@@ -49,15 +49,15 @@ function TrackerPeople({ orgId, developerId }: { orgId: string; developerId: str
   const names = new Map((read.data?.members ?? []).map(member => [member.developerId, member.name]));
   async function send(body: TrackerPeopleMutationBody, receiptText: string) {
     const checked = TrackerPeopleMutationBodySchema.safeParse(body);
-    if (!checked.success) { setFailure({ message: "Check the person and the member, then try again.", reauth: false });return; }
+    if (!checked.success) { setFailure({ message: "Check the person and the member, then try again." });return; }
     setBusy(body.action === "auto_link" ? "auto_link" : `${body.system}#${body.sourceId}`);setFailure(undefined);setReceipt(undefined);
     try {
       // One request per press: a repeated press with the same request id is one change.
       await api.sendAnswer("POST", "/v1/app/org/tracker-people", checked.data, TrackerPeopleResultReaderSchema, { retry: "never" });
       setReceipt(receiptText);await read.refetch();
     } catch (caught) {
-      if (caught instanceof ApiError) setFailure({ message: caught.code === "REAUTH_REQUIRED" ? "Sign in again to make this change. Mapping people needs a sign-in within the last 10 minutes." : caught.code === "NOT_FOUND" ? "That person is not on the list any more. The list was reloaded." : caught.code === "AUDIT_UNAVAILABLE" ? "This change could not be recorded in the audit log, so it was not made. Try again later." : "That change was not made. Try again.", reauth: caught.code === "REAUTH_REQUIRED" });
-      else setFailure({ message: "That change was not made. Try again.", reauth: false });
+      if (caught instanceof ApiError) setFailure({ message: caught.code === "NOT_FOUND" ? "That person is not on the list any more. The list was reloaded." : caught.code === "AUDIT_UNAVAILABLE" ? "This change could not be recorded in the audit log, so it was not made. Try again later." : "That change was not made. Try again." });
+      else setFailure({ message: "That change was not made. Try again." });
       if (caught instanceof ApiError && caught.code === "NOT_FOUND") void read.refetch();
     } finally { setBusy(undefined); }
   }
@@ -67,7 +67,7 @@ function TrackerPeople({ orgId, developerId }: { orgId: string; developerId: str
   return <section aria-busy={read.isFetching}>
     <PageHeader focusOnMount title="Tracker people" description="People in Linear and Jira that Rovara could not match to a company member by a verified email. Map each to the member they are, so their work can be remembered and, if they ask, forgotten." />
     {receipt !== undefined && <p role="status">{receipt}</p>}
-    {failure !== undefined && <p role="alert"><VisibleText text={failure.message} />{failure.reauth && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>Sign in again</Button></>}</p>}
+    {failure !== undefined && <p role="alert"><VisibleText text={failure.message} /></p>}
     {read.isPending ? <Skeleton label="Loading tracker people" /> : read.isError || people === undefined ? <div><p role="alert">{read.error instanceof ApiError && read.error.status === 404 ? "Tracker people are not turned on for this company." : read.error instanceof ApiError && read.error.status === 403 ? "You don't have permission to see tracker people." : "Couldn't load tracker people. Try again."}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div> : <>
       {people.truncated && <p role="alert">The list is long, so only the first part is shown.</p>}
       <h2>Automatic linking</h2>

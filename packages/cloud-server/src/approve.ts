@@ -90,7 +90,7 @@ export async function approvalRoute(
     if (record.owner.developerId !== context.session.access.developerId) {
       return page(403, "Not yours to decide", `<h1>Only ${escape(record.owner.name)} can decide this plan</h1><p>They own the session. <a href="${sessionLink}">Back to the session</a></p>`);
     }
-    // A core task's plan is decided on its decision card, with Code's own step-up, digest and risk rules (audit 2026-11-18 item 6): the core takes no decision from this page.
+    // A core task's plan is decided on its decision card, with Code's own digest and risk rules (audit 2026-11-18 item 6): the core takes no decision from this page.
     const onCard = page(200, "Decide on the session page", `<h1>Decide this plan on its card</h1><p>${escape(CORE_ACTION_WORDS.planOnCard)}</p><p><a href="${sessionLink}">Open the session</a></p>`);
     if (method === "GET" && await planDecidedOnCard(context.client, context.session, record.taskId)) return onCard;
     if (method === "GET") {

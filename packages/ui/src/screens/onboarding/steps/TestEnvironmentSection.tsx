@@ -45,7 +45,7 @@ function Line({ text, source }: { text: string; source: Source | undefined }) {
 
 /**
  * The setup wizard's test-environment section (E4): Rovara proposes, a maintainer looks at what would run and where each value came from, runs the proposal's own check on a fresh workspace (the commands are NOT in
- * the project's settings yet), proves it from that check, and approves it; the approval adds the commands to the project's settings. A change that is less safe than the sandbox needs a second person's confirmation and the approver's own fresh sign-in; this page only asks, and the server decides. With the feature off
+ * the project's settings yet), proves it from that check, and approves it; the approval adds the commands to the project's settings. A change that is less safe than the sandbox needs a second person's confirmation; this page only asks, and the server decides. With the feature off
  * the server answers "not found" and this section shows nothing.
  */
 export function TestEnvironmentSection({ project, canEditSettings, setupStatus, settingsRevision, onSettingsChanged }: { project: string; /** The page knows the viewer may edit the project's settings (a maintainer): only then is the company-recipe share panel mounted, so a viewer's page never asks and logs a refusal. */ canEditSettings: boolean; setupStatus: string; settingsRevision: number; onSettingsChanged: () => Promise<void> }) {
@@ -57,7 +57,7 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
   // While the proposal's own check runs, read again every few seconds: it is done when its workspace is.
   const query = useQuery({ queryKey: key, queryFn: () => api.read(project), retry: false, refetchInterval: (q) => (q.state.data?.proposal?.check.status === "checking" || q.state.data?.approved?.check.status === "checking" ? 5000 : false) });
   const [busy, setBusy] = useState<string>();
-  const [error, setError] = useState<{ message: string; reauth: boolean }>();
+  const [error, setError] = useState<{ message: string }>();
   const [applied, setApplied] = useState<TestEnvApplyAnswer>();
   const [confirmUrl, setConfirmUrl] = useState<string>();
   const [editing, setEditing] = useState<string>();
@@ -67,8 +67,8 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
   async function act<T>(name: string, run: () => Promise<T>, after?: (value: T) => void): Promise<void> {
     setBusy(name); setError(undefined);
     try { after?.(await run()); } catch (caught) {
-      if (caught instanceof ApiError) setError({ message: caught.message, reauth: caught.code === "REAUTH_REQUIRED" });
-      else setError({ message: "Couldn't finish that. Try again.", reauth: false });
+      if (caught instanceof ApiError) setError({ message: caught.message });
+      else setError({ message: "Couldn't finish that. Try again." });
     } finally { setBusy(undefined); }
   }
   const take = (value: TestEnvironmentState) => { client.setQueryData(key, value); };
@@ -113,12 +113,12 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
       <TextArea label="Edit the test environment" hint="The whole environment as JSON. It is checked again when you save, and it becomes the proposal; nothing changes until it is proved and approved." value={editing} rows={14} onChange={(event) => setEditing(event.target.value)} />
       <Button variant="primary" busy={busy === "edit"} onClick={() => {
         let parsed: unknown;
-        try { parsed = JSON.parse(editing); } catch { setError({ message: "That isn't valid JSON.", reauth: false }); return; }
+        try { parsed = JSON.parse(editing); } catch { setError({ message: "That isn't valid JSON." }); return; }
         void act("edit", () => api.edit(project, parsed), (value) => { take(value); setEditing(undefined); });
       }}>Save my edit</Button>
       <Button onClick={() => setEditing(undefined)}>Cancel</Button>
     </div>}
-    {error && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => host.signIn(host.currentPath(), { stepUp: true })}>Confirm it's you</Button></>}</p>}
+    {error && <p role="alert"><VisibleText text={error.message} /></p>}
   </section>;
 }
 
@@ -176,7 +176,7 @@ function ProposalView(props: {
 
     <h4>Approve</h4>
     {!proposal.needs.secondPerson && <>
-      <p>{proposal.needs.freshSignIn ? "This raises the risk, so you will be asked to sign in again if your sign-in is more than ten minutes old." : "Tasks in this project use it from now on."}</p>
+      <p>Tasks in this project use it from now on.</p>
       <Button variant="primary" busy={busy === "approve"} disabled={!proposal.proved} onClick={props.onApprove}>Approve</Button>
     </>}
     {proposal.needs.secondPerson && <>

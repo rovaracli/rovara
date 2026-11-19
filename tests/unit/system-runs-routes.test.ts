@@ -1,9 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment -- the tests break a plain JSON answer on purpose */
 // L4-P3 (owner 2026-11-17): the company's one control over nightly upkeep through Cloud's handler, passed to Code's `GET`/`PUT /v1/app/company/system-runs` as the signed-in person. Only a company owner or admin
-// uses it (the role is Code's access check now, never the stored sign-in): anyone else gets one fixed 403 and Code is not asked. ALLOWING needs Code's fresh step-up (Cloud answers it with the code
-// `REAUTH_REQUIRED` in Cloud's words, which the app turns into the sign-in step); WITHDRAWING asks for none. Cloud forwards exactly a request id and the choice, rebuilds the answer, and never echoes Code's text.
-// Mutants (each killed by the named test, run by hand): S1 role check dropped; S2 stored sign-in role used; S3 extra body field forwarded; S4 query forwarded; S5 REAUTH_REQUIRED not kept (answered as "not allowed");
-// S6 Code's step-up words passed on; S7 a withdrawal asks for a step-up in Cloud; S8 Code's answer passed unrebuilt; S9 contradictory answer accepted; S10 unknown-route 404 not "not yet"; S11 Code's text echoed;
+// uses it (the role is Code's access check now, never the stored sign-in): anyone else gets one fixed 403 and Code is not asked. Neither allowing nor withdrawing needs a step-up
+// (owner DEC 254zzz73: any 403 from Code is the one "not allowed" sentence). Cloud forwards exactly a request id and the choice, rebuilds the answer, and never echoes Code's text.
+// Mutants (each killed by the named test, run by hand): S1 role check dropped; S2 stored sign-in role used; S3 extra body field forwarded; S4 query forwarded; S5 an admin with no step-up refused;
+// S6 Code's words passed on; S7 a withdrawal refused; S8 Code's answer passed unrebuilt; S9 contradictory answer accepted; S10 unknown-route 404 not "not yet"; S11 Code's text echoed;
 // S12 log names what the person wrote; S13 company or person in Code's body or path.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -17,7 +17,6 @@ const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb";
 const ID = (c: string) => c.repeat(64);
 const LEAK = "SENSITIVE-CODE-DETAIL";
 const RID = "11111111-1111-4111-8111-111111111111";
-const NEEDS_SIGN_IN = "Rovara's automatic runs are allowed right after you confirm it's you on the sign-in page: a tool that holds an API token cannot allow them. Confirm it's you, then try again within a few minutes.";
 const NOT_ALLOWED = "Only company owners and admins can see or change whether Rovara's automatic runs are allowed for the company.";
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const err = (status: number, code: string, message: string) => json(status, { error: { code, message } });
@@ -50,12 +49,11 @@ function setUp(override: Override = () => undefined) {
     const replaced = override(call, person);
     if (replaced !== undefined) return replaced;
     if (url.pathname !== "/v1/app/company/system-runs") return err(404, "NOT_FOUND", "route not found");
-    // Code's rule: a live company owner or admin; the company is the caller's; allowing needs a fresh step-up, withdrawing does not.
+    // Code's rule: a live company owner or admin; the company is the caller's (no step-up since owner DEC 254zzz73).
     if (person.company === undefined || (person.role !== "owner" && person.role !== "admin")) return err(403, "FORBIDDEN", `${NOT_ALLOWED} ${LEAK}`);
     const view = () => ({ available: true, allowed: consent.get(person.company!) === true, systemRunsOn: consent.get(person.company!) === true });
     if (call.method === "GET") return json(200, view());
     const body = call.body as { requestId: string; allowed: boolean };
-    if (body.allowed && person.fresh !== true) return err(403, "REAUTH_REQUIRED", NEEDS_SIGN_IN);
     consent.set(person.company, body.allowed);
     return json(200, view());
   }) as typeof fetch;
@@ -95,7 +93,8 @@ afterEach(() => { vi.restoreAllMocks(); });
 describe("the words and the contract", () => {
   it("Cloud's new sentences are the same in the server and in the app's contracts and are among the sentences the app shows", () => {
     expect({ ...WIKI_SETUP_WORDS }).toEqual({ ...APP_WORDS });
-    for (const key of ["needsSignIn", "systemRunsNotAllowed"] as const) expect(WIKI_SETUP_SENTENCES.has(APP_WORDS[key])).toBe(true);
+    expect(WIKI_SETUP_SENTENCES.has(APP_WORDS.systemRunsNotAllowed)).toBe(true);
+    expect(Object.keys(APP_WORDS)).not.toContain("needsSignIn");
     expect(SYSTEM_RUNS_PATH).toBe("/v1/app/company/system-runs");
   });
 });
@@ -121,8 +120,8 @@ describe("who uses the control", () => {
   });
 });
 
-describe("allowing needs Code's fresh step-up; withdrawing needs none", () => {
-  it("allowing with a fresh step-up works and Code is sent exactly the id and the choice", async () => {
+describe("allowing and withdrawing need no step-up (owner DEC 254zzz73)", () => {
+  it("allowing works and Code is sent exactly the id and the choice", async () => {
     const s = setUp();
     const answer = await s.send("PUT", PATH, await s.as("ada-token"), { requestId: RID, allowed: true });
     expect(answer.status).toBe(200);
@@ -136,28 +135,29 @@ describe("allowing needs Code's fresh step-up; withdrawing needs none", () => {
     expect(s.consent.get(A)).toBe(true);
   });
 
-  // MUTANT S5 (REAUTH_REQUIRED not kept) and S6 (Code's words passed on).
-  it("without a fresh step-up Code says REAUTH_REQUIRED: Cloud answers 403 with the same code in Cloud's own sentence, which the app turns into the sign-in step", async () => {
+  // MUTANT S5 (an admin with no step-up refused) and the wrong company.
+  it("an admin with no step-up allows (owner DEC 254zzz73); another company's admin changes only their own company; a member still can't", async () => {
     const s = setUp();
-    const answer = await s.send("PUT", PATH, await s.as("mel-token"), { requestId: RID, allowed: true });
-    expect(asRefusal(answer)).toEqual(refusal("needsSignIn"));
-    expect(error(answer)).toEqual({ code: "REAUTH_REQUIRED", message: APP_WORDS.needsSignIn });
-    expect(answer.text).not.toContain("API token");
+    expect(asRefusal(await s.send("PUT", PATH, await s.as("pam-token"), { requestId: RID, allowed: true }))).toEqual(refusal("systemRunsNotAllowed"));
+    expect((await s.send("PUT", PATH, await s.as("bob-token"), { requestId: RID, allowed: true })).status).toBe(200);
     expect(s.consent.get(A)).toBeUndefined();
+    expect(s.consent.get(B)).toBe(true);
+    expect((await s.send("PUT", PATH, await s.as("mel-token"), { requestId: RID, allowed: true })).status).toBe(200);
+    expect(s.consent.get(A)).toBe(true);
   });
 
-  // MUTANT S5b: the step-up is recognised only by Code's exact sentence (a one-character difference would turn the sign-in step into "not allowed").
-  it("any 403 REAUTH_REQUIRED from Code is the step-up, in Cloud's sentence, whatever words Code used; any other 403 is 'not allowed'", async () => {
-    const s = setUp((call) => (call.method === "PUT" ? err(403, "REAUTH_REQUIRED", `other ${LEAK}`) : undefined));
-    const answer = await s.send("PUT", PATH, await s.as("ada-token"), { requestId: RID, allowed: true });
-    expect(asRefusal(answer)).toEqual(refusal("needsSignIn"));
-    expect(answer.text).not.toContain(LEAK);
-    const forbidden = setUp((call) => (call.method === "PUT" ? err(403, "FORBIDDEN", NEEDS_SIGN_IN) : undefined));
-    expect(asRefusal(await forbidden.send("PUT", PATH, await forbidden.as("ada-token"), { requestId: RID, allowed: true }))).toEqual(refusal("systemRunsNotAllowed"));
+  // MUTANT S6: Code's words passed on.
+  it("any 403 from Code, whatever its code, is 'not allowed' in Cloud's sentence, never Code's words", async () => {
+    for (const code of ["REAUTH_REQUIRED", "FORBIDDEN"]) {
+      const s = setUp((call) => (call.method === "PUT" ? err(403, code, `other ${LEAK}`) : undefined));
+      const answer = await s.send("PUT", PATH, await s.as("ada-token"), { requestId: RID, allowed: true });
+      expect(asRefusal(answer)).toEqual(refusal("systemRunsNotAllowed"));
+      expect(answer.text).not.toContain(LEAK);
+    }
   });
 
-  // MUTANT S7: Cloud asks for a step-up on a withdrawal (here: a person whose step-up is stale is refused by Cloud itself).
-  it("withdrawing needs none: an admin whose step-up is stale withdraws, and Cloud sends the same two fields", async () => {
+  // MUTANT S7: a withdrawal refused.
+  it("withdrawing: an admin withdraws, and Cloud sends the same two fields", async () => {
     const s = setUp();
     await s.send("PUT", PATH, await s.as("ada-token"), { requestId: RID, allowed: true });
     const mel = await s.as("mel-token");

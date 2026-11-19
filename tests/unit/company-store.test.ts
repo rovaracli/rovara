@@ -321,6 +321,31 @@ function contract(name: string, make: () => CompanyStore) {
 
 contract("LocalCompanyStore", () => new LocalCompanyStore());
 contract("DynamoCompanyStore (in-memory table)", () => new DynamoCompanyStore(memoryTable() as never, "companies"));
+// DEC 254zzz84(4): the agent AI row's saved order (first choice + fallback), on both stores.
+for (const [name, make] of [["LocalCompanyStore", () => new LocalCompanyStore()], ["DynamoCompanyStore", () => new DynamoCompanyStore(memoryTable() as never, "companies")]] as const) describe(`${name}: the agent AI order`, () => {
+  it("saves and reads the fallback; a row without one carries none; an invalid one is refused before writing", async () => {
+    const store: CompanyStore = make();
+    await store.putAgentAi({ companyId: A, source: "anthropic_key", fallback: ["rovara"], updatedAt: iso(NOW), updatedBy: "d".repeat(64) }, 0);
+    expect(await store.agentAi(A)).toEqual({ companyId: A, source: "anthropic_key", fallback: ["rovara"], version: 1, updatedAt: iso(NOW), updatedBy: "d".repeat(64) });
+    await store.putAgentAi({ companyId: A, source: "rovara", fallback: [], updatedAt: iso(NOW), updatedBy: "d".repeat(64) }, 1);
+    expect(await store.agentAi(A)).toEqual({ companyId: A, source: "rovara", version: 2, updatedAt: iso(NOW), updatedBy: "d".repeat(64) });
+    for (const fallback of [["rovara"], ["anthropic_key", "anthropic_key"], ["x"]] as never[]) await expect(store.putAgentAi({ companyId: A, source: "rovara", fallback, updatedAt: iso(NOW), updatedBy: "d".repeat(64) }, 2)).rejects.toThrow();
+    expect(await store.agentAi(A)).toMatchObject({ version: 2 });
+    expect(await store.agentAi(B)).toBeUndefined();
+  });
+});
+describe("DynamoCompanyStore: an agent AI row with an unreadable fallback is an outage, never a partial order", () => {
+  it("throws on a fallback that repeats the first choice, repeats itself or names an unknown source", async () => {
+    const table = memoryTable();
+    const store = new DynamoCompanyStore(table as never, "companies");
+    const db = table as never as { send: (command: unknown) => Promise<unknown> };
+    for (const fallback of [["anthropic_key"], ["rovara", "rovara"], ["openai"], "rovara"]) {
+      await db.send(new PutCommand({ TableName: "companies", Item: { pk: `COMPANY#${A}`, sk: "AGENT_AI", companyId: A, source: "anthropic_key", fallback, version: 1, updatedAt: iso(NOW), updatedBy: "d".repeat(64) } }));
+      await expect(store.agentAi(A)).rejects.toThrow();
+    }
+  });
+});
+
 
 describe("DynamoCompanyStore: a row's company is checked on every read", () => {
   it("reads nothing from a row whose company attribute is not the one its key names", async () => {

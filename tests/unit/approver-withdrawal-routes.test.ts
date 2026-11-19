@@ -161,3 +161,32 @@ describe("the approval as the app sees it", () => {
     expect((await w.call(pam, "GET", "/projects/web/product-ai")).body).toMatchObject({ evalApproval: { state: "stale" } });
   });
 });
+
+// DEC 254zzz84 (5): removing a person from the company withdraws their eval approvals, but only once Code removed them (a refused removal withdraws nothing).
+describe("company member removal", () => {
+  const removal = (status: number) => (call: { method: string; pathname: string; body: unknown }) => {
+    if (call.method !== "POST" || call.pathname !== `/v1/dev/company/members/${pamId}/removal`) return undefined;
+    const body = call.body as { requestId: string; successorId: string };
+    return new Response(JSON.stringify(status === 200
+      ? { removalId: body.requestId, state: "DONE", successorId: body.successorId, moved: { agents: 0, chains: 0, projects: 0, tasks: 0, tasksLeft: 0 } }
+      : { error: { code: "CHANGE_STALE", message: "this person's role changed; review the removal again" } }), { status, headers: { "content-type": "application/json" } });
+  };
+
+  it("withdraws the removed person's approvals after Code removed them", async () => {
+    const w = world({ code: removal(200) });
+    await approved(w);
+    w.advance(1000);
+    const r = await w.call(await w.signIn("ada", 30), "POST", `/org/members/${pamId}/removal`, { requestId: "00000000-0000-4000-8000-0000000000aa", expectedRole: "member" });
+    expect(r.status).toBe(200);
+    expect(await storedEvalApprovals(w.store, () => w.clock.at).current(ISS, A, "web")).toBe(EVAL_APPROVAL_STALE);
+  });
+
+  it("a removal Code refuses withdraws nothing", async () => {
+    const w = world({ code: removal(409) });
+    await approved(w);
+    w.advance(1000);
+    const r = await w.call(await w.signIn("ada", 30), "POST", `/org/members/${pamId}/removal`, { requestId: "00000000-0000-4000-8000-0000000000ab", expectedRole: "member" });
+    expect(r.status).toBe(409);
+    expect(await storedEvalApprovals(w.store, () => w.clock.at).current(ISS, A, "web")).toMatchObject({ approver: { personId: pamId } });
+  });
+});

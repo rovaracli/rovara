@@ -33,7 +33,7 @@ const corrections = (role: Role, over: Partial<{ stale: boolean; lessons: boolea
   ],
 });
 
-interface Options { role?: Role | "none"; corrections?: () => ApiResponse; stale?: boolean; lessons?: boolean; write?: (request: ApiRequest) => ApiResponse | undefined; disputed?: () => ApiResponse; initial?: string }
+interface Options { role?: Role | "none"; corrections?: () => ApiResponse; stale?: boolean; lessons?: boolean; write?: (request: ApiRequest) => ApiResponse | undefined; disputed?: () => ApiResponse; gaps?: () => ApiResponse; initial?: string }
 function mount(options: Options = {}) {
   const overview = projectFixture();
   overview.project.repositories = [{ name: "beacon-api", fullName: "acme/beacon-api", defaultBranch: "main" }] as unknown as typeof overview.project.repositories;
@@ -45,6 +45,7 @@ function mount(options: Options = {}) {
       return options.write?.(request) ?? json(200, path.endsWith("/notes") ? { note: { noteId: "note-new-0001", text: "x", author: "Me", createdAt: "2026-11-17T10:00:00.000Z", approval: "pending" } } : path.endsWith("/approve") ? { noteId: "note-pending-1", approval: "approved" } : path.endsWith("/delete") ? { deleted: true } : path.endsWith("/suggest-lesson") ? { state: "proposed", lessonId: "wn_abc123abc123" } : path.endsWith("/resolve") ? { resolved: 1 } : { flagId: "flag-0001", pageId: BILLING });
     }
     if (path === "/v1/app/projects/payments/wiki") return json(200, wikiIndex("payments"));
+    if (path === "/v1/app/projects/payments/wiki/gaps") return options.gaps?.() ?? json(200, { project: "payments", more: false, items: [{ topic: "How do refunds work", kind: "partly", people: 2, questions: 3, lastAskedAt: "2026-11-17" }, { topic: "Where is the <b>retry</b> policy", kind: "not_found", people: 1, questions: 1, lastAskedAt: "2026-11-16" }] });
     if (path === "/v1/app/projects/payments/wiki/disputed") return options.disputed?.() ?? json(200, { project: "payments", more: false, items: [{ flagId: "flag-0009", pageId: BILLING, pageTitle: "billing", claimId: "c-charge", claimText: "Charges go through chargeCustomer.", markedBy: "Priya", markedAt: "2026-11-16T10:00:00.000Z", reason: "It moved to charge_v2.ts" }] });
     const page = /^\/v1\/app\/projects\/payments\/wiki\/pages\/([^/]+)$/u.exec(path);
     if (page !== null) { const one = wikiPage("payments", page[1]!); return one === undefined ? refuse(404, "NOT_FOUND", "That wiki page is not there.") : json(200, one); }
@@ -266,6 +267,78 @@ describe("notes: approve, remove, suggest as a lesson", () => {
     fireEvent.click(a.getByRole("button", { name: "Suggest as a lesson" }));
     expect((await screen.findByRole("alert")).textContent).toBe(W.notARule);
     f.close();
+  });
+});
+
+describe("B17: acknowledge a changed-file note, and the questions the wiki could not answer", () => {
+  it("a note whose file changed offers I've checked it to the people Code names; it sends one empty acknowledge to the note's own path", async () => {
+    const f = mount({ stale: true, write: (request) => (request.path.endsWith("/acknowledge") ? json(200, { noteId: "note-approved-1", acknowledged: true }) : undefined) });
+    await article();
+    fireEvent.click(await screen.findByRole("button", { name: /^I've checked it/u }));
+    await waitFor(() => expect(f.writes).toHaveLength(1));
+    expect(f.writes[0]).toMatchObject({ method: "POST", path: "/v1/app/projects/payments/wiki/pages/beacon-api--billing/notes/note-approved-1/acknowledge", body: {}, retry: "never" });
+    f.close();
+    const g = mount({ role: "contributor", stale: true });
+    await article();
+    await screen.findByTestId("wiki-add-note");
+    expect(screen.queryByRole("button", { name: /^I've checked it/u })).toBeNull();
+    g.close();
+    // Code's per-note permission still controls acknowledgement when a note is stale.
+    const denied = corrections("maintainer");
+    denied.notes = [{ ...denied.notes[0]!, canDelete: false, canApprove: true, mayBeOutOfDate: true }];
+    const d = mount({ corrections: () => json(200, denied) });
+    await article();
+    await screen.findByTestId("wiki-add-note");
+    expect(screen.queryByRole("button", { name: /^I've checked it/u })).toBeNull();
+    d.close();
+    // No changed-file reminder, no button, even for a maintainer.
+    const n = mount();
+    await article();
+    await screen.findByTestId("wiki-add-note");
+    expect(screen.queryByRole("button", { name: /^I've checked it/u })).toBeNull();
+    n.close();
+    const k = mount({ stale: true, write: () => refuse(403, "FORBIDDEN", W.noteNotYours) });
+    await article();
+    fireEvent.click(await screen.findByRole("button", { name: /^I've checked it/u }));
+    expect((await screen.findAllByRole("alert")).map((one) => one.textContent)).toContain(W.noteNotYours);
+    k.close();
+  });
+
+  it("a maintainer opens the questions list from the navigation: topics, who-asked counts, the day, in plain text, no name", async () => {
+    const f = mount();
+    await article();
+    fireEvent.click(await screen.findByTestId("wiki-gaps-link"));
+    const list = within(await screen.findByTestId("wiki-gaps"));
+    expect(list.getByText("How do refunds work")).toBeTruthy();
+    expect(list.getByText(/Answered partly\. Asked by 2 people, 3 times; last on 2026-11-17\./u)).toBeTruthy();
+    expect(list.getByText("Where is the <b>retry</b> policy")).toBeTruthy();
+    expect(list.getByText(/Not found\. Asked by 1 person, 1 time/u)).toBeTruthy();
+    expect(document.querySelector("[data-testid=wiki-gaps] b b")).toBeNull();
+    await expectNoAxeViolations(f.container);
+    f.close();
+  });
+
+  it("is not offered to a contributor, says when there is nothing or the list was cut, and a refusal reads in fixed words", async () => {
+    const c = mount({ role: "contributor" });
+    await article();
+    await screen.findByTestId("wiki-add-note");
+    expect(screen.queryByTestId("wiki-gaps-link")).toBeNull();
+    c.close();
+    const f = mount({ gaps: () => json(200, { project: "payments", more: false, items: [] }) });
+    await article();
+    fireEvent.click(await screen.findByTestId("wiki-gaps-link"));
+    expect(await screen.findByTestId("wiki-gaps-empty")).toBeTruthy();
+    f.close();
+    const g = mount({ gaps: () => json(200, { project: "payments", more: true, items: [{ topic: "t", kind: "wiki_empty", people: 1, questions: 1, lastAskedAt: "2026-11-17" }] }) });
+    await article();
+    fireEvent.click(await screen.findByTestId("wiki-gaps-link"));
+    expect(await screen.findByTestId("wiki-gaps-more")).toBeTruthy();
+    g.close();
+    const k = mount({ gaps: () => refuse(403, "FORBIDDEN", W.needsMaintainer) });
+    await article();
+    fireEvent.click(await screen.findByTestId("wiki-gaps-link"));
+    expect((await screen.findByTestId("wiki-gaps-error")).textContent).toBe(W.needsMaintainer);
+    k.close();
   });
 });
 

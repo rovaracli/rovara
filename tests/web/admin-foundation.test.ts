@@ -16,11 +16,11 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const member = { developerId: "b".repeat(64), name: "Maya", role: "member", identities: ["github"], joinedAt: "2026-10-01T00:00:00Z" };
-function mount(options: { path?: string; role?: "owner" | "admin" | "member"; theme?: "light" | "dark"; enabled?: boolean; kind?: "web" | "desktop"; state?: unknown; confirmed?: boolean; respond?: (r: ApiRequest) => Promise<ApiResponse> } = {}) {
+function mount(options: { path?: string; role?: "owner" | "admin" | "member"; theme?: "light" | "dark"; enabled?: boolean; kind?: "web" | "desktop"; state?: unknown; respond?: (r: ApiRequest) => Promise<ApiResponse> } = {}) {
  const role = options.role ?? "owner", nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { ...features, admin: options.enabled ?? true } });
  const me = AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: role }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
  const f = fakeHost(async r => options.respond?.(r) ?? { status: 200, body: r.path === "/v1/app/nav" ? nav : r.path === "/v1/app/me" ? me : r.path === "/v1/app/home" ? { cards: [], total: 0 } : { members: [member] } });
- f.host.kind = options.kind ?? "web";if (options.confirmed !== false) f.storage.set("rovara.stepup.confirmedAt." + "a".repeat(64), String(Date.now()));
+ f.host.kind = options.kind ?? "web";
  const query = createQueryClient();query.setQueryData(["nav"], nav);f.storage.set("rovara.theme", options.theme ?? "light");
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [{ pathname: options.path ?? "/app/admin/people", state: options.state }] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
@@ -134,15 +134,13 @@ it("shows the who-can-do-what table on the Members page", async () => {
  const f = mount();const table = await screen.findByRole("table", { name: "Who can do what" });
  expect(table.textContent).toContain("make or change owners and disconnect GitHub, Slack or Linear");expect(table.textContent).toContain("make people members or admins");expect(table.textContent).toContain("Work in the projects they're in.");expect(table.textContent).toContain("A company needs at least one owner.");f.close();
 });
-it("asks for a fresh confirmation before a role change, and after the server says the confirmation is too old", async () => {
- let puts = 0;const f = mount({ confirmed: false, respond: async r => { if (r.method === "PUT") { puts++;return { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "untrusted" } } }; }return { status: 200, body: r.path.endsWith("/members") ? { members: [member] } : f.me }; } });
+it("a role change has no sign-in step (owner DEC 254zzz73): Confirm role change is offered at once; a 403 refusal is fixed words, never the server's", async () => {
+ let puts = 0;const f = mount({ respond: async r => { if (r.method === "PUT") { puts++;return { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "untrusted" } } }; }return { status: 200, body: r.path.endsWith("/members") ? { members: [member] } : f.me }; } });
  await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Make Maya an admin" }));
- expect(screen.getByTestId("fresh-sign-in").getAttribute("data-state")).toBe("ask");expect(screen.queryByRole("button", { name: "Confirm role change" })).toBeNull();
- fireEvent.click(screen.getByTestId("fresh-sign-in-start"));expect(f.host.signIn).toHaveBeenCalledWith(expect.stringMatching(/^\/app\/live\?confirmed=/u), { stepUp: true });expect(puts).toBe(0);f.close();
- const g = mount({ respond: async r => { if (r.method === "PUT") { puts++;return { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "untrusted" } } }; }return { status: 200, body: r.path.endsWith("/members") ? { members: [member] } : g.me }; } });
- await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Make Maya an admin" }));fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));
- await waitFor(() => expect(screen.getByTestId("fresh-sign-in").getAttribute("data-state")).toBe("needed"));expect(puts).toBe(1);expect(screen.queryByText("untrusted")).toBeNull();expect(screen.queryByText("Role change refused. Company access was checked again.")).toBeNull();
- expect(g.storage.get("rovara.stepup.confirmedAt." + "a".repeat(64))).toBe("");g.close();
+ expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+ fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));
+ await waitFor(() => expect(puts).toBe(1));expect(screen.queryByText("untrusted")).toBeNull();expect(f.host.signIn).not.toHaveBeenCalled();
+ f.close();
 });
 it("invalidates a review when the target role changes during a background recheck", async () => {
  const f = mount();await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Make Maya an admin" }));

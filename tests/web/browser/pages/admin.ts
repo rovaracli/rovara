@@ -43,17 +43,11 @@ export class AdminPage {
   }
 }
 
-/** Your account: name, appearance, confirmation email and passkeys. */
+/** Your account: name, appearance, connected sign-ins and the GitHub account. */
 export class AccountPage {
   readonly page: Page;
-  readonly passkeys: Locator;
-  readonly factorEmail: Locator;
-  readonly freshSignIn: Locator;
   constructor(page: Page) {
     this.page = page;
-    this.passkeys = page.getByRole("list", { name: "Your passkeys" });
-    this.factorEmail = page.getByTestId("factor-email");
-    this.freshSignIn = page.getByTestId("fresh-sign-in");
   }
   async open(query = ""): Promise<void> {
     await this.page.goto(ROUTES.account + query);
@@ -112,11 +106,11 @@ export class AiSpendPage {
   constructor(page: Page) {
     this.page = page;
     this.step = page.getByTestId("ai-spend-step");
-    this.model = this.step.getByLabel("Model");
+    this.model = this.step.getByLabel("Model", { exact: true });
     this.limit = this.step.getByLabel(/Company monthly limit/);
     this.rovara = page.getByTestId("ai-spend-rovara").locator("input");
     this.own = page.getByTestId("ai-spend-own").locator("input");
-    this.save = page.getByRole("button", { name: "Save" });
+    this.save = this.step.getByRole("button", { name: "Save" });
     this.saved = page.getByTestId("ai-spend-saved");
     this.freshSignIn = page.getByTestId("fresh-sign-in");
     this.projectLimits = page.getByTestId("project-spend-limits");
@@ -125,14 +119,10 @@ export class AiSpendPage {
     this.perTask = this.projectLimits.getByLabel(/Per-task limit \(USD\)/);
     this.projectSaved = page.getByTestId("project-spend-saved");
   }
-  /** Opens a page as if just back from Code's step-up page (the nonce this tab stored), or plainly. */
-  async open(path: string, confirmed = false): Promise<void> {
+  /** Opens a page (no step-up since owner DEC 254zzz73). */
+  async open(path: string): Promise<void> {
     const nav = this.page.getByRole("navigation", { name: "Administration" });
     await this.page.goto(path);
-    await expect(nav).toBeVisible();
-    if (!confirmed) return;
-    await this.page.evaluate(() => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce: "e2e-ai-spend", at: Date.now() })));
-    await this.page.goto(`${path}?confirmed=e2e-ai-spend`);
     await expect(nav).toBeVisible();
   }
 }

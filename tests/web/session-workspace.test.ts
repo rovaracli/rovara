@@ -68,7 +68,8 @@ it("labels changed lines in words and keeps untrusted file names as text", () =>
 });
 it("links pull requests only to safe GitHub HTTPS URLs", () => {
  const urls = ["https://github.com/acme/payments/pull/42", "http://github.com/acme/payments/pull/42", "https://github.com.foreign.example/acme/payments/pull/42"];
- for (const url of urls) { const f = setup(fixture({ body: { kind: "task", task: taskFixture({ pullRequests: [{ repository: "acme/payments", number: 42, url, state: "open" }] }) } }), "#pull-request");expect(screen.queryAllByRole("link")).toHaveLength(url === urls[0] ? 1 : 0);f.close(); }
+ for (const url of urls) { const f = setup(fixture({ body: { kind: "task", task: taskFixture({ pullRequests: [{ repository: "acme/payments", number: 42, url, state: "open" }] }) } }), "#pull-request");// Two links for the safe URL since L4-TA5 (#212): the pull request section and the Merge section's "Merge on GitHub" list; an unsafe URL gets neither.
+ const links = screen.queryAllByRole("link");expect(links).toHaveLength(url === urls[0] ? 2 : 0);for (const link of links) expect(link.getAttribute("href")).toBe(url);f.close(); }
 });
 it("uses only the server-provided anchor when discussing a changed file", () => {
  const anchor = { target: "change_file" as const, targetId: "acme/payments:src/refund.ts", revision: "+12-3" };

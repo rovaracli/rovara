@@ -55,16 +55,13 @@ it("treats a malformed size list or an over-long cost note as an unreadable answ
   const g = setup({ status: 200, body: view }, { status: 200, body: { ...view, choices: [null] } });
   await screen.findByText("Couldn't load machine measurements. Try again."); g.close();
 });
-it.each(["FORBIDDEN", "REAUTH_REQUIRED"])("shows the distinct %s recovery", async (code) => {
+it.each(["FORBIDDEN", "REAUTH_REQUIRED"])("a %s refusal is the plain 'not allowed' sentence with no sign-in step (owner DEC 254zzz73)", async (code) => {
   const f = setup({ status: 403, body: { error: { code, message: "Code fixed words" } } });
   fireEvent.click(await screen.findByRole("button", { name: "Save machine size" }));
-  if (code === "FORBIDDEN") {
-    await screen.findByText("Only a company owner or admin, or this project's administrator, can change this.");
-    expect(screen.queryByRole("button", { name: "Confirm it's you" })).toBeNull();
-  } else {
-    fireEvent.click(await screen.findByRole("button", { name: "Confirm it's you" }));
-    expect(f.host.signIn).toHaveBeenCalledWith("/app/live", { stepUp: true });
-  }
+  if (code === "FORBIDDEN") await screen.findByText("Only a company owner or admin, or this project's administrator, can change this.");
+  else await screen.findByText("Couldn't save this choice. Try again.");
+  expect(screen.queryByRole("button", { name: "Confirm it's you" })).toBeNull();
+  expect(f.host.signIn).not.toHaveBeenCalled();
   f.close();
 });
 it("shows a removed project without claiming setup is unavailable", async () => {

@@ -3,7 +3,7 @@
 //
 // The pretend Code here keeps two companies and applies Code's rules: the engine model (Code #835: any member reads, an owner or admin sets one
 // from the gateway's live list for THEIR company) and a project's cost settings (Code's M4a: members of the project's company read, the project's
-// administrator changes them with a fresh step-up, revision-checked, never above the company's limit). Cloud must pass the person's own token,
+// administrator changes them (no step-up since owner DEC 254zzz73), revision-checked, never above the company's limit). Cloud must pass the person's own token,
 // never let the browser name a company, refuse first where it can (Code not asked), forward only checked members, check Code's answers, and
 // answer refusals in its fixed words.
 import { describe, expect, it } from "vitest";
@@ -83,7 +83,6 @@ function setUp(override: Override = () => undefined) {
     const body = call.body as { expectedRevision: number; overrides: Record<string, unknown> };
     const entry = settings.get(project)!;
     if (body.expectedRevision !== entry.revision) return json(409, { error: { code: "PROJECT_REVISION_MISMATCH", message: `${LEAK} conflict` } });
-    if (!held.steppedUp) return json(403, { error: { code: "REAUTH_REQUIRED", message: `${LEAK} step up` } });
     const asked = body.overrides["model_budget_usd"];
     if (typeof asked === "number" && asked > A_TASK_LIMIT_USD) return json(403, { error: { code: "FORBIDDEN", message: "model_budget_usd: company limit cannot be crossed" } });
     settings.set(project, { overrides: { ...body.overrides }, revision: entry.revision + 1 });
@@ -290,17 +289,18 @@ describe("a project's per-task limit", () => {
     expect(w.settings.get("payments")!.revision).toBe(2);
   });
 
-  it("a moved revision is refused before anything is written; no step-up, above the company's limit and bad amounts get fixed sentences", async () => {
+  it("a moved revision is refused before anything is written; above the company's limit and bad amounts get fixed sentences; no step-up is needed", async () => {
     const w = setUp();
     const pam = await w.as("pam", 10);
     expect((await w.send("PUT", LIMITS("payments"), pam, { expectedRevision: 1, perTaskUsd: 5 })).body).toEqual(AI_SPEND_ANSWERS.projectStale.body);
     expect(w.codeCalls(CODE_SETTINGS, "PUT")).toEqual([]);
     const above = await w.send("PUT", LIMITS("payments"), pam, { expectedRevision: 2, perTaskUsd: A_TASK_LIMIT_USD + 1 });
     expect(above.body).toEqual(AI_SPEND_ANSWERS.projectAboveCompany.body);
-    const tired = await w.as("pam");
-    const stepUp = await w.send("PUT", LIMITS("payments"), tired, { expectedRevision: 2, perTaskUsd: 5 });
-    expect(stepUp).toMatchObject({ status: 403, body: { error: { code: "STEP_UP_REQUIRED", message: AI_SPEND_WORDS.stepUp } } });
-    expect(stepUp.text).not.toContain(LEAK);
+    // Code's 403 of any code (an old REAUTH_REQUIRED too) is "only this project's admins", never Code's words.
+    const odd = setUp((call) => (call.method === "PUT" && call.path.startsWith(CODE_SETTINGS) ? json(403, { error: { code: "REAUTH_REQUIRED", message: `${LEAK} step up` } }) : undefined));
+    const old = await odd.send("PUT", LIMITS("payments"), await odd.as("pam"), { expectedRevision: 2, perTaskUsd: 5 });
+    expect(old).toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN", message: AI_SPEND_WORDS.projectNotAllowed } } });
+    expect(old.text).not.toContain(LEAK);
     const writes = w.codeCalls(CODE_SETTINGS).length;
     for (const body of [{ expectedRevision: 2, perTaskUsd: 1.234 }, { expectedRevision: 2, perTaskUsd: -1 }, { expectedRevision: 2, perTaskUsd: 1_000_001 }, { expectedRevision: 2, perTaskUsd: "5" },
       { expectedRevision: 2, perTaskUsd: 5, overrides: { real_check: "sandbox_only" } }, { perTaskUsd: 5 }, { expectedRevision: -1, perTaskUsd: 5 }, { expectedRevision: 2, perTaskUsd: true }, null]) {
@@ -419,13 +419,16 @@ describe("the whole step's save, two companies", () => {
     expect(await w.companies.agentAi(A)).toMatchObject({ source: "rovara" });
   });
 
-  it("the money writes keep Cloud's own step-up check (an owner without a fresh step-up saves no limit and no source)", async () => {
+  it("the money writes need no step-up (owner DEC 254zzz73): an owner with none saves; a member with none saves nothing", async () => {
     const w = setUp();
-    const ada = await w.as("ada");
-    const saved = await saveStep(w, ada, { capMicros: 500_000_000, source: "rovara", model: "zai.glm-4.7" });
-    expect(saved.cap.body.error?.code).toBe("STEP_UP_REQUIRED");
-    expect(saved.source.body.error?.code).toBe("STEP_UP_REQUIRED");
+    const cal = await w.as("cal");
+    expect((await w.send("PUT", "/v1/web/org/settings", cal, { expectedVersion: 0, settings: {} })).status).toBe(403);
+    expect((await w.send("PUT", "/v1/web/org/agent-ai", cal, { expectedVersion: 0, source: "rovara" })).status).toBe(403);
+    expect((await w.send("PUT", ENGINE, cal, { model: "zai.glm-4.7" })).status).toBe(403);
     expect(await w.companies.settings(A)).toBeUndefined();
     expect(await w.companies.agentAi(A)).toBeUndefined();
+    const saved = await saveStep(w, await w.as("ada"), { capMicros: 500_000_000, source: "rovara", model: "zai.glm-4.7" });
+    expect([saved.cap.status, saved.source.status, saved.model.status]).toEqual([200, 200, 200]);
+    expect(await capOf(w, A)).toBe(500_000_000);
   });
 });

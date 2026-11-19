@@ -2,7 +2,7 @@
 // echoes must be the ones the read showed, and each answer is dollars-only. Browser specs stage it through /__fake/eval-card.
 import { createHash, randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { EvalCardViewSchema, EvalApproveReplySchema, EvalDecideReplySchema, EvalHealthReplySchema } from "../../packages/contracts/src/setup-agent-web.js";
+import { EvalCardViewSchema, EvalApproveReplySchema, EvalDecideReplySchema, EvalHealthReplySchema, EvalWrapperActionReplySchema } from "../../packages/contracts/src/setup-agent-web.js";
 import { PRIYA, SAM, startFakeCode, type FakeCode } from "../support/fake-code.js";
 
 let fake: FakeCode;
@@ -25,10 +25,21 @@ const call = async (path: string, token: string, init: { method?: string; body?:
   const response = await fetch(`${fake.url}${path}`, { method: init.method ?? "GET", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
   return { status: response.status, body: await response.json().catch(() => undefined) };
 };
-const stage = (state: string, health?: string) => fetch(`${fake.url}/__fake/eval-card`, { method: "POST", body: JSON.stringify({ project: "web", state, ...(health === undefined ? {} : { health }) }) });
+const stage = (state: string, health?: string, wrapper?: string) => fetch(`${fake.url}/__fake/eval-card`, { method: "POST", body: JSON.stringify({ project: "web", state, ...(health === undefined ? {} : { health }), ...(wrapper === undefined ? {} : { wrapper }) }) });
 const BASE = "/v1/app/projects/web/setup-agent";
 
 describe("the fake eval card", () => {
+  it("'default' forgets a staged card, so the card follows the setup run again (specs reset it in afterEach)", async () => {
+    const priya = await tokenFor(PRIYA);
+    const state = async () => EvalCardViewSchema.parse((await call(`${BASE}/eval`, priya)).body).state;
+    const before = await state();
+    await stage(before === "approved" ? "rejected" : "approved");
+    expect(await state()).not.toBe(before);
+    expect((await stage("default")).status).toBe(200);
+    expect(await state()).toBe(before);
+    expect((await stage("nonsense")).status).toBe(400);
+  });
+
   it("reads in the app's schema; a manager approves with the dollars the read showed, a different figure is refused, a reader cannot act", async () => {
     const priya = await tokenFor(PRIYA);
     await stage("propose");
@@ -61,5 +72,22 @@ describe("the fake eval card", () => {
     const asked = await call(`${BASE}/eval-health`, priya, { method: "POST", body: { requestId: "6f9d0c1e-2b3a-4c5d-8e7f-001122334455", seenCostMicros: approved.health!.seenCostMicros } });
     expect(EvalHealthReplySchema.parse(asked.body)).toMatchObject({ requested: true });
     expect(EvalCardViewSchema.parse((await call(`${BASE}/eval`, priya)).body).health?.state).toBe("requested");
+  });
+
+  it("L4-EVW4: the wrapper card is one per eval with the file for everyone; a manager acts, a member may only check, and a body is exactly a request id, an act and (to open) the eval", async () => {
+    const priya = await tokenFor(PRIYA);
+    const sam = await tokenFor(SAM);
+    await stage("propose", undefined, "needs_file");
+    const id = "6f9d0c1e-2b3a-4c5d-8e7f-001122334455";
+    const read = EvalCardViewSchema.parse((await call(`${BASE}/eval`, sam)).body);
+    expect(read.wrappers?.[0]).toMatchObject({ step: "needs_file", path: "rovara/eval-wrapper.py", canOpenPullRequest: false });
+    expect(read.suites[0]).toMatchObject({ readable: false });
+    const opened = await call(`${BASE}/eval-wrapper`, priya, { method: "POST", body: { requestId: id, action: "open_pull_request", selection: "npm run evals" } });
+    expect(opened.status).toBe(200);
+    expect(EvalWrapperActionReplySchema.parse(opened.body)).toMatchObject({ outcome: { state: "open", number: "12" }, wrappers: [{ step: "pull_request_open" }] });
+    expect(EvalWrapperActionReplySchema.parse((await call(`${BASE}/eval-wrapper`, priya, { method: "POST", body: { requestId: id, action: "dismiss" } })).body)).toMatchObject({ wrappers: [{ step: "dismissed", dismissed: true }] });
+    expect((await call(`${BASE}/eval-wrapper`, sam, { method: "POST", body: { requestId: id, action: "check" } })).status).toBe(200);
+    expect((await call(`${BASE}/eval-wrapper`, sam, { method: "POST", body: { requestId: id, action: "dismiss" } })).status).toBe(403);
+    for (const body of [{}, { requestId: "x", action: "check" }, { requestId: id }, { requestId: id, action: "open_pull_request" }, { requestId: id, action: "check", repository: "other" }]) expect((await call(`${BASE}/eval-wrapper`, priya, { method: "POST", body })).status).toBe(400);
   });
 });
