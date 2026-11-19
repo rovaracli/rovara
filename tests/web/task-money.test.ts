@@ -136,3 +136,23 @@ for (const terminal of [false, true]) for (const state of ["empty", "unmeasured"
   expect(screen.getByText(words)).toBeTruthy(); tile.unmount();
  });
 }
+
+
+it("shows the own-task receipt and limit, and no figures for another readable task without money", () => {
+ const own = money();
+ own.terminal = false;
+ own.spentMicros = { state: "available", value: 1_230_000 };
+ own.estimatedMicros = { state: "available", value: 1_230_000 };
+ own.stop.taskMaximumMicros = { state: "available", value: 12_000_000 };
+ const task = work.readTask({ taskId: own.taskId, title: "Own task", project: "payments", status: "RUNNING", updatedAt: own.asOf, money: own })!;
+ const view = renderUi(h(TaskSideCards, { task, plan: undefined, events: [] }));
+ expect(view.container.textContent).toContain("About $1.23 so far");
+ expect(view.container.textContent).toContain("Task limit $12.00");
+ view.unmount();
+ const other = work.readTask({ taskId: "other-readable-task", title: "Other task", project: "payments", status: "RUNNING", updatedAt: own.asOf, spent: { usd: 1.23 }, runLimit: { limitUsd: 12 } })!;
+ const hidden = renderUi(h(TaskSideCards, { task: other, plan: undefined, events: [] }));
+ expect(hidden.container.textContent).toContain("Cost unavailable");
+ expect(hidden.container.textContent).not.toContain("$");
+ expect(screen.queryByRole("meter")).toBeNull();
+ hidden.unmount();
+});

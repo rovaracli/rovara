@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { SAVED_ENV_ROUTES } from "../../packages/cloud-server/src/saved-env-routes.js";
 import type { RouteContext } from "../../packages/cloud-server/src/routes.js";
 import { quoteFixture } from "../support/start-preview-fixture.js";
+import { restrictPreviewV2, parsePreviewV2 } from "../../packages/contracts/src/start-estimates.js";
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa";
 const preview = SAVED_ENV_ROUTES.find(r => r.path.test("/projects/web/start-preview"))!;
 function context(body: unknown, raw: unknown = quoteFixture(), projects = [{ name: "web" }], role = "member") {
@@ -60,13 +61,19 @@ it("strips company numbers throughout member JSON and leaves admin and owner quo
  }
  expect(numbers(JSON.parse(JSON.stringify(member.body))).filter(n => sentinels.includes(n))).toEqual([]);
  expect(PreviewV2Schema.safeParse(member.body).success).toBe(true);
+ expect(numbers(member.body)).toEqual([2, 1_000_000, 3_000_000, 4_000_000, 10_000_000]);
+ for (const extra of [{ spentMicros: 123 }, { planningAllowanceMicros: { state: "available", value: 123 } }, { companyRemainingMicros: 123 }, { taskMaximumMicros: { state: "available", value: -1 } }]) {
+  const bad = structuredClone(member.body) as { options: object[] };
+  for (const q of bad.options) Object.assign(q, extra);
+  expect(PreviewV2Schema.safeParse(bad).success).toBe(false);
+ }
  for (const role of ["owner", "admin"]) expect(await preview.answer(context({ quoteVersion: 2 }, raw, [{ name: "web" }], role))).toEqual({ status: 200, body: raw });
 });
 
 
 it.each([true, false, null])("accepts and preserves an already restricted Code quote (%s), strictly", async blocked => {
- const raw = quoteFixture();
- for (const q of raw.options) Object.assign(q, { initialHoldMicros: { state: "unavailable", reason: "restricted" }, firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked, bindingScope: "engine_day" } } });
+ const raw = restrictPreviewV2(parsePreviewV2(quoteFixture())!);
+ for (const q of raw.options) Object.assign(q, { firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked, bindingScope: "engine_day" } } });
  expect(PreviewV2Schema.safeParse(raw).success).toBe(true);
  expect(await preview.answer(context({ quoteVersion: 2 }, raw))).toEqual({ status: 200, body: raw });
  for (const extra of [{ availableMicros: 42 }, { requiredMicros: 42 }, { blocked: "false" }, { bindingScope: "other" }, { bindingScope: 42 }]) {
@@ -80,6 +87,17 @@ it.each([true, false, null])("accepts and preserves an already restricted Code q
 
 it("pins the mirrored PreviewV2 contract and member boundary", () => {
  const bytes = readFileSync("packages/contracts/src/start-estimates.ts");
- expect(createHash("sha256").update(bytes).digest("hex")).toBe("9db6c3ee44077f81cb402cb8cd36c29f6574b6abb3da90ca5c747b4e8bb0a34c");
+ expect(createHash("sha256").update(bytes).digest("hex")).toBe("b426600eeed7ab865ba75dcf658fc93f2a7a857296dc185d3ec72f29388b320c");
  expect(readFileSync("packages/cloud-server/src/start-estimates.ts")).toEqual(bytes);
+});
+
+
+it("keeps the own-task maximum through Cloud restriction without remaining or held amounts", async () => {
+ const raw = quoteFixture();
+ for (const q of raw.options) Object.assign(q, { limits: [{ scope: "project_task", maximumMicros: { state: "available", value: 12_000_000 }, availableMicros: { state: "available", value: 8_100_013 }, heldMicros: { state: "available", value: 7_100_017 }, resetAt: { state: "unavailable", reason: "not_measured" } }] });
+ const answer = await preview.answer(context({ quoteVersion: 2 }, raw));
+ expect(answer.status).toBe(200);
+ const q = answer.body as { options: object[] };
+ for (const option of q.options) expect(option).toMatchObject({ taskMaximumMicros: { state: "available", value: 12_000_000 } });
+ expect(JSON.stringify(answer.body)).not.toMatch(/8100013|7100017|planningAllowanceMicros|stages|basis/);
 });

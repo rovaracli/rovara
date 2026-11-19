@@ -33,3 +33,13 @@ it("keeps current, partial, awaiting-only and unavailable states distinct and sa
  expect(mergeTaskMoney({ ...p, revision: 8 }, { ...p, revision: 7 })).toMatchObject({ revision: 8 });
  expect(mergeTaskMoney(p, undefined)).toBeUndefined();
 });
+
+
+it("preserves Code's omitted money for reader and co-owner sessions without reviving legacy spend", () => {
+ for (const coOwner of [false, true]) {
+  const raw = { ...task(), owner: { developerId: "stored-task-owner", name: "Owner" } };
+  const view = sessionView(session, raw, { developerId: "same-company-member" }, "https://example.test", undefined, { coOwner });
+  const tile = liveTile(session, raw, { developerId: "same-company-member" }, "https://example.test");
+  for (const output of [view, tile, workTask(detailedRow(raw))]) expect((output as { money?: unknown }).money).toBeUndefined();
+ }
+});

@@ -1,3 +1,4 @@
+import { restrictPreviewV2, parsePreviewV2 } from "../../packages/contracts/src/start-estimates.js";
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
@@ -236,8 +237,8 @@ it("starts once after refreshing an expired quote with equal ranges", async () =
 
 it.each([[true, "Blocked by a spending limit"], [false, "Fits the budget"], [null, "We'll check the budget when the task runs"]] as const)("shows restricted budget status %s without company figures", async (blocked, message) => {
  const { quoteFixture } = await import("./support/start-preview-fixture.js");
- const raw = quoteFixture();
- for (const q of raw.options) Object.assign(q, { initialHoldMicros: { state: "unavailable", reason: "restricted" }, firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked } } });
+ const raw = restrictPreviewV2(parsePreviewV2(quoteFixture())!);
+ for (const q of raw.options) Object.assign(q, { firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked } } });
  const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...raw, project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
  try {
   fireEvent.change(await box(), { target: { value: "Fix it" } });
@@ -253,8 +254,8 @@ it.each([
  ["project_task", "project task limit"], ["engine_task", "task limit on this install"],
  ["engine_day", "daily limit on this install"], ["gateway_task", "AI task limit"],
 ])("names a member's blocking %s without budget figures", async (bindingScope, words) => {
- const { quoteFixture } = await import("./support/start-preview-fixture.js"); const raw = quoteFixture();
- for (const q of raw.options) Object.assign(q, { limits: [], initialHoldMicros: { state: "unavailable", reason: "restricted" }, firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked: true, bindingScope } } });
+ const { quoteFixture } = await import("./support/start-preview-fixture.js"); const raw = restrictPreviewV2(parsePreviewV2(quoteFixture())!);
+ for (const q of raw.options) Object.assign(q, { firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked: true, bindingScope } } });
  const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...raw, project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
  try {
   fireEvent.change(await box(), { target: { value: "Fix it" } });
@@ -277,5 +278,22 @@ it("reviews Full with unchanged visible ranges without claiming the estimate cha
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(posts(f).filter(r => r.path === CODE)).toHaveLength(1));
   expect(posts(f).find(r => r.path === CODE)?.body).toMatchObject({ path: "full" });
+ } finally { f.close(); }
+});
+
+
+it("shows the member's own estimate and task maximum in the start box without supporting money", async () => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js");
+ const raw = quoteFixture();
+ for (const q of raw.options) Object.assign(q, { limits: [{ scope: "engine_task", maximumMicros: { state: "available", value: 12_000_000 }, availableMicros: { state: "available", value: 8_100_013 }, heldMicros: { state: "available", value: 7_100_017 }, resetAt: { state: "unavailable", reason: "not_measured" } }] });
+ const member = restrictPreviewV2(parsePreviewV2(raw)!);
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...member, project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  const region = await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  expect(region.textContent).toContain("Quick: about $1.00 to $3.00");
+  expect(region.textContent).toContain("Full: about $4.00 to $10.00");
+  expect(region.textContent).toContain("Task limit: $12.00");
+  expect(region.textContent).not.toMatch(/Planning allowance|Initial hold|past tasks|8\.10|7\.10/);
  } finally { f.close(); }
 });
