@@ -442,24 +442,19 @@ const VIEW = { enabled: false, canManage: true, available: true, systemRunsOn: f
 const upkeepWorld = (answer: (call: CodeCall) => Response) => setUp((call) => (call.path.endsWith("/upkeep") ? answer(call) : undefined));
 const putCalls = (w: ReturnType<typeof setUp>) => w.codeCalls().filter((call) => call.method === "PUT");
 
-describe("the setup choice's fresh step-up (L4-P3, owner 2026-11-17)", () => {
+describe("the setup choice needs no step-up (L4-P3; owner DEC 254zzz73)", () => {
   const SIGN_IN = "Rovara's automatic runs are allowed right after you confirm it's you on the sign-in page: a tool that holds an API token cannot allow them. Confirm it's you, then try again within a few minutes.";
-  // MUTANT T1: Code's REAUTH_REQUIRED on the setup PUT is answered as "not allowed" (the app would say the person may not, instead of asking them to confirm it's them).
-  // MUTANT T2: Code's step-up sentence is passed on instead of Cloud's own.
-  it("Code's step-up answer on the setup PUT keeps its code REAUTH_REQUIRED in Cloud's sentence, and nothing of Code's text", async () => {
-    const w = setUp((call) => (call.path.endsWith("/upkeep") && call.method === "PUT" ? err(403, "REAUTH_REQUIRED", SIGN_IN) : undefined));
-    const res = await w.send("PUT", P("payments", "upkeep"), await w.as("ada-token"), { requestId: RID, on: true, allowSystemRuns: true });
-    expect(res.status).toBe(403);
-    expect(res.body.error).toEqual({ code: "REAUTH_REQUIRED", message: APP_WORDS.needsSignIn });
-    expect(res.text).not.toContain("API token");
-    // The code alone is the step-up (Code's words may differ); only Cloud's sentence reaches the app. Any other 403 stays "not allowed".
-    const other = setUp((call) => (call.path.endsWith("/upkeep") && call.method === "PUT" ? err(403, "REAUTH_REQUIRED", LEAK) : undefined));
-    const odd = await other.send("PUT", P("payments", "upkeep"), await other.as("ada-token"), { requestId: RID, on: true, allowSystemRuns: true });
-    expect(odd.body.error).toEqual({ code: "REAUTH_REQUIRED", message: APP_WORDS.needsSignIn });
-    expect(odd.text).not.toContain(LEAK);
-    const plainForbidden = setUp((call) => (call.path.endsWith("/upkeep") && call.method === "PUT" ? err(403, "FORBIDDEN", SIGN_IN) : undefined));
-    const no = await plainForbidden.send("PUT", P("payments", "upkeep"), await plainForbidden.as("ada-token"), { requestId: RID, on: true, allowSystemRuns: true });
-    expect(no.body.error).toEqual({ code: "FORBIDDEN", message: APP_WORDS.upkeepNotAllowed });
+  // MUTANT T2: Code's sentence is passed on instead of Cloud's own.
+  it("any 403 from Code on the setup PUT (whatever its code) is Cloud's 'not allowed' sentence, and nothing of Code's text", async () => {
+    for (const code of ["REAUTH_REQUIRED", "FORBIDDEN"]) {
+      for (const words of [SIGN_IN, LEAK]) {
+        const w = setUp((call) => (call.path.endsWith("/upkeep") && call.method === "PUT" ? err(403, code, words) : undefined));
+        const res = await w.send("PUT", P("payments", "upkeep"), await w.as("ada-token"), { requestId: RID, on: true, allowSystemRuns: true });
+        expect(res.body.error).toEqual({ code: "FORBIDDEN", message: APP_WORDS.upkeepNotAllowed });
+        expect(res.text).not.toContain("API token");
+        expect(res.text).not.toContain(LEAK);
+      }
+    }
   });
 });
 

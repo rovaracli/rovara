@@ -53,6 +53,10 @@ it("B35 a 403 fails closed with the same fixed copy, no sign-in redirect and no 
  expect(f.host.signIn).not.toHaveBeenCalled();expect(screen.queryByRole("table")).toBeNull();expect(document.body.textContent).not.toContain("private-server-detail");
  expect(f.request.mock.calls.every(([input]) => input.method === "GET" && input.retry === "never")).toBe(true);
 });
+it("B35 a 501 says Not available without showing evidence", async () => {
+ await mount(async () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "private detail" } } }), "web");
+ expect((await screen.findByRole("alert")).textContent).toBe("Not available yet.");expect(screen.queryByRole("table")).toBeNull();expect(document.body.textContent).not.toContain("private detail");
+});
 it("B35 a later failed refresh replaces earlier evidence with the failure notice", async () => {
  let status = 200;const { f } = await mount(async () => status === 200 ? { status, body: body([{ kind: "web", state: "ready", observation: "qualified", reason: "qualified", expiresAt }, ...unknown("not_observed").slice(1)]) } : { status, body: {} }, "web");
  await screen.findByRole("table");status = 403;fireEvent.click(screen.getByRole("button", { name: "Refresh stored status" }));

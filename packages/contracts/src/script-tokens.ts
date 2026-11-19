@@ -21,9 +21,10 @@ export const SCRIPT_TOKEN_NAME_MAX = 60;
 /**
  * What a token may do. `read`: read the creator's own tasks on the token's projects (a task, its events, the list). `start`: start a task on one of them.
  * `lessons` (decision 46b): read the project-wide team lessons for a repository of the token's project, for a local coding tool. A token made before it has `read` and `start` only and cannot read lessons.
+ * `wiki`: list and read the wiki of a named project. Never implied by `read`, and never permits wiki writes or model calls.
  * Nothing else is a permission: a token never makes tokens, changes members, roles, billing, company settings or secrets, and never decides anything a person must.
  */
-export const SCRIPT_TOKEN_PERMISSIONS = ["read", "start", "lessons"] as const;
+export const SCRIPT_TOKEN_PERMISSIONS = ["read", "start", "lessons", "wiki"] as const;
 export const ScriptTokenPermissionSchema = z.enum(SCRIPT_TOKEN_PERMISSIONS);
 export type ScriptTokenPermission = z.infer<typeof ScriptTokenPermissionSchema>;
 
@@ -94,7 +95,6 @@ export const RevokedScriptTokenReaderSchema = forwardReader(RevokedScriptTokenSc
 export type ReadScriptTokenView = z.output<typeof ScriptTokenListReaderSchema>["tokens"][number];
 
 // Cloud caches metadata only. Strip every uncontracted field instead of using the loose forward readers above.
-// Code #914 adds wiki: older Code still accepts only SCRIPT_TOKEN_PERMISSIONS on create.
 export const ScriptTokenMetadataSchema = ScriptTokenViewSchema.extend({ permissions: z.array(z.enum(["read", "start", "lessons", "wiki"])).max(4) }).strip();
 export const ScriptTokenMetadataListSchema = z.object({ tokens: z.array(ScriptTokenMetadataSchema).max(1000), canCreate: z.boolean().optional() });
 export const CreatedScriptTokenMetadataSchema = z.object({ token: ScriptTokenMetadataSchema, secret: CreatedScriptTokenSchema.shape.secret });

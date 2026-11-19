@@ -213,7 +213,10 @@ export const LEARNING_SOURCES = [
   { key: "remember", label: "Things people ask Rovara to remember", detail: "Notes people write on purpose" },
   { key: "after_merge", label: "After merge", detail: "Reverts and what happened to merged work" },
   { key: "ci", label: "Failing checks", detail: "Test and build failures. No log text is kept" },
+  { key: "tickets", label: "Ticket comments", detail: "Comments on the tickets Rovara works from" },
 ] as const;
+/** Sources an older Code does not know: listed only when Code sent the row, so nobody is offered a Pause that Code would refuse. */
+const ONLY_IF_SENT: readonly string[] = ["tickets"];
 const SOURCE_KEYS: readonly string[] = LEARNING_SOURCES.map((one) => one.key);
 /** The area tree is at most this deep and wide (Code's bounds; anything past them is dropped, never drawn). */
 const AREA_DEPTH = 7, AREA_CHILDREN = 40, AREA_FILES = 20, AREA_REPOS = 30, AREA_NODES = 800;
@@ -270,7 +273,7 @@ export function learningSourcesAnswer(raw: unknown, project: string): Record<str
   const rows = new Map(list(body["sources"], SOURCE_KEYS.length).filter(isRecord).flatMap((one) => (typeof one["key"] === "string" && SOURCE_KEYS.includes(one["key"]) ? [[one["key"], one] as const] : [])));
   return some({
     project, windowDays: 30, canPause: body["canPause"] === true,
-    sources: LEARNING_SOURCES.map((words) => {
+    sources: LEARNING_SOURCES.filter((words) => !ONLY_IF_SENT.includes(words.key) || rows.has(words.key)).map((words) => {
       const one = rows.get(words.key) ?? {};
       const example = isRecord(one["example"]) && typeof one["example"]["lessonId"] === "string" && new RegExp(`^${LESSON_ID}$`, "u").test(one["example"]["lessonId"]) && typeof one["example"]["title"] === "string"
         ? { lessonId: one["example"]["lessonId"], title: one["example"]["title"].slice(0, 80) } : undefined;
@@ -282,6 +285,13 @@ export function learningSourcesAnswer(raw: unknown, project: string): Record<str
 
 export const body = (context: RouteContext): Record<string, unknown> => (isRecord(context.body) ? context.body : {});
 export const postTo = async (context: RouteContext, path: string, payload: unknown) => context.client.json<unknown>(context.session, path, { method: "POST", body: payload });
+
+/** Code's record of the wiki pages a task was given and read: two lists of page ids (the wiki's own id pattern), or nothing. */
+export function wikiUse(raw: unknown): { given: string[]; read: string[] } | undefined {
+  if (!isRecord(raw)) return undefined;
+  const ids = (value: unknown): string[] => [...new Set(list(value, 80).flatMap((one) => (typeof one === "string" && /^[a-z0-9][a-z0-9-]{0,119}$/u.test(one) ? [one] : [])))];
+  return { given: ids(raw["given"]), read: ids(raw["read"]) };
+}
 
 export const LESSONS_ROUTES: Route[] = [
   { method: "GET", path: /^\/lessons\/inbox$/u, answer: inbox },
@@ -452,6 +462,8 @@ export const LESSONS_ROUTES: Route[] = [
       const answer = await context.client.json<unknown>(context.session, `${dev(project)}/tasks/${taskId}/lessons`);
       return ok({
         project, taskId,
+        // The wiki pages the agent was given and opened (page ids only; words and links are the screen's). Anything else Code sent is dropped.
+        wikiUse: wikiUse(isRecord(answer) ? answer["wikiUse"] : undefined),
         lessons: list(isRecord(answer) ? answer["lessons"] : undefined, 100).filter(isRecord).flatMap((one) => {
           const lessonId = text(one["lessonId"], 64), at = num(one["version"]);
           if (lessonId === undefined || at === undefined) return [];
@@ -478,8 +490,11 @@ export const LESSONS_ROUTES: Route[] = [
   },
 ];
 
-function modeOf(raw: unknown, project: string): Record<string, unknown> {
+export function modeOf(raw: unknown, project: string): Record<string, unknown> {
   const body = isRecord(raw) ? raw : {};
   const mode = fixed(body["mode"], LESSON_MODES) ?? "off";
-  return { project, mode, effective: fixed(body["effective"], LESSON_MODES) ?? mode, lockedByCompany: body["lockedByCompany"] === true, canChange: body["canChange"] === true };
+  const offer = isRecord(body["trialOffer"]) ? body["trialOffer"] : undefined;
+  const trialOffer = offer !== undefined && ["approvals", "drops", "since"].every((key) => Number.isSafeInteger(offer[key]) && (offer[key] as number) >= 0)
+    ? { approvals: offer["approvals"], drops: offer["drops"], since: offer["since"] } : undefined;
+  return { project, mode, effective: fixed(body["effective"], LESSON_MODES) ?? mode, lockedByCompany: body["lockedByCompany"] === true, canChange: body["canChange"] === true, ...(trialOffer === undefined ? {} : { trialOffer }) };
 }

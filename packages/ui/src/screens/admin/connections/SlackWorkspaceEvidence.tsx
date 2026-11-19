@@ -28,7 +28,7 @@ function SlackWorkspaceEvidenceRead() {
    throw new ApiError(error instanceof ApiError ? error.status : 0, error instanceof ApiError && error.code === "INVALID_RESPONSE" ? "INVALID_RESPONSE" : "REQUEST_FAILED", unavailable);
   }
  }, gcTime: 0, retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false });
- const refused = read.error instanceof ApiError && ([401, 403, 404, 503].includes(read.error.status) || read.error.code === "INVALID_RESPONSE");
+ const refused = read.error instanceof ApiError && ([401, 403, 404, 501, 503].includes(read.error.status) || read.error.code === "INVALID_RESPONSE");
  const data = !refused ? read.data : undefined;
  return <section aria-label="Slack workspace details" aria-busy={read.isFetching}>
  <h3>Stored workspace associations</h3>

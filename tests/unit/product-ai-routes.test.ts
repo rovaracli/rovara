@@ -1,6 +1,6 @@
 // B7: the project's product AI settings in Cloud (product-ai-routes.ts) over the gateway's write-only key store, through the real
-// handler (CSRF) and a fake Code that issues access tokens with step-up claims. Write-only key (never answered, logged or
-// audited), project admin or company admin only, a fresh step-up on every write, audited, company from Code (two companies never
+// handler (CSRF) and a fake Code that issues access tokens (some still with old step-up claims, which no longer matter). Write-only key (never answered, logged or
+// audited), project admin or company admin only (no step-up since owner DEC 254zzz73), audited, company from Code (two companies never
 // meet), and the records the gateway's eval hold reads (eval-approvals.ts).
 import { randomBytes, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -67,7 +67,7 @@ function world() {
 const write = (expectedRevision: number, more: Record<string, unknown> = {}) => ({ requestId: randomUUID(), expectedRevision, ...more });
 const KEY_PATH = "/projects/web/product-ai/key";
 
-describe("product AI key: write-only, project admin, fresh step-up, audited", () => {
+describe("product AI key: write-only, project admin, audited", () => {
   it("a project admin connects, rotates and removes the key; the key is never answered, logged or audited", async () => {
     const w = world();
     const pam = await w.signIn("pam", 30);
@@ -92,16 +92,17 @@ describe("product AI key: write-only, project admin, fresh step-up, audited", ()
     for (const text of [JSON.stringify(await w.audit.read(A, { max: 50 })), ...w.logs]) { expect(text).not.toContain(key); expect(text).not.toContain(key2); }
   });
 
-  it("needs a fresh step-up for every write, and writes nothing without one", async () => {
+  it("needs no step-up (owner DEC 254zzz73): the project admin writes with none or an old one; the wrong role still writes nothing", async () => {
     const w = world();
-    for (const age of [undefined, 601]) {
+    // Wrong role (a contributor), with no step-up claim: nothing written. (Wrong company: "two companies" below; B's admin only ever reaches B's record.)
+    expect((await w.call(await w.signIn("cal"), "PUT", KEY_PATH, write(0, { key: aiKey() }))).status).toBe(403);
+    expect(w.table.rows.size).toBe(0);
+    for (const [index, age] of [undefined, 601].entries()) {
       const pam = await w.signIn("pam", age);
-      const refused = await w.call(pam, "PUT", KEY_PATH, write(0, { key: aiKey() }));
-      expect([refused.status, refused.body.error?.code]).toEqual([403, "STEP_UP_REQUIRED"]);
-      // Reading needs none.
+      const saved = await w.call(pam, "PUT", KEY_PATH, write(index, { key: aiKey() }));
+      expect(saved.status).toBe(200);
       expect((await w.call(pam, "GET", "/projects/web/product-ai")).status).toBe(200);
     }
-    expect(w.table.rows.size).toBe(0);
   });
 
   it("refuses a contributor, hides a project the person can't see, and needs the CSRF token", async () => {

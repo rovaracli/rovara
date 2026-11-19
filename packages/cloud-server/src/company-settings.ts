@@ -1,7 +1,7 @@
 // A company's settings and rules, kept by Cloud (migration plan v3.2, 2.2: "Company settings and rules ... Cloud backend"; 7.5: Code asks
 // for them through the policy hook at the moment of the action). One document per company: feature gates, the website ceiling, the
-// company's instructions (rules text), the eval budget, the step-up window, whether tasks may start, decision rules (who may decide,
-// second person, sign-in age; the owner's row 11.5 rule `{ what: "setting.loosen", secondPerson: true }` is in the defaults), Code
+// company's instructions (rules text), the eval budget, whether tasks may start, decision rules (who may decide,
+// second person; the owner's row 11.5 rule `{ what: "setting.loosen", secondPerson: true }` is in the defaults), Code
 // policy locks, and the money budgets the gateway enforces.
 //
 // Everything here is total over untrusted data: `validateCompanySettings` reads a request body or a stored row and either returns the
@@ -21,9 +21,6 @@ export const COMPANY_SETTINGS_LIMITS = Object.freeze({
   decidersMax: 50,
   /** $1,000,000 in micro-dollars, as the app's budget schema allows. */
   usdMicrosMax: 1_000_000_000_000,
-  /** The step-up window a company may set: never longer than Code's own (600 s, DEVELOPER_STEP_UP_WINDOW_SECONDS). */
-  freshSignInSecondsMin: 60,
-  freshSignInSecondsMax: 600,
   /** A settings request body, as JSON. */
   bodyBytesMax: 64 * 1024,
 });
@@ -57,8 +54,6 @@ export interface CompanySettings {
   instructions: CompanyInstruction[];
   /** Micro-dollars a month for evals; null: no eval budget of its own. */
   evalBudgetUsdMicros: number | null;
-  /** How recent an admin's step-up must be to change these settings. */
-  freshSignInSeconds: number;
   start: { allow: boolean; maxEstimateUsdMicros: number | null };
   decisions: DecisionRule[];
   /** Code policy locks (Code's own field list, `POLICY_FIELDS`), answered to Code's "what are the company's values?". */
@@ -72,7 +67,6 @@ export const DEFAULT_COMPANY_SETTINGS: Readonly<CompanySettings> = Object.freeze
   websiteCeiling: { mode: "any" },
   instructions: [],
   evalBudgetUsdMicros: null,
-  freshSignInSeconds: L.freshSignInSecondsMax,
   start: { allow: true, maxEstimateUsdMicros: null },
   decisions: [{ what: "setting.loosen", secondPerson: true }],
   locks: {},
@@ -108,6 +102,8 @@ const HIDDEN = /[\p{Cc}\p{Cf}]/gu;
 export const plainObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 const plainArray = (value: unknown): value is unknown[] => Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype;
+/** The removed step-up window's field (owner DEC 254zzz73): read from an older row or app, never kept. */
+const LEGACY_FRESH_SIGN_IN = "freshSignInSeconds";
 const keysAre = (value: Record<string, unknown>, allowed: readonly string[], required: readonly string[] = allowed) =>
   Object.keys(value).every((key) => allowed.includes(key)) && required.every((key) => Object.hasOwn(value, key));
 const whole = (value: unknown, min: number, max: number): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= min && value <= max;
@@ -129,6 +125,8 @@ export function governsSettings(what: string): boolean {
   return ruleCovers(what, "setting.loosen") || ruleCovers(what, "setting.change");
 }
 
+// `signInMaxAgeSeconds` is the old approval sign-in age (owner DEC 254zzz73 removed it): a stored rule or an older app's write that carries it (a whole number
+// 0..2592000) still reads, and the field is DROPPED, so it is never answered, shown in the rule editor or saved again (review L2: an ignored field must not look live).
 function readDecision(value: unknown): DecisionRule | undefined {
   if (!plainObject(value) || !keysAre(value, ["what", "allow", "minApprovers", "secondPerson", "selfApproval", "signInMaxAgeSeconds", "deciders"], ["what"])) return undefined;
   const { what, allow, minApprovers, secondPerson, selfApproval, signInMaxAgeSeconds, deciders } = value;
@@ -139,7 +137,7 @@ function readDecision(value: unknown): DecisionRule | undefined {
   return {
     what,
     ...(allow === undefined ? {} : { allow }), ...(minApprovers === undefined ? {} : { minApprovers }), ...(secondPerson === undefined ? {} : { secondPerson }),
-    ...(selfApproval === undefined ? {} : { selfApproval }), ...(signInMaxAgeSeconds === undefined ? {} : { signInMaxAgeSeconds }),
+    ...(selfApproval === undefined ? {} : { selfApproval }),
     ...(deciders === undefined ? {} : { deciders: [...(deciders as string[])] }),
   };
 }
@@ -153,10 +151,15 @@ function readLock(field: string, value: unknown): boolean {
   return typeof value === "boolean";
 }
 
-/** The whole document, or one fixed problem. Every field is required, so a stored row and a request read the same way. */
+/**
+ * The whole document, or one fixed problem. Every field is required, so a stored row and a request read the same way. The one exception is
+ * `freshSignInSeconds`, the old step-up window (removed by owner DEC 254zzz73): a stored row or an older app may still carry it, so it is
+ * accepted when it reads as it always did (a whole number from 60 to 600) and then dropped; it is never answered or saved again.
+ */
 export function validateCompanySettings(value: unknown): SettingsCheck {
-  const fields = ["featureGates", "websiteCeiling", "instructions", "evalBudgetUsdMicros", "freshSignInSeconds", "start", "decisions", "locks", "budgets"];
-  if (!plainObject(value) || !keysAre(value, fields)) return problem("settings: give exactly the settings fields");
+  const fields = ["featureGates", "websiteCeiling", "instructions", "evalBudgetUsdMicros", "start", "decisions", "locks", "budgets"];
+  if (!plainObject(value) || !keysAre(value, [...fields, LEGACY_FRESH_SIGN_IN], fields)) return problem("settings: give exactly the settings fields");
+  if (Object.hasOwn(value, LEGACY_FRESH_SIGN_IN) && !whole(value[LEGACY_FRESH_SIGN_IN], 60, 600)) return problem("settings: give exactly the settings fields");
 
   const gates = value["featureGates"];
   if (!plainObject(gates)) return problem("featureGates: must be an object of names to true or false");
@@ -197,8 +200,6 @@ export function validateCompanySettings(value: unknown): SettingsCheck {
 
   const evalBudget = value["evalBudgetUsdMicros"];
   if (!usdOrNull(evalBudget)) return problem("evalBudgetUsdMicros: a whole number of micro-dollars, or null");
-  const fresh = value["freshSignInSeconds"];
-  if (!whole(fresh, L.freshSignInSecondsMin, L.freshSignInSecondsMax)) return problem(`freshSignInSeconds: a whole number from ${String(L.freshSignInSecondsMin)} to ${String(L.freshSignInSecondsMax)}`);
 
   const start = value["start"];
   if (!plainObject(start) || !keysAre(start, ["allow", "maxEstimateUsdMicros"]) || typeof start["allow"] !== "boolean" || !usdOrNull(start["maxEstimateUsdMicros"])) {
@@ -211,13 +212,12 @@ export function validateCompanySettings(value: unknown): SettingsCheck {
   const decisions: DecisionRule[] = [];
   for (const entry of decisionList) {
     const rule = readDecision(entry);
-    if (rule === undefined) return problem("decisions: each rule is { what, allow?, minApprovers?, secondPerson?, selfApproval?, signInMaxAgeSeconds?, deciders? }");
+    if (rule === undefined) return problem("decisions: each rule is { what, allow?, minApprovers?, secondPerson?, selfApproval?, deciders? }");
     // A company may forbid loosening (`setting.loosen` with allow false is a ratchet: tightening still works). A rule on EVERY settings change
     // (`setting.change`, or a prefix such as `setting.*`) must leave a way to change them in the app: no refusal, at most two approvals, at
     // least two deciders. Otherwise no change, not even removing that rule, could ever be made again.
-    if (ruleCovers(rule.what, "setting.change") && (rule.allow === false || (rule.minApprovers ?? 1) > 2 || (rule.deciders !== undefined && rule.deciders.length < 2)
-      || (rule.signInMaxAgeSeconds !== undefined && rule.signInMaxAgeSeconds < L.freshSignInSecondsMin))) {
-      return problem("decisions: a rule on every settings change must not stop them changing (no allow false, at most 2 approvers, at least 2 deciders, a sign-in age of at least 60 s)");
+    if (ruleCovers(rule.what, "setting.change") && (rule.allow === false || (rule.minApprovers ?? 1) > 2 || (rule.deciders !== undefined && rule.deciders.length < 2))) {
+      return problem("decisions: a rule on every settings change must not stop them changing (no allow false, at most 2 approvers, at least 2 deciders)");
     }
     decisions.push(rule);
   }
@@ -242,7 +242,7 @@ export function validateCompanySettings(value: unknown): SettingsCheck {
   return {
     ok: true,
     settings: {
-      featureGates: { ...(gates as Record<string, boolean>) }, websiteCeiling, instructions, evalBudgetUsdMicros: evalBudget, freshSignInSeconds: fresh,
+      featureGates: { ...(gates as Record<string, boolean>) }, websiteCeiling, instructions, evalBudgetUsdMicros: evalBudget,
       start: { allow: start["allow"], maxEstimateUsdMicros: start["maxEstimateUsdMicros"] }, decisions, locks: { ...(locks as Record<string, LockValue>) },
       budgets: { ...Object.fromEntries(budgetFields.map((name) => [name, budgets[name]])), learningMonthlyUsdMicros: learning } as unknown as CompanyBudgets,
     },
@@ -276,7 +276,6 @@ export function loosens(current: CompanySettings, next: CompanySettings): boolea
   }
   if (canonical(next.instructions) !== canonical(current.instructions)) return true;
   if (!capNotLooser(next.evalBudgetUsdMicros, current.evalBudgetUsdMicros)) return true;
-  if (next.freshSignInSeconds > current.freshSignInSeconds) return true;
   if (next.start.allow && !current.start.allow) return true;
   if (!capNotLooser(next.start.maxEstimateUsdMicros, current.start.maxEstimateUsdMicros)) return true;
   const kept = new Set(next.decisions.map(canonical));
@@ -299,7 +298,7 @@ export function hookRulesOf(settings: CompanySettings): CompanyRules {
 }
 
 /** How a change to the settings may go ahead, under the company's CURRENT rules (never the proposed ones, which could drop the rule that guards them). */
-export type SettingsDecision = { allow: false } | { allow: true; secondPerson: boolean; signInMaxAgeSeconds: number };
+export type SettingsDecision = { allow: false } | { allow: true; secondPerson: boolean };
 
 /**
  * The company's own rules for a settings change: `setting.loosen` when the change loosens anything, else `setting.change`, answered as the
@@ -312,10 +311,5 @@ export function settingsDecision(current: CompanySettings, loosening: boolean, s
   if (answer === undefined || answer["allow"] !== true) return { allow: false };
   const minApprovers = answer["minApprovers"] as number;
   if (minApprovers > 2) return { allow: false };
-  const age = answer["signInMaxAgeSeconds"];
-  return {
-    allow: true,
-    secondPerson: answer["secondPerson"] === true || minApprovers === 2,
-    signInMaxAgeSeconds: Math.min(current.freshSignInSeconds, typeof age === "number" ? age : L.freshSignInSecondsMax),
-  };
+  return { allow: true, secondPerson: answer["secondPerson"] === true || minApprovers === 2 };
 }

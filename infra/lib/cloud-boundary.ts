@@ -67,6 +67,7 @@ export interface BoundaryStatement {
   readonly Effect: "Allow" | "Deny";
   readonly Action: string[];
   readonly Resource: string[];
+  readonly Condition?: Record<string, Record<string, string | string[]>>;
 }
 
 /** The CDK bootstrap roles `cdk deploy` assumes from the release pipeline's deploy job: never the CloudFormation execution role. */
@@ -76,6 +77,20 @@ export const CDK_BOOTSTRAP_QUALIFIER = "hnb659fds";
 /** The customers' roles the Bedrock broker assumes (packages/model-gateway bedrock-byo.ts; model-gateway.ts holds the two equal). */
 const BYO_CUSTOMER_ROLE_PREFIX = "RovaraBedrockInvoke-";
 const BYO_BROKER_ROLE_PREFIX = "RovaraBedrockBroker-";
+/**
+ * The conditions on the broker's grant to assume a customer's Bedrock role, in ONE place: model-gateway.ts puts exactly these on the broker role's own
+ * policy and this file puts exactly these on the boundary's ceiling for it (L4-HARD, owner 2026-11-18), so the two can never disagree (a test holds them
+ * equal and refuses any other external id scheme). The external id is the ONE Bedrock scheme, `rvb-` + an HMAC of (install, company) under the gateway's
+ * KMS key (packages/model-gateway/src/bedrock-byo.ts); the session name is the company id; the role is never one in Rovara's own account.
+ */
+export const BYO_CUSTOMER_EXTERNAL_ID_PATTERN = "rvb-*";
+export const BYO_CUSTOMER_SESSION_NAME_PATTERN = "org_*";
+export function byoCustomerAssumeConditions(account: string): { StringLike: Record<string, string>; StringNotEquals: Record<string, string> } {
+  return {
+    StringLike: { "sts:ExternalId": BYO_CUSTOMER_EXTERNAL_ID_PATTERN, "sts:RoleSessionName": BYO_CUSTOMER_SESSION_NAME_PATTERN },
+    StringNotEquals: { "aws:ResourceAccount": account },
+  };
+}
 /**
  * The logical ids of the gateway's provider key secrets (model-gateway.ts, `ProviderKey-<provider>` for each of MODEL_GATEWAY_PROVIDERS;
  * a test holds the two equal). With generated names (model-gateway.ts MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, the default)
@@ -162,9 +177,16 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
       { Sid: "PriceFetchTask", Effect: "Allow", Action: ["ecs:RunTask", "ecs:TagResource"], Resource: [`arn:${p}:ecs:${r}:${a}:task-definition/*`, `arn:${p}:ecs:${r}:*:task/${stack("gateway")}-*`] },
       { Sid: "PassOwnRoles", Effect: "Allow", Action: ["iam:PassRole"], Resource: [rolesOf("gateway")] },
       {
-        // The serving role assumes its Vertex role (under the path) and the broker; the broker assumes customers' Bedrock roles.
+        // The serving role assumes its Vertex role (under the path) and the broker.
         Sid: "AssumeGatewayRoles", Effect: "Allow", Action: ["sts:AssumeRole"],
-        Resource: [rolesOf("gateway"), `arn:${p}:iam::${a}:role/${BYO_BROKER_ROLE_PREFIX}${env}`, `arn:${p}:iam::*:role/${BYO_CUSTOMER_ROLE_PREFIX}*`],
+        Resource: [rolesOf("gateway"), `arn:${p}:iam::${a}:role/${BYO_BROKER_ROLE_PREFIX}${env}`],
+      },
+      {
+        // The broker assumes customers' Bedrock roles, in OTHER accounts only, with the company's rvb- external id and its org_ session name: the same
+        // conditions its own grant carries (byoCustomerAssumeConditions), so the ceiling is exactly the grant (before L4-HARD it had no conditions).
+        Sid: "AssumeCustomerBedrockRoles", Effect: "Allow", Action: ["sts:AssumeRole"],
+        Resource: [`arn:${p}:iam::*:role/${BYO_CUSTOMER_ROLE_PREFIX}*`],
+        Condition: byoCustomerAssumeConditions(a),
       },
     ],
   };

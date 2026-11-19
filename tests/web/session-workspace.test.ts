@@ -2,6 +2,8 @@
 import { expect, it, vi } from "vitest";
 import { screen, fireEvent } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { workspaceFixture as fixture, workspaceWorkflow as workflow } from "./support/workspace-fixture.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
@@ -14,7 +16,8 @@ import { chainRunViewOf } from "./support/chain-fixture.js";
 import { taskFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 function setup(value: unknown = fixture(), hash = "", onComment = vi.fn()) {
  const session = SessionViewReaderSchema.parse(value), f = fakeHost();const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session: SessionViewReaderSchema.parse(session), onComment })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID + hash] });
- const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(RouterProvider, { router }) }));
+ const ui = renderUi(h(AppHostProvider, { host: f.host, // The Merge section (#233) reads whether the person may merge, so the page needs a query client.
+ children: h(QueryClientProvider, { client: createQueryClient(), children: h(RouterProvider, { router }) }) }));
  return { ...ui, ...f, router, onComment, close() { ui.unmount();router.dispose(); } };
 }
 it("shows the five supported task tabs and excludes Terminal and Preview", () => {
@@ -68,7 +71,8 @@ it("labels changed lines in words and keeps untrusted file names as text", () =>
 });
 it("links pull requests only to safe GitHub HTTPS URLs", () => {
  const urls = ["https://github.com/acme/payments/pull/42", "http://github.com/acme/payments/pull/42", "https://github.com.foreign.example/acme/payments/pull/42"];
- for (const url of urls) { const f = setup(fixture({ body: { kind: "task", task: taskFixture({ pullRequests: [{ repository: "acme/payments", number: 42, url, state: "open" }] }) } }), "#pull-request");expect(screen.queryAllByRole("link")).toHaveLength(url === urls[0] ? 1 : 0);f.close(); }
+ for (const url of urls) { const f = setup(fixture({ body: { kind: "task", task: taskFixture({ pullRequests: [{ repository: "acme/payments", number: 42, url, state: "open" }] }) } }), "#pull-request");// Two links for the safe URL since L4-TA5 (#212): the pull request section and the Merge section's "Merge on GitHub" list; an unsafe URL gets neither.
+ const links = screen.queryAllByRole("link");expect(links).toHaveLength(url === urls[0] ? 2 : 0);for (const link of links) expect(link.getAttribute("href")).toBe(url);f.close(); }
 });
 it("uses only the server-provided anchor when discussing a changed file", () => {
  const anchor = { target: "change_file" as const, targetId: "acme/payments:src/refund.ts", revision: "+12-3" };

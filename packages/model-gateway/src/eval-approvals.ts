@@ -1,6 +1,6 @@
 // The production EvalApprovalSource and per-project eval budget the stage hold reads (product-eval.ts; PRODUCT-EVAL-APPROVAL-ADAPTER).
 // Both come from the project's product-AI document in the product key table, written by Cloud's settings routes (signed write,
-// project admin, fresh step-up, audited) through ProductKeyStore.setEvalApproval / setEvalBudget. Strongly consistent reads, on
+// project admin, audited) through ProductKeyStore.setEvalApproval / setEvalBudget. Strongly consistent reads, on
 // every hold: a withdrawn approval or a lowered budget applies to the next hold.
 //
 // roleOf (PRODUCT-EVAL-APPROVER-REREAD): the gateway has no way to re-read a person's Code membership (Cloud asks Code as that

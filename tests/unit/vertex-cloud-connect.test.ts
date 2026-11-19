@@ -1,7 +1,7 @@
 // PRODUCT-VERTEX-CLOUD-CONNECT: connecting Vertex AI from Cloud's "Product AI keys" screen. Cloud's settings route sends the
 // federation form to the model gateway in a call signed with the product key store's KMS HMAC key (service-call.ts); the gateway
 // runs the connection test (a token for the company, the canary company refused) and answers only its fixed result; Cloud seals
-// the record only on "ok". Fresh step-up, project or company admin, audited, write-only, two companies never meet.
+// the record only on "ok". Project or company admin (no step-up since owner DEC 254zzz73), audited, write-only, two companies never meet.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
@@ -59,7 +59,7 @@ function gatewayKit(result: (cid: string) => ProbeResult = () => "ok") {
 const VERTEX = "/projects/web/product-ai/vertex";
 
 describe("Cloud's Vertex connect: the gateway tests, Cloud seals", () => {
-  it("a project admin with a fresh step-up connects Vertex: tested for THIS company at the gateway, sealed, audited, the setup shown but never a secret", async () => {
+  it("a project admin connects Vertex: tested for THIS company at the gateway, sealed, audited, the setup shown but never a secret", async () => {
     const g = gatewayKit();
     const w = world({ vertexCheck: g.check });
     const pam = await w.signIn("pam", 30);
@@ -107,12 +107,13 @@ describe("Cloud's Vertex connect: the gateway tests, Cloud seals", () => {
     expect((await none.call(await none.signIn("pam", 30), "PUT", VERTEX, write(0, FORM))).status).toBe(503);
   });
 
-  it("needs a fresh step-up and an admin; refuses a bad form without calling the gateway; never echoes input", async () => {
+  it("needs an admin (with or without a step-up); refuses a bad form without calling the gateway; never echoes input", async () => {
     const g = gatewayKit();
     const w = world({ vertexCheck: g.check });
-    expect((await w.call(await w.signIn("pam"), "PUT", VERTEX, write(0, FORM))).body.error?.code).toBe("STEP_UP_REQUIRED");
-    expect((await w.call(await w.signIn("pam", 3600), "PUT", VERTEX, write(0, FORM))).body.error?.code).toBe("STEP_UP_REQUIRED");
     expect((await w.call(await w.signIn("cal", 30), "PUT", VERTEX, write(0, FORM))).status).toBe(403);
+    expect((await w.call(await w.signIn("cal"), "PUT", VERTEX, write(0, FORM))).status).toBe(403);
+    // The project admin with no step-up (or an old one) gets past the role check: a bad form is the 400.
+    for (const age of [undefined, 3600]) expect((await w.call(await w.signIn("pam", age), "PUT", VERTEX, write(0, { ...FORM, extra: 1 }))).status).toBe(400);
     const pam = await w.signIn("pam", 30);
     for (const bad of [{ ...FORM, projectId: "Bad Project<script>" }, { ...FORM, location: "us" }, { ...FORM, audience: "https://evil.example" }, { ...FORM, serviceAccount: "someone@gmail.com" }, { ...FORM, extra: 1 }, { projectId: FORM.projectId }]) {
       const r = await w.call(pam, "PUT", VERTEX, write(0, bad));

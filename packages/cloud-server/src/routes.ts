@@ -7,7 +7,7 @@ import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } f
 import { renameInSessions } from "./rename.js";
 import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
 import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask, type SessionExtras } from "./session-view.js";
-import { CORE_ACTION_WORDS, acceptOnPage, acceptStepUp, actOnCoreSession, codeSessionOf, isCoreNotYet, noSession, pendingPlanCards, securityAcceptRefusal, type FindingsAccept } from "./core-task-actions.js";
+import { CORE_ACTION_WORDS, acceptOnPage, actOnCoreSession, codeSessionOf, isCoreNotYet, noSession, pendingPlanCards, securityAcceptRefusal, type FindingsAccept } from "./core-task-actions.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError, SignInEnded, slackWorkspaceHint } from "./code-client.js";
 import type { CloudAuditStore } from "./audit-log.js";
@@ -18,6 +18,8 @@ import { MEMBER_ROUTES } from "./member-routes.js";
 import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
 import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./project-create-routes.js";
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
+import { LEARNING_MODEL_ROUTES } from "./learning-model-routes.js";
+import { AGENT_MODELS_ROUTES } from "./agent-models-routes.js";
 import { EGRESS_ADDRESSES_ROUTES } from "./egress-addresses-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { codeOwnerOf, openTaskByCodeId } from "./open-task.js";
@@ -29,9 +31,13 @@ import { EVAL_CHECK_ROUTES } from "./eval-check-routes.js";
 import { ANSWERS_ROUTES } from "./answers-routes.js";
 import { AGENT_DIRECTORY_ROUTES } from "./agent-directory-routes.js";
 import { SYSTEM_RUNS_ROUTES } from "./system-runs-routes.js";
+import { MERGE_ROUTES } from "./merge-routes.js";
 import { SETUP_REPAIR_ROUTES } from "./setup-repair-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
+import { KNOWLEDGE_SWITCH_ROUTES } from "./knowledge-switch-routes.js";
 import { GRADUATION_ROUTES } from "./lessons-graduation-routes.js";
+import { SKILLS_ROUTES } from "./skills-routes.js";
+import { LESSONS_EXTRAS_ROUTES } from "./lessons-extras-routes.js";
 import { HOW_WE_WORK_ROUTES } from "./how-we-work-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES, coOwnerOf } from "./people-routes.js";
@@ -46,7 +52,6 @@ import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
 import { NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
 import { parseAnswersBody } from "./answers.js";
-import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
 /** The deployment's plan words. The company itself (its id and name) is never the deployment's: it comes from Code's access check (company-caller.ts). */
 export interface OrgView { orgId: string; name: string; plan: string }
@@ -136,7 +141,6 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 /** A project name in a path, as the lessons routes take it (lessons-routes.ts PROJECT). */
 const PROJECT_IN_PATH = "([A-Za-z0-9][A-Za-z0-9._-]{0,99})";
 /** DEC 253q (d): the only members of an eval confirm Cloud passes on to Code (Code validates them strictly). */
-export const EVAL_CONFIRM_KEYS = ["taskId", "reportDigest", "selection", "paths"] as const;
 const evalConfirmNotOnCode = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "Confirming an eval isn't connected to Rovara Code yet." } } };
 const evalConfirmRefused: RouteAnswer = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer confirms the eval." } } };
 /** A company owner or admin (Code's company role), or the project's maintainer (its "administrator" access, roleOf). Code re-checks the role live. */
@@ -155,19 +159,17 @@ export const EVAL_HEALTH_KEYS = ["requestId", "seenCostMicros"] as const;
 /** The members of `seen` that are passed on: the dollars the person was shown (approve), or the offer's revision and digest (decide). */
 const EVAL_SEEN_KEYS = { approve: ["perCheckHighMicros", "monthlyCapMicros"], decide: ["revision", "artifactDigest"] } as const;
 const evalCardNotOnCode: RouteAnswer = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "The eval card isn't connected to Rovara Code yet." } } };
-const evalCardStepUp: RouteAnswer = { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } };
 const evalCardRefused: RouteAnswer = { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer can answer for the eval's spend." } } };
 const EVAL_UNAVAILABLE_ON_INSTALL = "Approving an eval's spend isn't available on this install yet.";
 /** L4-EVW4 (DEC 254zzz43): a person's act on the wrapper card names its request id, the act and (to open a pull request) the eval; nothing else. Code's own refusal that no code host is wired for it reads as "not connected yet". */
 export const EVAL_WRAPPER_KEYS = ["requestId", "action", "selection"] as const;
 const EVAL_WRAPPER_UNAVAILABLE_ON_INSTALL = "Setting up the file Rovara needs to read your eval isn't available on this install yet.";
 
-/** Code's fixed refusals the eval card turns into Cloud's own: not served yet (its unknown-route 404, or the install has no eval approval) and a step-up that is not fresh. Any other refusal is Code's own. */
+/** Code's fixed refusal the eval card turns into Cloud's own: not served yet (its unknown-route 404, or the install has no eval approval). Any other refusal is Code's own. */
 function evalCardRefusal(error: unknown): RouteAnswer | undefined {
   if (!(error instanceof CodeError)) return undefined;
   const answered = (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
   if (error.status === 404 && answered?.code === "NOT_FOUND" && (answered.message === "route not found" || answered.message === EVAL_UNAVAILABLE_ON_INSTALL || answered.message === EVAL_WRAPPER_UNAVAILABLE_ON_INSTALL)) return evalCardNotOnCode;
-  if (error.status === 403 && answered?.code === "REAUTH_REQUIRED") return evalCardStepUp;
   return undefined;
 }
 
@@ -428,7 +430,7 @@ async function homeCards(context: RouteContext): Promise<{ cards: HomeCard[]; to
 
 export const ROUTES: Route[] = [
   {
-    // Project machine size: member reads; SET is a stored choice and requires a fresh web-page step-up in Cloud and Code.
+    // Project machine size: member reads; SET is a stored choice; Code decides who may make it.
     method: "GET", path: /^\/projects\/([^/]+)\/machine-size$/u,
     answer: async (context) => {
       const project = context.params[0]!;
@@ -449,7 +451,6 @@ export const ROUTES: Route[] = [
     answer: async (context) => {
       const project = context.params[0]!;
       if (mine(context.session.access, project) === undefined) return projectNotFound;
-      if (freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } };
       const rowId = (context.body as { rowId?: unknown } | undefined)?.rowId;
       if (typeof rowId !== "string") return badRequest("Choose one of the listed machine sizes.");
       try { return ok(await context.client.json<Record<string, unknown>>(context.session, `/v1/dev/projects/${encodeURIComponent(project)}/machine-size`, { method: "POST", body: { rowId } })); }
@@ -646,28 +647,17 @@ export const ROUTES: Route[] = [
     },
   },
   {
-    // POST /v1/web/projects/{p}/setup-agent/eval-confirm (the app's /v1/app/..., DEC 253q d): forwarded to Code's own route as the signed-in person. Only a
-    // company administrator or the project's maintainer is forwarded (Code re-checks the role live); only an object body, and only
-    // its EVAL_CONFIRM_KEYS. Until Code serves the route (E2) its unknown-route 404 reaches the app as 501 NOT_ON_CODE_YET.
+    // POST /v1/web/projects/{p}/setup-agent/eval-confirm: remains unavailable on Cloud. Keep the company and project role checks
+    // so unauthorized callers receive the same fixed refusal as other company actions.
     method: "POST", path: new RegExp(`^/projects/${PROJECT_IN_PATH}/setup-agent/eval-confirm$`, "u"),
-    answer: async ({ client, session, params, body }) => {
+    answer: async ({ session, params, body }) => {
       const project = params[0]!;
       // The sign-in's latest access answer: Code re-checks the role live on its own route, so this only spares Code a call it would refuse.
       const membership = companyOf(session.access);
       if (membership === undefined) return NOT_IN_COMPANY;
       if (!confirmsEval(session.access, membership.companyRole, project)) return evalConfirmRefused;
       if (body === null || typeof body !== "object" || Array.isArray(body)) return badRequest("Send the eval confirmation as a JSON object.");
-      const given = body as Record<string, unknown>;
-      const forwarded: Record<string, unknown> = {};
-      for (const key of EVAL_CONFIRM_KEYS) if (Object.hasOwn(given, key)) forwarded[key] = given[key];
-      try {
-        return ok(await client.json<unknown>(session, `/v1/app/projects/${encodeURIComponent(project)}/setup-agent/eval-confirm`, { method: "POST", body: forwarded }));
-      } catch (error) {
-        // A Code that does not serve the route yet answers its fixed unknown-route 404 (handler.ts "route not found"): the app reads that as not on Code yet. Any other 404 (no report, no project) is Code's own.
-        const answered = error instanceof CodeError ? (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error : undefined;
-        if (error instanceof CodeError && error.status === 404 && answered?.code === "NOT_FOUND" && answered.message === "route not found") return evalConfirmNotOnCode;
-        throw error;
-      }
+      return evalConfirmNotOnCode;
     },
   },
   {
@@ -864,12 +854,11 @@ export const ROUTES: Route[] = [
       try {
         ({ task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review-findings`, { method: "POST", headers: TASK_VIEW, body: accept }));
       } catch (error) {
-        // Accepting a security finding needs a fresh step-up: the old engine takes it here (REAUTH_REQUIRED when stale); the core takes it only on the web page's own route
-        // (Code #1045), which Cloud asks next, with the same body, when its own token's step-up is fresh. Said in fixed words, never Code's bare 403.
+        // The core takes a security finding's accept only on the web page's own route (Code #1045), which Cloud asks next, with the same body. Said in fixed words,
+        // never Code's bare 403. The owner/co-owner rule above and Code's own check both stay (owner DEC 254zzz73 removed only the step-up).
         const refused = securityAcceptRefusal(error);
-        if (refused === "stepUp") return acceptStepUp();
         if (refused !== "page") throw error;
-        const done = await acceptOnPage(context.client, context.session, found.record.taskId, accept, context.now().getTime());
+        const done = await acceptOnPage(context.client, context.session, found.record.taskId, accept);
         if ("answer" in done) return done.answer;
         task = done.task;
       }
@@ -1116,7 +1105,12 @@ export const ROUTES: Route[] = [
   ...WORK_READS,
   // Graduation and tidy first: `…/lessons/tidy/retire` must be tried before `…/lessons/{id}/retire`.
   ...GRADUATION_ROUTES,
+  ...LESSONS_EXTRAS_ROUTES,
   ...LESSONS_ROUTES,
+  // L4-JA7: "Knowledge stays in Rovara" and a project's local tools setting, as the person (knowledge-switch-routes.ts).
+  ...KNOWLEDGE_SWITCH_ROUTES,
+  // Rovara skills (L4-JA): list, one skill with its text, edit, approve (two different people) and retire, as the person; Code decides.
+  ...SKILLS_ROUTES,
   ...HOW_WE_WORK_ROUTES,
   // Creating a company (DEC 254a), for a person with no company yet.
   ...ONBOARDING_ROUTES,
@@ -1126,6 +1120,10 @@ export const ROUTES: Route[] = [
   ...PROJECT_CREATE_ROUTES,
   // The "AI and spending" step (guided onboarding PR 15): the company's AI model and a project's per-task limit, answered by Code as the person.
   ...AI_SPEND_ROUTES,
+  // The model the company's lessons learn with (DEC 254zzz63): its own choice or the install default, answered by Code as the person.
+  ...LEARNING_MODEL_ROUTES,
+  // DEC 254zzz84 (1): the company's per-step AI models, answered by Code as the person.
+  ...AGENT_MODELS_ROUTES,
   // Rovara's outbound addresses (L4-EGR): a read for company owners and admins, answered by Code as the person.
   ...EGRESS_ADDRESSES_ROUTES,
   // The in-app inbox (web task channel K5): Code's C7 routes, as the person.
@@ -1148,8 +1146,9 @@ export const ROUTES: Route[] = [
   ...WIKI_SETUP_ROUTES,
   // L4-EVCI2: the setup checklist's "Eval check from your CI" (Code decides who may; Cloud rebuilds every body and answer).
   ...EVAL_CHECK_ROUTES,
-  // L4-P3: the company's one control over nightly upkeep (read, allow with Code's fresh step-up, withdraw): company owners and admins only; Code decides again.
+  // L4-P3: the company's one control over nightly upkeep (read, allow, withdraw): company owners and admins only; Code decides again.
   ...SYSTEM_RUNS_ROUTES,
+  ...MERGE_ROUTES,
   // L4-U5: the "Setup needs repair" card on a project's setup page and its "Re-check setup" button, passed to Code as the person; Code decides who may.
   ...SETUP_REPAIR_ROUTES,
   // The admin portal's Cost and time report (Feature A, slice A3): Code's one-row-per-task read, grouped here for a company owner or admin.

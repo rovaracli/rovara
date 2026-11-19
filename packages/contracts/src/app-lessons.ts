@@ -180,5 +180,8 @@ export const LessonApproveAnswerSchema = z.object({ status: z.enum(["active", "p
 export const LessonApproveAnswerReaderSchema = forwardReader(LessonApproveAnswerSchema);
 export const LessonDoneAnswerSchema = z.object({ done: z.literal(true) }).strict();
 export const LessonDoneAnswerReaderSchema = forwardReader(LessonDoneAnswerSchema);
+/** `POST /v1/app/projects/{p}/tasks/{t}/lessons/{id}/not-helpful`: one mark per person per lesson. Cloud also names the project, task and lesson; the page needs only that the mark was taken. */
+export const LessonNotHelpfulAnswerSchema = z.object({ marked: z.literal("not_helpful") }).strict();
+export const LessonNotHelpfulAnswerReaderSchema = forwardReader(LessonNotHelpfulAnswerSchema);
 export const LessonRollbackAnswerSchema = z.object({ setVersion: z.number().int().min(0), restored: z.number().int().min(0) }).strict();
 export const LessonRollbackAnswerReaderSchema = forwardReader(LessonRollbackAnswerSchema);

@@ -9,7 +9,7 @@
 //   GET  /v1/app/github/connections      (browser: /v1/web/…)               the company's connected GitHub accounts (Code's read, any member), with
 //                                                                            #832's health (`status` active/suspended/uninstalled, `accountType`)
 //   DELETE /v1/app/github/connections/{installationId}                     guided onboarding PR 12b: disconnect (Code #832 DELETE /v1/dev/company/github/{id}).
-//                                                                            A company OWNER with a fresh step-up, checked here first and by Code again;
+//                                                                            A company OWNER, checked here first and by Code again;
 //                                                                            refused while projects use its repos (Code names them; Cloud rebuilds the sentence)
 //
 // Rules:
@@ -30,7 +30,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { companyOf } from "./company-caller.js";
-import { PROJECT_NAME, STEP_UP_WORDS, codeRefusal, ownerWithFreshStepUp } from "./connect-flow.js";
+import { PROJECT_NAME, codeRefusal, companyOwnerOnly } from "./connect-flow.js";
 import { validGithubUserId, type CompanyStore } from "./company-store.js";
 import { sessionKey, type CodeSession, type SessionStore } from "./sessions.js";
 
@@ -431,7 +431,7 @@ export function createGithubConnect(deps: GithubConnectDeps) {
     },
 
     /**
-     * DELETE /v1/app/github/connections/{installationId} (guided onboarding PR 12b): a company owner with a fresh step-up (checked here first; Code checks both
+     * DELETE /v1/app/github/connections/{installationId} (guided onboarding PR 12b): a company owner (checked here first; Code checks it
      * again, and that the installation is the company's own and not in use). The browser names only the installation; the company is Code's, read live.
      */
     async disconnect(session: CodeSession, rawId: string, body: unknown): Promise<GithubAnswer> {
@@ -439,7 +439,7 @@ export function createGithubConnect(deps: GithubConnectDeps) {
       // Not an installation id: answered as Code answers an installation that isn't the company's, without asking Code.
       if (!INSTALLATION_IN_PATH.test(rawId) || !Number.isSafeInteger(Number(rawId))) return refusal(404, "NOT_FOUND", GITHUB_WORDS.notConnected);
       const wanted = Number(rawId);
-      const refused = await ownerWithFreshStepUp(deps.client, session, nowMs(), GITHUB_WORDS.ownerOnly);
+      const refused = await companyOwnerOnly(deps.client, session, GITHUB_WORDS.ownerOnly);
       if (refused !== undefined) return { status: refused.status, body: refused.body };
       let answer: unknown;
       try {
@@ -447,7 +447,7 @@ export function createGithubConnect(deps: GithubConnectDeps) {
       } catch (error) {
         if (!(error instanceof CodeError)) throw error;
         const { code, message } = codeRefusal(error.body);
-        if (error.status === 403) return code === "REAUTH_REQUIRED" ? refusal(403, "REAUTH_REQUIRED", STEP_UP_WORDS) : refusal(403, "FORBIDDEN", GITHUB_WORDS.ownerOnly);
+        if (error.status === 403) return refusal(403, "FORBIDDEN", GITHUB_WORDS.ownerOnly);
         if (error.status === 409 && code === "GITHUB_IN_USE") {
           const named = typeof message === "string" ? IN_USE.exec(message)?.[1]?.split(", ") : undefined;
           const projects = named !== undefined && named.length <= 100 && named.every((name) => PROJECT_NAME.test(name)) ? named : undefined;

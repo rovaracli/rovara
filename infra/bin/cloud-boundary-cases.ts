@@ -31,7 +31,7 @@ const out = dirs.map((dir) => {
     dir,
     boundaries: resolvedBoundaries(stacks, scope),
     stacksWithoutBoundary: stacks.filter((s) => s.template.Resources[BOUNDARY_LOGICAL_ID]?.Type !== "AWS::IAM::ManagedPolicy").map((s) => s.stackName),
-    cases: roleCases(stacks, scope).map((c) => ({ stackName: c.stackName, role: c.role, action: c.action, resource: c.resource })),
+    cases: roleCases(stacks, scope).map((c) => ({ stackName: c.stackName, role: c.role, action: c.action, resource: c.resource, ...(c.condition === undefined ? {} : { condition: c.condition }) })),
     violations: boundaryViolations(stacks, scope),
   };
 });

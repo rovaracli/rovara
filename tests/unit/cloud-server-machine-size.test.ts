@@ -5,11 +5,11 @@ import { CodeError } from "../../packages/cloud-server/src/code-client.js";
 const NOW = Date.UTC(2026, 10, 17, 18);
 const path = "/projects/payments/machine-size";
 const payload = (at: number) => `e30.${Buffer.from(JSON.stringify({ step_up_at: at, step_up_amr: "passkey" })).toString("base64url")}.sig`;
-function context(method: "GET" | "POST", token = "no-step-up", codeStatus?: number, code = "NOT_FOUND", message = "route not found") {
+function context(method: "GET" | "POST", token = "no-step-up", codeStatus?: number, code = "NOT_FOUND", message = "route not found", projects: Array<{ name: string; access: string }> = [{ name: "payments", access: "administrator" }]) {
   const calls: Array<{ path: string; options: unknown }> = [];
   const value: RouteContext = {
     client: { json: async (_session: unknown, requestPath: string, options: unknown) => { calls.push({ path: requestPath, options }); if (codeStatus !== undefined) throw new CodeError(codeStatus, { error: { code, message } }); return { measuredPeakMemoryMiB: 6144, testTimeMs: 120_000, suggestedSize: "arm64-4-16", currentSize: null, storedOnlyLine: "Stored only: Rovara does not launch this size yet.", choices: [] }; }, access: async () => ({ projects: [] }) } as never,
-    session: { accessToken: token, access: { developerId: "person", displayName: "Person", administrator: false, projects: [{ name: "payments", access: "administrator" }], notices: [] } } as never,
+    session: { accessToken: token, access: { developerId: "person", displayName: "Person", administrator: false, projects, notices: [] } } as never,
     params: ["payments"], query: new URLSearchParams(), body: { rowId: "arm64-4-16" }, org: { orgId: "acme", name: "Acme", plan: "test" }, now: () => new Date(NOW),
     work: {} as never, origin: "https://cloud.example.test", presence: {} as never,
   };
@@ -25,15 +25,21 @@ describe("Cloud machine-size route", () => {
     expect(result).toMatchObject({ status: 200, body: { measuredPeakMemoryMiB: 6144, suggestedSize: "arm64-4-16" } });
     expect(w.calls[0]?.path).toBe("/v1/dev/projects/payments/machine-size");
   });
-  it("asks for a fresh step-up before forwarding the choice", async () => {
-    const w = context("POST");
-    expect(await w.answer()).toMatchObject({ status: 403, body: { error: { message: "Confirm it's you again, then try once more." } } });
+  it("forwards a choice with no step-up in the token (owner DEC 254zzz73); Code decides the role", async () => {
+    for (const token of ["no-step-up", payload(Math.floor(NOW / 1000) - 3600)]) {
+      const w = context("POST", token);
+      expect(await w.answer()).toMatchObject({ status: 200, body: { suggestedSize: "arm64-4-16" } });
+      expect(w.calls[0]).toMatchObject({ path: "/v1/dev/projects/payments/machine-size", options: { method: "POST", body: { rowId: "arm64-4-16" } } });
+    }
+  });
+  it("a person without the project (another company's, or none) is not found and Code is not asked", async () => {
+    const w = context("POST", "no-step-up", undefined, "NOT_FOUND", "route not found", []);
+    expect(await w.answer()).toMatchObject({ status: 404 });
     expect(w.calls).toHaveLength(0);
   });
-  it("forwards a choice only with a fresh Code factor", async () => {
-    const w = context("POST", payload(Math.floor(NOW / 1000) - 30));
-    expect(await w.answer()).toMatchObject({ status: 200, body: { suggestedSize: "arm64-4-16" } });
-    expect(w.calls[0]).toMatchObject({ path: "/v1/dev/projects/payments/machine-size", options: { method: "POST", body: { rowId: "arm64-4-16" } } });
+  it("Code's refusal of the wrong role (403) reaches the app with no step-up in play", async () => {
+    const w = context("POST", "no-step-up", 403, "FORBIDDEN", "fixed refusal");
+    await expect(w.answer()).rejects.toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN", message: "fixed refusal" } } });
   });
   it("maps a missing Code route to fixed not-set-up words", async () => {
     const w = context("GET", "no-step-up", 404);

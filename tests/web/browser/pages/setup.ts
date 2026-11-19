@@ -74,12 +74,11 @@ export class SetupApprovalPage {
     this.problem = this.card.getByTestId("setup-approval-problem");
     this.decided = page.getByTestId("setup-decided");
   }
-  /** Opens the Setup step. `confirmed` seeds the step-up nonce the way a return from Code's sign-in page does. */
-  async open(project: string, confirmed?: string): Promise<void> {
+  /** Opens the Setup step. */
+  async open(project: string): Promise<void> {
     // The first address opened signs the person in through Code (a redirect chain), so settle on a page of the app before touching its storage.
     await this.page.goto(ROUTES.home);
     await new HomePage(this.page).expectLoaded();
-    if (confirmed !== undefined) await this.page.evaluate((nonce) => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce, at: Date.now() })), confirmed);
-    await this.page.goto(`${ROUTES.firstDay}?project=${encodeURIComponent(project)}&step=setup${confirmed === undefined ? "" : `&confirmed=${confirmed}`}`);
+    await this.page.goto(`${ROUTES.firstDay}?project=${encodeURIComponent(project)}&step=setup`);
   }
 }

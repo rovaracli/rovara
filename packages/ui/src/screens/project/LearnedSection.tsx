@@ -21,6 +21,10 @@ import { Tabs } from "../../design/Tabs.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { areasAbsent, useLessonAreas, type AreaPick, type LessonAreaNode, type LessonAreaRepo } from "../../api/learned-areas.js";
 import { LearningSources } from "./lessons/LearningSources.js";
+import { TrialOfferCard } from "./lessons/TrialOfferCard.js";
+import { WeeklySummaryRow } from "./lessons/WeeklySummaryRow.js";
+import { LessonChecks } from "./lessons/LessonChecks.js";
+import { RepeatsLine } from "./lessons/RepeatsLine.js";
 import "../work/lessons.css";
 import "./lessons/areas.css";
 
@@ -86,6 +90,7 @@ function LearnedLesson({ project, lesson, list }: { project: string; lesson: Les
   <ul className="rv-lesson-facts">
    {list === "retired" && lesson.became !== undefined ? <li data-testid="lesson-became">{becameWords(lesson.became.kind)}{lesson.became.at > 0 && <> <span className="rv-muted"><RelativeTime at={new Date(lesson.became.at).toISOString()} /></span></>}</li>
     : list === "retired" ? <li>{RETIRED_STATUS[lesson.status] ?? "No longer used"}{reasonWords(lesson.rejectedReason) === undefined ? "" : `: ${reasonWords(lesson.rejectedReason)!.toLowerCase()}`}</li> : <li>{usageWords(lesson)}</li>}
+   {list === "proposed" && lesson.supportTasks > 0 && <li className="rv-muted">Rovara was corrected on this {lesson.supportTasks === 1 ? "once" : `${lesson.supportTasks} times`}.</li>}
    {lesson.trial === "trial" && <li>On trial</li>}
    {lesson.needs !== undefined && lesson.needs.required === 2 && list === "proposed" && <li>{lesson.needs.have === 1 ? "One person kept it; needs one more" : "Needs two people to keep it"}</li>}
    {lesson.citations.slice(0, 3).map((one, index) => { const words = citationWords(one); return <li key={index}>{words.href === undefined ? <span className="mono"><VisibleText text={words.text} /></span> : <a href={words.href} target="_blank" rel="noreferrer">{words.text}</a>}</li>; })}
@@ -236,11 +241,13 @@ export function LearnedSection({ project }: { project: string }) {
  const showExample = useCallback((lessonId: string) => { setTab("approved");setView("all");setFocus(lessonId); }, [setTab, setView, setFocus]);
  const mode = useLessonMode(project), isOff = off || (mode.isError && lessonsOff(mode.error));
  return <section className="rv-learned" aria-labelledby="learned-title" data-testid="learned">
-  <header><h2 id="learned-title">Learned</h2><p className="rv-muted">Lessons Rovara learned from this project's corrections. Approved lessons are given to future tasks where they fit.</p></header>
+  <header><h2 id="learned-title">Learned</h2><p className="rv-muted">Lessons Rovara learned from this project's corrections. Approved lessons are given to future tasks where they fit.</p><RepeatsLine project={project} /></header>
   {isOff ? <p className="rv-learned-off" data-testid="lessons-off">{OFF_TEXT}</p> : <>
    <ThisWeek project={project} />
    <TeamRules project={project} />
    <ModeRow project={project} />
+   <TrialOfferCard project={project} />
+   <WeeklySummaryRow project={project} mode={mode.data?.effective ?? "off"} />
    <RetireRequests project={project} />
    <Tabs label="Lessons" value={tab} onValueChange={value => setTab(value as LessonList)} items={[
     { value: "approved", label: "Approved", content: <ApprovedView project={project} onOff={markOff} view={view} setView={next => { setView(next);setFocus(undefined); }} focus={focus} /> },
@@ -248,6 +255,7 @@ export function LearnedSection({ project }: { project: string }) {
     { value: "retired", label: "Retired", content: <LessonsList project={project} list="retired" onOff={markOff} /> },
    ]} />
    <LearningSources project={project} onExample={showExample} />
+   <LessonChecks project={project} />
   </>}
  </section>;
 }

@@ -4,6 +4,8 @@
 import { expect, it } from "vitest";
 import { screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { workspaceFixture as fixture } from "./support/workspace-fixture.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
@@ -16,7 +18,7 @@ import { taskFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 
 function setup(value: unknown) {
  const session = SessionViewReaderSchema.parse(value), f = fakeHost();const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID + "#pull-request"] });
- const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(RouterProvider, { router }) }));
+ const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(RouterProvider, { router }) }) })); // the Merge section (#233) reads readiness
  return { ...ui, close() { ui.unmount();router.dispose(); } };
 }
 const withSignal = (signal?: Record<string, unknown>) => fixture({ body: { kind: "task", task: taskFixture({ pullRequests: [{ repository: "acme/payments", number: 42, url: "https://github.com/acme/payments/pull/42", state: "open" }], ...(signal === undefined ? {} : { earlyRiskSignal: signal }) }) } });

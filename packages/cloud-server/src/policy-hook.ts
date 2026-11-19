@@ -118,6 +118,7 @@ export interface DecisionRule {
   /** Owner row 11.5: loosening a setting needs a second admin, as `{ "what": "setting.loosen", "secondPerson": true }`. */
   secondPerson?: boolean;
   selfApproval?: boolean;
+  /** Legacy (owner DEC 254zzz73 removed the approval sign-in age): still read from stored rules, never answered. */
   signInMaxAgeSeconds?: number;
   /** Who may decide (person ids). Absent: anyone the install's own rules allow. */
   deciders?: readonly string[];
@@ -244,13 +245,12 @@ export function answerFor(kind: PolicyHookKind, q: Record<string, unknown>, rule
     const deciders = found.filter((rule) => rule.deciders !== undefined);
     if (q["stage"] === "verdict" && deciders.some((rule) => typeof q["per"] !== "string" || !rule.deciders!.includes(q["per"]))) return refused;
     const secondPerson = found.some((rule) => rule.secondPerson === true);
-    const ages = found.flatMap((rule) => (rule.signInMaxAgeSeconds === undefined ? [] : [rule.signInMaxAgeSeconds]));
     return {
       allow: true,
       minApprovers: Math.max(1, ...found.map((rule) => rule.minApprovers ?? 1)),
       secondPerson,
       selfApproval: !secondPerson && found.every((rule) => rule.selfApproval !== false),
-      ...(ages.length === 0 ? {} : { signInMaxAgeSeconds: Math.min(...ages) }),
+      // No `signInMaxAgeSeconds` any more (owner DEC 254zzz73): the field stays optional in the answer schema for older readers.
     };
   }
   if (rules === undefined) return undefined;

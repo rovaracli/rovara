@@ -123,17 +123,17 @@ it("owner reviews impacts before two explicit enforcement confirmations, after f
 it("admin cannot load or change company enforcement", async () => {
  const f = mount({ role: "admin" });try { await screen.findByRole("table");expect(screen.queryByRole("button", { name: "Turn on enforcement" })).toBeNull();expect(f.request.mock.calls.some(([r]) => /enrollment|cutover-review/.test(r.path))).toBe(false); } finally { f.close(); }
 });
-it("stale sign-in stops before review and offers the existing sign-in flow", async () => {
+it("a refused review stops before anything is changed, with no sign-in step (owner DEC 254zzz73)", async () => {
  const f = mount({ respond: async r => r.path.includes("/enrollment") ? { status: 403, body: { error: { code: "REAUTH_REQUIRED" } } } : { status: 200, body: settings } });
  try {
   await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Sign in again" }));expect(f.host.signIn).toHaveBeenCalled();
+  await screen.findByRole("alert");expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();expect(f.host.signIn).not.toHaveBeenCalled();
   expect(f.request.mock.calls.some(([r]) => r.method !== "GET")).toBe(false);
  } finally { f.close(); }
 });
-it("turning off enabled enforcement also handles REAUTH without a second-owner flow", async () => {
+it("turning off enabled enforcement: a refusal shows no sign-in step and no second-owner flow", async () => {
  const f = mount({ respond: async r => r.path.includes("/enrollment") ? r.method === "GET" ? { status: 200, body: { orgId, state: "enabled", revision: 3 } } : { status: 403, body: { error: { code: "REAUTH_REQUIRED" } } } : { status: 200, body: settings } });
- try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));fireEvent.click(await screen.findByRole("button", { name: "Turn off enforcement" }));await screen.findByRole("button", { name: "Sign in again" });expect(screen.queryByText(/second owner/i)).toBeNull(); } finally { f.close(); }
+ try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));fireEvent.click(await screen.findByRole("button", { name: "Turn off enforcement" }));await screen.findByRole("alert");expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();expect(screen.queryByText(/second owner/i)).toBeNull(); } finally { f.close(); }
 });
 
 for (const [code, text] of [

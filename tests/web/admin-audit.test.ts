@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+// The Audit page reads Cloud's company audit list (GET /v1/app/company/audit, plan v3.2 7.5), not the old broker's sealed ledger (/v1/app/org/audit/status and /records), which
+// hosted Rovara does not serve (live test run 2, 2026-11-18: both 501). Every answer here is a REAL Cloud answer: the page's requests go through Cloud's own handler
+// (createCloudHandler) with a fake Rovara Code behind it that answers as hosted Code 0.5.29 does (its audit read is a 404 "route not found" while sign-in client routes are off).
 import { expect, it } from "vitest";
 import { screen, waitFor, act, fireEvent } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -29,91 +32,177 @@ function mount(options: { path?: string; role?: "owner" | "admin" | "member"; th
 }
 
 
-const orgId = "org_aaaaaaaaaaaaaaaaaaaa";
-const ledgerStatus = { headSeq: 3, sealedThroughSeq: 2, latestTimestamp: "2026-10-01T00:00:00Z", epochsWithoutTimestamp: ["epoch-one"], lockMode: "GOVERNANCE" };
-const limits = ["What this ledger proves: the records in this export have not been changed, removed or reordered since Rovara sealed them, and each sealed batch existed no later than the time an independent timestamp service signed.", "What it does not prove: that the records are true or complete. Rovara writes them, so an action Rovara never recorded, or recorded wrongly, does not show up as tampering. Records after the last seal are not sealed yet; this export says how many.", "It is tamper-evident, not tamper-proof. Someone with enough access could still change Rovara's live copy, but the change would show when checked against the sealed copy, the timestamps and your earlier exports. Keep every export you take."].join("\n\n");
-const row = { record: { orgId, seq: 1, action: "member.role_changed", occurredAt: "2026-10-01T00:00:00Z", recordedAt: "2026-10-01T00:00:01Z", actor: { kind: "member", id: "actor-pseudonym" }, target: { kind: "member", id: "target-pseudonym" }, proof: { kind: "browser", sessionRef: "unneeded-session-ref" }, facts: { unknownSecret: "synthetic-private-value" } }, details: [{ subject: "person", salt: "unneeded-salt", fields: { email: "synthetic@example.test", apiKey: "synthetic-private-value" } }] };
-function page(cursor = false) { return { ...ledgerStatus, records: [{ ...row, record: { ...row.record, seq: cursor ? 2 : 1, action: cursor ? "org.renamed" : "member.role_changed" } }], ...(cursor ? {} : { nextCursor: "next_page" }) }; }
-function audit(role: "owner" | "admin" | "member" = "owner") { return mount({ path: "/app/admin/audit", role, respond: async r => ({ status: 200, body: r.path === "/v1/app/me" ? { developer: { id: "a".repeat(64), name: "Priya", orgRole: role }, org: { orgId, name: "Acme", plan: "team" }, identities: [] } : r.path.includes("/audit/status") ? { ...ledgerStatus, limits } : r.path.includes("/audit/records") ? page(r.path.includes("cursor=")) : {} }) }); }
-for (const role of ["owner", "admin"] as const) it(`opens the audit metadata for ${role} with exact limits and safe projections`, async () => {
- const f = audit(role);await screen.findByRole("heading", { name: "Audit" });await screen.findByText("member.role_changed");expect(screen.getByText("1 unsealed record")).toBeTruthy();expect(screen.getByText("In governance mode, a privileged administrator could remove the sealed copies.")).toBeTruthy();
- for (const part of limits.split("\n\n")) expect(screen.getByText(part)).toBeTruthy();const cache=JSON.stringify(f.query.getQueriesData({ queryKey: ["admin", "lane-c", "audit"] }));for (const text of ["synthetic-private-value", "synthetic@example.test", "unneeded-salt", "unneeded-session-ref"]) { expect(cache).not.toContain(text);expect(f.container.textContent).not.toContain(text); }expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);f.close();
-});
-it("makes no audit read for an ordinary member", async () => { const f=audit("member");await screen.findByRole("heading", { name: "Administration unavailable" });expect(f.request.mock.calls.some(([r]) => r.path.includes("/audit/"))).toBe(false);f.close(); });
-it("does not refetch audit records or status on focus, reconnect or identity recheck", async () => {
- const f=audit();await screen.findByText("member.role_changed");const count=()=>f.request.mock.calls.filter(([r])=>r.path.includes("/audit/")).length;const before=count();
- await act(async()=>{focusManager.setFocused(false);onlineManager.setOnline(false);onlineManager.setOnline(true);focusManager.setFocused(true);await f.query.invalidateQueries({queryKey:["admin","identity"]});await new Promise(r=>setTimeout(r,30));});expect(count()).toBe(before);expect(screen.getByText("member.role_changed")).toBeTruthy();
- fireEvent.click(screen.getByRole("button",{name:"Refresh this page and status"}));await waitFor(()=>expect(count()).toBe(before+2));f.close();
-});
-it("reads only the requested page and uses server cursors on deliberate pagination", async()=>{
- const f=audit();await screen.findByText("member.role_changed");expect(f.request.mock.calls.filter(([r])=>r.path.includes("/audit/records"))).toHaveLength(1);fireEvent.click(screen.getByRole("button",{name:"Next page"}));await screen.findByText("org.renamed");expect(screen.queryByText("member.role_changed")).toBeNull();expect(f.request.mock.calls.filter(([r])=>r.path.includes("/audit/records"))).toHaveLength(2);expect(f.request.mock.calls.some(([r])=>new URL(r.path,"https://cell.example").searchParams.get("cursor")==="next_page")).toBe(true);f.close();
-});
-it("applies valid UTC filters only on submit and resets pagination",async()=>{
- const f=audit();await screen.findByText("member.role_changed");const before=f.request.mock.calls.length;fireEvent.change(screen.getByLabelText("From (UTC)"),{target:{value:"2026-10-01T12:30"}});fireEvent.change(screen.getByLabelText("Through (UTC)"),{target:{value:"2026-10-02T12:30"}});expect(f.request.mock.calls).toHaveLength(before);fireEvent.click(screen.getByRole("button",{name:"Apply time range"}));await waitFor(()=>expect(f.request.mock.calls.some(([r])=>new URL(r.path,"https://cell.example").searchParams.get("from")==="2026-10-01T12:30:00.000Z")).toBe(true));expect(f.request.mock.calls.filter(([r])=>r.path.includes("/audit/records")).at(-1)?.[0].path).not.toContain("cursor=");f.close();
-});
-it("rejects reversed time ranges without a read",async()=>{
- const f=audit();await screen.findByText("member.role_changed");const before=f.request.mock.calls.length;fireEvent.change(screen.getByLabelText("From (UTC)"),{target:{value:"2026-10-02T12:30"}});fireEvent.change(screen.getByLabelText("Through (UTC)"),{target:{value:"2026-10-01T12:30"}});fireEvent.click(screen.getByRole("button",{name:"Apply time range"}));expect(await screen.findByText("From must be no later than Through.")).toBeTruthy();expect(f.request.mock.calls).toHaveLength(before);f.close();
-});
-it("keeps independent status information when record access fails and hides old rows",async()=>{
- const f=audit();await screen.findByText("member.role_changed");f.request.mockImplementation(async r=>r.path.includes("/audit/records")?{status:403,body:{error:{code:"FORBIDDEN",message:"untrusted detail"}}}:{status:200,body:{...ledgerStatus,limits}});fireEvent.click(screen.getByRole("button",{name:"Refresh this page and status"}));await screen.findByText(/permission to view/);expect(screen.queryByText("member.role_changed")).toBeNull();expect(screen.getByText("1 unsealed record")).toBeTruthy();expect(screen.queryByText("untrusted detail")).toBeNull();f.close();
-});
-it("rejects a foreign-org record before caching",async()=>{
- const f=audit();await screen.findByText("member.role_changed");f.request.mockImplementation(async r=>({status:200,body:r.path.includes("/audit/records")?{...page(),records:[{...row,record:{...row.record,orgId:"org_bbbbbbbbbbbbbbbbbbbb",action:"foreign-action"}}]}:{...ledgerStatus,limits}}));fireEvent.click(screen.getByRole("button",{name:"Refresh this page and status"}));await screen.findByText("This information is unavailable. Reload or try again.");expect(screen.queryByText("foreign-action")).toBeNull();expect(JSON.stringify(f.query.getQueriesData({queryKey:["admin","lane-c","audit"]}))).not.toContain("foreign-action");f.close();
-});
-for (const field of ["org","developer"] as const) it(`evicts old audit pages and resets cursors when ${field} changes`,async()=>{
- const f=audit();await screen.findByText("member.role_changed");fireEvent.click(screen.getByRole("button",{name:"Next page"}));await screen.findByText("org.renamed");const next=structuredClone(f.me);if(field==="org")next.org.orgId="org_bbbbbbbbbbbbbbbbbbbb";else next.developer.id="b".repeat(64);
- let resolve!:(v:ApiResponse)=>void;const pending=new Promise<ApiResponse>(r=>{resolve=r;});const paths:string[]=[];f.request.mockImplementation(async r=>{if(r.path.endsWith("/me"))return{status:200,body:next};paths.push(r.path);return pending;});await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","identity"]});});await waitFor(()=>expect(screen.queryByText("org.renamed")).toBeNull());expect(paths.filter(path=>path.includes("/audit/records")).every(path=>!path.includes("cursor="))).toBe(true);expect(f.query.getQueriesData({queryKey:["admin","lane-c","audit"]}).every(([key])=>key.includes(next.org.orgId)&&key.includes(next.developer.id))).toBe(true);await act(async()=>resolve({status:200,body:{...ledgerStatus,limits,records:[]}}));f.close();
-});
-it("clears audit data on role revocation",async()=>{
- const f=audit();await screen.findByText("member.role_changed");const next=structuredClone(f.me);next.developer.orgRole="member";f.request.mockImplementation(async()=>({status:200,body:next}));await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","identity"]});});await screen.findByRole("heading",{name:"Administration unavailable"});await waitFor(()=>expect(f.query.getQueriesData({queryKey:["admin","lane-c","audit"]})).toEqual([]));f.close();
+
+import { CodeClient, LocalCloudAuditStore, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudAuditRecord, type CodeSession } from "@rovara/cloud-server";
+
+const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb";
+const OWNER = "a".repeat(64), MEMBER = "b".repeat(64), OTHER = "c".repeat(64);
+const PEOPLE: Record<string, { id: string; company: string; role: "owner" | "admin" | "member" }> = {
+ "owner-token": { id: OWNER, company: A, role: "owner" }, "admin-token": { id: OWNER, company: A, role: "admin" }, "member-token": { id: MEMBER, company: A, role: "member" }, "other-token": { id: OTHER, company: B, role: "owner" },
+};
+const BASE = Date.UTC(2026, 10, 18, 12, 0, 0);
+const iso = (ms: number) => new Date(ms).toISOString();
+let n = 0;
+const cloudRow = (companyId: string, atMs: number, action: CloudAuditRecord["action"]): CloudAuditRecord => ({ id: `aud_${String(n++).padStart(20, "0")}`, companyId, at: iso(atMs), actor: { developerId: OWNER, name: "Priya", type: "person" }, action, subject: "", outcome: "ok", via: "web" });
+const jsonResponse = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+/** Cloud's handler with company A's and company B's records, and a fake Code: hosted 0.5.29 answers its audit read 404 "route not found" unless `engine` gives records. */
+async function cloud(options: { engine?: unknown[] } = {}) {
+ const audit = new LocalCloudAuditStore(undefined, {});
+ for (let i = 0; i < 60; i += 1) await audit.append(cloudRow(A, BASE - i * 60_000, i === 0 ? "company.rules.changed" : "company.invite.created"));
+ await audit.append(cloudRow(B, BASE, "company.budget.changed"));
+ const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+  const url = new URL(input instanceof Request ? input.url : input);
+  const person = PEOPLE[((init?.headers as Record<string, string> | undefined)?.["authorization"] ?? "").replace(/^Bearer /u, "")];
+  if (url.pathname === "/v1/auth/token") return jsonResponse(400, { error: "invalid_grant" });
+  if (person === undefined) return jsonResponse(401, {});
+  if (url.pathname === "/v1/dev/access") return jsonResponse(200, { developerId: person.id, displayName: "Priya", administrator: false, companyId: person.company, companyRole: person.role, projects: [], notices: [] });
+  if (url.pathname === "/v1/dev/client/company/audit/records" && options.engine !== undefined) return jsonResponse(200, { records: options.engine });
+  return jsonResponse(404, { error: { code: "NOT_FOUND", message: "route not found" } });
+ }) as typeof fetch;
+ const store = new LocalSessionStore(undefined, { environment: {} });
+ const client = new CodeClient({ baseUrl: "https://code.example.test", clientId: "rovara-cloud", clientSecret: "secret", redirectUri: "http://127.0.0.1:8787/callback", scopes: "projects:members", fetch: fetchImpl });
+ const handler = createCloudHandler({ client, store, work: new LocalWorkSessionStore(), origin: "https://cloud.example.test", org: { orgId: "rovara", name: "Rovara", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(BASE + 3_600_000), audit });
+ for (const token of Object.keys(PEOPLE)) {
+  // The stored sign-in says owner of A for everyone: Cloud must go by Code's live answer.
+  const access = { developerId: PEOPLE[token]!.id, displayName: "Priya", administrator: false, companyId: A, companyRole: "owner", projects: [], notices: [] } as CodeSession["access"];
+  await store.create(`cookie-${token}`, { accessToken: token, refreshToken: `r-${token}`, csrf: "csrf", signedInAt: iso(BASE), access });
+ }
+ return async (token: string, path: string): Promise<ApiResponse> => {
+  const url = new URL(path.replace(/^\/v1\/app\//u, "/v1/web/"), "https://cloud.example.test");
+  const answer = await handler({ method: "GET", path: url.pathname, query: url.searchParams, headers: { cookie: `rovara_cloud_session=cookie-${token}`, "x-rovara-csrf": "csrf" } });
+  return { status: answer!.status, body: JSON.parse(answer!.body) as unknown };
+ };
+}
+async function audit(role: "owner" | "admin" = "owner", options: { engine?: unknown[] } = {}) {
+ const cloudAs = await cloud(options);
+ const me = { developer: { id: OWNER, name: "Priya", orgRole: role }, org: { orgId: A, name: "Acme", plan: "team" }, identities: [] };
+ const f = mount({ path: "/app/admin/audit", role, respond: async r => r.path.startsWith("/v1/app/company/audit") || r.path.startsWith("/v1/app/org/audit") ? cloudAs(`${role}-token`, r.path) : { status: 200, body: r.path === "/v1/app/me" ? me : {} } });
+ return { ...f, cloudAs };
+}
+const auditReads = (f: { request: { mock: { calls: Array<[ApiRequest]> } } }) => f.request.mock.calls.map(([r]) => r.path).filter(path => path.includes("audit"));
+
+for (const role of ["owner", "admin"] as const) it(`${role}: reads Cloud's company audit list only (never the old ledger routes) and shows Cloud's records with the engine's plain status`, async () => {
+ const f = await audit(role);
+ await screen.findByRole("heading", { name: "Audit" });
+ await screen.findByText("company.rules.changed");
+ expect(screen.getByText("Engine records are not connected yet. This list shows Cloud's own records only.")).toBeTruthy();
+ expect(auditReads(f).every(path => path.startsWith("/v1/app/company/audit?"))).toBe(true);
+ expect(auditReads(f)).toHaveLength(1);
+ expect(screen.getAllByText("Rovara Cloud").length).toBeGreaterThan(0);
+ // No sealing claim: this list is not a sealed ledger.
+ expect(f.container.textContent).not.toMatch(/sealed|ledger|independent timestamp/i);
+ expect(screen.queryByText(/Couldn't load|Not available/)).toBeNull();
+ f.close();
 });
 
-it("distinguishes an empty filtered page from unavailable or unsealed history",async()=>{
- const f=audit();await screen.findByText("member.role_changed");f.request.mockImplementation(async()=>({status:200,body:{...ledgerStatus,limits,records:[]}}));fireEvent.click(screen.getByRole("button",{name:"Refresh this page and status"}));expect(await screen.findByText("No audit records returned for this page and time range. This does not prove no action occurred.")).toBeTruthy();expect(screen.getByText("1 unsealed record")).toBeTruthy();f.close();
-});
-it("marks failed background records stale without hiding the last good page",async()=>{
- const f=audit();await screen.findByText("member.role_changed");f.request.mockImplementation(async r=>r.path.includes("/audit/records")?{status:400,body:{error:{code:"CONFIG_INVALID",message:"untrusted storage response"}}}:{status:200,body:{...ledgerStatus,limits}});fireEvent.click(screen.getByRole("button",{name:"Refresh this page and status"}));await screen.findByText(/information is stale/);expect(screen.getByText("member.role_changed")).toBeTruthy();expect(screen.queryByText("untrusted storage response")).toBeNull();expect(screen.getByRole("button",{name:"Next page"})).toHaveProperty("disabled",true);f.close();
-});
-
-it("does not offer or promise the protected export while it is not built (deferred)",async()=>{
- const f=audit();await screen.findByText("member.role_changed");await screen.findByRole("button",{name:"Free verifier instructions"});expect(screen.queryByRole("button",{name:"Open secure audit export"})).toBeNull();expect(screen.queryByText(/secure (audit )?export/i)).toBeNull();expect(screen.queryByText(/secure window/i)).toBeNull();expect(screen.queryByText(/separate protected window/i)).toBeNull();expect(screen.queryByText(/time filter is not carried over/)).toBeNull();expect(screen.getByRole("heading",{name:"Check an audit export file"})).toBeTruthy();expect(f.host.openExternal).not.toHaveBeenCalled();expect(f.request.mock.calls.every(([r])=>r.method==="GET")).toBe(true);f.close();
-});
-it("offers free verifier guidance without opening or fetching anything at render",async()=>{
- const f=audit();await screen.findByText("member.role_changed");const instructions=await screen.findByRole("button",{name:"Free verifier instructions"});expect(f.host.openExternal).not.toHaveBeenCalled();fireEvent.click(instructions);await screen.findByRole("dialog",{name:"Verify an audit export"});expect(screen.getByText("rovara-audit-verify newer.json.gz --extends older.json.gz")).toBeTruthy();expect(screen.getByText(/Ask your installation administrator/)).toBeTruthy();expect(f.host.openExternal).not.toHaveBeenCalled();f.close();
-});
-it("shows no export availability message when the status says there are no records, since no export is offered",async()=>{
- const f=audit();await screen.findByText("member.role_changed");f.request.mockImplementation(async()=>({status:200,body:{...ledgerStatus,headSeq:0,sealedThroughSeq:0,limits,records:[]}}));fireEvent.click(screen.getByRole("button",{name:"Refresh this page and status"}));await screen.findByText(/No audit records returned/);expect(screen.queryByText("There are no records to export in this status snapshot.")).toBeNull();expect(screen.queryByRole("button",{name:"Open secure audit export"})).toBeNull();expect(screen.getByRole("button",{name:"Free verifier instructions"})).toBeTruthy();expect(f.host.openExternal).not.toHaveBeenCalled();f.close();
-});
-it("keeps the export entry hidden and the verifier guidance available if the status refresh is unavailable",async()=>{
- const f=audit();await screen.findByText("member.role_changed");await screen.findByRole("button",{name:"Free verifier instructions"});f.request.mockImplementation(async r=>r.path.includes("/audit/status")?{status:400,body:{error:{code:"CONFIG_INVALID",message:"untrusted detail"}}}:{status:200,body:page()});fireEvent.click(screen.getByRole("button",{name:"Refresh this page and status"}));await screen.findByText(/information is stale/);expect(screen.queryByRole("button",{name:"Open secure audit export"})).toBeNull();expect(screen.queryByText(/Audit export availability is unknown/)).toBeNull();expect(screen.getByRole("button",{name:"Free verifier instructions"})).toBeTruthy();f.close();
+it("another company's records never appear (Cloud's list is the caller's company from Code's live answer)", async () => {
+ const f = await audit();
+ await screen.findByText("company.rules.changed");
+ expect(screen.queryByText("company.budget.changed")).toBeNull();
+ expect(JSON.stringify(f.query.getQueriesData({ queryKey: ["admin", "lane-c", "audit"] }))).not.toContain("company.budget.changed");
+ f.close();
 });
 
-it("keeps the export entry hidden during a live identity recheck",async()=>{
- const f=audit();await screen.findByText("member.role_changed");await screen.findByRole("button",{name:"Free verifier instructions"});let resolve!:(v:ApiResponse)=>void;const pending=new Promise<ApiResponse>(r=>{resolve=r;});f.request.mockImplementation(async r=>r.path.endsWith("/me")?pending:{status:200,body:r.path.includes("/status")?{...ledgerStatus,limits}:page()});let recheck!:Promise<unknown>;await act(async()=>{recheck=f.query.invalidateQueries({queryKey:["admin","identity"]});await new Promise(r=>setTimeout(r,20));});expect(screen.queryByRole("button",{name:"Open secure audit export"})).toBeNull();expect(f.host.openExternal).not.toHaveBeenCalled();await act(async()=>{resolve({status:200,body:f.me});await recheck;});expect(screen.queryByRole("button",{name:"Open secure audit export"})).toBeNull();f.close();
+it("Cloud refuses a member and answers another company's owner with that company's records only (the route's own negatives)", async () => {
+ const cloudAs = await cloud();
+ const member = await cloudAs("member-token", "/v1/app/company/audit?limit=50");
+ expect(member.status).toBe(403);
+ expect(JSON.stringify(member.body)).not.toContain("company.");
+ const other = await cloudAs("other-token", "/v1/app/company/audit?limit=50");
+ expect(other.status).toBe(200);
+ expect((other.body as { records: Array<{ action: string }> }).records.map(row => row.action)).toEqual(["company.budget.changed"]);
+ // The old ledger routes are not Cloud's: they answer Cloud's fixed 501.
+ expect((await cloudAs("owner-token", "/v1/app/org/audit/status")).status).toBe(501);
 });
 
-for(const role of ["owner","admin"] as const)for(const pending of ["records","status","both"] as const)it(`keeps Audit refresh focus and one read while ${pending} pending for ${role}`,async()=>{
- const f=audit(role);let resolveRecords!:(response:ApiResponse)=>void,resolveStatus!:(response:ApiResponse)=>void;const recordRead=new Promise<ApiResponse>(r=>{resolveRecords=r;}),statusRead=new Promise<ApiResponse>(r=>{resolveStatus=r;});try{await screen.findByText("member.role_changed");fireEvent.click(screen.getByRole("button",{name:"Next page"}));await screen.findByText("org.renamed");await waitFor(()=>expect(screen.queryAllByRole("progressbar")).toHaveLength(0));fireEvent.change(screen.getByLabelText("From (UTC)"),{target:{value:"2026-10-01T12:30"}});const before=f.request.mock.calls.length,button=screen.getByRole("button",{name:"Refresh this page and status"}),original=f.request.getMockImplementation()!;f.request.mockImplementation(async r=>r.path.includes("/audit/records")?(pending==="records"||pending==="both"?recordRead:{status:200,body:page(true)}):r.path.includes("/audit/status")?(pending==="status"||pending==="both"?statusRead:{status:200,body:{...ledgerStatus,limits}}):original(r));button.focus();fireEvent.click(button);fireEvent.click(button);await waitFor(()=>expect(button.getAttribute("aria-disabled")).toBe("true"));expect(document.activeElement).toBe(button);expect(screen.getByText("org.renamed")).toBeTruthy();const paths=f.request.mock.calls.slice(before).map(([r])=>r.path);expect(paths).toHaveLength(2);expect(paths.filter(path=>path.includes("/audit/status"))).toHaveLength(1);expect(paths.filter(path=>path.includes("/audit/records")&&path.includes("cursor=next_page"))).toHaveLength(1);await act(async()=>{resolveRecords({status:200,body:page(true)});resolveStatus({status:200,body:{...ledgerStatus,limits}});});await waitFor(()=>expect(button.getAttribute("aria-disabled")).toBe("false"));expect(document.activeElement).toBe(button);expect(screen.getByText("org.renamed")).toBeTruthy();expect(screen.getByLabelText<HTMLInputElement>("From (UTC)").value).toBe("2026-10-01T12:30");expect(f.request.mock.calls.slice(before).map(([r])=>r.path)).toEqual(paths);expect(f.request.mock.calls.every(([r])=>r.method==="GET")).toBe(true);}finally{resolveRecords({status:200,body:page(true)});resolveStatus({status:200,body:{...ledgerStatus,limits}});f.close();}
-});
-it("preserves Audit refresh focus through independent refused and stale reads then recovery",async()=>{
- const f=audit();try{await screen.findByText("member.role_changed");await waitFor(()=>expect(screen.queryAllByRole("progressbar")).toHaveLength(0));const button=screen.getByRole("button",{name:"Refresh this page and status"}),before=f.request.mock.calls.length,original=f.request.getMockImplementation()!;let fail=true;f.request.mockImplementation(async r=>fail&&r.path.includes("/audit/")?{status:r.path.includes("/records")?403:400,body:{error:{code:r.path.includes("/records")?"FORBIDDEN":"CONFIG_INVALID",message:"untrusted Audit refresh error"}}}:original(r));button.focus();fireEvent.click(button);await screen.findByText(/permission to view/);await screen.findByText(/information is stale/);await waitFor(()=>expect(button.getAttribute("aria-disabled")).toBe("false"));expect(screen.queryByText("member.role_changed")).toBeNull();expect(document.activeElement).toBe(button);expect(screen.queryByText("untrusted Audit refresh error")).toBeNull();expect(screen.queryByRole("button",{name:"Open secure audit export"})).toBeNull();fail=false;fireEvent.click(button);await screen.findByText("member.role_changed");await waitFor(()=>expect(button.getAttribute("aria-disabled")).toBe("false"));expect(document.activeElement).toBe(button);expect(f.request.mock.calls.slice(before)).toHaveLength(4);expect(f.request.mock.calls.every(([r])=>r.method==="GET")).toBe(true);expect(f.host.openExternal).not.toHaveBeenCalled();}finally{f.close();}
-});
-
-for(const role of ["owner","admin"] as const)for(const code of [200,400,403])it(`keeps Audit range-submit focus for ${role} after ${code} with one pending records read`,async()=>{
- const f=audit(role);let resolve!:(response:ApiResponse)=>void;const pending=new Promise<ApiResponse>(r=>{resolve=r;});try{await screen.findByText("member.role_changed");fireEvent.click(screen.getByRole("button",{name:"Next page"}));await screen.findByText("org.renamed");await waitFor(()=>expect(screen.queryAllByRole("progressbar")).toHaveLength(0));fireEvent.change(screen.getByLabelText("From (UTC)"),{target:{value:"2026-10-01T00:00"}});fireEvent.change(screen.getByLabelText("Through (UTC)"),{target:{value:"2026-10-02T00:00"}});const button=screen.getByRole("button",{name:"Apply time range"}),form=button.closest("form"),before=f.request.mock.calls.length,original=f.request.getMockImplementation()!;if(form===null)throw new Error("Audit time-range form missing");expect(button.getAttribute("type")).toBe("submit");let hold=true;f.request.mockImplementation(async r=>hold&&r.path.includes("/audit/records")?pending:original(r));button.focus();fireEvent.submit(form);fireEvent.submit(form);await waitFor(()=>expect(button.getAttribute("aria-disabled")).toBe("true"));expect(document.activeElement).toBe(button);expect(screen.queryByText("org.renamed")).toBeNull();const paths=f.request.mock.calls.slice(before).map(([r])=>r.path);expect(paths).toHaveLength(1);const query=new URL(paths[0]!,"https://cell.example").searchParams;expect(query.get("from")).toBe("2026-10-01T00:00:00.000Z");expect(query.get("to")).toBe("2026-10-02T00:00:00.000Z");expect(query.has("cursor")).toBe(false);expect(paths[0]).toContain("/audit/records?");await act(async()=>resolve({status:code,body:code===200?page():{error:{code:code===403?"FORBIDDEN":"CONFIG_INVALID",message:"untrusted range error"}}}));await waitFor(()=>expect(button.getAttribute("aria-disabled")).toBe("false"));expect(document.activeElement).toBe(button);expect(screen.getByLabelText<HTMLInputElement>("From (UTC)").value).toBe("2026-10-01T00:00");expect(screen.getByLabelText<HTMLInputElement>("Through (UTC)").value).toBe("2026-10-02T00:00");if(code===200){expect(screen.getByText("member.role_changed")).toBeTruthy();expect(screen.queryByText("org.renamed")).toBeNull();}else{await screen.findByText(code===403?"You don't have permission to view this information.":"Couldn't load this information. Try again.");expect(screen.queryByText("org.renamed")).toBeNull();expect(screen.queryByText("member.role_changed")).toBeNull();hold=false;fireEvent.submit(form);await screen.findByText("member.role_changed");await waitFor(()=>expect(button.getAttribute("aria-disabled")).toBe("false"));expect(document.activeElement).toBe(button);}expect(screen.queryByText("untrusted range error")).toBeNull();expect(f.request.mock.calls.slice(before)).toHaveLength(code===200?1:2);expect(f.request.mock.calls.slice(before).every(([r])=>r.method==="GET"&&r.path.includes("/audit/records?"))).toBe(true);expect(f.host.openExternal).not.toHaveBeenCalled();}finally{resolve({status:200,body:page()});f.close();}
+it("an ordinary member's page makes no audit read", async () => {
+ const cloudAs = await cloud();
+ const me = { developer: { id: MEMBER, name: "Maya", orgRole: "member" }, org: { orgId: A, name: "Acme", plan: "team" }, identities: [] };
+ const f = mount({ path: "/app/admin/audit", role: "member", respond: async r => r.path.includes("audit") ? cloudAs("member-token", r.path) : { status: 200, body: r.path === "/v1/app/me" ? me : {} } });
+ await screen.findByRole("heading", { name: "Administration unavailable" });
+ expect(auditReads(f)).toHaveLength(0);
+ f.close();
 });
 
-for(const role of ["owner","admin"] as const)it(`identifies the Audit page count as a polite atomic status for ${role}`,async()=>{
- const f=audit(role);try{await screen.findByText("member.role_changed");const status=screen.getByRole("status",{name:"Audit records shown on this page"});expect(status.getAttribute("aria-live")).toBe("polite");expect(status.getAttribute("aria-atomic")).toBe("true");expect(status.textContent).toBe("Audit records: Page 1: 1 record returned, up to 50 per page. Sequence 1 through 1. Log head at this read: 3.");const before=f.request.mock.calls.length,next=screen.getByRole("button",{name:"Next page"});fireEvent.click(next);await screen.findByText("org.renamed");expect(screen.getByRole("status",{name:"Audit records shown on this page"}).textContent).toBe("Audit records: Page 2: 1 record returned, up to 50 per page. Sequence 2 through 2. Log head at this read: 3.");expect(f.request.mock.calls.slice(before)).toHaveLength(1);const refresh=screen.getByRole("button",{name:"Refresh this page and status"});refresh.focus();fireEvent.click(refresh);await waitFor(()=>expect(refresh.getAttribute("aria-disabled")).toBe("false"));expect(document.activeElement).toBe(refresh);expect(screen.getByRole("status",{name:"Audit records shown on this page"}).textContent).toBe("Audit records: Page 2: 1 record returned, up to 50 per page. Sequence 2 through 2. Log head at this read: 3.");expect(f.request.mock.calls.slice(before)).toHaveLength(3);expect(f.request.mock.calls.every(([r])=>r.method==="GET")).toBe(true);expect(f.host.openExternal).not.toHaveBeenCalled();}finally{f.close();}
-});
-it("identifies an empty Audit page without implying no action occurred",async()=>{
- const f=audit();try{await screen.findByText("member.role_changed");const original=f.request.getMockImplementation()!,before=f.request.mock.calls.length;f.request.mockImplementation(async r=>r.path.includes("/audit/records")?{status:200,body:{...ledgerStatus,records:[]}}:original(r));fireEvent.click(screen.getByRole("button",{name:"Refresh this page and status"}));await screen.findByText("No audit records returned for this page and time range. This does not prove no action occurred.");const status=screen.getByRole("status",{name:"Audit records shown on this page"});expect(status.getAttribute("aria-live")).toBe("polite");expect(status.getAttribute("aria-atomic")).toBe("true");expect(status.textContent).toBe("Audit records: Page 1: 0 records returned, up to 50 per page. Log head at this read: 3.");expect(f.request.mock.calls.slice(before)).toHaveLength(2);expect(f.request.mock.calls.every(([r])=>r.method==="GET")).toBe(true);expect(f.host.openExternal).not.toHaveBeenCalled();}finally{f.close();}
-});
-
-for(const role of ["owner","admin"] as const)it(`links rejected Audit range fields to the existing error and clears them on valid submit for ${role}`,async()=>{
- const f=audit(role);try{await screen.findByText("member.role_changed");fireEvent.click(screen.getByRole("button",{name:"Next page"}));await screen.findByText("org.renamed");const from=screen.getByLabelText<HTMLInputElement>("From (UTC)"),through=screen.getByLabelText<HTMLInputElement>("Through (UTC)"),button=screen.getByRole("button",{name:"Apply time range"}),before=f.request.mock.calls.length;for(const field of [from,through]){expect(field.getAttribute("aria-invalid")).toBeNull();expect(field.getAttribute("aria-describedby")).toBeNull();}fireEvent.change(from,{target:{value:"2026-10-02T12:30"}});fireEvent.change(through,{target:{value:"2026-10-01T12:30"}});button.focus();fireEvent.click(button);const error=await screen.findByRole("alert");expect(error.textContent).toBe("From must be no later than Through.");expect(error.id).toBe("audit-range-error");for(const field of [from,through]){expect(field.getAttribute("aria-invalid")).toBe("true");expect(field.getAttribute("aria-describedby")).toBe(error.id);}expect(document.activeElement).toBe(button);expect(screen.getByText("org.renamed")).toBeTruthy();expect(from.value).toBe("2026-10-02T12:30");expect(through.value).toBe("2026-10-01T12:30");expect(f.request.mock.calls).toHaveLength(before);fireEvent.change(through,{target:{value:"2026-10-03T12:30"}});expect(screen.getByRole("alert")).toBe(error);expect(f.request.mock.calls).toHaveLength(before);fireEvent.click(button);await screen.findByText("member.role_changed");expect(screen.queryByRole("alert")).toBeNull();for(const field of [from,through]){expect(field.getAttribute("aria-invalid")).toBeNull();expect(field.getAttribute("aria-describedby")).toBeNull();}expect(document.activeElement).toBe(button);expect(screen.queryByText("org.renamed")).toBeNull();const reads=f.request.mock.calls.slice(before);expect(reads).toHaveLength(1);const request=reads[0]![0],query=new URL(request.path,"https://cell.example").searchParams;expect(request.method).toBe("GET");expect(request.path).toContain("/audit/records?");expect(query.get("from")).toBe("2026-10-02T12:30:00.000Z");expect(query.get("to")).toBe("2026-10-03T12:30:00.000Z");expect(query.has("cursor")).toBe(false);expect(f.host.openExternal).not.toHaveBeenCalled();}finally{f.close();}
+it("shows the engine's records when Code serves them, marked as Rovara Code's", async () => {
+ const f = await audit("owner", { engine: [{ eventId: "ev_0001", at: iso(BASE + 60_000), actor: { developerId: OWNER, name: "Grace", type: "person" }, action: "task.approved", subject: "task:t1", outcome: "ok", via: "slack" }] });
+ await screen.findByText("task.approved");
+ expect(screen.getAllByText("Rovara Code").length).toBe(1);
+ expect(screen.queryByText(/Engine records are not connected yet/)).toBeNull();
+ f.close();
 });
 
-for(const field of ["company","person","role"] as const)it(`resets linked Audit range errors and page state when ${field} scope changes`,async()=>{
- const f=audit();try{await screen.findByText("member.role_changed");const oldPrefix=["admin","lane-c","audit",orgId,f.me.developer.id,"owner"],initial=f.query.getQueryData<{records:{record:{orgId:string;action:string}}[]}>([...oldPrefix,"records","","","",0]),status=f.query.getQueryData([...oldPrefix,"status"]);if(initial===undefined||status===undefined)throw new Error("Initial Audit caches missing");fireEvent.click(screen.getByRole("button",{name:"Next page"}));await screen.findByText("org.renamed");fireEvent.change(screen.getByLabelText("From (UTC)"),{target:{value:"2026-10-02T12:30"}});fireEvent.change(screen.getByLabelText("Through (UTC)"),{target:{value:"2026-10-01T12:30"}});fireEvent.click(screen.getByRole("button",{name:"Apply time range"}));await screen.findByText("From must be no later than Through.");expect(screen.getByLabelText("From (UTC)").getAttribute("aria-invalid")).toBe("true");const oldHeading=screen.getByRole("heading",{name:"Audit"}),next=structuredClone(f.me);if(field==="company")next.org.orgId="org_bbbbbbbbbbbbbbbbbbbb";else if(field==="person")next.developer.id="b".repeat(64);else next.developer.orgRole="admin";const prefix=["admin","lane-c","audit",next.org.orgId,next.developer.id,next.developer.orgRole],fresh={...initial,records:initial.records.map(item=>({...item,record:{...item.record,orgId:next.org.orgId,action:"new-scope-action"}}))};f.query.setQueryData([...prefix,"status"],status);f.query.setQueryData([...prefix,"records","","","",0],fresh);const before=f.request.mock.calls.length,original=f.request.getMockImplementation()!;f.request.mockImplementation(async r=>r.path==="/v1/app/me"?{status:200,body:next}:original(r));await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","identity"]});});await screen.findByText("new-scope-action");expect(screen.queryByRole("alert")).toBeNull();for(const name of ["From (UTC)","Through (UTC)"]){const input=screen.getByLabelText<HTMLInputElement>(name);expect(input.value).toBe("");expect(input.getAttribute("aria-invalid")).toBeNull();expect(input.getAttribute("aria-describedby")).toBeNull();}const heading=screen.getByRole("heading",{name:"Audit"});expect(heading).not.toBe(oldHeading);expect(document.activeElement).toBe(heading);expect(screen.queryByText("org.renamed")).toBeNull();expect(screen.getByRole("status",{name:"Audit records shown on this page"}).textContent).toContain("Audit records: Page 1: 1 record returned");await waitFor(()=>expect(f.query.getQueriesData({queryKey:oldPrefix})).toEqual([]));expect(f.query.getQueryData([...prefix,"records","","","",0])).toEqual(fresh);expect(f.query.getQueryData([...prefix,"status"])).toEqual(status);const reads=f.request.mock.calls.slice(before);expect(reads.map(([r])=>({method:r.method,path:r.path})).filter((r)=>r.path!=="/v1/app/org/second-review")).toEqual([{method:"GET",path:"/v1/app/me"}]);expect(f.host.openExternal).not.toHaveBeenCalled();}finally{f.close();}
+it("pages with Cloud's cursor and goes back to the first page", async () => {
+ const f = await audit();
+ await screen.findByText("company.rules.changed");
+ expect(screen.getByRole("status", { name: "Audit records shown on this page" }).textContent).toBe("Page 1: 50 records, up to 50 per page.");
+ fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+ await waitFor(() => expect(screen.getByRole("status", { name: "Audit records shown on this page" }).textContent).toBe("Page 2: 10 records, up to 50 per page."));
+ expect(auditReads(f)[1]).toContain("cursor=");
+ expect(screen.queryByText("company.rules.changed")).toBeNull();
+ expect(screen.getByRole("button", { name: "Next page" }).hasAttribute("disabled")).toBe(true);
+ fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+ await screen.findByText("company.rules.changed");
+ expect(auditReads(f).slice(2).every(path => !path.includes("cursor="))).toBe(true);
+ f.close();
+});
+
+it("applies a valid UTC range on submit (Cloud's own query shape) and refuses a reversed one without a read", async () => {
+ const f = await audit();
+ await screen.findByText("company.rules.changed");
+ fireEvent.change(screen.getByLabelText("From (UTC)"), { target: { value: "2026-11-18T11:00" } });
+ fireEvent.change(screen.getByLabelText("Through (UTC)"), { target: { value: "2026-11-18T11:30" } });
+ fireEvent.click(screen.getByRole("button", { name: "Apply range" }));
+ await waitFor(() => expect(auditReads(f)).toHaveLength(2));
+ const sent = new URL(auditReads(f)[1]!, "https://x.test").searchParams;
+ expect(sent.get("from")).toBe("2026-11-18T11:00:00.000Z");
+ expect(sent.get("to")).toBe("2026-11-18T11:30:00.000Z");
+ await waitFor(() => expect(screen.getByRole("status", { name: "Audit records shown on this page" }).textContent).toBe("Page 1: 30 records, up to 50 per page."));
+ fireEvent.change(screen.getByLabelText("From (UTC)"), { target: { value: "2026-11-18T12:00" } });
+ fireEvent.change(screen.getByLabelText("Through (UTC)"), { target: { value: "2026-11-18T11:00" } });
+ fireEvent.click(screen.getByRole("button", { name: "Apply range" }));
+ await screen.findByText("From must be no later than Through.");
+ expect(auditReads(f)).toHaveLength(2);
+ f.close();
+});
+
+it("does not read again on focus or reconnect", async () => {
+ const f = await audit();
+ await screen.findByText("company.rules.changed");
+ const before = auditReads(f).length;
+ await act(async () => { focusManager.setFocused(false); onlineManager.setOnline(false); onlineManager.setOnline(true); focusManager.setFocused(true); await new Promise(r => setTimeout(r, 30)); });
+ expect(auditReads(f)).toHaveLength(before);
+ f.close();
+});
+
+it("a next cursor that names the page just read is refused (no page loop)", async () => {
+ const cloudAs = await cloud();
+ const me = { developer: { id: OWNER, name: "Priya", orgRole: "owner" }, org: { orgId: A, name: "Acme", plan: "team" }, identities: [] };
+ let firstNext = "";
+ const f = mount({ path: "/app/admin/audit", role: "owner", respond: async r => {
+  if (!r.path.startsWith("/v1/app/company/audit")) return { status: 200, body: r.path === "/v1/app/me" ? me : {} };
+  const real = await cloudAs("owner-token", r.path);
+  const body = real.body as { next?: string; records: Array<{ action: string }> };
+  if (!r.path.includes("cursor=")) { firstNext = body.next ?? ""; return real; }
+  return { status: 200, body: { ...body, next: firstNext, records: [{ ...body.records[0]!, action: "company.rules.changed" }] } };
+ } });
+ await screen.findByText("company.rules.changed");
+ fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+ await screen.findByText("This information is unavailable. Reload or try again.");
+ f.close();
+});
+
+it("an answer that does not read (unknown source) is refused before it is shown or cached", async () => {
+ const cloudAs = await cloud();
+ const me = { developer: { id: OWNER, name: "Priya", orgRole: "owner" }, org: { orgId: A, name: "Acme", plan: "team" }, identities: [] };
+ const f = mount({ path: "/app/admin/audit", role: "owner", respond: async r => {
+  if (!r.path.startsWith("/v1/app/company/audit")) return { status: 200, body: r.path === "/v1/app/me" ? me : {} };
+  const real = await cloudAs("owner-token", r.path) as { status: number; body: { records: Array<Record<string, unknown>> } };
+  return { status: 200, body: { ...real.body, records: [{ ...real.body.records[0], source: "elsewhere", action: "forged.action" }] } };
+ } });
+ await screen.findByText("This information is unavailable. Reload or try again.");
+ expect(screen.queryByText("forged.action")).toBeNull();
+ expect(JSON.stringify(f.query.getQueriesData({ queryKey: ["admin", "lane-c", "audit"] }))).not.toContain("forged.action");
+ f.close();
 });

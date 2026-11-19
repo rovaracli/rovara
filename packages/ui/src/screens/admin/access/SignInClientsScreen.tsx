@@ -31,6 +31,6 @@ export function SignInClientsScreen() {
      : <div role="alert" className="rv-banner rv-banner-danger"><span><b>{read.error instanceof ApiError && read.error.status === 403 ? "You don't have permission to view sign-in clients." : "Couldn't load sign-in clients."}</b></span><Button disabled={read.isFetching} onClick={() => { void read.refetch(); }}>Try again</Button></div>)
    : read.data.length === 0 ? <p className="rv-muted">This company has no sign-in client of its own. People sign in through Rovara's own clients.</p>
    : <DataTable caption="Sign-in clients" columns={columns} rows={read.data} rowKey={client => client.clientId} />}
-  <AdminSection title="Who may sign in"><p>A person joins the company only through an invite or a pre-approved email. <Link to="/app/admin/invites">Open Invites</Link> to add one. Confirmation emails and passkeys for fresh sign-ins are on <Link to="/app/admin/sign-in-factors">Sign-in factors</Link>.</p></AdminSection>
+  <AdminSection title="Who may sign in"><p>A person joins the company only through an invite or a pre-approved email. <Link to="/app/admin/invites">Open Invites</Link> to add one.</p></AdminSection>
  </section>;
 }

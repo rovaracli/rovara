@@ -3,7 +3,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { SecondReviewState } from "@agentx/contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { secondReviewKey, useSecondReview, useSecondReviewApi } from "../../../api/second-review.js";
-import { useAppHost } from "../../../host.js";
 import { Banner } from "../../../design/Banner.js";
 import { Button } from "../../../design/Button.js";
 import { PageHeader } from "../../../design/PageHeader.js";
@@ -13,14 +12,14 @@ import { VisibleText } from "../../../design/VisibleText.js";
 import { expires, cost, days, T } from "./second-review-text.js";
 import "../how-we-work/how-we-work.css";
 
-type Message = { kind: "status"; text: string } | { kind: "alert"; text: string; signIn?: boolean };
+type Message = { kind: "status"; text: string } | { kind: "alert"; text: string };
 type Ref = { provider: string; modelId: string };
 const refKey = (model: Ref): string => model.provider + "\u0000" + model.modelId;
 const refOf = (key: string): Ref | undefined => { const at = key.indexOf("\u0000"); return at < 0 ? undefined : { provider: key.slice(0, at), modelId: key.slice(at + 1) }; };
 
 /** Runs one write: one press at a time, the server's words on a refusal, a fresh read afterwards. */
 function useWrite() {
- const query = useQueryClient(), host = useAppHost(), sending = useRef(false);
+ const query = useQueryClient(), sending = useRef(false);
  const [busy, setBusy] = useState(false), [message, setMessage] = useState<Message>();
  async function run(write: () => Promise<unknown>, done: string | ((answer: unknown) => string)) {
   if (sending.current) return;
@@ -31,13 +30,12 @@ function useWrite() {
    await query.invalidateQueries({ queryKey: secondReviewKey });
   } catch (error) {
    if (error instanceof ApiError && error.code === "CHANGE_STALE") { await query.invalidateQueries({ queryKey: secondReviewKey });setMessage({ kind: "alert", text: T.CHANGED }); }
-   else if (error instanceof ApiError && error.code === "REAUTH_REQUIRED") setMessage({ kind: "alert", text: error.message, signIn: true });
    else setMessage({ kind: "alert", text: error instanceof ApiError ? error.message : T.FAILED });
   } finally { sending.current = false;setBusy(false); }
  }
  const view = <>
   <p role="status">{message?.kind === "status" ? message.text : ""}</p>
-  {message?.kind === "alert" && <p role="alert"><VisibleText text={message.text} />{message.signIn === true && <> <Button onClick={() => host.signIn(host.currentPath())}>{T.SIGN_IN_AGAIN}</Button></>}</p>}
+  {message?.kind === "alert" && <p role="alert"><VisibleText text={message.text} /></p>}
  </>;
  return { run, busy, view };
 }

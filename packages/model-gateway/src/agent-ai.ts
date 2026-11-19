@@ -10,7 +10,9 @@
 //   custom_endpoint the company's own OpenAI-compatible endpoint (DEC 254t), behind the SSRF guard (endpoint-guard.ts).
 //
 // No choice saved: company-key mode exactly as before (DEC 236), except for a company the operator named exempt (the pilot list, RovaraAi.exempt): its own key, its
-// own Bedrock, else Rovara's AI (DEC 254zzz3(1); resolveAgentSource below). There is never an automatic fallback between sources.
+// own Bedrock, else Rovara's AI (DEC 254zzz3(1); resolveAgentSource below). The only fallback between sources is the company's own saved
+// order (DEC 254zzz84(4): `fallback` on the same row, e.g. its own key first, then Rovara's AI), decided at admission before anything is
+// held or sent (server.ts); never a guess, and never after a provider answered.
 import { BEDROCK_CONVERSE_ID } from "./bedrock-converse.js";
 import type { CredentialSource } from "./aws.js";
 import type { EndpointTarget } from "./endpoint-guard.js";
@@ -84,6 +86,24 @@ export function agentSourceSwitchedOn(source: string, switchedOn: ReadonlySet<st
 export interface AgentAiSourceReader {
   /** The company's saved choice, or undefined when it saved none. Throws when the choice can't be read or is not one of the sources. */
   sourceFor(cid: string, signal?: AbortSignal): Promise<AgentAiSource | undefined>;
+  /**
+   * DEC 254zzz84(4): the company's saved order, its first choice and the sources after it (in order, possibly none), or undefined when it saved
+   * none. Throws like sourceFor. A reader without it has no fallback (the first choice alone, exactly as before).
+   */
+  orderFor?(cid: string, signal?: AbortSignal): Promise<{ source: AgentAiSource; fallback: AgentAiSource[] } | undefined>;
+}
+
+/** DEC 254zzz84(4): the most sources a company's order may hold after its first choice. */
+export const AGENT_AI_FALLBACK_MAX = 5;
+/** A stored fallback list: an array of distinct known sources, without the first choice, at most AGENT_AI_FALLBACK_MAX. Anything else is undefined (unreadable). */
+export function validFallback(value: unknown, source: AgentAiSource): AgentAiSource[] | undefined {
+  if (!Array.isArray(value) || value.length > AGENT_AI_FALLBACK_MAX) return undefined;
+  const seen = new Set<string>([source]);
+  for (const entry of value) {
+    if (typeof entry !== "string" || !(AGENT_AI_SOURCES as readonly string[]).includes(entry) || seen.has(entry)) return undefined;
+    seen.add(entry);
+  }
+  return value.slice() as AgentAiSource[];
 }
 
 /**
@@ -94,12 +114,19 @@ export interface AgentAiSourceReader {
 export class CompanyAgentAiSource implements AgentAiSourceReader {
   constructor(private readonly db: Dynamo, private readonly table: string) {}
   async sourceFor(cid: string, signal?: AbortSignal): Promise<AgentAiSource | undefined> {
+    return (await this.orderFor(cid, signal))?.source;
+  }
+  /** The saved order. A `fallback` that is present but not a valid list (another source twice, the first choice again, an unknown source, too many) throws: never a partial order. */
+  async orderFor(cid: string, signal?: AbortSignal): Promise<{ source: AgentAiSource; fallback: AgentAiSource[] } | undefined> {
     if (typeof cid !== "string" || !COMPANY.test(cid)) throw new Error("agent ai source unavailable");
     const item = await this.db.get(this.table, { pk: `${GATEWAY_COMPANY_AGENT_AI.partitionPrefix}${cid}`, sk: GATEWAY_COMPANY_AGENT_AI.sortKey }, { consistent: true, ...(signal === undefined ? {} : { signal }) });
     if (item === undefined) return undefined;
     const source = record(item)?.source;
     if (item.companyId !== cid || typeof source !== "string" || !(AGENT_AI_SOURCES as readonly string[]).includes(source)) throw new Error("agent ai source unavailable");
-    return source as AgentAiSource;
+    const stored = record(item)?.fallback;
+    const fallback = stored === undefined ? [] : validFallback(stored, source as AgentAiSource);
+    if (fallback === undefined) throw new Error("agent ai source unavailable");
+    return { source: source as AgentAiSource, fallback };
   }
 }
 
@@ -111,7 +138,11 @@ export class CompanyAgentAiSource implements AgentAiSourceReader {
  * "none" (no choice and not exempt: company-key mode exactly as before).
  */
 export type AgentSourceVia = "chosen" | "default" | "own_key" | "none";
-export interface ResolvedAgentSource { source: AgentAiSource | undefined; via: AgentSourceVia }
+export interface ResolvedAgentSource {
+  source: AgentAiSource | undefined; via: AgentSourceVia;
+  /** DEC 254zzz84(4): the saved order's sources after `source`, only when the company saved some (absent: no fallback, exactly as before). */
+  fallback?: AgentAiSource[];
+}
 /** The pure rule for an exempt company with no saved choice. A contract test holds Cloud's copy equal (cloud-server company-store.ts). */
 export function defaultAgentSource(input: { keyConnected: boolean; bedrockConnected: boolean }): { source: AgentAiSource | undefined; via: "own_key" | "default" } {
   if (input.keyConnected) return { source: undefined, via: "own_key" };
@@ -132,8 +163,13 @@ export interface AgentSourcePorts {
  * onto Rovara's account.
  */
 export async function resolveAgentSource(ports: AgentSourcePorts, iss: string, cid: string, signal?: AbortSignal): Promise<ResolvedAgentSource> {
-  const saved = await ports.sources.sourceFor(cid, signal);
-  if (saved !== undefined) return { source: saved, via: "chosen" };
+  if (ports.sources.orderFor !== undefined) {
+    const order = await ports.sources.orderFor(cid, signal);
+    if (order !== undefined) return order.fallback.length === 0 ? { source: order.source, via: "chosen" } : { source: order.source, via: "chosen", fallback: order.fallback.slice() };
+  } else {
+    const saved = await ports.sources.sourceFor(cid, signal);
+    if (saved !== undefined) return { source: saved, via: "chosen" };
+  }
   if (ports.exempt === undefined || !ports.exempt.has(cid)) return { source: undefined, via: "none" };
   const keyConnected = (await ports.keys.connected(iss, cid, "anthropic", signal)) === true;
   const bedrockConnected = !keyConnected && ports.byo !== undefined && (await ports.byo.connection(iss, cid, signal)) !== undefined;

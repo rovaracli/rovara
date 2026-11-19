@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // L4-EVC (DEC 254zzz20 D5, D6, D8): the setup flow's ONE eval card, in plain dollars, on the checklist's "Confirm how work is checked" row. It shows what was found with Code's own sentence and ONE Approve
-// (after a fresh sign-in); a changed eval set that grew past the approved dollars asks again (Approve / Not now); once approved it says what a PR costs and offers the OPT-IN health check, which is
+// (one press: no step-up since owner DEC 254zzz73); a changed eval set that grew past the approved dollars asks again (Approve / Not now); once approved it says what a PR costs and offers the OPT-IN health check, which is
 // never sent without a click. The dollars a person saw (`seen`) are copied from the read, never worked out here. No tokens, counts or micro-dollar words reach the page. The server decides everything;
 // these tests watch what the page asks and says.
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +19,7 @@ import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
 afterEach(cleanup);
-const ME = "a".repeat(64), NONCE_KEY = "rovara.stepup.nonce";
+const ME = "a".repeat(64);
 const TASK = "task_0123-abc", DIGEST = "ab12".repeat(16), OFFER_DIGEST = "cd34".repeat(16), OFFER_ID = `eval-${"e".repeat(40)}-3`;
 const LEAK = "SENSITIVE-SERVER-DETAIL";
 // Whole-number figures chosen so that no formula in the page could reproduce them by accident.
@@ -41,7 +41,7 @@ const checklist = (evalConfirm: Record<string, unknown> = { state: "needs_you", 
   slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: { state: "needs_you", hasTask: false, canStart: false },
 });
 
-interface Options { read?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse; fresh?: boolean; status?: () => unknown; put?: (request: ApiRequest) => ApiResponse }
+interface Options { read?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse; status?: () => unknown; put?: (request: ApiRequest) => ApiResponse }
 function mount(options: Options = {}) {
   let current: ApiResponse = options.read?.() ?? { status: 200, body: card() };
   const f = fakeHost(async (request) => {
@@ -53,10 +53,9 @@ function mount(options: Options = {}) {
     if (request.path.startsWith("/v1/app/projects/web/setup-agent/journal")) return { status: 200, body: { status: "ready", entries: [], hostAsks: [] } };
     return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
   });
-  if (options.fresh === true) f.storage.set(NONCE_KEY, JSON.stringify({ nonce: "n-1", at: Date.now() }));
   const query = createQueryClient();
   query.setQueryData(["nav"], { me: { developerId: ME, name: "Maya", orgRole: "owner" } });
-  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/web" + (options.fresh === true ? "?confirmed=n-1" : "")], children: h(ProjectChecklist, { project: "web" }) }) }) }), { theme: "light" });
+  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/web"], children: h(ProjectChecklist, { project: "web" }) }) }) }), { theme: "light" });
   return { ...f, setRead(value: ApiResponse) { current = value; }, close() { ui.unmount(); query.clear(); } };
 }
 const posts = (f: ReturnType<typeof mount>, tail?: string) => f.request.mock.calls.map(([r]) => r).filter(r => r.method === "POST" && (tail === undefined ? r.path.includes("/setup-agent/eval-") : r.path.endsWith(`/setup-agent/${tail}`)));
@@ -105,23 +104,10 @@ describe("what was found (state propose)", () => {
     f.close();
   });
 
-  it("Approve without a fresh sign-in sends the person to confirm it's them, and sends nothing", async () => {
+  it("Approve posts eval-approve with one press (no step-up since owner DEC 254zzz73), with the report, the files and `seen` exactly as the read sent them (never worked out here)", async () => {
     const f = mount();
     const c = await theCard();
-    expect(within(c).getByTestId("eval-fresh").textContent).toBe(EVAL_CARD_WORDS.stepUp);
-    fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
-    expect(f.host.signIn).toHaveBeenCalledTimes(1);
-    const [path, options] = (f.host.signIn as unknown as { mock: { calls: Array<[string, { stepUp?: boolean }]> } }).mock.calls[0]!;
-    expect(path).toMatch(/confirmed=[0-9a-f-]{36}/u);
-    expect(options).toEqual({ stepUp: true });
-    expect(posts(f)).toHaveLength(0);
-    f.close();
-  });
-
-  it("after the fresh sign-in, Approve posts eval-approve with the report, the files and `seen` exactly as the read sent them (never worked out here)", async () => {
-    const f = mount({ fresh: true });
-    const c = await theCard();
-    expect(within(c).getByTestId("eval-fresh").textContent).toBe(EVAL_CARD_WORDS.stepUpDone);
+    expect(within(c).queryByTestId("eval-fresh")).toBeNull();
     fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(posts(f, "eval-approve")).toHaveLength(1));
     const sent = posts(f, "eval-approve")[0]!;
@@ -134,7 +120,7 @@ describe("what was found (state propose)", () => {
 
   it("each suite carries its own `seen`: a second suite's Approve sends the second suite's figures", async () => {
     const other = { perCheckHighMicros: 7_654_321, monthlyCapMicros: 99_000_000 };
-    const f = mount({ fresh: true, read: () => ({ status: 200, body: card({ suites: [suite(), suite({ selection: "pytest evals", files: ["evals/c.py"], cases: 1, seen: other })] }) }) });
+    const f = mount({ read: () => ({ status: 200, body: card({ suites: [suite(), suite({ selection: "pytest evals", files: ["evals/c.py"], cases: 1, seen: other })] }) }) });
     const c = await theCard();
     const suites = within(c).getAllByTestId("eval-suite");
     expect(suites[1]!.textContent).toContain("1 eval case");
@@ -145,7 +131,7 @@ describe("what was found (state propose)", () => {
   });
 
   it("a second press while the answer is being read does not send a second approval", async () => {
-    const f = mount({ fresh: true });
+    const f = mount();
     const approve = within(await theCard()).getByRole("button", { name: "Approve" });
     fireEvent.click(approve);
     fireEvent.click(approve);
@@ -155,19 +141,17 @@ describe("what was found (state propose)", () => {
     f.close();
   });
 
-  it("a sign-in the server finds too old asks again: the next press goes to the sign-in", async () => {
-    const f = mount({ fresh: true, post: () => ({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } }) });
+  it("a 403 refusal is shown as it comes, with no sign-in step", async () => {
+    const f = mount({ post: () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company owner, admin or project maintainer can answer for the eval's spend." } } }) });
     const c = await theCard();
     fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(within(c).getByTestId("eval-fresh").textContent).toBe(EVAL_CARD_WORDS.stepUpOld));
-    fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
-    expect(f.host.signIn).toHaveBeenCalledTimes(1);
-    expect(posts(f, "eval-approve")).toHaveLength(1);
+    expect((await within(c).findByTestId("eval-problem")).textContent).toContain("Only a company owner, admin or project maintainer");
+    expect(f.host.signIn).not.toHaveBeenCalled();
     f.close();
   });
 
   it("a refusal is shown as it comes; a moved eval offers a Refresh that reads the card again", async () => {
-    const f = mount({ fresh: true, post: () => ({ status: 409, body: { error: { code: "CHANGE_STALE", message: "Your evals changed. Look again." } } }) });
+    const f = mount({ post: () => ({ status: 409, body: { error: { code: "CHANGE_STALE", message: "Your evals changed. Look again." } } }) });
     const c = await theCard();
     fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
     const problem = await screen.findByTestId("eval-problem");
@@ -177,7 +161,7 @@ describe("what was found (state propose)", () => {
     await waitFor(() => expect(evalReads(f)).toBeGreaterThan(before));
     f.close();
     cleanup();
-    const g = mount({ fresh: true, post: () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "Only an owner approves." } } }) });
+    const g = mount({ post: () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "Only an owner approves." } } }) });
     fireEvent.click(within(await theCard()).getByRole("button", { name: "Approve" }));
     const other = await screen.findByTestId("eval-problem");
     expect(other.textContent).toContain("Only an owner approves.");
@@ -197,8 +181,8 @@ describe("a changed eval that needs approval again (state waiting)", () => {
     f.close();
   });
 
-  it("Approve and Not now post eval-decide with the offer's id, revision and digest copied from the read, after a fresh sign-in", async () => {
-    const f = mount({ fresh: true, read: () => ({ status: 200, body: waiting() }) });
+  it("Approve and Not now post eval-decide with the offer's id, revision and digest copied from the read, with no step-up", async () => {
+    const f = mount({ read: () => ({ status: 200, body: waiting() }) });
     const c = await theCard();
     fireEvent.click(within(c).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(posts(f, "eval-decide")).toHaveLength(1));
@@ -206,19 +190,19 @@ describe("a changed eval that needs approval again (state waiting)", () => {
     expect(posts(f, "eval-decide")[0]!.retry).toBe("never");
     f.close();
     cleanup();
-    const g = mount({ fresh: true, read: () => ({ status: 200, body: waiting() }) });
+    const g = mount({ read: () => ({ status: 200, body: waiting() }) });
     fireEvent.click(within(await theCard()).getByRole("button", { name: "Not now" }));
     await waitFor(() => expect(posts(g, "eval-decide")).toHaveLength(1));
     expect(posts(g, "eval-decide")[0]!.body).toEqual({ requestId: OFFER_ID, outcome: "reject", seen: { revision: 3, artifactDigest: OFFER_DIGEST } });
     g.close();
   });
 
-  it("without a fresh sign-in the buttons send the person to confirm, and nothing is posted; a person who may not approve gets no buttons", async () => {
+  it("the buttons never send the person to a sign-in page; a person who may not approve gets no buttons", async () => {
     const f = mount({ read: () => ({ status: 200, body: waiting() }) });
     const c = await theCard();
     fireEvent.click(within(c).getByRole("button", { name: "Not now" }));
-    expect(f.host.signIn).toHaveBeenCalledTimes(1);
-    expect(posts(f)).toHaveLength(0);
+    await waitFor(() => expect(posts(f, "eval-decide")).toHaveLength(1));
+    expect(f.host.signIn).not.toHaveBeenCalled();
     f.close();
     cleanup();
     const g = mount({ read: () => ({ status: 200, body: waiting({ canApprove: false }) }) });
@@ -259,7 +243,7 @@ describe("approved", () => {
 
 describe("the opt-in health check", () => {
   it("is never sent on render, on load or after the card settles (mutant: post health on render)", async () => {
-    const f = mount({ fresh: true, read: () => ({ status: 200, body: approved() }) });
+    const f = mount({ read: () => ({ status: 200, body: approved() }) });
     const c = await theCard();
     expect(within(c).getByRole("button", { name: "Check my evals now (about $2.40)" })).toBeTruthy();
     await waitFor(() => expect(evalReads(f)).toBeGreaterThanOrEqual(1));
@@ -440,25 +424,24 @@ describe("when there is no card", () => {
 });
 
 describe("dollars only", () => {
-  const states: Array<[string, Record<string, unknown>, boolean]> = [
-    ["propose", card(), false],
-    ["propose, grew past", card({ suites: [suite({ versusApproved: { within: false, words: "Needs approval: your eval set grew past the approved $4.00" } })] }), false],
-    ["propose, still inside", card({ suites: [suite({ versusApproved: { within: true, words: "Still inside what you approved: no new approval needed" } })] }), false],
-    ["propose, reader", card({ canApprove: false }), false],
-    ["waiting", waiting(), false],
-    ["waiting, reader", waiting({ canApprove: false }), false],
-    ["renew", waiting({ state: "renew" }), false],
-    ["approved", approved(), false],
-    ["approved, carried", approved({ spend: { state: "approved", perPr: "$0.50-$1.20", monthly: "$41.00", carried: true } }), false],
-    ["approved, health queued", approved({ health: health("requested") }), false],
-    ["approved, health ran", approved({ health: health("finished") }), false],
-    ["rejected", card({ state: "rejected", suites: [], spend: { state: "rejected", perPr: "$0.50-$1.20", monthly: "$41.00" } }), false],
-    ["propose, fresh", card(), true],
+  const states: Array<[string, Record<string, unknown>]> = [
+    ["propose", card()],
+    ["propose, grew past", card({ suites: [suite({ versusApproved: { within: false, words: "Needs approval: your eval set grew past the approved $4.00" } })] })],
+    ["propose, still inside", card({ suites: [suite({ versusApproved: { within: true, words: "Still inside what you approved: no new approval needed" } })] })],
+    ["propose, reader", card({ canApprove: false })],
+    ["waiting", waiting()],
+    ["waiting, reader", waiting({ canApprove: false })],
+    ["renew", waiting({ state: "renew" })],
+    ["approved", approved()],
+    ["approved, carried", approved({ spend: { state: "approved", perPr: "$0.50-$1.20", monthly: "$41.00", carried: true } })],
+    ["approved, health queued", approved({ health: health("requested") })],
+    ["approved, health ran", approved({ health: health("finished") })],
+    ["rejected", card({ state: "rejected", suites: [], spend: { state: "rejected", perPr: "$0.50-$1.20", monthly: "$41.00" } })],
   ];
-  for (const [name, body, fresh] of states) {
+  for (const [name, body] of states) {
     it(`${name}: no token, call or micro-dollar word and no raw whole-number figure in the card's text or accessible names`, async () => {
       expect(() => EvalCardViewSchema.parse(body)).not.toThrow();
-      const f = mount({ fresh, read: () => ({ status: 200, body }) });
+      const f = mount({ read: () => ({ status: 200, body }) });
       const c = await theCard();
       const said = readable(c);
       expect(said.trim().length).toBeGreaterThan(20);
@@ -525,8 +508,8 @@ it("the reported fallback says approving, as #179 worded it", async () => {
 // The provider and the connection are Code's own words and answer; the page works out neither.
 describe("the AI the evals call (L4-T3)", () => {
   const withProvider = (provider: string | undefined, connected: boolean | undefined, over: Record<string, unknown> = {}) => ({ status: 200, body: card({ ...(provider === undefined ? {} : { provider }), ...(connected === undefined ? {} : { connected }), ...over }) });
-  it("not connected: says which AI, that it is not connected, links to Product AI keys with this project, and Approve waits (nothing is sent, even after a fresh sign-in)", async () => {
-    const f = mount({ fresh: true, read: () => withProvider("Google Gemini", false) });
+  it("not connected: says which AI, that it is not connected, links to Product AI keys with this project, and Approve waits (nothing is sent)", async () => {
+    const f = mount({ read: () => withProvider("Google Gemini", false) });
     const c = await theCard();
     expect(within(c).getByTestId("eval-provider-calls").textContent).toBe(EVAL_CARD_WORDS.callsLine("Google Gemini"));
     expect(within(c).getByTestId("eval-provider-calls").textContent).toBe("Your evals call Google Gemini. Rovara runs them on your own AI account, so the spend and the data stay with you.");
@@ -549,7 +532,7 @@ describe("the AI the evals call (L4-T3)", () => {
   });
   it("Check again reads the card again and, once the provider is connected, says so and lets Approve through (flipping `connected` flips the page)", async () => {
     let connected = false;
-    const f = mount({ fresh: true, read: () => withProvider("Vertex AI", connected) });
+    const f = mount({ read: () => withProvider("Vertex AI", connected) });
     const c = await theCard();
     expect(within(c).getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(true);
     const before = evalReads(f);

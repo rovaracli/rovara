@@ -2,7 +2,6 @@ import { useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../../../api/errors.js";
 import { SETUP_LIMIT_NAMES, isUnreadable, setupLocksKey, useSetupLimitsApi, type LimitSetting, type ReadableLocks, type SetupLimitName } from "../../../api/setup-limits.js";
-import { useAppHost } from "../../../host.js";
 import { Button } from "../../../design/Button.js";
 import { Skeleton } from "../../../design/Skeleton.js";
 import { Switch } from "../../../design/Switch.js";
@@ -11,7 +10,7 @@ import { LimitFields } from "../../setup/LimitFields.js";
 import { LIMIT_SHORT, SETUP_LOCKS as T, expiresText, limitField, limitShown, sameSetting, settingOfFields } from "../../setup/limits-text.js";
 import "./how-we-work.css";
 
-type Message = { kind: "status"; text: string } | { kind: "alert"; text: string; signIn?: boolean };
+type Message = { kind: "status"; text: string } | { kind: "alert"; text: string };
 const fieldsOf = (setting: LimitSetting): Record<SetupLimitName, string> => Object.fromEntries(SETUP_LIMIT_NAMES.map(name => [name, limitField(name, setting[name])])) as Record<SetupLimitName, string>;
 const limitsText = (setting: LimitSetting): string => SETUP_LIMIT_NAMES.filter(name => setting[name] !== undefined).map(name => `${LIMIT_SHORT[name]} ${limitShown(name, setting[name]!)}`).join(", ");
 
@@ -21,7 +20,7 @@ const limitsText = (setting: LimitSetting): string => SETUP_LIMIT_NAMES.filter(n
  * press. Absent (NOT_FOUND) while the setup agent is off. Loaded lazily with the How we work page.
  */
 export default function SetupLocksRow() {
- const api = useSetupLimitsApi(), client = useQueryClient(), host = useAppHost(), sending = useRef(false), attempt = useRef<{ key: string; id: string } | undefined>(undefined);
+ const api = useSetupLimitsApi(), client = useQueryClient(), sending = useRef(false), attempt = useRef<{ key: string; id: string } | undefined>(undefined);
  const read = useQuery({ queryKey: setupLocksKey, queryFn: () => api.locks(), retry: false, refetchOnWindowFocus: false });
  const [busy, setBusy] = useState(false), [message, setMessage] = useState<Message>(), [editing, setEditing] = useState(false);
  if (read.error instanceof ApiError && (read.error.status === 404 || read.error.status === 403)) return null;
@@ -34,11 +33,10 @@ export default function SetupLocksRow() {
   try { const answer = await write(attempt.current.id);setMessage({ kind: "status", text: done(answer) });setEditing(false);await client.invalidateQueries({ queryKey: setupLocksKey }); }
   catch (error) {
    if (error instanceof ApiError && error.code === "CHANGE_STALE") { await client.invalidateQueries({ queryKey: setupLocksKey });setMessage({ kind: "alert", text: T.CHANGED }); }
-   else if (error instanceof ApiError && error.code === "REAUTH_REQUIRED") setMessage({ kind: "alert", text: error.message, signIn: true });
    else setMessage({ kind: "alert", text: error instanceof ApiError ? error.message : T.FAILED });
   } finally { sending.current = false;setBusy(false); }
  }
- const messageView = <><p role="status">{message?.kind === "status" ? message.text : ""}</p>{message?.kind === "alert" && <p role="alert"><VisibleText text={message.text} />{message.signIn === true && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>{T.SIGN_IN_AGAIN}</Button></>}</p>}</>;
+ const messageView = <><p role="status">{message?.kind === "status" ? message.text : ""}</p>{message?.kind === "alert" && <p role="alert"><VisibleText text={message.text} /></p>}</>;
  // One section for every state, so a screen reader's place in it survives the load, a repair and a re-read.
  let body: ReactNode;
  if (read.isPending) body = <Skeleton label={T.LOADING} />;

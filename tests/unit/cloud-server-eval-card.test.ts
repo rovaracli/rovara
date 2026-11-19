@@ -1,7 +1,7 @@
 // L4-EVC (DEC 254zzz20 D5, D6, D8): the setup flow's ONE eval card through Cloud's handler. Code serves four hosted routes (setup-run-routes.ts); Cloud forwards each to Code's own
 // path as the signed-in person (their own bearer token), the same way as eval-confirm: only a company owner or admin, or the project's maintainer, may POST (the read is open to anyone in the
 // company; Code decides `canApprove`), only an object body, only each route's own keys (nothing that names a company, a role or a payer), Code's fixed unknown-route 404 reads 501 NOT_ON_CODE_YET,
-// and a step-up refusal keeps its code REAUTH_REQUIRED in Cloud's own words.
+// and there is no step-up (owner DEC 254zzz73): Cloud adds no REAUTH_REQUIRED answer of its own.
 import { describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type CodeSession } from "../../packages/cloud-server/src/index.js";
 import { EVAL_APPROVE_KEYS, EVAL_DECIDE_KEYS, EVAL_HEALTH_KEYS, EVAL_WRAPPER_KEYS } from "../../packages/cloud-server/src/routes.js";
@@ -199,11 +199,7 @@ describe("Code's answer", () => {
     });
   }
   for (const [tail, body] of [["eval-approve", APPROVE], ["eval-decide", DECIDE]] as const) {
-    it(`POST ${tail}: Code's REAUTH_REQUIRED keeps its code in Cloud's own words (never Code's sentence); Code's other refusals pass as they are (mutant: the step-up pass-through)`, async () => {
-      const w = setUp(() => json(403, { error: { code: "REAUTH_REQUIRED", message: "A tool that holds an API token cannot approve: SENSITIVE-CODE-SENTENCE" } }));
-      const res = await w.send("POST", webPath(tail), await admin(w), body);
-      expect(res).toMatchObject({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } });
-      expect(res.text).not.toContain("SENSITIVE-CODE-SENTENCE");
+    it(`POST ${tail}: Code's refusals (the wrong role among them) pass as they are; Cloud has no step-up answer of its own`, async () => {
       for (const [status, refusal] of [[403, { error: { code: "FORBIDDEN", message: "not a maintainer" } }], [409, { error: { code: "CHANGE_STALE", message: "moved" } }], [400, { error: { code: "CONFIG_INVALID", message: "seen: wrong" } }]] as const) {
         const other = setUp(() => json(status, refusal));
         expect(await other.send("POST", webPath(tail), await maintainer(other), body)).toMatchObject({ status, body: refusal });

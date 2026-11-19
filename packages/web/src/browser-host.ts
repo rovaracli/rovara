@@ -114,7 +114,7 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
    if (options?.differentWorkspace === true) { try { win.localStorage.setItem(LAST_WORKSPACE_KEY, ""); } catch { /* Blocked storage: nothing to forget. */ } }
    const hint = options?.differentWorkspace === true || options?.method === "github" ? undefined : lastWorkspace();
    try { const stored = win.sessionStorage.getItem(key);if (options?.automatic === true && stored !== null && Number.isFinite(Number(stored)) && Date.now() - Number(stored) < SIGN_IN_REPEAT_GUARD_MS) { win.location.assign("/app/signed-out?reason=failed");return; }win.sessionStorage.setItem(key, String(Date.now())); } catch { /* Blocked preference storage does not prevent a deliberate sign-in. */ }
-   win.location.assign("/v1/auth/browser/authorize?return_to=" + encodeURIComponent(destination) + (options?.stepUp === true ? "&step_up=1" : "") + (options?.join === true ? "&join=1" : "")
+   win.location.assign("/v1/auth/browser/authorize?return_to=" + encodeURIComponent(destination) + (options?.join === true ? "&join=1" : "")
     + (options?.method === "slack" || options?.method === "github" ? "&method=" + options.method : "") + (hint === undefined ? "" : "&slack_team=" + hint));
   },
   // DEC 253z: the invite link's token stays in the page's fragment (never sent as a URL); Cloud's server looks it up and keeps the join ticket.

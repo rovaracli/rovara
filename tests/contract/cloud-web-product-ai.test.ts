@@ -1,6 +1,6 @@
 // B7's Cloud stack side: with -c rovaraModelGatewayProductAi=on (named test environments only) the server may write the gateway's
 // product key table by company keys and seal keys (GenerateDataKey, GenerateMac), never Decrypt. Off, the Cloud web template is
-// byte for byte what it was, for production and for staging, apart from the approved meter reads below.
+// byte for byte what it was, for production and for staging, apart from the approved meter reads and answers switch below.
 import { createHash } from "node:crypto";
 import { withoutRoleBoundary } from "../support/without-role-boundary.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -11,7 +11,7 @@ import { Code } from "aws-cdk-lib/aws-lambda";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { BEDROCK_TEMPLATE_URL_PATTERN, CLOUD_BEDROCK_TEMPLATE_URL_ENV, CLOUD_PRODUCT_AI_ENV, CloudWebStack } from "../../infra/lib/cloud-web.js";
+import { BEDROCK_TEMPLATE_URL_PATTERN, CLOUD_ANSWERS_ENABLED_ENV, CLOUD_ANSWERS_ENABLED_PARAMETER, CLOUD_BEDROCK_TEMPLATE_URL_ENV, CLOUD_PRODUCT_AI_ENV, CloudWebStack } from "../../infra/lib/cloud-web.js";
 import { validTemplateUrl } from "../../packages/model-gateway/src/bedrock-byo.js";
 import { MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
 
@@ -26,8 +26,8 @@ const synth = (environmentName: string, productAi?: boolean) => Template.fromSta
 const BEFORE_CONDITION_CHECK = { production: "db67fcbbc888b0f1d83f7fa6f6fd9796c1dd0f0ab90452a75121897886898dbf", staging: "2520e7cd7500cad24785df29bfcb000c1a1839f9fbf9d75574dbab9b44cbed85" };
 // DEC 254zzz27: only ConditionCheckItem was added to the Companies-table grant; the test below proves the old digests too.
 const BEFORE = { production: "ae8e407d00367b254cbb58aed6a81396aac3fcedced39c3c44749eb9a4caab55", staging: "67347f5063fa512907cdaac2a1f73d6598c269d10c479b3a249733b084e6ec03" };
-// cp-iam: full templates, INCLUDING the boundary; stripping only the meter parameter, env and two read statements restores BEFORE.
-const METER_READ = { production: "d39d529eb3ef32bc760e0a852098da4d3fe9a7c30b671f4616bef786e400d043", staging: "280cfe83999dfeae0e3c15427054d458c74fde3d2cc7736571880a7871b81790" };
+// cp-iam + live switches: full merged templates, INCLUDING the boundary. Removing only the meter changes and answers switch restores BEFORE.
+const METER_READ = { production: "d39d529eb3ef32bc760e0a852098da4d3fe9a7c30b671f4616bef786e400d043", staging: "4ec03c8958f8bafe96f08bb4d1aed8a8df4bca032dd808dc5866d7a51f482965" };
 // Less the role boundary (2026-11-17), which every template now carries (tests/contract/cloud-role-boundary.test.ts).
 const sha = (value: Parameters<typeof withoutRoleBoundary>[0]) => createHash("sha256").update(JSON.stringify(withoutRoleBoundary(value))).digest("hex");
 function withoutMeterRead(template: ReturnType<typeof synth>): ReturnType<typeof synth> {
@@ -68,18 +68,40 @@ function withOldCompanySetting(template: ReturnType<typeof synth>): ReturnType<t
   return out as ReturnType<typeof synth>;
 }
 
+/**
+ * Live switches 2026-11-18 (rule D, additive): a named test environment's web stack gained exactly the AnswersEnabled parameter and the server's ROVARA_ANSWERS_ENABLED (its Ref). Taken out again (and
+ * checked to be exactly those two), the template must hash to what it was: so nothing else moved. Production has neither.
+ */
+function withoutAnswersSwitch(template: ReturnType<typeof synth>, env: string): ReturnType<typeof synth> {
+  const parameters = { ...template.Parameters };
+  if (env === "production") expect(parameters[CLOUD_ANSWERS_ENABLED_PARAMETER]).toBeUndefined();
+  else expect({ ...(parameters[CLOUD_ANSWERS_ENABLED_PARAMETER] as object), Description: "" }).toEqual({ Type: "String", Default: "1", AllowedValues: ["1", "0"], Description: "" });
+  delete parameters[CLOUD_ANSWERS_ENABLED_PARAMETER];
+  let removed = 0;
+  const resources: Record<string, unknown> = {};
+  for (const [id, resource] of Object.entries(template.Resources)) {
+    const variables = (resource.Properties.Environment as { Variables?: Record<string, unknown> } | undefined)?.Variables;
+    if (resource.Type !== "AWS::Lambda::Function" || variables === undefined || !(CLOUD_ANSWERS_ENABLED_ENV in variables)) { resources[id] = resource; continue; }
+    expect(variables[CLOUD_ANSWERS_ENABLED_ENV]).toEqual({ Ref: CLOUD_ANSWERS_ENABLED_PARAMETER });
+    const rest = Object.fromEntries(Object.entries(variables).filter(([key]) => key !== CLOUD_ANSWERS_ENABLED_ENV));
+    removed++;
+    resources[id] = { ...resource, Properties: { ...resource.Properties, Environment: { ...(resource.Properties.Environment as object), Variables: rest } } };
+  }
+  expect(removed).toBe(env === "production" ? 0 : 1);
+  return { ...template, Parameters: parameters, Resources: resources } as ReturnType<typeof synth>;
+}
+
 describe("Cloud web: product AI settings grants (B7)", () => {
-  it("off: only the approved meter parameter, env and identity/boundary statements changed since the pinned templates", () => {
-    for (const env of ["production", "staging"] as const) {
-      const t = synth(env);
+  it("off: only the approved meter reads and answers switch changed since the pinned templates", () => {
+    for (const [env, productAi] of [["production", undefined], ["staging", undefined], ["staging", false]] as const) {
+      const t = synth(env, productAi);
       expect(createHash("sha256").update(JSON.stringify(t)).digest("hex")).toBe(METER_READ[env]);
-      expect(sha(withOldCompanySetting(withoutMeterRead(t)))).toBe(BEFORE[env]);
+      expect(sha(withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(t), env)))).toBe(BEFORE[env]);
     }
-    expect(sha(withOldCompanySetting(withoutMeterRead(synth("staging", false))))).toBe(BEFORE.staging);
     expect(Object.keys(synth("staging").Parameters)).not.toContain("CompanyId");
   });
   it.each(["production", "staging"] as const)("%s: removing only the approved Companies ConditionCheckItem restores the previous template digest", (env) => {
-    const t = withOldCompanySetting(withoutMeterRead(synth(env)));
+    const t = withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(synth(env)), env));
     let changed = 0;
     for (const resource of Object.values(t.Resources)) {
       if (resource.Type !== "AWS::IAM::Policy") continue;

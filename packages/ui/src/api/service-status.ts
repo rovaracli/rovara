@@ -13,7 +13,7 @@ export function createServiceStatusApi(host: AppHost, orgId: string) {
    if (!active || epoch !== version) throw new ApiError(0, "SCOPE_ENDED", "Service status scope changed.");
    if (response.status < 200 || response.status >= 300) {
     if (response.status === 401 && !redirected) { redirected = true;host.signIn(host.currentPath(), { automatic: true }); }
-    throw new ApiError(response.status, response.status === 403 ? "FORBIDDEN" : "RUNTIME_UNAVAILABLE", "Stored service status could not be read.");
+    throw new ApiError(response.status, response.status === 501 ? "NOT_ON_CODE_YET" : response.status === 403 ? "FORBIDDEN" : "RUNTIME_UNAVAILABLE", response.status === 501 ? "Not available yet." : "Stored service status could not be read.");
    }
    const parsed = OrgServiceStatusReaderSchema.safeParse(response.body);if (!parsed.success || parsed.data.orgId !== orgId) throw new ApiError(502, "INVALID_RESPONSE", "Service status evidence could not be verified.");return parsed.data;
   },

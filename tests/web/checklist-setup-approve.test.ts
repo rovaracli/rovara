@@ -17,7 +17,7 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { navFixture } from "./support/fixtures.js";
 
 afterEach(cleanup);
-const ME = "a".repeat(64), DIGEST = "ab12".repeat(16), NONCE_KEY = "rovara.stepup.nonce", COMMIT = "a".repeat(40);
+const ME = "a".repeat(64), DIGEST = "ab12".repeat(16), COMMIT = "a".repeat(40);
 const LIMITS = { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 };
 const file = (path: string, line: number, quote: string) => ({ kind: "file", repo: "web", path, commit: COMMIT, line, quote });
 const item = <V,>(id: string, value: V, from: unknown[]) => ({ id, value, from, confidence: "high", risk: "safe" });
@@ -42,7 +42,7 @@ const checklist = (state = "needs_you") => ({
   slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: { state: "needs_you", hasTask: false, canStart: false },
 });
 
-interface Options { read?: unknown; fresh?: boolean; decide?: { status: number; body: unknown }; agentGone?: boolean }
+interface Options { read?: unknown; decide?: { status: number; body: unknown }; agentGone?: boolean }
 function mount(options: Options = {}) {
   let current: unknown = options.read ?? run({ apply: apply() });
   let list: unknown = checklist();
@@ -64,10 +64,9 @@ function mount(options: Options = {}) {
     if (request.path === "/v1/app/projects/web/slack/channel") return { status: 200, body: { connected: false, channels: [] } };
     return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
   });
-  if (options.fresh === true) f.storage.set(NONCE_KEY, JSON.stringify({ nonce: "n-1", at: Date.now() }));
   const query = createQueryClient();
   query.setQueryData(["nav"], { me: { developerId: ME, name: "Maya", orgRole: "owner" } });
-  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/web" + (options.fresh === true ? "?confirmed=n-1" : "")], children: h(ProjectChecklist, { project: "web" }) }) }) }), { theme: "light" });
+  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/web"], children: h(ProjectChecklist, { project: "web" }) }) }) }), { theme: "light" });
   return { ...f, query, setCurrent(value: unknown) { current = value; }, failReads(value: boolean) { failing = value; }, close() { ui.unmount(); query.clear(); } };
 }
 const row = () => screen.findByTestId("setup-run-row");
@@ -128,8 +127,8 @@ describe("approving a setup from the checklist", () => {
     proposal.close();
   });
 
-  it("after the fresh sign-in, Approve is sent bound to the read's revision and digest, and the row updates", async () => {
-    const f = mount({ fresh: true });
+  it("Approve is sent bound to the read's revision and digest, and the row updates", async () => {
+    const f = mount();
     const card = await within(await row()).findByTestId("setup-approval");
     fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(decides(f)).toHaveLength(1));
@@ -144,12 +143,12 @@ describe("approving a setup from the checklist", () => {
     f.close();
   });
 
-  it("without a fresh sign-in Approve sends the person to confirm, and decides nothing", async () => {
+  it("Approve decides with one press and never sends the person to a sign-in page (owner DEC 254zzz73)", async () => {
     const f = mount();
     const card = await within(await row()).findByTestId("setup-approval");
     fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
-    expect(f.host.signIn).toHaveBeenCalledTimes(1);
-    expect(decides(f)).toHaveLength(0);
+    await waitFor(() => expect(decides(f)).toHaveLength(1));
+    expect(f.host.signIn).not.toHaveBeenCalled();
     f.close();
   });
 
@@ -186,7 +185,7 @@ describe("approving a setup from the checklist", () => {
   });
 
   it("a decision is about one run: a later run's proposal is not hidden by an old decision", async () => {
-    const f = mount({ fresh: true, read: run({ startedAt: "2026-11-17T10:00:00.000Z", apply: apply() }) });
+    const f = mount({ read: run({ startedAt: "2026-11-17T10:00:00.000Z", apply: apply() }) });
     const card = await within(await row()).findByTestId("setup-approval");
     fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
     expect((await screen.findByTestId("setup-decided")).textContent).toBe(A.approved);
