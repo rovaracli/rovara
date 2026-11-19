@@ -5,7 +5,6 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
  { id: "people", title: "People and access", links: [
   { to: "/app/admin/people", label: "People", blurb: "Who is in the company, their roles and how they sign in." },
   { to: "/app/admin/invites", label: "Invites", blurb: "Invites and pre-approved emails: who may join." },
-  { to: "/app/admin/sign-in-clients", label: "Sign-in clients", blurb: "The apps and company logins that can sign people in." },
   { to: "/app/admin/sign-in-factors", label: "Sign-in factors", blurb: "Confirmation emails and passkeys, for fresh sign-ins." },
   { to: "/app/admin/domains", label: "Company domains", blurb: "Verify the email domains that belong to the company.", ownerOnly: true },
  ] },
@@ -32,7 +31,6 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
  ] },
  { id: "oversight", title: "Oversight", links: [
   { to: "/app/admin/audit", label: "Audit", blurb: "Who did what, and when." },
-  { to: "/app/admin/health", label: "Health", blurb: "Stored service status. No checks run here." },
   { to: "/app/admin/waiting", label: "Waiting for people", blurb: "Items waiting on a person." },
  ] },
 ];
