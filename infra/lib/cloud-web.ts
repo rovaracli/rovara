@@ -84,7 +84,7 @@ export const CLOUD_ANSWERS_ENABLED_PARAMETER = "AnswersEnabled";
 export const CLOUD_ANSWERS_ENABLED_VALUES = ["1", "0"] as const;
 export const CLOUD_ANSWERS_ENABLED_DEFAULT = "1";
 
-/** Owner 2026-11-19: Cloud's own name (app.rovara.com) and its certificate, stack parameters empty by default (cloud-web below). */
+/** Owner 2026-11-19: Cloud's own name (app.rovara.dev) and its certificate, stack parameters empty by default (cloud-web below). */
 export const CLOUD_CUSTOM_DOMAIN_PARAMETER = "CustomDomainName";
 export const CLOUD_CUSTOM_CERTIFICATE_PARAMETER = "CustomDomainCertificateArn";
 /** Empty, or a lower-case DNS name of two or more labels (no scheme, port, path or trailing dot). */
@@ -317,12 +317,12 @@ export class CloudWebStack extends Stack {
     // distribution: the function's own address answers 403 to anyone else, so every request goes through CloudFront.
     const url = server.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.AWS_IAM });
 
-    // Owner 2026-11-19: Cloud on its own name (app.rovara.com), one name for every company. Both empty (the default): CloudFront's
+    // Owner 2026-11-19: Cloud on its own name (app.rovara.dev), one name for every company. Both empty (the default): CloudFront's
     // name only, as before. Set: CloudFront answers that name with the certificate (us-east-1, made outside this stack, like the
     // gateway's), Cloud's address (the SSM parameter, the outputs) becomes it, and the CloudFront name answers 307 to it.
     const customDomain = new CfnParameter(this, CLOUD_CUSTOM_DOMAIN_PARAMETER, {
       type: "String", default: "", allowedPattern: CLOUD_CUSTOM_DOMAIN_PATTERN,
-      description: "Cloud's own name, for example app.rovara.com (lower case, no scheme or path); empty: CloudFront's name only. Point a CNAME at the distribution before setting it",
+      description: "Cloud's own name, for example app.rovara.dev (lower case, no scheme or path); empty: CloudFront's name only. Point a CNAME at the distribution before setting it",
     }).valueAsString;
     const customCertificate = new CfnParameter(this, CLOUD_CUSTOM_CERTIFICATE_PARAMETER, {
       type: "String", default: "", allowedPattern: "^(|arn:aws[a-z-]*:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]{36})$",

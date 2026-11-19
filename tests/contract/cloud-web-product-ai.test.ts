@@ -29,7 +29,7 @@ const BEFORE = { production: "ae8e407d00367b254cbb58aed6a81396aac3fcedced39c3c44
 // cp-iam + live switches: full merged templates, INCLUDING the boundary. Removing only the meter changes and answers switch restores BEFORE.
 // GatewayMeterTableName optional (empty default, the env variable only when set) for an install with no gateway.
 // Owner 2026-11-19: plus Cloud's own name (withoutCustomDomain below takes it out again); before it, 9a1d27ac... (production) and 1ce02d6d... (staging).
-const METER_READ = { production: "c4317b74aff459730d71acfafe6fed4fe9f5735a1c578c0753b8eb04ba372449", staging: "ebbb6abc9ad7b936de5e223d8d1e720b2e2e7145c0241b9ca6de9088bf087db3" };
+const METER_READ = { production: "b43beba117d07fc2a2a31439f3ed02a61d2d47860660761fdae01fdef75f366c", staging: "3597757c3fb62fd5f7c9e33eaf244af45c0038b949e1b72ff0ae246cadef68e4" };
 // Less the role boundary (2026-11-17), which every template now carries (tests/contract/cloud-role-boundary.test.ts).
 const sha = (value: Parameters<typeof withoutRoleBoundary>[0]) => createHash("sha256").update(JSON.stringify(withoutRoleBoundary(value))).digest("hex");
 function withoutMeterRead(template: ReturnType<typeof synth>): ReturnType<typeof synth> {
@@ -96,7 +96,7 @@ function withoutAnswersSwitch(template: ReturnType<typeof synth>, env: string): 
 }
 
 /**
- * Owner 2026-11-19 (Cloud's own name, app.rovara.com): the web template gained exactly the two CustomDomain parameters, their rule and
+ * Owner 2026-11-19 (Cloud's own name, app.rovara.dev): the web template gained exactly the two CustomDomain parameters, their rule and
  * condition, the ToCustomDomain function on both behaviors, the conditional Aliases and ViewerCertificate, and Cloud's address as an
  * Fn::If wherever CloudFront's address stood (the SSM parameter, CloudUrl, CallbackUrl, RegisterWithCode). Taken out again (each
  * checked to be there exactly), with CDK's string joins flattened back, the template must hash to what it was: so nothing else moved.

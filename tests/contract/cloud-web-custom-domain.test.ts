@@ -1,4 +1,4 @@
-// Owner 2026-11-19: Cloud on its own name (app.rovara.com), one name for every company. Two web stack parameters, empty by default:
+// Owner 2026-11-19: Cloud on its own name (app.rovara.dev), one name for every company. Two web stack parameters, empty by default:
 // set together, CloudFront answers the name with the certificate, Cloud's address becomes it, and CloudFront's own name answers 307
 // to it (the server takes writes from its one address only). The first-address stack's import of CloudFront's name is unchanged.
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -43,12 +43,12 @@ describe("Cloud web: its own name (CustomDomainName)", () => {
 
   it("takes a lower-case name and a us-east-1 certificate only", () => {
     const name = new RegExp(CLOUD_CUSTOM_DOMAIN_PATTERN, "u");
-    for (const good of ["", "app.rovara.com", "a-b.c1.example.io"]) expect(name.test(good), good).toBe(true);
-    for (const bad of ["https://app.rovara.com", "app.rovara.com/", "App.Rovara.com", "app", "app.rovara.com.", "-x.rovara.com", "app.rovara.com:443"]) expect(name.test(bad), bad).toBe(false);
+    for (const good of ["", "app.rovara.dev", "a-b.c1.example.io"]) expect(name.test(good), good).toBe(true);
+    for (const bad of ["https://app.rovara.dev", "app.rovara.dev/", "App.Rovara.com", "app", "app.rovara.dev.", "-x.rovara.com", "app.rovara.dev:443"]) expect(name.test(bad), bad).toBe(false);
     const certificate = new RegExp(String(t.Parameters[CLOUD_CUSTOM_CERTIFICATE_PARAMETER]!.AllowedPattern), "u");
-    expect(certificate.test("arn:aws:acm:us-east-1:944937319445:certificate/27fb667c-e65f-4316-9503-39aeb395e01e")).toBe(true);
+    expect(certificate.test("arn:aws:acm:us-east-1:944937319445:certificate/980ddf3f-b004-4f3b-ae97-3a478e8d93a1")).toBe(true);
     expect(certificate.test("")).toBe(true);
-    expect(certificate.test("arn:aws:acm:us-west-2:944937319445:certificate/27fb667c-e65f-4316-9503-39aeb395e01e")).toBe(false);
+    expect(certificate.test("arn:aws:acm:us-west-2:944937319445:certificate/980ddf3f-b004-4f3b-ae97-3a478e8d93a1")).toBe(false);
   });
 
   it("answers the name with the certificate when set, CloudFront's own certificate otherwise", () => {
@@ -105,20 +105,20 @@ describe("Cloud web: the redirect function", () => {
   });
 
   it("lets requests on the name through", () => {
-    const req = request("app.rovara.com", "/app");
-    expect(handlerFor("app.rovara.com")({ request: req })).toBe(req);
+    const req = request("app.rovara.dev", "/app");
+    expect(handlerFor("app.rovara.dev")({ request: req })).toBe(req);
   });
 
   it("sends other names to the name with 307 (method kept, not cached), path and query kept", () => {
-    const handler = handlerFor("app.rovara.com");
+    const handler = handlerFor("app.rovara.dev");
     expect(handler({ request: request("d5hwoqksa23xv.cloudfront.net", "/app") })).toEqual({
       statusCode: 307, statusDescription: "Temporary Redirect",
-      headers: { location: { value: "https://app.rovara.com/app" }, "cache-control": { value: "no-store" } },
+      headers: { location: { value: "https://app.rovara.dev/app" }, "cache-control": { value: "no-store" } },
     });
     const many = { session: { value: "s%20one" }, tag: { value: "a", multiValue: [{ value: "a" }, { value: "b" }] }, empty: { value: "" } };
     expect(handler({ request: request("d5hwoqksa23xv.cloudfront.net", "/app/sessions/9", many, "POST") })).toMatchObject({
-      statusCode: 307, headers: { location: { value: "https://app.rovara.com/app/sessions/9?session=s%20one&tag=a&tag=b&empty=" } },
+      statusCode: 307, headers: { location: { value: "https://app.rovara.dev/app/sessions/9?session=s%20one&tag=a&tag=b&empty=" } },
     });
-    expect(handler({ request: request(undefined, "/") })).toMatchObject({ statusCode: 307, headers: { location: { value: "https://app.rovara.com/" } } });
+    expect(handler({ request: request(undefined, "/") })).toMatchObject({ statusCode: 307, headers: { location: { value: "https://app.rovara.dev/" } } });
   });
 });
