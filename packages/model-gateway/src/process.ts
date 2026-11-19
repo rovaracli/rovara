@@ -1,3 +1,4 @@
+import { createRateQuoteHandler, RATE_QUOTE_PATH, RATE_QUOTE_TOKEN_KIND } from "./rate-quote.js";
 import { randomUUID } from "node:crypto";
 import http, { type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -410,6 +411,13 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, UPKEEP_CAP_READ_TOKEN_KIND),
     limits: upkeepLimits, meter, now,
   });
+  const rateQuote = companyKeys === undefined ? undefined : createRateQuoteHandler({
+    verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, RATE_QUOTE_TOKEN_KIND),
+    sources: agentAiSources, keys: companyKeys, prices, region: config.region, now, switchedOn: config.aiSourceKinds ?? new Set<string>(),
+    offeredProviders: new Set(["anthropic", ...(companyKeys === undefined ? [] : ["openai", "openrouter"]), ...(config.rovaraAi === undefined && (config.bedrockByo === undefined || handlerDeps.agentAi?.byo === undefined) ? [] : ["bedrock"])]),
+    ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt } }),
+    ...(handlerDeps.agentAi?.byo === undefined ? {} : { byo: handlerDeps.agentAi.byo }),
+  });
   // L4-HW3c: the company's approved rules for Code's hosted broker (company-instructions.ts), from Cloud's Companies table (the same read-only grant as the budgets), signed with the task key.
   const companyInstructions = createCompanyInstructionsHandler({
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, COMPANY_INSTRUCTIONS_TOKEN_KIND),
@@ -425,6 +433,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     const service = vertexCheck !== undefined && path === VERTEX_CHECK_PATH ? vertexCheck
       : bedrockCalls !== undefined && (path === BEDROCK_SETUP_PATH || path === BEDROCK_CHECK_PATH) ? bedrockCalls[path]
       : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels
+      : rateQuote !== undefined && RATE_QUOTE_PATH.test(req.url ?? "") ? rateQuote
       : UPKEEP_CAP_READ_PATH.test(req.url ?? "") ? upkeepCapRead
       : evalAuthority !== undefined && path === EVAL_AUTHORITY_PATH ? evalAuthority
       : path === COMPANY_INSTRUCTIONS_PATH ? companyInstructions

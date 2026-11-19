@@ -93,6 +93,8 @@ export interface LessonsSwitch { isOn(cid: string, signal?: AbortSignal): Promis
 export interface LearningKeySource {
   /** Optional receipt capability: pin saved source/version before the hold, and open exactly that credential after it. */
   resolveForCharge?(iss: string, cid: string, provider: CompanyKeyProvider, signal?: AbortSignal): Promise<{ source: ChargeReceiptV1["source"]; key(): Promise<string | undefined> } | undefined>;
+  /** Read-only connection identity for signed price quotes; never opens a key. */
+  identityFor?(iss: string, cid: string, provider: "anthropic" | "openai" | "openrouter"): Promise<{ sourceId: string; versionId: string } | undefined>;
   /** Whether the company has this provider connected. `provider` is the route's: a company with only Gemini connected is not connected for OpenAI. */
   connected(iss: string, cid: string, provider: CompanyKeyProvider, signal?: AbortSignal): Promise<boolean>;
   /** The secret to send: the API key, or for Vertex the short-lived Google bearer token the adapter minted for this company. */
