@@ -26,6 +26,7 @@ import { EGRESS_ADDRESSES_ROUTES } from "./egress-addresses-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { codeOwnerOf, openTaskByCodeId } from "./open-task.js";
 import { WIKI_ROUTES } from "./wiki-routes.js";
+import { KNOWN_FAILING_ROUTES, knownFailingOverview } from "./known-failing-routes.js";
 import { SAVED_ENV_ROUTES } from "./saved-env-routes.js";
 import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
 import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
@@ -619,17 +620,22 @@ export const ROUTES: Route[] = [
     method: "GET", path: /^\/projects\/([^/]+)\/overview$/u,
     answer: async (context) => {
       const name = context.params[0]!;
-      const project = mine(await context.client.access(context.session), name);
+      const access = await context.client.access(context.session);
+      const project = mine(access, name);
       if (project === undefined) return projectNotFound;
       const code = await codeProject(context, name);
       const role = roleOf(project.access);
+      const membership = companyOf(access);
+      const canEditSettings = role === "maintainer" || isCompanyAdmin(membership?.companyRole);
+      const knownFailing = membership !== undefined && canEditSettings ? await knownFailingOverview(context, name) : undefined;
       const overview = {
         project: {
           name, status: "active", ...(code === undefined ? {} : { latestRevision: code.latestRevision }),
           repositories: (code?.repositories ?? []).slice(0, 20).map((repository) => ({ fullName: repository.fullName ?? repository.name, defaultBranch: repository.defaultBranch })),
           setup: { status: "unchecked" }, channels: [],
         },
-        you: { role, canStartWork: true, canEditSettings: role === "maintainer", canViewSpend: false },
+        you: { role, canStartWork: true, canEditSettings, canViewSpend: false },
+        ...(knownFailing === undefined ? {} : { knownFailing }),
         agents: [],
         running: await runningInProject(context, name),
       };
@@ -1153,6 +1159,7 @@ export const ROUTES: Route[] = [
   ...WIKI_ROUTES,
   // L4-MF1: the saved environment image read (forwarded to Code) and the start preview (answered here: unknown).
   ...SAVED_ENV_ROUTES,
+  ...KNOWN_FAILING_ROUTES,
   // The wiki's corrections (lead 4 C1): Code decides who may add notes, mark wrong, approve and resolve; Cloud passes the person's token and rebuilds each answer.
   ...WIKI_CORRECTION_ROUTES,
   // The wiki panel on the setup page (lead 4 W6): the file map, the build controls and the nightly upkeep switch; Code decides who may, Cloud rebuilds bodies and answers (no dollar figure crosses).

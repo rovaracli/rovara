@@ -25,7 +25,11 @@ it("shows only known-failing policy and leaves model defaults in the consolidate
  await screen.findByRole("heading", { name: "How we work (company)" });
  expect(screen.queryByRole("region", { name: "Build" })).toBeNull();
  expect(screen.queryByRole("region", { name: "Plan check" })).toBeNull();
- expect(screen.queryByRole("region", { name: "Marking tests as already failing" })).toBeNull();
+ // The known-failing explanation is fixed text now (one maintainer, no configurable approval count; owner DEC 254zzz133).
+ const kf = screen.getByRole("region", { name: "Marking tests as already failing" });
+ expect(kf.textContent).toContain("One currently authorized project maintainer");
+ expect(kf.textContent).not.toMatch(/two people|signed in within/iu);
+ expect(kf.querySelector("button")).toBeNull();
  expect(screen.getByRole("link", { name: "Back to AI models" }).getAttribute("href")).toBe("/app/admin/ai-spending#ai-models");
  expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/org/model-selection-policy")).toBe(false);
  await expectNoAxeViolations(ui.container);

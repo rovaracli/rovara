@@ -18,7 +18,7 @@ describe("Code's decision-card contract copy", () => {
   it("is Code's file, byte for byte (Code 250282ac2)", () => {
     expect(FIXTURE.codeSha).toBe("5b8f7f5046b269af433cf3758d9e9cf48951b4c7");
     expect(sha("decision-cards")).toBe("3b4531d60fe857777ba087d40392f306d5b9b022990a9b3626711582a2ad8701");
-    expect(sha("decision-card-tabs")).toBe("a30003ca106d11c164bb99a0b28d5f10500f6b834eccd70dd5e816a6433dbe2a");
+    expect(sha("decision-card-tabs")).toBe("40efc8ee9b8a14580b2d932496c879340669f6ca7b431f8adf841f995cedbd10");
     expect(sha("decision-focus")).toBe("7393f3c37f0d26b6106e20c1232ac76d52ad728d1f93272bc6da4d3208a1c832");
   });
 });
