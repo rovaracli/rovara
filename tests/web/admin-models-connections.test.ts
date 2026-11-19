@@ -12,6 +12,7 @@ import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
+import { modelProvider } from "../../packages/ui/src/screens/admin/models/source-order.js";
 import { SlackWorkspaceEvidence } from "../../packages/ui/src/screens/admin/connections/SlackWorkspaceEvidence.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
@@ -33,6 +34,9 @@ function mount(options: { path?: string; role?: "owner" | "admin" | "member"; th
 
 const source = { source: "anthropic_key", available: true, connected: true, inOrder: true, apiKey: "synthetic-private-value", suffix: "private-suffix", roleArn: "private-role" };
 const bodies: Record<string, unknown> = {
+ "/v1/app/org/engine-model": { model: "claude-haiku-5-5", source: "install", offered: ["claude-haiku-5-5"], preselect: "claude-haiku-5-5", canChange: true },
+ "/v1/app/org/settings": { version: 1, settings: { budgets: { companyMonthlyUsdMicros: 500000000 } } },
+ "/v1/app/org/agent-ai": { version: 1, source: "rovara", choices: [] },
  "/v1/app/models": { models: [{ provider: "openai", modelId: "builtin-model", label: "Builtin", company: "openai", sources: ["rovara", "personal-chatgpt"] }] },
  "/v1/app/org/model-sources": { sources: [source, { source: "rovara", available: true, connected: true, inOrder: true }], order: ["anthropic_key", "rovara"] },
  "/v1/app/connections": { connections: [{ connectionId: "con_aaaaaaaaaaaaaaaaaaaa", type: "linear", label: "Tracker", identity: "service", hasCredential: true, createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-02T00:00:00Z", lastCheck: { ok: true, at: "2026-10-02T00:00:00Z", message: "synthetic-private-value" } }] },
@@ -42,22 +46,22 @@ const bodies: Record<string, unknown> = {
  "/v1/app/spend-requests": { spendRequests: [] },
 };
 function area(path: string) { return mount({ path, respond: async r => ({ status: 200, body: bodies[r.path] ?? (r.path === "/v1/app/me" ? AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] }) : {}) }) }); }
-for (const [path, title, content] of [["models/sources", "AI models", "Your Anthropic key"], ["models/available", "Available models", "builtin-model"], ["models/steps", "Code step models", "Effective model unavailable"], ["connections", "Connections", "Tracker"], ["waiting", "Waiting for people", "Approval"]] as const) it(`opens ${path} read-only with safe projected data`, async () => {
+for (const [path, title, content] of [["models/sources", "AI and spending", "Your Anthropic key"], ["models/available", "AI and spending", "AI models for each step"], ["models/steps", "AI and spending", "AI models for each step"], ["connections", "Connections", "Tracker"], ["waiting", "Waiting for people", "Approval"]] as const) it(`opens ${path} read-only with safe projected data`, async () => {
  const f = area("/app/admin/" + path);await screen.findByRole("heading", { name: title });await screen.findAllByText(content, { exact: false });
  expect(f.container.textContent).not.toContain("synthetic-private-value");expect(f.container.textContent).not.toContain("private-suffix");expect(f.container.querySelector('a[href*="evil.example"]')).toBeNull();
  expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);expect(JSON.stringify(f.query.getQueriesData({ queryKey: ["admin", "lane-c"] }))).not.toContain("synthetic-private-value");f.close();
 });
-it("does not claim served models are verified or invent prices", async () => { const f = area("/app/admin/models/available");await screen.findByText("builtin-model");expect(screen.getAllByText(/unverified/i).length).toBeGreaterThan(0);expect(screen.getByText(/Cost unavailable/)).toBeTruthy();f.close(); });
 it("hides the unserved MCP section from hosted connections", async () => { const f = area("/app/admin/connections");await screen.findByRole("heading", { name: "Connections" });await screen.findByText("Tracker");expect(screen.queryByText(/MCP servers/i)).toBeNull();expect(screen.queryByRole("button", { name: /add.*server/i })).toBeNull();await expectNoAxeViolations(f.container);f.close(); });
 it("removes unsupported Health and Sign-in clients from routes and admin navigation", async () => {
  const app = appRoutes(features).find(route => route.path === "/app")!;
  const admin = app.children!.find(route => route.path === "admin/*")!;
  const adminPaths = admin.children!.map(route => route.path);
- expect(adminPaths).not.toContain("health");expect(adminPaths).not.toContain("health/runtime/:kind");expect(adminPaths).not.toContain("sign-in-clients");
+ expect(adminPaths).not.toContain("health");expect(adminPaths).not.toContain("health/runtime/:kind");expect(adminPaths).not.toContain("sign-in-clients");expect(adminPaths).not.toContain("domains");expect(adminPaths).not.toContain("tracker-people");expect(adminPaths).not.toContain("second-review");
  const f = area("/app/admin/people");await screen.findByRole("heading", { name: "People" });
- expect(screen.queryByRole("link", { name: "Health" })).toBeNull();expect(screen.queryByRole("link", { name: "Sign-in clients" })).toBeNull();
+ expect(screen.queryByRole("link", { name: "Health" })).toBeNull();expect(screen.queryByRole("link", { name: "Sign-in clients" })).toBeNull();expect(screen.queryByRole("link", { name: "Company domains" })).toBeNull();expect(screen.queryByRole("link", { name: "Tracker people" })).toBeNull();expect(screen.queryByRole("link", { name: "Second opinion" })).toBeNull();
  await expectNoAxeViolations(f.container);f.close();
 });
+it("uses the real company model instead of the unserved catalog, without inventing prices or access", async () => { const f = area("/app/admin/models/available");await screen.findByLabelText("Company model");expect(screen.getByText(/Model access is checked when used/)).toBeTruthy();expect(screen.queryByText("builtin-model")).toBeNull();expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/models")).toBe(false);expect(screen.getByRole("region",{name:"Company model setting"}).textContent).toContain("Price unavailable");f.close(); });
 it("keeps successful connection sections when one read fails", async () => { const f = area("/app/admin/connections");await screen.findByText("Tracker");f.request.mockImplementation(async r => r.path === "/v1/app/connections" ? { status: 403, body: {} } : { status: 200, body: bodies[r.path] });await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "lane-c"] }); });expect(await screen.findByText(/permission to view/)).toBeTruthy();expect(screen.queryByText("Tracker")).toBeNull();expect(screen.getByText("Example")).toBeTruthy();f.close(); });
 it("states waiting coverage and never mints confirmation tickets", async () => { const f = area("/app/admin/waiting");await screen.findByText("Approval");expect(screen.getByText(/Questions, plan reviews/)).toBeTruthy();expect(f.request.mock.calls.some(([r]) => r.path.includes("confirm-link"))).toBe(false);f.close(); });
 for (const field of ["org", "developer"] as const) it(`evicts old ${field} data and fetches the new identity scope`, async () => {
@@ -67,7 +71,7 @@ for (const field of ["org", "developer"] as const) it(`evicts old ${field} data 
  expect(f.query.getQueriesData({ queryKey: ["admin", "lane-c"] }).every(([key]) => key.includes(next.org.orgId) && key.includes(next.developer.id))).toBe(true);
  await act(async () => resolve({ status: 200, body: { sources: [], order: [] } }));await screen.findByText(/No order is saved yet/);f.close();
 });
-it("removes all lane C cache after role revocation", async () => { const f = area("/app/admin/models/sources");await screen.findAllByText("Your Anthropic key");const next = structuredClone(f.me);next.developer.orgRole = "member";f.request.mockImplementation(async () => ({ status: 200, body: next }));await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await screen.findByRole("heading", { name: "Administration unavailable" });await waitFor(() => expect(f.query.getQueriesData({ queryKey: ["admin", "lane-c"] })).toEqual([]));f.close(); });
+it("removes all lane C cache after role revocation", async () => { const f = area("/app/admin/models/sources");await screen.findAllByText("Your Anthropic key");const next = structuredClone(f.me);next.developer.orgRole = "member";f.request.mockImplementation(async () => ({ status: 200, body: next }));await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await waitFor(() => expect(f.query.getQueriesData({ queryKey: ["admin", "lane-c"] })).toEqual([]));expect(screen.queryByRole("combobox")).toBeNull();f.close(); });
 
 for (const role of ["owner", "admin", "member"] as const) it(`preserves the authorized waiting queue for ${role}`, async () => {
  const f = mount({ path: "/app/admin/waiting", role, respond: async r => ({ status: 200, body: r.path === "/v1/app/me" ? { developer: { id: "a".repeat(64), name: "Priya", orgRole: role }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } : bodies[r.path] ?? {} }) });
@@ -124,9 +128,9 @@ it("keeps waiting focus and rows during a successful background recheck", async 
 
 it("shows declared connection account association without exposing an account identity", async () => { const f = area("/app/admin/connections");await screen.findByText("Tracker");expect(screen.getByText("Service account (declared)")).toBeTruthy();f.close(); });
 
-it("reads the permitted serving catalog independently of unavailable company sources", async () => {
- const f = mount({ path: "/app/admin/models/available", respond: async r => r.path.endsWith("/model-sources") ? { status: 403, body: {} } : { status: 200, body: r.path === "/v1/app/models" ? bodies[r.path] : { developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } } });
- await screen.findByText("builtin-model");expect(screen.getByText("Rovara, Personal ChatGPT")).toBeTruthy();expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);f.close();
+it("reads the company model independently of unavailable company sources", async () => {
+ const f=mount({path:"/app/admin/models/available",respond:async r=>r.path.endsWith("/model-sources")?{status:403,body:{}}:{status:200,body:bodies[r.path]??{developer:{id:"a".repeat(64),name:"Priya",orgRole:"owner"},org:{orgId:"org_aaaaaaaaaaaaaaaaaaaa",name:"Acme",plan:"team"},identities:[]}}});
+ await screen.findByLabelText("Company model");expect(screen.getByRole("region",{name:"Company model setting"}).textContent).toContain("claude-haiku-5-5");expect(f.request.mock.calls.every(([r])=>r.method==="GET")).toBe(true);f.close();
 });
 
 it("keeps filtered waiting counts consistent with visible rows", async () => {
@@ -137,9 +141,8 @@ it("keeps filtered waiting counts consistent with visible rows", async () => {
 it("hides the waiting navigation link below the supported viewport", async () => {
  const f = mount({ path: "/app", role: "member", enabled: false, width: 390 });await screen.findByRole("heading", { name: "Home" });expect(screen.queryByRole("link", { name: "Waiting for people" })).toBeNull();f.close();
 });
-it("normalizes serving Bedrock providers at the cache boundary", async () => {
- const f = mount({ path: "/app/admin/models/available", respond: async r => ({ status: 200, body: r.path.endsWith("/model-sources") ? { sources: [], order: [] } : r.path === "/v1/app/models" ? { models: [{ provider: "amazon-bedrock", modelId: "served-bedrock-sample", sources: ["bedrock_byo"] }] } : { developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } }) });
- await screen.findByText("served-bedrock-sample");const cache=JSON.stringify(f.query.getQueriesData({ queryKey: ["admin", "lane-c"] }));expect(cache).not.toContain("amazon-bedrock");expect(cache.match(/"provider":"bedrock"/g)).toHaveLength(1);f.close();
+it("normalizes serving Bedrock providers at the cache boundary", () => {
+ expect(modelProvider.parse("amazon-bedrock")).toBe("bedrock");
 });
 function guidedConnections(role:"owner"|"admin"|"member"="owner",connections:unknown[]=(bodies["/v1/app/connections"] as {connections:unknown[]}).connections){
  const me=AppMeResponseSchema.parse({developer:{id:"a".repeat(64),name:"Priya",orgRole:role},org:{orgId:"org_aaaaaaaaaaaaaaaaaaaa",name:"Acme",plan:"team"},identities:[]});const f=mount({path:"/app/admin/connections",role,respond:async r=>({status:200,body:r.path==="/v1/app/me"?me:r.path==="/v1/app/connections"?{connections}:bodies[r.path]??{}})});return {...f,liveMe:me};
@@ -178,14 +181,14 @@ for(const role of ["owner","admin"] as const) it(`shows the company's AI sources
  const f=guidedModels(role,[{...source,apiKey:canary,label:canary},{source:"rovara",available:true,connected:true,inOrder:true},{source:"bedrock_byo",available:false,connected:null,inOrder:false}],["anthropic_key","rovara"]);
  try{const table=await screen.findByRole("table",{name:"Company AI sources"});const rows=within(table).getAllByRole("row").slice(1).map(row=>Array.from(row.children).map(cell=>cell.textContent));
   expect(rows).toEqual([["Your Anthropic key","Yes","Yes","First choice"],["Rovara's AI","Yes","Yes","Fallback 1"],["Your Bedrock","Can't tell right now","Connect it first","Not in the order"]]);
-  const page=screen.getByRole("heading",{name:"AI models"}).closest("section")!;expect(page.outerHTML).not.toContain(canary);expect(JSON.stringify(f.query.getQueriesData({queryKey:["admin","lane-c"]}))).not.toContain(canary);
+  const page=screen.getByRole("heading",{name:"AI and spending"}).closest("section")!;expect(page.outerHTML).not.toContain(canary);expect(JSON.stringify(f.query.getQueriesData({queryKey:["admin","lane-c"]}))).not.toContain(canary);
   expect(f.request.mock.calls.every(([r])=>r.method==="GET")).toBe(true);}finally{f.close();}
 });
 it("removes the sources on a forbidden read",async()=>{
  const f=guidedModels();try{await screen.findByRole("table",{name:"Company AI sources"});f.request.mockImplementation(async r=>r.path==="/v1/app/org/model-sources"?{status:403,body:{}}:{status:200,body:f.liveMe});await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","lane-c","sources"]});});await screen.findByText(/permission to view/);expect(screen.queryByRole("table",{name:"Company AI sources"})).toBeNull();}finally{f.close();}
 });
 it("refuses a snapshot naming an unknown source rather than drawing it",async()=>{
- const f=guidedModels("owner",[{source:"personal-chatgpt",available:true,connected:true,inOrder:true}],["personal-chatgpt"]);try{await screen.findByText(/unavailable|Couldn't load/);expect(screen.queryByText("personal-chatgpt")).toBeNull();}finally{f.close();}
+ const f=guidedModels("owner",[{source:"personal-chatgpt",available:true,connected:true,inOrder:true}],["personal-chatgpt"]);try{await within(await screen.findByRole("region",{name:"AI source order"})).findByText(/unavailable|Couldn't load/);expect(screen.queryByText("personal-chatgpt")).toBeNull();}finally{f.close();}
 });
 
 const slackPath="/v1/app/org/slack-workspace-evidence",slackKey=["admin","lane-c","slack-workspace-evidence"];

@@ -73,11 +73,12 @@ describe("readers", () => {
 });
 
 describe("Company settings, AI", () => {
- it("the card sits on the page beside the engine model card", async () => {
+ it("the learning row sits inside the company model card", async () => {
   const c = cloud({ model: null });
   const f = mountPage(c.respond);
   try {
    expect((await screen.findByTestId("learning-model-card")).textContent).toContain(W.title);
+   expect(screen.getByTestId("step-models").contains(screen.getByTestId("learning-model-card"))).toBe(true);
    expect(c.reads.length).toBeGreaterThan(0);
   } finally { f.close(); }
  });
@@ -88,7 +89,7 @@ describe("an owner or admin", () => {
   const c = cloud({ model: null });
   const f = mountCard("owner", c.respond);
   try {
-   expect((await screen.findByTestId("learning-model-current")).textContent).toBe(`Model: Claude Haiku 5.5 (${W.installDefault})`);
+   expect((await screen.findByTestId("learning-model-current")).textContent).toBe(`Learning model: Claude Haiku 5.5 (${W.installDefault})`);
    const select = screen.getByLabelText<HTMLSelectElement>(W.pick);
    expect(select.value).toBe(HAIKU);
    expect([...select.options].map(o => o.value).filter(Boolean)).toEqual([SONNET, HAIKU]);
@@ -106,13 +107,13 @@ describe("an owner or admin", () => {
    fireEvent.click(screen.getByRole("button", { name: W.save }));
    expect((await screen.findByTestId("learning-model-saved")).textContent).toBe(W.saved);
    expect(c.writes.map(w => [w.method, w.path, w.body])).toEqual([["PUT", LEARNING_MODEL_PATH, { model: SONNET }]]);
-   await waitFor(() => { expect(screen.getByTestId("learning-model-current").textContent).toBe(`Model: Claude Sonnet 5.5 (${W.companyChoice})`); });
+   await waitFor(() => { expect(screen.getByTestId("learning-model-current").textContent).toBe(`Learning model: Claude Sonnet 5.5 (${W.companyChoice})`); });
    // Already the company's choice: nothing to save until another is picked.
    expect(screen.getByRole("button", { name: W.save }).hasAttribute("disabled")).toBe(true);
    fireEvent.click(screen.getByRole("button", { name: W.useDefault }));
    await waitFor(() => { expect(screen.getByTestId("learning-model-saved").textContent).toBe(W.savedDefault); });
    expect(c.writes.map(w => w.body)).toEqual([{ model: SONNET }, { model: null }]);
-   await waitFor(() => { expect(screen.getByTestId("learning-model-current").textContent).toBe(`Model: Claude Haiku 5.5 (${W.installDefault})`); });
+   await waitFor(() => { expect(screen.getByTestId("learning-model-current").textContent).toBe(`Learning model: Claude Haiku 5.5 (${W.installDefault})`); });
   } finally { f.close(); }
  });
 
@@ -183,7 +184,7 @@ describe("an owner or admin", () => {
 
  it("says plainly when this Rovara has no default", async () => {
   const f = mountCard("owner", () => ({ status: 200, body: view(null, "install", { offered: [SONNET] }) }));
-  try { expect((await screen.findByTestId("learning-model-current")).textContent).toBe(`Model: ${W.noDefault}`); } finally { f.close(); }
+  try { expect((await screen.findByTestId("learning-model-current")).textContent).toBe(`Learning model: ${W.noDefault}`); } finally { f.close(); }
  });
 });
 
@@ -192,7 +193,7 @@ describe("everyone else", () => {
   const c = cloud({ model: SONNET }, { canChange: false });
   const f = mountCard("member", c.respond);
   try {
-   expect((await screen.findByTestId("learning-model-current")).textContent).toBe(`Model: Claude Sonnet 5.5 (${W.companyChoice})`);
+   expect((await screen.findByTestId("learning-model-current")).textContent).toBe(`Learning model: Claude Sonnet 5.5 (${W.companyChoice})`);
    expect(screen.getByTestId("learning-model-read-only").textContent).toBe(W.readOnly);
    expect(screen.queryByLabelText(W.pick)).toBeNull();
    expect(screen.queryByRole("button", { name: W.save })).toBeNull();

@@ -9,6 +9,7 @@ import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
+import { SecondReviewScreen } from "../../packages/ui/src/screens/admin/second-review/SecondReviewScreen.js";
 import { SecondReviewAck } from "../../packages/ui/src/screens/session/SecondReviewAck.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -40,7 +41,13 @@ function mount(options: { state?: Partial<State>; respond?: (request: ApiRequest
   f.host.viewport = { width: () => 1280, subscribe: () => () => undefined };
   const query = createQueryClient();
   query.setQueryData(["nav"], nav);
-  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/second-review"] });
+  // Preserve the legacy presentation/domain guards for SR-PORT's reuse. Production routing is
+  // tested in model-settings-consolidation.test.ts and never mounts this manual picker.
+  const routes = appRoutes(nav.features);
+  const modelRoutes = routes.find(route => route.path === "/app")!.children!.find(route => route.children?.some(child => child.path === "admin/second-review"));
+  const legacy = modelRoutes!.children!.find(route => route.path === "admin/second-review")!;
+  legacy.element = h(SecondReviewScreen, {});
+  const router = createMemoryRouter(routes, { initialEntries: ["/app/admin/second-review"] });
   const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
   return { ...f, ...view, current, router, query, close: () => { view.unmount();router.dispose();query.clear(); } };
 }
@@ -65,7 +72,7 @@ it("shows the mode, the 'Using default' line, and the models with maker, cost, f
   expect(rows[3]!.textContent).toContain("Not used: same maker as the model that wrote the code");
   expect(rows[3]!.className).toContain("rv-muted");
   expect(screen.getByText(/depends on the model that wrote each task's code/u)).toBeTruthy();
-  expect(screen.getByRole("link", { name: "Second opinion" })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Second opinion" })).toBeNull();
   expect(f.request.mock.calls.filter(([request]) => request.path === PATH).every(([request]) => request.method === "GET")).toBe(true);
   f.close();
 });
@@ -242,40 +249,6 @@ it("tells the admin when the model stopped qualifying, with the server's fixed w
   await screen.findByText("The second opinion model needs attention");
   expect(screen.queryByRole("button", { name: "I've seen it" })).toBeNull();
   seen.close();
-});
-
-it("asks once per session whether the page exists: coming back into the admin area does not ask again, and the link stays", async () => {
-  const f = mount();
-  await screen.findByRole("heading", { name: "Second opinion" });
-  await screen.findByRole("link", { name: "Second opinion" });
-  const gets = () => f.request.mock.calls.filter(([request]) => request.path === PATH && request.method === "GET").length;
-  const first = gets();
-  // The page's own read and the nav's one question.
-  expect(first).toBe(2);
-  await f.router.navigate("/app/nowhere-in-particular");
-  await screen.findByRole("heading", { name: "Not found" });
-  expect(screen.queryByRole("link", { name: "Second opinion" })).toBeNull();
-  await f.router.navigate("/app/admin/second-review");
-  await screen.findByRole("heading", { name: "Second opinion" });
-  await screen.findByRole("link", { name: "Second opinion" });
-  // Only the page's own read is asked again (its cache is dropped when the admin area is left); the nav's question is answered from the session's cache.
-  expect(gets()).toBe(first + 1);
-  expect(f.query.getQueryData(["second-review-probe"])).toBe(true);
-  f.close();
-});
-
-it("is absent while the switch is off, and a failed load can be retried", async () => {
-  const off = mount({ respond: async request => (request.path === PATH ? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } } : undefined) });
-  await screen.findByText("The second opinion is not switched on for your company yet.");
-  // The page does not exist, so the nav does not offer it (the other admin links stay).
-  expect(screen.queryByRole("link", { name: "Second opinion" })).toBeNull();
-  expect(screen.getByRole("link", { name: "Audit" })).toBeTruthy();
-  off.close();
-  let calls = 0;
-  const failing = mount({ respond: async request => (request.path === PATH ? (++calls === 1 ? { status: 400, body: { error: { code: "CONFIG_INVALID", message: "x" } } } : { status: 200, body: base() }) : undefined) });
-  fireEvent.click(await screen.findByRole("button", { name: "Try again" }, ));
-  await screen.findByRole("table");
-  failing.close();
 });
 
 // ---- the task page

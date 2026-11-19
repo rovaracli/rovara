@@ -35,9 +35,10 @@ const reasons = [{ reason: "lessons_off", message: "Lessons are switched off for
 const view = (connected: boolean) => ({ revision: 2, canChange: true, accounts: { anthropic: connected ? { connected: true, updatedAt: Date.UTC(2026, 10, 15) } : { connected: false }, openai: { connected: false }, gemini: { connected: false } }, removed: [], learningCap: { monthlyUsdMicros: 20_000_000, companyMonthlyUsdMicros: 500_000_000 }, lessonsOn: true, pausedNow: connected ? [] : ["no_provider"], pauseReasons: reasons });
 
 describe("learning AI key page", () => {
- it("is a company-admin link in AI and connections", () => {
-  expect(visibleAdminGroups("owner", false).find(group => group.id === "ai")!.links.map(link => link.label)).toContain("Learning AI key");
-  expect(visibleAdminGroups("admin", false).find(group => group.id === "ai")?.links.map(link => link.label) ?? []).not.toContain("Learning AI key");
+ it("uses the single AI and spending navigation home", () => {
+  expect(visibleAdminGroups("owner", false).find(group => group.id === "ai")!.links.map(link => link.label)).toContain("AI and spending");
+  expect(visibleAdminGroups("admin", false).find(group => group.id === "ai")?.links.map(link => link.label) ?? []).toContain("AI and spending");
+  expect(visibleAdminGroups("owner", false).find(group => group.id === "ai")!.links.map(link => link.label)).not.toContain("Learning AI key");
  });
  it("reads only the shape it expects", () => {
   expect(readLearningAi({ ...view(true), accounts: { anthropic: { connected: true, updatedAt: "x" }, mistral: { connected: true } }, pausedNow: ["<b>", "no_provider"], removed: [{ provider: "mistral", recoverUntil: 1 }] }))
@@ -61,6 +62,7 @@ describe("learning AI key page", () => {
   let connected = false;
   const f = mount("/app/admin/learning-ai", (r) => { if (r.method === "PUT") { sent.push(r); connected = true; } return { status: 200, body: view(connected) }; });
   try {
+   fireEvent.click(await screen.findByText("Connect company AI", { selector: "summary" }));
    const field = await screen.findByLabelText("Paste the Anthropic key");
    const secret = ["sk", "ant", "x".repeat(32)].join("-");
    fireEvent.change(field, { target: { value: secret } });

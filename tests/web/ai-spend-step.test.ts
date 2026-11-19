@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // Guided onboarding PR 15 (DEC 254l item 7, DEC 254n item 1): the company step "AI and spending" and a project's "AI and spend limit".
 // The step preselects Code's `preselect` from the company's own offered list, prefills the saved monthly limit or the existing default, and its one
-// Save writes the limit and the source only when they changed but the model ALWAYS (explicitly, so a new company never depends on the install
-// default). A plain member sees it read only. Refusals are the server's fixed sentences. The project part keeps "Same as company" picked.
+// Save writes changed rows only, with an explicit initial model save so a new company never depends on the install
+// default. A plain member sees it read only. Refusals are the server's fixed sentences. The project part keeps "Same as company" picked.
 import { beforeEach, describe, expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -93,7 +93,7 @@ describe("the company step, AI and spending", () => {
   const c = company({ cap: null, source: null, model: null });
   const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
-   expect((await screen.findByLabelText<HTMLSelectElement>("Model")).value).toBe("zai.glm-4.7");
+   expect((await screen.findByLabelText<HTMLSelectElement>("Company model")).value).toBe("zai.glm-4.7");
    expect((screen.getByTestId("ai-spend-rovara").querySelector("input") as HTMLInputElement).checked).toBe(true);
    expect(screen.getByLabelText<HTMLInputElement>(/Company monthly limit/u).value).toBe("500");
    expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
@@ -106,7 +106,7 @@ describe("the company step, AI and spending", () => {
    const c = company({ cap: null, source: null, model: null });
    const f = mountRoute("/app/admin/ai-spending", (r) => (r.path === "/v1/app/org/agent-ai" && r.method === "GET" ? { status: 200, body: { ...(agentAi(null, 0) as object), effectiveSource: effective, sourceIsDefault: true } } : c.respond(r)));
    try {
-    await screen.findByLabelText("Model");
+    await screen.findByLabelText("Company model");
     expect(screen.queryByTestId("ai-spend-default") !== null).toBe(!own);
     expect((screen.getByTestId("ai-spend-rovara").querySelector("input") as HTMLInputElement).checked).toBe(!own);
     expect((screen.getByTestId("ai-spend-own").querySelector("input") as HTMLInputElement).checked).toBe(own);
@@ -118,7 +118,7 @@ describe("the company step, AI and spending", () => {
   const c = company({ cap: null, source: null, model: null });
   const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
-   await screen.findByLabelText("Model");
+   await screen.findByLabelText("Company model");
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
    await screen.findByTestId("ai-spend-saved");
    expect(c.writes.map(w => `${w.method} ${w.path}`)).toEqual(["PUT /v1/app/org/settings", "PUT /v1/app/org/engine-model"]);
@@ -145,7 +145,7 @@ describe("the company step, AI and spending", () => {
  });
 
  it("a refetched effective default never makes an untouched source choice save", async () => {
-  const c = company({ cap: 800_000_000, source: null, model: "zai.glm-4.7" });
+  const c = company({ cap: 800_000_000, source: null, model: null });
   let effective: "rovara" | "anthropic_key" = "rovara";
   const respond: Respond = r => {
    if (r.path === "/v1/app/org/agent-ai" && r.method === "GET") {
@@ -156,16 +156,46 @@ describe("the company step, AI and spending", () => {
   };
   const f = mountRoute("/app/admin/ai-spending", respond);
   try {
-   await screen.findByLabelText("Model");
+   await screen.findByLabelText("Company model");
    expect((screen.getByTestId("ai-spend-rovara").querySelector("input") as HTMLInputElement).checked).toBe(true);
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
    await screen.findByTestId("ai-spend-saved");
    await waitFor(() => expect(screen.queryByTestId("ai-spend-default")).toBeNull());
    expect(c.writes.map(w => w.path)).toEqual(["/v1/app/org/engine-model"]);
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-   await waitFor(() => expect(c.writes.filter(w => w.path === "/v1/app/org/engine-model")).toHaveLength(2));
+   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(false));
+   expect(c.writes.filter(w => w.path === "/v1/app/org/engine-model")).toHaveLength(1);
    expect(c.writes.some(w => w.path === "/v1/app/org/agent-ai")).toBe(false);
    expect(c.state.source).toBeNull();
+  } finally { f.close(); }
+ });
+
+ for (const savedModel of ["claude-retired", "claude-sonnet-4-5"]) it(`a spending-only save preserves untouched company model ${savedModel}, even when preselect differs`, async () => {
+  const c = company({ cap: 500_000_000, source: "rovara", model: savedModel });
+  const f = mountRoute("/app/admin/ai-spending", r => r.path === "/v1/app/org/engine-model" && r.method === "GET" ? { status: 200, body: { ...engine(savedModel, "company"), preselect: "zai.glm-4.7" } } : c.respond(r));
+  try {
+   const picker = await screen.findByLabelText<HTMLSelectElement>("Company model");
+   expect(picker.value).toBe(savedModel);
+   if (savedModel === "claude-retired") expect(within(picker).getByRole<HTMLOptionElement>("option", { name: "claude-retired (no longer offered)" }).disabled).toBe(true);
+   fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+   fireEvent.click(screen.getByRole("button", { name: "Save" })); await screen.findByTestId("ai-spend-saved");
+   expect(c.writes.map(w => w.path)).toEqual(["/v1/app/org/settings"]);
+   expect(c.state.model).toBe(savedModel);
+  } finally { f.close(); }
+ });
+ it("returning the model draft to its loaded choice makes no model PUT", async () => {
+  const c = company({ cap: 500_000_000, source: "rovara", model: "claude-sonnet-4-5" });
+  const f = mountRoute("/app/admin/ai-spending", c.respond);
+  try {
+   const picker = await screen.findByLabelText("Company model");
+   fireEvent.change(picker, { target: { value: "zai.glm-4.7" } });
+   fireEvent.change(picker, { target: { value: "claude-sonnet-4-5" } });
+   fireEvent.click(screen.getByRole("button", { name: "Save" })); await screen.findByTestId("ai-spend-saved");
+   expect(c.writes).toEqual([]);
+   fireEvent.change(picker, { target: { value: "zai.glm-4.7" } });
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   await waitFor(() => expect(c.writes).toHaveLength(1));
+   expect(c.writes[0]!.body).toEqual({ model: "zai.glm-4.7" });
   } finally { f.close(); }
  });
 
@@ -174,7 +204,7 @@ describe("the company step, AI and spending", () => {
    const c = company({ cap: 800_000_000, source: savedSource, model: null });
    const f = mountRoute("/app/admin/ai-spending", c.respond);
    try {
-    await screen.findByLabelText("Model");
+    await screen.findByLabelText("Company model");
     if (savedSource === "rovara") {
      expect((screen.getByTestId("ai-spend-rovara").querySelector("input") as HTMLInputElement).checked).toBe(true);
     } else if (savedSource === "anthropic_key" || savedSource === "bedrock_byo") {
@@ -182,7 +212,7 @@ describe("the company step, AI and spending", () => {
     } else {
      expect(screen.getByTestId("ai-spend-source-read-only").textContent).toContain(sourceLabel(savedSource));
      expect(screen.getByTestId("ai-spend-source-read-only").textContent).not.toContain(savedSource);
-     expect(screen.getByTestId("ai-spend-source-read-only").querySelector("a")?.getAttribute("href")).toBe("/app/admin/models/sources");
+     expect(screen.getByTestId("ai-spend-source-read-only").querySelector("a")?.getAttribute("href")).toBe("/app/admin/ai-spending#ai-connections");
     }
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByTestId("ai-spend-saved");
@@ -199,7 +229,7 @@ describe("the company step, AI and spending", () => {
    const c = company(initial);
    const f = mountRoute("/app/admin/ai-spending", c.respond);
    try {
-    await screen.findByLabelText("Model");
+    await screen.findByLabelText("Company model");
     if (initial.source === null) {
      fireEvent.click(screen.getByTestId("ai-spend-own").querySelector("input")!);
      fireEvent.click(screen.getByTestId("ai-spend-rovara").querySelector("input")!);
@@ -215,16 +245,16 @@ describe("the company step, AI and spending", () => {
   }
  });
 
- it("the read-only source link opens the existing source-order page", async () => {
+ it("the read-only source link reaches the source-order editor in the consolidated card", async () => {
   const c = company({ cap: 800_000_000, source: "openai_key", model: null });
   const f = mountRoute("/app/admin/ai-spending", r => r.method === "GET" && r.path === "/v1/app/org/model-sources"
    ? { status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", developerId: me, revision: 1, canChange: true, order: ["openai_key"], sources: [{ source: "openai_key", available: true, connected: true, inOrder: true }] } }
    : c.respond(r));
   try {
-   await screen.findByLabelText("Model");
+   await screen.findByLabelText("Company model");
    fireEvent.click(screen.getByTestId("ai-spend-source-read-only").querySelector("a")!);
-   expect(await screen.findByText("Source order")).toBeTruthy();
-   expect(screen.getByRole("heading", { name: "Company AI sources" })).toBeTruthy();
+   expect(await screen.findByText("AI source order")).toBeTruthy();
+   expect(screen.getByRole("heading", { name: "Company AI connections" })).toBeTruthy();
    expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/org/model-sources")).toBe(true);
   } finally { f.close(); }
  });
@@ -233,7 +263,7 @@ describe("the company step, AI and spending", () => {
   const c = company({ cap: 800_000_000, source: "openai_key", model: null });
   const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
-   await screen.findByLabelText("Model");
+   await screen.findByLabelText("Company model");
    fireEvent.click(screen.getByTestId("ai-spend-rovara").querySelector("input")!);
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
    await screen.findByTestId("ai-spend-saved");
@@ -246,9 +276,9 @@ describe("the company step, AI and spending", () => {
   const c = company({ cap: null, source: null, model: null });
   const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
-   fireEvent.change(await screen.findByLabelText("Model"), { target: { value: "claude-sonnet-4-5" } });
+   fireEvent.change(await screen.findByLabelText("Company model"), { target: { value: "claude-sonnet-4-5" } });
    fireEvent.click(screen.getByTestId("ai-spend-own").querySelector("input")!);
-   expect(screen.getByTestId("ai-spend-connect").getAttribute("href")).toBe("/app/admin/learning-ai");
+   expect(screen.getByTestId("ai-spend-connect").getAttribute("href")).toBe("/app/admin/ai-spending#ai-connections");
    fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "15.50" } });
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
    await screen.findByTestId("ai-spend-saved");
@@ -275,7 +305,7 @@ describe("the company step, AI and spending", () => {
   const c = company({ cap: null, source: null, model: null }, { "/v1/app/org/engine-model": notOffered });
   const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
-   await screen.findByLabelText("Model");
+   await screen.findByLabelText("Company model");
    const reads = f.request.mock.calls.length;
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
    expect((await screen.findByTestId("ai-spend-error")).textContent).toBe("That model isn't offered to this company now. Pick one from the list.");
@@ -288,7 +318,7 @@ describe("the company step, AI and spending", () => {
   const c = company({ cap: null, source: null, model: null }, { "/v1/app/org/settings": refused });
   const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
-   await screen.findByLabelText("Model");
+   await screen.findByLabelText("Company model");
    // The page also carries the learning-model and per-step model cards (#209, #219): read the company step's own save and alert.
    const step = within(screen.getByTestId("ai-spend-step"));
    fireEvent.click(step.getByRole("button", { name: "Save" }));
@@ -314,8 +344,8 @@ describe("the company step, AI and spending", () => {
   try {
    expect((await screen.findByTestId("ai-spend-read-only")).textContent).toMatch(/claude-sonnet-4-5.*Only a company owner or admin can change this/u);
    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-   // No money reads; the step models card reads the company's step models (read only for a member).
-   expect(f.request.mock.calls.map(([r]) => r.path).sort()).toEqual(["/v1/app/org/agent-models", "/v1/app/org/engine-model"]);
+   // The member receives only the read-only model and step/learning rows, with no money or source-control reads.
+   expect(f.request.mock.calls.map(([r]) => r.path).sort()).toEqual(["/v1/app/org/agent-models", "/v1/app/org/engine-model", "/v1/app/org/learning-model"]);
   } finally { f.close(); }
  });
 });

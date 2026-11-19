@@ -14,11 +14,11 @@ import { VisibleText } from "../../../design/VisibleText.js";
 
 export const LEARNING_MODEL_CARD_WORDS = Object.freeze({
  title: "Lessons learning model",
- intro: "The AI model Rovara's lessons learn with. Tasks keep using the model above. Learning runs on your company's own AI account.",
+ intro: "The AI model Rovara's lessons learn with. Learning has its own model and does not follow task source order. Hosted learning currently uses Claude through the company’s Anthropic key. Rovara’s AI is a restricted fallback for an eligible exempt company; OpenAI, OpenRouter, own Bedrock and endpoint connections alone do not enable learning on this release. Current source, readiness, pause state and price could not be checked here.",
  companyChoice: "Your company's choice",
  installDefault: "This Rovara's default",
  noDefault: "No default is set on this Rovara.",
- pick: "Model",
+ pick: "Learning model",
  pickHint: "Claude models your company can use now.",
  readOnly: "Only a company owner or admin can change this. Ask one of them.",
  noneOffered: "No Claude model is offered to your company right now, so this can't be changed yet.",
@@ -35,17 +35,17 @@ export const LEARNING_MODEL_CARD_WORDS = Object.freeze({
 const W = LEARNING_MODEL_CARD_WORDS;
 type Notice = { ok: boolean; text: string } | undefined;
 
-export function LearningModelCard({ developerId, role }: { developerId: string; role: string }) {
+export function LearningModelCard({ developerId, role, orgId = "" }: { developerId: string; role: string; orgId?: string }) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
- const read = useQuery({ queryKey: ["ai-spend", developerId, role, "learning-model"], queryFn: () => api.get(LEARNING_MODEL_PATH, { parse: readLearningModel }), gcTime: 0, refetchOnWindowFocus: false });
+ const read = useQuery({ queryKey: ["ai-spend", orgId, developerId, role, "learning-model"], queryFn: () => api.get(LEARNING_MODEL_PATH, { parse: readLearningModel }), gcTime: 0, refetchOnWindowFocus: false });
  const [notice, setNotice] = useState<Notice>();
  const error = read.error;
  const readFailure = error instanceof ApiError && error.status === 501 ? W.notYet : error instanceof ApiError && error.status === 503 ? W.unavailable : W.failed;
- return <section className="rv-ai-spend rv-learning-model" aria-label={W.title} data-testid="learning-model-card">
-  <h2>{W.title}</h2><p>{W.intro}</p>
+ return <section id="learning-model" className="rv-ai-spend rv-learning-model" aria-label={W.title} data-testid="learning-model-card">
+  <h3>{W.title}</h3><p>{W.intro}</p>
   {read.isError ? <><p role="alert" data-testid="learning-model-read-error">{readFailure}</p>{!(error instanceof ApiError && error.status === 501) && <Button onClick={() => { void read.refetch(); }}>Try again</Button>}</>
    : read.data === undefined ? <Skeleton label="Loading the lessons learning model" />
-   : <Body key={`${read.data.source}:${read.data.model ?? ""}`} view={read.data} notice={notice} setNotice={setNotice} reload={() => { void read.refetch(); }} />}
+   : <Body key={`${read.data.source}:${read.data.model ?? ""}`} view={{ ...read.data, canChange: role !== "member" && read.data.canChange }} notice={notice} setNotice={setNotice} reload={() => { void read.refetch(); }} />}
  </section>;
 }
 
