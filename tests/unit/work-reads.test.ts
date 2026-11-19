@@ -1,3 +1,5 @@
+import type { TaskMoneyV1 } from "../../packages/contracts/src/task-money.js";
+import { readFileSync } from "node:fs";
 // The Work page's reads on Cloud (packages/cloud-server/src/work-reads.ts), run end to end on the fake Code: sign in, then read the list, one task's plan,
 // proof index, events and comments. Each answer keeps only what the page draws, and a task the person may not read is Code's own 404.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -238,4 +240,12 @@ describe("the proof index's failing tests (TE-A6) and Code's own access rule", (
     expect(refused.body.items).toBeUndefined();
     expect(JSON.stringify(refused.body)).not.toContain("Unit tests");
   });
+});
+
+it("passes strict TaskMoneyV1 unchanged through work reads and omits malformed money", () => {
+  const money = (JSON.parse(readFileSync(new URL("../../contracts/shared/task-money.v1.json", import.meta.url), "utf8")) as { examples: TaskMoneyV1[] }).examples[0]!;
+  const task = { taskId: money.taskId, title: "Task", project: "payments", status: "CLOSED", updatedAt: money.asOf, money, spent: { usd: 999 } };
+  expect(workTask(task)?.["money"]).toEqual(money);
+  expect(workTask({ ...task, money: { ...money, currency: "EUR" } })?.["money"]).toBeUndefined();
+  expect(workTask({ ...task, money: undefined })?.["money"]).toBeUndefined();
 });

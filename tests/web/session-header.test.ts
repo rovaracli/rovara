@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { TaskMoneyV1 } from "../../packages/contracts/src/task-money.js";
 import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { SessionHeader } from "../../packages/ui/src/screens/session/SessionHeader.js";
@@ -11,7 +12,7 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { sessionFixture, sessionPerson, taskFixture } from "./support/session-fixture.js";
 it("shows stable task identity, real status, money and execution location", () => {
  const view = sessionFixture();const f = renderUi(h(SessionHeader, { session: view, onAction: () => undefined }));
- expect(screen.getByRole("heading", { name: "Fix duplicate refunds", level: 1 })).toBeTruthy();expect(screen.getByText("Payments expert")).toBeTruthy();expect(screen.getByText("on Priya's MacBook")).toBeTruthy();expect(screen.getByText("offline")).toBeTruthy();expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();expect(screen.getByText("$1.20")).toBeTruthy();expect(screen.getByText("$4.00")).toBeTruthy();f.unmount();
+ expect(screen.getByRole("heading", { name: "Fix duplicate refunds", level: 1 })).toBeTruthy();expect(screen.getByText("Payments expert")).toBeTruthy();expect(screen.getByText("on Priya's MacBook")).toBeTruthy();expect(screen.getByText("offline")).toBeTruthy();expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();expect(screen.getByText("Cost unavailable")).toBeTruthy();expect(screen.queryByText("$1.20")).toBeNull();expect(screen.queryByText("Paid by payments")).toBeNull();f.unmount();
 });
 it("offers follow and sharing only from explicit server actions", () => {
  const view = sessionFixture({ you: { level: "view", owner: false, following: false, actions: ["watch"] } });const f = renderUi(h(SessionHeader, { session: view, onAction: () => undefined }));
@@ -37,3 +38,31 @@ it("continues an owner's capped test once and navigates only to the canonical re
  const navigate = vi.spyOn(f.host, "navigate");const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(MoneyBanners, { session }) }));expect(screen.getByText("This test run reached its $0.50 limit.")).toBeTruthy();fireEvent.click(screen.getByRole("button", { name: "Continue as a normal task" }));fireEvent.click(screen.getByRole("button", { name: "Continue as a normal task" }));expect(f.request).toHaveBeenCalledTimes(1);expect(navigate).not.toHaveBeenCalled();finish({ status: 200, body: { task: taskFixture({ sessionId: nextId }) } });await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + nextId));expect(f.request.mock.calls[0]?.[0]).toMatchObject({ method: "POST", path: "/v1/app/tasks/11111111-1111-4111-8111-111111111111/continue-as-task", body: { requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown } });ui.unmount();
 });
 it("does not grant test continuation to a viewer", () => { const f = fakeHost(), session = sessionFixture({ you: { level: "view", owner: false, following: false, actions: ["watch"] }, body: { kind: "task", task: taskFixture({ testOffer: { capUsd: 0.5 } }) } });const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(MoneyBanners, { session }) }));expect(screen.getByText("This test run reached its $0.50 limit.")).toBeTruthy();expect(screen.queryByRole("button", { name: "Continue as a normal task" })).toBeNull();ui.unmount(); });
+
+it("renders provisional task money instead of legacy spend and inferred payer", async () => {
+ const { readFileSync } = await import("node:fs");
+ const money = (JSON.parse(readFileSync("contracts/shared/task-money.v1.json", "utf8")) as { examples: TaskMoneyV1[] }).examples[0]!;
+ const f = renderUi(h(SessionHeader, { session: sessionFixture({ money }), onAction: () => undefined }));
+ expect(screen.getByText("at least $0.00008 · estimated · awaiting usage · provisional")).toBeTruthy();
+ expect(screen.queryByText("$1.20")).toBeNull();
+ f.unmount();
+});
+it("absent money never displays legacy dollars", () => {
+ const view = renderUi(h(SessionHeader, { session: sessionFixture(), onAction: () => undefined }));
+ expect(screen.queryByText("$1.20")).toBeNull();
+ expect(screen.queryByText("Cost unavailable")).not.toBeNull();
+ view.unmount();
+});
+
+it("shows the money stop limit only when supplied, independently of legacy limits", async () => {
+ const { readFileSync } = await import("node:fs");
+ for (const limit of [12_000_000, 0, undefined]) {
+  const money = (JSON.parse(readFileSync("contracts/shared/task-money.v1.json", "utf8")) as { examples: TaskMoneyV1[] }).examples[0]!;
+  money.stop.taskMaximumMicros = limit === undefined ? { state: "unavailable", reason: "not_measured" } : { state: "available", value: limit };
+  const view = renderUi(h(SessionHeader, { session: sessionFixture({ money, cost: { spentUsd: 999, runLimitUsd: 999, payer: { kind: "member", name: "Legacy" } } }), onAction: () => undefined }));
+  expect(view.container.textContent).not.toContain("$999.00");
+  if (limit === undefined) expect(view.container.textContent).not.toContain(" of ");
+  else expect(view.container.textContent).toContain(limit === 0 ? " of $0.00" : " of $12.00");
+  view.unmount();
+ }
+});

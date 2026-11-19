@@ -1,8 +1,9 @@
+import { mergeTaskMoney, parseTaskMoneyV1, type TaskMoneyV1 } from "@agentx/contracts/web";
 // The Work page's read layer (Hybrid 1, the split inbox, DEC 223): contract v0 shapes (code-contract-v0.ts) turned into what the list, the step rail,
 // the spec, the build activity and the proof table draw. Nothing here is invented: a field Code did not send is absent, and what the page says about a
 // task is worked out from the workflow's stage and state, the pending decision card and the proof index, in fixed words.
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ProofItem, TaskView } from "@agentx/contracts/code-contract-v0";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "./client.js";
@@ -37,6 +38,7 @@ const records = (value: unknown): Array<Record<string, unknown>> => (Array.isArr
 export interface ReadTask {
  /** L4-U5: the one evidence line when Rovara re-checked the project's setup for this task (Code's fixed words); absent when there was no drift. */
  setupRecheck?: string | undefined;
+ money?: TaskMoneyV1 | undefined;
  taskId: string; title: string; project: string; status: TaskView["status"] | undefined;
  workflow: { stage?: string; state?: string; revision?: number; path?: string; outcome?: string; blockReason?: string; round?: number } | undefined;
  pullRequests: Array<{ repository?: string; number?: number; url?: string; state?: string }>;
@@ -58,6 +60,7 @@ export function readTask(raw: unknown): ReadTask | undefined {
   ...(raw["detail"] === "unread" ? { detailUnread: true as const } : {}),
   ...opt("setupRecheck", ((line) => (line !== undefined && line.length > 0 && line.length <= 600 && !/[\p{Cc}\p{Cf}]/u.test(line) ? line : undefined))(str(raw["setupRecheck"]))),
   hasThread: bool(raw["shared"]) === true || (isRecord(raw["share"]) && (str(raw["share"]["threadUrl"]) !== undefined || str(raw["share"]["threadTs"]) !== undefined)),
+  money: ((money) => money?.taskId === taskId ? money : undefined)(parseTaskMoneyV1(raw["money"])),
   taskId, sessionId: str(raw["sessionId"]), title, project, status: str(raw["status"]) as ReadTask["status"] | undefined,
   workflow: workflow === undefined ? undefined : { ...opt("stage", str(workflow["stage"])), ...opt("state", str(workflow["state"])), ...opt("revision", num(workflow["revision"])), ...opt("path", str(workflow["path"])), ...opt("outcome", str(workflow["outcome"])), ...opt("blockReason", str(workflow["blockReason"])), ...opt("round", num(workflow["round"])) },
   pullRequests: records(raw["pullRequests"]).map(pull => ({ ...opt("repository", str(pull["repository"])), ...opt("number", num(pull["number"])), ...opt("url", str(pull["url"])), ...opt("state", str(pull["state"])) })),
@@ -299,7 +302,14 @@ export function useWorkApi() {
   };
  }, [host]);
 }
-export function useWorkTasks(enabled = true) { const api = useWorkApi();return useQuery({ queryKey: ["work", "tasks"], retry: false, enabled, queryFn: api.tasks }); }
+export function acceptWorkTasks(previous: readonly ReadTask[] | undefined, next: ReadTask[]): ReadTask[] {
+ const old = new Map(previous?.map(task => [task.taskId, task]));
+ return next.map(task => ({ ...task, money: mergeTaskMoney(old.get(task.taskId)?.money, task.money) }));
+}
+export function useWorkTasks(enabled = true) {
+ const api = useWorkApi(), query = useQueryClient();
+ return useQuery({ queryKey: ["work", "tasks"], retry: false, enabled, queryFn: async () => { const next = await api.tasks(); return acceptWorkTasks(query.getQueryData<ReadTask[]>(["work", "tasks"]), next); } });
+}
 /** The tasks the person is involved in. Its own read, so a failure here never takes the person's own list with it. */
 export function useInvolvedTasks(enabled = true) { const api = useWorkApi();return useQuery({ queryKey: ["work", "involved"], retry: false, enabled, queryFn: api.involved }); }
 export function useTaskPlan(id: string | undefined) { const api = useWorkApi();return useQuery({ queryKey: ["work", "plan", id], retry: false, enabled: id !== undefined, queryFn: () => api.plan(id!) }); }

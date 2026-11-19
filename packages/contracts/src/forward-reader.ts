@@ -1,3 +1,4 @@
+import type { TaskMoneyV1 } from "./task-money.js";
 // Forward-compatible readers, shared by the chain session views (chain-session.ts) and the agent session views (session-views.ts).
 import { z } from "zod";
 
@@ -13,7 +14,7 @@ export function openEnum<const T extends readonly [string, ...string[]]>(values:
 }
 
 /** What a reader gives for a strict type: objects keep unknown fields, and a string-literal or number-literal union may read as "unknown". */
-export type ForwardReader<T> = T extends string
+export type ForwardReader<T> = T extends TaskMoneyV1 ? TaskMoneyV1 : T extends string
   ? string extends T ? T : T | typeof UNKNOWN
   : T extends number
     ? number extends T ? T : T | typeof UNKNOWN

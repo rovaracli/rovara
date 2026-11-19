@@ -1,3 +1,4 @@
+import { TaskMoneyV1Schema } from "./task-money-schema.js";
 import { z } from "zod";
 import { TriggerIdSchema } from "./chains.js";
 import { ChainRunIdSchema, SessionIdSchema, SESSION_ID_PATTERN, type SessionId } from "./browser-ids.js";
@@ -167,6 +168,7 @@ export const SessionSummarySchema = z
     /** The task's workflow is `BLOCKED` (it shows as `needs_person`): the session can be retried through Plan 3's workflow retry. Absent in summaries written before this existed. */
     workflowBlocked: z.literal(true).optional(),
     /** What the session cost Rovara. Always 0 for a session on a Mac: it runs on the person's own machine and credentials, and a Mac can't report `paused`. */
+    money: TaskMoneyV1Schema.optional(),
     costUsd: z.number().min(0),
     runLimitUsd: z.number().min(0).optional(),
     stopAtUsd: z.number().min(0).optional(),

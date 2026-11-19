@@ -1,3 +1,4 @@
+import { TaskMoney } from "../../design/TaskMoney.js";
 import { useRef, useState, type KeyboardEvent } from "react";
 import type { LessonInboxBatch } from "@agentx/contracts/code-contract-v0";
 import { batchTitle, soonCount } from "../../api/learned.js";
@@ -13,7 +14,7 @@ export function InboxRow({ row, selected, onSelect, buttonRef }: { row: WorkRow;
    <ToneDot tone={row.tone} words={row.need ?? row.line} />
    <span className="rv-inbox-main"><b><VisibleText text={row.title} /></b>
     <small>{row.need !== undefined && <><span className="rv-inbox-need" data-tone={row.tone}>{row.need}</span> · </>}<VisibleText text={row.line} /> · <VisibleText text={row.project} /></small></span>
-   <span className="rv-inbox-meta"><span className="mono">{row.age}{row.stale ? " · waiting" : ""}</span><StepMini step={row.step} tone={row.tone} /></span>
+   <span className="rv-inbox-meta"><TaskMoney money={row.task.money} /><span className="mono">{row.age}{row.stale ? " · waiting" : ""}</span><StepMini step={row.step} tone={row.tone} /></span>
   </button>
  </li>;
 }
