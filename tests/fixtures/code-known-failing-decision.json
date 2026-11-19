@@ -1,0 +1,105 @@
+{
+  "cards": [
+    {
+      "id": "fix_setup:fix-long",
+      "kind": "fix_setup",
+      "project": "payments",
+      "title": "Fix the test setup",
+      "question": "Fix the test setup?",
+      "recommended": {
+        "action": "open",
+        "why": "The code did not fail: the test setup could not give a verdict."
+      },
+      "next": {
+        "text": "One task waits on this. Open the setup to fix it; the task's checks run again after."
+      },
+      "evidence": [
+        {
+          "kind": "environment",
+          "label": "Result",
+          "value": "Blocked by environment",
+          "state": "warning"
+        },
+        {
+          "kind": "environment",
+          "label": "Failing step",
+          "value": "Tests",
+          "state": "bad"
+        },
+        {
+          "kind": "checks",
+          "label": "Tasks affected",
+          "value": "1",
+          "state": "unknown"
+        },
+        {
+          "kind": "test_proof",
+          "label": "Failing before this change",
+          "value": "1 test, confirmed by the nightly run",
+          "state": "warning"
+        }
+      ],
+      "risk": "medium",
+      "riskReasons": [
+        "Marking tests as already failing changes how later results are judged."
+      ],
+      "friction": {
+        "expandEvidenceFirst": true,
+        "freshSignIn": false,
+        "secondPerson": false
+      },
+      "actions": [
+        {
+          "kind": "open",
+          "label": "Open the setup",
+          "href": "/app/projects/payments",
+          "method": "GET"
+        },
+        {
+          "kind": "reject",
+          "label": "Not now",
+          "href": "/v1/app/decisions/fix_setup/fix-long/reject",
+          "method": "POST"
+        },
+        {
+          "kind": "approve",
+          "label": "Mark as known failing",
+          "href": "/v1/app/decisions/fix_setup/fix-long/approve",
+          "method": "POST"
+        }
+      ],
+      "rejectReasons": [
+        "wrong_problem",
+        "wrong_approach",
+        "too_big",
+        "missing_test",
+        "not_now",
+        "other"
+      ],
+      "status": "pending",
+      "createdAt": "2026-11-01T10:00:00.000Z"
+    }
+  ],
+  "total": 1,
+  "tabs": {},
+  "details": {
+    "fix_setup:fix-long": [
+      {
+        "title": "Tests and checks this mark will cover",
+        "lines": [
+          "unit :: test_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      {
+        "title": "Why this needs a look",
+        "lines": [
+          "Marking tests as already failing changes how later results are judged."
+        ]
+      }
+    ]
+  },
+  "digests": {
+    "fix_setup:fix-long": "f00d68789c0a089643036f73f4c21573127c089c17149017a9774f495b3b1e34"
+  },
+  "dropped": 0
+}
