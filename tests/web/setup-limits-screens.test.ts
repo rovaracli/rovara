@@ -2,11 +2,10 @@
 // SU-1: the project page's "Setup limits" (a maintainer's, with the company's caps beside the boxes) and the company How we work page's "Setup locks" (an admin's: off switch, caps, a loosening waiting for a different admin
 // and when it expires, Approve with "Sign in again" on REAUTH_REQUIRED, Repair for an unreadable row). Nothing shows while the setup agent is off (not found). Every word that comes from the server goes through VisibleText.
 import { describe, expect, it } from "vitest";
-import { act, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Outlet, Routes, Route, createMemoryRouter, RouterProvider } from "react-router";
+import { act, cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, Routes, Route, createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
-import { HowWeWorkCompanyScreen } from "../../packages/ui/src/screens/admin/how-we-work/HowWeWorkCompanyScreen.js";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
@@ -160,8 +159,6 @@ describe("the project's Setup limits", () => {
 
 // ---- the company page
 
-const PENDING_AT = "2026-11-02T12:30:00.000Z";
-const DIGEST = "d".repeat(64);
 const locksView = (over: Record<string, unknown> = {}) => ({ revision: 3, limits: {}, setupAgentOff: false, devcontainerImages: null, noSoleOwnerException: false, defaults: DEFAULTS, maxima: MAXIMA, ...over });
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 
@@ -193,170 +190,15 @@ function mountCompany(options: { view?: unknown; missing?: boolean; role?: "owne
  const writes = () => f.request.mock.calls.map(([request]) => request).filter(request => request.path.startsWith(LOCKS_PATH) && request.method !== "GET");
  return { ...f, ...ui, writes, set(next: unknown) { view = next; } };
 }
-const locksRegion = async () => within(await screen.findByRole("region", { name: "Setup locks" }));
-
-describe("the company's Setup locks", () => {
- it("shows nothing while the setup agent is off (not found)", async () => {
-  const f = mountCompany({ missing: true });
-  await screen.findByRole("heading", { name: "How we work (company)" });
-  await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.path === LOCKS_PATH)).toBe(true));
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
-  expect(screen.queryByRole("region", { name: "Setup locks" })).toBeNull();
-  expect(screen.queryByText("Couldn't load the setup locks.")).toBeNull();
- });
-
- it("shows 'Setup agent off', the caps and the allowed images (the images through VisibleText)", async () => {
-  mountCompany({ view: locksView({ setupAgentOff: true, limits: { commands: 20, budgetCents: 250 }, devcontainerImages: ["ghcr.io/acme/base‮:1"], noSoleOwnerException: true }) });
-  const section = await locksRegion();
-  expect(await section.findByText("Setup agent off", { selector: "strong" })).toBeTruthy();
-  expect(section.getByText("No setup run can start in any project of the company.")).toBeTruthy();
-  expect(section.getByText("Company limits for a run: Commands 20, Model spend $2.50")).toBeTruthy();
-  expect(section.getByText("Dev container images allowed: ghcr.io/acme/base[U+202E]:1")).toBeTruthy();
-  expect(section.getByText("A company with one admin cannot loosen locks by itself.")).toBeTruthy();
-  expect(section.queryByRole("button", { name: "Approve this change" })).toBeNull();
- });
-
- it("is an admin's: rendered with a member's role (outside the admin layout, which would block the page first) it never asks for the locks", async () => {
-  for (const role of ["member", "admin"] as const) {
-   const f = fakeHost(async request => {
-    const path = request.path.split("?")[0] ?? "";
-    if (path === "/v1/app/org/model-selection-policy") return { status: 200, body: companyPolicyRaw() };
-    if (path === "/v1/app/org/model-sources") return { status: 200, body: { sources: [], order: ["rovara"] } };
-    if (path === LOCKS_PATH) return { status: 200, body: locksView() };
-    return refuse(404, "NOT_FOUND", "Not found.");
-   });
-   f.host.kind = "web";f.host.origin = "https://cell.example";
-   const query = createQueryClient();
-   const context = { orgId: "org_aaaaaaaaaaaaaaaaaaaa", company: "Acme", developerId: "a".repeat(64), role, checking: false };
-   const router = createMemoryRouter([{ element: h(Outlet, { context }), children: [{ path: "/", element: h(HowWeWorkCompanyScreen) }] }], { initialEntries: ["/"] });
-   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
+describe("the company's Setup locks (hidden: the hosted Code does not serve them, DEC 254zzz113/115/116)", () => {
+ it("shows no Setup locks card on the company How we work page, for an owner or an admin, and never asks for the locks", async () => {
+  for (const role of ["owner", "admin"] as const) {
+   const f = mountCompany({ role });
    await screen.findByRole("heading", { name: "How we work (company)" });
-   if (role === "admin") expect(await screen.findByRole("region", { name: "Setup locks" })).toBeTruthy();
-   else {
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 150)); });
-    expect(screen.queryByRole("region", { name: "Setup locks" })).toBeNull();
-    expect(f.request.mock.calls.some(([request]) => request.path === LOCKS_PATH)).toBe(false);
-   }
-   ui.unmount();query.clear();
+   await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+   expect(screen.queryByRole("region", { name: "Setup locks" })).toBeNull();
+   expect(f.request.mock.calls.some(([request]) => request.path.startsWith(LOCKS_PATH))).toBe(false);
+   cleanup();
   }
- });
-
- it("shows 'Setup agent on' with no company limit set", async () => {
-  mountCompany();
-  const section = await locksRegion();
-  expect(await section.findByText("Setup agent on", { selector: "strong" })).toBeTruthy();
-  expect(section.getByText(/No company limit is set/u)).toBeTruthy();
- });
-
- const waiting = (byYou: boolean) => locksView({ setupAgentOff: true, pending: { limits: { commands: 80 }, setupAgentOff: false, devcontainerImages: null, noSoleOwnerException: false, digest: DIGEST, proposedAt: PENDING_AT, byYou } });
-
- it("shows a loosening that waits, what it would set and when it expires; the one who proposed it cannot approve it", async () => {
-  mountCompany({ view: waiting(true) });
-  const section = await locksRegion();
-  expect(await section.findByText("A change is waiting for a different admin")).toBeTruthy();
-  expect(section.getByText("It would set: Setup agent on; Commands 80.")).toBeTruthy();
-  expect(section.getByText("It expires at 2026-11-03 12:30 UTC.")).toBeTruthy();
-  expect(section.getByText("You proposed this. A different admin has to approve it.")).toBeTruthy();
-  expect(section.queryByRole("button", { name: "Approve this change" })).toBeNull();
- });
-
- it("a different admin approves exactly the revision and digest they saw, once", async () => {
-  const f = mountCompany({ role: "admin", view: waiting(false) });
-  const section = await locksRegion();
-  expect(await section.findByText("Another admin proposed this. You can approve it.")).toBeTruthy();
-  f.set(locksView({ setupAgentOff: false, limits: { commands: 80 } }));
-  fireEvent.click(section.getByRole("button", { name: "Approve this change" }));
-  await section.findByText("Approved. The change is on.");
-  expect(f.writes()).toHaveLength(1);
-  expect(f.writes()[0]!.method).toBe("POST");
-  expect(f.writes()[0]!.path).toBe(LOCKS_PATH + "/approve");
-  expect(f.writes()[0]!.body).toMatchObject({ expectedRevision: 3, expectedDigest: DIGEST });
-  expect(await section.findByText("Setup agent on", { selector: "strong" })).toBeTruthy();
-  expect(section.queryByRole("button", { name: "Approve this change" })).toBeNull();
- });
-
- it("a refused approval shows the server's words with no sign-in step, and changes nothing", async () => {
-  const f = mountCompany({ role: "admin", view: waiting(false), write: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to approve this.") });
-  const section = await locksRegion();
-  fireEvent.click(await section.findByRole("button", { name: "Approve this change" }));
-  expect((await screen.findByRole("alert")).textContent).toContain("Sign in again to approve this.");
-  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
-  expect(f.host.signIn).not.toHaveBeenCalled();
-  expect(section.getByText("Setup agent off", { selector: "strong" })).toBeTruthy();
- });
-
- it("a change that moved says so and reads the locks again", async () => {
-  const f = mountCompany({ role: "admin", view: waiting(false), write: () => refuse(409, "CHANGE_STALE", "The locks changed since you looked. Refresh and try again.") });
-  const section = await locksRegion();
-  f.set(locksView());
-  fireEvent.click(await section.findByRole("button", { name: "Approve this change" }));
-  expect((await screen.findByRole("alert")).textContent).toContain("The locks changed since you looked. They were read again.");
-  await waitFor(() => expect(section.queryByText("A change is waiting for a different admin")).toBeNull());
- });
-
- it("sends one approval even when two presses land before the page has redrawn", async () => {
-  let release: (() => void) | undefined;
-  const f = mountCompany({ role: "admin", view: waiting(false), write: () => new Promise<ApiResponse>(resolve => { release = () => resolve({ status: 200, body: { status: "applied" } }); }) });
-  const section = await locksRegion();
-  const button = await section.findByRole("button", { name: "Approve this change" });
-  act(() => { button.click();button.click(); });
-  await waitFor(() => expect(f.writes()).toHaveLength(1));
-  release?.();
-  await section.findByText("Approved. The change is on.");
-  expect(f.writes()).toHaveLength(1);
- });
-
- const unreadable = { unreadable: true, revision: 4, message: "Company locks unreadable, runs held. A company admin has to repair them.‮" };
-
- it("offers Repair when the locks do not read, sending the stored revision once", async () => {
-  const f = mountCompany({ view: unreadable });
-  const section = await locksRegion();
-  expect(await section.findByText("The setup locks can't be read")).toBeTruthy();
-  expect(section.getByText("Company locks unreadable, runs held. A company admin has to repair them.[U+202E]")).toBeTruthy();
-  f.set(locksView({ revision: 5 }));
-  fireEvent.click(section.getByRole("button", { name: "Repair the locks" }));
-  await section.findByText("Repaired. Setup runs can start again.");
-  expect(f.writes()).toHaveLength(1);
-  expect(f.writes()[0]!.path).toBe(LOCKS_PATH + "/repair");
-  expect(f.writes()[0]!.body).toMatchObject({ expectedRevision: 4 });
-  expect(await section.findByText("Setup agent on", { selector: "strong" })).toBeTruthy();
- });
-
- it("a refused repair shows an alert and no sign-in step (owner DEC 254zzz73)", async () => {
-  const f = mountCompany({ view: unreadable, write: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to repair the locks.") });
-  const section = await locksRegion();
-  fireEvent.click(await section.findByRole("button", { name: "Repair the locks" }));
-  expect((await screen.findByRole("alert", {}, { timeout: 2000 })).textContent).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
-  expect(f.host.signIn).not.toHaveBeenCalled();
- });
-
- it("turning setup runs off applies at once and sends only what changed", async () => {
-  const f = mountCompany({ write: () => ({ status: 200, body: { status: "applied" } }) });
-  const section = await locksRegion();
-  fireEvent.click(await section.findByRole("button", { name: "Change the locks" }));
-  fireEvent.click(section.getByRole("switch", { name: "Turn off setup runs for the company" }));
-  fireEvent.click(section.getByRole("button", { name: "Save locks" }));
-  await section.findByText("Saved. The change is on.");
-  expect(f.writes()).toHaveLength(1);
-  expect(f.writes()[0]!.method).toBe("PUT");
-  expect(f.writes()[0]!.body).toMatchObject({ expectedRevision: 3, setupAgentOff: true });
-  expect(Object.keys(f.writes()[0]!.body as object).sort()).toEqual(["expectedRevision", "requestId", "setupAgentOff"]);
- });
-
- it("a change that loosens a lock says a different admin has to approve it", async () => {
-  const f = mountCompany({ view: locksView({ setupAgentOff: true }), write: () => ({ status: 202, body: { status: "needs_second_admin" } }) });
-  const section = await locksRegion();
-  fireEvent.click(await section.findByRole("button", { name: "Change the locks" }));
-  fireEvent.click(section.getByRole("switch", { name: "Turn off setup runs for the company" }));
-  fireEvent.click(section.getByRole("button", { name: "Save locks" }));
-  await section.findByText("Saved. Part of this loosens a lock, so a different admin has to approve it.");
-  expect(f.writes()[0]!.body).toMatchObject({ setupAgentOff: false });
- });
-
- it("has no accessibility violations", async () => {
-  const f = mountCompany({ role: "admin", view: waiting(false) });
-  await locksRegion();
-  await expectNoAxeViolations(f.container);
  });
 });

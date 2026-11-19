@@ -69,17 +69,12 @@ function mount(options: { state?: State; missing?: boolean; role?: "owner" | "ad
 afterEach(() => { document.body.innerHTML = ""; });
 
 describe("the link on How we work", () => {
- it("shows how many recipes wait, and goes to the screen", async () => {
-  mount({ state: initial([recipe(), recipe({ recipeId: "rcp_" + "3".repeat(20) })]), at: "/app/admin/how-we-work" });
-  const section = within(await screen.findByRole("region", { name: "Setup recipes" }));
-  expect(section.getByText("2 recipes are waiting for approval.")).toBeTruthy();
-  expect(section.getByRole("link", { name: "Open setup recipes" }).getAttribute("href")).toBe("/app/admin/how-we-work/recipes");
- });
- it("is absent while the switch is off (the server says not found), with no notice", async () => {
-  const f = mount({ missing: true, at: "/app/admin/how-we-work" });
+ it("is hidden: the company How we work page shows no Setup recipes card, even when recipes wait (DEC 254zzz113/115/116)", async () => {
+  const f = mount({ state: initial([recipe(), recipe({ recipeId: "rcp_" + "3".repeat(20) })]), at: "/app/admin/how-we-work" });
   await screen.findByRole("heading", { name: "How we work (company)" });
-  await waitFor(() => expect(f.reads().length).toBeGreaterThan(0));
   expect(screen.queryByRole("region", { name: "Setup recipes" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Open setup recipes" })).toBeNull();
+  expect(f.reads()).toEqual([]);
  });
 });
 

@@ -20,7 +20,6 @@ import type { Overlay } from "../builder/draft-state.js";
 import { NewerRovaraCodeNotice } from "./NewerRovaraCodeNotice.js";
 import { ReviewChangesDialog } from "./ReviewChangesDialog.js";
 import { RuleField } from "./RuleField.js";
-import { ReviewDefaultNotice } from "./ReviewDefaultNotice.js";
 import { StageModelRows } from "./StageModelRows.js";
 import { DRAFT_CHANGED_TEXT, EDITS_REMOVED_TEXT } from "./stage-model-text.js";
 import { applicableStages, applyModelEdits, mergeEdit, needsExplicitVendor, pruneEdits, type ModelEdits, type StageEdit } from "./how-we-work-models.js";
@@ -31,7 +30,9 @@ const NOT_IN_USE = "This project runs Rovara Code's defaults.";
 class DraftChanged extends Error {}
 const LESS_SAFE_HINT = "Changing these instructions needs someone else who can approve changes in this project to confirm it.";
 /** The "How we work" tab: Rovara Code's stages as cards of six marked rows. A maintainer edits the team's rules (project-wide and per stage) as a draft of the project's process layer, then reviews and publishes it. */
-export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: boolean }) {
+export function HowWeWorkTab({ project, canEdit: _canEdit, repository }: { project: string; canEdit: boolean; repository?: { fullName: string; defaultBranch: string } | undefined }) {
+ void _canEdit;
+ const canEdit = false;
  const view = useHowWeWork(project), how = useHowWeWorkApi(), builder = useBuilderApi(), query = useQueryClient();
  const [filter, setFilter] = useState<Filter>("all"), [showUnchanged, setShowUnchanged] = useState(false), [edits, setEdits] = useState<{ rules?: string; stages: Record<string, string> }>({ stages: {} });
  const [ensured, setEnsured] = useState<string>(), [saving, setSaving] = useState(false), [saveError, setSaveError] = useState<string>(), [saved, setSaved] = useState<"draft" | "removed" | false>(false);
@@ -122,9 +123,9 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   finally { setChoosing(false); }
  }
  return <section className="rv-hww" aria-label="How we work">
+  <p>{repository === undefined ? "To change these, edit .rovara/playbook.yaml in your repo" : <>To change these, <a href={`https://github.com/${repository.fullName}/blob/${encodeURIComponent(repository.defaultBranch)}/.rovara/playbook.yaml`} target="_blank" rel="noopener noreferrer">edit .rovara/playbook.yaml in your repo</a></>}</p>
   {data.process.update !== undefined && <NewerRovaraCodeNotice update={data.process.update} agentId={layerId} canEdit={canEdit} disabled={dirty || saving || draft.data === undefined} onMoved={async () => { await query.invalidateQueries({ queryKey: howWeWorkKey(project) });setReviewRequest(count => count + 1); }} />}
   <p className="rv-muted">How Rovara Code works in this project, stage by stage. Every setting says where it comes from.</p>
-  {models.data !== undefined && <ReviewDefaultNotice stages={models.data.stages} labelOf={model => models.data.stages.flatMap(stage => stage.candidates).find(candidate => candidate.model.provider + "/" + candidate.model.modelId === model)?.label ?? model} />}
   {(staleRead || discarded) && <section className="rv-project-section" aria-label="Draft changed"><p role="alert">{DRAFT_CHANGED_TEXT}</p><Button onClick={() => { setDiscarded(false);void draft.refetch();void models.refetch(); }}>Reload</Button></section>}
   {removed && !staleRead && !discarded && <p role="status">{EDITS_REMOVED_TEXT}</p>}
   {savedVersion !== undefined && <section className="rv-project-section" aria-label="Saved version">

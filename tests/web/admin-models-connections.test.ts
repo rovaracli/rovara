@@ -13,6 +13,7 @@ import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { SlackWorkspaceEvidence } from "../../packages/ui/src/screens/admin/connections/SlackWorkspaceEvidence.js";
+import { expectNoAxeViolations } from "./support/axe.js";
 
 
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
@@ -47,6 +48,16 @@ for (const [path, title, content] of [["models/sources", "AI models", "Your Anth
  expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);expect(JSON.stringify(f.query.getQueriesData({ queryKey: ["admin", "lane-c"] }))).not.toContain("synthetic-private-value");f.close();
 });
 it("does not claim served models are verified or invent prices", async () => { const f = area("/app/admin/models/available");await screen.findByText("builtin-model");expect(screen.getAllByText(/unverified/i).length).toBeGreaterThan(0);expect(screen.getByText(/Cost unavailable/)).toBeTruthy();f.close(); });
+it("hides the unserved MCP section from hosted connections", async () => { const f = area("/app/admin/connections");await screen.findByRole("heading", { name: "Connections" });await screen.findByText("Tracker");expect(screen.queryByText(/MCP servers/i)).toBeNull();expect(screen.queryByRole("button", { name: /add.*server/i })).toBeNull();await expectNoAxeViolations(f.container);f.close(); });
+it("removes unsupported Health and Sign-in clients from routes and admin navigation", async () => {
+ const app = appRoutes(features).find(route => route.path === "/app")!;
+ const admin = app.children!.find(route => route.path === "admin/*")!;
+ const adminPaths = admin.children!.map(route => route.path);
+ expect(adminPaths).not.toContain("health");expect(adminPaths).not.toContain("health/runtime/:kind");expect(adminPaths).not.toContain("sign-in-clients");
+ const f = area("/app/admin/people");await screen.findByRole("heading", { name: "People" });
+ expect(screen.queryByRole("link", { name: "Health" })).toBeNull();expect(screen.queryByRole("link", { name: "Sign-in clients" })).toBeNull();
+ await expectNoAxeViolations(f.container);f.close();
+});
 it("keeps successful connection sections when one read fails", async () => { const f = area("/app/admin/connections");await screen.findByText("Tracker");f.request.mockImplementation(async r => r.path === "/v1/app/connections" ? { status: 403, body: {} } : { status: 200, body: bodies[r.path] });await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "lane-c"] }); });expect(await screen.findByText(/permission to view/)).toBeTruthy();expect(screen.queryByText("Tracker")).toBeNull();expect(screen.getByText("Example")).toBeTruthy();f.close(); });
 it("states waiting coverage and never mints confirmation tickets", async () => { const f = area("/app/admin/waiting");await screen.findByText("Approval");expect(screen.getByText(/Questions, plan reviews/)).toBeTruthy();expect(f.request.mock.calls.some(([r]) => r.path.includes("confirm-link"))).toBe(false);f.close(); });
 for (const field of ["org", "developer"] as const) it(`evicts old ${field} data and fetches the new identity scope`, async () => {

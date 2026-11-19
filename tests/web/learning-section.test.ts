@@ -12,7 +12,6 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { h } from "./support/h.js";
-import { diffBody, publishedAgent, LAYER } from "./support/how-we-work-fixture.js";
 import { CONFIRM_URL, LEARNING_PATH, dismissed, learningHost, learningView, rule, source, suggestion } from "./support/learning-fixture.js";
 
 type Options = Parameters<typeof learningHost>[0] & { theme?: "light" | "dark"; path?: string };
@@ -437,20 +436,6 @@ describe("the Added by suggestions list", () => {
   await open({ view: learningView({ canDecide: false, suggestions: [], rules: [rule()] }) });
   fireEvent.click(screen.getByRole("button", { name: "Added by suggestions (1)" }));
   expect(screen.queryByRole("button", { name: "Remove rule" })).toBeNull();
- });
-});
-
-describe("with the How we work tab", () => {
- it("reads the suggestions again after a How we work publish", async () => {
-  const f = await open({ handle: (request, url) => url.pathname.endsWith("/publish") ? ok({ agent: publishedAgent(), version: { version: 3 } }) : url.pathname === `/v1/app/agents/${LAYER}/diff` ? ok(diffBody(2, ["Changes the build instructions"], [], "draft")) : undefined });
-  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));
-  const reads = f.learningReads();
-  fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
-  const dialog = await screen.findByRole("dialog", { name: "Review changes" });
-  await within(dialog).findByText("Changes the build instructions");
-  fireEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
-  await within(dialog).findByText(/Published as version 3/u);
-  await waitFor(() => expect(f.learningReads()).toBe(reads + 1));
  });
 });
 

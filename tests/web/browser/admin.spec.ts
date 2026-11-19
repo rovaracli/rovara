@@ -69,15 +69,6 @@ test("Overview shows this month's money and the people at a glance", async ({ pa
   await expect(page.getByRole("link", { name: "Open Spending", exact: true })).toBeVisible();
 });
 
-for (const screen of [
-  { name: "Sign-in clients", path: ROUTES.admin.signInClients, what: "Sign-in clients" },
-]) {
-  test(`${screen.name} says it is not connected yet instead of loading forever`, async ({ page }) => {
-    const admin = new AdminPage(page);
-    await admin.open(screen.path);
-    await admin.expectNotConnected(screen.what);
-  });
-}
 
 // Company settings is served for real: Cloud's company backend runs in memory (CLOUD_COMPANY_DATA=memory in playwright.config.ts) for the company the pretend Code's access check names.
 test("Company settings reads Cloud's company backend and says the model gateway needs a monthly cap", async ({ page }) => {

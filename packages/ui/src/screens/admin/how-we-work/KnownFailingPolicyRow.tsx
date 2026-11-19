@@ -16,7 +16,7 @@ type Message = { kind: "status"; text: string } | { kind: "alert"; text: string 
 export function KnownFailingPolicyRow() {
  const api = useKnownFailingApi(), query = useQueryClient(), read = useKnownFailingPolicy(), sending = useRef(false);
  const [busy, setBusy] = useState(false), [message, setMessage] = useState<Message>();
- if (read.error instanceof ApiError && read.error.code === "NOT_FOUND") return null;
+ if (read.error instanceof ApiError && (read.error.code === "NOT_FOUND" || read.error.code === "NOT_ON_CODE_YET" || read.error.status === 404 || read.error.status === 501)) return null;
  if (read.isPending) return null;
  if (read.data === undefined) return <section aria-label={T.HEADING} className="rv-hww-company-card"><h2>{T.HEADING}</h2><p role="alert">{T.LOAD_FAILED}</p><div><Button onClick={() => { void read.refetch(); }}>{T.RETRY}</Button></div></section>;
  const state = read.data, pending = state.pending;

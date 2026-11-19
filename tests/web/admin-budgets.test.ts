@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { it, expect, vi } from "vitest";
+import { it, expect } from "vitest";
 import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -41,123 +41,14 @@ for(const role of ["member","maintainer","future-role"])it(`never requests month
 
 it("does not repeat an unsuccessful initial budget read when only identity rechecks; Refresh remains deliberate",async()=>{const fail={status:503,body:{error:{code:"RUNTIME_UNAVAILABLE"}}},f=mount({respond:async()=>fail});try{await screen.findAllByRole("alert");const reads=()=>f.request.mock.calls.filter(([r])=>r.path.endsWith("/budget-settings")).length;expect(reads()).toBe(1);let resolve!:(r:ApiResponse)=>void;const pending=new Promise<ApiResponse>(done=>{resolve=done;});f.request.mockImplementation(r=>r.path.endsWith("/me")?pending:Promise.resolve(fail));let checking!:Promise<void>;await act(async()=>{checking=f.query.invalidateQueries({queryKey:["admin","identity"]});});await screen.findByText("Checking company access...");await act(async()=>{resolve({status:200,body:f.me});await checking;});await waitFor(()=>expect(screen.getByRole("button",{name:"Refresh budgets"}).getAttribute("aria-disabled")).toBe("false"));expect(reads()).toBe(1);fireEvent.click(screen.getByRole("button",{name:"Refresh budgets"}));await waitFor(()=>expect(reads()).toBe(2));}finally{f.close();}});
 
-it("edits an exact company task stop with original revision and keeps monthly settings separate", async () => {
- const context = { orgId, scopeKind: "company", revision: 3, sourceDigest: "c".repeat(64), policy: { kind: "limited", stopMicrousd: 2000000 } };
- const f = mount({ respond: async r => r.path.includes("task-stop-policy") ? { status: 200, body: r.method === "GET" ? context : { requestId: (r.body as { requestId: string }).requestId, state: "applied", revision: 4 } } : { status: 200, body: settings } });
- try {
-  await screen.findByRole("table", { name: "Monthly base budgets" });
-  fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));
-  await screen.findByLabelText("Task stop amount (USD)");
-  fireEvent.change(screen.getByLabelText("Task stop amount (USD)"), { target: { value: "1.234567" } });
-  fireEvent.click(screen.getByRole("button", { name: "Review task stop change" }));
-  await screen.findByText(/New task stop: \$1.234567/);
-  fireEvent.click(screen.getByRole("button", { name: "Apply tightening" }));
-  await screen.findByText(/Task stop change applied/);
-  const writes = f.request.mock.calls.map(([r]) => r).filter(r => r.method === "PUT");expect(writes).toHaveLength(1);
-  expect(writes[0]?.body).toMatchObject({ expectedRevision: 3, expectedPolicyDigest: context.sourceDigest, policy: { kind: "limited", stopMicrousd: 1234567 } });
-  expect(screen.getByText("$500.00")).toBeTruthy();
- } finally { f.close(); }
-});
-for (const invalid of ["", "-1", "1e3", "0.0000001", "1000000.000001", "NaN"]) it(`refuses invalid exact task stop ${JSON.stringify(invalid)} without a money request`, async () => {
- const context = { orgId, scopeKind: "company", revision: 1, sourceDigest: "c".repeat(64), policy: { kind: "limited", stopMicrousd: 2_000_000 } };
- const f = mount({ respond: async r => ({ status: 200, body: r.path.includes("task-stop-policy") ? context : settings }) });
- try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));await screen.findByLabelText("Task stop amount (USD)");fireEvent.change(screen.getByLabelText("Task stop amount (USD)"), { target: { value: invalid } });fireEvent.click(screen.getByRole("button", { name: "Review task stop change" }));await screen.findByRole("alert");expect(screen.queryByRole("button", { name: "Apply tightening" })).toBeNull();expect(f.request.mock.calls.some(([r]) => r.method !== "GET")).toBe(false); } finally { f.close(); }
-});
-it("discards a late unauthorized Spending response after current company access ends", async () => {
- let resolve!: (value: ApiResponse) => void;const pending = new Promise<ApiResponse>(done => { resolve = done; });
- const f = mount({ respond: async r => r.path.includes("task-stop-policy") ? pending : { status: 200, body: settings } });
- try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));await screen.findByText("Checking task stop...");f.me.developer.orgRole = "member";await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await screen.findByRole("heading", { name: "Administration unavailable" });await act(async () => { resolve({ status: 401, body: {} }); });expect(f.host.signIn).not.toHaveBeenCalled();expect(screen.queryByText(/Current task stop/)).toBeNull(); } finally { f.close(); }
-});
-it("reviews a project inheritance loosening without applying it or inventing an amount", async () => {
- const context = { orgId, scopeKind: "project", project: "web", revision: 2, sourceDigest: "c".repeat(64), policy: { kind: "limited", stopMicrousd: 1234567 } };
- const f = mount({ respond: async r => ({ status: 200, body: r.path.includes("task-stop-policy") ? r.method === "GET" ? context : { requestId: (r.body as { requestId: string }).requestId, state: "pending", revision: 2, proposalId: (r.body as { requestId: string }).requestId } : settings }) });
- try { await screen.findByRole("table");fireEvent.change(screen.getByLabelText("Project name for task stop"), { target: { value: "web" } });fireEvent.click(screen.getByRole("button", { name: "Load project task stop" }));await screen.findByLabelText("Task stop policy");fireEvent.change(screen.getByLabelText("Task stop policy"), { target: { value: "inherit" } });fireEvent.click(screen.getByRole("button", { name: "Review task stop change" }));await screen.findByText(/New task stop: Inherit the company task stop/);fireEvent.click(screen.getByRole("button", { name: "Request loosening" }));await screen.findByText(/Task stop change requested/);expect(f.request.mock.calls.map(([r]) => r).find(r => r.method === "PUT")).toMatchObject({ path: "/v1/app/org/task-stop-policy/projects/web", body: { policy: { kind: "inherit" }, expectedRevision: 2 } }); } finally { f.close(); }
-});
-it("shows original proposed terms and binds a distinct-person decision to the displayed digest", async () => {
- const proposalId = "11111111-1111-4111-8111-111111111111", proposalDigest = "d".repeat(64);
- const context = { orgId, scopeKind: "company", revision: 2, sourceDigest: "c".repeat(64), policy: { kind: "limited", stopMicrousd: 1 }, pending: { version: 1, proposalId, requestedBy: "b".repeat(64), createdAt: "2026-10-30T23:00:00.000Z", baseRevision: 2, beforePolicy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 1 } }, proposedPolicy: { kind: "rovara_estimate" }, proposalDigest, sourceDigest: "c".repeat(64), scopeKind: "company" } };
- const f = mount({ respond: async r => ({ status: 200, body: r.path.includes("task-stop-policy") ? r.method === "GET" ? context : { requestId: (r.body as { requestId: string }).requestId, state: "applied", revision: 3, proposalId } : settings }) });
- try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));await screen.findByText(/Original task stop: \$0.000001/);await screen.findByText(/Proposed task stop: Use Rovara's estimate/);fireEvent.click(screen.getByRole("button", { name: "Approve original task stop change" }));await screen.findByText(/Task stop change applied/);expect(f.request.mock.calls.map(([r]) => r).find(r => r.method === "POST")?.body).toMatchObject({ proposalId, expectedProposalDigest: proposalDigest, decision: "approve" }); } finally { f.close(); }
-});
-it("labels a seeded estimate for company review without making up a task-stop amount", async () => {
- const context = { orgId, scopeKind: "company", revision: 1, sourceDigest: "c".repeat(64), policy: { kind: "rovara_estimate" }, seedReview: { source: "bootstrap", reviewRequired: true, seededAt: "2026-10-01T00:00:00.000Z" } };
- const f = mount({ respond: async r => ({ status: 200, body: r.path.includes("task-stop-policy") ? context : settings }) });
- try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));await screen.findByText(/This company policy was seeded during bootstrap/);expect(screen.getByText("Current task stop: Use Rovara's estimate for each task. Revision 1.")).toBeTruthy();expect(screen.queryByLabelText("Task stop amount (USD)")).toBeNull();expect(screen.queryByText("$10.00")).toBeNull(); } finally { f.close(); }
-});
-
-it("reloads a failed task stop deliberately even within the same clock tick", async () => {
- const context = { orgId, scopeKind: "company", revision: 1, sourceDigest: "c".repeat(64), policy: { kind: "limited", stopMicrousd: 1 } };let reads = 0;
- const clock = vi.spyOn(Date, "now").mockReturnValue(1), f = mount({ respond: async r => r.path.includes("task-stop-policy") ? ++reads === 1 ? { status: 503, body: {} } : { status: 200, body: context } : { status: 200, body: settings } });
- try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));await screen.findByRole("alert");fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));await screen.findByText("Current task stop: $0.000001. Revision 1.");expect(reads).toBe(2); } finally { f.close();clock.mockRestore(); }
-});
-
-it("owner reviews impacts before two explicit enforcement confirmations, after freshness preflight", async () => {
- let state = "disabled", revision = 1;
- const reviewId = "11111111-1111-4111-8111-111111111111", digest = "d".repeat(64);
- const f = mount({ respond: async r => {
-  if (r.path.includes("/enrollment")) {
-   if (r.method === "PUT") { state = (r.body as { state: string }).state;revision += 1;return { status: 200, body: { orgId, requestId: (r.body as { requestId: string }).requestId, state, revision, tasksReviewed: 0, tasksAtEnable: 0, newImpacts: 0 } }; }
-   return { status: 200, body: { orgId, state, revision } };
-  }
-  if (r.path.endsWith("/cutover-review")) return { status: 200, body: { orgId, reviewId, digest, revision, complete: true, capturedAt: "2026-11-04T15:00:00.000Z", expiresAt: "2026-11-04T15:05:00.000Z", tasks: [], truncated: false, counts: { refuse_next_admission: 0, new_window_at_stop: 0, retain_current_window: 0, exempt: 0 } } };
-  return { status: 200, body: settings };
- } });
- try {
-  await screen.findByRole("table");expect(f.request.mock.calls.some(([r]) => r.path.includes("enrollment"))).toBe(false);
-  fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));
-  await screen.findByRole("heading", { name: "Review enforcement impacts" });
-  const calls = f.request.mock.calls.map(([r]) => r).filter(r => /enrollment|cutover-review/.test(r.path));
-  expect(calls[0]).toMatchObject({ method: "GET", path: "/v1/app/org/task-stop-policy/enrollment?fresh=1" });
-  expect(calls[1]).toMatchObject({ method: "POST", path: "/v1/app/org/task-stop-policy/cutover-review" });
-  expect(f.request.mock.calls.some(([r]) => r.method === "PUT")).toBe(false);
-  fireEvent.click(screen.getByRole("button", { name: "Confirm review and mark ready" }));
-  await screen.findByRole("button", { name: "Enable enforcement" });
-  expect(state).toBe("ready");fireEvent.click(screen.getByRole("button", { name: "Enable enforcement" }));
-  await screen.findByText("Enforcement is enabled.");expect(state).toBe("enabled");
-  expect(f.request.mock.calls.filter(([r]) => r.method === "PUT").map(([r]) => r.body)).toEqual([
-   expect.objectContaining({ state: "ready", expectedRevision: 1, reviewId, expectedReviewDigest: digest }),
-   expect.objectContaining({ state: "enabled", expectedRevision: 2, reviewId, expectedReviewDigest: digest }),
-  ]);
- } finally { f.close(); }
-});
-it("admin cannot load or change company enforcement", async () => {
- const f = mount({ role: "admin" });try { await screen.findByRole("table");expect(screen.queryByRole("button", { name: "Turn on enforcement" })).toBeNull();expect(f.request.mock.calls.some(([r]) => /enrollment|cutover-review/.test(r.path))).toBe(false); } finally { f.close(); }
-});
-it("a refused review stops before anything is changed, with no sign-in step (owner DEC 254zzz73)", async () => {
- const f = mount({ respond: async r => r.path.includes("/enrollment") ? { status: 403, body: { error: { code: "REAUTH_REQUIRED" } } } : { status: 200, body: settings } });
- try {
-  await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));
-  await screen.findByRole("alert");expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();expect(f.host.signIn).not.toHaveBeenCalled();
-  expect(f.request.mock.calls.some(([r]) => r.method !== "GET")).toBe(false);
- } finally { f.close(); }
-});
-it("turning off enabled enforcement: a refusal shows no sign-in step and no second-owner flow", async () => {
- const f = mount({ respond: async r => r.path.includes("/enrollment") ? r.method === "GET" ? { status: 200, body: { orgId, state: "enabled", revision: 3 } } : { status: 403, body: { error: { code: "REAUTH_REQUIRED" } } } : { status: 200, body: settings } });
- try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));fireEvent.click(await screen.findByRole("button", { name: "Turn off enforcement" }));await screen.findByRole("alert");expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();expect(screen.queryByText(/second owner/i)).toBeNull(); } finally { f.close(); }
-});
-
-for (const [code, text] of [
- ["TASK_STOP_REVIEW_TOO_LARGE", /up to 100 active tasks/],
- ["TASK_STOP_CONFIG_MISSING", /Prepare the missing Spending setting/],
- ["TASK_STOP_CONFIG_INVALID", /Repair the invalid Spending setting/],
- ["CHANGE_STALE", /capture a fresh review/],
- ["AUDIT_UNAVAILABLE", /audit ledger is unavailable/],
-] as const) it(`enforcement review explains ${code} without writing`, async () => {
- const f = mount({ respond: async r => r.path.includes("/enrollment") ? { status: 200, body: { orgId, state: "disabled", revision: 1 } } : r.path.endsWith("/cutover-review") ? { status: 409, body: { error: { code, message: "UNTRUSTED SERVER TEXT", resource: { kind: "project", name: "payments" } } } } : { status: 200, body: settings } });
- try {
-  await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));await screen.findByText(text);
-  if (code.startsWith("TASK_STOP_CONFIG_")) expect(screen.getByRole("alert").textContent).toContain("project: payments");
-  expect(screen.queryByText(/UNTRUSTED SERVER TEXT/)).toBeNull();expect(f.request.mock.calls.some(([r]) => r.method === "PUT")).toBe(false);
- } finally { f.close(); }
-});
-
-it("stale enable tells the owner to cancel setup; failure sends no follow-up write", async () => {
- const review = { orgId, reviewId: "11111111-1111-4111-8111-111111111111", digest: "d".repeat(64), revision: 2, complete: true, capturedAt: "2026-11-04T15:00:00.000Z", expiresAt: "2026-11-04T15:05:00.000Z", tasks: [], truncated: false, counts: { refuse_next_admission: 0, new_window_at_stop: 0, retain_current_window: 0, exempt: 0 } };
- const f = mount({ respond: async r => r.path.endsWith("/cutover-review") ? { status: 200, body: review } : r.path.includes("/enrollment") ? r.method === "GET" ? { status: 200, body: { orgId, state: "ready", revision: 2 } } : { status: 409, body: { error: { code: "CHANGE_STALE", message: "raw server words" } } } : { status: 200, body: settings } });
- try {
-  await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Enable enforcement" }));await screen.findByText("Spending sources changed. Cancel setup and review again.");
-  expect(screen.getByRole("button", { name: "Cancel enforcement setup" })).toBeTruthy();
-  expect(f.request.mock.calls.filter(([r]) => r.method === "PUT")).toHaveLength(1);expect(screen.queryByText(/raw server words/)).toBeNull();
- } finally { f.close(); }
+it("shows no task stop card or button on Spending, and sends nothing to the task stop routes (hidden: the hosted Code does not serve them, DEC 254zzz113/115/116)", async () => {
+ for (const role of ["owner", "admin"]) {
+  const f = mount({ role });
+  try {
+   await screen.findByText("$500.00");
+   expect(screen.queryByRole("heading", { name: "Task stops" })).toBeNull();
+   expect(screen.queryByRole("button", { name: /task stop|enforcement/i })).toBeNull();
+   expect(f.request.mock.calls.some(([r]) => r.path.includes("task-stop") || r.path.includes("enforcement"))).toBe(false);
+  } finally { f.close(); }
+ }
 });
