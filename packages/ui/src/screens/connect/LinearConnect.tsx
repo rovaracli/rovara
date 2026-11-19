@@ -6,6 +6,7 @@ import { useAppHost } from "../../host.js";
 import { isLinearAuthorizeUrl } from "../../text/links.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { ConnectStepError } from "./ConnectStepError.js";
 import "./connect.css";
 
 /** Cloud's fixed sentence for each landing word (linear-connect.ts LINEAR_OUTCOMES). */
@@ -21,18 +22,18 @@ export const LINEAR_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
 
 /** Starts Connect Linear: Cloud's server asks Code for a state, binds it to this browser, and answers Linear's consent page. Linear comes back to this page. */
 export function useLinearConnect() {
- const api = useIntegrationsApi(), host = useAppHost(), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
+ const api = useIntegrationsApi(), host = useAppHost(), [busy, setBusy] = useState(false), [error, setError] = useState<unknown>();
  async function start() {
   setBusy(true);setError(undefined);
   try { const { authorizeUrl } = await api.linearConnect();if (!isLinearAuthorizeUrl(authorizeUrl, host.origin)) throw new Error("Rovara returned an invalid Linear link.");host.navigate(authorizeUrl); }
-  catch (e) { setError(e instanceof Error ? e.message : "Couldn't connect Linear.");setBusy(false); }
+  catch (e) { setError(e);setBusy(false); }
  }
- return { busy, error, start };
+ return { busy, error: error instanceof Error ? error.message : undefined, errorValue: error, start };
 }
 
 export function LinearConnectButton({ label = "Connect Linear" }: { label?: string }) {
- const connect = useLinearConnect();
- return <><Button variant="primary" busy={connect.busy} data-testid="linear-connect" onClick={() => { void connect.start(); }}>{label}</Button>{connect.error !== undefined && <p role="alert" data-testid="linear-connect-error"><VisibleText text={connect.error} /></p>}</>;
+ const connect = useLinearConnect(), host = useAppHost();
+ return <><Button variant="primary" busy={connect.busy} data-testid="linear-connect" onClick={() => { void connect.start(); }}>{label}</Button>{connect.errorValue !== undefined && <ConnectStepError error={connect.errorValue} fallback="Couldn't connect Linear." testId="linear-connect-error" onSignIn={() => host.signIn(host.currentPath())} />}</>;
 }
 
 export function LinearConnectResult({ outcome }: { outcome: string }) {

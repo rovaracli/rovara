@@ -7,6 +7,7 @@ import { useAppHost } from "../../host.js";
 import { isSlackAuthorizeUrl } from "../../text/links.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { ConnectStepError } from "./ConnectStepError.js";
 import "./connect.css";
 
 /** Cloud's fixed sentence for each landing word (slack-connect.ts SLACK_OUTCOMES). */
@@ -26,13 +27,13 @@ const workspaceWords = (name: string | undefined) => name === undefined ? "your 
 
 /** Starts Add to Slack: Cloud's server asks Code for a state, binds it to this browser, and answers Slack's page to open. */
 export function useSlackInstall() {
- const api = useIntegrationsApi(), host = useAppHost(), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
+ const api = useIntegrationsApi(), host = useAppHost(), [busy, setBusy] = useState(false), [error, setError] = useState<unknown>();
  async function start() {
   setBusy(true);setError(undefined);
   try { const { authorizeUrl } = await api.slackInstall();if (!isSlackAuthorizeUrl(authorizeUrl, host.origin)) throw new Error("Rovara returned an invalid Slack link.");host.navigate(authorizeUrl); }
-  catch (e) { setError(e instanceof Error ? e.message : "Couldn't add Rovara to Slack.");setBusy(false); }
+  catch (e) { setError(e);setBusy(false); }
  }
- return { busy, error, start };
+ return { busy, error: error instanceof Error ? error.message : undefined, errorValue: error, start };
 }
 
 export function useSlackWorkspace(enabled = true) {
@@ -41,8 +42,8 @@ export function useSlackWorkspace(enabled = true) {
 }
 
 function AddButton({ label = "Add to Slack" }: { label?: string }) {
- const install = useSlackInstall();
- return <><Button variant="primary" busy={install.busy} data-testid="slack-add" onClick={() => { void install.start(); }}>{label}</Button>{install.error !== undefined && <p role="alert" data-testid="slack-add-error"><VisibleText text={install.error} /></p>}</>;
+ const install = useSlackInstall(), host = useAppHost();
+ return <><Button variant="primary" busy={install.busy} data-testid="slack-add" onClick={() => { void install.start(); }}>{label}</Button>{install.errorValue !== undefined && <ConnectStepError error={install.errorValue} fallback="Couldn't add Rovara to Slack." testId="slack-add-error" onSignIn={() => host.signIn(host.currentPath())} />}</>;
 }
 
 /**
