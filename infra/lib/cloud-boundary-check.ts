@@ -34,6 +34,7 @@ function parameterSamples(s: CheckScope): Record<string, string> {
   return {
     ProductKeysTableName: `rovara-cloud-${s.env}-gateway-ProductKeys518BAD1E-SAMPLE0000AA`,
     CompanyTableName: `rovara-cloud-${s.env}-web-CompaniesAF68172A-SAMPLE0000AA`,
+    GatewayMeterTableName: `rovara-cloud-${s.env}-gateway-Meter-SAMPLE0000AA`,
     ProductKeysKeyArn: `arn:${s.partition}:kms:${s.region}:${s.account}:key/11111111-1111-4111-8111-111111111111`,
     ProductKeysMacKeyArn: `arn:${s.partition}:kms:${s.region}:${s.account}:key/22222222-2222-4222-8222-222222222222`,
     GitHubConnectionArn: `arn:${s.partition}:codeconnections:${s.region}:${s.account}:connection/33333333-3333-4333-8333-333333333333`,
@@ -229,13 +230,18 @@ function keepShape(original: unknown, resolved: ResolvedCondition): Record<strin
 
 /**
  * Does a role statement's own condition keep the request inside what a boundary Allow's condition requires? (A boundary only caps: an Allow with a condition
- * covers a grant only when the grant is at least as narrow.) Only the three operators Cloud's boundary uses are understood; any other in a boundary is an error,
+ * covers a grant only when the grant is at least as narrow.) Only the operators Cloud's boundary uses are understood; any other in a boundary is an error,
  * never a guess. StringLike / StringEquals: every value the grant allows must match one the boundary allows. StringNotEquals: the grant must exclude every
- * value the boundary excludes. A key the grant does not constrain does not satisfy a boundary that does.
+ * value the boundary excludes. The meter's ForAllValues:StringLike and Null conditions must match exactly (no inferred containment).
+ * A key the grant does not constrain does not satisfy a boundary that does.
  */
 export function conditionWithin(own: ResolvedCondition | undefined, required: ResolvedCondition | undefined): boolean {
   if (required === undefined) return true;
   for (const [operator, keys] of Object.entries(required)) {
+    if (operator === "ForAllValues:StringLike" || operator === "Null") {
+      if (JSON.stringify(own?.[operator]) !== JSON.stringify(keys)) return false;
+      continue;
+    }
     if (operator !== "StringLike" && operator !== "StringEquals" && operator !== "StringNotEquals") throw new Error(`the boundary condition operator ${operator} is not supported by this check`);
     for (const [key, wanted] of Object.entries(keys)) {
       // Glob containment below is sound for `*`-only boundary patterns; a `?` in a boundary value is not handled yet (review L4-HARD 4): an error, never a guess.
