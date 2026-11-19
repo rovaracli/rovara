@@ -27,13 +27,16 @@ const BEFORE_CONDITION_CHECK = { production: "db67fcbbc888b0f1d83f7fa6f6fd9796c1
 // DEC 254zzz27: only ConditionCheckItem was added to the Companies-table grant; the test below proves the old digests too.
 const BEFORE = { production: "ae8e407d00367b254cbb58aed6a81396aac3fcedced39c3c44749eb9a4caab55", staging: "67347f5063fa512907cdaac2a1f73d6598c269d10c479b3a249733b084e6ec03" };
 // cp-iam + live switches: full merged templates, INCLUDING the boundary. Removing only the meter changes and answers switch restores BEFORE.
-const METER_READ = { production: "d39d529eb3ef32bc760e0a852098da4d3fe9a7c30b671f4616bef786e400d043", staging: "4ec03c8958f8bafe96f08bb4d1aed8a8df4bca032dd808dc5866d7a51f482965" };
+// GatewayMeterTableName optional (empty default, the env variable only when set) for an install with no gateway.
+const METER_READ = { production: "9a1d27ac2b3ac9c53b081d5f29749c7bd9a995617f78832e8aab07ed2290599e", staging: "1ce02d6d908d877a599b31374c72a333f55e18d5734453222a77a43e64985462" };
 // Less the role boundary (2026-11-17), which every template now carries (tests/contract/cloud-role-boundary.test.ts).
 const sha = (value: Parameters<typeof withoutRoleBoundary>[0]) => createHash("sha256").update(JSON.stringify(withoutRoleBoundary(value))).digest("hex");
 function withoutMeterRead(template: ReturnType<typeof synth>): ReturnType<typeof synth> {
   const t = structuredClone(template);
   expect(t.Parameters).toHaveProperty("GatewayMeterTableName");
   delete t.Parameters.GatewayMeterTableName;
+  const conditions = (t as { Conditions?: Record<string, unknown> }).Conditions;
+  if (conditions !== undefined) { delete conditions.GatewayMeterTableNameSet; if (Object.keys(conditions).length === 0) delete (t as { Conditions?: unknown }).Conditions; }
   let grants = 0; let variables = 0;
   for (const resource of Object.values(t.Resources)) {
     const env = (resource.Properties.Environment as { Variables?: Record<string, unknown> } | undefined)?.Variables;
