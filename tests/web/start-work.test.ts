@@ -181,7 +181,7 @@ it("a pending preview never disables Start", async () => {
 });
 
 it("opts in after typing and shows Quick/Full estimates with planning exposure and partial limits", async () => {
- const { quoteFixture } = await import("../support/start-preview-fixture.js");
+ const { quoteFixture } = await import("./support/start-preview-fixture.js");
  const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
  try {
   fireEvent.change(await box(), { target: { value: "Fix it" } });
@@ -195,7 +195,7 @@ it("opts in after typing and shows Quick/Full estimates with planning exposure a
  } finally { f.close(); }
 });
 it("refreshes changed quotes and discloses the cost change before starting", async () => {
- const { quoteFixture } = await import("../support/start-preview-fixture.js");
+ const { quoteFixture } = await import("./support/start-preview-fixture.js");
  let refreshed = false;
  const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", inputsDigest: (refreshed ? "b" : "a").repeat(64), asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
  try {

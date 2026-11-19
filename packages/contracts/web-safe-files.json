@@ -110,6 +110,7 @@
   "packages/contracts/src/stage-model-publish-refusal.ts",
   "packages/contracts/src/stage-model-shared.ts",
   "packages/contracts/src/stage-models.ts",
+  "packages/contracts/src/start-estimates.ts",
   "packages/contracts/src/task-money-schema.ts",
   "packages/contracts/src/task-money.ts",
   "packages/contracts/src/task-response.ts",
