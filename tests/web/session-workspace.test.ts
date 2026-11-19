@@ -1,3 +1,4 @@
+import { designReviewFixture, designTaskSession } from "./support/design-review-fixture.js";
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
 import { screen, fireEvent } from "@testing-library/react";
@@ -170,6 +171,22 @@ it("shows no plan figures to a reader or co-owner when Code omitted the estimate
   expect(f.container.textContent).not.toContain("$");
   expect(f.container.textContent).not.toContain("Estimated cost");
   expect(f.container.textContent).not.toContain("Task limit");
+  f.close();
+ }
+});
+
+it("a reader or co-owner can read a FULL task's design tab after the server withholds its money", async () => {
+ const review = designReviewFixture({ approvals: [{ kind: "raise_cap", by: { actorId: "owner" }, at: "2026-11-03T10:00:00.000Z", fromUsd: 9.73, capUsd: 18.61 }] });
+ const strip = (value: unknown): unknown => Array.isArray(value) ? value.map(strip) : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([key]) => !key.endsWith("Usd")).map(([key, field]) => [key, strip(field)])) : value;
+ for (const level of ["view", "edit"]) {
+  const raw = designTaskSession(review);
+  if (raw.body.kind !== "task") throw new Error("task fixture");
+  const session = { ...raw, you: { ...raw.you, owner: false, level }, cost: { payer: raw.cost.payer }, body: { kind: "task", task: { ...raw.body.task, runEstimate: undefined, workflow: { ...raw.body.task.workflow, designReview: strip(review) } } } };
+  const f = setup(session, "#design");
+  expect(await screen.findByRole("tab", { name: "Design" })).toBeTruthy();
+  expect(f.container.textContent).not.toContain("$");
+  expect(f.container.textContent).toContain("A person raised the limit.");
+  expect(f.container.textContent).toContain("Comprehension reviewer");
   f.close();
  }
 });

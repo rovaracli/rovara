@@ -13,6 +13,7 @@ export interface CodeTask {
   project: string;
   status: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED" | "CLOSED";
   workflow?: {
+    designReview?: unknown;
     stage?: string; state?: string; revision?: number; artifacts?: Array<{ type?: string; version?: number; sha256?: string }>;
     /** The code the reviews look at, and the checks that ran on it (Code's workflow snapshot). */
     candidate?: { digest?: string };
@@ -100,6 +101,11 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
   const money = maySeeMoney && parsedMoney?.taskId === task.taskId ? parsedMoney : undefined;
   const safeTask = { ...task };
   delete safeTask["money"];
+  if (!maySeeMoney && safeTask.workflow !== undefined) {
+    const strip = (value: unknown): unknown => Array.isArray(value) ? value.map(strip)
+      : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([key]) => !/Usd(?:PerTask)?$/u.test(key)).map(([key, field]) => [key, strip(field)])) : value;
+    safeTask.workflow = { ...safeTask.workflow, ...(safeTask.workflow["designReview"] === undefined ? {} : { designReview: strip(safeTask.workflow["designReview"]) }) };
+  }
   if (!maySeeMoney) for (const field of ["spent", "runLimit", "runEstimate", "costUsd", "runLimitUsd", "stopAtUsd"]) delete safeTask[field];
   const spent = spentUsd(safeTask), limit = runLimitUsd(safeTask);
   if (money !== undefined) safeTask["money"] = money;

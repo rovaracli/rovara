@@ -24,7 +24,7 @@ it("says the status, tier, and the estimate against what was spent", () => {
  expect(model.tierWords).toContain("Standard");
  expect(model.cost).toEqual({ estimate: "$1.10", spent: "$0.96", limit: "$10.00" });
  expect(usdWords(undefined)).toBe("not available");
- expect(designTabModel(designReviewFixture({ estimateUsd: undefined })).cost.estimate).toBe("not available");
+ expect(designTabModel(designReviewFixture({ estimateUsd: undefined })).cost.estimate).toBeUndefined();
 });
 
 it("words each reviewer's proof with the fixed sentence and never claims the proxy confirmed unless it did", () => {
@@ -132,4 +132,21 @@ it("cleans the reason for an approve with an open blocker to one plain line, and
  expect(openBlockersOnCard([{ label: "Open blockers", value: "0" }])).toBe(0);
  expect(openBlockersOnCard([{ label: "Open blockers", value: "many" }])).toBe(0);
  expect(openBlockersOnCard([])).toBe(0);
+});
+
+it("renders a FULL design review for reader and co-owner with no server-omitted money or invented cost labels", () => {
+ const review = designReviewFixture({ approvals: [{ kind: "spend", by: { actorId: "owner" }, at: "2026-11-03T10:00:00.000Z", approvedUsd: 5.67 }, { kind: "raise_cap", by: { actorId: "owner" }, at: "2026-11-03T10:00:00.000Z", fromUsd: 9.73, capUsd: 18.61 }] });
+ const strip = (value: unknown): unknown => Array.isArray(value) ? value.map(strip) : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([key]) => !key.endsWith("Usd")).map(([key, field]) => [key, strip(field)])) : value;
+ for (const role of ["reader", "co-owner"]) {
+  const read = readDesignReview(strip(review));
+  expect(read, role).not.toBe("unreadable");
+  if (read === undefined || read === "unreadable") throw new Error("The redacted review must remain readable");
+  const model = designTabModel(read), ui = render(h(DesignTabView, { model }));
+  const text = JSON.stringify(model) + ui.container.textContent;
+  expect(text).not.toContain("$");
+  for (const label of ["Estimated cost", "Spent so far", "Limit for this task"]) expect(ui.container.textContent).not.toContain(label);
+  expect(ui.container.textContent).toContain("A person raised the limit.");
+  expect(ui.container.textContent).toContain("Comprehension reviewer");
+  ui.unmount();
+ }
 });

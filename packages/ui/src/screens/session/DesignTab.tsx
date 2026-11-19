@@ -48,7 +48,7 @@ function Round({ round }: { round: RoundLine }) {
   {round.reviewers.length > 0 && <ul className="rv-design-reviewers" aria-label={"Reviewers in round " + String(round.round)}>{round.reviewers.map((reviewer, index) => <li key={index} data-verified={reviewer.verified ? "true" : "false"}>
    <p><strong><VisibleText text={reviewer.role} /></strong> <span className="rv-muted"><VisibleText text={"(" + reviewer.model + ")"} /></span></p>
    <p><VisibleText text={reviewer.proof} /></p>
-   <p className="rv-muted"><VisibleText text={reviewer.cost + ", " + reviewer.tokens} /></p>
+   <p className="rv-muted"><VisibleText text={(reviewer.cost === undefined ? "" : reviewer.cost + ", ") + reviewer.tokens} /></p>
    {reviewer.filesRead.files.length > 0 && <details><summary>{reviewer.filesRead.label + ": " + String(reviewer.filesRead.files.length)}</summary><ul>{reviewer.filesRead.files.map((file, at) => <li key={at}><VisibleText text={file} /></li>)}</ul></details>}
   </li>)}</ul>}
   {round.groups.length === 0 ? <p>{round.reviewers.some(reviewer => reviewer.verified) ? "The reviewers found nothing to raise." : "No finding counts: no reviewer was verified."}</p> : round.groups.map(group => <section key={group.section} aria-label={"Findings in design " + group.section}>
@@ -76,9 +76,9 @@ export function DesignTabView({ model }: { model: DesignTabModel }) {
   <dl className="rv-design-facts">
    <div><dt>Status</dt><dd>{model.statusWords}</dd></div>
    <div><dt>Tier</dt><dd>{model.tierWords}</dd></div>
-   <div><dt>Estimated cost</dt><dd>{model.cost.estimate}</dd></div>
-   <div><dt>Spent so far</dt><dd>{model.cost.spent}</dd></div>
-   <div><dt>Limit for this task</dt><dd>{model.cost.limit}</dd></div>
+   {model.cost.estimate !== undefined && <div><dt>Estimated cost</dt><dd>{model.cost.estimate}</dd></div>}
+   {model.cost.spent !== undefined && <div><dt>Spent so far</dt><dd>{model.cost.spent}</dd></div>}
+   {model.cost.limit !== undefined && <div><dt>Limit for this task</dt><dd>{model.cost.limit}</dd></div>}
   </dl>
   {model.progress !== undefined && <p role="status">{model.progress}</p>}
   {model.notRun !== undefined && <p role="status" className="rv-design-notrun">{model.notRun}</p>}

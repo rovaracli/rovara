@@ -37,13 +37,13 @@ it("keeps current, partial, awaiting-only and unavailable states distinct and sa
 
 it("preserves Code's omitted money for reader and co-owner sessions without reviving legacy spend", () => {
  for (const coOwner of [false, true]) {
-  const raw = { ...task(), runEstimate: { lowUsd: 4.37, highUsd: 10.19, runLimitUsd: 12.71, stopAtUsd: 12.71 }, runLimit: { limitUsd: 12.71 }, owner: { developerId: "stored-task-owner", name: "Owner" } };
+  const raw = { ...task(), workflow: { path: "FULL", designReview: { status: "done", spentUsd: 2.83, capUsd: 17.43, estimateUsd: 3.91, rounds: [{ reviewers: [{ costUsd: 0.87 }] }], approvals: [{ approvedUsd: 5.67 }, { fromUsd: 9.73, capUsd: 18.61 }], earlierReviews: [{ spentUsd: 1.81 }] } }, runEstimate: { lowUsd: 4.37, highUsd: 10.19, runLimitUsd: 12.71, stopAtUsd: 12.71 }, runLimit: { limitUsd: 12.71 }, owner: { developerId: "stored-task-owner", name: "Owner" } };
   const view = sessionView(session, raw, { developerId: "same-company-member" }, "https://example.test", undefined, { coOwner });
   const tile = liveTile(session, raw, { developerId: "same-company-member" }, "https://example.test", undefined, { coOwner });
   for (const output of [view, tile]) {
    expect((output as { money?: unknown }).money).toBeUndefined();
    const walk = (value: unknown): number[] => typeof value === "number" ? [value] : value !== null && typeof value === "object" ? Object.values(value).flatMap(walk) : [];
-   for (const figure of [999, 4.37, 10.19, 12.71]) expect(walk(output)).not.toContain(figure);
+   for (const figure of [999, 4.37, 10.19, 12.71, 2.83, 17.43, 3.91, 0.87, 5.67, 9.73, 18.61, 1.81]) expect(walk(output)).not.toContain(figure);
   }
   expect(view.body.task).not.toHaveProperty("runEstimate");
   expect(view.body.task).not.toHaveProperty("spent");
