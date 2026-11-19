@@ -255,7 +255,14 @@ export class CodeClient {
       if (outcome !== "ok") throw new SignInEnded();
     }
     const second = await send(session.accessToken);
-    if (second.status === 401) throw new SignInEnded();
+    if (second.status === 401) {
+      // A 401 on a fresh token can come from Code's gateway for a path Code doesn't serve (a legacy install has no /v1/app/*).
+      // Only Code's own access check refusing the sign-in ends it; otherwise the path is answered as not on Code yet.
+      if (path !== "/v1/dev/access" && await this.accessWith(session.accessToken) !== undefined) {
+        throw new CodeError(501, { error: { code: "NOT_ON_CODE_YET", message: "This isn't available on this Rovara Code yet." } });
+      }
+      throw new SignInEnded();
+    }
     return second;
   }
 
