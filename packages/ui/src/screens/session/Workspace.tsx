@@ -24,6 +24,6 @@ export const Workspace = memo(function Workspace({ session, onComment, section }
  const prefix = section === undefined ? "" : "step-" + section + "-";
  const tabs = SESSION_TABS.filter(tab => tab.available(view)), requested = location.hash.startsWith("#" + prefix) ? location.hash.slice(1 + prefix.length) : "", selected = tabs.find(tab => tab.value === requested)?.value ?? "pipeline";
  const items = tabs.map(tab => ({ ...tab, content: tab.value === "pipeline" ? <PipelineTab session={session} task={task} onComment={onComment} /> : task === undefined ? null : tab.value === "plan" ? <PlanTab session={session} task={task} onComment={onComment} /> : tab.value === "design" ? <DesignTab task={task} /> : tab.value === "tests" ? <EvidenceTab task={task} sessionId={session.sessionId} /> : tab.value === "changes" ? <ChangesTab session={session} task={task} onComment={onComment} /> : <PullRequestTab task={task} /> }));
- const merge = section === undefined && task !== undefined && hasMergeSection(task) ? <MergeSection task={task} /> : null;
+ const merge = section === undefined && task !== undefined && hasMergeSection(task) ? <MergeSection sessionId={session.sessionId} task={task} /> : null;
  return <>{merge}<Tabs label={section === undefined ? "Session workspace" : "Evidence for step " + section} value={selected} onValueChange={value => { if (tabs.some(tab => tab.value === value)) void navigate({ pathname: location.pathname, search: location.search, hash: "#" + prefix + value }, { replace: true, preventScrollReset: true }); }} items={items} /></>;
 });

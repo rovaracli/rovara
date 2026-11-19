@@ -32,6 +32,8 @@ function fakeCode() {
   // Code rotates refresh tokens: each one works once.
   let generation = 1;
   let decisionRefusal: string | undefined;
+  // DEC 254zzz94: what Code answers on the task's merge route, by method (unset: Code's unknown-route 404).
+  const mergeAnswers = new Map<string, { status: number; body: unknown }>();
   let revokeFails = false;
   // Spec 067: the people Code lets read the task besides its owner (Ada). Grace signs in with her own code and token.
   const readers = new Map<string, { developerId: string; name: string; role: string; projectMember: boolean; grantedAt: string }>();
@@ -125,6 +127,7 @@ function fakeCode() {
       task = { ...task, workflow: { ...(task.workflow as object), stage: "IMPLEMENTATION", state: "RUNNING" } };
       return respond(200, { task });
     }
+    if (url.pathname === `/v1/app/tasks/${TASK_ID}/merge` && mergeAnswers.has(call.method)) { const a = mergeAnswers.get(call.method)!; return respond(a.status, a.body); }
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/people` && call.method === "GET") return respond(200, { view: { revision: peopleRevision } });
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/people/take-ownership`) {
       const body = JSON.parse(call.body ?? "{}") as { expectedPeopleRevision?: number };
@@ -144,6 +147,7 @@ function fakeCode() {
     /** What Code's access check says of this person's company from now on (undefined: none). */
     setCompany: (developerId: string, company: Record<string, unknown> | undefined) => { companies.set(developerId, company); },
     refuseDecisions: (message: string) => { decisionRefusal = message; },
+    answerMerge: (method: "GET" | "POST", status: number, body: unknown) => { mergeAnswers.set(method, { status, body }); },
     failRevoke: () => { revokeFails = true; },
     expireToken: () => { validToken = "access-rotated"; }, endSignIn: () => { refreshable = false; validToken = "nobody"; } };
 }
@@ -1088,3 +1092,99 @@ describe("people's names on sessions follow their current name (Rovara-cloud#39)
   });
 });
 
+
+describe("the Merge button through Code (DEC 254zzz94)", () => {
+  const PULL = { repositoryId: "payments-api", number: 42, url: "https://github.com/acme/payments-api/pull/42" };
+  const begin = async () => {
+    const world = setUp();
+    const auth = await world.signIn();
+    const started = await world.call("POST", "/v1/web/projects/payments/code", { ...auth, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the README typo" } } });
+    const { sessionId } = JSON.parse(started!.body) as { sessionId: string };
+    return { ...world, auth, sessionId, mergeCalls: () => world.code.calls.filter((entry) => entry.path.endsWith("/merge")) };
+  };
+  const ID = "66666666-6666-4666-8666-666666666666";
+
+  it("reads whether the person may merge from Code's task route, and presses with exactly the request id, as the person", async () => {
+    const { call, auth, sessionId, code, mergeCalls } = await begin();
+    code.answerMerge("GET", 200, { mayMerge: true, ready: true, pullRequests: [PULL] });
+    code.answerMerge("POST", 200, { status: "MERGED", pullRequests: [{ repositoryId: "payments-api", number: 42 }] });
+    const read = await call("GET", `/v1/web/sessions/${sessionId}/merge`, { cookie: auth.cookie });
+    expect(read!.status).toBe(200);
+    expect(JSON.parse(read!.body)).toEqual({ mayMerge: true, ready: true, pullRequests: [PULL] });
+    const pressed = await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } });
+    expect(pressed!.status).toBe(200);
+    expect(JSON.parse(pressed!.body)).toEqual({ status: "MERGED", pullRequests: [{ repositoryId: "payments-api", number: 42 }] });
+    expect(mergeCalls().map((entry) => [entry.method, entry.path])).toEqual([["GET", `/v1/app/tasks/${code.taskId}/merge`], ["POST", `/v1/app/tasks/${code.taskId}/merge`]]);
+    expect(JSON.parse(mergeCalls()[1]!.body!)).toEqual({ requestId: ID });
+  });
+
+  it("refuses a body with anything but a request id, a query, and an unknown session, without asking Code", async () => {
+    const { call, auth, sessionId, mergeCalls } = await begin();
+    for (const body of [{}, { requestId: "x" }, { requestId: ID, force: true }, [ID]]) expect((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body }))!.status).toBe(400);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/merge?as=admin`, { ...auth, body: { requestId: ID } }))!.status).toBe(400);
+    expect((await call("POST", "/v1/web/sessions/ses_00000000000000000000/merge", { ...auth, body: { requestId: ID } }))!.status).toBe(404);
+    expect((await call("GET", "/v1/web/sessions/ses_00000000000000000000/merge", { cookie: auth.cookie }))!.status).toBe(404);
+    expect(mergeCalls()).toEqual([]);
+  });
+
+  it("passes Code's fixed refusals on under their own code, and says 'not available yet' for a Code without the route", async () => {
+    const { call, auth, sessionId, code } = await begin();
+    const notYet = await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } });
+    expect(notYet!.status).toBe(501);
+    expect((JSON.parse(notYet!.body) as { error: { message: string } }).error.message).toContain("isn't available on this Rovara yet");
+    for (const [status, codeName, message] of [[409, "MERGE_NOT_READY", "Checks haven't passed on the latest code."], [403, "FORBIDDEN", "Do this on the Rovara website: the command line and AI tools cannot make this change."], [404, "TASK_NOT_FOUND", "no such task"], [409, "IDEMPOTENCY_CONFLICT", "That request was already used by someone else."]] as const) {
+      code.answerMerge("POST", status, { error: { code: codeName, message } });
+      const answer = await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } });
+      expect([answer!.status, (JSON.parse(answer!.body) as { error: unknown }).error]).toEqual([status, { code: codeName, message }]);
+    }
+    // Anything else (an unexpected code, a status that does not match, a long or multi-line sentence) is Cloud's own words: nothing of Code's is echoed.
+    for (const body of [{ error: { code: "INTERNAL", message: "stack at ghs_secret" } }, { error: { code: "MERGE_NOT_READY", message: "line one\nghs_secret" } }, "oops"]) {
+      code.answerMerge("POST", body === "oops" ? 500 : 409, body);
+      const answer = await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } });
+      expect(answer!.status).toBe(503);
+      expect(answer!.body).not.toContain("ghs_");
+    }
+  });
+
+  it("carries what the person was shown (heads, risk) both ways, each checked; a bad one is refused without asking Code", async () => {
+    const { call, auth, sessionId, code, mergeCalls } = await begin();
+    const HEAD = { repositoryId: "payments-api", number: 42, headSha: "a".repeat(40) };
+    code.answerMerge("GET", 200, { mayMerge: true, ready: true, risk: "medium", heads: [HEAD], pullRequests: [PULL] });
+    code.answerMerge("POST", 200, { status: "MERGED", pullRequests: [{ repositoryId: "payments-api", number: 42 }] });
+    expect(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}/merge`, { cookie: auth.cookie }))!.body)).toEqual({ mayMerge: true, ready: true, risk: "medium", heads: [HEAD], pullRequests: [PULL] });
+    for (const body of [{ requestId: ID, risk: "none" }, { requestId: ID, expectedHeads: [{ ...HEAD, headSha: "zz" }] }, { requestId: ID, expectedHeads: [{ ...HEAD, extra: 1 }] }, { requestId: ID, expectedHeads: [] }]) {
+      expect((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body }))!.status).toBe(400);
+    }
+    expect(mergeCalls().filter((entry) => entry.method === "POST")).toEqual([]);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID, expectedHeads: [HEAD], risk: "medium" } }))!.status).toBe(200);
+    expect(JSON.parse(mergeCalls().filter((entry) => entry.method === "POST")[0]!.body!)).toEqual({ requestId: ID, expectedHeads: [HEAD], risk: "medium" });
+    for (const body of [{ mayMerge: true, ready: true, risk: "extreme", pullRequests: [] }, { mayMerge: true, ready: true, heads: [{ ...HEAD, headSha: "x" }], pullRequests: [] }]) {
+      code.answerMerge("GET", 200, body);
+      expect((await call("GET", `/v1/web/sessions/${sessionId}/merge`, { cookie: auth.cookie }))!.status).toBe(502);
+    }
+  });
+
+  it("a long half merge is cut, never dropped; an answer Cloud can't read never says nothing was merged", async () => {
+    const { call, auth, sessionId, code } = await begin();
+    const long = "a, b merged, but c didn't: " + "the code host would not merge it ".repeat(30) + ". Merge it on GitHub or press Merge again.";
+    code.answerMerge("POST", 409, { error: { code: "MERGE_NOT_READY", message: long } });
+    const half = JSON.parse((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } }))!.body) as { error: { code: string; message: string } };
+    expect(half.error.code).toBe("MERGE_NOT_READY");
+    expect(half.error.message.startsWith("a, b merged, but c didn't:")).toBe(true);
+    expect(half.error.message.length).toBeLessThanOrEqual(600);
+    code.answerMerge("POST", 500, "oops");
+    const unknown = JSON.parse((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } }))!.body) as { error: { message: string } };
+    expect(unknown.error.message).toBe("We couldn't confirm the result yet; checking GitHub. Reload this page in a moment.");
+    expect(unknown.error.message).not.toMatch(/nothing was merged/iu);
+  });
+
+  it("refuses an answer from Code that does not read (a link that is not github.com, ready without may, extra shapes)", async () => {
+    const { call, auth, sessionId, code } = await begin();
+    for (const body of [{ mayMerge: true, ready: true, pullRequests: [{ ...PULL, url: "https://evil.example/pull/42" }] }, { mayMerge: false, ready: true, pullRequests: [] }, { mayMerge: true, ready: true }, { mayMerge: true, ready: true, pullRequests: [{ ...PULL, number: 0 }] }]) {
+      code.answerMerge("GET", 200, body);
+      expect((await call("GET", `/v1/web/sessions/${sessionId}/merge`, { cookie: auth.cookie }))!.status).toBe(502);
+    }
+    code.answerMerge("POST", 200, { status: "QUEUED", pullRequests: [] });
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } }))!.status).toBe(502);
+  });
+});

@@ -93,7 +93,7 @@ describe("fake Code answers contract v0", () => {
 
   it("has a path parameter sample for every parameter the contract names", () => {
     const names = new Set(CODE_ROUTES.flatMap((route) => pathParamNames(route.path)));
-    expect([...names].sort()).toEqual(["account", "action", "channel", "developerId", "draftId", "emailHash", "installationId", "kind", "lessonId", "project", "requestId", "ruleId", "sha256", "source", "subject", "taskId", "tokenId", "workspace"].sort());
+    expect([...names].sort()).toEqual(["account", "action", "channel", "developerId", "draftId", "emailHash", "installationId", "kind", "lessonId", "project", "requestId", "ruleId", "sha256", "skill", "source", "subject", "taskId", "tokenId", "workspace"].sort());
   });
 
   it("keeps a task you start, answers the same task for the same request id, and hides it from others", async () => {
