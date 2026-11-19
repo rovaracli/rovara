@@ -1,3 +1,4 @@
+import { parseTaskMoneyV1 } from "./task-money.js";
 // The web app's API routes (/v1/app/*, which the browser calls as /v1/web/*) that Cloud answers from Rovara Code, as
 // the signed-in person. Each entry shapes Code's answer into the reader schema the app expects. The migration tracker
 // lists every route and where it is answered from (PrepLabsAI/Rovara-cloud#1).
@@ -218,7 +219,10 @@ const EVAL_CARD_ROUTES: Route[] = [
 ];
 
 async function readTask(context: RouteContext, taskId: string): Promise<CodeTask> {
-  return (await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}`, { headers: TASK_VIEW })).task;
+  const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}`, { headers: TASK_VIEW });
+  const { money: rawMoney, ...legacy } = task;
+  const money = parseTaskMoneyV1(rawMoney);
+  return { ...legacy, ...(money?.taskId === task.taskId ? { money } : {}) };
 }
 
 /** The session and its task, or undefined for a session Cloud doesn't have. Code decides whether the person may see the task. */
@@ -245,7 +249,7 @@ async function ownerFromCode(context: RouteContext, record: WorkSession, task: C
 }
 
 /** The reader, with the name they signed in with now: their own name on a session is always current (Rovara-cloud#39). */
-const viewer = (context: RouteContext) => ({ developerId: context.session.access.developerId, name: context.session.access.displayName });
+const viewer = (context: RouteContext) => ({ developerId: context.session.access.developerId, name: context.session.access.displayName, ...(context.session.access.companyRole === undefined ? {} : { companyRole: context.session.access.companyRole }) });
 const me = (context: RouteContext) => ({ developerId: context.session.access.developerId, name: context.session.access.displayName });
 
 /** The session's followers and viewers for this person. */

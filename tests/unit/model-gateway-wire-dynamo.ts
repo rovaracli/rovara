@@ -144,6 +144,17 @@ export class WireDynamo {
     const translated = operation === "TransactWriteItems"
       ? { TransactItems: (input.TransactItems as Json[]).map((entry) => Object.fromEntries(Object.entries(entry).map(([kind, action]) => [kind, values(action as Json)]))) }
       : values(input);
+    // Normalize the gateway's Expr aliases for the fake's primary-key range parser. Real Dynamo accepts both forms.
+    if (operation === "Query" && translated.IndexName === undefined) {
+      const names = (translated.ExpressionAttributeNames ?? {}) as Record<string, string>;
+      const values = translated.ExpressionAttributeValues as Json;
+      const range = /^(#[a-z0-9]+) = (:[a-z0-9]+) AND (#[a-z0-9]+) BETWEEN (:[a-z0-9]+) AND (:[a-z0-9]+)$/u.exec(String(translated.KeyConditionExpression));
+      if (range !== null && names[range[1]!] === "pk" && names[range[3]!] === "sk") {
+        translated.KeyConditionExpression = "pk = :pk AND sk BETWEEN :low AND :high";
+        translated.ExpressionAttributeValues = { ":pk": this.#namespace ? `${call.table}\u0001${String(values[range[2]!] )}` : values[range[2]!], ":low": values[range[4]!], ":high": values[range[5]!] };
+        delete translated.ExpressionAttributeNames;
+      }
+    }
     if (operation === "GetItem") {
       const key = translated.Key as { pk: string; sk: string };
       if ((this.#tableOf.get(JSON.stringify([key.pk, key.sk])) ?? call.table) !== call.table) return this.#ok({});

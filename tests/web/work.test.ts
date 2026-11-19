@@ -159,7 +159,7 @@ it("draws the pull request open or merged and links only to https", () => {
 });
 it("shows the budget banner only when the month's budget is used up, with the raise action for an administrator", () => {
   const none = wrap(h(BudgetBanner, { remainingUsd: 3, canRaise: true }));expect(none.container.textContent).toBe("");none.unmount();
-  const a = wrap(h(BudgetBanner, { remainingUsd: 0, canRaise: true }));expect(a.container.textContent).toContain("budget is used up");expect(screen.getByRole("link", { name: "Raise the limit" })).toBeTruthy();a.unmount();
+  const a = wrap(h(BudgetBanner, { remainingUsd: 0, canRaise: true }));expect(a.container.textContent).toContain("budget is used up");expect(screen.getByRole("link", { name: "Raise the limit" }).getAttribute("href")).toBe("/app/admin/ai-spending");a.unmount();
   const b = wrap(h(BudgetBanner, { remainingUsd: -1.5, canRaise: false }));expect(b.container.textContent).toContain("$1.50 over");expect(screen.queryByRole("link")).toBeNull();expect(b.container.textContent).toContain("Ask a company administrator");
 });
 
@@ -216,7 +216,7 @@ it("selects by click and shows that task's step rail, decision card, spec and si
   expect(decision.textContent).toContain("Approve this quick spec");expect(within(decision).getByRole("button", { name: "Approve and build" })).toBeTruthy();
   const merge = within(decision).getByRole<HTMLInputElement>("checkbox", { name: /Merge by itself/u });expect(merge.disabled).toBe(true);expect(decision.textContent).toContain("not connected yet");
   const spec = await screen.findByRole("region", { name: "Spec" });expect(spec.textContent).toContain("R1.1");expect(spec.textContent).toContain("Question for you.");
-  expect(screen.getByRole("list", { name: "Steps of this task" })).toBeTruthy();expect(screen.getByRole("region", { name: "Cost" }).textContent).toContain("stops at $2.00");
+  expect(screen.getByRole("list", { name: "Steps of this task" })).toBeTruthy();expect(screen.getByRole("region", { name: "Cost" }).textContent).toContain("Cost unavailable");
   f.close();
 });
 it("clicking a step shows that stage of the task", async () => {

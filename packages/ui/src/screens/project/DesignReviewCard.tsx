@@ -27,6 +27,8 @@ const PLAYBOOK_STALE = "Someone changed how this project works. Reload and try a
 export function DesignReviewCard({ project, canEdit, filter }: { project: string; canEdit: boolean; filter: Filter }) {
  const api = useDesignReviewApi(), onboarding = useOnboardingApi(), query = useQueryClient();
  const playbook = useQuery({ queryKey: designReviewKey(project), queryFn: () => api.playbook(project) });
+ const identity = useQuery({ queryKey: ["design-review", "identity"], queryFn: () => onboarding.me(), staleTime: 0, refetchOnMount: "always", retry: false });
+ const revealMoney = identity.data?.developer.orgRole === "owner" || identity.data?.developer.orgRole === "admin";
  const members = useQuery({ queryKey: [...designReviewKey(project), "members"], enabled: canEdit, queryFn: () => onboarding.members(), retry: false });
  const [draft, setDraft] = useState<SettingDraft>(), [saving, setSaving] = useState(false), [error, setError] = useState<string>(), [saved, setSaved] = useState(false);
  const id = "hww-stage-design-review";
@@ -41,7 +43,7 @@ export function DesignReviewCard({ project, canEdit, filter }: { project: string
  const response = playbook.data, setting = designReviewSettingOf(response.playbook), locked = lockedSet(response.designReviewLocked), groups = response.designReviewGroups === true;
  const names = new Map((members.data?.members ?? []).map(member => [member.developerId, member.name]));
  const nameOf = (person: string) => names.get(person);
- const rows = designRows(setting, locked, nameOf), lines = settingLines(setting, locked), editing = draft !== undefined;
+ const rows = designRows(setting, locked, nameOf), lines = settingLines(setting, locked, revealMoney), editing = draft !== undefined;
  const shownRows = filter === "locked" ? rows.filter(row => row.values.some(value => value.mark.locked)) : filter === "changed" ? rows.filter(row => row.values.some(value => value.mark.source === "project")) : rows;
  const current = draft ?? draftOf(setting), anyLocked = locked.size > 0;
  const patch = (change: Partial<SettingDraft>) => { setSaved(false);setError(undefined);setDraft({ ...current, ...change }); };
@@ -77,7 +79,7 @@ export function DesignReviewCard({ project, canEdit, filter }: { project: string
    <div className="rv-design-field"><Select label="When it runs" value={current.mode} options={MODE_OPTIONS} disabled={saving} onValueChange={value => patch({ mode: value as SettingDraft["mode"] })} /></div>
    <div className="rv-design-field"><Select label="Tier" value={current.tier} options={TIER_OPTIONS} disabled={locked.has("tier") || saving} onValueChange={value => patch({ tier: value as SettingDraft["tier"] })} />{lockNote("tier")}</div>
    <div className="rv-design-field"><Switch label="Allow skipping design review" checked={current.allowSkip} disabled={locked.has("allowSkip") || saving} onCheckedChange={value => patch({ allowSkip: value })} />{lockNote("allowSkip")}</div>
-   <div className="rv-design-field"><TextField label="Cost limit per task (USD)" type="number" inputMode="decimal" min={0.5} max={100} step={0.5} value={current.capText} disabled={locked.has("capUsdPerTask") || saving} hint="Between $0.50 and $100. Above it, a person decides." {...(problems.cap === undefined ? {} : { error: problems.cap })} onChange={event => patch({ capText: event.target.value })} />{lockNote("capUsdPerTask")}</div>
+   {revealMoney && <div className="rv-design-field"><TextField label="Cost limit per task (USD)" type="number" inputMode="decimal" min={0.5} max={100} step={0.5} value={current.capText} disabled={locked.has("capUsdPerTask") || saving} hint="Between $0.50 and $100. Above it, a person decides." {...(problems.cap === undefined ? {} : { error: problems.cap })} onChange={event => patch({ capText: event.target.value })} />{lockNote("capUsdPerTask")}</div>}
    <div className="rv-design-field"><Select label="Who approves a high-risk design" value={current.approverKind} options={kindOptions} disabled={locked.has("highRiskApprover") || saving} onValueChange={value => patch({ approverKind: value as ApproverKind })} />{lockNote("highRiskApprover")}
     {current.approverKind === "people" && <fieldset className="rv-design-people" disabled={locked.has("highRiskApprover") || saving}><legend>Named people (up to {DESIGN_REVIEW_APPROVERS_MAX})</legend>
      {members.isError ? <p className="rv-muted">The list of people can't be loaded right now. People already named stay named.</p> : people.map(person => <Checkbox key={person.developerId} label={person.name} checked={current.memberIds.includes(person.developerId)} disabled={locked.has("highRiskApprover") || saving} onCheckedChange={value => patch({ memberIds: value === true ? [...current.memberIds, person.developerId] : current.memberIds.filter(other => other !== person.developerId) })} />)}

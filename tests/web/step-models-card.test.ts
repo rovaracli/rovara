@@ -70,7 +70,7 @@ describe("the step models card", () => {
   const m = mount("member", c.respond);
   await screen.findByTestId("step-models-read-only");
   expect(screen.queryByLabelText("Coding")).toBeNull();
-  expect(screen.getByTestId("step-model-build").textContent).toContain("Company model");
+  expect(screen.getByTestId("step-model-build").textContent).toContain("Rovara's default (currently claude-sonnet-5-5)");
   expect(c.writes).toEqual([]);
   m.close();
  });
@@ -91,11 +91,11 @@ describe("the step models card", () => {
 });
 
 describe("prices", () => {
- it("where Code knows no step's price (the hosted product today), no price line is drawn", async () => {
+ it("where Code knows no step's price, the rate stays explicitly unavailable", async () => {
   const steps = STAGES.map(stage => ({ stage, setting: null, refused: false, effective: { model: "claude-sonnet-5-5", companyDefault: true } }));
   const m = mount("owner", () => ({ status: 200, body: { revision: 0, offered: OFFERED, canChange: true, steps } }));
   expect((await screen.findByTestId("step-model-build")).textContent).toContain("Runs on claude-sonnet-5-5 (company model).");
-  expect(screen.queryByTestId("step-model-price-build")).toBeNull();
+  expect(screen.getByTestId("step-model-price-build").textContent).toBe("Price unavailable.");
   m.close();
  });
 });

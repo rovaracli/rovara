@@ -1,3 +1,4 @@
+import { parseTaskMoneyV1 } from "./task-money.js";
 // A Cloud session as the app reads it (SessionViewSchema, `GET /v1/app/sessions/{id}`), built from Cloud's own session
 // record and the Rovara Code task it points at. The task goes in as Code answered it: Cloud's task view is a subset of
 // Code's, and the app reads it tolerantly. A plan waiting for the owner's review is the owner's approval. Someone the
@@ -12,6 +13,7 @@ export interface CodeTask {
   project: string;
   status: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED" | "CLOSED";
   workflow?: {
+    designReview?: unknown;
     stage?: string; state?: string; revision?: number; artifacts?: Array<{ type?: string; version?: number; sha256?: string }>;
     /** The code the reviews look at, and the checks that ran on it (Code's workflow snapshot). */
     candidate?: { digest?: string };
@@ -89,7 +91,24 @@ export function freshPerson<P extends { developerId: string; name: string }>(per
  */
 export interface SessionExtras { planOnCard?: boolean; coOwner?: boolean }
 
-export function sessionView(session: WorkSession, task: CodeTask, viewer: { developerId: string; name?: string }, origin: string, people?: SessionPeople, extras: SessionExtras = {}) {
+export function sessionView(session: WorkSession, task: CodeTask, viewer: { developerId: string; name?: string; companyRole?: string }, origin: string, people?: SessionPeople, extras: SessionExtras = {}) {
+  const parsedMoney = parseTaskMoneyV1(task["money"]);
+  // Code omits private figures for other members. Derived legacy figures also
+  // require the stored owner or the viewer's live company role.
+  const taskOwner = task["owner"] as { developerId?: unknown } | undefined;
+  const maySeeMoney = viewer.developerId === (taskOwner?.developerId ?? session.owner.developerId)
+    || viewer.companyRole === "owner" || viewer.companyRole === "admin";
+  const money = maySeeMoney && parsedMoney?.taskId === task.taskId ? parsedMoney : undefined;
+  const safeTask = { ...task };
+  delete safeTask["money"];
+  if (!maySeeMoney && safeTask.workflow !== undefined) {
+    const strip = (value: unknown): unknown => Array.isArray(value) ? value.map(strip)
+      : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([key]) => !/Usd(?:PerTask)?$/u.test(key)).map(([key, field]) => [key, strip(field)])) : value;
+    safeTask.workflow = { ...safeTask.workflow, ...(safeTask.workflow["designReview"] === undefined ? {} : { designReview: strip(safeTask.workflow["designReview"]) }) };
+  }
+  if (!maySeeMoney) for (const field of ["spent", "runLimit", "runEstimate", "costUsd", "runLimitUsd", "stopAtUsd"]) delete safeTask[field];
+  const spent = spentUsd(safeTask), limit = runLimitUsd(safeTask);
+  if (money !== undefined) safeTask["money"] = money;
   const status = sessionStatus(task);
   const owner = viewer.developerId === session.owner.developerId;
   const ended = ENDED.has(status);
@@ -100,6 +119,7 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
   const follow = people ?? { ...followState(session, viewer.developerId), viewingNow: [] };
   return {
     contractVersion: 1,
+    ...(money === undefined ? {} : { money }),
     sessionId: session.sessionId,
     kind: "task",
     mode: "delegate",
@@ -110,8 +130,8 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
     where: { kind: "cloud" },
     status,
     ...(status === "failed" ? { lastRunFailed: true } : {}),
-    // What Code has counted for the task (Rovara-cloud#31); before the first run is recorded it has spent nothing.
-    cost: { spentUsd: spentUsd(task), ...(runLimitUsd(task) === undefined ? {} : { runLimitUsd: runLimitUsd(task) }), payer: { kind: "member", name: freshPerson(session.startedBy, viewer).name } },
+    // Only figures Code actually sent for this viewer; missing spend is unknown.
+    cost: { ...(spent === undefined ? {} : { spentUsd: spent }), ...(limit === undefined ? {} : { runLimitUsd: limit }), payer: { kind: "member", name: freshPerson(session.startedBy, viewer).name } },
     // Only the task's owner decides a plan in Code, so only the owner is shown it.
     // A core task's plan is decided on its decision card (the session page shows it), never on Cloud's approval page (audit 2026-11-18 item 6).
     approvals: owner && waitingPlan(task) !== undefined && extras.planOnCard !== true ? [{ approvalId: `plan-${session.sessionId}`, title: "Review the plan", confirmUrl: approvalUrl(origin, session.sessionId) }] : [],
@@ -125,7 +145,7 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
     createdAt: session.createdAt,
     updatedAt: task.updatedAt,
     ...(ended ? { endedAt: task.updatedAt } : {}),
-    body: { kind: "task", task },
+    body: { kind: "task", task: safeTask },
   };
 }
 
@@ -143,7 +163,7 @@ export const sessionRunning = (task: CodeTask): boolean => !ENDED.has(sessionSta
  * One session as a Live tile (LiveTileSchema), for the person reading it, from the same parts as the session page: Code's task,
  * Cloud's followers and who is viewing. Only the owner is told a plan waits on them, with the link to Cloud's approval page.
  */
-export function liveTile(session: WorkSession, task: CodeTask, viewer: { developerId: string; name?: string }, origin: string, people?: SessionPeople, extras: SessionExtras = {}) {
+export function liveTile(session: WorkSession, task: CodeTask, viewer: { developerId: string; name?: string; companyRole?: string }, origin: string, people?: SessionPeople, extras: SessionExtras = {}) {
   const view = sessionView(session, task, viewer, origin, people, extras);
   const plan = view.you.owner && waitingPlan(task) !== undefined && extras.planOnCard !== true;
   const step = task.workflow?.stage === undefined ? undefined : STEP_WORDS[task.workflow.stage];
@@ -159,7 +179,8 @@ export function liveTile(session: WorkSession, task: CodeTask, viewer: { develop
     statusWords: blockedReview(task)?.unfinished === true ? "Review couldn't finish" : STATUS_WORDS[view.status],
     ...(step === undefined ? {} : { step }),
     ...(view.status === "failed" ? { lastRunFailed: true as const } : {}),
-    costUsd: spentUsd(task),
+    ...(view.money === undefined ? {} : { money: view.money }),
+    ...(view.cost.spentUsd === undefined ? {} : { costUsd: view.cost.spentUsd }),
     viewingNow: view.viewingNow.slice(0, 5),
     viewingNowCount: view.viewingNow.length,
     needsYou: view.you.owner && view.status === "needs_person",
@@ -244,10 +265,10 @@ export function reviewChoices(task: CodeTask): { findings: OpenFinding[]; expect
   return { findings, expectedRevision: task.workflow.revision, candidateDigest: task.workflow.candidate.digest };
 }
 
-/** The task's spent dollars from Code (PrepLabsAI/Rovara#651), rounded to the cent; 0 before the first run is recorded. */
-export function spentUsd(task: CodeTask): number {
+/** The task's spent dollars from Code (PrepLabsAI/Rovara#651), rounded to the cent; absent stays unknown. */
+export function spentUsd(task: CodeTask): number | undefined {
   const usd = task.spent?.usd;
-  return typeof usd === "number" && Number.isFinite(usd) && usd > 0 ? Math.round(usd * 100) / 100 : 0;
+  return typeof usd === "number" && Number.isFinite(usd) && usd >= 0 ? Math.round(usd * 100) / 100 : undefined;
 }
 
 /** The run limit Code holds the task to, when it has one. */

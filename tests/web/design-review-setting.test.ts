@@ -12,12 +12,15 @@ import { renderUi } from "./support/render.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 
+import { meFixture } from "./support/fixtures.js";
+
 const PERSON = "b".repeat(64);
-interface World { off?: boolean; allowed?: boolean | undefined; setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
+interface World { off?: boolean; allowed?: boolean | undefined; setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown; role?: "member" | "owner" | "admin" }
 function setup(world: World = {}, canEdit = true, filter: "all" | "changed" | "locked" = "all") {
  const state = { ...world }, puts: Array<{ path: string; body: Record<string, unknown> }> = [];
  const answer = () => ({ ...(state.allowed === undefined ? {} : { designReviewAllowed: state.allowed }), playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.off === true || state.allowed === false ? {} : { designReview: state.setting ?? DESIGN_REVIEW_DEFAULT_SETTING }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
  const f = fakeHost(async request => {
+  if (request.path === "/v1/app/me") { const me = meFixture();return { status: 200, body: { ...me, developer: { ...me.developer, orgRole: state.role ?? "owner" } } }; }
   if (request.path.endsWith("/playbook") && request.method === "GET") return { status: 200, body: answer() };
   if (request.path.endsWith("/playbook") && request.method === "PUT") { const body = request.body as Record<string, unknown>;puts.push({ path: request.path, body });state.setting = body.designReview as DesignReviewSetting;state.revision = (state.revision ?? 4) + 1;return { status: 200, body: answer() }; }
   if (request.path === "/v1/app/org/members") return { status: 200, body: { members: [{ developerId: "a".repeat(64), name: "Priya", role: "owner" }, { developerId: PERSON, name: "Sam", role: "member" }] } };
@@ -180,4 +183,16 @@ it("DR-FU4: a project with no setting shows Off, and there is no text about a co
  expect(within(editor).getByRole<HTMLSelectElement>("combobox", { name: "When it runs" }).value).toBe("never");
  expect(screen.queryByText(/company default/u)).toBeNull();
  f.close();
+});
+
+it("How we work hides the project cost amount from readers and co-owners, including maintainer editors", async () => {
+ for (const canEdit of [false, true]) {
+  const f = setup({ role: "member", setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, capUsdPerTask: 17.43 } }, canEdit);
+  await screen.findByText("Who does it");
+  const card = screen.getByRole("region", { name: "Design review" });
+  expect(card.textContent).not.toMatch(/17\.43|\$/u);
+  expect(within(card).queryByLabelText("Cost limit per task (USD)")).toBeNull();
+  expect(card.textContent).toContain("Design review limit");
+  f.close();
+ }
 });

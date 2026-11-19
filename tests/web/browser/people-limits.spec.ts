@@ -50,7 +50,7 @@ test("People and limits draws the people in name order with spend against their 
   await expect(table.getByRole("row").nth(1)).toContainText("set for this person");
   await expect(table.getByRole("row").nth(3)).toContainText("Over the limit");
   await expect(table.getByRole("row").nth(4)).toContainText("No limit set");
-  await expect(table.getByRole("columnheader")).toHaveText(["Person", "Spent this month", "Monthly limit", "Standing", "Change"]);
+  await expect(table.getByRole("columnheader")).toHaveText(["Person", "Spent this month (all projects)", "Monthly limit", "Standing", "Change"]);
   await expect(table.getByRole("button")).toHaveCount(0);
   await expect(page.locator("main")).not.toContainText(/merged|rank|quality|score|total/iu);
   await shot(page, info, "people-limits-light");

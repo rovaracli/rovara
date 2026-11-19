@@ -13,7 +13,6 @@ import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 const orgId="org_aaaaaaaaaaaaaaaaaaaa", developerId="a".repeat(64);
-const settings={orgId,checkedAt:"2026-10-27T12:00:00Z",coverage:"monthly_base_settings_only",orgMonthly:{kind:"limited",microdollars:500_000_000,source:"cloud_default"},memberDefaultMonthly:{kind:"limited",microdollars:29_000_000,source:"configured"},memberOverrideCount:2,memberOverrideCoverage:"configured_only_membership_not_checked",usage:"not_checked",topUps:"not_checked",enforcement:"not_checked"};
 // Match json-reply.ts, including gateway overwrite of a route's own requestId.
 function gatewayHost(...args: Parameters<typeof fakeHost>) {
  const f = fakeHost(...args);
@@ -23,32 +22,66 @@ function gatewayHost(...args: Parameters<typeof fakeHost>) {
  };
  return f;
 }
-function mount(options:{role?:string;respond?:(r:ApiRequest)=>Promise<ApiResponse>;theme?:"light"|"dark";width?:number;prime?:boolean}={}){
+const settings = { month: "2026-11", spentThisMonthUsd: 20, remainingUsd: 78, heldUsd: 2, limitUsd: 100, provisionalMicros: 1_230_000 };
+function mount(options:{role?:string;respond?:(r:ApiRequest)=>Promise<ApiResponse>;theme?:"light"|"dark";width?:number}={}){
  const nav=AppNavSchema.parse({me:{developerId,name:"Priya",orgRole:"owner"},org:{name:"Acme"},homeCount:0,projects:[],shared:{agents:[],sessions:[]},features:{admin:true,localAgents:false,usage:false,chains:false,describe:false,notices:false}}),me={developer:{id:developerId,name:"Priya",orgRole:options.role??"owner"},org:{orgId,name:"Acme",plan:"team"},identities:[]};
- const f=gatewayHost(async r=>r.path.endsWith("/me")?{status:200,body:me}:r.path.endsWith("/nav")?{status:200,body:nav}:r.path.startsWith("/v1/app/inbox")?{status:501,body:{error:{code:"NOT_IMPLEMENTED",message:"Your inbox isn't available on this install yet."}}}:options.respond?.(r)??{status:200,body:settings});if(options.width!==undefined)f.host.viewport={width:()=>options.width??1280,subscribe:()=>()=>undefined};f.storage.set("rovara.theme",options.theme??"light");const query=createQueryClient();query.setQueryData(["nav"],nav);if(options.prime){query.setQueryData(["admin","identity"],me);query.setQueryData(["admin","budget-settings"],{...settings,orgId:"org_bbbbbbbbbbbbbbbbbbbb",orgMonthly:{kind:"limited",microdollars:777_000_000,source:"configured"}});}const router=createMemoryRouter(appRoutes(nav.features),{initialEntries:["/app/admin/money/budgets"]});const view=renderUi(h(AppHostProvider,{host:f.host,children:h(QueryClientProvider,{client:query,children:h(ThemeProvider,{host:f.host,children:h(RouterProvider,{router})})})}));return{...f,...view,query,router,me,close(){view.unmount();router.dispose();query.clear();}};
+ const f=gatewayHost(async r=>r.path.endsWith("/me")?{status:200,body:me}:r.path.endsWith("/nav")?{status:200,body:nav}:r.path.startsWith("/v1/app/inbox")?{status:501,body:{error:{code:"NOT_IMPLEMENTED",message:"Your inbox isn't available on this install yet."}}}:options.respond?.(r)??{status:200,body:r.path.endsWith("/org/spend") ? settings : {}});if(options.width!==undefined)f.host.viewport={width:()=>options.width??1280,subscribe:()=>()=>undefined};f.storage.set("rovara.theme",options.theme??"light");const query=createQueryClient();query.setQueryData(["nav"],nav);const router=createMemoryRouter(appRoutes(nav.features),{initialEntries:["/app/admin/money/budgets"]});const view=renderUi(h(AppHostProvider,{host:f.host,children:h(QueryClientProvider,{client:query,children:h(ThemeProvider,{host:f.host,children:h(RouterProvider,{router})})})}));return{...f,...view,query,router,me,close(){view.unmount();router.dispose();query.clear();}};
 }
-for(const role of ["owner","admin"])it(`lets ${role} read monthly base settings with explicit coverage and no money writes`,async()=>{const f=mount({role});try{await screen.findByRole("table",{name:"Monthly base budgets"});expect(screen.getByText("$500.00")).toBeTruthy();expect(screen.getByText("$29.00")).toBeTruthy();expect(screen.getByText("Existing cloud default")).toBeTruthy();expect(screen.getByText(/2 configured member overrides/)).toBeTruthy();expect(screen.getByText(/Current membership and individual limits are not checked/)).toBeTruthy();expect(screen.getByText(/Monthly base budgets are read only/)).toBeTruthy();expect(screen.getByText(/Usage, top-ups and enforcement are not checked/)).toBeTruthy();expect(screen.getByText(/does not determine whether a task can start/)).toBeTruthy();expect(screen.queryByRole("button",{name:/save|confirm/i})).toBeNull();expect(f.request.mock.calls.every(([r])=>r.method==="GET")).toBe(true);expect(screen.getByRole("link",{name:"Spending"})).toBeTruthy();}finally{f.close();}});
-it("distinguishes zero from unlimited and preserves display of a single microdollar",async()=>{const f=mount({respond:async()=>({status:200,body:{...settings,orgMonthly:{kind:"limited",microdollars:0,source:"configured"},memberDefaultMonthly:{kind:"unlimited",source:"unset"}}})});try{await screen.findByText("$0.00");expect(screen.getByText("Unlimited (not configured)")).toBeTruthy();f.request.mockImplementation(async r=>r.path.endsWith("/me")?{status:200,body:f.me}:{status:200,body:{...settings,orgMonthly:{kind:"limited",microdollars:1,source:"configured"}}});fireEvent.click(screen.getByRole("button",{name:"Refresh budgets"}));await screen.findByText("$0.000001");}finally{f.close();}});
-for(const status of [403,404,429,503])it(`hides cached financial amounts after ${status} without raw errors or fallback`,async()=>{const f=mount();try{await screen.findByText("$500.00");f.request.mockImplementation(async r=>r.path.endsWith("/me")?{status:200,body:f.me}:{status,body:{error:{code:"RUNTIME_UNAVAILABLE",message:"private upstream detail"}}});fireEvent.click(screen.getByRole("button",{name:"Refresh budgets"}));await waitFor(()=>expect(screen.queryByText("$500.00")).toBeNull());expect(screen.queryByRole("table")).toBeNull();expect(screen.queryByText("private upstream detail")).toBeNull();expect(screen.getByRole("alert")).toBeTruthy();expect(f.request.mock.calls.filter(([r])=>r.path.includes("budget")&&!r.path.endsWith("/budget-settings")).length).toBe(0);expect(f.request.mock.calls.filter(([r])=>r.path.endsWith("/budget-settings")).length).toBe(2);}finally{f.close();}});
-for(const bad of [{...settings,orgId:"org_bbbbbbbbbbbbbbbbbbbb"},{...settings,usage:0},{...settings,orgMonthly:{kind:"limited",microdollars:-1,source:"configured"}}])it("refuses a foreign or malformed budget projection instead of showing plausible amounts",async()=>{const f=mount({respond:async()=>({status:200,body:bad})});try{await screen.findByRole("alert");expect(screen.queryByText("$500.00")).toBeNull();expect(screen.queryByRole("table")).toBeNull();}finally{f.close();}});
-for(const field of ["org","person","role"] as const)for(const late of [200,401])it(`discards late ${late} budget data on a mounted ${field} change without redirecting the new scope`,async()=>{let resolve!:(value:ApiResponse)=>void;const pending=new Promise<ApiResponse>(done=>{resolve=done;});const f=mount({respond:()=>pending});try{await screen.findByRole("button",{name:"Refresh budgets"});await waitFor(()=>expect(f.request.mock.calls.some(([r])=>r.path.endsWith("/budget-settings"))).toBe(true));if(field==="org")f.me.org.orgId="org_bbbbbbbbbbbbbbbbbbbb";else if(field==="person")f.me.developer.id="c".repeat(64);else f.me.developer.orgRole="admin";f.request.mockImplementation(async r=>r.path.endsWith("/me")?{status:200,body:f.me}:{status:200,body:{...settings,orgId:f.me.org.orgId,orgMonthly:{kind:"limited",microdollars:777_000_000,source:"configured"}}});await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","identity"]});});await screen.findByText("$777.00");await act(async()=>{resolve(late===200?{status:200,body:settings}:{status:401,body:{error:{code:"AUTH_REQUIRED"}}});});expect(screen.queryByText("$500.00")).toBeNull();expect(f.host.signIn).not.toHaveBeenCalled();expect(f.query.getQueriesData({queryKey:["admin","budget-settings",orgId,developerId,"owner"]})).toEqual([]);}finally{f.close();}});
-it("keeps the page and focused refresh during background identity and data checks",async()=>{const f=mount();try{await screen.findByText("$500.00");const button=screen.getByRole("button",{name:"Refresh budgets"});button.focus();let resolve!:(value:ApiResponse)=>void;let pending=new Promise<ApiResponse>(done=>{resolve=done;});f.request.mockImplementation(r=>r.path.endsWith("/me")?pending:Promise.resolve({status:200,body:settings}));let recheck!:Promise<void>;await act(async()=>{recheck=f.query.invalidateQueries({queryKey:["admin","identity"]});});await waitFor(()=>expect(button.getAttribute("aria-disabled")).toBe("true"));expect(document.activeElement===button).toBe(true);expect(screen.getByRole("table")).toBeTruthy();const before=f.request.mock.calls.length;fireEvent.click(button);expect(f.request.mock.calls.length).toBe(before);await act(async()=>{resolve({status:200,body:f.me});await recheck;});pending=new Promise<ApiResponse>(done=>{resolve=done;});f.request.mockImplementation(r=>r.path.endsWith("/me")?Promise.resolve({status:200,body:f.me}):pending);fireEvent.click(button);await waitFor(()=>expect(button.getAttribute("aria-disabled")).toBe("true"));expect(document.activeElement===button).toBe(true);expect(screen.getByRole("table")).toBeTruthy();await act(async()=>{resolve({status:200,body:settings});});expect(document.activeElement===button).toBe(true);}finally{f.close();}});
-it("clears money cache on role loss and does not read budgets on phones",async()=>{const f=mount();try{await screen.findByText("$500.00");f.me.developer.orgRole="member";await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","identity"]});});await screen.findByRole("heading",{name:"Administration unavailable"});expect(f.query.getQueriesData({queryKey:["admin","budget-settings"]})).toEqual([]);}finally{f.close();}const phone=mount({width:390});try{await screen.findByText(/Open this on a larger screen/);expect(phone.request.mock.calls.some(([r])=>r.path.includes("budget"))).toBe(false);}finally{phone.close();}});
-for(const theme of ["light","dark"] as const)it(`has accessible read-only monthly budgets in ${theme}`,async()=>{const f=mount({theme});try{await screen.findByRole("table",{name:"Monthly base budgets"});await expectNoAxeViolations(f.container);}finally{f.close();}});
 
-it("never reuses an unscoped foreign cache and binds the query to org person and role",async()=>{const f=mount({prime:true});try{await screen.findByText("$500.00");expect(screen.queryByText("$777.00")).toBeNull();expect(f.query.getQueriesData({queryKey:["admin","budget-settings",orgId,developerId,"owner"]}).length).toBe(1);}finally{f.close();}});
-for(const role of ["member","maintainer","future-role"])it(`never requests monthly budgets for initial ${role} access`,async()=>{const f=mount({role});try{await screen.findByRole("heading",{name:"Administration unavailable"});expect(f.request.mock.calls.some(([r])=>r.path.includes("budget"))).toBe(false);expect(screen.queryByRole("table")).toBeNull();}finally{f.close();}});
+for (const role of ["owner", "admin"]) it(`shows ${role} the company month totals without the duplicate table or dead editor`, async () => {
+ const f = mount({ role }); try {
+  const group = await screen.findByRole("group", { name: "Spending in November" }); expect(group.textContent).toContain("$20.00"); expect(group.textContent).toContain("$78.00");
+  expect(screen.getByText(/Not yet confirmed:/).textContent).toBe("Not yet confirmed: $1.23");
+  expect(screen.getByText("Not yet confirmed amounts are already counted in Spent or Held.")).toBeTruthy();
+  expect(screen.queryByText(/Spending by project/)).toBeNull(); expect(screen.queryByRole("region", { name: "By project" })).toBeNull();
+  expect(screen.queryByRole("table", { name: "Monthly base budgets" })).toBeNull(); expect(screen.queryByText("Task stop")).toBeNull();
+  expect(f.request.mock.calls.every(([r]) => r.method === "GET" && !/budget-settings|task-stop|enrollment/.test(r.path))).toBe(true);
+ } finally { f.close(); }
+});
+for (const status of [403, 404, 429, 503]) it(`hides previous amounts after spending refresh fails with ${status}`, async () => {
+ const f = mount(); try {
+  await screen.findByText("$20.00");
+  f.request.mockImplementation(async r => r.path.endsWith("/me") ? { status: 200, body: f.me } : { status, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "private detail" } } });
+  fireEvent.click(screen.getByRole("button", { name: "Refresh spending" }));
+  await waitFor(() => expect(screen.queryByText("$20.00")).toBeNull()); expect(screen.queryByText("private detail")).toBeNull();
+ } finally { f.close(); }
+});
+it("shows unknown provisional totals as unavailable rather than zero", async () => {
+ const f = mount({ respond: async () => ({ status: 200, body: { spentThisMonthUsd: 0, limitUsd: 10, remainingUsd: 10 } }) });
+ try { expect((await screen.findByText(/Not yet confirmed:/)).textContent).toBe("Not yet confirmed: Unavailable"); } finally { f.close(); }
+});
+for (const field of ["org", "person", "role"] as const) for (const late of [200, 401]) it(`discards late ${late} spending on a mounted ${field} change`, async () => {
+ let resolve!: (value: ApiResponse) => void; const pending = new Promise<ApiResponse>(done => { resolve = done; });
+ const f = mount({ respond: r => r.path.endsWith("/org/spend") ? pending : Promise.resolve({ status: 200, body: {} }) });
+ try {
+  await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.path.endsWith("/org/spend"))).toBe(true));
+  if (field === "org") f.me.org.orgId = "org_bbbbbbbbbbbbbbbbbbbb"; else if (field === "person") f.me.developer.id = "c".repeat(64); else f.me.developer.orgRole = "admin";
+  f.request.mockImplementation(async r => r.path.endsWith("/me") ? { status: 200, body: f.me } : { status: 200, body: r.path.endsWith("/org/spend") ? { ...settings, spentThisMonthUsd: 7 } : {} });
+  await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); }); await screen.findByText("$7.00");
+  await act(async () => { resolve(late === 200 ? { status: 200, body: settings } : { status: 401, body: { error: { code: "AUTH_REQUIRED" } } }); });
+  expect(screen.queryByText("$20.00")).toBeNull(); expect(f.host.signIn).not.toHaveBeenCalled();
+  expect(f.query.getQueriesData({ queryKey: ["admin", "lane-c", "org-spend", orgId, developerId, "owner"] })).toEqual([]);
+ } finally { f.close(); }
+});
+it("does not ask for financial data as a member", async () => {
+ const f = mount({ role: "member" }); try { await screen.findByRole("heading", { name: "Administration unavailable" }); expect(f.request.mock.calls.some(([r]) => r.path.endsWith("/org/spend"))).toBe(false); } finally { f.close(); }
+});
+for (const theme of ["light", "dark"] as const) it(`has accessible spending totals in ${theme}`, async () => {
+ const f = mount({ theme }); try { await screen.findByText("$20.00"); await expectNoAxeViolations(f.container); } finally { f.close(); }
+});
 
-it("does not repeat an unsuccessful initial budget read when only identity rechecks; Refresh remains deliberate",async()=>{const fail={status:503,body:{error:{code:"RUNTIME_UNAVAILABLE"}}},f=mount({respond:async()=>fail});try{await screen.findAllByRole("alert");const reads=()=>f.request.mock.calls.filter(([r])=>r.path.endsWith("/budget-settings")).length;expect(reads()).toBe(1);let resolve!:(r:ApiResponse)=>void;const pending=new Promise<ApiResponse>(done=>{resolve=done;});f.request.mockImplementation(r=>r.path.endsWith("/me")?pending:Promise.resolve(fail));let checking!:Promise<void>;await act(async()=>{checking=f.query.invalidateQueries({queryKey:["admin","identity"]});});await screen.findByText("Checking company access...");await act(async()=>{resolve({status:200,body:f.me});await checking;});await waitFor(()=>expect(screen.getByRole("button",{name:"Refresh budgets"}).getAttribute("aria-disabled")).toBe("false"));expect(reads()).toBe(1);fireEvent.click(screen.getByRole("button",{name:"Refresh budgets"}));await waitFor(()=>expect(reads()).toBe(2));}finally{f.close();}});
-
-it("shows no task stop card or button on Spending, and sends nothing to the task stop routes (hidden: the hosted Code does not serve them, DEC 254zzz113/115/116)", async () => {
- for (const role of ["owner", "admin"]) {
-  const f = mount({ role });
-  try {
-   await screen.findByText("$500.00");
-   expect(screen.queryByRole("heading", { name: "Task stops" })).toBeNull();
-   expect(screen.queryByRole("button", { name: /task stop|enforcement/i })).toBeNull();
-   expect(f.request.mock.calls.some(([r]) => r.path.includes("task-stop") || r.path.includes("enforcement"))).toBe(false);
-  } finally { f.close(); }
- }
+it("shows an absent meter month calmly, with no amounts or error", async () => {
+ const f = mount({ respond: async () => ({ status: 200, body: { month: "2026-11", empty: true } }) });
+ try {
+  await screen.findByText("No AI spending recorded yet this month");
+  expect(screen.queryByTestId("spend-error")).toBeNull();
+  expect(screen.queryByText(/\$0/)).toBeNull(); expect(screen.queryByRole("group", { name: "Spending in November" })).toBeNull();
+ } finally { f.close(); }
+});
+it("shows a real meter read fault as an error, never an empty month or zero", async () => {
+ const f = mount({ respond: async () => ({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "private fault" } } }) });
+ try {
+  expect((await screen.findByTestId("spend-error")).textContent).toContain("Couldn't load spending.");
+  expect(screen.queryByText("No AI spending recorded yet this month")).toBeNull(); expect(screen.queryByText(/\$0/)).toBeNull();
+ } finally { f.close(); }
 });

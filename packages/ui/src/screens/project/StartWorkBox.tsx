@@ -1,3 +1,5 @@
+import { type PreviewV2 } from "@agentx/contracts/web";
+import { StartEstimateComparison, quoteCostSummary } from "./StartEstimateComparison.js";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useQuery, skipToken } from "@tanstack/react-query";
@@ -36,15 +38,28 @@ export function StartWorkBox({ project, agents }: { project: string; agents: rea
  const answersOn = useAnswersEnabled(), answers = useAnswersApi(), overview = useProject(project), fromAnswer = useStartFromAnswer(project);
  const [offer, setOffer] = useState<{ text: string; pick: StartSuggestPick; why: "large" | "failed" }>(), [said, setSaid] = useState<string>(), [answer, setAnswer] = useState<{ question: string; value: AnswerResponse }>();
  const [text, setText] = useState(""), [busy, setBusy] = useState(false), [accepted, setAccepted] = useState(false), [error, setError] = useState<string>(), [full, setFull] = useState(false), [pending, setPending] = useState<Exclude<SendResult<unknown>, { kind: "done" }>>();
- const [preview, setPreview] = useState<{ project: string; api: typeof api; stop?: number }>();
+ const [preview, setPreview] = useState<{ project: string; api: typeof api; inputText: string; stop?: number; quote?: PreviewV2 }>();
+ const [costChange, setCostChange] = useState<string>(), [reviewPath, setReviewPath] = useState<"quick" | "full">();
+ const lastQuote = useRef<PreviewV2 | undefined>(undefined), requested = useRef<string | undefined>(undefined);
  // The spending-stop preview is a POST: it is sent only after the person acts (their first keystroke in this box for this project), never when the page loads.
  const [askedFor, setAskedFor] = useState<string>(), asked = askedFor === project;
  useEffect(() => {
-  if (!asked) return;
+  if (!asked || !text.trim() || text.length > CODE_TEXT_MAX) return;
   const abort = new AbortController();let live = true;
-  void api.previewStart(project, abort.signal).then(value => { if (live) setPreview(value === undefined ? undefined : { project, api, ...(value.kind === "captured" ? { stop: value.effectiveStopMicrousd } : {}) }); });
-  return () => { live = false;abort.abort(); };
- }, [api, project, asked]);
+  const delay = requested.current === project ? 250 : 0;
+  const timer = setTimeout(() => {
+   requested.current = project;
+   void api.previewStart(project, abort.signal, { quoteVersion: 2, inputText: text }).then(value => {
+    if (!live) return;
+    if (value === undefined) { setPreview(undefined);return; }
+    const quote = value.kind === "comparison" ? value : undefined;
+    if (quote !== undefined && lastQuote.current?.project === project && quoteCostSummary(lastQuote.current) !== quoteCostSummary(quote)) setCostChange("Cost estimate changed. " + quoteCostSummary(lastQuote.current) + " → " + quoteCostSummary(quote) + ". Review before starting.");
+    lastQuote.current = quote;
+    setPreview({ project, api, inputText: text, ...(value?.kind === "captured" ? { stop: value.effectiveStopMicrousd } : {}), ...(quote === undefined ? {} : { quote }) });
+   });
+  }, delay);
+  return () => { live = false;clearTimeout(timer);abort.abort(); };
+ }, [api, project, asked, text]);
  const sending = useRef(false), intent = useRef<{ text: string; requestId: string } | undefined>(undefined);
  const tooLong = text.length > CODE_TEXT_MAX, locked = busy || accepted || pending !== undefined, blocked = locked || !text.trim() || tooLong;
  async function start(path?: "quick" | "full") {
@@ -53,7 +68,18 @@ export function StartWorkBox({ project, agents }: { project: string; agents: rea
   // A retry of the same text reuses its request id, so a lost answer never starts the work twice.
   if (intent.current?.text !== text) intent.current = { text, requestId: crypto.randomUUID() };
   try {
-   const result = await api.startCode(project, text, intent.current.requestId, path);
+   const before = preview?.project === project && preview.api === api ? preview.quote : undefined;
+   if (before !== undefined) {
+    const refreshed = await api.previewStart(project, undefined, { quoteVersion: 2, inputText: text });
+    if (refreshed?.kind !== "comparison") { setCostChange("Cost comparison unavailable. Start again to continue with spending checked when work starts.");setPreview(undefined);return; }
+    setPreview({ project, api, inputText: text, quote: refreshed });lastQuote.current = refreshed;
+    const selected = path ?? reviewPath ?? "quick";
+    const changed = quoteCostSummary(before) !== quoteCostSummary(refreshed);
+    if (changed || (selected === "full" && reviewPath !== "full")) {
+     setCostChange(changed ? "Cost estimate changed. " + quoteCostSummary(before) + " → " + quoteCostSummary(refreshed) + ". Review before starting." : "Full path selected. Review before starting.");setReviewPath(selected);return;
+    }
+   }
+   const result = await api.startCode(project, text, intent.current.requestId, path ?? reviewPath);
    if (result.kind !== "done") { setPending(result);return; }
    setAccepted(true);
    // A legacy answer can lack its session id: never guess one, and never send the work a second time.
@@ -76,6 +102,7 @@ export function StartWorkBox({ project, agents }: { project: string; agents: rea
  /** The first press with answers on: ask what the text needs, then do the one obvious thing (small change: Quick, as Slack does; question or unclear: answer first) or show the card. */
  async function press() {
   if (blocked || sending.current) return;
+  if (reviewPath !== undefined) { void start(reviewPath);return; }
   if (!answersOn) { void start();return; }
   sending.current = true;setBusy(true);setError(undefined);setSaid(undefined);setOffer(undefined);setAnswer(undefined);
   let next: "legacy" | "start-quick" | "answer" | undefined;
@@ -101,5 +128,5 @@ export function StartWorkBox({ project, agents }: { project: string; agents: rea
  const choose = (pick: StartSuggestPick) => { setOffer(undefined);if (pick === "answer") void ask(text.trim());else void start(pick); };
  const canStart = overview.data?.you.canStartWork === true, repositories = overview.data?.project.repositories ?? [];
  const choices: StartSuggestPick[] = ["answer", "quick", "full"], choiceWords = { answer: A.CHOICE_ANSWER, quick: A.CHOICE_QUICK, full: A.CHOICE_FULL } as const;
- return <section className="rv-project-start" aria-label="Start work"><form onSubmit={event => { event.preventDefault();void press(); }}><div className="rv-field"><label htmlFor={field}>What do you need?</label><textarea id={field} data-testid="start-work-text" className="rv-input rv-project-start-text" value={text} disabled={locked} aria-invalid={tooLong || undefined} aria-describedby={field + "-count " + field + "-runs"} onChange={event => { setText(event.target.value);setAskedFor(project); }} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault();void press(); } }} /></div><div className="rv-project-start-bar"><p id={field + "-count"} className={tooLong ? "rv-error" : "rv-muted"}>{text.length} / {CODE_TEXT_MAX}</p><Button type="submit" variant="primary" data-testid="start-work-submit" busy={busy} disabled={blocked}>Start</Button></div><p id={field + "-runs"} className="rv-muted"><VisibleText text={runs} /></p>{preview?.project === project && preview.api === api && <p className="rv-muted">{preview.stop === undefined ? "Spending stop: not shown yet. It is checked when work starts." : "Effective spending stop: " + formatUsdMicrodollars(preview.stop) + ". Checked again when work starts."}</p>}{error && <p role="alert" data-testid="start-work-error"><VisibleText text={error} /></p>}{full && <OpenTasksToClose onClosed={() => { setFull(false);setError(undefined); }} />}{busy && answersOn && <p className="rv-muted" role="status">{A.SUGGESTING}</p>}{said && <p role="status" data-testid="start-small-talk"><VisibleText text={said} /></p>}{offer && <div className="rv-start-card" role="group" aria-label="Choose how to handle this" data-testid="start-choice-card"><p><VisibleText text={offer.why === "large" ? A.CARD_LARGE : A.CARD_FAILED} /></p><div className="rv-start-card-choices">{choices.map(pick => <Button key={pick} variant={pick === offer.pick ? "primary" : "secondary"} data-testid={"start-choice-" + pick} disabled={pick !== "answer" && !canStart} onClick={() => choose(pick)}>{choiceWords[pick]}{pick === offer.pick ? " (" + A.RECOMMENDED + ")" : ""}</Button>)}</div></div>}{answer && answer.question.length > 1_000 && <p className="rv-muted" data-testid="start-clipped">Only the first 1,000 characters of your text were asked.</p>}{answer && <AnswerView project={project} answer={answer.value} repositories={repositories} {...(canStart && answer.value.action !== undefined ? { onStart: () => { void fromAnswer.start(taskTextFromAnswer(answer.question, answer.value)); }, starting: fromAnswer.busy } : {})} />}<StartedNotes started={fromAnswer} />{accepted && <p role="status">Work was accepted. <Link to="/app/live">Open Live</Link> to find its session.</p>}{pending && <ConfirmInBrowser result={pending} subjectKey={["project", project, "overview"]} isApplied={() => false} />}</form></section>;
+ return <section className="rv-project-start" aria-label="Start work"><form onSubmit={event => { event.preventDefault();void press(); }}><div className="rv-field"><label htmlFor={field}>What do you need?</label><textarea id={field} data-testid="start-work-text" className="rv-input rv-project-start-text" value={text} disabled={locked} aria-invalid={tooLong || undefined} aria-describedby={field + "-count " + field + "-runs"} onChange={event => { setText(event.target.value);setReviewPath(undefined);setCostChange(undefined);setAskedFor(project); }} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault();void press(); } }} /></div><div className="rv-project-start-bar"><p id={field + "-count"} className={tooLong ? "rv-error" : "rv-muted"}>{text.length} / {CODE_TEXT_MAX}</p><Button type="submit" variant="primary" data-testid="start-work-submit" busy={busy} disabled={blocked}>Start</Button></div><p id={field + "-runs"} className="rv-muted"><VisibleText text={runs} /></p>{preview?.project === project && preview.api === api && preview.inputText === text && (preview.quote !== undefined ? <StartEstimateComparison quote={preview.quote} /> : <p className="rv-muted">{preview.stop === undefined ? "Spending stop: not shown yet. It is checked when work starts." : "Effective spending stop: " + formatUsdMicrodollars(preview.stop) + ". Checked again when work starts."}</p>)}{costChange && <p role="status">{costChange}</p>}{error && <p role="alert" data-testid="start-work-error"><VisibleText text={error} /></p>}{full && <OpenTasksToClose onClosed={() => { setFull(false);setError(undefined); }} />}{busy && answersOn && <p className="rv-muted" role="status">{A.SUGGESTING}</p>}{said && <p role="status" data-testid="start-small-talk"><VisibleText text={said} /></p>}{offer && <div className="rv-start-card" role="group" aria-label="Choose how to handle this" data-testid="start-choice-card"><p><VisibleText text={offer.why === "large" ? A.CARD_LARGE : A.CARD_FAILED} /></p><div className="rv-start-card-choices">{choices.map(pick => <Button key={pick} variant={pick === offer.pick ? "primary" : "secondary"} data-testid={"start-choice-" + pick} disabled={pick !== "answer" && !canStart} onClick={() => choose(pick)}>{choiceWords[pick]}{pick === offer.pick ? " (" + A.RECOMMENDED + ")" : ""}</Button>)}</div></div>}{answer && answer.question.length > 1_000 && <p className="rv-muted" data-testid="start-clipped">Only the first 1,000 characters of your text were asked.</p>}{answer && <AnswerView project={project} answer={answer.value} repositories={repositories} {...(canStart && answer.value.action !== undefined ? { onStart: () => { void fromAnswer.start(taskTextFromAnswer(answer.question, answer.value)); }, starting: fromAnswer.busy } : {})} />}<StartedNotes started={fromAnswer} />{accepted && <p role="status">Work was accepted. <Link to="/app/live">Open Live</Link> to find its session.</p>}{pending && <ConfirmInBrowser result={pending} subjectKey={["project", project, "overview"]} isApplied={() => false} />}</form></section>;
 }

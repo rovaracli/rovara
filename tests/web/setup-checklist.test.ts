@@ -203,12 +203,14 @@ describe("Project settings", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Re-run setup" }));
     await waitFor(() => expect(calls(f, "POST", "/v1/app/projects/web/setup-agent")).toHaveLength(1));
     expect(await screen.findByRole("button", { name: "Review archive" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "AI models for each step" }).getAttribute("href")).toBe("/app/admin/ai-spending#ai-models");
     f.close();
   });
 
   it("a project user gets no Re-run setup and no Archive", async () => {
     const f = mount(h(ProjectSettingsTab, { project: "web", canEdit: false }), { role: "member", run: () => ({ status: 200, body: runView("ready", false) }) });
     await screen.findByTestId("project-settings-lifecycle-none");
+    expect(screen.getByRole("link", { name: "AI models for each step" }).getAttribute("href")).toBe("/app/admin/ai-spending#ai-models");
     expect(screen.queryByRole("button", { name: "Re-run setup" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Review archive" })).toBeNull();
     f.close();

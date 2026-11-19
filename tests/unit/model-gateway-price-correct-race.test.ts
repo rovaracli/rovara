@@ -36,7 +36,7 @@ it("below-zero guard writes nothing when a corrupted item is injected before the
   expect((await meter.read(scope)).every((row) => row.spentMicros === 0 && row.estimatedMicros === 80 && row.committed === 80)).toBe(true);
   expect(meter.ledger(input.callKey)?.status).toBe("pending");
 });
-it("a failing pre-write hook leaves ledger and rows atomic; missing usage stays estimated without a record", async () => {
+it("a failing pre-write hook leaves ledger and rows atomic; missing usage stays estimated with a pending record", async () => {
   const meter = new InMemoryMeter(() => now, () => false, () => { throw new Error("fixture"); });
   const r = await meter.reserve({ scope, caps, estimateMicros: 100 }); if (!r.ok) throw new Error("fixture");
   await expect(meter.settle(r.reservation, 80, estimated)).rejects.toThrow();
@@ -44,5 +44,5 @@ it("a failing pre-write hook leaves ledger and rows atomic; missing usage stays 
   expect(await meter.pendingKeys(10)).toEqual({ items: [] });
   const clean = new InMemoryMeter(() => now); const other = await clean.reserve({ scope, caps, estimateMicros: 100 }); if (!other.ok) throw new Error("fixture");
   await clean.settle(other.reservation, 100, { provider: "anthropic", model: "m", kind: "chat", settledAt: now });
-  expect((await clean.read(scope))[0]).toMatchObject({ spentMicros: 100, estimatedMicros: 100 }); expect(await clean.pendingKeys(10)).toEqual({ items: [] });
+  expect((await clean.read(scope))[0]).toMatchObject({ spentMicros: 100, estimatedMicros: 100 }); expect(await clean.pendingKeys(10)).toEqual({ items: [{ provider: "anthropic", model: "m" }] });
 });

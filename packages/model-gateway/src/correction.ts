@@ -95,6 +95,8 @@ export async function runCorrections(options: RunOptions & { prices: PriceSource
       for (const call of page.items) {
         if (!ctx.room()) { complete = false; break; }
         ctx.visit();
+        // Price evidence cannot resolve missing usage, including the placeholder zero counts.
+        if (call.chargeStatus === "awaiting_usage") { report.skipped++; report.more = true; continue; }
         const priorAttempt = retry.get(call.callKey);
         if (priorAttempt !== undefined && (priorAttempt.attempts >= MAX_UNKNOWN_ATTEMPTS || options.now < priorAttempt.after)) { report.skipped++; report.more = true; continue; }
         if (priorAttempt === undefined && retry.size >= MAX_ENTRIES_PER_SOURCE) { report.skipped++; report.more = true; ctx.log({ event: "price_correction_operator_review" }); continue; }

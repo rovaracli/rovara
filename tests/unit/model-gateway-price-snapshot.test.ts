@@ -64,3 +64,15 @@ it("source prices beat overrides, expired overrides disappear on reads", async (
   expect(prices.priceFor("anthropic", "a")?.inputMicrosPerMTok).toBe(1_000_000); expect(prices.health().redundantOverrides).toBe(1); expect(prices.priceFor("anthropic", "gap")?.inputMicrosPerMTok).toBe(99);
   clock = Date.UTC(2026, 10, 15); expect(prices.priceFor("anthropic", "gap")).toBeUndefined();
 });
+it("keeps one snapshot hash with the built price snapshot", async () => {
+  const { createHash } = await import("node:crypto");
+  const { InMemoryPriceSnapshotStore } = await import("../../packages/model-gateway/src/price-snapshot.js");
+  const { SnapshotPriceSource } = await import("../../packages/model-gateway/src/price-index.js");
+  const now = Date.UTC(2026, 10, 18);
+  const snapshot = { version: 1, sources: { litellm: { fetchedAt: now - 1000, count: 1, entries: [entry] } } };
+  const store = new InMemoryPriceSnapshotStore(); await store.save(snapshot, 0);
+  const prices = new SnapshotPriceSource(store, { now: () => now }); await prices.reload();
+  const expected = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+  expect(prices.quoteBasis("anthropic", "a")?.hash).toBe(expected);
+  expect(prices.quoteBasis("anthropic", "a")?.hash).toBe(expected);
+});

@@ -2,7 +2,7 @@
 // The Hybrid 1 admin pages (DEC 223): grouped navigation, Spending with real amounts and its over-budget states, company settings and the account
 // page, each with its "not connected yet" state (no step-up in front of any action since owner DEC 254zzz73).
 import { beforeEach, describe, expect, it } from "vitest";
-import { cleanup, screen, fireEvent, within } from "@testing-library/react";
+import { screen, fireEvent, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
@@ -11,7 +11,7 @@ import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packag
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { lineState, readCompanySettings, readOrgSpend, spendSummary } from "../../packages/ui/src/api/admin-company.js";
-import { visibleAdminGroups } from "../../packages/ui/src/screens/admin/admin-nav.js";
+import { ADMIN_GROUPS, visibleAdminGroups } from "../../packages/ui/src/screens/admin/admin-nav.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
@@ -21,11 +21,11 @@ const me = "a".repeat(64), maya = { developerId: "b".repeat(64), name: "Maya", r
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const NOT_ON_CODE = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } };
 const spendBody = {
- spentThisMonthUsd: 412.6, remainingUsd: 549.2, heldUsd: 38.2, limitUsd: 1000, runsOutOn: "2026-11-29", costPerMergedChangeUsd: 3.84, mergedCount: 96, month: "2026-11",
+ spentThisMonthUsd: 412.6, remainingUsd: 549.2, provisionalMicros: 1_230_000, heldUsd: 38.2, limitUsd: 1000, runsOutOn: "2026-11-29", costPerMergedChangeUsd: 3.84, mergedCount: 96, month: "2026-11",
  byProject: [{ name: "evals-api", spentUsd: 201.4, heldUsd: 21, limitUsd: 400, taskStopUsd: 8, mergedCount: 52, paidFrom: "Company Gemini account" }, { name: "prompt-router", spentUsd: 171.6, heldUsd: 17.2, limitUsd: 172, taskStopUsd: 8, mergedCount: 37, paidFrom: "Company Gemini account" }],
  byPerson: [{ name: "Priya Raman", role: "Admin", spentUsd: 148.2, allowanceUsd: 300, allowanceSource: "own", tasks: 41, mergedCount: 38 }, { name: "Sam Okoye", role: "Member", spentUsd: 139.9, allowanceUsd: 150, allowanceSource: "company_default", tasks: 36, mergedCount: 31 }],
 };
-const CAP_UNSET = { ready: false, reason: "company_monthly_cap_unset", message: "Set a monthly cap to use the model gateway." };
+const CAP_UNSET = { ready: false, reason: "company_monthly_cap_unset", message: "Set a monthly limit to use the model gateway." };
 const settingsBody = (extra: Record<string, unknown> = {}) => ({
  companyId: "org_aaaaaaaaaaaaaaaaaaaa", version: 4,
  settings: { featureGates: {}, websiteCeiling: { mode: "any" }, instructions: [{ text: "Never touch the billing tables.", priority: "required" }], evalBudgetUsdMicros: null, start: { allow: true, maxEstimateUsdMicros: 5_000_000 }, decisions: [], locks: {}, budgets: { companyMonthlyUsdMicros: null, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } },
@@ -86,6 +86,7 @@ describe("admin navigation", () => {
   expect(all).toEqual(expect.arrayContaining(["People", "Invites", "Spending", "Company settings", "How we work", "Audit"]));
   expect(all).not.toContain("Sign-in clients");expect(all).not.toContain("Health");
   expect(all).not.toContain("Sign-in factors");
+  expect(ADMIN_GROUPS.flatMap(g => g.links).find(l => l.label === "Spending")?.blurb).toBe("Spent this month and what is left.");
  });
  it("hides owner-only and switched-off pages, and shows a member only the waiting queue", () => {
   expect(visibleAdminGroups("owner", false).flatMap(group => group.links.map(link => link.label))).not.toContain("Company domains");
@@ -109,6 +110,7 @@ describe("Spending", () => {
   const f = mount("/app/admin/money/budgets", r => (r.path === "/v1/app/org/spend" ? ok(spendBody) : ok({})));
   try {
    const stats = await screen.findByRole("group", { name: "Spending in November" });
+   expect(screen.getByText(/Not yet confirmed:/).textContent).toBe("Not yet confirmed: $1.23");
    expect(within(stats).getByText("$412.60")).toBeTruthy(); expect(within(stats).getByText("$38.20")).toBeTruthy(); expect(within(stats).getByText("$549.20")).toBeTruthy(); expect(within(stats).getByText("$3.84")).toBeTruthy();
    const projects = screen.getByRole("table", { name: "Spending by project" });
    expect(within(projects).getByText("evals-api")).toBeTruthy(); expect(within(projects).getByText("$201.40")).toBeTruthy();
@@ -128,7 +130,7 @@ describe("Spending", () => {
    const banner = screen.getByRole("region", { name: "This month's budget is used up" });
    expect(banner.textContent).toContain("$4.50 over");
    expect(screen.getByText(/Over by/).textContent).toBe("Over by $10.00");
-   expect(screen.getByRole("link", { name: "See limits" }).getAttribute("href")).toBe("#limits");
+   expect(screen.getByRole("link", { name: "Raise the limit" }).getAttribute("href")).toBe("/app/admin/ai-spending");
   } finally { f.close(); }
  });
  it("warns when the month is nearly used", async () => {
@@ -143,20 +145,13 @@ describe("Spending", () => {
    expect(screen.queryByRole("table", { name: "Spending by project" })).toBeNull();
   } finally { f.close(); }
  });
- it("says per-project amounts are not connected when only the totals are served", async () => {
+ it("omits the by-project placeholder when only the company totals are served", async () => {
   const f = mount("/app/admin/money/budgets", r => (r.path === "/v1/app/org/spend" ? ok({ spentThisMonthUsd: 12, remainingUsd: 88 }) : ok({})));
-  try { await screen.findByRole("group", { name: /Spending in/ }); expect(screen.getAllByTestId("not-connected")).toHaveLength(1); } finally { f.close(); }
+  try { await screen.findByRole("group", { name: /Spending in/ }); expect(screen.queryByText(/Spending by project/)).toBeNull(); expect(screen.queryByRole("region", { name: "By project" })).toBeNull(); } finally { f.close(); }
  });
  it("has no accessibility violations with amounts shown", async () => {
   const f = mount("/app/admin/money/budgets", r => (r.path === "/v1/app/org/spend" ? ok(spendBody) : ok({})));
   try { await screen.findByRole("table", { name: "Spending by project" }); await expectNoAxeViolations(f.container); } finally { f.close(); }
- });
-});
-
-describe("Monthly limits", () => {
- it("say they are not connected yet when Cloud does not serve the budget settings", async () => {
-  const f = mount("/app/admin/money/budgets", r => (r.path === "/v1/app/org/spend" ? ok(spendBody) : NOT_ON_CODE));
-  try { expect(await screen.findByText("Monthly base budgets aren't connected to Rovara Code yet. No current amounts are shown.")).toBeTruthy(); } finally { f.close(); }
  });
 });
 
@@ -165,17 +160,17 @@ describe("model gateway readiness", () => {
  it("says what to do on Spending when the company has no monthly cap, and links to where the cap is set", async () => {
   const f = mount("/app/admin/money/budgets", withReadiness(CAP_UNSET));
   try {
-   const banner = await screen.findByRole("region", { name: "Set a monthly cap to use the model gateway." });
-   expect(within(banner).getByRole("link", { name: "Set the cap" }).getAttribute("href")).toBe("/app/admin/settings#monthly-cap");
+   const banner = await screen.findByRole("region", { name: "Set a monthly limit to use the model gateway." });
+   expect(within(banner).getByRole("link", { name: "Set the monthly limit" }).getAttribute("href")).toBe("/app/admin/ai-spending");
    expect(banner.textContent).toContain("Rovara picks no amount for you");
   } finally { f.close(); }
  });
  it("says it on the Overview too, and says nothing when the gateway is ready, when Cloud does not say, or when settings are not connected", async () => {
   const f = mount("/app/admin", withReadiness(CAP_UNSET));
-  try { expect(await screen.findByText("Set a monthly cap to use the model gateway.")).toBeTruthy(); } finally { f.close(); }
+  try { expect(await screen.findByText("Set a monthly limit to use the model gateway.")).toBeTruthy(); } finally { f.close(); }
   for (const answer of [withReadiness({ ready: true }), withReadiness(undefined), (r: ApiRequest) => (r.path === "/v1/app/org/settings" ? NOT_ON_CODE : ok({ members: [maya] }))]) {
    const g = mount("/app/admin", answer);
-   try { await screen.findByRole("group", { name: "At a glance" }); await within(await screen.findByRole("group", { name: "At a glance" })).findByText("1"); expect(screen.queryByText("Set a monthly cap to use the model gateway.")).toBeNull(); } finally { g.close(); }
+   try { await screen.findByRole("group", { name: "At a glance" }); await within(await screen.findByRole("group", { name: "At a glance" })).findByText("1"); expect(screen.queryByText("Set a monthly limit to use the model gateway.")).toBeNull(); } finally { g.close(); }
   }
  });
  it("shows an unknown reason with Cloud's own words, as plain text", async () => {
@@ -185,59 +180,20 @@ describe("model gateway readiness", () => {
  it("is shown on Company settings, with the cap on its own section", async () => {
   const f = mount("/app/admin/settings", r => (r.path === "/v1/app/org/settings" ? ok(settingsBody({ modelGateway: CAP_UNSET })) : ok({})));
   try {
-   expect(await screen.findByText("Set a monthly cap to use the model gateway.")).toBeTruthy();
-   expect(screen.getByText(/No monthly cap is set/)).toBeTruthy();
+   expect(await screen.findByText("Set a monthly limit to use the model gateway.")).toBeTruthy();
+   expect(screen.getByText(/No monthly limit is set/)).toBeTruthy();
   } finally { f.close(); }
  });
- it("sets the cap from the editor after the fresh sign-in, sending it in micro-dollars with the rest of the budgets", async () => {
-  const f = mount("/app/admin/settings", r => (r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok(settingsBody({ modelGateway: CAP_UNSET })) : ok({})));
+ it("shows a read-only monthly limit linking to the sole editor and preserves all budgets when saving rules", async () => {
+  const body = settingsBody(); const budgets = { ...body.settings.budgets, companyMonthlyUsdMicros: 500_000_000, learningMonthlyUsdMicros: 20_000_000 };
+  const f = mount("/app/admin/settings", r => r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok({ ...body, settings: { ...body.settings, budgets } }) : ok({}));
   try {
-   fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
-   const field = await screen.findByLabelText("Company monthly cap (USD)");
-   fireEvent.change(field, { target: { value: "1500.50" } });
-   fireEvent.click(screen.getByRole("button", { name: "Save rules" }));
-   await screen.findByText(/Saved\. The new rules apply/);
-   expect(writes(f).find(r => r.method === "PUT")?.body).toMatchObject({ expectedVersion: 4, settings: { budgets: { companyMonthlyUsdMicros: 1_500_500_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } } });
-  } finally { f.close(); }
- });
- it("keeps the learning cap under the company cap when saving, and leaves it alone otherwise", async () => {
-  const withLearning = () => { const body = settingsBody(); return { ...body, settings: { ...body.settings, budgets: { ...body.settings.budgets, companyMonthlyUsdMicros: 500_000_000, learningMonthlyUsdMicros: 20_000_000 } } }; };
-  for (const [typed, learning] of [["5", 5_000_000], ["100", 20_000_000]] as const) {
-   const f = mount("/app/admin/settings", r => (r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok(withLearning()) : ok({})));
-   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
-    fireEvent.change(await screen.findByLabelText("Company monthly cap (USD)"), { target: { value: typed } });
-    fireEvent.click(screen.getByRole("button", { name: "Save rules" }));
-    await screen.findByText(/Saved\. The new rules apply/);
-    expect(writes(f).find(r => r.method === "PUT")?.body).toMatchObject({ settings: { budgets: { companyMonthlyUsdMicros: Number(typed) * 1_000_000, learningMonthlyUsdMicros: learning } } });
-   } finally { f.close(); }
-   cleanup();
-  }
- });
- it("accepts a $0 cap (Cloud's validator does) and says it blocks all model gateway use", async () => {
-  const f = mount("/app/admin/settings", r => (r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
-  try {
-   fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
-   fireEvent.change(await screen.findByLabelText("Company monthly cap (USD)"), { target: { value: "0" } });
-   expect(screen.getByText("A $0 cap blocks all model gateway use.")).toBeTruthy();
-   fireEvent.click(screen.getByRole("button", { name: "Save rules" }));
-   await screen.findByText(/Saved\. The new rules apply/);
-   expect(writes(f).find(r => r.method === "PUT")?.body).toMatchObject({ settings: { budgets: { companyMonthlyUsdMicros: 0 } } });
-  } finally { f.close(); }
- });
- it("says a stored $0 cap blocks all model gateway use", async () => {
-  const body = settingsBody(); body.settings.budgets.companyMonthlyUsdMicros = 0 as unknown as null;
-  const f = mount("/app/admin/settings", r => (r.path === "/v1/app/org/settings" ? ok(body) : ok({})));
-  try { expect(await screen.findByText(/A \$0 cap blocks all model gateway use\./)).toBeTruthy(); } finally { f.close(); }
- });
- it("refuses a cap that is not a dollar amount before sending anything", async () => {
-  const f = mount("/app/admin/settings", r => (r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
-  try {
-   fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
-   fireEvent.change(await screen.findByLabelText("Company monthly cap (USD)"), { target: { value: "lots" } });
-   expect(screen.getByRole("button", { name: "Save rules" }).hasAttribute("disabled")).toBe(true);
-   expect(screen.getByText("Enter an amount in dollars, like 1500 or 1500.50.")).toBeTruthy();
-   expect(writes(f)).toHaveLength(0);
+   const section = await screen.findByRole("region", { name: "Monthly limit" }); const link = within(section).getByRole("link", { name: "AI and spending" }); expect(link.getAttribute("href")).toBe("/app/admin/ai-spending");
+   expect(screen.getByText(/monthly limit is/)).toBeTruthy();
+   fireEvent.click(screen.getByRole("button", { name: "Change rules" }));
+   expect(screen.queryByLabelText(/Company monthly/)).toBeNull();
+   fireEvent.click(screen.getByRole("button", { name: "Save rules" })); await screen.findByText(/Saved\. The new rules apply/);
+   expect(writes(f).find(r => r.method === "PUT")?.body).toMatchObject({ settings: { budgets } });
   } finally { f.close(); }
  });
 });
@@ -374,4 +330,15 @@ describe("Your account", () => {
   const f = mount("/app/account", () => ok({}));
   try { await screen.findByRole("heading", { name: "Your account" }); await expectNoAxeViolations(f.container); } finally { f.close(); }
  });
+});
+
+it("Overview distinguishes an empty month from a fault without showing invented amounts", async () => {
+ const f = mount("/app/admin", r => r.path === "/v1/app/org/spend" ? ok({ month: "2026-11", empty: true }) : ok({ members: [maya] }));
+ try { await screen.findByText("No AI spending recorded yet this month"); expect(screen.queryByText(/\$0/)).toBeNull(); } finally { f.close(); }
+ const g = mount("/app/admin", r => r.path === "/v1/app/org/spend" ? { status: 503, body: {} } : ok({ members: [maya] }));
+ try { await screen.findByText(/Couldn't load spending/); expect(screen.queryByText("No AI spending recorded yet this month")).toBeNull(); } finally { g.close(); }
+});
+it("only accepts the explicit empty answer without contradictory amounts", () => {
+ expect(readOrgSpend({ month: "2026-11", empty: true })).toEqual({ month: "2026-11", empty: true });
+ for (const extra of [{ spentThisMonthUsd: 0 }, { provisionalMicros: 1 }, { month: "bad" }]) expect(() => readOrgSpend({ month: "2026-11", empty: true, ...extra })).toThrow();
 });

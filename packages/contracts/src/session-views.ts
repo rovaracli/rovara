@@ -1,3 +1,4 @@
+import { TaskMoneyV1Schema } from "./task-money-schema.js";
 import { z } from "zod";
 import { OrgIdSchema } from "./browser-ids.js";
 import { AGENT_SESSION_CONTRACT_VERSION, SessionIdSchema, SESSION_KINDS, SESSION_MODES, SessionAgentSchema, SessionOwnerSchema, SessionStartedBySchema, SessionSummarySchema, SESSION_LEVELS, SessionActionSchema, SESSION_ACTIONS, SessionLegSchema, SESSION_LEGS_MAX, SessionAnchorRefSchema, SESSION_ANCHORS_MAX, LocalToolSchema, SESSION_SHARES_MAX, SessionWhereSchema, LIVE_FILTERS, LIVE_VIEWING_MAX, LIVE_PAGE_MAX, SessionEventSchema, SessionMessageSchema, SESSION_EVENTS_PAGE_MAX, SESSION_MESSAGES_PAGE_MAX } from "./agent-sessions.js";
@@ -52,9 +53,10 @@ export const SessionViewSchema = z
     lastRunFailed: SessionSummarySchema.shape.lastRunFailed,
     /** Live interaction F1: what "Fix with agent" is about for this session (the task's error, when it shows one). Fixed codes and ids only. */
     errorRef: ErrorRefSchema.optional(),
+    money: TaskMoneyV1Schema.optional(),
     cost: z
       .object({
-        spentUsd: z.number().min(0),
+        spentUsd: z.number().min(0).optional(),
         runLimitUsd: z.number().min(0).optional(),
         stopAtUsd: z.number().min(0).optional(),
         payer: PayerNameSchema,
@@ -180,6 +182,7 @@ export const SessionTileSchema = z
   .object({
     contractVersion: z.literal(AGENT_SESSION_CONTRACT_VERSION),
     sessionId: SessionIdSchema,
+    money: TaskMoneyV1Schema.optional(),
     kind: z.enum(SESSION_KINDS),
     title: z.string().min(1),
     project: z.string().regex(AGENTX_NAME_PATTERN).optional(),
@@ -188,7 +191,9 @@ export const SessionTileSchema = z
     where: SessionWhereSchema,
     level: z.enum(SESSION_LEVELS),
     revision: z.number().int().min(0),
-    summary: SessionSummarySchema,
+    // Read projection: money is absent for people who do not own this task.
+    // SessionSummarySchema remains strict for stored session records.
+    summary: SessionSummarySchema.partial({ costUsd: true, runLimitUsd: true, stopAtUsd: true }),
     createdAt: InstantSchema,
     updatedAt: InstantSchema,
     endedAt: InstantSchema.optional(),
@@ -226,7 +231,8 @@ export const LiveTileSchema = z
     step: SessionSummarySchema.shape.step,
     peek: SessionSummarySchema.shape.peek,
     lastRunFailed: SessionSummarySchema.shape.lastRunFailed,
-    costUsd: SessionSummarySchema.shape.costUsd,
+    money: TaskMoneyV1Schema.optional(),
+    costUsd: SessionSummarySchema.shape.costUsd.optional(),
     viewingNow: z.array(SessionOwnerSchema).max(LIVE_VIEWING_MAX),
     viewingNowCount: CountSchema,
     needsYou: z.boolean(),

@@ -1,3 +1,4 @@
+import { restrictPreviewV2, parsePreviewV2 } from "../../packages/contracts/src/start-estimates.js";
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
@@ -178,4 +179,121 @@ for (const result of [{ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", 
 it("a pending preview never disables Start", async () => {
  const f = setup(undefined, { preview: async () => new Promise<ApiResponse>(() => undefined) });
  try { fireEvent.change(await box(), { target: { value: "Fix it" } });expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start" }).disabled).toBe(false);fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1)); } finally { f.close(); }
+});
+
+it("opts in after typing and shows Quick/Full estimates with planning exposure and partial limits", async () => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js");
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  expect(await screen.findByRole("region", { name: "Quick and Full cost estimates" })).toBeTruthy();
+  expect(screen.getByText(/Quick: about \$1.00 to \$3.00/)).toBeTruthy();
+  expect(screen.getByText(/Full: about \$4.00 to \$10.00/)).toBeTruthy();
+  expect(screen.getAllByText(/not model-priced/).length).toBeGreaterThan(0);
+  expect(screen.getByText(/No money is reserved/)).toBeTruthy();
+  expect(previews(f)[0]?.body).toEqual({ quoteVersion: 2, inputText: "Fix it" });
+  expect(posts(f)).toHaveLength(0);
+ } finally { f.close(); }
+});
+it("refreshes changed quotes and discloses the cost change before starting", async () => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js");
+ let refreshed = false;
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), options: quoteFixture().options.map(q => refreshed ? { ...q, range: { state: "available", value: { lowMicros: 2_000_000, highMicros: 5_000_000 } }, stages: q.stages.map(s => ({ ...s, range: { state: "available", value: { lowMicros: 2_000_000, highMicros: 5_000_000 } } })) } : q), project: "payments", inputsDigest: (refreshed ? "b" : "a").repeat(64), asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  refreshed = true;fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  expect(await screen.findByText(/Cost estimate changed/)).toBeTruthy();
+  expect(posts(f)).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(posts(f)).toHaveLength(1));
+ } finally { f.close(); }
+});
+
+it("typing twice with equal ranges never reports a cost change, even with new digests", async () => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js"); let revision = 0;
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", inputsDigest: (++revision % 2 ? "a" : "b").repeat(64), asOf: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  const field = await box(); fireEvent.change(field, { target: { value: "Fix" } });
+  await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  fireEvent.change(field, { target: { value: "Fix it" } });
+  await waitFor(() => expect(previews(f)).toHaveLength(2));
+  await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  expect(screen.queryByText(/Cost estimate changed/)).toBeNull();
+  expect(screen.getAllByText("How this is worked out")).toHaveLength(1);
+  expect(document.body.textContent).not.toMatch(/partial|engine day|next call|legacy_aggregate/);
+ } finally { f.close(); }
+});
+it("starts once after refreshing an expired quote with equal ranges", async () => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js"); let revision = 0; const now = Date.now(); const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", inputsDigest: (++revision % 2 ? "a" : "b").repeat(64), asOf: revision === 1 ? new Date(now - 1000).toISOString() : new Date(now + 120_000).toISOString(), expiresAt: revision === 1 ? new Date(now + 60_000).toISOString() : new Date(now + 180_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } }); await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  clock.mockReturnValue(now + 120_000); fireEvent.click(screen.getByRole("button", { name: "Start" })); await waitFor(() => expect(posts(f)).toHaveLength(1));
+  expect(screen.queryByText(/Cost estimate changed/)).toBeNull();
+ } finally { clock.mockRestore(); f.close(); }
+});
+
+
+it.each([[true, "Blocked by a spending limit"], [false, "Fits the budget"], [null, "We'll check the budget when the task runs"]] as const)("shows restricted budget status %s without company figures", async (blocked, message) => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js");
+ const raw = restrictPreviewV2(parsePreviewV2(quoteFixture())!);
+ for (const q of raw.options) Object.assign(q, { firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked } } });
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...raw, project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  expect(screen.getAllByText(message)).toHaveLength(2);
+  if (blocked !== false) expect(screen.queryByText("Fits the budget")).toBeNull();
+  expect(screen.queryByText(/Initial hold|available;/)).toBeNull();
+ } finally { f.close(); }
+});
+
+it.each([
+ ["company_month", "company monthly limit"], ["project_month", "project monthly limit"],
+ ["project_task", "project task limit"], ["engine_task", "task limit on this install"],
+ ["engine_day", "daily limit on this install"], ["gateway_task", "AI task limit"],
+])("names a member's blocking %s without budget figures", async (bindingScope, words) => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js"); const raw = restrictPreviewV2(parsePreviewV2(quoteFixture())!);
+ for (const q of raw.options) Object.assign(q, { firstBindingLimit: { state: "available", value: { scope: "RESTRICTED", blocked: true, bindingScope } } });
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...raw, project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  expect(screen.getAllByText("Blocked by " + words)).toHaveLength(2);
+  expect(screen.queryByText(/Initial hold|available;/)).toBeNull();
+ } finally { f.close(); }
+});
+it("reviews Full with unchanged visible ranges without claiming the estimate changed", async () => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js");
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }), send: async r => r.path.endsWith("/start-suggest") ? { status: 200, body: { kind: "large_change", classifier: "ok", pick: "full" } } : started() });
+ f.query.setQueryData(["nav"], { features: { answers: true } });
+ try {
+  fireEvent.change(await box(), { target: { value: "Rewrite the module" } }); await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  fireEvent.click(await screen.findByTestId("start-choice-full"));
+  await screen.findByText("Full path selected. Review before starting.");
+  expect(screen.queryByText(/Cost estimate changed/)).toBeNull();
+  expect(posts(f).filter(r => r.path === CODE)).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(posts(f).filter(r => r.path === CODE)).toHaveLength(1));
+  expect(posts(f).find(r => r.path === CODE)?.body).toMatchObject({ path: "full" });
+ } finally { f.close(); }
+});
+
+
+it("shows the member's own estimate and task maximum in the start box without supporting money", async () => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js");
+ const raw = quoteFixture();
+ for (const q of raw.options) Object.assign(q, { limits: [{ scope: "engine_task", maximumMicros: { state: "available", value: 12_000_000 }, availableMicros: { state: "available", value: 8_100_013 }, heldMicros: { state: "available", value: 7_100_017 }, resetAt: { state: "unavailable", reason: "not_measured" } }] });
+ const member = restrictPreviewV2(parsePreviewV2(raw)!);
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...member, project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  const region = await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  expect(region.textContent).toContain("Quick: about $1.00 to $3.00");
+  expect(region.textContent).toContain("Full: about $4.00 to $10.00");
+  expect(region.textContent).toContain("Task limit: $12.00");
+  expect(region.textContent).not.toMatch(/Planning allowance|Initial hold|past tasks|8\.10|7\.10/);
+ } finally { f.close(); }
 });

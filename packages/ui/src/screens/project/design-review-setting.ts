@@ -98,10 +98,10 @@ export function designRows(setting: DesignReviewSetting, locked: ReadonlySet<Set
 
 export interface SettingLine { field: SettingField; label: string; text: string; mark: Mark }
 /** Mode, skipping and the cost limit, in words, each with its mark. */
-export function settingLines(setting: DesignReviewSetting, locked: ReadonlySet<SettingField>): SettingLine[] {
+export function settingLines(setting: DesignReviewSetting, locked: ReadonlySet<SettingField>, revealMoney = false): SettingLine[] {
   return [
     { field: "mode", label: "When it runs", text: MODE_WORDS[setting.mode], mark: markOf("mode", setting, locked) },
     { field: "allowSkip", label: "Skipping", text: setting.allowSkip ? "Allowed. On a high-risk design only the design approver may skip." : "Not allowed.", mark: markOf("allowSkip", setting, locked) },
-    { field: "capUsdPerTask", label: "Cost limit per task", text: `$${setting.capUsdPerTask.toFixed(2)}. Above it, a person decides.`, mark: markOf("capUsdPerTask", setting, locked) },
+    { field: "capUsdPerTask", label: revealMoney ? "Cost limit per task" : "Design review limit", text: revealMoney ? `$${setting.capUsdPerTask.toFixed(2)}. Above it, a person decides.` : "Work that does not fit is blocked until a person decides.", mark: markOf("capUsdPerTask", setting, locked) },
   ];
 }

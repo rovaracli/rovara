@@ -48,7 +48,7 @@ export function PlanChoices({ decision, pick, onPick, disabled }: { decision: Re
   parts.push(<div key="note" className="rv-plan-note"><label htmlFor={noteId}>Note for Rovara (optional)</label><textarea id={noteId} rows={2} maxLength={DECISION_PLAN_NOTE_MAX} value={pick.note} disabled={disabled} onChange={event => onPick({ ...pick, note: event.target.value })} />{pick.note.trim() !== "" && cleanNote(pick.note) === undefined ? <p className="rv-muted">Only plain text goes with your decision.</p> : null}</div>);
  }
  if (limit !== undefined) {
-  parts.push(<div key="limit" className="rv-plan-limit"><p>{"Run limit: " + (limit.currentUsd === undefined ? "none yet" : dollars(limit.currentUsd) + " now") + ", " + dollars(limit.proposedUsd) + " once you approve."}</p>
+  parts.push(<div key="limit" className="rv-plan-limit"><p>{"Task limit: " + (limit.currentUsd === undefined ? "none yet" : dollars(limit.currentUsd) + " now") + ", " + dollars(limit.proposedUsd) + " once you approve."}</p>
    {limit.raises ? <label><input type="checkbox" checked={pick.limitAgreed} disabled={disabled} onChange={event => onPick({ ...pick, limitAgreed: event.target.checked })} /> {"I agree Rovara may spend up to " + dollars(limit.proposedUsd) + " on this task."}</label> : null}{limit.raises && !pick.limitAgreed ? <p id={"limit-hint-" + id} className="rv-muted">Tick the box above to approve.</p> : null}</div>);
  }
  if (choices !== undefined) parts.push(<p key="takes" className="rv-muted rv-plan-takes">{DECISION_APPROVE_TAKES}</p>);

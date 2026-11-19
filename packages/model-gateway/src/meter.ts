@@ -1,3 +1,6 @@
+import { validProvisionalContext, historyOutput, neverConfirmedReceipt, provisionalEstimate, USAGE_WAIT_MS, type ProvisionalContext, type ProvisionalEstimate } from "./provisional.js";
+import { chargeValue, chargeReceiptContent, type ApplyChargeResult, type ChargeReceiptV1, type SettleV2 } from "./charge-receipt.js";
+import { checkReceiptScope, estimatedReceipt, readSettlementReceipt, receiptIdentity, receiptRevision } from "./charge-settlement.js";
 import { comparePosition, pendingPage, type PendingPage, type PendingPosition } from "./pending-page.js";
 import { PENDING_RETENTION_DAYS, DAY_MS, CORRECTION_RUN_MS } from "./price-constants.js";
 import { hasUsage, validUsage } from "./reported-cost.js";
@@ -16,11 +19,13 @@ export interface MeterScope { iss: string; cid: string; pid: string; tid: string
  * call (the task, person, project and company rows still count it), present only when the call's caps carry `upkeepMonth`, so it can only tighten.
  */
 export type MeterItem = "task" | "person" | "project" | "company" | "upkeep";
-export interface MeterRow { item: MeterItem; company: string; spentMicros: number; estimatedMicros: number; reservedMicros: number; committed: number; overrun: boolean }
+export interface MeterRow { item: MeterItem; company: string; spentMicros: number; estimatedMicros: number; reservedMicros: number; committed: number; overrun: boolean; provisionalMicros?: number }
 export interface Reservation { readonly id: string; readonly appliedMaxOutputTokens?: number }
 export type ReserveResult = { ok: true; reservation: Reservation } | { ok: false; reason: "cap" | "overrun"; item: MeterItem; held: boolean } | { ok: false; reason: "busy"; overrunInFlight?: true };
 export interface ReserveInput {
   scope: MeterScope; caps: Caps; estimateMicros: number; appliedMaxOutputTokens?: number;
+  provisional?: ProvisionalContext;
+  charge?: { receipt: ChargeReceiptV1; requestFingerprint: string };
   /** Omit only when usage is bounded by the priced hold. All times are integer seconds. */
   overrun?: { deadlineSeconds: number; tokenExpiresSeconds: number };
   /**
@@ -59,6 +64,9 @@ export interface Meter {
    */
   readonly combinedCompany?: boolean;
   reserve(input: ReserveInput): Promise<ReserveResult>;
+  /** Optional negotiated receipt capability; legacy adapters retain settle. */
+  settleV2?(input: SettleV2): Promise<void>;
+  applyChargeReceipt?(receipt: ChargeReceiptV1): Promise<ApplyChargeResult>;
   settle(reservation: Reservation, actualMicros: number, estimated?: EstimatedSettlement): Promise<void>;
   pendingKeys(limit: number, cursor?: string): Promise<PendingPage<PriceKey>>;
   pendingFor(key: PriceKey, limit: number, cursor?: string): Promise<PendingPage<EstimatedCall>>;
@@ -73,7 +81,8 @@ export interface Meter {
 export interface EstimatedSettlement { provider: string; model: string; kind: PriceKind; usage?: TokenUsage; settledAt: number; priceVersion?: number }
 export interface EstimatedCall extends MeterScope {
   callKey: string; month: string; provider: string; model: string; kind: PriceKind; usage: TokenUsage;
-  settledMicros: number; status: "pending" | "corrected" | "expired"; settledAt: number;
+  estimateBasis?: ProvisionalEstimate["estimateBasis"]; outputEstimateBasis?: ProvisionalEstimate["outputEstimateBasis"]; estimateStatus?: "estimated"; neverConfirmed?: true;
+  chargeStatus?: "estimated" | "awaiting_usage"; unresolvedAt?: number; settledMicros: number; status: "pending" | "corrected" | "expired"; settledAt: number;
   priceVersion?: number; capExceeded?: true; correctedFrom?: number; correctedTo?: number; deltaMicros?: number; correctedAt?: number; expiredAt?: number; runId?: string; priceSource?: PriceOrigin;
 }
 export interface ExpiryInput { callKey: string; runId: string; now: number; signal?: AbortSignal }
@@ -84,7 +93,7 @@ export function costView(rows: readonly MeterRow[]): Array<{ item: MeterItem; sp
 }
 /** `combined`: the partner (agent) meter's company row, the one combined company monthly cap (DEC 228c). */
 interface Target { key: string; item: MeterItem; cap: number | undefined; combined?: true }
-interface Open { month: string; appliedMaxOutputTokens?: number; scope: MeterScope; estimate: number; targets: Target[]; line?: BillLine }
+interface Open { provisional?: ProvisionalContext; charge?: ReserveInput["charge"]; month: string; appliedMaxOutputTokens?: number; scope: MeterScope; estimate: number; targets: Target[]; line?: BillLine }
 function validScope(value: unknown): value is MeterScope {
   const s = record(value);
   return s !== undefined && typeof s.iss === "string" && s.iss.length > 0 && s.iss.length <= 2048 && typeof s.cid === "string" && COMPANY.test(s.cid) && typeof s.pid === "string" && PROJECT.test(s.pid) && typeof s.tid === "string" && TASK.test(s.tid) && (s.per === undefined || (typeof s.per === "string" && PERSON.test(s.per)));
@@ -115,6 +124,8 @@ export class InMemoryMeter implements Meter {
   readonly #expiryOrder: string[] = [];
   readonly #ownInFlight = new Map<string, { owner: string; expiresSeconds: number }>();
   readonly #partner: InMemoryMeter | undefined;
+  readonly #receipts = new Map<string, { receipt: ChargeReceiptV1; targets: Target[]; amount: number; held: boolean; cutoffAt?: number; provisional?: ProvisionalEstimate; neverConfirmed?: true }>();
+  readonly #adjustments = new Map<string, { receipt: ChargeReceiptV1; deltaMicros: number }>();
   readonly #billed = new Map<string, BilledCall>();
   constructor(private readonly now: () => number = Date.now, private readonly conflict: () => boolean = () => false, private readonly beforeWrite: (operation: "settle" | "correct" | "expire", rows?: MeterRow[]) => void | Promise<void> = () => undefined, options: InMemoryMeterOptions = {}) {
     if (options.combineCompanyWith !== undefined && (options.combineCompanyWith === this || options.combineCompanyWith.#partner !== undefined)) throw new Error("meter unavailable");
@@ -131,6 +142,7 @@ export class InMemoryMeter implements Meter {
     const { scope, caps, estimateMicros } = input;
     if (input.appliedMaxOutputTokens !== undefined && (!whole(input.appliedMaxOutputTokens) || input.appliedMaxOutputTokens < 1)) return { ok: false, reason: "busy" };
     if (input.sweepAfter !== undefined && (!whole(input.sweepAfter) || input.sweepAfter > this.now() + SWEEP_AFTER_MAX_MS)) return { ok: false, reason: "busy" };
+    if (input.provisional !== undefined && !validProvisionalContext(input.provisional)) return { ok: false, reason: "busy" };
     if (input.line !== undefined && !validLine(input.line)) return { ok: false, reason: "busy" };
     if (input.review !== undefined && !(typeof input.review.jti === "string" && /^[0-9a-f-]{36}$/u.test(input.review.jti))) return { ok: false, reason: "busy" };
     // Fail closed: a combined meter without the combined company cap holds nothing.
@@ -145,6 +157,9 @@ export class InMemoryMeter implements Meter {
     }
     const companyKey = JSON.stringify([scope.iss, scope.cid]);
     const month = this.#month();
+    if (input.charge !== undefined) {
+      try { const r = readSettlementReceipt(input.charge.receipt); checkReceiptScope(r, scope, r.callId, estimateMicros, month); if (r.status !== "awaiting_usage" || !/^[0-9a-f-]{36}$/u.test(r.callId) || !/^[a-f0-9]{64}$/u.test(input.charge.requestFingerprint) || this.#open.has(r.callId)) return { ok: false, reason: "busy" }; } catch { return { ok: false, reason: "busy" }; }
+    }
     const items = targets(scope, caps, month, this.#partner !== undefined);
     for (let attempt = 0; attempt < 3; attempt++) {
       if (this.conflict()) continue;
@@ -165,49 +180,124 @@ export class InMemoryMeter implements Meter {
       // Expiry frees ONLY the concurrency marker. Open reservations and their rows stay.
       if (marker !== undefined && marker.expiresSeconds <= clock) this.#inFlight.delete(companyKey);
       if (expiresSeconds !== undefined && this.#inFlight.has(companyKey)) return { ok: false, reason: "busy", overrunInFlight: true };
-      const reservation = Object.freeze({ id: randomUUID(), ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }) });
+      const reservation = Object.freeze({ id: input.charge?.receipt.callId ?? randomUUID(), ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }) });
       for (const target of items) { const row = this.#row(target, scope); this.#store(target).set(target.key, { ...row, reservedMicros: row.reservedMicros + estimateMicros, committed: row.committed + estimateMicros }); }
       if (expiresSeconds !== undefined) this.#inFlight.set(companyKey, { owner: reservation.id, expiresSeconds });
-      this.#open.set(reservation.id, { month, ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }), scope: { ...scope }, estimate: estimateMicros, targets: items, ...(input.line === undefined ? {} : { line: { ...input.line } }) });
+      this.#open.set(reservation.id, { ...(input.provisional === undefined ? {} : { provisional: structuredClone(input.provisional) }), ...(input.charge === undefined ? {} : { charge: structuredClone(input.charge) }), month, ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }), scope: { ...scope }, estimate: estimateMicros, targets: items, ...(input.line === undefined ? {} : { line: { ...input.line } }) });
       return { ok: true, reservation };
     }
     return { ok: false, reason: "busy" };
   }
-  async settle(reservation: Reservation, actualMicros: number, estimated?: EstimatedSettlement): Promise<void> {
+  async settle(reservation: Reservation, actualMicros: number, estimated?: EstimatedSettlement, receipt?: ChargeReceiptV1, provisional?: ProvisionalEstimate): Promise<void> {
     if (record(reservation) === undefined || typeof reservation.id !== "string") throw new Error("settlement unavailable");
     await this.beforeWrite("settle");
     const open = this.#open.get(reservation.id);
     if (open === undefined) return; // Already closed; ledger and rows stay untouched.
     if (!whole(actualMicros)) throw new Error("settlement unavailable");
-    if (estimated !== undefined && (!validEntry({ ...estimated, inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 }) || !whole(estimated.settledAt) || (estimated.priceVersion !== undefined && !whole(estimated.priceVersion)) || (estimated.usage !== undefined && !validUsage(estimated.usage)) || actualMicros < 1)) throw new Error("settlement unavailable");
-    const extraEstimated = estimated === undefined ? 0 : actualMicros;
+    if (open.charge !== undefined && receipt === undefined) throw new Error("charge receipt required");
+    if (receipt !== undefined) { checkReceiptScope(receipt, open.scope, reservation.id, open.estimate, open.month); if (open.charge !== undefined && receiptIdentity(open.charge.receipt) !== receiptIdentity(receipt)) throw new Error("charge identity changed"); }
+    if (estimated !== undefined && (!validEntry({ ...estimated, inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 }) || !whole(estimated.settledAt) || (estimated.priceVersion !== undefined && !whole(estimated.priceVersion)) || (estimated.usage !== undefined && !validUsage(estimated.usage)) || (actualMicros < 1 && provisional === undefined))) throw new Error("settlement unavailable");
+    const held = provisional !== undefined;
+    const extraEstimated = held || estimated === undefined ? 0 : actualMicros;
+    const spend = held ? 0 : actualMicros;
+    const release = open.estimate - (held ? actualMicros : 0);
     // All validation, ledger insertion and row writes below are one synchronous transaction.
     for (const t of open.targets) {
       const row = this.#row(t, open.scope);
-      if (![row.committed - open.estimate + actualMicros, row.spentMicros + actualMicros, row.estimatedMicros + extraEstimated].every(whole) || row.reservedMicros < open.estimate) throw new Error("settlement unavailable");
+      if (![row.committed - open.estimate + actualMicros, row.spentMicros + spend, row.estimatedMicros + extraEstimated].every(whole) || row.reservedMicros < open.estimate) throw new Error("settlement unavailable");
     }
     for (const target of open.targets) {
-      const row = this.#row(target, open.scope); const spentMicros = row.spentMicros + actualMicros;
-      this.#store(target).set(target.key, { ...row, spentMicros, estimatedMicros: row.estimatedMicros + extraEstimated, reservedMicros: row.reservedMicros - open.estimate, committed: row.committed - open.estimate + actualMicros, overrun: row.overrun || (target.cap !== undefined && spentMicros > target.cap) });
+      const row = this.#row(target, open.scope); const spentMicros = row.spentMicros + spend;
+      this.#store(target).set(target.key, { ...row, ...(target.item === "company" && held ? { provisionalMicros: (row.provisionalMicros ?? 0) + actualMicros } : {}), spentMicros, estimatedMicros: row.estimatedMicros + extraEstimated, reservedMicros: row.reservedMicros - release, committed: row.committed - open.estimate + actualMicros, overrun: row.overrun || (target.cap !== undefined && spentMicros > target.cap) });
     }
     if (open.line !== undefined) {
       const callKey = JSON.stringify([open.scope.iss, open.scope.cid, reservation.id]);
       this.#billed.set(callKey, { ...open.scope, callKey, month: open.month, line: { ...open.line }, settledMicros: actualMicros, estimated: estimated !== undefined });
     }
-    if (estimated?.usage !== undefined && hasUsage(estimated.usage)) {
+    if (estimated !== undefined) {
       const callKey = JSON.stringify([open.scope.iss, open.scope.cid, reservation.id]);
-      const call: EstimatedCall = { ...open.scope, callKey, month: open.month, provider: estimated.provider, model: estimated.model, kind: estimated.kind, usage: { ...estimated.usage }, settledAt: estimated.settledAt, settledMicros: actualMicros, ...(estimated.priceVersion === undefined ? {} : { priceVersion: estimated.priceVersion }), status: "pending" };
+      const call: EstimatedCall = { ...(provisional === undefined ? {} : { estimateBasis: provisional.estimateBasis, outputEstimateBasis: provisional.outputEstimateBasis, estimateStatus: "estimated" }), ...open.scope, callKey, month: open.month, provider: estimated.provider, model: estimated.model, kind: estimated.kind, usage: { ...(estimated.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }) }, chargeStatus: estimated.usage === undefined || !hasUsage(estimated.usage) ? "awaiting_usage" : "estimated", settledAt: estimated.settledAt, settledMicros: actualMicros, ...(estimated.priceVersion === undefined ? {} : { priceVersion: estimated.priceVersion }), status: "pending" };
       this.#ledger.set(callKey, { call, targets: open.targets.map((t) => ({ ...t })) });
+      this.#insertPending(call);
+    }
+    if (receipt !== undefined) {
+      const callKey = JSON.stringify([receipt.issuer, receipt.companyId, receipt.callId]);
+      this.#receipts.set(callKey, { receipt: structuredClone(receipt), targets: open.targets, amount: actualMicros, held, ...(provisional === undefined ? {} : { provisional, cutoffAt: this.now() }) });
+      this.#adjustments.set(`${callKey}:${receipt.revision}`, { receipt: structuredClone(receipt), deltaMicros: actualMicros });
+    }
+    this.#open.delete(reservation.id);
+    const companyKey = JSON.stringify([open.scope.iss, open.scope.cid]);
+    if (this.#inFlight.get(companyKey)?.owner === reservation.id) this.#inFlight.delete(companyKey);
+  }
+  async settleV2(input: SettleV2): Promise<void> {
+    const r = readSettlementReceipt(input.receipt);
+    if (input.reservationId !== r.callId || r.revision !== 1) throw new Error("invalid charge settlement");
+    const old = this.#receipts.get(JSON.stringify([r.issuer, r.companyId, r.callId]));
+    if (old !== undefined) { receiptRevision(old.receipt, r); return; }
+    if (!this.#open.has(input.reservationId)) throw new Error("charge reservation missing");
+    const open = this.#open.get(input.reservationId)!;
+    const outputs = [...this.#receipts.values()].flatMap(({ receipt }) => receipt.issuer === r.issuer && receipt.companyId === r.companyId && receipt.model.provider === r.model.provider && receipt.model.modelId === r.model.modelId && historyOutput(receipt) !== undefined ? [historyOutput(receipt)!] : []);
+    for (const { call } of this.#ledger.values()) if (!this.#receipts.has(call.callKey) && call.iss === r.issuer && call.cid === r.companyId && call.provider === r.model.provider && call.model === r.model.modelId && call.chargeStatus !== "awaiting_usage" && hasUsage(call.usage)) outputs.push(call.usage.output);
+    const provisional = r.status === "awaiting_usage" && open.provisional !== undefined ? provisionalEstimate(open.estimate, open.provisional, outputs, input.actualInputTokens) : undefined;
+    await this.settle({ id: input.reservationId }, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r), r, provisional);
+  }
+  async applyChargeReceipt(input: ChargeReceiptV1): Promise<ApplyChargeResult> {
+    const r = readSettlementReceipt(input);
+    const callKey = JSON.stringify([r.issuer, r.companyId, r.callId]);
+    const stored = this.#receipts.get(callKey);
+    if (stored === undefined) throw new Error("charge receipt missing");
+    const result = receiptRevision(stored.receipt, r);
+    if (result !== "applied") {
+      const prior = this.#adjustments.get(`${callKey}:${r.revision}`);
+      if (result === "older" && prior !== undefined && chargeReceiptContent(prior.receipt) !== chargeReceiptContent(r)) throw new Error("conflicting charge revision");
+      return { callId: r.callId, appliedRevision: stored.receipt.revision, result, deltaMicros: 0 };
+    }
+    const old = stored.receipt, amount = chargeValue(r.amountMicros)!, delta = amount - stored.amount;
+    const spendDelta = stored.held ? amount : delta;
+    const release = stored.held ? stored.amount : 0;
+    const provisionalDelta = stored.provisional === undefined ? 0 : (r.status === "final" ? 0 : amount) - (old.status === "final" ? 0 : stored.amount);
+    const estimatedDelta = (r.status === "final" ? 0 : chargeValue(r.amountMicros)!) - (old.status === "final" || stored.held ? 0 : stored.amount);
+    // No await between CAS observation and all row/receipt writes.
+    if (this.conflict()) throw new Error("charge revision busy");
+    for (const t of stored.targets) {
+      const row = this.#row(t, { iss: r.issuer, cid: r.companyId, pid: r.project, tid: r.taskId });
+      if (![row.spentMicros + spendDelta, row.committed + delta, row.estimatedMicros + estimatedDelta, row.reservedMicros - release, ...(t.item === "company" ? [(row.provisionalMicros ?? 0) + provisionalDelta] : [])].every(whole)) throw new Error("charge accounting unavailable");
+    }
+    for (const t of stored.targets) {
+      const scope = { iss: r.issuer, cid: r.companyId, pid: r.project, tid: r.taskId }, row = this.#row(t, scope);
+      this.#store(t).set(t.key, { ...row, spentMicros: row.spentMicros + spendDelta, reservedMicros: row.reservedMicros - release, ...(t.item === "company" && stored.provisional !== undefined ? { provisionalMicros: (row.provisionalMicros ?? 0) + provisionalDelta } : {}), committed: row.committed + delta, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: t.cap === undefined ? row.overrun : row.spentMicros + spendDelta > t.cap });
+    }
+    const pending = this.#ledger.get(callKey);
+    if (pending?.call.status === "pending") this.#removePending(pending.call);
+    const estimate = estimatedReceipt(r);
+    if (estimate !== undefined) {
+      const call: EstimatedCall = { ...(stored.provisional === undefined ? {} : { estimateBasis: stored.provisional.estimateBasis, outputEstimateBasis: stored.provisional.outputEstimateBasis, estimateStatus: "estimated" }), ...(r.neverConfirmed === true ? { neverConfirmed: true } : {}), iss: r.issuer, cid: r.companyId, pid: r.project, tid: r.taskId, callKey, month: r.accountingMonth, provider: r.model.provider, model: r.model.modelId, kind: "chat", usage: estimate.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, chargeStatus: r.status === "awaiting_usage" ? "awaiting_usage" : "estimated", settledAt: Date.parse(r.occurredAt), settledMicros: chargeValue(r.amountMicros)!, status: "pending" };
+      this.#ledger.set(callKey, { call, targets: stored.targets }); this.#insertPending(call);
+    } else if (pending !== undefined) pending.call = { ...pending.call, settledMicros: chargeValue(r.amountMicros)!, status: "corrected" };
+    const billed = this.#billed.get(callKey);
+    if (billed !== undefined) this.#billed.set(callKey, { ...billed, settledMicros: chargeValue(r.amountMicros)!, estimated: r.status !== "final" });
+    stored.receipt = structuredClone(r); stored.amount = amount; stored.held = false;
+    this.#adjustments.set(`${callKey}:${r.revision}`, { receipt: structuredClone(r), deltaMicros: delta });
+    return { callId: r.callId, appliedRevision: r.revision, result: "applied", deltaMicros: delta };
+  }
+  async sweepOpenHolds(now: number, limit: number): Promise<{ swept: number; already: number; failed: number; more: boolean }> {
+    let swept = 0;
+    for (const stored of this.#receipts.values()) {
+      if (swept >= limit) return { swept, already: 0, failed: 0, more: true };
+      if (!stored.held || stored.cutoffAt === undefined || now - stored.cutoffAt < USAGE_WAIT_MS) continue;
+      await this.applyChargeReceipt(neverConfirmedReceipt(stored.receipt, stored.amount, now));
+      stored.neverConfirmed = true; swept++;
+    }
+    return { swept, already: 0, failed: 0, more: false };
+  }
+  #insertPending(call: EstimatedCall): void {
+    const callKey = call.callKey;
       const key = priceKey(call); const pending = this.#pending.get(key) ?? [];
       // Keep oldest first at write time; reads take bounded prefixes without scanning the ledger.
       const index = pending.findIndex((id) => comparePosition(this.#callPosition(id), [call.settledAt, callKey]) > 0);
       const expiryIndex = this.#expiryOrder.findIndex((id) => comparePosition(this.#callPosition(id), [call.settledAt, callKey]) > 0);
       this.#expiryOrder.splice(expiryIndex < 0 ? this.#expiryOrder.length : expiryIndex, 0, callKey);
       pending.splice(index < 0 ? pending.length : index, 0, callKey); this.#pending.set(key, pending); this.#orderKey(key);
-    }
-    this.#open.delete(reservation.id);
-    const companyKey = JSON.stringify([open.scope.iss, open.scope.cid]);
-    if (this.#inFlight.get(companyKey)?.owner === reservation.id) this.#inFlight.delete(companyKey);
   }
   #orderKey(key: string): void {
     const previous = this.#keyOrder.indexOf(key); if (previous >= 0) this.#keyOrder.splice(previous, 1);
@@ -257,7 +347,9 @@ export class InMemoryMeter implements Meter {
     if (!await this.#beforeTransaction("expire", input) || input.signal?.aborted) return { status: "unknown" };
     const ledger = this.#ledger.get(input.callKey); if (ledger === undefined) return { status: "missing" };
     const { call } = ledger; if (call.status !== "pending") return { status: "already" };
-    if (this.conflict() || input.now - call.settledAt <= PENDING_RETENTION_DAYS * DAY_MS) return { status: "busy" };
+    if (call.chargeStatus === "awaiting_usage") { call.unresolvedAt ??= input.now; return { status: "busy" }; }
+    if (input.now - call.settledAt <= PENDING_RETENTION_DAYS * DAY_MS) return { status: call.neverConfirmed === true ? "already" : "busy" };
+    if (this.conflict()) return { status: "busy" };
     ledger.call = { ...call, status: "expired", expiredAt: input.now, runId: input.runId };
     this.#removePending(call); return { status: "expired" };
   }
@@ -271,6 +363,8 @@ export class InMemoryMeter implements Meter {
     // Re-read after the race hook. No await until every row and the ledger have committed.
     const ledger = this.#ledger.get(input.callKey); if (ledger === undefined) return { status: "missing" };
     const { call } = ledger; if (call.status !== "pending") return { status: "already" };
+    if (call.neverConfirmed === true) return { status: "already" };
+    if (call.chargeStatus === "awaiting_usage" || this.#receipts.has(input.callKey)) return { status: "busy" };
     if (this.conflict()) return { status: "busy" };
     const expire = input.now - call.settledAt > PENDING_RETENTION_DAYS * DAY_MS;
     if (!expire && (input.priceVersion ?? 0) <= (call.priceVersion ?? 0)) return { status: "already" };
@@ -386,3 +480,5 @@ export async function runMeterDeadlineConformance(factory: (clock: () => number,
   }
   return ["bounded correction transaction", "no late correction write", "bounded expiry transaction", "no late expiry write"];
 }
+
+export * from "./charge-receipt.js";

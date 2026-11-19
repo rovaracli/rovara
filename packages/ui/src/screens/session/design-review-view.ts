@@ -1,13 +1,39 @@
+import { z } from "zod";
 // Design review (DR11): what the task page's Design tab says, worked out from the stored review as plain strings and small records. Pure: no React, no clock, no network.
 // Every string that came from a model (a finding, a note, a paraphrase, a question) is carried unchanged and shown through `VisibleText`: it is text and nothing else. A hidden or bidirectional
 // control character shows as [U+XXXX]; markdown, HTML and links in it stay literal. The only link on the tab is `codeLink`, built from the encoded `codeCitationLinkPath` and a base the broker's own
 // record of the task's repositories gave (never from model text).
 import {
-  CODE_CITATION_UNCHECKED, DESIGN_SECTIONS, DESIGN_SOURCE_ONLY_LABEL, designFindingIsSourceOnly, FILES_READ_LABEL, codeCitationInPacket, codeCitationLinkPath, designFindingRaisedBefore, designReasonPhrase, designReviewDisagreements, inputProofSentence, resolutionOf,
-  type CitablePacketItem, type DesignCitation, type DesignDisagreementKind, type DesignFinding, type DesignQuestion, type DesignReason, type DesignReviewRound, type DesignReviewTier, type DesignReviewView,
-  type FindingResolution, type ReviewerRole, type ReviewerRun,
+  DESIGN_REVIEW_APPROVALS_MAX, DESIGN_REVIEW_EARLIER_MAX, DESIGN_REVIEW_REVIEWERS_MAX, DESIGN_REVIEW_ROUNDS_MAX, CODE_CITATION_UNCHECKED, DESIGN_SECTIONS, DESIGN_SOURCE_ONLY_LABEL, designFindingIsSourceOnly, FILES_READ_LABEL, codeCitationInPacket, codeCitationLinkPath, designFindingRaisedBefore, designReasonPhrase, designReviewDisagreements, inputProofSentence, resolutionOf,
+  type CitablePacketItem, type DesignCitation, type DesignDisagreementKind, type DesignFinding, type DesignQuestion, type DesignReason, type DesignReviewRound as StoredDesignReviewRound, type DesignReviewTier, type DesignReviewView as StoredDesignReviewView,
+  type FindingResolution, type ReviewerRole,
   DesignActionsViewSchema, WorkflowDesignReviewSchema, type DesignActionsView,
 } from "@agentx/contracts/web";
+
+// Read projection only: the engine's stored schema remains strict. Omitted money stays
+// omitted, while all non-money fields and reviewer proof checks retain their validation.
+// safeExtend preserves the stored refinements. A read may loosen only money's
+// presence; its amount validators and every other field remain the stored ones.
+function extendRead<S extends z.ZodRawShape, R extends z.ZodRawShape>(schema: z.ZodObject<S>, fields: R): z.ZodObject<Omit<S, keyof R> & R> {
+  return schema.safeExtend(fields as never) as unknown as z.ZodObject<Omit<S, keyof R> & R>;
+}
+const storedRound = WorkflowDesignReviewSchema.shape.rounds.element;
+const storedRun = storedRound.shape.reviewers.element;
+const readRun = extendRead(storedRun, { costUsd: storedRun.shape.costUsd.optional() });
+const readRound = storedRound.extend({ reviewers: z.array(readRun).max(DESIGN_REVIEW_REVIEWERS_MAX) });
+const [spendApproval, raiseApproval, tierApproval] = WorkflowDesignReviewSchema.shape.approvals.unwrap().element.options;
+const storedEarlier = WorkflowDesignReviewSchema.shape.earlierReviews.unwrap().element;
+const archivedRound = storedEarlier.shape.rounds.element;
+const archivedRun = archivedRound.shape.reviewers.element;
+const reviewReadSchema = extendRead(WorkflowDesignReviewSchema, {
+  spentUsd: WorkflowDesignReviewSchema.shape.spentUsd.optional(),
+  rounds: z.array(readRound).max(DESIGN_REVIEW_ROUNDS_MAX),
+  approvals: z.array(z.discriminatedUnion("kind", [spendApproval, raiseApproval.extend({ fromUsd: raiseApproval.shape.fromUsd.optional(), capUsd: raiseApproval.shape.capUsd.optional() }), tierApproval])).max(DESIGN_REVIEW_APPROVALS_MAX).optional(),
+  earlierReviews: z.array(storedEarlier.extend({ spentUsd: storedEarlier.shape.spentUsd.optional(), rounds: z.array(archivedRound.extend({ reviewers: z.array(archivedRun.extend({ costUsd: archivedRun.shape.costUsd.optional() })).max(DESIGN_REVIEW_REVIEWERS_MAX) })).max(DESIGN_REVIEW_ROUNDS_MAX) })).max(DESIGN_REVIEW_EARLIER_MAX).optional(),
+});
+type DesignReviewView = z.infer<typeof reviewReadSchema>;
+type DesignReviewRound = z.infer<typeof readRound>;
+type ReviewerRun = z.infer<typeof readRun>;
 
 export const ROLE_WORDS: Readonly<Record<ReviewerRole, string>> = {
   comprehension: "Comprehension reviewer", critic: "Critic", codebase: "Codebase reviewer", zoom_out: "Zoom-out reviewer", critic_b: "Second critic",
@@ -78,7 +104,7 @@ export function citationLine(citation: DesignCitation, packet: readonly CitableP
   }
 }
 
-export interface ReviewerLine { role: string; model: string; verified: boolean; proof: string; filesRead: { label: string; files: string[] }; cost: string; tokens: string }
+export interface ReviewerLine { role: string; model: string; verified: boolean; proof: string; filesRead: { label: string; files: string[] }; cost?: string | undefined; tokens: string }
 export function reviewerLine(run: ReviewerRun): ReviewerLine {
   // A verified run says what proved its input, in the contract's fixed words, and nothing stronger. One stored without a proof says so.
   const proof = run.verified
@@ -87,7 +113,7 @@ export function reviewerLine(run: ReviewerRun): ReviewerLine {
   return {
     role: ROLE_WORDS[run.role], model: `${run.model.provider} ${run.model.modelId}`, verified: run.verified, proof,
     filesRead: { label: `Files read (${FILES_READ_LABEL}, not checked by Rovara)`, files: [...run.filesRead] },
-    cost: usdWords(run.costUsd), tokens: `${String(run.tokensIn)} tokens in, ${String(run.tokensOut)} out`,
+    cost: run.costUsd === undefined ? undefined : usdWords(run.costUsd), tokens: `${String(run.tokensIn)} tokens in, ${String(run.tokensOut)} out`,
   };
 }
 
@@ -115,12 +141,12 @@ function allPackets(round: DesignReviewRound): CitablePacketItem[] {
 }
 
 function findingLine(review: DesignReviewView, round: DesignReviewRound, finding: DesignFinding, codeLinkBase?: CodeLinkBase): FindingLine {
-  const own = packetOf(round, finding.fromReviewers), resolution = resolutionOf(round, finding.id);
+  const own = packetOf(round, finding.fromReviewers), resolution = resolutionOf(round as StoredDesignReviewRound, finding.id);
   return {
     id: finding.id, severity: finding.severity, severityWords: SEVERITY_WORDS[finding.severity], section: finding.section, text: finding.text,
     citations: finding.citations.map((citation) => citationLine(citation, own, codeLinkBase)),
     reviewers: finding.fromReviewers.map((role) => ROLE_WORDS[role]), addedByRovara: finding.origin === "rovara", sourceOnly: designFindingIsSourceOnly(finding) ? DESIGN_SOURCE_ONLY_LABEL : undefined,
-    raisedAgain: designFindingRaisedBefore(review, round.round, finding) !== undefined,
+    raisedAgain: designFindingRaisedBefore(review as StoredDesignReviewView, round.round, finding) !== undefined,
     raw: (finding.rawFindings ?? []).map((entry) => ({ role: ROLE_WORDS[entry.role], severity: SEVERITY_WORDS[entry.severity], text: entry.text })),
     resolution: resolution === undefined ? undefined : {
       action: resolution.action, words: ACTION_WORDS[resolution.action], note: resolution.note, settled: resolution.settled,
@@ -151,7 +177,7 @@ export interface DisagreementLine {
 }
 /** The "Disagreements" list: both sides of every place a reviewer and the planner differ, from `designReviewDisagreements` (the same list the decision card counts). */
 export function disagreementLines(review: DesignReviewView, codeLinkBase?: CodeLinkBase): DisagreementLine[] {
-  return designReviewDisagreements(review).flatMap((entry) => {
+  return designReviewDisagreements(review as StoredDesignReviewView).flatMap((entry) => {
     const round = review.rounds[entry.round - 1], finding = round?.findings.find((candidate) => candidate.id === entry.findingId);
     if (round === undefined || finding === undefined) return [];
     const line = findingLine(review, round, finding, codeLinkBase);
@@ -225,7 +251,7 @@ export interface DesignTabModel {
   reading?: string | undefined;
   statusWords: string;
   tierWords: string;
-  cost: { estimate: string; spent: string; limit: string };
+  cost: { estimate?: string | undefined; spent?: string | undefined; limit?: string | undefined };
   notRun?: string | undefined;
   /** "Design review, round 1 of 2: reviewers reading the design." while it runs. */
   progress?: string | undefined;
@@ -244,7 +270,7 @@ export function designTabModel(review: DesignReviewView, options: { note?: strin
   const approvals = (review.approvals ?? []).map((approval) => {
     switch (approval.kind) {
       case "spend": return `A person approved the spend${approval.approvedUsd === undefined ? "" : ` (${usdWords(approval.approvedUsd)})`}.`;
-      case "raise_cap": return `A person raised the limit from ${usdWords(approval.fromUsd)} to ${usdWords(approval.capUsd)}.`;
+      case "raise_cap": return approval.fromUsd === undefined || approval.capUsd === undefined ? "A person raised the limit." : `A person raised the limit from ${usdWords(approval.fromUsd)} to ${usdWords(approval.capUsd)}.`;
       case "lower_tier": return `A person lowered the tier from ${approval.from} to ${approval.tier}.`;
     }
   });
@@ -253,7 +279,7 @@ export function designTabModel(review: DesignReviewView, options: { note?: strin
     classification: classificationLine(review),
     reading: note === undefined || note === "" ? undefined : note,
     statusWords: STATUS_WORDS[review.status], tierWords: TIER_WORDS[review.tier],
-    cost: { estimate: usdWords(review.estimateUsd), spent: usdWords(review.spentUsd), limit: review.capUsd === undefined ? "not set" : usdWords(review.capUsd) },
+    cost: { estimate: review.estimateUsd === undefined ? undefined : usdWords(review.estimateUsd), spent: review.spentUsd === undefined ? undefined : usdWords(review.spentUsd), limit: review.capUsd === undefined ? undefined : usdWords(review.capUsd) },
     notRun: review.status === "not_run" && review.notRunReason !== undefined ? NOT_RUN_WORDS[review.notRunReason] : review.status === "stopped_at_cap" ? "Design review stopped because it reached the cost limit." : undefined,
     progress: review.status === "running" ? `Design review, round ${String(Math.min(review.rounds.length + 1, 2))} of 2: reviewers reading the design.` : undefined,
     decisions: approvals,
@@ -277,7 +303,7 @@ export function hasDesignReview(workflow: { designReview?: DesignReviewView | un
  */
 export function readDesignReview(value: unknown): DesignReviewView | "unreadable" | undefined {
   if (value === undefined) return undefined;
-  const parsed = WorkflowDesignReviewSchema.safeParse(value);
+  const parsed = reviewReadSchema.safeParse(value);
   return parsed.success ? parsed.data : "unreadable";
 }
 

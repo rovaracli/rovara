@@ -4,7 +4,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { ORG_SETTINGS_PATH, capToMicros, isNotConnected, readCompanySettings, type CompanyRule, type CompanySettingsRead } from "../../../api/admin-company.js";
+import { ORG_SETTINGS_PATH, isNotConnected, readCompanySettings, type CompanyRule, type CompanySettingsRead } from "../../../api/admin-company.js";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";
@@ -44,7 +44,6 @@ export function SettingsScreen() {
  </section>;
 }
 
-const capText = (usd: number | null | undefined) => (usd === null || usd === undefined ? "" : String(usd));
 function RuleList({ rules }: { rules: readonly CompanyRule[] }) {
  if (rules.length === 0) return <p className="rv-muted">No company rules yet. Every task follows each project's own rules.</p>;
  return <ol className="rv-passkeys" aria-label="Company rules">{rules.map((rule, index) => <li key={index}><p><VisibleText text={rule.text} /></p><span className="rv-status-pill" data-tone={rule.priority === "required" ? "wait" : "idle"}>{rule.priority === "required" ? "Required" : "Preferred"}</span></li>)}</ol>;
@@ -52,23 +51,17 @@ function RuleList({ rules }: { rules: readonly CompanyRule[] }) {
 
 function Settings({ settings, reload }: { settings: CompanySettingsRead; reload: () => void }) {
  const { developerId } = useAdminContext(), host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
- const [editing, setEditing] = useState(false), [rules, setRules] = useState<CompanyRule[]>(() => settings.instructions.map(rule => ({ ...rule }))), [cap, setCap] = useState(capText(settings.monthlyCapUsd));
+ const [editing, setEditing] = useState(false), [rules, setRules] = useState<CompanyRule[]>(() => settings.instructions.map(rule => ({ ...rule })));
  const [busy, setBusy] = useState(false), [notice, setNotice] = useState<Notice>(), [seenVersion, setSeenVersion] = useState(settings.version);
  // The rules on screen are a copy of what was read. When the settings move on (another admin's change was approved, or this one saved), the copy is taken again,
  // so a save never sends old rules with the new version.
- const reseed = () => { setRules(settings.instructions.map(rule => ({ ...rule }))); setCap(capText(settings.monthlyCapUsd)); };
+ const reseed = () => { setRules(settings.instructions.map(rule => ({ ...rule }))); };
  if (seenVersion !== settings.version) { setSeenVersion(settings.version); reseed(); }
  async function after(next: Notice) { setNotice(next); setEditing(false); await query.invalidateQueries({ queryKey: ["admin", "lane-c", "company-settings"] }); reload(); }
  async function save() {
   setBusy(true); setNotice(undefined);
   try {
-   const micros = capToMicros(cap);
-   if (micros === undefined) { setNotice({ kind: "failed", text: "The monthly cap must be an amount in dollars, like 1500 or 1500.50." }); return; }
-   const saved = typeof settings.raw["budgets"] === "object" && settings.raw["budgets"] !== null ? settings.raw["budgets"] as Record<string, unknown> : {};
-   // The learning cap is never above the company cap (Cloud refuses it): lowering the company cap lowers it too.
-   const learning = saved["learningMonthlyUsdMicros"];
-   const budgets = { ...saved, companyMonthlyUsdMicros: micros, ...(typeof learning === "number" && micros !== null ? { learningMonthlyUsdMicros: Math.min(learning, micros) } : {}) };
-   const settingsBody = { ...settings.raw, budgets, instructions: rules.filter(rule => rule.text.trim() !== "").map(rule => ({ text: rule.text.trim(), priority: rule.priority })) };
+   const settingsBody = { ...settings.raw, instructions: rules.filter(rule => rule.text.trim() !== "").map(rule => ({ text: rule.text.trim(), priority: rule.priority })) };
    const answer = await api.sendAnswer("PUT", ORG_SETTINGS_PATH, { expectedVersion: settings.version, settings: settingsBody }, { parse: body => body }, { retry: "never" });
    const proposed = typeof answer === "object" && answer !== null && "pending" in answer && !("settings" in answer);
    await after(proposed ? { kind: "proposed" } : { kind: "saved" });
@@ -100,13 +93,13 @@ function Settings({ settings, reload }: { settings: CompanySettingsRead; reload:
    {!editing ? <RuleList rules={settings.instructions} /> : <>
     <div role="group" aria-label="Edit company rules">{rules.map((rule, index) => <div key={index} className="rv-rule-edit"><TextField label={`Rule ${index + 1}`} value={rule.text} maxLength={600} onChange={event => { setRules(rules.map((entry, at) => (at === index ? { ...entry, text: event.target.value } : entry))); }} /><Select label="How firm" value={rule.priority} options={[{ value: "required", label: "Required" }, { value: "preferred", label: "Preferred" }]} onValueChange={value => { setRules(rules.map((entry, at) => (at === index ? { ...entry, priority: value === "preferred" ? "preferred" : "required" } : entry))); }} /><Button onClick={() => { setRules(rules.filter((_, at) => at !== index)); }}>Remove rule {index + 1}</Button></div>)}</div>
     <p><Button disabled={rules.length >= RULES_MAX} onClick={() => { setRules([...rules, { text: "", priority: "required" }]); }}>Add a rule</Button></p>
-    <TextField label="Company monthly cap (USD)" id="monthly-cap-field" inputMode="decimal" value={cap} onChange={event => { setCap(event.target.value); }} hint={capToMicros(cap) === 0 ? "A $0 cap blocks all model gateway use." : "Leave empty for no cap. The model gateway serves a company only when it has one."} {...(capToMicros(cap) === undefined ? { error: "Enter an amount in dollars, like 1500 or 1500.50." } : {})} />
     <p className="rv-muted">Making a rule looser needs a second admin to approve it.</p>
-    <p><Button variant="primary" busy={busy} disabled={capToMicros(cap) === undefined} onClick={() => { void save(); }}>Save rules</Button> <Button onClick={() => { setEditing(false); reseed(); }}>Cancel</Button></p>
+    <p><Button variant="primary" busy={busy} onClick={() => { void save(); }}>Save rules</Button> <Button onClick={() => { setEditing(false); reseed(); }}>Cancel</Button></p>
    </>}
   </AdminSection>
-  <AdminSection id="monthly-cap" title="Monthly cap" note="What the model gateway holds you to">
-   {settings.monthlyCapUsd === undefined ? <NotConnected what="The monthly cap" /> : settings.monthlyCapUsd === null ? <p>No monthly cap is set. Rovara picks no amount for you. Use <b>Change rules</b> above to set one.</p> : <p>The company's monthly cap is <b><Money usd={settings.monthlyCapUsd} /></b>.{settings.monthlyCapUsd === 0 ? " A $0 cap blocks all model gateway use." : ""}</p>}
+  <AdminSection id="monthly-cap" title="Monthly limit" note="What the model gateway holds you to">
+   {settings.monthlyCapUsd === undefined ? <NotConnected what="The monthly limit" /> : settings.monthlyCapUsd === null ? <p>No monthly limit is set.</p> : <p>The company's monthly limit is <b><Money usd={settings.monthlyCapUsd} /></b>.</p>}
+   <p>Change the monthly limit in <Link to="/app/admin/ai-spending">AI and spending</Link>.</p>
   </AdminSection>
   <AdminSection title="Who may start work">
    {settings.start === undefined ? <NotConnected what="The start rule" /> : <dl className="rv-kv-list"><div className="rv-kv"><dt>New tasks</dt><dd>{settings.start.allow ? "Anyone with project access may start one" : "Paused: nobody may start a task"}</dd></div><div className="rv-kv"><dt>Largest estimate without asking</dt><dd>{settings.start.maxEstimateUsd === undefined ? "No limit" : <Money usd={settings.start.maxEstimateUsd} />}</dd></div></dl>}

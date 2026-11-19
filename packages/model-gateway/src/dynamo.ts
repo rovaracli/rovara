@@ -90,9 +90,9 @@ export class Dynamo {
     const answer = await this.#read("GetItem", { TableName: table, Key: marshalItem({ ...key }), ConsistentRead: options.consistent ?? true }, options);
     return answer.Item === undefined ? undefined : unmarshalItem(answer.Item);
   }
-  async query(table: string, input: { index?: string; key: (e: Expr) => string; limit: number; consistent?: boolean }, options: AwsCallOptions = {}): Promise<Item[]> {
+  async query(table: string, input: { index?: string; key: (e: Expr) => string; limit: number; consistent?: boolean; descending?: boolean }, options: AwsCallOptions = {}): Promise<Item[]> {
     const e = new Expr(); const condition = input.key(e);
-    const answer = await this.#read("Query", { TableName: table, ...(input.index === undefined ? {} : { IndexName: input.index }), KeyConditionExpression: condition, ...e.wire(), Limit: input.limit, ScanIndexForward: true, ...(input.index === undefined ? { ConsistentRead: input.consistent ?? true } : {}) }, options);
+    const answer = await this.#read("Query", { TableName: table, ...(input.index === undefined ? {} : { IndexName: input.index }), KeyConditionExpression: condition, ...e.wire(), Limit: input.limit, ScanIndexForward: input.descending !== true, ...(input.index === undefined ? { ConsistentRead: input.consistent ?? true } : {}) }, options);
     if (!Array.isArray(answer.Items)) throw new AwsUnknownError();
     return answer.Items.map(unmarshalItem);
   }

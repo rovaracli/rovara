@@ -1,3 +1,4 @@
+import { mergeTaskMoney } from "@agentx/contracts/web";
 import { useMemo } from "react";
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { LiveResponseReaderSchema, type LiveFilterSchema, type LiveTileReaderSchema } from "@agentx/contracts/web";
@@ -6,10 +7,18 @@ import { createApiClient } from "./client.js";
 export type ReadLivePage = ReturnType<typeof LiveResponseReaderSchema.parse>;
 export type ReadLiveTile = ReturnType<typeof LiveTileReaderSchema.parse>;
 export type LiveFilter = ReturnType<typeof LiveFilterSchema.parse>;
-export function mergeLiveTiles(pages: readonly ReadLivePage[]): ReadLiveTile[] { const byId = new Map<string, ReadLiveTile>();for (const tile of pages.flatMap(page => page.tiles)) { const old = byId.get(tile.sessionId);if (old === undefined || Date.parse(tile.updatedAt) >= Date.parse(old.updatedAt)) byId.set(tile.sessionId, tile); }return [...byId.values()]; }
+function mergeTile(previous: ReadLiveTile | undefined, next: ReadLiveTile): ReadLiveTile {
+ const view = previous !== undefined && Date.parse(next.updatedAt) < Date.parse(previous.updatedAt) ? previous : next;
+ return { ...view, money: mergeTaskMoney(previous?.money, next.money) };
+}
+export function mergeLiveTiles(pages: readonly ReadLivePage[]): ReadLiveTile[] {
+ const byId = new Map<string, ReadLiveTile>();
+ for (const tile of pages.flatMap(page => page.tiles)) byId.set(tile.sessionId, mergeTile(byId.get(tile.sessionId), tile));
+ return [...byId.values()];
+}
 export function acceptLivePage(previous: ReadLivePage | undefined, next: ReadLivePage): ReadLivePage {
  const old = new Map(previous?.tiles.map(tile => [tile.sessionId, tile]));
- return { ...next, tiles: next.tiles.map(tile => { const earlier = old.get(tile.sessionId);return earlier !== undefined && Date.parse(tile.updatedAt) < Date.parse(earlier.updatedAt) ? earlier : tile; }) };
+ return { ...next, tiles: next.tiles.map(tile => mergeTile(old.get(tile.sessionId), tile)) };
 }
 export function useLive(filter: LiveFilter, project?: string) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient(), key = ["live", filter, project];
