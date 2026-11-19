@@ -65,7 +65,8 @@ export function MergeSection({ sessionId, task }: { sessionId: string; task: Rea
   } catch (failure) {
    // A refused press (Code answered no) sends a fresh request the next time; a lost answer or a server fault keeps the same request id, so pressing again gets the first press's answer, never a second merge.
    if (failure instanceof ApiError && failure.status >= 400 && failure.status < 500) requestId.current = undefined;
-   setError(failure instanceof ApiError ? failure.message : "Couldn't press Merge. Try again.");setOpen(false);
+   // A lost answer does not say what GitHub did: neutral words, and the same request id the next time.
+   setError(failure instanceof ApiError ? failure.message : "We couldn't confirm the result yet; checking GitHub. Reload this page in a moment.");setOpen(false);
    void query.invalidateQueries({ queryKey: readinessKey });
   } finally { sending.current = false;setBusy(false); }
  }
