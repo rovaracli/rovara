@@ -43,6 +43,14 @@ export type MemberRemovalBody = z.infer<typeof MemberRemovalBodySchema>;
 export const MemberRemovalStartedSchema = z.object({ removalId: z.string().uuid(), state: z.enum(["STARTED", "DONE", "CANCELLED_REJOINED"]), message: z.string().max(500) }).strict();
 export const MemberRemovalStartedReaderSchema = forwardReader(MemberRemovalStartedSchema);
 
+/** DEC 254zzz101: `GET /v1/app/org/members/handovers`, the removals whose hand-over did not finish after the membership ended (an owner or admin finishes each to someone now). */
+export const PendingHandOversSchema = z.object({
+  handovers: z.array(z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string().max(200), removalId: z.string().uuid(), startedAt: z.string().datetime() }).strict()).max(100),
+}).strict();
+export const PendingHandOversReaderSchema = forwardReader(PendingHandOversSchema);
+/** DEC 254zzz101: the body of `POST /v1/app/org/members/{id}/handover`; the answer is MemberRemovalStartedSchema (`removalId` is the removal's own id). */
+export const FinishHandOverBodySchema = z.object({ requestId: z.string().uuid(), successorId: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+
 /** `GET /v1/app/org/removals/{removalId}`. */
 export const MemberRemovalStatusSchema = z.object({
   removalId: z.string().uuid(), state: z.enum(["STARTED", "DONE", "CANCELLED_REJOINED"]), removedAt: z.string().datetime(),
