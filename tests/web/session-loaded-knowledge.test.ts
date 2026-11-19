@@ -43,7 +43,8 @@ function setup(respond: (request: ApiRequest) => Promise<ApiResponse>) {
 it("is closed and reads nothing until it is opened", async () => {
  const s = setup(async () => ({ status: 200, body: { stages: [record], requestId: "r" } }));
  await screen.findByText("What the agent loaded");
- expect(s.f.request).not.toHaveBeenCalled();
+ // The Merge section (#233) reads merge readiness on the task page; the knowledge read itself must wait for the opening.
+ expect(s.f.request.mock.calls.filter(([request]) => request.path.includes("/loaded-knowledge"))).toEqual([]);
  s.close();
 });
 
@@ -85,7 +86,7 @@ it("fetches the text of one file only when asked, and says in words when it is r
  expect(paths.filter(path => path.includes("/text"))).toEqual([]);
  fireEvent.click(screen.getByRole("button", { name: "Show the text of .kiro/steering/product.md" }));
  expect(await screen.findByText("Product rules go here")).toBeTruthy();
- expect(paths.filter(path => path.includes("/text"))).toEqual(["/v1/app/tasks/" + (paths[0]!.split("/")[4]!) + "/loaded-knowledge/op1/plan/items/0/text"]);
+ expect(paths.filter(path => path.includes("/text"))).toEqual(["/v1/app/tasks/" + (paths.find(path => path.endsWith("/loaded-knowledge"))!.split("/")[4]!) + "/loaded-knowledge/op1/plan/items/0/text"]);
  fireEvent.click(screen.getByRole("button", { name: "Show the text of .kiro/steering/python-style.md" }));
  await waitFor(() => { expect(screen.getByText("That file no longer matches what the agent saw, so it is not shown.")).toBeTruthy(); });
  s.close();
