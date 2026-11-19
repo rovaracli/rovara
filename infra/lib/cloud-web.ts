@@ -163,10 +163,13 @@ export class CloudWebStack extends Stack {
       description: "The Rovara Code install Cloud signs people in through and calls, for example https://abc.execute-api.us-east-1.amazonaws.com",
     });
     // Like ProductKeysTableName, passed by the controller rather than a cross-stack export: the gateway deploys independently.
+    // Empty (the default, an install with no model gateway): the server gets no meter table and People and limits answers "not connected yet".
+    // The grant below then names a table with no name, which matches nothing.
     const meterTableName = new CfnParameter(this, "GatewayMeterTableName", {
-      type: "String", allowedPattern: "^[A-Za-z0-9_.-]{3,255}$",
-      description: "The model gateway's Meter table physical name (not ProductMeter or LearningMeter); its Issuer output must equal CodeUrl + /v1/auth",
+      type: "String", default: "", allowedPattern: "^(|[A-Za-z0-9_.-]{3,255})$",
+      description: "The model gateway's Meter table physical name (not ProductMeter or LearningMeter); its Issuer output must equal CodeUrl + /v1/auth; empty: no gateway, spend shows not connected yet",
     }).valueAsString;
+    const meterTableSet = new CfnCondition(this, "GatewayMeterTableNameSet", { expression: Fn.conditionNot(Fn.conditionEquals(meterTableName, "")) });
     const meterTableArn = `arn:${this.partition}:dynamodb:${this.region}:${this.account}:table/${meterTableName}`;
 
     // Sign-ins, Cloud's sessions with their comments, and who is viewing (packages/cloud-server/src/dynamo-stores.ts, CLOUD_TABLE).
@@ -217,7 +220,7 @@ export class CloudWebStack extends Stack {
       ROVARA_SCOPES: CLOUD_APP_SCOPES.join(" "),
       CLOUD_TABLE: table.tableName,
       COMPANY_TABLE: companies.tableName,
-      CLOUD_GATEWAY_METER_TABLE: meterTableName,
+      CLOUD_GATEWAY_METER_TABLE: Token.asString(Fn.conditionIf(meterTableSet.logicalId, meterTableName, Aws.NO_VALUE)),
       CLOUD_ORIGIN_PARAMETER: originParameter,
       CLOUD_CLIENT_SECRET_ID: clientSecret.secretName,
       CLOUD_APP_DIRECTORY: `/var/task/${CLOUD_WEB_SHELL_DIRECTORY}`,

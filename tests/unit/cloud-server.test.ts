@@ -35,6 +35,8 @@ function fakeCode() {
   // DEC 254zzz94: what Code answers on the task's merge route, by method (unset: Code's unknown-route 404).
   const mergeAnswers = new Map<string, { status: number; body: unknown }>();
   let revokeFails = false;
+  // A legacy Code install: its API gateway answers 401 on paths Code does not serve, whatever the token (Rovara-cloud: the sign-in loop of 2026-11-19).
+  let gatewayRefused: string | undefined;
   // Spec 067: the people Code lets read the task besides its owner (Ada). Grace signs in with her own code and token.
   const readers = new Map<string, { developerId: string; name: string; role: string; projectMember: boolean; grantedAt: string }>();
   const members = [{ developerId: ADA, name: "Ada", role: "administrator" }];
@@ -69,6 +71,7 @@ function fakeCode() {
       }
       return respond(400, { error: "invalid_grant" });
     }
+    if (gatewayRefused !== undefined && url.pathname.startsWith(gatewayRefused)) return respond(401, { message: "Unauthorized" });
     const grace = call.authorization === "Bearer grace-access";
     if (call.authorization !== `Bearer ${validToken}` && !grace) return respond(401, { error: { code: "AUTH_REQUIRED" } });
     if (url.pathname === "/v1/dev/access") {
@@ -149,6 +152,8 @@ function fakeCode() {
     refuseDecisions: (message: string) => { decisionRefusal = message; },
     answerMerge: (method: "GET" | "POST", status: number, body: unknown) => { mergeAnswers.set(method, { status, body }); },
     failRevoke: () => { revokeFails = true; },
+    /** Code's gateway answers 401 on every path under this prefix from now on, as a legacy install does for /v1/app/*. */
+    refuseAtGateway: (prefix: string) => { gatewayRefused = prefix; },
     expireToken: () => { validToken = "access-rotated"; }, endSignIn: () => { refreshable = false; validToken = "nobody"; } };
 }
 
@@ -403,6 +408,21 @@ describe("the app's API, answered from Code as the person", () => {
     expect((await store.get(id))?.accessToken).toBe("access-2");
     code.endSignIn();
     expect((await call("GET", "/v1/web/nav", { cookie }))!.status).toBe(401);
+    expect(await store.get(id)).toBeUndefined();
+  });
+
+  it("keeps the sign-in when one Code path answers 401 but Code still accepts the sign-in (a legacy install's gateway on /v1/app/*)", async () => {
+    const { call, signIn, code, store } = setUp();
+    const { cookie } = await signIn();
+    code.refuseAtGateway("/v1/app/");
+    const id = cookie.split("=")[1]!;
+    const inbox = await call("GET", "/v1/web/inbox", { cookie });
+    expect(inbox!.status).not.toBe(401);
+    expect(await store.get(id)).toBeDefined();
+    expect((await call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
+    // A sign-in Code has really ended still ends, on the same path.
+    code.endSignIn();
+    expect((await call("GET", "/v1/web/inbox", { cookie }))!.status).toBe(401);
     expect(await store.get(id)).toBeUndefined();
   });
 

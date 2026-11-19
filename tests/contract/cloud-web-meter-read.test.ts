@@ -50,12 +50,18 @@ describe("Cloud reads the gateway's meter only by company item keys", () => {
     expect(onMeter).toEqual([grant]);
     expect(policies.filter((p) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement.includes(grant!)).map((p) => p.Properties.Roles)).toEqual([[{ Ref: role }]]);
     const variables = (server.Environment as { Variables: Record<string, unknown> }).Variables;
-    expect(variables.CLOUD_GATEWAY_METER_TABLE).toEqual({ Ref: "GatewayMeterTableName" });
+    expect(variables.CLOUD_GATEWAY_METER_TABLE).toEqual({ "Fn::If": ["GatewayMeterTableNameSet", { Ref: "GatewayMeterTableName" }, { Ref: "AWS::NoValue" }] });
     // The reader derives <CodeUrl>/v1/auth, the same issuer the gateway must trust.
     expect(variables.ROVARA_CODE_URL).toEqual({ Ref: "CodeUrl" });
-    expect(template.Parameters.GatewayMeterTableName).toMatchObject({ Type: "String", AllowedPattern: "^[A-Za-z0-9_.-]{3,255}$" });
     const boundary = (resources.RoleBoundary!.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
     expect(boundary.filter((s) => JSON.stringify(s.Resource).includes("GatewayMeterTableName"))).toEqual([grant]);
+  });
+
+  it("deploys without a gateway: the table name is optional, and unset the server gets no meter table (the page says not connected yet)", () => {
+    expect(template.Parameters.GatewayMeterTableName).toMatchObject({ Type: "String", Default: "", AllowedPattern: "^(|[A-Za-z0-9_.-]{3,255})$" });
+    expect((template as { Conditions?: Record<string, unknown> }).Conditions?.GatewayMeterTableNameSet).toEqual({ "Fn::Not": [{ "Fn::Equals": [{ Ref: "GatewayMeterTableName" }, ""] }] });
+    const variables = (server.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(variables.CLOUD_GATEWAY_METER_TABLE).toEqual({ "Fn::If": ["GatewayMeterTableNameSet", { Ref: "GatewayMeterTableName" }, { Ref: "AWS::NoValue" }] });
   });
 
   it("intersects the synthesized identity policy and boundary: company reads allowed; other keys, tables and actions denied", () => {
