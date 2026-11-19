@@ -1,8 +1,5 @@
-// Guided onboarding PR 15 (DEC 254l item 7): a project's "AI and spend limit". "Same as company" starts picked; "Set for this project" gives the
-// project its own per-task limit (Code's per-project cost setting, through Cloud's /v1/app/projects/{p}/spend-limits). The project's monthly limit
-// is the company's limit for every project today (no per-project monthly amount exists yet; see the build's Questions, PR 15), so it is shown as
-// that and not editable here. Code decides who may change the per-task limit; every refusal shown is the server's own
-// fixed sentence. PR 9 places this in Project settings; the admin project page shows it today.
+// The project page edits its task limit; monthly limits live on Spending limits.
+import { Link } from "react-router";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { dollarsOf, readSpendLimits, spendLimitsPath, type SpendLimitsRead } from "../../api/ai-spend.js";
@@ -23,7 +20,7 @@ export const PROJECT_SPEND_WORDS = Object.freeze({
  own: "Set for this project",
  perTask: "Per-task limit (USD)",
  badAmount: "The per-task limit must be an amount in dollars, like 5 or 12.50, up to 1,000,000.",
- monthly: "Monthly limit: the company's limit for each project. Company owners and admins set it in Company settings.",
+ monthly: "Monthly limits for each project are set by company owners and admins on Spending limits.",
  readOnly: "Only this project's admins can change it.",
  saved: "Saved. The new limit applies to the next task that starts.",
 });
@@ -58,7 +55,7 @@ function Limits({ limits, setNotice, reload }: { limits: SpendLimitsRead; setNot
   } finally { setBusy(false); }
  }
  if (!limits.canChange) {
-  return <div data-testid="project-spend-read-only"><p>Per-task limit: <b>{limits.perTask.sameAsCompany ? W.same : limits.perTask.usd === null ? "No limit of its own" : money(limits.perTask.usd)}</b></p>{applied !== undefined && <p className="rv-muted">{applied}</p>}<p>{W.monthly}</p><p>{W.readOnly}</p></div>;
+  return <div data-testid="project-spend-read-only"><p>Per-task limit: <b>{limits.perTask.sameAsCompany ? W.same : limits.perTask.usd === null ? "No limit of its own" : money(limits.perTask.usd)}</b></p>{applied !== undefined && <p className="rv-muted">{applied}</p>}<p>{W.monthly} <Link to="/app/admin/money/limits">Open Spending limits</Link>.</p><p>{W.readOnly}</p></div>;
  }
  return <>
   <fieldset disabled={busy} aria-label="Per-task limit"><legend>Per-task limit</legend>
@@ -67,7 +64,7 @@ function Limits({ limits, setNotice, reload }: { limits: SpendLimitsRead; setNot
   </fieldset>
   {!same && <TextField label={W.perTask} inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} disabled={busy} {...(usd === undefined && amount !== "" ? { error: W.badAmount } : {})} />}
   {applied !== undefined && <p className="rv-muted" data-testid="project-spend-applied">{applied}</p>}
-  <p>{W.monthly}</p>
+  <p>{W.monthly} <Link to="/app/admin/money/limits">Open Spending limits</Link>.</p>
   <p><Button variant="primary" busy={busy} disabled={!same && usd === undefined} onClick={() => { void save(); }}>Save</Button></p>
  </>;
 }

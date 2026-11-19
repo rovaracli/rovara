@@ -186,8 +186,8 @@ it("opts in after typing and shows Quick/Full estimates with planning exposure a
  try {
   fireEvent.change(await box(), { target: { value: "Fix it" } });
   expect(await screen.findByRole("region", { name: "Quick and Full cost estimates" })).toBeTruthy();
-  expect(screen.getByText(/Quick: \$1.00–\$3.00/)).toBeTruthy();
-  expect(screen.getByText(/Full: \$4.00–\$10.00/)).toBeTruthy();
+  expect(screen.getByText(/Quick: about \$1.00 to \$3.00/)).toBeTruthy();
+  expect(screen.getByText(/Full: about \$4.00 to \$10.00/)).toBeTruthy();
   expect(screen.getAllByText(/not model-priced/).length).toBeGreaterThan(0);
   expect(screen.getByText(/No money is reserved/)).toBeTruthy();
   expect(previews(f)[0]?.body).toEqual({ quoteVersion: 2, inputText: "Fix it" });
@@ -197,7 +197,7 @@ it("opts in after typing and shows Quick/Full estimates with planning exposure a
 it("refreshes changed quotes and discloses the cost change before starting", async () => {
  const { quoteFixture } = await import("./support/start-preview-fixture.js");
  let refreshed = false;
- const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", inputsDigest: (refreshed ? "b" : "a").repeat(64), asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), options: quoteFixture().options.map(q => refreshed ? { ...q, range: { state: "available", value: { lowMicros: 2_000_000, highMicros: 5_000_000 } }, stages: q.stages.map(s => ({ ...s, range: { state: "available", value: { lowMicros: 2_000_000, highMicros: 5_000_000 } } })) } : q), project: "payments", inputsDigest: (refreshed ? "b" : "a").repeat(64), asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
  try {
   fireEvent.change(await box(), { target: { value: "Fix it" } });
   await screen.findByRole("region", { name: "Quick and Full cost estimates" });
@@ -207,4 +207,28 @@ it("refreshes changed quotes and discloses the cost change before starting", asy
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(posts(f)).toHaveLength(1));
  } finally { f.close(); }
+});
+
+it("typing twice with equal ranges never reports a cost change, even with new digests", async () => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js"); let revision = 0;
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", inputsDigest: (++revision % 2 ? "a" : "b").repeat(64), asOf: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  const field = await box(); fireEvent.change(field, { target: { value: "Fix" } });
+  await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  fireEvent.change(field, { target: { value: "Fix it" } });
+  await waitFor(() => expect(previews(f)).toHaveLength(2));
+  await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  expect(screen.queryByText(/Cost estimate changed/)).toBeNull();
+  expect(screen.getAllByText("How this is worked out")).toHaveLength(1);
+  expect(document.body.textContent).not.toMatch(/partial|engine day|next call|legacy_aggregate/);
+ } finally { f.close(); }
+});
+it("starts once after refreshing an expired quote with equal ranges", async () => {
+ const { quoteFixture } = await import("./support/start-preview-fixture.js"); let revision = 0; const now = Date.now(); const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", inputsDigest: (++revision % 2 ? "a" : "b").repeat(64), asOf: revision === 1 ? new Date(now - 1000).toISOString() : new Date(now + 120_000).toISOString(), expiresAt: revision === 1 ? new Date(now + 60_000).toISOString() : new Date(now + 180_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } }); await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  clock.mockReturnValue(now + 120_000); fireEvent.click(screen.getByRole("button", { name: "Start" })); await waitFor(() => expect(posts(f)).toHaveLength(1));
+  expect(screen.queryByText(/Cost estimate changed/)).toBeNull();
+ } finally { clock.mockRestore(); f.close(); }
 });

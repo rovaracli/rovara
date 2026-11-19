@@ -1,9 +1,9 @@
 // Spending limits (lead 3 B1, DEC 254t b): a monthly limit for one project or one person, over the company default. Company owners and admins only (the server
 // refuses everyone else, and a member never sees the link). The page sends each change; the server applies the company's rules
-// to a raise. The company defaults live in Company settings; a project's per-task limit lives on its own page.
+// to a raise. The company monthly limit is edited in AI and spending; a project's per-task limit lives on its own page.
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { MEMBERS_PATH, SCOPE_ID, SPEND_LIMITS_PATH, SPEND_LIMIT_TABLES, limitPath, parseUsd, readPeopleNames, readSpendLimits, type PersonName, type SpendLimitRow, type SpendLimitScope, type SpendLimitTable, type SpendLimitsRead } from "../../../api/admin-spend-limits.js";
 import { isNotConnected } from "../../../api/admin-company.js";
 import { createApiClient } from "../../../api/client.js";
@@ -63,7 +63,7 @@ function Limits({ limits, reload }: { limits: SpendLimitsRead; reload: () => voi
  const d = limits.defaults;
  return <>
   {notice !== undefined && <p role={notice.ok ? "status" : "alert"}><VisibleText text={notice.text} /></p>}
-  <AdminSection title="Company defaults" note="Change these in Company settings">
+  <AdminSection title="Company defaults" note={<>Change the company monthly limit in <Link to="/app/admin/ai-spending">AI and spending</Link>. Other defaults apply unless overridden below.</>}>
    <ul data-testid="spend-defaults">
     <li>Company, each month: {usdOrNone(d.companyMonthlyUsd)}</li>
     <li>Each person, each month: {usdOrNone(d.memberMonthlyUsd)}</li>

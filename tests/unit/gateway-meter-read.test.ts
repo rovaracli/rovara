@@ -108,3 +108,17 @@ it("refuses an unverified issuer/partition instead of interpreting every missing
     await expect(new DynamoGatewayMeterReader(fake([companyRow(A, "2026-11", over)], { noPartition: true }).db, TABLE, ISS).monthSpend(A, "2026-11", [P(1)])).rejects.toThrow("meter unavailable");
   }
 });
+
+it("reads the company-month totals with exact keys and refuses foreign, missing, malformed or unfinished reads", async () => {
+ const row = companyRow(A, "2026-11", { spentMicros: 20_000_000, reservedMicros: 2_000_000, committed: 22_000_000, provisionalMicros: 1_230_000 });
+ const f = fake([row], { noPartition: true });
+ expect(await new DynamoGatewayMeterReader(f.db, TABLE, ISS).companyMonth(A, "2026-11")).toEqual({ spentMicros: 20_000_000, reservedMicros: 2_000_000, committed: 22_000_000, provisionalMicros: 1_230_000 });
+ expect(f.commands[0]!.input.RequestItems![TABLE]).toEqual({ Keys: [{ pk: meterPartition(ISS, A), sk: `ROW#["company","2026-11"]` }], ConsistentRead: true });
+ for (const patch of [{ company: B }, { pk: meterPartition(ISS, B) }, { sk: `ROW#["company","2026-10"]` }, { item: "person" }, { spentMicros: -1 }, { committed: 1.1 }, { reservedMicros: undefined }, { provisionalMicros: -1 }, { spentMicros: Number.MAX_SAFE_INTEGER + 1 }]) {
+  await expect(new DynamoGatewayMeterReader(fake([], { noPartition: true, extra: [{ ...row, ...patch }] }).db, TABLE, ISS).companyMonth(A, "2026-11")).rejects.toThrow();
+ }
+ await expect(new DynamoGatewayMeterReader(fake([], { noPartition: true }).db, TABLE, ISS).companyMonth(A, "2026-11")).rejects.toThrow();
+ await expect(new DynamoGatewayMeterReader(fake([row], { neverFinish: true }).db, TABLE, ISS).companyMonth(A, "2026-11")).rejects.toThrow();
+ const reader = new DynamoGatewayMeterReader(fake([row], { noPartition: true }).db, TABLE, ISS);
+ await expect(reader.companyMonth("bad", "2026-11")).rejects.toThrow(); await expect(reader.companyMonth(A, "2026-13")).rejects.toThrow();
+});

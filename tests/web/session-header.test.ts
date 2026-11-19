@@ -43,7 +43,7 @@ it("renders provisional task money instead of legacy spend and inferred payer", 
  const { readFileSync } = await import("node:fs");
  const money = (JSON.parse(readFileSync("contracts/shared/task-money.v1.json", "utf8")) as { examples: TaskMoneyV1[] }).examples[0]!;
  const f = renderUi(h(SessionHeader, { session: sessionFixture({ money }), onAction: () => undefined }));
- expect(screen.getByText("at least $0.00008 · estimated · awaiting usage · provisional")).toBeTruthy();
+ expect(screen.getByText("under $0.01 (not yet confirmed)")).toBeTruthy();
  expect(screen.queryByText("$1.20")).toBeNull();
  f.unmount();
 });
@@ -62,7 +62,7 @@ it("shows the money stop limit only when supplied, independently of legacy limit
   const view = renderUi(h(SessionHeader, { session: sessionFixture({ money, cost: { spentUsd: 999, runLimitUsd: 999, payer: { kind: "member", name: "Legacy" } } }), onAction: () => undefined }));
   expect(view.container.textContent).not.toContain("$999.00");
   if (limit === undefined) expect(view.container.textContent).not.toContain(" of ");
-  else expect(view.container.textContent).toContain(limit === 0 ? " of $0.00" : " of $12.00");
+  else expect(view.container.textContent).toContain(limit === 0 ? " · Task limit $0.00" : " · Task limit $12.00");
   view.unmount();
  }
 });

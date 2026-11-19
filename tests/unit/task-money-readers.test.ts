@@ -13,7 +13,7 @@ it("preserves identical money revision and value across detailed list, work, ses
  expect(workTask(row)?.money).toEqual(money);
  expect(sessionView(session, task(money), person, "https://example.test")).toMatchObject({ money });
  expect(liveTile(session, task(money), person, "https://example.test")).toMatchObject({ money });
- expect(taskMoneyWords(money)).toBe("at least $0.00008 · estimated · awaiting usage · provisional");
+ expect(taskMoneyWords(money)).toBe("under $0.01 (not yet confirmed)");
 });
 it("old Code and malformed or cross-task money are unavailable, regardless of legacy dollars", () => {
  for (const money of [undefined, { ...sample(), injected: true }, { ...sample(), taskId: "other-task" }]) {
@@ -26,10 +26,10 @@ it("keeps current, partial, awaiting-only and unavailable states distinct and sa
  const p = sample(), a = (value: number) => ({ state: "available" as const, value });
  const current: TaskMoneyV1 = { ...p, state: "current", spentMicros: a(80), finalMicros: a(80), estimatedMicros: a(0), awaitingUsageMicros: a(0), awaitingUsageCalls: a(0), heldMicros: a(0), coverage: { expectedCalls: a(1), finalCalls: 1, estimatedCalls: 0, awaitingUsageCalls: 0, incompatibleCurrencyCalls: 0 }, stop: { ...p.stop, coverage: "complete" }, finality: "final" };
  expect(parseTaskMoneyV1(current)).toEqual(current);
- expect(taskMoneyWords(current)).toBe("$0.00008");
+ expect(taskMoneyWords(current)).toBe("under $0.01");
  const unavailable: TaskMoneyV1 = { ...p, state: "unavailable", spentMicros: { state: "unavailable", reason: "not_measured" }, finalMicros: { state: "unavailable", reason: "not_measured" }, estimatedMicros: { state: "unavailable", reason: "not_measured" }, awaitingUsageMicros: { state: "unavailable", reason: "not_measured" }, finality: "unavailable" };
  expect(parseTaskMoneyV1(unavailable)).toEqual(unavailable);
- expect(taskMoneyWords(unavailable)).toBe("Cost unavailable · awaiting usage");
+ expect(taskMoneyWords(unavailable)).toBe("Cost unavailable");
  expect(mergeTaskMoney({ ...p, revision: 8 }, { ...p, revision: 7 })).toMatchObject({ revision: 8 });
  expect(mergeTaskMoney(p, undefined)).toBeUndefined();
 });

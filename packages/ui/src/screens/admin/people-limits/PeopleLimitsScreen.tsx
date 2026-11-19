@@ -27,7 +27,7 @@ const dollars = (cents: number) => cents / 100;
 
 const columns: readonly Column<PersonLimitRow>[] = [
  { key: "person", title: "Person", render: row => <b><VisibleText text={row.name} /></b> },
- { key: "spent", title: "Company spend this month", render: row => <span className="rv-num"><Money usd={dollars(row.spentCents)} /></span> },
+ { key: "spent", title: "Spent this month (all projects)", render: row => <span className="rv-num"><Money usd={dollars(row.spentCents)} /></span> },
  { key: "limit", title: "Monthly limit", render: row => row.limitCents === null ? <span className="rv-muted">No limit set</span> : <><span className="rv-num"><Money usd={dollars(row.limitCents)} /></span><span className="rv-muted"> {row.limitSource === "own" ? "set for this person" : "company default"}</span></> },
  { key: "standing", title: "Standing", render: row => { const state = standing(row); return state === "over" ? <span className="rv-spend-flag" data-tone="bad">{STANDING_WORDS[state]}</span> : state === "close" ? <span className="rv-spend-flag">{STANDING_WORDS[state]}</span> : <span className="rv-muted">{STANDING_WORDS[state]}</span>; } },
  { key: "change", title: "Change", render: row => <Link to={changeLimitPath(row.developerId)} aria-label={`Change the limit for ${row.name}`}>Change limit</Link> },

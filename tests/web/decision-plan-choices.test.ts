@@ -50,7 +50,7 @@ describe("a plan card with choices and a run limit", () => {
     expect(within(plan).getByRole<HTMLInputElement>("checkbox", { name: "Run the strict lint shard" }).checked).toBe(true);
     expect(within(plan).getByRole<HTMLInputElement>("checkbox", { name: "Please cover the refund path" }).checked).toBe(true);
     expect(within(plan).getByRole("textbox", { name: /Note for Rovara/u })).toBeTruthy();
-    expect(plan.textContent).toContain("Run limit: $2.00 now, $5.00 once you approve.");
+    expect(plan.textContent).toContain("Task limit: $2.00 now, $5.00 once you approve.");
     expect(plan.textContent).toContain("A question left on Rovara's recommendation takes that answer");
   });
   it("keeps Approve off until the run limit raise is ticked, then sends the limit and nothing else the person did not change", async () => {

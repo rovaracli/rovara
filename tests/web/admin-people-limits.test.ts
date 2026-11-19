@@ -75,7 +75,7 @@ describe("People and limits: the page", () => {
   const f = mount(PATH, () => ok(body()));
   try {
    const table = await screen.findByRole("table", { name: "People and limits" });
-   expect(within(table).getAllByRole("columnheader").map(cell => cell.textContent)).toEqual(["Person", "Company spend this month", "Monthly limit", "Standing", "Change"]);
+   expect(within(table).getAllByRole("columnheader").map(cell => cell.textContent)).toEqual(["Person", "Spent this month (all projects)", "Monthly limit", "Standing", "Change"]);
    const lines = within(table).getAllByRole("row").slice(1);
    expect(lines.map(line => within(line).getAllByRole("cell")[0]!.textContent)).toEqual(["Al", "Bo", "Cy", "Di"]);
    expect(lines[0]!.textContent).toContain("$12.34"); expect(lines[0]!.textContent).toContain("$50.00"); expect(lines[0]!.textContent).toContain("set for this person"); expect(lines[0]!.textContent).toContain("Within the limit");

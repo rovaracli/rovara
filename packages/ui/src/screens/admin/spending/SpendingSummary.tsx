@@ -26,7 +26,7 @@ export function useOrgSpendRead() {
  const host = useAppHost(), query = useQueryClient(), { orgId, developerId, role } = useAdminContext(), key = ["admin", "lane-c", "org-spend", orgId, developerId, role];
  useEffect(() => () => { void query.cancelQueries({ queryKey: key, exact: true }); query.removeQueries({ queryKey: key, exact: true }); }, [query, orgId, developerId, role]); // eslint-disable-line react-hooks/exhaustive-deps
  return useQuery({
-  queryKey: key, gcTime: 0,
+  queryKey: key, gcTime: 0, enabled: (role === "owner" || role === "admin"), retry: false,
   queryFn: async () => {
    let response;
    try { response = await host.transport.request({ method: "GET", path: ORG_SPEND_PATH }); } catch { throw new ApiError(0, "NETWORK_ERROR", "Couldn't reach Rovara. Check your connection and try again."); }
@@ -65,8 +65,8 @@ export function SpendingSummary({ read }: { read: UseQueryResult<OrgSpendRead> }
  const readiness = useGatewayReadiness();
  const summary = useMemo(() => (read.data === undefined ? undefined : spendSummary(read.data)), [read.data]);
  if (read.isPending) return <Skeleton label="Loading spending" />;
- if (read.isError && read.data === undefined) {
-  if (isNotConnected(read.error)) return <><GatewayReadinessBanner readiness={readiness} /><AdminSection title="This month"><NotConnected what="Company spending">Budgets and limits are below.</NotConnected></AdminSection></>;
+ if (read.isError) {
+  if (isNotConnected(read.error)) return <><GatewayReadinessBanner readiness={readiness} /><AdminSection title="This month"><NotConnected what="Company spending">Try again later.</NotConnected></AdminSection></>;
   const forbidden = read.error instanceof ApiError && read.error.status === 403;
   return <><GatewayReadinessBanner readiness={readiness} /><AdminSection title="This month"><div role="alert" className="rv-banner rv-banner-danger" data-testid="spend-error"><span><b>{forbidden ? "You don't have permission to view spending." : "Couldn't load spending."}</b> No amounts are shown.</span><Button disabled={read.isFetching} onClick={() => { void read.refetch(); }}>Try again</Button></div></AdminSection></>;
  }
@@ -74,15 +74,15 @@ export function SpendingSummary({ read }: { read: UseQueryResult<OrgSpendRead> }
  if (s.state === "unknown") return <><GatewayReadinessBanner readiness={readiness} /><AdminSection title="This month"><NotConnected what="This month's spending numbers" /></AdminSection></>;
  return <>
   <GatewayReadinessBanner readiness={readiness} />
-  {s.state === "over" && <Banner tone="danger" title="This month's budget is used up" action={<a className="rv-button rv-button-secondary" href="#limits">See limits</a>}><p>{s.overUsd > 0 ? <><Money usd={s.overUsd} /> over. </> : null}New tasks wait in the queue. Running tasks finish their current step.</p></Banner>}
+  {s.state === "over" && <Banner tone="danger" title="This month's budget is used up" action={<Link className="rv-button rv-button-secondary" to="/app/admin/ai-spending">Raise the limit</Link>}><p>{s.overUsd > 0 ? <><Money usd={s.overUsd} /> over. </> : null}New tasks wait in the queue. Running tasks finish their current step.</p></Banner>}
   {s.state === "near" && <Banner tone="warning" title="Close to this month's limit"><p><Money usd={s.remainingUsd ?? 0} /> left of <Money usd={s.limitUsd ?? 0} />.{data.runsOutOn !== undefined ? ` At this pace it runs out on ${dayName(data.runsOutOn)}.` : ""}</p></Banner>}
-  {read.isError && <p role="alert" className="rv-muted">These numbers are stale: the last refresh failed.</p>}
   <div className="rv-stats" aria-label={`Spending in ${month}`} role="group">
    <Stat label={`Spent in ${month}`} {...(s.limitUsd === undefined ? {} : { note: <>of <Money usd={s.limitUsd} /></> })}>{s.spentUsd === undefined ? "Unavailable" : <Money usd={s.spentUsd} />}</Stat>
    {s.heldUsd !== undefined && <Stat label="Held for running work" note="Set aside until the work ends">{<Money usd={s.heldUsd} />}</Stat>}
    <Stat label="Left this month" {...(s.state === "over" ? { tone: "bad" as const } : s.state === "near" ? { tone: "warn" as const } : {})} note={s.limitUsd === undefined ? "No company limit is set" : s.state === "over" ? "Used up" : data.runsOutOn !== undefined ? `Runs out around ${dayName(data.runsOutOn)}` : undefined}>{s.remainingUsd === undefined ? "Unavailable" : s.remainingUsd < 0 ? <>−<Money usd={-s.remainingUsd} /></> : <Money usd={s.remainingUsd} />}</Stat>
    {data.costPerMergedChangeUsd !== undefined && <Stat label="Cost per merged change" {...(data.mergedCount === undefined ? {} : { note: `${data.mergedCount} merged` })}><Money usd={data.costPerMergedChangeUsd} /></Stat>}
   </div>
+  <p>Not yet confirmed: {data.provisionalMicros === undefined ? "Unavailable" : <Money usd={data.provisionalMicros / 1_000_000} />}</p>
   {s.usedFraction !== undefined && <SpendMeter used={(s.spentUsd ?? 0) / (s.limitUsd ?? 1)} held={s.heldFraction ?? 0} bad={s.state === "over"} caption label={`${Math.round(s.usedFraction * 100)}% of this month's limit used or held`} />}
   <AdminSection title="By project">{data.projects === undefined ? <NotConnected what="Spending by project" /> : data.projects.length === 0 ? <p className="rv-muted">No project has spent anything this month.</p> : <DataTable caption="Spending by project" columns={projectColumns} rows={data.projects} rowKey={row => row.name} />}</AdminSection>
   <AdminSection title="People and limits" note="Only owners and admins see this."><p className="rv-muted">Each person's spending this month against their own limit is on <Link to="/app/admin/money/people">People and limits</Link>.</p></AdminSection>

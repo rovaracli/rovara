@@ -26,6 +26,7 @@ import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
 /** The gateway's person-month spend, in micro-dollars, for these people in one company and month. A person with no row is absent (spent nothing). Throws when it cannot say. */
 export interface PersonSpendReader {
+  companyMonth?(companyId: string, month: string): Promise<{ spentMicros: number; reservedMicros: number; committed: number; provisionalMicros?: number }>;
   provisionalTotal?(companyId: string, month: string): Promise<number | undefined>;
   monthSpend(companyId: string, month: string, personIds: readonly string[]): Promise<ReadonlyMap<string, number>>;
 }

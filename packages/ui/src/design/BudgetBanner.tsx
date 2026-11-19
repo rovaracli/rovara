@@ -9,7 +9,7 @@ import { Money } from "./Money.js";
  */
 export function BudgetBanner({ remainingUsd, canRaise }: { remainingUsd: number; canRaise: boolean }) {
  if (!(remainingUsd <= 0)) return null;
- return <Banner tone="danger" title="This month's budget is used up" action={canRaise ? <Link className="rv-button rv-button-secondary" to={paths.admin.home + "/money/budgets"}>Raise the limit</Link> : undefined}>
+ return <Banner tone="danger" title="This month's budget is used up" action={canRaise ? <Link className="rv-button rv-button-secondary" to={paths.admin.home + "/ai-spending"}>Raise the limit</Link> : undefined}>
   <p>{remainingUsd < 0 ? <><Money usd={-remainingUsd} /> over. </> : null}New tasks wait in the queue. Running tasks finish their current step. {canRaise ? "" : "Ask a company administrator to raise the limit."}</p>
  </Banner>;
 }

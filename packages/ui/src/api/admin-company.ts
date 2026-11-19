@@ -21,7 +21,7 @@ export interface ProjectSpend { name: string; spentUsd: number; heldUsd?: number
  * additions when Cloud sends them: `heldUsd`, `limitUsd`, `runsOutOn`, `costPerMergedChangeUsd`, `mergedCount`, `month`, and `byProject[]`. Per-person spending is NOT read here (owner rule, decision D2): it lives on People and limits only.
  */
 export interface OrgSpendRead {
-  spentUsd?: number; remainingUsd?: number; heldUsd?: number; limitUsd?: number; runsOutOn?: string; costPerMergedChangeUsd?: number; mergedCount?: number; month?: string;
+  provisionalMicros?: number; spentUsd?: number; remainingUsd?: number; heldUsd?: number; limitUsd?: number; runsOutOn?: string; costPerMergedChangeUsd?: number; mergedCount?: number; month?: string;
   projects?: ProjectSpend[];
 }
 function readProject(raw: unknown): ProjectSpend | undefined {
@@ -35,7 +35,7 @@ export function readOrgSpend(body: unknown): OrgSpendRead {
   const projects = Array.isArray(body["byProject"]) ? body["byProject"].flatMap(raw => { const line = readProject(raw); return line === undefined ? [] : [line]; }) : undefined;
   const remaining = num(body["remainingUsd"]), runsOutOn = str(body["runsOutOn"]);
   return {
-    ...opt("spentUsd", money(body["spentThisMonthUsd"] ?? body["spentUsd"])), ...opt("remainingUsd", remaining), ...opt("heldUsd", money(body["heldUsd"])), ...opt("limitUsd", money(body["limitUsd"])),
+    ...opt("provisionalMicros", count(body["provisionalMicros"])), ...opt("spentUsd", money(body["spentThisMonthUsd"] ?? body["spentUsd"])), ...opt("remainingUsd", remaining), ...opt("heldUsd", money(body["heldUsd"])), ...opt("limitUsd", money(body["limitUsd"])),
     ...opt("runsOutOn", runsOutOn !== undefined && !Number.isNaN(Date.parse(runsOutOn)) ? runsOutOn : undefined), ...opt("costPerMergedChangeUsd", money(body["costPerMergedChangeUsd"])), ...opt("mergedCount", count(body["mergedCount"])), ...opt("month", str(body["month"])),
     ...opt("projects", projects),
   };
@@ -88,7 +88,7 @@ export function readGatewayReadiness(value: unknown): GatewayReadiness | undefin
 }
 /** The words the page uses for a reason it knows; an unknown reason shows Cloud's own message. */
 export const GATEWAY_CAP_UNSET = "company_monthly_cap_unset";
-export const GATEWAY_CAP_WORDS = "Set a monthly cap to use the model gateway.";
+export const GATEWAY_CAP_WORDS = "Set a monthly limit to use the model gateway.";
 /** `GET /v1/app/org/settings` read only for its readiness; undefined when Cloud has no company settings or does not say. */
 export function readSettingsReadiness(body: unknown): GatewayReadiness | undefined { return isRecord(body) ? readGatewayReadiness(body["modelGateway"]) : undefined; }
 /** A company cap typed as dollars: "" is no cap, up to two decimals, at most $1,000,000. undefined is "not an amount". */
