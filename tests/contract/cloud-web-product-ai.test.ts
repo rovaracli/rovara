@@ -28,7 +28,8 @@ const BEFORE_CONDITION_CHECK = { production: "db67fcbbc888b0f1d83f7fa6f6fd9796c1
 const BEFORE = { production: "ae8e407d00367b254cbb58aed6a81396aac3fcedced39c3c44749eb9a4caab55", staging: "67347f5063fa512907cdaac2a1f73d6598c269d10c479b3a249733b084e6ec03" };
 // cp-iam + live switches: full merged templates, INCLUDING the boundary. Removing only the meter changes and answers switch restores BEFORE.
 // GatewayMeterTableName optional (empty default, the env variable only when set) for an install with no gateway.
-const METER_READ = { production: "9a1d27ac2b3ac9c53b081d5f29749c7bd9a995617f78832e8aab07ed2290599e", staging: "1ce02d6d908d877a599b31374c72a333f55e18d5734453222a77a43e64985462" };
+// Owner 2026-11-19: plus Cloud's own name (withoutCustomDomain below takes it out again); before it, 9a1d27ac... (production) and 1ce02d6d... (staging).
+const METER_READ = { production: "b43beba117d07fc2a2a31439f3ed02a61d2d47860660761fdae01fdef75f366c", staging: "3597757c3fb62fd5f7c9e33eaf244af45c0038b949e1b72ff0ae246cadef68e4" };
 // Less the role boundary (2026-11-17), which every template now carries (tests/contract/cloud-role-boundary.test.ts).
 const sha = (value: Parameters<typeof withoutRoleBoundary>[0]) => createHash("sha256").update(JSON.stringify(withoutRoleBoundary(value))).digest("hex");
 function withoutMeterRead(template: ReturnType<typeof synth>): ReturnType<typeof synth> {
@@ -94,17 +95,63 @@ function withoutAnswersSwitch(template: ReturnType<typeof synth>, env: string): 
   return { ...template, Parameters: parameters, Resources: resources } as ReturnType<typeof synth>;
 }
 
+/**
+ * Owner 2026-11-19 (Cloud's own name, app.rovara.dev): the web template gained exactly the two CustomDomain parameters, their rule and
+ * condition, the ToCustomDomain function on both behaviors, the conditional Aliases and ViewerCertificate, and Cloud's address as an
+ * Fn::If wherever CloudFront's address stood (the SSM parameter, CloudUrl, CallbackUrl, RegisterWithCode). Taken out again (each
+ * checked to be there exactly), with CDK's string joins flattened back, the template must hash to what it was: so nothing else moved.
+ */
+function withoutCustomDomain(template: ReturnType<typeof synth>): ReturnType<typeof synth> {
+  const t = structuredClone(template) as ReturnType<typeof synth> & { Conditions: Record<string, unknown>; Rules: Record<string, unknown> };
+  expect(Object.keys(t.Parameters)).toEqual(expect.arrayContaining(["CustomDomainName", "CustomDomainCertificateArn"]));
+  delete t.Parameters.CustomDomainName; delete t.Parameters.CustomDomainCertificateArn;
+  expect(t.Conditions.CustomDomainSet).toBeDefined(); delete t.Conditions.CustomDomainSet;
+  if (Object.keys(t.Conditions).length === 0) delete (t as { Conditions?: unknown }).Conditions;
+  expect(t.Rules.CustomDomainNeedsCertificate).toBeDefined(); delete t.Rules.CustomDomainNeedsCertificate;
+  const functions = Object.keys(t.Resources).filter((id) => t.Resources[id]!.Type === "AWS::CloudFront::Function");
+  expect(functions).toHaveLength(1); delete t.Resources[functions[0]!];
+  const [distributionId, distribution] = Object.entries(t.Resources).find(([, r]) => r.Type === "AWS::CloudFront::Distribution")!;
+  const config = distribution.Properties.DistributionConfig as Record<string, unknown> & { DefaultCacheBehavior: Record<string, unknown>; CacheBehaviors: Array<Record<string, unknown>> };
+  for (const behavior of [config.DefaultCacheBehavior, ...config.CacheBehaviors]) {
+    expect(behavior.FunctionAssociations).toEqual([{ EventType: "viewer-request", FunctionARN: { "Fn::GetAtt": [functions[0], "FunctionARN"] } }]);
+    delete behavior.FunctionAssociations;
+  }
+  expect(config.Aliases).toBeDefined(); delete config.Aliases;
+  expect(config.ViewerCertificate).toBeDefined(); delete config.ViewerCertificate;
+  const cloudfront = { "Fn::Join": ["", ["https://", { "Fn::GetAtt": [distributionId, "DomainName"] }]] };
+  const chosen = JSON.stringify({ "Fn::If": ["CustomDomainSet", { "Fn::Join": ["", ["https://", { Ref: "CustomDomainName" }]] }, cloudfront] });
+  const text = JSON.stringify(t);
+  expect(text.split(chosen).length - 1).toBe(4);
+  // CDK writes `https://${domain}/app` as one join of strings and tokens, adjacent strings merged: do the same to the nested joins.
+  const flatten = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(flatten);
+    if (value === null || typeof value !== "object") return value;
+    const entries = Object.entries(value).map(([k, v]) => [k, flatten(v)] as const);
+    const out = Object.fromEntries(entries) as Record<string, unknown>;
+    const join = out["Fn::Join"] as [string, unknown[]] | undefined;
+    if (join === undefined || join[0] !== "") return out;
+    const parts: unknown[] = [];
+    for (const part of join[1].flatMap((p) => { const inner = (p as { "Fn::Join"?: [string, unknown[]] } | null)?.["Fn::Join"]; return inner !== undefined && inner[0] === "" ? inner[1] : [p]; })) {
+      if (typeof part === "string" && typeof parts.at(-1) === "string") parts[parts.length - 1] = (parts.at(-1) as string) + part; else parts.push(part);
+    }
+    return { "Fn::Join": ["", parts] };
+  };
+  const { Rules: rules, ...rest } = flatten(JSON.parse(text.split(chosen).join(JSON.stringify(cloudfront)))) as Record<string, unknown>;
+  // The new rule made CDK write Rules before Outputs; the old template had them last.
+  return { ...rest, Rules: rules } as unknown as ReturnType<typeof synth>;
+}
+
 describe("Cloud web: product AI settings grants (B7)", () => {
-  it("off: only the approved meter reads and answers switch changed since the pinned templates", () => {
+  it("off: only the approved meter reads, answers switch and own name changed since the pinned templates", () => {
     for (const [env, productAi] of [["production", undefined], ["staging", undefined], ["staging", false]] as const) {
       const t = synth(env, productAi);
       expect(createHash("sha256").update(JSON.stringify(t)).digest("hex")).toBe(METER_READ[env]);
-      expect(sha(withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(t), env)))).toBe(BEFORE[env]);
+      expect(sha(withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(withoutCustomDomain(t)), env)))).toBe(BEFORE[env]);
     }
     expect(Object.keys(synth("staging").Parameters)).not.toContain("CompanyId");
   });
   it.each(["production", "staging"] as const)("%s: removing only the approved Companies ConditionCheckItem restores the previous template digest", (env) => {
-    const t = withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(synth(env)), env));
+    const t = withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(withoutCustomDomain(synth(env))), env));
     let changed = 0;
     for (const resource of Object.values(t.Resources)) {
       if (resource.Type !== "AWS::IAM::Policy") continue;

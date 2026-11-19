@@ -145,7 +145,8 @@ describe("Rovara Cloud on CloudFront, Lambda and DynamoDB (Rovara-cloud#11)", ()
     expect(statements.filter((statement) => actions(statement).some((action) => /^kms:(Decrypt|GenerateDataKey|Encrypt|CreateGrant|Create\*|\*)/u.test(action)))).toEqual([
       expect.objectContaining({ Sid: "OnlyCloudsServerSeals", Principal: { AWS: { "Fn::GetAtt": [role, "Arn"] } }, Action: ["kms:GenerateDataKey", "kms:Decrypt"], Condition: { StringEquals: { "kms:EncryptionContext:purpose": "rovara-cloud-session" } } }),
     ]);
-    template.hasResourceProperties("AWS::SSM::Parameter", { Name: "/rovara-cloud/production/web/origin", Value: Match.objectLike({ "Fn::Join": ["", ["https://", Match.anyValue()]] }) });
+    // Cloud's own name when CustomDomainName is set (owner 2026-11-19), CloudFront's otherwise (cloud-web-custom-domain.test.ts).
+    template.hasResourceProperties("AWS::SSM::Parameter", { Name: "/rovara-cloud/production/web/origin", Value: { "Fn::If": ["CustomDomainSet", { "Fn::Join": ["", ["https://", { Ref: "CustomDomainName" }]] }, { "Fn::Join": ["", ["https://", { "Fn::GetAtt": [idOf("AWS::CloudFront::Distribution"), "DomainName"] }]] }] } });
   });
 
   it("keeps company data in a table of its own, kept and recoverable, granted to the server item by item", () => {
