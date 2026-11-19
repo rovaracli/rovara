@@ -31,6 +31,8 @@ function FinishOne({ pending, self, people, onFinished }: { pending: Pending; se
    else if (code === "NOT_FOUND") setMessage("There's no hand-over waiting for this person. Reload the page.");
    else if (code === "FORBIDDEN") setMessage("Only an owner can finish an owner's hand-over.");
    else if (code === "HANDOVER_TOO_BIG") setMessage("This person owns too much to hand over in one go.");
+   else if (code === "HANDOVER_IN_PROGRESS") setMessage("This removal is still being made. Try again in a few minutes.");
+   else if (code === "IDEMPOTENCY_CONFLICT") { attempt.current = undefined;setMessage("Something changed. Try again."); }
    else setMessage("The outcome is unknown. Try again: nothing is handed over twice.");
   } finally { setBusy(false); }
  }

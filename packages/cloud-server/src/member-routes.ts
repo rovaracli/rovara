@@ -185,6 +185,7 @@ export const REMOVAL_WORDS = Object.freeze({
   unavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The removal couldn't be finished just now. Try the removal again: nothing is handed over twice."),
   previewUnavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The removal couldn't be previewed just now. Try again."),
   noPending: refusal(404, "NOT_FOUND", "There's no hand-over waiting for this person."),
+  inProgress: refusal(409, "HANDOVER_IN_PROGRESS", "This removal is still being made. Try again in a few minutes."),
   finishBody: refusal(400, "CONFIG_INVALID", "Send a request id and who takes over."),
   finishUnavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The hand-over couldn't be finished just now. Try again: nothing is handed over twice."),
   pendingUnavailable: refusal(503, "RUNTIME_UNAVAILABLE", "Hand-overs waiting to be finished couldn't be read just now. Try again."),
@@ -283,19 +284,24 @@ async function removeMember(context: RouteContext): Promise<RouteAnswer> {
   const moved = plain(answer) && plain(answer["moved"]) ? answer["moved"] : undefined;
   const agents = count(moved?.["agents"]), chains = count(moved?.["chains"]), projects = moved?.["projects"] === undefined ? 0 : count(moved["projects"]), tasks = count(moved?.["tasks"]), tasksLeft = count(moved?.["tasksLeft"]);
   if (!plain(answer) || answer["state"] !== "DONE" || typeof answer["removalId"] !== "string" || answer["removalId"] !== body["requestId"].toLowerCase()
-    || answer["successorId"] !== successorId || agents === undefined || chains === undefined || projects === undefined || tasks === undefined || tasksLeft === undefined) return REMOVAL_WORDS.unavailable;
+    || typeof answer["successorId"] !== "string" || !PERSON_ID.test(answer["successorId"]) || agents === undefined || chains === undefined || projects === undefined || tasks === undefined || tasksLeft === undefined) return REMOVAL_WORDS.unavailable;
+  // DEC 254zzz101: an owner or admin may have finished this removal's hand-over to someone else (it had stopped); that is a finished removal too.
+  const finishedElsewhere = answer["successorId"] !== successorId;
   // Only after Code removed them: a removal Code refuses (an owner, a stale role, the last owner) withdraws nothing.
   // A withdrawal that could not be saved is not a finished removal: the screen retries with the same request id, which Code answers DONE again.
   const withdrawal = await withdrawForMember(context, personId, { companyId: who.companyId });
   if ("status" in withdrawal) return REMOVAL_WORDS.unavailable;
   await withdrawal.after();
   const handed = [agents > 0 && plural(agents, "agent"), chains > 0 && plural(chains, "chain"), projects > 0 && `admin of ${plural(projects, "project")}`, tasks > 0 && plural(tasks, "open task")].filter((part): part is string => part !== false);
-  const message = `Removed from the company.${handed.length === 0 ? "" : ` Handed over ${handed.join(", ")}.`}${tasksLeft > 0 ? ` ${plural(tasksLeft, "open task")} wait for someone with access to take over.` : ""}`;
+  const message = finishedElsewhere ? "Removed from the company. Another owner or admin finished the hand-over."
+    : `Removed from the company.${handed.length === 0 ? "" : ` Handed over ${handed.join(", ")}.`}${tasksLeft > 0 ? ` ${plural(tasksLeft, "open task")} wait for someone with access to take over.` : ""}`;
   return { status: 200, body: { removalId: answer["removalId"], state: "DONE", message } };
 }
 
 /** Code's fixed words for "nothing to finish" (company-member-routes.ts NO_PENDING_HANDOVER). */
 const CODE_NO_PENDING = "this person has no hand-over waiting to be finished";
+/** Code's fixed words for a removal still being made by its remover (company-member-routes.ts HANDOVER_IN_PROGRESS). */
+const CODE_IN_PROGRESS = "this removal is still being made; try again in a few minutes";
 
 /** `GET /org/members/handovers` (DEC 254zzz101): the removals whose hand-over is waiting, as the app's list, or a refusal of the whole list. */
 async function pendingHandOvers(context: RouteContext): Promise<RouteAnswer> {
@@ -338,6 +344,7 @@ async function finishHandOver(context: RouteContext): Promise<RouteAnswer> {
   } catch (error) {
     if (!(error instanceof CodeError)) throw error;
     if (error.status === 404 && codeRefusal(error).message === CODE_NO_PENDING) return REMOVAL_WORDS.noPending;
+    if (codeRefusal(error).message === CODE_IN_PROGRESS) return REMOVAL_WORDS.inProgress;
     const mapped = removalRefusal(error);
     return mapped === REMOVAL_WORDS.unavailable || mapped === REMOVAL_WORDS.badBody ? (mapped === REMOVAL_WORDS.badBody ? REMOVAL_WORDS.finishBody : REMOVAL_WORDS.finishUnavailable) : mapped;
   }

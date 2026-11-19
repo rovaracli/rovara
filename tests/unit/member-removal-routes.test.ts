@@ -234,9 +234,11 @@ describe("Code's refusals reach the app as fixed sentences", () => {
       const shown = await w.preview(ada, "mia");
       expect(shown.status).toBeGreaterThanOrEqual(400); expect(shown.raw).not.toContain(SECRET);
     }
-    // A DONE for another successor than the one asked for is not this removal.
+    // A DONE whose hand-over another owner or admin finished (to someone else) is a finished removal, in its own words.
     const requestId = randomUUID();
     w.setOverride({ status: 200, body: { removalId: requestId, state: "DONE", successorId: PEOPLE.otto!.personId, moved: { agents: 0, chains: 0, projects: 0, tasks: 0, tasksLeft: 0 } } });
+    expect((await w.remove(ada, "mia", { requestId })).body).toEqual({ removalId: requestId, state: "DONE", message: "Removed from the company. Another owner or admin finished the hand-over." });
+    w.setOverride({ status: 200, body: { removalId: requestId, state: "DONE", successorId: SECRET, moved: { agents: 0, chains: 0, projects: 0, tasks: 0, tasksLeft: 0 } } });
     expect(words(await w.remove(ada, "mia", { requestId }))).toEqual(words(REMOVAL_WORDS.unavailable));
     w.setOverride({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "This person owns too much to hand over in one go. Hand some of it over first." } } });
     expect(words(await w.remove(ada, "mia"))).toEqual(words(REMOVAL_WORDS.tooMuch));
@@ -298,6 +300,8 @@ describe("finishing a stuck hand-over (DEC 254zzz101)", () => {
       const r = await finish(ada);
       expect(words(r)).toEqual(words(REMOVAL_WORDS.finishUnavailable)); expect(r.raw).not.toContain(SECRET);
     }
+    w.setOverride({ status: 409, body: { error: { code: "CHANGE_STALE", message: "this removal is still being made; try again in a few minutes" } } });
+    expect(words(await finish(ada))).toEqual(words(REMOVAL_WORDS.inProgress));
     w.setOverride({ status: 200, body: { handovers: [{ personId: SECRET }] } });
     expect(words(await w.call(ada, "GET", "/org/members/handovers"))).toEqual(words(REMOVAL_WORDS.pendingUnavailable));
   });
