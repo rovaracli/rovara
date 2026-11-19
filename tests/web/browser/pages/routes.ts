@@ -12,7 +12,7 @@ export const ROUTES = {
   account: "/app/account",
   /** The admin area (Hybrid 1, DEC 223): five groups in a sidebar. */
   admin: {
-    home: "/app/admin", people: "/app/admin/people", invites: "/app/admin/invites", signInClients: "/app/admin/sign-in-clients",
+    home: "/app/admin", people: "/app/admin/people", invites: "/app/admin/invites",
     spending: "/app/admin/money/budgets", peopleLimits: "/app/admin/money/people", spendingLimits: "/app/admin/money/limits", costReport: "/app/admin/money/report", costFeature: (id: string) => `/app/admin/money/report/features/${id}`, settings: "/app/admin/settings", howWeWork: "/app/admin/how-we-work", projects: "/app/admin/projects", audit: "/app/admin/audit", aiSpending: "/app/admin/ai-spending",
   },
   project: (name: string) => `/app/projects/${name}`,

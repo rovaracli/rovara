@@ -1,4 +1,3 @@
-import { TaskStopEditor } from "./TaskStopEditor.js";
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatUsdMicrodollars, type AdminBudgetSettings } from "@agentx/contracts/web";
@@ -21,7 +20,7 @@ const columns: readonly Column<Row>[] = [
 export function BudgetsScreen() {
  const { orgId, developerId, role } = useAdminContext();
  if (role !== "owner" && role !== "admin") return <section><PageHeader focusOnMount title="Spending" /><p role="alert">Only current company owners and admins can view these budgets. No amounts are shown.</p></section>;
- return <div key={`${orgId}:${developerId}:${role}`}><MonthlyBase orgId={orgId} developerId={developerId} role={role} /><div className="rv-admin-card"><TaskStopEditor /></div></div>;
+ return <div key={`${orgId}:${developerId}:${role}`}><MonthlyBase orgId={orgId} developerId={developerId} role={role} /></div>;
 }
 function MonthlyBase({ orgId, developerId, role }: { orgId: string; developerId: string; role: "owner" | "admin" }) {
  const host = useAppHost(), query = useQueryClient(), { checking } = useAdminContext();
@@ -33,8 +32,8 @@ function MonthlyBase({ orgId, developerId, role }: { orgId: string; developerId:
  return <section aria-busy={locked}>
   <PageHeader focusOnMount title="Spending" description="Spent this month, what is left, and the limits behind it." actions={<Button aria-disabled={locked} onClick={() => { if (!locked) void read.refetch(); }}>Refresh budgets</Button>} />
   <SpendingSummary read={spend} />
-  <AdminSection id="limits" title="Limits" note="Monthly base budgets and task stops">
-  <p className="rv-admin-note">{"Monthly base budgets are read only. Task stops can be reviewed and changed below."}</p>
+  <AdminSection id="limits" title="Limits" note="Monthly base budgets">
+  <p className="rv-admin-note">{"Monthly base budgets are read only."}</p>
   <p className="rv-admin-note">Usage, top-ups and enforcement are not checked by the monthly table. A monthly base is separate from a task stop.</p>
   {checking && <p role="status">Checking company access...</p>}{read.isFetching && read.data !== undefined && <p role="status">Checking monthly base budgets...</p>}
   {read.isPending ? <Skeleton label="Loading monthly base budgets" /> : read.isError ? <p role="alert">{error}</p> : read.data !== undefined ? <>

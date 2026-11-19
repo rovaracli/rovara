@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Track record (v1.2 slice 1), the app: the How we work cards say what each checking stage has earned, in plain words, and a confirmation shows the stage's lines beside each less-safe change.
 import { describe, expect, it } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { screen, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
@@ -11,7 +11,7 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { h } from "./support/h.js";
-import { diffBody, howWeWorkHost, howWeWorkView, type Handler } from "./support/how-we-work-fixture.js";
+import { howWeWorkHost, howWeWorkView, type Handler } from "./support/how-we-work-fixture.js";
 import { record, stageRecords } from "./support/how-we-work-view.js";
 
 const REVERTS = "Reverts after merge aren't tracked yet";
@@ -79,37 +79,5 @@ describe("the record on each card", () => {
  it("has no accessibility violations with the records shown", async () => {
   const world = await open();
   await expectNoAxeViolations(world.container);
- });
-});
-
-describe("a confirmation shows the stage's record beside each less-safe change", () => {
- const reasons = ["Changes the instructions of the review step \"Review\"", "Raises the agent's autonomy from suggest to run", "Changes the instructions of the plan check \"Plan check\""];
- const lessSafeDiff: Handler = (request, url) => url.pathname.endsWith("/diff") ? { status: 200, body: diffBody(2, ["Changes the review instructions"], reasons) } : undefined;
- const publish = async () => { fireEvent.click(await screen.findByRole("button", { name: "Review changes" })); const dialog = await screen.findByRole("dialog", { name: "Review changes" });await within(dialog).findByText("What changes");return dialog; };
- const item = (dialog: HTMLElement, text: string) => within(dialog).getByText(text).closest("li")!;
-
- it("in the review dialog: the review's lines under a review change, the plan check's under a plan check change, and nothing under a change about no stage", async () => {
-  await open({ handle: lessSafeDiff });
-  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));
-  const dialog = await publish();
-  const review = item(dialog, reasons[0]!);
-  expect(within(review).getByText("No changes requested by a person on 9 of 10 merged PRs (last 30 days)")).toBeTruthy();
-  expect(within(review).getByText(`2 PRs closed unmerged · 3 merged without a person's review · ${REVERTS}`)).toBeTruthy();
-  expect(within(review).getByText("Not enough history yet (6 so far)")).toBeTruthy();
-  expect(within(item(dialog, reasons[2]!)).getByText("The person approved the plan 14 of 17 times (last 30 days)")).toBeTruthy();
-  expect(within(item(dialog, reasons[1]!)).queryByRole("group", { name: "Track record" })).toBeNull();
-  expect(item(dialog, reasons[1]!).textContent).toBe(reasons[1]);
- });
-
- it("after the publish is sent for confirmation: the same lines under each change that waits", async () => {
-  await open({ handle: (request, url) => url.pathname.endsWith("/publish") ? { status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "https://cell.example/v1/app/approve/abc123", changes: [reasons[0], reasons[1]] } } : lessSafeDiff(request, url) });
-  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));
-  const dialog = await publish();
-  fireEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
-  await within(dialog).findByText("Sent for confirmation: someone else who can approve changes in this project confirms it.");
-  const waiting = within(dialog).getAllByRole("status").find(node => node.textContent?.includes("Sent for confirmation"))!;
-  const first = within(waiting).getByText(reasons[0]!).closest("li")!;
-  expect(within(first).getByText("No changes requested by a person on 9 of 10 merged PRs (last 30 days)")).toBeTruthy();
-  expect(within(within(waiting).getByText(reasons[1]!).closest("li")!).queryByRole("group", { name: "Track record" })).toBeNull();
  });
 });

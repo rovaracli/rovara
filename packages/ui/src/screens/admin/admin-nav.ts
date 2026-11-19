@@ -5,7 +5,6 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
  { id: "people", title: "People and access", links: [
   { to: "/app/admin/people", label: "People", blurb: "Who is in the company, their roles and how they sign in." },
   { to: "/app/admin/invites", label: "Invites", blurb: "Invites and pre-approved emails: who may join." },
-  { to: "/app/admin/domains", label: "Company domains", blurb: "Verify the email domains that belong to the company.", ownerOnly: true },
  ] },
  { id: "money", title: "Money", links: [
   { to: "/app/admin/money/budgets", label: "Spending", blurb: "Spent this month, what is left, and by project." },
@@ -25,7 +24,6 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
   { to: "/app/admin/agent-ai", label: "AI for your agents", blurb: "Rovara's AI, the company's own Anthropic key, or (soon) its own Bedrock.", ownerOnly: true },
   { to: "/app/admin/learning-ai", label: "Learning AI key", blurb: "The company's own AI account that lessons learn on, and its monthly learning cap.", ownerOnly: true },
   { to: "/app/admin/connections", label: "Connections", blurb: "Slack, GitHub, Jira and other connected tools." },
-  { to: "/app/admin/tracker-people", label: "Tracker people", blurb: "Who in your tracker maps to whom in Rovara." },
   { to: "/app/admin/second-review", label: "Second opinion", blurb: "A second review of risky changes.", key: "second-review" },
  ] },
  { id: "oversight", title: "Oversight", links: [

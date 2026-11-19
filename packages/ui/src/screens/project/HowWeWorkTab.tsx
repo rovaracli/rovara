@@ -20,7 +20,6 @@ import type { Overlay } from "../builder/draft-state.js";
 import { NewerRovaraCodeNotice } from "./NewerRovaraCodeNotice.js";
 import { ReviewChangesDialog } from "./ReviewChangesDialog.js";
 import { RuleField } from "./RuleField.js";
-import { ReviewDefaultNotice } from "./ReviewDefaultNotice.js";
 import { StageModelRows } from "./StageModelRows.js";
 import { DRAFT_CHANGED_TEXT, EDITS_REMOVED_TEXT } from "./stage-model-text.js";
 import { applicableStages, applyModelEdits, mergeEdit, needsExplicitVendor, pruneEdits, type ModelEdits, type StageEdit } from "./how-we-work-models.js";
@@ -127,7 +126,6 @@ export function HowWeWorkTab({ project, canEdit: _canEdit, repository }: { proje
   <p>{repository === undefined ? "To change these, edit .rovara/playbook.yaml in your repo" : <>To change these, <a href={`https://github.com/${repository.fullName}/blob/${encodeURIComponent(repository.defaultBranch)}/.rovara/playbook.yaml`} target="_blank" rel="noopener noreferrer">edit .rovara/playbook.yaml in your repo</a></>}</p>
   {data.process.update !== undefined && <NewerRovaraCodeNotice update={data.process.update} agentId={layerId} canEdit={canEdit} disabled={dirty || saving || draft.data === undefined} onMoved={async () => { await query.invalidateQueries({ queryKey: howWeWorkKey(project) });setReviewRequest(count => count + 1); }} />}
   <p className="rv-muted">How Rovara Code works in this project, stage by stage. Every setting says where it comes from.</p>
-  {models.data !== undefined && <ReviewDefaultNotice stages={models.data.stages} labelOf={model => models.data.stages.flatMap(stage => stage.candidates).find(candidate => candidate.model.provider + "/" + candidate.model.modelId === model)?.label ?? model} />}
   {(staleRead || discarded) && <section className="rv-project-section" aria-label="Draft changed"><p role="alert">{DRAFT_CHANGED_TEXT}</p><Button onClick={() => { setDiscarded(false);void draft.refetch();void models.refetch(); }}>Reload</Button></section>}
   {removed && !staleRead && !discarded && <p role="status">{EDITS_REMOVED_TEXT}</p>}
   {savedVersion !== undefined && <section className="rv-project-section" aria-label="Saved version">

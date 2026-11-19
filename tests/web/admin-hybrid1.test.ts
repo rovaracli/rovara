@@ -83,11 +83,12 @@ describe("admin navigation", () => {
   const groups = visibleAdminGroups("owner", false);
   expect(groups.map(group => group.title)).toEqual(["People and access", "Money", "Work and rules", "AI and connections", "Oversight"]);
   const all = groups.flatMap(group => group.links.map(link => link.label));
-  expect(all).toEqual(expect.arrayContaining(["People", "Invites", "Sign-in clients", "Spending", "Company settings", "How we work", "Audit", "Health"]));
+  expect(all).toEqual(expect.arrayContaining(["People", "Invites", "Spending", "Company settings", "How we work", "Audit"]));
+  expect(all).not.toContain("Sign-in clients");expect(all).not.toContain("Health");
   expect(all).not.toContain("Sign-in factors");
  });
  it("hides owner-only and switched-off pages, and shows a member only the waiting queue", () => {
-  expect(visibleAdminGroups("admin", false).flatMap(group => group.links.map(link => link.label))).not.toContain("Company domains");
+  expect(visibleAdminGroups("owner", false).flatMap(group => group.links.map(link => link.label))).not.toContain("Company domains");
   expect(visibleAdminGroups("owner", true).flatMap(group => group.links.map(link => link.label))).not.toContain("Second opinion");
   expect(visibleAdminGroups("member", false).flatMap(group => group.links.map(link => link.label))).toEqual(["Waiting for people"]);
  });
@@ -98,7 +99,7 @@ describe("admin navigation", () => {
    expect(within(nav).getAllByRole("heading").map(heading => heading.textContent)).toEqual(["People and access", "Money", "Work and rules", "AI and connections", "Oversight"]);
    expect(within(nav).getByRole("link", { name: "People" }).getAttribute("aria-current")).toBe("page");
    expect(within(nav).getByRole("link", { name: "Spending" }).getAttribute("href")).toBe("/app/admin/money/budgets");
-   expect(within(nav).getByRole("link", { name: "Company domains" })).toBeTruthy();
+   expect(within(nav).queryByRole("link", { name: "Company domains" })).toBeNull();expect(within(nav).queryByRole("link", { name: "Tracker people" })).toBeNull();
   } finally { f.close(); }
  });
 });
@@ -248,7 +249,7 @@ describe("Overview", () => {
    const glance = await screen.findByRole("group", { name: "At a glance" });
    await within(glance).findByText("$412.60"); expect(within(glance).getByText("$549.20")).toBeTruthy(); expect(await within(glance).findByText("1")).toBeTruthy();
    expect(screen.getByRole("link", { name: "Open Spending" }).getAttribute("href")).toBe("/app/admin/money/budgets");
-   expect(screen.getByRole("link", { name: "Open Health" })).toBeTruthy();
+   expect(screen.queryByRole("link", { name: "Open Health" })).toBeNull();
   } finally { f.close(); }
  });
  it("says spending is not connected yet", async () => {
@@ -346,14 +347,16 @@ describe("the company rules editor", () => {
  });
 });
 
-describe("Sign-in clients", () => {
- it("says not connected yet", async () => {
-  const f = mount("/app/admin/sign-in-clients", r => (r.path.endsWith("/sign-in-clients") ? NOT_ON_CODE : ok({})));
-  try { expect(await screen.findByTestId("not-connected")).toBeTruthy(); expect(screen.getByText(/Sign-in clients isn't connected to Rovara Code yet/)).toBeTruthy(); } finally { f.close(); }
- });
- it("lists the company's clients", async () => {
-  const f = mount("/app/admin/sign-in-clients", r => (r.path.endsWith("/sign-in-clients") ? ok({ clients: [{ clientId: "c1", name: "Acme Okta", kind: "oidc", createdAt: "2026-10-01T00:00:00Z" }, { nope: 1 }] }) : ok({})));
-  try { const table = await screen.findByRole("table", { name: "Sign-in clients" }); expect(within(table).getByText("Acme Okta")).toBeTruthy(); expect(within(table).getByText("Company login")).toBeTruthy(); } finally { f.close(); }
+describe("Sign-in clients and Health (hidden: the hosted Code does not serve them, DEC 254zzz113/115/116)", () => {
+ for (const page of ["sign-in-clients", "health"]) it(`has no ${page} page: the address finds nothing and no request is made for it`, async () => {
+  const f = mount("/app/admin/" + page, () => ok({ members: [maya] }));
+  try {
+   await screen.findByRole("navigation", { name: "Administration" });
+   expect(screen.queryByTestId("not-connected")).toBeNull();
+   expect(screen.queryByRole("table", { name: "Sign-in clients" })).toBeNull();
+   expect(screen.queryByRole("heading", { name: "Rovara service status" })).toBeNull();
+   expect(f.request.mock.calls.some(([r]) => /sign-in-clients|service-status/.test(r.path))).toBe(false);
+  } finally { f.close(); }
  });
 });
 
