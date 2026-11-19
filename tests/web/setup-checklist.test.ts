@@ -40,7 +40,7 @@ function checklist(extra: Record<string, unknown> = {}) {
 }
 const runView = (status: string, canManage: boolean) => ({ status, basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, canManage });
 
-interface Options { status?: () => ApiResponse; run?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse; role?: "owner" | "admin" | "member"; projects?: string[] }
+interface Options { status?: () => ApiResponse; run?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse; role?: "owner" | "admin" | "member"; projects?: string[]; archived?: boolean }
 function mount(element: ReactElement, options: Options = {}) {
   const f = fakeHost(async (request) => {
     if (request.path === "/v1/app/projects/web/setup-status") return options.status?.() ?? { status: 200, body: checklist() };
@@ -55,7 +55,7 @@ function mount(element: ReactElement, options: Options = {}) {
     if (request.path === "/v1/app/projects/web/slack/channel") return { status: 200, body: { connected: false, channels: [] } };
     if (request.path === "/v1/app/nav") { const nav = navFixture(); return { status: 200, body: { ...nav, me: { ...nav.me, orgRole: options.role ?? "owner" }, projects: (options.projects ?? ["web"]).map((name) => ({ name, agents: [] })) } }; }
     if (request.path === "/v1/app/me") { const me = meFixture(); me.developer.orgRole = options.role ?? "owner"; return { status: 200, body: me }; }
-    if (request.path === "/v1/app/projects/web/lifecycle") return { status: 200, body: { status: "active", actions: options.role === "member" ? [] : ["archive"] } };
+    if (request.path === "/v1/app/projects/web/lifecycle") return { status: 200, body: { status: options.archived ? "archived" : "active", actions: options.role === "member" ? [] : [options.archived ? "restore" : "archive"] } };
     return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
   });
   const query = createQueryClient();
@@ -205,6 +205,15 @@ describe("Project settings", () => {
     expect(await screen.findByRole("button", { name: "Review archive" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "AI models for each step" }).getAttribute("href")).toBe("/app/admin/ai-spending#ai-models");
     f.close();
+  });
+
+  it("explains an archived project's running tasks consistently and accessibly", async () => {
+    const f = mount(h(ProjectSettingsTab, { project: "web", canEdit: true }), { archived: true });
+    try {
+      const summary = await screen.findByText("This project is archived. New work stops. Running tasks stop at their next step.");
+      expect(summary.textContent).not.toMatch(/existing work continues/i);
+      await expectNoAxeViolations(screen.getByTestId("project-settings-lifecycle"));
+    } finally { f.close(); }
   });
 
   it("a project user gets no Re-run setup and no Archive", async () => {

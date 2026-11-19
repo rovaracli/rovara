@@ -125,7 +125,7 @@ export function ArchiveProject({ name, available, observedStatus }: { name: stri
    {preview && <p>Project revision: {preview.expectedProjectRevision}.</p>}
    {current && <p>Checked at {current.checkedAt}. Current state is separate from the original receipt.</p>}
    {preview?.status === "active" && !preview.access.actions.includes("archive") && <p role="alert">Archiving isn't available to you for this project right now.</p>}
-   {preview?.status === "active" && preview.access.actions.includes("archive") && receipt === undefined && samePins && !stale && <label><input type="checkbox" checked={ack} disabled={busy || context.checking} onChange={event => setAck(event.target.checked)} /> {preview.impact ? "I understand that new work stops and a running task stops at its next step." : "I understand that new work stops and existing work continues."}</label>}
+   {preview?.status === "active" && preview.access.actions.includes("archive") && receipt === undefined && samePins && !stale && <label><input type="checkbox" checked={ack} disabled={busy || context.checking} onChange={event => setAck(event.target.checked)} /> I understand that new work stops and a running task stops at its next step.</label>}
    {receipt === undefined && !stale && samePins && preview?.access.actions.includes("archive") === true && <Button variant="danger" disabled={!canWrite} onClick={() => void commit()}>{uncertain ? "Retry same archive request" : "Archive project"}</Button>}
    {(uncertain || earlierUnknown || receipt !== undefined || message) && <Button disabled={busy || context.checking} onClick={() => void check()}>Check current state</Button>}
    {mayFreshReview && <Button disabled={busy || context.checking} onClick={() => void check(true)}>Review latest state</Button>}

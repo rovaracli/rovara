@@ -227,7 +227,9 @@ describe("signing in through Rovara Code", () => {
     expect(answer!.status).toBe(400);
     expect(answer!.body).toContain("You're no longer a member of this company.");
     expect(answer!.body).toContain("Ask an admin to invite you again.");
-    expect(answer!.body).not.toContain("access_denied");
+    expect(answer!.headers["content-type"]).toBe("text/html; charset=utf-8");
+    expect(answer!.body).toContain('<a href="/app">Sign in again</a>');
+    for (const privateText of ["access_denied", state, "Acme", ACME, "payments", ADA]) expect(answer!.body).not.toContain(privateText);
   });
 
   it("returns only to an app path", () => {

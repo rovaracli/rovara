@@ -47,11 +47,11 @@ function setUp(options: { enabled?: boolean; override?: Override } = {}) {
     const person = PEOPLE[(call.authorization ?? "").replace(/^Bearer /u, "")];
     if (url.pathname === "/v1/auth/token") return json(400, { error: "invalid_grant" });
     if (person === undefined) return json(401, {});
+    const replaced = options.override?.(call, person);
+    if (replaced !== undefined) return replaced;
     if (url.pathname === "/v1/dev/access") {
       return json(200, { developerId: person.id, displayName: "Someone", administrator: false, ...(person.company === undefined ? {} : { companyId: person.company, companyRole: person.role }), projects: [], notices: [] });
     }
-    const replaced = options.override?.(call, person);
-    if (replaced !== undefined) return replaced;
     // J5: "Not right": Code's rule is the same role rule here (the real route also needs the asker; the pretend Code lets any person with a role press).
     const notRight = /^\/v1\/app\/projects\/([^/]+)\/answers\/([^/]+)\/not-right$/u.exec(url.pathname);
     if (notRight !== null && call.method === "POST") {
@@ -205,7 +205,7 @@ describe("an answer that does not read is refused whole", () => {
   const bad = (name: string, answer: Record<string, unknown>) => it(name, async () => {
     const w = setUp({ override: (call) => (/\/answers$/u.test(call.path) ? json(200, answer) : undefined) });
     const res = await w.send("POST", ASK, await w.as("pam-token"), ask());
-    expect(asFixed(res)).toEqual(fixed("unavailable"));
+    expect(asFixed(res)).toEqual(fixed("unreadable"));
     expect(res.text).not.toContain("CANARY");
   });
   bad("an extra field", goodAnswer({ cost: 12, CANARY: 1 }));
@@ -252,6 +252,33 @@ it("logs only the upstream status when Ask is unavailable, never the question or
   expect(JSON.stringify(w.logged)).not.toContain("private");
 });
 
+it("distinguishes an unreadable answer from an upstream outage without exposing content", async () => {
+  const results = [];
+  for (const [status, body, key, event] of [
+    [200, goodAnswer({ text: `private ${LEAK}`, extra: LEAK }), "unreadable", { event: "cloud.answers_unreadable" }],
+    [503, { error: { code: "RUNTIME_UNAVAILABLE", message: LEAK } }, "unavailable", { event: "cloud.answers_unavailable", status: 503 }],
+  ] as const) {
+    const w = setUp({ override: call => call.path.endsWith("/answers") ? json(status, body) : undefined });
+    const res = await w.send("POST", ASK, await w.as("pam-token"), ask({ question: `private ${LEAK}` }));
+    expect(asFixed(res)).toEqual(fixed(key));
+    expect(w.logged).toEqual([event]);
+    expect(JSON.stringify(w.logged)).not.toContain(LEAK);
+    expect(res.text).not.toContain(LEAK);
+    results.push(res.body);
+  }
+  expect(results[0]).not.toEqual(results[1]);
+});
+
+it.each([403, 503])("logs only a fixed cause when the live Ask access check fails (%i)", async status => {
+  const w = setUp({ override: call => call.path === "/v1/dev/access" ? json(status, { error: { code: LEAK, message: `private ${LEAK}` } }) : undefined });
+  const res = await w.send("POST", ASK, await w.as("pam-token"), ask({ question: `private ${LEAK}` }));
+  expect(asFixed(res)).toEqual(fixed("unavailable"));
+  expect(w.codeCalls()).toEqual([]);
+  expect(w.logged).toEqual([{ event: "cloud.answers_unavailable", code: "ACCESS_CHECK_FAILED" }]);
+  expect(JSON.stringify(w.logged)).not.toContain(LEAK);
+  expect(res.text).not.toContain(LEAK);
+});
+
 describe("B8: the Ask box's edge cases", () => {
   it("a repeat of a NOT FOUND question (Code's earlier Code replays the fixed words as the text) is the not-found answer, never 'Couldn't answer that just now'", async () => {
     const replayed = { answerId: "a1234567890", threadId: "t-1234", outcome: "not_found", text: "I don't know. The wiki and the code I can read do not cover this.", unconfirmed: [], sources: [], wikiPages: [] };
@@ -279,7 +306,7 @@ describe("B8: the Ask box's edge cases", () => {
       ["a control character", { ...base, text: "a\u0000b", sources: [] }],
     ] as const) {
       const w = setUp({ override: (call) => (/\/answers$/u.test(call.path) ? json(200, answer) : undefined) });
-      expect(asFixed(await w.send("POST", ASK, await w.as("pam-token"), ask())), name).toEqual(fixed("unavailable"));
+      expect(asFixed(await w.send("POST", ASK, await w.as("pam-token"), ask())), name).toEqual(fixed("unreadable"));
     }
   });
 
