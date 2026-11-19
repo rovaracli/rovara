@@ -89,8 +89,8 @@ list or `--parameters` overrides). On staging the old stopgap value was `org_jck
 exactly the company Code's access check now names for the founders, so no company data moves. Code must answer
 `companyId` and `companyRole` (Code PR #820) before this Cloud is deployed, or every company route refuses.
 
-The web stack requires `GatewayMeterTableName`: pass the gateway stack's **Meter** resource's physical table name on the first update
-that enables People and limits. Compare the gateway's `Issuer` output with `CodeUrl` plus `/v1/auth` before that update; they must match
+The web stack takes `GatewayMeterTableName` (default empty: an install with no model gateway, where People and limits says "not connected yet"):
+pass the gateway stack's **Meter** resource's physical table name on the first update that enables People and limits. Compare the gateway's `Issuer` output with `CodeUrl` plus `/v1/auth` before that update; they must match
 exactly. The web role gets only conditioned item reads on that table. Subsequent release deploys keep the parameter, as for the product key settings.
 
 The web stack's product AI settings (staging, with the `ProductKeys*` parameters and `ModelGatewayUrl`) also take an optional
