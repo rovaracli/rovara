@@ -38,7 +38,8 @@ export const MERGE_WORDS = {
   invalid: "Send a request id and, if you were shown them, the heads and the risk level; nothing else.",
   notYet: "Merging from Rovara isn't available on this Rovara yet. Merge the pull request on GitHub.",
   unreadable: "Rovara answered Merge in an unexpected way. Reload this page.",
-  failed: "Couldn't merge just now. Nothing was merged. Try again in a minute.",
+  /** An answer Cloud cannot read as Code's own refusal (a fault, a timeout): it does not say what GitHub did, so the words never say "nothing was merged". */
+  failed: "We couldn't confirm the result yet; checking GitHub. Reload this page in a moment.",
 } as const;
 
 const answer = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
@@ -84,9 +85,12 @@ export function mergeDoneAnswer(value: unknown): { status: "MERGED"; pullRequest
   return { status: "MERGED", pullRequests: pullsOf((value as Record<string, unknown>)["pullRequests"], false) };
 }
 
-/** A sentence of Code's own fixed words: one printable line, bounded. Anything else is not passed on. */
+/** The longest sentence passed on; a longer one (a half merge naming many repositories) is cut, never dropped, so the person still reads what merged. */
+const SENTENCE_MAX = 600;
+/** A sentence of Code's own fixed words: one printable line, cut to SENTENCE_MAX. Anything with a control character or markup is not passed on. */
 function sentence(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 && value.length <= 400 && ![...value].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f || ch === "<" || ch === ">") ? value : undefined;
+  if (typeof value !== "string" || value.length === 0 || [...value].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f || ch === "<" || ch === ">")) return undefined;
+  return value.length <= SENTENCE_MAX ? value : value.slice(0, SENTENCE_MAX - 1) + "…";
 }
 
 /** The error codes Code's merge route answers with, and the HTTP status each keeps. */

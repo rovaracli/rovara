@@ -1164,6 +1164,20 @@ describe("the Merge button through Code (DEC 254zzz94)", () => {
     }
   });
 
+  it("a long half merge is cut, never dropped; an answer Cloud can't read never says nothing was merged", async () => {
+    const { call, auth, sessionId, code } = await begin();
+    const long = "a, b merged, but c didn't: " + "the code host would not merge it ".repeat(30) + ". Merge it on GitHub or press Merge again.";
+    code.answerMerge("POST", 409, { error: { code: "MERGE_NOT_READY", message: long } });
+    const half = JSON.parse((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } }))!.body) as { error: { code: string; message: string } };
+    expect(half.error.code).toBe("MERGE_NOT_READY");
+    expect(half.error.message.startsWith("a, b merged, but c didn't:")).toBe(true);
+    expect(half.error.message.length).toBeLessThanOrEqual(600);
+    code.answerMerge("POST", 500, "oops");
+    const unknown = JSON.parse((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } }))!.body) as { error: { message: string } };
+    expect(unknown.error.message).toBe("We couldn't confirm the result yet; checking GitHub. Reload this page in a moment.");
+    expect(unknown.error.message).not.toMatch(/nothing was merged/iu);
+  });
+
   it("refuses an answer from Code that does not read (a link that is not github.com, ready without may, extra shapes)", async () => {
     const { call, auth, sessionId, code } = await begin();
     for (const body of [{ mayMerge: true, ready: true, pullRequests: [{ ...PULL, url: "https://evil.example/pull/42" }] }, { mayMerge: false, ready: true, pullRequests: [] }, { mayMerge: true, ready: true }, { mayMerge: true, ready: true, pullRequests: [{ ...PULL, number: 0 }] }]) {

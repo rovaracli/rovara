@@ -150,7 +150,7 @@ it("the press carries the heads and risk Code showed; a lost answer keeps the re
   const HEAD = { repositoryId: "payments", number: 42, headSha: "a".repeat(40) };
   let first = true;
   const f = setup({ pullRequests: [PR] }, { readiness: { status: 200, body: { ...READY, risk: "medium", heads: [HEAD] } }, press: async () => {
-    if (first) { first = false; return { status: 503, body: { error: { code: "MERGE_FAILED", message: "Couldn't merge just now. Nothing was merged. Try again in a minute." } } }; }
+    if (first) { first = false; return { status: 503, body: { error: { code: "MERGE_FAILED", message: "We couldn't confirm the result yet; checking GitHub. Reload this page in a moment." } } }; }
     return { status: 200, body: { status: "MERGED", pullRequests: [{ repositoryId: "payments", number: 42 }] } };
   } });
   fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
