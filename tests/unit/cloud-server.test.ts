@@ -296,6 +296,7 @@ describe("the app's API, answered from Code as the person", () => {
     expect((await work.get(started.sessionId))?.companyId).toBe(ACME);
     await call("PUT", `/v1/web/sessions/${started.sessionId}/shares`, { cookie: ada.cookie, csrf: ada.csrf, body: { requestId: "33333333-3333-4333-8333-333333333333", principal: { kind: "member", developerId: GRACE }, level: "view" } });
     const grace = await signIn("grace-code");
+    code.setTask({ ...PLAN_WAITING, spent: { usd: 999.13 }, runEstimate: { lowUsd: 4.37, highUsd: 10.19, runLimitUsd: 12.71, stopAtUsd: 12.71 } });
     // Positive control: in Acme, Grace reads the shared session.
     expect((await call("GET", `/v1/web/sessions/${started.sessionId}`, { cookie: grace.cookie }))!.status).toBe(200);
     code.setCompany(GRACE, { companyId: OTHER, companyRole: "owner" });
@@ -304,10 +305,12 @@ describe("the app's API, answered from Code as the person", () => {
     for (const tail of reads) {
       const answer = await call("GET", `/v1/web/sessions/${started.sessionId}${tail}`, { cookie: other.cookie });
       expect({ tail, status: answer!.status }).toEqual({ tail, status: 404 });
+      expect(answer!.body).not.toMatch(/999\.13|4\.37|10\.19|12\.71/);
     }
     for (const [tail, body] of [["/follow", undefined], ["/messages", { requestId: "44444444-4444-4444-8444-444444444444", kind: "comment", text: "hi" }], ["/presence", {}]] as const) {
       const answer = await call("POST", `/v1/web/sessions/${started.sessionId}${tail}`, { cookie: other.cookie, csrf: other.csrf, ...(body === undefined ? {} : { body }) });
       expect({ tail, status: answer!.status }).toEqual({ tail, status: 404 });
+      expect(answer!.body).not.toMatch(/999\.13|4\.37|10\.19|12\.71/);
     }
     expect(JSON.parse((await call("GET", "/v1/web/home", { cookie: other.cookie }))!.body)).toMatchObject({ total: 0 });
     // A retried start from the other company never answers Acme's session.
@@ -743,10 +746,10 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     expect(code.calls.some((entry) => entry.path.endsWith("/workflow/review"))).toBe(false);
   });
 
-  it("shows what the task has cost from Code's spent figure, with its run limit, on the session and its tile; nothing spent reads $0 (Rovara-cloud#31)", async () => {
+  it("shows what the task has cost from Code's spent figure, with its run limit, on the session and its tile; absent spend stays absent (Rovara-cloud#31)", async () => {
     const { call, auth, code, sessionId } = await begin();
     const session = async () => SessionResponseReaderSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: auth.cookie }))!.body)).session;
-    expect((await session()).cost).toEqual({ spentUsd: 0, payer: { kind: "member", name: "Ada" } });
+    expect((await session()).cost).toEqual({ payer: { kind: "member", name: "Ada" } });
     code.setTask({ ...PLAN_WAITING, spent: { usd: 28.4812, inputTokens: 26_257_037, outputTokens: 257_592, runs: 17, unpricedRuns: 0, updatedAt: "2026-11-15T01:43:15.327Z" }, runLimit: { limitUsd: 40, canAskAgain: true } });
     expect((await session()).cost).toEqual({ spentUsd: 28.48, runLimitUsd: 40, payer: { kind: "member", name: "Ada" } });
     const [tile] = ProjectOverviewSchema.parse(JSON.parse((await call("GET", "/v1/web/projects/payments/overview", { cookie: auth.cookie }))!.body)).running;

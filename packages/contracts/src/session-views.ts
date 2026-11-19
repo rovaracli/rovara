@@ -56,7 +56,7 @@ export const SessionViewSchema = z
     money: TaskMoneyV1Schema.optional(),
     cost: z
       .object({
-        spentUsd: z.number().min(0),
+        spentUsd: z.number().min(0).optional(),
         runLimitUsd: z.number().min(0).optional(),
         stopAtUsd: z.number().min(0).optional(),
         payer: PayerNameSchema,
@@ -230,7 +230,7 @@ export const LiveTileSchema = z
     peek: SessionSummarySchema.shape.peek,
     lastRunFailed: SessionSummarySchema.shape.lastRunFailed,
     money: TaskMoneyV1Schema.optional(),
-    costUsd: SessionSummarySchema.shape.costUsd,
+    costUsd: SessionSummarySchema.shape.costUsd.optional(),
     viewingNow: z.array(SessionOwnerSchema).max(LIVE_VIEWING_MAX),
     viewingNowCount: CountSchema,
     needsYou: z.boolean(),

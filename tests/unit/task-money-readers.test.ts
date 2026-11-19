@@ -37,9 +37,31 @@ it("keeps current, partial, awaiting-only and unavailable states distinct and sa
 
 it("preserves Code's omitted money for reader and co-owner sessions without reviving legacy spend", () => {
  for (const coOwner of [false, true]) {
-  const raw = { ...task(), owner: { developerId: "stored-task-owner", name: "Owner" } };
+  const raw = { ...task(), runEstimate: { lowUsd: 4.37, highUsd: 10.19, runLimitUsd: 12.71, stopAtUsd: 12.71 }, runLimit: { limitUsd: 12.71 }, owner: { developerId: "stored-task-owner", name: "Owner" } };
   const view = sessionView(session, raw, { developerId: "same-company-member" }, "https://example.test", undefined, { coOwner });
-  const tile = liveTile(session, raw, { developerId: "same-company-member" }, "https://example.test");
-  for (const output of [view, tile, workTask(detailedRow(raw))]) expect((output as { money?: unknown }).money).toBeUndefined();
+  const tile = liveTile(session, raw, { developerId: "same-company-member" }, "https://example.test", undefined, { coOwner });
+  for (const output of [view, tile]) {
+   expect((output as { money?: unknown }).money).toBeUndefined();
+   const walk = (value: unknown): number[] => typeof value === "number" ? [value] : value !== null && typeof value === "object" ? Object.values(value).flatMap(walk) : [];
+   for (const figure of [999, 4.37, 10.19, 12.71]) expect(walk(output)).not.toContain(figure);
+  }
+  expect(view.body.task).not.toHaveProperty("runEstimate");
+  expect(view.body.task).not.toHaveProperty("spent");
+  expect(view.cost).not.toHaveProperty("spentUsd");
+  expect(tile).not.toHaveProperty("costUsd");
  }
+});
+
+it("retains the stored owner's estimate and limit and never invents missing spend", () => {
+ const raw = { ...task(), owner: person, runEstimate: { lowUsd: 4.37, highUsd: 10.19, runLimitUsd: 12.71 }, runLimit: { limitUsd: 12.71 } };
+ expect(sessionView(session, raw, person, "https://example.test")).toMatchObject({ body: { task: { runEstimate: raw.runEstimate } }, cost: { spentUsd: 999, runLimitUsd: 12.71 } });
+ const missing = { ...raw }; delete missing.spent;
+ expect(sessionView(session, missing, person, "https://example.test").cost).not.toHaveProperty("spentUsd");
+ expect(liveTile(session, missing, person, "https://example.test")).not.toHaveProperty("costUsd");
+});
+
+it("keeps admin figures while a stale session owner cannot see the stored owner's figures", () => {
+ const raw = { ...task(), owner: { developerId: "new-owner" }, runLimit: { limitUsd: 12.71 }, runEstimate: { lowUsd: 4.37, highUsd: 10.19, runLimitUsd: 12.71 } };
+ for (const companyRole of ["owner", "admin"]) expect(sessionView(session, raw, { developerId: "company-admin", companyRole }, "https://example.test")).toMatchObject({ cost: { spentUsd: 999, runLimitUsd: 12.71 }, body: { task: { runEstimate: raw.runEstimate } } });
+ expect(sessionView(session, raw, person, "https://example.test").body.task).not.toHaveProperty("runEstimate");
 });

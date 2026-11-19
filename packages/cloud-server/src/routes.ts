@@ -249,7 +249,7 @@ async function ownerFromCode(context: RouteContext, record: WorkSession, task: C
 }
 
 /** The reader, with the name they signed in with now: their own name on a session is always current (Rovara-cloud#39). */
-const viewer = (context: RouteContext) => ({ developerId: context.session.access.developerId, name: context.session.access.displayName });
+const viewer = (context: RouteContext) => ({ developerId: context.session.access.developerId, name: context.session.access.displayName, ...(context.session.access.companyRole === undefined ? {} : { companyRole: context.session.access.companyRole }) });
 const me = (context: RouteContext) => ({ developerId: context.session.access.developerId, name: context.session.access.displayName });
 
 /** The session's followers and viewers for this person. */

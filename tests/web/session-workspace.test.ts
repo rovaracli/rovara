@@ -160,3 +160,16 @@ it("says the agent wrote no conclusion when the findings have none, and only tha
  const other = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: noCodeWorkflow({ blockReason: "Coding stopped before it finished.", noChangeFindings: { commands: [], conclusion: "left over" } }) }) } }));
  expect(screen.queryByText(/left over/u)).toBeNull();expect(screen.queryByText("No code changes were needed.")).toBeNull();other.close();
 });
+
+it("shows no plan figures to a reader or co-owner when Code omitted the estimate", async () => {
+ for (const coOwner of [false, true]) {
+  const base = fixture(); if (base.body.kind !== "task") throw new Error("Wrong fixture kind");
+  const task = { ...base.body.task }; delete task.runEstimate;
+  const f = setup(fixture({ body: { kind: "task", task }, you: { level: "view", owner: false, following: false, actions: ["watch"], ...(coOwner ? { coOwner: true } : {}) } }), "#plan");
+  await screen.findByRole("heading", { name: "Refund investigation" });
+  expect(f.container.textContent).not.toContain("$");
+  expect(f.container.textContent).not.toContain("Estimated cost");
+  expect(f.container.textContent).not.toContain("Task limit");
+  f.close();
+ }
+});
