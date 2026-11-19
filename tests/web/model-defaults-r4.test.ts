@@ -53,7 +53,7 @@ function mount(respond?: (r: ApiRequest) => ApiResponse | Promise<ApiResponse> |
 }
 async function ready() { await screen.findByTestId("learning-model-current"); await screen.findByLabelText("Company model"); }
 function companyRow() { return screen.getByRole("region", { name: "Company model setting" }); }
-function companySave() { return within(screen.getByTestId("ai-spend-step")).getAllByRole("button", { name: "Save" }).at(-1)!; }
+function companySave() { return within(screen.getByTestId("ai-spend-step")).getByRole("button", { name: "Save" }); }
 function writes(f: ReturnType<typeof mount>) { return f.request.mock.calls.map(([r]) => r).filter(r => r.method !== "GET"); }
 
 it("company default: spending-only Save never pins the untouched preselect", async () => {
@@ -90,11 +90,11 @@ for (const group of STEP_GROUPS) it(`${group.label}: follows the actual effectiv
  } finally { f.close(); }
 });
 
-it("learning default: untouched Save is disabled; an explicit pin can be cleared", async () => {
+it("learning default: untouched Save learning model is disabled; an explicit pin can be cleared", async () => {
  const f = mount(); try {
   await ready(); const row = screen.getByTestId("learning-model-card");
   expect(row.textContent).toContain(`Rovara's default (currently Claude Sonnet 5.5)`);
-  const save = within(row).getByRole("button", { name: "Save" });
+  const save = within(row).getByRole("button", { name: "Save learning model" });
   expect(save).toHaveProperty("disabled", true); fireEvent.click(save); expect(writes(f)).toEqual([]);
   fireEvent.change(within(row).getByRole("combobox"), { target: { value: A } });
   fireEvent.click(save); await waitFor(() => expect(row.textContent).toContain("Your choice: Claude Sonnet 5.5"));
@@ -120,7 +120,7 @@ it("effective-default refetches cannot turn preselects into changes", async () =
   await act(async () => { await f.query.invalidateQueries({ queryKey: ["ai-spend", org, person, "owner"] }); });
   fireEvent.click(companySave()); await screen.findByTestId("ai-spend-saved");
   expect(writes(f)).toEqual([]);
-  expect(within(screen.getByTestId("learning-model-card")).getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
+  expect(within(screen.getByTestId("learning-model-card")).getByRole("button", { name: "Save learning model" })).toHaveProperty("disabled", true);
  } finally { f.close(); }
 });
 
@@ -186,7 +186,7 @@ for (const [path, label, saved] of [["/v1/app/org/learning-model", "Learning mod
  const f = mount(r => r.path === path && r.method !== "GET" ? new Promise(resolve => { finish = resolve; }) : undefined);
  try {
   await ready(); fireEvent.change(screen.getByLabelText(label), { target: { value: B } });
-  if (label === "Learning model") fireEvent.click(within(screen.getByTestId("learning-model-card")).getByRole("button", { name: "Save" }));
+  if (label === "Learning model") fireEvent.click(within(screen.getByTestId("learning-model-card")).getByRole("button", { name: "Save learning model" }));
   await waitFor(() => expect(finish).toBeDefined());
   await f.scope("org_bbbbbbbbbbbbbbbbbbbb", person, "owner"); await ready();
   const before = f.request.mock.calls.length;
@@ -201,7 +201,7 @@ it("captures an explicit learning draft once even if the effective default chang
   f.state.effective = B;
   await act(async () => { await f.query.invalidateQueries({ queryKey: ["ai-spend", org, person, "owner", "learning-model"] }); });
   expect(screen.getByLabelText("Learning model")).toHaveProperty("value", B);
-  fireEvent.click(within(screen.getByTestId("learning-model-card")).getByRole("button", { name: "Save" }));
+  fireEvent.click(within(screen.getByTestId("learning-model-card")).getByRole("button", { name: "Save learning model" }));
   await screen.findByTestId("learning-model-saved");
   expect(writes(f).map(r => r.body)).toEqual([{ model: B }]);
  } finally { f.close(); }

@@ -22,7 +22,7 @@ export const LEARNING_MODEL_CARD_WORDS = Object.freeze({
  readOnly: "Only a company owner or admin can change this. Ask one of them.",
  noneOffered: "No Claude model is offered to your company right now, so this can't be changed yet.",
  notOffered: "This model isn't offered to your company now. Pick one from the list.",
- save: "Save",
+ save: "Save learning model",
  useDefault: BACK_TO_DEFAULT,
  saved: "Saved.",
  savedDefault: "Saved. Lessons use this Rovara's default again.",

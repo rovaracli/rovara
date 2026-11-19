@@ -50,6 +50,8 @@ for (const path of ["/app/admin/ai-spending", "/app/onboard?step=ai"]) it(`uses 
   expect(screen.getAllByRole("region", { name: "AI models for each step" })).toHaveLength(1);
   for (const label of ["Company model", "Understand and plan", "Plan check", "Coding", "Code and security review", "Pull request feedback", "Learning model"]) expect(within(card).getByRole("combobox", { name: label })).toBeTruthy();
   expect(screen.getAllByRole("combobox").every(input => card.contains(input))).toBe(true);
+  expect(within(card).getByRole("button", { name: "Save learning model" })).toBeTruthy();
+  expect(within(screen.getByTestId("ai-spend-step")).getByRole("button", { name: "Save" })).toBeTruthy();
   const connections = screen.getByRole("region", { name: "Company AI connections" });
   expect(connections.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(within(connections).getByRole("button", { name: "Change source order" })).toBeTruthy();
@@ -94,6 +96,22 @@ for (const [path, hash] of [
   expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/models")).toBe(false);
   if (role === "member") expect(screen.queryByRole("combobox")).toBeNull();
  } finally { f.close(); if (original) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", original); else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView"); }
+});
+
+for (const role of ["owner", "admin", "member"] as const) it.each(["/app/admin/ai-spending", "/app/admin/models/steps"])(`${role} has the appropriate administration menu at %s`, async path => {
+ const f = mount({ path, role });
+ try {
+  await ready();
+  expect(f.router.state.location.pathname).toBe("/app/admin/ai-spending");
+  if (path === "/app/admin/models/steps") expect(f.router.state.location.hash).toBe("#ai-models");
+  if (role === "member") {
+   expect(screen.queryByRole("navigation", { name: "Administration" })).toBeNull();
+   expect(screen.queryByRole("link", { name: "People" })).toBeNull();
+  } else {
+   const menu = screen.getByRole("navigation", { name: "Administration" });
+   expect(within(menu).getByRole("link", { name: "People" }).getAttribute("href")).toBe("/app/admin/people");
+  }
+ } finally { f.close(); }
 });
 
 it("gives a narrow-screen member only the read-only card, even if a stale server response advertises edits", async () => {
@@ -202,9 +220,9 @@ for (const state of ["unavailable", "install", "unusable-source", "pending-save"
   if (state === "pending-cap") fireEvent.change(await screen.findByLabelText(/Company monthly limit/u), { target: { value: "600" } });
   await waitFor(() => expect(next).toHaveProperty("disabled", state !== "ready" && state !== "default-ready"));
   if (state === "pending-save" || state === "pending-cap") {
-   fireEvent.click(within(screen.getByTestId("ai-spend-step")).getAllByRole("button", { name: "Save" }).at(-1)!); await screen.findByTestId("ai-spend-saved");
+   fireEvent.click(within(screen.getByTestId("ai-spend-step")).getByRole("button", { name: "Save" })); await screen.findByTestId("ai-spend-saved");
    // A nominal write response whose follow-up read still has no company model cannot advance.
-   await waitFor(() => expect(within(screen.getByTestId("ai-spend-step")).getAllByRole("button", { name: "Save" }).at(-1)!).toHaveProperty("disabled", false));
+   await waitFor(() => expect(within(screen.getByTestId("ai-spend-step")).getByRole("button", { name: "Save" })).toHaveProperty("disabled", false));
    expect(f.request.mock.calls.some(([r]) => r.method === "PUT" && r.path.endsWith(state === "pending-cap" ? "settings" : "engine-model"))).toBe(true);
   }
   fireEvent.click(next);
@@ -223,8 +241,45 @@ it("disables setup Continue for required unsaved edits until a save is confirmed
  try {
   await ready(); fireEvent.change(screen.getByLabelText("Company model"), { target: { value: HAIKU } });
   expect(screen.getByTestId("onboard-continue-repos")).toHaveProperty("disabled", true);
-  fireEvent.click(within(screen.getByTestId("ai-spend-step")).getAllByRole("button", { name: "Save" }).at(-1)!);
+  fireEvent.click(within(screen.getByTestId("ai-spend-step")).getByRole("button", { name: "Save" }));
   await waitFor(() => expect(f.router.state.location.search).toBe("?step=repositories"));
+ } finally { f.close(); }
+});
+
+it.each(["limit", "source"] as const)("clearing the company model keeps an unsaved %s draft on the real setup AI step", async draft => {
+ const f = mount({ path: "/app/onboard?step=ai", respond: r => {
+  if (r.method !== "PUT") return undefined;
+  if (r.path === "/v1/app/org/engine-model") {
+   f.bodies[r.path] = { model: HAIKU, source: "install", offered: [SONNET, HAIKU], preselect: HAIKU, canChange: true };
+  } else if (r.path === "/v1/app/org/settings") {
+   f.bodies[r.path] = { version: 2, modelGateway: { ready: true }, settings: (r.body as { settings: unknown }).settings };
+  } else if (r.path === "/v1/app/org/agent-ai") {
+   f.bodies[r.path] = { version: 2, source: (r.body as { source: string }).source, choices: ["openrouter_key", "rovara"].map(source => ({ source, available: true })) };
+  }
+  return { status: 200, body: f.bodies[r.path] };
+ } });
+ (f.bodies["/v1/app/org/agent-models"] as { steps: Array<{ refused: boolean }> }).steps.forEach(step => { step.refused = false; });
+ f.bodies["/v1/app/org/agent-ai"] = { version: 1, source: "openrouter_key", choices: ["openrouter_key", "rovara"].map(source => ({ source, available: true })) };
+ try {
+  await ready();
+  await waitFor(() => expect(screen.getByTestId("onboard-continue-repos")).toHaveProperty("disabled", false));
+  if (draft === "limit") fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+  else fireEvent.click(within(screen.getByTestId("ai-spend-rovara")).getByRole("radio"));
+  expect(screen.getByTestId("onboard-continue-repos")).toHaveProperty("disabled", true);
+  fireEvent.click(within(screen.getByRole("region", { name: "Company model setting" })).getByRole("button", { name: "Go back to Rovara's default" }));
+  await screen.findByTestId("ai-spend-saved");
+  await waitFor(() => expect(screen.getByLabelText("Company model")).toHaveProperty("disabled", false));
+  expect(f.router.state.location).toMatchObject({ pathname: "/app/onboard", search: "?step=ai" });
+  expect(screen.getByLabelText(/Company monthly limit/u)).toHaveProperty("value", draft === "limit" ? "600" : "500");
+  expect(within(screen.getByTestId(draft === "source" ? "ai-spend-rovara" : "ai-spend-own")).getByRole("radio")).toHaveProperty("checked", true);
+  expect(screen.getByRole("region", { name: "Company model setting" }).textContent).toContain(`Rovara's default (currently ${HAIKU})`);
+  expect(screen.queryByRole("button", { name: "Go back to Rovara's default" })).toBeNull();
+  expect(screen.getByTestId("onboard-continue-repos")).toHaveProperty("disabled", true);
+  expect(f.request.mock.calls.filter(([r]) => r.method !== "GET").map(([r]) => [r.method, r.path, r.body])).toEqual([["PUT", "/v1/app/org/engine-model", { model: null }]]);
+  // Only the main Save persists the remaining draft and advances setup; the cleared model baseline stays untouched.
+  fireEvent.click(within(screen.getByTestId("ai-spend-step")).getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(f.router.state.location.search).toBe("?step=repositories"));
+  expect(f.request.mock.calls.filter(([r]) => r.method !== "GET").map(([r]) => r.path)).toEqual(["/v1/app/org/engine-model", draft === "limit" ? "/v1/app/org/settings" : "/v1/app/org/agent-ai"]);
  } finally { f.close(); }
 });
 

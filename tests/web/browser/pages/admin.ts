@@ -110,8 +110,7 @@ export class AiSpendPage {
     this.limit = this.step.getByLabel(/Company monthly limit/);
     this.rovara = page.getByTestId("ai-spend-rovara").locator("input");
     this.own = page.getByTestId("ai-spend-own").locator("input");
-    // The learning model row keeps its own Save (its own endpoint); the step's Save is the one outside that card.
-    this.save = page.locator('[data-testid="ai-spend-step"] button:not([data-testid="learning-model-card"] button)').getByText("Save", { exact: true });
+    this.save = this.step.getByRole("button", { name: "Save", exact: true });
     this.saved = page.getByTestId("ai-spend-saved");
     this.freshSignIn = page.getByTestId("fresh-sign-in");
     this.projectLimits = page.getByTestId("project-spend-limits");

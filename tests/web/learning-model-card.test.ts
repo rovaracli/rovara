@@ -94,7 +94,7 @@ describe("an owner or admin", () => {
    expect(select.value).toBe("@default");
    expect([...select.options].map(o => o.value).filter(Boolean)).toEqual(["@default", SONNET, HAIKU]);
    expect(screen.queryByRole("button", { name: W.useDefault })).toBeNull();
-   expect(screen.getByRole("button", { name: W.save }).hasAttribute("disabled")).toBe(true);
+   expect(screen.getByRole("button", { name: "Save learning model" }).hasAttribute("disabled")).toBe(true);
   } finally { f.close(); }
  });
 
@@ -104,12 +104,12 @@ describe("an owner or admin", () => {
   try {
    await screen.findByTestId("learning-model-current");
    fireEvent.change(screen.getByLabelText(W.pick), { target: { value: SONNET } });
-   fireEvent.click(screen.getByRole("button", { name: W.save }));
+   fireEvent.click(screen.getByRole("button", { name: "Save learning model" }));
    expect((await screen.findByTestId("learning-model-saved")).textContent).toBe(W.saved);
    expect(c.writes.map(w => [w.method, w.path, w.body])).toEqual([["PUT", LEARNING_MODEL_PATH, { model: SONNET }]]);
    await waitFor(() => { expect(screen.getByTestId("learning-model-current").textContent).toBe("Your choice: Claude Sonnet 5.5"); });
    // Already the company's choice: nothing to save until another is picked.
-   expect(screen.getByRole("button", { name: W.save }).hasAttribute("disabled")).toBe(true);
+   expect(screen.getByRole("button", { name: "Save learning model" }).hasAttribute("disabled")).toBe(true);
    fireEvent.click(screen.getByRole("button", { name: W.useDefault }));
    await waitFor(() => { expect(screen.getByTestId("learning-model-saved").textContent).toBe(W.savedDefault); });
    expect(c.writes.map(w => w.body)).toEqual([{ model: SONNET }, { model: null }]);
@@ -123,7 +123,7 @@ describe("an owner or admin", () => {
   try {
    await screen.findByTestId("learning-model-current");
    fireEvent.change(screen.getByLabelText(W.pick), { target: { value: HAIKU } });
-   fireEvent.click(screen.getByRole("button", { name: W.save }));
+   fireEvent.click(screen.getByRole("button", { name: "Save learning model" }));
    await screen.findByTestId("learning-model-saved");
    expect(c.writes.map(w => w.body)).toEqual([{ model: HAIKU }]);
    await waitFor(() => { expect(screen.getByTestId("learning-model-current").textContent).toContain(W.companyChoice); });
@@ -137,7 +137,7 @@ describe("an owner or admin", () => {
    try {
     await screen.findByTestId("learning-model-current");
     fireEvent.change(screen.getByLabelText(W.pick), { target: { value: HAIKU } });
-    fireEvent.click(screen.getByRole("button", { name: W.save }));
+    fireEvent.click(screen.getByRole("button", { name: "Save learning model" }));
     expect((await screen.findByTestId("learning-model-error")).textContent).toBe(message);
    } finally { f.close(); }
   }
@@ -151,7 +151,7 @@ describe("an owner or admin", () => {
    await screen.findByTestId("learning-model-current");
    const before = c.reads.length;
    fireEvent.change(screen.getByLabelText(W.pick), { target: { value: SONNET } });
-   fireEvent.click(screen.getByRole("button", { name: W.save }));
+   fireEvent.click(screen.getByRole("button", { name: "Save learning model" }));
    expect((await screen.findByTestId("learning-model-error")).textContent).toBe("That model isn't offered to this company now. Pick one from the list.");
    await waitFor(() => { expect(c.reads.length).toBeGreaterThan(before); });
   } finally { f.close(); }
@@ -166,7 +166,7 @@ describe("an owner or admin", () => {
   const none = mountCard("owner", () => ({ status: 200, body: view(HAIKU, "install", { offered: [] }) }));
   try {
    expect((await screen.findByTestId("learning-model-none-offered")).textContent).toBe(W.noneOffered);
-   expect(screen.queryByRole("button", { name: W.save })).toBeNull();
+   expect(screen.queryByRole("button", { name: "Save learning model" })).toBeNull();
    expect(screen.queryByLabelText(W.pick)).toBeNull();
    expect(screen.queryByRole("button", { name: W.useDefault })).toBeNull();
   } finally { none.close(); }
@@ -199,7 +199,7 @@ describe("everyone else", () => {
    expect((await screen.findByTestId("learning-model-current")).textContent).toBe("Your choice: Claude Sonnet 5.5");
    expect(screen.getByTestId("learning-model-read-only").textContent).toBe(W.readOnly);
    expect(screen.queryByLabelText(W.pick)).toBeNull();
-   expect(screen.queryByRole("button", { name: W.save })).toBeNull();
+   expect(screen.queryByRole("button", { name: "Save learning model" })).toBeNull();
    expect(screen.queryByRole("button", { name: W.useDefault })).toBeNull();
    expect(f.request.mock.calls.map(([r]) => `${r.method} ${r.path}`)).toEqual([`GET ${LEARNING_MODEL_PATH}`]);
   } finally { f.close(); }
@@ -209,7 +209,7 @@ describe("everyone else", () => {
   const f = mountCard("owner", () => ({ status: 200, body: view(HAIKU, "install", { canChange: false }) }));
   try {
    await screen.findByTestId("learning-model-read-only");
-   expect(screen.queryByRole("button", { name: W.save })).toBeNull();
+   expect(screen.queryByRole("button", { name: "Save learning model" })).toBeNull();
   } finally { f.close(); }
  });
 });

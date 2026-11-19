@@ -173,7 +173,7 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
    await query.invalidateQueries({ queryKey: ["admin", "lane-c"] });
    await query.invalidateQueries({ queryKey: ["step-models", orgId, developerId, role] });
    if (!active()) return;
-   const next = await onSaved(!pending);
+   const next = await onSaved(!resetModel && !pending);
    if (active() && next) {
     setLoaded(next); setPicked(initialPick(next.model)); setModelInteracted(false);
     const nextSource = next.source.source ?? next.source.effectiveSource;
