@@ -84,6 +84,32 @@ export const CLOUD_ANSWERS_ENABLED_PARAMETER = "AnswersEnabled";
 export const CLOUD_ANSWERS_ENABLED_VALUES = ["1", "0"] as const;
 export const CLOUD_ANSWERS_ENABLED_DEFAULT = "1";
 
+/** Owner 2026-11-19: Cloud's own name (app.rovara.com) and its certificate, stack parameters empty by default (cloud-web below). */
+export const CLOUD_CUSTOM_DOMAIN_PARAMETER = "CustomDomainName";
+export const CLOUD_CUSTOM_CERTIFICATE_PARAMETER = "CustomDomainCertificateArn";
+/** Empty, or a lower-case DNS name of two or more labels (no scheme, port, path or trailing dot). */
+export const CLOUD_CUSTOM_DOMAIN_PATTERN = "^(|[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+)$";
+/**
+ * The viewer-request function (cloudfront-js-2.0) that sends every other name to Cloud's own name, as an Fn::Sub template: ${Target}
+ * is the CustomDomainName parameter. Query values are passed on as CloudFront hands them over, the way AWS's own samples rebuild them.
+ */
+export const CLOUD_CUSTOM_DOMAIN_REDIRECT_CODE = [
+  "function handler(event) {",
+  "  var target = \"${Target}\";",
+  "  var request = event.request;",
+  "  var host = request.headers.host ? request.headers.host.value : \"\";",
+  "  if (target === \"\" || host === target) return request;",
+  "  var parts = [];",
+  "  for (var key in request.querystring) {",
+  "    var field = request.querystring[key];",
+  "    var values = field.multiValue ? field.multiValue : [field];",
+  "    for (var i = 0; i < values.length; i++) parts.push(key + \"=\" + values[i].value);",
+  "  }",
+  "  var location = \"https://\" + target + request.uri + (parts.length > 0 ? \"?\" + parts.join(\"&\") : \"\");",
+  "  return { statusCode: 307, statusDescription: \"Temporary Redirect\", headers: { location: { value: location }, \"cache-control\": { value: \"no-store\" } } };",
+  "}",
+].join("\n");
+
 /** DEC 254zzz3(1): the server's environment variable for the exempt companies (scripts/cloud-lambda.ts reads it). */
 export const CLOUD_ROVARA_AI_EXEMPT_ENV = "CLOUD_ROVARA_AI_EXEMPT";
 
@@ -291,6 +317,37 @@ export class CloudWebStack extends Stack {
     // distribution: the function's own address answers 403 to anyone else, so every request goes through CloudFront.
     const url = server.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.AWS_IAM });
 
+    // Owner 2026-11-19: Cloud on its own name (app.rovara.com), one name for every company. Both empty (the default): CloudFront's
+    // name only, as before. Set: CloudFront answers that name with the certificate (us-east-1, made outside this stack, like the
+    // gateway's), Cloud's address (the SSM parameter, the outputs) becomes it, and the CloudFront name answers 307 to it.
+    const customDomain = new CfnParameter(this, CLOUD_CUSTOM_DOMAIN_PARAMETER, {
+      type: "String", default: "", allowedPattern: CLOUD_CUSTOM_DOMAIN_PATTERN,
+      description: "Cloud's own name, for example app.rovara.com (lower case, no scheme or path); empty: CloudFront's name only. Point a CNAME at the distribution before setting it",
+    }).valueAsString;
+    const customCertificate = new CfnParameter(this, CLOUD_CUSTOM_CERTIFICATE_PARAMETER, {
+      type: "String", default: "", allowedPattern: "^(|arn:aws[a-z-]*:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]{36})$",
+      description: "An issued ACM certificate in us-east-1 for CustomDomainName (made outside this stack); empty with an empty CustomDomainName",
+    }).valueAsString;
+    new CfnRule(this, "CustomDomainNeedsCertificate", {
+      assertions: [{
+        assert: Fn.conditionOr(
+          Fn.conditionAnd(Fn.conditionEquals(customDomain, ""), Fn.conditionEquals(customCertificate, "")),
+          Fn.conditionAnd(Fn.conditionNot(Fn.conditionEquals(customDomain, "")), Fn.conditionNot(Fn.conditionEquals(customCertificate, ""))),
+        ),
+        assertDescription: "CustomDomainName and CustomDomainCertificateArn are set together or both left empty",
+      }],
+    });
+    const customDomainSet = new CfnCondition(this, "CustomDomainSet", { expression: Fn.conditionNot(Fn.conditionEquals(customDomain, "")) });
+    // Every request on another name (CloudFront's) goes to Cloud's own name: the server answers one address only (handler.ts,
+    // approve.ts refuse writes from any other), so a page left on the old name would show but never save. 307 keeps the method
+    // and is not cached by browsers, so emptying the parameter undoes it. Empty name: the request goes on unchanged.
+    const toCustomDomain = new cloudfront.Function(this, "ToCustomDomain", {
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      comment: `Rovara Cloud ${env}: sends other names to Cloud's own name, when it has one`,
+      code: cloudfront.FunctionCode.fromInline(Fn.sub(CLOUD_CUSTOM_DOMAIN_REDIRECT_CODE, { Target: customDomain })),
+    });
+    const functionAssociations = [{ function: toCustomDomain, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST }];
+
     const assetsOrigin = origins.S3BucketOrigin.withOriginAccessControl(assets);
     const distribution = new cloudfront.Distribution(this, "Distribution", {
       comment: `Rovara Cloud ${env}`,
@@ -306,6 +363,7 @@ export class CloudWebStack extends Stack {
         // Cookies, query and headers reach the function; the Host header is the function URL's own.
         originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
         compress: true,
+        functionAssociations,
       },
       additionalBehaviors: {
         "/app/assets/*": {
@@ -314,9 +372,16 @@ export class CloudWebStack extends Stack {
           cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
           responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
           compress: true,
+          functionAssociations,
         },
       },
     });
+    // The name and its certificate only when set; otherwise CloudFront's own certificate, as before.
+    const cfnDistribution = distribution.node.defaultChild as cloudfront.CfnDistribution;
+    cfnDistribution.addPropertyOverride("DistributionConfig.Aliases", Fn.conditionIf(customDomainSet.logicalId, [customDomain], Aws.NO_VALUE));
+    cfnDistribution.addPropertyOverride("DistributionConfig.ViewerCertificate", Fn.conditionIf(customDomainSet.logicalId,
+      { AcmCertificateArn: customCertificate, SslSupportMethod: "sni-only", MinimumProtocolVersion: "TLSv1.2_2021" },
+      { CloudFrontDefaultCertificate: true }));
 
     // A release adds this build's files and deletes nothing (prune: false).
     new s3deploy.BucketDeployment(this, "AppFiles", {
@@ -331,10 +396,13 @@ export class CloudWebStack extends Stack {
       logGroup: new logs.LogGroup(this, "AppFilesLogs", { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY }),
     });
 
-    const origin = `https://${distribution.distributionDomainName}`;
+    // CloudFront's address stays this.origin: the first-address stack imports it (an export in use can't change), and its redirect
+    // there is sent on to the own name by ToCustomDomain. Cloud's address (what the server answers as) is the own name when set.
+    const cloudfrontOrigin = `https://${distribution.distributionDomainName}`;
+    const origin = Token.asString(Fn.conditionIf(customDomainSet.logicalId, Fn.join("", ["https://", customDomain]), cloudfrontOrigin));
     // aws-cdk-lib types TableV2.tableId as `string | undefined`, which exactOptionalPropertyTypes rejects for ITableV2.
     this.table = table as dynamodb.ITableV2;
-    this.origin = origin;
+    this.origin = cloudfrontOrigin;
     new ssm.StringParameter(this, "Origin", {
       parameterName: originParameter,
       stringValue: origin,
