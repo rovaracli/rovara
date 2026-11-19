@@ -74,8 +74,8 @@ export function StartWorkBox({ project, agents }: { project: string; agents: rea
     if (refreshed?.kind !== "comparison") { setCostChange("Cost comparison unavailable. Start again to continue with spending checked when work starts.");setPreview(undefined);return; }
     setPreview({ project, api, inputText: text, quote: refreshed });lastQuote.current = refreshed;
     const selected = path ?? reviewPath ?? "quick";
-    if (quoteCostSummary(before) !== quoteCostSummary(refreshed)) {
-     setCostChange("Cost estimate changed. " + quoteCostSummary(before) + " → " + quoteCostSummary(refreshed) + ". Review before starting.");setReviewPath(selected);return;
+    if (quoteCostSummary(before) !== quoteCostSummary(refreshed) || (selected === "full" && reviewPath !== "full")) {
+     setCostChange("Cost estimate changed. " + quoteCostSummary(before) + " → " + quoteCostSummary(refreshed) + ". " + (selected === "full" && reviewPath !== "full" ? "Full path selected. " : "") + "Review before starting.");setReviewPath(selected);return;
     }
    }
    const result = await api.startCode(project, text, intent.current.requestId, path ?? reviewPath);

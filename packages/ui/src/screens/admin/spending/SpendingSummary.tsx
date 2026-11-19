@@ -83,7 +83,7 @@ export function SpendingSummary({ read }: { read: UseQueryResult<OrgSpendRead> }
    {data.costPerMergedChangeUsd !== undefined && <Stat label="Cost per merged change" {...(data.mergedCount === undefined ? {} : { note: `${data.mergedCount} merged` })}><Money usd={data.costPerMergedChangeUsd} /></Stat>}
   </div>
   <p>Not yet confirmed: {data.provisionalMicros === undefined ? "Unavailable" : <Money usd={data.provisionalMicros / 1_000_000} />}</p>
-  <p className="rv-muted">Spent includes estimated charges. Not yet confirmed shows estimated amounts still held, already included in Held for running work.</p>
+  <p className="rv-muted">Not yet confirmed amounts are already counted in Spent or Held.</p>
   {s.usedFraction !== undefined && <SpendMeter used={(s.spentUsd ?? 0) / (s.limitUsd ?? 1)} held={s.heldFraction ?? 0} bad={s.state === "over"} caption label={`${Math.round(s.usedFraction * 100)}% of this month's limit used or held`} />}
   <AdminSection title="By project">{data.projects === undefined ? <NotConnected what="Spending by project" /> : data.projects.length === 0 ? <p className="rv-muted">No project has spent anything this month.</p> : <DataTable caption="Spending by project" columns={projectColumns} rows={data.projects} rowKey={row => row.name} />}</AdminSection>
   <AdminSection title="People and limits" note="Only owners and admins see this."><p className="rv-muted">Each person's spending this month against their own limit is on <Link to="/app/admin/money/people">People and limits</Link>.</p></AdminSection>

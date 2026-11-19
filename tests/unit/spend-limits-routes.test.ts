@@ -826,11 +826,12 @@ it.each([
  { kind: "held call", row: { spentMicros: 0, estimatedMicros: 0, reservedMicros: 3_000_000, committed: 3_000_000, provisionalMicros: 0 }, spent: 0, held: 3, left: 97, provisional: 0 },
  { kind: "estimated-price settlement", row: { spentMicros: 20_000_000, estimatedMicros: 4_000_000, reservedMicros: 0, committed: 20_000_000, provisionalMicros: 0 }, spent: 20, held: 0, left: 80, provisional: 0 },
  { kind: "cut-off estimate within held work", row: { spentMicros: 20_000_000, estimatedMicros: 4_000_000, reservedMicros: 3_000_000, committed: 23_000_000, provisionalMicros: 1_250_000 }, spent: 20, held: 3, left: 77, provisional: 1_250_000 },
+ { kind: "settled provisional estimate exceeds held", row: { spentMicros: 20_000_000, estimatedMicros: 4_000_000, reservedMicros: 1_000_000, committed: 21_000_000, provisionalMicros: 1_250_000 }, spent: 20, held: 1, left: 79, provisional: 1_250_000 },
  { kind: "confirmed settlement", row: { spentMicros: 6_000_000, estimatedMicros: 0, reservedMicros: 0, committed: 6_000_000, provisionalMicros: 0 }, spent: 6, held: 0, left: 94, provisional: 0 },
  { kind: "absent provisional rollout field", row: { spentMicros: 20_000_000, estimatedMicros: 4_000_000, reservedMicros: 3_000_000, committed: 23_000_000 }, spent: 20, held: 3, left: 77, provisional: undefined },
 ])("maps $kind without double counting or calling settled estimates confirmed", async ({ row, spent, held, left, provisional }) => {
  // Estimated settlements are already in spent. Provisional cut-offs are already
- // in held. Neither is added again, and left subtracts committed exactly once.
+ // in spent or held. Neither is added again, and left subtracts committed exactly once.
  const w = world({ companyMonth: async () => row });
  await w.settings(A, { company: 100_000_000 });
  const result = await w.call(await w.signIn("ada"), "GET", "/org/spend");
