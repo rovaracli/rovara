@@ -145,3 +145,23 @@ it("a refused press shows Code's words and the next press uses a fresh request i
   expect(new Set(ids).size).toBe(2);
   f.close();
 });
+
+it("the press carries the heads and risk Code showed; a lost answer keeps the request id, so pressing again is the same press", async () => {
+  const HEAD = { repositoryId: "payments", number: 42, headSha: "a".repeat(40) };
+  let first = true;
+  const f = setup({ pullRequests: [PR] }, { readiness: { status: 200, body: { ...READY, risk: "medium", heads: [HEAD] } }, press: async () => {
+    if (first) { first = false; return { status: 503, body: { error: { code: "MERGE_FAILED", message: "Couldn't merge just now. Nothing was merged. Try again in a minute." } } }; }
+    return { status: 200, body: { status: "MERGED", pullRequests: [{ repositoryId: "payments", number: 42 }] } };
+  } });
+  fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
+  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Press Merge" }));
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
+  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Press Merge" }));
+  expect(await screen.findByText("Merged payments #42.")).toBeTruthy();
+  const bodies = mergeCalls(f).map(call => call.body as { requestId: string; expectedHeads?: unknown; risk?: string });
+  expect(bodies).toHaveLength(2);
+  expect(bodies[0]).toEqual({ requestId: bodies[0]!.requestId, expectedHeads: [HEAD], risk: "medium" });
+  expect(bodies[1]!.requestId).toBe(bodies[0]!.requestId);
+  f.close();
+});

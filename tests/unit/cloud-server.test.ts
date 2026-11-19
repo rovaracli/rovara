@@ -1146,6 +1146,24 @@ describe("the Merge button through Code (DEC 254zzz94)", () => {
     }
   });
 
+  it("carries what the person was shown (heads, risk) both ways, each checked; a bad one is refused without asking Code", async () => {
+    const { call, auth, sessionId, code, mergeCalls } = await begin();
+    const HEAD = { repositoryId: "payments-api", number: 42, headSha: "a".repeat(40) };
+    code.answerMerge("GET", 200, { mayMerge: true, ready: true, risk: "medium", heads: [HEAD], pullRequests: [PULL] });
+    code.answerMerge("POST", 200, { status: "MERGED", pullRequests: [{ repositoryId: "payments-api", number: 42 }] });
+    expect(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}/merge`, { cookie: auth.cookie }))!.body)).toEqual({ mayMerge: true, ready: true, risk: "medium", heads: [HEAD], pullRequests: [PULL] });
+    for (const body of [{ requestId: ID, risk: "none" }, { requestId: ID, expectedHeads: [{ ...HEAD, headSha: "zz" }] }, { requestId: ID, expectedHeads: [{ ...HEAD, extra: 1 }] }, { requestId: ID, expectedHeads: [] }]) {
+      expect((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body }))!.status).toBe(400);
+    }
+    expect(mergeCalls().filter((entry) => entry.method === "POST")).toEqual([]);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID, expectedHeads: [HEAD], risk: "medium" } }))!.status).toBe(200);
+    expect(JSON.parse(mergeCalls().filter((entry) => entry.method === "POST")[0]!.body!)).toEqual({ requestId: ID, expectedHeads: [HEAD], risk: "medium" });
+    for (const body of [{ mayMerge: true, ready: true, risk: "extreme", pullRequests: [] }, { mayMerge: true, ready: true, heads: [{ ...HEAD, headSha: "x" }], pullRequests: [] }]) {
+      code.answerMerge("GET", 200, body);
+      expect((await call("GET", `/v1/web/sessions/${sessionId}/merge`, { cookie: auth.cookie }))!.status).toBe(502);
+    }
+  });
+
   it("refuses an answer from Code that does not read (a link that is not github.com, ready without may, extra shapes)", async () => {
     const { call, auth, sessionId, code } = await begin();
     for (const body of [{ mayMerge: true, ready: true, pullRequests: [{ ...PULL, url: "https://evil.example/pull/42" }] }, { mayMerge: false, ready: true, pullRequests: [] }, { mayMerge: true, ready: true }, { mayMerge: true, ready: true, pullRequests: [{ ...PULL, number: 0 }] }]) {

@@ -1,13 +1,14 @@
 // Owner DEC 254zzz94: the in-Rovara Merge button for a finished task, passed to Rovara Code as the signed-in person with their own token (the Rovara website's own sign-in client, which Code
 // recognises as the web app: DEC 254zzz91).
 //
-//   GET  /v1/app/sessions/{id}/merge   -> Code GET  /v1/app/tasks/{taskId}/merge   { mayMerge, ready, message?, pullRequests }
-//   POST /v1/app/sessions/{id}/merge   { requestId } -> Code POST /v1/app/tasks/{taskId}/merge   { status: "MERGED", pullRequests }
+//   GET  /v1/app/sessions/{id}/merge   -> Code GET  /v1/app/tasks/{taskId}/merge   { mayMerge, ready, message?, risk?, heads?, pullRequests }
+//   POST /v1/app/sessions/{id}/merge   { requestId, expectedHeads?, risk? } -> Code POST /v1/app/tasks/{taskId}/merge   { status: "MERGED", pullRequests }
+//   (DEC 254zzz104: the heads and risk level the person was shown go back with the press, so Code merges only what they saw.)
 //
 // Rules:
 //   - The task id is Cloud's own session record's, never the request's. A session this Cloud does not hold is "not found" and Code is not asked.
 //   - Code decides everything: who may merge (owner, co-owner, project admin, company admin), the website-only rule, Rovara's checks, GitHub's mergeable state, one merge at a time and the
-//     request id. Cloud adds no rule that could widen it. The press sends exactly a request id (a UUID): any other field, a malformed body or a query is refused without asking Code.
+//     request id. Cloud adds no rule that could widen it. The press sends a request id (a UUID) and, optionally, the heads and risk level it was shown, each checked; any other field, a malformed body or a query is refused without asking Code.
 //   - Code's answers are rebuilt field by field and checked (an answer that does not read is refused whole). Code's refusals are its own fixed words; they reach the app only as a bounded, single-line
 //     sentence under Code's error code, and anything else reads as Cloud's fixed words. Code's unknown-route 404 (a Code without the route) reads "not available on this Rovara yet".
 import { CodeError } from "./code-client.js";
@@ -17,10 +18,24 @@ const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const SESSION_PATH = /^\/sessions\/(ses_[0-9a-z]{20})\/merge$/u;
 const REPOSITORY = /^[A-Za-z0-9._/-]{1,200}$/u;
 const MAX_PULLS = 32;
+const SHA = /^[a-f0-9]{40}$/u;
+const RISKS = new Set(["low", "medium", "high"]);
+
+/** The heads a person was shown: exactly repository, number and a 40-hex head each. Throws `Unreadable` for anything else. */
+function headsOf(value: unknown): Array<{ repositoryId: string; number: number; headSha: string }> {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_PULLS) throw new Unreadable();
+  return value.map((head: unknown) => {
+    if (!plain(head) || Object.keys(head).length !== 3) throw new Unreadable();
+    const { repositoryId, number } = pullOf({ repositoryId: head["repositoryId"], number: head["number"] }, false);
+    const headSha = head["headSha"];
+    if (typeof headSha !== "string" || !SHA.test(headSha)) throw new Unreadable();
+    return { repositoryId, number, headSha };
+  });
+}
 
 export const MERGE_WORDS = {
   sessionNotFound: "That session doesn't exist, or you can't see it.",
-  invalid: "Send a request id and nothing else.",
+  invalid: "Send a request id and, if you were shown them, the heads and the risk level; nothing else.",
   notYet: "Merging from Rovara isn't available on this Rovara yet. Merge the pull request on GitHub.",
   unreadable: "Rovara answered Merge in an unexpected way. Reload this page.",
   failed: "Couldn't merge just now. Nothing was merged. Try again in a minute.",
@@ -52,13 +67,15 @@ function pullsOf(value: unknown, withUrl: boolean): Array<{ repositoryId: string
 }
 
 /** Code's readiness answer, rebuilt: exactly mayMerge, ready, an optional sentence, and the pull requests. A press that may not happen is never `ready`. */
-export function mergeReadinessAnswer(value: unknown): { mayMerge: boolean; ready: boolean; message?: string; pullRequests: Array<{ repositoryId: string; number: number; url?: string }> } {
+export function mergeReadinessAnswer(value: unknown): { mayMerge: boolean; ready: boolean; message?: string; risk?: string; heads?: Array<{ repositoryId: string; number: number; headSha: string }>; pullRequests: Array<{ repositoryId: string; number: number; url?: string }> } {
   need(plain(value), value);
   const f = value as Record<string, unknown>;
   const mayMerge = need(typeof f["mayMerge"] === "boolean", f["mayMerge"]) as boolean;
   const ready = need(typeof f["ready"] === "boolean" && (mayMerge || f["ready"] === false), f["ready"]) as boolean;
   const message = f["message"] === undefined ? undefined : need(sentence(f["message"]) !== undefined, f["message"]) as string;
-  return { mayMerge, ready, ...(message === undefined ? {} : { message }), pullRequests: pullsOf(f["pullRequests"], true) };
+  const risk = f["risk"] === undefined ? undefined : need(typeof f["risk"] === "string" && RISKS.has(f["risk"]), f["risk"]) as string;
+  const heads = f["heads"] === undefined || (Array.isArray(f["heads"]) && f["heads"].length === 0) ? undefined : headsOf(f["heads"]);
+  return { mayMerge, ready, ...(message === undefined ? {} : { message }), ...(risk === undefined ? {} : { risk }), ...(heads === undefined ? {} : { heads }), pullRequests: pullsOf(f["pullRequests"], true) };
 }
 
 /** Code's merged answer, rebuilt. */
@@ -87,18 +104,22 @@ export function mergeRefusal(error: CodeError): RouteAnswer {
 
 async function forward(context: RouteContext, method: "GET" | "POST"): Promise<RouteAnswer> {
   if ([...context.query.keys()].length > 0) return answer(400, "CONFIG_INVALID", MERGE_WORDS.invalid);
-  let requestId: string | undefined;
+  let press: { requestId: string; expectedHeads?: Array<{ repositoryId: string; number: number; headSha: string }>; risk?: string } | undefined;
   if (method === "POST") {
     const body = context.body;
-    if (!plain(body) || Object.keys(body).length !== 1 || typeof body["requestId"] !== "string" || !REQUEST_ID.test(body["requestId"])) return answer(400, "CONFIG_INVALID", MERGE_WORDS.invalid);
-    requestId = body["requestId"];
+    if (!plain(body) || typeof body["requestId"] !== "string" || !REQUEST_ID.test(body["requestId"]) || Object.keys(body).some((key) => key !== "requestId" && key !== "expectedHeads" && key !== "risk")) return answer(400, "CONFIG_INVALID", MERGE_WORDS.invalid);
+    const risk = body["risk"];
+    if (risk !== undefined && (typeof risk !== "string" || !RISKS.has(risk))) return answer(400, "CONFIG_INVALID", MERGE_WORDS.invalid);
+    let expectedHeads: Array<{ repositoryId: string; number: number; headSha: string }> | undefined;
+    try { expectedHeads = body["expectedHeads"] === undefined ? undefined : headsOf(body["expectedHeads"]); } catch { return answer(400, "CONFIG_INVALID", MERGE_WORDS.invalid); }
+    press = { requestId: body["requestId"], ...(expectedHeads === undefined ? {} : { expectedHeads }), ...(typeof risk === "string" ? { risk } : {}) };
   }
   const record = await context.work.get(context.params[0]!);
   if (record === undefined) return answer(404, "SESSION_NOT_FOUND", MERGE_WORDS.sessionNotFound);
   const path = `/v1/app/tasks/${encodeURIComponent(record.taskId)}/merge`;
   let value: unknown;
   try {
-    value = await context.client.json<unknown>(context.session, path, method === "GET" ? { method: "GET" } : { method: "POST", body: { requestId } });
+    value = await context.client.json<unknown>(context.session, path, method === "GET" ? { method: "GET" } : { method: "POST", body: press });
   } catch (error) {
     if (error instanceof CodeError) return mergeRefusal(error);
     throw error;

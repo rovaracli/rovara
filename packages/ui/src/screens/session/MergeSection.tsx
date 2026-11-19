@@ -57,13 +57,14 @@ export function MergeSection({ sessionId, task }: { sessionId: string; task: Rea
   sending.current = true;setBusy(true);setError(undefined);
   try {
    requestId.current ??= crypto.randomUUID();
-   const result = await api.merge(sessionId, requestId.current);
+   // What the person was shown goes with the press: Code merges only those heads at that risk level.
+   const result = await api.merge(sessionId, requestId.current, { expectedHeads: view?.heads, risk: view?.risk });
    if (result.kind !== "done") throw new ApiError(502, "INVALID_RESPONSE", "Rovara answered Merge in an unexpected way. Reload this page.");
    setOpen(false);setDone("Merged " + result.value.pullRequests.map(pull => pull.repositoryId + " #" + String(pull.number)).join(", ") + ".");requestId.current = undefined;
    await query.invalidateQueries({ queryKey: ["session", sessionId] });
   } catch (failure) {
-   // A refused press sends a fresh request the next time; the readiness is read again so the button shows what Code says now.
-   requestId.current = undefined;
+   // A refused press (Code answered no) sends a fresh request the next time; a lost answer or a server fault keeps the same request id, so pressing again gets the first press's answer, never a second merge.
+   if (failure instanceof ApiError && failure.status >= 400 && failure.status < 500) requestId.current = undefined;
    setError(failure instanceof ApiError ? failure.message : "Couldn't press Merge. Try again.");setOpen(false);
    void query.invalidateQueries({ queryKey: readinessKey });
   } finally { sending.current = false;setBusy(false); }
@@ -76,7 +77,7 @@ export function MergeSection({ sessionId, task }: { sessionId: string; task: Rea
   {merge?.risk && <div className="rv-merge-risk" aria-label="Risk"><p><strong>{RISK_WORDS[levelOf(merge.risk)]}</strong></p>{merge.risk.reasons.length > 0 && <ul>{merge.risk.reasons.map(reason => <li key={reason}><VisibleText text={reason} /></li>)}</ul>}</div>}
   {done && <p role="status"><VisibleText text={done} /></p>}
   {items.length > 0 && <ul className="rv-merge-items" aria-label="Pull requests to merge">{items.map(item => <li key={item.repositoryId + "#" + String(item.number)}><span><VisibleText text={item.repositoryId + " #" + String(item.number)} /></span> <span>{item.state === "merged" ? "Merged" : item.state === "closed" ? "Closed" : item.draft ? "Draft" : checksWords(item) + ". " + reviewWords(item) + ". Head " + item.headSha.slice(0, 7) + ". " + (BRANCH_WORDS[item.branch] ?? "Branch not read yet")}{item.state === "open" && item.draft ? "" : "."}</span></li>)}</ul>}
-  {mayPress && <Dialog title="Press Merge?" description="Rovara asks GitHub to merge it now, with the project's merge method. GitHub's branch rules, required reviews and required checks still apply." open={open} onOpenChange={value => { if (!busy) { if (value) requestId.current = crypto.randomUUID();setOpen(value); } }}
+  {mayPress && <Dialog title="Press Merge?" description="Rovara asks GitHub to merge it now, with the project's merge method. GitHub's branch rules, required reviews and required checks still apply." open={open} onOpenChange={value => { if (!busy) { if (value) requestId.current ??= crypto.randomUUID();setOpen(value); } }}
    trigger={<Button variant="primary" disabled={view.ready !== true}>Merge</Button>}>
    <ul className="rv-merge-items">{view.pullRequests.map(pull => <li key={pull.repositoryId + "#" + String(pull.number)}><VisibleText text={pull.repositoryId + " #" + String(pull.number)} /></li>)}</ul>
    <div className="rv-actions"><Button disabled={busy} onClick={() => setOpen(false)}>Not now</Button><Button variant="primary" busy={busy} onClick={() => { void press(); }}>Press Merge</Button></div>
