@@ -95,7 +95,12 @@ describe("every role Rovara Cloud makes carries the environment's permissions bo
 
   it("each stack's boundary is its part's, the same in every shape (no switch changes it)", () => {
     for (const stack of Object.values(synthesized).flat()) {
-      expect(resolvedBoundaries([stack], scope)[stack.stackName]!.Statement, stack.stackName).toEqual(cloudBoundaryStatements(scope, part(stack)));
+      const meterReads = part(stack) === "web" ? [{
+        Sid: "GatewayMeterCompanyReads", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:BatchGetItem"],
+        Resource: [`arn:aws:dynamodb:${REGION}:123456789012:table/rovara-cloud-staging-gateway-Meter-SAMPLE0000AA`],
+        Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["CO#*"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+      }] : [];
+      expect(resolvedBoundaries([stack], scope)[stack.stackName]!.Statement, stack.stackName).toEqual([...cloudBoundaryStatements(scope, part(stack)), ...meterReads]);
     }
   });
 
@@ -183,6 +188,25 @@ describe("the boundary breaks nothing a Cloud role's own policy grants", () => {
     const stacks = synthesized[shape]!;
     expect(roleCases(stacks, scope).length).toBeGreaterThan(0);
     expect(boundaryViolations(stacks, scope).map((v) => `${v.role} ${v.action} ${v.resource} ${v.reason}`)).toEqual([]);
+  });
+
+  it("requires both exact meter guards when checking the batch-read boundary", () => {
+    const stacks = synthesized["web + first address"]!;
+    expect(boundaryViolations(stacks, scope)).toEqual([]);
+    for (const condition of [
+      undefined,
+      { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["CO#*"] } },
+      { Null: { "dynamodb:LeadingKeys": "false" } },
+      { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["*"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+      { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["CO#*"] }, Null: { "dynamodb:LeadingKeys": "true" } },
+      { StringLike: { "dynamodb:LeadingKeys": ["CO#*"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+    ]) {
+      const changed = structuredClone(stacks);
+      const policy = byType(changed[0]!, "AWS::IAM::Policy").find(([, r]) => JSON.stringify(r.Properties).includes("GatewayMeterCompanyReads"))![1];
+      const statement = (policy.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Condition?: unknown }> }).Statement.find((s) => s.Sid === "GatewayMeterCompanyReads")!;
+      statement.Condition = condition;
+      expect(boundaryViolations(changed, scope)).toMatchObject([{ action: "dynamodb:BatchGetItem", reason: "not allowed by the boundary" }]);
+    }
   });
 
   it("covers the grants that matter: the server's table, secret, key and setting; the gateway's Bedrock, broker and customer roles", () => {
