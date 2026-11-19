@@ -10,7 +10,7 @@ import { CompanyAnswersLimits } from "../../packages/model-gateway/src/company-c
 import type { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { InMemoryMeter, type MeterScope } from "../../packages/model-gateway/src/meter.js";
 import type { ProviderRequest, ProviderTransport } from "../../packages/model-gateway/src/provider.js";
-import { ANSWERS_DEFAULT_MONTH_MICROS, ANSWERS_PAUSE_HEADER, ANSWERS_PAUSE_MESSAGES, ANSWERS_PATH, ANSWERS_STEP, createAnswersRoutes, type AnswersLimits } from "../../packages/model-gateway/src/answers-route.js";
+import { ANSWERS_DEFAULT_MONTH_MICROS, ANSWERS_PAUSE_HEADER, ANSWERS_PAUSE_MESSAGES, ANSWERS_CLIENT_PATH, ANSWERS_PATH, ANSWERS_STEP, createAnswersRoutes, type AnswersLimits } from "../../packages/model-gateway/src/answers-route.js";
 import { LEARNING_PATH, LEARNING_STEP, createLearningRoutes, type LearningKeySource } from "../../packages/model-gateway/src/learning-route.js";
 import { handleGateway, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
 import { answer, call, caps as agentCaps, claims, MemorySink, mint, now, requestBody, scope as agentScope, setup } from "./model-gateway-fixture.js";
@@ -329,5 +329,67 @@ describe("CompanyAnswersLimits reads the company's own answers_month item, stron
     expect(await new CompanyAnswersLimits(fakeDb(item(), seen), "companies").limitFor("org_X")).toBeNull();
     expect(seen).toEqual([]);
     await expect(new CompanyAnswersLimits({ get: async () => { throw new Error("down"); } } as unknown as Dynamo, "companies").limitFor(cidA)).rejects.toThrow();
+  });
+});
+
+// DEC 254zzz79 (3): Rovara's Slack chat and message router speak to the answers route through an Anthropic client whose base URL is `<gateway>/v1/answers`,
+// so the request path is /v1/answers/v1/messages. It is the SAME route: the answers purpose, the company's own key, the answers month and the combined cap.
+describe("answers class: the Anthropic client's own path (Slack chat and routing)", () => {
+  it("serves /v1/answers/v1/messages exactly like /v1/answers/messages: the company's own key, the answers meter, the cost header", async () => {
+    const g = answersGateway();
+    const sink = await ask(g.deps, {}, requestBody, ANSWERS_CLIENT_PATH);
+    expect(sink.status).toBe(200);
+    expect(g.answerCalls).toHaveLength(1);
+    expect(g.answerCalls[0]!.key).toBe(keyOf(cidA));
+    expect(g.agentKeyReads).toEqual([]);
+    expect((await row(g.answersMeter, "company", answersScope()))!.committed).toBeGreaterThan(0);
+    expect(g.logs).toContainEqual(expect.objectContaining({ event: "settled", route: "answers" }));
+  });
+
+  it("a company with no connected account is paused with the same fixed words and header, and nothing is held or sent (no Rovara-paid fallback)", async () => {
+    const g = answersGateway();
+    g.customer.connectedTo.delete(cidA);
+    const sink = await ask(g.deps, {}, requestBody, ANSWERS_CLIENT_PATH);
+    expect(sink.status).toBe(403);
+    expectPaused(sink, "no_provider");
+    await nothingMoved(g);
+    expect(g.agentKeyReads).toEqual([]);
+  });
+
+  it("a company over its answers month is paused the same way", async () => {
+    const g = answersGateway();
+    g.limits.byCompany.set(cidA, 0);
+    const sink = await ask(g.deps, {}, requestBody, ANSWERS_CLIENT_PATH);
+    expect(sink.status).toBe(422);
+    expect(sink.headers[ANSWERS_PAUSE_HEADER]).toMatch(/^(no_budget|monthly_limit|cost_too_high)$/u);
+    await nothingMoved(g);
+  });
+
+  it("only the answers token: an agent token on this path, and an answers token on the agent path, get the fixed 401", async () => {
+    const g = answersGateway();
+    const agent = await ask(g.deps, { stp: "plan" }, requestBody, ANSWERS_CLIENT_PATH);
+    expect(agent.status).toBe(401);
+    const onAgent = await call(g.deps, requestBody, mint(answersClaims));
+    expect(onAgent.status).toBe(401);
+    await nothingMoved(g);
+  });
+
+  it("the learning route does not grow the same path, and an unknown sibling path is still not found", async () => {
+    const g = answersGateway({ withLearning: true });
+    const learning = await ask(g.deps, { stp: LEARNING_STEP }, requestBody, "/v1/learning/v1/messages");
+    expect(learning.status).toBe(404);
+    const other = await ask(g.deps, {}, requestBody, "/v1/answers/v1/other");
+    expect(other.status).toBe(404);
+    await nothingMoved(g);
+  });
+
+  it("two companies: each call is held to ITS company's connection and meter", async () => {
+    const g = answersGateway();
+    g.customer.connectedTo.delete(cidB);
+    const sink = await ask(g.deps, { cid: cidB }, requestBody, ANSWERS_CLIENT_PATH);
+    expect(sink.status).toBe(403);
+    expectPaused(sink, "no_provider");
+    expect((await ask(g.deps, {}, requestBody, ANSWERS_CLIENT_PATH)).status).toBe(200);
+    expect(g.customer.used).toEqual([cidA]);
   });
 });

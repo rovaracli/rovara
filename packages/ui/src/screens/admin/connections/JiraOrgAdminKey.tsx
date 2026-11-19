@@ -8,17 +8,16 @@ import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";
 
 const PATH = "/v1/app/org/jira-org-admin";
-type Failure = { message: string; reauth: boolean };
+type Failure = { message: string };
 
 /** What a refusal says, in fixed words: nothing the person typed (and no text from the server) is shown back. */
 function failureOf(caught: unknown): Failure {
-  if (!(caught instanceof ApiError)) return { message: "That change was not made. Try again.", reauth: false };
-  if (caught.code === "REAUTH_REQUIRED") return { message: "Sign in again to change the key. This needs a sign-in within the last 10 minutes.", reauth: true };
-  if (caught.code === "AUDIT_UNAVAILABLE") return { message: "This change needs the audit log, which is not available right now. Nothing was changed.", reauth: false };
-  if (caught.code === "FORBIDDEN") return { message: "Only a company owner or admin, in the browser, can change the key.", reauth: false };
-  if (caught.code === "NOT_FOUND") return { message: "That Jira connection, or this setting, is not available for this company.", reauth: false };
-  if (caught.status === 400) return { message: "Check the key and the organization id, then try again. Save the connection's email and API token first if you have not.", reauth: false };
-  return { message: "That change was not made. Try again.", reauth: false };
+  if (!(caught instanceof ApiError)) return { message: "That change was not made. Try again." };
+  if (caught.code === "AUDIT_UNAVAILABLE") return { message: "This change needs the audit log, which is not available right now. Nothing was changed." };
+  if (caught.code === "FORBIDDEN") return { message: "Only a company owner or admin, in the browser, can change the key." };
+  if (caught.code === "NOT_FOUND") return { message: "That Jira connection, or this setting, is not available for this company." };
+  if (caught.status === 400) return { message: "Check the key and the organization id, then try again. Save the connection's email and API token first if you have not." };
+  return { message: "That change was not made. Try again." };
 }
 
 /**
@@ -34,7 +33,7 @@ export function JiraOrgAdminKey({ connections }: { connections: ReadonlyArray<{ 
   const ready = key.trim() !== "" && orgId.trim() !== "";
   async function send(body: JiraOrgAdminMutationBody, done: string) {
     const checked = JiraOrgAdminMutationBodySchema.safeParse(body);
-    if (!checked.success) { setFailure({ message: "Check the key and the organization id, then try again.", reauth: false });return; }
+    if (!checked.success) { setFailure({ message: "Check the key and the organization id, then try again." });return; }
     setBusy(true);setFailure(undefined);setReceipt(undefined);
     // The key leaves the page the moment it is sent, whatever the answer: it is never kept for a retry.
     setKey("");setOrgId("");
@@ -48,7 +47,7 @@ export function JiraOrgAdminKey({ connections }: { connections: ReadonlyArray<{ 
     <h3 id="jira-org-admin-title">Jira organization admin key</h3>
     <p>Optional. A read-only Atlassian organization admin API key lets Rovara see which Jira accounts your company manages, so it can link people to their tickets automatically if you turn that on (see Tracker people). Without it, you map Jira people by hand. Give the key and the organization id together.</p>
     <p>Rovara keeps the key like a password and never shows it again. This is the one place on this page where you type a credential.</p>
-    {failure !== undefined && <p role="alert"><VisibleText text={failure.message} />{failure.reauth && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>Sign in again</Button></>}</p>}
+    {failure !== undefined && <p role="alert"><VisibleText text={failure.message} /></p>}
     {receipt !== undefined && <p role="status">{receipt}</p>}
     <form onSubmit={event => { event.preventDefault();if (ready && !busy) void send({ action: "set", requestId: crypto.randomUUID(), connectionId: chosen, orgAdminKey: key.trim(), atlassianOrgId: orgId.trim() }, "Saved. Rovara does not show the key again."); }}>
       {connections.length > 1 && <div className="rv-field"><label htmlFor="jira-org-admin-connection">Jira connection</label><select id="jira-org-admin-connection" value={chosen} onChange={event => setConnectionId(event.target.value)}>{connections.map(connection => <option key={connection.connectionId} value={connection.connectionId}>{visibleText(connection.label)}</option>)}</select></div>}

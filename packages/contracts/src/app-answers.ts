@@ -55,6 +55,8 @@ export const ANSWER_WORDS = {
   rate: "You've asked a lot of questions lately. Try again a little later.",
   unavailable: "Couldn't answer that just now.",
   limitReached: "This project has reached its spending limit for now.",
+  /** The company's monthly answers limit or budget has no room (Code's `ANSWER_WORDS.paused`). */
+  paused: "Answers are paused for this month.",
   badRequest: "An answer needs a request ID and a question of 1 to 1,000 characters.",
 } as const;
 
@@ -152,6 +154,7 @@ export const ANSWERS_WORDS = Object.freeze({
   unavailable: ANSWER_WORDS.unavailable,
   rate: ANSWER_WORDS.rate,
   limitReached: ANSWER_WORDS.limitReached,
+  paused: ANSWER_WORDS.paused,
   suggestUnavailable: START_SUGGEST_WORDS.unavailable,
   suggestRate: START_SUGGEST_WORDS.rate,
   answerGone: "That answer is not there.",

@@ -101,19 +101,15 @@ it("Slack's return: one fixed sentence per word, with Try again; the kept outcom
  r.close();
 });
 
-it("'You signed in from A but added Rovara to B. Keep it?': Keep closes it; Disconnect asks an owner to confirm it's them first, then disconnects", async () => {
- let fresh = false;
+it("'You signed in from A but added Rovara to B. Keep it?': Keep closes it; Disconnect disconnects with one press (no step-up since owner DEC 254zzz73)", async () => {
  const f = setup(h(SlackConnectResult, { outcome: "result" }), {
   "/v1/app/slack/install/result": { status: 200, body: { status: "connected", alreadyConnected: false, workspaceName: "Side", mismatch: { signedInName: "Main" } } },
-  "/v1/app/slack/disconnect": () => fresh ? { status: 200, body: { status: "disconnected", workspaceName: "Side", projectsLosingChannel: [] } } : err(403, "REAUTH_REQUIRED", "Confirm it's you again, then try once more."),
+  "/v1/app/slack/disconnect": () => ({ status: 200, body: { status: "disconnected", workspaceName: "Side", projectsLosingChannel: [] } }),
  });
  expect((await screen.findByTestId("slack-mismatch")).textContent).toContain("You signed in from Main but added Rovara to Side. Keep it?");
  fireEvent.click(screen.getByTestId("slack-mismatch-disconnect"));
- await screen.findByTestId("fresh-sign-in");
- fireEvent.click(screen.getByTestId("fresh-sign-in-start"));
- expect(f.host.signIn).toHaveBeenCalledWith(expect.stringContaining("confirmed="), { stepUp: true });
- fresh = true;
- fireEvent.click(screen.getByTestId("slack-mismatch-disconnect"));
+ expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+ expect(f.host.signIn).not.toHaveBeenCalled();
  expect((await screen.findByTestId("slack-disconnected")).textContent).toBe("Rovara was removed from Side.");
  f.close();
  const g = setup(h(SlackConnectResult, { outcome: "result" }), { "/v1/app/slack/install/result": { status: 200, body: { status: "connected", alreadyConnected: false, workspaceName: "Side", mismatch: {} } } });

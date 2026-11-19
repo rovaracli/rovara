@@ -1,7 +1,7 @@
 // The Members page's routes (member-routes.ts, guided onboarding PR 12a) through the real handler and a fake Code that serves Code's own member
 // routes with Code's rules (company-member-routes.ts on code/next): the company is the caller's live membership, a plain member gets 404, another
-// company's person and nobody both get "member not found", nobody changes their own role, only an owner changes or makes an owner, a fresh step-up
-// from the token's claims, and the last active owner is kept. Covers Cloud's early refusals (each proven by Code never being asked), Code's refusals
+// company's person and nobody both get "member not found", nobody changes their own role, only an owner changes or makes an owner, no step-up
+// (owner DEC 254zzz73), and the last active owner is kept. Covers Cloud's early refusals (each proven by Code never being asked), Code's refusals
 // reaching the app as fixed sentences (never Code's words or the request's), two companies, the list's bounds, and leak checks.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -79,7 +79,6 @@ function world() {
     const role = (body as { role?: unknown } | undefined)?.role;
     if (role !== "member" && role !== "admin" && role !== "owner") return refuse("CONFIG_INVALID", "send the new role: member, admin or owner", 400);
     if ((target.role === "owner" || role === "owner") && me.role !== "owner") return refuse("FORBIDDEN", "only an owner can change or remove an owner", 403);
-    if (token.stepUpAt === undefined || nowS() - token.stepUpAt > 600) return refuse("REAUTH_REQUIRED", "this role change needs a fresh sign-in check; sign in again and retry", 403);
     if (override !== undefined) return respond(override.status, override.body);
     if (target.revokedAt !== undefined) return refuse("MEMBER_ALREADY_REMOVED", "restore this member before changing their role", 409);
     if (target.role === "owner" && role !== "owner" && ![...members.values()].some((m) => m.companyId === me.companyId && m.role === "owner" && m.revokedAt === undefined && m.personId !== target.personId)) {
@@ -186,9 +185,9 @@ describe("role change: Code's route as the person", () => {
     expect(w.putCalls()).toEqual([]);
   });
 
-  it("an admin can't make an owner or change an owner: refused before the step-up and before Code", async () => {
+  it("an admin can't make an owner or change an owner: refused before Code", async () => {
     const w = world();
-    const ada = await w.signIn("ada"); // no step-up: the owner rule answers first
+    const ada = await w.signIn("ada");
     expect(words(await w.change(ada, "mia", "owner"))).toEqual(words(MEMBER_WORDS.ownerOnly));
     expect(words(await w.change(ada, "olga", "member", { expectedRole: "owner" }))).toEqual(words(MEMBER_WORDS.ownerOnly));
     expect(w.putCalls()).toEqual([]);
@@ -209,26 +208,27 @@ describe("role change: Code's route as the person", () => {
     expect(w.roleOf("olga")).toBe("owner");
   });
 
-  it("a missing, stale or future step-up gives the re-auth answer before Code is asked; a fresh one goes through", async () => {
-    const w = world();
-    const none = await w.signIn("ada");
-    expect(words(await w.change(none, "mia", "admin"))).toEqual(words(MEMBER_WORDS.stepUp));
-    const stale = await w.signIn("ada", 601);
-    expect(words(await w.change(stale, "mia", "admin"))).toEqual(words(MEMBER_WORDS.stepUp));
-    const future = await w.signIn("ada", -120);
-    expect(words(await w.change(future, "mia", "admin"))).toEqual(words(MEMBER_WORDS.stepUp));
-    expect(w.putCalls()).toEqual([]);
-    expect(MEMBER_WORDS.stepUp.body).toMatchObject({ error: { code: "REAUTH_REQUIRED" } });
-    const fresh = await w.signIn("ada", 600);
-    expect((await w.change(fresh, "mia", "admin")).status).toBe(200);
+  it("no step-up (owner DEC 254zzz73): with none, an old one or a future one an admin changes a member of their own company; the wrong role and the wrong company still can't", async () => {
+    for (const age of [undefined, 601, -120]) {
+      const w = world();
+      // Wrong role: a member with the same kind of sign-in is refused before Code is asked.
+      expect(words(await w.change(await w.signIn("mia", age), "otto", "admin"))).toEqual(words(MEMBER_WORDS.notAdmin));
+      expect(w.putCalls()).toEqual([]);
+      // Wrong company: B's admin with the same kind of sign-in gets the one not-found sentence; A's member is unchanged.
+      expect(words(await w.change(await w.signIn("bea", age), "mia", "admin"))).toEqual(words(MEMBER_WORDS.notFound));
+      expect(w.roleOf("mia")).toBe("member");
+      // The right role in the right company goes through.
+      expect((await w.change(await w.signIn("ada", age), "mia", "admin")).status).toBe(200);
+      expect(w.roleOf("mia")).toBe("admin");
+    }
   });
 
-  it("Code's own step-up refusal (its clock, its window) reaches the app as the same re-auth answer", async () => {
+  it("an unexpected 403 from Code (whatever its code) is the not-allowed sentence, never Code's words", async () => {
     const w = world();
-    const ada = await w.signIn("ada", 10);
+    const ada = await w.signIn("ada");
     w.setOverride({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: `${SECRET} this role change needs a fresh sign-in check` } } });
     const answer = await w.change(ada, "mia", "admin");
-    expect(words(answer)).toEqual(words(MEMBER_WORDS.stepUp));
+    expect(words(answer)).toEqual(words(MEMBER_WORDS.notAdmin));
     expect(answer.raw).not.toContain(SECRET);
   });
 

@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 // L3b: the lessons list inside "What the agent loaded": per step, why each lesson was chosen, whether its code reference held, no words for a lesson from a source the viewer can't see,
-// and "Helpful" / "Wrong here" once per lesson.
+// and one "Not helpful" mark per lesson, sent to the project route (B13: the old project-less route was a 404 on Cloud).
 import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { SessionViewReaderSchema, LessonFeedbackBodySchema } from "@agentx/contracts/web";
+import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { workspaceFixture as fixture } from "./support/workspace-fixture.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
@@ -58,20 +58,24 @@ it("a lesson from a source this person can't see is a row with no words and no b
  s.close();
 });
 
-it("Helpful and Wrong here send one mark and say thanks; a refusal is shown in the server's words", async () => {
+it("B13: reads the project's task lessons route, and Not helpful sends one mark there and says thanks; a refusal is shown in the server's words", async () => {
  const sent: Array<{ path: string; body: unknown }> = [];
+ const reads: string[] = [];
  const s = setup(async request => {
-  if (request.method === "POST") { sent.push({ path: request.path, body: request.body });return request.path.includes("les_bbbb2222") ? { status: 409, body: { error: { code: "CHANGE_STALE", message: "You already marked this lesson for this task." } } } : { status: 200, body: { done: true } }; }
+  if (request.method === "POST") { sent.push({ path: request.path, body: request.body });return request.path.includes("les_bbbb2222") ? { status: 409, body: { error: { code: "IDEMPOTENCY_CONFLICT", message: "You already marked this lesson." } } } : { status: 200, body: { project: "payments", taskId: "t", lessonId: "les_aaaa1111", marked: "not_helpful" } }; }
+  if (lessonsPath(request)) reads.push(request.path);
   return rules(request) ?? { status: 200, body: loaded([loadedRow(), loadedRow({ lessonId: "les_bbbb2222", title: "Second" })]) };
  });
  await open();
- fireEvent.click(await screen.findByRole("button", { name: "Helpful: Use the shared retry helper" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Not helpful: Use the shared retry helper" }));
  await screen.findByText(/Your mark is recorded/u);
+ expect(reads[0]).toMatch(/^\/v1\/app\/projects\/[^/]+\/tasks\/[^/]+\/lessons$/u);
  expect(sent).toHaveLength(1);
- expect(sent[0]!.path.endsWith("/lessons/les_aaaa1111/feedback")).toBe(true);
- expect(LessonFeedbackBodySchema.parse(sent[0]!.body)).toEqual({ kind: "helpful" });
- fireEvent.click(screen.getByRole("button", { name: "Wrong here: Second" }));
- expect((await screen.findByRole("alert")).textContent).toContain("You already marked this lesson for this task.");
+ expect(sent[0]!.path).toMatch(/^\/v1\/app\/projects\/[^/]+\/tasks\/[^/]+\/lessons\/les_aaaa1111\/not-helpful$/u);
+ expect(sent[0]!.body).toEqual({});
+ expect(screen.queryByRole("button", { name: /^Helpful/u })).toBeNull();
+ fireEvent.click(screen.getByRole("button", { name: "Not helpful: Second" }));
+ expect((await screen.findByRole("alert")).textContent).toContain("You already marked this lesson.");
  s.close();
 });
 

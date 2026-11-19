@@ -23,7 +23,7 @@ import {
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
-import { applyCloudBoundary } from "./cloud-boundary.js";
+import { applyCloudBoundary, byoCustomerAssumeConditions } from "./cloud-boundary.js";
 
 /**
  * The Cloud model gateway's infrastructure (migration plan v3.2, 7.4; packages/model-gateway). Every model call of every task
@@ -74,6 +74,11 @@ export const MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY = "rovaraModelGatewayRov
  * account's one-time Marketplace enable), and the template is exactly as without it.
  */
 export const MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY = "rovaraModelGatewayRovaraAiDisabled";
+/**
+ * DEC 254zzz96 (2): `-c rovaraModelGatewayOfferedPrices=on` publishes each offered model's list price (GATEWAY_OFFERED_PRICES=on) for the company's
+ * step models card. Turn it on only once the Code install's release accepts the optional price field. Absent: the template is exactly as without it.
+ */
+export const MODEL_GATEWAY_OFFERED_PRICES_CONTEXT_KEY = "rovaraModelGatewayOfferedPrices";
 /**
  * Bring your own Bedrock (DEC 238), only with MODEL_GATEWAY_PRODUCT_CONTEXT_KEY on: `-c rovaraModelGatewayBedrockByo=on` adds the
  * fixed-name, retained Bedrock broker role and the external-id HMAC key. Refused for production at synth. Absent: the template is
@@ -206,6 +211,7 @@ export const MODEL_GATEWAY_ENV = {
   bedrockBrokerRole: "GATEWAY_BEDROCK_BROKER_ROLE",
   bedrockExternalIdKey: "GATEWAY_BEDROCK_EXTERNAL_ID_KEY",
   aiSourceKinds: "GATEWAY_AI_SOURCE_KINDS",
+  offeredPrices: "GATEWAY_OFFERED_PRICES",
 } as const;
 /** The eval stage table's due-stages index (deploy.ts GATEWAY_EVAL_STAGE_INDEXES). */
 export const MODEL_GATEWAY_EVAL_STAGE_INDEXES = {
@@ -311,6 +317,8 @@ export interface ModelGatewayProps extends StackProps {
   readonly bedrockByo?: boolean;
   /** DEC 254t: the switched-on company AI source kinds (app.ts AI_SOURCE_KINDS_CONTEXT_KEY, checked there). Needs productAi. Absent: not set (none). */
   readonly aiSourceKinds?: string;
+  /** DEC 254zzz96 (2): publish list prices on the offered-models answer. Absent: off. */
+  readonly offeredPrices?: boolean;
   /**
    * "fixed" keeps the provider secrets at their original fixed names (an environment deployed that way must keep it); the default
    * lets CloudFormation generate them (MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY).
@@ -591,6 +599,7 @@ export class ModelGatewayStack extends Stack {
         ...(rovaraAi === undefined ? {} : rovaraAi.environment),
         ...(bedrockByo === undefined ? {} : bedrockByo.environment),
         ...(props.aiSourceKinds === undefined ? {} : { [MODEL_GATEWAY_ENV.aiSourceKinds]: props.aiSourceKinds }),
+        ...(props.offeredPrices === true ? { [MODEL_GATEWAY_ENV.offeredPrices]: "on" } : {}),
       },
     });
     props.repository.grantPull(serveTask.obtainExecutionRole());
@@ -769,7 +778,7 @@ export class ModelGatewayStack extends Stack {
             sid: "AssumeCustomerBedrockRoles", actions: ["sts:AssumeRole"],
             resources: [`arn:${this.partition}:iam::*:role/${BEDROCK_BYO_CUSTOMER_ROLE_PREFIX}*`],
             // Customers' accounts only: never a role of that name in Rovara's own account (made by mistake or by an insider).
-            conditions: { StringLike: { "sts:ExternalId": "rvb-*", "sts:RoleSessionName": "org_*" }, StringNotEquals: { "aws:ResourceAccount": this.account } },
+            conditions: byoCustomerAssumeConditions(this.account),
           })],
         }),
       },

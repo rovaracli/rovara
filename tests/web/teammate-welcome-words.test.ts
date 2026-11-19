@@ -14,7 +14,7 @@ import { navFixture } from "./support/fixtures.js";
 
 const checklist = (channels: unknown[]) => ({
   project: "payments", viewer: { companyRole: "member", projectAdmin: false, canSkip: false }, progress: { done: 8, total: 8, percent: 100, nextRequired: null },
-  repos: { state: "done", count: 1, items: [] }, setupRun: { state: "done", status: "ready" }, evalConfirm: { state: "done", report: "confirmed" }, aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
+  repos: { state: "done", count: 1, items: [] }, setupRun: { state: "done", status: "ready", approval: "approved", check: { status: "ready" } }, evalConfirm: { state: "done", report: "confirmed" }, aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
   slackChannel: { state: channels.length > 0 ? "done" : "optional", channels }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: { state: "done", hasTask: true, canStart: true },
 });
 function mount(channels: unknown[]) {

@@ -3,7 +3,7 @@ import { useMemo, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { ApiError } from "../../../api/errors.js";
-import { ORIGINS, ORIGIN_WORDS, PATHS, PATH_WORDS, RANGES, RANGE_WORDS, costWords, dollars, durationWords, filterQuery, isRange, pullRequestWords, rangeBounds, unpricedWords, unreadableWords, type Origin, type RangeId, type ReportFilters, type ReportNumbers, type StateFilter, type TaskPath } from "../../../api/admin-report.js";
+import { ORIGINS, ORIGIN_WORDS, PATHS, PATH_WORDS, RANGES, RANGE_WORDS, costWords, coverageWords, durationWords, filterQuery, isRange, pullRequestWords, rangeBounds, unpricedWords, unreadableWords, type Origin, type RangeId, type ReportFilters, type ReportNumbers, type StateFilter, type TaskPath } from "../../../api/admin-report.js";
 import { Button } from "../../../design/Button.js";
 import { Select } from "../../../design/Select.js";
 import { Skeleton } from "../../../design/Skeleton.js";
@@ -52,15 +52,15 @@ export function FilterRow({ projects, state, hideProject = false }: { projects: 
 /** The four numbers at the top: spent, merged pull requests, cost per merged pull request, median time from request to pull request. A number that does not exist is said so, never drawn as zero. */
 export function TopNumbers({ totals, label }: { totals: ReportNumbers; label: string }) {
  return <div className="rv-stats" role="group" aria-label={label}>
-  <Stat label="Spent" note={totals.unpricedCalls > 0 ? unpricedWords(totals.unpricedCalls) + ", so the real total is higher" : undefined}>{costWords(totals.costCents, totals.costIsFloor)}</Stat>
+  <Stat label="Spent" note={[coverageWords(totals), totals.unpricedCalls > 0 ? unpricedWords(totals.unpricedCalls) + ", so the real total is higher" : undefined].filter(Boolean).join(" ") || undefined}>{costWords(totals.costCents, totals.costIsFloor)}</Stat>
   <Stat label="Merged pull requests" note={`of ${totals.prsOpened} opened`}>{totals.prsMerged}</Stat>
-  <Stat label="Cost per merged pull request" note={totals.costPerMergedCents === undefined ? "Nothing has merged yet" : "All cost, failed work included"}>{totals.costPerMergedCents === undefined ? "No merges yet" : dollars(totals.costPerMergedCents)}</Stat>
+  <Stat label="Cost per merged pull request" note={totals.costPerMergedCents === undefined ? "Nothing has merged yet" : "All cost, failed work included"}>{totals.costPerMergedCents === undefined ? "No merges yet" : costWords(totals.costPerMergedCents, totals.costIsFloor)}</Stat>
   <Stat label="Median time from request to pull request" note={totals.medianRequestToPrMs === undefined ? "No pull request opened yet" : undefined}>{totals.medianRequestToPrMs === undefined ? "None yet" : durationWords(totals.medianRequestToPrMs)}</Stat>
  </div>;
 }
 
-export function CostCell({ cents, floor, unpriced }: { cents: number; floor: boolean; unpriced: number }) {
- return <span className="rv-num">{costWords(cents, floor)}{unpriced > 0 && <span className="rv-report-note">{unpricedWords(unpriced)}</span>}</span>;
+export function CostCell({ cents, floor, unpriced, unavailable }: { cents: number; floor: boolean; unpriced: number; unavailable?: boolean | undefined }) {
+ return <span className="rv-num">{unavailable === true ? "Cost unavailable" : costWords(cents, floor)}{unpriced > 0 && <span className="rv-report-note">{unpricedWords(unpriced)}</span>}</span>;
 }
 export const PullRequestCell = ({ merged, opened }: { merged: number; opened: number }) => <span className="rv-num">{pullRequestWords(merged, opened)}</span>;
 export function EndCell({ ms, soFar }: { ms: number | undefined; soFar: boolean | undefined }) {

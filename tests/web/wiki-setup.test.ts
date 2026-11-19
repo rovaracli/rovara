@@ -39,7 +39,7 @@ const built = (extra: Record<string, unknown> = {}) => build({
 });
 const checklist = (extra: Record<string, unknown> = {}) => ({
   project: "web", viewer: { companyRole: "owner", projectAdmin: false, canSkip: true }, progress: { done: 2, total: 8, percent: 25, nextRequired: "setupRun" },
-  repos: { state: "done", count: 1, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }] }, setupRun: { state: "needs_you", status: "none" }, evalConfirm: { state: "needs_you", report: "none", blockedBy: "setupRun" },
+  repos: { state: "done", count: 1, items: [{ name: "web", fullName: "acme/web", defaultBranch: "main" }] }, setupRun: { state: "needs_you", status: "none", approval: "none" }, evalConfirm: { state: "needs_you", report: "none", blockedBy: "setupRun" },
   aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null }, slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" },
   firstTask: { state: "needs_you", hasTask: false, canStart: false }, ...extra,
 });
@@ -443,7 +443,7 @@ describe("nightly upkeep", () => {
     f.close();
   });
 
-  it("the cap: a bad amount is refused here without a call; a step-up asks for a fresh sign-in; a refusal shows only a known sentence", async () => {
+  it("the cap: a bad amount is refused here without a call; an old STEP_UP_REQUIRED is a plain refusal with no sign-in step; a refusal shows only a known sentence", async () => {
     const f = mount(row(true), { capPut: () => err(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more.") });
     await open();
     const input = await screen.findByLabelText("Monthly cap on nightly upkeep");
@@ -455,7 +455,8 @@ describe("nightly upkeep", () => {
     expect(calls(f, "PUT", "/v1/app/org/spend-limits/upkeep/web")).toHaveLength(0);
     fireEvent.change(input, { target: { value: "40" } });
     fireEvent.click(screen.getByTestId("wiki-setup-cap-save"));
-    expect(await screen.findByTestId("fresh-sign-in")).toBeTruthy();
+    expect((await screen.findByTestId("wiki-setup-cap-error")).textContent).toBe("That could not be saved just now. Try again.");
+    expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
     f.close();
     for (const [message, shown] of [[LEAK, "That could not be saved just now. Try again."], ["Raising this limit needs a second admin under your company's rules. Ask an owner to change the rules, or raise the company default in Company settings.", "Raising this limit needs a second admin under your company's rules. Ask an owner to change the rules, or raise the company default in Company settings."]] as const) {
       const g = mount(row(true), { capPut: () => err(403, "SECOND_PERSON_REQUIRED", message) });
@@ -497,40 +498,21 @@ const noControls = () => {
 
 // ---- L4-P3 (owner 2026-11-17): allowing needs a fresh sign-in; the company's one control is linked from here ---------------------------------------------------------------------------------
 // Mutants (each killed by the named test, run by hand): V1 a step-up answer shown as an error sentence instead of the sign-in step; V2 the request id replaced after a step-up refusal (the retry is a new act);
-// V3 the sign-in step drawn for any other refusal; V4 the company link drawn for a maintainer or while consent is off; V5 Confirm it's you does not ask Code for a step-up.
-describe("nightly upkeep: the fresh sign-in step and the company control's link (L4-P3)", () => {
-  it("Code asks for a fresh sign-in on the choice: the page shows the sign-in step (not an error), Confirm it's you asks Code for a step-up, and the same press afterwards is the retry with the same request id (V1, V2, V5)", async () => {
-    let step = true;
-    let state = { ...VIEW } as Record<string, unknown>;
-    const f = mount(row(true), { upkeep: () => ({ status: 200, body: state }), put: () => {
-      if (step) return err(403, "REAUTH_REQUIRED", WIKI_SETUP_WORDS.needsSignIn);
-      state = { ...state, enabled: true, systemRunsOn: true };
-      return { status: 200, body: state };
-    } });
+// V3 a sign-in step drawn for a refusal; V4 the company link drawn for a maintainer or while consent is off.
+describe("nightly upkeep: no sign-in step (owner DEC 254zzz73) and the company control's link (L4-P3)", () => {
+  it("allowing is one press: no sign-in step, and an old REAUTH_REQUIRED from Code is an error sentence, never a sign-in step (V1, V2)", async () => {
+    const f = mount(row(true), { upkeep: upkeepIs({}), put: () => err(403, "REAUTH_REQUIRED", LEAK) });
     await open();
     fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));
     fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
-    const fresh = await screen.findByTestId("fresh-sign-in");
-    expect(fresh.getAttribute("data-state")).toBe("needed");
-    expect(fresh.textContent).toContain("allow nightly upkeep for the company");
-    expect(screen.queryByTestId("wiki-setup-upkeep-error")).toBeNull();
-    expect(screen.queryByRole("switch", { name: "Nightly upkeep" })).toBeNull();
-    await expectNoAxeViolations(document.body);
-    fireEvent.click(within(fresh).getByTestId("fresh-sign-in-start"));
-    expect(f.host.signIn).toHaveBeenCalledTimes(1);
-    expect((f.host.signIn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![1]).toMatchObject({ stepUp: true });
-    // Back from the sign-in, the person presses again: the same request id, and now it works.
-    step = false;
-    fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-yes"));
-    await waitFor(() => expect(screen.getByRole("switch", { name: "Nightly upkeep" }).getAttribute("aria-checked")).toBe("true"));
-    const sent = calls(f, "PUT", ROOT + "/upkeep");
-    expect(sent).toHaveLength(2);
-    expect((sent[1]!.body as { requestId: string }).requestId).toBe((sent[0]!.body as { requestId: string }).requestId);
+    expect(await screen.findByTestId("wiki-setup-upkeep-error")).toBeTruthy();
     expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+    expect(f.host.signIn).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain(LEAK);
     f.close();
   });
 
-  it("any other refusal is an error sentence, never the sign-in step (V3)", async () => {
+  it("a refusal is an error sentence, never a sign-in step (V3)", async () => {
     const f = mount(row(true), { upkeep: upkeepIs({}), put: () => err(403, "FORBIDDEN", WIKI_SETUP_WORDS.upkeepConsentNotAllowed) });
     await open();
     fireEvent.click(await screen.findByTestId("wiki-setup-upkeep-offer"));

@@ -419,7 +419,7 @@ export interface LinearDisconnected { status: "disconnected"; workspaceName: str
 export interface LinearTeam { id: string; key: string; name: string }
 export interface LinearProjectTeam { project: string; team: LinearTeam | null; teams?: LinearTeam[]; cleared?: boolean }
 export interface GithubConnectionsResponse { installations: Array<{ installationId: number; accountLogin: string; status?: "active" | "suspended" | "uninstalled"; accountType?: "User" | "Organization"; connectedAt: Iso; connectedBy: { kind: "person"; personId: string; name?: string } | { kind: "operator" } }> }
-/** Guided onboarding PR 12b (Code #832): a company owner with a fresh step-up disconnects one of the company's GitHub installations (refused while in use). */
+/** Guided onboarding PR 12b (Code #832): a company owner disconnects one of the company's GitHub installations (refused while in use). */
 export interface GithubDisconnected { status: "disconnected"; installationId: number; accountLogin: string; uninstallUrl: string }
 /**
  * One engine action (Code's `GET /v1/dev/client/company/audit/records`, lane AU, Rovara PR #649). The optional fields are what Code adds: the record's id, the actor's kind and the caller the
@@ -464,7 +464,7 @@ export interface CompanyAuditPage { records: CompanyAuditEntry[]; next?: string;
 
 export interface ScriptToken { tokenId: string; name: string; hint: string; projects: string[]; permissions: Array<"read" | "start" | "lessons" | "wiki">; createdAt: Iso; expiresAt: Iso; lastUsedAt?: Iso; revokedAt?: Iso; status: "active" | "expired" | "revoked"; mine: boolean; createdBy?: string }
 export interface ScriptTokensResponse { tokens: ScriptToken[] }
-export interface CreateScriptTokenRequest { requestId: string; name: string; projects: string[]; permissions: Array<"read" | "start" | "lessons">; days?: number }
+export interface CreateScriptTokenRequest { requestId: string; name: string; projects: string[]; permissions: Array<"read" | "start" | "lessons" | "wiki">; days?: number }
 /** The secret is shown once, in this answer only. */
 export interface CreateScriptTokenResponse { token: ScriptToken; secret: string }
 export interface RevokeScriptTokenResponse { token: ScriptToken }
@@ -485,9 +485,17 @@ export interface CompanyEgressAddressesView { addresses: string[] }
 export interface CompanyEngineModelView { model: string | null; source: "company" | "install"; offered: string[]; preselect: string }
 /** A model id, or null to clear the company's own (the install default applies again). Nothing else. */
 export interface PutCompanyEngineModelRequest { model: string | null }
+/**
+ * Code #1075 (DEC 254zzz58/63): the model the company's lessons LEARN with, separate from the engine model. `model` is what lessons learn with now (the company's own, else the
+ * install default, null only where the install's setting is broken); `offered` holds only the Claude models the gateway offers THIS company now (it can be empty); `preselect` is
+ * `model` when offered, else the first offered, else null.
+ */
+export interface CompanyLearningModelView { model: string | null; source: "company" | "install"; offered: string[]; preselect: string | null }
+/** A Claude model id, or null to clear the company's own (the install default applies again). Nothing else. */
+export interface PutCompanyLearningModelRequest { model: string | null }
 /** Code's project settings (M4a, `GET|PUT /v1/dev/projects/{name}/settings`): the stored preset and overrides, the revision, and what applies under the company's bounds. */
 export interface ProjectSettingsView { preset: string | null; overrides: JsonObject; revision: number; updatedAt: Iso | null; updatedBy: string | null; resolved: JsonObject; values: JsonObject; clamped: JsonObject[] }
-/** A change names the revision read; a cost field (such as `model_budget_usd`, the per-task model budget) needs the person's fresh step-up at Code. */
+/** A change names the revision read; Code decides who may change a cost field (such as `model_budget_usd`, the per-task model budget). */
 export interface PutProjectSettingsRequest { expectedRevision: number; preset?: "lightweight" | "balanced" | "careful"; overrides?: JsonObject }
 
 /** Guided onboarding PR 9 (Code #841): the project checklist read (contracts project-setup-status.ts ProjectSetupChecklistSchema has every field). */
@@ -581,7 +589,13 @@ export interface TaskLesson {
 export interface TaskLessonsResponse { project: string; taskId: string; lessons: TaskLesson[] }
 export interface NotHelpfulResponse { project: string; taskId: string; lessonId: string; marked: "not_helpful" }
 /** The project's own mode, the mode in force (the stricter of it and the company's), whether the company is the reason, and whether this person may change it. */
-export interface LessonModeResponse { project: string; mode: LessonMode; effective: LessonMode; lockedByCompany: boolean; canChange: boolean }
+export interface LessonModeResponse { project: string; mode: LessonMode; effective: LessonMode; lockedByCompany: boolean; canChange: boolean; trialOffer?: { approvals: number; drops: number; since: number } }
+export interface WeeklySummaryResponse { project: string; on: boolean; source: "chosen" | "pilot_default" | "default"; canChange: boolean }
+export interface WeeklyLessonsResponse { project: string; weekly: { needLook: JsonObject[]; picks: JsonObject[] } }
+export interface LessonReplayResponse { project: string; tasks: JsonObject[]; totals: JsonObject }
+export interface LessonTuningResponse { project: string; windowDays: number; ready: boolean; message: string; evidence: JsonObject; suggestions: JsonObject[]; note: string }
+export interface LessonRepeatsResponse { project: string; month: string; repeated: number; corrections: number; enoughData: boolean; split: JsonObject; unjudged: number; truncated: boolean }
+export interface CompanyLessonRepeatsResponse { scope: "company"; month: string; projects: JsonObject[]; repeated: number; corrections: number; enoughData: boolean }
 /** Code's counts only phase 0 measurement, returned only to a project maintainer or company owner/admin. */
 export interface LessonMeasureResponse {
   project: string; windowDays: number; floor: number; loads: number; lessonsInUse: number | null; loadedLessons: number; loadedBelowFloor: number;
@@ -602,7 +616,7 @@ export interface LessonAreasResponse {
   selection?: { whole?: true; repo?: string | null; folder?: string; lessons: LessonItem[]; moreLessons?: number };
 }
 /** Lead 4 L4-LP3W: "Where Rovara learns from". Counts are the last 30 days; Cloud words every row itself. */
-export type LearningSourceKey = "task_decisions" | "review_comments" | "pr_edits" | "remember" | "after_merge" | "ci";
+export type LearningSourceKey = "task_decisions" | "review_comments" | "pr_edits" | "remember" | "after_merge" | "ci" | "tickets";
 export interface LearningSourceRow { key: LearningSourceKey; label: string; detail: string; seen: number; suggested: number; kept: number; paused: boolean; example?: { lessonId: string; title: string } }
 export interface LearningSourcesResponse { project: string; windowDays: 30; canPause: boolean; sources: LearningSourceRow[]; partial?: true }
 export interface PutLearningSourceRequest { paused: boolean }
@@ -654,6 +668,24 @@ export interface RuleRetireResponse { project: string; ruleId: string; status: "
 
 // ---------------------------------------------------------------------------------------------------------------
 // The typed map: one entry per Code route id (request is the JSON body or `void`, response the 2xx JSON body).
+
+
+/** Rovara skills (L4-AK3, with L4-JA's `canDecide` and `?name=`): a procedure the team proved, versioned, used only after TWO different eligible people approved the newest version. Text only; it grants nothing. */
+export interface SkillRow {
+  name: string; description: string; currentVersion: number; activeVersion?: number; approvals: number; approvedByYou: boolean; retired: boolean; bytes: number;
+  /** Code's one sentence for a skill over 8 KB ("This skill is long. Consider splitting it into smaller skills."). */
+  note?: string;
+}
+/** The fields an edit takes, and what a skill's text reads back as (only when Code can make the very same text from it). */
+export interface SkillForm { description: string; when: string; steps: string[]; doneWhen?: string; why?: string }
+export interface SkillDetail extends SkillRow { content: string; form?: SkillForm }
+/** `GET …/skills` (every skill, no text) and `GET …/skills?name=` (that one skill, with the text of its newest version and its form). `canDecide`: a maintainer of the project or a company owner or admin. */
+export interface SkillsResponse { project: string; canDecide: boolean; skills: Array<SkillRow | SkillDetail> }
+export interface SkillEditRequest { expectedVersion: number; description: string; when: string; steps: string[]; doneWhen?: string; why?: string }
+export interface SkillEditResponse { project: string; name: string; version: number; note?: string }
+export interface SkillApproveRequest { version: number }
+export interface SkillApproveResponse { project: string; name: string; version: number; approvals: number; live: boolean }
+export interface SkillRetireResponse { project: string; name: string; retired: true }
 
 export interface CodeRouteTypes {
   "auth.authorize": { request: void; response: void };
@@ -769,6 +801,15 @@ export interface CodeRouteTypes {
   "lessons.notHelpful": { request: JsonObject; response: NotHelpfulResponse };
   "lessons.mode.get": { request: void; response: LessonModeResponse };
   "lessons.mode.put": { request: PutLessonModeRequest; response: LessonModeResponse };
+  "lessons.weeklySummary.get": { request: void; response: WeeklySummaryResponse };
+  "lessons.weeklySummary.put": { request: { on: boolean }; response: WeeklySummaryResponse };
+  "lessons.weekly": { request: void; response: WeeklyLessonsResponse };
+  "lessons.keep": { request: JsonObject; response: JsonObject };
+  "lessons.trialOffer": { request: { decision: "accept" | "not_now" }; response: JsonObject };
+  "lessons.replay": { request: void; response: LessonReplayResponse };
+  "lessons.tuning": { request: void; response: LessonTuningResponse };
+  "lessons.repeats": { request: void; response: LessonRepeatsResponse };
+  "lessons.repeats.company": { request: void; response: CompanyLessonRepeatsResponse };
   "lessons.graduation": { request: void; response: GraduationResponse };
   "lessons.graduate": { request: GraduateRequest; response: GraduateResponse };
   "lessons.graduateLater": { request: JsonObject; response: GraduateLaterResponse };
@@ -780,11 +821,22 @@ export interface CodeRouteTypes {
   "lessons.rules.retire": { request: JsonObject; response: RuleRetireResponse };
   "lessons.measure": { request: void; response: LessonMeasureResponse };
   "lessons.areas": { request: void; response: LessonAreasResponse };
+  "skills.list": { request: void; response: SkillsResponse };
+  "skills.edit": { request: SkillEditRequest; response: SkillEditResponse };
+  "skills.approve": { request: SkillApproveRequest; response: SkillApproveResponse };
+  "skills.retire": { request: JsonObject; response: SkillRetireResponse };
   "lessons.learningSources.get": { request: void; response: LearningSourcesResponse };
   "lessons.learningSources.put": { request: PutLearningSourceRequest; response: PutLearningSourceResponse };
   "company.egressAddresses.get": { request: void; response: CompanyEgressAddressesView };
+  // L4-JA7: Knowledge stays in Rovara and a project's local coding tools setting (shapes in cloud-server/src/knowledge-switch-routes.ts).
+  "company.knowledgeStays.get": { request: void; response: { stays: boolean } };
+  "company.knowledgeStays.put": { request: { stays: boolean }; response: { stays: boolean } };
+  "lessons.localTools.get": { request: void; response: { enabled: boolean; own?: boolean; reason?: "company_stays" | "regulated" | "project_setting"; preset: "standard" | "regulated"; companyStays: boolean; canChange: boolean } };
+  "lessons.localTools.put": { request: { enabled: boolean }; response: { enabled: boolean; own?: boolean; reason?: "company_stays" | "regulated" | "project_setting"; preset: "standard" | "regulated"; companyStays: boolean; canChange: boolean } };
   "company.engineModel.get": { request: void; response: CompanyEngineModelView };
   "company.engineModel.put": { request: PutCompanyEngineModelRequest; response: CompanyEngineModelView };
+  "company.learningModel.get": { request: void; response: CompanyLearningModelView };
+  "company.learningModel.put": { request: PutCompanyLearningModelRequest; response: CompanyLearningModelView };
   "projects.settings.get": { request: void; response: ProjectSettingsView };
   "projects.settings.put": { request: PutProjectSettingsRequest; response: ProjectSettingsView };
 }
@@ -928,12 +980,12 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.github.claim", "POST", "/v1/dev/company/github/claim", "GitHub's return: spend the state, check the person controls the installation, bind it or list the ones they control", "full", ["admin"], "no", false, "none", true),
   spec("company.github.choose", "POST", "/v1/dev/company/github/choose", "Bind one installation from a claim's checked list, with its single-use ticket", "full", ["admin"], "no", false, "none", true),
   spec("company.github.status", "GET", "/v1/dev/company/github", "The company's connected GitHub installations, who connected each and when (any member)", "full", ["admin"], "no", false, "none", true),
-  spec("company.github.disconnect", "DELETE", "/v1/dev/company/github/{installationId}", "A company owner with a fresh step-up disconnects one GitHub installation (refused while projects use it)", "full", ["admin"], "no", false, "none", true),
+  spec("company.github.disconnect", "DELETE", "/v1/dev/company/github/{installationId}", "A company owner disconnects one GitHub installation (refused while projects use it)", "full", ["admin"], "no", false, "none", true),
   // Guided onboarding (Code PRs #836 pr/go-slack-install, #840 pr/go-slack-channel, #838 pr/go-linear-oauth): not on code/next yet.
   spec("company.slack.install", "POST", "/v1/dev/company/slack/install", "A company owner or admin starts Add to Slack: a single-use state and Slack's OAuth v2 address for Cloud's callback", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.installComplete", "POST", "/v1/dev/company/slack/install/complete", "Slack's return: spend the state, exchange the code, bind the workspace to the company", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.get", "GET", "/v1/dev/company/slack", "The company's Slack workspace, who connected it and when (any member)", "full", ["admin"], "no", false, "none", true),
-  spec("company.slack.disconnect", "POST", "/v1/dev/company/slack/disconnect", "A company owner with a fresh step-up disconnects Slack", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.disconnect", "POST", "/v1/dev/company/slack/disconnect", "A company owner disconnects Slack", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.channels", "GET", "/v1/dev/company/slack/channels", "One page of the company workspace's channels a project may link", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.channel.get", "GET", "/v1/dev/company/slack/projects/{project}/channel", "A project's linked Slack channel", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.channel.link", "PUT", "/v1/dev/company/slack/projects/{project}/channel", "Link a project's Slack channel (or say the bot must be invited)", "full", ["admin"], "no", false, "none", true),
@@ -942,14 +994,14 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.linear.connect", "POST", "/v1/dev/company/linear/connect", "A company owner or admin starts Connect Linear: a single-use state and Linear's consent address (as the app, PKCE)", "full", ["admin"], "no", false, "none", true),
   spec("company.linear.complete", "POST", "/v1/dev/company/linear/complete", "Linear's return: spend the state, exchange the code, bind the Linear workspace", "full", ["admin"], "no", false, "none", true),
   spec("company.linear.get", "GET", "/v1/dev/company/linear", "The company's Linear connection (any member)", "full", ["admin"], "no", false, "none", true),
-  spec("company.linear.disconnect", "DELETE", "/v1/dev/company/linear", "A company owner with a fresh step-up disconnects Linear", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.disconnect", "DELETE", "/v1/dev/company/linear", "A company owner disconnects Linear", "full", ["admin"], "no", false, "none", true),
   spec("company.linear.team.get", "GET", "/v1/dev/company/linear/projects/{project}", "A project's Linear team and the teams the company's token sees", "full", ["admin"], "no", false, "none", true),
   spec("company.linear.team.put", "PUT", "/v1/dev/company/linear/projects/{project}", "Pick a project's Linear team", "full", ["admin"], "no", false, "none", true),
   spec("company.linear.team.clear", "DELETE", "/v1/dev/company/linear/projects/{project}", "Clear a project's Linear team", "full", ["admin"], "no", false, "none", true),
   spec("company.audit.records", "GET", "/v1/dev/client/company/audit/records", "Engine audit records, for a company administrator (lane AU)", "full", ["admin"], "no", false, "none"),
   // Settings: the person's script tokens
   spec("scriptTokens.list", "GET", "/v1/app/script-tokens", "The caller's tokens, or company tokens Code lets them manage", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
-  spec("scriptTokens.create", "POST", "/v1/app/script-tokens", "Make a script token with a fresh step-up; secret shown once", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
+  spec("scriptTokens.create", "POST", "/v1/app/script-tokens", "Make a script token; secret shown once", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
   spec("scriptTokens.revoke", "POST", "/v1/app/script-tokens/{tokenId}/revoke", "Revoke one", "full", ["settings"], "yes", true, "core-host/dev-routes.ts:455-476 (code/next 5b8f7f504)", true),
   // Lessons (PrepLabsAI/Rovara#713, LM8 part 1): served by code/next once merged and wired (its Step 6); until then every route answers 404 LESSONS_SWITCHED_OFF "Lessons are off."
   spec("lessons.list", "GET", `${DP}/lessons`, "One page of a project's lessons (query: list=proposed|approved|retired, since, limit 1..100, cursor)", "full", ["home", "how-we-work"], "no", false, "none", true),
@@ -963,6 +1015,15 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.notHelpful", "POST", `${DP}/tasks/{taskId}/lessons/{lessonId}/not-helpful`, "Mark a lesson the task was given as not helpful", "full", ["session"], "no", false, "none", true),
   spec("lessons.mode.get", "GET", `${DP}/lessons/mode`, "The project's learning mode, the mode in force and whether the company locks it", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.mode.put", "PUT", `${DP}/lessons/mode`, "Set the learning mode (a project admin, or a company owner or admin)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.weeklySummary.get", "GET", `${DP}/lessons/weekly-summary`, "Read the weekly lessons summary setting", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.weeklySummary.put", "PUT", `${DP}/lessons/weekly-summary`, "Set the weekly lessons summary setting", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.weekly", "GET", `${DP}/lessons/weekly`, "This week's lesson questions and picks (people who decide)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.keep", "POST", `${DP}/lessons/{lessonId}/keep`, "Keep a lesson asked to be reviewed", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.trialOffer", "POST", `${DP}/lessons/mode/trial-offer`, "Accept or decline the earned trial offer", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.replay", "GET", `${DP}/lessons/replay`, "Replay a sample of tasks against current lessons", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.tuning", "GET", `${DP}/lessons/tuning`, "Suggested lesson settings from usage evidence", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.repeats", "GET", `${DP}/lessons/repeats`, "Project repeated corrections", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.repeats.company", "GET", "/v1/dev/lessons/repeats", "Company repeated corrections", "full", ["admin"], "no", false, "none", true),
   spec("lessons.graduation", "GET", `${DP}/lessons/graduation`, "This week's one Make this permanent card, the tidy card and the draft tasks (people who decide)", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.graduate", "POST", `${DP}/lessons/{lessonId}/graduate`, "Make a proven lesson permanent: a team rule, a draft task to add a check, or a skill", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.graduateLater", "POST", `${DP}/lessons/{lessonId}/graduate-later`, "Not now: no card for this lesson for 60 days", "full", ["how-we-work"], "no", false, "none", true),
@@ -975,15 +1036,28 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.measure", "GET", `${DP}/lessons/measure`, "Counts only lesson fit, below-floor loads, clean merges and revert detection (maintainer or company owner/admin)", "full", ["how-we-work"], "no", false, "none", true),
   // Lead 4 L4-LP3W (Code pr/l4-lessons-by-area): the approved lessons by code area, and "Where Rovara learns from" with its Pause.
   spec("lessons.areas", "GET", `${DP}/lessons/areas`, "The approved lessons by code area (a tree), and the lessons at one node (query: repo, folder, whole=1)", "full", ["how-we-work"], "no", false, "none", true),
+  // L4-JA (Code #1034 and its skills read): Rovara skills. Full access; the approver directory (a maintainer of the project, or a company owner or admin) decides who may draft, edit, approve and retire; no step-up.
+  spec("skills.list", "GET", `${DP}/skills`, "The project's skills (newest version of each) and whether the person may decide; with ?name= one skill with its text and form", "full", ["how-we-work"], "no", false, "none", true),
+  spec("skills.edit", "PUT", `${DP}/skills/{skill}`, "Edit a skill: a new version with no approvals; the live version stays live", "full", ["how-we-work"], "no", false, "none", true),
+  spec("skills.approve", "POST", `${DP}/skills/{skill}/approve`, "One of the two different people a version needs before it is used", "full", ["how-we-work"], "no", false, "none", true),
+  spec("skills.retire", "POST", `${DP}/skills/{skill}/retire`, "Take a skill out of use at once", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.learningSources.get", "GET", `${DP}/lessons/learning-sources`, "Where Rovara learns from: a row per kind of source with seen, suggested and kept counts (30 days), one example and whether it is paused", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.learningSources.put", "PUT", `${DP}/lessons/learning-sources/{source}`, "Pause or resume one source (a project admin, or a company owner or admin; recorded first)", "full", ["how-we-work"], "no", false, "none", true),
   // Guided onboarding PR 15 (DEC 254l item 7, 254n item 1): the company's AI model (Code #835, not on code/next yet) and a project's per-task model budget (Code's M4a settings).
   // L4-EGR: Rovara's fixed outbound addresses (owner or admin), shown read-only in company settings. Code company-egress-routes.ts.
+  // L4-JA7 (Code pr/l4-ja-knowledge-switch-hosted): "Knowledge stays in Rovara" (company owner or admin) and a project's "local coding tools can fetch lessons" (the project's admin, or a company owner or admin; recorded first).
+  spec("company.knowledgeStays.get", "GET", "/v1/dev/company/lessons/local-tools", "Whether the company keeps team knowledge inside Rovara (owner or admin)", "full", ["admin"], "no", false, "none", true),
+  spec("company.knowledgeStays.put", "PUT", "/v1/dev/company/lessons/local-tools", "Turn Knowledge stays in Rovara on or off (owner or admin; recorded first)", "full", ["admin"], "no", false, "none", true),
+  spec("lessons.localTools.get", "GET", `${DP}/lessons/local-tools`, "Whether local coding tools get the project's lessons now, and the first reason they do not (a person on the project)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.localTools.put", "PUT", `${DP}/lessons/local-tools`, "Turn the project's local coding tools setting on or off (a project admin, or a company owner or admin; recorded first)", "full", ["how-we-work"], "no", false, "none", true),
   spec("company.egressAddresses.get", "GET", "/v1/dev/company/egress-addresses", "Rovara's outbound addresses (the same for every company on this Rovara), for a company owner or admin", "full", ["admin"], "no", false, "none", true),
   spec("company.engineModel.get", "GET", "/v1/dev/company/engine-model", "The company's engine model, the models the gateway offers it now, and the one to preselect (any member)", "full", ["later"], "no", false, "none", true),
   spec("company.engineModel.put", "PUT", "/v1/dev/company/engine-model", "Set or clear the company's engine model, only from its offered list (owner or admin)", "full", ["later"], "no", false, "none", true),
+  // Code #1075 (DEC 254zzz63): the model lessons learn with, a company choice beside the install default.
+  spec("company.learningModel.get", "GET", "/v1/dev/company/learning-model", "The model lessons learn with, whether it is the company's choice or the install default, and the Claude models the gateway offers it now (any member)", "full", ["later"], "no", false, "none", true),
+  spec("company.learningModel.put", "PUT", "/v1/dev/company/learning-model", "Set or clear the company's lessons learning model, only from its offered Claude models (owner or admin)", "full", ["later"], "no", false, "none", true),
   spec("projects.settings.get", "GET", `${DP}/settings`, "A project's cost and approval settings (preset, overrides, what applies)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
-  spec("projects.settings.put", "PUT", `${DP}/settings`, "Change them (revision-checked; a cost field needs a fresh step-up; the project's administrator)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
+  spec("projects.settings.put", "PUT", `${DP}/settings`, "Change them (revision-checked; the project's administrator)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
 ];
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1017,7 +1091,6 @@ PUT /v1/app/me/name | k | shell | me.setName | shell/NameForm | T
 GET /v1/app/me/sign-ins | k | later | | sign-ins | T
 POST /v1/app/me/sign-ins/link | k | later | | sign-ins | T
 DELETE /v1/app/me/sign-ins/{method} | k | later | | sign-ins | T
-GET /v1/app/me/sign-in-factors | k | later | | admin-company | T
 GET /v1/app/me/lessons-slack | k | later | | admin-company | T
 PUT /v1/app/me/lessons-slack | k | later | | admin-company | T
 GET /v1/app/me/github | k | later | | github-link | T
@@ -1069,6 +1142,7 @@ GET /v1/app/sessions/{id}/sections/{n}/task | k | later | tasks.get | screens/se
 POST /v1/app/sessions/{id}/ask | k | later | | session-ask | L
 GET /v1/app/sessions/{id}/asks/{askId} | k | later | | session-ask | L
 POST /v1/app/tasks/{t}/continue-as-task | k | session | tasks.continue | sessions |
+POST /v1/app/tasks/{t}/answers | k | home | tasks.answers | work | T
 POST /v1/app/tasks/{t}/continue/publish-branch | k | later | tasks.continue | continue-loop |
 POST /v1/app/tasks/{t}/continue/recheck | k | later | tasks.continue | continue-loop |
 GET /v1/app/tasks/{t}/documents/{document} | k | plan | tasks.plan | plan-panel |
@@ -1178,10 +1252,12 @@ GET /v1/app/projects/{p}/wiki/pages/{pageId}/corrections | k | later | | wiki | 
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/approve | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/delete | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/acknowledge | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/suggest-lesson | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags/resolve | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/disputed | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/gaps | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki-map | k | later | | wiki-setup | T
 POST /v1/app/projects/{p}/wiki-map | k | later | | wiki-setup | T
 GET /v1/app/projects/{p}/wiki-build | k | later | | wiki-setup | T
@@ -1210,6 +1286,7 @@ GET /v1/app/projects/{p}/setup-agent/eval | k | later | | setup-agent | T
 POST /v1/app/projects/{p}/setup-agent/eval-approve | k | later | | setup-agent | T
 POST /v1/app/projects/{p}/setup-agent/eval-decide | k | later | | setup-agent | T
 POST /v1/app/projects/{p}/setup-agent/eval-health | k | later | | setup-agent | T
+POST /v1/app/projects/{p}/setup-agent/eval-wrapper | k | later | | setup-agent | T
 GET /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 PUT /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 GET /v1/app/projects/{p}/setup-recipe | k | later | | setup-recipes |
@@ -1247,12 +1324,30 @@ POST /v1/app/projects/{p}/lessons/{lessonId}/retire | k | how-we-work | lessons.
 POST /v1/app/projects/{p}/lessons/{lessonId}/retire-request | k | how-we-work | lessons.retireRequest | learned | T
 GET /v1/app/projects/{p}/lessons/retire-requests | k | how-we-work | lessons.retireRequests | learned | T
 GET /v1/app/projects/{p}/lessons/areas | k | how-we-work | lessons.areas | learned | T
+GET /v1/app/projects/{p}/skills | k | how-we-work | skills.list | skills | T
+GET /v1/app/projects/{p}/skills/{skill} | k | how-we-work | skills.list | skills | T
+PUT /v1/app/projects/{p}/skills/{skill} | k | how-we-work | skills.edit | skills | T
+POST /v1/app/projects/{p}/skills/{skill}/approve | k | how-we-work | skills.approve | skills | T
+POST /v1/app/projects/{p}/skills/{skill}/retire | k | how-we-work | skills.retire | skills | T
 GET /v1/app/projects/{p}/lessons/learning-sources | k | how-we-work | lessons.learningSources.get | learned | T
 PUT /v1/app/projects/{p}/lessons/learning-sources/{source} | k | how-we-work | lessons.learningSources.put | learned | T
 POST /v1/app/projects/{p}/lessons/decisions | k | home | lessons.decisions | learned | T
 GET /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.get | learned | T
 GET /v1/app/projects/{p}/lessons/measure | k | how-we-work | lessons.measure | learned | T
+GET /v1/app/projects/{p}/lessons/local-tools | k | how-we-work | lessons.localTools.get | learned | T
+PUT /v1/app/projects/{p}/lessons/local-tools | k | how-we-work | lessons.localTools.put | learned | T
+GET /v1/app/company/lessons/local-tools | k | admin | company.knowledgeStays.get | learned | T
+PUT /v1/app/company/lessons/local-tools | k | admin | company.knowledgeStays.put | learned | T
 PUT /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.put | learned | T
+GET /v1/app/projects/{p}/lessons/weekly-summary | k | how-we-work | lessons.weeklySummary.get | learned | T
+PUT /v1/app/projects/{p}/lessons/weekly-summary | k | how-we-work | lessons.weeklySummary.put | learned | T
+GET /v1/app/projects/{p}/lessons/weekly | k | how-we-work | lessons.weekly | learned | T
+POST /v1/app/projects/{p}/lessons/{lessonId}/keep | k | how-we-work | lessons.keep | learned | T
+POST /v1/app/projects/{p}/lessons/mode/trial-offer | k | how-we-work | lessons.trialOffer | learned | T
+GET /v1/app/projects/{p}/lessons/replay | k | how-we-work | lessons.replay | learned | T
+GET /v1/app/projects/{p}/lessons/tuning | k | how-we-work | lessons.tuning | learned | T
+GET /v1/app/projects/{p}/lessons/repeats | k | how-we-work | lessons.repeats | learned | T
+GET /v1/app/lessons/repeats | k | admin | lessons.repeats.company | learned | T
 GET /v1/app/projects/{p}/lessons/graduation | k | how-we-work | lessons.graduation | learned | T
 POST /v1/app/projects/{p}/lessons/{lessonId}/graduate | k | how-we-work | lessons.graduate | learned | T
 POST /v1/app/projects/{p}/lessons/{lessonId}/graduate-later | k | how-we-work | lessons.graduateLater | learned | T
@@ -1270,7 +1365,6 @@ POST /v1/app/projects/{p}/lessons/sources/resume | k | later | | lessons |
 POST /v1/app/projects/{p}/lessons/preset | k | later | | lessons |
 POST /v1/app/projects/{p}/lessons/preset/approve | k | later | | lessons |
 POST /v1/app/projects/{p}/lessons/preset/cancel | k | later | | lessons |
-GET /v1/app/projects/{p}/lessons/local-tools | k | later | | lessons-local-tools | L
 POST /v1/app/projects/{p}/lessons/local-tools | k | later | | lessons-local-tools | L
 GET /v1/app/projects/{p}/learning | k | later | | learning |
 POST /v1/app/projects/{p}/learning/suggestions/{suggestionId}/accept | k | later | | learning |
@@ -1326,14 +1420,12 @@ GET /v1/app/org/members | k | admin | company.members.list | project-people |
 PUT /v1/app/org/members/{developerId}/role | k | admin | company.members.setRole | admin/RoleChangeDialog |
 GET /v1/app/org/members/{developerId}/removal-preview | k | admin | company.members.removalPreview | admin/RemoveMemberDialog |
 POST /v1/app/org/members/{developerId}/removal | k | admin | company.members.remove | admin/RemoveMemberDialog |
-POST /v1/app/org/members/lookup | k | session | company.members.list | session/ShareDialog |
 GET /v1/app/org/invites | c | admin | | admin/InvitesScreen |
 POST /v1/app/org/invites | c | admin | company.preapprovals.create | onboarding |
 POST /v1/app/org/invites/reviewed | c | admin | company.preapprovals.create | invite-admin |
 GET /v1/app/org/invites/requests/{requestId} | c | admin | | invite-admin |
 DELETE /v1/app/org/invites/{inviteId} | c | admin | company.preapprovals.withdraw | invite-admin |
 PATCH /v1/app/org | c | admin | | onboarding |
-POST /v1/app/org/leave | c | later | company.members.remove | shell/AccountMenu |
 GET /v1/app/companies | c | shell | | companies |
 POST /v1/app/companies | c | shell | company.create | onboarding/CreateCompany |
 GET /v1/app/org/audit/status | c | admin | | admin/audit/AuditScreen |
@@ -1355,6 +1447,8 @@ GET /v1/app/org/budget-settings | g | budgets | | spending |
 GET /v1/app/org/egress-addresses | k | admin | company.egressAddresses.get | admin/settings/OutboundAddresses | T
 GET /v1/app/org/engine-model | k | later | company.engineModel.get | setup/AiSpendStep | T
 PUT /v1/app/org/engine-model | k | later | company.engineModel.put | setup/AiSpendStep | T
+GET /v1/app/org/learning-model | k | later | company.learningModel.get | admin/ai-spending/LearningModelCard | T
+PUT /v1/app/org/learning-model | k | later | company.learningModel.put | admin/ai-spending/LearningModelCard | T
 GET /v1/app/projects/{p}/spend-limits | k | later | projects.settings.get | setup/ProjectSpendLimits | T
 PUT /v1/app/projects/{p}/spend-limits | k | later | projects.settings.put | setup/ProjectSpendLimits | T
 GET /v1/app/trial | c | budgets | | trial-billing |

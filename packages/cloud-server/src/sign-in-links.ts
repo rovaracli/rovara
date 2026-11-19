@@ -1,5 +1,5 @@
 // DEC 254w: "Connected sign-ins", Cloud's half. A signed-in person connects a second sign-in method (Slack or GitHub) to their own person record, and
-// removes a connected one. Rovara Code owns every rule (the person, the company, the step-up, the single-use link, what the provider proved); Cloud carries
+// removes a connected one. Rovara Code owns every rule (the person, the company, the single-use link, what the provider proved); Cloud carries
 // the browser through the provider and shows Code's answers in its own fixed words.
 //
 //   GET    /v1/app/me/sign-ins                   Code's list as the person: { signIns: [{ method, primary, linkedAt? }], linkable }
@@ -7,7 +7,7 @@
 //                                                browser's sign-in, and answers { authorizeUrl } (the provider's page; the browser never sees verifier or state)
 //   GET    <the registered sign-in callback>     the provider's return, through Code, carrying `state` and `link_id`+`link_code` or `link_error`: a LINK
 //                                                return, never a sign-in (handler.ts asks `isReturn` first). Goes on only for the browser that started it
-//   DELETE /v1/app/me/sign-ins/{method}          Code's unlink (fresh step-up); Code then ends every sign-in of the person
+//   DELETE /v1/app/me/sign-ins/{method}          Code's unlink; Code then ends every sign-in of the person
 //
 // Rules: the pending link is keyed by a hash of THIS sign-in's cookie, so only the browser that started a link can finish it (the account-takeover guard);
 // it is taken (deleted) before anything else is checked, so it works once whatever happens next; the state in the return must equal the stored one
@@ -37,7 +37,6 @@ export const SIGN_IN_LINK_WORDS = Object.freeze({
   forbidden: "Only the person or a company owner or admin can change this person's sign-ins.",
   lastMethod: "This is the first way this person signs in, so it can't be removed.",
   notConnected: "That sign-in is not connected.",
-  reauth: "Confirm it's you first: connecting or removing a sign-in needs a confirmation from the last few minutes.",
   notOnCode: "Connected sign-ins aren't connected to Rovara Code yet.",
   unavailable: "Connected sign-ins could not be reached just now. Try again in a moment.",
   invalid: "That sign-in can't be connected here.",
@@ -108,7 +107,6 @@ function refusalOf(error: CodeError, operation: Operation): ConnectAnswer {
   const { code, message } = codeRefusal(error.body);
   if (error.status === 401) return connectRefusal(401, "AUTH_REQUIRED", SIGN_IN_LINK_WORDS.signedOut);
   if (error.status === 403) {
-    if (code === "REAUTH_REQUIRED") return connectRefusal(403, "REAUTH_REQUIRED", SIGN_IN_LINK_WORDS.reauth);
     const known = [SIGN_IN_LINK_WORDS.refused, SIGN_IN_LINK_WORDS.forbidden, SIGN_IN_LINK_WORDS.lastMethod].find((words) => words === message);
     return connectRefusal(403, "FORBIDDEN", known ?? (operation === "start" ? SIGN_IN_LINK_WORDS.refused : SIGN_IN_LINK_WORDS.forbidden));
   }
@@ -170,7 +168,7 @@ export function createSignInLinks(deps: SignInLinksDeps) {
       return { status: 200, body: { authorizeUrl } };
     },
 
-    /** DELETE /v1/app/me/sign-ins/{method}: Code checks the step-up and the first-method rule, then ends every sign-in of the person. */
+    /** DELETE /v1/app/me/sign-ins/{method}: Code checks the first-method rule, then ends every sign-in of the person. */
     async unlink(session: CodeSession, sessionCookie: string, method: string): Promise<ConnectAnswer> {
       if (!isLinkMethod(method)) return connectRefusal(404, "SIGN_IN_NOT_CONNECTED", SIGN_IN_LINK_WORDS.notConnected);
       const asked = await ask(session, "unlink", `${CODE_SIGN_INS}/${method}`, { method: "DELETE" });

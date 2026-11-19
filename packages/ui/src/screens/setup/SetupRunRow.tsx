@@ -11,6 +11,7 @@ import { checklistAbsent, fixedSetupWords, setupChecklistKey } from "../../api/s
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { RunJournal } from "./RunJournal.js";
+import { REVIEW_TEXT, SetupReview, type SetupReviewState } from "./SetupReview.js";
 
 type RunRow = ProjectSetupChecklist["setupRun"];
 const minutes = (ms: number) => { const m = Math.max(1, Math.round(ms / 60_000)); return `${String(m)} ${m === 1 ? "minute" : "minutes"}`; };
@@ -43,16 +44,42 @@ export function SetupRunControls({ project, status: given, onChanged, againLabel
  </div>;
 }
 
-export function SetupRunRow({ project, row, onChanged }: { project: string; row: RunRow; onChanged: () => void }) {
+const approvedOn = (at: string | undefined): string => { const date = at === undefined ? undefined : new Date(at); return date === undefined || Number.isNaN(date.getTime()) ? "" : ` on ${date.toLocaleDateString("en-US", { day: "numeric", month: "short", timeZone: "UTC" })}`; };
+
+/** L4-T2c: the fixed words for a newer proposal that sits beside the approved setup (Code's `newerProposal`; never a word of Code's own). */
+export const NEWER_PROPOSAL_WORDS: Readonly<Record<NonNullable<RunRow["newerProposal"]>, string>> = Object.freeze({
+ needs_you: "A newer setup proposal is waiting for review",
+ checking: "A newer setup proposal is being checked on a fresh machine",
+ rejected: "A newer setup proposal was rejected; the approved setup is still in use",
+});
+
+/** The approved setup's line: its check is ready (Done), going, failed (with Code's reason) or not run on a fresh machine yet. */
+function ApprovedLine({ row }: { row: RunRow }) {
+ const status = row.check?.status;
+ if (status === "ready") return row.state !== "done" ? null : <p role="status" data-testid="setup-run-approved">Setup approved{approvedOn(row.approvedAt)}. Checked on a fresh machine.</p>;
+ if (status === "checking") return <p role="status" data-testid="setup-run-approved-checking"><strong>{REVIEW_TEXT.checking}</strong></p>;
+ if (status === "failed") return <p role="alert" data-testid="setup-run-approved-failed"><strong>Needs you: the approved setup failed its check.</strong>{row.check?.failedStep === undefined ? null : <> <VisibleText text={row.check.failedStep} /></>}</p>;
+ return <p role="status" data-testid="setup-run-approved-unchecked"><strong>Needs you: the approved setup has not been checked on a fresh machine.</strong></p>;
+}
+
+export function SetupRunRow({ project, row, onChanged, review }: { project: string; row: RunRow; onChanged: () => void; /** L4-T1: where a setup of Rovara's waits for a person; its cards are mounted here, so no page change is needed to approve. */ review?: SetupReviewState }) {
  const facts = [
   row.commandsFound === undefined ? undefined : `Commands found: ${String(row.commandsFound.setup)} to set up, ${String(row.commandsFound.tests)} to test.`,
   row.testOutcome === "passed" ? "Tests passed." : row.testOutcome === "failed" ? "Tests failed." : undefined,
   row.elapsedMs === undefined ? undefined : `Took ${minutes(row.elapsedMs)}${row.costCents === undefined ? "" : `, cost ${dollars(row.costCents)}`}.`,
  ].filter((one): one is string => one !== undefined);
+ // L4-T2c: a newer proposal beside the approved setup says so in fixed words instead of the review line; its cards (below) are the same ones a first proposal gets.
+ // The review read is fresher than the checklist while a check goes: a check that finished (a card to decide) or a new one that started moves the word; a rejection is only ever Code's.
+ const given = row.approval === "approved" ? row.newerProposal : undefined;
+ const newer = given === "checking" && (review?.stage === "approve" || review?.stage === "review") ? "needs_you" : given === "needs_you" && review?.stage === "checking" ? "checking" : given;
  return <div data-testid="setup-run-row" data-status={row.status}>
-  {row.status === "none" && <p>Rovara works out how to install and test this project in a throw-away sandbox with no secrets. It uses this project's AI budget.</p>}
+  {row.status === "none" && newer === undefined && <p>Rovara works out how to install and test this project in a throw-away sandbox with no secrets. It uses this project's AI budget.</p>}
   {row.status === "running" && <p role="status">Rovara is working out how to install and test the project. You can leave and come back.</p>}
-  {row.status === "ready" && <p role="status">Rovara found how to set the project up.</p>}
+  {row.status === "ready" && newer === undefined && (review === undefined || review.stage === "none" ? <p role="status">Rovara found how to set the project up.</p> : <p role="status" data-testid="setup-run-needs-you"><strong>{REVIEW_TEXT[review.stage]}</strong></p>)}
+  {newer !== undefined && <p role="status" data-testid="setup-run-newer-proposal" data-newer={newer}>{newer === "needs_you" ? <strong>{NEWER_PROPOSAL_WORDS[newer]}</strong> : NEWER_PROPOSAL_WORDS[newer]}</p>}
+  {review !== undefined && <SetupReview project={project} review={review} />}
+  {/* L4-T2: what the row says once a person approved a setup: done only with a passing check; otherwise what is wrong with the check. Never while the review cards say what waits. */}
+  {row.approval === "approved" && (newer !== undefined || review === undefined || review.stage === "none") && <ApprovedLine row={row} />}
   {row.status === "failed" && row.failure !== undefined && <p role="alert" data-testid="setup-run-failure"><VisibleText text={row.failure} /></p>}
   {facts.length > 0 && <p className="rv-muted" data-testid="setup-run-facts">{facts.join(" ")}</p>}
   {row.failedCommand !== undefined && <div className="rv-checklist-failed" data-testid="setup-run-failed-command">
@@ -61,7 +88,7 @@ export function SetupRunRow({ project, row, onChanged }: { project: string; row:
   </div>}
   {row.status === "ready" && <p className="rv-muted">Running it again only proposes: the working setup stays until someone confirms a new one.</p>}
   <div className="rv-connect-actions">
-   <SetupRunControls project={project} status={row.status} onChanged={onChanged} />
+   <SetupRunControls project={project} status={row.status} onChanged={() => { review?.reset(); onChanged(); }} />
    {row.status === "failed" && <Link className="rv-button" data-testid="setup-run-edit" to={`/app/onboard?project=${encodeURIComponent(project)}&step=setup`}>Edit commands</Link>}
   </div>
   {row.status !== "none" && <details><summary>What Rovara ran</summary><RunJournal project={project} running={row.status === "running"} /></details>}

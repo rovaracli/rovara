@@ -3,12 +3,10 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useIntegrationsApi } from "../../api/integrations.js";
-import { needsStepUp } from "../../api/admin-company.js";
 import { useAppHost } from "../../host.js";
 import { isSlackAuthorizeUrl } from "../../text/links.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
-import { FreshSignIn } from "../admin/parts.js";
 import "./connect.css";
 
 /** Cloud's fixed sentence for each landing word (slack-connect.ts SLACK_OUTCOMES). */
@@ -69,14 +67,14 @@ export function AddToSlackStep({ skipped = false, onSkip, onUndoSkip }: { skippe
 /** What Slack's return came back with (`slack=<word>` on the landing address). Refusals are fixed sentences with "Try again". */
 export function SlackConnectResult({ outcome }: { outcome: string }) {
  const api = useIntegrationsApi(), query = useQueryClient();
- const [kept, setKept] = useState(false), [disconnect, setDisconnect] = useState<{ busy: boolean; done?: string; error?: string; stepUp?: boolean }>({ busy: false });
+ const [kept, setKept] = useState(false), [disconnect, setDisconnect] = useState<{ busy: boolean; done?: string; error?: string }>({ busy: false });
  // Own words only: a crafted `?…=toString` must not find Object.prototype's members.
  const refusal = Object.hasOwn(SLACK_REFUSALS, outcome) ? SLACK_REFUSALS[outcome] : undefined;
  const result = useQuery({ queryKey: ["slack", "connect-result"], enabled: outcome === "result", queryFn: async () => { const value = await api.slackResult();if (value.status === "connected") void query.invalidateQueries({ queryKey: ["slack", "workspace"] });return value; }, retry: false, staleTime: Infinity, gcTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false });
  async function doDisconnect() {
   setDisconnect({ busy: true });
   try { const value = await api.slackDisconnect();setDisconnect({ busy: false, done: `Rovara was removed from ${workspaceWords(value.workspaceName)}.` });void query.invalidateQueries({ queryKey: ["slack"] , predicate: item => item.queryKey[1] !== "connect-result" }); }
-  catch (e) { setDisconnect(needsStepUp(e) ? { busy: false, stepUp: true } : { busy: false, error: e instanceof Error ? e.message : SLACK_REFUSALS.unavailable! }); }
+  catch (e) { setDisconnect({ busy: false, error: e instanceof Error ? e.message : SLACK_REFUSALS.unavailable! }); }
  }
  if (refusal !== undefined) return <section className="rv-connect-result" aria-label="Slack connection" data-testid="slack-refused"><p role={outcome === "cancelled" ? "status" : "alert"} data-testid="slack-refused-message"><VisibleText text={refusal} /></p>{outcome !== "not_set_up" && outcome !== "not_available" && <AddButton label="Try again" />}</section>;
  if (outcome !== "result" || result.isPending || result.isError || result.data.status === "none") return null;
@@ -86,7 +84,6 @@ export function SlackConnectResult({ outcome }: { outcome: string }) {
   return <section className="rv-connect-result" aria-label="Slack connection" data-testid="slack-mismatch">
    <p>You signed in from <strong><VisibleText text={workspaceWords(value.mismatch.signedInName)} /></strong> but added Rovara to <strong><VisibleText text={workspaceWords(value.workspaceName)} /></strong>. Keep it?</p>
    <div className="rv-connect-actions"><Button variant="primary" data-testid="slack-keep" onClick={() => setKept(true)}>Keep</Button><Button busy={disconnect.busy} data-testid="slack-mismatch-disconnect" onClick={() => { void doDisconnect(); }}>Disconnect</Button></div>
-   {disconnect.stepUp === true && <FreshSignIn action="disconnect Slack" refused />}
    {disconnect.error !== undefined && <p role="alert" data-testid="slack-disconnect-error"><VisibleText text={disconnect.error} /></p>}
   </section>;
  }

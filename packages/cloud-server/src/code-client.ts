@@ -3,7 +3,6 @@
 // answers 401 refreshes the token once and tries again.
 import { createHash, randomBytes } from "node:crypto";
 import type { SecretReader } from "./client-secret.js";
-import { STEP_UP_ACR } from "./step-up.js";
 import type { CodeSession, RefreshGuard } from "./sessions.js";
 import type { GithubPending } from "./github-connect.js";
 import type { ConnectPending } from "./connect-flow.js";
@@ -154,17 +153,15 @@ export class CodeClient {
   }
 
   /**
-   * Step 1 of sign-in: the URL to send the browser to, and what to keep until it comes back. `stepUp` asks Code for a fresh step-up with
-   * a factor Code owns (`acr_values=step-up`), which a sensitive change in Cloud needs.
+   * Step 1 of sign-in: the URL to send the browser to, and what to keep until it comes back.
    */
-  startSignIn(returnTo: string, now: number, options: { stepUp?: boolean; company?: string; invite?: string; inviteSecret?: string; slackTeam?: string; method?: string } = {}): { url: string; state: string; pending: PendingSignIn } {
+  startSignIn(returnTo: string, now: number, options: { company?: string; invite?: string; inviteSecret?: string; slackTeam?: string; method?: string } = {}): { url: string; state: string; pending: PendingSignIn } {
     const verifier = randomBytes(32).toString("base64url");
     const state = randomBytes(24).toString("base64url");
     const url = new URL(`${this.base}/v1/auth/authorize`);
     url.search = new URLSearchParams({
       response_type: "code", client_id: this.options.clientId, redirect_uri: this.options.redirectUri, state, scope: this.options.scopes,
       code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256",
-      ...(options.stepUp === true ? { acr_values: STEP_UP_ACR } : {}),
       // A join: the company the invite names, chosen by Cloud's server (never the browser). Code still checks the email's pre-approval.
       ...(options.company === undefined ? {} : { company: options.company }),
       // DEC 254h: Code's single-use invite secret, from Cloud's server (the join ticket), with the invite's company. Code checks it is live,

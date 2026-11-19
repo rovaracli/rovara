@@ -16,8 +16,8 @@ import "./how-we-work.css";
 import { RECIPES_TEXT } from "./recipes-text.js";
 export { RECIPES_TEXT };
 
-const problem = (error: unknown): { message: string; reauth: boolean; stale: boolean } => error instanceof ApiError
- ? { message: error.message, reauth: error.code === "REAUTH_REQUIRED", stale: error.code === "CHANGE_STALE" } : { message: RECIPES_TEXT.FAILED, reauth: false, stale: false };
+const problem = (error: unknown): { message: string; stale: boolean } => error instanceof ApiError
+ ? { message: error.message, stale: error.code === "CHANGE_STALE" } : { message: RECIPES_TEXT.FAILED, stale: false };
 const scopeText = (recipe: SetupRecipe): string => recipe.scope.kind === "company" ? RECIPES_TEXT.EVERY_PROJECT : RECIPES_TEXT.ONLY_THESE + recipe.scope.projects.join(", ");
 
 /** The reads the screen and the How we work link share (a refusal as "not found" means the switch is off). */
@@ -70,7 +70,7 @@ function ScopeEditor({ recipe, projects, busy, onSave, onCancel }: { recipe: Set
 }
 
 function Recipes() {
- const { api, read } = useSetupRecipes(), host = useAppHost(), query = useQueryClient(), sending = useRef(false);
+ const { api, read } = useSetupRecipes(), query = useQueryClient(), sending = useRef(false);
  const [busy, setBusy] = useState<string>(), [error, setError] = useState<ReturnType<typeof problem>>(), [note, setNote] = useState<string>(), [editing, setEditing] = useState<string>();
  useEffect(() => () => { void query.cancelQueries({ queryKey: ["admin", "setup-recipes"] }); }, [query]);
  async function run(label: string, work: () => Promise<void>, done?: string): Promise<boolean> {
@@ -85,7 +85,7 @@ function Recipes() {
  return <section aria-busy={read.isFetching}>
   <PageHeader focusOnMount title={RECIPES_TEXT.TITLE} description={RECIPES_TEXT.NOTE} />
   <p><Link to="/app/admin/how-we-work">{RECIPES_TEXT.BACK}</Link></p>
-  {error !== undefined && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>{RECIPES_TEXT.SIGN_IN_AGAIN}</Button></>}</p>}
+  {error !== undefined && <p role="alert"><VisibleText text={error.message} /></p>}
   <p role="status">{note ?? ""}</p>
   {read.isPending ? <Skeleton label="Loading setup recipes" /> : notOn ? <p role="status">{RECIPES_TEXT.NOT_ON}</p> : state === undefined ? <div><p role="alert">{RECIPES_TEXT.LOAD_FAILED}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div> : <>
    {state.unreadable.length > 0 && <section aria-label={RECIPES_TEXT.UNREADABLE} className="rv-hww-company-card"><h2>{RECIPES_TEXT.UNREADABLE}</h2><p>{RECIPES_TEXT.UNREADABLE_HELP}</p>

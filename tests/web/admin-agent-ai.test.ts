@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // DEC 240: the "AI for your agents" page (company admins). Three choices in plain words, no prices: Rovara's AI (charged per use), the
-// company's own Anthropic key, and its own Bedrock shown as coming soon. A change waits for the fresh sign-in step and sends the source
+// company's own Anthropic key, and its own Bedrock shown as coming soon. A change (no step-up since owner DEC 254zzz73) sends the source
 // with the version read; "not connected yet" when Cloud has no company data.
 import { beforeEach, describe, expect, it } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
@@ -34,7 +34,6 @@ function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<A
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  return { ...f, ...view, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
-function confirmedPath(path: string, nonce = "n-1"): string { seeded.set("rovara.stepup.nonce", JSON.stringify({ nonce, at: Date.now() })); return `${path}?confirmed=${nonce}`; }
 const view = (source: string | null, version: number, keyConnected: boolean | null = true) => ({ source, version, canChange: true, anthropicKeyConnected: keyConnected, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }] });
 
 describe("AI for your agents page", () => {
@@ -58,9 +57,9 @@ describe("AI for your agents page", () => {
    expect(screen.getByTestId("agent-ai-no-key")).toBeTruthy();
    expect(screen.getByTestId("agent-ai-unset")).toBeTruthy();
    expect(document.body.textContent).not.toMatch(/\$\s?\d/u);
-   // Before the fresh sign-in: no save.
-   expect(screen.getByTestId("fresh-sign-in")).toBeTruthy();
-   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+   // No step-up: the Save is there at once, and no sign-in step is shown.
+   expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+   expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
   } finally { f.close(); }
  });
  it("reads the default only for a company with nothing saved, and only a real source", () => {
@@ -72,7 +71,7 @@ describe("AI for your agents page", () => {
  });
  it("an exempt company on the default sees Rovara's AI as its source with a Use your own key action, and saving Rovara's AI is explicit", async () => {
   const sent: ApiRequest[] = [];
-  const f = mount(confirmedPath("/app/admin/agent-ai"), (r) => { if (r.method === "PUT") sent.push(r); return { status: 200, body: { ...view(null, 0, false), effectiveSource: "rovara", sourceIsDefault: true } }; });
+  const f = mount("/app/admin/agent-ai", (r) => { if (r.method === "PUT") sent.push(r); return { status: 200, body: { ...view(null, 0, false), effectiveSource: "rovara", sourceIsDefault: true } }; });
   try {
    expect((await screen.findByTestId("agent-ai-default")).textContent).toMatch(/Rovara's AI by default/u);
    expect(screen.queryByTestId("agent-ai-unset")).toBeNull();
@@ -88,7 +87,7 @@ describe("AI for your agents page", () => {
   } finally { f.close(); }
  });
  it("with a key connected, Use your own key picks the own-key choice", async () => {
-  const f = mount(confirmedPath("/app/admin/agent-ai"), () => ({ status: 200, body: { ...view(null, 0, true), effectiveSource: "rovara", sourceIsDefault: true } }));
+  const f = mount("/app/admin/agent-ai", () => ({ status: 200, body: { ...view(null, 0, true), effectiveSource: "rovara", sourceIsDefault: true } }));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Use your own key" }));
    await waitFor(() => expect(((screen.getByTestId("agent-ai-anthropic_key")).querySelector("input") as HTMLInputElement).checked).toBe(true));
@@ -104,7 +103,7 @@ describe("AI for your agents page", () => {
  it("saves the picked source with the version read", async () => {
   const sent: ApiRequest[] = [];
   let saved: string | null = "anthropic_key"; let version = 4;
-  const f = mount(confirmedPath("/app/admin/agent-ai"), (r) => { if (r.method === "PUT") { sent.push(r); saved = (r.body as { source: string }).source; version += 1; } return { status: 200, body: view(saved, version) }; });
+  const f = mount("/app/admin/agent-ai", (r) => { if (r.method === "PUT") { sent.push(r); saved = (r.body as { source: string }).source; version += 1; } return { status: 200, body: view(saved, version) }; });
   try {
    const rovara = (await screen.findByTestId("agent-ai-rovara")).querySelector("input") as HTMLInputElement;
    fireEvent.click(rovara);
@@ -137,7 +136,7 @@ describe("AI for your agents page", () => {
   for (const bad of ["", "noequals", "=openai/x", "name=nocatalog", "name=openai/", Array.from({ length: 21 }, (_, i) => `m${String(i)}=openai/x`).join("\n")]) expect(parseEndpointModels(bad)).toBeUndefined();
   const sent: ApiRequest[] = [];
   const listed = { ...view(null, 0), choices: [...view(null, 0).choices, { source: "custom_endpoint", available: false }], endpointConnected: false, keysRevision: 7 };
-  const f = mount(confirmedPath("/app/admin/agent-ai"), (r) => { if (r.method === "PUT") sent.push(r); return { status: 200, body: listed }; });
+  const f = mount("/app/admin/agent-ai", (r) => { if (r.method === "PUT") sent.push(r); return { status: 200, body: listed }; });
   try {
    expect((await screen.findByTestId("agent-ai-custom_endpoint")).textContent).toMatch(/Your own endpoint/u);
    expect(screen.getByTestId("agent-ai-no-endpoint")).toBeTruthy();

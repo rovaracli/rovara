@@ -9,6 +9,8 @@ import { Link } from "react-router";
 import { Button } from "../../design/Button.js";
 import { EmptyState } from "../../design/EmptyState.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { useWorkTasks } from "../../api/work.js";
+import { tasksAsking } from "./HomeQuestions.js";
 
 /** The decisions could not be read: said plainly, with a way to try again. The older Home cards below still show. */
 function DecisionsError({ error, retry }: { error: unknown; retry: () => void }) {
@@ -54,9 +56,12 @@ export function TaskDecisions({ taskId, design }: { taskId: string; /** The Desi
  return <section aria-label="Decision for this task"><DecisionList decisions={mine} label="Decisions for this task" extras={design === undefined ? undefined : () => ({ design })} /></section>;
 }
 
-/** Home's "nothing needs you" empty state, shown only once the decision cards have been read and none is pending: Home's own cards are empty, but a decision card is something that needs the person. */
+/**
+ * Home's "nothing needs you" empty state, shown only once the decision cards have been read and none is pending: Home's own cards are empty, but a decision card is something that needs the person.
+ * Understand's questions waiting on the person (Home's "Rovara has questions") need them too; a task list that cannot be read says nothing either way.
+ */
 export function NothingNeedsYou() {
- const decisions = useDecisions();
- if (decisions.isPending || (decisions.data ?? []).some(decision => decision.card.status === "pending")) return null;
+ const decisions = useDecisions(), tasks = useWorkTasks();
+ if (decisions.isPending || tasks.isPending || (decisions.data ?? []).some(decision => decision.card.status === "pending") || tasksAsking(tasks.data).length > 0) return null;
  return <EmptyState testId="home-empty" title="Nothing needs you right now" description="Your team's work can keep moving." action={<Link to="/app/live">See work in progress</Link>} />;
 }

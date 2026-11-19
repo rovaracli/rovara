@@ -19,7 +19,7 @@ async function violations(page: Page, contrast = false): Promise<string[]> {
   }, contrast);
 }
 /** Cloud's spending-limits routes are the company backend's, which the pretend Code does not stand behind: the cap is answered here, as the routes answer it. */
-async function pretendSpendLimits(page: Page, state: { usd: number | null; version: number; puts: unknown[]; stepUp?: boolean }) {
+async function pretendSpendLimits(page: Page, state: { usd: number | null; version: number; puts: unknown[]; refuse?: boolean }) {
   await page.route("**/v1/web/org/spend-limits**", async (route) => {
     const request = route.request();
     if (request.method() === "GET") {
@@ -27,7 +27,7 @@ async function pretendSpendLimits(page: Page, state: { usd: number | null; versi
       return;
     }
     state.puts.push(request.postDataJSON());
-    if (state.stepUp === true) { await route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "STEP_UP_REQUIRED", message: "Confirm it's you again, then try once more." } }) }); return; }
+    if (state.refuse === true) { await route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Your company's rules don't allow raising a limit." } }) }); return; }
     state.usd = (request.postDataJSON() as { monthlyUsd: number }).monthlyUsd; state.version += 1;
     await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
   });
@@ -104,8 +104,8 @@ test("a built wiki: the agents switch starts off, refresh now, and delete asks f
   await expect(panel.byId("wiki-setup-controls")).toHaveCount(0);
 });
 
-test("nightly upkeep: the owner makes the one choice and confirms; then the switch, the cap saves lower at once and asks for a fresh sign-in to raise; each part names its limit", async ({ page }, testInfo) => {
-  const cap: { usd: number | null; version: number; puts: unknown[]; stepUp?: boolean } = { usd: null, version: 0, puts: [] };
+test("nightly upkeep: the owner makes the one choice and confirms; then the switch, the cap saves at once (no step-up), a refused raise shows its words and no sign-in step; each part names its limit", async ({ page }, testInfo) => {
+  const cap: { usd: number | null; version: number; puts: unknown[]; refuse?: boolean } = { usd: null, version: 0, puts: [] };
   await pretendSpendLimits(page, cap);
   const panel = new WikiSetupPanel(page);
   await panel.open(PROJECT);
@@ -140,10 +140,11 @@ test("nightly upkeep: the owner makes the one choice and confirms; then the swit
   expect(cap.puts).toEqual([{ expectedVersion: 0, monthlyUsd: 12.5 }]);
   await expect(panel.byId("wiki-setup-cap")).toContainText("This project has its own cap.");
   await page.screenshot({ path: testInfo.outputPath("wiki-setup-upkeep.png"), fullPage: true });
-  cap.stepUp = true;
+  cap.refuse = true;
   await panel.byId("wiki-setup-cap").getByLabel("Monthly cap on nightly upkeep").fill("40");
   await panel.byId("wiki-setup-cap-save").click();
-  await expect(page.getByTestId("fresh-sign-in")).toBeVisible();
+  await expect(panel.byId("wiki-setup-cap-error")).toBeVisible();
+  await expect(page.getByTestId("fresh-sign-in")).toHaveCount(0);
   expect(cap.puts).toEqual([{ expectedVersion: 0, monthlyUsd: 12.5 }, { expectedVersion: 1, monthlyUsd: 40 }]);
   expect(await violations(page)).toEqual([]);
 });
@@ -255,31 +256,19 @@ test("phone width and dark mode keep the panel readable", async ({ page }, testI
   expect(await violations(page, true)).toEqual([]);
 });
 
-// ---- L4-P3 (owner 2026-11-17): the fresh sign-in to allow, and the company's one control to withdraw -----------------------------------------------------------------------------------------
-test("allowing nightly upkeep asks for a fresh sign-in first (the pretend Code says so), then the same choice works; nothing was changed in between", async ({ page }, testInfo) => {
+// ---- L4-P3 (owner 2026-11-17): allowing needs no step-up (owner DEC 254zzz73), and the company's one control to withdraw ------------------------------------------------------------------------
+test("allowing nightly upkeep works with the one press, with no sign-in step", async ({ page }) => {
   await pretendSpendLimits(page, { usd: null, version: 0, puts: [] });
-  await setWikiSetup(page, PROJECT, { stepUp: "stale" });
+  await setWikiSetup(page, PROJECT, {});
   const panel = new WikiSetupPanel(page);
   await panel.open(PROJECT);
   await panel.byId("wiki-setup-upkeep-offer").click();
   const puts: unknown[] = [];
   page.on("request", (request) => { if (request.method() === "PUT" && request.url().endsWith("/upkeep")) puts.push(request.postDataJSON()); });
   await panel.byId("wiki-setup-upkeep-yes").click();
-  const fresh = panel.row.getByTestId("fresh-sign-in");
-  await expect(fresh).toBeVisible();
-  await expect(fresh).toHaveAttribute("data-state", "needed");
-  await expect(fresh).toContainText("allow nightly upkeep for the company");
-  await expect(panel.byId("wiki-setup-upkeep-error")).toHaveCount(0);
-  await expect(panel.upkeep).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath("wiki-setup-upkeep-step-up.png"), fullPage: true });
-  expect(await violations(page, true)).toEqual([]);
-  // The person confirms it is them (the pretend Code's sign-in is not driven here); Code then accepts the same request.
-  await setWikiSetup(page, PROJECT, {});
-  await panel.byId("wiki-setup-upkeep-yes").click();
   await expect(panel.upkeep).toBeChecked();
   await expect(panel.row.getByTestId("fresh-sign-in")).toHaveCount(0);
-  expect(puts).toHaveLength(2);
-  expect((puts[1] as { requestId: string }).requestId).toBe((puts[0] as { requestId: string }).requestId);
+  expect(puts).toHaveLength(1);
 });
 
 test("Company settings: 'Nightly upkeep for the company: Allowed · Withdraw' with one confirm; withdrawing stops it for the company and the project keeps its switch; light, dark and phone", async ({ page }, testInfo) => {

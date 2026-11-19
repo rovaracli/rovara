@@ -8,7 +8,7 @@ import { TextArea } from "../../design/TextArea.js";
 import { TextField } from "../../design/TextField.js";
 import { VisibleText } from "../../design/VisibleText.js";
 
-const problem = (error: unknown, fallback: string): { message: string; reauth: boolean } => (error instanceof ApiError ? { message: error.message, reauth: error.code === "REAUTH_REQUIRED" } : { message: fallback, reauth: false });
+const problem = (error: unknown, fallback: string): { message: string } => (error instanceof ApiError ? { message: error.message } : { message: fallback });
 
 /** Tells the running agent how to set things up (the Live wall's steer message: it steers the method and never the limits, the websites, the files or the sandbox). Only when the run has a session. */
 export function SteerBox({ sessionId }: { sessionId: string }) {
@@ -29,7 +29,7 @@ export function SteerBox({ sessionId }: { sessionId: string }) {
 /** Runs one command of the person's own in the run's sandbox. A command needs a signed-in browser whose sign-in is fresh; the server decides, this page only asks. */
 export function CommandBox({ project, onRan }: { project: string; onRan: () => void }) {
   const api = useSetupAgentApi();
-  const [command, setCommand] = useState(""), [busy, setBusy] = useState(false), [queued, setQueued] = useState(false), [error, setError] = useState<{ message: string; reauth: boolean }>(), [requestId, setRequestId] = useState(() => crypto.randomUUID());
+  const [command, setCommand] = useState(""), [busy, setBusy] = useState(false), [queued, setQueued] = useState(false), [error, setError] = useState<{ message: string }>(), [requestId, setRequestId] = useState(() => crypto.randomUUID());
   async function run() {
     setBusy(true); setError(undefined); setQueued(false);
     try { await api.command(project, requestId, command.trim()); setCommand(""); setRequestId(crypto.randomUUID()); setQueued(true); onRan(); } catch (caught) { setError(problem(caught, "Couldn't run that. Try again.")); } finally { setBusy(false); }
@@ -38,6 +38,6 @@ export function CommandBox({ project, onRan }: { project: string; onRan: () => v
     <TextField label="Run a command in the sandbox" hint="One line, no secrets. It runs in the same throw-away sandbox as Rovara's, and Rovara is told what it printed." value={command} onChange={event => { setCommand(event.target.value); setRequestId(crypto.randomUUID()); }} maxLength={1000} />
     <Button busy={busy} disabled={command.trim() === ""} onClick={() => { void run(); }}>Run</Button>
     {queued && <p role="status">Queued. It appears in the list below when it has run.</p>}
-    {error !== undefined && <p role="alert"><VisibleText text={error.message} />{error.reauth && " Sign in again, then press Run."}</p>}
+    {error !== undefined && <p role="alert"><VisibleText text={error.message} /></p>}
   </section>;
 }

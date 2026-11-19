@@ -193,7 +193,8 @@ describe("deployed product route (started process)", () => {
       // The row Cloud's company backend writes: min(company, project).
       await t.db.put(TABLES.companies, { pk: `COMPANY#${claims.cid}`, sk: "SETTINGS", companyId: claims.cid, version: 1, settings: { featureGates: {}, budgets: { companyMonthlyUsdMicros: 30_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: 12_000_000, taskUsdMicros: null } } });
       const yes = await capCall(t.gateway.server);
-      expect([yes.statusCode, JSON.parse(yes.text())]).toEqual([200, { company: claims.cid, project: pid, monthlyCapMicros: 12_000_000 }]);
+      // L4-T3 (additive): with the product route (eval stages bound) the answer also says whether the project's own key is connected (a key is connected in this world); without it, the three members it always had.
+      expect([yes.statusCode, JSON.parse(yes.text())]).toEqual([200, { company: claims.cid, project: pid, monthlyCapMicros: 12_000_000, ...(product ? { connected: true } : {}) }]);
       expect((await capCall(t.gateway.server, `org_${"b".repeat(20)}`)).statusCode).toBe(404);
       // A task token (x-api-key) never opens it.
       expect((await request(t.gateway.server, EVAL_CAP_PATH, { company: claims.cid, project: pid })).statusCode).toBe(401);

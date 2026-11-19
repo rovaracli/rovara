@@ -334,3 +334,28 @@ describe("the HTTP handler", () => {
     expect(reads).toBe(EVAL_AUTHORITY_PER_MINUTE);
   });
 });
+
+// L4-T3: ProductEvalStages.connected, the check the cap answer's additive `connected` rests on: the very re-read the authority and the hold make, for this company and project only.
+describe("L4-T3: ProductEvalStages.connected", () => {
+  const live = () => new AbortController().signal;
+  it("is true for a company with its own key connected, false after the key is removed, and never another company's answer", async () => {
+    const w = await world({ connectB: false });
+    expect(await w.stages.connected({ iss: ISS, cid: A, pid }, live())).toBe(true);
+    expect(await w.stages.connected({ iss: ISS, cid: B, pid }, live())).toBe(false);
+    const revision = (await w.kit.store.view(ISS, A, pid)).revision;
+    await w.kit.store.remove({ iss: ISS, cid: A, owner: pid, requestId: randomUUID(), expectedRevision: revision, actor: maintainer, sourceId: "src_gem" });
+    expect(await w.stages.connected({ iss: ISS, cid: A, pid }, live())).toBe(false);
+  });
+  it("agrees with the authority: an approved project whose key is not connected is 'not connected' here and the authority's fixed 404", async () => {
+    const w = await world({ connectA: false });
+    await w.approve();
+    expect(await w.stages.connected({ iss: ISS, cid: A, pid }, live())).toBe(false);
+    expect(await call(w.opts, ask())).toEqual(NOT_FOUND);
+  });
+  it("is unknown (undefined) when the stages are not bound to a product route, and an aborted read throws", async () => {
+    const unbound = new ProductEvalStages({ approvals: { current: async () => undefined, roleOf: async () => undefined } });
+    expect(await unbound.connected({ iss: ISS, cid: A, pid }, live())).toBeUndefined();
+    const w = await world(); const controller = new AbortController(); controller.abort();
+    await expect(w.stages.connected({ iss: ISS, cid: A, pid }, controller.signal)).rejects.toThrow();
+  });
+});

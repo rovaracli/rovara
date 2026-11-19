@@ -82,15 +82,15 @@ it("unmaps a matched person", async () => {
   f.close();
 });
 
-it("says a sign-in is needed when the change is refused for a stale sign-in, and offers to sign in again", async () => {
+it("an old REAUTH_REQUIRED refusal is a plain fixed refusal with no sign-in step (owner DEC 254zzz73)", async () => {
   const f = mount();
   await screen.findByText("Sam K");
   fireEvent.change(screen.getByLabelText("Company member for Sam K"), { target: { value: SAM } });
   f.request.mockImplementation(async request => (request.method === "POST" ? { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again." } } } : { status: 200, body: request.path === "/v1/app/org/tracker-people" ? people : { members } }));
   fireEvent.click(screen.getAllByRole("button", { name: "Map" })[0]!);
-  await screen.findByText(/Sign in again to make this change/);
-  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
-  expect(f.host.signIn).toHaveBeenCalled();
+  await screen.findByText("That change was not made. Try again.");
+  expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
+  expect(f.host.signIn).not.toHaveBeenCalled();
   f.close();
 });
 

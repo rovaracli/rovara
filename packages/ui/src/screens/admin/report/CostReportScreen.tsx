@@ -56,7 +56,7 @@ function ReportView() {
  const projectColumns: readonly Column<ReportGroup>[] = [
   { key: "name", title: "Project", render: g => <b><VisibleText text={g.name} /></b> }, ...featureColumns.slice(1, 5),
  ];
- const download = () => { if (data !== undefined) host.saveFile(tab === "feature" ? "cost-and-time-by-feature.csv" : "cost-and-time-by-project.csv", new Blob([reportCsv(groups, tab)], { type: "text/csv" })); };
+ const download = () => { if (data !== undefined) host.saveFile(tab === "feature" ? "cost-and-time-by-feature.csv" : "cost-and-time-by-project.csv", new Blob([reportCsv(groups, tab, data.unreadableTasks)], { type: "text/csv" })); };
  return <section className="rv-report-surface" aria-busy={read.isFetching}>
   <PageHeader focusOnMount title="Cost and time" description="What work cost and how long it took, by feature and by project." actions={<>{data?.canChange === true && <NewFeatureButton onCreated={id => { void navigate(`${REPORT_HOME}/features/${encodeURIComponent(id)}${state.carry}`); }} />}<Button disabled={data === undefined || groups.length === 0} onClick={download}>Download CSV</Button></>} />
   <FilterRow projects={projects} state={state} />

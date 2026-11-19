@@ -125,6 +125,15 @@ it("draws the one Make this permanent card for a person who decides: the proof i
   await expectNoAxeViolations(f.container);
   f.close();
 });
+it("shows a dynamic-path card with only a check task and a skill", async () => {
+  const f = mount({ graduation: { card: { ...CARD, target: "rule", targets: ["rule", "check", "skill"], paths: ["src/{area}/[id].ts"] } } });
+  const card = await screen.findByTestId("permanent-card");
+  expect(within(card).getAllByRole("radio").map(radio => radio.parentElement!.textContent)).toEqual(["A draft task to add a check (you start it)", "A skill"]);
+  expect(card.textContent).toContain("Team rules need plain file paths, so this one can't become a rule.");
+  expect(within(card).getByRole("button", { name: "Make a draft task" })).toBeTruthy();
+  expect(within(card).queryByRole("button", { name: "Make it a rule" })).toBeNull();
+  f.close();
+});
 it("says the whole project when the lesson has no paths, and sends no paths for it", async () => {
   const sent: ApiRequest[] = [];
   const f = mount({ graduation: { card: { ...CARD, paths: [] } }, send: request => { sent.push(request);return ok({ project: "web", lessonId: "les_logs0001", target: "rule", state: "done", ref: "rule_1", already: false }); } });

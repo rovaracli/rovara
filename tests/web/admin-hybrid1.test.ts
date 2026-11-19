@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-// The Hybrid 1 admin pages (DEC 223): grouped navigation, Spending with real amounts and its over-budget states, company settings, the sign-in factor pages and the account
-// page, each with its "not connected yet" state and the fresh sign-in step in front of every sensitive action.
+// The Hybrid 1 admin pages (DEC 223): grouped navigation, Spending with real amounts and its over-budget states, company settings and the account
+// page, each with its "not connected yet" state (no step-up in front of any action since owner DEC 254zzz73).
 import { beforeEach, describe, expect, it } from "vitest";
-import { cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, fireEvent, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
@@ -10,7 +10,7 @@ import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
-import { lineState, readCompanySettings, readMyFactors, readOrgSpend, spendSummary, windowWords } from "../../packages/ui/src/api/admin-company.js";
+import { lineState, readCompanySettings, readOrgSpend, spendSummary } from "../../packages/ui/src/api/admin-company.js";
 import { visibleAdminGroups } from "../../packages/ui/src/screens/admin/admin-nav.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -28,7 +28,7 @@ const spendBody = {
 const CAP_UNSET = { ready: false, reason: "company_monthly_cap_unset", message: "Set a monthly cap to use the model gateway." };
 const settingsBody = (extra: Record<string, unknown> = {}) => ({
  companyId: "org_aaaaaaaaaaaaaaaaaaaa", version: 4,
- settings: { featureGates: {}, websiteCeiling: { mode: "any" }, instructions: [{ text: "Never touch the billing tables.", priority: "required" }], evalBudgetUsdMicros: null, freshSignInSeconds: 300, start: { allow: true, maxEstimateUsdMicros: 5_000_000 }, decisions: [], locks: {}, budgets: { companyMonthlyUsdMicros: null, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } },
+ settings: { featureGates: {}, websiteCeiling: { mode: "any" }, instructions: [{ text: "Never touch the billing tables.", priority: "required" }], evalBudgetUsdMicros: null, start: { allow: true, maxEstimateUsdMicros: 5_000_000 }, decisions: [], locks: {}, budgets: { companyMonthlyUsdMicros: null, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } },
  ...extra,
 });
 
@@ -46,9 +46,6 @@ function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<A
 const ok = (body: unknown): ApiResponse => ({ status: 200, body });
 const seeded = new Map<string, string>();
 beforeEach(() => { seeded.clear(); });
-/** What the fresh sign-in step does on the way out and back: the tab stores a one-time nonce, and the return address carries it. */
-const NONCE_KEY = "rovara.stepup.nonce";
-function confirmedPath(path: string, nonce = "n-1"): string { seeded.set(NONCE_KEY, JSON.stringify({ nonce, at: Date.now() })); return path + (path.includes("?") ? "&" : "?") + "confirmed=" + nonce; }
 const writes = (f: ReturnType<typeof mount>) => f.request.mock.calls.map(([r]) => r).filter(r => r.method !== "GET");
 
 describe("spending numbers", () => {
@@ -72,14 +69,12 @@ describe("spending numbers", () => {
   expect(lineState(172.4, 172)).toMatchObject({ state: "over" });
   expect(lineState(10, undefined)).toEqual({ state: "none", leftUsd: undefined, fraction: undefined });
  });
- it("words the approval window", () => {
-  expect(windowWords(60)).toBe("1 minute"); expect(windowWords(300)).toBe("5 minutes"); expect(windowWords(90)).toBe("90 seconds"); expect(windowWords(undefined)).toBe("Not set");
- });
- it("reads settings and factors, ignoring rows that are not the shape", () => {
+ it("reads settings, ignoring rows that are not the shape (an older document's step-up window is not read: owner DEC 254zzz73)", () => {
   const read = readCompanySettings(settingsBody({ pending: { changeId: "chg_" + "a".repeat(20), proposedBy: "c", proposedAt: "2026-11-14T00:00:00Z", expiresAt: "2026-11-21T00:00:00Z", settings: { instructions: [{ text: "x", priority: "preferred" }], freshSignInSeconds: 60 } } }));
-  expect(read).toMatchObject({ version: 4, freshSignInSeconds: 300, start: { allow: true, maxEstimateUsd: 5 }, pending: { instructions: [{ text: "x" }], freshSignInSeconds: 60 } });
+  expect(read).toMatchObject({ version: 4, start: { allow: true, maxEstimateUsd: 5 }, pending: { instructions: [{ text: "x" }] } });
+  expect(read).not.toHaveProperty("freshSignInSeconds");
+  expect(read.pending).not.toHaveProperty("freshSignInSeconds");
   expect(() => readCompanySettings({ settings: {} })).toThrow();
-  expect(readMyFactors({ factorEmail: "p***@acme.test", passkeys: [{ credentialId: "k1", createdAt: "2026-10-01T00:00:00Z" }, { credentialId: "k2", createdAt: "nope" }] }).passkeys).toHaveLength(1);
  });
 });
 
@@ -88,7 +83,8 @@ describe("admin navigation", () => {
   const groups = visibleAdminGroups("owner", false);
   expect(groups.map(group => group.title)).toEqual(["People and access", "Money", "Work and rules", "AI and connections", "Oversight"]);
   const all = groups.flatMap(group => group.links.map(link => link.label));
-  expect(all).toEqual(expect.arrayContaining(["People", "Invites", "Sign-in clients", "Sign-in factors", "Spending", "Company settings", "How we work", "Audit", "Health"]));
+  expect(all).toEqual(expect.arrayContaining(["People", "Invites", "Sign-in clients", "Spending", "Company settings", "How we work", "Audit", "Health"]));
+  expect(all).not.toContain("Sign-in factors");
  });
  it("hides owner-only and switched-off pages, and shows a member only the waiting queue", () => {
   expect(visibleAdminGroups("admin", false).flatMap(group => group.links.map(link => link.label))).not.toContain("Company domains");
@@ -193,7 +189,7 @@ describe("model gateway readiness", () => {
   } finally { f.close(); }
  });
  it("sets the cap from the editor after the fresh sign-in, sending it in micro-dollars with the rest of the budgets", async () => {
-  const f = mount(confirmedPath("/app/admin/settings"), r => (r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok(settingsBody({ modelGateway: CAP_UNSET })) : ok({})));
+  const f = mount("/app/admin/settings", r => (r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok(settingsBody({ modelGateway: CAP_UNSET })) : ok({})));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
    const field = await screen.findByLabelText("Company monthly cap (USD)");
@@ -206,7 +202,7 @@ describe("model gateway readiness", () => {
  it("keeps the learning cap under the company cap when saving, and leaves it alone otherwise", async () => {
   const withLearning = () => { const body = settingsBody(); return { ...body, settings: { ...body.settings, budgets: { ...body.settings.budgets, companyMonthlyUsdMicros: 500_000_000, learningMonthlyUsdMicros: 20_000_000 } } }; };
   for (const [typed, learning] of [["5", 5_000_000], ["100", 20_000_000]] as const) {
-   const f = mount(confirmedPath("/app/admin/settings"), r => (r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok(withLearning()) : ok({})));
+   const f = mount("/app/admin/settings", r => (r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok(withLearning()) : ok({})));
    try {
     fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
     fireEvent.change(await screen.findByLabelText("Company monthly cap (USD)"), { target: { value: typed } });
@@ -218,7 +214,7 @@ describe("model gateway readiness", () => {
   }
  });
  it("accepts a $0 cap (Cloud's validator does) and says it blocks all model gateway use", async () => {
-  const f = mount(confirmedPath("/app/admin/settings"), r => (r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
+  const f = mount("/app/admin/settings", r => (r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
    fireEvent.change(await screen.findByLabelText("Company monthly cap (USD)"), { target: { value: "0" } });
@@ -234,7 +230,7 @@ describe("model gateway readiness", () => {
   try { expect(await screen.findByText(/A \$0 cap blocks all model gateway use\./)).toBeTruthy(); } finally { f.close(); }
  });
  it("refuses a cap that is not a dollar amount before sending anything", async () => {
-  const f = mount(confirmedPath("/app/admin/settings"), r => (r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
+  const f = mount("/app/admin/settings", r => (r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
    fireEvent.change(await screen.findByLabelText("Company monthly cap (USD)"), { target: { value: "lots" } });
@@ -266,122 +262,74 @@ describe("Company settings", () => {
   const f = mount("/app/admin/settings", r => (r.path === "/v1/app/org/settings" ? NOT_ON_CODE : ok({})));
   try { expect(await screen.findByTestId("not-connected")).toBeTruthy(); expect(screen.getAllByRole("link", { name: "Projects" })).toHaveLength(2); } finally { f.close(); }
  });
- it("shows the rules, the approval window and who may start work", async () => {
+ it("shows the rules and who may start work, and no approval window (owner DEC 254zzz73)", async () => {
   const f = mount("/app/admin/settings", r => (r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
   try {
    expect(await screen.findByText("Never touch the billing tables.")).toBeTruthy();
-   expect(screen.getByText("5 minutes")).toBeTruthy();
+   expect(screen.queryByRole("region", { name: "Approval window" })).toBeNull();
+   expect(screen.queryByText(/confirm it's them|Confirm it's you/u)).toBeNull();
    expect(screen.getByText("Anyone with project access may start one")).toBeTruthy();
    expect(screen.getByText("$5.00")).toBeTruthy();
   } finally { f.close(); }
  });
- it("asks for the fresh sign-in first, and sends the person to Code's step-up page without changing anything", async () => {
+ it("opens the editor straight away with no step-up, and never sends the person to a sign-in page", async () => {
   const f = mount("/app/admin/settings", r => (r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
-   const panel = await screen.findByTestId("fresh-sign-in");
-   expect(panel.getAttribute("data-state")).toBe("ask");
-   expect(screen.queryByRole("group", { name: "Edit company rules" })).toBeNull();
-   fireEvent.click(screen.getByTestId("fresh-sign-in-start"));
-   const call = (f.host.signIn as unknown as { mock: { calls: Array<[string, { stepUp?: boolean }]> } }).mock.calls.at(-1);
-   expect(call?.[1]).toEqual({ stepUp: true });
-   expect(call?.[0]).toMatch(/confirmed=[0-9a-f-]{36}/u);
-   expect((JSON.parse(f.storage.get(NONCE_KEY) ?? "null") as { nonce?: string } | null)?.nonce).toMatch(/^[0-9a-f-]{36}$/u);
+   expect(await screen.findByRole("group", { name: "Edit company rules" })).toBeTruthy();
+   expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+   expect(screen.queryByLabelText("Approval window")).toBeNull();
+   expect(f.host.signIn).not.toHaveBeenCalled();
    expect(writes(f)).toHaveLength(0);
   } finally { f.close(); }
  });
- it("opens the editor after the person comes back confirmed, and saves the whole document with its version", async () => {
-  const f = mount(confirmedPath("/app/admin/settings"), r => (r.method === "PUT" ? ok({ companyId: "x", version: 5, settings: {} }) : r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
+ it("saves the whole document with its version", async () => {
+  const f = mount("/app/admin/settings", r => (r.method === "PUT" ? ok({ companyId: "x", version: 5, settings: {} }) : r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
    fireEvent.change(await screen.findByLabelText("Rule 1"), { target: { value: "Never touch the billing or ledger tables." } });
    fireEvent.click(screen.getByRole("button", { name: "Save rules" }));
    await screen.findByText(/Saved\. The new rules apply/);
    const put = writes(f).find(r => r.method === "PUT");
-   expect(put?.body).toMatchObject({  expectedVersion: 4, settings: { instructions: [{ text: "Never touch the billing or ledger tables.", priority: "required" }], freshSignInSeconds: 300, start: { allow: true }, websiteCeiling: { mode: "any" } } });
+   expect(put?.body).toMatchObject({  expectedVersion: 4, settings: { instructions: [{ text: "Never touch the billing or ledger tables.", priority: "required" }], start: { allow: true }, websiteCeiling: { mode: "any" } } });
   } finally { f.close(); }
  });
- it("goes back to the fresh sign-in step when Code says the confirmation is too old", async () => {
-  const f = mount(confirmedPath("/app/admin/settings"), r => (r.method === "PUT" ? { status: 403, body: { error: { code: "STEP_UP_REQUIRED", message: "Confirm it's you again, then try once more." } } } : r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
+ it("shows the server's refusal in its own words and keeps the editor open (no step-up to go back to)", async () => {
+  const f = mount("/app/admin/settings", r => (r.method === "PUT" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company admin can do this." } } } : r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
    fireEvent.click(await screen.findByRole("button", { name: "Save rules" }));
-   await waitFor(() => expect(screen.getByTestId("fresh-sign-in").getAttribute("data-state")).toBe("needed"));
-   expect(screen.queryByRole("group", { name: "Edit company rules" })).toBeNull();
+   expect((await screen.findByTestId("settings-error")).textContent).toContain("Only a company admin can do this.");
+   expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
+   expect(f.host.signIn).not.toHaveBeenCalled();
   } finally { f.close(); }
  });
  it("tells the person a loosening change is waiting for a second admin", async () => {
-  const f = mount(confirmedPath("/app/admin/settings"), r => (r.method === "PUT" ? { status: 202, body: { companyId: "x", version: 4, pending: { changeId: "chg_" + "a".repeat(20) } } } : r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
+  const f = mount("/app/admin/settings", r => (r.method === "PUT" ? { status: 202, body: { companyId: "x", version: 4, pending: { changeId: "chg_" + "a".repeat(20) } } } : r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
    fireEvent.click(await screen.findByRole("button", { name: "Save rules" }));
    expect(await screen.findByText(/Another company admin must approve/)).toBeTruthy();
   } finally { f.close(); }
  });
- it("asks a second admin for the fresh sign-in before approving a change someone else proposed", async () => {
-  const pending = { changeId: "chg_" + "a".repeat(20), proposedBy: "c".repeat(64), proposedAt: "2026-11-14T00:00:00Z", expiresAt: "2026-11-21T00:00:00Z", settings: { instructions: [{ text: "Allow every website.", priority: "preferred" }], freshSignInSeconds: 600 } };
-  const f = mount("/app/admin/settings", r => (r.path === "/v1/app/org/settings" ? ok(settingsBody({ pending })) : ok({})));
+ it("lets a second admin approve a change someone else proposed with one press (no step-up)", async () => {
+  const pending = { changeId: "chg_" + "a".repeat(20), proposedBy: "c".repeat(64), proposedAt: "2026-11-14T00:00:00Z", expiresAt: "2026-11-21T00:00:00Z", settings: { instructions: [{ text: "Allow every website.", priority: "preferred" }] } };
+  const f = mount("/app/admin/settings", r => (r.method === "POST" ? ok({ companyId: "x", version: 5, settings: {} }) : r.path === "/v1/app/org/settings" ? ok(settingsBody({ pending })) : ok({})));
   try {
    expect(await screen.findByText("Allow every website.")).toBeTruthy();
-   expect(screen.queryByRole("button", { name: "Approve this change" })).toBeNull();
-   expect(screen.getByTestId("fresh-sign-in")).toBeTruthy();
+   expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
    expect(screen.queryByRole("button", { name: "Change rules" })).toBeNull();
+   fireEvent.click(screen.getByRole("button", { name: "Approve this change" }));
+   await screen.findByText(/Approved\. The new rules apply/);
+   expect(writes(f).map(w => w.path)).toEqual([`/v1/app/org/settings/pending/${pending.changeId}/approve`]);
   } finally { f.close(); }
  });
 });
 
-describe("the fresh sign-in state", () => {
- const factors = { factorEmail: "p***@acme.test", passkeys: [{ credentialId: "key-one", createdAt: "2026-10-01T00:00:00Z" }] };
- it("is not a flag anyone can type: a made-up confirmed value shows the step, not the action", async () => {
-  const f = mount("/app/account?remove=key-one&confirmed=1", r => (r.path === "/v1/app/me/sign-in-factors" ? ok(factors) : ok({})));
-  try {
-   const dialog = await screen.findByRole("dialog", { name: "Remove this passkey?" });
-   expect(within(dialog).getByTestId("fresh-sign-in").getAttribute("data-state")).toBe("ask");
-   expect(within(dialog).queryByRole("button", { name: "Remove passkey" })).toBeNull();
-   await waitFor(() => expect(f.router.state.location.search).not.toContain("confirmed"));
-  } finally { f.close(); }
- });
- it("does not accept an old nonce", async () => {
-  seeded.set(NONCE_KEY, JSON.stringify({ nonce: "n-old", at: Date.now() - 11 * 60_000 }));
-  const f = mount("/app/account?remove=key-one&confirmed=n-old", r => (r.path === "/v1/app/me/sign-in-factors" ? ok(factors) : ok({})));
-  try { expect((await screen.findByTestId("fresh-sign-in")).getAttribute("data-state")).toBe("ask"); } finally { f.close(); }
- });
- it("cleans the address after the person comes back, and a reload no longer says confirmed once the window has passed", async () => {
-  const f = mount(confirmedPath("/app/account?remove=key-one"), r => (r.path === "/v1/app/me/sign-in-factors" ? ok(factors) : ok({})));
-  try {
-   expect((await screen.findByTestId("fresh-sign-in")).getAttribute("data-state")).toBe("done");
-   await waitFor(() => expect(f.router.state.location.search).toBe("?remove=key-one"));
-   expect(f.storage.get(NONCE_KEY)).toBe("");
-  } finally { f.close(); }
-  seeded.set(`rovara.stepup.confirmedAt.${me}`, String(Date.now() - 11 * 60_000));
-  const again = mount("/app/account?remove=key-one", r => (r.path === "/v1/app/me/sign-in-factors" ? ok(factors) : ok({})));
-  try { expect((await screen.findByTestId("fresh-sign-in")).getAttribute("data-state")).toBe("ask"); } finally { again.close(); }
- });
- it("belongs to the person who confirmed: another person on the same browser sees the step", async () => {
-  seeded.set(`rovara.stepup.confirmedAt.${"e".repeat(64)}`, String(Date.now()));
-  const f = mount("/app/account?remove=key-one", r => (r.path === "/v1/app/me/sign-in-factors" ? ok(factors) : ok({})));
-  try { expect((await screen.findByTestId("fresh-sign-in")).getAttribute("data-state")).toBe("ask"); } finally { f.close(); }
-  seeded.set(`rovara.stepup.confirmedAt.${me}`, String(Date.now()));
-  const mine = mount("/app/account?remove=key-one", r => (r.path === "/v1/app/me/sign-in-factors" ? ok(factors) : ok({})));
-  try { expect((await screen.findByTestId("fresh-sign-in")).getAttribute("data-state")).toBe("done"); } finally { mine.close(); }
- });
- it("forgets the confirmation when the server says it is too old, and keeps asking for the next row and after a reload", async () => {
-  const f = mount(confirmedPath("/app/admin/sign-in-factors"), r => (r.method === "PUT" ? { status: 403, body: { error: { code: "STEP_UP_REQUIRED", message: "again" } } } : ok(r.path.endsWith("/members") ? { members: [maya, { ...maya, developerId: "c".repeat(64), name: "Noor" }] } : {})));
-  try {
-   fireEvent.click(await screen.findByRole("button", { name: "Set confirmation email for Maya" }));
-   const dialog = await screen.findByRole("dialog");
-   fireEvent.change(within(dialog).getByLabelText("New confirmation email"), { target: { value: "maya@acme.test" } });
-   fireEvent.click(within(dialog).getByRole("button", { name: "Change confirmation email" }));
-   await waitFor(() => expect(within(dialog).getByTestId("fresh-sign-in").getAttribute("data-state")).toBe("needed"));
-   expect(f.storage.get(`rovara.stepup.confirmedAt.${me}`)).toBe("");
-   fireEvent.click(within(dialog).getByRole("button", { name: /close/i }));
-   fireEvent.click(await screen.findByRole("button", { name: "Set confirmation email for Noor" }));
-   expect((await screen.findByTestId("fresh-sign-in")).getAttribute("data-state")).toBe("needed");
-  } finally { f.close(); }
- });
+describe("the company rules editor", () => {
  it("re-reads the company rules when it opens the editor, so an old copy is never saved over a newer version", async () => {
   let body = settingsBody();
-  const f = mount(confirmedPath("/app/admin/settings"), r => (r.path === "/v1/app/org/settings" && r.method === "GET" ? ok(body) : r.method === "PUT" ? ok({ settings: {}, version: 6 }) : ok({})));
+  const f = mount("/app/admin/settings", r => (r.path === "/v1/app/org/settings" && r.method === "GET" ? ok(body) : r.method === "PUT" ? ok({ settings: {}, version: 6 }) : ok({})));
   try {
    await screen.findByText("Never touch the billing tables.");
    const next = settingsBody(); next.version = 5; next.settings.instructions = [{ text: "Approved elsewhere.", priority: "required" }];
@@ -409,91 +357,18 @@ describe("Sign-in clients", () => {
  });
 });
 
-describe("Sign-in factors for admins", () => {
- const people = (r: ApiRequest) => ok(r.path.endsWith("/members") ? { members: [maya] } : {});
- it("shows the fresh sign-in step before the form, and makes no change", async () => {
-  const f = mount("/app/admin/sign-in-factors", people);
-  try {
-   fireEvent.click(await screen.findByRole("button", { name: "Set confirmation email for Maya" }));
-   const dialog = await screen.findByRole("dialog", { name: /Set confirmation email for Maya/ });
-   expect(within(dialog).getByTestId("fresh-sign-in").getAttribute("data-state")).toBe("ask");
-   expect(within(dialog).queryByLabelText("New confirmation email")).toBeNull();
-   expect(writes(f)).toHaveLength(0);
-  } finally { f.close(); }
- });
- it("sets the email after coming back confirmed, with a request id, and says the old address was told", async () => {
-  const f = mount(confirmedPath(`/app/admin/sign-in-factors?person=${maya.developerId}&do=email`), r => (r.method === "PUT" ? ok({}) : people(r)));
-  try {
-   const dialog = await screen.findByRole("dialog");
-   const send = within(dialog).getByRole("button", { name: "Change confirmation email" });
-   expect((send as HTMLButtonElement).disabled).toBe(true);
-   fireEvent.change(within(dialog).getByLabelText("New confirmation email"), { target: { value: "maya@acme.test" } });
-   fireEvent.click(send);
-   await within(dialog).findByText(/The old address was told first/);
-   const put = writes(f)[0];
-   expect(put?.path).toBe(`/v1/app/org/members/${maya.developerId}/factor-email`);
-   expect(put?.body).toMatchObject({ email: "maya@acme.test" }); expect(typeof (put?.body as { requestId: string }).requestId).toBe("string");
-  } finally { f.close(); }
- });
- it("removes passkeys only after the confirmation, and says not connected on a 501", async () => {
-  const f = mount(confirmedPath(`/app/admin/sign-in-factors?person=${maya.developerId}&do=passkeys`), r => (r.method === "DELETE" ? NOT_ON_CODE : people(r)));
-  try {
-   const dialog = await screen.findByRole("dialog");
-   fireEvent.click(within(dialog).getByRole("button", { name: "Remove all passkeys" }));
-   expect(await within(dialog).findByTestId("not-connected")).toBeTruthy();
-  } finally { f.close(); }
- });
-});
-
-describe("Sign-in factors rows", () => {
- it("sends a person to their own account page, and keeps an admin away from an owner's factors", async () => {
-  const rows = [{ ...maya, developerId: me, name: "Priya", role: "admin" }, { ...maya, developerId: "d".repeat(64), name: "Olivia", role: "owner" }, maya];
-  const f = mount("/app/admin/sign-in-factors", r => ok(r.path.endsWith("/members") ? { members: rows } : {}), { role: "admin" });
-  try {
-   await screen.findByRole("button", { name: "Set confirmation email for Maya" });
-   expect(screen.getByRole("link", { name: "Your account" }).getAttribute("href")).toBe("/app/account");
-   expect(screen.getByText("Owners only")).toBeTruthy();
-   expect(screen.queryByRole("button", { name: "Set confirmation email for Olivia" })).toBeNull();
-   expect(screen.queryByRole("button", { name: "Set confirmation email for Priya" })).toBeNull();
-  } finally { f.close(); }
- });
-});
-
 describe("Your account", () => {
- const factors = { factorEmail: "p***@acme.test", passkeys: [{ credentialId: "key-one", createdAt: "2026-10-01T00:00:00Z", lastUsedAt: "2026-11-01T00:00:00Z" }] };
- it("hides the confirmation email and passkeys sections while Cloud answers 501 (no sign-in factors route yet), with no not-connected note", async () => {
-  const f = mount("/app/account", r => (r.path === "/v1/app/me/sign-in-factors" ? NOT_ON_CODE : ok({})));
+ it("never asks for the sign-in factors and shows no confirmation email or passkeys (owner DEC 254zzz73)", async () => {
+  const f = mount("/app/account", () => ok({}));
   try {
-   await screen.findByRole("heading", { name: "Your account" });await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/me/sign-in-factors")).toBe(true));
-   await waitFor(() => expect(screen.queryByLabelText("Loading your sign-in factors")).toBeNull());
+   await screen.findByRole("heading", { name: "Your account" });
+   expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/me/sign-in-factors")).toBe(false);
    expect(screen.queryByRole("heading", { name: "Confirmation email" })).toBeNull();expect(screen.queryByRole("heading", { name: "Passkeys" })).toBeNull();
-   expect(screen.queryByTestId("factor-email")).toBeNull();expect(screen.queryByText(/Your confirmation email and passkeys isn't connected/)).toBeNull();expect(screen.queryByText(/Passkeys isn't connected/)).toBeNull();
-   expect(screen.getByRole("heading", { name: "You" })).toBeTruthy();
-  } finally { f.close(); }
- });
- it("lists the email and the passkeys, and asks for the fresh sign-in before removing one", async () => {
-  const f = mount("/app/account", r => (r.path === "/v1/app/me/sign-in-factors" ? ok(factors) : ok({})));
-  try {
-   expect((await screen.findByTestId("factor-email")).textContent).toBe("p***@acme.test");
-   const list = screen.getByRole("list", { name: "Your passkeys" });
-   fireEvent.click(within(list).getByRole("button", { name: /Remove the passkey added/ }));
-   const dialog = await screen.findByRole("dialog", { name: "Remove this passkey?" });
-   expect(within(dialog).getByTestId("fresh-sign-in").getAttribute("data-state")).toBe("ask");
-   expect(within(dialog).queryByRole("button", { name: "Remove passkey" })).toBeNull();
-   expect(writes(f)).toHaveLength(0);
-  } finally { f.close(); }
- });
- it("removes the passkey after the confirmation", async () => {
-  const f = mount(confirmedPath("/app/account?remove=key-one"), r => (r.method === "DELETE" ? ok({}) : r.path === "/v1/app/me/sign-in-factors" ? ok(factors) : ok({})));
-  try {
-   const dialog = await screen.findByRole("dialog", { name: "Remove this passkey?" });
-   fireEvent.click(within(dialog).getByRole("button", { name: "Remove passkey" }));
-   await screen.findByText(/Passkey removed/);
-   expect(writes(f)[0]?.path).toBe("/v1/app/me/passkeys/key-one");
+   expect(screen.queryByTestId("factor-email")).toBeNull();expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
   } finally { f.close(); }
  });
  it("has no accessibility violations", async () => {
-  const f = mount("/app/account", r => (r.path === "/v1/app/me/sign-in-factors" ? ok(factors) : ok({})));
-  try { await screen.findByTestId("factor-email"); await expectNoAxeViolations(f.container); } finally { f.close(); }
+  const f = mount("/app/account", () => ok({}));
+  try { await screen.findByRole("heading", { name: "Your account" }); await expectNoAxeViolations(f.container); } finally { f.close(); }
  });
 });

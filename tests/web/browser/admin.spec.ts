@@ -25,9 +25,10 @@ test("the admin area has five groups in a sidebar, not 14 flat tabs", async ({ p
   // The sidebar is a column beside the page, not a row of tabs above it.
   const nav = await admin.nav.boundingBox(), main = await page.locator(".rv-admin-surface").boundingBox();
   expect(nav !== null && main !== null && main.x >= nav.x + nav.width - 1 && Math.abs(main.y - nav.y) < 80).toBe(true);
-  await admin.link("Sign-in factors").click();
-  await expect(admin.heading("Sign-in factors")).toBeVisible();
-  await expect(admin.link("Sign-in factors")).toHaveAttribute("aria-current", "page");
+  await expect(admin.link("Sign-in factors")).toHaveCount(0);
+  await admin.link("Sign-in clients").click();
+  await expect(admin.heading("Sign-in clients")).toBeVisible();
+  await expect(admin.link("Sign-in clients")).toHaveAttribute("aria-current", "page");
 });
 
 test("Spending says it is not connected yet when Cloud has no spending read", async ({ page }) => {
@@ -101,92 +102,50 @@ test("Spending and the Overview say the same, and link to where the cap is set",
   await expect(page.getByRole("region", { name: "Set a monthly cap to use the model gateway." })).toBeVisible();
 });
 
-test("changing the cap asks for the fresh sign-in first, and Cloud's own step-up check sends the person back to it", async ({ page }) => {
+// The settings PUTs below are answered here, never by the local Cloud: a saved cap would stay in its store and change what later specs read.
+async function answerSettingsWrites(page: Page): Promise<void> {
+  await page.route("**/v1/web/org/settings", route => (route.request().method() === "PUT" ? route.fulfill(json({ companyId: "org_aaaaaaaaaaaaaaaaaaaa", version: 2, settings: {} })) : route.fallback()));
+}
+
+test("changing the cap needs no step-up (owner DEC 254zzz73): the editor opens at once and the change is sent", async ({ page }) => {
+  await answerSettingsWrites(page);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.settings);
   await page.getByRole("button", { name: "Change rules" }).click();
-  await expect(admin.freshSignIn).toHaveAttribute("data-state", "ask");
-  await expect(page.getByLabel("Company monthly cap (USD)")).toHaveCount(0);
-  // Back from Code's step-up page (the pretend Code does not set one in the token, so Cloud's own check refuses the change).
-  await page.evaluate(() => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce: "e2e-cap", at: Date.now() })));
-  await page.goto(`${ROUTES.admin.settings}?confirmed=e2e-cap`);
-  await page.getByRole("button", { name: "Change rules" }).click();
+  await expect(admin.freshSignIn).toHaveCount(0);
   await page.getByLabel("Company monthly cap (USD)").fill("2500");
   await page.getByRole("button", { name: "Save rules" }).click();
-  await expect(admin.freshSignIn).toHaveAttribute("data-state", "needed");
-  await expect(page.getByLabel("Company monthly cap (USD)")).toHaveCount(0);
+  await expect(page.getByText(/Saved\. The new rules apply/u)).toBeVisible();
+  await expect(admin.freshSignIn).toHaveCount(0);
 });
 
 // Every write goes through the browser host's one signed-write path: it carries its body's SHA-256 in x-amz-content-sha256 (Cloud #48, behind CloudFront).
-test("the settings write and a passkey removal carry the body hash like every other write", async ({ page }) => {
+test("the settings write carries the body hash like every other write", async ({ page }) => {
   const writes: Array<{ method: string; url: string; hash: string | undefined; body: string | null }> = [];
   page.on("request", request => { if (request.method() !== "GET" && request.url().includes("/v1/web/")) writes.push({ method: request.method(), url: request.url(), hash: request.headers()["x-amz-content-sha256"], body: request.postData() }); });
-  await serve(page, "/me/sign-in-factors", { factorEmail: "p***@acme.test", passkeys: [{ credentialId: "key-one", createdAt: "2026-10-01T00:00:00Z" }] });
-  await page.route("**/v1/web/me/passkeys/key-one", route => route.fulfill(json({})));
-  // The first address opened signs the person in through Code (a redirect chain), so wait for the page itself before touching its storage: `goto` can resolve mid-chain.
-  const account = new AccountPage(page);
-  await account.open();
-  await page.evaluate(() => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce: "e2e-sign", at: Date.now() })));
-  await account.open("?remove=key-one&confirmed=e2e-sign");
-  await page.getByRole("button", { name: "Remove passkey" }).click();
-  await expect.poll(() => writes.some(write => write.url.endsWith("/v1/web/me/passkeys/key-one"))).toBe(true);
+  await answerSettingsWrites(page);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.settings);
-  await page.evaluate(() => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce: "e2e-sign2", at: Date.now() })));
-  await admin.open(`${ROUTES.admin.settings}?confirmed=e2e-sign2`);
   await page.getByRole("button", { name: "Change rules" }).click();
   await page.getByLabel("Company monthly cap (USD)").fill("0");
   await expect(page.getByText("A $0 cap blocks all model gateway use.")).toBeVisible();
   await page.getByRole("button", { name: "Save rules" }).click();
   await expect.poll(() => writes.some(write => write.method === "PUT" && write.url.endsWith("/v1/web/org/settings"))).toBe(true);
-  for (const write of writes.filter(entry => entry.url.endsWith("/v1/web/me/passkeys/key-one") || entry.url.endsWith("/v1/web/org/settings"))) {
+  for (const write of writes.filter(entry => entry.url.endsWith("/v1/web/org/settings"))) {
     expect(write.hash, `${write.method} ${write.url}`).toBe(createHash("sha256").update(write.body ?? "").digest("hex"));
   }
 });
 
-test("Sign-in factors lists people and shows the fresh sign-in step before any change", async ({ page }) => {
-  await serve(page, "/org/members", { members: [{ developerId: "b".repeat(64), name: "Maya", role: "member", identities: ["github"], joinedAt: "2026-10-01T00:00:00Z" }] });
-  const admin = new AdminPage(page);
-  await admin.open(ROUTES.admin.signInFactors);
-  await page.getByRole("button", { name: "Set confirmation email for Maya" }).click();
-  await expect(admin.freshSignIn).toHaveAttribute("data-state", "ask");
-  await expect(page.getByLabel("New confirmation email")).toHaveCount(0);
-  // The button sends the person to Code's step-up page (through Cloud's sign-in), coming back to this step.
-  const asked = page.waitForRequest(request => request.url().includes("/v1/auth/browser/authorize") && request.url().includes("step_up=1"));
-  await page.getByTestId("fresh-sign-in-start").click();
-  const url = (await asked).url();
-  expect(url).toContain("return_to=");
-  expect(decodeURIComponent(url)).toMatch(/confirmed=[0-9a-f-]{36}/u);
-});
-
-test("Your account hides the confirmation email and passkeys while sign-in factors are not connected yet", async ({ page }) => {
+test("Your account has no confirmation email or passkeys, and never asks for sign-in factors (owner DEC 254zzz73)", async ({ page }) => {
+  const asked: string[] = [];
+  page.on("request", request => { if (request.url().includes("/sign-in-factors")) asked.push(request.url()); });
   const account = new AccountPage(page);
   await account.open();
   await expect(page.getByRole("heading", { name: "Your account" })).toBeVisible();
   await expect(page.getByRole("progressbar")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Confirmation email" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Passkeys" })).toHaveCount(0);
-  await expect(page.getByText("Passkeys isn't connected to Rovara Code yet.")).toHaveCount(0);
-});
-
-test("removing a passkey asks for the fresh sign-in first, then offers the removal after coming back", async ({ page }) => {
-  await serve(page, "/me/sign-in-factors", { factorEmail: "p***@acme.test", passkeys: [{ credentialId: "key-one", createdAt: "2026-10-01T00:00:00Z", lastUsedAt: "2026-11-01T00:00:00Z" }] });
-  const account = new AccountPage(page);
-  await account.open();
-  await expect(account.factorEmail).toHaveText("p***@acme.test");
-  await account.passkeys.getByRole("button", { name: /Remove the passkey added/u }).click();
-  await expect(account.freshSignIn).toHaveAttribute("data-state", "ask");
-  await expect(page.getByRole("button", { name: "Remove passkey" })).toHaveCount(0);
-  // Coming back from Code's step-up page lands on the same step, now confirmed.
-  await page.evaluate(() => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce: "e2e-nonce", at: Date.now() })));
-  await page.goto(`${ROUTES.account}?remove=key-one&confirmed=e2e-nonce`);
-  await expect(account.freshSignIn).toHaveAttribute("data-state", "done");
-  await expect(page.getByRole("button", { name: "Remove passkey" })).toBeVisible();
-  // A made-up address does not say confirmed.
-  await page.evaluate(() => window.localStorage.clear());
-  await page.goto(`${ROUTES.account}?remove=key-one&confirmed=1`);
-  await expect(account.freshSignIn).toHaveAttribute("data-state", "ask");
-  await expect(page).toHaveURL(/remove=key-one$/u);
+  expect(asked).toEqual([]);
 });
 
 test("the account menu leads to the account page", async ({ page }) => {
@@ -197,7 +156,7 @@ test("the account menu leads to the account page", async ({ page }) => {
 });
 
 // Contrast and structure in a real browser (jsdom cannot judge colour), in both themes, on the pages that carry the new colours: the stat tiles, the meters, the
-// over-budget flags, the "not connected yet" boxes and the fresh sign-in panel.
+// over-budget flags and the "not connected yet" boxes.
 const axeSource = readFileSync(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
 async function violations(page: Page): Promise<string[]> {
   await page.evaluate(axeSource);
@@ -215,12 +174,11 @@ for (const scheme of ["light", "dark"] as const) {
     await expect(admin.table("Spending by project")).toBeVisible();
     expect(await violations(page)).toEqual([]);
   });
-  test(`Account and the fresh sign-in step have no accessibility violations in ${scheme}`, async ({ page }) => {
+  test(`Account has no accessibility violations in ${scheme}`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: scheme });
-    await serve(page, "/me/sign-in-factors", { factorEmail: "p***@acme.test", passkeys: [{ credentialId: "key-one", createdAt: "2026-10-01T00:00:00Z" }] });
     const account = new AccountPage(page);
-    await account.open("?remove=key-one");
-    await expect(account.freshSignIn).toBeVisible();
+    await account.open();
+    await expect(page.getByRole("heading", { name: "Your account" })).toBeVisible();
     expect(await violations(page)).toEqual([]);
   });
 }

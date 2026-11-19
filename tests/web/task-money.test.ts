@@ -59,7 +59,7 @@ it("keeps legacy spend unavailable on each task surface when money is absent", (
  const task = work.readTask({ taskId: "legacy", title: "Task", project: "payments", status: "CLOSED", updatedAt: "2026-11-18T00:00:00.000Z", spent: { usd: 999 } })!;
  const cards = renderUi(h(TaskSideCards, { task, plan: undefined, events: [] }));
  expect(screen.getByText("Cost unavailable")).toBeTruthy(); expect(cards.container.textContent).not.toContain("$999.00"); cards.unmount();
- const list = renderUi(h(WorkList, { rows: [work.workRow(task, undefined, new Date("2026-11-18T00:00:00.000Z"))], selectedId: undefined, onSelect: () => undefined }));
+ const list = renderUi(h(AppHostProvider, { host: fakeHost().host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(WorkList, { rows: [work.workRow(task, undefined, new Date("2026-11-18T00:00:00.000Z"))], selectedId: undefined, onSelect: () => undefined }) }) }));
  expect(screen.getByText("Cost unavailable")).toBeTruthy(); expect(list.container.textContent).not.toContain("$999.00"); list.unmount();
  const f = fakeHost(), tile = liveFixture({ costUsd: 999 });
  const router = createMemoryRouter([{ path: "/", element: h(SessionTile, { tile, onChanged: () => Promise.resolve() }) }], { initialEntries: ["/"] });
@@ -85,4 +85,14 @@ it("shows only the configured money limit and meters only measured spend", () =>
  const task = work.readTask({ taskId: snapshot.taskId, title: "Task", project: "payments", status: "CLOSED", updatedAt: snapshot.asOf })!;
  const view = renderUi(h(TaskSideCards, { task: { ...task, money: snapshot }, plan: undefined, events: [] }));
  expect(screen.queryByRole("meter")).toBeNull(); view.unmount();
+});
+
+it("keeps the outcome beside the receipt on a completed work row", () => {
+ const snapshot = money();
+ const task = work.readTask({ taskId: snapshot.taskId, title: "Task", project: "payments", status: "CLOSED", outcome: "MERGED", updatedAt: snapshot.asOf, money: snapshot, spent: { usd: 999 } })!;
+ const view = renderUi(h(AppHostProvider, { host: fakeHost().host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(WorkList, { rows: [work.workRow(task, undefined, new Date(snapshot.asOf))], selectedId: undefined, onSelect: () => undefined }) }) }));
+ expect(screen.getByText("Merged")).toBeTruthy();
+ expect(screen.getByText("at least $0.00008 · estimated · awaiting usage · provisional")).toBeTruthy();
+ expect(view.container.textContent).not.toContain("$999.00");
+ view.unmount();
 });

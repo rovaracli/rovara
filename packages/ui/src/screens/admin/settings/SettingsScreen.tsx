@@ -1,10 +1,10 @@
-// Company settings (Hybrid 1, DEC 223): the company's rules, the approval window, who may start work and the website ceiling, in one page with clear groups.
+// Company settings (Hybrid 1, DEC 223): the company's rules, who may start work and the website ceiling, in one page with clear groups.
 // Cloud's company backend serves `GET` and `PUT /v1/app/org/settings` (feat/cloud-company-backend); until a Cloud has it, the page says "not connected yet".
-// Changing a rule is a sensitive change: the page shows the fresh sign-in step (Code's step-up page) first and edits only after it, and the server checks the same.
+// Company owners and admins only (the server checks it); a looser change waits for a second admin.
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { ORG_SETTINGS_PATH, WINDOW_CHOICES, capToMicros, isNotConnected, needsStepUp, readCompanySettings, windowWords, type CompanyRule, type CompanySettingsRead } from "../../../api/admin-company.js";
+import { ORG_SETTINGS_PATH, capToMicros, isNotConnected, readCompanySettings, type CompanyRule, type CompanySettingsRead } from "../../../api/admin-company.js";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";
@@ -17,10 +17,11 @@ import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { CompanyUpkeep } from "../../setup/wiki/CompanyUpkeep.js";
+import { KnowledgeStays } from "./KnowledgeStays.js";
 import { OutboundAddresses } from "./OutboundAddresses.js";
 import { ReadSection, useAdminRead } from "../models/read.js";
 import { GatewayReadinessBanner } from "../spending/GatewayReadiness.js";
-import { AdminSection, FreshSignIn, NotConnected, forgetConfirmed, useJustConfirmed } from "../parts.js";
+import { AdminSection, NotConnected } from "../parts.js";
 
 const reader = { parse: readCompanySettings };
 const RULES_MAX = 30;
@@ -35,6 +36,7 @@ export function SettingsScreen() {
    : read.isError && isNotConnected(read.error) ? <AdminSection title="Company rules"><NotConnected what="Company settings">The pages for projects and how we work are below.</NotConnected></AdminSection>
    : <ReadSection read={read} label="Company settings">{settings => <Settings settings={settings} reload={() => { void read.refetch(); }} />}</ReadSection>}
   <AdminSection title="Nightly upkeep for the company" note="One choice for every project"><CompanyUpkeep /></AdminSection>
+  <KnowledgeStays />
   <OutboundAddresses />
   <AdminSection title="Project setup and defaults" note="Each has its own page">
    <ul className="rv-passkeys"><li><span><Link to="/app/admin/projects">Projects</Link><small>Project setup, working branches, allowed websites and archiving.</small></span></li><li><span><Link to="/app/admin/how-we-work">How we work</Link><small>Company defaults for models, locks, learning and design review.</small></span></li></ul>
@@ -50,12 +52,11 @@ function RuleList({ rules }: { rules: readonly CompanyRule[] }) {
 
 function Settings({ settings, reload }: { settings: CompanySettingsRead; reload: () => void }) {
  const { developerId } = useAdminContext(), host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
- const confirmed = useJustConfirmed(developerId);
- const [editing, setEditing] = useState(false), [rules, setRules] = useState<CompanyRule[]>(() => settings.instructions.map(rule => ({ ...rule }))), [seconds, setSeconds] = useState(settings.freshSignInSeconds ?? 600), [cap, setCap] = useState(capText(settings.monthlyCapUsd));
- const [busy, setBusy] = useState(false), [notice, setNotice] = useState<Notice>(), [stale, setStale] = useState(false), [seenVersion, setSeenVersion] = useState(settings.version);
+ const [editing, setEditing] = useState(false), [rules, setRules] = useState<CompanyRule[]>(() => settings.instructions.map(rule => ({ ...rule }))), [cap, setCap] = useState(capText(settings.monthlyCapUsd));
+ const [busy, setBusy] = useState(false), [notice, setNotice] = useState<Notice>(), [seenVersion, setSeenVersion] = useState(settings.version);
  // The rules on screen are a copy of what was read. When the settings move on (another admin's change was approved, or this one saved), the copy is taken again,
  // so a save never sends old rules with the new version.
- const reseed = () => { setRules(settings.instructions.map(rule => ({ ...rule }))); setSeconds(settings.freshSignInSeconds ?? 600); setCap(capText(settings.monthlyCapUsd)); };
+ const reseed = () => { setRules(settings.instructions.map(rule => ({ ...rule }))); setCap(capText(settings.monthlyCapUsd)); };
  if (seenVersion !== settings.version) { setSeenVersion(settings.version); reseed(); }
  async function after(next: Notice) { setNotice(next); setEditing(false); await query.invalidateQueries({ queryKey: ["admin", "lane-c", "company-settings"] }); reload(); }
  async function save() {
@@ -67,23 +68,21 @@ function Settings({ settings, reload }: { settings: CompanySettingsRead; reload:
    // The learning cap is never above the company cap (Cloud refuses it): lowering the company cap lowers it too.
    const learning = saved["learningMonthlyUsdMicros"];
    const budgets = { ...saved, companyMonthlyUsdMicros: micros, ...(typeof learning === "number" && micros !== null ? { learningMonthlyUsdMicros: Math.min(learning, micros) } : {}) };
-   const settingsBody = { ...settings.raw, budgets, instructions: rules.filter(rule => rule.text.trim() !== "").map(rule => ({ text: rule.text.trim(), priority: rule.priority })), freshSignInSeconds: seconds };
+   const settingsBody = { ...settings.raw, budgets, instructions: rules.filter(rule => rule.text.trim() !== "").map(rule => ({ text: rule.text.trim(), priority: rule.priority })) };
    const answer = await api.sendAnswer("PUT", ORG_SETTINGS_PATH, { expectedVersion: settings.version, settings: settingsBody }, { parse: body => body }, { retry: "never" });
    const proposed = typeof answer === "object" && answer !== null && "pending" in answer && !("settings" in answer);
    await after(proposed ? { kind: "proposed" } : { kind: "saved" });
   } catch (error) {
-   if (needsStepUp(error)) { setStale(true); forgetConfirmed(host.storage, developerId); setNotice(undefined); }
-   else setNotice({ kind: "failed", text: error instanceof ApiError ? error.message : "Couldn't save the settings. Try again." });
+   setNotice({ kind: "failed", text: error instanceof ApiError ? error.message : "Couldn't save the settings. Try again." });
   } finally { setBusy(false); }
  }
  async function decide(change: string, action: "approve" | "withdraw") {
   setBusy(true); setNotice(undefined);
   try { await api.sendAnswer("POST", `${ORG_SETTINGS_PATH}/pending/${encodeURIComponent(change)}/${action}`, {}, { parse: body => body }, { retry: "never" }); await after({ kind: action === "approve" ? "approved" : "withdrawn" }); }
-  catch (error) { if (needsStepUp(error)) { setStale(true); forgetConfirmed(host.storage, developerId); } else setNotice({ kind: "failed", text: error instanceof ApiError ? error.message : "Couldn't finish that. Try again." }); }
+  catch (error) { setNotice({ kind: "failed", text: error instanceof ApiError ? error.message : "Couldn't finish that. Try again." }); }
   finally { setBusy(false); }
  }
  const pending = settings.pending, mine = pending?.proposedBy === developerId;
- const ready = confirmed && !stale;
  return <>
   <GatewayReadinessBanner readiness={settings.modelGateway} />
   {notice?.kind === "saved" && <p role="status">Saved. The new rules apply to the next task that starts.</p>}
@@ -94,26 +93,20 @@ function Settings({ settings, reload }: { settings: CompanySettingsRead; reload:
   {pending !== undefined && <AdminSection title="Waiting for approval" note={mine ? "You proposed this" : "Proposed by another admin"}>
    <p>A change to the company's rules is waiting for a second admin{pending.expiresAt !== "" ? `, until ${new Date(pending.expiresAt).toLocaleDateString("en-US", { day: "numeric", month: "short", timeZone: "UTC" })}` : ""}.</p>
    <RuleList rules={pending.instructions} />
-   {pending.freshSignInSeconds !== undefined && <p className="rv-muted">Approval window would become {windowWords(pending.freshSignInSeconds)}.</p>}
-   {!mine && (ready ? <Button variant="primary" busy={busy} onClick={() => { void decide(pending.changeId, "approve"); }}>Approve this change</Button> : <FreshSignIn action="approve this change" refused={stale} />)}
+   {!mine && <Button variant="primary" busy={busy} onClick={() => { void decide(pending.changeId, "approve"); }}>Approve this change</Button>}
    <p><Button busy={busy} onClick={() => { void decide(pending.changeId, "withdraw"); }}>{mine ? "Withdraw my change" : "Reject this change"}</Button></p>
   </AdminSection>}
   <AdminSection title="Company rules" note="Every task follows these" actions={!editing && pending === undefined ? <Button onClick={() => { reseed(); setEditing(true); }}>Change rules</Button> : undefined}>
-   {!editing ? <RuleList rules={settings.instructions} /> : !ready ? <FreshSignIn action="change the company's rules" refused={stale} /> : <>
-    <FreshSignIn action="change the company's rules" done />
+   {!editing ? <RuleList rules={settings.instructions} /> : <>
     <div role="group" aria-label="Edit company rules">{rules.map((rule, index) => <div key={index} className="rv-rule-edit"><TextField label={`Rule ${index + 1}`} value={rule.text} maxLength={600} onChange={event => { setRules(rules.map((entry, at) => (at === index ? { ...entry, text: event.target.value } : entry))); }} /><Select label="How firm" value={rule.priority} options={[{ value: "required", label: "Required" }, { value: "preferred", label: "Preferred" }]} onValueChange={value => { setRules(rules.map((entry, at) => (at === index ? { ...entry, priority: value === "preferred" ? "preferred" : "required" } : entry))); }} /><Button onClick={() => { setRules(rules.filter((_, at) => at !== index)); }}>Remove rule {index + 1}</Button></div>)}</div>
     <p><Button disabled={rules.length >= RULES_MAX} onClick={() => { setRules([...rules, { text: "", priority: "required" }]); }}>Add a rule</Button></p>
     <TextField label="Company monthly cap (USD)" id="monthly-cap-field" inputMode="decimal" value={cap} onChange={event => { setCap(event.target.value); }} hint={capToMicros(cap) === 0 ? "A $0 cap blocks all model gateway use." : "Leave empty for no cap. The model gateway serves a company only when it has one."} {...(capToMicros(cap) === undefined ? { error: "Enter an amount in dollars, like 1500 or 1500.50." } : {})} />
-    <Select label="Approval window" value={String(seconds)} options={WINDOW_CHOICES.map(choice => ({ value: String(choice.seconds), label: choice.label }))} onValueChange={value => { setSeconds(Number(value)); }} />
     <p className="rv-muted">Making a rule looser needs a second admin to approve it.</p>
     <p><Button variant="primary" busy={busy} disabled={capToMicros(cap) === undefined} onClick={() => { void save(); }}>Save rules</Button> <Button onClick={() => { setEditing(false); reseed(); }}>Cancel</Button></p>
    </>}
   </AdminSection>
   <AdminSection id="monthly-cap" title="Monthly cap" note="What the model gateway holds you to">
    {settings.monthlyCapUsd === undefined ? <NotConnected what="The monthly cap" /> : settings.monthlyCapUsd === null ? <p>No monthly cap is set. Rovara picks no amount for you. Use <b>Change rules</b> above to set one.</p> : <p>The company's monthly cap is <b><Money usd={settings.monthlyCapUsd} /></b>.{settings.monthlyCapUsd === 0 ? " A $0 cap blocks all model gateway use." : ""}</p>}
-  </AdminSection>
-  <AdminSection title="Approval window" note="For sensitive changes">
-   <p>Admins confirm it's them again before they change rules, send an admin invite or remove a passkey. The confirmation counts for <b>{windowWords(settings.freshSignInSeconds)}</b>.</p>
   </AdminSection>
   <AdminSection title="Who may start work">
    {settings.start === undefined ? <NotConnected what="The start rule" /> : <dl className="rv-kv-list"><div className="rv-kv"><dt>New tasks</dt><dd>{settings.start.allow ? "Anyone with project access may start one" : "Paused: nobody may start a task"}</dd></div><div className="rv-kv"><dt>Largest estimate without asking</dt><dd>{settings.start.maxEstimateUsd === undefined ? "No limit" : <Money usd={settings.start.maxEstimateUsd} />}</dd></div></dl>}

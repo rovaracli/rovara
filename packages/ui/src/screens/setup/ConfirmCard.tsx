@@ -4,7 +4,7 @@ import { useSetupAgentApi } from "../../api/setup-agent.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
-import { CONFIRM_WORDS, VERDICT_WORDS } from "./words.js";
+import { CONFIRM_WORDS, REVIEW_WORDS, VERDICT_WORDS } from "./words.js";
 
 type Ready = SetupAgentView & { proposal: NonNullable<SetupAgentView["proposal"]> };
 
@@ -12,7 +12,7 @@ type Ready = SetupAgentView & { proposal: NonNullable<SetupAgentView["proposal"]
  * "Use this setup": the commands Rovara found, each with whether the code host still shows what it cited. Using it PROPOSES the ticked commands as the project's test environment and applies nothing: the page says so,
  * and the next steps (settings, the setup check on a fresh machine, the Prove, approval) are the test environment section's. An item that does not match the code cannot be ticked.
  */
-export function ConfirmCard({ project, view, settingsRevision, onProposed }: { project: string; view: Ready; settingsRevision: number; onProposed: () => void }) {
+export function ConfirmCard({ project, view, settingsRevision, onProposed, place = "step" }: { project: string; view: Ready; settingsRevision: number; onProposed: () => void; /** "checklist": the card is in the checklist's Setup run row, where the check starts by itself and the approval is right below, so the words say that. */ place?: "step" | "checklist" }) {
   const api = useSetupAgentApi();
   const items = setupItemsOf(view.proposal).filter(item => item.kind === "setup" || item.kind === "tests");
   const verdict = (id: string) => view.verification?.[id] ?? "unchecked";
@@ -39,11 +39,11 @@ export function ConfirmCard({ project, view, settingsRevision, onProposed }: { p
         </li>;
       })}
     </ul>}
-    <p>{CONFIRM_WORDS.rule}</p>
+    <p>{place === "checklist" ? REVIEW_WORDS.confirmRule : CONFIRM_WORDS.rule}</p>
     {!checked && <p role="status">{CONFIRM_WORDS.checking}</p>}
     {done === undefined
       ? <Button variant="primary" busy={busy} disabled={!checked || ids.length === 0} onClick={() => { void use(); }}>Use this setup</Button>
-      : <><p role="status">{CONFIRM_WORDS.next}</p>{done.left.length > 0 && <ul aria-label="Left out">{done.left.map(left => <li key={`${left.id}-${left.reason}`}><VisibleText text={left.id} />: {CONFIRM_WORDS.leftOut[left.reason]}</li>)}</ul>}</>}
+      : <><p role="status">{place === "checklist" ? REVIEW_WORDS.confirmNext : CONFIRM_WORDS.next}</p>{done.left.length > 0 && <ul aria-label="Left out">{done.left.map(left => <li key={`${left.id}-${left.reason}`}><VisibleText text={left.id} />: {CONFIRM_WORDS.leftOut[left.reason]}</li>)}</ul>}</>}
     {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
   </section>;
 }

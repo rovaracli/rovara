@@ -2,6 +2,7 @@
 // The Cost and time report's Cloud routes (Feature A, slice A3): GET /v1/app/org/report and GET /v1/app/org/report/features/{id}, through Cloud's handler against a
 // pretend Rovara Code. Company owner or admin only; the company is Code's live access answer; Cloud reads Code's one-row-per-task report, groups it, and sends whole cents.
 import { describe, expect, it } from "vitest";
+import { readCostReport, readFeatureDetail, reportCsv, featureCsv } from "../../packages/ui/src/api/admin-report.js";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type CodeSession } from "../../packages/cloud-server/src/index.js";
 import { CODE_REPORT_FEATURES_PATH, CODE_REPORT_TASKS_PATH, REPORT_PAGES_MAX, REPORT_ROWS_MAX, REPORT_WORDS, allocateCents, plainHttpsLink, readRow } from "../../packages/cloud-server/src/report-routes.js";
 
@@ -317,12 +318,12 @@ describe("the report", () => {
 });
 
 describe("what Code sent, read strictly", () => {
-  it("refuses the whole answer for one unreadable row, in fixed words with nothing of the row", async () => {
-    for (const bad of [{ origin: "carrier-pigeon" }, { state: "weird" }, { currency: "EUR" }, { costMicros: -1 }, { costMicros: 1.5 }, { costMicros: 2_000_000_000_000 }, { prsMerged: "1" }, { startedAt: "soon" }, { path: "slow" }, { taskId: "x y" }, { feature: { id: "none", source: "chosen" } }, { feature: { id: "ok", source: "magic" } }, { endedAt: "later" }]) {
+  it("counts invalid rows separately, preserving valid tasks without exposing invalid text", async () => {
+    for (const bad of [{ origin: "carrier-pigeon" }, { state: "weird" }, { costMicros: -1 }, { costMicros: 1.5 }, { costMicros: 2_000_000_000_000 }, { prsMerged: "1" }, { startedAt: "soon" }, { path: "slow" }, { taskId: "x y" }, { feature: { id: "none", source: "chosen" } }, { feature: { id: "ok", source: "magic" } }, { endedAt: "later" }]) {
       const w = setUp({ [ACME]: { rows: [row(1), row(2, { ...bad, title: "SECRET-TITLE" })] } });
       const answer = await w.get(REPORT, "ada-token");
-      expect(answer.status, JSON.stringify(bad)).toBe(502);
-      expect(answer.body).toEqual(REPORT_WORDS.unreadable.body);
+      expect(answer.status, JSON.stringify(bad)).toBe(200);
+      expect(answer.body).toMatchObject({ unreadableTasks: 1, totals: { tasks: 1, costCents: 100, costIsFloor: true } });
       expect(answer.text).not.toContain("SECRET-TITLE");
     }
   });
@@ -395,8 +396,8 @@ describe("what Code sent, read strictly", () => {
     expect(answer.body.totals).toMatchObject({ tasks: 1, costCents: 0, costIsFloor: false });
     expect([...w.taskCalls()[0]!.search.keys()].sort()).toEqual(["from", "limit", "origin", "state"]);
     // A cost with no currency is not a cost Cloud can read; merged cannot exceed opened.
-    expect((await setUp({ [ACME]: { rows: [row(1, { currency: undefined, costMicros: 5 })] } }).get(REPORT, "ada-token")).status).toBe(502);
-    expect((await setUp({ [ACME]: { rows: [row(1, { prsOpened: 1, prsMerged: 2 })] } }).get(REPORT, "ada-token")).status).toBe(502);
+    expect((await setUp({ [ACME]: { rows: [row(1, { currency: undefined, costMicros: 5 })] } }).get(REPORT, "ada-token")).body.unreadableTasks).toBe(1);
+    expect((await setUp({ [ACME]: { rows: [row(1, { prsOpened: 1, prsMerged: 2 })] } }).get(REPORT, "ada-token")).body.unreadableTasks).toBe(1);
   });
 });
 
@@ -519,3 +520,27 @@ describe("allocating cents", () => {
   });
 });
 
+
+
+describe("cost coverage across summary, detail and CSV", () => {
+  it("keeps wholly unpriced tasks and foreign currencies separate from invalid rows", async () => {
+    const rows = [row(1), row(2, { costMicros: 0, currency: undefined, unpricedCalls: 1 }), row(3, { costMicros: 9_000_000, currency: "EUR" }), row(4, { costMicros: -1 })];
+    const w = setUp({ [ACME]: { rows } });
+    const summary = await w.get(REPORT, "ada-token"), detail = await w.get(FEATURE("none"), "ada-token");
+    expect(summary.status).toBe(200); expect(detail.status).toBe(200);
+    const report = readCostReport.parse(summary.body), feature = readFeatureDetail.parse(detail.body);
+    for (const result of [report, feature]) {
+      expect(result.unreadableTasks).toBe(1);
+      expect(result.totals).toMatchObject({ tasks: 3, costCents: 100, costIsFloor: true, pricedTasks: 1, foreignCurrencyTasks: 1, unpricedCalls: 1 });
+    }
+    expect(report.byFeature[0]).toMatchObject({ costCents: 100, pricedTasks: 1, foreignCurrencyTasks: 1 });
+    expect(feature.tasks.find(t => t.taskId === rows[1]!["taskId"])).toMatchObject({ costCents: 0, costUnavailable: true });
+    expect(feature.tasks.find(t => t.taskId === rows[2]!["taskId"])).toMatchObject({ costCents: 0, costUnavailable: true });
+    expect(feature.tasks.reduce((sum, t) => sum + t.costCents, 0)).toBe(100);
+    expect(reportCsv(report.byFeature, "feature", report.unreadableTasks)).toContain("Fully priced USD tasks,Foreign currency tasks");
+    expect(reportCsv(report.byFeature, "feature", report.unreadableTasks)).toContain(",1,1,1\r\n");
+    expect(featureCsv(feature.tasks, feature)).toContain(",1,1,1\r\n");
+    expect(featureCsv(feature.tasks, feature).match(/Cost unavailable/gu)).toHaveLength(2);
+    expect(readRow(row(5, { costMicros: 0, currency: undefined, unpricedCalls: 1 }), ACME)).toBeDefined();
+  });
+});

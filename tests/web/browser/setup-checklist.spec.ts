@@ -4,7 +4,8 @@
 import { expect, test } from "@playwright/test";
 import { HomePage, PROJECT, ROUTES, SetupChecklistPage, setEvalCard, setSetupRun } from "./pages/index.js";
 
-test.afterEach(async ({ page }) => { await setSetupRun(page, PROJECT, "none"); });
+// The setup run and the eval card both go back to the pretend Code's defaults, so no spec depends on the order they run in (batch 12 review L3).
+test.afterEach(async ({ page }) => { await setSetupRun(page, PROJECT, "none");await setEvalCard(page, PROJECT, "default"); });
 
 test("the owner works through the project checklist: a failed run, Run again, Stop, Set up later", async ({ page }, testInfo) => {
   await setSetupRun(page, PROJECT, "failed");
@@ -29,6 +30,10 @@ test("the owner works through the project checklist: a failed run, Run again, St
 test("a finished run, Project settings with Re-run setup, and Home's Finish setting up card", async ({ page }, testInfo) => {
   await setSetupRun(page, PROJECT, "ready");
   const screen = new SetupChecklistPage(page);
+  await screen.open(PROJECT);
+  // L4-T2: a run that ended with a proposal nobody approved is not Done.
+  await expect(screen.row("setupRun")).toHaveAttribute("data-state", "needs_you");
+  await setSetupRun(page, PROJECT, "ready", true);
   await screen.open(PROJECT);
   await expect(screen.row("setupRun")).toHaveAttribute("data-state", "done");
   // L4-EVC: a finished run brings the eval card; with no card, the row keeps the checks the run reported.

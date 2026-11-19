@@ -100,13 +100,13 @@ function codeMessage(error: CodeError): { code: unknown; message: unknown } | un
 // (the revision approving it makes), `risk`, `lessSafe`, `changes` (Code's own "where: before -> after" lines) and `proved`. The app's onboarding section reads Cloud's
 // TestEnvironmentState (contracts test-environment-wire.ts), so Cloud builds it from that:
 //   - the proposal: its digest, risk, less-safe flags, whether it is proved, its body and a summary counted from the body; Code's change lines are the section's notes. Code's hosted
-//     read names no commands as run lines, prove steps or value sources, so none are shown. Approving it always needs a fresh step-up on the hosted Code (`needs.freshSignIn`),
-//     and who may approve is Code's risk rule (no second-person card on the hosted Code).
+//     read names no commands as run lines, prove steps or value sources, so none are shown. Approving it needs no step-up (owner DEC 254zzz73: `needs.freshSignIn` is
+//     always false), and who may approve is Code's risk rule (no second-person card on the hosted Code).
 //   - a proposal without a body that reads (an older Code, or one that could not be read back) is not offered for approval: a fixed line says one waits, as before.
 //   - an approved revision is a fixed line (Code's hosted read carries no approved body to show).
 // Approve (`POST .../test-environment/approve`, the app's `{ digest, expectedRevision, requestId }`) is forwarded as Code's `{ requestId, revision: proposal.nextRevision, artifactDigest:
 // proposal.digest }`, only when the proposal Code holds NOW is the one the person saw (the same digest, and the approved revision they saw is the one before `nextRevision`); otherwise
-// nothing is sent and the answer says it changed. Code decides who may approve and checks the step-up; its refusals become fixed words.
+// nothing is sent and the answer says it changed. Code decides who may approve; its refusals become fixed words.
 // With the feature off (`enabled: false`) the app gets Code's 404 words and shows nothing.
 export const TEST_ENVIRONMENT_WORDS = Object.freeze({
   off: "The test environment is off for this install.",
@@ -116,7 +116,6 @@ export const TEST_ENVIRONMENT_WORDS = Object.freeze({
   unreadable: "The test environment could not be read just now. Try again.",
   approveNotYet: "Approving the test environment isn't available on this Rovara yet.",
   stale: "It changed while you were looking. Open it again.",
-  stepUp: "Confirm it's you again, then try once more.",
   notAllowed: "Only a company admin, or the project's maintainer for a low or medium risk change, can approve this test environment.",
   approvedRefresh: "The test environment was approved. Refresh to see it.",
 });
@@ -183,7 +182,7 @@ function proposalOf(proposal: Record<string, unknown>): { view: Record<string, u
     changes: ((changes ?? []) as unknown[]).filter((change): change is string => line(change, 400)).slice(0, CHANGE_LINES_SHOWN),
     view: {
       digest, source: "setup", risk: proposal["risk"], lessSafe, summary, environment: proposal["environment"], runs: [], valueSources: [], proved: proposal["proved"], proveSteps: [],
-      needs: { freshSignIn: true, secondPerson: false }, approval: { status: "none" }, commandsNotInSettings: 0, check: { status: proposal["proved"] === true ? "ready" : "unchecked" },
+      needs: { freshSignIn: false, secondPerson: false }, approval: { status: "none" }, commandsNotInSettings: 0, check: { status: proposal["proved"] === true ? "ready" : "unchecked" },
     },
   };
 }
@@ -254,7 +253,7 @@ export const SAVED_ENV_ROUTES: Route[] = [
     },
   },
   {
-    // The app's Approve: forwarded only for the proposal Code holds now, exactly as the person saw it (see above). Code checks the step-up and who may approve.
+    // The app's Approve: forwarded only for the proposal Code holds now, exactly as the person saw it (see above). Code checks who may approve.
     method: "POST", path: /^\/projects\/([^/]+)\/test-environment\/approve$/u,
     answer: async ({ client, session, params, body }) => {
       const project = params[0]!;
@@ -270,9 +269,7 @@ export const SAVED_ENV_ROUTES: Route[] = [
         await client.json<unknown>(session, `/v1/app/projects/${encodeURIComponent(project)}/test-environment/approve`, { method: "POST", body: { requestId: asked.requestId, revision: waiting.nextRevision, artifactDigest: waiting.digest } });
       } catch (error) {
         if (!(error instanceof CodeError)) throw error;
-        const said = codeMessage(error);
         if (notYetFromCode(error)) return answer(501, "NOT_ON_CODE_YET", TEST_ENVIRONMENT_WORDS.approveNotYet);
-        if (error.status === 403 && said?.code === "REAUTH_REQUIRED") return answer(403, "REAUTH_REQUIRED", TEST_ENVIRONMENT_WORDS.stepUp);
         if (error.status === 403) return answer(403, "FORBIDDEN", TEST_ENVIRONMENT_WORDS.notAllowed);
         if (error.status === 409) return answer(409, "CHANGE_STALE", TEST_ENVIRONMENT_WORDS.stale);
         if (error.status === 404) return A.notFound;

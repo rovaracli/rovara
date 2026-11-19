@@ -11,9 +11,10 @@ const P = (n: number) => n.toString(16).padStart(64, "0");
 const TABLE = "gateway-meter";
 
 type Row = Record<string, unknown>;
+const companyRow = (company = A, month = "2026-11", over: Row = {}): Row => ({ pk: meterPartition(ISS, company), sk: `ROW#${JSON.stringify(["company", month])}`, item: "company", company, spentMicros: 0, ...over });
 const meterRow = (company: string, person: string, month: string, spentMicros: unknown, over: Row = {}): Row => ({ pk: meterPartition(ISS, company), sk: personMonthSort(person, month), item: "person", company, spentMicros, estimatedMicros: 0, reservedMicros: 0, committed: 0, overrun: false, ...over });
 /** A fake DocumentClient over a table of rows. It records every command and refuses anything but BatchGet. */
-function fake(rows: Row[], options: { unprocessedOnce?: boolean; neverFinish?: boolean; extra?: Row[] } = {}) {
+function fake(rows: Row[], options: { unprocessedOnce?: boolean; neverFinish?: boolean; extra?: Row[]; noPartition?: boolean } = {}) {
   const commands: Array<{ name: string; input: BatchGetCommand["input"] }> = [];
   let first = true;
   const db = {
@@ -24,7 +25,8 @@ function fake(rows: Row[], options: { unprocessedOnce?: boolean; neverFinish?: b
       const keys = table.Keys as Array<{ pk: string; sk: string }>;
       if (keys.length > 100) throw new Error("more than 100 keys");
       if (new Set(keys.map((key) => key.pk + key.sk)).size !== keys.length) throw new Error("duplicate keys");
-      const found = keys.flatMap((key) => rows.filter((row) => row["pk"] === key.pk && row["sk"] === key.sk));
+      const stored = options.noPartition === true ? rows : [companyRow(), ...rows];
+      const found = keys.flatMap((key) => stored.filter((row) => row["pk"] === key.pk && row["sk"] === key.sk));
       if (options.neverFinish === true) return { Responses: { [TABLE]: [] }, UnprocessedKeys: { [TABLE]: { Keys: keys } } };
       if (options.unprocessedOnce === true && first && keys.length > 1) { first = false; return { Responses: { [TABLE]: found.slice(0, 1) }, UnprocessedKeys: { [TABLE]: { Keys: keys.slice(1) } } }; }
       return { Responses: { [TABLE]: [...found, ...(options.extra ?? [])] } };
@@ -38,7 +40,7 @@ describe("DynamoGatewayMeterReader", () => {
     const f = fake([meterRow(A, P(1), "2026-11", 2_500_000), meterRow(B, P(1), "2026-11", 99_000_000), meterRow(A, P(1), "2026-10", 7_000_000)]);
     const read = await new DynamoGatewayMeterReader(f.db, TABLE, ISS).monthSpend(A, "2026-11", [P(1), P(2)]);
     expect([...read]).toEqual([[P(1), 2_500_000]]);
-    const keys = f.commands[0]!.input.RequestItems![TABLE]!;
+    const keys = f.commands[1]!.input.RequestItems![TABLE]!;
     expect(keys.ConsistentRead).toBe(true);
     expect(keys.Keys).toEqual([{ pk: `CO#${JSON.stringify([ISS, A])}`, sk: `ROW#${JSON.stringify(["person", P(1), "2026-11"])}` }, { pk: `CO#${JSON.stringify([ISS, A])}`, sk: `ROW#${JSON.stringify(["person", P(2), "2026-11"])}` }]);
     expect(JSON.stringify(keys.Keys)).not.toContain(B);
@@ -47,7 +49,7 @@ describe("DynamoGatewayMeterReader", () => {
     const ids = Array.from({ length: 250 }, (_, n) => P(n + 1));
     const f = fake(ids.map((id, n) => meterRow(A, id, "2026-11", (n + 1) * 10_000)));
     const read = await new DynamoGatewayMeterReader(f.db, TABLE, ISS).monthSpend(A, "2026-11", [...ids, ids[0]!]);
-    expect(f.commands.map((c) => c.input.RequestItems![TABLE]!.Keys!.length)).toEqual([100, 100, 50]);
+    expect(f.commands.map((c) => c.input.RequestItems![TABLE]!.Keys!.length)).toEqual([1, 100, 100, 50]);
     expect(read.size).toBe(250);
     expect(read.get(P(250))).toBe(2_500_000);
   });
@@ -60,7 +62,7 @@ describe("DynamoGatewayMeterReader", () => {
     const rows = [meterRow(A, P(1), "2026-11", 1_000_000), meterRow(A, P(2), "2026-11", 2_000_000)];
     const retried = fake(rows, { unprocessedOnce: true });
     expect([...await new DynamoGatewayMeterReader(retried.db, TABLE, ISS).monthSpend(A, "2026-11", [P(1), P(2)])].sort()).toEqual([[P(1), 1_000_000], [P(2), 2_000_000]]);
-    expect(retried.commands.length).toBe(2);
+    expect(retried.commands.length).toBe(3);
     await expect(new DynamoGatewayMeterReader(fake(rows, { neverFinish: true }).db, TABLE, ISS).monthSpend(A, "2026-11", [P(1)])).rejects.toThrow("meter unavailable");
   });
   it("refuses a row that is not exactly the one asked for", async () => {
@@ -91,9 +93,18 @@ describe("DynamoGatewayMeterReader", () => {
 it("reads the company's optional provisional total with the existing exact-key BatchGet and rejects cross-company or invalid rows", async () => {
   const sk = `ROW#${JSON.stringify(["company", "2026-11"])}`;
   const row = { pk: meterPartition(ISS, A), sk, item: "company", company: A, provisionalMicros: 42 };
-  const f = fake([row]);
+  const f = fake([row], { noPartition: true });
   expect(await new DynamoGatewayMeterReader(f.db, TABLE, ISS).provisionalTotal(A, "2026-11")).toBe(42);
   expect(f.commands[0]!.input.RequestItems![TABLE]!.Keys).toEqual([{ pk: row.pk, sk }]);
-  expect(await new DynamoGatewayMeterReader(fake([{ ...row, provisionalMicros: undefined }]).db, TABLE, ISS).provisionalTotal(A, "2026-11")).toBeUndefined();
-  for (const bad of [{ ...row, company: B }, { ...row, provisionalMicros: -1 }, { ...row, provisionalMicros: 0.5 }]) await expect(new DynamoGatewayMeterReader(fake([bad]).db, TABLE, ISS).provisionalTotal(A, "2026-11")).rejects.toThrow();
+  expect(await new DynamoGatewayMeterReader(fake([{ ...row, provisionalMicros: undefined }], { noPartition: true }).db, TABLE, ISS).provisionalTotal(A, "2026-11")).toBeUndefined();
+  for (const bad of [{ ...row, company: B }, { ...row, provisionalMicros: -1 }, { ...row, provisionalMicros: 0.5 }]) await expect(new DynamoGatewayMeterReader(fake([bad], { noPartition: true }).db, TABLE, ISS).provisionalTotal(A, "2026-11")).rejects.toThrow();
+});
+
+it("refuses an unverified issuer/partition instead of interpreting every missing person as zero", async () => {
+  const f = fake([meterRow(A, P(1), "2026-11", 5)]);
+  await expect(new DynamoGatewayMeterReader(f.db, TABLE, "https://wrong.example/v1/auth").monthSpend(A, "2026-11", [P(1)])).rejects.toThrow("meter unavailable");
+  await expect(new DynamoGatewayMeterReader(fake([], { noPartition: true }).db, TABLE, ISS).monthSpend(A, "2026-11", [P(1)])).rejects.toThrow("meter unavailable");
+  for (const over of [{ company: B }, { item: "person" }, { spentMicros: -1 }, { pk: meterPartition(ISS, B) }]) {
+    await expect(new DynamoGatewayMeterReader(fake([companyRow(A, "2026-11", over)], { noPartition: true }).db, TABLE, ISS).monthSpend(A, "2026-11", [P(1)])).rejects.toThrow("meter unavailable");
+  }
 });
