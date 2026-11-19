@@ -19,7 +19,7 @@ const effects: Record<Role, string> = {
 const REFUSALS: Readonly<Record<string, string>> = {
  FORBIDDEN: "You can't make this role change. Close and reload to see what you can do.",
  NOT_FOUND: "That person isn't in your company. Close and reload.",
- LAST_OWNER: "A company needs at least one owner. Make someone else an owner first.",
+ LAST_OWNER: "You're the only owner; add another owner first",
  MEMBER_ALREADY_REMOVED: "This person was removed from the company.",
  CONFIG_INVALID: "Choose member, admin or owner.",
  CHANGE_STALE: "Company roles changed. Close and review again.",
@@ -36,12 +36,13 @@ interface Props {
  /** The role changes this viewer may start for this person (company-roles.ts roleChangesFor); none: "Owners only". */
  changes: readonly Role[];
  checking: boolean; staleData: boolean; checkingReasonId: string; verify: () => Promise<Role | undefined>; onApplied: (role: Role) => void; onDenied: () => void;
+ selfStepDown?: boolean; onStepDown?: (role: Role) => void;
 }
 /**
  * A person's role buttons ("Make admin" and so on) and the one dialog they open: review, then Code's answer checked
  * against the list. The dialog keeps the change it opened for even when the list moves on underneath it.
  */
-export function RoleChangeDialog({ company, member, changes, checking, staleData, checkingReasonId, verify, onApplied, onDenied }: Props) {
+export function RoleChangeDialog({ company, member, changes, checking, staleData, checkingReasonId, verify, onApplied, onDenied, selfStepDown = false, onStepDown }: Props) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
  const [open, setOpen] = useState(false), [to, setTo] = useState<Role>(changes[0] ?? "member"), triggers = useRef(new Map<Role, HTMLButtonElement>()), [current, setCurrent] = useState(member.role), [requestId, setRequestId] = useState(""), [busy, setBusy] = useState(false), [sent, setSent] = useState(false), [message, setMessage] = useState<string>(), [verified, setVerified] = useState(false);
  const checkElement = useRef<HTMLButtonElement>(null);
@@ -70,6 +71,7 @@ export function RoleChangeDialog({ company, member, changes, checking, staleData
    if (!alive.current || version.current !== ticket) return;
    if (result.kind !== "done") { setMessage("The role change is pending. Check the current role before making another change.");return; }
    if (result.value.developerId !== member.developerId || result.value.role !== to) { setMessage("The role response could not be verified. Check the current role before making another change.");return; }
+   if (selfStepDown) { onStepDown?.(to);return; }
    await check(to, ticket);
   } catch (error) {
    if (!alive.current || version.current !== ticket) return;
@@ -80,8 +82,8 @@ export function RoleChangeDialog({ company, member, changes, checking, staleData
  }
  const name = visibleText(member.name);
  if (!open && changes.length === 0) return <span className="rv-muted">Owners only</span>;
- return <><div className="rv-admin-role-buttons">{changes.map(role => <Button key={role} ref={element => { if (element === null) triggers.current.delete(role); else triggers.current.set(role, element); }} aria-disabled={checking || staleData} aria-describedby={checking || staleData ? checkingReasonId : undefined} aria-label={`Make ${name} ${asWords[role]}`} data-testid={`role-${role}`} onClick={() => { changeOpen(true, role); }}>{buttonWords[role]}</Button>)}</div>
- <Dialog title="Change company role" description="Review who will have company access before confirming." open={open} onOpenChange={value => { changeOpen(value); }} onCloseAutoFocus={event => { const back = triggers.current.get(to);if (back !== undefined) { event.preventDefault();back.focus(); } }}>
+ return <><div className="rv-admin-role-buttons">{changes.map(role => <Button key={role} ref={element => { if (element === null) triggers.current.delete(role); else triggers.current.set(role, element); }} aria-disabled={checking || staleData} aria-describedby={checking || staleData ? checkingReasonId : undefined} aria-label={selfStepDown ? `Step down to ${asWords[role]}` : `Make ${name} ${asWords[role]}`} data-testid={`role-${role}`} onClick={() => { changeOpen(true, role); }}>{selfStepDown ? `Step down to ${role}` : buttonWords[role]}</Button>)}</div>
+ <Dialog title={selfStepDown ? "Step down as company owner" : "Change company role"} description={selfStepDown ? "Review your new company role before confirming." : "Review who will have company access before confirming."} open={open} onOpenChange={value => { changeOpen(value); }} onCloseAutoFocus={event => { const back = triggers.current.get(to);if (back !== undefined) { event.preventDefault();back.focus(); } }}>
   <div className="rv-admin-role-review" aria-busy={busy}>
    {(checking || staleData) && <p role={staleData ? "alert" : "status"}>{staleData ? "Member list is stale. Retry the member list before making a change." : "Checking company access..."}</p>}
    <p>Company: <VisibleText text={company} /></p><p><VisibleText text={member.name} /></p><p>{verified ? "Previous role" : "Current role"}: {ROLE_NAMES[current]}</p>
@@ -90,7 +92,7 @@ export function RoleChangeDialog({ company, member, changes, checking, staleData
    {stale && !verified && <p role="alert">This person's role changed. Close and review again.</p>}
    {message && <p role={verified ? "status" : "alert"}>{message}</p>}{verified && <p className="rv-muted">Verified just now for this company.</p>}
    {!verified && <div className="rv-admin-role-actions">
-    <Button variant="primary" busy={busy} disabled={staleData || stale || sent} aria-disabled={checking || staleData || stale || sent} onClick={() => { void commit(); }}>Confirm role change</Button>
+    <Button variant="primary" busy={busy} disabled={staleData || stale || sent} aria-disabled={checking || staleData || stale || sent} onClick={() => { void commit(); }}>{selfStepDown ? "Confirm step down" : "Confirm role change"}</Button>
     {sent && !busy && <Button ref={checkElement} disabled={checking} onClick={() => { if (sending.current) return;const ticket = version.current;sending.current = true;setBusy(true);void check(to, ticket).finally(() => { sending.current = false;if (alive.current && version.current === ticket) setBusy(false); }); }}>Check current role</Button>}
    </div>}
   </div>

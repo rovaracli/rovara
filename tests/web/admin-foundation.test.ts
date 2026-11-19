@@ -151,9 +151,25 @@ it("does not claim success when the canonical role disagrees with the write rece
  const f = mount({ respond: async r => r.method === "PUT" ? { status: 200, body: { developerId: member.developerId, role: "admin" } } : { status: 200, body: r.path.endsWith("/members") ? { members: [member] } : f.me } });
  await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Make Maya an admin" }));fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));expect(await screen.findByText("The current role could not be verified. Close and reload before making another change.")).toBeTruthy();expect(screen.queryByText("Company role verified: Admin.")).toBeNull();f.close();
 });
-it("offers no role change on your own row", async () => {
+it("offers owner-only step-down choices on the owner's own row", async () => {
  const self = { ...member, developerId: "a".repeat(64), name: "Priya", role: "owner" };const f = mount({ respond: async r => ({ status: 200, body: r.path.endsWith("/members") ? { members: [self, member] } : f.me }) });
- await screen.findByText("Maya");expect(screen.queryByRole("button", { name: /^Make Priya/ })).toBeNull();expect(screen.getAllByText("You").length).toBeGreaterThan(0);f.close();
+ await screen.findByText("Maya");expect(screen.getByRole("button", { name: "Step down to an admin" })).toBeTruthy();expect(screen.getByRole("button", { name: "Step down to a member" })).toBeTruthy();expect(screen.getAllByText("You").length).toBeGreaterThan(0);f.close();
+});
+
+it("lets the live owner step down with another live owner and returns Home", async () => {
+ const self = { ...member, developerId: "a".repeat(64), name: "Priya", role: "owner" }, successor = { ...member, developerId: "c".repeat(64), name: "Olu", role: "owner" };
+ const f = mount({ respond: async r => r.method === "PUT" ? { status: 200, body: { developerId: self.developerId, role: "admin" } } : { status: 200, body: r.path.endsWith("/members") ? { members: [self, successor] } : f.me } });
+ await screen.findByText("Olu");fireEvent.click(screen.getByRole("button", { name: "Step down to an admin" }));
+ expect(await screen.findByRole("dialog", { name: "Step down as company owner" })).toBeTruthy();await expectNoAxeViolations(f.container);
+ fireEvent.click(screen.getByRole("button", { name: "Confirm step down" }));expect(await screen.findByRole("heading", { name: "Home" })).toBeTruthy();
+ expect(f.request.mock.calls.find(([r]) => r.method === "PUT")?.[0].body).toMatchObject({ role: "admin" });f.close();
+});
+
+it("shows the fixed last-owner refusal when Code rejects a step-down", async () => {
+ const self = { ...member, developerId: "a".repeat(64), name: "Priya", role: "owner" };
+ const f = mount({ respond: async r => r.method === "PUT" ? { status: 409, body: { error: { code: "LAST_OWNER", message: "untrusted upstream detail" } } } : { status: 200, body: r.path.endsWith("/members") ? { members: [self] } : f.me } });
+ fireEvent.click(await screen.findByRole("button", { name: "Step down to a member" }));fireEvent.click(screen.getByRole("button", { name: "Confirm step down" }));
+ expect(await screen.findByText("You're the only owner; add another owner first")).toBeTruthy();expect(screen.queryByText("untrusted upstream detail")).toBeNull();expect(f.router.state.location.pathname).toBe("/app/admin/people");f.close();
 });
 
 it("preserves dialog focus while a background identity check blocks a commit", async () => {
@@ -178,7 +194,7 @@ it("bounds a stalled role write and never resends or claims its late result", as
   fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await act(async () => { resolve({ status: 200, body: { developerId: member.developerId, role: "admin" } }); });expect(screen.queryByText(/role verified|role changed and verified/)).toBeNull();expect(f.request.mock.calls.filter(([r]) => r.method === "PUT")).toHaveLength(1);
  } finally { vi.useRealTimers();f.close(); }
 });
-for (const [status, code, copy] of [[403, "FORBIDDEN", "You can't make this role change. Close and reload to see what you can do."], [409, "CHANGE_STALE", "Company roles changed. Close and review again."], [409, "LAST_OWNER", "A company needs at least one owner. Make someone else an owner first."], [404, "NOT_FOUND", "That person isn't in your company. Close and reload."], [409, "MEMBER_ALREADY_REMOVED", "This person was removed from the company."], [503, "RUNTIME_UNAVAILABLE", "The outcome is unknown. Check the current role before making another change."]] as const) it(`renders a safe ${code} refusal without optimistic success or resending`, async () => {
+for (const [status, code, copy] of [[403, "FORBIDDEN", "You can't make this role change. Close and reload to see what you can do."], [409, "CHANGE_STALE", "Company roles changed. Close and review again."], [409, "LAST_OWNER", "You're the only owner; add another owner first"], [404, "NOT_FOUND", "That person isn't in your company. Close and reload."], [409, "MEMBER_ALREADY_REMOVED", "This person was removed from the company."], [503, "RUNTIME_UNAVAILABLE", "The outcome is unknown. Check the current role before making another change."]] as const) it(`renders a safe ${code} refusal without optimistic success or resending`, async () => {
  const f = mount({ respond: async r => r.method === "PUT" ? { status, body: { error: { code, message: "untrusted provider detail" } } } : { status: 200, body: r.path.endsWith("/members") ? { members: [member] } : f.me } });
  await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Make Maya an admin" }));fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));await screen.findByText(copy);expect(screen.queryByText("untrusted provider detail")).toBeNull();expect(screen.queryByText(/role verified|role changed and verified/)).toBeNull();expect(screen.getByRole("button", { name: "Confirm role change" }).hasAttribute("disabled")).toBe(true);expect(f.request.mock.calls.filter(([r]) => r.method === "PUT")).toHaveLength(1);f.close();
 });
