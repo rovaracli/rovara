@@ -104,8 +104,13 @@ describe("Rovara's AI in the gateway stack (DEC 240)", () => {
     expect(bySid.RovaraAiProfileModels!.Condition).toEqual({ StringEquals: { "bedrock:InferenceProfileArn": [profileArn("us.anthropic.claude-haiku-5-5"), profileArn("us.moonshotai.kimi-k3.1")] } });
   });
 
-  it("refused at synth: production, without product AI (company-key mode), global or another geography, bad lists", () => {
-    expect(() => app({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS }, "production")).toThrow(/^Rovara's AI is for named test environments/u);
+  it("allowed for production with product AI (Rovara-cloud#247), with no exempt companies there", () => {
+    const production = Template.fromStack(app({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS }, "production").node.findChild("RovaraModelGateway") as Stack).toJSON() as { Resources: Record<string, Resource> };
+    expect(JSON.stringify(production.Resources)).toContain("GATEWAY_ROVARA_AI_MODELS");
+    expect(() => app({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS, [MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY]: `org_${"a".repeat(20)}` }, "production")).toThrow(/exempt/u);
+  });
+
+  it("refused at synth: without product AI (company-key mode), global or another geography, bad lists", () => {
     expect(() => synth({ [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS })).toThrow(/needs rovaraModelGatewayProductAi=on/u);
     for (const bad of ["claude-sonnet-5-5=anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=global.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=eu.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=us.meta.llama3", "x=us.anthropic.claude-a", "claude-a=us.anthropic.claude-a,claude-a=us.anthropic.claude-b"]) {
       expect(() => synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: bad })).toThrow();

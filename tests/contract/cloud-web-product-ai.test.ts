@@ -118,8 +118,8 @@ describe("Cloud web: product AI settings grants (B7)", () => {
     expect(changed).toBe(1);
     expect(sha(t)).toBe(BEFORE_CONDITION_CHECK[env]);
   });
-  it("is refused for production, and by the app only when the switch is exactly on", () => {
-    expect(() => synth("production", true)).toThrow(/named test environments/u);
+  it("is allowed for production (Rovara-cloud#247), and by the app only when the switch is exactly on", () => {
+    expect(Object.keys(synth("production", true).Parameters)).toEqual(expect.arrayContaining(["ProductKeysTableName", "ProductKeysKeyArn", "ProductKeysMacKeyArn", "ModelGatewayUrl"]));
     expect(() => buildAgentXApp({ rovaraCloudApp: "staging", [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "maybe" })).toThrow(/must be "on" or absent/u);
   });
   it("on (staging): exactly the table by company keys, GenerateDataKey for this install's sealed rows and GenerateMac; never Decrypt", () => {
