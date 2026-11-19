@@ -18,6 +18,7 @@ import { SetupRunControls } from "../setup/SetupRunRow.js";
 import { RecheckSetupRow } from "../setup/SetupRepairCard.js";
 import { setupChecklistKey } from "../../api/setup-checklist.js";
 import { TicketUpdatesSettings } from "./TicketUpdatesSettings.js";
+import { ProjectPeople } from "../admin/projects/ProjectPeople.js";
 import { LocalToolsSetting } from "./LocalToolsSetting.js";
 
 const lifecycleReader = { parse(value: unknown) { return AppProjectLifecycleSchema.parse(value); } };
@@ -51,6 +52,7 @@ export function ProjectSettingsTab({ project, canEdit }: { project: string; canE
    <SetupRunControls project={project} againLabel="Re-run setup" onChanged={() => { void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); }} />
    <RecheckSetupRow project={project} />
   </section>
+  <ProjectPeople key={`people:${scope.orgId}:${scope.developerId}:${project}`} name={project} />
   <Lifecycle project={project} scope={scope} />
   <ProjectIntegrations project={project} canEdit={canEdit} />
   <TicketUpdatesSettings project={project} />
