@@ -1,0 +1,72 @@
+{
+  "code": {
+    "source": {
+      "installId": "install_1",
+      "companyId": "org_1",
+      "sourceKind": "code",
+      "eventId": "4e497f175ad081a28264ee5dfa3d8303b312ebbc69ee4048aa40426107738c56"
+    },
+    "factsDigest": "09b7568e8f52d2b88bc90b6b90b13bd7a794a0a0c805a6109e7877c33dab68da",
+    "event": {
+      "v": 1,
+      "orgId": "org_1",
+      "eventId": "aev1.install_1.code.org_1.4e497f175ad081a28264ee5dfa3d8303b312ebbc69ee4048aa40426107738c56",
+      "action": "task.approved",
+      "actor": {
+        "kind": "person",
+        "id": "bdb9793be53f184a0244e8a1154c4c54d7c4755b56e98de855f9e675f18b5b4b"
+      },
+      "target": {
+        "kind": "commitment",
+        "id": "bc077f88d99fe17670ebcee177a2283384a39d92b5262e8a7567de0d2fe64b90"
+      },
+      "occurredAt": "2026-11-19T00:00:00.000Z",
+      "related": [],
+      "facts": {
+        "sourceKind": "code",
+        "sourceInstall": "install_1"
+      },
+      "details": [
+        {
+          "subject": "source",
+          "commit": "09b7568e8f52d2b88bc90b6b90b13bd7a794a0a0c805a6109e7877c33dab68da"
+        }
+      ]
+    }
+  },
+  "cloud": {
+    "source": {
+      "installId": "install_1",
+      "companyId": "org_1",
+      "sourceKind": "cloud",
+      "eventId": "24c2cfc516c3cdfb0369b64940c7d09397e58eb4b97821443906b2017e09a6a5"
+    },
+    "factsDigest": "bf4188e42f948d30282687b672638682ef8841d1bd1ac0a8e53fb622a318b06a",
+    "event": {
+      "v": 1,
+      "orgId": "org_1",
+      "eventId": "aev1.install_1.cloud.org_1.24c2cfc516c3cdfb0369b64940c7d09397e58eb4b97821443906b2017e09a6a5",
+      "action": "company.budget.changed",
+      "actor": {
+        "kind": "agent",
+        "id": "7019df80ebe15e68f0261126c47402f27d5173e64a9a72d81a8225b21c40570b"
+      },
+      "target": {
+        "kind": "commitment",
+        "id": "95afb609d50d23d14738e6ff521f256ea9ee3cbb38ff22e22df5269b1fe1f8bc"
+      },
+      "occurredAt": "2026-11-19T00:00:00.000Z",
+      "related": [],
+      "facts": {
+        "sourceKind": "cloud",
+        "sourceInstall": "install_1"
+      },
+      "details": [
+        {
+          "subject": "source",
+          "commit": "bf4188e42f948d30282687b672638682ef8841d1bd1ac0a8e53fb622a318b06a"
+        }
+      ]
+    }
+  }
+}
