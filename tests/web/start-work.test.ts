@@ -179,3 +179,32 @@ it("a pending preview never disables Start", async () => {
  const f = setup(undefined, { preview: async () => new Promise<ApiResponse>(() => undefined) });
  try { fireEvent.change(await box(), { target: { value: "Fix it" } });expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start" }).disabled).toBe(false);fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1)); } finally { f.close(); }
 });
+
+it("opts in after typing and shows Quick/Full estimates with planning exposure and partial limits", async () => {
+ const { quoteFixture } = await import("../support/start-preview-fixture.js");
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  expect(await screen.findByRole("region", { name: "Quick and Full cost estimates" })).toBeTruthy();
+  expect(screen.getByText(/Quick: \$1.00–\$3.00/)).toBeTruthy();
+  expect(screen.getByText(/Full: \$4.00–\$10.00/)).toBeTruthy();
+  expect(screen.getAllByText(/not model-priced/).length).toBeGreaterThan(0);
+  expect(screen.getByText(/No money is reserved/)).toBeTruthy();
+  expect(previews(f)[0]?.body).toEqual({ quoteVersion: 2, inputText: "Fix it" });
+  expect(posts(f)).toHaveLength(0);
+ } finally { f.close(); }
+});
+it("refreshes changed quotes and discloses the cost change before starting", async () => {
+ const { quoteFixture } = await import("../support/start-preview-fixture.js");
+ let refreshed = false;
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { ...quoteFixture(), project: "payments", inputsDigest: (refreshed ? "b" : "a").repeat(64), asOf: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }) });
+ try {
+  fireEvent.change(await box(), { target: { value: "Fix it" } });
+  await screen.findByRole("region", { name: "Quick and Full cost estimates" });
+  refreshed = true;fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  expect(await screen.findByText(/Cost estimate changed/)).toBeTruthy();
+  expect(posts(f)).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(posts(f)).toHaveLength(1));
+ } finally { f.close(); }
+});
