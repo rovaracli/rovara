@@ -19,7 +19,7 @@
 // another body is refused). Hosted Code has no setup-run route yet, so nothing here starts a setup run; `SETUP_RUNS_AT_ONCE_PER_COMPANY` (contracts, the
 // one place a future runner caps them) is not used on this path.
 import { createHash } from "node:crypto";
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import type { CodeSession } from "./sessions.js";
@@ -94,6 +94,7 @@ function codeMessage(error: CodeError): string | undefined {
 
 /** Code's refusal of a create or a picker read, as one of these fixed answers (or the one sentence that names a project's name). */
 export function createRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   if (error.status === 403) return PICKER_WORDS.notAdmin;
   const message = codeMessage(error);
   if (error.status === 400 && message === CODE_NOT_AVAILABLE) return PICKER_WORDS.notAvailable;

@@ -28,7 +28,7 @@
 //     racing for one GitHub account cannot both get a trial. The company that loses is still connected (Code bound the installation as the
 //     person before Cloud is told), is told only the fixed flag `trialUsed`, and gets no trial.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { companyOf } from "./company-caller.js";
 import { PROJECT_NAME, codeRefusal, companyOwnerOnly } from "./connect-flow.js";
 import { validGithubUserId, type CompanyStore } from "./company-store.js";
@@ -233,6 +233,7 @@ export function createGithubConnect(deps: GithubConnectDeps) {
       deps.log({ event: "cloud.github_trial_used", companyId, developerId: session.access.developerId });
       return { ...result, trialUsed: true };
     } catch (error) {
+      if (isCodeOutcomeUnknown(error)) throw error;
       if (error instanceof SignInEnded) throw error;
       deps.log({ event: "cloud.github_trial_check_failed", developerId: session.access.developerId });
       return result;
@@ -263,6 +264,7 @@ export function createGithubConnect(deps: GithubConnectDeps) {
       try {
         answer = await deps.client.json<unknown>(session, `${CODE_GITHUB}/connect`, { method: "POST", body: {} });
       } catch (error) {
+        if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
         if (!(error instanceof CodeError)) throw error;
         if (error.status === 403) return refusal(403, "FORBIDDEN", GITHUB_WORDS.adminOnly);
         if (error.status === 404 || error.status === 405 || error.status === 501) return refusal(404, "NOT_FOUND", GITHUB_WORDS.notAvailable);
@@ -339,6 +341,7 @@ export function createGithubConnect(deps: GithubConnectDeps) {
             answer = await deps.client.json<unknown>(session, `${CODE_GITHUB}/claim`, { method: "POST", body: claim });
           }
         } catch (error) {
+          if (isCodeOutcomeUnknown(error)) throw error;
           if (!(error instanceof CodeError)) throw error;
           const refused = claimOutcome(error.status);
           deps.log({ event: "cloud.github_claim_refused", developerId: session.access.developerId, status: error.status });
@@ -392,6 +395,7 @@ export function createGithubConnect(deps: GithubConnectDeps) {
       try {
         answer = await deps.client.json<unknown>(session, `${CODE_GITHUB}/choose`, { method: "POST", body: { ticket: listed.ticket, installationId: wanted } });
       } catch (error) {
+        if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
         if (!(error instanceof CodeError)) throw error;
         deps.log({ event: "cloud.github_choose_refused", developerId: session.access.developerId, status: error.status });
         return outcomeRefusal(claimOutcome(error.status));
@@ -410,6 +414,7 @@ export function createGithubConnect(deps: GithubConnectDeps) {
       try {
         answer = await deps.client.json<unknown>(session, CODE_GITHUB);
       } catch (error) {
+        if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
         if (!(error instanceof CodeError)) throw error;
         if (error.status === 404 || error.status === 405 || error.status === 501) return refusal(404, "NOT_FOUND", GITHUB_WORDS.notAvailable);
         return refusal(503, "RUNTIME_UNAVAILABLE", GITHUB_WORDS.connectionsUnavailable);
@@ -445,6 +450,7 @@ export function createGithubConnect(deps: GithubConnectDeps) {
       try {
         answer = await deps.client.json<unknown>(session, `${CODE_GITHUB}/${String(wanted)}`, { method: "DELETE" });
       } catch (error) {
+        if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
         if (!(error instanceof CodeError)) throw error;
         const { code, message } = codeRefusal(error.body);
         if (error.status === 403) return refusal(403, "FORBIDDEN", GITHUB_WORDS.ownerOnly);

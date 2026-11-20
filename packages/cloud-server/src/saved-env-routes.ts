@@ -24,7 +24,7 @@ import { parsePreviewRequestV2, parsePreviewV2, restrictPreviewV2 } from "./star
 // plainly. Only a person who may use the project (Code's access check, made now, names it) gets an answer: any other project is the one 404; the company in the answer
 // is the one Code's access check names, never the browser's. The body is `{}` (a request id and a path word are accepted, nothing else).
 // cloud-server takes no package dependency, so the shapes are checked here by hand against contracts app-saved-env.ts (a unit test pins the words).
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
@@ -322,6 +322,7 @@ export const SAVED_ENV_ROUTES: Route[] = [
           if (quote === undefined || quote.orgId !== who.companyId || quote.project !== project || Date.parse(quote.expiresAt) <= context.now().getTime() || Date.parse(quote.asOf) > context.now().getTime()) return answer(502, "RUNTIME_UNAVAILABLE", "The cost comparison could not be read just now.");
           return { status: 200, body: who.companyRole === "owner" || who.companyRole === "admin" ? quote : restrictPreviewV2(quote) };
         } catch (error) {
+          if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
           if (error instanceof CodeError && error.status === 404 && !notYetFromCode(error)) return A.projectNotFound;
           return answer(502, "RUNTIME_UNAVAILABLE", "The cost comparison is unavailable. It does not reserve money or authorize spending.");
         }

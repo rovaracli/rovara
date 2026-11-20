@@ -15,7 +15,7 @@
 // only when it is exactly one of Code's own fixed ones). Admin routes (GET/DELETE /v1/dev/company/members/{personId}/sign-ins[/{method}]) are Code's and
 // not used here yet.
 import { createHash, randomBytes } from "node:crypto";
-import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { codeRefusal, isObject, oneValue, sameDigest, sha256, type ConnectAnswer, connectRefusal } from "./connect-flow.js";
 import { sessionKey, type CodeSession, type SessionStore } from "./sessions.js";
 
@@ -104,6 +104,7 @@ type Operation = "list" | "start" | "unlink";
 
 /** Code's refusal in Cloud's fixed words, by status and code (a Code sentence only when it is exactly one of Code's own). */
 function refusalOf(error: CodeError, operation: Operation): ConnectAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const { code, message } = codeRefusal(error.body);
   if (error.status === 401) return connectRefusal(401, "AUTH_REQUIRED", SIGN_IN_LINK_WORDS.signedOut);
   if (error.status === 403) {
@@ -234,6 +235,7 @@ export function createSignInLinks(deps: SignInLinksDeps) {
           await deps.store.delete(sessionCookie);
           return refuse("signed_out");
         }
+        if (isCodeOutcomeUnknown(failure)) throw failure;
         if (failure instanceof CodeError) return refuse(`code_${String(failure.status)}`, failure.status === 403 ? "refused" : "failed");
         throw failure;
       }

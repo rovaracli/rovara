@@ -25,7 +25,7 @@
 //     the saved "AI for your agents" choice and its connection), and refuses Build/Continue/Refresh now with Code's fixed "Connect an AI key" sentence before Code is asked when it knows there is none.
 //     Code's own connected/missing wins; a reader keeps "unknown"; a fact Cloud cannot read stays "unknown". Only the enum and that sentence leave (no key, provider, source or model).
 // cloud-server takes no package dependency, so the shapes are checked here by hand against contracts app-wiki-setup.ts (its limits and words are repeated and a unit test pins them).
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { agentAiConnected } from "./agent-ai-presence.js";
 import { Unreadable, list, need, oneOf, plain, prose, rec, scope, text, when, whole } from "./wiki-routes.js";
@@ -110,6 +110,7 @@ export const CODE_CONSENT_WORDS = Object.freeze({
 type Kind = "map" | "build" | "upkeep";
 /** Code's refusal in fixed words. Only Code's exact unknown-route 404 means "not on Code yet". */
 export function wikiSetupRefusal(kind: Kind, error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
   const message = typeof body?.["message"] === "string" ? body["message"] : undefined, code = typeof body?.["code"] === "string" ? body["code"] : undefined;
   if (error.status === 404 && code === "NOT_FOUND" && message === "route not found") return kind === "upkeep" ? A.upkeepNotYet : A.notYet;

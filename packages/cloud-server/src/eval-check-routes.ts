@@ -12,7 +12,7 @@
 //   - A refusal reaches the app in the words Code fixed (an exact member of a known list), else in Cloud's own fixed words; never an echo of the browser's input. Until Code serves the route, its fixed unknown-route 404
 //     reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
 //   - The logs say what was done and where (action, project), never what the person chose.
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyOf, isCompanyAdmin } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { Unreadable, list, need, oneOf, plain, rec, safePath, scope, text } from "./wiki-routes.js";
@@ -53,6 +53,7 @@ const hasOnly = (value: Record<string, unknown>, keys: readonly string[]): boole
 
 /** Code's refusal in fixed words. Only Code's exact unknown-route 404 means "not on Code yet". */
 export function evalCheckRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
   const message = typeof body?.["message"] === "string" ? body["message"] : undefined, code = typeof body?.["code"] === "string" ? body["code"] : undefined;
   if (error.status === 404 && code === "NOT_FOUND" && message === "route not found") return A.notYet;

@@ -15,7 +15,7 @@
 //   - The answer text is untrusted: it is kept to plain characters here and drawn as text, never as markup.
 //   - Code's refusals reach the app as Cloud's fixed sentences, never Code's own text and never an echo of the browser's input or the cause.
 // cloud-server takes no package dependency, so the shapes are checked here by hand against contracts app-answers.ts (its limits are repeated and a unit test pins them).
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
@@ -152,6 +152,7 @@ export function notRightObject(value: unknown): Plain {
 type Kind = "answer" | "suggest" | "notRight";
 /** Code's refusal in Cloud's fixed words. Only Code's exact unknown-route 404 means "not on Code yet"; any other 404 is "not found". */
 export function answersRefusal(kind: Kind, error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
   if (error.status === 404) return body?.["code"] === "NOT_FOUND" && (body["message"] === "route not found" || body["message"] === CORE_NOT_YET) ? A.notYet : kind === "notRight" ? A.answerGone : A.notFound;
   if (kind === "notRight") return error.status === 403 ? A.forbidden : error.status === 400 ? A.invalid : A.notRightFailed;
@@ -171,6 +172,7 @@ async function scope(context: RouteContext, kind: Kind): Promise<{ project: stri
   try {
     who = await companyCaller(context);
   } catch (error) {
+    if (isCodeOutcomeUnknown(error)) return { refusal: { status: error.status, body: error.body } };
     if (error instanceof CodeError) {
       (context.log ?? ((event) => { console.log(JSON.stringify(event)); }))({ event: "cloud.answers_unavailable", code: "ACCESS_CHECK_FAILED" });
       return { refusal: kind === "suggest" ? A.suggestUnavailable : kind === "notRight" ? A.notRightFailed : A.unavailable };

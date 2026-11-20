@@ -17,7 +17,7 @@
 //   - Code's refusals are worded here, never echoed: the five sentences Code fixes (name taken, too many features, feature is done, cannot merge, changed while saving) and the maintainer rule
 //     each get Cloud's own fixed sentence; anything else Code says is one generic sentence. An ended sign-in is the handler's.
 // Every write is a non-GET under /v1/web, so the handler's CSRF check covers it already. Code writes the audit record of each change (who and when); Cloud keeps none of its own.
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { FEATURE_ID, FEATURE_NAME_MAX, NAME_UNSAFE, REPORT_WORDS, TASK_ID, readFeature } from "./report-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
@@ -67,6 +67,7 @@ function messageOf(error: CodeError): string | undefined {
 
 /** Code's refusal as one of the fixed answers. `task`: the move route, whose 404 names a task, not a feature. */
 function refusalOf(error: CodeError, task: boolean): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const message = messageOf(error);
   if (error.status === 403) return task && message === CODE_NEEDS_MAINTAINER ? ACTION_WORDS.needsMaintainer : ACTION_WORDS.notAdmin;
   if (error.status === 404) {

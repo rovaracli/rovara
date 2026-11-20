@@ -34,6 +34,7 @@ function fakeCode() {
   let projectNames = ["payments"];
   let projectRevision = 3;
   let decisionRefusal: string | undefined;
+  let decisionReplyLost = false;
   // DEC 254zzz94: what Code answers on the task's merge route, by method (unset: Code's unknown-route 404).
   const mergeAnswers = new Map<string, { status: number; body: unknown }>();
   let revokeFails = false;
@@ -132,6 +133,7 @@ function fakeCode() {
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/decision`) {
       if (decisionRefusal !== undefined) return respond(409, { error: { code: "IDEMPOTENCY_CONFLICT", message: decisionRefusal } });
       task = { ...task, workflow: { ...(task.workflow as object), stage: "IMPLEMENTATION", state: "RUNNING" } };
+      if (decisionReplyLost) return respond(401, { error: { code: "AUTH_REQUIRED" } });
       return respond(200, { task });
     }
     if (url.pathname === `/v1/app/tasks/${TASK_ID}/merge` && mergeAnswers.has(call.method)) { const a = mergeAnswers.get(call.method)!; return respond(a.status, a.body); }
@@ -156,6 +158,7 @@ function fakeCode() {
     /** What Code's access check says of this person's company from now on (undefined: none). */
     setCompany: (developerId: string, company: Record<string, unknown> | undefined) => { companies.set(developerId, company); },
     refuseDecisions: (message: string) => { decisionRefusal = message; },
+    loseDecisionReply: () => { decisionReplyLost = true; },
     answerMerge: (method: "GET" | "POST", status: number, body: unknown) => { mergeAnswers.set(method, { status, body }); },
     failRevoke: () => { revokeFails = true; },
     /** Code's gateway answers 401 on every path under this prefix from now on, as a legacy install does for /v1/app/*. */
@@ -882,6 +885,34 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     expect((await home(call, auth.cookie)).total).toBe(0);
   });
 
+  it("keeps the approval outcome unknown when Code commits then answers 401", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask(PLAN_WAITING);
+    code.loseDecisionReply();
+    const answer = await call("POST", `/v1/app/approve/plan-${sessionId}`, { cookie: auth.cookie, form: { csrf: auth.csrf, revision: "4", digest: PLAN_DIGEST, decision: "APPROVE" }, headers: ORIGIN });
+    expect(answer!.status).toBe(503);
+    expect(answer!.body).toContain("outcome is unknown");
+    expect(answer!.body).not.toContain("didn't take the decision");
+    expect(answer!.body).not.toContain("Rovara Code refused");
+    expect(code.calls.filter(entry => entry.path.endsWith("/workflow/decision"))).toHaveLength(1);
+  });
+
+  it("refreshes expired access before sending a real write exactly once and keeping its unknown outcome", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask(PLAN_WAITING);
+    code.expireToken();
+    code.loseDecisionReply();
+    const before = code.calls.length;
+    const answer = await call("POST", `/v1/app/approve/plan-${sessionId}`, { cookie: auth.cookie, form: { csrf: auth.csrf, revision: "4", digest: PLAN_DIGEST, decision: "APPROVE" }, headers: ORIGIN });
+    expect(answer!.status).toBe(503);
+    expect(answer!.body).toContain("outcome is unknown");
+    expect(answer!.body).not.toContain("didn't take the decision");
+    const sent = code.calls.slice(before);
+    expect(sent.filter(entry => entry.method === "GET" && entry.path === `/v1/dev/tasks/${code.taskId}`)).toHaveLength(2);
+    expect(sent.filter(entry => entry.path.endsWith("/workflow/decision"))).toHaveLength(1);
+    expect(sent.filter(entry => entry.path === "/v1/auth/token" && entry.body?.includes("refresh_token"))).toHaveLength(2);
+  });
+
   it("asks Code for changes with the person's reason, and shows Code's refusal as a page", async () => {
     const { call, auth, code, sessionId } = await begin();
     code.setTask(PLAN_WAITING);
@@ -1047,6 +1078,28 @@ describe("the Conversation: timeline and comments (Rovara-cloud#24)", () => {
     expect(deleted).toMatchObject({ text: "Comment deleted", rev: 3 });
     expect((await list(ada)).messages[0]).toMatchObject({ text: "Comment deleted", deletedAt: deleted.deletedAt });
     expect((await call("PATCH", path, { ...ada, body: { rev: 3, text: "Back." } }))!.status).toBe(404);
+  });
+
+  it("deletes a comment with its revision in the query when DELETE has no body", async () => {
+    const { call, ada, sessionId, post, list } = await begin();
+    const comment = SessionMessageSchema.parse(JSON.parse((await post(ada, { requestId: "55555555-5555-4555-8555-555555555555", kind: "comment", text: "Remove me." }))!.body));
+    const path = `/v1/web/sessions/${sessionId}/messages/${comment.messageId}`;
+
+    const deleted = await call("DELETE", `${path}?rev=1`, ada);
+    expect(deleted!.status).toBe(200);
+    expect(SessionMessageSchema.parse(JSON.parse(deleted!.body))).toMatchObject({ text: "Comment deleted", rev: 2 });
+    expect((await list(ada)).messages[0]).toMatchObject({ text: "Comment deleted", rev: 2 });
+  });
+
+  it("refuses a bodyless comment delete with a wrong or missing revision", async () => {
+    const { call, ada, sessionId, post, work } = await begin();
+    const comment = SessionMessageSchema.parse(JSON.parse((await post(ada, { requestId: "66666666-6666-4666-8666-666666666666", kind: "comment", text: "Keep me." }))!.body));
+    const path = `/v1/web/sessions/${sessionId}/messages/${comment.messageId}`;
+
+    expect((await call("DELETE", `${path}?rev=2`, ada))!.status).toBe(409);
+    expect((await call("DELETE", path, ada))!.status).toBe(409);
+    expect((await work.get(sessionId))?.messages?.[0]).toMatchObject({ text: "Keep me.", rev: 1 });
+    expect((await work.get(sessionId))?.messages?.[0]?.deletedAt).toBeUndefined();
   });
 
   it("offers comment to anyone who can read the session, so the app shows the send box", async () => {

@@ -120,8 +120,19 @@ describe("the company step, AI and spending", () => {
    await screen.findByLabelText("Company model");
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
    await screen.findByTestId("ai-spend-saved");
-   expect(c.writes.map(w => `${w.method} ${w.path}`)).toEqual(["PUT /v1/app/org/settings", "PUT /v1/app/org/agent-ai"]);
-   expect(c.writes[1]!.body).toEqual({ expectedVersion: 0, source: "rovara" });
+   expect(c.writes).toEqual([
+    {
+     method: "PUT", path: "/v1/app/org/settings", retry: "never", body: {
+      expectedVersion: 0,
+      settings: {
+       featureGates: {}, websiteCeiling: { mode: "any" }, instructions: [], evalBudgetUsdMicros: null, freshSignInSeconds: 600,
+       start: { allow: true, maxEstimateUsdMicros: null }, decisions: [{ what: "setting.loosen", secondPerson: true }], locks: {},
+       budgets: { companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null, learningMonthlyUsdMicros: 20_000_000 },
+      },
+     },
+    },
+    { method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 0, source: "rovara" } },
+   ]);
    expect(c.state).toEqual({ cap: 500_000_000, source: "rovara", model: null });
   } finally { f.close(); }
  });

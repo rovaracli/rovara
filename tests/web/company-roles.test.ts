@@ -14,8 +14,12 @@ describe("roleChangesFor", () => {
     expect(roleChangesFor("admin", "admin", false)).toEqual(["member"]);
     expect(roleChangesFor("admin", "owner", false)).toEqual([]);
   });
-  it("nobody changes their own role, a member or an unknown viewer changes nothing, and auditors or unknown targets aren't offered", () => {
-    for (const viewer of ["owner", "admin"]) for (const target of ["owner", "admin", "member"]) expect(roleChangesFor(viewer, target, true)).toEqual([]);
+  it("only an owner may step down from their own owner role; members and admins cannot change their own role", () => {
+    expect(roleChangesFor("owner", "owner", true)).toEqual(["admin", "member"]);
+    for (const target of ["admin", "member"]) expect(roleChangesFor("owner", target, true)).toEqual([]);
+    for (const viewer of ["admin", "member", "auditor", "unknown", undefined]) for (const target of ["owner", "admin", "member"]) expect(roleChangesFor(viewer, target, true)).toEqual([]);
+  });
+  it("a member or unknown viewer changes nothing, and auditors or unknown targets aren't offered", () => {
     for (const viewer of ["member", "auditor", "unknown", undefined]) for (const target of ["owner", "admin", "member"]) expect(roleChangesFor(viewer, target, false)).toEqual([]);
     for (const target of ["auditor", "unknown"]) expect(roleChangesFor("owner", target, false)).toEqual([]);
   });

@@ -7,7 +7,7 @@ import { BEDROCK_MODEL_ACCESS_WORDS } from "./bedrock-byo-sessions.js";
 import { CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS, REASONING_CARRYOVER_MODEL, toConverse } from "./bedrock-converse.js";
 import { BEDROCK_CLAUDE_ID, bedrockConversePath, bedrockInvokePath } from "./bedrock-transport.js";
 import type { GuardFailure } from "./guard.js";
-import type { RouteCall, RouteRefusal } from "./server.js";
+import type { RefusedLogReason, RouteCall, RouteRefusal } from "./server.js";
 
 /** DEC 240: a model that is not on Rovara's AI allow-list. Before any hold. */
 export const ROVARA_AI_MODEL: GuardFailure = Object.freeze({ ok: false as const, status: 400, code: "invalid_request", message: "This model is not offered on Rovara's AI." });
@@ -55,8 +55,9 @@ export function rovaraGuard(checked: RouteCall, ai: Pick<RovaraAi, "models" | "m
  * frame (bedrock-transport.ts answers that as its error status). A stream that breaks AFTER output started keeps the core's rule (charged).
  * Its refusal of Rovara's own role is Rovara's to fix.
  */
-export function rovaraProviderFailure(status: number, body?: Uint8Array): { charged: boolean; refusal: RouteRefusal } {
-  if (status === 403 && body !== undefined && MODEL_ACCESS_WORDS.test(Buffer.from(body).toString("utf8"))) return { charged: false, refusal: ROVARA_AI_MODEL_NOT_ENABLED };
-  if (status === 401 || status === 403) return { charged: false, refusal: ROVARA_AI_UNAVAILABLE };
-  return { charged: false, refusal: PROVIDER_ERROR };
+export function rovaraProviderFailure(status: number, body?: Uint8Array): { charged: boolean; refusal: RouteRefusal; reason: RefusedLogReason } {
+  if (status === 403 && body !== undefined && MODEL_ACCESS_WORDS.test(Buffer.from(body).toString("utf8"))) return { charged: false, refusal: ROVARA_AI_MODEL_NOT_ENABLED, reason: "bedrock_403" };
+  if (status === 401) return { charged: false, refusal: ROVARA_AI_UNAVAILABLE, reason: "bedrock_401" };
+  if (status === 403) return { charged: false, refusal: ROVARA_AI_UNAVAILABLE, reason: "bedrock_403" };
+  return { charged: false, refusal: PROVIDER_ERROR, reason: "bedrock_other" };
 }

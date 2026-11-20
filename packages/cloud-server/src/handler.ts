@@ -5,7 +5,7 @@
 import { renameInSessions } from "./rename.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { CloudAuditStore } from "./audit-log.js";
-import { CodeError, SignInEnded, slackWorkspaceHint, type CodeClient } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError, SignInEnded, codeOutcomeUnknown, codeWritesSent, slackWorkspaceHint, type CodeClient } from "./code-client.js";
 import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
 import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
 import { POLICY_HOOK_PATH } from "./policy-hook.js";
@@ -203,20 +203,32 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     return "/app?joined=1";
   }
 
+  /** Callback writes can commit without an answer. Never redirect that result to a failure/start-again page. */
+  async function callbackAnswer(run: () => Promise<{ location: string; setCookie?: string }>, clearCookie?: string): Promise<CloudResponse> {
+    const headers = { "referrer-policy": "no-referrer", "cache-control": "no-store" };
+    try {
+      const back = await run();
+      return text(302, "", { ...headers, location: back.location, ...(back.setCookie === undefined ? {} : { "set-cookie": back.setCookie }) });
+    } catch (error) {
+      if (!isCodeOutcomeUnknown(error)) throw error;
+      return json(error.status, error.body, { ...headers, ...(clearCookie === undefined ? {} : { "set-cookie": clearCookie }) });
+    }
+  }
+
   return async (request) => {
     const { method, path } = request;
     if (path === POLICY_HOOK_PATH && options.policyHook !== undefined) return options.policyHook(request);
     if (path === GITHUB_CALLBACK_PATH && method === "GET") {
-      const back = await github.callback(request.query, cookieNamed(request, GITHUB_CONNECT_COOKIE), sessionId(request));
-      return text(302, "", { location: back.location, "set-cookie": back.setCookie });
+      return callbackAnswer(() => github.callback(request.query, cookieNamed(request, GITHUB_CONNECT_COOKIE), sessionId(request)),
+        `${GITHUB_CONNECT_COOKIE}=; HttpOnly; SameSite=Lax; Path=/api/connect/github${options.secureCookies ? "; Secure" : ""}; Max-Age=0`);
     }
     if (path === SLACK_CALLBACK_PATH && method === "GET") {
-      const back = await slack.callback(request.query, cookieNamed(request, connectCookieName("slack")), sessionId(request));
-      return text(302, "", { location: back.location, "set-cookie": back.setCookie });
+      return callbackAnswer(() => slack.callback(request.query, cookieNamed(request, connectCookieName("slack")), sessionId(request)),
+        `${connectCookieName("slack")}=; HttpOnly; SameSite=Lax; Path=/api/connect/slack${options.secureCookies ? "; Secure" : ""}; Max-Age=0`);
     }
     if (path === LINEAR_CALLBACK_PATH && method === "GET") {
-      const back = await linear.callback(request.query, cookieNamed(request, connectCookieName("linear")), sessionId(request));
-      return text(302, "", { location: back.location, "set-cookie": back.setCookie });
+      return callbackAnswer(() => linear.callback(request.query, cookieNamed(request, connectCookieName("linear")), sessionId(request)),
+        `${connectCookieName("linear")}=; HttpOnly; SameSite=Lax; Path=/api/connect/linear${options.secureCookies ? "; Secure" : ""}; Max-Age=0`);
     }
     if (path === JOIN_PATH && method === "POST") return joinLookup(request);
     if (path === SIGN_IN_OFFER_PATH && method === "GET") return json(200, await options.client.signInOffer());
@@ -234,9 +246,8 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     }
     if (path === options.callbackPath && method === "GET" && signInLinks.isReturn(request.query)) {
       // A connected sign-in's return, never a sign-in: it goes on only for the browser whose sign-in started it.
-      const back = await signInLinks.callback(request.query, sessionId(request));
-      // The request URL carried link_code: the answer is never cached and the page it lands on never sends this URL on as a referrer.
-      return text(302, "", { location: back.location, "referrer-policy": "no-referrer", "cache-control": "no-store" });
+      // The request URL carried link_code: neither a redirect nor an unknown answer may cache or forward it.
+      return callbackAnswer(() => signInLinks.callback(request.query, sessionId(request)));
     }
     if (path === options.callbackPath && method === "GET") {
       const state = request.query.get("state") ?? "";
@@ -330,11 +341,13 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     if (connectCall !== undefined) {
       try {
         let answer: GithubAnswer;
+        const writesBefore = codeWritesSent(session);
         try {
           answer = await connectCall();
         } catch (error) {
           // Another server refreshed this sign-in first (its refresh token was used once): run once more on what the store holds, as the route loop does.
           if (!(error instanceof SignInEnded)) throw error;
+          if (codeWritesSent(session) !== writesBefore) throw codeOutcomeUnknown();
           const stored = await options.store.get(id);
           if (stored === undefined || stored.refreshToken === session.refreshToken) throw error;
           session = stored;
@@ -350,6 +363,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
           await options.store.delete(id);
           return signInAgain();
         }
+        if (isCodeOutcomeUnknown(error)) return json(error.status, error.body);
         throw error;
       }
     }
@@ -370,6 +384,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         // again on what the store holds now, a few times at most.
         for (let attempt = 1; answer === undefined; attempt += 1) {
           const using = session;
+          const writesBefore = codeWritesSent(using);
           try {
             answer = await route.answer({
               client: options.client, session: using, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
@@ -382,6 +397,9 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
               log,
             });
           } catch (error) {
+            // A local-only conflict can be retried. Once Code received a write, re-entering
+            // the route can send it twice or turn a later refusal into a false no-write answer.
+            if ((error instanceof StoreConflict || error instanceof SignInEnded) && codeWritesSent(using) !== writesBefore) throw codeOutcomeUnknown();
             if (attempt >= REQUEST_ATTEMPTS) throw error;
             if (error instanceof StoreConflict) continue;
             if (!(error instanceof SignInEnded)) throw error;

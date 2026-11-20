@@ -10,7 +10,7 @@
 //   - The answer is rebuilt from the three booleans and must read (and agree: running is available AND allowed), else the whole read is refused.
 //   - Code's refusals reach the app as Cloud's own fixed words, never Code's text and never an echo of the browser's input. Until Code serves the route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
 //   - The logs say what was done (allowed or withdrawn), never what the person wrote.
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { WIKI_SETUP_ANSWERS as A } from "./wiki-setup-routes.js";
@@ -40,6 +40,7 @@ export function systemRunsAnswer(value: unknown): { available: boolean; allowed:
 
 /** Code's refusal in Cloud's fixed words: a 404 (unknown route, not wired, or the operator's ceiling off) reads "not available yet", anything else is Cloud's own sentence. */
 export function systemRunsRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   // Any 403 is "not allowed"; Code's sentence is never passed on.
   if (error.status === 403) return A.systemRunsNotAllowed;
   if (error.status === 404) return A.upkeepNotYet;
@@ -55,6 +56,7 @@ async function authorised(context: RouteContext): Promise<RouteAnswer | undefine
   try {
     who = await companyCaller(context);
   } catch (error) {
+    if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
     if (error instanceof CodeError) return A.upkeepUnavailable;
     throw error;
   }
