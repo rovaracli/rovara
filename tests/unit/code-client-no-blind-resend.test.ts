@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { codeWritesSent } from "../../packages/cloud-server/src/code-client.js";
 import { CodeClient, CodeError, LocalSessionStore, LocalWorkSessionStore, SignInEnded, StoreConflict, createCloudHandler, type CodeSession, type Route } from "../../packages/cloud-server/src/index.js";
 
 const COMPANY = "org_aaaaaaaaaaaaaaaaaaaa";
@@ -32,6 +33,33 @@ describe("Code refresh never blindly re-sends writes", () => {
     expect(w.calls.filter(call => call.path === "/v1/app/change")).toHaveLength(1);
     expect(w.calls.filter(call => call.path === "/v1/auth/token")).toHaveLength(1);
     expect(using.accessToken).toBe("fresh");
+  });
+
+  it.each(["/v1/dev/access", "/v1/dev/access?check=live"])("%s is a read-only POST that refreshes once and never counts as a write", async path => {
+    const calls: string[] = [];
+    const using = session();
+    const client = clientFor(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input);
+      calls.push(url.pathname + url.search);
+      if (url.pathname === "/v1/auth/token") return json(200, { access_token: "fresh", refresh_token: "refresh-fresh" });
+      expect(init?.method).toBe("POST");
+      return (init?.headers as Record<string, string>).authorization === "Bearer old" ? json(401, {}) : json(200, access);
+    });
+    await expect(client.json(using, path, { method: "POST", body: {} })).resolves.toEqual(access);
+    expect(calls).toEqual([path, "/v1/auth/token", path]);
+    expect(codeWritesSent(using)).toBe(0);
+  });
+
+  it.each([
+    ["POST", "/v1/dev/access/change"],
+    ["POST", "/v1/dev/access-extra"],
+    ["PUT", "/v1/dev/access"],
+  ])("%s %s stays a write outside the exact read-only access exception", async (method, path) => {
+    const w = transport();
+    const using = session();
+    await expect(w.client.json(using, path, { method })).rejects.toMatchObject(unknown);
+    expect(w.calls.filter(call => call.path === path)).toHaveLength(1);
+    expect(codeWritesSent(using)).toBe(1);
   });
 
   it.each(["archive", "restore"])("a same-id %s route does not qualify when permission precedes its receipt", async action => {
@@ -90,14 +118,14 @@ describe("the handler cannot re-enter after a Code write", () => {
     expect(await store.get("cookie")).toBeDefined();
   });
 
-  it.each(["archive", "restore"])("real %s adapter answers unknown for commit -> 401 -> refresh, never the later 403", async action => {
+  it.each([["archive", false], ["restore", false], ["archive", true], ["restore", true]] as const)("real %s adapter (expired access: %s) answers unknown for commit -> 401 -> refresh, never the later 403", async (action, expiredAccess) => {
     let writes = 0;
     let refreshes = 0;
     const store = new LocalSessionStore(undefined, { environment: {} });
     await store.create("cookie", session());
-    const client = clientFor(async (input) => {
+    const client = clientFor(async (input, init) => {
       const path = new URL(input instanceof Request ? input.url : input).pathname;
-      if (path === "/v1/dev/access") return json(200, access);
+      if (path === "/v1/dev/access") return expiredAccess && (init?.headers as Record<string, string>).authorization === "Bearer old" ? json(401, {}) : json(200, access);
       if (path === "/v1/auth/token") { refreshes += 1; return json(200, { access_token: "fresh", refresh_token: "refresh-fresh" }); }
       writes += 1;
       return writes === 1 ? json(401, {}) : json(403, { error: { code: "FORBIDDEN" } });
@@ -107,7 +135,7 @@ describe("the handler cannot re-enter after a Code write", () => {
     expect(answer?.status).toBe(503);
     expect(JSON.parse(answer!.body)).toMatchObject({ error: { code: "RUNTIME_UNAVAILABLE" } });
     expect(writes).toBe(1);
-    expect(refreshes).toBe(1);
+    expect(refreshes).toBe(expiredAccess ? 2 : 1);
     expect((await store.get("cookie"))?.accessToken).toBe("fresh");
   });
 });

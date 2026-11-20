@@ -363,7 +363,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
           await options.store.delete(id);
           return signInAgain();
         }
-        if (error instanceof CodeError) return json(error.status, error.body);
+        if (isCodeOutcomeUnknown(error)) return json(error.status, error.body);
         throw error;
       }
     }

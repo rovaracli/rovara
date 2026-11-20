@@ -157,7 +157,7 @@ function rotatingCode(delayMs = 20) {
 const clientFor = (fetchImpl: typeof fetch) => new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: SECRET, redirectUri: "https://cloud.example.test/callback", scopes: "", fetch: fetchImpl });
 
 describe("a refreshed token is saved before the call is retried, under a conditional write", () => {
-  it("lets only one of two servers refresh at once; neither re-sends its POST, and the session survives", async () => {
+  it("lets only one of two servers refresh at once; both answer, and the session survives", async () => {
     const code = rotatingCode();
     const table = new LocalSessionTable();
     const key = randomBytes(32);
@@ -171,12 +171,8 @@ describe("a refreshed token is saved before the call is retried, under a conditi
     code.expire();
     // Each server loaded the session before either refreshed.
     const loaded = await Promise.all(servers.map(({ store }) => store.get(id)));
-    const answers = await Promise.allSettled(servers.map(({ client }, index) => client.json<{ ok: boolean }>(loaded[index]!, "/v1/dev/access", { method: "POST", body: {} })));
-    for (const answer of answers) {
-      expect(answer.status).toBe("rejected");
-      if (answer.status === "rejected") expect(answer.reason as unknown).toMatchObject({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE" } } });
-    }
-    expect(await servers[0]!.client.json(loaded[0]!, "/v1/dev/read")).toEqual({ ok: true });
+    const answers = await Promise.all(servers.map(({ client }, index) => client.json<{ ok: boolean }>(loaded[index]!, "/v1/dev/access", { method: "POST", body: {} })));
+    expect(answers).toEqual([{ ok: true }, { ok: true }]);
     expect(code.refreshes).toEqual(["refresh-1"]);
     expect(code.ended()).toBe(false);
     expect(await servers[0]!.store.get(id)).toMatchObject({ accessToken: "access-2", refreshToken: "refresh-2" });

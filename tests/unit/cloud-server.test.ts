@@ -445,15 +445,11 @@ describe("the app's API, answered from Code as the person", () => {
     const { call, signIn, code, store } = setUp();
     const { cookie } = await signIn();
     code.expireToken();
-    // The access check is a POST: refresh is saved, but that first call is not re-sent.
-    expect((await call("GET", "/v1/web/nav", { cookie }))!.status).toBe(503);
     expect((await call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
     const id = cookie.split("=")[1]!;
     expect((await store.get(id))?.accessToken).toBe("access-2");
     code.endSignIn();
-    expect((await call("GET", "/v1/web/nav", { cookie }))!.status).toBe(503);
-    // A read sent with the ended sign-in still ends it; no dispatched write is settled by a 401.
-    expect((await call("GET", "/v1/web/inbox", { cookie }))!.status).toBe(401);
+    expect((await call("GET", "/v1/web/nav", { cookie }))!.status).toBe(401);
     expect(await store.get(id)).toBeUndefined();
   });
 
@@ -901,6 +897,22 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     expect(code.calls.filter(entry => entry.path.endsWith("/workflow/decision"))).toHaveLength(1);
   });
 
+  it("refreshes expired access before sending a real write exactly once and keeping its unknown outcome", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask(PLAN_WAITING);
+    code.expireToken();
+    code.loseDecisionReply();
+    const before = code.calls.length;
+    const answer = await call("POST", `/v1/app/approve/plan-${sessionId}`, { cookie: auth.cookie, form: { csrf: auth.csrf, revision: "4", digest: PLAN_DIGEST, decision: "APPROVE" }, headers: ORIGIN });
+    expect(answer!.status).toBe(503);
+    expect(answer!.body).toContain("outcome is unknown");
+    expect(answer!.body).not.toContain("didn't take the decision");
+    const sent = code.calls.slice(before);
+    expect(sent.filter(entry => entry.method === "GET" && entry.path === `/v1/dev/tasks/${code.taskId}`)).toHaveLength(2);
+    expect(sent.filter(entry => entry.path.endsWith("/workflow/decision"))).toHaveLength(1);
+    expect(sent.filter(entry => entry.path === "/v1/auth/token" && entry.body?.includes("refresh_token"))).toHaveLength(2);
+  });
+
   it("asks Code for changes with the person's reason, and shows Code's refusal as a page", async () => {
     const { call, auth, code, sessionId } = await begin();
     code.setTask(PLAN_WAITING);
@@ -916,7 +928,6 @@ describe("Home's cards and plan approval (phase 2b)", () => {
   it("refreshes an expired token once when calls made together all find it expired", async () => {
     const { call, auth, code } = await begin();
     code.expireToken();
-    expect((await call("GET", "/v1/web/nav", { cookie: auth.cookie }))!.status).toBe(503);
     expect((await call("GET", "/v1/web/nav", { cookie: auth.cookie }))!.status).toBe(200);
     expect(code.calls.filter((entry) => entry.path === "/v1/auth/token" && entry.body?.includes("refresh_token"))).toHaveLength(1);
   });
@@ -1087,7 +1098,6 @@ describe("several servers on the same stores (Rovara-cloud#11)", () => {
     const id = cookie.split("=")[1]!;
     const before = structuredClone((await a.store.get(id))!);
     a.code.expireToken();
-    expect((await a.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(503);
     expect((await a.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
     const refreshed = (await a.store.get(id))!.refreshToken;
     expect(refreshed).not.toBe(before.refreshToken);
@@ -1096,7 +1106,6 @@ describe("several servers on the same stores (Rovara-cloud#11)", () => {
     const shared = Object.create(a.store) as SessionStore;
     shared.get = async (key) => (stale && key === id ? (stale = false, structuredClone(before)) : a.store.get(key));
     const b = setUp({ code: a.code, store: shared, work: a.work });
-    expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(503);
     expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
     expect((await a.store.get(id))?.refreshToken).toBe(refreshed);
   });
@@ -1106,8 +1115,7 @@ describe("several servers on the same stores (Rovara-cloud#11)", () => {
     const { cookie } = await a.signIn();
     const b = setUp({ code: a.code, store: a.store, work: a.work });
     a.code.endSignIn();
-    expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(503);
-    expect((await b.call("GET", "/v1/web/inbox", { cookie }))!.status).toBe(401);
+    expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(401);
     expect(await a.store.get(cookie.split("=")[1]!)).toBeUndefined();
   });
 

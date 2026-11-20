@@ -246,7 +246,8 @@ export class CodeClient {
     const method = (init.method ?? "GET").toUpperCase();
     // A request id alone is insufficient: Code's receipt lookup may follow a permission check.
     // No write replay is enabled: the verified receipt candidates check permission first.
-    const mayResend = method === "GET" || method === "HEAD";
+    // Code's access POST only reads sign-in/membership; it is safe to retry and is not a dispatched write.
+    const mayResend = method === "GET" || method === "HEAD" || (method === "POST" && path.split("?", 1)[0] === "/v1/dev/access");
     const send = (token: string) => this.fetchImpl(`${this.base}${path}`, {
       method: init.method ?? "GET",
       headers: { ...init.headers, authorization: `Bearer ${token}`, ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
