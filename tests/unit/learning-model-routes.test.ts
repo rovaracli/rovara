@@ -209,12 +209,11 @@ describe("Code's refusals and failures become fixed sentences; nothing of Code's
     }
   });
 
-  it("a route 401 after the access POST stays unknown when renewal ends the sign-in", async () => {
+  it("a read's route 401 after the access POST answers sign-in-ended when renewal ends the sign-in", async () => {
     const w = setUp((call) => (call.path === CODE_PATH ? json(401, {}) : undefined));
     const ada = await w.as("ada");
     const r = await w.send("GET", PATH, ada);
-    expect(r.status).toBe(503);
-    expect(r.text).toMatch(/outcome.*unknown.*check.*status/iu);
+    expect(r.status).toBe(401);
   });
 });
 
