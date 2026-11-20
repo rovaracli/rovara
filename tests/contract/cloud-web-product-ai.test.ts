@@ -73,13 +73,12 @@ function withOldCompanySetting(template: ReturnType<typeof synth>): ReturnType<t
 }
 
 /**
- * Live switches 2026-11-18 (rule D, additive): a named test environment's web stack gained exactly the AnswersEnabled parameter and the server's ROVARA_ANSWERS_ENABLED (its Ref). Taken out again (and
- * checked to be exactly those two), the template must hash to what it was: so nothing else moved. Production has neither.
+ * Live switches 2026-11-18 (rule D, additive), extended to production by ANSWERS-ON-PROD: every web stack gains exactly the AnswersEnabled parameter and the server's ROVARA_ANSWERS_ENABLED (its Ref).
+ * Taken out again (and checked to be exactly those two), the template must hash to what it was: so nothing else moved.
  */
-function withoutAnswersSwitch(template: ReturnType<typeof synth>, env: string): ReturnType<typeof synth> {
+function withoutAnswersSwitch(template: ReturnType<typeof synth>): ReturnType<typeof synth> {
   const parameters = { ...template.Parameters };
-  if (env === "production") expect(parameters[CLOUD_ANSWERS_ENABLED_PARAMETER]).toBeUndefined();
-  else expect({ ...(parameters[CLOUD_ANSWERS_ENABLED_PARAMETER] as object), Description: "" }).toEqual({ Type: "String", Default: "1", AllowedValues: ["1", "0"], Description: "" });
+  expect({ ...(parameters[CLOUD_ANSWERS_ENABLED_PARAMETER] as object), Description: "" }).toEqual({ Type: "String", Default: "1", AllowedValues: ["1", "0"], Description: "" });
   delete parameters[CLOUD_ANSWERS_ENABLED_PARAMETER];
   let removed = 0;
   const resources: Record<string, unknown> = {};
@@ -91,7 +90,7 @@ function withoutAnswersSwitch(template: ReturnType<typeof synth>, env: string): 
     removed++;
     resources[id] = { ...resource, Properties: { ...resource.Properties, Environment: { ...(resource.Properties.Environment as object), Variables: rest } } };
   }
-  expect(removed).toBe(env === "production" ? 0 : 1);
+  expect(removed).toBe(1);
   return { ...template, Parameters: parameters, Resources: resources } as ReturnType<typeof synth>;
 }
 
@@ -145,13 +144,15 @@ describe("Cloud web: product AI settings grants (B7)", () => {
   it("off: only the approved meter reads, answers switch and own name changed since the pinned templates", () => {
     for (const [env, productAi] of [["production", undefined], ["staging", undefined], ["staging", false]] as const) {
       const t = synth(env, productAi);
-      expect(createHash("sha256").update(JSON.stringify(t)).digest("hex")).toBe(METER_READ[env]);
-      expect(sha(withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(withoutCustomDomain(t)), env)))).toBe(BEFORE[env]);
+      // Production gains only the approved parameter and its Ref; staging remains byte-for-byte unchanged.
+      const pinned = env === "production" ? withoutAnswersSwitch(t) : t;
+      expect(createHash("sha256").update(JSON.stringify(pinned)).digest("hex")).toBe(METER_READ[env]);
+      expect(sha(withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(withoutCustomDomain(t)))))).toBe(BEFORE[env]);
     }
     expect(Object.keys(synth("staging").Parameters)).not.toContain("CompanyId");
   });
   it.each(["production", "staging"] as const)("%s: removing only the approved Companies ConditionCheckItem restores the previous template digest", (env) => {
-    const t = withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(withoutCustomDomain(synth(env))), env));
+    const t = withOldCompanySetting(withoutAnswersSwitch(withoutMeterRead(withoutCustomDomain(synth(env)))));
     let changed = 0;
     for (const resource of Object.values(t.Resources)) {
       if (resource.Type !== "AWS::IAM::Policy") continue;

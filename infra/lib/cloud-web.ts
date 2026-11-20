@@ -75,9 +75,8 @@ export interface CloudWebProps extends StackProps {
 
 /**
  * Lead 4 J3 (DEC 254z-amend2, 254zk(4)): the smart Just answer's Ask boxes. scripts/cloud-lambda.ts turns them on only when this variable is exactly "1"; nothing set it before (live switches check
- * 2026-11-18: the Ask boxes said "not available on this Rovara yet" although the gateway's answers purpose was live). A named test environment's web stack sets it from its own stack parameter
- * (CLOUD_ANSWERS_ENABLED_PARAMETER, "1" by default, "0" the operator's off), so a later deploy keeps the operator's value. "production" gets neither (the template is what it was) until a Cloud
- * release carries it, like the other switches here.
+ * 2026-11-18: the Ask boxes said "not available on this Rovara yet" although the gateway's answers purpose was live). Every web stack, including production (ANSWERS-ON-PROD), sets it from its own
+ * stack parameter (CLOUD_ANSWERS_ENABLED_PARAMETER, "1" by default per DEC 254zzz215, "0" the existing operator override), so a later deploy keeps the operator's value.
  */
 export const CLOUD_ANSWERS_ENABLED_ENV = "ROVARA_ANSWERS_ENABLED";
 export const CLOUD_ANSWERS_ENABLED_PARAMETER = "AnswersEnabled";
@@ -306,13 +305,11 @@ export class CloudWebStack extends Stack {
       if (env === "production") throw new Error("Rovara's AI for exempt companies is for named test environments until a Cloud release carries it");
       server.addEnvironment(CLOUD_ROVARA_AI_EXEMPT_ENV, props.rovaraAiExempt);
     }
-    if (env !== "production") {
-      const answers = new CfnParameter(this, CLOUD_ANSWERS_ENABLED_PARAMETER, {
-        type: "String", default: CLOUD_ANSWERS_ENABLED_DEFAULT, allowedValues: [...CLOUD_ANSWERS_ENABLED_VALUES],
-        description: "The smart Just answer's Ask boxes (lead 4 J3): 1 (the default) on, 0 off. On needs the model gateway's answers purpose deployed; Code decides who may ask",
-      });
-      server.addEnvironment(CLOUD_ANSWERS_ENABLED_ENV, answers.valueAsString);
-    }
+    const answers = new CfnParameter(this, CLOUD_ANSWERS_ENABLED_PARAMETER, {
+      type: "String", default: CLOUD_ANSWERS_ENABLED_DEFAULT, allowedValues: [...CLOUD_ANSWERS_ENABLED_VALUES],
+      description: "The smart Just answer's Ask boxes (lead 4 J3): 1 (the default) on, 0 off. On needs the model gateway's answers purpose deployed; Code decides who may ask",
+    });
+    server.addEnvironment(CLOUD_ANSWERS_ENABLED_ENV, answers.valueAsString);
     // IAM auth on the function URL, signed by CloudFront's origin access control (SigV4, always), and invoke rights only for this
     // distribution: the function's own address answers 403 to anyone else, so every request goes through CloudFront.
     const url = server.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.AWS_IAM });
