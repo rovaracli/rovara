@@ -28,6 +28,8 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  "screens/project/wiki/wiki.css",
  // L4-D2: the setup approval card.
  "screens/setup/approval-card.css",
+ // The "AI and spending" page and onboarding step: its cards.
+ "screens/setup/ai-spend.css",
  // L4-U5: the "Setup needs repair" card and the paused upkeep notice.
  "screens/setup/setup-repair.css",
  // W6: the wiki row on the setup checklist.

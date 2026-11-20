@@ -26,6 +26,7 @@ import { sourceLabel } from "../admin/models/source-order.js";
 import { ProjectScopeContext } from "../admin/admin-context.js";
 import { BACK_TO_DEFAULT, DEFAULT_MODEL, defaultModelText, modelScopeId, useModelScope } from "./model-scope.js";
 import { CompanyAiConnections } from "../admin/ai-spending/CompanyAiConnections.js";
+import "./ai-spend.css";
 
 export type CompanyRole = "owner" | "admin" | "member";
 const MICROS = 1_000_000;
@@ -87,7 +88,7 @@ function AiSpendScope({ role, developerId, orgId, company, onSaved, onContinue }
   if (root.current) observer.observe(root.current, { childList: true, subtree: true });
   return () => { clearTimeout(timer); observer.disconnect(); };
  }, [location.hash, admin, model.isPending, source.isPending, settings.isPending, complete]);
- return <ProjectScopeContext.Provider value={{ orgId, company, developerId, role, checking: false }}><section ref={root} className="rv-ai-spend" aria-label={W.title} data-testid="ai-spend-step">
+ return <ProjectScopeContext.Provider value={{ orgId, company, developerId, role, checking: false }}><section ref={root} className="rv-ai-spend rv-ai-spend-step" aria-label={W.title} data-testid="ai-spend-step">
   <p>{W.intro}</p>
   {notice !== undefined && <p role={notice.ok ? "status" : "alert"} data-testid={notice.ok ? "ai-spend-saved" : "ai-spend-error"}><VisibleText text={notice.text} /></p>}
   {complete
@@ -218,8 +219,12 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
   <p>Save below changes this model only after you choose an option.</p>
   {model.source === "company" && model.canChange && <Button disabled={busy} onClick={() => { void save(true); }}>{BACK_TO_DEFAULT}</Button>}
   </>} />
+  <section className="rv-ai-spend-limit" aria-label="Monthly limit"><h2>Monthly limit</h2>
   <TextField label={W.limit} hint={W.limitHint} inputMode="decimal" value={cap} onChange={event => setCap(event.target.value)} disabled={busy} {...(capUsd === undefined || capUsd === 0 ? { error: W.badLimit } : {})} />
-  {onContinue && <p><Button data-testid="onboard-continue-repos" disabled={busy || !ready || sourceChanged || modelChanged || capUsd !== savedCap} onClick={onContinue}>Continue to pick repos</Button></p>}
-  <p><Button variant="primary" busy={busy} disabled={capUsd === undefined || capUsd === 0 || !sourceUsable || (saveModel && (!model.canChange || (picked !== DEFAULT_MODEL && !model.offered.includes(picked))))} onClick={() => { void save(); }}>Save</Button></p>
+  </section>
+  <div className="rv-ai-spend-actions">
+  <Button variant="primary" busy={busy} disabled={capUsd === undefined || capUsd === 0 || !sourceUsable || (saveModel && (!model.canChange || (picked !== DEFAULT_MODEL && !model.offered.includes(picked))))} onClick={() => { void save(); }}>Save</Button>
+  {onContinue && <Button data-testid="onboard-continue-repos" disabled={busy || !ready || sourceChanged || modelChanged || capUsd !== savedCap} onClick={onContinue}>Continue to pick repos</Button>}
+  </div>
  </>;
 }

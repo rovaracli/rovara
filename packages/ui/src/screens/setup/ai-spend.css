@@ -1,0 +1,59 @@
+/* "AI and spending" (AiSpendStep): the admin page and onboarding step 3. Each top-level part is a card, as on Company settings. */
+.rv-ai-spend-step{display:grid;gap:var(--rv-space-4);min-width:0}
+.rv-ai-spend-step>p{max-width:76ch;color:var(--rv-text-muted)}
+.rv-ai-spend-step>p[role]{color:inherit}
+
+/* Cards */
+.rv-ai-spend-step>section{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);padding:var(--rv-space-5);min-width:0}
+.rv-ai-spend-step>section>*+*{margin-top:var(--rv-space-3)}
+.rv-ai-spend-step>section>h2{font:600 var(--rv-font-lg)/1.3 var(--rv-font-ui)}
+.rv-ai-spend-step>section>h2+p{color:var(--rv-text-muted)}
+
+/* Parts inside a card, divided by a line */
+.rv-ai-spend-step>section section{min-width:0}
+.rv-ai-spend-step>section section>*+*{margin-top:var(--rv-space-2)}
+.rv-ai-spend-step>section>section,.rv-ai-spend-step .rv-step-models-list>li{border-top:1px solid var(--rv-border);padding-top:var(--rv-space-4);margin-top:var(--rv-space-4)}
+.rv-ai-spend-step>section>section:empty{display:none}
+.rv-ai-spend-step h3{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui)}
+.rv-ai-spend-step section>h3+*{margin-top:var(--rv-space-2)}
+.rv-ai-spend-step section section h3:not(:first-child){margin-top:var(--rv-space-5)}
+
+/* "Connect company AI" */
+.rv-ai-spend-step details{border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm)}
+.rv-ai-spend-step summary{display:flex;align-items:center;gap:var(--rv-space-3);min-height:44px;padding:var(--rv-space-2) var(--rv-space-4);font-weight:550;cursor:pointer;list-style:none}
+.rv-ai-spend-step summary::-webkit-details-marker{display:none}
+.rv-ai-spend-step summary::before{content:"";width:6px;height:6px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
+.rv-ai-spend-step details[open]>summary{border-bottom:1px solid var(--rv-border)}
+.rv-ai-spend-step details[open]>summary::before{transform:rotate(45deg)}
+.rv-ai-spend-step details>:not(summary){margin:var(--rv-space-4)}
+
+/* Who pays for the AI */
+.rv-ai-spend-step fieldset{border:0;padding:0;margin:0;min-width:0}
+.rv-ai-spend-step>section>fieldset,.rv-ai-spend-step>section>details+*{margin-top:var(--rv-space-5)}
+.rv-ai-spend-step legend{padding:0;margin-bottom:var(--rv-space-2);font-weight:600}
+.rv-ai-spend-step fieldset>p+p{margin-top:var(--rv-space-2)}
+.rv-ai-spend-step fieldset>p>label{display:block;position:relative;padding:var(--rv-space-3) var(--rv-space-4) var(--rv-space-3) calc(var(--rv-space-4) + 28px);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);cursor:pointer}
+.rv-ai-spend-step fieldset>p>label:has(input:checked){border-color:var(--rv-accent);background:var(--rv-accent-soft)}
+.rv-ai-spend-step fieldset>p>label:has(input:disabled){cursor:default;opacity:.65}
+.rv-ai-spend-step fieldset label>input[type=radio]{position:absolute;left:var(--rv-space-4);top:calc(var(--rv-space-3) + 4px);margin:0;accent-color:var(--rv-accent)}
+.rv-ai-spend-own{margin:var(--rv-space-2) 0 0 calc(var(--rv-space-4) + 28px)}
+.rv-ai-spend-own>p+p{margin-top:var(--rv-space-1)}
+.rv-ai-spend-own label{display:block;position:relative;padding:var(--rv-space-1) 0 var(--rv-space-1) 28px;cursor:pointer}
+.rv-ai-spend-step .rv-ai-spend-own label>input[type=radio]{left:0;top:calc(var(--rv-space-1) + 4px)}
+
+/* Tables sit on the card, not in a second box */
+.rv-ai-spend-step .rv-table-wrap{border:0;background:none;padding:0}
+.rv-ai-spend-step .rv-table{width:100%}
+
+/* Fields: not the full width of the page */
+.rv-ai-spend-step .rv-field{max-width:32rem;margin-bottom:0}
+.rv-ai-spend-limit .rv-field{max-width:16rem}
+
+/* Models for each step */
+.rv-ai-spend-step .rv-step-models-list{list-style:none;padding:0;margin:var(--rv-space-4) 0 0}
+.rv-ai-spend-step .rv-step-models-list>li>*+*{margin-top:var(--rv-space-2)}
+.rv-ai-spend-step .rv-step-models-list>li:first-child{margin-top:0}
+
+/* Save stays in reach on a long page */
+.rv-ai-spend-actions{position:sticky;bottom:0;z-index:1;display:flex;flex-wrap:wrap;gap:var(--rv-space-3);align-items:center;padding-block:var(--rv-space-3);background:var(--rv-bg);border-top:1px solid var(--rv-border)}
+.rv-ai-spend-actions .rv-button{margin:0}
