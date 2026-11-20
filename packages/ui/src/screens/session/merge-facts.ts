@@ -92,6 +92,7 @@ const headsKey = (heads: MergeReadiness["heads"]): string => (heads ?? []).map(h
 /** True once anything the person was shown no longer matches: a head moved on GitHub, or the review facts (the decision digest) changed. A changed page is read again, never pressed. */
 export function changedSince(shown: Shown, rows: readonly PullRow[], readiness: MergeReadiness | undefined): boolean {
  if (headsKey(shown.heads) !== headsKey(readiness?.heads)) return true;
+ if (shown.risk !== readiness?.risk) return true;
  const now = shownOf(rows, readiness).tracked;
  return now.length !== shown.tracked.length || shown.tracked.some(before => !now.some(after => after.key === before.key && after.head === before.head && after.digest === before.digest));
 }
@@ -124,7 +125,7 @@ export function headsBound(view: MergeReadiness): boolean {
  */
 export function taskBasisOf(task: ReadTask): string {
  const rows = pullRowsOf(task, undefined).map(row => { const item = row.tracked; return [row.key, row.state, item?.headSha ?? "", item?.decisionDigest ?? "", item?.draft === true ? "draft" : "", item?.ci ?? "", item?.failingChecks.join("+") ?? "", item?.review ?? "", item?.branch ?? ""].join(":"); });
- return [task.status, task.workflow?.stage ?? "", task.workflow?.state ?? "", ...rows].join("|");
+ return [task.status, task.workflow?.stage ?? "", task.workflow?.state ?? "", task.merge?.risk?.level ?? "", ...rows].join("|");
 }
 
 /**

@@ -221,6 +221,8 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
   if (latestView.ready !== true) return (latestView.message ?? "It isn't ready to merge now.") + " Nothing was sent.";
   if (!pressBound(latestView)) return "Rovara can't tie this merge to the exact head and risk you were shown, so it wasn't sent. Merge it on GitHub.";
   if (shown === undefined || changedSince(shown, rows, latestView)) return "What you were shown has changed on GitHub. Nothing was merged. Read it again.";
+  // The risk the person was shown must be the risk that is sent: the page's own risk line (the task's) and the readiness risk that goes in the body must agree (P2-1).
+  if (merge?.risk !== undefined && levelOf(merge.risk) !== latestView.risk) return "The risk shown for this merge doesn't match what Code says now. Nothing was sent. Review it again.";
   return undefined;
  }
  async function press() {
@@ -271,7 +273,8 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
    else setMemoryDone(answer);
    setOpen(false);
    observeRecord(fence, "acc|" + answer.requestId);void readNow();
-   await query.invalidateQueries({ queryKey: ["session", sessionId] });
+   // Fired, not awaited: a stalled session read must never keep the claim, busy or sending held after the answer is recorded.
+   query.invalidateQueries({ queryKey: ["session", sessionId] }).catch(() => undefined);
   } catch (failure) {
    setOpen(false);
    if (failure instanceof ApiError && failure.status === 403 && (failure.code === "CSRF_INVALID" || failure.code === "CSRF_STALE")) {
@@ -298,7 +301,7 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
  }
  // An open confirmation becomes inert, and says why, the instant the latest read drops the authority or what was shown moves (R6c).
  const dialogPulls = view?.pullRequests ?? (shown?.heads ?? []).map(({ repositoryId, number }) => ({ repositoryId, number }));
- const inertWhy = !open ? undefined : saved !== undefined ? "Code has already answered that these are merged. Nothing was sent." : readiness.isError ? "Rovara's latest read failed, so Merge isn't available. Nothing was sent." : view === undefined ? "Rovara hasn't read the latest state yet. Nothing was sent." : view.mayMerge !== true ? "You can't merge this task now. Nothing was sent." : view.ready !== true ? (view.message ?? "It isn't ready to merge now.") + " Nothing was sent." : stale ? "What you were shown has changed on GitHub. Nothing was merged. Close this and read it again." : lock !== undefined && !(busy && lock.kind === "unresolved") ? lock.words : undefined;
+ const inertWhy = !open ? undefined : saved !== undefined ? "Code has already answered that these are merged. Nothing was sent." : readiness.isError ? "Rovara's latest read failed, so Merge isn't available. Nothing was sent." : view === undefined ? "Rovara hasn't read the latest state yet. Nothing was sent." : view.mayMerge !== true ? "You can't merge this task now. Nothing was sent." : view.ready !== true ? (view.message ?? "It isn't ready to merge now.") + " Nothing was sent." : stale ? "What you were shown has changed on GitHub. Nothing was merged. Close this and read it again." : merge?.risk !== undefined && view.risk !== undefined && levelOf(merge.risk) !== view.risk ? "The risk shown for this merge doesn't match what Code says now. Nothing was sent. Close this and read it again." : lock !== undefined && !(busy && lock.kind === "unresolved") ? lock.words : undefined;
  const everyMerged = merged || saved !== undefined;
  const partial = !everyMerged && mergedRows.length > 0 && openRows.length > 0;
  const waiting = saved !== undefined && !recorded && !merged;

@@ -153,11 +153,14 @@ export async function withClaim<T>(subject: string, claim: () => T): Promise<Cla
  let release!: () => void;
  const held = new Promise<void>(resolve => { release = resolve; });
  return new Promise<ClaimOutcome<T>>(resolve => {
-  locks.request("rovara.merge.claim:" + subject, { mode: "exclusive", ifAvailable: true }, async (lock: unknown) => {
-   if (lock === null) { resolve({ kind: "busy" });return; }
-   try { resolve({ kind: "done", value: claim(), release }); } catch { resolve({ kind: "failed" });release(); }
-   await held;
-  }).catch(() => { resolve({ kind: "failed" });release(); });
+  // A synchronous throw from the lock API (a non-conforming implementation) falls back closed too: nothing is sent.
+  try {
+   locks.request("rovara.merge.claim:" + subject, { mode: "exclusive", ifAvailable: true }, async (lock: unknown) => {
+    if (lock === null) { resolve({ kind: "busy" });return; }
+    try { resolve({ kind: "done", value: claim(), release }); } catch { resolve({ kind: "failed" });release(); }
+    await held;
+   }).catch(() => { resolve({ kind: "failed" });release(); });
+  } catch { resolve({ kind: "failed" });release(); }
  });
 }
 /** True only if the stored accepted answer is exactly this one. */

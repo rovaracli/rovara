@@ -3,7 +3,7 @@
 // server returned. Code's idempotency for the same request id: hosted-merge-routes.ts 168-173 (stored answer) and merge.ts 684/909 (merged pull requests are skipped and returned).
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -1129,4 +1129,73 @@ it("M-2: the claim lock is held while the POST is in flight (a second tab cannot
   expect(w.posts(), outcome).toHaveLength(1);
   t.unmount();
  }
+});
+
+// Round 15 (Sol R14 P2; Opus P2-1, Low-1).
+const lockFree = async (): Promise<boolean> => { const result: boolean = await navigator.locks.request("rovara.merge.claim:" + SUBJECT, { mode: "exclusive", ifAvailable: true }, async (lock: unknown) => lock !== null); return result; };
+
+it("Sol P2: a stalled ordinary session refetch after the answer never keeps the lock, busy or sending: the lock is free at once and a later deliberate press (new head B) works", async () => {
+ let head = HEAD_A;
+ const w = world({ readiness: () => ready(head), press: () => merged });
+ const t = w.tab(A);
+ let stall!: () => void;
+ const stalled = new Promise<null>(resolve => { stall = () => resolve(null); });
+ // The ordinary session query, active as on the session screen, whose refetch never answers.
+ const unsubscribe = new QueryObserver(t.query, { queryKey: ["session", A], queryFn: () => stalled, initialData: {}, staleTime: Infinity, retry: false }).subscribe(() => undefined);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ await waitFor(async () => expect(await lockFree()).toBe(true));
+ head = HEAD_B;
+ await t.read(A, { mergeTracking: [tracked({ headSha: HEAD_B, decisionDigest: "c".repeat(64) })] });
+ const button = await screen.findByRole("button", { name: /^Merge #42/u });
+ await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+ await press();
+ await waitFor(() => expect(w.posts()).toHaveLength(2));
+ unsubscribe();stall();
+});
+
+it("P2-1: the page says Low while readiness says high: nothing is sent; and a risk that changes while the confirmation is open makes it inert", async () => {
+ const lowTask = taskOf(A, { merge: { ready: true, risk: { level: "low", reasons: [] } } });
+ const high = (): Answer => ({ status: 200, body: { ...(ready().body as object), risk: "high" } });
+ const w = world({ readiness: high, press: () => merged });
+ w.tab(A, lowTask);
+ await screen.findByRole("button", { name: /^Merge #42/u });
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog = await screen.findByRole("dialog");
+ fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+ await new Promise(resolve => setTimeout(resolve, 60));
+ expect(w.posts()).toHaveLength(0);
+ // Risk changes while the confirmation is open (same heads): it goes inert.
+ localStorage.clear();
+ let level: "low" | "high" = "low";
+ const w2 = world({ readiness: () => ({ status: 200, body: { ...(ready().body as object), risk: level } }), press: () => merged });
+ const t2 = w2.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog2 = await screen.findByRole("dialog");
+ level = "high";
+ await t2.query.invalidateQueries({ queryKey: ["session", A, "merge", SUBJECT] });
+ const confirm = within(dialog2).getByRole("button", { name: "Press Merge" });
+ await waitFor(() => expect(confirm.hasAttribute("disabled")).toBe(true));
+ fireEvent.click(confirm);
+ expect(w2.posts()).toHaveLength(0);
+});
+
+it("Low-1: a lock API that throws synchronously falls back closed: nothing is sent, the dialog closes, and the next press works once the lock does", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ w.tab(A);
+ await screen.findByRole("button", { name: /^Merge #42/u });
+ const saved = Object.getOwnPropertyDescriptor(navigator, "locks")!;
+ Object.defineProperty(navigator, "locks", { configurable: true, value: { request() { throw new Error("sync"); } } });
+ const unhandled: unknown[] = [];
+ const onRejection = (reason: unknown): void => { unhandled.push(reason); };
+ process.on("unhandledRejection", onRejection);
+ try {
+  await press();
+  expect((await screen.findByRole("alert")).textContent).toContain("can't make sure two tabs");
+  expect(w.posts()).toHaveLength(0);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(unhandled).toHaveLength(0);
+ } finally { process.off("unhandledRejection", onRejection);Object.defineProperty(navigator, "locks", saved); }
+ await press();
+ await waitFor(() => expect(w.posts()).toHaveLength(1));
 });
