@@ -128,6 +128,8 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
     const response = await fetchJson("/v1/web/me/sign-in-workspace", { method: "GET", headers: { accept: "application/json" } });
     const id = (response.body as { slackTeamId?: unknown } | undefined)?.slackTeamId;
     if (response.status === 200 && typeof id === "string" && WORKSPACE_ID.test(id) && id !== lastWorkspace()) win.localStorage.setItem(LAST_WORKSPACE_KEY, id);
+    // An authenticated empty answer belongs to this person, so discard any previous person's hint.
+    else if (response.status === 200 && typeof response.body === "object" && response.body !== null && !Array.isArray(response.body) && id === undefined) win.localStorage.setItem(LAST_WORKSPACE_KEY, "");
    } catch { /* The hint is optional: blocked or full storage, or a failed request, is no hint. */ }
   },
   signIn(path, options) {
