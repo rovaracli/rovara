@@ -10,7 +10,7 @@
 .rv-admin-nav a[aria-current=page]{background:var(--rv-accent-soft);color:var(--rv-accent-text);font-weight:600;box-shadow:inset 2px 0 0 var(--rv-accent)}
 .rv-admin-surface{padding:var(--rv-space-6) clamp(20px,3vw,48px) var(--rv-space-7);min-width:0;max-width:1180px;width:100%}
 .rv-admin-surface .rv-page-header{margin-bottom:var(--rv-space-4)}
-.rv-admin-surface h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:0;margin:0}
+.rv-admin-surface h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:-.015em;margin:0}
 .rv-admin-surface .rv-table{font-size:var(--rv-font-sm)}
 .rv-admin-surface .rv-table caption{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui);padding-bottom:var(--rv-space-2)}
 .rv-admin-surface .rv-table th{font:600 10.5px/1 var(--rv-font-ui);letter-spacing:.06em;text-transform:uppercase;color:var(--rv-text-subtle);padding:var(--rv-space-1) var(--rv-space-2);border-bottom:1px solid var(--rv-border-medium);white-space:nowrap}
@@ -85,7 +85,7 @@
 .rv-admin-card .rv-table caption{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .rv-admin-card .rv-field{margin-bottom:var(--rv-space-2)}
 .rv-meter-caption{font-size:var(--rv-font-xs);color:var(--rv-text-muted);margin:0 0 var(--rv-space-2)}
-.rv-account{max-width:920px}.rv-shell-main .rv-account h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:0;margin:0}.rv-account .rv-page-header{margin-bottom:var(--rv-space-4)}
+.rv-account{max-width:920px}.rv-shell-main .rv-account h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:-.015em;margin:0}.rv-account .rv-page-header{margin-bottom:var(--rv-space-4)}
 .rv-admin[hidden]{display:none}
 .rv-people-limits-filter{max-width:22rem;margin-block:var(--rv-space-3,12px)}
 .rv-vertex-guide pre{overflow-x:auto;background:var(--rv-bg-sunken);border:1px solid var(--rv-border-medium);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3);font-size:var(--rv-font-sm)}

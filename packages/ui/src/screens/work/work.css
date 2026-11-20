@@ -21,7 +21,7 @@
 .rv-task-pane{min-width:0}
 .rv-pane-head{padding:var(--rv-space-4) var(--rv-space-5) var(--rv-space-3);border-bottom:1px solid var(--rv-border);background:var(--rv-bg-raised)}
 .rv-eyebrow{margin:0;font:600 10.5px/1 var(--rv-font-ui);letter-spacing:.07em;text-transform:uppercase;color:var(--rv-text-subtle)}
-.rv-pane-head h2{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));margin:4px 0 var(--rv-space-3);overflow-wrap:anywhere}
+.rv-pane-head h2{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:-.015em;margin:4px 0 var(--rv-space-3);overflow-wrap:anywhere}
 .rv-pane-grid{padding:var(--rv-space-4) var(--rv-space-5) var(--rv-space-6);display:grid;gap:var(--rv-space-4);min-width:0}
 .rv-pane-decision{position:sticky;top:0;z-index:2;background:var(--rv-bg)}
 .rv-pane-main{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);padding:var(--rv-space-4) var(--rv-space-5);min-width:0}
