@@ -38,7 +38,8 @@ export interface GatewaySink { head(status: number, headers: Readonly<Record<str
  * (task, person, project, upkeep, company), `route` the route that answered and `payer` who pays for the call's AI (the source word, set once the company's choice
  * is read). Fixed words and numbers only: never a token, key, prompt, provider text, company or task id.
  */
-export interface RefusedLog { event: "refused"; code: string; status: number; cap?: MeterItem; route?: "agent" | "product" | "learning" | "answers"; payer?: string }
+export type RefusedLogReason = "bedrock_401" | "bedrock_403" | "bedrock_other" | "meter_busy";
+export interface RefusedLog { event: "refused"; code: string; status: number; cap?: MeterItem; route?: "agent" | "product" | "learning" | "answers"; payer?: string; reason?: RefusedLogReason }
 const REFUSAL_CODE = /^[a-z0-9_]{1,64}$/u;
 /** A refusal code as it is logged: a fixed lower-case word, or "other" for anything else (a code never carries provider text). */
 export const logCode = (code: string): string => REFUSAL_CODE.test(code) ? code : "other";
@@ -126,7 +127,7 @@ export interface GatewayRoute {
   transport: ProviderTransport;
   usage(): UsageReader;
   /** A provider answer that is not 2xx. `charged: false` only for an explicit rejection before any generation. `body`: its first bytes, when `failureBody`. */
-  providerFailure(status: number, body?: Uint8Array): { charged: boolean; refusal: RouteRefusal };
+  providerFailure(status: number, body?: Uint8Array): { charged: boolean; refusal: RouteRefusal; reason?: RefusedLogReason };
   /** Read (at most FAILURE_BODY_BYTES of) a failed provider answer for providerFailure's classification. Never echoed. */
   readonly failureBody?: boolean;
   /**
@@ -611,9 +612,10 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let events: (GatewaySink & { finish(outcome: { completed: boolean; code?: string }): Promise<void> }) | undefined;
   // The cap row a cap refusal is about, set just before it is answered (the reason code alone says "budget_exceeded" for every row).
   let refusedCap: MeterItem | undefined;
+  let refusedReason: RefusedLogReason | undefined;
   const refusedLine = (type: string, status: number): RefusedLog => {
     const payer = route?.payer;
-    return { event: "refused", code: logCode(type), status, ...(refusedCap === undefined ? {} : { cap: refusedCap }), ...(route === undefined ? {} : { route: route.purpose ?? (route.product ? "product" as const : "agent" as const) }), ...(payer !== undefined && PAYER.test(payer) ? { payer } : {}) };
+    return { event: "refused", code: logCode(type), status, ...(refusedCap === undefined ? {} : { cap: refusedCap }), ...(route === undefined ? {} : { route: route.purpose ?? (route.product ? "product" as const : "agent" as const) }), ...(payer !== undefined && PAYER.test(payer) ? { payer } : {}), ...(refusedReason === undefined ? {} : { reason: refusedReason }) };
   };
   const respond = async (status: number, type: string, message: string, extra: Readonly<Record<string, string>> = {}) => {
     refusedCode = type;
@@ -724,7 +726,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         try { deps.metrics.overrunBusy(claims.iss, claims.cid); } catch { /* A metrics outage never changes admission or settlement. */ }
         log({ event: "overrun_busy", company: claims.cid });
         await respond(429, "busy", OVERRUN_BUSY_MESSAGE, { "retry-after": String(OVERRUN_BUSY_RETRY_SECONDS) });
-      } else if (reserved.reason === "busy") await respond(503, "unavailable", "model access unavailable");
+      } else if (reserved.reason === "busy") { refusedReason = "meter_busy"; await respond(503, "unavailable", "model access unavailable"); }
       else if (reserved.held) await respond(429, "budget_held", "budget is held by another call", { "retry-after": "2" });
       else if (route.capRefusal !== undefined) { const refused = await wait(route.capRefusal({ reason: reserved.reason, item: reserved.item }, scope, caps, estimate, controller.signal)); refusedCap = reserved.item; await respond(refused.status, refused.code, refused.message, refused.headers); }
       else if (upkeep && reserved.item === "upkeep") { refusedCap = reserved.item; const refused = upkeepRefusal(caps, estimate); await respond(refused.status, refused.code, refused.message, refused.headers); }
@@ -802,6 +804,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         failureBytes = Buffer.concat(read).subarray(0, FAILURE_BODY_BYTES);
       }
       const failure = route.providerFailure(provider.status, failureBytes);
+      refusedReason = failure.reason;
       if (!failure.charged) { cost = 0; estimated = false; }
       if (route.product && (provider.status === 401 || provider.status === 403)) log({ event: "product_key_refused" });
       await respond(failure.refusal.status, failure.refusal.code, failure.refusal.message, failure.refusal.headers); return; }

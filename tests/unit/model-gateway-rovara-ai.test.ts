@@ -235,6 +235,18 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     }
   });
 
+  it("logs Bedrock failure status as a fixed reason without logging the provider body", async () => {
+    for (const [status, reason] of [[401, "bedrock_401"], [403, "bedrock_403"], [500, "bedrock_other"]] as const) {
+      const g = gateway({ bedrock: async () => ({ status, body: (async function* () { yield Buffer.from("BEDROCK-CANARY private provider text"); })() }) });
+      g.choices.saved.set(cidA, "rovara");
+      await call(g.deps);
+      expect(g.logs.filter((line) => (line as { event?: unknown }).event === "refused")).toEqual([
+        { event: "refused", code: status === 500 ? "provider_error" : "unavailable", status: status === 500 ? 502 : 503, route: "agent", payer: "rovara", reason },
+      ]);
+      expect(JSON.stringify(g.logs)).not.toContain("BEDROCK-CANARY");
+    }
+  });
+
   it("a model on the list but not enabled yet in Rovara's account answers 'not enabled yet', free; the other company is unaffected", async () => {
     // Bedrock's AccessDeniedException words when the account's Marketplace agreement for the model is missing.
     const notEnabled: ProviderTransport = async () => ({ status: 403, body: (async function* () { yield Buffer.from(JSON.stringify({ message: "Model access is denied due to IAM user or service role is not authorized to perform the required AWS Marketplace actions (aws-marketplace:ViewSubscriptions, aws-marketplace:Subscribe) to enable access to this model." })); })() });
@@ -248,6 +260,19 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     expect(g.meter.billedCalls(claims.iss, cidA)).toMatchObject([{ settledMicros: 0 }]);
     expect(g.keySent).toEqual([]);
     expect((await call(g.deps, requestBody, mint({ cid: cidB }))).status).toBe(200);
+  });
+
+  it("classifies Bedrock's unavailable-for-this-account AccessDeniedException as a model-access refusal", async () => {
+    const message = "anthropic.claude-haiku-5-5 is not available for this account. You can explore other available models on Amazon Bedrock...";
+    const g = gateway({ bedrock: async () => ({ status: 403, body: (async function* () { yield Buffer.from(JSON.stringify({ message })); })() }) });
+    g.choices.saved.set(cidA, "rovara");
+
+    const sink = await call(g.deps);
+
+    expect(sink.status).toBe(503);
+    expect(error(sink)).toEqual({ type: ROVARA_AI_MODEL_NOT_ENABLED.code, message: ROVARA_AI_MODEL_NOT_ENABLED.message });
+    expect(g.logs.filter((line) => (line as { event?: unknown }).event === "refused")).toMatchObject([{ reason: "bedrock_403" }]);
+    expect(JSON.stringify(g.logs)).not.toContain("is not available for this account");
   });
 
   it("a stream that breaks after output started is charged (the core's rule), as a billable line", async () => {
