@@ -605,7 +605,7 @@ describe("invites", () => {
     expect(OrganizationInviteResponseSchema.parse((await w.call(ada, "POST", "/org/invites", { requestId: randomUUID(), role: "member", email: "onboard@example.com" })).body).inviteUrl).toContain("#invite=");
   });
 
-  it("takes back an invite Code refused or couldn't take, in fixed words, so it is never shown or used", async () => {
+  it("removes a refused invite but retains an unanswered preapproval for reconciliation", async () => {
     const w = world();
     const ada = await w.signIn("ada");
     // Code already holds a live pre-approval for the address (made elsewhere): Code refuses, Cloud keeps nothing.
@@ -614,7 +614,9 @@ describe("invites", () => {
     w.setCode({ fails: true });
     expect((await create(w, ada, "member", "gone@example.com")).status).toBe(503);
     w.setCode({ fails: false });
-    expect((await w.store.invites(A)).invites).toEqual([]);
+    const kept = (await w.store.invites(A)).invites;
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).toMatchObject({ email: "gone@example.com", state: "revoking" });
     expect((await create(w, ada, "member", "next@example.com")).status).toBe(200);
   });
 

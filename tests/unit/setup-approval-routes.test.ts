@@ -469,12 +469,13 @@ describe("two companies and two projects", () => {
 });
 
 describe("the sign-in ended", () => {
-  it("signs the person out when Code refuses the token, on every approval route", async () => {
+  it("keeps a dispatched approval unknown when Code refuses renewal, on every approval route", async () => {
     for (const tail of ["confirm", "discard", "decide"]) {
       const w = setUp({ override: (path) => path.startsWith("/v1/app/projects/") ? err(401, "AUTH_REQUIRED", LEAK) : undefined });
       const body = tail === "confirm" ? { requestId: UUID1, expectedRevision: 1 } : tail === "discard" ? { requestId: UUID1 } : decision(A, "payments", 4);
       const res = await w.send("POST", `/v1/web/projects/payments/setup-agent/${tail}`, await w.as("ada-token"), body);
-      expect(res.status, tail).toBe(401);
+      expect(res.status, tail).toBe(503);
+      expect(res.text).toMatch(/outcome.*unknown.*check.*status/iu);
       expect(res.text).not.toContain(LEAK);
     }
   });

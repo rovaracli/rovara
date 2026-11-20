@@ -17,7 +17,7 @@
 //     Cloud's fixed sentences (LIFECYCLE_WORDS, the same as @agentx/contracts PROJECT_LIFECYCLE_WORDS), never Code's or the browser's text.
 //   - Until Code serves the routes, its fixed unknown-route 404 reads "Archiving isn't available yet." (501 NOT_ON_CODE_YET).
 // cloud-server takes no package dependency, so the shapes are checked here by hand against Code's contract (reviewed-project-archive.ts, -restore.ts).
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, refused } from "./company-caller.js";
 import { COMPANY_ID } from "./company-store.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
@@ -107,6 +107,7 @@ function outcomeOk(kind: Kind, value: unknown, company: string, project: string)
 
 /** Code's refusal in Cloud's fixed words. Only Code's exact unknown-route 404 means "not on Code yet"; any other 404 is "project not found". */
 export function lifecycleRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
   if (error.status === 404) return body?.["code"] === "NOT_FOUND" && body["message"] === "route not found" ? LIFECYCLE_ANSWERS.notYet : LIFECYCLE_ANSWERS.notFound;
   if (error.status === 403) return LIFECYCLE_ANSWERS.notAllowed;

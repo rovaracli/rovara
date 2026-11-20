@@ -422,11 +422,12 @@ describe("Code's failures (M11, M13, M14)", () => {
     expect(res.text).not.toContain(LEAK);
   });
 
-  it("signs the person out (401, the session deleted) when Code refuses the token and it can't be refreshed, on every route", async () => {
+  it("keeps the result unknown after access dispatch when renewal ends, on every route", async () => {
     for (const [method, path, body] of [["GET", "wiki-map", undefined], ["POST", "wiki-build", { requestId: RID }], ["GET", "upkeep", undefined]] as const) {
       const w = setUp((call) => (call.path.startsWith("/v1/app/projects/") ? json(401, { error: { code: "AUTH_REQUIRED", message: LEAK } }) : undefined));
       const res = await w.send(method, P("payments", path), await w.as("ada-token"), body);
-      expect(res.status, path).toBe(401);
+      expect(res.status, path).toBe(503);
+      expect(res.text).toMatch(/outcome.*unknown.*check.*status/iu);
       expect(res.text).not.toContain(LEAK);
       expect(await w.store.get("cookie-ada-token"), path).toBeUndefined();
     }

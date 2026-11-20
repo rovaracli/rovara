@@ -57,8 +57,11 @@ export class CodeError extends Error {
 /** Internal dispatch history, never stored with the session. The handler must not re-enter a route after a Code write. */
 const writesSent = new WeakMap<CodeSession, number>();
 export const codeWritesSent = (session: CodeSession): number => writesSent.get(session) ?? 0;
+/** Internal classification: adapters must not turn this locally generated result into a Code refusal. */
+class CodeOutcomeUnknown extends CodeError { readonly outcomeUnknown = true; }
+export const isCodeOutcomeUnknown = (error: unknown): error is CodeOutcomeUnknown => error instanceof CodeOutcomeUnknown;
 /** Existing web unknown-outcome shape: no new public code or field, and no claim that the write was refused. */
-export const codeOutcomeUnknown = (): CodeError => new CodeError(503, {
+export const codeOutcomeUnknown = (): CodeError => new CodeOutcomeUnknown(503, {
   error: { code: "RUNTIME_UNAVAILABLE", message: "The request's outcome is unknown. Check its status before trying again." },
 });
 

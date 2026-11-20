@@ -208,21 +208,23 @@ describe("the checklist read", () => {
 });
 
 describe("an ended sign-in", () => {
-  it("signs the person out (401, the session deleted) when Code refuses the token and it can't be refreshed, on every route", async () => {
+  it("keeps the answer unknown after access dispatch when renewal ends, on every route", async () => {
     for (const [method, path, body] of [["GET", "/v1/web/projects/payments/setup-status"], ["GET", "/v1/web/projects/payments/setup-agent"], ["GET", "/v1/web/projects/payments/setup-agent/journal"], ["POST", "/v1/web/projects/payments/setup-agent", { requestId: REQUEST_ID }]] as const) {
       // Code's project route refuses the token (the access check still answers).
       const w = setUp((call) => call.path.startsWith("/v1/dev/client/projects/") || call.path.startsWith("/v1/app/projects/") ? json(401, { error: { code: "AUTH_REQUIRED", message: LEAK } }) : undefined);
       const res = await w.send(method, path, await w.as("ada-token"), body);
-      expect(res.status, path).toBe(401);
+      expect(res.status, path).toBe(503);
+      expect(res.text).toMatch(/outcome.*unknown.*check.*status/iu);
       expect(res.text).not.toContain(LEAK);
       expect(await w.store.get("cookie-ada-token"), path).toBeUndefined();
     }
   });
 
-  it("signs the person out when Code's access check itself refuses the token", async () => {
+  it("keeps the access POST unknown while ending the stored sign-in after refused renewal", async () => {
     const w = setUp();
     const res = await w.send("GET", "/v1/web/projects/payments/setup-status", await w.as("dead-token"));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(503);
+    expect(res.text).toMatch(/outcome.*unknown.*check.*status/iu);
     expect(await w.store.get("cookie-dead-token")).toBeUndefined();
     expect(w.codeCalls().filter((call) => call.path.includes("/setup-status"))).toHaveLength(0);
   });

@@ -23,7 +23,7 @@
 //   - Code's refusals reach the app as Cloud's fixed sentences (SETUP_CHECKLIST_WORDS, the same as @agentx/contracts), never Code's or the browser's text. Until Code
 //     serves a route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
 // cloud-server takes no package dependency, so the shapes are checked here by hand against Code's contract (project-setup-status.ts on #841, setup-run-routes.ts on #844).
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { agentAiConnected } from "./agent-ai-presence.js";
 import { companyCaller, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
@@ -187,6 +187,7 @@ export function runBody(value: unknown): { requestId: string } | undefined {
 type Kind = "checklist" | "skip" | "run";
 /** Code's refusal in Cloud's fixed words. Only Code's exact unknown-route 404 means "not on Code yet"; any other 404 is "project not found". */
 export function setupRefusal(kind: Kind, error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
   if (error.status === 404) return body?.["code"] === "NOT_FOUND" && body["message"] === "route not found" ? (kind === "run" ? A.runNotYet : A.notYet) : A.notFound;
   if (error.status === 403) return kind === "run" ? A.runNotAllowed : kind === "skip" ? A.skipNotAllowed : A.unavailable;
@@ -215,6 +216,7 @@ async function scope(context: RouteContext): Promise<{ project: string; companyI
   try {
     who = await companyCaller(context);
   } catch (error) {
+    if (isCodeOutcomeUnknown(error)) return { refusal: { status: error.status, body: error.body } };
     if (error instanceof CodeError) return { refusal: A.unavailable };
     throw error;
   }
@@ -333,6 +335,7 @@ function confirmAnswer(value: unknown): Plain {
 type ApprovalKind = "confirm" | "discard" | "decide";
 /** Code's refusal of a setup approval act in Cloud's fixed words. Only a message that is exactly one of Code's fixed sentences is said (as this file's copy of it); anything else is by code and status. */
 export function approvalRefusal(kind: ApprovalKind, error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
   const code = body?.["code"], said = typeof body?.["message"] === "string" ? SETUP_APPROVAL_CODE_WORDS.find((words) => words === body["message"]) : undefined;
   if (error.status === 404) {
