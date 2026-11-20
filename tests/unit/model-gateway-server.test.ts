@@ -165,3 +165,40 @@ it.each(["memory", "dynamo"])("charges only a signed member payer with %s: two p
   expect((await meter.read(scope)).find(row => row.item === "project")?.spentMicros).toBeGreaterThan(0);
   expect((await call(f.deps)).status).toBe(422);
 });
+
+it("routes the agent call on the bare path and on exactly ?beta=true (the Anthropic SDK beta client); any other query is not_found before auth", async () => {
+  const { handleGateway } = await import("../../packages/model-gateway/src/server.js");
+  const post = async (deps: Parameters<typeof handleGateway>[0], url: string, token = mint()) => {
+    const sink = new MemorySink(); const bytes = Buffer.from(JSON.stringify(requestBody));
+    await handleGateway(deps, { method: "POST", url, headers: { "content-type": "application/json", "x-api-key": token }, body: (async function* () { yield bytes; })() }, sink);
+    return sink;
+  };
+  for (const url of ["/v1/messages", "/v1/messages?beta=true"]) {
+    const f = setup(); const ok = await post(f.deps, url);
+    expect(ok.status, url).toBe(200); expect(f.calls, url).toHaveLength(1);
+    expect((await post(setup().deps, url, "secret")).status, `${url} bad token`).toBe(401);
+  }
+  for (const url of ["/v1/messages?beta=false", "/v1/messages?beta=true&x=1", "/v1/messages?x=1", "/v1/messages?", "/v1/messages/", "/v1/messages?BETA=TRUE", "/v1/messages#beta=true"]) {
+    const f = setup(); const refused = await post(f.deps, url);
+    expect(refused.status, url).toBe(404); expect(refused.text(), url).toBe('{"error":{"type":"not_found","message":"not found"}}'); expect(f.calls, url).toHaveLength(0);
+    // Refused before auth: a bad token on an unknown path is still not_found, never 401.
+    expect((await post(setup().deps, url, "secret")).status, `${url} bad token`).toBe(404);
+  }
+});
+
+it("logs a not_found refusal's method and bounded pathname, and only whether a query was present", async () => {
+  const { handleGateway } = await import("../../packages/model-gateway/src/server.js");
+  const f = setup();
+  const sink = new MemorySink();
+  const long = `/v1/messages/count_tokens/${"x".repeat(300)}`;
+  await handleGateway(f.deps, { method: "POST", url: `${long}?beta=true&secret=abc123`, headers: { "x-api-key": "secret-token-value" }, body: (async function* () { yield Buffer.from("{}"); })() }, sink);
+  expect(sink.status).toBe(404);
+  const line = f.logs.find((entry) => (entry as { event: string }).event === "refused") as Record<string, unknown>;
+  expect(line).toMatchObject({ code: "not_found", status: 404, method: "POST", query: true });
+  expect(typeof line.path).toBe("string"); expect((line.path as string).length).toBeLessThanOrEqual(120);
+  expect((line.path as string).startsWith("/v1/messages/count_tokens/")).toBe(true);
+  expect(JSON.stringify(f.logs)).not.toContain("abc123"); expect(JSON.stringify(f.logs)).not.toContain("secret-token-value");
+  // An ordinary refusal on a known route carries no path fields.
+  const g = setup(); await handleGateway(g.deps, { method: "POST", url: "/v1/messages", headers: { "content-type": "application/json", "x-api-key": "bad" }, body: (async function* () { yield Buffer.from("{}"); })() }, new MemorySink());
+  expect(g.logs.find((entry) => (entry as { event: string }).event === "refused")).not.toHaveProperty("path");
+});

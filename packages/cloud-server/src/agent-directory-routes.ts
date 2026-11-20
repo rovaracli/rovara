@@ -14,7 +14,7 @@
 //   - Code's refusals reach the app as Cloud's fixed sentences, never Code's own text and never an echo of the browser's input or the cause. Until Code serves the route, its fixed unknown-route 404
 //     reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
 // cloud-server takes no package dependency, so the shape is checked here by hand against contracts agent-web-views.ts (the limits are repeated and a unit test pins them).
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
@@ -126,6 +126,7 @@ async function read(context: RouteContext): Promise<RouteAnswer> {
   try {
     who = await companyCaller(context);
   } catch (error) {
+    if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
     if (error instanceof CodeError) return A.unavailable;
     throw error;
   }

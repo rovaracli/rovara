@@ -1,6 +1,6 @@
 // The Members page's routes (member-routes.ts, guided onboarding PR 12a) through the real handler and a fake Code that serves Code's own member
 // routes with Code's rules (company-member-routes.ts on code/next): the company is the caller's live membership, a plain member gets 404, another
-// company's person and nobody both get "member not found", nobody changes their own role, only an owner changes or makes an owner, no step-up
+// company's person and nobody both get "member not found", only a live owner can step down, only an owner changes or makes another owner, no step-up
 // (owner DEC 254zzz73), and the last active owner is kept. Covers Cloud's early refusals (each proven by Code never being asked), Code's refusals
 // reaching the app as fixed sentences (never Code's words or the request's), two companies, the list's bounds, and leak checks.
 import { randomUUID } from "node:crypto";
@@ -75,9 +75,9 @@ function world() {
     if (match === null || method !== "PUT") return refuse("NOT_FOUND", "not found", 404);
     const target = members.get(decodeURIComponent(match[1]!));
     if (target === undefined || target.companyId !== me.companyId) return refuse("NOT_FOUND", "member not found", 404);
-    if (target.personId === me.personId) return refuse("FORBIDDEN", "you cannot change your own role or remove yourself here", 403);
     const role = (body as { role?: unknown } | undefined)?.role;
     if (role !== "member" && role !== "admin" && role !== "owner") return refuse("CONFIG_INVALID", "send the new role: member, admin or owner", 400);
+    if (target.personId === me.personId && (me.role !== "owner" || role === "owner")) return refuse("FORBIDDEN", "you cannot change your own role or remove yourself here", 403);
     if ((target.role === "owner" || role === "owner") && me.role !== "owner") return refuse("FORBIDDEN", "only an owner can change or remove an owner", 403);
     if (override !== undefined) return respond(override.status, override.body);
     if (target.revokedAt !== undefined) return refuse("MEMBER_ALREADY_REMOVED", "restore this member before changing their role", 409);
@@ -198,14 +198,33 @@ describe("role change: Code's route as the person", () => {
     expect(w.roleOf("olga")).toBe("owner");
   });
 
-  it("nobody changes their own role: refused before Code, for an owner too", async () => {
+  it("an admin cannot change their own role, and an owner cannot promote themself or remove themself", async () => {
     const w = world();
-    for (const who of ["olga", "ada"]) {
-      const as = await w.signIn(who, 30);
-      expect(words(await w.change(as, who, "member"))).toEqual(words(MEMBER_WORDS.self));
-    }
+    const as = await w.signIn("ada", 30);
+    expect(words(await w.change(as, "ada", "member"))).toEqual(words(MEMBER_WORDS.self));
+    const owner = await w.signIn("olga", 30);
+    expect(words(await w.change(owner, "olga", "owner"))).toEqual(words(MEMBER_WORDS.self));
+    expect(words(await w.call(owner, "POST", `/org/members/${PEOPLE.olga!.personId}/removal`, { requestId: randomUUID(), expectedRole: "owner" }))).toEqual(words({ status: 403, body: { error: { code: "FORBIDDEN", message: "You can't remove yourself. Ask another owner or admin." } } }));
     expect(w.putCalls()).toEqual([]);
     expect(w.roleOf("olga")).toBe("owner");
+  });
+
+  it("a live owner steps down through Code, which keeps the other live owner", async () => {
+    const w = world(), owner = await w.signIn("olga", 30);
+    const answer = await w.change(owner, "olga", "member", { expectedRole: "owner" });
+    expect(answer.status).toBe(200);
+    expect(w.roleOf("olga")).toBe("member");
+    expect(w.roleOf("otto")).toBe("owner");
+    expect(w.putCalls().at(-1)).toMatchObject({ path: `${CODE_MEMBERS_PATH}/${PEOPLE.olga!.personId}/role`, body: { role: "member" } });
+  });
+
+  it("a removed owner in this company and a live owner in another company are not witnesses", async () => {
+    const w = world(), owner = await w.signIn("olga", 30);
+    w.members.get(PEOPLE.otto!.personId)!.revokedAt = "2026-11-10T00:00:00.000Z";
+    const answer = await w.change(owner, "olga", "admin", { expectedRole: "owner" });
+    expect(words(answer)).toEqual(words({ status: 409, body: { error: { code: "LAST_OWNER", message: "You're the only owner; add another owner first" } } }));
+    expect(w.roleOf("olga")).toBe("owner");
+    expect(w.roleOf("bob")).toBe("owner");
   });
 
   it("no step-up (owner DEC 254zzz73): with none, an old one or a future one an admin changes a member of their own company; the wrong role and the wrong company still can't", async () => {
@@ -239,7 +258,7 @@ describe("role change: Code's route as the person", () => {
     const olga = await w.signIn("olga", 30);
     w.setOverride({ status: 409, body: { error: { code: "LAST_OWNER", message: `a company must keep at least one active owner ${SECRET}` } } });
     const answer = await w.change(olga, "otto", "member", { expectedRole: "owner" });
-    expect(words(answer)).toEqual(words({ status: 409, body: { error: { code: "LAST_OWNER", message: "A company needs at least one owner. Make someone else an owner first." } } }));
+    expect(words(answer)).toEqual(words({ status: 409, body: { error: { code: "LAST_OWNER", message: "You're the only owner; add another owner first" } } }));
     expect(answer.raw).not.toContain(SECRET);
     expect(w.roleOf("otto")).toBe("owner");
   });

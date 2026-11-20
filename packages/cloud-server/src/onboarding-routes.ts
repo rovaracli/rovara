@@ -16,7 +16,7 @@
 // "Sign in to join" opens it and sends `company=<id>&invite=<secret>` to Code's authorize: the only URL after the link that carries it. Cloud
 // marks the invite accepted only when Code's access answer puts the person in the invite's company AND says `joinedByInvite: true`.
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyOf } from "./company-caller.js";
 import { COMPANY_ID, type CompanyStore, type InviteRecord } from "./company-store.js";
 import type { Route, RouteAnswer } from "./routes.js";
@@ -95,6 +95,7 @@ async function createCompany(context: Parameters<Route["answer"]>[0]): Promise<R
   try {
     answer = await context.client.json<unknown>(context.session, COMPANY_CREATE_PATH, { method: "POST", body: { name, inviteCode } });
   } catch (error) {
+    if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
     if (!(error instanceof CodeError)) throw error;
     // Code's own words never pass through: each outcome has Cloud's fixed answer.
     if (error.status === 403) return CREATE_WORDS.badCode;

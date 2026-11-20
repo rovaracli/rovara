@@ -34,7 +34,7 @@ const MODEL_CHECK_BODY_BYTES = 8 * 1024;
 const BROKER_ROLE = /^arn:aws:iam::[0-9]{12}:role\/RovaraBedrockBroker-[a-z0-9-]{1,32}$/u;
 const AWS_REGION = /^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u;
 /** Bedrock's words for "this account has no access to the model yet" (a Marketplace agreement or model access). Read only to classify. */
-export const BEDROCK_MODEL_ACCESS_WORDS = /aws-marketplace|Model access is denied|don't have access to the model|do not have access to the model|model access/iu;
+export const BEDROCK_MODEL_ACCESS_WORDS = /aws-marketplace|Model access is denied|don't have access to the model|do not have access to the model|is not available for this account|model access/iu;
 /** Bedrock's words for a model id or profile it does not serve here. */
 const UNKNOWN_MODEL_WORDS = /model identifier is invalid|on-demand throughput|inference profile|could not be found|not found/iu;
 

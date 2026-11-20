@@ -99,12 +99,13 @@ describe("the connections read carries #832's health", () => {
 });
 
 describe("disconnecting a GitHub account", () => {
-  it("an ended sign-in signs the person out (401, the session deleted) and nothing is disconnected", async () => {
+  it("an ended renewal leaves the dispatched disconnect unknown and ends the stored sign-in", async () => {
     const w = world();
     const nova = await w.signIn(NOVA);
     w.overrides.set("DELETE /v1/dev/company/github/12", () => respond(401, { error: { code: "AUTH_REQUIRED", message: LEAK } }));
     const answer = await w.api(nova, "DELETE", "/github/connections/12");
-    expect(answer.status).toBe(401);
+    expect(answer.status).toBe(503);
+    expect(answer.text).toMatch(/outcome.*unknown.*check.*status/iu);
     expect(answer.text).not.toContain(LEAK);
     expect((await w.api(nova, "GET", "/github/connections")).status).toBe(401);
     expect(w.installations.has(12)).toBe(true);

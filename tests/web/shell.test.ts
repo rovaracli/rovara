@@ -53,9 +53,9 @@ it("opens the workspace menu and returns focus when it closes", async () => {
  const f = shell();await screen.findByRole("heading", { name: "Home" });const menu = screen.getByRole("button", { name: "Open workspace menu" });menu.focus();fireEvent.click(menu);
  expect(await screen.findByRole("dialog", { name: "Workspace" })).toBeTruthy();const ids = [...document.querySelectorAll("[id]")].map(element => element.id);expect(new Set(ids).size).toBe(ids.length);fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());await waitFor(() => expect(document.activeElement).toBe(menu));f.close();
 });
-it("signs out through the host and begins a deliberate sign in", async () => {
+it("signs out through the host without beginning another sign in", async () => {
  const f = shell();await screen.findByRole("heading", { name: "Home" });fireEvent.click(screen.getByRole("button", { name: "Open account menu" }));fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
- await waitFor(() => expect(f.host.signIn).toHaveBeenCalledWith("/app", { differentWorkspace: true }));expect(f.host.signOut).toHaveBeenCalledTimes(1);f.close();
+ await waitFor(() => expect(f.host.signOut).toHaveBeenCalledTimes(1));expect(f.host.signIn).not.toHaveBeenCalled();f.close();
 });
 it("uses exact trial guidance", () => {
  const f = fakeHost();const { unmount } = renderUi(h(AppHostProvider, { host: f.host, children: h(MemoryRouter, { children: h(TrialBanner, { state: "locked" }) }) }));expect(screen.getByText("Connect GitHub to start your free trial.")).toBeTruthy();expect(screen.getByRole("link", { name: "Connect GitHub" }).getAttribute("href")).toBe("/app/onboard");unmount();

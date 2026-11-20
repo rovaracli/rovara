@@ -75,7 +75,7 @@ test("refusals are fixed sentences: the last owner", async ({ page }, testInfo) 
   await openPeople(admin);
   await page.getByRole("button", { name: "Make Maya an admin" }).click();
   await page.getByRole("button", { name: "Confirm role change" }).click();
-  await expect(page.getByText("A company needs at least one owner. Make someone else an owner first.")).toBeVisible();
+  await expect(page.getByText("You're the only owner; add another owner first")).toBeVisible();
   await expect(page.getByText("server words never shown")).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("role-change-last-owner.png"), fullPage: true });
   await expect(admin.freshSignIn).toHaveCount(0);
@@ -88,7 +88,7 @@ test("an open role dialog and its refusal survive a narrow window, a focus and a
   await page.getByRole("button", { name: "Make Maya an admin" }).click();
   await expect(page.getByText("New role: Admin")).toBeVisible();
   await page.getByRole("button", { name: "Confirm role change" }).click();
-  await expect(page.getByText("A company needs at least one owner. Make someone else an owner first.")).toBeVisible();
+  await expect(page.getByText("You're the only owner; add another owner first")).toBeVisible();
   await page.evaluate(() => { document.querySelector('[role="dialog"]')?.setAttribute("data-mark", "same"); });
   await page.setViewportSize({ width: 600, height: 720 });
   await expect(page.getByTestId("admin-narrow")).toBeVisible();
@@ -97,7 +97,7 @@ test("an open role dialog and its refusal survive a narrow window, a focus and a
   await page.evaluate(() => { window.dispatchEvent(new Event("focus")); document.dispatchEvent(new Event("visibilitychange")); });
   await page.waitForTimeout(500);
   await expect(page.locator('[role="dialog"][data-mark="same"]')).toBeVisible();
-  await expect(page.getByText("A company needs at least one owner. Make someone else an owner first.")).toBeVisible();
+  await expect(page.getByText("You're the only owner; add another owner first")).toBeVisible();
   await page.getByRole("button", { name: "Close dialog" }).click();
 });
 

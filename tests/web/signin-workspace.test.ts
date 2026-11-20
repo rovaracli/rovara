@@ -19,7 +19,7 @@ function browser(options: { stored?: string; throwing?: boolean; readOnly?: bool
  const boom = () => { throw new Error("storage blocked"); };
  const fetch = vi.fn(async (input: RequestInfo | URL) => (options.answers?.[String(typeof input === "string" ? input : input instanceof URL ? input.href : input.url)] ?? (() => json({}, 404)))());
  const win = { location: { origin: "https://cell.example", pathname: "/app/live", search: "", assign }, fetch,
-  localStorage: options.throwing === true ? { getItem: boom, setItem: boom } : options.readOnly === true ? { getItem: (key: string) => local.get(key) ?? null, setItem: boom } : { getItem: (key: string) => local.get(key) ?? null, setItem: (key: string, value: string) => { local.set(key, value); } },
+  localStorage: options.throwing === true ? { getItem: boom, setItem: boom, removeItem: boom } : options.readOnly === true ? { getItem: (key: string) => local.get(key) ?? null, setItem: boom, removeItem: boom } : { getItem: (key: string) => local.get(key) ?? null, setItem: (key: string, value: string) => { local.set(key, value); }, removeItem: (key: string) => { local.delete(key); } },
   sessionStorage: { getItem: () => null, setItem: () => undefined },
  } as unknown as BrowserWindow;
  return { win, local, assign, fetch };
@@ -35,6 +35,19 @@ describe("the browser host's sign-in", () => {
   const none = browser();
   createBrowserHost(none.win).signIn("/app");
   expect(none.assign.mock.lastCall?.[0]).toBe("/v1/auth/browser/authorize?return_to=%2Fapp");
+ });
+
+ it("keeps the remembered workspace through sign-out for the next sign-in", async () => {
+  const b = browser({ stored: HINT, answers: {
+   "/v1/web/me": () => json({ developer: { id: "a".repeat(64), name: "Ada", orgRole: "owner" }, org: { orgId: "org_" + "a".repeat(20), name: "Acme", plan: "team" }, identities: [], csrf: "c".repeat(43) }),
+   "/v1/auth/browser/sign-out": () => new Response(null, { status: 204 }),
+  } });
+  const host = createBrowserHost(b.win);
+  await host.signOut();
+  expect(b.local.get(LAST_WORKSPACE_KEY)).toBe(HINT);
+  expect(b.assign.mock.lastCall?.[0]).toBe("/app/signed-out?reason=ended");
+  host.signIn("/app");
+  expect(target(b.assign).searchParams.get("slack_team")).toBe(HINT);
  });
 
  it.each([["lowercase", "t0hint0001"], ["too short", "T0HIN"], ["a url", "https://evil.example"], ["an injection", "T0HINT0001&return_to=/x"], ["an enterprise id", "E0HINT0001"], ["empty", ""]])("ignores a stored value that is not a workspace id (%s)", (_case, stored) => {
@@ -65,7 +78,7 @@ describe("the browser host's sign-in", () => {
  it("a different workspace carries no hint even when the browser cannot forget it (storage that reads but will not write)", () => {
   const b = browser({ stored: HINT, readOnly: true });
   const host = createBrowserHost(b.win);
-  expect(host.lastWorkspace?.()).toBe(HINT);
+  expect(host.lastWorkspace?.()).toBeUndefined();
   host.signIn("/app", { differentWorkspace: true });
   expect(target(b.assign).searchParams.has("slack_team")).toBe(false);
  });
@@ -88,7 +101,70 @@ describe("the browser host's sign-in", () => {
   expect([...b.local.values()].join(" ")).not.toContain("a@b.test");
  });
 
- it.each([["a bad id", json({ slackTeamId: "nope" })], ["no workspace", json({})], ["an error", json({}, 401)], ["a non-object", json("T0HINT0001")]])("keeps nothing for %s", async (_case, answer) => {
+ it("clears the previous hint when the authenticated person has no workspace", async () => {
+  const b = browser({ stored: "T0KEEP0001", answers: { "/v1/web/me/sign-in-workspace": () => json({}) } });
+  await createBrowserHost(b.win).rememberSignInWorkspace?.();
+  expect(b.local.get(LAST_WORKSPACE_KEY)).toBe("");
+ });
+
+ it("does not send Alice's workspace after Bob with no workspace signs out", async () => {
+  let person = "Alice";
+  const b = browser({ answers: {
+   "/v1/web/me/sign-in-workspace": () => json(person === "Alice" ? { slackTeamId: "T0ALICE001" } : {}),
+   "/v1/web/me": () => json({ developer: { id: (person === "Alice" ? "a" : "b").repeat(64), name: person, orgRole: "owner" }, org: { orgId: "org_" + "a".repeat(20), name: "Acme", plan: "team" }, identities: [], csrf: "c".repeat(43) }),
+   "/v1/auth/browser/sign-out": () => new Response(null, { status: 204 }),
+  } });
+  const alice = createBrowserHost(b.win);
+  await alice.rememberSignInWorkspace?.();
+  await alice.signOut();
+  expect(b.local.get(LAST_WORKSPACE_KEY)).toBe("T0ALICE001");
+  person = "Bob";
+  const bob = createBrowserHost(b.win);
+  await bob.rememberSignInWorkspace?.();
+  await bob.signOut();
+  expect(b.assign.mock.lastCall?.[0]).toBe("/app/signed-out?reason=ended");
+  createBrowserHost(b.win).signIn("/app");
+  expect(target(b.assign).searchParams.has("slack_team")).toBe(false);
+ });
+
+ it.each([{}, { slackTeamId: "T0BOB00001" }])("ignores Alice's read-only persisted hint for Bob in a fresh host (%j)", async (answer) => {
+  const b = browser({ stored: "T0ALICE001", readOnly: true, answers: {
+   "/v1/web/me/sign-in-workspace": () => json(answer),
+   "/v1/web/me": () => json({ developer: { id: "b".repeat(64), name: "Bob", orgRole: "owner" }, org: { orgId: "org_" + "a".repeat(20), name: "Acme", plan: "team" }, identities: [], csrf: "c".repeat(43) }),
+   "/v1/auth/browser/sign-out": () => new Response(null, { status: 204 }),
+  } });
+  const bob = createBrowserHost(b.win);
+  await bob.rememberSignInWorkspace?.();
+  await bob.signOut();
+  createBrowserHost(b.win).signIn("/app");
+  expect(target(b.assign).searchParams.has("slack_team")).toBe(false);
+  expect(b.local.get(LAST_WORKSPACE_KEY)).toBe("T0ALICE001");
+ });
+
+ it.each([{}, { slackTeamId: "T0BOB00001" }])("stops trusting Alice's hint after a throwing reconcile write (%j)", async (answer) => {
+  const b = browser({ stored: "T0ALICE001", answers: { "/v1/web/me/sign-in-workspace": () => json(answer) } });
+  const bob = createBrowserHost(b.win);
+  expect(bob.lastWorkspace?.()).toBe("T0ALICE001");
+  const write = vi.spyOn(b.win.localStorage, "setItem").mockImplementation(() => { throw new Error("storage became full"); });
+  await bob.rememberSignInWorkspace?.();
+  expect(write).toHaveBeenCalledWith(LAST_WORKSPACE_KEY, "slackTeamId" in answer ? answer.slackTeamId : "");
+  bob.signIn("/app");
+  expect(target(b.assign).searchParams.has("slack_team")).toBe(false);
+  expect(bob.lastWorkspace?.()).toBeUndefined();
+  createBrowserHost(b.win).signIn("/app");
+  expect(target(b.assign).searchParams.has("slack_team")).toBe(false);
+  write.mockRestore();
+  expect(bob.lastWorkspace?.()).toBeUndefined();
+ });
+
+ it("replaces the previous person's hint with the current person's valid workspace", async () => {
+  const b = browser({ stored: "T0ALICE001", answers: { "/v1/web/me/sign-in-workspace": () => json({ slackTeamId: "T0BOB00001" }) } });
+  await createBrowserHost(b.win).rememberSignInWorkspace?.();
+  createBrowserHost(b.win).signIn("/app");
+  expect(target(b.assign).searchParams.get("slack_team")).toBe("T0BOB00001");
+ });
+
+ it.each([["a bad id", json({ slackTeamId: "nope" })], ["an error", json({}, 401)], ["a non-object", json("T0HINT0001")]])("keeps the hint for %s", async (_case, answer) => {
   const b = browser({ stored: "T0KEEP0001", answers: { "/v1/web/me/sign-in-workspace": () => answer } });
   await createBrowserHost(b.win).rememberSignInWorkspace?.();
   expect(b.local.get(LAST_WORKSPACE_KEY)).toBe("T0KEEP0001");
@@ -97,6 +173,8 @@ describe("the browser host's sign-in", () => {
  it("never throws when storage or the request fails", async () => {
   const blocked = browser({ throwing: true, answers: { "/v1/web/me/sign-in-workspace": () => json({ slackTeamId: HINT }) } });
   await expect(createBrowserHost(blocked.win).rememberSignInWorkspace?.()).resolves.toBeUndefined();
+  const readOnly = browser({ stored: HINT, readOnly: true, answers: { "/v1/web/me/sign-in-workspace": () => json({}) } });
+  await expect(createBrowserHost(readOnly.win).rememberSignInWorkspace?.()).resolves.toBeUndefined();
   const failing = browser();
   failing.fetch.mockRejectedValueOnce(new Error("offline"));
   await expect(createBrowserHost(failing.win).rememberSignInWorkspace?.()).resolves.toBeUndefined();

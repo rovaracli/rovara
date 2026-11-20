@@ -15,14 +15,15 @@
 //
 // Who: Code decides. The company is the one Code's live membership names for the person (Code reads it again on every call); the browser never
 // names a company, and the person id is passed only as Code's path parameter. Cloud asks Code's access check first (company-caller.ts) and
-// refuses early, in fixed words, what Code would refuse anyway: a person who is not a company owner or admin, their own role, an owner change by a
-// non-owner. Code alone answers
+// refuses early, in fixed words, what Code would refuse anyway: a person who is not a company owner or admin, an admin's self-change, an owner's
+// self-promotion, and an owner change by a non-owner. An owner may step down through the existing forward; Code alone checks the live-owner witness
+// transactionally and answers
 // "another company's person" (404, which reaches the app as one fixed sentence, the same as a missing person) and "the last owner" (Code refuses
 // demoting or removing a company's last active owner inside its own transaction; Cloud only words it).
 //
 // Every answer is a fixed sentence; nothing the request carried and nothing Code worded is echoed. Code writes the company-log record of the change
 // (with the person, the old and the new role).
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { withdrawForMember } from "./product-ai-routes.js";
@@ -41,7 +42,7 @@ export const MEMBER_WORDS = Object.freeze({
   notFound: refusal(404, "NOT_FOUND", "That person isn't in your company."),
   self: refusal(403, "FORBIDDEN", "You can't change your own role. Ask another owner."),
   ownerOnly: refusal(403, "FORBIDDEN", "Only an owner can make someone an owner or change an owner's role."),
-  lastOwner: refusal(409, "LAST_OWNER", "A company needs at least one owner. Make someone else an owner first."),
+  lastOwner: refusal(409, "LAST_OWNER", "You're the only owner; add another owner first"),
   removed: refusal(409, "MEMBER_ALREADY_REMOVED", "This person was removed from the company."),
   badBody: refusal(400, "CONFIG_INVALID", "Choose member, admin or owner."),
   unavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The role couldn't be changed just now. Try again."),
@@ -77,6 +78,7 @@ function codeRefusal(error: CodeError): { code?: string; message?: string } {
 
 /** Code's refusal of a role change, as one of this module's fixed answers. */
 export function roleRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const { code, message } = codeRefusal(error);
   if (error.status === 404 && message === CODE_NOT_ADMIN) return MEMBER_WORDS.notAdmin;
   if (error.status === 404) return MEMBER_WORDS.notFound;
@@ -101,7 +103,9 @@ async function changeRole(context: RouteContext): Promise<RouteAnswer> {
   const role = body["role"];
   const personId = context.params[0] ?? "";
   if (!PERSON_ID.test(personId)) return MEMBER_WORDS.notFound;
-  if (personId === who.developerId) return MEMBER_WORDS.self;
+  // Code owns the transactional last-owner check. Cloud forwards only an owner's own step-down;
+  // self-promotion, an admin's self-change and keeping the owner role remain refused.
+  if (personId === who.developerId && (who.companyRole !== "owner" || role === "owner")) return MEMBER_WORDS.self;
   // Owner changes are an owner's. The person's real role is Code's to know (it refuses an admin who changes an owner); the screen's `expectedRole`
   // only lets Cloud say so before asking Code.
   if ((role === "owner" || body["expectedRole"] === "owner") && who.companyRole !== "owner") return MEMBER_WORDS.ownerOnly;
@@ -192,6 +196,7 @@ const CODE_OWNER_ONLY_REMOVAL = CODE_OWNER_ONLY;
 
 /** Code's refusal of a removal or its preview, as one of the fixed answers above. */
 export function removalRefusal(error: CodeError, preview = false): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const { code, message } = codeRefusal(error);
   if (error.status === 404 && message === CODE_NOT_ADMIN) return REMOVAL_WORDS.notAdmin;
   if (error.status === 404) return REMOVAL_WORDS.notFound;

@@ -279,10 +279,11 @@ describe("Rename, Merge into and Mark done", () => {
       expect([answer.status, answer.body]).toEqual([ACTION_WORDS.unreadable.status, ACTION_WORDS.unreadable.body]);
     }
   });
-  it("sends a person whose Code sign-in has ended to sign in again", async () => {
+  it("keeps a dispatched change unknown when the Code sign-in cannot be renewed", async () => {
     const w = world({ respond: () => json(401, {}) });
     const answer = await w.post(ACTION(F1, "rename"), "ada-token", { name: "Again" });
-    expect([answer.status, answer.body.error.code]).toEqual([401, "AUTH_REQUIRED"]);
+    expect([answer.status, answer.body.error.code]).toEqual([503, "RUNTIME_UNAVAILABLE"]);
+    expect(answer.body.error.message).toMatch(/outcome.*unknown.*check.*status/iu);
   });
 });
 

@@ -20,7 +20,7 @@
 //   - A project's per-task limit is Code's per-project cost setting `model_budget_usd` (US dollars a task; absent: the company's limit applies, "Same as
 //     company"). Cloud reads the project's settings as the person and writes back the same overrides with only that member changed, naming the
 //     revision it read; a revision that moved since the browser read it is refused before anything is written.
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused, type CompanyCaller } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
@@ -101,6 +101,7 @@ const errorOf = (error: CodeError): Plain | undefined => (plain(error.body) && p
 
 /** Code's refusal of the engine-model routes, in Cloud's fixed words. Code answers this path's 404 only when it doesn't serve it (no gateway, or not on Code yet): "not available yet". */
 export function engineModelRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const said = errorOf(error);
   if (error.status === 404) return A.notYet;
   if (error.status === 403) return A.notAdmin;
@@ -111,6 +112,7 @@ export function engineModelRefusal(error: CodeError): RouteAnswer {
 
 /** Code's refusal of the project settings routes, in Cloud's fixed words. Any 404 is "project not found", whoever asks. */
 export function projectSettingsRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const said = errorOf(error);
   if (error.status === 404) return A.projectNotFound;
   if (error.status === 403 && said?.["message"] === CODE_ABOVE_COMPANY) return A.projectAboveCompany;
