@@ -37,7 +37,7 @@ async function mockCompanyWrites(page: Page) {
   return writes;
 }
 
-test("Save with the model untouched writes only spending, with no step-up", async ({ page }, testInfo) => {
+test("Save with the model untouched writes spending and the shown source, with no step-up", async ({ page }, testInfo) => {
   const writes = await mockCompanyWrites(page);
   const screen = new AiSpendPage(page);
   await screen.open(ROUTES.admin.aiSpending);
@@ -45,7 +45,8 @@ test("Save with the model untouched writes only spending, with no step-up", asyn
   await screen.save.click();
   await expect(screen.saved).toHaveText("Saved.");
   await expect(screen.save).toBeEnabled();
-  expect(writes.map(write => write.path)).toEqual(["/v1/web/org/settings"]);
+  expect(writes.map(write => write.path)).toEqual(["/v1/web/org/settings", "/v1/web/org/agent-ai"]);
+  expect(writes[1]?.body).toEqual({ expectedVersion: 0, source: "rovara" });
   await expect(screen.model.locator("option:checked")).toHaveText("Rovara's default (currently zai.glm-4.6)");
   await expect(screen.freshSignIn).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("ai-spending-saved.png"), fullPage: true });
@@ -60,8 +61,9 @@ test("an explicit model choice saves after spending and can go back to Rovara's 
   await screen.save.click();
   await expect(screen.saved).toHaveText("Saved.");
   await expect(screen.save).toBeEnabled();
-  expect(writes.map(write => write.path)).toEqual(["/v1/web/org/settings", "/v1/web/org/engine-model"]);
-  expect(writes[1]?.body).toEqual({ model: "claude-sonnet-4-5" });
+  expect(writes.map(write => write.path)).toEqual(["/v1/web/org/settings", "/v1/web/org/agent-ai", "/v1/web/org/engine-model"]);
+  expect(writes[1]?.body).toEqual({ expectedVersion: 0, source: "rovara" });
+  expect(writes[2]?.body).toEqual({ model: "claude-sonnet-4-5" });
   await expect(screen.step.getByText("Your choice: claude-sonnet-4-5", { exact: true })).toBeVisible();
   const companyModel = screen.step.getByRole("region", { name: "Company model setting", exact: true });
   const clear = companyModel.getByRole("button", { name: "Go back to Rovara's default", exact: true });
@@ -71,8 +73,8 @@ test("an explicit model choice saves after spending and can go back to Rovara's 
   await clear.click();
   await expect(screen.model.locator("option:checked")).toHaveText("Rovara's default (currently zai.glm-4.6)");
   await expect(screen.save).toBeEnabled();
-  expect(writes).toHaveLength(3);
-  expect(writes[2]).toEqual({ path: "/v1/web/org/engine-model", body: { model: null } });
+  expect(writes).toHaveLength(4);
+  expect(writes[3]).toEqual({ path: "/v1/web/org/engine-model", body: { model: null } });
   await expect(screen.step.getByText("Your choice: claude-sonnet-4-5", { exact: true })).toHaveCount(0);
   await expect(clear).toHaveCount(0);
   await expect(companyModel.locator("p").filter({ hasText: /^Rovara's default \(currently zai\.glm-4\.6\)$/u })).toBeVisible();
