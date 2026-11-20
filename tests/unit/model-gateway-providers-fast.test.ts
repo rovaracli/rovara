@@ -21,16 +21,16 @@ async function world() {
  const open = vi.fn(async () => "fixture-key");
  const keys = { connected: async () => true, keyFor: open, resolveForCharge: async () => ({ source, key: open }), identityFor: async () => ({ sourceId: source.id, versionId: source.connectionRevision }) };
  const sources = { sourceFor: async () => "openrouter_key" as const };
- const result = await answerRateQuote({ prices, keys, sources, now: () => now, region: "us-west-2", switchedOn: new Set(), offeredProviders: new Set(["openrouter"]), openRouterTariffs: [tariff], verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${model}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
+ const result = await answerRateQuote({ prices, keys, sources, now: () => now, region: "us-west-2", switchedOn: new Set(["openrouter"]), offeredProviders: new Set(["openrouter"]), openRouterTariffs: [tariff], verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${model}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
  const runPrice = (result.body as { runPrice: RunPrice }).runPrice; expect(runPrice).toBeDefined();
  const f = setup({ prices, agentKeys: keys, openRouterTariffs: [tariff], chargeReceipts: { source: (_c, _m, resolved) => resolved } });
  const sent: Record<string, unknown>[] = [];
- f.deps.agentAi = { sources, openrouter: { transport: async request => { sent.push(JSON.parse(request.body.toString()) as Record<string, unknown>); return { status: 200, body: answer() }; } } };
+ f.deps.agentAi = { sources, switchedOn: new Set(["openrouter"]), openrouter: { transport: async request => { sent.push(JSON.parse(request.body.toString()) as Record<string, unknown>); return { status: 200, body: answer() }; } } };
  return { ...f, sent, open, runPrice, prices, keys, sources };
 }
 it("uses the same priced set for exact connected offers, quote and signed hold before key opening", async () => {
  const w = await world();
- const offer = await answerOfferedModels({ sources: w.sources, keys: w.keys, disabled: new Set(), chat: { openrouter: true }, openRouterTariffs: [tariff], now: () => now, verify: async () => ({ ...claims, aud: SERVICE_TOKEN_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/offered-models`, headers: { authorization: "Bearer fixture" } });
+ const offer = await answerOfferedModels({ sources: w.sources, keys: w.keys, disabled: new Set(), switchedOn: new Set(["openrouter"]), chat: { openrouter: true }, openRouterTariffs: [tariff], now: () => now, verify: async () => ({ ...claims, aud: SERVICE_TOKEN_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/offered-models`, headers: { authorization: "Bearer fixture" } });
  expect((offer.body as { models: Array<{ identity: unknown }> }).models[0]?.identity).toEqual({ provider: "openrouter", sourceId: source.id, connectionRevision: "r1", modelId: model });
  const reserve = vi.spyOn(w.meter, "reserve");
  expect((await call(w.deps, { ...requestBody, model }, mint({ mdl: [model], runPrice: w.runPrice }))).status).toBe(200);

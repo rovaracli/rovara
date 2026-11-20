@@ -78,7 +78,7 @@ export function parseAiSourceKinds(value: string | undefined): Set<AiSourceKind>
  * as before); any other source only when its kind is switched on. An unknown source never.
  */
 export function agentSourceSwitchedOn(source: string, switchedOn: ReadonlySet<string>): boolean {
-  if (source === "rovara" || source === "openrouter_key" || PRE_SWITCH_AGENT_SOURCES.includes(source)) return true;
+  if (source === "rovara" || PRE_SWITCH_AGENT_SOURCES.includes(source)) return true;
   const kind = AI_SOURCE_KINDS.find((k) => AGENT_SOURCE_OF_KIND[k] === source);
   return kind !== undefined && switchedOn.has(kind);
 }
