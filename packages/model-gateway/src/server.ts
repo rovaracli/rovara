@@ -706,11 +706,15 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const providerPrice = resolved;
     for (const also of route.alsoPricedAs?.(guarded.model) ?? []) resolved = dearerPrice(resolved, await wait(resolvePrice(deps.prices ?? UnknownPriceSource, also.provider, also.model, deps.cautiousCeiling, controller.signal, guarded.priceKind ?? "chat")));
     const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
-    const legacyBedrock = route.payer === "bedrock_byo" && claims.runPrice === undefined;
+    const customerBedrock = route.payer === "bedrock_byo";
+    // Product Bedrock retains its existing media admission; agent compatibility requires a bounded, known-price request.
+    const legacyBedrock = customerBedrock && !route.product && claims.runPrice === undefined;
     if (legacyBedrock && (!guarded.inputBounded || guarded.media !== undefined || providerPrice.estimated || price.estimated || usageEstimated(price, { input: guarded.bytes.length + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0), output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || price.operatorReview || route.meter.settleV2 === undefined)) {
       if (claims.reviewer !== undefined) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
       await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
     }
+    // Unsafe reviews get their own refusal even with a signed price; genuine stale authorizations still use the guard below.
+    if (customerBedrock && claims.reviewer !== undefined && (!guarded.inputBounded || guarded.media !== undefined || price.estimated || usageEstimated(price, { input: guarded.bytes.length, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
     const basis = claims.runPrice === undefined ? undefined : deps.prices?.quoteBasis?.(route.provider, guarded.model);
     if ((claims.runPrice !== undefined && (!guarded.inputBounded || guarded.media !== undefined || (price.estimated && !price.knownTokenPrice) || basis === undefined || basis.hash !== claims.runPrice.snapshotHash || basis.version !== claims.runPrice.snapshotVersion)) || !runPriceAllows(claims, route.provider, guarded.model, route.chargeSource, price, now(), deps.openRouterTariffs)) {
       await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
@@ -746,7 +750,9 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     // whose provider reports its own cost (OpenRouter), which is a source Code never lists for reviews (reviewerProviderOf) but could be saved within the grant's 120 s.
     if (grant !== undefined && (overrunCapable || route.provider === "openrouter" || usageEstimated(price, { input: guarded.bytes.length, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || estimate > Math.floor(grant.ceilingUsd * 1_000_000))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
     // The grant's own lifetime and binding, and the model the request names, are pure: checked BEFORE anything is read or held (the claim itself comes later).
-    const bind = grant === undefined ? "" : JSON.stringify([scope.cid, scope.pid, scope.tid, claims.ws, claims.op, grant.kind, grant.slot, claims.mdl[0]]);
+    // A ceiling hold can only fund calls on the source and accounting mode that opened it. Old/incompatible sessions
+    // take a fresh hold below, then fail the store's atomic binding check; the unused hold is settled once in finally.
+    const bind = grant === undefined ? "" : JSON.stringify([scope.cid, scope.pid, scope.tid, claims.ws, claims.op, grant.kind, grant.slot, claims.mdl[0], route.payer, route.provider, route.chargeSource, customerReview ? "per_call" : "session_ceiling"]);
     let named: unknown;
     if (grant !== undefined) {
       try { named = (JSON.parse(Buffer.concat(parts).toString("utf8")) as { model?: unknown }).model; } catch { named = undefined; }
@@ -757,12 +763,12 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     let session: Awaited<ReturnType<ReviewerGrantStore["read"]>>;
     if (grant !== undefined) { try { session = await wait(deps.reviewerGrants!.read(claims.iss, scope.cid, claims.jti, controller.signal)); } catch { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; } }
     const ceilingMicros = grant === undefined ? 0 : Math.floor(grant.ceilingUsd * 1_000_000);
-    if ((deps.chargeReceipts !== undefined || legacyBedrock || customerReview) && (grant === undefined || customerReview) && guarded.media === undefined && route.meter.settleV2 !== undefined) {
-      const source = legacyBedrock || customerReview ? route.chargeSource : deps.chargeReceipts!.source(claims, guarded.model, route.chargeSource);
+    if ((deps.chargeReceipts !== undefined || customerBedrock) && (grant === undefined || customerReview) && guarded.media === undefined && route.meter.settleV2 !== undefined) {
+      const source = customerBedrock ? route.chargeSource : deps.chargeReceipts!.source(claims, guarded.model, route.chargeSource);
       if (source !== undefined) charge = initialCharge(claims, { provider: route.provider, modelId: guarded.model }, source, estimate, now(), price);
     }
-    const reserved = grant !== undefined && !customerReview && session !== undefined ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined || customerReview ? estimate : ceilingMicros, appliedMaxOutputTokens,
-      ...(route.payer === "bedrock_byo" ? { customerSource: "bedrock_byo" as const } : route.provider === "openrouter" ? { customerSource: "openrouter" as const } : {}), ...(charge === undefined ? {} : { charge: { receipt: charge, requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, ...(claims.runPrice !== undefined || legacyBedrock ? {} : { provisional: { requestBytes: guarded.bytes.length, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }) }), ...(line === undefined ? {} : { line }),
+    const reserved = grant !== undefined && !customerReview && session?.bind === bind ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined || customerReview ? estimate : ceilingMicros, appliedMaxOutputTokens,
+      ...(route.payer === "bedrock_byo" ? { customerSource: "bedrock_byo" as const } : route.provider === "openrouter" ? { customerSource: "openrouter" as const } : {}), ...(charge === undefined ? {} : { charge: { receipt: charge, requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, ...(claims.runPrice !== undefined || customerBedrock ? {} : { provisional: { requestBytes: guarded.bytes.length, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }) }), ...(line === undefined ? {} : { line }),
       ...(grant === undefined || customerReview ? {} : { sweepAfter: now() + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS, review: { jti: claims.jti.toLowerCase() } }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });

@@ -142,7 +142,7 @@ agents still work) and drops the session; the fix is to tell a model refusal fro
 
 ### Customer-source overage stop (Round C)
 
-Every agent call on `bedrock_byo` or `openrouter` reserves one durable slot in
+Every agent, product and reviewer call on `bedrock_byo` or `openrouter` reserves one durable slot in
 `meter / CO#[iss,cid] / SOURCESTOP#<source>`, atomically with its money hold. There
 is at most **one in-flight call per company and source**, across processes, tasks
 and accounting months, with combined product/agent meters sharing the agent record. No TTL frees this slot: settlement or the existing dead-hold
@@ -156,7 +156,11 @@ one ceiling-sized meter hold for the session). This enforces the source slot and
 caps for every call, records its actual bill, and stops and alarms above its hold.
 The session's debits authorize calls only up to its ceiling; an unexpected bill
 above that ceiling is still recorded in full. Other reviewer sources retain their
-existing session-sized hold.
+existing session-sized hold. Sessions bind their funding source (including its
+connection revision) and accounting mode. A changed source or mode cannot reuse
+the old hold: admission takes a fresh hold, checks its caps, then refuses the
+incompatible grant before sending. Any unused new hold settles once at zero;
+the existing session and its hold remain unchanged. A fresh grant is required.
 
 Only the local interactive operator CLI clears a stop. It resolves the operator's
 IAM **user** ARN using STS with the same exported credentials used for DynamoDB;

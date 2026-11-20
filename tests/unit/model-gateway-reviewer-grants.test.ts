@@ -473,7 +473,7 @@ describe("(c) short-lived, one task, one kind, single use", () => {
   });
   it("REVIEW-3 M2: a failed claim that finds ANOTHER call's session leaves it alone, releases its own hold and continues that review", async () => {
     const spy = spyStore(); const jti = randomUUID();
-    await spy.inner.open({ iss: claims.iss, cid: cidA, jti, bind: JSON.stringify([cidA, claims.pid, claims.tid, claims.ws, claims.op, "second_review", "second_review", MODEL]), holdId: randomUUID(), ceilingMicros: 1_000_000, firstDebitMicros: 10, endsAt: secs + REVIEW_SESSION_SECONDS });
+    await spy.inner.open({ iss: claims.iss, cid: cidA, jti, bind: JSON.stringify([cidA, claims.pid, claims.tid, claims.ws, claims.op, "second_review", "second_review", MODEL, "anthropic_key", "anthropic", null, "session_ceiling"]), holdId: randomUUID(), ceilingMicros: 1_000_000, firstDebitMicros: 10, endsAt: secs + REVIEW_SESSION_SECONDS });
     const g = gateway({ grants: { ...spy.store, read: (iss, cid, j) => spy.inner.read(iss, cid, j), open: async () => { throw new Error("answer lost"); } } });
     // The first read (before the hold) already sees the winner's session, so make the pre-read miss it once and the post-failure read find it.
     let reads = 0; const realRead = spy.inner.read.bind(spy.inner);
