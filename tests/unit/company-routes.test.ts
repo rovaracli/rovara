@@ -821,6 +821,23 @@ describe("invites carrying Code's invite secret (DEC 254h)", () => {
     }
   });
 
+  it("answers with the expiry it stored: Code's whole-second one, so the receipt matches the status read (#260)", async () => {
+    const w = world();
+    const ada = await w.signIn("ada");
+    w.advance(29);
+    // Production, 2026-11-20: Cloud's seven days end at …:15.029Z, Code's at …:15.000Z, which wins.
+    const codeExpiry = new Date(Math.floor((w.now() + 7 * 86_400_000) / 1000) * 1000).toISOString();
+    w.setMint(() => ({ secret: secretOf(), expiresAt: codeExpiry }));
+    const requestId = randomUUID();
+    const made = await w.call(ada, "POST", "/org/invites/reviewed", { requestId, role: "member", email: "colleague@example.com" });
+    expect(made.status).toBe(200);
+    const { receipt } = ReviewedInviteCreateResponseSchema.parse(made.body);
+    expect(receipt.expiresAt).toBe(codeExpiry);
+    const status = AppOrgInviteStatusSchema.parse((await w.call(ada, "GET", `/org/invites/${receipt.inviteId}`)).body);
+    expect(Date.parse(status.expiresAt)).toBe(Date.parse(receipt.expiresAt));
+    expect((await w.call(ada, "GET", `/org/invites/requests/${requestId}`)).body).toEqual({ receipt });
+  });
+
   it("never uses an `invite` from Code that doesn't read: withdraws the pre-approval at Code and keeps nothing", async () => {
     const good = secretOf();
     const future = new Date(START + 86_400_000).toISOString();
