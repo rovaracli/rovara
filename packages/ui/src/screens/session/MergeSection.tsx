@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
-import { createSessionActions } from "../../api/session-actions.js";
+import { createSessionActions, type MergeReadiness } from "../../api/session-actions.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";
@@ -11,6 +11,7 @@ import { isGithubUrl, safeExternalUrl } from "../../text/links.js";
 import type { ReadTask } from "./workspace-types.js";
 import { branchFact, changedSince, checksFact, lockOf, pullRowsOf, reviewFact, shortSha, shownOf, type PullRow, type Shown } from "./merge-facts.js";
 import { Clock, Facts, MergeChip, Sha, ThreeParts } from "./merge-parts.js";
+import { nextStamp, useLatestTaskReadStamp } from "./merge-stamp.js";
 import { allMerged, clearPending, headsMoved, readPendingNow, usePending, writePending, type PendingPress } from "./merge-pending.js";
 
 const RISK_WORDS = { low: "Low risk", medium: "Medium risk", high: "High risk" } as const;
@@ -81,30 +82,40 @@ export function MergeSection(props: { sessionId: string; task: ReadTask }) {
  return <MergeSectionFor key={props.sessionId} {...props} />;
 }
 
-/** Code answered this press with a refusal (nothing was merged by it), or the answer was lost, unreadable or pending (the outcome is unknown). */
-const refused = (failure: unknown): boolean => failure instanceof ApiError && failure.status >= 400 && failure.status < 500;
-/** The saved answer to this page's own press: the pull requests the server returned, and when it arrived. */
-interface Saved { words: string; keys: string[]; at: string }
+/**
+ * Only the refusals Code's merge route documents as final mean "nothing more will happen for this request" (R6a): `CODE_REFUSALS` in cloud-server `merge-routes.ts:97` (409 MERGE_NOT_READY, 409 IDEMPOTENCY_CONFLICT, 403 FORBIDDEN,
+ * 404 TASK_NOT_FOUND, 400 CONFIG_INVALID; Code raises them at `hosted-merge-routes.ts` 163, 171, 180, 230, 240) plus Cloud's own 404 SESSION_NOT_FOUND. Everything else (408, 429, 401, any other 4xx, every 5xx, 202,
+ * an unreadable body, a network failure) is UNKNOWN and keeps the lock: it does not say what GitHub did.
+ */
+const FINAL_REFUSALS: ReadonlyArray<readonly [number, string]> = [[409, "MERGE_NOT_READY"], [409, "IDEMPOTENCY_CONFLICT"], [403, "FORBIDDEN"], [404, "TASK_NOT_FOUND"], [404, "SESSION_NOT_FOUND"], [400, "CONFIG_INVALID"]];
+const refused = (failure: unknown): boolean => failure instanceof ApiError && FINAL_REFUSALS.some(([status, code]) => failure.status === status && failure.code === code);
+/** The saved answer to this page's own press: the pull requests the server returned, the request it answered, and the issue stamp taken when the answer arrived (a read issued after it can disagree). */
+interface Saved { words: string; keys: string[]; requestId: string; stamp: number }
 const doneWords = (pulls: ReadonlyArray<{ repositoryId: string; number: number }>): string => "Merged " + pulls.map(pull => pull.repositoryId + " #" + String(pull.number)).join(", ") + ".";
 
 function MergeSectionFor({ sessionId, task }: { sessionId: string; task: ReadTask }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionActions(host), [host]), reasonId = useId();
  const merged = mergedEverywhere(task), merge = task.merge;
- const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<Saved>(), [note, setNote] = useState<string>();
+ const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<Saved>(), [note, setNote] = useState<string>(), [retiredNote, setRetiredNote] = useState(false);
  const [shown, setShown] = useState<Shown>();
  const sending = useRef(false);
  const open_ = openPullRequestsOf(task);
  const readinessKey = ["session", sessionId, "merge"];
- // A saved answer yields to a later task read that disagrees: tracking taken after the answer arrived that shows one of its pull requests open again (SCREEN-STATE-RULES R2).
- const trackedRows = pullRowsOf(task, undefined);
- const retired = done !== undefined && trackedRows.some(row => done.keys.includes(row.key) && row.state === "open" && row.tracked !== undefined && Date.parse(row.tracked.observedAt) > Date.parse(done.at));
- const saved = retired ? undefined : done;
+ // Read order is by ISSUE stamp (R6b). The task read belongs to the session screen: the stamp of the latest completed read is paired with the task value that arrives with it; data of unknown order counts as old.
+ const latestRead = useLatestTaskReadStamp(sessionId), [stamped, setStamped] = useState({ task, stamp: 0 });
+ if (stamped.task !== task) setStamped({ task, stamp: latestRead });
+ const taskStamp = stamped.task === task ? stamped.stamp : latestRead;
+ // A saved answer yields, for good, to a task read issued AFTER the answer arrived that shows one of its pull requests open (R2).
+ const disagrees = done !== undefined && taskStamp > done.stamp && pullRowsOf(task, undefined).some(row => done.keys.includes(row.key) && row.state === "open");
+ if (disagrees) { setDone(undefined);setRetiredNote(true); }
+ const saved = disagrees ? undefined : done;
  // Only while something is open to merge; a refusal of the read (a Code without the route, a session gone) leaves the GitHub links only.
  const readiness = useQuery({ queryKey: readinessKey, enabled: !merged && saved === undefined && open_.length > 0, retry: false, refetchOnWindowFocus: false, queryFn: async () => api.mergeReadiness(sessionId) });
  // React Query keeps the last good answer after a failed refresh. A read that failed makes that answer inert, until a read works again: an earlier "ready" is never actionable.
  const view = readiness.isError ? undefined : readiness.data, rows = pullRowsOf(task, view), mayPress = view?.mayMerge === true && !merged && saved === undefined;
  const stored = usePending(sessionId), entry = stored.kind === "pending" ? stored.entry : undefined;
- const voided = entry !== undefined && headsMoved(entry, rows), settled = entry !== undefined && (merged || saved !== undefined || allMerged(entry, rows));
+ // A record resolves only through a read issued after its own press, or through the answer to that same request; another request's answer or an older read settles nothing.
+ const voided = entry !== undefined && headsMoved(entry, rows, taskStamp), settled = entry !== undefined && ((merged && taskStamp > entry.stamp) || (saved !== undefined && saved.requestId === entry.requestId) || allMerged(entry, rows, taskStamp));
  const active = entry !== undefined && !voided && !settled ? entry : undefined, staleEntry = active !== undefined && stored.kind === "pending" && stored.stale;
  const storageLock = stored.kind === "unavailable" || stored.kind === "unreadable" ? stored.kind : undefined;
  // A record that a moved head voided is dropped with a visible notice, never silently (derived during render, so it needs no effect to set state).
@@ -113,6 +124,9 @@ function MergeSectionFor({ sessionId, task }: { sessionId: string; task: ReadTas
  useEffect(() => {
   if (entry !== undefined && (voided || settled)) clearPending(entry);
  }, [entry, voided, settled, sessionId]);
+ // An unresolved press found on load is read again at once (a GET), so a read issued after it can resolve it.
+ const hadRecord = useRef(entry !== undefined);
+ useEffect(() => { if (hadRecord.current) void query.invalidateQueries({ queryKey: ["session", sessionId] }); }, [query, sessionId]);
  const lock = lockOf({ unresolved: active !== undefined, ...(storageLock === undefined ? {} : { storage: storageLock }), rows, readiness: view });
  const readFailed = readiness.isError && couldNotRead(readiness.error);
  const moved = rows.some(row => row.drift), stale = open && shown !== undefined && changedSince(shown, rows, view);
@@ -121,27 +135,39 @@ function MergeSectionFor({ sessionId, task }: { sessionId: string; task: ReadTas
  const into = base.length === 1 ? " into " + base[0]! : "";
  const what = openRows.length === 1 ? "#" + String(openRows[0]!.number) + into : String(openRows.length) + " pull requests";
  const buttonWords = "Merge " + what;
+ /** Why the latest completed readiness read does not allow a press, or undefined when it does. Read from the query cache at the moment of sending, never from what was last rendered. */
+ function refusalNow(): string | undefined {
+  const latest = query.getQueryState<MergeReadiness>(readinessKey), latestView = latest?.status === "success" ? latest.data : undefined;
+  if (latest?.status === "error") return "Rovara's latest read failed, so Merge isn't available. Nothing was sent.";
+  if (latestView === undefined) return "Rovara hasn't read the latest state yet. Nothing was sent.";
+  if (latestView.mayMerge !== true) return "You can't merge this task now. Nothing was sent.";
+  if (latestView.ready !== true) return (latestView.message ?? "It isn't ready to merge now.") + " Nothing was sent.";
+  if (shown === undefined || changedSince(shown, rows, latestView)) return "What you were shown has changed on GitHub. Nothing was merged. Read it again.";
+  return undefined;
+ }
  async function press() {
-  // A press is only ever sent for exactly what the person was shown. Anything that moved since then is read again, never sent.
-  if (sending.current || shown === undefined || changedSince(shown, rows, view)) return;
+  if (sending.current || shown === undefined) return;
+  // Authority and readiness are checked again at the moment of sending, from the latest read in the query cache (R6c): a denial that has not rendered yet still stops the send.
+  const why = refusalNow();
+  if (why !== undefined) { setOpen(false);setError(why);return; }
   // Read the saved record fresh, right now: if one exists (this tab, another tab, an earlier visit) or storage cannot be read, no new request id is minted.
   if (readPendingNow(sessionId).kind !== "none") { setOpen(false); return; }
-  const next: PendingPress = { v: 1, sessionId, requestId: crypto.randomUUID(), startedAt: new Date().toISOString(), heads: shown.heads ?? [], risk: shown.risk, sent: (shown.heads ?? []).map(head => head.repositoryId + " #" + String(head.number) + " at " + shortSha(head.headSha)) };
+  const next: PendingPress = { v: 1, sessionId, requestId: crypto.randomUUID(), startedAt: new Date().toISOString(), stamp: nextStamp(), heads: shown.heads ?? [], risk: shown.risk, sent: (shown.heads ?? []).map(head => head.repositoryId + " #" + String(head.number) + " at " + shortSha(head.headSha)) };
   // Saved before it is sent. If it cannot be saved, it is not sent: a reload could not be kept from sending a second one.
   if (!writePending(next)) { setOpen(false);setError(STORAGE_WORDS);return; }
   sending.current = true;setBusy(true);setError(undefined);setNote(undefined);
   try {
    const result = await api.merge(sessionId, next.requestId, { expectedHeads: next.heads, risk: next.risk });
    if (result.kind !== "done") throw new ApiError(502, "INVALID_RESPONSE", "Rovara answered Merge in an unexpected way. Reload this page.");
-   clearPending(next);setOpen(false);setDone({ words: doneWords(result.value.pullRequests), keys: result.value.pullRequests.map(pull => pull.repositoryId + "#" + String(pull.number)), at: new Date().toISOString() });
+   clearPending(next);setOpen(false);setDone({ words: doneWords(result.value.pullRequests), keys: result.value.pullRequests.map(pull => pull.repositoryId + "#" + String(pull.number)), requestId: next.requestId, stamp: nextStamp() });
    await query.invalidateQueries({ queryKey: ["session", sessionId] });
   } catch (failure) {
    setOpen(false);
    if (refused(failure)) {
-    // Code answered no to this request (another person's merge in progress included): it is over and nothing was sent for it. The next press is a new one.
+    // Code gave a documented final refusal to this request: nothing more will happen for it. The next press is a new one.
     clearPending(next);setError((failure as ApiError).message);
    }
-   // Otherwise the record stays: a lost or unreadable answer does not say what GitHub did.
+   // Anything else is unknown: the record stays, a lost, throttled, timed-out or unreadable answer does not say what GitHub did.
    void query.invalidateQueries({ queryKey: readinessKey });
   } finally { sending.current = false;setBusy(false); }
  }
@@ -156,6 +182,9 @@ function MergeSectionFor({ sessionId, task }: { sessionId: string; task: ReadTas
    setNote(state?.status === "error" ? "Rovara couldn't read the current state, so this is still not confirmed." : "Rovara read again" + (state?.dataUpdatedAt ? " at " + new Date(state.dataUpdatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "") + ". Nothing there says this request merged, so it is still not confirmed.");
   } finally { sending.current = false;setBusy(false); }
  }
+ // An open confirmation becomes inert, and says why, the instant the latest read drops the authority or what was shown moves (R6c).
+ const dialogPulls = view?.pullRequests ?? (shown?.heads ?? []).map(({ repositoryId, number }) => ({ repositoryId, number }));
+ const inertWhy = !open ? undefined : readiness.isError ? "Rovara's latest read failed, so Merge isn't available. Nothing was sent." : view === undefined ? "Rovara hasn't read the latest state yet. Nothing was sent." : view.mayMerge !== true ? "You can't merge this task now. Nothing was sent." : view.ready !== true ? (view.message ?? "It isn't ready to merge now.") + " Nothing was sent." : stale ? "What you were shown has changed on GitHub. Nothing was merged. Close this and read it again." : lock !== undefined ? lock.words : undefined;
  const everyMerged = merged || saved !== undefined;
  const partial = !everyMerged && mergedRows.length > 0 && openRows.length > 0;
  const kind = everyMerged ? "merged" : active !== undefined ? "unknown" : storageLock !== undefined && mayPress ? "storage" : partial ? "partial" : moved ? "changed" : readFailed ? "read_failed" : view?.mayMerge === true ? (view.ready ? "ready" : "not_ready") : merge === undefined ? "github" : merge.ready ? "github_ready" : "github_not_ready";
@@ -203,15 +232,15 @@ function MergeSectionFor({ sessionId, task }: { sessionId: string; task: ReadTas
   {note && <p role="status" className="rv-merge-muted"><VisibleText text={note} /></p>}
   {merge?.risk && <div className="rv-merge-risk" aria-label="Risk"><p><strong>{RISK_WORDS[levelOf(merge.risk)]}</strong></p>{merge.risk.reasons.length > 0 && <ul>{merge.risk.reasons.map(reason => <li key={reason}><VisibleText text={reason} /></li>)}</ul>}</div>}
   {saved && <p role="status" className="rv-merge-receipt-line"><VisibleText text={saved.words} /></p>}
-  {retired && <p role="status" className="rv-merge-muted">A later read shows a pull request open again, so the earlier answer no longer applies.</p>}
+  {retiredNote && <p role="status" className="rv-merge-muted">A later read shows a pull request open again, so the earlier answer no longer applies.</p>}
   {rows.length > 0 && <ol className="rv-merge-prs" aria-label="Pull requests to merge">{rows.map((row, index) => <PullItem key={row.key} row={row} ready={rowReady} held={active !== undefined} many={rows.length > 1} index={index} />)}</ol>}
   {kind === "ready" && lock === undefined && <div className="rv-merge-authorize"><p><strong>You authorize</strong> {openRows.map(row => row.githubHead ?? row.checkedHead).filter(head => head !== undefined).length > 0 ? "merging " + openRows.map(row => { const head = row.githubHead ?? row.checkedHead; return head === undefined ? row.label : "head " + shortSha(head) + " of " + row.label; }).join(", ") + into + "." : "merging the open pull request" + (openRows.length === 1 ? "" : "s") + into + "."}</p><p className="rv-merge-muted">Not included: deploying. If the head changes before GitHub merges, nothing is merged and you are asked again.</p></div>}
-  {mayPress && <div className="rv-merge-actions"><Dialog title={"Merge " + what + "?"} description="Rovara asks GitHub to merge it now, with the project's merge method. GitHub's branch rules, required reviews and required checks still apply." open={open} onOpenChange={value => { if (busy) return; if (value) setShown(shownOf(rows, view)); setOpen(value); }}
+  {(mayPress || open) && <div className="rv-merge-actions"><Dialog title={"Merge " + what + "?"} description="Rovara asks GitHub to merge it now, with the project's merge method. GitHub's branch rules, required reviews and required checks still apply." open={open} onOpenChange={value => { if (busy) return; if (value) setShown(shownOf(rows, view)); setOpen(value); }}
    trigger={<Button variant="primary" disabled={lock !== undefined} aria-describedby={lock === undefined ? undefined : reasonId}>{buttonWords}</Button>}>
-   <ol className="rv-merge-items">{view.pullRequests.map(pull => { const head = shown?.heads?.find(candidate => candidate.repositoryId === pull.repositoryId && candidate.number === pull.number); return <li key={pull.repositoryId + "#" + String(pull.number)}><VisibleText text={pull.repositoryId + " #" + String(pull.number)} />{head === undefined ? null : <> at <Sha value={head.headSha} /></>}</li>; })}</ol>
-   {view.pullRequests.length > 1 && <p className="rv-merge-muted">Rovara merges them one at a time, in the order listed. If one is refused, the ones after it are not tried and the ones already merged stay merged.</p>}
-   {stale && <p role="alert" className="rv-merge-stale">What you were shown has changed on GitHub. Nothing was merged. Close this and read it again.</p>}
-   <div className="rv-actions"><Button disabled={busy} onClick={() => setOpen(false)}>Not now</Button><Button variant="primary" busy={busy} disabled={stale} onClick={() => { void press(); }}>Press Merge</Button></div>
+   <ol className="rv-merge-items">{dialogPulls.map(pull => { const head = shown?.heads?.find(candidate => candidate.repositoryId === pull.repositoryId && candidate.number === pull.number); return <li key={pull.repositoryId + "#" + String(pull.number)}><VisibleText text={pull.repositoryId + " #" + String(pull.number)} />{head === undefined ? null : <> at <Sha value={head.headSha} /></>}</li>; })}</ol>
+   {dialogPulls.length > 1 && <p className="rv-merge-muted">Rovara merges them one at a time, in the order listed. If one is refused, the ones after it are not tried and the ones already merged stay merged.</p>}
+   {inertWhy !== undefined && <p role="alert" className="rv-merge-stale"><VisibleText text={inertWhy} /></p>}
+   <div className="rv-actions"><Button disabled={busy} onClick={() => setOpen(false)}>Not now</Button><Button variant="primary" busy={busy} disabled={inertWhy !== undefined} onClick={() => { void press(); }}>Press Merge</Button></div>
   </Dialog>
    {lock !== undefined && <p id={reasonId} className="rv-merge-muted"><VisibleText text={lock.words} /></p>}
    {lock?.kind === "drift" && <Button busy={readiness.isFetching} onClick={() => { void readiness.refetch(); }}>Read again</Button>}</div>}

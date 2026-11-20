@@ -5,8 +5,8 @@ import { pullKey, type PullRow } from "./merge-facts.js";
  * The press that has been sent and not answered. It is written to localStorage BEFORE the POST goes out. Nothing re-sends it: Code replays only a stored SUCCESS (hosted-merge-routes.ts 168-218); an unanswered id stores nothing,
  * the task lock is released on an unknown end, and the per-pull-request claim ages out after 120 s, so a second POST could cause a second provider merge while the first lost call still lands (CONTRACTS R1a 124-128 keeps an
  * uncertain call fenced with ZERO merge calls on replay). "Check again" therefore only re-reads. The record is shared by every tab and survives a closed tab, so a reload, a second tab or Back can never mint a request id
- * for an unresolved press. It is removed only by the tab that made it (request id AND startedAt must match), or by a read that resolves it: GitHub showing the pull requests merged, or a tracking read taken AFTER the press
- * showing a different head. Storage that cannot be read or written locks Merge and says so; it never unlocks blindly.
+ * for an unresolved press. It is removed only by the tab that made it (request id AND startedAt must match), or by a read ISSUED AFTER the press (issue stamp, merge-stamp.ts) that resolves it: GitHub showing the pull
+ * requests merged, or a different head. Storage that cannot be read or written locks Merge and says so; it never unlocks blindly.
  */
 const PREFIX = "rovara.merge.pending.v1:";
 const CHANGED = "rovara-merge-pending-changed";
@@ -15,7 +15,7 @@ const UNAVAILABLE = "\u0000unavailable";
 export const PENDING_STALE_MS = 24 * 60 * 60 * 1000;
 
 export interface PendingHead { repositoryId: string; number: number; headSha: string }
-export interface PendingPress { v: 1; sessionId: string; requestId: string; startedAt: string; heads: PendingHead[]; risk: "low" | "medium" | "high" | undefined; sent: string[] }
+export interface PendingPress { v: 1; sessionId: string; requestId: string; startedAt: string; /** The issue stamp (merge-stamp.ts) taken when this press was issued: a read issued before it can never resolve or void it. */ stamp: number; heads: PendingHead[]; risk: "low" | "medium" | "high" | undefined; sent: string[] }
 export type PendingState = { kind: "none" } | { kind: "unavailable" } | { kind: "unreadable" } | { kind: "pending"; entry: PendingPress; stale: boolean };
 
 const keyOf = (sessionId: string): string => PREFIX + sessionId;
@@ -32,11 +32,11 @@ export function parsePending(raw: string | null, sessionId: string, now = Date.n
  if (raw === null) return { kind: "none" };
  try {
   const value = JSON.parse(raw) as Partial<PendingPress> | null;
-  if (value === null || typeof value !== "object" || value.v !== 1 || value.sessionId !== sessionId || typeof value.requestId !== "string" || !UUID.test(value.requestId) || typeof value.startedAt !== "string" || !Number.isFinite(Date.parse(value.startedAt))) return { kind: "unreadable" };
+  if (value === null || typeof value !== "object" || value.v !== 1 || value.sessionId !== sessionId || typeof value.requestId !== "string" || !UUID.test(value.requestId) || typeof value.startedAt !== "string" || !Number.isFinite(Date.parse(value.startedAt)) || typeof value.stamp !== "number" || !Number.isSafeInteger(value.stamp) || value.stamp <= 0) return { kind: "unreadable" };
   if (!Array.isArray(value.heads) || value.heads.length > 32 || !value.heads.every(head => typeof head === "object" && head !== null && typeof head.repositoryId === "string" && head.repositoryId.length > 0 && head.repositoryId.length <= 200 && Number.isInteger(head.number) && head.number > 0 && typeof head.headSha === "string" && SHA.test(head.headSha))) return { kind: "unreadable" };
   if (value.risk !== undefined && value.risk !== "low" && value.risk !== "medium" && value.risk !== "high") return { kind: "unreadable" };
   if (!Array.isArray(value.sent) || !value.sent.every(item => typeof item === "string" && item.length <= 300) || value.sent.length > 32) return { kind: "unreadable" };
-  const entry: PendingPress = { v: 1, sessionId, requestId: value.requestId, startedAt: value.startedAt, heads: value.heads, risk: value.risk, sent: value.sent };
+  const entry: PendingPress = { v: 1, sessionId, requestId: value.requestId, startedAt: value.startedAt, stamp: value.stamp, heads: value.heads, risk: value.risk, sent: value.sent };
   return { kind: "pending", entry, stale: now - Date.parse(value.startedAt) >= PENDING_STALE_MS };
  } catch { return { kind: "unreadable" }; }
 }
@@ -79,15 +79,15 @@ export function clearPending(entry: Pick<PendingPress, "sessionId" | "requestId"
 }
 
 /**
- * A moved head voids the record only when a tracking read taken AFTER the press (its server instant `observedAt` is later than `startedAt`) shows a different head for a pull request the press covered. A tab still showing
- * older data, a readiness answer (which carries no observation time) and a failed read never void it. Clock skew can only make this stricter: it stays locked.
+ * A moved head voids the record only when a task read ISSUED AFTER the press (its issue stamp is greater than the record's) shows a different head for a pull request the press covered. A read issued before the press,
+ * data of unknown order (stamp 0), a readiness answer and a failed read never void it, whenever their answers arrive and whatever clocks they carry.
  */
-export function headsMoved(entry: PendingPress, rows: readonly PullRow[]): boolean {
- const started = Date.parse(entry.startedAt);
- return entry.heads.some(head => { const tracked = rows.find(candidate => candidate.key === pullKey(head.repositoryId, head.number))?.tracked; return tracked !== undefined && Date.parse(tracked.observedAt) > started && tracked.headSha !== head.headSha; });
+export function headsMoved(entry: PendingPress, rows: readonly PullRow[], readStamp: number): boolean {
+ if (readStamp <= entry.stamp) return false;
+ return entry.heads.some(head => { const tracked = rows.find(candidate => candidate.key === pullKey(head.repositoryId, head.number))?.tracked; return tracked !== undefined && tracked.headSha !== head.headSha; });
 }
 
-/** Every pull request the record covered is merged on GitHub (an observation, not an answer to the request). */
-export function allMerged(entry: PendingPress, rows: readonly PullRow[]): boolean {
- return entry.heads.length > 0 && entry.heads.every(head => rows.find(candidate => candidate.key === pullKey(head.repositoryId, head.number))?.state === "merged");
+/** Every pull request the record covered shows merged in a task read issued after the press (an observation, not an answer to the request). */
+export function allMerged(entry: PendingPress, rows: readonly PullRow[], readStamp: number): boolean {
+ return readStamp > entry.stamp && entry.heads.length > 0 && entry.heads.every(head => rows.find(candidate => candidate.key === pullKey(head.repositoryId, head.number))?.state === "merged");
 }

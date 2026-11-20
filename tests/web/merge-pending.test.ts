@@ -8,6 +8,7 @@ import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { MergeSection } from "../../packages/ui/src/screens/session/MergeSection.js";
+import { nextStamp } from "../../packages/ui/src/screens/session/merge-stamp.js";
 import { workspaceTask, type ReadTask } from "../../packages/ui/src/screens/session/workspace-types.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -40,7 +41,11 @@ function world(script: Script) {
   const element = (id: string, t: ReadTask) => h("div", { "data-theme": "light" }, h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MergeSection, { sessionId: id, task: t }) }) }));
   const ui = renderUi(element(sessionId, task));
   return { ...ui, query, // Same wrapper depth as renderUi, so the tree is preserved (a real navigation within one mounted tree), not remounted.
-  show(id: string, t: ReadTask) { ui.rerender(h("div", { "data-theme": "light" }, element(id, t))); } };
+  show(id: string, t: ReadTask) { ui.rerender(h("div", { "data-theme": "light" }, element(id, t))); },
+  /** A task read ISSUED now and delivered with `t`: the fetch the session screen would make, observed by the section through the query cache. */
+  async read(id: string, t: ReadTask) { await query.fetchQuery({ queryKey: ["session", id], queryFn: async () => ({ n: nextStamp() }), staleTime: 0 }); ui.rerender(h("div", { "data-theme": "light" }, element(id, t))); },
+  /** A task read that is ISSUED now but answers only when `deliver()` is called (a slow read). */
+  slowRead(id: string) { let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); const pending = query.fetchQuery({ queryKey: ["session", id], queryFn: async () => { await gate; return { n: nextStamp() }; }, staleTime: 0 }); return { async deliver(t: ReadTask) { release(); await pending; ui.rerender(h("div", { "data-theme": "light" }, element(id, t))); } }; }, };
  };
  return { ...f, posts, tab };
 }
@@ -140,7 +145,7 @@ it("F1/second tab, live: a record another tab writes (storage event) locks an op
  fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
  const dialog = await screen.findByRole("dialog");
  const key = "rovara.merge.pending.v1:" + A;
- localStorage.setItem(key, JSON.stringify({ v: 1, sessionId: A, requestId: "22222222-2222-4222-8222-222222222222", startedAt: new Date().toISOString(), heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }], risk: undefined, sent: ["acme/payments #42 at aaaaaaa"] }));
+ localStorage.setItem(key, JSON.stringify({ v: 1, sessionId: A, stamp: nextStamp(), requestId: "22222222-2222-4222-8222-222222222222", startedAt: new Date().toISOString(), heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }], risk: undefined, sent: ["acme/payments #42 at aaaaaaa"] }));
  window.dispatchEvent(new StorageEvent("storage", { key }));
  fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
  await waitFor(() => expect(headline()).toBe(UNSURE));
@@ -168,29 +173,39 @@ it("F1/storage: a press that cannot be saved is not sent, and storage that canno
 });
 
 const key = "rovara.merge.pending.v1:" + A, STARTED = "2026-11-20T08:00:00.000Z";
-const record = (over: Record<string, unknown> = {}) => JSON.stringify({ v: 1, sessionId: A, requestId: "33333333-3333-4333-8333-333333333333", startedAt: STARTED, heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }], risk: "low", sent: [], ...over });
+const record = (over: Record<string, unknown> = {}) => JSON.stringify({ v: 1, sessionId: A, stamp: nextStamp(), requestId: "33333333-3333-4333-8333-333333333333", startedAt: STARTED, heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }], risk: "low", sent: [], ...over });
 
-it("F1/clear rules: a tracking read taken AFTER the press that shows a moved head voids the record (never replayed); GitHub showing every PR merged clears it", async () => {
+it("F1/clear rules: a task read issued AFTER the press that shows a moved head voids the record (never replayed); one that shows every PR merged clears it", async () => {
  localStorage.setItem(key, record());
  const moved = world({ readiness: () => ready(HEAD_B), press: () => merged });
- const m = moved.tab(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_B, observedAt: "2026-11-20T08:05:00.000Z" })] }));
+ const m = moved.tab(A);
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ await m.read(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_B })] }));
  await waitFor(() => expect(localStorage.getItem(key)).toBeNull());
  expect(screen.getByRole("status").textContent).toContain("dropped because the pull request has a new head");
  expect(moved.posts()).toHaveLength(0);
  m.unmount();
  localStorage.setItem(key, record());
  const seen = world({});
- const s = seen.tab(A, taskOf(A, { mergeTracking: [tracked({ state: "merged" })] }));
+ const s = seen.tab(A);
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ await s.read(A, taskOf(A, { mergeTracking: [tracked({ state: "merged" })] }));
  await waitFor(() => expect(localStorage.getItem(key)).toBeNull());
  s.unmount();
 });
 
-it("B1: a stale tab never deletes another tab's newer record: older tracking or a different head in a readiness answer does not void it, and a stale clear (other startedAt) removes nothing", async () => {
- // This tab still shows head A, observed BEFORE the other tab's press; the other tab saved a request for head B.
- localStorage.setItem(key, record({ heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_B }], startedAt: STARTED }));
+it("B1/N2: a stale tab never deletes another tab's newer record: data of unknown order, a read ISSUED BEFORE the press arriving later, and a readiness answer void nothing; a stale clear removes nothing", async () => {
  const w = world({ readiness: () => ready(HEAD_A), press: () => merged });
- const stale = w.tab(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_A, observedAt: "2026-11-20T07:00:00.000Z" })] }));
+ // This tab shows head A and has a slow task read in flight, issued before the other tab's press.
+ const stale = w.tab(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_A })] }));
+ await screen.findByRole("button", { name: /^Merge #42/u });
+ const slow = stale.slowRead(A);
+ // The other tab then presses for head B (its record carries a LATER issue stamp) and the storage event reaches this tab.
+ localStorage.setItem(key, record({ heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_B }], stamp: nextStamp() }));
+ window.dispatchEvent(new StorageEvent("storage", { key }));
  await waitFor(() => expect(headline()).toBe(UNSURE));
+ // The slow read now answers, with a tracking time that is far in the future (another clock): it was issued before the press, so it voids nothing.
+ await slow.deliver(taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_A, observedAt: "2099-01-01T00:00:00.000Z" })] }));
  await new Promise(resolve => setTimeout(resolve, 60));
  expect(localStorage.getItem(key)).not.toBeNull();
  expect(screen.queryByText(/dropped because/u)).toBeNull();
@@ -203,6 +218,19 @@ it("B1: a stale tab never deletes another tab's newer record: older tracking or 
  expect(localStorage.getItem(key)).not.toBeNull();
  clearPending({ sessionId: A, requestId: "33333333-3333-4333-8333-333333333333", startedAt: STARTED });
  expect(localStorage.getItem(key)).toBeNull();
+});
+
+it("B1/N2: an older saved answer in one tab never settles ANOTHER request's record", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ const a = w.tab(A);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ // Another tab's newer unresolved request arrives by storage event: this tab still holds its own older answer.
+ localStorage.setItem(key, record({ requestId: "55555555-5555-4555-8555-555555555555", stamp: nextStamp() }));
+ window.dispatchEvent(new StorageEvent("storage", { key }));
+ await new Promise(resolve => setTimeout(resolve, 60));
+ expect(localStorage.getItem(key)).not.toBeNull();
+ a.unmount();
 });
 
 it("F2: one session's lock never shows on another; the first session's record is untouched and locks again when it comes back", async () => {
@@ -271,21 +299,74 @@ it("R5: the unresolved state, the locked storage state and the check-again state
  await expectNoAxeViolations(region());
 });
 
-it("B4/R2: a saved 'Merged' answer retires when a later task read disagrees (the pull request open again, observed after the answer)", async () => {
+it("B4/N2: a saved 'Merged' answer retires, for good, only to a task read ISSUED AFTER the answer arrived that shows the pull request open; a read issued before it, answering later, does not", async () => {
  const w = world({ readiness: () => ready(), press: () => merged });
  const t = w.tab(A);
+ await screen.findByRole("button", { name: /^Merge #42/u });
+ const slow = t.slowRead(A);                      // issued BEFORE the answer
  await press();
  expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ // It answers late with a disagreeing task whose tracking time is far in the future: issued before the answer, so it cannot contradict it.
+ await slow.deliver(taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_B, observedAt: "2099-01-01T00:00:00.000Z" })] }));
  expect(headline()).toBe("Merged");
- // A task read from before the answer does not retire it ...
- t.show(A, taskOf(A));
- expect(headline()).toBe("Merged");
- // ... one observed after it, showing the pull request open at another head, does.
- t.show(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_B, observedAt: new Date(Date.now() + 60_000).toISOString() })] }));
+ // A read issued after the answer that shows the pull request open does.
+ await t.read(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_B, observedAt: "2000-01-01T00:00:00.000Z" })] }));
  await waitFor(() => expect(headline()).not.toBe("Merged"));
  expect(screen.queryByText("Merged acme/payments #42.")).toBeNull();
  expect(region().textContent).toContain("A later read shows a pull request open again, so the earlier answer no longer applies.");
+ // Older facts delivered afterwards do not bring it back.
+ t.show(A, taskOf(A));
+ await new Promise(resolve => setTimeout(resolve, 40));
+ expect(screen.queryByText("Merged acme/payments #42.")).toBeNull();
  expect(w.posts()).toHaveLength(1);
+});
+
+it("N1/R6a: 408, 429, 401 and any unlisted 4xx are UNKNOWN and keep the lock; only the documented final refusals clear it", async () => {
+ const answer = (status: number, code: string): Answer => ({ status, body: { error: { code, message: "Code's words." } } });
+ for (const [reply, locked] of [[answer(408, "REQUEST_TIMEOUT"), true], [answer(429, "RATE_LIMITED"), true], [answer(418, "TEAPOT"), true], [answer(401, "UNAUTHENTICATED"), true], [answer(409, "SOMETHING_ELSE"), true], [answer(500, "MERGE_FAILED"), true], [answer(409, "MERGE_NOT_READY"), false], [answer(409, "IDEMPOTENCY_CONFLICT"), false], [answer(403, "FORBIDDEN"), false], [answer(404, "TASK_NOT_FOUND"), false], [answer(404, "SESSION_NOT_FOUND"), false], [answer(400, "CONFIG_INVALID"), false]] as Array<[Answer, boolean]>) {
+  localStorage.clear();
+  const w = world({ readiness: () => ready(), press: () => reply });
+  const t = w.tab(A);
+  await press();
+  await waitFor(() => expect(w.posts()).toHaveLength(1));
+  if (locked) { await waitFor(() => expect(headline()).toBe(UNSURE)); expect(localStorage.getItem(key)).not.toBeNull(); expect((await mergeButton()).hasAttribute("disabled")).toBe(true); }
+  else { expect((await screen.findByRole("alert")).textContent).toContain("Code's words."); expect(localStorage.getItem(key)).toBeNull(); expect(headline()).not.toBe(UNSURE); }
+  expect(w.posts()).toHaveLength(1);
+  t.unmount();
+ }
+});
+
+it("N3/R6c: Press Merge checks the LATEST state at send time: a denial or not-ready answer already in the query cache but not yet rendered sends ZERO POSTs", async () => {
+ for (const latest of [{ mayMerge: false, ready: false, pullRequests: [{ repositoryId: "acme/payments", number: 42 }] }, { mayMerge: true, ready: false, message: "Checks haven't passed on the latest code.", heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }] }]) {
+  const w = world({ readiness: () => ready(), press: () => merged });
+  const t = w.tab(A);
+  fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+  const dialog = await screen.findByRole("dialog");
+  // The read lands in the cache; React has not re-rendered yet.
+  t.query.setQueryData(["session", A, "merge"], latest);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+  expect(w.posts()).toHaveLength(0);
+  expect((await screen.findByRole("alert")).textContent).toContain("Nothing was sent");
+  t.unmount();
+  localStorage.clear();
+ }
+});
+
+it("N3/R6c: an already open confirmation becomes inert and says why when the latest read drops the authority (rendered), and a failed latest read sends nothing", async () => {
+ let state: "ok" | "no" | "fail" = "ok";
+ const w = world({ readiness: () => state === "fail" ? { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "x" } } } : state === "no" ? { status: 200, body: { mayMerge: true, ready: false, message: "Not ready now.", heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }] } } : ready(), press: () => merged });
+ const t = w.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog = await screen.findByRole("dialog");
+ state = "no";
+ await t.query.invalidateQueries({ queryKey: ["session", A, "merge"] });
+ expect((await within(dialog).findByRole("alert")).textContent).toContain("Not ready now.");
+ expect(within(dialog).getByRole("button", { name: "Press Merge" }).hasAttribute("disabled")).toBe(true);
+ state = "fail";
+ await t.query.invalidateQueries({ queryKey: ["session", A, "merge"] });
+ await waitFor(() => expect(within(dialog).getByRole("alert").textContent).toContain("latest read failed"));
+ fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+ expect(w.posts()).toHaveLength(0);
 });
 
 it("B5/R4: the readiness answer's arrival is never shown as a fresh GitHub observation; tracking time and the answer's time are labelled for what they are", async () => {
