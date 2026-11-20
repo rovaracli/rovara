@@ -81,7 +81,7 @@ function PullItem({ row, ready, held, accepted, many, index }: { row: PullRow; r
  * RE-READS (readiness and the task), because Code replays only a stored success and an unanswered id could cause a second provider merge (retry waits for the R1a journal); (3) a pull request GitHub shows merged is an
  * observation ("Merged on GitHub"), and only this page's own accepted answer says "Merged ... on your request", and that line yields to any later task read that disagrees; (4) every piece of state belongs to one session id
  * and resets when it changes; (5) a failed or refused readiness read makes older "ready" data inert; (6) times are labelled for what they are: the tracking observation time, or "Read by Rovara at" for the answer's arrival.
- * The receipt reader and original-operation adoption are held (MergeReceiptView is the unmounted presentation).
+ * The receipt reader and original-operation adoption are held (the receipt presentation is kept on branch held/merge-receipt-view, not mounted).
  */
 /** Who is reading (R6g/N5): company + person from /v1/app/me, then the session. */
 const subjectFrom = (me: { org: { orgId: string }; developer: { id: string } } | undefined, sessionId: string): string | undefined => me === undefined ? undefined : me.org.orgId + "|" + me.developer.id + "|" + sessionId;

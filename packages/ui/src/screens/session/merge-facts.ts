@@ -4,7 +4,7 @@ import type { ReadTask } from "./workspace-types.js";
 /**
  * What the Merge section may say about each pull request, from facts the page is already served: Code's merge tracking (what GitHub said when Code last read it), the task's pull request list and the
  * readiness read (Code's answer for this person, built from its stored tracking: not a live GitHub read, so it is never labelled as one). Nothing here is a receipt: a pull request GitHub shows as merged is an observation, never "merged by this request". The receipt facts the
- * reader will serve (CONTRACTS R1a) are presented by MergeReceiptView and are not read here.
+ * reader will serve (CONTRACTS R1a) are not read here; their held presentation (MergeReceiptView) is kept on branch held/merge-receipt-view until the receipt reader exists.
  */
 export type TrackedPull = NonNullable<ReadTask["mergeTracking"]>[number];
 export type MergeTone = "ok" | "wait" | "bad" | "idle" | "run";
