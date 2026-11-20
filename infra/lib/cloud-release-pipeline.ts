@@ -48,7 +48,27 @@ export const CLOUD_PIPELINE_SWITCHES: Readonly<Record<string, Readonly<{ product
   staging: Object.freeze({ productAi: true as const }),
   // Rovara-cloud#247: production's gateway is deployed, and its web stack was switched on by hand with the gateway's ProductKeys* parameters.
   production: Object.freeze({ productAi: true as const }),
+  // Rovara-cloud#269: beta, on beta Code (https://beta.rovara.dev, account 233082642592). No product AI: that switch needs a model gateway
+  // (ModelGatewayUrl and the ProductKeys* parameters set by hand first), and beta has none yet; People and limits says "not connected yet".
+  beta: Object.freeze({}),
 });
+/**
+ * Rovara-cloud#269: an environment whose Cloud lives in another account. Its pipeline runs in the account that holds the GitHub
+ * connection (as Rovara Code's beta release does) and deploys into this account through its CDK bootstrap roles, which must trust the
+ * pipeline's account (`cdk bootstrap --trust <pipeline account> --trust-for-lookup <pipeline account>` there). Absent: its own account.
+ */
+export const CLOUD_PIPELINE_DEPLOY_ACCOUNTS: Readonly<Record<string, string>> = Object.freeze({
+  beta: "233082642592",
+});
+/** The account the environment's pipeline deploys into, or undefined for the pipeline's own. */
+export function pipelineDeployAccount(env: string, accounts: Readonly<Record<string, string>> = CLOUD_PIPELINE_DEPLOY_ACCOUNTS): string | undefined {
+  const account = Object.hasOwn(accounts, env) ? accounts[env] : undefined;
+  if (account !== undefined && !/^[0-9]{12}$/u.test(account)) throw new Error(`the deploy account for ${env} must be 12 digits`);
+  return account;
+}
+/** The cdk context naming the account the Cloud stacks deploy into (app.ts). */
+export const DEPLOY_ACCOUNT_CONTEXT_KEY = "agentxAccount";
+
 /** The `-c` arguments the environment's deploy carries (cdk context), from CLOUD_PIPELINE_SWITCHES. */
 export function pipelineDeployContext(env: string, config: Readonly<Record<string, Readonly<{ productAi?: true }>>> = CLOUD_PIPELINE_SWITCHES): string[] {
   const switches = Object.hasOwn(config, env) ? config[env]! : {};
@@ -98,8 +118,14 @@ export const RELEASE_CHECK_PATHS = ["/app", "/v1/web/me"] as const;
  * every second, and any 5xx or failed connection fails the release, even when the deploy itself succeeded. The first deploy of the web
  * stack has no address yet, so it isn't checked.
  */
-const releaseCheckedDeploy = (context: readonly string[]) => [
-  'base="$(aws cloudformation describe-stacks --stack-name "${STACK_PREFIX}-web" --query "Stacks[0].Outputs[?OutputKey==\'CloudUrl\'].OutputValue" --output text 2>/dev/null | sed "s#/app\\$##")"',
+const releaseCheckedDeploy = (context: readonly string[], deployAccount?: string) => [
+  ...(deployAccount === undefined
+    ? ['base="$(aws cloudformation describe-stacks --stack-name "${STACK_PREFIX}-web" --query "Stacks[0].Outputs[?OutputKey==\'CloudUrl\'].OutputValue" --output text 2>/dev/null | sed "s#/app\\$##")"']
+    // The web stack is in the deploy account: read its address through that account's lookup role (read only).
+    : [
+      `lookup="$(aws sts assume-role --role-arn "arn:aws:iam::${deployAccount}:role/cdk-${CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER}-lookup-role-${deployAccount}-$AWS_REGION" --role-session-name release-check --query "Credentials.[AccessKeyId,SecretAccessKey,SessionToken]" --output text)"`,
+      'base="$(set -- $lookup; AWS_ACCESS_KEY_ID="$1" AWS_SECRET_ACCESS_KEY="$2" AWS_SESSION_TOKEN="$3" aws cloudformation describe-stacks --stack-name "${STACK_PREFIX}-web" --query "Stacks[0].Outputs[?OutputKey==\'CloudUrl\'].OutputValue" --output text 2>/dev/null | sed "s#/app\\$##")"',
+    ]),
   "rm -f /tmp/release-check.log; poller=",
   'if [ -n "$base" ] && [ "$base" != "None" ]; then',
   `  ( while :; do for path in ${RELEASE_CHECK_PATHS.join(" ")}; do code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$base$path")"; case "$code" in 5*|000) echo "$(date -u +%H:%M:%S) $path $code" >> /tmp/release-check.log;; esac; done; sleep 1; done ) &`,
@@ -108,7 +134,7 @@ const releaseCheckedDeploy = (context: readonly string[]) => [
   "else",
   '  echo "release check: no live address yet (the first deploy of ${STACK_PREFIX}-web), so nothing to check"',
   "fi",
-  `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION"${context.map((arg) => ` ${arg}`).join("")} --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`,
+  `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION"${deployAccount === undefined ? "" : ` -c ${DEPLOY_ACCOUNT_CONTEXT_KEY}=${deployAccount}`}${context.map((arg) => ` ${arg}`).join("")} --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`,
   "status=$?",
   'if [ -n "$poller" ]; then kill "$poller" 2>/dev/null; wait "$poller" 2>/dev/null; fi',
   'if [ -s /tmp/release-check.log ]; then echo "the release check saw errors on $base during the deploy:" >&2; cat /tmp/release-check.log >&2; exit 1; fi',
@@ -122,6 +148,9 @@ export class CloudReleasePipelineStack extends Stack {
     const env = props.environmentName;
     // Validates the name (at most 14 characters, the environment-name rules) at synth.
     environmentSettingsPrefix(env);
+    const deployAccount = pipelineDeployAccount(env);
+    // Where cdk deploy goes: the deploy account's bootstrap roles, or this account's.
+    const target = deployAccount ?? this.account;
 
     const connectionArn = new CfnParameter(this, "GitHubConnectionArn", {
       type: "String",
@@ -172,14 +201,15 @@ export class CloudReleasePipelineStack extends Stack {
           pre_build: { commands: [...FIND_RELEASE_TAG, ...RELEASE_TAG_ON_BRANCH, "npm ci", "npx tsc -b infra", "npm run build:web"] },
           build: {
             // One command: the release check's poller and the deploy share one shell.
-            commands: [releaseCheckedDeploy(pipelineDeployContext(env))],
+            commands: [releaseCheckedDeploy(pipelineDeployContext(env), deployAccount)],
           },
         },
       }),
     });
     deploy.addToRolePolicy(useConnection);
-    // The release check reads the live address from the web stack's outputs, and nothing else.
-    deploy.addToRolePolicy(new iam.PolicyStatement({
+    // The release check reads the live address from the web stack's outputs, and nothing else (in another account: through its lookup
+    // role, below).
+    if (deployAccount === undefined) deploy.addToRolePolicy(new iam.PolicyStatement({
       actions: ["cloudformation:DescribeStacks"],
       resources: [`arn:${this.partition}:cloudformation:${this.region}:${this.account}:stack/${RESOURCE_PREFIX}-${env}-web/*`],
     }));
@@ -187,7 +217,7 @@ export class CloudReleasePipelineStack extends Stack {
     // CloudFormation execution role (the role boundary denies that one too).
     deploy.addToRolePolicy(new iam.PolicyStatement({
       actions: ["sts:AssumeRole"],
-      resources: CDK_BOOTSTRAP_ASSUMED_ROLES.map((role) => `arn:${this.partition}:iam::${this.account}:role/cdk-${CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER}-${role}-${this.account}-${this.region}`),
+      resources: CDK_BOOTSTRAP_ASSUMED_ROLES.map((role) => `arn:${this.partition}:iam::${target}:role/cdk-${CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER}-${role}-${target}-${this.region}`),
     }));
 
     const sourceRole = new iam.Role(this, "SourceActionRole", {
@@ -258,6 +288,6 @@ export class CloudReleasePipelineStack extends Stack {
     // CDK names a CodeBuild project's service role by name, which CodeBuild reads as a role at "/": those two stay there.
     keepRoleAtRoot(deploy.role!);
     keepRoleAtRoot(check.role!);
-    applyCloudBoundary(this, env, "pipeline");
+    applyCloudBoundary(this, env, "pipeline", undefined, deployAccount);
   }
 }

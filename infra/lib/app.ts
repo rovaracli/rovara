@@ -1,6 +1,6 @@
 import { App, Aspects, Tags } from "aws-cdk-lib";
 import { ENVIRONMENT_TAG_KEY, RESOURCE_PREFIX, parseSourceKindsSwitch } from "@agentx/contracts";
-import { CLOUD_PIPELINE_CONTEXT_KEY, CloudReleasePipelineStack } from "./cloud-release-pipeline.js";
+import { CLOUD_PIPELINE_CONTEXT_KEY, CloudReleasePipelineStack, DEPLOY_ACCOUNT_CONTEXT_KEY } from "./cloud-release-pipeline.js";
 import { CLOUD_APP_CONTEXT_KEY, CloudAppStack, cloudAppStackName } from "./cloud-app.js";
 import { CloudWebStack, cloudWebStackName } from "./cloud-web.js";
 import { RequireCloudBoundary } from "./cloud-boundary.js";
@@ -26,11 +26,16 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   const cloudAppEnv = app.node.tryGetContext(CLOUD_APP_CONTEXT_KEY) as unknown;
   if (cloudAppEnv !== undefined) {
     if (typeof cloudAppEnv !== "string" || cloudAppEnv === "") throw new Error(`${CLOUD_APP_CONTEXT_KEY} must name the Rovara Cloud environment, for example production`);
+    // Rovara-cloud#269: a pipeline in another account names the account it deploys into, so cdk goes through that account's bootstrap
+    // roles. Absent: the stacks deploy into the account of the credentials, as before.
+    const account = app.node.tryGetContext(DEPLOY_ACCOUNT_CONTEXT_KEY) as unknown;
+    if (account !== undefined && (typeof account !== "string" || !/^[0-9]{12}$/u.test(account))) throw new Error(`${DEPLOY_ACCOUNT_CONTEXT_KEY} must be a 12-digit AWS account id`);
+    const cloudEnv = { region: deploymentRegion ?? "us-east-1", ...(typeof account === "string" ? { account } : {}) };
     // Cloud, with no gap on a release (#11). cloud-app.ts keeps only Cloud's first address, which redirects here.
     const cloudWeb = new CloudWebStack(app, "RovaraCloudWeb", {
       description: `Rovara Cloud ${cloudAppEnv}: the web app on CloudFront and S3, Cloud's server on Lambda, its state in DynamoDB`,
       stackName: cloudWebStackName(cloudAppEnv),
-      env: { region: deploymentRegion ?? "us-east-1" },
+      env: cloudEnv,
       environmentName: cloudAppEnv,
       ...(productAiOn(app.node.tryGetContext(MODEL_GATEWAY_PRODUCT_CONTEXT_KEY), MODEL_GATEWAY_PRODUCT_CONTEXT_KEY) ? { productAi: true } : {}),
       ...aiSourceKindsContext(app.node.tryGetContext(AI_SOURCE_KINDS_CONTEXT_KEY)),
@@ -40,7 +45,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     const cloudApp = new CloudAppStack(app, "RovaraCloudApp", {
       description: `Rovara Cloud ${cloudAppEnv}: its first address, which sends people to its current one`,
       stackName: cloudAppStackName(cloudAppEnv),
-      env: { region: deploymentRegion ?? "us-east-1" },
+      env: cloudEnv,
       environmentName: cloudAppEnv,
       // Its first address only redirects now (#11): every request goes to the same path at Cloud's address.
       movedTo: cloudWeb.origin,
