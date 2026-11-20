@@ -11,11 +11,14 @@
 .rv-admin-surface{padding:var(--rv-space-6) clamp(20px,3vw,48px) var(--rv-space-7);min-width:0;max-width:1180px;width:100%}
 .rv-admin-surface .rv-page-header{margin-bottom:var(--rv-space-4)}
 .rv-admin-surface h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:-.015em;margin:0}
-.rv-admin-surface .rv-table{font-size:var(--rv-font-sm)}
+.rv-admin-surface .rv-table,.rv-admin-who{font-size:var(--rv-font-md)}
 /* The caption names the table for screen readers; the heading above it names it on screen. */
 .rv-admin-surface .rv-table caption{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .rv-admin-surface .rv-table th{font:600 var(--rv-font-sm)/1.3 var(--rv-font-ui);color:var(--rv-text-muted);background:var(--rv-bg-sunken);padding:var(--rv-space-2) var(--rv-space-4);border-bottom:1px solid var(--rv-border);white-space:nowrap}
-.rv-admin-surface .rv-table td{padding:var(--rv-space-3) var(--rv-space-4);vertical-align:top}
+.rv-admin-surface .rv-table td{padding:var(--rv-space-3) var(--rv-space-4);vertical-align:middle}
+/* Buttons in a row: compact, no stray margins, so text and buttons share one line. */
+.rv-admin-surface .rv-table td .rv-button{min-height:36px;padding:var(--rv-space-1) var(--rv-space-3);margin:0}
+.rv-admin-surface .rv-table td :is(.rv-admin-role-actions,.rv-row-actions){gap:var(--rv-space-2)}
 .rv-admin-surface .rv-table tbody tr:last-child>td{border-bottom:0}
 .rv-admin-surface .rv-table tbody tr:hover>td{background:var(--rv-bg-sunken)}
 .rv-admin-surface .rv-table-wrap{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);padding:0}
@@ -115,3 +118,8 @@ html body :where(.rv-admin-surface) summary::before{content:"";flex:none;width:6
 html body :where(.rv-admin-surface) details[open]>summary::before{transform:rotate(45deg)}
 html body :where(.rv-admin-surface) :where(p,ul,ol,dl,.rv-table-wrap)+:where(div:has(>.rv-button)){margin-top:var(--rv-space-3)}
 html body :where(.rv-admin-surface) :where(.rv-button)+:where(section){margin-top:var(--rv-space-3)}
+/* "Who can do what": the same card table as the shared tables, so the two tables on People line up. */
+.rv-admin-who{border-collapse:separate;border-spacing:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised);overflow:hidden}
+.rv-admin-who caption{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui)}
+.rv-admin-who th,.rv-admin-who td{padding:var(--rv-space-3) var(--rv-space-4);vertical-align:middle}
+.rv-admin-who thead th{border-top:0;background:var(--rv-bg-sunken);font:600 var(--rv-font-sm)/1.3 var(--rv-font-ui);color:var(--rv-text-muted);padding-block:var(--rv-space-2)}
