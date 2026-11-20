@@ -113,8 +113,21 @@ describe("the company step, AI and spending", () => {
   }
  });
 
- it("one Save writes only the changed limit when model and source are untouched", async () => {
+ it("a new company with no saved source and no default: one Save writes the limit and the shown Rovara's AI (#255)", async () => {
   const c = company({ cap: null, source: null, model: null });
+  const f = mountRoute("/app/admin/ai-spending", c.respond);
+  try {
+   await screen.findByLabelText("Company model");
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   await screen.findByTestId("ai-spend-saved");
+   expect(c.writes.map(w => `${w.method} ${w.path}`)).toEqual(["PUT /v1/app/org/settings", "PUT /v1/app/org/agent-ai"]);
+   expect(c.writes[1]!.body).toEqual({ expectedVersion: 0, source: "rovara" });
+   expect(c.state).toEqual({ cap: 500_000_000, source: "rovara", model: null });
+  } finally { f.close(); }
+ });
+
+ it("one Save writes only the changed limit when model and source are untouched", async () => {
+  const c = company({ cap: null, source: "rovara", model: null });
   const f = mountRoute("/app/admin/ai-spending", c.respond);
   try {
    await screen.findByLabelText("Company model");
@@ -126,7 +139,7 @@ describe("the company step, AI and spending", () => {
    expect(sent.settings.budgets).toEqual({ companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null, learningMonthlyUsdMicros: 20_000_000 });
    // Everything else in the settings goes back as read.
    expect(sent.settings.decisions).toEqual([{ what: "setting.loosen", secondPerson: true }]);
-   expect(c.state).toEqual({ cap: 500_000_000, source: null, model: null });
+   expect(c.state).toEqual({ cap: 500_000_000, source: "rovara", model: null });
   } finally { f.close(); }
  });
 
@@ -222,13 +235,13 @@ describe("the company step, AI and spending", () => {
  it("returning to the initial source makes no source PUT", async () => {
   for (const initial of [
    { cap: 800_000_000, source: "openai_key", model: null },
-   { cap: null, source: null, model: null },
+   { cap: null, source: "rovara", model: null },
   ]) {
    const c = company(initial);
    const f = mountRoute("/app/admin/ai-spending", c.respond);
    try {
     await screen.findByLabelText("Company model");
-    if (initial.source === null) {
+    if (initial.source === "rovara") {
      fireEvent.click(screen.getByTestId("ai-spend-own").querySelector("input")!);
      fireEvent.click(screen.getByTestId("ai-spend-rovara").querySelector("input")!);
     } else {
