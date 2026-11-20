@@ -122,6 +122,8 @@ export function useAccepted(subject: string): AcceptedAnswer | undefined {
  const raw = useSyncExternalStore(subscribe, () => rawAccepted(subject), () => null);
  return parseAccepted(raw, subject);
 }
+/** Reads the accepted answer fresh from storage, right now (never from a render): the check made immediately before anything is sent. */
+export const readAcceptedNow = (subject: string): AcceptedAnswer | undefined => parseAccepted(rawAccepted(subject), subject);
 export function writeAccepted(answer: AcceptedAnswer): boolean {
  try { globalThis.localStorage.setItem(acceptedKey(answer.subject), JSON.stringify(answer));notify();return true; } catch { return false; }
 }

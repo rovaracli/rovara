@@ -324,7 +324,7 @@ it("B4/N2: a saved 'Merged' answer retires, for good, only to a task read ISSUED
  await t.read(A, { mergeTracking: [tracked({ headSha: HEAD_B, observedAt: "2000-01-01T00:00:00.000Z" })] });
  await waitFor(() => expect(headline()).not.toBe("Merge accepted"));
  expect(screen.queryByText("Merged acme/payments #42.")).toBeNull();
- expect(region().textContent).toContain("A later read shows a pull request open again, so the earlier answer no longer applies.");
+ expect(region().textContent).toContain("A later read shows a different head for a pull request this merge covered, so the earlier answer no longer applies.");
  // Older facts delivered afterwards do not bring it back.
  t.show(A, taskOf(A));
  await new Promise(resolve => setTimeout(resolve, 40));
@@ -665,7 +665,7 @@ it("H1/B4 (production path): Code's tracking LAGS after an accepted answer: read
  over = { mergeTracking: [tracked({ headSha: HEAD_B })], pullRequests: [PR] };
  await query.invalidateQueries({ queryKey: ["session", A] });
  await waitFor(() => expect(screen.queryByText("Merged acme/payments #42.")).toBeNull());
- expect(region().textContent).toContain("A later read shows a pull request open again");
+ expect(region().textContent).toContain("A later read shows a different head for a pull request this merge covered");
  expect(localStorage.getItem("rovara.merge.accepted.v1:" + SUBJECT)).toBeNull();
  expect(w.posts()).toHaveLength(1);
 });
@@ -699,6 +699,7 @@ it("H1: an accepted answer also yields to a read that shows the pull request CLO
  over = { mergeTracking: [tracked({ state: "closed" })], pullRequests: [{ ...PR, state: "closed" }] };
  await query.invalidateQueries({ queryKey: ["session", A] });
  await waitFor(() => expect(screen.queryByText("Merged acme/payments #42.")).toBeNull());
+ expect(region().textContent).toContain("closed without a merge, so the earlier answer no longer applies");
 });
 
 it("L1: 400 CONFIG_INVALID is final only for a single-PR press; for a multi-PR press (it can arrive after an earlier PR merged) it stays unknown and keeps the lock", async () => {
@@ -730,4 +731,37 @@ it("H1/reload: the accepted answer survives a reload and a second tab during Cod
  expect(readinessReads()).toBe(before);
  expect(w.posts()).toHaveLength(1);
  reloaded.unmount();second.unmount();
+});
+
+const acceptedKey = "rovara.merge.accepted.v1:" + SUBJECT;
+const acceptedRecord = (): string => JSON.stringify({ v: 1, subject: SUBJECT, requestId: "66666666-6666-4666-8666-666666666666", acceptedAt: new Date().toISOString(), words: "Merged acme/payments #42.", keys: ["acme/payments#42"], heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }] });
+
+it("M2: a confirmation already OPEN in a second tab cannot send once the first tab's press was accepted: zero new POSTs, with or without the storage event; the dialog goes inert and says why", async () => {
+ for (const withEvent of [true, false]) {
+  localStorage.clear();
+  const w = world({ readiness: () => ready(), press: () => merged });
+  const b = w.tab(A);
+  fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+  const dialog = await screen.findByRole("dialog");
+  // Tab A's press was accepted: its accepted answer (written exactly as the press writes it) is in storage. Two Radix modals cannot be driven in one jsdom document, so tab A's press itself is exercised by the H1 tests.
+  localStorage.setItem(acceptedKey, acceptedRecord());
+  if (withEvent) { window.dispatchEvent(new StorageEvent("storage", { key: acceptedKey }));await waitFor(() => expect(within(dialog).getByRole("alert").textContent).toContain("Code has already answered that these are merged")); }
+  fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+  expect(w.posts()).toHaveLength(0);
+  expect(Object.keys(localStorage).filter(k => k.startsWith("rovara.merge.pending"))).toHaveLength(0);
+  b.unmount();
+ }
+});
+
+it("L4: when storage refuses the accepted-answer write, the in-memory state says so ('this browser couldn't save it'), Merge stays locked, and one POST was sent", async () => {
+ const realSet = Storage.prototype.setItem.bind(localStorage);
+ vi.spyOn(Storage.prototype, "setItem").mockImplementation((key: string, value: string) => { if (key.startsWith("rovara.merge.accepted")) throw new Error("quota"); realSet(key, value); });
+ const w = world({ readiness: () => ready(), press: () => merged });
+ w.tab(A);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ expect(headline()).toBe("Merge accepted (this browser couldn't save it)");
+ expect(screen.queryAllByRole("button", { name: /^Merge #42/u })).toHaveLength(0);
+ expect(localStorage.getItem(acceptedKey)).toBeNull();
+ expect(w.posts()).toHaveLength(1);
 });
