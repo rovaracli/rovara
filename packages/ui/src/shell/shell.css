@@ -7,3 +7,8 @@
 @media(prefers-reduced-motion:reduce){.rv-sidebar-nav a,.rv-shell-header button{transition:none}}
 .rv-name-prompt .rv-field{min-width:min(360px,100%)}.rv-name-form{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}.rv-name-form .rv-account-actions{margin-bottom:2px}
 .rv-signin-choices{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}
+/* Desktop: the header and the sidebar stay put; only the page scrolls. The admin nav already sticks under the header. */
+@media(min-width:768px){
+.rv-shell-header{position:sticky;top:0;z-index:20}
+.rv-shell-sidebar{position:sticky;top:var(--rv-shell-header);align-self:start;height:calc(100dvh - var(--rv-shell-header));overflow-y:auto;overscroll-behavior:contain}
+}
