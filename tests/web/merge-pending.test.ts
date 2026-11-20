@@ -25,7 +25,7 @@ const PR = { repository: "acme/payments", number: 42, url: "https://github.com/a
 const tracked = (over: Record<string, unknown> = {}) => ({ orgId: "org_aaaaaaaaaaaaaaaaaaaa", taskId: "11111111-1111-4111-8111-111111111111", repositoryId: "acme/payments", number: 42, version: 1, headSha: HEAD_A, draft: false, state: "open", baseBranch: "main", ci: "passing", ciBasis: "required", checksEverSeen: true, failingChecks: [], review: "approved", branch: "up_to_date", headByRovara: true, nudges: { count: 0 }, syncs: { day: "2026-10-23", count: 0 }, decisionDigest: "b".repeat(64), observedAt: "2026-10-23T12:00:00.000Z", ...over });
 const sessionOf = (sessionId: string, over: Record<string, unknown> = {}) => SessionViewReaderSchema.parse(workspaceFixture({ sessionId }, { pullRequests: [PR], mergeTracking: [tracked()], ...over }));
 const taskOf = (sessionId: string, over: Record<string, unknown> = {}): ReadTask => workspaceTask(sessionOf(sessionId, over))!;
-const ready = (headSha = HEAD_A): Answer => ({ status: 200, body: { mayMerge: true, ready: true, heads: [{ repositoryId: "acme/payments", number: 42, headSha }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }] } });
+const ready = (headSha = HEAD_A): Answer => ({ status: 200, body: { mayMerge: true, ready: true, risk: "low", heads: [{ repositoryId: "acme/payments", number: 42, headSha }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }] } });
 const lost: Answer = { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "We couldn't confirm the result yet; checking GitHub. Reload this page in a moment." } } };
 const merged: Answer = { status: 200, body: { status: "MERGED", pullRequests: [{ repositoryId: "acme/payments", number: 42 }] } };
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa", DEV = "a1".repeat(32), OTHER_DEV = "b2".repeat(32);
@@ -295,7 +295,7 @@ it("F3/R1: a later refusal (403) removes the Merge button at once, even with an 
 
 it("R2: the page announces what the server returned, not what was asked", async () => {
  const web = { ...tracked(), repositoryId: "acme/web", number: 7 };
- const w = world({ readiness: () => ({ status: 200, body: { mayMerge: true, ready: true, heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }, { repositoryId: "acme/web", number: 7 }] } }), press: () => merged });
+ const w = world({ readiness: () => ({ status: 200, body: { mayMerge: true, ready: true, risk: "low", heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }, { repositoryId: "acme/web", number: 7 }] } }), press: () => merged });
  w.tab(A, taskOf(A, { pullRequests: [PR, { ...PR, repository: "acme/web", number: 7, url: "https://github.com/acme/web/pull/7" }], mergeTracking: [tracked(), web] }));
  fireEvent.click(await screen.findByRole("button", { name: "Merge 2 pull requests" }));
  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Press Merge" }));
@@ -706,7 +706,7 @@ it("H1: an accepted answer also yields to a read that shows the pull request CLO
 
 it("L1: 400 CONFIG_INVALID is final only for a single-PR press; for a multi-PR press (it can arrive after an earlier PR merged) it stays unknown and keeps the lock", async () => {
  const web = { ...tracked(), repositoryId: "acme/web", number: 7 };
- const twoReady: Answer = { status: 200, body: { mayMerge: true, ready: true, heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }, { repositoryId: "acme/web", number: 7 }] } };
+ const twoReady: Answer = { status: 200, body: { mayMerge: true, ready: true, risk: "low", heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }, { repositoryId: "acme/web", number: 7 }] } };
  const w = world({ readiness: () => twoReady, press: () => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "Code's words." } } }) });
  w.tab(A, taskOf(A, { pullRequests: [PR, { ...PR, repository: "acme/web", number: 7, url: "https://github.com/acme/web/pull/7" }], mergeTracking: [tracked(), web] }));
  fireEvent.click(await screen.findByRole("button", { name: "Merge 2 pull requests" }));
@@ -858,7 +858,7 @@ it("F1/R6b: an older FAILED task read arriving after a newer success never super
 
 it("M1/R4: tracking alone never decides 'everything merged': two PRs, the first tracked merged, the second open and untracked: the page says 1 of 2 merged, not Merged, and Merge is not hidden", async () => {
  const web = { ...PR, repository: "acme/web", number: 7, url: "https://github.com/acme/web/pull/7" };
- const webReady: Answer = { status: 200, body: { mayMerge: true, ready: true, heads: [{ repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/web", number: 7 }] } };
+ const webReady: Answer = { status: 200, body: { mayMerge: true, ready: true, risk: "low", heads: [{ repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/web", number: 7 }] } };
  const w = world({ readiness: () => webReady, press: () => merged });
  w.tab(A, taskOf(A, { pullRequests: [{ ...PR, state: "merged" }, web], mergeTracking: [tracked({ state: "merged" })] }));
  await waitFor(() => expect(headline()).toBe("1 of 2 pull requests is merged on GitHub"));
@@ -1008,6 +1008,7 @@ it("P1-4: the claim re-reads the saved records inside the lock: a press another 
 
 it("P1-5: a readiness answer with no heads, a missing head, a duplicate or an extra head binds nothing: Merge is not offered in the app and the GitHub path stays; a complete answer sends exactly the checked head", async () => {
  const shapes: Array<[string, Record<string, unknown>]> = [
+  ["no risk (Code's merge body requires one)", { risk: undefined }],
   ["no heads", { heads: undefined }],
   ["empty heads", { heads: [] }],
   ["missing head", { heads: [{ repositoryId: "acme/web", number: 7, headSha: HEAD_A }] }],
@@ -1032,6 +1033,7 @@ it("P1-5: a readiness answer with no heads, a missing head, a duplicate or an ex
  await screen.findByText("Merged acme/payments #42.");
  expect(w.posts()).toHaveLength(1);
  expect(w.posts()[0]!.expectedHeads).toEqual([{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }]);
+ expect(w.posts()[0]!.risk).toBe("low");
 });
 
 it("P2: a section whose own latest task read failed or was refused sends nothing", async () => {
@@ -1044,4 +1046,87 @@ it("P2: a section whose own latest task read failed or was refused sends nothing
  fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
  await new Promise(resolve => setTimeout(resolve, 50));
  expect(w.posts()).toHaveLength(0);
+});
+
+// Round 14 (Opus review of c4db8b90c): R (risk), M-1 (the re-read is compared), M-2 (the lock is held until the POST settles).
+it("R: a ready answer with bound heads but NO risk gives no in-app Merge (GitHub path) and sends nothing; the press body is exactly requestId, expectedHeads, risk", async () => {
+ const w = world({ readiness: () => ({ status: 200, body: { ...(ready().body as object), risk: undefined } }), press: () => merged });
+ const first = w.tab(A);
+ await waitFor(() => expect(w.request.mock.calls.some(([request]) => /\/merge$/u.test(request.path) && request.method === "GET")).toBe(true));
+ await new Promise(resolve => setTimeout(resolve, 30));
+ expect(screen.queryAllByRole("button", { name: /^Merge #/u })).toHaveLength(0);
+ expect(w.posts()).toHaveLength(0);
+ first.unmount();
+ localStorage.clear();
+ const w2 = world({ readiness: () => ready(), press: () => merged });
+ w2.tab(A);
+ await press();
+ await screen.findByText("Merged acme/payments #42.");
+ expect(Object.keys(w2.posts()[0]!)).toEqual(["requestId", "expectedHeads", "risk"]);
+});
+
+it("M-1 (Sol's reproduction): ready at head A with the confirmation open, a newer own-task refusal recorded, the next GET succeeds at the SAME head A but CI failing and digest C, the parent prop not refetched: press sends NOTHING and the confirmation goes inert", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged, session: () => ({ mergeTracking: [tracked({ headSha: HEAD_A, ci: "failing", failingChecks: ["security"], decisionDigest: "c".repeat(64) })] }) });
+ const t = w.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog = await screen.findByRole("dialog");
+ await fencedRead(fenceFor(t.query, SUBJECT), async () => { throw new ApiError(403, "FORBIDDEN", "no"); }).catch(() => undefined);
+ fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+ await waitFor(() => expect(w.request.mock.calls.filter(([request]) => request.method === "GET" && /sessions\/[^/]+$/u.test(request.path)).length).toBeGreaterThan(0));
+ await new Promise(resolve => setTimeout(resolve, 60));
+ expect(w.posts()).toHaveLength(0);
+ expect(localStorage.getItem(pendingKey)).toBeNull();
+ expect(screen.queryByRole("button", { name: "Press Merge" })).toBeNull();
+});
+
+it("M-1: after a failed own read, a recovery read that shows the SAME facts stays recoverable (one POST)", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged, session: () => ({}) });
+ const t = w.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog = await screen.findByRole("dialog");
+ await fencedRead(fenceFor(t.query, SUBJECT), async () => { throw new ApiError(503, "RUNTIME_UNAVAILABLE", "x"); }).catch(() => undefined);
+ fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+ await screen.findByText("Merged acme/payments #42.");
+ expect(w.posts()).toHaveLength(1);
+});
+
+it("P2 (Sol): a retired memory-only acceptance does not leave an enabled Merge that can never send: after storage fails, a new observed head and a fresh readiness, one deliberate new press goes out (no automatic replay)", async () => {
+ let head = HEAD_A;
+ const realSet = Storage.prototype.setItem.bind(localStorage);
+ const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation((k: string, value: string) => { if (k.startsWith("rovara.merge.accepted")) throw new Error("quota"); realSet(k, value); });
+ const w = world({ readiness: () => ready(head), press: () => merged });
+ const t = w.tab(A);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ expect(w.posts()).toHaveLength(1);
+ spy.mockRestore();
+ // A later read, issued after the answer was observed, shows #42 still open at a NEW head with a new digest: the old answer is retired.
+ head = HEAD_B;
+ await t.read(A, { mergeTracking: [tracked({ headSha: HEAD_B, decisionDigest: "c".repeat(64) })] });
+ await waitFor(() => expect(region().textContent).not.toContain("Merge accepted"));
+ const button = await screen.findByRole("button", { name: /^Merge #42/u });
+ await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+ await press();
+ await waitFor(() => expect(w.posts()).toHaveLength(2));
+ expect(w.posts()[1]!.expectedHeads).toEqual([{ repositoryId: "acme/payments", number: 42, headSha: HEAD_B }]);
+ expect(w.posts()[1]!.requestId).not.toBe(w.posts()[0]!.requestId);
+});
+
+it("M-2: the claim lock is held while the POST is in flight (a second tab cannot claim) and released when it settles, whether it was answered, refused, lost or the page threw", async () => {
+ const claimable = async (): Promise<boolean> => { const result: boolean = await navigator.locks.request("rovara.merge.claim:" + SUBJECT, { mode: "exclusive", ifAvailable: true }, async (lock: unknown) => lock !== null); return result; };
+ for (const outcome of ["done", "lost", "refused", "throws"] as const) {
+  localStorage.clear();
+  let answer!: (value: Answer) => void;
+  const gate = new Promise<Answer>(resolve => { answer = resolve; });
+  const w = world({ readiness: () => ready(), press: () => gate });
+  const t = w.tab(A);
+  await press();
+  await waitFor(() => expect(w.posts()).toHaveLength(1));
+  // In flight: another tab cannot take the claim.
+  expect(await claimable(), outcome).toBe(false);
+  answer(outcome === "done" ? merged : outcome === "lost" ? lost : outcome === "refused" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "No." } } } : { status: 200, body: { nonsense: true } });
+  await waitFor(async () => expect(await claimable(), outcome).toBe(true));
+  expect(w.posts(), outcome).toHaveLength(1);
+  t.unmount();
+ }
 });

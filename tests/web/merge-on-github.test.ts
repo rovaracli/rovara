@@ -98,7 +98,7 @@ it("never makes a link of an address that is not github.com (a pull request url 
 });
 
 // DEC 254zzz94: the Merge button.
-const READY = { mayMerge: true, ready: true, heads: [{ repositoryId: "payments", number: 42, headSha: "a".repeat(40) }], pullRequests: [{ repositoryId: "payments", number: 42, url: PR.url }] };
+const READY = { mayMerge: true, ready: true, risk: "low" as const, heads: [{ repositoryId: "payments", number: 42, headSha: "a".repeat(40) }], pullRequests: [{ repositoryId: "payments", number: 42, url: PR.url }] };
 
 it("a person who may merge sees an enabled Merge button when Code says ready; pressing asks once and sends one request with one request id", async () => {
   const f = setup({ pullRequests: [PR] }, { readiness: { status: 200, body: READY }, press: { status: 200, body: { status: "MERGED", pullRequests: [{ repositoryId: "payments", number: 42 }] } } });
@@ -113,7 +113,7 @@ it("a person who may merge sees an enabled Merge button when Code says ready; pr
   const presses = mergeCalls(f);
   expect(presses).toHaveLength(1);
   // P1-5: every press names the exact heads it checked.
-  expect(Object.keys(presses[0]!.body as object)).toEqual(["requestId", "expectedHeads"]);
+  expect(Object.keys(presses[0]!.body as object)).toEqual(["requestId", "expectedHeads", "risk"]);
   expect((presses[0]!.body as { requestId: string }).requestId).toMatch(/^[0-9a-f-]{36}$/u);
   expect(screen.queryByRole("button", { name: /^Merge #42/u })).toBeNull();
   await expectNoAxeViolations(f.container);
@@ -168,7 +168,7 @@ it("the press carries the heads and risk Code showed, frozen when the confirmati
 
 // Lifecycle UI (boards 3e-3i, 9a, 12j, 15j): per-pull-request facts, head drift, an unresolved original request, and observation versus receipt.
 const HEAD_A = "a".repeat(40), HEAD_B = "b".repeat(40);
-const ready = (heads: Array<{ repositoryId: string; number: number; headSha: string }>): Answer => ({ status: 200, body: { mayMerge: true, ready: true, heads, pullRequests: heads.map(({ repositoryId, number }) => ({ repositoryId, number })) } });
+const ready = (heads: Array<{ repositoryId: string; number: number; headSha: string }>): Answer => ({ status: 200, body: { mayMerge: true, ready: true, risk: "low" as const, heads, pullRequests: heads.map(({ repositoryId, number }) => ({ repositoryId, number })) } });
 const headOf = (headSha: string) => ({ repositoryId: "acme/payments", number: 42, headSha });
 const region = () => screen.getByRole("region", { name: "Merge" });
 
@@ -214,7 +214,7 @@ it("a head that moves while the confirmation is open is not pressed: the page sa
 });
 
 it("changedSince also reads the review digest: same head, different digest is a change", () => {
-  const readiness = { mayMerge: true, ready: true, heads: [headOf(HEAD_A)], pullRequests: [{ repositoryId: "acme/payments", number: 42 }] };
+  const readiness = { mayMerge: true, ready: true, risk: "low" as const, heads: [headOf(HEAD_A)], pullRequests: [{ repositoryId: "acme/payments", number: 42 }] };
   const task = (digest: string) => ({ pullRequests: [PR], mergeTracking: [{ ...tracked("open"), decisionDigest: digest }] }) as unknown as Parameters<typeof pullRowsOf>[0];
   const before = shownOf(pullRowsOf(task("b".repeat(64)), readiness), readiness);
   expect(changedSince(before, pullRowsOf(task("b".repeat(64)), readiness), readiness)).toBe(false);

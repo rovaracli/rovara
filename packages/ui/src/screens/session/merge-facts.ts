@@ -127,4 +127,9 @@ export function taskBasisOf(task: ReadTask): string {
  return [task.status, task.workflow?.stage ?? "", task.workflow?.state ?? "", ...rows].join("|");
 }
 
+/**
+ * Code's merge body is strict and REQUIRES the risk level the person saw, so an answer is offered in the app only when it also names one (with the heads it must bind). Without it the page falls back to GitHub.
+ */
+export const pressBound = (view: MergeReadiness): boolean => headsBound(view) && view.risk !== undefined;
+
 export const pullsMergedOf = (rows: readonly PullRow[]): PullRow[] => rows.filter(row => row.state === "merged");

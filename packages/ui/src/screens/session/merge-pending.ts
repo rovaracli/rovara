@@ -138,18 +138,27 @@ export function clearAccepted(answer: Pick<AcceptedAnswer, "subject" | "requestI
  * one per subject (`orgId|developerId|sessionId`), taken only if it is free right now (a tab that finds it taken sends nothing). Inside it the caller re-reads the saved records and writes its own. The lock is released as soon as
  * the record is saved; the saved record, not the lock, is what keeps every later press out. Without the Web Locks API, or if it fails, nothing is sent and the page points at GitHub.
  */
-export type ClaimOutcome<T> = { kind: "done"; value: T } | { kind: "busy" } | { kind: "unsupported" } | { kind: "failed" };
+export type ClaimOutcome<T> = { kind: "done"; value: T; release: () => void } | { kind: "busy" } | { kind: "unsupported" } | { kind: "failed" };
 interface LockApi { request: (name: string, options: { mode: "exclusive"; ifAvailable: true }, callback: (lock: unknown) => Promise<unknown>) => Promise<unknown> }
 const lockApi = (): LockApi | undefined => { try { const locks = (globalThis as { navigator?: { locks?: LockApi } }).navigator?.locks; return typeof locks?.request === "function" ? locks : undefined; } catch { return undefined; } };
 /** True when this browser can take the claim lock. When it can't, Merge is not offered in the app. */
 export const claimLockSupported = (): boolean => lockApi() !== undefined;
+/**
+ * Takes the lock, runs `claim` inside it, and KEEPS HOLDING the lock until the caller calls `release()` (M-2): the press holds it until its request has settled and the answer, refusal or unknown end is recorded, so no other
+ * tab can claim while this one's request is in flight, and by the time it is released the writes have long reached other tabs. The caller must call `release()` in a `finally`; a claim that throws releases at once.
+ */
 export async function withClaim<T>(subject: string, claim: () => T): Promise<ClaimOutcome<T>> {
  const locks = lockApi();
  if (locks === undefined) return { kind: "unsupported" };
- try {
-  const result = await locks.request("rovara.merge.claim:" + subject, { mode: "exclusive", ifAvailable: true }, async (lock: unknown) => lock === null ? { kind: "busy" } as const : { kind: "done", value: claim() } as const);
-  return result as ClaimOutcome<T>;
- } catch { return { kind: "failed" }; }
+ let release!: () => void;
+ const held = new Promise<void>(resolve => { release = resolve; });
+ return new Promise<ClaimOutcome<T>>(resolve => {
+  locks.request("rovara.merge.claim:" + subject, { mode: "exclusive", ifAvailable: true }, async (lock: unknown) => {
+   if (lock === null) { resolve({ kind: "busy" });return; }
+   try { resolve({ kind: "done", value: claim(), release }); } catch { resolve({ kind: "failed" });release(); }
+   await held;
+  }).catch(() => { resolve({ kind: "failed" });release(); });
+ });
 }
 /** True only if the stored accepted answer is exactly this one. */
 export const acceptedStoredExactly = (answer: AcceptedAnswer): boolean => { const back = readAcceptedNow(answer.subject); return back !== undefined && JSON.stringify(back) === JSON.stringify({ v: 1, subject: answer.subject, requestId: answer.requestId, acceptedAt: answer.acceptedAt, words: answer.words, keys: answer.keys, heads: answer.heads }); };
