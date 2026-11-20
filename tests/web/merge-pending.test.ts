@@ -3,13 +3,14 @@
 // server returned. Code's idempotency for the same request id: hosted-merge-routes.ts 168-173 (stored answer) and merge.ts 684/909 (merged pull requests are skipped and returned).
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
-import { fencedRead, fenceFor } from "../../packages/ui/src/screens/session/merge-fence.js";
+import { fencedRead, fencedReadiness, fenceFor } from "../../packages/ui/src/screens/session/merge-fence.js";
 import { useSession } from "../../packages/ui/src/api/sessions.js";
+import { taskBasisOf } from "../../packages/ui/src/screens/session/merge-facts.js";
 import { MergeSection } from "../../packages/ui/src/screens/session/MergeSection.js";
 import { workspaceTask, type ReadTask } from "../../packages/ui/src/screens/session/workspace-types.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
@@ -24,7 +25,7 @@ const PR = { repository: "acme/payments", number: 42, url: "https://github.com/a
 const tracked = (over: Record<string, unknown> = {}) => ({ orgId: "org_aaaaaaaaaaaaaaaaaaaa", taskId: "11111111-1111-4111-8111-111111111111", repositoryId: "acme/payments", number: 42, version: 1, headSha: HEAD_A, draft: false, state: "open", baseBranch: "main", ci: "passing", ciBasis: "required", checksEverSeen: true, failingChecks: [], review: "approved", branch: "up_to_date", headByRovara: true, nudges: { count: 0 }, syncs: { day: "2026-10-23", count: 0 }, decisionDigest: "b".repeat(64), observedAt: "2026-10-23T12:00:00.000Z", ...over });
 const sessionOf = (sessionId: string, over: Record<string, unknown> = {}) => SessionViewReaderSchema.parse(workspaceFixture({ sessionId }, { pullRequests: [PR], mergeTracking: [tracked()], ...over }));
 const taskOf = (sessionId: string, over: Record<string, unknown> = {}): ReadTask => workspaceTask(sessionOf(sessionId, over))!;
-const ready = (headSha = HEAD_A): Answer => ({ status: 200, body: { mayMerge: true, ready: true, heads: [{ repositoryId: "acme/payments", number: 42, headSha }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }] } });
+const ready = (headSha = HEAD_A): Answer => ({ status: 200, body: { mayMerge: true, ready: true, risk: "low", heads: [{ repositoryId: "acme/payments", number: 42, headSha }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }] } });
 const lost: Answer = { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "We couldn't confirm the result yet; checking GitHub. Reload this page in a moment." } } };
 const merged: Answer = { status: 200, body: { status: "MERGED", pullRequests: [{ repositoryId: "acme/payments", number: 42 }] } };
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa", DEV = "a1".repeat(32), OTHER_DEV = "b2".repeat(32);
@@ -294,7 +295,7 @@ it("F3/R1: a later refusal (403) removes the Merge button at once, even with an 
 
 it("R2: the page announces what the server returned, not what was asked", async () => {
  const web = { ...tracked(), repositoryId: "acme/web", number: 7 };
- const w = world({ readiness: () => ({ status: 200, body: { mayMerge: true, ready: true, heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }, { repositoryId: "acme/web", number: 7 }] } }), press: () => merged });
+ const w = world({ readiness: () => ({ status: 200, body: { mayMerge: true, ready: true, risk: "low", heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }, { repositoryId: "acme/web", number: 7 }] } }), press: () => merged });
  w.tab(A, taskOf(A, { pullRequests: [PR, { ...PR, repository: "acme/web", number: 7, url: "https://github.com/acme/web/pull/7" }], mergeTracking: [tracked(), web] }));
  fireEvent.click(await screen.findByRole("button", { name: "Merge 2 pull requests" }));
  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Press Merge" }));
@@ -355,7 +356,7 @@ it("N3/R6c: Press Merge checks the LATEST state at send time: a denial or not-re
   fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
   const dialog = await screen.findByRole("dialog");
   // The read lands in the cache; React has not re-rendered yet.
-  t.query.setQueryData(["session", A, "merge", SUBJECT], latest);
+  t.query.setQueryData(["session", A, "merge", SUBJECT, taskBasisOf(taskOf(A))], latest);
   fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
   expect(w.posts()).toHaveLength(0);
   expect((await screen.findByRole("alert")).textContent).toContain("Nothing was sent");
@@ -496,7 +497,7 @@ it("R6e: a refusal of the readiness read survives remount and a manual cache wri
  await waitFor(() => expect(screen.queryByRole("button", { name: /^Merge #42/u })).toBeNull());
  first.unmount();
  // Back again: the cache is handed a "ready" answer by a manual write, and the new read is still in flight.
- client.setQueryData(["session", A, "merge", SUBJECT], ready().body);
+ client.setQueryData(["session", A, "merge", SUBJECT, taskBasisOf(taskOf(A))], ready().body);
  mode = "hold";
  w.tab(A, taskOf(A), client);
  await new Promise(resolve => setTimeout(resolve, 80));
@@ -705,7 +706,7 @@ it("H1: an accepted answer also yields to a read that shows the pull request CLO
 
 it("L1: 400 CONFIG_INVALID is final only for a single-PR press; for a multi-PR press (it can arrive after an earlier PR merged) it stays unknown and keeps the lock", async () => {
  const web = { ...tracked(), repositoryId: "acme/web", number: 7 };
- const twoReady: Answer = { status: 200, body: { mayMerge: true, ready: true, heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }, { repositoryId: "acme/web", number: 7 }] } };
+ const twoReady: Answer = { status: 200, body: { mayMerge: true, ready: true, risk: "low", heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }, { repositoryId: "acme/web", number: 7 }] } };
  const w = world({ readiness: () => twoReady, press: () => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "Code's words." } } }) });
  w.tab(A, taskOf(A, { pullRequests: [PR, { ...PR, repository: "acme/web", number: 7, url: "https://github.com/acme/web/pull/7" }], mergeTracking: [tracked(), web] }));
  fireEvent.click(await screen.findByRole("button", { name: "Merge 2 pull requests" }));
@@ -853,4 +854,348 @@ it("F1/R6b: an older FAILED task read arriving after a newer success never super
  // A failure issued AFTER the latest success is still recorded (and an older success after it is dropped).
  await fencedRead(fence, async () => { throw new ApiError(403, "FORBIDDEN", "No."); }).catch(() => undefined);
  expect(fence.taskFailed).toBeDefined();
+});
+
+it("M1/R4: tracking alone never decides 'everything merged': two PRs, the first tracked merged, the second open and untracked: the page says 1 of 2 merged, not Merged, and Merge is not hidden", async () => {
+ const web = { ...PR, repository: "acme/web", number: 7, url: "https://github.com/acme/web/pull/7" };
+ const webReady: Answer = { status: 200, body: { mayMerge: true, ready: true, risk: "low", heads: [{ repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/web", number: 7 }] } };
+ const w = world({ readiness: () => webReady, press: () => merged });
+ w.tab(A, taskOf(A, { pullRequests: [{ ...PR, state: "merged" }, web], mergeTracking: [tracked({ state: "merged" })] }));
+ await waitFor(() => expect(headline()).toBe("1 of 2 pull requests is merged on GitHub"));
+ expect(region().textContent).not.toContain("GitHub shows every pull request merged");
+ expect(region().textContent).toContain("acme/web #7");
+ // Merge is not hidden on the strength of tracking alone: the readiness read ran and the control for the open pull request is there.
+ expect((await screen.findByRole("button", { name: /^Merge #7/u })).hasAttribute("disabled")).toBe(false);
+ expect(w.request.mock.calls.some(([request]) => /\/merge$/u.test(request.path) && request.method === "GET")).toBe(true);
+});
+
+it("L1/R6b: an older FAILED readiness read arriving after a newer success never supersedes it: no refusal is recorded and authority is not dropped; a failure issued after the success is recorded", async () => {
+ const w = world({ readiness: () => ready(HEAD_A), press: () => merged });
+ const t = w.tab(A);
+ await screen.findByRole("button", { name: /^Merge #42/u });
+ const fence = fenceFor(t.query, SUBJECT);
+ let fail!: () => void;
+ const gate = new Promise<void>(resolve => { fail = resolve; });
+ const older = fencedReadiness(fence, async () => { await gate; throw new ApiError(503, "RUNTIME_UNAVAILABLE", "x"); }).catch(() => "failed");   // issued first, still in flight
+ await fencedReadiness(fence, async () => "ok");                                                                                                   // a newer read succeeds
+ fail();
+ expect(await older).toBe("failed");
+ expect(fence.readinessDenied).toBeUndefined();
+ await new Promise(resolve => setTimeout(resolve, 40));
+ expect(screen.getByRole("button", { name: /^Merge #42/u }).hasAttribute("disabled")).toBe(false);
+ await fencedReadiness(fence, async () => { throw new ApiError(403, "FORBIDDEN", "No."); }).catch(() => undefined);
+ expect(fence.readinessDenied).toBeDefined();
+});
+
+// Hotfix round 13 (Sol REVIEW-SHIPPED-a0f4f4ba1: five P1s). Each test below failed against the previous MergeSection before the fix.
+const pendingKey = "rovara.merge.pending.v1:" + SUBJECT;
+const webPull = { ...PR, repository: "acme/web", number: 63, url: "https://github.com/acme/web/pull/63" };
+
+it("P1-1: when the accepted-answer write fails, the saved press stays: a reload sends NOTHING and Merge stays locked; only a task read showing every covered PR merged releases it", async () => {
+ const realSet = Storage.prototype.setItem.bind(localStorage);
+ const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation((k: string, value: string) => { if (k.startsWith("rovara.merge.accepted")) throw new Error("quota"); realSet(k, value); });
+ const w = world({ readiness: () => ready(), press: () => merged });
+ const first = w.tab(A);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ expect(headline()).toBe("Merge accepted (this browser couldn't save it)");
+ // Nothing may release the saved press while only memory knows the answer (neither the direct clear nor the settle effect).
+ await new Promise(resolve => setTimeout(resolve, 50));
+ expect(localStorage.getItem(pendingKey)).not.toBeNull();
+ expect(localStorage.getItem(acceptedKey)).toBeNull();
+ first.unmount();
+ spy.mockRestore();
+ // Reload: a fresh query client. Tracking still reads open at the same head.
+ const second = w.tab(A);
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ expect(screen.queryAllByRole("button", { name: /^Merge #42/u })).toHaveLength(0);
+ expect(w.posts()).toHaveLength(1);
+ // A read issued after this tab saw the record, with every covered pull request merged, is what releases it.
+ await second.read(A, { pullRequests: [{ ...PR, state: "merged" }], mergeTracking: [tracked({ state: "merged" })] });
+ await waitFor(() => expect(localStorage.getItem(pendingKey)).toBeNull());
+ expect(w.posts()).toHaveLength(1);
+});
+
+it("P1-2: a saved press is settled only by an observed merged row for each pull request it covered: a task read that merely does not list it, or says only another PR merged, leaves it saved", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ localStorage.setItem(key, record({ heads: [{ repositoryId: "acme/web", number: 63, headSha: HEAD_B }] }));
+ const t = w.tab(A, taskOf(A, { pullRequests: [PR, webPull], mergeTracking: [tracked()] }));
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ // The read lists payments #42 merged (tracked) and web #63 open and untracked: not Merged, and the saved press stays.
+ await t.read(A, { pullRequests: [{ ...PR, state: "merged" }, webPull], mergeTracking: [tracked({ state: "merged" })] });
+ expect(headline()).not.toBe("Merged");
+ expect(localStorage.getItem(key)).not.toBeNull();
+ // The read does not list web #63 at all: tracking says every listed PR merged, which says nothing about #63. The saved press stays.
+ await t.read(A, { pullRequests: [{ ...PR, state: "merged" }], mergeTracking: [tracked({ state: "merged" })] });
+ await new Promise(resolve => setTimeout(resolve, 50));
+ expect(localStorage.getItem(key)).not.toBeNull();
+ expect(screen.queryAllByRole("button", { name: /^Merge #/u })).toHaveLength(0);
+ // An observed merged row for #63 releases it.
+ await t.read(A, { pullRequests: [{ ...PR, state: "merged" }, { ...webPull, state: "merged" }], mergeTracking: [tracked({ state: "merged" }), tracked({ state: "merged", repositoryId: "acme/web", number: 63, headSha: HEAD_B })] });
+ await waitFor(() => expect(localStorage.getItem(key)).toBeNull());
+});
+
+it("P1-3: a newer task snapshot (different digest, failing checks, status, or PR set) makes the old readiness inert: no Merge until a readiness read issued after the change succeeds, and a press in an open confirmation sends nothing", async () => {
+ const variants: Array<[string, Record<string, unknown>]> = [
+  ["digest + failing check", { mergeTracking: [tracked({ decisionDigest: "c".repeat(64), ci: "failing", failingChecks: ["security"] })] }],
+  ["pending check", { mergeTracking: [tracked({ decisionDigest: "d".repeat(64), ci: "pending" })] }],
+  ["PR set", { pullRequests: [PR, webPull] }],
+  ["status", { status: "CANCELLED" }],
+ ];
+ for (const [name, over] of variants) {
+  localStorage.clear();
+  let reads = 0, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const w = world({ readiness: async () => { reads += 1; if (reads > 1) await gate; return ready(); }, press: () => merged });
+  const t = w.tab(A);
+  fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+  const dialog = await screen.findByRole("dialog");
+  // A newer snapshot arrives; its readiness read has not answered yet.
+  t.show(A, taskOf(A, over));
+  await waitFor(() => expect(reads, name).toBeGreaterThan(1));
+  const confirm = within(screen.getByRole("dialog")).getByRole("button", { name: "Press Merge" });
+  await waitFor(() => expect(confirm.hasAttribute("disabled"), name).toBe(true));
+  fireEvent.click(confirm);
+  expect(w.posts(), name).toHaveLength(0);
+  expect(screen.queryAllByRole("button", { name: /^Merge #42/u }).filter(button => !button.hasAttribute("disabled")), name).toHaveLength(0);
+  expect(document.querySelector(".rv-merge-state")!.textContent, name).not.toBe("Ready to merge");
+  release();
+  void dialog;
+  t.unmount();
+ }
+});
+
+it("P1-4: two tabs racing the claim: the exclusive lock lets exactly one take it, the other sends nothing; with no Web Locks API Merge is not offered and nothing is sent", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ const a = w.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialogA = await screen.findByRole("dialog");
+ // The lock is held by another tab at this moment (its claim is in progress): this press must not proceed, and must not mint or save anything.
+ let freeIt!: () => void;
+ const held = new Promise<void>(resolve => { freeIt = resolve; });
+ const holding = navigator.locks.request("rovara.merge.claim:" + SUBJECT, { mode: "exclusive" }, () => held);
+ await Promise.resolve();
+ fireEvent.click(within(dialogA).getByRole("button", { name: "Press Merge" }));
+ await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Another tab is merging this task right now"));
+ expect(w.posts()).toHaveLength(0);
+ expect(localStorage.getItem(pendingKey)).toBeNull();
+ freeIt();await holding;
+ a.unmount();
+ // Without the lock API Merge is not offered in the app and nothing is read for it.
+ const saved = Object.getOwnPropertyDescriptor(navigator, "locks")!;
+ Object.defineProperty(navigator, "locks", { configurable: true, value: undefined });
+ try {
+  const w2 = world({ readiness: () => ready(), press: () => merged });
+  w2.tab(A);
+  await waitFor(() => expect(headline()).toBe("Merge it on GitHub"));
+  expect(screen.queryAllByRole("button", { name: /^Merge #/u })).toHaveLength(0);
+  expect(w2.posts()).toHaveLength(0);
+ } finally { Object.defineProperty(navigator, "locks", saved); }
+});
+
+it("P1-4: the claim re-reads the saved records inside the lock: a press another tab saved after this one passed its checks sends nothing", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ w.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog = await screen.findByRole("dialog");
+ // Another tab claims first and saves its press, then this one presses (no storage event reached this tab).
+ localStorage.setItem(key, record());
+ fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+ await new Promise(resolve => setTimeout(resolve, 50));
+ expect(w.posts()).toHaveLength(0);
+ expect((JSON.parse(localStorage.getItem(key)!) as { requestId: string }).requestId).toBe("33333333-3333-4333-8333-333333333333");
+});
+
+it("P1-5: a readiness answer with no heads, a missing head, a duplicate or an extra head binds nothing: Merge is not offered in the app and the GitHub path stays; a complete answer sends exactly the checked head", async () => {
+ const shapes: Array<[string, Record<string, unknown>]> = [
+  ["no risk (Code's merge body requires one)", { risk: undefined }],
+  ["no heads", { heads: undefined }],
+  ["empty heads", { heads: [] }],
+  ["missing head", { heads: [{ repositoryId: "acme/web", number: 7, headSha: HEAD_A }] }],
+  ["extra head", { heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/web", number: 7, headSha: HEAD_A }] }],
+  ["duplicate head", { pullRequests: [{ repositoryId: "acme/payments", number: 42 }, { repositoryId: "acme/web", number: 7 }], heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/payments", number: 42, headSha: HEAD_A }] }],
+ ];
+ for (const [name, over] of shapes) {
+  localStorage.clear();
+  const w = world({ readiness: () => ({ status: 200, body: { ...(ready().body as object), ...over } }), press: () => merged });
+  const t = w.tab(A);
+  await waitFor(() => expect(w.request.mock.calls.some(([request]) => /\/merge$/u.test(request.path) && request.method === "GET"), name).toBe(true));
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(screen.queryAllByRole("button", { name: /^Merge #/u }), name).toHaveLength(0);
+  expect(region().querySelector("[data-state]")?.getAttribute("data-state") ?? region().getAttribute("data-state"), name).not.toBe("ready");
+  expect(w.posts(), name).toHaveLength(0);
+  t.unmount();
+ }
+ localStorage.clear();
+ const w = world({ readiness: () => ready(), press: () => merged });
+ w.tab(A);
+ await press();
+ await screen.findByText("Merged acme/payments #42.");
+ expect(w.posts()).toHaveLength(1);
+ expect(w.posts()[0]!.expectedHeads).toEqual([{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }]);
+ expect(w.posts()[0]!.risk).toBe("low");
+});
+
+it("P2: a section whose own latest task read failed or was refused sends nothing", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ const t = w.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog = await screen.findByRole("dialog");
+ const fence = fenceFor(t.query, SUBJECT);
+ await fencedRead(fence, async () => { throw new ApiError(403, "FORBIDDEN", "no"); }).catch(() => undefined);
+ fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+ await new Promise(resolve => setTimeout(resolve, 50));
+ expect(w.posts()).toHaveLength(0);
+});
+
+// Round 14 (Opus review of c4db8b90c): R (risk), M-1 (the re-read is compared), M-2 (the lock is held until the POST settles).
+it("R: a ready answer with bound heads but NO risk gives no in-app Merge (GitHub path) and sends nothing; the press body is exactly requestId, expectedHeads, risk", async () => {
+ const w = world({ readiness: () => ({ status: 200, body: { ...(ready().body as object), risk: undefined } }), press: () => merged });
+ const first = w.tab(A);
+ await waitFor(() => expect(w.request.mock.calls.some(([request]) => /\/merge$/u.test(request.path) && request.method === "GET")).toBe(true));
+ await new Promise(resolve => setTimeout(resolve, 30));
+ expect(screen.queryAllByRole("button", { name: /^Merge #/u })).toHaveLength(0);
+ expect(w.posts()).toHaveLength(0);
+ first.unmount();
+ localStorage.clear();
+ const w2 = world({ readiness: () => ready(), press: () => merged });
+ w2.tab(A);
+ await press();
+ await screen.findByText("Merged acme/payments #42.");
+ expect(Object.keys(w2.posts()[0]!)).toEqual(["requestId", "expectedHeads", "risk"]);
+});
+
+it("M-1 (Sol's reproduction): ready at head A with the confirmation open, a newer own-task refusal recorded, the next GET succeeds at the SAME head A but CI failing and digest C, the parent prop not refetched: press sends NOTHING and the confirmation goes inert", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged, session: () => ({ mergeTracking: [tracked({ headSha: HEAD_A, ci: "failing", failingChecks: ["security"], decisionDigest: "c".repeat(64) })] }) });
+ const t = w.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog = await screen.findByRole("dialog");
+ await fencedRead(fenceFor(t.query, SUBJECT), async () => { throw new ApiError(403, "FORBIDDEN", "no"); }).catch(() => undefined);
+ fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+ await waitFor(() => expect(w.request.mock.calls.filter(([request]) => request.method === "GET" && /sessions\/[^/]+$/u.test(request.path)).length).toBeGreaterThan(0));
+ await new Promise(resolve => setTimeout(resolve, 60));
+ expect(w.posts()).toHaveLength(0);
+ expect(localStorage.getItem(pendingKey)).toBeNull();
+ expect(screen.queryByRole("button", { name: "Press Merge" })).toBeNull();
+});
+
+it("M-1: after a failed own read, a recovery read that shows the SAME facts stays recoverable (one POST)", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged, session: () => ({}) });
+ const t = w.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog = await screen.findByRole("dialog");
+ await fencedRead(fenceFor(t.query, SUBJECT), async () => { throw new ApiError(503, "RUNTIME_UNAVAILABLE", "x"); }).catch(() => undefined);
+ fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+ await screen.findByText("Merged acme/payments #42.");
+ expect(w.posts()).toHaveLength(1);
+});
+
+it("P2 (Sol): a retired memory-only acceptance does not leave an enabled Merge that can never send: after storage fails, a new observed head and a fresh readiness, one deliberate new press goes out (no automatic replay)", async () => {
+ let head = HEAD_A;
+ const realSet = Storage.prototype.setItem.bind(localStorage);
+ const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation((k: string, value: string) => { if (k.startsWith("rovara.merge.accepted")) throw new Error("quota"); realSet(k, value); });
+ const w = world({ readiness: () => ready(head), press: () => merged });
+ const t = w.tab(A);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ expect(w.posts()).toHaveLength(1);
+ spy.mockRestore();
+ // A later read, issued after the answer was observed, shows #42 still open at a NEW head with a new digest: the old answer is retired.
+ head = HEAD_B;
+ await t.read(A, { mergeTracking: [tracked({ headSha: HEAD_B, decisionDigest: "c".repeat(64) })] });
+ await waitFor(() => expect(region().textContent).not.toContain("Merge accepted"));
+ const button = await screen.findByRole("button", { name: /^Merge #42/u });
+ await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+ await press();
+ await waitFor(() => expect(w.posts()).toHaveLength(2));
+ expect(w.posts()[1]!.expectedHeads).toEqual([{ repositoryId: "acme/payments", number: 42, headSha: HEAD_B }]);
+ expect(w.posts()[1]!.requestId).not.toBe(w.posts()[0]!.requestId);
+});
+
+it("M-2: the claim lock is held while the POST is in flight (a second tab cannot claim) and released when it settles, whether it was answered, refused, lost or the page threw", async () => {
+ const claimable = async (): Promise<boolean> => { const result: boolean = await navigator.locks.request("rovara.merge.claim:" + SUBJECT, { mode: "exclusive", ifAvailable: true }, async (lock: unknown) => lock !== null); return result; };
+ for (const outcome of ["done", "lost", "refused", "throws"] as const) {
+  localStorage.clear();
+  let answer!: (value: Answer) => void;
+  const gate = new Promise<Answer>(resolve => { answer = resolve; });
+  const w = world({ readiness: () => ready(), press: () => gate });
+  const t = w.tab(A);
+  await press();
+  await waitFor(() => expect(w.posts()).toHaveLength(1));
+  // In flight: another tab cannot take the claim.
+  expect(await claimable(), outcome).toBe(false);
+  answer(outcome === "done" ? merged : outcome === "lost" ? lost : outcome === "refused" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "No." } } } : { status: 200, body: { nonsense: true } });
+  await waitFor(async () => expect(await claimable(), outcome).toBe(true));
+  expect(w.posts(), outcome).toHaveLength(1);
+  t.unmount();
+ }
+});
+
+// Round 15 (Sol R14 P2; Opus P2-1, Low-1).
+const lockFree = async (): Promise<boolean> => { const result: boolean = await navigator.locks.request("rovara.merge.claim:" + SUBJECT, { mode: "exclusive", ifAvailable: true }, async (lock: unknown) => lock !== null); return result; };
+
+it("Sol P2: a stalled ordinary session refetch after the answer never keeps the lock, busy or sending: the lock is free at once and a later deliberate press (new head B) works", async () => {
+ let head = HEAD_A;
+ const w = world({ readiness: () => ready(head), press: () => merged });
+ const t = w.tab(A);
+ let stall!: () => void;
+ const stalled = new Promise<null>(resolve => { stall = () => resolve(null); });
+ // The ordinary session query, active as on the session screen, whose refetch never answers.
+ const unsubscribe = new QueryObserver(t.query, { queryKey: ["session", A], queryFn: () => stalled, initialData: {}, staleTime: Infinity, retry: false }).subscribe(() => undefined);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ await waitFor(async () => expect(await lockFree()).toBe(true));
+ head = HEAD_B;
+ await t.read(A, { mergeTracking: [tracked({ headSha: HEAD_B, decisionDigest: "c".repeat(64) })] });
+ const button = await screen.findByRole("button", { name: /^Merge #42/u });
+ await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+ await press();
+ await waitFor(() => expect(w.posts()).toHaveLength(2));
+ unsubscribe();stall();
+});
+
+it("P2-1: the page says Low while readiness says high: nothing is sent; and a risk that changes while the confirmation is open makes it inert", async () => {
+ const lowTask = taskOf(A, { merge: { ready: true, risk: { level: "low", reasons: [] } } });
+ const high = (): Answer => ({ status: 200, body: { ...(ready().body as object), risk: "high" } });
+ const w = world({ readiness: high, press: () => merged });
+ w.tab(A, lowTask);
+ await screen.findByRole("button", { name: /^Merge #42/u });
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog = await screen.findByRole("dialog");
+ fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+ await new Promise(resolve => setTimeout(resolve, 60));
+ expect(w.posts()).toHaveLength(0);
+ // Risk changes while the confirmation is open (same heads): it goes inert.
+ localStorage.clear();
+ let level: "low" | "high" = "low";
+ const w2 = world({ readiness: () => ({ status: 200, body: { ...(ready().body as object), risk: level } }), press: () => merged });
+ const t2 = w2.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog2 = await screen.findByRole("dialog");
+ level = "high";
+ await t2.query.invalidateQueries({ queryKey: ["session", A, "merge", SUBJECT] });
+ const confirm = within(dialog2).getByRole("button", { name: "Press Merge" });
+ await waitFor(() => expect(confirm.hasAttribute("disabled")).toBe(true));
+ fireEvent.click(confirm);
+ expect(w2.posts()).toHaveLength(0);
+});
+
+it("Low-1: a lock API that throws synchronously falls back closed: nothing is sent, the dialog closes, and the next press works once the lock does", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ w.tab(A);
+ await screen.findByRole("button", { name: /^Merge #42/u });
+ const saved = Object.getOwnPropertyDescriptor(navigator, "locks")!;
+ Object.defineProperty(navigator, "locks", { configurable: true, value: { request() { throw new Error("sync"); } } });
+ const unhandled: unknown[] = [];
+ const onRejection = (reason: unknown): void => { unhandled.push(reason); };
+ process.on("unhandledRejection", onRejection);
+ try {
+  await press();
+  expect((await screen.findByRole("alert")).textContent).toContain("can't make sure two tabs");
+  expect(w.posts()).toHaveLength(0);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(unhandled).toHaveLength(0);
+ } finally { process.off("unhandledRejection", onRejection);Object.defineProperty(navigator, "locks", saved); }
+ await press();
+ await waitFor(() => expect(w.posts()).toHaveLength(1));
 });
