@@ -213,6 +213,52 @@ it("F1: failed pending removal keeps the exact stored answer visible across relo
  const hook = renderHook(() => store().useAccepted(subject));expect(hook.result.current).toEqual(answer());hook.unmount();
  const send = vi.fn(async () => answer());await runActionPress(inputFor({ records: store(), send }));expect(send).not.toHaveBeenCalled();
 });
+it.each(["changed request id", "unavailable pending", "unreadable pending", "absent pending"])("N1: rejected marked answer stays hidden with %s", async fault => {
+ const records = store(), write = Storage.prototype.setItem.bind(localStorage), read = Storage.prototype.getItem.bind(localStorage), remove = Storage.prototype.removeItem.bind(localStorage);
+ vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+  if (key.startsWith("fixture.accepted:")) value = JSON.stringify({ ...JSON.parse(value) as Record<string, unknown>, words: "NOT THE SERVER ANSWER", ...(fault === "changed request id" ? { requestId: "22222222-2222-4222-8222-222222222222" } : {}) });
+  write(key, value);
+ });
+ // Changed-ID corruption survives the existing ID-scoped cleanup without a
+ // removal fault. The other schedules retain the candidate via denied cleanup.
+ vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, key) { if (fault !== "changed request id" && key.startsWith("fixture.accepted:")) throw new Error("cleanup denied");remove(key); });
+ const accepted = vi.fn(), send = vi.fn(async () => answer());
+ await runActionPress(inputFor({ records, accepted, send }));
+ expect(accepted).toHaveBeenCalledWith(answer(), "not-stored");expect(send).toHaveBeenCalledTimes(1);
+ const pendingRaw = read("fixture.pending:" + subject);expect(pendingRaw).toBe(JSON.stringify(pending()));
+ expect(parseAccepted(read("fixture.accepted:" + subject), subject)?.words).toBe("NOT THE SERVER ANSWER");
+ if (fault === "unavailable pending") vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) { if (key === "fixture.pending:" + subject) throw new Error("read denied");return read(key); });
+ if (fault === "unreadable pending") write("fixture.pending:" + subject, "unreadable");
+ if (fault === "absent pending") remove("fixture.pending:" + subject);
+ const reload = store();
+ expect(reload.readPendingNow(subject).kind).toBe(fault === "unavailable pending" ? "unavailable" : fault === "unreadable pending" ? "unreadable" : fault === "absent pending" ? "none" : "pending");
+ expect(reload.readAcceptedNow(subject)).toBeUndefined();
+ const hook = renderHook(() => reload.useAccepted(subject));expect(hook.result.current).toBeUndefined();hook.unmount();
+ if (fault !== "absent pending") {
+  await runActionPress(inputFor({ records: reload, send }));expect(send).toHaveBeenCalledTimes(1);
+  expect(read("fixture.pending:" + subject)).toBe(fault === "unreadable pending" ? "unreadable" : pendingRaw);
+ }
+});
+it.each(["throw", "no-op"])("N1: observed resolution discards a changed-ID rejected candidate before pending; failed removal %s retains both", async fault => {
+ const records = store(), write = Storage.prototype.setItem.bind(localStorage), remove = Storage.prototype.removeItem.bind(localStorage);
+ vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) { write(key, key.startsWith("fixture.accepted:") ? JSON.stringify({ ...JSON.parse(value) as Record<string, unknown>, requestId: "22222222-2222-4222-8222-222222222222", words: "NOT THE SERVER ANSWER" }) : value); });
+ const accepted = vi.fn();await runActionPress(inputFor({ records, accepted }));expect(accepted).toHaveBeenCalledWith(answer(), "not-stored");
+ const pendingRaw = localStorage.getItem("fixture.pending:" + subject), candidateRaw = localStorage.getItem("fixture.accepted:" + subject);
+ expect(pendingRaw).not.toBeNull();expect(candidateRaw).not.toBeNull();
+ const removing = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, key) { if (key.startsWith("fixture.accepted:")) { if (fault === "throw") throw new Error("cleanup denied");return; }remove(key); });
+ records.clearPending(subject, pending().requestId, pending().startedAt);
+ expect(localStorage.getItem("fixture.pending:" + subject)).toBe(pendingRaw);expect(localStorage.getItem("fixture.accepted:" + subject)).toBe(candidateRaw);
+ removing.mockRestore();records.clearPending(subject, pending().requestId, pending().startedAt);
+ expect(localStorage.getItem("fixture.accepted:" + subject)).toBeNull();expect(records.readPendingNow(subject).kind).toBe("none");
+});
+it.each(["unavailable", "unreadable", "none"])("N1/F1: exact marked answer stays visible with pending %s", state => {
+ const records = store(), read = Storage.prototype.getItem.bind(localStorage);
+ expect(records.writeAccepted(answer())).toBe(true);
+ if (state === "unavailable") vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) { if (key === "fixture.pending:" + subject) throw new Error("read denied");return read(key); });
+ if (state === "unreadable") localStorage.setItem("fixture.pending:" + subject, "unreadable");
+ expect(records.readPendingNow(subject).kind).toBe(state);expect(store().readAcceptedNow(subject)).toEqual(answer());
+ const hook = renderHook(() => records.useAccepted(subject));expect(hook.result.current).toEqual(answer());hook.unmount();
+});
 it("F1: exact stored answer with pending cleared is durable; another request or subject is not stored", () => {
  const records = store();records.writePending(pending());expect(records.recordAccepted(pending(), answer())).toBe("durable");
  expect(records.readPendingNow(subject).kind).toBe("none");expect(records.readAcceptedNow(subject)).toEqual(answer());

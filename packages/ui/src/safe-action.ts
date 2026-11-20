@@ -152,9 +152,16 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
  function candidateMatches(raw: string | null, answer: A): boolean {
   try { return raw !== null && (JSON.parse(raw) as Record<string, unknown>)[canonicalField] === canonicalOf(answer); } catch { return false; }
  }
+ function markedCandidateMismatch(raw: string | null, answer: A): boolean {
+  try { return raw !== null && Object.prototype.hasOwnProperty.call(JSON.parse(raw), canonicalField) && !candidateMatches(raw, answer); } catch { return true; }
+ }
  const visibleAccepted = (subject: string, raw: string | null): A | undefined => {
-  const answer = config.parseAccepted(raw, subject), pending = readPendingNow(subject);
-  return answer !== undefined && pending.kind === "pending" && pending.entry.requestId === answer.requestId && !candidateMatches(raw, answer) ? undefined : answer;
+  const answer = config.parseAccepted(raw, subject);
+  // A rejected marked candidate never becomes a saved answer when pending
+  // cannot be read, disappears, or belongs to a different request id.
+  if (answer === undefined || markedCandidateMismatch(raw, answer)) return undefined;
+  const pending = readPendingNow(subject);
+  return pending.kind === "pending" && pending.entry.requestId === answer.requestId && !candidateMatches(raw, answer) ? undefined : answer;
  };
  const readAcceptedNow = (subject: string): A | undefined => visibleAccepted(subject, rawAccepted(subject));
  function useRaw(subject: string, accepted: boolean): string | null {
@@ -191,7 +198,7 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
    if (!verifiedAnswer) {
     // Observed resolution must never unmask an unverified accepted candidate.
     const raw = globalThis.localStorage.getItem(acceptedKey(subject)), answer = config.parseAccepted(raw, subject);
-    if (raw !== null && (answer === undefined || (answer.requestId === requestId && !candidateMatches(raw, answer)))) {
+    if (raw !== null && (answer === undefined || markedCandidateMismatch(raw, answer) || (answer.requestId === requestId && !candidateMatches(raw, answer)))) {
      globalThis.localStorage.removeItem(acceptedKey(subject));
      if (globalThis.localStorage.getItem(acceptedKey(subject)) !== null) return false;
     }
@@ -221,8 +228,8 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
  function recordAccepted(entry: P, answer: A): AcceptedStorage {
   if (answer.requestId !== entry.requestId || config.acceptedSubject(answer) !== config.pendingSubject(entry)) return "not-stored";
   if (!writeAccepted(answer) || !acceptedStoredExactly(answer)) {
-   // Best-effort discard now; if storage refuses, pending masks this candidate
-   // and observed resolution must discard it before removing pending.
+   // Best-effort discard now; canonical validation keeps a rejected marked
+   // candidate hidden, and observed resolution discards it before pending.
    clearAccepted(config.acceptedSubject(answer), answer.requestId);
    return "not-stored";
   }

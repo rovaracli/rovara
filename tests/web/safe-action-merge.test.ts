@@ -98,6 +98,33 @@ it.each(["write refused", "readback differs"])("F1/P1-1: mounted Merge with answ
  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Check again" }).disabled).toBe(false));
  expect(localStorage.getItem(key)).toBe(pending);expect(f.posts()).toHaveLength(1);
 });
+it.each(["changed request id", "unavailable pending", "unreadable pending"])("N1: mounted Merge rejects corrupt saved receipt with %s across reload without replay", async fault => {
+ const f = setup(async () => success), first = f.mount(), button = await confirm(), write = Storage.prototype.setItem.bind(localStorage), read = Storage.prototype.getItem.bind(localStorage), remove = Storage.prototype.removeItem.bind(localStorage);
+ vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, name, value) {
+  if (name.startsWith("rovara.merge.accepted.v1:")) value = JSON.stringify({ ...JSON.parse(value) as Record<string, unknown>, words: "NOT THE SERVER ANSWER", ...(fault === "changed request id" ? { requestId: "22222222-2222-4222-8222-222222222222" } : {}) });
+  write(name, value);
+ });
+ vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, name) { if (fault !== "changed request id" && name.startsWith("rovara.merge.accepted.v1:")) throw new Error("cleanup denied");remove(name); });
+ fireEvent.click(button);
+ await screen.findByRole("heading", { name: /Merge accepted/u });
+ expect(f.posts()).toHaveLength(1);
+ const pendingRaw = read(key);expect(pendingRaw).not.toBeNull();
+ first.unmount();
+ if (fault === "unavailable pending") vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, name) { if (name === key) throw new Error("read denied");return read(name); });
+ if (fault === "unreadable pending") write(key, "unreadable");
+ f.mount();
+ await screen.findByRole("heading", { name: /Merge accepted|The result isn't confirmed yet|Merge is locked in this browser/u });
+ expect(f.posts()).toHaveLength(1);expect(screen.queryByRole("heading", { name: /Merge accepted/u })).toBeNull();
+ expect(screen.getByRole("heading", { name: fault === "changed request id" ? "The result isn't confirmed yet" : "Merge is locked in this browser" })).toBeTruthy();
+ expect(screen.queryByText("NOT THE SERVER ANSWER")).toBeNull();expect(screen.queryByText("Merged acme/payments #42.")).toBeNull();
+ const merge = await screen.findByRole<HTMLButtonElement>("button", { name: /^Merge #42/u });
+ expect(merge.disabled).toBe(true);fireEvent.click(merge);
+ if (fault === "changed request id") {
+  fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Check again" }).disabled).toBe(false));
+ } else expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+ expect(read(key)).toBe(fault === "unreadable pending" ? "unreadable" : pendingRaw);expect(f.posts()).toHaveLength(1);
+});
 it("mounted Merge maps busy to another-tab words without a GitHub fallback", async () => {
  const f = setup(async () => success);f.mount();const button = await confirm();
  const held = await withClaim(subject, () => true);expect(held.kind).toBe("done");
