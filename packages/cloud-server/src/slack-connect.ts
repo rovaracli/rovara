@@ -15,7 +15,7 @@
 //
 // Rules: the browser never names a company (Code reads it live from the person's token); every query value is checked before it reaches Code and none is echoed
 // into a page, a URL or a log; Code's and Slack's own words never pass through (answers are rebuilt field by field, refusals are SLACK_WORDS by status and code).
-import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import {
   CONNECT_SECRET, NOT_IN_COMPANY_WORDS, PROJECT_NAME, askAsBound, codeRefusal, connectCallbackPath, connectRefusal, createConnectFlow, displayName, isObject, liveMembership,
   oneValue, companyOwnerOnly, startBody, type ConnectAnswer,
@@ -186,6 +186,7 @@ export function createSlackConnect(deps: SlackConnectDeps) {
     try {
       answer = await deps.client.json<unknown>(session, path, init);
     } catch (error) {
+      if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
       if (!(error instanceof CodeError)) throw error;
       return refuse(error);
     }
@@ -207,6 +208,7 @@ export function createSlackConnect(deps: SlackConnectDeps) {
       try {
         answer = await deps.client.json<unknown>(session, `${CODE_SLACK}/install`, { method: "POST", body: { redirectUri } });
       } catch (error) {
+        if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
         if (!(error instanceof CodeError)) throw error;
         if (error.status === 403) return connectRefusal(403, "FORBIDDEN", SLACK_WORDS.adminOnly);
         if (notAvailable(error.status)) return connectRefusal(404, "NOT_FOUND", SLACK_WORDS.notAvailable);
@@ -353,6 +355,7 @@ export function createSlackConnect(deps: SlackConnectDeps) {
         try {
           ({ answer, session } = await askAsBound(deps.client, deps.store, bound, `${CODE_SLACK}/install/complete`, { state: bound.state, ...(code === undefined ? { error } : { code }) }));
         } catch (failure) {
+          if (isCodeOutcomeUnknown(failure)) throw failure;
           if (!(failure instanceof CodeError)) throw failure;
           deps.log({ event: "cloud.slack_install_refused", developerId: session.access.developerId, status: failure.status });
           return { location: flow.landing(bound.back, completeOutcome(failure)), setCookie: flow.clearCookie };

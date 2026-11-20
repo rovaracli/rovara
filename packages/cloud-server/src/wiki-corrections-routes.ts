@@ -20,7 +20,7 @@
 //     Until Code serves a route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
 //   - The logs say what was done and where (action, project), never what the person wrote.
 // cloud-server takes no package dependency, so the shapes are checked here by hand against contracts app-wiki-corrections.ts (its limits and words are repeated and a unit test pins them).
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { WIKI_PAGE_ID, WIKI_WORDS, Unreadable, list, need, oneOf, plain, prose, rec, repoName, safePath, scope, text, when, whole, wikiId } from "./wiki-routes.js";
 
@@ -64,6 +64,7 @@ const NOTE_ID = /^[A-Za-z0-9_-]{4,64}$/u;
 
 /** Code's refusal in fixed words. Only Code's exact unknown-route 404 means "not on Code yet". */
 export function wikiCorrectionRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
   const message = typeof body?.["message"] === "string" ? body["message"] : undefined, code = typeof body?.["code"] === "string" ? body["code"] : undefined;
   if (error.status === 404 && code === "NOT_FOUND" && message === "route not found") return A.notYet;

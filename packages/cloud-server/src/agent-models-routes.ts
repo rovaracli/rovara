@@ -11,7 +11,7 @@
 //   - A step's model is named the way the gateway names it (`claude-...` for Anthropic's models, the Bedrock id for the rest); Cloud turns it into Code's model identity.
 //   - Code's answer is projected to what the card needs and checked (shape) before it reaches the app; anything else is "couldn't be read". Code's refusals reach the app as the
 //     fixed sentences below (AGENT_MODELS_WORDS), never Code's or the browser's text.
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
@@ -155,6 +155,7 @@ const errorOf = (error: CodeError): Plain | undefined => (plain(error.body) && p
 
 /** Code's refusal of /v1/app/agent-models, in Cloud's fixed words. A 404 means this Code does not serve the step models (the choice switch is off, or not on the core yet). */
 export function agentModelsRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const said = errorOf(error);
   const code = said?.["code"], message = said?.["message"];
   if (error.status === 404) return A.notYet;

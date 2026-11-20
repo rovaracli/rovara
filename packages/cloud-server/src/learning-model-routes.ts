@@ -12,7 +12,7 @@
 //   - Code's answer is checked strictly (shape and the preselect rule) before it reaches the app; anything else is "couldn't be read". `offered` may be empty and `preselect` may be
 //     null here (no Claude model offered), unlike the engine model.
 //   - Code's refusals reach the app as the fixed sentences below, never Code's or the browser's text.
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
@@ -74,6 +74,7 @@ const errorOf = (error: CodeError): Plain | undefined => (plain(error.body) && p
 
 /** Code's refusal of the learning-model routes, in Cloud's fixed words. Code answers this path's 404 only when it doesn't serve it (no gateway wired, or not on Code yet): "not available yet". */
 export function learningModelRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const said = errorOf(error);
   if (error.status === 404) return A.notYet;
   if (error.status === 403) return A.notAdmin;

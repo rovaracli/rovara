@@ -13,7 +13,7 @@
 //
 // Rules: as slack-connect.ts. Linear's authorize address must come back to THIS Cloud's callback (the redirect_uri Code put in it), so a misconfigured app
 // secret refuses at start instead of sending the person's code elsewhere.
-import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import {
   CONNECT_SECRET, NOT_IN_COMPANY_WORDS, PROJECT_NAME, askAsBound, codeRefusal, connectCallbackPath, connectRefusal, createConnectFlow, displayName, isObject, liveMembership,
   oneValue, companyOwnerOnly, startBody, type ConnectAnswer,
@@ -138,6 +138,7 @@ export function createLinearConnect(deps: LinearConnectDeps) {
     try {
       answer = await deps.client.json<unknown>(session, path, init);
     } catch (error) {
+      if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
       if (!(error instanceof CodeError)) throw error;
       return refuse(error);
     }
@@ -156,6 +157,7 @@ export function createLinearConnect(deps: LinearConnectDeps) {
       try {
         answer = await deps.client.json<unknown>(session, `${CODE_LINEAR}/connect`, { method: "POST", body: {} });
       } catch (error) {
+        if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
         if (!(error instanceof CodeError)) throw error;
         if (error.status === 403) return connectRefusal(403, "FORBIDDEN", LINEAR_WORDS.adminOnly);
         if (notAvailable(error.status)) return connectRefusal(404, "NOT_FOUND", LINEAR_WORDS.notAvailable);
@@ -273,6 +275,7 @@ export function createLinearConnect(deps: LinearConnectDeps) {
         try {
           ({ answer, session } = await askAsBound(deps.client, deps.store, bound, `${CODE_LINEAR}/complete`, { state: bound.state, code }));
         } catch (failure) {
+          if (isCodeOutcomeUnknown(failure)) throw failure;
           if (!(failure instanceof CodeError)) throw failure;
           deps.log({ event: "cloud.linear_connect_refused", developerId: session.access.developerId, status: failure.status });
           return { location: flow.landing(bound.back, completeOutcome(failure)), setCookie: flow.clearCookie };

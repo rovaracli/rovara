@@ -230,9 +230,17 @@ describe("an answer that does not read is refused whole", () => {
 });
 
 describe("refusals are Cloud's fixed words", () => {
+  it("a dispatched answer's 401 stays unknown even when renewal ends the sign-in", async () => {
+    const w = setUp({ override: call => /\/answers$/u.test(call.path) ? json(401, { error: { code: "AUTH_REQUIRED", message: LEAK } }) : undefined });
+    const res = await w.send("POST", ASK, await w.as("pam-token"), ask());
+    expect(res.status).toBe(503);
+    expect(res.body.error.message).toMatch(/outcome.*unknown.*check.*status/iu);
+    expect(res.text).not.toContain(LEAK);
+    expect(w.codeCalls().filter(call => call.path.endsWith("/answers"))).toHaveLength(1);
+  });
   const refuse = (status: number, message: string, code = "X") => (call: CodeCall) => (/\/(answers|suggest)$/u.test(call.path) ? json(status, { error: { code, message } }) : undefined);
   it.each([
-    [404, "route not found", "NOT_FOUND", "notYet"], [404, "That is not on the core engine on this install yet.", "NOT_FOUND", "notYet"], [404, `project not found ${LEAK}`, "NOT_FOUND", "notFound"], [401, `expired ${LEAK}`, "AUTH_REQUIRED", "signIn"], [403, `no ${LEAK}`, "FORBIDDEN", "forbidden"], [400, `bad ${LEAK}`, "CONFIG_INVALID", "invalid"],
+    [404, "route not found", "NOT_FOUND", "notYet"], [404, "That is not on the core engine on this install yet.", "NOT_FOUND", "notYet"], [404, `project not found ${LEAK}`, "NOT_FOUND", "notFound"], [403, `no ${LEAK}`, "FORBIDDEN", "forbidden"], [400, `bad ${LEAK}`, "CONFIG_INVALID", "invalid"],
     [429, ANSWER_WORDS.limitReached, "TOO_MANY_REQUESTS", "limitReached"], [429, ANSWER_WORDS.paused, "TOO_MANY_REQUESTS", "paused"], [429, `slow ${LEAK}`, "TOO_MANY_REQUESTS", "rate"], [500, `boom ${LEAK}`, "X", "unavailable"], [503, `down ${LEAK}`, "RUNTIME_UNAVAILABLE", "unavailable"],
   ] as const)("Code %i %s becomes the fixed '%s'", async (status, message, code, key) => {
     const w = setUp({ override: refuse(status, message, code) });

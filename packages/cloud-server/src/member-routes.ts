@@ -23,7 +23,7 @@
 //
 // Every answer is a fixed sentence; nothing the request carried and nothing Code worded is echoed. Code writes the company-log record of the change
 // (with the person, the old and the new role).
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { withdrawForMember } from "./product-ai-routes.js";
@@ -78,6 +78,7 @@ function codeRefusal(error: CodeError): { code?: string; message?: string } {
 
 /** Code's refusal of a role change, as one of this module's fixed answers. */
 export function roleRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const { code, message } = codeRefusal(error);
   if (error.status === 404 && message === CODE_NOT_ADMIN) return MEMBER_WORDS.notAdmin;
   if (error.status === 404) return MEMBER_WORDS.notFound;
@@ -195,6 +196,7 @@ const CODE_OWNER_ONLY_REMOVAL = CODE_OWNER_ONLY;
 
 /** Code's refusal of a removal or its preview, as one of the fixed answers above. */
 export function removalRefusal(error: CodeError, preview = false): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const { code, message } = codeRefusal(error);
   if (error.status === 404 && message === CODE_NOT_ADMIN) return REMOVAL_WORDS.notAdmin;
   if (error.status === 404) return REMOVAL_WORDS.notFound;

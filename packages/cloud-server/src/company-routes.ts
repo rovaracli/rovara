@@ -386,11 +386,12 @@ async function createInvite(context: RouteContext, withReceipt: boolean): Promis
     confirmed = true;
   } finally {
     if (!confirmed) {
-      // Code never took it (or it could not be marked): take it back, so it is never shown, accepted or sent again. When Code did take it,
-      // withdraw it there too, so the address can be invited again; if that fails as well, the invite is kept as "revoking" (listed, so an
+      // Only a definitive refusal establishes that Code never took it. A missing answer may have committed: keep the record
+      // for reconciliation. When Code confirmed it but it could not be marked, withdraw it there so the address can be invited again.
+      // If that withdrawal fails as well, keep the invite as "revoking" (listed, so an
       // admin's withdrawal tries Code again) rather than leave a pre-approval nobody can see.
-      let withdrawn = told !== "told";
-      if (!withdrawn) withdrawn = (await askCode(context, `${PREAPPROVALS_PATH}/${preapprovalEmailHash(invite.email)}`, { method: "DELETE" }).catch(() => "failed" as const)) === "told";
+      let withdrawn = told !== undefined && told !== "told";
+      if (told === "told") withdrawn = (await askCode(context, `${PREAPPROVALS_PATH}/${preapprovalEmailHash(invite.email)}`, { method: "DELETE" }).catch(() => "failed" as const)) === "told";
       if (withdrawn) await store.removeInvite(invite).catch(() => undefined);
       else {
         await store.updateInvite({ ...invite, state: "revoking" }, { revision: 0, state: "unconfirmed" }).catch(() => undefined);

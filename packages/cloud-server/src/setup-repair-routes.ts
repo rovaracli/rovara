@@ -12,7 +12,7 @@
 //   - Code's refusals reach the app in Cloud's own fixed words, never Code's text or an echo of the browser's input. Until Code serves the read, its unknown-route 404 reads "isn't available yet" (501 NOT_ON_CODE_YET).
 //   - The logs say what was done and where (action, project), never what the person wrote.
 // cloud-server takes no package dependency, so the shapes are checked here by hand against contracts app-setup-repair.ts (a unit test pins the sentences against Code's).
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { Unreadable, need, plain, rec, scope, text, when } from "./wiki-routes.js";
 
@@ -83,6 +83,7 @@ export function setupRepairView(value: unknown): Record<string, unknown> {
 
 /** Code's refusal in Cloud's words. Only Code's exact unknown-route 404 means "not on Code yet"; a missing project (or one the person cannot see) is the one uniform 404. */
 export function setupRepairRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
   const message = typeof body?.["message"] === "string" ? body["message"] : undefined, code = typeof body?.["code"] === "string" ? body["code"] : undefined;
   if (error.status === 404 && code === "NOT_FOUND" && message === "route not found") return A.notYet;

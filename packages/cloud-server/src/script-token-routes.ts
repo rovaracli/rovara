@@ -1,6 +1,6 @@
 // Cloud mirrors Code's app script-token routes. Code alone decides authorization and keeps the token records.
 // Responses are projected field by field: list/revoke can never carry a secret, and refusals never echo Code text.
-import { CodeError, SignInEnded } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError, SignInEnded } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
 type Obj = Record<string, unknown>;
@@ -34,6 +34,7 @@ function createBody(raw: unknown): Obj | undefined {
  return { requestId: raw["requestId"], name: raw["name"].trim(), projects: raw["projects"], permissions: raw["permissions"], ...(raw["days"] === undefined ? {} : { days: raw["days"] }) };
 }
 function refusal(error: unknown): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
  if (error instanceof CodeError) {
   const e = obj(error.body) && obj(error.body["error"]) ? error.body["error"] : undefined;
   if (error.status === 501 || error.status === 404 && e?.["code"] === "NOT_FOUND" && e["message"] === "route not found") return fail(501, "NOT_ON_CODE_YET", "Automation keys are not available yet.");

@@ -330,12 +330,16 @@ describe("connect a sign-in: the link return (the registered callback with link_
     expect(w.codeCalls("/v1/auth/token")).toEqual([]);
   });
 
-  it("ends the sign-in when Code no longer knows it, and still lands on a fixed word", async () => {
+  it("ends the stored sign-in when renewal is refused but leaves the dispatched finish unknown", async () => {
     const w = world();
     const nova = await w.signIn(NOVA);
     const s = await w.start(nova, "slack");
     w.ended.add(NOVA.developerId);
-    expect((await w.callback(w.good(s), nova.cookie)).location).toBe("/app/account?link=failed");
+    const answer = await w.callback(w.good(s), nova.cookie);
+    expect(answer.status).toBe(503);
+    expect(answer.location).toBeUndefined();
+    expect(answer.body).toMatch(/outcome.*unknown.*check.*status/iu);
+    expect(w.codeCalls(w.FINISH)).toHaveLength(1);
     expect(await w.sessions.get(nova.cookie)).toBeUndefined();
   });
 

@@ -12,7 +12,7 @@
 // is bound to this browser (cookie) and this sign-in (hash) and is taken once whatever happens next. Code's words never pass through: a Code sentence is shown only as one of Cloud's own fixed
 // ones, chosen by status and code. The landing URL carries one fixed word (`?github_link=<word>`); no query value is echoed into a page, a URL or a log.
 import { randomBytes } from "node:crypto";
-import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { codeRefusal, isObject, sha256, type ConnectAnswer, connectRefusal } from "./connect-flow.js";
 import { GITHUB_CONNECT_TTL_MS, GITHUB_LINK_LANDING, githubConnectCookie, githubStateKey, sessionBinding } from "./github-connect.js";
 import type { CodeSession, SessionStore } from "./sessions.js";
@@ -75,6 +75,7 @@ export function createGithubLink(deps: GithubLinkDeps) {
 
   /** Code's refusal in Cloud's fixed words, by status and code. */
   function refusalOf(error: CodeError, operation: "read" | "start" | "unlink"): ConnectAnswer {
+    if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
     const { message } = codeRefusal(error.body);
     if (error.status === 401) return connectRefusal(401, "AUTH_REQUIRED", GITHUB_LINK_WORDS.signedOut);
     if (error.status === 403) return connectRefusal(403, "FORBIDDEN", GITHUB_LINK_WORDS.startAgain);
@@ -175,6 +176,7 @@ export function createGithubLink(deps: GithubLinkDeps) {
           await deps.store.delete(sessionCookie);
           return refuse("signed_out");
         }
+        if (isCodeOutcomeUnknown(error)) throw error;
         if (!(error instanceof CodeError)) throw error;
         const { code } = codeRefusal(error.body);
         deps.log({ event: "cloud.github_link_claim_refused", developerId: session.access.developerId, status: error.status });

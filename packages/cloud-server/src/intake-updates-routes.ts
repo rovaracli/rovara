@@ -1,5 +1,5 @@
 import { TicketUpdatesPutBodySchema, TicketUpdatesViewSchema } from "@agentx/contracts";
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import type { Route, RouteAnswer } from "./routes.js";
 
 const PROJECT = "([a-z][a-z0-9-]{0,62})";
@@ -22,6 +22,7 @@ const A = Object.freeze({
 });
 const plain = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 function refusal(error: unknown): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   if (!(error instanceof CodeError)) throw error;
   if (error.status === 405) return A.notYet;
   if (error.status === 404) {

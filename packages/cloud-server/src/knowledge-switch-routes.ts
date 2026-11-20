@@ -13,7 +13,7 @@
 //   - Code's own words never reach the browser: every refusal is Cloud's fixed sentence. Code answers 404 "route not found", 405 or 501 while it does not serve the routes: that is "not connected yet" (501 NOT_ON_CODE_YET),
 //     which the settings screens read as "hide the setting".
 //   - The logs say what was done (the status of a refusal; whether a setting was changed to on or off), never a person, a project or anything the person wrote.
-import { CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
 import { PROJECT, dev, isRecord } from "./lessons-routes.js";
 import type { Route, RouteAnswer } from "./routes.js";
 
@@ -66,6 +66,7 @@ const bodyOf = (body: unknown, key: "stays" | "enabled"): boolean | undefined =>
 
 /** Code's refusal in Cloud's fixed words. */
 export function knowledgeSwitchRefusal(error: CodeError, scope: "company" | "project"): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const body = isRecord(error.body) && isRecord(error.body["error"]) ? error.body["error"] : undefined;
   const code = typeof body?.["code"] === "string" ? body["code"] : undefined;
   console.log(JSON.stringify({ event: "cloud.knowledge_switch_refused", scope, status: error.status }));
