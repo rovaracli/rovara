@@ -8,6 +8,7 @@ import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { fencedRead, fenceFor } from "../../packages/ui/src/screens/session/merge-fence.js";
+import { useSession } from "../../packages/ui/src/api/sessions.js";
 import { MergeSection } from "../../packages/ui/src/screens/session/MergeSection.js";
 import { workspaceTask, type ReadTask } from "../../packages/ui/src/screens/session/workspace-types.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
@@ -627,5 +628,27 @@ it("N6: a different person never inherits the previous person's accepted-success
  await waitFor(() => expect(region().textContent).not.toContain("You pressed Merge and GitHub accepted it"));
  expect(screen.queryByText("Merged acme/payments #42.")).toBeNull();
  expect(screen.queryByText(/dropped because|A later read shows/u)).toBeNull();
+ expect(w.posts()).toHaveLength(1);
+});
+
+it("B4 (production path): a later REAL refetch of the session through the actual useSession hook retires a saved 'Merged' when the section's own body-bound read disagrees", async () => {
+ const mergedFacts = { mergeTracking: [tracked({ state: "merged" })], pullRequests: [{ ...PR, state: "merged" }] };
+ let over: Record<string, unknown> = {}, pressed = false;
+ // Before the press the page reads head A open; once the press is accepted every read says merged, as the real tracking would.
+ const w = world({ readiness: () => ready(), press: () => { pressed = true;over = mergedFacts;return merged; }, session: () => pressed ? over : {} });
+ const query = createQueryClient();
+ function Page() { const s = useSession(A); const task = s.data === undefined ? undefined : workspaceTask(s.data); return task === undefined ? null : h(MergeSection, { sessionId: A, task }); }
+ renderUi(h(AppHostProvider, { host: w.host, children: h(QueryClientProvider, { client: query, children: h(Page) }) }));
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ // The page reads the PR as merged (the ordinary session GET and the section's own GET both say so): the saved answer stays.
+ await query.invalidateQueries({ queryKey: ["session", A] });
+ await new Promise(resolve => setTimeout(resolve, 150));
+ expect(screen.queryByText("Merged acme/payments #42.")).not.toBeNull();
+ // A later real refetch shows the pull request OPEN at another head: the section reads for itself, sees the same, and the saved answer goes.
+ over = { mergeTracking: [tracked({ headSha: HEAD_B })], pullRequests: [PR] };
+ await query.invalidateQueries({ queryKey: ["session", A] });
+ await waitFor(() => expect(screen.queryByText("Merged acme/payments #42.")).toBeNull());
+ expect(screen.getByRole("region", { name: "Merge" }).textContent).toContain("A later read shows a pull request open again");
  expect(w.posts()).toHaveLength(1);
 });

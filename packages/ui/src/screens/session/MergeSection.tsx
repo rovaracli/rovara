@@ -127,6 +127,15 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
  const disagrees = done !== undefined && read !== undefined && read.issued > done.seq && readRows.some(row => done.keys.includes(row.key) && row.state === "open");
  if (disagrees) { setDone(undefined);setRetiredNote(true); }
  const saved = disagrees ? undefined : done;
+ // While an accepted answer is shown, a real refetch of the ordinary session query is only a TRIGGER: this section then makes its OWN body-bound read (readNow) and the answer yields if that body disagrees. The
+ // subscription never reads the event's data, so no cache write and no kept-older projection can supply a fact.
+ useEffect(() => {
+  if (done === undefined) return;
+  return query.getQueryCache().subscribe(event => {
+   const key = event.query.queryKey as readonly unknown[];
+   if (event.type === "updated" && event.action.type === "success" && event.action.manual !== true && key.length === 2 && key[0] === "session" && key[1] === sessionId) void readNow();
+  });
+ }, [done, query, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
  // Only while something is open to merge; a refusal of the read (a Code without the route, a session gone) leaves the GitHub links only.
  const readiness = useQuery({ queryKey: readinessKey, enabled: subject !== undefined && !merged && saved === undefined && open_.length > 0, retry: false, refetchOnWindowFocus: false, queryFn: async () => fencedReadiness(fence, () => api.mergeReadiness(sessionId)) });
  // React Query keeps the last good answer after a failed refresh. A read that failed makes that answer inert, until a read works again: an earlier "ready" is never actionable.
