@@ -39,7 +39,7 @@ export interface GatewaySink { head(status: number, headers: Readonly<Record<str
  * is read). Fixed words and numbers only: never a token, key, prompt, provider text, company or task id.
  */
 export type RefusedLogReason = "bedrock_401" | "bedrock_403" | "bedrock_other" | "meter_busy";
-export interface RefusedLog { event: "refused"; code: string; status: number; cap?: MeterItem; route?: "agent" | "product" | "learning" | "answers"; payer?: string; reason?: RefusedLogReason }
+export interface RefusedLog { event: "refused"; code: string; status: number; cap?: MeterItem; route?: "agent" | "product" | "learning" | "answers"; payer?: string; reason?: RefusedLogReason; method?: string; path?: string; query?: boolean }
 const REFUSAL_CODE = /^[a-z0-9_]{1,64}$/u;
 /** A refusal code as it is logged: a fixed lower-case word, or "other" for anything else (a code never carries provider text). */
 export const logCode = (code: string): string => REFUSAL_CODE.test(code) ? code : "other";
@@ -508,11 +508,21 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     },
   };
 }
+/** A not_found refusal's method and pathname for the log: at most 120 printable ASCII characters, the query only as a yes/no. */
+function notFoundWhere(request: GatewayRequest): Pick<RefusedLog, "method" | "path" | "query"> {
+  const at = request.url.indexOf("?");
+  const path = (at < 0 ? request.url : request.url.slice(0, at)).replace(/[^\x21-\x7e]/gu, "?").slice(0, 120);
+  return { method: String(request.method).replace(/[^A-Z]/gu, "").slice(0, 10), path, query: at >= 0 };
+}
+/** The agent route with the one query the Anthropic SDK beta client adds. */
+const AGENT_BETA_URL = "/v1/messages?beta=true";
 /** The purpose a step reserves (learning, answers), or undefined for any task step. */
 const tokenPurpose = (step: string): "learning" | "answers" | undefined => step === LEARNING_STEP ? "learning" : step === ANSWERS_STEP ? "answers" : undefined;
 function routeFor(deps: GatewayDependencies, request: GatewayRequest): GatewayRoute | ProductControl | undefined {
   if (request.method !== "POST") return undefined;
-  if (request.url === "/v1/messages") return agentRoute(deps);
+  // The Anthropic SDK's beta client (Pi's anthropic-messages runtime on hosted workers) posts to /v1/messages?beta=true. Accept exactly that
+  // one query besides the bare path; any other query stays not_found.
+  if (request.url === "/v1/messages" || request.url === AGENT_BETA_URL) return agentRoute(deps);
   if (request.url.startsWith(LEARNING_PATH_PREFIX)) {
     if (request.url.length > 2048) return undefined;
     const at = request.url.indexOf("?");
@@ -617,16 +627,18 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const payer = route?.payer;
     return { event: "refused", code: logCode(type), status, ...(refusedCap === undefined ? {} : { cap: refusedCap }), ...(route === undefined ? {} : { route: route.purpose ?? (route.product ? "product" as const : "agent" as const) }), ...(payer !== undefined && PAYER.test(payer) ? { payer } : {}), ...(refusedReason === undefined ? {} : { reason: refusedReason }) };
   };
+  let notFoundAt: Pick<RefusedLog, "method" | "path" | "query"> | undefined;
   const respond = async (status: number, type: string, message: string, extra: Readonly<Record<string, string>> = {}) => {
     refusedCode = type;
     if (head) { sink.destroy(); return; }
     head = true; sink.head(status, { ...JSON_HEADERS, ...extra });
-    await wait(sink.write(Buffer.from(JSON.stringify(route?.refusalBody?.(type, message) ?? { error: { type, message } })))); sink.end(); log(refusedLine(type, status));
+    await wait(sink.write(Buffer.from(JSON.stringify(route?.refusalBody?.(type, message) ?? { error: { type, message } })))); sink.end(); log(notFoundAt === undefined ? refusedLine(type, status) : { ...refusedLine(type, status), ...notFoundAt });
   };
   try {
     if (request.method === "GET" && request.url === "/healthz") { head = true; sink.head(200, JSON_HEADERS); await wait(sink.write(Buffer.from('{"ok":true}'))); sink.end(); return; }
     const routed = routeFor(deps, request);
-    if (routed === undefined) { await respond(404, "not_found", "not found"); return; }
+    // Which path was not found (pathname only, bounded, printable; never the query, which could carry anything), so operators can tell probes from a client on a wrong path.
+    if (routed === undefined) { notFoundAt = notFoundWhere(request); await respond(404, "not_found", "not found"); return; }
     let control: ProductControl | undefined;
     if ("control" in routed) control = routed;
     else {
