@@ -71,7 +71,7 @@ export const LOOK_DENSITY = {
   compact: { rowY: 10, rowYDense: 5, card: 16, gap: 20, controlH: 36, font: { lg: 15, xl: 17, xxl: 26, title: 19 } },
 } as const;
 export type Density = keyof typeof LOOK_DENSITY;
-export const LOOK_SHAPE = { radius: { sm: 6, md: 10, lg: 14 }, fontXs: 11, fontSm: 12, fontMd: 14, fontTitle: '"Source Serif 4",Georgia,serif', motionFastMs: 150, touchMinPx: 44 } as const;
+export const LOOK_SHAPE = { radius: { sm: 6, md: 10, lg: 14 }, fontXs: 11, fontSm: 12, fontMd: 14, fontTitle: 'system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif', motionFastMs: 150, touchMinPx: 44 } as const;
 const kebab = (key: string): string => key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
 function colors(theme: "light" | "dark"): string {
  const effects = LOOK_EFFECTS[theme];
