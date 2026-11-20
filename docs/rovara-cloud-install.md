@@ -130,13 +130,35 @@ npx cdk deploy RovaraCloudPipeline --app 'node infra/dist/bin/agentx.js' \
 Each environment's deploy switches come from `CLOUD_PIPELINE_SWITCHES` in `infra/lib/cloud-release-pipeline.ts`, never from
 the run: the `staging` pipeline deploys with `-c rovaraModelGatewayProductAi=on` (the product AI settings: switch the web stack on
 by hand first, with its `ProductKeys*` parameters and `ModelGatewayUrl`, which later deploys keep: a release deploy of a staging
-web stack that never had them fails), and `production` is refused. The pipeline stack itself must be redeployed once for a
+web stack that never had them fails), `production` carries the same switch, and `beta` carries none (it has no model gateway). The pipeline stack itself must be redeployed once for a
 changed switch to take effect. Run the pipeline
 command above again after changing them.
 
 The deploy job has no administrator access. It can assume only the account's CDK bootstrap roles, and read
 the web stack's outputs for the release check. The pipeline never deploys itself: run the command above
 again after a change to `cloud-release-pipeline.ts`.
+
+### Beta: a pipeline that deploys into another account
+
+Beta Cloud (`app.beta.rovara.dev`, on beta Code at `https://beta.rovara.dev`) lives in the beta account, `233082642592`. Its
+pipeline, `rovara-cloud-beta-pipeline`, runs in the production account, `944937319445`, which holds the GitHub connection. This is
+how Rovara Code's beta release works too (Rovara-cloud#269).
+
+- `CLOUD_PIPELINE_DEPLOY_ACCOUNTS` in `cloud-release-pipeline.ts` names beta's account.
+- The deploy job passes `-c agentxAccount=<that account>`, so `cdk deploy` goes through beta's CDK bootstrap roles.
+- The release check reads the web stack's address through beta's lookup role.
+- The pipeline's role boundary allows exactly those roles.
+
+The beta account's bootstrap must trust the production account. Run this once, as the beta account:
+
+```sh
+npx cdk bootstrap aws://233082642592/us-east-1 --trust 944937319445 --trust-for-lookup 944937319445 \
+  --cloudformation-execution-policies arn:aws:iam::aws:policy/AdministratorAccess
+```
+
+Deploy the pipeline as the production account, with `-c rovaraCloudPipeline=beta`, the production GitHub connection and
+`CodeUrl=https://beta.rovara.dev`. A `vX.Y.Z` tag then starts both `rovara-cloud-production-release` and `rovara-cloud-beta-release`,
+each waiting for its own approval: approve beta first.
 
 ## Releasing
 
