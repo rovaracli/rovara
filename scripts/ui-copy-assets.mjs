@@ -38,6 +38,8 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  "screens/answers/answers.css",
  // Understand's questions and their answer form: the session page, the Work list and Home.
  "screens/session/answer-form.css",
+ // UI-TASK-MERGE: the per-PR merge section and receipt view.
+ "screens/session/merge-section.css",
  // L4-JA89: the project Skills tab (its own lazy chunk).
  "screens/project/skills/skills.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
