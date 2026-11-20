@@ -90,3 +90,23 @@
 .rv-people-limits-filter{max-width:22rem;margin-block:var(--rv-space-3,12px)}
 .rv-vertex-guide pre{overflow-x:auto;background:var(--rv-bg-sunken);border:1px solid var(--rv-border-medium);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3);font-size:var(--rv-font-sm)}
 .rv-vertex-guide li[data-redo]{border-left:3px solid var(--rv-border-medium);padding-left:var(--rv-space-3)}
+
+/* Consistent spacing on every admin page. The base reset sets p and h margins to 0, so a page without cards ran its parts
+   together. These rules use element-level specificity only (html body ... = 0,0,2+): any page's own class rule still wins. */
+html body :where(.rv-admin-surface) p+p{margin-top:var(--rv-space-2)}
+html body :where(.rv-admin-surface) :where(p,ul,ol,dl,details,fieldset,form,table,div,section,.rv-button)+:where(p,ul,ol,dl,details,fieldset,form):where(:not(p+p)){margin-top:var(--rv-space-3)}
+html body :where(.rv-admin-surface) :where(p,ul,ol,dl,details,fieldset,form,div,section)+:where(.rv-field,.rv-table-wrap){margin-top:var(--rv-space-3)}
+html body :where(.rv-admin-surface) :where(p,ul,ol,dl,details,.rv-field,.rv-table-wrap,section)+:where(.rv-button){margin-top:var(--rv-space-3)}
+html body :where(.rv-admin-surface) *+:where(h2){margin-top:var(--rv-space-6)}
+html body :where(.rv-admin-surface) *+:where(h3){margin-top:var(--rv-space-5)}
+html body :where(.rv-admin-surface) :where(h2,h3)+:where(p,ul,ol,dl,details,fieldset,form,.rv-field,.rv-table-wrap,.rv-button){margin-top:var(--rv-space-2)}
+/* Plain selects look like the other inputs; fields don't stretch across the whole page. */
+html body :where(.rv-admin-surface) select:where(:not(.rv-input)){display:block;width:100%;min-height:44px;padding:var(--rv-space-2) var(--rv-space-3);color:var(--rv-text);background:var(--rv-bg-raised);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm)}
+:where(.rv-admin-surface) .rv-field{max-width:40rem}
+/* Disclosures: a chevron instead of the browser triangle. */
+html body :where(.rv-admin-surface) summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:var(--rv-space-2);font-weight:550}
+html body :where(.rv-admin-surface) summary::-webkit-details-marker{display:none}
+html body :where(.rv-admin-surface) summary::before{content:"";flex:none;width:6px;height:6px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
+html body :where(.rv-admin-surface) details[open]>summary::before{transform:rotate(45deg)}
+html body :where(.rv-admin-surface) :where(p,ul,ol,dl,.rv-table-wrap)+:where(div:has(>.rv-button)){margin-top:var(--rv-space-3)}
+html body :where(.rv-admin-surface) :where(.rv-button)+:where(section){margin-top:var(--rv-space-3)}
