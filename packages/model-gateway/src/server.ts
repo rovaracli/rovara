@@ -507,11 +507,15 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     },
   };
 }
+/** The agent route with the one query the Anthropic SDK beta client adds. */
+const AGENT_BETA_URL = "/v1/messages?beta=true";
 /** The purpose a step reserves (learning, answers), or undefined for any task step. */
 const tokenPurpose = (step: string): "learning" | "answers" | undefined => step === LEARNING_STEP ? "learning" : step === ANSWERS_STEP ? "answers" : undefined;
 function routeFor(deps: GatewayDependencies, request: GatewayRequest): GatewayRoute | ProductControl | undefined {
   if (request.method !== "POST") return undefined;
-  if (request.url === "/v1/messages") return agentRoute(deps);
+  // The Anthropic SDK's beta client (Pi's anthropic-messages runtime on hosted workers) posts to /v1/messages?beta=true. Accept exactly that
+  // one query besides the bare path; any other query stays not_found.
+  if (request.url === "/v1/messages" || request.url === AGENT_BETA_URL) return agentRoute(deps);
   if (request.url.startsWith(LEARNING_PATH_PREFIX)) {
     if (request.url.length > 2048) return undefined;
     const at = request.url.indexOf("?");
