@@ -123,8 +123,8 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     expect(await committed(g.meter, cidB)).toBeGreaterThan(0);
   });
 
-  it("no saved choice, or anthropic_key, answers byte for byte as DEC 236 (company-key mode)", async () => {
-    for (const saved of [undefined, "anthropic_key"] as const) {
+  it("an explicit anthropic_key choice preserves DEC 236 company-key behavior", async () => {
+    for (const saved of ["anthropic_key"] as const) {
       const g = gateway({ rovara: { exempt: new Set() } });
       if (saved !== undefined) g.choices.saved.set(cidA, saved);
       const plain = setup({ agentKeys: new CompanyKeys(), keys: { keyFor: async () => "rovara-install-key" }, transport: async () => ({ status: 200, body: answer() }), prices: g.deps.prices! });
@@ -151,7 +151,8 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     expect(error(sink)).toEqual({ type: ROVARA_AI_OFF.code, message: ROVARA_AI_OFF.message });
     expect(g.keySent).toEqual([]); expect(g.companyKeys.reads).toEqual([]); expect(g.companyKeys.asked).toEqual([]); expect(g.installKeyReads).toEqual([]);
     expect(await committed(g.meter)).toBe(0);
-    // B, on its own key, is unaffected.
+    // B, explicitly on its own key, is unaffected.
+    g.choices.saved.set(cidB, "anthropic_key");
     expect((await call(g.deps, requestBody, mint({ cid: cidB }))).status).toBe(200);
   });
 
@@ -197,13 +198,13 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     expect(await committed(g.meter)).toBe(0);
   });
 
-  it("the operator-named founders' company is exempt; another company is refused (two companies)", async () => {
+  it("only the operator-named company is exempt; the other company is charged (two companies)", async () => {
     const g = gateway({ rovara: { exempt: new Set([cidA]) } });
     g.choices.saved.set(cidA, "rovara"); g.choices.saved.set(cidB, "rovara");
     await call(g.deps, requestBody, mint({ cid: cidA }));
-    expect((await call(g.deps, requestBody, mint({ cid: cidB }))).status).toBe(403);
+    expect((await call(g.deps, requestBody, mint({ cid: cidB }))).status).toBe(200);
     expect(g.meter.billedCalls(claims.iss, cidA).map((l) => l.line.charge)).toEqual(["exempt"]);
-    expect(g.meter.billedCalls(claims.iss, cidB)).toEqual([]);
+    expect(g.meter.billedCalls(claims.iss, cidB).map(l => l.line.charge)).toEqual(["customer"]);
     // Exempt from the charge, never from the cap: the spend still counts.
     expect(await committed(g.meter, cidA)).toBeGreaterThan(0);
   });

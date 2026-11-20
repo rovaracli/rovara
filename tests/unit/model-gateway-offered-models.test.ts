@@ -78,11 +78,11 @@ describe("the list one company is offered", () => {
     const { opts } = options({ disabled: parseDisabledAgentModels("") });
     expect(names((await get(opts, cidA, mintService())).body)).toEqual(["claude-haiku-4-5", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2", ...BEDROCK_17]);
   });
-  it("a company's own Anthropic key, or nothing saved: Anthropic's models (never Bedrock's); the Bedrock-only disable does not apply", async () => {
+  it("an explicit own key offers Anthropic models; deleting the choice returns to the Rovara default", async () => {
     const { opts, choices } = options();
     expect(names((await get(opts, cidB, mintService({ cid: cidB }))).body)).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
     choices.saved.delete(cidB);
-    expect(names((await get(opts, cidB, mintService({ cid: cidB }))).body)).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
+    expect(names((await get(opts, cidB, mintService({ cid: cidB }))).body)).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
   });
   it("the Anthropic list is the Claude names of the Rovara allow-list, one per model", () => {
     const seen = new Set<string>(); const claude: string[] = [];
@@ -364,17 +364,17 @@ describe("gateway process: two companies, one server", () => {
       else expect(names(JSON.parse(answer.text()))).toEqual([...OPENAI_KEY_AGENT_MODELS]);
     }
   });
-  it("L4-AIDEF: the deployed handler offers an exempt company with no saved choice the same list the agent route serves it (Rovara's AI unless its own key is connected); anyone else the Anthropic list", async () => {
+  it("DEC 263: deployed no-choice companies get Rovara models regardless of exemption or connected credentials", async () => {
     const cidC = `org_${"c".repeat(20)}`;
     const exemptEnv = { [GATEWAY_ENV.rovaraAiExempt]: `${cidA},${cidC}` };
     // C: exempt, nothing saved, no key connected: Rovara's AI.
     const none = await serve(exemptEnv, true, false);
     expect(names(JSON.parse((await ask(none.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
-    // C with its own key connected: the Anthropic list. A non-exempt company with no key and nothing saved: also today's Anthropic list.
+    // Connected credentials are not a saved choice; non-exempt companies receive the same default list.
     const keyed = await serve(exemptEnv, true, true);
-    expect(names(JSON.parse((await ask(keyed.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
+    expect(names(JSON.parse((await ask(keyed.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
     const notExempt = await serve({}, true, false);
-    expect(names(JSON.parse((await ask(notExempt.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
+    expect(names(JSON.parse((await ask(notExempt.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
   });
   it("task tokens and service tokens are not interchangeable between the two routes", async () => {
     const s = await serve();

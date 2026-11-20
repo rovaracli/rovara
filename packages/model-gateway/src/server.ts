@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { openRouterPolicy, type OpenRouterTariff } from "./openrouter-policy.js";
 import { runPriceAllows } from "./run-price.js";
-import { AGENT_AI_SOURCES, agentSourceSwitchedOn, operatorSourceAllowed, resolveAgentSource, type AgentAiSource, type ResolvedAgentSource, type AgentSourceVia, type AgentAiSourceReader, type ByoBedrock, type CompanyChatAi, type CompanyEndpointAi, type RovaraAi } from "./agent-ai.js";
+import { AGENT_AI_SOURCES, agentSourceSwitchedOn, resolveAgentSource, type AgentAiSource, type ResolvedAgentSource, type AgentSourceVia, type AgentAiSourceReader, type ByoBedrock, type CompanyChatAi, type CompanyEndpointAi, type RovaraAi } from "./agent-ai.js";
 import { endpointTarget, ENDPOINT_ADDRESS_REFUSED, type EndpointTarget } from "./endpoint-guard.js";
 import { parseEndpointConnect, type EndpointConnection, type EndpointModel } from "./endpoint-source.js";
 import { OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS, OPENAI_AGENT_MODEL, OPENAI_AGENT_UPSTREAM, toChatCompletions, type OpenAiAgentProvider } from "./agent-openai.js";
@@ -347,7 +347,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     if (source === "rovara") {
       const ai = choice.rovara;
       if (ai === undefined) return soft(ROVARA_AI_OFF);
-      if (!operatorSourceAllowed(ai.exempt, claims.cid)) return soft(AGENT_KEY_MISSING);
+      // DEC 254zzz263 supersedes round C R2-M2: non-exempt companies use this source billed as customer, under the same caps.
       if (!serves(checkModel, claims, (m) => ai.models.has(m) && choice.rovaraDisabled?.has(m) !== true)) return soft(AGENT_MODEL_NOT_SERVED);
       // A per-call marker stands in for a key: the transport signs with the task role, and no key exists to leak.
       return { admit() {
@@ -381,7 +381,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
       let via: AgentSourceVia = "none";
       if (choice !== undefined) {
         let resolved: ResolvedAgentSource;
-        // DEC 254zzz3(1): no saved choice + an exempt company: its own key, its own Bedrock, else Rovara's AI (agent-ai.ts resolveAgentSource).
+        // DEC 254zzz263: saved choice/order wins; no choice defaults to company-billed Rovara AI.
         try { resolved = await resolveAgentSource({ sources: choice.sources, ...(choice.rovara === undefined ? {} : { exempt: choice.rovara.exempt }), keys, ...(choice.byo === undefined ? {} : { byo: choice.byo }) }, claims.iss, claims.cid, signal); } catch { return AGENT_UNAVAILABLE; }
         via = resolved.via;
         if (resolved.source !== undefined) {

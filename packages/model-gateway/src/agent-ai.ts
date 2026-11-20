@@ -9,10 +9,9 @@
 //   openrouter_key the company's own OpenRouter key (DEC 254t), the same way; its reported cost is used by settleAmount's rules.
 //   custom_endpoint the company's own OpenAI-compatible endpoint (DEC 254t), behind the SSRF guard (endpoint-guard.ts).
 //
-// No choice saved: company-key mode exactly as before (DEC 236), except for a company the operator named exempt (the pilot list, RovaraAi.exempt): its own key, its
-// own Bedrock, else Rovara's AI (DEC 254zzz3(1); resolveAgentSource below). The only fallback between sources is the company's own saved
-// order (DEC 254zzz84(4): `fallback` on the same row, e.g. its own key first, then Rovara's AI), decided at admission before anything is
-// held or sent (server.ts); never a guess, and never after a provider answered.
+// DEC 254zzz263: no saved choice defaults to Rovara's AI, billed to the company under its caps. Only the operator's
+// explicit exemption list makes a call exempt. Connected credentials alone are not an explicit choice. Saved choices and
+// fallback order win at admission, before any hold or send; never retry another source after a provider answered.
 import { BEDROCK_CONVERSE_ID } from "./bedrock-converse.js";
 import type { CredentialSource } from "./aws.js";
 import type { EndpointTarget } from "./endpoint-guard.js";
@@ -130,41 +129,27 @@ export class CompanyAgentAiSource implements AgentAiSourceReader {
   }
 }
 
-/**
- * DEC 254zzz3(1) (L4-AIDEF): the company AI source DEFAULTS to Rovara's AI, for a company the operator named exempt (`RovaraAi.exempt`, the
- * pilot list) that saved no choice. This REPLACES, for those companies only, the "customer always pays" rule. The default is only the
- * answer to "no saved choice": a company's own connected Anthropic key, then its own connected Bedrock, win at once; Rovara's AI is last.
- * `via`: "chosen" (a saved choice), "default" (picked by this rule), "own_key" (no choice, own key: company-key mode as before),
- * "none" (no choice and not exempt: company-key mode exactly as before).
- */
+/** DEC 254zzz263: an explicit saved choice wins; otherwise Rovara's AI is the default for every company. Billing is decided at admission. */
 export type AgentSourceVia = "chosen" | "default" | "own_key" | "none";
 export interface ResolvedAgentSource {
   source: AgentAiSource | undefined; via: AgentSourceVia;
   /** DEC 254zzz84(4): the saved order's sources after `source`, only when the company saved some (absent: no fallback, exactly as before). */
   fallback?: AgentAiSource[];
 }
-/** The pure rule for an exempt company with no saved choice. A contract test holds Cloud's copy equal (cloud-server company-store.ts). */
-export function defaultAgentSource(input: { keyConnected: boolean; bedrockConnected: boolean }): { source: AgentAiSource | undefined; via: "own_key" | "default" } {
-  if (input.keyConnected) return { source: undefined, via: "own_key" };
-  if (input.bedrockConnected) return { source: "bedrock_byo", via: "default" };
+/** The no-choice rule. Provider connection facts do not choose a source; Cloud's copy is held equal by a contract test. */
+export function defaultAgentSource(_input: { keyConnected: boolean; bedrockConnected: boolean }): { source: AgentAiSource | undefined; via: "own_key" | "default" } {
+  void _input; // Retain the existing helper signature; connection facts no longer choose the default.
   return { source: "rovara", via: "default" };
 }
 export interface AgentSourcePorts {
   sources: AgentAiSourceReader;
-  /** The operator's exempt companies, given ONLY where this gateway offers Rovara's AI. Absent: no company is defaulted. */
+  /** Operator billing exemptions only; never eligibility for the default. */
   exempt?: ReadonlySet<string>;
   keys: Pick<LearningKeySource, "connected">;
   byo?: Pick<ByoBedrock, "connection">;
 }
-/** Operator Bedrock is admitted only for the operator's explicit pilot companies, including saved choices and fallback candidates. */
-export function operatorSourceAllowed(exempt: ReadonlySet<string> | undefined, cid: string): boolean { return exempt?.has(cid) === true; }
-/**
- * The effective source of one company's call. A saved choice always wins and nothing else is read. Without one, a company that is not
- * exempt (or on a gateway without Rovara's AI) is company-key mode exactly as before and nothing else is read. An exempt company's own
- * key and Bedrock are read (the verified token's install and company only). A read that fails THROWS: the call is refused, never guessed
- * onto Rovara's account.
- */
-export async function resolveAgentSource(ports: AgentSourcePorts, iss: string, cid: string, signal?: AbortSignal): Promise<ResolvedAgentSource> {
+/** Saved source/order first; an unreadable saved row throws. No choice defaults to Rovara AI without reading unrelated credentials. */
+export async function resolveAgentSource(ports: AgentSourcePorts, _iss: string, cid: string, signal?: AbortSignal): Promise<ResolvedAgentSource> {
   if (ports.sources.orderFor !== undefined) {
     const order = await ports.sources.orderFor(cid, signal);
     if (order !== undefined) return order.fallback.length === 0 ? { source: order.source, via: "chosen" } : { source: order.source, via: "chosen", fallback: order.fallback.slice() };
@@ -172,10 +157,7 @@ export async function resolveAgentSource(ports: AgentSourcePorts, iss: string, c
     const saved = await ports.sources.sourceFor(cid, signal);
     if (saved !== undefined) return { source: saved, via: "chosen" };
   }
-  if (!operatorSourceAllowed(ports.exempt, cid)) return { source: undefined, via: "none" };
-  const keyConnected = (await ports.keys.connected(iss, cid, "anthropic", signal)) === true;
-  const bedrockConnected = !keyConnected && ports.byo !== undefined && (await ports.byo.connection(iss, cid, signal)) !== undefined;
-  return defaultAgentSource({ keyConnected, bedrockConnected });
+  return defaultAgentSource({ keyConnected: false, bedrockConnected: false });
 }
 
 /** Rovara's AI as the agent route uses it. */

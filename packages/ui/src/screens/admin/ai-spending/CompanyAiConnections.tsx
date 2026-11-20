@@ -24,7 +24,7 @@ export function CompanyAiConnections({ children }: { children?: ReactNode }) {
   {children}
   <ReadSection read={sources} label="AI source order">{data => <>
    <h3>AI source order</h3>
-   {data.order.length === 0 ? <p>No order is saved yet. The current source could not be checked.</p> : <ol>{data.order.map(source => <li key={source}>{sourceLabel(source)}</li>)}</ol>}
+   {data.order.length === 0 ? <p>No source order is saved yet.</p> : <ol>{data.order.map(source => <li key={source}>{sourceLabel(source)}</li>)}</ol>}
    <DataTable caption="Company AI sources" rows={data.sources} rowKey={s => s.source} columns={[
     { key: "source", title: "Source", render: s => sourceLabel(s.source) },
     { key: "connected", title: "Connected", render: s => s.connected === null ? "Can't tell right now" : s.connected ? "Yes" : "No" },

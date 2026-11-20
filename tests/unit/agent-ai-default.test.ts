@@ -1,7 +1,4 @@
-// L4-AIDEF (owner DEC 254zzz3(1)): what the settings screen's route says for a company the operator named exempt (the pilot list, CLOUD_ROVARA_AI_EXEMPT, the same
-// ids as the gateway's GATEWAY_ROVARA_AI_EXEMPT). The gateway decides every call (tests/unit/model-gateway-rovara-default.test.ts); this is the same rule shown to the admin:
-// no saved choice + exempt: Rovara's AI unless its own Anthropic key or Bedrock is connected. A saved choice, or a company that is not exempt, is answered byte for byte as before
-// (neither new field is added). Two companies never meet.
+// DEC 263: universal served default, explicit choices first; exemption is billing only.
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { agentAiConnected } from "../../packages/cloud-server/src/agent-ai-presence.js";
@@ -16,16 +13,16 @@ describe("effectiveAgentSource (the pure rule)", () => {
   it("a saved choice is the source, never a default", () => {
     for (const saved of ["rovara", "anthropic_key", "bedrock_byo", "openai_key"] as const) expect(effectiveAgentSource({ saved, exempt: true, keyConnected: true, bedrockConnected: true })).toEqual({ source: saved, isDefault: false });
   });
-  it("not exempt and nothing saved: nothing is said", () => {
-    for (const keyConnected of [true, false, null]) for (const bedrockConnected of [true, false, null]) expect(effectiveAgentSource({ saved: undefined, exempt: false, keyConnected, bedrockConnected })).toEqual({ source: null, isDefault: false });
+  it("no saved choice defaults regardless of exemption or connection health", () => {
+    for (const keyConnected of [true, false, null]) for (const bedrockConnected of [true, false, null]) expect(effectiveAgentSource({ saved: undefined, exempt: false, keyConnected, bedrockConnected })).toEqual({ source: "rovara", isDefault: true });
   });
-  it("exempt: own key, then own Bedrock, then Rovara's AI; a connection it cannot read is never guessed", () => {
-    expect(effectiveAgentSource({ saved: undefined, exempt: true, keyConnected: true, bedrockConnected: true })).toEqual({ source: "anthropic_key", isDefault: true });
-    expect(effectiveAgentSource({ saved: undefined, exempt: true, keyConnected: true, bedrockConnected: null })).toEqual({ source: "anthropic_key", isDefault: true });
-    expect(effectiveAgentSource({ saved: undefined, exempt: true, keyConnected: false, bedrockConnected: true })).toEqual({ source: "bedrock_byo", isDefault: true });
+  it("exempt: same default; connected credentials alone are not a saved choice", () => {
+    expect(effectiveAgentSource({ saved: undefined, exempt: true, keyConnected: true, bedrockConnected: true })).toEqual({ source: "rovara", isDefault: true });
+    expect(effectiveAgentSource({ saved: undefined, exempt: true, keyConnected: true, bedrockConnected: null })).toEqual({ source: "rovara", isDefault: true });
+    expect(effectiveAgentSource({ saved: undefined, exempt: true, keyConnected: false, bedrockConnected: true })).toEqual({ source: "rovara", isDefault: true });
     expect(effectiveAgentSource({ saved: undefined, exempt: true, keyConnected: false, bedrockConnected: false })).toEqual({ source: "rovara", isDefault: true });
-    expect(effectiveAgentSource({ saved: undefined, exempt: true, keyConnected: null, bedrockConnected: false })).toEqual({ source: null, isDefault: false });
-    expect(effectiveAgentSource({ saved: undefined, exempt: true, keyConnected: false, bedrockConnected: null })).toEqual({ source: null, isDefault: false });
+    expect(effectiveAgentSource({ saved: undefined, exempt: true, keyConnected: null, bedrockConnected: false })).toEqual({ source: "rovara", isDefault: true });
+    expect(effectiveAgentSource({ saved: undefined, exempt: true, keyConnected: false, bedrockConnected: null })).toEqual({ source: "rovara", isDefault: true });
   });
 });
 
@@ -50,11 +47,11 @@ describe("GET /org/agent-ai for the default", () => {
     expect(await w.companies.agentAi(A)).toBeUndefined();
   });
 
-  it("its own connected Anthropic key is the default at once (the key wins)", async () => {
+  it("connected Anthropic credentials alone do not override the default", async () => {
     const w = world({ company: true, rovaraAiExempt: new Set([A]) });
     const ada = await w.signIn("ada", 30);
     await w.call(ada, "PUT", "/org/learning-ai/key", write(0, { provider: "anthropic", key: fakeKey() }));
-    expect((await w.call(ada, "GET", PATH)).body).toMatchObject({ source: null, effectiveSource: "anthropic_key", sourceIsDefault: true });
+    expect((await w.call(ada, "GET", PATH)).body).toMatchObject({ source: null, effectiveSource: "rovara", sourceIsDefault: true });
   });
 
   it("switching back to Rovara's AI is an explicit save; afterwards it is a saved choice, not a default", async () => {
@@ -78,22 +75,22 @@ describe("GET /org/agent-ai for the default", () => {
     expect(Object.keys(got.body)).not.toContain("sourceIsDefault");
   });
 
-  it("a company that is NOT exempt is answered exactly as before (no new field), and the exempt list is per company (two companies)", async () => {
+  it("a NON-exempt company receives the same default, isolated from another company's choice", async () => {
     const w = world({ company: true, rovaraAiExempt: new Set([A]) });
     const ada = await w.signIn("ada", 30); const bea = await w.signIn("bea", 30);
     const a = await w.call(ada, "GET", PATH);
     const b = await w.call(bea, "GET", PATH);
     expect(a.body).toMatchObject({ effectiveSource: "rovara", sourceIsDefault: true });
-    expect(b.body).toEqual({ source: null, version: 0, canChange: true, anthropicKeyConnected: false, bedrockConnected: null, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }] });
+    expect(b.body).toMatchObject({ source: null, version: 0, effectiveSource: "rovara", sourceIsDefault: true });
     // A's own key never makes B's default.
     await w.call(ada, "PUT", "/org/learning-ai/key", write(0, { provider: "anthropic", key: fakeKey() }));
     expect((await w.call(bea, "GET", PATH)).body).toEqual(b.body);
   });
 
-  it("with no exempt list at all (a Cloud that was not given one) every answer is as before", async () => {
+  it("no exemption configuration is required for the default", async () => {
     const w = world({ company: true });
     const ada = await w.signIn("ada", 30);
-    expect(Object.keys((await w.call(ada, "GET", PATH)).body)).not.toContain("effectiveSource");
+    expect((await w.call(ada, "GET", PATH)).body).toMatchObject({ effectiveSource: "rovara", sourceIsDefault: true });
   });
 
   it("still company admins only: a plain member of an exempt company learns nothing", async () => {
@@ -122,12 +119,19 @@ describe("agentAiConnected for an exempt company with no saved choice", () => {
     expect(await agentAiConnected(context([A], { bedrock: true }), A)).toBe(true);
     expect(await agentAiConnected(context([A], { noBedrockBackend: true }), A)).toBe(true);
   });
-  it("a company that is not exempt keeps today's reading (no choice means its own Anthropic key)", async () => {
-    expect(await agentAiConnected(context([B]), A)).toBe(false);
+  it("a non-exempt company needs no key to satisfy presence", async () => {
+    expect(await agentAiConnected(context([B]), A)).toBe(true);
     expect(await agentAiConnected(context([], { anthropic: true }), A)).toBe(true);
   });
-  it("cannot tell when its Bedrock cannot be read; a saved choice is read as before", async () => {
-    expect(await agentAiConnected(context([A], { bedrock: "throws" }), A)).toBeNull();
+  it("an unrelated Bedrock read cannot block the default; explicit own choices keep readiness checks", async () => {
+    expect(await agentAiConnected(context([A], { bedrock: "throws" }), A)).toBe(true);
     expect(await agentAiConnected(context([A], { saved: "anthropic_key" }), A)).toBe(false);
   });
+});
+
+it("an unreadable saved choice never becomes a default or connected fact", async () => {
+  const w = world({ company: true }); const ada = await w.signIn("ada", 30);
+  w.companies.agentAi = async () => { throw new Error("unreadable"); };
+  expect((await w.call(ada, "GET", PATH)).status).toBe(503);
+  expect(await agentAiConnected({ company: { store: w.companies } }, A)).toBeNull();
 });

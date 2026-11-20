@@ -3,7 +3,7 @@
 // The step follows the served default until an explicit model choice, prefills the saved monthly limit or the existing default, and its one
 // Save writes changed rows only; pinning a model always requires an explicit choice. A plain member sees it read only. Refusals are the server's fixed sentences. The project part keeps "Same as company" picked.
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
@@ -34,7 +34,7 @@ function mountRoute(path: string, respond: Respond) {
  for (const [key, value] of seeded) f.storage.set(key, value);
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [path] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
- return { ...f, close: () => { view.unmount(); router.dispose(); query.clear(); } };
+ return { ...f, query, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
 /** The component alone, as PR 9's setup shell places it. */
 function mountAlone(element: ReturnType<typeof h>, respond: Respond, path = "/app/setup") {
@@ -43,7 +43,7 @@ function mountAlone(element: ReturnType<typeof h>, respond: Respond, path = "/ap
  const query = createQueryClient();
  const router = createMemoryRouter([{ path: "/app/setup", element }], { initialEntries: [path] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
- return { ...f, close: () => { view.unmount(); router.dispose(); query.clear(); } };
+ return { ...f, query, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
 
 const OFFERED = ["zai.glm-4.7", "claude-sonnet-4-5"];
@@ -100,17 +100,23 @@ describe("the company step, AI and spending", () => {
   } finally { f.close(); }
  });
 
- it("an exempt company on the default shows Rovara's AI with the default note; with its own key connected the step shows the own key, never a guess", async () => {
-  for (const [effective, own] of [["rovara", false], ["anthropic_key", true]] as const) {
-   const c = company({ cap: null, source: null, model: null });
-   const f = mountRoute("/app/admin/ai-spending", (r) => (r.path === "/v1/app/org/agent-ai" && r.method === "GET" ? { status: 200, body: { ...(agentAi(null, 0) as object), effectiveSource: effective, sourceIsDefault: true } } : c.respond(r)));
-   try {
-    await screen.findByLabelText("Company model");
-    expect(screen.queryByTestId("ai-spend-default") !== null).toBe(!own);
-    expect((screen.getByTestId("ai-spend-rovara").querySelector("input") as HTMLInputElement).checked).toBe(!own);
-    expect((screen.getByTestId("ai-spend-own").querySelector("input") as HTMLInputElement).checked).toBe(own);
-   } finally { f.close(); }
-  }
+ it("a served default shows company billing and a working Change link on the real route", async () => {
+  const c = company({ cap: 500_000_000, source: null, model: null });
+  const f = mountRoute("/app/admin/ai-spending", r => r.path === "/v1/app/org/agent-ai" && r.method === "GET"
+   ? { status: 200, body: { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } } : c.respond(r));
+  try {
+   const note = await screen.findByTestId("ai-spend-default");
+   expect(note.textContent).toContain("Rovara's AI, billed to your company");
+   const change = within(note).getByRole("link", { name: "Change" });
+   expect(change.getAttribute("href")).toBe("/app/admin/ai-spending#ai-connections");
+   fireEvent.click(change);
+   expect(await screen.findByRole("heading", { name: "Company AI connections" })).toBeTruthy();
+   fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   await screen.findByTestId("ai-spend-saved");
+   expect(c.writes.map(w => w.path)).toEqual(["/v1/app/org/settings"]);
+   expect(c.state.source).toBeNull();
+  } finally { f.close(); }
  });
 
  it("a new company with no saved source and no default: one Save writes the limit and the shown Rovara's AI (#255)", async () => {
@@ -167,12 +173,12 @@ describe("the company step, AI and spending", () => {
 
  it("a refetched effective default never makes an untouched source choice save", async () => {
   const c = company({ cap: 800_000_000, source: null, model: null });
-  let effective: "rovara" | "anthropic_key" = "rovara";
+  let chosen = false;
   const respond: Respond = r => {
    if (r.path === "/v1/app/org/agent-ai" && r.method === "GET") {
-    return { status: 200, body: { ...(agentAi(null, 0) as object), effectiveSource: effective, sourceIsDefault: true } };
+    return { status: 200, body: chosen ? agentAi("anthropic_key", 1) : { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } };
    }
-   if (r.path === "/v1/app/org/engine-model" && r.method === "PUT") effective = "anthropic_key";
+   if (r.path === "/v1/app/org/engine-model" && r.method === "PUT") chosen = true;
    return c.respond(r);
   };
   const f = mountRoute("/app/admin/ai-spending", respond);
@@ -425,4 +431,93 @@ describe("a project's AI and spend limit", () => {
    expect((await screen.findByTestId("project-spend-error")).textContent).toBe("That's above your company's per-task limit. Pick a lower amount.");
   } finally { f.close(); }
  });
+});
+
+// R1/R2/R4: fresh served facts, no stale billing or premature save claim.
+for (const failure of [403, 503]) it(`a later source read failure ${failure} drops the default claim and Save, even with cached data`, async () => {
+ const c = company({ cap: 500_000_000, source: null, model: null }); let failed = false;
+ const f = mountRoute("/app/admin/ai-spending", r => r.path === "/v1/app/org/agent-ai" && r.method === "GET"
+  ? failed ? { status: failure, body: { error: { code: "FORBIDDEN", message: "not readable" } } } : { status: 200, body: { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } } : c.respond(r));
+ try {
+  await screen.findByTestId("ai-spend-default");
+  fireEvent.click(screen.getByRole("button", { name: "Save" })); await screen.findByTestId("ai-spend-saved");
+  failed = true;
+  await act(async () => { await f.query.refetchQueries({ predicate: q => q.queryKey[0] === "ai-spend" && q.queryKey.at(-1) === "agent-ai" }); });
+  await screen.findByTestId("ai-spend-source-read-error", {}, { timeout: 5000 });
+  expect(screen.queryByTestId("ai-spend-default")).toBeNull();
+  expect(screen.queryByTestId("ai-spend-saved")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+ } finally { f.close(); }
+});
+it("does not claim Saved when the confirming source read fails", async () => {
+ const c = company({ cap: 500_000_000, source: null, model: null }); let wrote = false;
+ const f = mountRoute("/app/admin/ai-spending", r => {
+  if (r.method === "PUT") wrote = true;
+  if (r.path === "/v1/app/org/agent-ai" && r.method === "GET") return wrote ? { status: 403, body: { error: { code: "UNAVAILABLE", message: "unreadable" } } } : { status: 200, body: { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } };
+  return c.respond(r);
+ });
+ try {
+  await screen.findByTestId("ai-spend-default");
+  fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByTestId("ai-spend-source-read-error", {}, { timeout: 5000 });
+  expect(screen.queryByTestId("ai-spend-saved")).toBeNull();
+  expect(document.body.textContent).toContain("Rovara didn't confirm this yet");
+ } finally { f.close(); }
+});
+it("a served default can continue without saving, but model, cap, gateway and step checks still gate it", async () => {
+ const stages = ["understand", "plan", "plan_check", "build", "code_review", "security_review", "pull_request"];
+ for (const blocked of ["none", "model", "cap", "gateway", "steps", "source"]) {
+  const c = company({ cap: 500_000_000, source: null, model: "zai.glm-4.7" });
+  const f = mountAlone(h(AiSpendStep, { role: "owner", developerId: me, onContinue: () => undefined }), r => {
+   if (r.path === "/v1/app/org/agent-ai") return { status: 200, body: { ...agentAi(null, 0), ...(blocked === "source" ? {} : { effectiveSource: "rovara", sourceIsDefault: true }) } };
+   if (r.path === "/v1/app/org/agent-models") return { status: 200, body: { revision: 1, offered: OFFERED, canChange: true, steps: stages.map(stage => ({ stage, setting: null, refused: blocked === "steps", effective: blocked === "steps" ? null : { model: "zai.glm-4.7", companyDefault: true } })) } };
+   if (r.path === "/v1/app/org/engine-model" && blocked === "model") return { status: 200, body: engine(null, "install") };
+   if (r.path === "/v1/app/org/settings") return { status: 200, body: { ...settings(blocked === "cap" ? null : 500_000_000, 1), ...(blocked === "gateway" ? { modelGateway: { ready: false, reason: "not_ready", message: "not ready" } } : {}) } };
+   return c.respond(r);
+  });
+  try {
+   await screen.findByLabelText("Company model");
+   await waitFor(() => expect(screen.getByTestId("onboard-continue-repos")).toHaveProperty("disabled", blocked !== "none"));
+   expect(c.writes).toEqual([]);
+   if (blocked === "source") expect(screen.queryByTestId("ai-spend-default")).toBeNull();
+  } finally { f.close(); }
+ }
+});
+
+it("R2 reports the re-read company limit, and retires the status on a newer disagreeing read", async () => {
+ const c = company({ cap: 500_000_000, source: null, model: null });
+ const f = mountRoute("/app/admin/ai-spending", r => {
+  if (r.path === "/v1/app/org/settings" && r.method === "PUT") return { status: 200, body: settings(550_000_000, 2) };
+  if (r.path === "/v1/app/org/settings" && r.method === "GET") return { status: 200, body: settings(c.state.cap === 500_000_000 ? 550_000_000 : c.state.cap, 2) };
+  if (r.path === "/v1/app/org/agent-ai") return { status: 200, body: { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } };
+  return c.respond(r);
+ });
+ try {
+  await screen.findByLabelText("Company model");
+  fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  const status = await screen.findByTestId("ai-spend-saved");
+  expect(status.textContent).toContain("$550"); expect(status.textContent).not.toContain("$600");
+  c.state.cap = 700_000_000;
+  await act(async () => { await f.query.refetchQueries({ predicate: q => q.queryKey[0] === "ai-spend" && q.queryKey.at(-1) === "settings" }); });
+  await waitFor(() => expect(screen.queryByTestId("ai-spend-saved")).toBeNull());
+ } finally { f.close(); }
+});
+it("R2 offers a read-only Check after an unconfirmed default-card save", async () => {
+ const c = company({ cap: 500_000_000, source: null, model: null }); let wrote = false, unavailable = false;
+ const f = mountRoute("/app/admin/ai-spending", r => {
+  if (r.method === "PUT") { wrote = true; unavailable = true; }
+  if (r.path === "/v1/app/org/agent-ai") return wrote && unavailable ? { status: 403, body: { error: { code: "FORBIDDEN", message: "unreadable" } } } : { status: 200, body: { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } };
+  return c.respond(r);
+ });
+ try {
+  await screen.findByLabelText("Company model");
+  fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  const check = await screen.findByRole("button", { name: "Check" });
+  const before = c.writes.length; unavailable = false; fireEvent.click(check);
+  await waitFor(() => expect(screen.getByTestId("ai-spend-saved").textContent).toContain("$600"));
+  expect(c.writes).toHaveLength(before);
+ } finally { f.close(); }
 });

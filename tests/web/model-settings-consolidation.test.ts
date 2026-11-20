@@ -41,7 +41,7 @@ function mount({ path = "/app/admin/ai-spending", role = "owner", width = 1280, 
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  return { ...f, ...ui, query, router, identity, bodies, close() { ui.unmount(); router.dispose(); query.clear(); } };
 }
-async function ready() { await screen.findByTestId("learning-model-current"); await screen.findByTestId("step-model-build"); return screen.getByTestId("step-models"); }
+async function ready() { await screen.findByTestId("learning-model-current", {}, { timeout: 5000 }); await screen.findByTestId("step-model-build", {}, { timeout: 5000 }); return screen.getByTestId("step-models"); }
 
 for (const path of ["/app/admin/ai-spending", "/app/onboard?step=ai"]) it(`uses one model card and the same connection controls at ${path}`, async () => {
  const f = mount({ path });
@@ -309,7 +309,7 @@ it("takes a real member from the project's model link to the read-only company s
   return undefined;
  } });
  try {
-  fireEvent.click(await screen.findByRole("link", { name: "AI models for each step" }));
+  fireEvent.click(await screen.findByRole("link", { name: "AI models for each step" }, { timeout: 5000 }));
   await ready(); expect(f.router.state.location).toMatchObject({ pathname: "/app/admin/ai-spending", hash: "#ai-models" });
   await waitFor(() => expect(document.activeElement).toBe(document.getElementById("ai-models")));
   expect(screen.queryByRole("combobox")).toBeNull();

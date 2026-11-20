@@ -105,13 +105,15 @@ for (const durable of [false, true]) {
     expect(w.assumed).not.toHaveBeenCalled(); expect(w.sent).not.toHaveBeenCalled();
   });
 }
-it("M2 non-exempt setup_draft with no source never uses operator Bedrock or bills exempt", async () => {
+it("DEC 263 replaces M2: non-exempt setup_draft defaults to company-billed Rovara AI", async () => {
   const w = setup({ agentKeys: { connected: async () => false, keyFor: async () => undefined } });
   const transport = vi.fn(async () => ({ status: 200, body: answer() }));
   w.deps.agentAi = { sources: { sourceFor: async () => undefined }, rovara: { models: new Map([[alias, id]]), exempt: new Set([`org_${"b".repeat(20)}`]), transport } };
-  expect((await call(w.deps, body, mint({ mdl: [alias], stp: "setup_draft" }))).status).toBe(403);
-  expect(transport).not.toHaveBeenCalled(); expect(w.meter.billedCalls(claims.iss, claims.cid)).toEqual([]);
+  expect((await call(w.deps, { ...body, stream: true }, mint({ mdl: [alias], stp: "setup_draft" }))).status).toBe(200);
+  expect(transport).toHaveBeenCalledTimes(1);
+  expect(w.meter.billedCalls(claims.iss, claims.cid)).toMatchObject([{ line: { charge: "customer" } }]);
 });
+
 it("M3 refuses a mixed-unit partial AWS token tariff", async () => {
   const dims = { cheap: { unit: "1M tokens", pricePerUnit: { USD: "1" } }, dearer: { unit: "1000 tokens", pricePerUnit: { USD: "1" } } };
   const offer = { products: { i: { attributes: { model: "Claude Haiku 4.5", usagetype: "US_input_tokens_standard-Units" } }, o: { attributes: { model: "Claude Haiku 4.5", usagetype: "US_output_tokens_standard-Units" } } }, terms: { OnDemand: { i: { t: { priceDimensions: dims } }, o: { t: { priceDimensions: dims } } } } };
@@ -176,23 +178,26 @@ for (const durable of [false, true]) it(`OpenRouter reports true above-hold mone
   }
 });
 
-// Round C: every operator admission must independently check the operator's exemption list.
-for (const selected of ["default", "saved", "fallback"] as const) for (const signed of [false, true]) for (const exempt of [false, true]) it(`operator admission ${selected}, signed=${signed}, exempt=${exempt}`, async () => {
+// DEC 263 supersedes round C R2-M2 refusal: every operator admission is billed by membership only.
+for (const durable of [false, true]) for (const selected of ["default", "saved", "fallback"] as const) for (const signed of [false, true]) for (const exempt of [false, true]) it(`operator admission ${selected}, signed=${signed}, exempt=${exempt}, durable=${durable}`, async () => {
   const prices = new SnapshotPriceSource({ load: async () => ({ version: 1, sources: { litellm: { fetchedAt: now - 1, count: 1, entries: [{ provider: "bedrock", model: id, kind: "chat", ...price }] } } }), save: async () => false }, { now: () => now, overrides: [] }); await prices.reload();
-  const w = setup({ prices, agentKeys: { connected: async () => false, keyFor: async () => undefined } });
+  const w = world(prices, 2, durable);
   const transport = vi.fn(async () => ({ status: 200, body: answer() }));
   const rovara = { sourceId: "operator", models: new Map([[alias, id]]), exempt: new Set(exempt ? [claims.cid] : []), transport };
   const sources = selected === "fallback" ? { sourceFor: async () => "bedrock_byo" as const, orderFor: async () => ({ source: "bedrock_byo" as const, fallback: ["rovara" as const] }) } : { sourceFor: async () => selected === "saved" ? "rovara" as const : undefined };
   w.deps.agentAi = { sources, rovara };
-  const reserve = vi.spyOn(w.meter, "reserve");
-  // Obtain a real operator quote from an exempt pilot, then present it as this company's signed claim.
-  const quote = await answerRateQuote({ prices, now: () => now, region: "us-west-2", switchedOn: new Set(), offeredProviders: new Set(["bedrock"]), sources: { sourceFor: async () => "rovara" }, keys: w.deps.agentKeys!, rovara: { ...rovara, exempt: new Set([claims.cid]) }, verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${alias}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
+  w.deps.chargeReceipts = { source: (_claims, _model, resolved) => resolved };
+  // Quote the same company and its actual source configuration, then bind the quote at dispatch.
+  const quote = await answerRateQuote({ prices, now: () => now, region: "us-west-2", switchedOn: new Set(), offeredProviders: new Set(["bedrock"]), sources: { sourceFor: async () => "rovara" }, keys: w.deps.agentKeys!, rovara, verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${alias}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
   const runPrice = (quote.body as { runPrice?: RunPrice }).runPrice; expect(runPrice).toBeDefined();
   const r = await call(w.deps, { ...body, stream: true }, mint({ mdl: [alias], stp: "setup_draft", ...(signed ? { runPrice } : {}) }));
-  expect(r.status).toBe(exempt ? 200 : 403);
-  expect(transport).toHaveBeenCalledTimes(exempt ? 1 : 0);
-  expect(reserve).toHaveBeenCalledTimes(exempt ? 1 : 0);
-  expect(w.meter.billedCalls(claims.iss, claims.cid).map(x => x.line.charge)).toEqual(exempt ? ["exempt"] : []);
+  expect(r.status).toBe(200);
+  expect(transport).toHaveBeenCalledTimes(1);
+  expect(w.holds).toHaveLength(1);
+  expect(w.holds[0]?.line?.charge).toBe(exempt ? "exempt" : "customer");
+  expect(w.settlements.mock.calls[0]![0].receipt).toMatchObject({ billing: exempt ? "exempt" : "customer", source: { kind: "rovara_ai" }, usage: { state: "available" }, amountMicros: { state: "available" } });
+  expect((await w.meter.read(scope)).every(row => row.spentMicros > 0)).toBe(true);
+  if (w.wire) expect(w.wire.items("ledger").find(row => String(row.sk).startsWith("CALL#"))).toMatchObject({ receipt: { billing: exempt ? "exempt" : "customer" } });
 });
 for (const durable of [false, true]) it(`Bedrock reviewer records true cost, alarms and stops (${durable})`, async () => {
   const { InMemoryReviewerGrants } = await import("../../packages/model-gateway/src/reviewer-grants.js");
@@ -220,4 +225,13 @@ it("regional and global profile aliases retain the dearest regional premium in t
     expect(resolved.inputMicrosPerMTok).toBe(1_300_000); expect(resolved.outputMicrosPerMTok).toBe(2_600_000);
     expect(estimateCall(100, 100, resolved, 0, true)).toBeGreaterThanOrEqual(estimateCall(100, 100, entry, 0, true));
   }
+});
+
+for (const durable of [false, true]) for (const limit of ["task", "companyMonth"] as const) it(`non-exempt default admission respects ${limit} before send (${durable})`, async () => {
+  const w = world(undefined, 2, durable);
+  w.deps.agentAi = { sources: { sourceFor: async () => undefined }, rovara: { models: new Map([[alias, id]]), exempt: new Set(), transport: w.sent } };
+  w.deps.caps = new FixedCapsSource({ ...caps, [limit]: 1 });
+  expect((await call(w.deps, body, mint({ mdl: [alias] }))).status).toBe(422);
+  expect(w.sent).not.toHaveBeenCalled(); expect(w.assumed).not.toHaveBeenCalled();
+  expect((await w.meter.read(scope)).every(row => row.committed === 0)).toBe(true);
 });

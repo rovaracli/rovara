@@ -107,13 +107,11 @@ async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
   const listed = AGENT_AI_SOURCES.filter((source) => ALWAYS_LISTED.includes(source) || switchedOn(context, source) || (source === "custom_endpoint" && storedEndpoint));
   const keys: Partial<Record<AgentAiSource, boolean | null>> = {};
   for (const source of listed) { const provider = KEY_OF[source]; if (provider !== undefined) keys[source] = await keyConnected(context, who.companyId, provider); }
-  // DEC 254zzz3(1): for an exempt company with no saved choice, what its agents use now (the gateway's default). Only for such a company is a
-  // connection read for it; anyone else is answered exactly as before (neither field is added).
-  const exempt = saved === undefined && context.company?.rovaraAiExempt?.has(who.companyId) === true;
-  const effective = effectiveAgentSource({ saved: saved?.source, exempt, keyConnected: exempt ? await anthropicKeyConnected(context, who.companyId) : null, bedrockConnected: exempt ? bedrockForDefault(context, bedrock) : null });
+  // DEC 254zzz263: after a successful saved-choice read, no choice is the served Rovara default for every company.
+  const effective = effectiveAgentSource({ saved: saved?.source, exempt: false, keyConnected: null, bedrockConnected: null });
   return ok({
     source: saved?.source ?? null,
-    // Added only for a company on the default: every other answer is byte for byte what it was.
+    // No row is written merely to accept the default. Explicit choices keep their saved source/version.
     ...(effective.isDefault ? { effectiveSource: effective.source, sourceIsDefault: true } : {}),
     version: saved?.version ?? 0,
     canChange: true,

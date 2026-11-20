@@ -157,9 +157,9 @@ describe("the agent route with the switch (gateway, defence in depth)", () => {
     expect(g.sent).toEqual([]); expect(g.keys.asked).toEqual([]); expect(g.keys.reads).toEqual([]);
   });
 
-  it("no saved choice and the own Anthropic key keep working exactly as before, whatever the switch says (byte-identical answers)", async () => {
+  it("an explicit own Anthropic choice works unchanged regardless of the kind switch", async () => {
     const answers: string[] = [];
-    for (const saved of [undefined, "anthropic_key"]) {
+    for (const saved of ["anthropic_key"]) {
       for (const switchedOn of [undefined, new Set<string>(), new Set(GATEWAY_KINDS)]) {
         const g = gateway(saved, switchedOn);
         const sink = await call(g.deps);
@@ -292,4 +292,12 @@ describe(`-c ${AI_SOURCE_KINDS_CONTEXT_KEY}`, () => {
     expect(() => gatewayEnv({ [AI_SOURCE_KINDS_CONTEXT_KEY]: "openai" })).toThrow("company AI source kinds need the product AI additions");
     expect(() => cloudEnv({ [AI_SOURCE_KINDS_CONTEXT_KEY]: "openai" }, "production")).toThrow("company AI sources are for named test environments");
   });
+});
+
+it("the no-choice default fails closed without operator configuration, independent of source-kind switches", async () => {
+ for (const switchedOn of [undefined, new Set<string>(), new Set(GATEWAY_KINDS)]) {
+  const g = gateway(undefined, switchedOn);
+  expect((await call(g.deps)).status).toBe(403);
+  expect(g.sent).toEqual([]); expect(g.keys.asked).toEqual([]); expect(g.keys.reads).toEqual([]);
+ }
 });

@@ -225,6 +225,8 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
               if (provider !== "anthropic" || ai === undefined || !ai.ai.exempt.has(claims.cid)) return paused("no_provider");
               const resolved = await resolveAgentSource({ sources: ai.sources, exempt: ai.ai.exempt, keys: { connected: async () => false }, ...(ai.byo === undefined ? {} : { byo: ai.byo }) }, claims.iss, claims.cid, signal);
               if (resolved.source !== "rovara") return paused("no_provider");
+              // Preserve the purpose-specific rule: connected own Bedrock without a saved choice never enables this exempt fallback.
+              if (resolved.via === "default" && ai.byo !== undefined && (await ai.byo.connection(claims.iss, claims.cid, signal)) !== undefined) return paused("no_provider");
               rovara = { ai: ai.ai, marker: `rovara-ai-${randomUUID()}` };
             } else if (provider === "vertex") {
               target = await options.keys.vertexTarget?.(claims.iss, claims.cid, signal);

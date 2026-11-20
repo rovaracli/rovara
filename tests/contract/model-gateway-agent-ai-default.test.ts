@@ -3,16 +3,20 @@
 // go to GATEWAY_ROVARA_AI_EXEMPT and CLOUD_ROVARA_AI_EXEMPT).
 import { describe, expect, it } from "vitest";
 import { effectiveAgentSource, parseRovaraAiExempt as cloudParse, ROVARA_AI_EXEMPT_MAX as CLOUD_MAX } from "../../packages/cloud-server/src/company-store.js";
-import { defaultAgentSource, parseRovaraAiExempt as gatewayParse, ROVARA_AI_EXEMPT_MAX as GATEWAY_MAX } from "../../packages/model-gateway/src/agent-ai.js";
+import { resolveAgentSource, defaultAgentSource, parseRovaraAiExempt as gatewayParse, ROVARA_AI_EXEMPT_MAX as GATEWAY_MAX } from "../../packages/model-gateway/src/agent-ai.js";
 
 describe("the default rule is the same in the gateway and in Cloud", () => {
-  it("every key/Bedrock combination", () => {
-    for (const keyConnected of [true, false]) for (const bedrockConnected of [true, false]) {
-      const gateway = defaultAgentSource({ keyConnected, bedrockConnected });
-      const cloud = effectiveAgentSource({ saved: undefined, exempt: true, keyConnected, bedrockConnected });
-      // The gateway's undefined source is company-key mode, which Cloud names as the own Anthropic key.
-      expect(cloud.source).toBe(gateway.source ?? "anthropic_key");
-      expect(cloud.isDefault).toBe(true);
+  it("every no-choice company defaults to Rovara despite connected or unreadable provider facts", () => {
+    for (const exempt of [true, false]) for (const keyConnected of [true, false, null]) for (const bedrockConnected of [true, false, null]) {
+      const gateway = defaultAgentSource({ keyConnected: keyConnected === true, bedrockConnected: bedrockConnected === true });
+      expect(gateway).toEqual({ source: "rovara", via: "default" });
+      expect(effectiveAgentSource({ saved: undefined, exempt, keyConnected, bedrockConnected })).toEqual({ source: "rovara", isDefault: true });
+    }
+  });
+  it("explicit choices win for every company", async () => {
+    for (const source of ["rovara", "anthropic_key", "bedrock_byo", "openrouter_key"] as const) for (const exempt of [true, false]) {
+      expect(effectiveAgentSource({ saved: source, exempt, keyConnected: null, bedrockConnected: null })).toEqual({ source, isDefault: false });
+      expect(await resolveAgentSource({ sources: { sourceFor: async () => source }, keys: { connected: async () => { throw new Error("must not read"); } } }, "issuer", `org_${"a".repeat(20)}`)).toEqual({ source, via: "chosen" });
     }
   });
   it("the exempt list: the same limit and the same accepted and refused values", () => {

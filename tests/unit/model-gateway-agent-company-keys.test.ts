@@ -212,6 +212,7 @@ describe("gateway process, company-key mode", () => {
     const wire = new WireDynamo(Object.values(TABLES), { namespaceTables: true });
     const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
     await db.put(TABLES.companies, { pk: `COMPANY#${cidA}`, sk: "SETTINGS", companyId: cidA, version: 1, settings: { budgets: { companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } } });
+    await db.put(TABLES.companies, { pk: `COMPANY#${cidA}`, sk: "AGENT_AI", companyId: cidA, source: "anthropic_key", version: 1 });
     const sent: ProviderRequest[] = [];
     const installKeyReads: number[] = [];
     // The product route itself is given (no KMS here); company-key mode is set on the config.

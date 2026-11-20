@@ -75,7 +75,7 @@ const mutableCaps = (initial: Caps) => { const current = { ...initial }; return 
 
 function gateway(options: { grants?: ReviewerGrantStore | false; caps?: Caps; heavy?: boolean; overrides?: Partial<GatewayDependencies> } = {}) {
   const companyKeys = new CompanyKeys();
-  const choices = new Choices();
+  const choices = new Choices(); choices.saved.set(cidA, "anthropic_key"); choices.saved.set(cidB, "anthropic_key");
   const keySent: ProviderRequest[] = [];
   const bedrockSent: ProviderRequest[] = [];
   const rovara: RovaraAi = { models: new Map([[MODEL, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"]]), exempt: new Set([cidA]), transport: async (request) => { bedrockSent.push(request); return { status: 200, body: options.heavy === true ? heavyAnswer() : answer() }; } };
@@ -745,6 +745,7 @@ describe("the deployed process wires the durable store", () => {
   async function serve(wire: WireDynamo, mode: "company" | "install", sent: ProviderRequest[]) {
     const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
     await db.put(T.companies, { pk: `COMPANY#${cidA}`, sk: "SETTINGS", companyId: cidA, version: 1, settings: { budgets: { companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } } });
+    await db.put(T.companies, { pk: `COMPANY#${cidA}`, sk: "AGENT_AI", companyId: cidA, source: "anthropic_key", version: 1 });
     // One exact price row, so a review (which needs an exact price) is admitted; the deployed price source reads this table.
     await new DynamoPriceSnapshotStore(db, T.prices).save({ version: 1, sources: { litellm: { fetchedAt: now, count: 1, entries: [{ provider: "anthropic", model: MODEL, kind: "chat", inputMicrosPerMTok: 3_000_000, outputMicrosPerMTok: 15_000_000, cacheReadMicrosPerMTok: 300_000, cacheWrite5mMicrosPerMTok: 3_750_000, cacheWrite1hMicrosPerMTok: 6_000_000 }] } } } as never, 0);
     const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0, ...(mode === "company" ? { agentKeys: "company" as const } : {}) };

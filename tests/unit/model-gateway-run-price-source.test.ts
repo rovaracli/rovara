@@ -9,11 +9,11 @@ beforeAll(denyNetwork);
 const model = claims.mdl[0]!;
 const id = "us.anthropic.claude-sonnet-4-5-v1:0";
 const sourceId = "arn:aws:iam::123456789012:role/gateway@us-west-2";
-async function world() {
+async function world(defaultBilled = false) {
   const prices = new SnapshotPriceSource({ load: async () => ({ version: 9, sources: { litellm: { fetchedAt: now - 100, count: 1, entries: [{ provider: "bedrock", model: id, kind: "chat", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 }] } } }), save: async () => false }, { now: () => now, overrides: [] }); await prices.reload();
-  const rovara = { sourceId, models: new Map([[model, id]]), exempt: new Set([claims.cid]) };
+  const rovara = { sourceId, models: new Map([[model, id]]), exempt: new Set(defaultBilled ? [] : [claims.cid]) };
   const keys = { connected: async () => false, keyFor: async () => undefined };
-  const sources = { sourceFor: async () => "rovara" as const };
+  const sources = { sourceFor: async () => defaultBilled ? undefined : "rovara" as const };
   const quote = async (identity: string | undefined) => answerRateQuote({ prices, now: () => now, region: "us-west-2", switchedOn: new Set(), offeredProviders: new Set(["bedrock"]), sources, keys,
     rovara: { models: rovara.models, exempt: rovara.exempt, ...(identity === undefined ? {} : { sourceId: identity }) }, verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }) },
   { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${model}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
@@ -56,4 +56,16 @@ it("keeps an exact micro-rate ceiling valid without rounding a smaller authoriza
   const source = { source: { kind: "rovara_ai" as const, id: sourceId, name: "Operator AI", provider: "bedrock", connectionRevision: base.connectionRevision }, billing: "customer" as const };
   expect(runPriceAllows(parseTaskClaims({ ...claims, runPrice })!, "bedrock", id, source, price, now)).toBe(true);
   expect(runPriceAllows(parseTaskClaims({ ...claims, runPrice: { ...runPrice, inputUsdPerMillion: (rate - 0.1) / 1_000_000 } })!, "bedrock", id, source, price, now)).toBe(false);
+});
+
+it("a non-exempt default gets a usable exact operator quote and customer receipt", async () => {
+  const w = await world(true);
+  const grant = ((await w.quote(sourceId)).body as { runPrice: RunPrice }).runPrice;
+  expect(grant).toMatchObject({ companyId: claims.cid, sourceId, provider: "bedrock", catalogModel: id, snapshotVersion: 9 });
+  const f = setup({ prices: w.prices, agentKeys: w.keys, chargeReceipts: { source: (_claims, _model, resolved) => resolved } });
+  f.deps.agentAi = { sources: w.sources, rovara: { ...w.rovara, transport: f.deps.transport } };
+  const settle = vi.spyOn(f.meter, "settleV2");
+  expect((await call(f.deps, undefined, mint({ runPrice: grant }))).status).toBe(200);
+  expect(f.calls).toHaveLength(1);
+  expect(settle.mock.calls[0]![0].receipt).toMatchObject({ billing: "customer", source: { kind: "rovara_ai", id: sourceId }, usage: { state: "available" } });
 });
