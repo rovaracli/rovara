@@ -8,7 +8,7 @@ import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
-import { fencedRead, fenceFor } from "../../packages/ui/src/screens/session/merge-fence.js";
+import { fencedRead, fencedReadiness, fenceFor } from "../../packages/ui/src/screens/session/merge-fence.js";
 import { useSession } from "../../packages/ui/src/api/sessions.js";
 import { MergeSection } from "../../packages/ui/src/screens/session/MergeSection.js";
 import { workspaceTask, type ReadTask } from "../../packages/ui/src/screens/session/workspace-types.js";
@@ -853,4 +853,35 @@ it("F1/R6b: an older FAILED task read arriving after a newer success never super
  // A failure issued AFTER the latest success is still recorded (and an older success after it is dropped).
  await fencedRead(fence, async () => { throw new ApiError(403, "FORBIDDEN", "No."); }).catch(() => undefined);
  expect(fence.taskFailed).toBeDefined();
+});
+
+it("M1/R4: tracking alone never decides 'everything merged': two PRs, the first tracked merged, the second open and untracked: the page says 1 of 2 merged, not Merged, and Merge is not hidden", async () => {
+ const web = { ...PR, repository: "acme/web", number: 7, url: "https://github.com/acme/web/pull/7" };
+ const webReady: Answer = { status: 200, body: { mayMerge: true, ready: true, heads: [{ repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/web", number: 7 }] } };
+ const w = world({ readiness: () => webReady, press: () => merged });
+ w.tab(A, taskOf(A, { pullRequests: [{ ...PR, state: "merged" }, web], mergeTracking: [tracked({ state: "merged" })] }));
+ await waitFor(() => expect(headline()).toBe("1 of 2 pull requests is merged on GitHub"));
+ expect(region().textContent).not.toContain("GitHub shows every pull request merged");
+ expect(region().textContent).toContain("acme/web #7");
+ // Merge is not hidden on the strength of tracking alone: the readiness read ran and the control for the open pull request is there.
+ expect((await screen.findByRole("button", { name: /^Merge #7/u })).hasAttribute("disabled")).toBe(false);
+ expect(w.request.mock.calls.some(([request]) => /\/merge$/u.test(request.path) && request.method === "GET")).toBe(true);
+});
+
+it("L1/R6b: an older FAILED readiness read arriving after a newer success never supersedes it: no refusal is recorded and authority is not dropped; a failure issued after the success is recorded", async () => {
+ const w = world({ readiness: () => ready(HEAD_A), press: () => merged });
+ const t = w.tab(A);
+ await screen.findByRole("button", { name: /^Merge #42/u });
+ const fence = fenceFor(t.query, SUBJECT);
+ let fail!: () => void;
+ const gate = new Promise<void>(resolve => { fail = resolve; });
+ const older = fencedReadiness(fence, async () => { await gate; throw new ApiError(503, "RUNTIME_UNAVAILABLE", "x"); }).catch(() => "failed");   // issued first, still in flight
+ await fencedReadiness(fence, async () => "ok");                                                                                                   // a newer read succeeds
+ fail();
+ expect(await older).toBe("failed");
+ expect(fence.readinessDenied).toBeUndefined();
+ await new Promise(resolve => setTimeout(resolve, 40));
+ expect(screen.getByRole("button", { name: /^Merge #42/u }).hasAttribute("disabled")).toBe(false);
+ await fencedReadiness(fence, async () => { throw new ApiError(403, "FORBIDDEN", "No."); }).catch(() => undefined);
+ expect(fence.readinessDenied).toBeDefined();
 });

@@ -24,6 +24,8 @@ export interface Fence {
  taskFailed: { seq: number } | undefined;
  /** A readiness read failed or was refused; cleared only by a readiness read issued after it that succeeds. */
  readinessDenied: { seq: number } | undefined;
+ /** The issue number of the latest SUCCESSFUL readiness read: a failure issued before it never supersedes it (R6b). */
+ readinessLatest: number | undefined;
  /** Records this tab has observed, by `requestId|startedAt`, with tabSeq() at first observation. */
  observed: Map<string, number>;
  version: number;
@@ -31,7 +33,7 @@ export interface Fence {
 }
 const fences = new WeakMap<QueryClient, Map<string, Fence>>();
 
-function make(): Fence { return { latestRead: undefined, taskFailed: undefined, readinessDenied: undefined, observed: new Map(), version: 0, listeners: new Set() }; }
+function make(): Fence { return { latestRead: undefined, taskFailed: undefined, readinessDenied: undefined, readinessLatest: undefined, observed: new Map(), version: 0, listeners: new Set() }; }
 function changed(fence: Fence): void { fence.version += 1;for (const listener of fence.listeners) listener(); }
 
 /** The fence for one subject (`orgId|developerId|sessionId`) in this QueryClient. */
@@ -64,15 +66,20 @@ export async function fencedRead<T>(fence: Fence, call: () => Promise<T>): Promi
  return { issued, body };
 }
 
-/** A readiness read made by the section: a failure or refusal is recorded in the fence; only a read issued after it that succeeds clears it. */
+/**
+ * A readiness read made by the section: a failure or refusal is recorded in the fence; only a read issued after it that succeeds clears it. The same rule as task reads (R6b): a failure issued BEFORE the latest successful
+ * readiness read is ignored (the caller still sees its own failure), so an older failed read landing late can never supersede a newer success.
+ */
 export async function fencedReadiness<T>(fence: Fence, call: () => Promise<T>): Promise<T> {
  const issued = tabSeq();
  try {
   const body = await call();
+  if (fence.readinessLatest === undefined || issued > fence.readinessLatest) fence.readinessLatest = issued;
   if (fence.readinessDenied !== undefined && issued > fence.readinessDenied.seq) { fence.readinessDenied = undefined;changed(fence); }
   return body;
  } catch (failure) {
-  if (fence.readinessDenied === undefined || issued > fence.readinessDenied.seq) { fence.readinessDenied = { seq: issued };changed(fence); }
+  const newerSuccess = fence.readinessLatest !== undefined && fence.readinessLatest > issued;
+  if (!newerSuccess && (fence.readinessDenied === undefined || issued > fence.readinessDenied.seq)) { fence.readinessDenied = { seq: issued };changed(fence); }
   throw failure;
  }
 }

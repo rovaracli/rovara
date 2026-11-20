@@ -21,7 +21,11 @@ import { clearAccepted, readAcceptedNow, useAccepted, writeAccepted, type Accept
 const RISK_WORDS = { low: "Low risk", medium: "Medium risk", high: "High risk" } as const;
 /** The level the server named; a level this build does not know is treated as medium (more careful than low). */
 const levelOf = (risk: { level: string }): "low" | "medium" | "high" => (risk.level === "low" || risk.level === "high" ? risk.level : "medium");
-const mergedEverywhere = (task: ReadTask): boolean => task.workflow?.stage === "MERGED" || ((task.mergeTracking?.length ?? 0) > 0 && task.mergeTracking!.every(item => item.state === "merged"));
+/**
+ * "Everything is merged" is claimed only when tracking says every tracked pull request merged AND no pull request is still open: an open pull request tracking has not read yet (pullRowsOf adds it as an open row) means
+ * tracking alone does not cover the task, so the page must not say Merged or hide Merge on the strength of tracking alone (R4).
+ */
+const mergedEverywhere = (task: ReadTask): boolean => task.workflow?.stage === "MERGED" || ((task.mergeTracking?.length ?? 0) > 0 && task.mergeTracking!.every(item => item.state === "merged") && pullRowsOf(task, undefined).every(row => row.state !== "open"));
 /** The task's pull requests that are still open, with the GitHub link Code sent (only a github.com link is ever shown as one). */
 export const openPullRequestsOf = (task: ReadTask) => (task.pullRequests ?? []).filter(pull => pull.state === "open");
 /** Whether the Merge section has anything to show: a merge view Code sent, or a pull request still open. */
