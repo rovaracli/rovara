@@ -1,3 +1,4 @@
+import { actionSubject, runActionPress, recoverActionBasis, answerHeld, isCsrfFailure } from "../../safe-action.js";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
@@ -16,7 +17,7 @@ import { branchFact, changedSince, checksFact, lockOf, pressBound, pullKey, pull
 import { Clock, Facts, MergeChip, Sha, ThreeParts } from "./merge-parts.js";
 import { fencedRead, fencedReadiness, observeRecord, useFence } from "./merge-fence.js";
 import { createSessionApi } from "../../api/sessions.js";
-import { acceptedStoredExactly, claimLockSupported, clearAccepted, readAcceptedNow, useAccepted, withClaim, writeAccepted, type AcceptedAnswer, allMerged, clearPending, headsMoved, readPendingNow, usePending, writePending, type PendingPress } from "./merge-pending.js";
+import { mergeActionRecords, claimLockSupported, clearAccepted, readAcceptedNow, useAccepted, type AcceptedAnswer, allMerged, clearPending, headsMoved, usePending } from "./merge-pending.js";
 
 const RISK_WORDS = { low: "Low risk", medium: "Medium risk", high: "High risk" } as const;
 /** The level the server named; a level this build does not know is treated as medium (more careful than low). */
@@ -88,7 +89,7 @@ function PullItem({ row, ready, held, accepted, many, index }: { row: PullRow; r
  * The receipt reader and original-operation adoption are held (the receipt presentation is kept on branch held/merge-receipt-view, not mounted).
  */
 /** Who is reading (R6g/N5): company + person from /v1/app/me, then the session. */
-const subjectFrom = (me: { org: { orgId: string }; developer: { id: string } } | undefined, sessionId: string): string | undefined => me === undefined ? undefined : me.org.orgId + "|" + me.developer.id + "|" + sessionId;
+const subjectFrom = (me: { org: { orgId: string }; developer: { id: string } } | undefined, sessionId: string): string | undefined => me === undefined ? undefined : actionSubject({ orgId: me.org.orgId, developerId: me.developer.id, subjectId: sessionId });
 const identityKeyOf = (sessionId: string): readonly string[] => ["session", sessionId, "identity"];
 export function MergeSection(props: { sessionId: string; task: ReadTask }) {
  const host = useAppHost(), meApi = useMemo(() => createApiClient(host), [host]);
@@ -178,7 +179,9 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
  // A record resolves only through a task read THIS tab issued after THIS tab first observed it, or through the answer to that same request; another request's answer, an older read or a cache write settles nothing.
  const entryKey = entry === undefined ? undefined : recordKey(entry), observedAt = entryKey === undefined ? undefined : fence.observed.get(entryKey);
  const resolving = read !== undefined && observedAt !== undefined && read.issued > observedAt && readTask !== undefined;
- const voided = entry !== undefined && resolving && headsMoved(entry, readRows), settled = entry !== undefined && ((resolving && allMerged(entry, readRows)) || (!retired && storedAccepted !== undefined && storedAccepted.requestId === entry.requestId));
+ // Accepted persistence owns its pending cleanup. Never settle here from just
+ // a matching request id: an accepted candidate may have failed exact readback.
+ const voided = entry !== undefined && resolving && headsMoved(entry, readRows), settled = entry !== undefined && resolving && allMerged(entry, readRows);
  const active = entry !== undefined && !voided && !settled ? entry : undefined, staleEntry = active !== undefined && stored.kind === "pending" && stored.stale;
  const storageLock = subject !== undefined && (stored.kind === "unavailable" || stored.kind === "unreadable") ? stored.kind : undefined;
  // A record that a moved head voided is dropped with a visible notice, never silently (derived during render, so it needs no effect to set state).
@@ -207,7 +210,7 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
   if (subject === undefined || nowSubject === undefined) return "Rovara hasn't read who you are yet. Nothing was sent.";
   if (nowSubject !== subject) return "Who you are changed since this page was shown. Nothing was sent. Review it again.";
   // An accepted answer for these pull requests (this tab, another tab, an earlier visit) or a readiness read that is switched off means a cached "ready" is not current: nothing is sent (M2).
-  if (readAcceptedNow(subject) !== undefined || (memoryDone !== undefined && retiredInfo?.id !== memoryDone.requestId) || !readinessOn) return ACCEPTED_WORDS;
+  if (readAcceptedNow(subject) !== undefined || answerHeld(memoryDone, retiredInfo?.id) || !readinessOn) return ACCEPTED_WORDS;
   // The task this page shows now must be the one the readiness read was made for (P1-3), and the section's own latest task read must not have failed or been refused.
   if (basisRef.current !== basis) return "What the task shows changed since it was checked. Nothing was sent. Review it again.";
   if (fence.taskFailed !== undefined) return "Rovara's latest read of this task failed, so Merge isn't available. Nothing was sent.";
@@ -231,63 +234,62 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
   // The section's own task read: if the last one failed or was refused, or the newest body it holds does not show what the person was shown, it reads again first and compares the BODY that read returned (M-1, P2):
   // only a read that works and still shows the same facts (head, digest, status, checks, pull request set) lets the press go on; anything else sends nothing and the page re-reads.
   let validated = 0;
-  const held0 = fence.latestRead;
-  if (fence.taskFailed !== undefined || (held0 !== undefined && basisOfRead(held0.data) !== basis)) {
-   const fresh = await readFresh();
-   if (fresh === undefined) { sending.current = false;setOpen(false);setError("Rovara couldn't read this task just now, so nothing was sent. Try again in a moment.");return; }
-   if (basisOfRead(fresh.body) !== basis) { sending.current = false;setOpen(false);setError("What the task shows changed since it was checked. Nothing was sent. Review it again.");void query.invalidateQueries({ queryKey: ["session", sessionId] });return; }
-   validated = fresh.issued;
-  }
-  const frozen = shown, sentHeads = frozen.heads ?? [];
-  const next: PendingPress = { v: 1, sessionId: subject, requestId: crypto.randomUUID(), startedAt: new Date().toISOString(), heads: sentHeads, risk: frozen.risk, sent: sentHeads.map(head => head.repositoryId + " #" + String(head.number) + " at " + shortSha(head.headSha)) };
-  // The claim runs inside an exclusive same-origin lock for this subject (P1-4). Inside it everything is read AGAIN, right now: authority and readiness from the query cache (R6c), then the saved records from storage; if one exists
-  // (this tab, another tab, an earlier visit) or storage cannot be read, no request id is minted. The record is saved BEFORE the request is sent, and that saved record, not the lock, keeps every later press out.
-  const claim = await withClaim<{ stop: true; words: string | undefined } | { stop: false }>(subject, () => {
-   const why = refusalNow(validated);
-   if (why !== undefined) return { stop: true, words: why };
-   if (readAcceptedNow(subject) !== undefined || readPendingNow(subject).kind !== "none") return { stop: true, words: undefined };
-   if (!writePending(next)) return { stop: true, words: STORAGE_WORDS };
-   return { stop: false };
+  await runActionPress({
+   recover: async () => {
+    const recovery = await recoverActionBasis(fence, basis, basisOfRead, readFresh);
+    if (recovery.kind === "read_failed") { sending.current = false;setOpen(false);setError("Rovara couldn't read this task just now, so nothing was sent. Try again in a moment.");return false; }
+    if (recovery.kind === "changed") { sending.current = false;setOpen(false);setError("What the task shows changed since it was checked. Nothing was sent. Review it again.");void query.invalidateQueries({ queryKey: ["session", sessionId] });return false; }
+    validated = recovery.validated;
+    return true;
+   },
+   records: mergeActionRecords, timeoutMs: 120_000,
+   refusalNow: () => refusalNow(validated), storageWords: STORAGE_WORDS,
+   pending: () => {
+    const frozen = shown, sentHeads = frozen.heads ?? [];
+    return { v: 1 as const, sessionId: subject, requestId: crypto.randomUUID(), startedAt: new Date().toISOString(), heads: sentHeads, risk: frozen.risk, sent: sentHeads.map(head => head.repositoryId + " #" + String(head.number) + " at " + shortSha(head.headSha)) };
+   },
+   claimed: claim => {
+    if (claim.kind !== "done") {
+     setOpen(false);
+     setError(claim.kind === "busy" ? "Another tab is merging this task right now. Nothing was sent here." : "This browser can't make sure two tabs don't merge at once, so nothing was sent. Merge it on GitHub.");
+    } else if (claim.value.stop) {
+     setOpen(false);
+     if (claim.value.words !== undefined) setError(claim.value.words);
+    }
+   },
+   send: async next => {
+    observeRecord(fence, recordKey(next));
+    setBusy(true);setError(undefined);setNote(undefined);
+    if (next.risk === undefined) throw new Error("unreachable: a press is only offered with a risk level");
+    const result = await api.merge(sessionId, next.requestId, { expectedHeads: next.heads, risk: next.risk });
+    if (result.kind !== "done") throw new ApiError(502, "INVALID_RESPONSE", "Rovara answered Merge in an unexpected way. Reload this page.");
+    const answer: AcceptedAnswer = { v: 1, subject, requestId: next.requestId, acceptedAt: new Date().toISOString(), words: doneWords(result.value.pullRequests), keys: result.value.pullRequests.map(pull => pull.repositoryId + "#" + String(pull.number)), heads: next.heads };
+    // Kept in storage so a reload or another tab cannot offer Merge again for pull requests Code already said are merged; in memory if storage refuses.
+    // The saved press is released only once the accepted answer is stored AND read back exactly (P1-1). If it can't be, the saved press stays: a reload or another tab still sees it and sends nothing; this page shows the answer from memory.
+    return answer;
+   },
+   accepted: (answer, storage) => {
+    if (storage === "not-stored") setMemoryDone(answer);
+    setOpen(false);
+    observeRecord(fence, "acc|" + answer.requestId);void readNow();
+    // Fired, not awaited: a stalled session read must never keep the claim, busy or sending held after the answer is recorded.
+    void query.invalidateQueries({ queryKey: ["session", sessionId] }).catch(() => undefined);
+   },
+   failed: (failure, next) => {
+    setOpen(false);
+    if (isCsrfFailure(failure)) {
+     // Cloud's CSRF check (403 CSRF_INVALID, handler.ts:315-316) runs before anything is routed or forwarded, so nothing was sent; it is not a refusal of authority (R6h). Say so plainly and read who you are again.
+     clearPending(next);setError("Couldn't merge that. Your sign-in changed, so nothing was sent. Rovara is reading who you are again; try again in a moment.");void query.invalidateQueries({ queryKey: ["session", sessionId, "identity"] });
+    } else if (refused(failure, next.heads.length)) {
+     // Code gave a documented final refusal to this request: nothing more will happen for it. The next press is a new one.
+     clearPending(next);setError((failure as ApiError).message);
+    }
+    else if (failure instanceof ApiError && failure.status === 409 && failure.code === "MERGE_NOT_READY") setNote("Code answered: " + failure.message + " That doesn't say nothing was merged, so Merge stays locked until a read shows what GitHub holds.");
+    // Anything else is unknown: the record stays, a lost, throttled, timed-out or unreadable answer does not say what GitHub did.
+    void query.invalidateQueries({ queryKey: readinessKey });
+   },
+   finished: () => { sending.current = false;setBusy(false); },
   });
-  if (claim.kind !== "done") {
-   sending.current = false;setOpen(false);
-   setError(claim.kind === "busy" ? "Another tab is merging this task right now. Nothing was sent here." : "This browser can't make sure two tabs don't merge at once, so nothing was sent. Merge it on GitHub.");
-   return;
-  }
-  if (claim.value.stop) {
-   sending.current = false;claim.release();setOpen(false);
-   if (claim.value.words !== undefined) setError(claim.value.words);
-   return;
-  }
-  // The lock stays held until the request has settled and its end is recorded (M-2); the `finally` below always releases it.
-  try {
-   observeRecord(fence, recordKey(next));
-   setBusy(true);setError(undefined);setNote(undefined);
-   if (next.risk === undefined) throw new Error("unreachable: a press is only offered with a risk level");
-   const result = await api.merge(sessionId, next.requestId, { expectedHeads: next.heads, risk: next.risk });
-   if (result.kind !== "done") throw new ApiError(502, "INVALID_RESPONSE", "Rovara answered Merge in an unexpected way. Reload this page.");
-   const answer: AcceptedAnswer = { v: 1, subject, requestId: next.requestId, acceptedAt: new Date().toISOString(), words: doneWords(result.value.pullRequests), keys: result.value.pullRequests.map(pull => pull.repositoryId + "#" + String(pull.number)), heads: next.heads };
-   // Kept in storage so a reload or another tab cannot offer Merge again for pull requests Code already said are merged; in memory if storage refuses.
-   // The saved press is released only once the accepted answer is stored AND read back exactly (P1-1). If it can't be, the saved press stays: a reload or another tab still sees it and sends nothing; this page shows the answer from memory.
-   if (writeAccepted(answer) && acceptedStoredExactly(answer)) clearPending(next);
-   else setMemoryDone(answer);
-   setOpen(false);
-   observeRecord(fence, "acc|" + answer.requestId);void readNow();
-   // Fired, not awaited: a stalled session read must never keep the claim, busy or sending held after the answer is recorded.
-   query.invalidateQueries({ queryKey: ["session", sessionId] }).catch(() => undefined);
-  } catch (failure) {
-   setOpen(false);
-   if (failure instanceof ApiError && failure.status === 403 && (failure.code === "CSRF_INVALID" || failure.code === "CSRF_STALE")) {
-    // Cloud's CSRF check (403 CSRF_INVALID, handler.ts:315-316) runs before anything is routed or forwarded, so nothing was sent; it is not a refusal of authority (R6h). Say so plainly and read who you are again.
-    clearPending(next);setError("Couldn't merge that. Your sign-in changed, so nothing was sent. Rovara is reading who you are again; try again in a moment.");void query.invalidateQueries({ queryKey: ["session", sessionId, "identity"] });
-   } else if (refused(failure, next.heads.length)) {
-    // Code gave a documented final refusal to this request: nothing more will happen for it. The next press is a new one.
-    clearPending(next);setError((failure as ApiError).message);
-   }
-   else if (failure instanceof ApiError && failure.status === 409 && failure.code === "MERGE_NOT_READY") setNote("Code answered: " + failure.message + " That doesn't say nothing was merged, so Merge stays locked until a read shows what GitHub holds.");
-   // Anything else is unknown: the record stays, a lost, throttled, timed-out or unreadable answer does not say what GitHub did.
-   void query.invalidateQueries({ queryKey: readinessKey });
-  } finally { sending.current = false;setBusy(false);claim.release(); }
  }
  /** The one action while a press is unresolved: READ again (readiness and the task). It never sends the merge: Code replays only a stored success, so an unanswered id could cause a second provider merge. */
  async function checkAgain() {
