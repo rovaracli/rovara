@@ -319,10 +319,10 @@ it("B4/N2: a saved 'Merged' answer retires, for good, only to a task read ISSUED
  expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
  // It answers late with a disagreeing task whose tracking time is far in the future: issued before the answer, so it cannot contradict it.
  await slow.deliver({ mergeTracking: [tracked({ headSha: HEAD_B, observedAt: "2099-01-01T00:00:00.000Z" })] });
- expect(headline()).toBe("Merged");
+ expect(headline()).toBe("Merge accepted");
  // A read issued after the answer that shows the pull request open does.
  await t.read(A, { mergeTracking: [tracked({ headSha: HEAD_B, observedAt: "2000-01-01T00:00:00.000Z" })] });
- await waitFor(() => expect(headline()).not.toBe("Merged"));
+ await waitFor(() => expect(headline()).not.toBe("Merge accepted"));
  expect(screen.queryByText("Merged acme/payments #42.")).toBeNull();
  expect(region().textContent).toContain("A later read shows a pull request open again, so the earlier answer no longer applies.");
  // Older facts delivered afterwards do not bring it back.
@@ -545,8 +545,10 @@ it("R6g: nothing is offered or sent while identity is unread; once it reads, Mer
  expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
 });
 
-it("R6h: a stale-CSRF 403 is not a refusal of authority: it says Couldn't merge that, clears nothing-was-sent, re-reads identity and never says only an admin", async () => {
- const w = world({ readiness: () => ready(), press: () => ({ status: 403, body: { error: { code: "CSRF_STALE", message: "Your sign-in changed." } } }) });
+it("R6h/M1: Cloud's 403 CSRF_INVALID (and CSRF_STALE) is not a refusal of authority: it says Couldn't merge that, clears nothing-was-sent, re-reads identity and never says only an admin", async () => {
+ for (const code of ["CSRF_INVALID", "CSRF_STALE"]) {
+ localStorage.clear();
+ const w = world({ readiness: () => ready(), press: () => ({ status: 403, body: { error: { code, message: "Your sign-in changed." } } }) });
  w.tab(A);
  const meReads = () => w.request.mock.calls.filter(([request]) => request.path === "/v1/app/me").length;
  await press();
@@ -556,6 +558,9 @@ it("R6h: a stale-CSRF 403 is not a refusal of authority: it says Couldn't merge 
  expect(localStorage.getItem("rovara.merge.pending.v1:" + SUBJECT)).toBeNull();
  expect(headline()).not.toBe(UNSURE);
  expect(w.posts()).toHaveLength(1);
+ screen.getByRole("region", { name: "Merge" });
+ document.body.innerHTML = "";
+ }
 });
 
 it("N2a/body: a GET whose own body lacks a fact an earlier manual cache write added does NOT settle; the facts that resolve come from that GET's body, never from the cache", async () => {
@@ -622,33 +627,107 @@ it("N6: a different person never inherits the previous person's accepted-success
  const t = w.tab(A);
  await press();
  expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
- expect(region().textContent).toContain("You pressed Merge and GitHub accepted it");
+ expect(region().textContent).toContain("Code answered that these are merged");
  dev = OTHER_DEV;
  await t.query.invalidateQueries({ queryKey: ["session", A, "identity"] });
- await waitFor(() => expect(region().textContent).not.toContain("You pressed Merge and GitHub accepted it"));
+ await waitFor(() => expect(region().textContent).not.toContain("Code answered that these are merged"));
  expect(screen.queryByText("Merged acme/payments #42.")).toBeNull();
  expect(screen.queryByText(/dropped because|A later read shows/u)).toBeNull();
  expect(w.posts()).toHaveLength(1);
 });
 
-it("B4 (production path): a later REAL refetch of the session through the actual useSession hook retires a saved 'Merged' when the section's own body-bound read disagrees", async () => {
- const mergedFacts = { mergeTracking: [tracked({ state: "merged" })], pullRequests: [{ ...PR, state: "merged" }] };
+function lagPage(w: ReturnType<typeof world>, query: ReturnType<typeof createQueryClient>) {
+ function Page() { const s = useSession(A); const task = s.data === undefined ? undefined : workspaceTask(s.data); return task === undefined ? null : h(MergeSection, { sessionId: A, task }); }
+ renderUi(h(AppHostProvider, { host: w.host, children: h(QueryClientProvider, { client: query, children: h(Page) }) }));
+}
+async function lagRounds(query: ReturnType<typeof createQueryClient>, w: ReturnType<typeof world>) {
+ const readinessReads = () => w.request.mock.calls.filter(([request]) => /\/merge$/u.test(request.path) && request.method === "GET").length;
+ const before = readinessReads();
+ // Real refetches (and the section's own reads) all say: open, same head. The lag must not retire the answer or offer Merge.
+ for (let round = 0; round < 3; round += 1) { await query.invalidateQueries({ queryKey: ["session", A] });await new Promise(resolve => setTimeout(resolve, 120)); }
+ expect(screen.queryByText("Merged acme/payments #42.")).not.toBeNull();
+ expect(headline()).toBe("Merge accepted");
+ expect(region().textContent).toContain("Rovara's tracking hasn't recorded it yet");
+ expect(screen.queryAllByRole("button", { name: /^Merge #42/u })).toHaveLength(0);
+ expect(readinessReads()).toBe(before);
+ expect(w.posts()).toHaveLength(1);
+}
+
+it("H1/B4 (production path): Code's tracking LAGS after an accepted answer: reads still show the PR open at the same head, Merge stays locked, readiness stays off, the answer is never retired on that; new commits (a different head) retire it", async () => {
  let over: Record<string, unknown> = {}, pressed = false;
- // Before the press the page reads head A open; once the press is accepted every read says merged, as the real tracking would.
- const w = world({ readiness: () => ready(), press: () => { pressed = true;over = mergedFacts;return merged; }, session: () => pressed ? over : {} });
+ // Before the press the page reads head A open. Code's success path only WAKES the tracker (hosted-merge-routes.ts:212), so right after the answer reads STILL say open at the same head.
+ const w = world({ readiness: () => ready(), press: () => { pressed = true;return merged; }, session: () => pressed ? over : {} });
+ const query = createQueryClient();
+ lagPage(w, query);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ await lagRounds(query, w);
+ over = { mergeTracking: [tracked({ headSha: HEAD_B })], pullRequests: [PR] };
+ await query.invalidateQueries({ queryKey: ["session", A] });
+ await waitFor(() => expect(screen.queryByText("Merged acme/payments #42.")).toBeNull());
+ expect(region().textContent).toContain("A later read shows a pull request open again");
+ expect(localStorage.getItem("rovara.merge.accepted.v1:" + SUBJECT)).toBeNull();
+ expect(w.posts()).toHaveLength(1);
+});
+
+it("H1: when Code's tracking catches up, a read that shows the pull requests merged ends the waiting state: 'Merged', still no Merge control", async () => {
+ let over: Record<string, unknown> = {}, pressed = false;
+ const w = world({ readiness: () => ready(), press: () => { pressed = true;return merged; }, session: () => pressed ? over : {} });
+ const query = createQueryClient();
+ lagPage(w, query);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ await lagRounds(query, w);
+ over = { mergeTracking: [tracked({ state: "merged" })], pullRequests: [{ ...PR, state: "merged" }] };
+ await query.invalidateQueries({ queryKey: ["session", A] });
+ await waitFor(() => expect(headline()).toBe("Merged"));
+ expect(screen.queryAllByRole("button", { name: /^Merge #42/u })).toHaveLength(0);
+ expect(w.posts()).toHaveLength(1);
+});
+
+it("H1: an accepted answer also yields to a read that shows the pull request CLOSED without a merge, never to 'open at the same head'", async () => {
+ let over: Record<string, unknown> = {}, pressed = false;
+ const w = world({ readiness: () => ready(), press: () => { pressed = true;return merged; }, session: () => pressed ? over : {} });
  const query = createQueryClient();
  function Page() { const s = useSession(A); const task = s.data === undefined ? undefined : workspaceTask(s.data); return task === undefined ? null : h(MergeSection, { sessionId: A, task }); }
  renderUi(h(AppHostProvider, { host: w.host, children: h(QueryClientProvider, { client: query, children: h(Page) }) }));
  await press();
  expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
- // The page reads the PR as merged (the ordinary session GET and the section's own GET both say so): the saved answer stays.
  await query.invalidateQueries({ queryKey: ["session", A] });
- await new Promise(resolve => setTimeout(resolve, 150));
+ await new Promise(resolve => setTimeout(resolve, 120));
  expect(screen.queryByText("Merged acme/payments #42.")).not.toBeNull();
- // A later real refetch shows the pull request OPEN at another head: the section reads for itself, sees the same, and the saved answer goes.
- over = { mergeTracking: [tracked({ headSha: HEAD_B })], pullRequests: [PR] };
+ over = { mergeTracking: [tracked({ state: "closed" })], pullRequests: [{ ...PR, state: "closed" }] };
  await query.invalidateQueries({ queryKey: ["session", A] });
  await waitFor(() => expect(screen.queryByText("Merged acme/payments #42.")).toBeNull());
- expect(screen.getByRole("region", { name: "Merge" }).textContent).toContain("A later read shows a pull request open again");
+});
+
+it("L1: 400 CONFIG_INVALID is final only for a single-PR press; for a multi-PR press (it can arrive after an earlier PR merged) it stays unknown and keeps the lock", async () => {
+ const web = { ...tracked(), repositoryId: "acme/web", number: 7 };
+ const twoReady: Answer = { status: 200, body: { mayMerge: true, ready: true, heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/web", number: 7, headSha: HEAD_A }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }, { repositoryId: "acme/web", number: 7 }] } };
+ const w = world({ readiness: () => twoReady, press: () => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "Code's words." } } }) });
+ w.tab(A, taskOf(A, { pullRequests: [PR, { ...PR, repository: "acme/web", number: 7, url: "https://github.com/acme/web/pull/7" }], mergeTracking: [tracked(), web] }));
+ fireEvent.click(await screen.findByRole("button", { name: "Merge 2 pull requests" }));
+ fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Press Merge" }));
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ expect(localStorage.getItem(key)).not.toBeNull();
  expect(w.posts()).toHaveLength(1);
+});
+
+it("H1/reload: the accepted answer survives a reload and a second tab during Code's tracking lag: still 'Merge accepted', Merge locked, no readiness read, ONE POST in total", async () => {
+ let pressed = false;
+ const w = world({ readiness: () => ready(), press: () => { pressed = true;return merged; }, session: () => pressed ? {} : undefined });
+ const first = w.tab(A);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ first.unmount();
+ const readinessReads = () => w.request.mock.calls.filter(([request]) => /\/merge$/u.test(request.path) && request.method === "GET").length;
+ const before = readinessReads();
+ // Reload (a fresh QueryClient) and a second tab: Code's reads still say open at the same head.
+ const reloaded = w.tab(A), second = w.tab(A);
+ await waitFor(() => expect(screen.getAllByRole("region", { name: "Merge" })).toHaveLength(2));
+ await new Promise(resolve => setTimeout(resolve, 200));
+ for (const section of screen.getAllByRole("region", { name: "Merge" })) { expect(section.querySelector(".rv-merge-state")!.textContent).toBe("Merge accepted");expect(within(section).queryAllByRole("button", { name: /^Merge #42/u })).toHaveLength(0); }
+ expect(readinessReads()).toBe(before);
+ expect(w.posts()).toHaveLength(1);
+ reloaded.unmount();second.unmount();
 });

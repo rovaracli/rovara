@@ -91,3 +91,42 @@ export function headsMoved(entry: PendingPress, resolvingRows: readonly PullRow[
 export function allMerged(entry: PendingPress, resolvingRows: readonly PullRow[]): boolean {
  return entry.heads.length > 0 && entry.heads.every(head => resolvingRows.find(candidate => candidate.key === pullKey(head.repositoryId, head.number))?.state === "merged");
 }
+
+
+/**
+ * The accepted answer (H1). Code's success path only wakes the merge tracker, so for a while after Code says MERGED the page still reads the pull request as open. So the accepted answer is kept, per subject
+ * (`orgId|developerId|sessionId`), in localStorage, and keeps Merge locked for those pull requests across a reload or a second tab until a read this tab issued shows them merged or contradicts it.
+ * It is never a lock against anything but a second press of already-merged pull requests, and it carries no attribution beyond what Code's answer said.
+ */
+const ACCEPTED_PREFIX = "rovara.merge.accepted.v1:";
+export interface AcceptedAnswer { v: 1; subject: string; requestId: string; acceptedAt: string; words: string; keys: string[]; heads: PendingHead[] }
+const acceptedKey = (subject: string): string => ACCEPTED_PREFIX + subject;
+function rawAccepted(subject: string): string | null { try { return globalThis.localStorage.getItem(acceptedKey(subject)); } catch { return null; } }
+export function parseAccepted(raw: string | null, subject: string): AcceptedAnswer | undefined {
+ if (raw === null) return undefined;
+ try {
+  const v = JSON.parse(raw) as Partial<AcceptedAnswer> | null;
+  if (v === null || typeof v !== "object" || v.v !== 1 || v.subject !== subject || typeof v.requestId !== "string" || !UUID.test(v.requestId) || typeof v.acceptedAt !== "string" || typeof v.words !== "string" || v.words.length > 600) return undefined;
+  if (!Array.isArray(v.keys) || v.keys.length > 32 || !v.keys.every(key => typeof key === "string" && key.length <= 260)) return undefined;
+  if (!Array.isArray(v.heads) || v.heads.length > 32 || !v.heads.every(head => typeof head === "object" && head !== null && typeof head.repositoryId === "string" && head.repositoryId.length > 0 && head.repositoryId.length <= 200 && Number.isInteger(head.number) && head.number > 0 && typeof head.headSha === "string" && SHA.test(head.headSha))) return undefined;
+  return { v: 1, subject, requestId: v.requestId, acceptedAt: v.acceptedAt, words: v.words, keys: v.keys, heads: v.heads };
+ } catch { return undefined; }
+}
+/** The accepted answer stored for one subject, live across tabs and mounts. */
+export function useAccepted(subject: string): AcceptedAnswer | undefined {
+ const subscribe = useCallback((onChange: () => void) => {
+  const onStorage = (event: Event): void => { if (!(event instanceof StorageEvent) || event.key === null || event.key === acceptedKey(subject)) onChange(); };
+  globalThis.addEventListener("storage", onStorage);globalThis.addEventListener(CHANGED, onChange);
+  return () => { globalThis.removeEventListener("storage", onStorage);globalThis.removeEventListener(CHANGED, onChange); };
+ }, [subject]);
+ const raw = useSyncExternalStore(subscribe, () => rawAccepted(subject), () => null);
+ return parseAccepted(raw, subject);
+}
+export function writeAccepted(answer: AcceptedAnswer): boolean {
+ try { globalThis.localStorage.setItem(acceptedKey(answer.subject), JSON.stringify(answer));notify();return true; } catch { return false; }
+}
+/** Removes the accepted answer, only if it is the one the caller means. */
+export function clearAccepted(answer: Pick<AcceptedAnswer, "subject" | "requestId">): void {
+ try { const now = parseAccepted(globalThis.localStorage.getItem(acceptedKey(answer.subject)), answer.subject); if (now !== undefined && now.requestId !== answer.requestId) return;globalThis.localStorage.removeItem(acceptedKey(answer.subject)); } catch { /* stays */ }
+ notify();
+}
