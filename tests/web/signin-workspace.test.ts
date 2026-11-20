@@ -37,6 +37,19 @@ describe("the browser host's sign-in", () => {
   expect(none.assign.mock.lastCall?.[0]).toBe("/v1/auth/browser/authorize?return_to=%2Fapp");
  });
 
+ it("keeps the remembered workspace through sign-out for the next sign-in", async () => {
+  const b = browser({ stored: HINT, answers: {
+   "/v1/web/me": () => json({ developer: { id: "a".repeat(64), name: "Ada", orgRole: "owner" }, org: { orgId: "org_" + "a".repeat(20), name: "Acme", plan: "team" }, identities: [], csrf: "c".repeat(43) }),
+   "/v1/auth/browser/sign-out": () => new Response(null, { status: 204 }),
+  } });
+  const host = createBrowserHost(b.win);
+  await host.signOut();
+  expect(b.local.get(LAST_WORKSPACE_KEY)).toBe(HINT);
+  expect(b.assign.mock.lastCall?.[0]).toBe("/app/signed-out?reason=ended");
+  host.signIn("/app");
+  expect(target(b.assign).searchParams.get("slack_team")).toBe(HINT);
+ });
+
  it.each([["lowercase", "t0hint0001"], ["too short", "T0HIN"], ["a url", "https://evil.example"], ["an injection", "T0HINT0001&return_to=/x"], ["an enterprise id", "E0HINT0001"], ["empty", ""]])("ignores a stored value that is not a workspace id (%s)", (_case, stored) => {
   const b = browser({ stored });
   const host = createBrowserHost(b.win);
