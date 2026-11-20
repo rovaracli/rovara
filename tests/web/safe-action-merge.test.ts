@@ -55,6 +55,49 @@ it("mounted Merge cannot clear pending from an accepted record whose exact readb
  await waitFor(() => expect(screen.getByRole("heading", { name: /Merge accepted/u })).toBeTruthy());
  expect(localStorage.getItem(key)).not.toBeNull();expect(f.posts()).toHaveLength(1);
 });
+it("F1: mounted Merge keeps an exact stored answer accepted when pending clear fails, across reload without another POST", async () => {
+ const f = setup(async () => success), first = f.mount(), button = await confirm(), remove = Storage.prototype.removeItem.bind(localStorage);
+ vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, name) { if (name === key) throw new Error("pending clear denied");remove(name); });
+ fireEvent.click(button);
+ await waitFor(() => expect(screen.getByRole("heading", { name: "Merge accepted" })).toBeTruthy());
+ expect(screen.getByText("Merged acme/payments #42.")).toBeTruthy();
+ expect(screen.queryByText(/couldn't save it|isn't confirmed yet/u)).toBeNull();
+ const pending = localStorage.getItem(key);expect(pending).not.toBeNull();
+ expect(screen.queryByRole("button", { name: /^Merge #42/u })).toBeNull();expect(f.posts()).toHaveLength(1);
+ first.unmount();
+ const readinessBeforeReload = f.request.mock.calls.filter(([request]) => request.path.endsWith("/merge") && request.method !== "POST").length;
+ f.mount();
+ await screen.findByRole("heading", { name: "Merge accepted" });
+ expect(screen.getByText("Merged acme/payments #42.")).toBeTruthy();
+ expect(screen.queryByText(/couldn't save it|isn't confirmed yet/u)).toBeNull();
+ expect(screen.queryByRole("button", { name: /^Merge #42/u })).toBeNull();
+ expect(localStorage.getItem(key)).toBe(pending);expect(f.posts()).toHaveLength(1);
+ expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/merge") && request.method !== "POST")).toHaveLength(readinessBeforeReload);
+});
+it.each(["write refused", "readback differs"])("F1/P1-1: mounted Merge with answer not stored (%s) keeps pending and blocks another POST after reload", async failure => {
+ const f = setup(async () => success), first = f.mount(), button = await confirm(), write = Storage.prototype.setItem.bind(localStorage), remove = Storage.prototype.removeItem.bind(localStorage);
+ vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, name, value) {
+  if (name.startsWith("rovara.merge.accepted.v1:")) {
+   if (failure === "write refused") throw new Error("quota");
+   value = JSON.stringify({ ...JSON.parse(value) as Record<string, unknown>, words: "altered answer" });
+  }
+  write(name, value);
+ });
+ // Even failed candidate cleanup must not let a mismatched answer settle pending.
+ vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, name) { if (name.startsWith("rovara.merge.accepted.v1:")) throw new Error("cleanup denied");remove(name); });
+ fireEvent.click(button);
+ await screen.findByRole("heading", { name: "Merge accepted (this browser couldn't save it)" });
+ expect(screen.getByText("Merged acme/payments #42.")).toBeTruthy();
+ const pending = localStorage.getItem(key);expect(pending).not.toBeNull();expect(f.posts()).toHaveLength(1);
+ first.unmount();f.mount();
+ await screen.findByRole("heading", { name: "The result isn't confirmed yet" });
+ expect(screen.queryByText("Merged acme/payments #42.")).toBeNull();expect(screen.queryByText("altered answer")).toBeNull();
+ const merge = screen.queryByRole<HTMLButtonElement>("button", { name: /^Merge #42/u });
+ if (merge !== null) { expect(merge.disabled).toBe(true);fireEvent.click(merge); }
+ fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+ await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Check again" }).disabled).toBe(false));
+ expect(localStorage.getItem(key)).toBe(pending);expect(f.posts()).toHaveLength(1);
+});
 it("mounted Merge maps busy to another-tab words without a GitHub fallback", async () => {
  const f = setup(async () => success);f.mount();const button = await confirm();
  const held = await withClaim(subject, () => true);expect(held.kind).toBe("done");

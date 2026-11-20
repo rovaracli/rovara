@@ -186,7 +186,7 @@ it("cleanup and presentation exceptions release the lock; recovery exceptions cl
 it("unverified acceptance cannot settle retained pending via hooks or after reload", async () => {
  const records = store(), original = Storage.prototype.setItem.bind(localStorage);
  vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) { original(key, key.startsWith("fixture.accepted:") ? JSON.stringify({ ...JSON.parse(value) as AcceptedAnswer, words: "corrupt" }) : value); });
- const accepted = vi.fn();await runActionPress(inputFor({ records, accepted }));expect(accepted).toHaveBeenCalledWith(answer(), false);
+ const accepted = vi.fn();await runActionPress(inputFor({ records, accepted }));expect(accepted).toHaveBeenCalledWith(answer(), "not-stored");
  expect(store().readPendingNow(subject).kind).toBe("pending");expect(store().readAcceptedNow(subject)).toBeUndefined();
  records.clearPending(subject, pending().requestId, pending().startedAt);
  expect(records.readPendingNow(subject).kind).toBe("none");expect(records.readAcceptedNow(subject)).toBeUndefined();
@@ -205,10 +205,19 @@ it("failed candidate removal cannot unmask an unverified answer during observed 
  removing.mockRestore();records.clearPending(subject, pending().requestId, pending().startedAt);
  expect(store().readPendingNow(subject).kind).toBe("none");expect(store().readAcceptedNow(subject)).toBeUndefined();
 });
-it("failed pending removal keeps a confirmed answer in the current caller's memory path", async () => {
+it("F1: failed pending removal keeps the exact stored answer visible across reload", async () => {
  const records = store(), remove = Storage.prototype.removeItem.bind(localStorage), accepted = vi.fn();
  vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, key) { if (key.startsWith("fixture.pending:")) throw new Error("denied");remove(key); });
- await runActionPress(inputFor({ records, accepted }));expect(accepted).toHaveBeenCalledWith(answer(), false);expect(records.readPendingNow(subject).kind).toBe("pending");
+ await runActionPress(inputFor({ records, accepted }));expect(accepted).toHaveBeenCalledWith(answer(), "stored-but-pending-kept");expect(records.readPendingNow(subject).kind).toBe("pending");
+ expect(store().readAcceptedNow(subject)).toEqual(answer());
+ const hook = renderHook(() => store().useAccepted(subject));expect(hook.result.current).toEqual(answer());hook.unmount();
+ const send = vi.fn(async () => answer());await runActionPress(inputFor({ records: store(), send }));expect(send).not.toHaveBeenCalled();
+});
+it("F1: exact stored answer with pending cleared is durable; another request or subject is not stored", () => {
+ const records = store();records.writePending(pending());expect(records.recordAccepted(pending(), answer())).toBe("durable");
+ expect(records.readPendingNow(subject).kind).toBe("none");expect(records.readAcceptedNow(subject)).toEqual(answer());
+ expect(records.recordAccepted(pending(), { ...answer(), requestId: "another" })).toBe("not-stored");
+ expect(records.recordAccepted(pending(), { ...answer(), subject: "another" })).toBe("not-stored");
 });
 
 
@@ -244,7 +253,9 @@ it.each([undefined, 120_000])("F3: runner owns timeout %s without a transport wr
  expect(accepted).not.toHaveBeenCalled();expect(records.readAcceptedNow(subject)).toBeUndefined();expect(localStorage.getItem("fixture.pending:" + subject)).toBe(raw);
 });
 it("F4: accepted-only hook observes another tab adding and removing pending", () => {
- const records = store();records.writeAccepted(answer());
+ // Legacy/unverified candidate: pending-key changes must still update an
+ // accepted-only subscriber (round 3 F4), without any pending hook mounted.
+ const records = store();localStorage.setItem("fixture.accepted:" + subject, JSON.stringify(answer()));
  const hook = renderHook(() => records.useAccepted(subject));expect(hook.result.current).toEqual(answer());
  act(() => { localStorage.setItem("fixture.pending:" + subject, JSON.stringify(pending()));globalThis.dispatchEvent(new StorageEvent("storage", { key: "fixture.pending:" + subject })); });
  expect(hook.result.current).toBeUndefined();

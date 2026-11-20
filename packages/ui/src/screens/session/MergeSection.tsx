@@ -179,7 +179,9 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
  // A record resolves only through a task read THIS tab issued after THIS tab first observed it, or through the answer to that same request; another request's answer, an older read or a cache write settles nothing.
  const entryKey = entry === undefined ? undefined : recordKey(entry), observedAt = entryKey === undefined ? undefined : fence.observed.get(entryKey);
  const resolving = read !== undefined && observedAt !== undefined && read.issued > observedAt && readTask !== undefined;
- const voided = entry !== undefined && resolving && headsMoved(entry, readRows), settled = entry !== undefined && ((resolving && allMerged(entry, readRows)) || (!retired && storedAccepted !== undefined && storedAccepted.requestId === entry.requestId));
+ // Accepted persistence owns its pending cleanup. Never settle here from just
+ // a matching request id: an accepted candidate may have failed exact readback.
+ const voided = entry !== undefined && resolving && headsMoved(entry, readRows), settled = entry !== undefined && resolving && allMerged(entry, readRows);
  const active = entry !== undefined && !voided && !settled ? entry : undefined, staleEntry = active !== undefined && stored.kind === "pending" && stored.stale;
  const storageLock = subject !== undefined && (stored.kind === "unavailable" || stored.kind === "unreadable") ? stored.kind : undefined;
  // A record that a moved head voided is dropped with a visible notice, never silently (derived during render, so it needs no effect to set state).
@@ -266,8 +268,8 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
     // The saved press is released only once the accepted answer is stored AND read back exactly (P1-1). If it can't be, the saved press stays: a reload or another tab still sees it and sends nothing; this page shows the answer from memory.
     return answer;
    },
-   accepted: (answer, durable) => {
-    if (!durable) setMemoryDone(answer);
+   accepted: (answer, storage) => {
+    if (storage === "not-stored") setMemoryDone(answer);
     setOpen(false);
     observeRecord(fence, "acc|" + answer.requestId);void readNow();
     // Fired, not awaited: a stalled session read must never keep the claim, busy or sending held after the answer is recorded.

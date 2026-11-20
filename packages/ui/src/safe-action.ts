@@ -117,6 +117,7 @@ export const SAFE_ACTION_RULES = Object.freeze({
 });
 export const PENDING_STALE_MS = 24 * 60 * 60 * 1000;
 const UNAVAILABLE = "\u0000unavailable";
+export type AcceptedStorage = "durable" | "stored-but-pending-kept" | "not-stored";
 export type ActionPendingState<P> = { kind: "none" } | { kind: "unavailable" } | { kind: "unreadable" } | { kind: "pending"; entry: P; stale: boolean };
 /** Existing record namespace: identity is required before constructing a subject. */
 export function actionSubject(input: { orgId: string; developerId: string; subjectId: string }): string {
@@ -143,11 +144,17 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
   return raw === UNAVAILABLE ? { kind: "unavailable" } : config.parsePending(raw, subject, now);
  }
  const readPendingNow = (subject: string): ActionPendingState<P> => parsePending(rawOf(subject), subject);
- // While the pending record remains, an answer for that same press is not a
- // durable resolution: the exact readback/clear sequence may have failed.
+ // Keep the expected canonical answer INSIDE the existing accepted record. A
+ // reload can distinguish an exact answer from a mismatched candidate even if
+ // candidate removal also failed. Legacy records without pending still read.
+ const canonicalField = "__safeActionCanonical";
+ const canonicalOf = (answer: A): string => JSON.stringify(config.canonicalAccepted(answer));
+ function candidateMatches(raw: string | null, answer: A): boolean {
+  try { return raw !== null && (JSON.parse(raw) as Record<string, unknown>)[canonicalField] === canonicalOf(answer); } catch { return false; }
+ }
  const visibleAccepted = (subject: string, raw: string | null): A | undefined => {
   const answer = config.parseAccepted(raw, subject), pending = readPendingNow(subject);
-  return answer !== undefined && pending.kind === "pending" && pending.entry.requestId === answer.requestId ? undefined : answer;
+  return answer !== undefined && pending.kind === "pending" && pending.entry.requestId === answer.requestId && !candidateMatches(raw, answer) ? undefined : answer;
  };
  const readAcceptedNow = (subject: string): A | undefined => visibleAccepted(subject, rawAccepted(subject));
  function useRaw(subject: string, accepted: boolean): string | null {
@@ -184,7 +191,7 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
    if (!verifiedAnswer) {
     // Observed resolution must never unmask an unverified accepted candidate.
     const raw = globalThis.localStorage.getItem(acceptedKey(subject)), answer = config.parseAccepted(raw, subject);
-    if (raw !== null && (answer === undefined || answer.requestId === requestId)) {
+    if (raw !== null && (answer === undefined || (answer.requestId === requestId && !candidateMatches(raw, answer)))) {
      globalThis.localStorage.removeItem(acceptedKey(subject));
      if (globalThis.localStorage.getItem(acceptedKey(subject)) !== null) return false;
     }
@@ -196,7 +203,7 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
  }
  const clearPending = (subject: string, requestId: string, startedAt: string): void => { removePending(subject, requestId, startedAt, false); };
  function writeAccepted(answer: A): boolean {
-  try { globalThis.localStorage.setItem(acceptedKey(config.acceptedSubject(answer)), JSON.stringify(answer));notify();return true; } catch { return false; }
+  try { globalThis.localStorage.setItem(acceptedKey(config.acceptedSubject(answer)), JSON.stringify({ ...answer, [canonicalField]: canonicalOf(answer) }));notify();return true; } catch { return false; }
  }
  function clearAccepted(subject: string, requestId: string): void {
   try { const now = config.parseAccepted(globalThis.localStorage.getItem(acceptedKey(subject)), subject); if (now !== undefined && now.requestId !== requestId) return;globalThis.localStorage.removeItem(acceptedKey(subject)); } catch { /* stays */ }
@@ -210,16 +217,16 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
   if (!writePending(entry)) return { stop: true, words: storageWords };
   return { stop: false };
  }
- const acceptedStoredExactly = (answer: A): boolean => { const back = config.parseAccepted(rawAccepted(config.acceptedSubject(answer)), config.acceptedSubject(answer)); return back !== undefined && JSON.stringify(back) === JSON.stringify(config.canonicalAccepted(answer)); };
- function recordAccepted(entry: P, answer: A): boolean {
-  if (answer.requestId !== entry.requestId || config.acceptedSubject(answer) !== config.pendingSubject(entry)) return false;
+ const acceptedStoredExactly = (answer: A): boolean => { const raw = rawAccepted(config.acceptedSubject(answer)), back = config.parseAccepted(raw, config.acceptedSubject(answer)); return back !== undefined && JSON.stringify(back) === canonicalOf(answer) && candidateMatches(raw, answer); };
+ function recordAccepted(entry: P, answer: A): AcceptedStorage {
+  if (answer.requestId !== entry.requestId || config.acceptedSubject(answer) !== config.pendingSubject(entry)) return "not-stored";
   if (!writeAccepted(answer) || !acceptedStoredExactly(answer)) {
    // Best-effort discard now; if storage refuses, pending masks this candidate
    // and observed resolution must discard it before removing pending.
    clearAccepted(config.acceptedSubject(answer), answer.requestId);
-   return false;
+   return "not-stored";
   }
-  return removePending(config.pendingSubject(entry), entry.requestId, entry.startedAt, true);
+  return removePending(config.pendingSubject(entry), entry.requestId, entry.startedAt, true) ? "durable" : "stored-but-pending-kept";
  }
  return { lockName: (entry: P): string => config.lockPrefix + config.pendingSubject(entry), recordAccepted, claimPending, parsePending, parseAccepted: config.parseAccepted, usePending, readPendingNow, writePending, clearPending, useAccepted, readAcceptedNow, writeAccepted, clearAccepted, acceptedStoredExactly };
 }
@@ -280,7 +287,7 @@ export interface PressInput<P extends { requestId: string; startedAt: string }, 
  /** Only presentation: the runner itself decides whether it may dispatch. */
  claimed(claim: ClaimOutcome<ClaimDecision>): void;
  send(entry: P): Promise<A>;
- accepted(answer: A, durable: boolean): void;
+ accepted(answer: A, storage: AcceptedStorage): void;
  failed(failure: unknown, entry: P): void;
  finished(): void;
 }
@@ -300,8 +307,8 @@ export async function runActionPress<P extends { requestId: string; startedAt: s
   // Only dispatch/end recording failures reach route-specific refusal policy.
   let answer: A;
   try { answer = await postWithTimeout(() => input.send(entry), input.timeoutMs); } catch (failure) { input.failed(failure, entry);return; }
-  const durable = input.records.recordAccepted(entry, answer);
-  input.accepted(answer, durable);
+  const storage = input.records.recordAccepted(entry, answer);
+  input.accepted(answer, storage);
  } finally { try { input.finished(); } finally { release?.(); } }
 }
 /** Always on. Expiry is uncertainty, not a refusal, cancellation or permission to retry. */
