@@ -7,8 +7,8 @@ import { credentialsFromEnvironment } from "../packages/model-gateway/dist/aws.j
 import { Dynamo } from "../packages/model-gateway/dist/dynamo.js";
 import { DynamoMeter } from "../packages/model-gateway/dist/dynamo-meter.js";
 import { runOperatorClear } from "../packages/model-gateway/dist/source-stop-cli.js";
-const { values } = parseArgs({ options: Object.fromEntries(["issuer", "company", "source", "reason", "region", "meter-table", "ledger-table"].map(key => [key, { type: "string" }])) });
-if (Object.values(values).length !== 7 || Object.values(values).some(value => !value)) throw new Error("Required: --issuer --company --source --reason --region --meter-table --ledger-table");
+const { values } = parseArgs({ options: Object.fromEntries(["issuer", "company", "source", "class", "reason", "region", "meter-table", "ledger-table"].map(key => [key, { type: "string" }])) });
+if (Object.values(values).length !== 8 || Object.values(values).some(value => !value)) throw new Error("Required: --issuer --company --source --class (product|agent|legacy) --reason --region --meter-table --ledger-table");
 if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("Operator clear requires an interactive terminal");
 // Explicit local operator credentials only: never fetch or accept the gateway's ECS task role.
 if (process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI || !process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) throw new Error("Export local operator credentials first");
@@ -16,7 +16,7 @@ const db = new Dynamo({ region: values.region, credentials: credentialsFromEnvir
 const meter = new DynamoMeter({ db, tables: { meter: values["meter-table"], ledger: values["ledger-table"], markers: "unused-by-clear" } });
 const terminal = createInterface({ input: process.stdin, output: process.stdout });
 try {
-  const cleared = await runOperatorClear({ iss: values.issuer, cid: values.company, source: values.source, reason: values.reason }, {
+  const cleared = await runOperatorClear({ iss: values.issuer, cid: values.company, source: values.source, routeClass: values.class, reason: values.reason }, {
     meter, interactive: true,
     identity: async () => {
       const result = JSON.parse(execFileSync("aws", ["sts", "get-caller-identity", "--region", values.region, "--output", "json", "--no-cli-pager"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: process.env, timeout: 10000 }));

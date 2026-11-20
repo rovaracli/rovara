@@ -15,12 +15,12 @@ async function world(durable: boolean) {
   const hold = await meter.reserve({ scope, caps, estimateMicros: 10 }); if (!hold.ok) throw new Error("hold");
   const receipt = chargeReceipt({ issuer: scope.iss, companyId: scope.cid, project: scope.pid, taskId: scope.tid, callId: hold.reservation.id, model: { provider: "bedrock", modelId: "claude-x" }, billing: "external_provider", billableMicros: { state: "available", value: 0 }, providerCostMicros: { state: "available", value: 100002 }, originalReservationMicros: { state: "available", value: 10 }, amountMicros: { state: "available", value: 100002 }, status: "final", reason: "reported_cost", occurredAt: new Date(now).toISOString(), recordedAt: new Date(now).toISOString(), accountingDay: new Date(now).toISOString().slice(0, 10), accountingMonth: new Date(now).toISOString().slice(0, 7) });
   await meter.settleV2({ reservationId: hold.reservation.id, receipt });
-  const input = { iss: scope.iss, cid: scope.cid, source: "bedrock_byo" as const, expectedStopId: `${hold.reservation.id}:1`, actor, reason: "Reviewed provider invoice and corrected source configuration" };
+  const input = { iss: scope.iss, cid: scope.cid, source: "bedrock_byo" as const, routeClass: "legacy" as const, expectedStopId: `${hold.reservation.id}:1`, actor, reason: "Reviewed provider invoice and corrected source configuration" };
   return { meter, wire, tables, input, receipt };
 }
 for (const durable of [false, true]) it(`only audited operator clear reopens source, preserving spend and other cap latches (${durable})`, async () => {
   const w = await world(durable);
-  const run = () => w.meter.reserve({ scope: { ...scope, tid: "task_after_clear" }, caps, estimateMicros: 1, customerSource: "bedrock_byo" });
+  const run = () => w.meter.reserve({ scope: { ...scope, tid: "task_after_clear" }, caps, estimateMicros: 1, customerSource: "bedrock_byo", routeClass: "agent" });
   expect(await run()).toMatchObject({ ok: false, reason: "overrun" });
   for (const actor of ["agent", "arn:aws:sts::111111111111:assumed-role/Gateway/task", "arn:aws:iam::111111111111:root"]) await expect(w.meter.clearSourceStop({ ...w.input, actor })).rejects.toThrow();
   await expect(w.meter.clearSourceStop({ ...w.input, reason: "" })).rejects.toThrow();

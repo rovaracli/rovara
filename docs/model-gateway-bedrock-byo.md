@@ -140,14 +140,22 @@ is created in a different AWS account than the company's role (in the same accou
 Known gap (Low): a 403 for one product model that is missing from the role's policy marks the whole connection refused in Settings (the
 agents still work) and drops the session; the fix is to tell a model refusal from a credential failure once AWS's wording is confirmed.
 
-### Customer-source overage stop (Round C)
+### Customer-source overage stop per route class
 
 Every agent, product and reviewer call on `bedrock_byo` or `openrouter` reserves one durable slot in
 `meter / CO#[iss,cid] / SOURCESTOP#<source>`, atomically with its money hold. There
 is at most **one in-flight call per company and source**, across processes, tasks
 and accounting months, with combined product/agent meters sharing the agent record. No TTL frees this slot: settlement or the existing dead-hold
 sweep releases it. A failed settlement retains the hold/slot. An over-hold receipt
-or revision atomically stops that source, preserving its true cost. Corrections
+or revision atomically stops only the admitted route class, preserving its true cost:
+`SOURCESTOP#<source>#product` (all four product Bedrock operations) or
+`SOURCESTOP#<source>#agent` (agents, streaming/fallback, reviewers and upkeep).
+The hold and ledger retain the admitted class for settlement and later revisions.
+Each reserve transaction fences both its class record and the class-less shared slot.
+Unknown or missing classes on customer-source reservations refuse before sending.
+A pre-migration class-less stop continues to block **both** classes until explicitly
+cleared with `--class legacy`; clearing a product/agent stop never clears it.
+Legacy holds/ledger rows that lack a class continue to latch the class-less stop. Corrections
 never read or write the stop. Independent cap-overrun latches remain separate.
 
 Bedrock reviewer calls keep the grant's durable session/debit ceiling, and take
@@ -165,11 +173,11 @@ the existing session and its hold remain unchanged. A fresh grant is required.
 Only the local interactive operator CLI clears a stop. It resolves the operator's
 IAM **user** ARN using STS with the same exported credentials used for DynamoDB;
 workload/assumed-role/root identities and noninteractive input are refused. It
-prints the exact issuer, company, source, stop, amounts and target tables, asks for
+prints the exact issuer, company, source, route class, record key, stop, amounts and target tables, asks for
 an exact confirmation phrase, then conditionally clears only that stop while
-writing who/when/why into the ledger (`SOURCESTOPCLEAR#<stopId>`), in one transaction.
+writing who/when/why into the ledger (`SOURCESTOPCLEAR#<source>#<class>#<stopId>`, including the class), in one transaction.
 A changed stop or a live call makes the confirmation stale. Spend, accounting cap
-latches and other sources are untouched. This adds no serving-role IAM grant,
+latches, other route classes, legacy stops and other sources are untouched. This adds no serving-role IAM grant,
 web route, feature switch or step-up. The operator needs existing table write
 permissions; the serving process never exposes this action.
 
@@ -178,7 +186,7 @@ After building, run locally (with real identifiers and a meaningful reason):
 ```sh
 node scripts/model-gateway-source-stop-clear.mjs \
   --issuer https://code.example/v1/auth --company org_aaaaaaaaaaaaaaaaaaaa \
-  --source bedrock_byo --reason 'Reviewed invoice and corrected configuration' \
+  --source bedrock_byo --class product --reason 'Reviewed invoice and corrected configuration' \
   --region us-west-2 --meter-table <agent-meter-table> --ledger-table <agent-ledger-table>
 ```
 

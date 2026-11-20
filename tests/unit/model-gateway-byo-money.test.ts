@@ -17,7 +17,7 @@ import { translatedAnswer } from "../../packages/model-gateway/src/agent-openai.
 import { openRouterPolicy } from "../../packages/model-gateway/src/openrouter-policy.js";
 import { resolvePrice } from "../../packages/model-gateway/src/price.js";
 beforeAll(denyNetwork);
-async function meterStop(meter: InMemoryMeter | DynamoMeter, source: "bedrock_byo" | "openrouter") { return (await meter.sourceStop(scope.iss, scope.cid, source))?.stopId; }
+async function meterStop(meter: InMemoryMeter | DynamoMeter, source: "bedrock_byo" | "openrouter") { return (await meter.sourceStop(scope.iss, scope.cid, source, "agent"))?.stopId; }
 const alias = "claude-haiku-4-5", id = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 const body = { ...requestBody, model: alias, stream: false };
 const price = { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 };
@@ -75,12 +75,12 @@ for (const durable of [false, true]) {
       expect(ledger).toMatchObject({ settledMicros: 100002, receipt: { amountMicros: { value: 100002 }, usage: { value: { input: 100000, output: 1 } } } });
       const tables = { meter: "meter", ledger: "ledger", markers: "markers" };
       const fresh = new DynamoMeter({ db: new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "fixture", secretAccessKey: "fixture" }), transport: w.wire.transport }), tables, now: () => now });
-      expect(await fresh.reserve({ scope: { ...scope, tid: "task_3" }, caps, estimateMicros: 1, customerSource: "bedrock_byo" })).toMatchObject({ ok: false, reason: "overrun" });
+      expect(await fresh.reserve({ scope: { ...scope, tid: "task_3" }, caps, estimateMicros: 1, customerSource: "bedrock_byo", routeClass: "agent" })).toMatchObject({ ok: false, reason: "overrun" });
     }
     const rows = await w.meter.read(scope);
     expect(rows.every(row => row.spentMicros === 100002)).toBe(true);
     expect(rows.filter(row => row.overrun).map(row => row.item).sort()).toEqual(["company", "task"]);
-    expect(await w.meter.sourceStop(scope.iss, scope.cid, "bedrock_byo")).toMatchObject({ stopped: true });
+    expect(await w.meter.sourceStop(scope.iss, scope.cid, "bedrock_byo", "agent")).toMatchObject({ stopped: true });
     expect(w.logs).toContainEqual(expect.objectContaining({ event: "customer_source_over_reservation", source: "bedrock_byo", costMicros: 100002, heldMicros: hold, overageMicros: 100002 - hold }));
     expect((await call(w.deps, body, mint({ mdl: [alias], tid: "task_2" }))).status).toBe(422);
     expect(w.assumed).toHaveBeenCalledTimes(1); expect(w.sent).toHaveBeenCalledTimes(1);
@@ -92,7 +92,7 @@ for (const durable of [false, true]) {
     expect((await w.meter.read(scope)).filter(row => row.overrun).map(row => row.item).sort()).toEqual(["company", "task"]);
     if (w.wire !== undefined) {
       const stop = await meterStop(w.meter, "bedrock_byo");
-      expect(await w.meter.clearSourceStop({ iss: scope.iss, cid: scope.cid, source: "bedrock_byo", expectedStopId: stop!, actor: "arn:aws:iam::111111111111:user/operator", reason: "Invoice reviewed" })).toBe(true);
+      expect(await w.meter.clearSourceStop({ iss: scope.iss, cid: scope.cid, source: "bedrock_byo", routeClass: "agent", expectedStopId: stop!, actor: "arn:aws:iam::111111111111:user/operator", reason: "Invoice reviewed" })).toBe(true);
       w.deps.caps = new FixedCapsSource(caps);
       // Clearing a SOURCE stop never wipes separate accounting-cap overruns.
       expect((await call(w.deps, body, mint({ mdl: [alias], tid: "task_cleared" }))).status).toBe(422);
@@ -160,7 +160,7 @@ for (const durable of [false, true]) it(`OpenRouter reports true above-hold mone
   expect(hold).toBeLessThan(100002);
   expect(w.settlements.mock.calls[0]![0].receipt).toMatchObject({ amountMicros: { value: 100002 }, providerCostMicros: { value: 100002 } });
   expect((await w.meter.read(scope)).every(row => row.spentMicros === 100002)).toBe(true);
-  expect(await w.meter.sourceStop(scope.iss, scope.cid, "openrouter")).toMatchObject({ stopped: true });
+  expect(await w.meter.sourceStop(scope.iss, scope.cid, "openrouter", "agent")).toMatchObject({ stopped: true });
   expect(w.logs).toContainEqual(expect.objectContaining({ event: "customer_source_over_reservation", source: "openrouter", costMicros: 100002, heldMicros: hold, overageMicros: 100002 - hold }));
   expect((await call(w.deps, request, token("task_2"))).status).toBe(422);
   expect(sent).toHaveBeenCalledTimes(1);
@@ -170,7 +170,7 @@ for (const durable of [false, true]) it(`OpenRouter reports true above-hold mone
   expect((await w.meter.read(scope)).every(row => row.spentMicros === 100003)).toBe(true);
   if (w.wire !== undefined) {
     expect(w.wire.items("ledger").find(row => String(row.sk).startsWith("CALL#"))).toMatchObject({ settledMicros: 100003, receipt: { amountMicros: { value: 100003 } } });
-    expect(await w.meter.clearSourceStop({ iss: scope.iss, cid: scope.cid, source: "openrouter", expectedStopId: (await meterStop(w.meter, "openrouter"))!, actor: "arn:aws:iam::111111111111:user/operator", reason: "Invoice reviewed" })).toBe(true);
+    expect(await w.meter.clearSourceStop({ iss: scope.iss, cid: scope.cid, source: "openrouter", routeClass: "agent", expectedStopId: (await meterStop(w.meter, "openrouter"))!, actor: "arn:aws:iam::111111111111:user/operator", reason: "Invoice reviewed" })).toBe(true);
     expect((await call(w.deps, request, token("task_cleared"))).status).toBe(200);
     expect(sent).toHaveBeenCalledTimes(2);
   }
