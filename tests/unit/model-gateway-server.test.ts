@@ -185,3 +185,20 @@ it("routes the agent call on the bare path and on exactly ?beta=true (the Anthro
     expect((await post(setup().deps, url, "secret")).status, `${url} bad token`).toBe(404);
   }
 });
+
+it("logs a not_found refusal's method and bounded pathname, and only whether a query was present", async () => {
+  const { handleGateway } = await import("../../packages/model-gateway/src/server.js");
+  const f = setup();
+  const sink = new MemorySink();
+  const long = `/v1/messages/count_tokens/${"x".repeat(300)}`;
+  await handleGateway(f.deps, { method: "POST", url: `${long}?beta=true&secret=abc123`, headers: { "x-api-key": "secret-token-value" }, body: (async function* () { yield Buffer.from("{}"); })() }, sink);
+  expect(sink.status).toBe(404);
+  const line = f.logs.find((entry) => (entry as { event: string }).event === "refused") as Record<string, unknown>;
+  expect(line).toMatchObject({ code: "not_found", status: 404, method: "POST", query: true });
+  expect(typeof line.path).toBe("string"); expect((line.path as string).length).toBeLessThanOrEqual(120);
+  expect((line.path as string).startsWith("/v1/messages/count_tokens/")).toBe(true);
+  expect(JSON.stringify(f.logs)).not.toContain("abc123"); expect(JSON.stringify(f.logs)).not.toContain("secret-token-value");
+  // An ordinary refusal on a known route carries no path fields.
+  const g = setup(); await handleGateway(g.deps, { method: "POST", url: "/v1/messages", headers: { "content-type": "application/json", "x-api-key": "bad" }, body: (async function* () { yield Buffer.from("{}"); })() }, new MemorySink());
+  expect(g.logs.find((entry) => (entry as { event: string }).event === "refused")).not.toHaveProperty("path");
+});
