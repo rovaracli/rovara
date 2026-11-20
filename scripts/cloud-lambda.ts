@@ -110,7 +110,7 @@ export function cloudRequest(event: FunctionUrlEvent): CloudRequest {
   if (event.cookies !== undefined && event.cookies.length > 0) headers.cookie = event.cookies.join("; ");
   const method = event.requestContext.http.method;
   const body = event.body === undefined ? undefined : event.isBase64Encoded === true ? Buffer.from(event.body, "base64").toString("utf8") : event.body;
-  return { method, path: event.rawPath, query: new URLSearchParams(event.rawQueryString ?? ""), headers, ...(method === "GET" || method === "HEAD" || body === undefined ? {} : { body }) };
+  return { method, path: event.rawPath, query: new URLSearchParams(event.rawQueryString ?? ""), headers, ...((method === "GET" && !/^\/v1\/web\/task-start-requests(?:\/|$)/u.test(event.rawPath)) || method === "HEAD" || body === undefined ? {} : { body }) };
 }
 
 /** Cloud's answer in payload version 2.0. */

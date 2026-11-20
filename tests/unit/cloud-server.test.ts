@@ -1303,3 +1303,26 @@ describe("the Merge button through Code (DEC 254zzz94)", () => {
     expect((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID } }))!.status).toBe(502);
   });
 });
+
+
+describe("server-read browser routes", () => {
+  it("mounts original-start recovery on the authenticated browser API with no-store", async () => {
+    const { httpWorld, confirmed, REQUEST } = await import("../support/server-read-http.js");
+    const w = await httpWorld(confirmed);
+    const result = await w.call(`/v1/web/task-start-requests/${REQUEST}`);
+    expect(result).toMatchObject({ status: 200, body: confirmed });
+    expect(result.headers["cache-control"]).toContain("no-store");
+    await w.store.delete("cookie");
+    expect((await w.call(`/v1/web/task-start-requests/${REQUEST}`)).status).toBe(401);
+    expect(w.calls).toHaveLength(1);
+  });
+  it("mounts local preview with CSRF and preserves unknown dependencies even with zero blockers", async () => {
+    const { httpWorld, preview, previewInput } = await import("../support/server-read-http.js");
+    const reply = { ...preview, disconnectBlockers: { kind: "exact", count: 0, projects: [] } };
+    const w = await httpWorld(reply);
+    expect((await w.call("/v1/web/github/disconnect-preview", "POST", previewInput, "bad")).status).toBe(403);
+    expect(w.calls).toHaveLength(0);
+    expect((await w.call("/v1/web/github/disconnect-preview", "POST", previewInput)).body).toEqual(reply);
+    expect(w.calls.map(call => call.path)).toEqual(["/v1/dev/company/connections/impact"]);
+  });
+});
