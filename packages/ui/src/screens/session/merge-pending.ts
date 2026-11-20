@@ -53,7 +53,7 @@ export function parseAccepted(raw: string | null, subject: string): AcceptedAnsw
 }
 
 export const mergeActionRecords = createActionRecords<PendingPress, AcceptedAnswer>({
- pendingPrefix: "rovara.merge.pending.v1:", acceptedPrefix: "rovara.merge.accepted.v1:", changedEvent: "rovara-merge-pending-changed",
+ lockPrefix: "rovara.merge.claim:", pendingPrefix: "rovara.merge.pending.v1:", acceptedPrefix: "rovara.merge.accepted.v1:", changedEvent: "rovara-merge-pending-changed",
  parsePending, parseAccepted, pendingSubject: entry => entry.sessionId, acceptedSubject: answer => answer.subject,
  canonicalAccepted: answer => ({ v: 1, subject: answer.subject, requestId: answer.requestId, acceptedAt: answer.acceptedAt, words: answer.words, keys: answer.keys, heads: answer.heads }),
 });

@@ -118,8 +118,14 @@ export const SAFE_ACTION_RULES = Object.freeze({
 export const PENDING_STALE_MS = 24 * 60 * 60 * 1000;
 const UNAVAILABLE = "\u0000unavailable";
 export type ActionPendingState<P> = { kind: "none" } | { kind: "unavailable" } | { kind: "unreadable" } | { kind: "pending"; entry: P; stale: boolean };
+/** Existing record namespace: identity is required before constructing a subject. */
+export function actionSubject(input: { orgId: string; developerId: string; subjectId: string }): string {
+ const parts = [input.orgId, input.developerId, input.subjectId];
+ if (parts.some(part => typeof part !== "string" || part.trim().length === 0)) throw new Error("An action subject requires company, person and subject id.");
+ return parts.join("|");
+}
 export interface RecordConfig<P extends { requestId: string; startedAt: string }, A extends { requestId: string }> {
- pendingPrefix: string; acceptedPrefix: string; changedEvent: string;
+ lockPrefix: string; pendingPrefix: string; acceptedPrefix: string; changedEvent: string;
  parsePending(raw: string | null, subject: string, now?: number): ActionPendingState<P>;
  parseAccepted(this: void, raw: string | null, subject: string): A | undefined;
  pendingSubject(entry: P): string; acceptedSubject(answer: A): string;
@@ -145,12 +151,12 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
  };
  const readAcceptedNow = (subject: string): A | undefined => visibleAccepted(subject, rawAccepted(subject));
  function useRaw(subject: string, accepted: boolean): string | null {
-  const key = accepted ? acceptedKey(subject) : keyOf(subject);
+  const pendingKey = keyOf(subject), key = accepted ? acceptedKey(subject) : pendingKey;
   const subscribe = useCallback((onChange: () => void) => {
-   const onStorage = (event: Event): void => { if (!(event instanceof StorageEvent) || event.key === null || event.key === key) onChange(); };
+   const onStorage = (event: Event): void => { if (!(event instanceof StorageEvent) || event.key === null || event.key === key || (accepted && event.key === pendingKey)) onChange(); };
    globalThis.addEventListener("storage", onStorage);globalThis.addEventListener(config.changedEvent, onChange);
    return () => { globalThis.removeEventListener("storage", onStorage);globalThis.removeEventListener(config.changedEvent, onChange); };
-  }, [key]);
+  }, [key, pendingKey, accepted]);
   return useSyncExternalStore(subscribe, () => {
    if (!accepted) return rawOf(subject);
    const raw = rawAccepted(subject);
@@ -215,7 +221,7 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
   }
   return removePending(config.pendingSubject(entry), entry.requestId, entry.startedAt, true);
  }
- return { recordAccepted, claimPending, parsePending, parseAccepted: config.parseAccepted, usePending, readPendingNow, writePending, clearPending, useAccepted, readAcceptedNow, writeAccepted, clearAccepted, acceptedStoredExactly };
+ return { lockName: (entry: P): string => config.lockPrefix + config.pendingSubject(entry), recordAccepted, claimPending, parsePending, parseAccepted: config.parseAccepted, usePending, readPendingNow, writePending, clearPending, useAccepted, readAcceptedNow, writeAccepted, clearAccepted, acceptedStoredExactly };
 }
 
 export type ClaimOutcome<T> = { kind: "done"; value: T; release: () => void } | { kind: "busy" } | { kind: "unsupported" } | { kind: "failed" };
@@ -267,7 +273,9 @@ export type ActionRecords<P extends { requestId: string; startedAt: string }, A 
 export interface PressInput<P extends { requestId: string; startedAt: string }, A extends { requestId: string }> {
  /** Recovery compares the new response BODY with the shown basis before claiming. */
  recover(): Promise<boolean>;
- lockName: string; records: ActionRecords<P, A>;
+ records: ActionRecords<P, A>;
+ /** Always applied by the runner; expiry leaves pending unresolved. */
+ timeoutMs?: number;
  pending(): P; refusalNow(): string | undefined; storageWords: string;
  /** Only presentation: the runner itself decides whether it may dispatch. */
  claimed(claim: ClaimOutcome<ClaimDecision>): void;
@@ -285,13 +293,13 @@ export async function runActionPress<P extends { requestId: string; startedAt: s
  try {
   if (!await input.recover()) return;
   const entry = input.pending();
-  const claim = await withActionClaim(input.lockName, () => input.records.claimPending(entry, () => input.refusalNow(), input.storageWords));
+  const claim = await withActionClaim(input.records.lockName(entry), () => input.records.claimPending(entry, () => input.refusalNow(), input.storageWords));
   if (claim.kind === "done") release = claim.release;
   input.claimed(claim);
   if (claim.kind !== "done" || claim.value.stop) return;
   // Only dispatch/end recording failures reach route-specific refusal policy.
   let answer: A;
-  try { answer = await input.send(entry); } catch (failure) { input.failed(failure, entry);return; }
+  try { answer = await postWithTimeout(() => input.send(entry), input.timeoutMs); } catch (failure) { input.failed(failure, entry);return; }
   const durable = input.records.recordAccepted(entry, answer);
   input.accepted(answer, durable);
  } finally { try { input.finished(); } finally { release?.(); } }

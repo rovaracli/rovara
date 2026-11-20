@@ -1,4 +1,4 @@
-import { runActionPress, recoverActionBasis, answerHeld, isCsrfFailure } from "../../safe-action.js";
+import { actionSubject, runActionPress, recoverActionBasis, answerHeld, isCsrfFailure } from "../../safe-action.js";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
@@ -89,7 +89,7 @@ function PullItem({ row, ready, held, accepted, many, index }: { row: PullRow; r
  * The receipt reader and original-operation adoption are held (the receipt presentation is kept on branch held/merge-receipt-view, not mounted).
  */
 /** Who is reading (R6g/N5): company + person from /v1/app/me, then the session. */
-const subjectFrom = (me: { org: { orgId: string }; developer: { id: string } } | undefined, sessionId: string): string | undefined => me === undefined ? undefined : me.org.orgId + "|" + me.developer.id + "|" + sessionId;
+const subjectFrom = (me: { org: { orgId: string }; developer: { id: string } } | undefined, sessionId: string): string | undefined => me === undefined ? undefined : actionSubject({ orgId: me.org.orgId, developerId: me.developer.id, subjectId: sessionId });
 const identityKeyOf = (sessionId: string): readonly string[] => ["session", sessionId, "identity"];
 export function MergeSection(props: { sessionId: string; task: ReadTask }) {
  const host = useAppHost(), meApi = useMemo(() => createApiClient(host), [host]);
@@ -240,7 +240,7 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
     validated = recovery.validated;
     return true;
    },
-   lockName: "rovara.merge.claim:" + subject, records: mergeActionRecords,
+   records: mergeActionRecords, timeoutMs: 120_000,
    refusalNow: () => refusalNow(validated), storageWords: STORAGE_WORDS,
    pending: () => {
     const frozen = shown, sentHeads = frozen.heads ?? [];

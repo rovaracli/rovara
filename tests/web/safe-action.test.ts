@@ -3,21 +3,29 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
-import { actionLock, answerHeld, basisOf, claimLockSupported, createActionRecords, everyCovered, isCsrfFailure, fenceFor as actionFenceFor, fencedRead, fencedReadiness, itemsBound, observeRecord, recoverActionBasis, runActionPress, sameItems, withActionClaim, type PressInput } from "../../packages/ui/src/safe-action.js";
+import { actionSubject, actionLock, answerHeld, basisOf, claimLockSupported, createActionRecords, everyCovered, isCsrfFailure, fenceFor as actionFenceFor, fencedRead, fencedReadiness, itemsBound, observeRecord, recoverActionBasis, runActionPress, sameItems, withActionClaim, type PressInput } from "../../packages/ui/src/safe-action.js";
 import { parsePending, parseAccepted, type PendingPress, type AcceptedAnswer } from "../../packages/ui/src/screens/session/merge-pending.js";
 import "./support/render.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
-const subject = "org_aaaaaaaaaaaaaaaaaaaa|person-a|subject-a";
+const subject = actionSubject({ orgId: "org_aaaaaaaaaaaaaaaaaaaa", developerId: "person-a", subjectId: "subject-a" });
 const pending = (): PendingPress => ({ v: 1, sessionId: subject, requestId: "11111111-1111-4111-8111-111111111111", startedAt: "2026-11-20T15:00:00.000Z", heads: [{ repositoryId: "acme/repo", number: 1, headSha: "a".repeat(40) }], risk: "high", sent: ["the exact shown target"] });
 const answer = (): AcceptedAnswer => ({ v: 1, subject, requestId: pending().requestId, acceptedAt: "2026-11-20T15:00:01.000Z", words: "Server's actual answer", keys: ["acme/repo#1"], heads: pending().heads });
 function store() {
- return createActionRecords({ pendingPrefix: "fixture.pending:", acceptedPrefix: "fixture.accepted:", changedEvent: "fixture-changed", parsePending, parseAccepted, pendingSubject: (entry: PendingPress) => entry.sessionId, acceptedSubject: (entry: AcceptedAnswer) => entry.subject, canonicalAccepted: (entry: AcceptedAnswer) => ({ ...entry }) });
+ return createActionRecords({ lockPrefix: "fixture.claim:", pendingPrefix: "fixture.pending:", acceptedPrefix: "fixture.accepted:", changedEvent: "fixture-changed", parsePending, parseAccepted, pendingSubject: (entry: PendingPress) => entry.sessionId, acceptedSubject: (entry: AcceptedAnswer) => entry.subject, canonicalAccepted: (entry: AcceptedAnswer) => ({ ...entry }) });
 }
 function deferred<T>() { let resolve!: (value: T) => void, reject!: (reason: Error) => void; const promise = new Promise<T>((yes, no) => { resolve = yes;reject = no; });return { promise, resolve, reject }; }
 const fenceFor = (client: QueryClient, key: string) => actionFenceFor(client, key, "fixture-action");
 const fence = () => fenceFor(new QueryClient(), subject);
 function inputFor(overrides: Partial<PressInput<PendingPress, AcceptedAnswer>> = {}): PressInput<PendingPress, AcceptedAnswer> {
- return { recover: async () => true, lockName: subject, records: store(), pending, refusalNow: () => undefined, storageWords: "storage", claimed: () => undefined, send: async () => answer(), accepted: () => undefined, failed: () => undefined, finished: () => undefined, ...overrides };
+ return { recover: async () => true, records: store(), pending, refusalNow: () => undefined, storageWords: "storage", claimed: () => undefined, send: async () => answer(), accepted: () => undefined, failed: () => undefined, finished: () => undefined, ...overrides };
+}
+// Keep the real exclusive lock, changing caller facts only at the lock boundary.
+async function pressWithClaimChange(input: PressInput<PendingPress, AcceptedAnswer>, change: () => void | Promise<void>) {
+ const saved = Object.getOwnPropertyDescriptor(navigator, "locks")!, locks = navigator.locks;
+ Object.defineProperty(navigator, "locks", { configurable: true, value: { async request(name: string, options: LockOptions, callback: LockGrantedCallback<unknown>) {
+  await change();return locks.request(name, options, callback);
+ } } });
+ try { await runActionPress(input); } finally { Object.defineProperty(navigator, "locks", saved); }
 }
 beforeEach(() => {
  localStorage.clear();
@@ -25,7 +33,7 @@ beforeEach(() => {
  expect(parsePending(JSON.stringify(pending()), subject).kind).toBe("pending");
  expect(parseAccepted(JSON.stringify(answer()), subject)).toEqual(answer());
 });
-afterEach(() => { vi.restoreAllMocks();localStorage.clear(); });
+afterEach(() => { vi.restoreAllMocks();vi.useRealTimers();localStorage.clear(); });
 it("F1: older failed read cannot beat a newer success; body and fence survive remount", async () => {
  const client = new QueryClient(), f = fenceFor(client, subject), old = deferred<string>();
  const failed = fencedRead(f, () => old.promise).catch(() => undefined);
@@ -59,19 +67,24 @@ it("P1-2/M1: every covered item must be observed; partial tracking and empty cov
 it("P1-3: any meaningful newer snapshot invalidates the shown basis at send", async () => {
  const before = ["head-a", "digest-a", "ready", "passing", "item-a", "low"];
  for (let index = 0;index < before.length;index++) {
-  const changed = [...before];changed[index] = "changed";const f = fence();await fencedRead(f, async () => basisOf(changed));
-  const result = await recoverActionBasis(f, basisOf(before), body => typeof body === "string" ? body : undefined, async () => ({ issued: 999, body: basisOf(changed) }));
-  expect(result.kind).toBe("changed");
+  const changed = [...before];changed[index] = "changed";
+  const f = fence(), records = store(), send = vi.fn(async () => answer()), recovered = vi.fn();
+  await fencedRead(f, async () => basisOf(before));
+  await pressWithClaimChange(inputFor({ records, send,
+   recover: async () => { const result = await recoverActionBasis(f, basisOf(before), body => typeof body === "string" ? body : undefined, () => fencedRead(f, async () => basisOf(before)));recovered(result.kind);return result.kind === "unchanged"; },
+   refusalNow: () => f.latestRead?.data === basisOf(before) ? undefined : "changed",
+  }), async () => { expect(recovered).toHaveBeenCalledWith("unchanged");await fencedRead(f, async () => basisOf(changed)); });
+  expect(send).not.toHaveBeenCalled();expect(records.readPendingNow(subject).kind).toBe("none");
  }
 });
 it("P1-4/M-2: exclusive claim spans pending write and entire POST until recording and finally release", async () => {
  const records = store(), sent = deferred<void>(), recording = deferred<void>(), finish = vi.fn();
  const run = runActionPress(inputFor({ records, send: async () => { sent.resolve();await recording.promise;return answer(); }, finished: finish }));
  await sent.promise;expect(records.readPendingNow(subject).kind).toBe("pending");
- const second = vi.fn();expect(await withActionClaim(subject, second)).toEqual({ kind: "busy" });expect(second).not.toHaveBeenCalled();
+ const second = vi.fn();expect(await withActionClaim("fixture.claim:" + subject, second)).toEqual({ kind: "busy" });expect(second).not.toHaveBeenCalled();
  recording.resolve();await run;expect(finish).toHaveBeenCalledTimes(1);expect(records.acceptedStoredExactly(answer())).toBe(true);
  await new Promise(resolve => { setTimeout(resolve, 0); });
- const next = await withActionClaim(subject, () => "released");expect(next.kind).toBe("done");if (next.kind === "done") next.release();
+ const next = await withActionClaim("fixture.claim:" + subject, () => "released");expect(next.kind).toBe("done");if (next.kind === "done") next.release();
 });
 it("Low-1: absent, synchronously thrown and asynchronously rejected Web Lock APIs fail closed", async () => {
  const original = navigator.locks, claim = vi.fn();
@@ -90,21 +103,23 @@ it("Sol R13/R14 P1: successful recovery compares fresh BODY and blocks old confi
  expect(fresh.kind).toBe("changed");
  const sent = vi.fn(async () => answer());await runActionPress(inputFor({ recover: async () => fresh.kind === "unchanged", send: sent }));expect(sent).not.toHaveBeenCalled();
 });
-it("Sol P2: retired memory-only acceptance stops refusing a valid confirmation", () => {
- expect(answerHeld(answer(), undefined)).toBe(true);expect(answerHeld(answer(), answer().requestId)).toBe(false);
- const records = store();expect(records.claimPending(pending(), () => answerHeld(answer(), answer().requestId) ? "accepted" : undefined, "storage").stop).toBe(false);
+it("Sol P2: retired memory-only acceptance stops refusing a valid confirmation", async () => {
+ const records = store(), send = vi.fn(async () => answer());let retired: string | undefined;
+ await pressWithClaimChange(inputFor({ records, send, refusalNow: () => answerHeld(answer(), retired) ? "accepted" : undefined }), () => { retired = answer().requestId; });
+ expect(send).toHaveBeenCalledTimes(1);expect(records.acceptedStoredExactly(answer())).toBe(true);expect(records.readPendingNow(subject).kind).toBe("none");
 });
 it("Sol R14 P2: stalled refresh does not retain claim or busy after end is recorded", async () => {
  const stalled = deferred<void>(), finish = vi.fn(), events: string[] = [];
  await runActionPress(inputFor({ accepted: () => { events.push("record");void stalled.promise.catch(() => undefined); }, finished: () => { finish();events.push("finish"); } }));
  expect(events).toEqual(["record", "finish"]);expect(finish).toHaveBeenCalledTimes(1);
  await new Promise(resolve => { setTimeout(resolve, 0); });
- const claim = await withActionClaim(subject, () => true);expect(claim.kind).toBe("done");if (claim.kind === "done") claim.release();stalled.resolve();
+ const claim = await withActionClaim("fixture.claim:" + subject, () => true);expect(claim.kind).toBe("done");if (claim.kind === "done") claim.release();stalled.resolve();
 });
-it("Opus P2-1: shown and sent values must match, including risk", () => {
- const shown = [{ key: "a", head: "sha", digest: "d", risk: "low" }], sent = [{ ...shown[0]!, risk: "high" }];
- expect(sameItems(shown, sent, item => JSON.stringify(item))).toBe(false);
- expect(store().claimPending(pending(), () => sameItems(shown, sent, item => JSON.stringify(item)) ? undefined : "changed", "storage")).toEqual({ stop: true, words: "changed" });
+it("Opus P2-1: shown and sent values must match, including risk", async () => {
+ const shown = [{ key: "a", head: "sha", digest: "d", risk: "low" }];let sent = shown;
+ const records = store(), send = vi.fn(async () => answer());
+ await pressWithClaimChange(inputFor({ records, send, refusalNow: () => sameItems(shown, sent, item => JSON.stringify(item)) ? undefined : "changed" }), () => { sent = [{ ...shown[0]!, risk: "high" }]; });
+ expect(send).not.toHaveBeenCalled();expect(records.readPendingNow(subject).kind).toBe("none");
 });
 it("hard locks: unread identity, unusable storage and unknown end never offer or send", () => {
  expect(actionLock({ unresolved: false, identityUnread: true, drift: false, ready: true })).toBe("identity");
@@ -115,8 +130,9 @@ it("hard locks: unread identity, unusable storage and unknown end never offer or
 });
 it("server backstop is not the plan: send-time authority loss prevents persistence and dispatch", async () => {
  const records = store(), send = vi.fn(async () => answer()), entry = pending();let authority = true;
- const input = inputFor({ records, pending: () => entry, recover: async () => { authority = false;return true; }, refusalNow: () => authority ? undefined : "refused", send });
- await runActionPress(input);expect(send).not.toHaveBeenCalled();expect(records.readPendingNow(subject).kind).toBe("none");
+ const recovered = vi.fn(() => true);
+ const input = inputFor({ records, pending: () => entry, recover: async () => recovered(), refusalNow: () => authority ? undefined : "refused", send });
+ await pressWithClaimChange(input, () => { expect(recovered).toHaveBeenCalledTimes(1);authority = false; });expect(send).not.toHaveBeenCalled();expect(records.readPendingNow(subject).kind).toBe("none");
 });
 it("R6b/e/g: cache/old reads do not resolve an observed press; identity scopes are isolated", async () => {
  const client = new QueryClient(), f = fenceFor(client, subject), old = deferred<string>(), read = fencedRead(f, () => old.promise);
@@ -163,7 +179,7 @@ it("action namespaces isolate readiness refusal and body-bound facts on one subj
 it("cleanup and presentation exceptions release the lock; recovery exceptions clear busy without dispatch", async () => {
  await expect(runActionPress(inputFor({ finished: () => { throw new Error("cleanup"); } }))).rejects.toThrow("cleanup");
  await new Promise(resolve => { setTimeout(resolve, 0); });
- const claim = await withActionClaim(subject, () => true);expect(claim.kind).toBe("done");if (claim.kind === "done") claim.release();
+ const claim = await withActionClaim("fixture.claim:" + subject, () => true);expect(claim.kind).toBe("done");if (claim.kind === "done") claim.release();
  const finished = vi.fn(), send = vi.fn(async () => answer());
  await expect(runActionPress(inputFor({ recover: async () => { throw new Error("recovery"); }, send, finished }))).rejects.toThrow("recovery");expect(finished).toHaveBeenCalledTimes(1);expect(send).not.toHaveBeenCalled();
 });
@@ -193,4 +209,45 @@ it("failed pending removal keeps a confirmed answer in the current caller's memo
  const records = store(), remove = Storage.prototype.removeItem.bind(localStorage), accepted = vi.fn();
  vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, key) { if (key.startsWith("fixture.pending:")) throw new Error("denied");remove(key); });
  await runActionPress(inputFor({ records, accepted }));expect(accepted).toHaveBeenCalledWith(answer(), false);expect(records.readPendingNow(subject).kind).toBe("pending");
+});
+
+
+it("F2: subject builder requires company, person and id and retains existing key format", () => {
+ expect(actionSubject({ orgId: "org-a", developerId: "person-a", subjectId: "task-a" })).toBe("org-a|person-a|task-a");
+ for (const field of ["orgId", "developerId", "subjectId"] as const) {
+  for (const empty of ["", "   "]) expect(() => actionSubject({ orgId: "org-a", developerId: "person-a", subjectId: "task-a", [field]: empty })).toThrow();
+ }
+});
+it("F2: runner derives the exclusive lock from the same subject as the pending record", async () => {
+ const records = store(), sent = deferred<void>(), response = deferred<AcceptedAnswer>();
+ const run = runActionPress(inputFor({ records, send: async () => { sent.resolve();return response.promise; } }));
+ await sent.promise;
+ try {
+  expect(localStorage.getItem("fixture.pending:" + subject)).toBe(JSON.stringify(pending()));
+  const contender = vi.fn(), claim = await withActionClaim("fixture.claim:" + subject, contender);
+  if (claim.kind === "done") claim.release();
+  expect(claim.kind).toBe("busy");expect(contender).not.toHaveBeenCalled();
+ } finally { response.resolve(answer());await run; }
+});
+it.each([undefined, 120_000])("F3: runner owns timeout %s without a transport wrapper and keeps pending on late success", async timeoutMs => {
+ vi.useFakeTimers();
+ const records = store(), response = deferred<AcceptedAnswer>(), sent = deferred<void>(), failed = vi.fn(), accepted = vi.fn(), finished = vi.fn();
+ const run = runActionPress(inputFor({ records, ...(timeoutMs === undefined ? {} : { timeoutMs }), send: async () => { sent.resolve();return response.promise; }, failed, accepted, finished }));
+ await sent.promise;const raw = localStorage.getItem("fixture.pending:" + subject), expiry = timeoutMs ?? 30_000;
+ try {
+  await vi.advanceTimersByTimeAsync(expiry - 1);expect(failed).not.toHaveBeenCalled();expect(finished).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);expect(failed).toHaveBeenCalledWith(expect.objectContaining({ code: "UNKNOWN_OUTCOME" }), pending());
+  expect(finished).toHaveBeenCalledTimes(1);expect(localStorage.getItem("fixture.pending:" + subject)).toBe(raw);
+  const free = await withActionClaim("fixture.claim:" + subject, () => true);expect(free.kind).toBe("done");if (free.kind === "done") free.release();
+  const sendAgain = vi.fn(async () => answer());await runActionPress(inputFor({ records: store(), send: sendAgain }));expect(sendAgain).not.toHaveBeenCalled();
+ } finally { response.resolve(answer());await run; }
+ expect(accepted).not.toHaveBeenCalled();expect(records.readAcceptedNow(subject)).toBeUndefined();expect(localStorage.getItem("fixture.pending:" + subject)).toBe(raw);
+});
+it("F4: accepted-only hook observes another tab adding and removing pending", () => {
+ const records = store();records.writeAccepted(answer());
+ const hook = renderHook(() => records.useAccepted(subject));expect(hook.result.current).toEqual(answer());
+ act(() => { localStorage.setItem("fixture.pending:" + subject, JSON.stringify(pending()));globalThis.dispatchEvent(new StorageEvent("storage", { key: "fixture.pending:" + subject })); });
+ expect(hook.result.current).toBeUndefined();
+ act(() => { localStorage.removeItem("fixture.pending:" + subject);globalThis.dispatchEvent(new StorageEvent("storage", { key: "fixture.pending:" + subject })); });
+ expect(hook.result.current).toEqual(answer());hook.unmount();
 });
