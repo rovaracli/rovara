@@ -139,3 +139,46 @@ updates the company's stack. The template names the role from the company id, an
 is created in a different AWS account than the company's role (in the same account the stack fails to create; nothing is changed).
 Known gap (Low): a 403 for one product model that is missing from the role's policy marks the whole connection refused in Settings (the
 agents still work) and drops the session; the fix is to tell a model refusal from a credential failure once AWS's wording is confirmed.
+
+### Customer-source overage stop (Round C)
+
+Every agent call on `bedrock_byo` or `openrouter` reserves one durable slot in
+`meter / CO#[iss,cid] / SOURCESTOP#<source>`, atomically with its money hold. There
+is at most **one in-flight call per company and source**, across processes, tasks
+and accounting months, with combined product/agent meters sharing the agent record. No TTL frees this slot: settlement or the existing dead-hold
+sweep releases it. A failed settlement retains the hold/slot. An over-hold receipt
+or revision atomically stops that source, preserving its true cost. Corrections
+never read or write the stop. Independent cap-overrun latches remain separate.
+
+Bedrock reviewer calls keep the grant's durable session/debit ceiling, and take
+an individual priced meter hold and receipt for **each** call (rather than keeping
+one ceiling-sized meter hold for the session). This enforces the source slot and
+caps for every call, records its actual bill, and stops and alarms above its hold.
+The session's debits authorize calls only up to its ceiling; an unexpected bill
+above that ceiling is still recorded in full. Other reviewer sources retain their
+existing session-sized hold.
+
+Only the local interactive operator CLI clears a stop. It resolves the operator's
+IAM **user** ARN using STS with the same exported credentials used for DynamoDB;
+workload/assumed-role/root identities and noninteractive input are refused. It
+prints the exact issuer, company, source, stop, amounts and target tables, asks for
+an exact confirmation phrase, then conditionally clears only that stop while
+writing who/when/why into the ledger (`SOURCESTOPCLEAR#<stopId>`), in one transaction.
+A changed stop or a live call makes the confirmation stale. Spend, accounting cap
+latches and other sources are untouched. This adds no serving-role IAM grant,
+web route, feature switch or step-up. The operator needs existing table write
+permissions; the serving process never exposes this action.
+
+After building, run locally (with real identifiers and a meaningful reason):
+
+```sh
+node scripts/model-gateway-source-stop-clear.mjs \
+  --issuer https://code.example/v1/auth --company org_aaaaaaaaaaaaaaaaaaaa \
+  --source bedrock_byo --reason 'Reviewed invoice and corrected configuration' \
+  --region us-west-2 --meter-table <agent-meter-table> --ledger-table <agent-ledger-table>
+```
+
+Geo-profile aliases (`us.`, `eu.`, `apac.`, `global.`) currently share the **dearest**
+observed Bedrock price identity. A regional premium therefore raises every alias's
+hold rather than being replaced by a cheaper global observation. This is
+conservative pooling, not live AWS tariff qualification.

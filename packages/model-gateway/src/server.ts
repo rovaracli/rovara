@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { openRouterPolicy, type OpenRouterTariff } from "./openrouter-policy.js";
 import { runPriceAllows } from "./run-price.js";
-import { AGENT_AI_SOURCES, agentSourceSwitchedOn, resolveAgentSource, type AgentAiSource, type ResolvedAgentSource, type AgentSourceVia, type AgentAiSourceReader, type ByoBedrock, type CompanyChatAi, type CompanyEndpointAi, type RovaraAi } from "./agent-ai.js";
+import { AGENT_AI_SOURCES, agentSourceSwitchedOn, operatorSourceAllowed, resolveAgentSource, type AgentAiSource, type ResolvedAgentSource, type AgentSourceVia, type AgentAiSourceReader, type ByoBedrock, type CompanyChatAi, type CompanyEndpointAi, type RovaraAi } from "./agent-ai.js";
 import { endpointTarget, ENDPOINT_ADDRESS_REFUSED, type EndpointTarget } from "./endpoint-guard.js";
 import { parseEndpointConnect, type EndpointConnection, type EndpointModel } from "./endpoint-source.js";
 import { OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS, OPENAI_AGENT_MODEL, OPENAI_AGENT_UPSTREAM, toChatCompletions, type OpenAiAgentProvider } from "./agent-openai.js";
@@ -347,6 +347,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     if (source === "rovara") {
       const ai = choice.rovara;
       if (ai === undefined) return soft(ROVARA_AI_OFF);
+      if (!operatorSourceAllowed(ai.exempt, claims.cid)) return soft(AGENT_KEY_MISSING);
       if (!serves(checkModel, claims, (m) => ai.models.has(m) && choice.rovaraDisabled?.has(m) !== true)) return soft(AGENT_MODEL_NOT_SERVED);
       // A per-call marker stands in for a key: the transport signs with the task role, and no key exists to leak.
       return { admit() {
@@ -583,6 +584,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let appliedMaxOutputTokens = 0;
   let reservedMicros = 0;
   let charge: ChargeReceiptV1 | undefined;
+  let customerReview = false;
   // DEC 254zzz41: a review's first call holds the grant's whole ceiling (`held`) and opens the session that keeps it (`heldKept`); every call of a review debits that session
   // and holds nothing of its own (`sessionCall`: what it debited and gives back when it finishes).
   let held: Reservation | undefined; let heldKept = false; let pendingOpen: Promise<unknown> | undefined;
@@ -611,8 +613,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
         const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: reservedMicros, retainMissingUsage: callClaims?.runPrice !== undefined });
         cost = amount.actualMicros; estimated = amount.estimated;
-        // A review is never recorded above the hold it was admitted on (the task's and the company's caps were checked for exactly that amount).
-        if (callClaims?.reviewer !== undefined && cost > reservedMicros) cost = reservedMicros;
+        // Customer Bedrock reviews record the true bill like every customer call; other review sources retain their ceiling clamp.
+        if (callClaims?.reviewer !== undefined && route.payer !== "bedrock_byo" && cost > reservedMicros) cost = reservedMicros;
         if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
       }
       if (charge !== undefined && reservation !== undefined && route.meter.settleV2 !== undefined && settlementPrice !== undefined) {
@@ -625,6 +627,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         const actualInputTokens = usage?.actualInputTokens?.();
         await route.meter.settleV2({ reservationId: reservation.id, receipt, ...(actualInputTokens === undefined ? {} : { actualInputTokens }) });
         cost = chargeValue(receipt.amountMicros)!; estimated = receipt.status !== "final";
+        if (customerReview && sessionCall !== undefined) await deps.reviewerGrants?.giveBack(sessionCall.claims.iss, sessionCall.claims.cid, sessionCall.claims.jti, Math.max(0, sessionCall.debited - cost));
       } else if (sessionCall !== undefined) await deps.reviewerGrants?.giveBack(sessionCall.claims.iss, sessionCall.claims.cid, sessionCall.claims.jti, Math.max(0, sessionCall.debited - cost)); else await route.meter.settle(reservation!, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === undefined ? {} : { route: route.purpose }) });
       settled = { ok: true, micros: cost, estimated };
       if (route.overReservation !== undefined && callClaims !== undefined && cost > reservedMicros) {
@@ -705,6 +708,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
     const legacyBedrock = route.payer === "bedrock_byo" && claims.runPrice === undefined;
     if (legacyBedrock && (!guarded.inputBounded || guarded.media !== undefined || providerPrice.estimated || price.estimated || usageEstimated(price, { input: guarded.bytes.length + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0), output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || price.operatorReview || route.meter.settleV2 === undefined)) {
+      if (claims.reviewer !== undefined) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
       await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
     }
     const basis = claims.runPrice === undefined ? undefined : deps.prices?.quoteBasis?.(route.provider, guarded.model);
@@ -736,6 +740,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     // DEC 254zzz41: a review call is held at its priced worst case, which must fit the grant's ceiling and be exact (no estimated price, no unbounded input):
     // the hold below is then taken inside the task's limit AND the company's cap, so the ceiling cannot be spent beyond either.
     const grant = claims.reviewer;
+    customerReview = grant !== undefined && route.payer === "bedrock_byo";
+    // Bedrock reviews retain session authorization/debits, but meter each call with its own receipt and source slot.
     // REVIEW-1 M1: nothing may settle a review above its hold: no estimated price, no tier the request can reach whose rates are derived or uncertain (usageEstimated, at the most tokens the request's bytes can be), no unbounded input, and no source
     // whose provider reports its own cost (OpenRouter), which is a source Code never lists for reviews (reviewerProviderOf) but could be saved within the grant's 120 s.
     if (grant !== undefined && (overrunCapable || route.provider === "openrouter" || usageEstimated(price, { input: guarded.bytes.length, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || estimate > Math.floor(grant.ceilingUsd * 1_000_000))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
@@ -751,12 +757,13 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     let session: Awaited<ReturnType<ReviewerGrantStore["read"]>>;
     if (grant !== undefined) { try { session = await wait(deps.reviewerGrants!.read(claims.iss, scope.cid, claims.jti, controller.signal)); } catch { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; } }
     const ceilingMicros = grant === undefined ? 0 : Math.floor(grant.ceilingUsd * 1_000_000);
-    if ((deps.chargeReceipts !== undefined || legacyBedrock) && grant === undefined && guarded.media === undefined && route.meter.settleV2 !== undefined) {
-      const source = legacyBedrock ? route.chargeSource : deps.chargeReceipts!.source(claims, guarded.model, route.chargeSource);
+    if ((deps.chargeReceipts !== undefined || legacyBedrock || customerReview) && (grant === undefined || customerReview) && guarded.media === undefined && route.meter.settleV2 !== undefined) {
+      const source = legacyBedrock || customerReview ? route.chargeSource : deps.chargeReceipts!.source(claims, guarded.model, route.chargeSource);
       if (source !== undefined) charge = initialCharge(claims, { provider: route.provider, modelId: guarded.model }, source, estimate, now(), price);
     }
-    const reserved = grant !== undefined && session !== undefined ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined ? estimate : ceilingMicros, appliedMaxOutputTokens, ...(charge === undefined ? {} : { charge: { receipt: charge, requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, ...(claims.runPrice !== undefined || legacyBedrock ? {} : { provisional: { requestBytes: guarded.bytes.length, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }) }), ...(line === undefined ? {} : { line }),
-      ...(grant === undefined ? {} : { sweepAfter: now() + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS, review: { jti: claims.jti.toLowerCase() } }),
+    const reserved = grant !== undefined && !customerReview && session !== undefined ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined || customerReview ? estimate : ceilingMicros, appliedMaxOutputTokens,
+      ...(route.payer === "bedrock_byo" ? { customerSource: "bedrock_byo" as const } : route.provider === "openrouter" ? { customerSource: "openrouter" as const } : {}), ...(charge === undefined ? {} : { charge: { receipt: charge, requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, ...(claims.runPrice !== undefined || legacyBedrock ? {} : { provisional: { requestBytes: guarded.bytes.length, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }) }), ...(line === undefined ? {} : { line }),
+      ...(grant === undefined || customerReview ? {} : { sweepAfter: now() + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS, review: { jti: claims.jti.toLowerCase() } }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });
     if (!reserved.ok) {
@@ -771,7 +778,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       else { refusedCap = reserved.item; await respond(422, "budget_exceeded", route.prefix[reserved.item]); }
       return;
     }
-    if (grant === undefined) reservation = reserved.reservation; else held = reserved.reservation;
+    if (grant === undefined || customerReview) reservation = reserved.reservation;
+    if (grant !== undefined && (!customerReview || session === undefined)) held = reserved.reservation;
     reservedMicros = estimate;
     // One non-overlapping, deadline-bounded poll also stops streams stalled between chunks.
     const pollEnded = async (): Promise<void> => {
@@ -793,8 +801,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
           if (!(await store.open({ iss: claims.iss, cid: scope.cid, jti, bind, holdId: hold.id, ceilingMicros, firstDebitMicros: estimate, endsAt: at + REVIEW_SESSION_SECONDS }))) return "exists";
           heldKept = true; sessionCall = { debited: estimate, claims };
           // Whatever the review leaves unused goes back when its session ends (a short grace after); the session-aware hold sweep is only the backstop for a gateway task that died.
-          const timer = setTimeout(() => { void closeReviewSession(store, route!.meter, scope, jti, hold.id).catch(() => { log({ event: "settle_failed" }); }); }, (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS);
-          timer.unref();
+          if (!customerReview) { const timer = setTimeout(() => { void closeReviewSession(store, route!.meter, scope, jti, hold.id).catch(() => { log({ event: "settle_failed" }); }); }, (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS);
+          timer.unref(); }
           return "opened";
         } catch {
           // The write's outcome is unknown. Certainly not written: the finally gives the hold back whole. Written by THIS hold: the session is closed at what was debited (never left
@@ -805,7 +813,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
           if (seen === undefined) return "failed";
           if (seen.holdId !== hold.id) return "exists";
           heldKept = true;
-          try { await closeReviewSession(store, route!.meter, scope, jti, hold.id); } catch { log({ event: "settle_failed" }); }
+          try { if (customerReview) await store.close(claims.iss, scope.cid, jti, hold.id); else await closeReviewSession(store, route!.meter, scope, jti, hold.id); } catch { log({ event: "settle_failed" }); }
           return "failed";
         }
       };
@@ -896,7 +904,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     // The claim is never left running past this point: a session it opened is then known (heldKept) before the hold is judged.
     if (pendingOpen !== undefined) await pendingOpen.catch(() => undefined);
     // A hold taken for a review's first call that never opened its session (a refused or failed claim) is given back whole ($0).
-    if (held !== undefined && !heldKept && route !== undefined) { try { await route.meter.settle(held, 0); } catch { log({ event: "settle_failed" }); } }
+    if (held !== undefined && held !== reservation && !heldKept && route !== undefined) { try { await route.meter.settle(held, 0); } catch { log({ event: "settle_failed" }); } }
     await settleOnce();
     // Exactly one settle event, after the call settled.
     if (events !== undefined) { try { await events.finish({ completed, ...(refusedCode === undefined ? {} : { code: refusedCode }) }); } catch { /* The sink ends or destroys itself. */ } }

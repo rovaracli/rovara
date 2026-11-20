@@ -70,7 +70,7 @@ it.each(["openai", "converse"] as const)("%s binds the translated wire bytes and
   const f = setup({ meter, agentKeys: { connected: async () => true, keyFor: async () => "fixture-key" }, agentAi: {
     sources: { sourceFor: async () => adapter === "openai" ? "openai_key" : "rovara" },
     switchedOn: new Set(["openai"]),
-    ...(adapter === "openai" ? { openai: { transport } } : { rovara: { transport, models: new Map([[model, model]]), exempt: new Set<string>() } }),
+    ...(adapter === "openai" ? { openai: { transport } } : { rovara: { transport, models: new Map([[model, model]]), exempt: new Set([claims.cid]) } }),
   } });
   f.deps.chargeReceipts = { source: () => ({ source: { kind: "company_key", id: "connection_1", name: "Company key", provider: "openai", connectionRevision: "7" }, billing: "external_provider" }) };
   const result = await call(f.deps, { model, max_tokens: 100, stream: true, tools: [{ name: "ping", description: "Ping", input_schema: { type: "object", properties: {} } }], messages: [{ role: "user", content: "hello" }] }, mint({ mdl: [model] }));
@@ -129,7 +129,7 @@ it.each(["anthropic_key", "rovara"] as const)("fallback to %s binds only the win
     },
   }, agentAi: {
     sources: { sourceFor: async () => "openai_key", orderFor: async () => ({ source: "openai_key", fallback: [winner] }) },
-    switchedOn: new Set(["openai"]), openai: { transport }, rovara: { transport, models: new Map([[model, "us.anthropic.claude-sonnet-5-5-v1:0"]]), exempt: new Set<string>() },
+    switchedOn: new Set(["openai"]), openai: { transport }, rovara: { transport, models: new Map([[model, "us.anthropic.claude-sonnet-5-5-v1:0"]]), exempt: new Set([claims.cid]) },
   }, chargeReceipts: { source: (_claims, _model, resolved) => resolved } });
   expect((await call(f.deps, { model, max_tokens: 10, messages: [{ role: "user", content: "hello" }], stream: true }, mint({ mdl: [model] }))).status).toBe(200);
   expect(reserved?.charge?.receipt.source).toMatchObject(winner === "rovara" ? { kind: "rovara_ai", id: "rovara-ai", provider: "bedrock", connectionRevision: createHash("sha256").update(JSON.stringify([[model, "us.anthropic.claude-sonnet-5-5-v1:0"]])).digest("hex") } : { id: "saved_anthropic", provider: "anthropic", connectionRevision: "revision_7" });

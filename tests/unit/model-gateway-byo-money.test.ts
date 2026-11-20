@@ -9,7 +9,7 @@ import { fetchAWS } from "../../packages/model-gateway/src/price-sources.js";
 import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
-import type { ReserveInput } from "../../packages/model-gateway/src/meter.js";
+import type { InMemoryMeter, ReserveInput } from "../../packages/model-gateway/src/meter.js";
 import { SnapshotPriceSource } from "../../packages/model-gateway/src/price-index.js";
 import { answerRateQuote, RATE_QUOTE_AUDIENCE } from "../../packages/model-gateway/src/rate-quote.js";
 import type { RunPrice } from "../../packages/model-gateway/src/model-gateway-token.js";
@@ -17,6 +17,7 @@ import { translatedAnswer } from "../../packages/model-gateway/src/agent-openai.
 import { openRouterPolicy } from "../../packages/model-gateway/src/openrouter-policy.js";
 import { resolvePrice } from "../../packages/model-gateway/src/price.js";
 beforeAll(denyNetwork);
+async function meterStop(meter: InMemoryMeter | DynamoMeter, source: "bedrock_byo" | "openrouter") { return (await meter.sourceStop(scope.iss, scope.cid, source))?.stopId; }
 const alias = "claude-haiku-4-5", id = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 const body = { ...requestBody, model: alias, stream: false };
 const price = { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 };
@@ -30,7 +31,7 @@ function world(prices: PriceSource = { priceFor: () => price }, input = 2, durab
     wire = new WireDynamo(Object.values(tables));
     w.deps.meter = new DynamoMeter({ db: new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "fixture", secretAccessKey: "fixture" }), transport: wire.transport }), tables, now: () => now });
   }
-  const meter = w.deps.meter;
+  const meter = w.deps.meter as InMemoryMeter | DynamoMeter;
   const settlements = vi.spyOn(meter, "settleV2");
   const holds: ReserveInput[] = [];
   const reserve = meter.reserve.bind(meter);
@@ -74,24 +75,28 @@ for (const durable of [false, true]) {
       expect(ledger).toMatchObject({ settledMicros: 100002, receipt: { amountMicros: { value: 100002 }, usage: { value: { input: 100000, output: 1 } } } });
       const tables = { meter: "meter", ledger: "ledger", markers: "markers" };
       const fresh = new DynamoMeter({ db: new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "fixture", secretAccessKey: "fixture" }), transport: w.wire.transport }), tables, now: () => now });
-      expect(await fresh.reserve({ scope: { ...scope, tid: "task_3" }, caps, estimateMicros: 1 })).toMatchObject({ ok: false, reason: "overrun" });
+      expect(await fresh.reserve({ scope: { ...scope, tid: "task_3" }, caps, estimateMicros: 1, customerSource: "bedrock_byo" })).toMatchObject({ ok: false, reason: "overrun" });
     }
     const rows = await w.meter.read(scope);
-    expect(rows.every(row => row.spentMicros === 100002 && row.overrun)).toBe(true);
+    expect(rows.every(row => row.spentMicros === 100002)).toBe(true);
+    expect(rows.filter(row => row.overrun).map(row => row.item).sort()).toEqual(["company", "task"]);
+    expect(await w.meter.sourceStop(scope.iss, scope.cid, "bedrock_byo")).toMatchObject({ stopped: true });
     expect(w.logs).toContainEqual(expect.objectContaining({ event: "customer_source_over_reservation", source: "bedrock_byo", costMicros: 100002, heldMicros: hold, overageMicros: 100002 - hold }));
     expect((await call(w.deps, body, mint({ mdl: [alias], tid: "task_2" }))).status).toBe(422);
     expect(w.assumed).toHaveBeenCalledTimes(1); expect(w.sent).toHaveBeenCalledTimes(1);
     const receipt = w.settlements.mock.calls[0]![0].receipt;
     const revised = { ...receipt, revision: 2, replacesRevision: 1, amountMicros: { state: "available" as const, value: 100003 } };
-    expect(await w.meter.applyChargeReceipt!(revised)).toMatchObject({ result: "applied", deltaMicros: 1 });
-    expect(await w.meter.applyChargeReceipt!(revised)).toMatchObject({ result: "duplicate", deltaMicros: 0 });
-    expect((await w.meter.read(scope)).every(row => row.spentMicros === 100003 && row.overrun)).toBe(true);
+    expect(await w.meter.applyChargeReceipt(revised)).toMatchObject({ result: "applied", deltaMicros: 1 });
+    expect(await w.meter.applyChargeReceipt(revised)).toMatchObject({ result: "duplicate", deltaMicros: 0 });
+    expect((await w.meter.read(scope)).every(row => row.spentMicros === 100003)).toBe(true);
+    expect((await w.meter.read(scope)).filter(row => row.overrun).map(row => row.item).sort()).toEqual(["company", "task"]);
     if (w.wire !== undefined) {
-      // Simulate an explicit operator clear of the existing meter rows, preserving the true spend.
-      for (const row of w.wire.fake.items.values()) if (row.overrun === true) row.overrun = false;
+      const stop = await meterStop(w.meter, "bedrock_byo");
+      expect(await w.meter.clearSourceStop({ iss: scope.iss, cid: scope.cid, source: "bedrock_byo", expectedStopId: stop!, actor: "arn:aws:iam::111111111111:user/operator", reason: "Invoice reviewed" })).toBe(true);
       w.deps.caps = new FixedCapsSource(caps);
-      expect((await call(w.deps, body, mint({ mdl: [alias], tid: "task_cleared" }))).status).toBe(200);
-      expect(w.sent).toHaveBeenCalledTimes(2);
+      // Clearing a SOURCE stop never wipes separate accounting-cap overruns.
+      expect((await call(w.deps, body, mint({ mdl: [alias], tid: "task_cleared" }))).status).toBe(422);
+      expect(w.sent).toHaveBeenCalledTimes(1);
     }
   });
   for (const item of ["task", "companyMonth"] as const) it(`bounded no-runPrice ${item} admission cap before STS (${durable})`, async () => {
@@ -154,18 +159,65 @@ for (const durable of [false, true]) it(`OpenRouter reports true above-hold mone
   const hold = w.holds[0]!.estimateMicros;
   expect(hold).toBeLessThan(100002);
   expect(w.settlements.mock.calls[0]![0].receipt).toMatchObject({ amountMicros: { value: 100002 }, providerCostMicros: { value: 100002 } });
-  expect((await w.meter.read(scope)).every(row => row.spentMicros === 100002 && row.overrun)).toBe(true);
+  expect((await w.meter.read(scope)).every(row => row.spentMicros === 100002)).toBe(true);
+  expect(await w.meter.sourceStop(scope.iss, scope.cid, "openrouter")).toMatchObject({ stopped: true });
   expect(w.logs).toContainEqual(expect.objectContaining({ event: "customer_source_over_reservation", source: "openrouter", costMicros: 100002, heldMicros: hold, overageMicros: 100002 - hold }));
   expect((await call(w.deps, request, token("task_2"))).status).toBe(422);
   expect(sent).toHaveBeenCalledTimes(1);
   const receipt = w.settlements.mock.calls[0]![0].receipt;
   const revised = { ...receipt, revision: 2, replacesRevision: 1, amountMicros: { state: "available" as const, value: 100003 }, providerCostMicros: { state: "available" as const, value: 100003 } };
-  expect(await w.meter.applyChargeReceipt!(revised)).toMatchObject({ result: "applied", deltaMicros: 1 });
-  expect((await w.meter.read(scope)).every(row => row.spentMicros === 100003 && row.overrun)).toBe(true);
+  expect(await w.meter.applyChargeReceipt(revised)).toMatchObject({ result: "applied", deltaMicros: 1 });
+  expect((await w.meter.read(scope)).every(row => row.spentMicros === 100003)).toBe(true);
   if (w.wire !== undefined) {
     expect(w.wire.items("ledger").find(row => String(row.sk).startsWith("CALL#"))).toMatchObject({ settledMicros: 100003, receipt: { amountMicros: { value: 100003 } } });
-    for (const row of w.wire.fake.items.values()) if (row.overrun === true) row.overrun = false;
+    expect(await w.meter.clearSourceStop({ iss: scope.iss, cid: scope.cid, source: "openrouter", expectedStopId: (await meterStop(w.meter, "openrouter"))!, actor: "arn:aws:iam::111111111111:user/operator", reason: "Invoice reviewed" })).toBe(true);
     expect((await call(w.deps, request, token("task_cleared"))).status).toBe(200);
     expect(sent).toHaveBeenCalledTimes(2);
+  }
+});
+
+// Round C: every operator admission must independently check the operator's exemption list.
+for (const selected of ["default", "saved", "fallback"] as const) for (const signed of [false, true]) for (const exempt of [false, true]) it(`operator admission ${selected}, signed=${signed}, exempt=${exempt}`, async () => {
+  const prices = new SnapshotPriceSource({ load: async () => ({ version: 1, sources: { litellm: { fetchedAt: now - 1, count: 1, entries: [{ provider: "bedrock", model: id, kind: "chat", ...price }] } } }), save: async () => false }, { now: () => now, overrides: [] }); await prices.reload();
+  const w = setup({ prices, agentKeys: { connected: async () => false, keyFor: async () => undefined } });
+  const transport = vi.fn(async () => ({ status: 200, body: answer() }));
+  const rovara = { sourceId: "operator", models: new Map([[alias, id]]), exempt: new Set(exempt ? [claims.cid] : []), transport };
+  const sources = selected === "fallback" ? { sourceFor: async () => "bedrock_byo" as const, orderFor: async () => ({ source: "bedrock_byo" as const, fallback: ["rovara" as const] }) } : { sourceFor: async () => selected === "saved" ? "rovara" as const : undefined };
+  w.deps.agentAi = { sources, rovara };
+  const reserve = vi.spyOn(w.meter, "reserve");
+  // Obtain a real operator quote from an exempt pilot, then present it as this company's signed claim.
+  const quote = await answerRateQuote({ prices, now: () => now, region: "us-west-2", switchedOn: new Set(), offeredProviders: new Set(["bedrock"]), sources: { sourceFor: async () => "rovara" }, keys: w.deps.agentKeys!, rovara: { ...rovara, exempt: new Set([claims.cid]) }, verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${alias}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
+  const runPrice = (quote.body as { runPrice?: RunPrice }).runPrice; expect(runPrice).toBeDefined();
+  const r = await call(w.deps, { ...body, stream: true }, mint({ mdl: [alias], stp: "setup_draft", ...(signed ? { runPrice } : {}) }));
+  expect(r.status).toBe(exempt ? 200 : 403);
+  expect(transport).toHaveBeenCalledTimes(exempt ? 1 : 0);
+  expect(reserve).toHaveBeenCalledTimes(exempt ? 1 : 0);
+  expect(w.meter.billedCalls(claims.iss, claims.cid).map(x => x.line.charge)).toEqual(exempt ? ["exempt"] : []);
+});
+for (const durable of [false, true]) it(`Bedrock reviewer records true cost, alarms and stops (${durable})`, async () => {
+  const { InMemoryReviewerGrants } = await import("../../packages/model-gateway/src/reviewer-grants.js");
+  const w = world(undefined, 100_000, durable);
+  w.deps.reviewerGrants = new InMemoryReviewerGrants();
+  const r = await call(w.deps, body, mint({ mdl: [alias], stp: "second_review", exp: now / 1000 + 120, reviewer: { kind: "second_review", slot: "second_review", ceilingUsd: 1 } }));
+  expect(r.status).toBe(200);
+  expect(w.logs).toContainEqual(expect.objectContaining({ event: "customer_source_over_reservation", source: "bedrock_byo", costMicros: 100002 }));
+  expect((await w.meter.read(scope)).every(row => row.spentMicros === 100002)).toBe(true);
+  expect((await call(w.deps, body, mint({ mdl: [alias], tid: "task_after_review" }))).status).toBe(422);
+  expect(w.sent).toHaveBeenCalledTimes(1);
+});
+it("Bedrock reviewer-specific refusal precedes legacy unsafe-price/media refusal", async () => {
+  const { InMemoryReviewerGrants } = await import("../../packages/model-gateway/src/reviewer-grants.js");
+  const w = world(UnknownPriceSource); w.deps.reviewerGrants = new InMemoryReviewerGrants();
+  const r = await call(w.deps, { ...body, messages: [{ role: "user", content: [{ type: "image", source: { type: "url", url: "https://image.example/test.png" } }] }] }, mint({ mdl: [alias], stp: "second_review", exp: now / 1000 + 120, reviewer: { kind: "second_review", slot: "second_review", ceilingUsd: 1 } }));
+  expect(r.status).toBe(422); expect(w.holds).toEqual([]); expect(w.assumed).not.toHaveBeenCalled(); expect(w.sent).not.toHaveBeenCalled();
+});
+it("regional and global profile aliases retain the dearest regional premium in the hold", async () => {
+  const { estimateCall } = await import("../../packages/model-gateway/src/estimate.js");
+  const entries = ["global", "us", "eu", "apac"].map((geo, i) => ({ provider: "bedrock", model: `${geo}.anthropic.claude-haiku-4-5-20251001-v1:0`, kind: "chat" as const, inputMicrosPerMTok: 1_000_000 + i * 100_000, outputMicrosPerMTok: 2_000_000 + i * 200_000 }));
+  const prices = new SnapshotPriceSource({ load: async () => ({ version: 1, sources: { litellm: { fetchedAt: now - 1, count: 4, entries } } }), save: async () => false }, { now: () => now, overrides: [] }); await prices.reload();
+  for (const entry of entries) {
+    const resolved = await resolvePrice(prices, "bedrock", entry.model);
+    expect(resolved.inputMicrosPerMTok).toBe(1_300_000); expect(resolved.outputMicrosPerMTok).toBe(2_600_000);
+    expect(estimateCall(100, 100, resolved, 0, true)).toBeGreaterThanOrEqual(estimateCall(100, 100, entry, 0, true));
   }
 });

@@ -56,6 +56,7 @@ for (const durable of [false, true]) it(`retains missing usage, records an above
  const missing = finishCharge(receipt, { price, notSent: false, now, reportedCostMicros: 5, retainMissingUsage: true }); expect(missing.amountMicros).toEqual({ state: "available", value: 50 }); expect(missing.status).toBe("awaiting_usage");
  const final = finishCharge(receipt, { price, notSent: false, now, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, reportedCostMicros: 60 });
  await meter.settleV2({ reservationId: reserved.reservation.id, receipt: final }); await meter.settleV2({ reservationId: reserved.reservation.id, receipt: final });
- expect((await meter.read(scope)).every(row => row.spentMicros === 60 && row.overrun)).toBe(true);
- expect((await meter.reserve({ scope, caps, estimateMicros: 1 })).ok).toBe(false);
+ expect((await meter.read(scope)).every(row => row.spentMicros === 60)).toBe(true);
+ expect(await meter.sourceStop(scope.iss, scope.cid, "openrouter")).toMatchObject({ stopped: true });
+ expect((await meter.reserve({ scope, caps, estimateMicros: 1, customerSource: "openrouter" })).ok).toBe(false);
 });

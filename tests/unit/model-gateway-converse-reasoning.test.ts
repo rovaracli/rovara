@@ -226,7 +226,7 @@ function gateway(model: string, answers: Buffer[], sent: Buffer[]) {
   const saved = new Map<string, AgentAiSource>([[claims.cid, "rovara"]]);
   return setup({
     agentKeys: { connected: async () => false, keyFor: async () => undefined },
-    agentAi: { sources: { sourceFor: async (cid) => saved.get(cid) }, rovara: { models: parseRovaraAiModels(`${model}=${model}`, "us-west-2"), exempt: new Set(), transport: createBedrockTransport({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), request, now: () => 0 }), maxOutputTokens: () => 256 } },
+    agentAi: { sources: { sourceFor: async (cid) => saved.get(cid) }, rovara: { models: parseRovaraAiModels(`${model}=${model}`, "us-west-2"), exempt: new Set([claims.cid]), transport: createBedrockTransport({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), request, now: () => 0 }), maxOutputTokens: () => 256 } },
     keys: { keyFor: async () => { throw new Error("install key read"); } },
     prices: { priceFor: (provider) => provider === "bedrock" ? { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 4_000_000 } : undefined },
   });

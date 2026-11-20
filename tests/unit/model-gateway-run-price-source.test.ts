@@ -11,7 +11,7 @@ const id = "us.anthropic.claude-sonnet-4-5-v1:0";
 const sourceId = "arn:aws:iam::123456789012:role/gateway@us-west-2";
 async function world() {
   const prices = new SnapshotPriceSource({ load: async () => ({ version: 9, sources: { litellm: { fetchedAt: now - 100, count: 1, entries: [{ provider: "bedrock", model: id, kind: "chat", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 }] } } }), save: async () => false }, { now: () => now, overrides: [] }); await prices.reload();
-  const rovara = { sourceId, models: new Map([[model, id]]), exempt: new Set<string>() };
+  const rovara = { sourceId, models: new Map([[model, id]]), exempt: new Set([claims.cid]) };
   const keys = { connected: async () => false, keyFor: async () => undefined };
   const sources = { sourceFor: async () => "rovara" as const };
   const quote = async (identity: string | undefined) => answerRateQuote({ prices, now: () => now, region: "us-west-2", switchedOn: new Set(), offeredProviders: new Set(["bedrock"]), sources, keys,

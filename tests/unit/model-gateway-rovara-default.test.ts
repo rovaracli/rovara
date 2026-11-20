@@ -163,11 +163,12 @@ describe("agent route: a saved choice always wins (no fallback)", () => {
     expect(sources(g)).toEqual([{ event: "agent_source", company: cidA, source: "rovara", via: "chosen" }]);
   });
 
-  it("a NON-exempt company that explicitly chose Rovara's AI is still billed as a customer (unchanged)", async () => {
+  it("a NON-exempt company that explicitly chose Rovara's AI is refused before transport", async () => {
     const g = gateway();
     g.choices.saved.set(cidB, "rovara");
-    expect((await call(g.deps, requestBody, mint({ cid: cidB }))).status).toBe(200);
-    expect(g.meter.billedCalls(claims.iss, cidB)).toMatchObject([{ line: { charge: "customer" } }]);
+    expect((await call(g.deps, requestBody, mint({ cid: cidB }))).status).toBe(403);
+    expect(g.meter.billedCalls(claims.iss, cidB)).toEqual([]);
+    nothingSent(g);
   });
 });
 

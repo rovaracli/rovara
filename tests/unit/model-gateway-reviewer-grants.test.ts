@@ -78,7 +78,7 @@ function gateway(options: { grants?: ReviewerGrantStore | false; caps?: Caps; he
   const choices = new Choices();
   const keySent: ProviderRequest[] = [];
   const bedrockSent: ProviderRequest[] = [];
-  const rovara: RovaraAi = { models: new Map([[MODEL, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"]]), exempt: new Set(), transport: async (request) => { bedrockSent.push(request); return { status: 200, body: options.heavy === true ? heavyAnswer() : answer() }; } };
+  const rovara: RovaraAi = { models: new Map([[MODEL, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"]]), exempt: new Set([cidA]), transport: async (request) => { bedrockSent.push(request); return { status: 200, body: options.heavy === true ? heavyAnswer() : answer() }; } };
   const limits = mutableCaps(options.caps ?? { task: 1_000_000_000, personMonth: 1_000_000_000, projectMonth: 1_000_000_000, companyMonth: 1_000_000_000 });
   const grants = options.grants === false ? undefined : options.grants ?? new InMemoryReviewerGrants();
   const base = setup({

@@ -156,6 +156,8 @@ export interface AgentSourcePorts {
   keys: Pick<LearningKeySource, "connected">;
   byo?: Pick<ByoBedrock, "connection">;
 }
+/** Operator Bedrock is admitted only for the operator's explicit pilot companies, including saved choices and fallback candidates. */
+export function operatorSourceAllowed(exempt: ReadonlySet<string> | undefined, cid: string): boolean { return exempt?.has(cid) === true; }
 /**
  * The effective source of one company's call. A saved choice always wins and nothing else is read. Without one, a company that is not
  * exempt (or on a gateway without Rovara's AI) is company-key mode exactly as before and nothing else is read. An exempt company's own
@@ -170,7 +172,7 @@ export async function resolveAgentSource(ports: AgentSourcePorts, iss: string, c
     const saved = await ports.sources.sourceFor(cid, signal);
     if (saved !== undefined) return { source: saved, via: "chosen" };
   }
-  if (ports.exempt === undefined || !ports.exempt.has(cid)) return { source: undefined, via: "none" };
+  if (!operatorSourceAllowed(ports.exempt, cid)) return { source: undefined, via: "none" };
   const keyConnected = (await ports.keys.connected(iss, cid, "anthropic", signal)) === true;
   const bedrockConnected = !keyConnected && ports.byo !== undefined && (await ports.byo.connection(iss, cid, signal)) !== undefined;
   return defaultAgentSource({ keyConnected, bedrockConnected });

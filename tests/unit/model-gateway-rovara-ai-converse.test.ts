@@ -54,7 +54,7 @@ function gateway(name: string, id: string, answers: Buffer[]) {
   const choices = new Choices();
   const g = setup({
     agentKeys: noKeys,
-    agentAi: { sources: choices, rovara: { models: parseRovaraAiModels(`${name}=${id}`, "us-west-2"), exempt: new Set(), transport: createBedrockTransport({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), request: bedrock.request, now: () => Date.UTC(2026, 10, 15) }), maxOutputTokens: () => 16_384 } },
+    agentAi: { sources: choices, rovara: { models: parseRovaraAiModels(`${name}=${id}`, "us-west-2"), exempt: new Set([cidA, cidB]), transport: createBedrockTransport({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), request: bedrock.request, now: () => Date.UTC(2026, 10, 15) }), maxOutputTokens: () => 16_384 } },
     keys: { keyFor: async () => { throw new Error("install key read"); } },
     prices: { priceFor: (provider) => provider === "bedrock" ? { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 4_000_000 } : undefined },
   });
@@ -90,7 +90,7 @@ describe("agent loop on Rovara's AI through Converse (fakes)", () => {
         { role: "user", content: [{ toolResult: { toolUseId: "tooluse_abc123", content: [{ text: "export {}" }], status: "success" } }] },
       ]);
       // Usage: turn 1 120 in / 30 out, turn 2 200 in / 12 out, at $1 and $4 a million: 240 and 248 micro-dollars.
-      expect(g.meter.billedCalls(claims.iss, cidA).map((l) => [l.line.model, l.line.charge, l.settledMicros])).toEqual([[id, "customer", 240], [id, "customer", 248]]);
+      expect(g.meter.billedCalls(claims.iss, cidA).map((l) => [l.line.model, l.line.charge, l.settledMicros])).toEqual([[id, "exempt", 240], [id, "exempt", 248]]);
       expect(g.meter.billedCalls(claims.iss, cidB)).toEqual([]);
     });
   }
