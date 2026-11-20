@@ -46,6 +46,14 @@ describe("gateway refusal log lines carry a fixed reason", () => {
     ]);
   });
 
+  it("a meter busy refusal records only the fixed meter reason", async () => {
+    const f = setup();
+    f.meter.reserve = async () => ({ ok: false, reason: "busy" });
+    await call(f.deps, { ...requestBody, messages: [{ role: "user", content: "PROMPT-CANARY" }] });
+    expect(refusals(f.logs)).toEqual([{ event: "refused", code: "unavailable", status: 503, route: "agent", reason: "meter_busy" }]);
+    expect(JSON.stringify(f.logs)).not.toContain("PROMPT-CANARY");
+  });
+
   it("a code that is not a fixed lower-case word is logged as other", () => {
     for (const odd of ["Provider said: sk-secret", "", "a".repeat(65), "has space", "UPPER"]) expect(logCode(odd)).toBe("other");
     expect(logCode("budget_exceeded")).toBe("budget_exceeded");
