@@ -45,13 +45,15 @@ export function fenceFor(client: QueryClient, subject: string): Fence {
 
 /**
  * A task read made BY THE SECTION: the issue number is taken at the start of the call and kept with the body that same call returned. A later-issued read supersedes an earlier one, never the reverse. A failed or refused
- * attempt is recorded by its issue number too (like `fencedReadiness`): any response issued before it is dropped, and nothing resolves until a read issued after it succeeds. The fence survives remounts.
+ * attempt is recorded by its issue number too (like `fencedReadiness`): any response issued before it is dropped, and nothing resolves until a read issued after it succeeds; a failure issued before the latest successful read is ignored. The fence survives remounts.
  */
 export async function fencedRead<T>(fence: Fence, call: () => Promise<T>): Promise<{ issued: number; body: T }> {
  const issued = tabSeq();
  let body: T;
  try { body = await call(); } catch (failure) {
-  if (fence.taskFailed === undefined || issued > fence.taskFailed.seq) { fence.taskFailed = { seq: issued };changed(fence); }
+  // A failure supersedes only what was issued BEFORE it: a failed read older than the latest successful read must never override that newer success (R6b). The caller still sees its own failure.
+  const newerSuccess = fence.latestRead !== undefined && fence.latestRead.issued > issued;
+  if (!newerSuccess && (fence.taskFailed === undefined || issued > fence.taskFailed.seq)) { fence.taskFailed = { seq: issued };changed(fence); }
   throw failure;
  }
  // Issued before a newer failed or refused read: an older response must not apply after it.

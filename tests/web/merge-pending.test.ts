@@ -833,3 +833,24 @@ it("B2/R6e: the refusal outlives the component: after a remount on the same clie
  expect(localStorage.getItem(key)).not.toBeNull();
  expect(fenceOf(client, SUBJECT).latestRead).toBeUndefined();
 });
+
+it("F1/R6b: an older FAILED task read arriving after a newer success never supersedes it: no failure is recorded, the newer read stays the latest, and authority is not dropped", async () => {
+ const w = world({ readiness: () => ready(HEAD_A), press: () => merged });
+ const t = w.tab(A);
+ await screen.findByRole("button", { name: /^Merge #42/u });
+ const fence = fenceFor(t.query, SUBJECT);
+ let fail!: () => void;
+ const gate = new Promise<void>(resolve => { fail = resolve; });
+ // Issued first, still in flight; it will fail after a newer read has succeeded.
+ const older = fencedRead(fence, async () => { await gate; throw new ApiError(503, "RUNTIME_UNAVAILABLE", "x"); }).catch(() => "failed");
+ await t.read(A, { mergeTracking: [tracked({ headSha: HEAD_A })] });
+ const newer = fence.latestRead!;
+ expect(newer).toBeDefined();
+ fail();
+ expect(await older).toBe("failed");
+ expect(fence.taskFailed).toBeUndefined();
+ expect(fence.latestRead).toBe(newer);
+ // A failure issued AFTER the latest success is still recorded (and an older success after it is dropped).
+ await fencedRead(fence, async () => { throw new ApiError(403, "FORBIDDEN", "No."); }).catch(() => undefined);
+ expect(fence.taskFailed).toBeDefined();
+});
