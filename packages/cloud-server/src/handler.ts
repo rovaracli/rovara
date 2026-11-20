@@ -5,7 +5,7 @@
 import { renameInSessions } from "./rename.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { CloudAuditStore } from "./audit-log.js";
-import { CodeError, SignInEnded, slackWorkspaceHint, type CodeClient } from "./code-client.js";
+import { CodeError, SignInEnded, codeOutcomeUnknown, codeWritesSent, slackWorkspaceHint, type CodeClient } from "./code-client.js";
 import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
 import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
 import { POLICY_HOOK_PATH } from "./policy-hook.js";
@@ -330,11 +330,13 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     if (connectCall !== undefined) {
       try {
         let answer: GithubAnswer;
+        const writesBefore = codeWritesSent(session);
         try {
           answer = await connectCall();
         } catch (error) {
           // Another server refreshed this sign-in first (its refresh token was used once): run once more on what the store holds, as the route loop does.
           if (!(error instanceof SignInEnded)) throw error;
+          if (codeWritesSent(session) !== writesBefore) throw codeOutcomeUnknown();
           const stored = await options.store.get(id);
           if (stored === undefined || stored.refreshToken === session.refreshToken) throw error;
           session = stored;
@@ -350,6 +352,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
           await options.store.delete(id);
           return signInAgain();
         }
+        if (error instanceof CodeError) return json(error.status, error.body);
         throw error;
       }
     }
@@ -370,6 +373,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         // again on what the store holds now, a few times at most.
         for (let attempt = 1; answer === undefined; attempt += 1) {
           const using = session;
+          const writesBefore = codeWritesSent(using);
           try {
             answer = await route.answer({
               client: options.client, session: using, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
@@ -382,6 +386,9 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
               log,
             });
           } catch (error) {
+            // A local-only conflict can be retried. Once Code received a write, re-entering
+            // the route can send it twice or turn a later refusal into a false no-write answer.
+            if ((error instanceof StoreConflict || error instanceof SignInEnded) && codeWritesSent(using) !== writesBefore) throw codeOutcomeUnknown();
             if (attempt >= REQUEST_ATTEMPTS) throw error;
             if (error instanceof StoreConflict) continue;
             if (!(error instanceof SignInEnded)) throw error;

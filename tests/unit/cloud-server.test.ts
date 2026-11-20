@@ -34,6 +34,7 @@ function fakeCode() {
   let projectNames = ["payments"];
   let projectRevision = 3;
   let decisionRefusal: string | undefined;
+  let decisionReplyLost = false;
   // DEC 254zzz94: what Code answers on the task's merge route, by method (unset: Code's unknown-route 404).
   const mergeAnswers = new Map<string, { status: number; body: unknown }>();
   let revokeFails = false;
@@ -132,6 +133,7 @@ function fakeCode() {
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/decision`) {
       if (decisionRefusal !== undefined) return respond(409, { error: { code: "IDEMPOTENCY_CONFLICT", message: decisionRefusal } });
       task = { ...task, workflow: { ...(task.workflow as object), stage: "IMPLEMENTATION", state: "RUNNING" } };
+      if (decisionReplyLost) return respond(401, { error: { code: "AUTH_REQUIRED" } });
       return respond(200, { task });
     }
     if (url.pathname === `/v1/app/tasks/${TASK_ID}/merge` && mergeAnswers.has(call.method)) { const a = mergeAnswers.get(call.method)!; return respond(a.status, a.body); }
@@ -156,6 +158,7 @@ function fakeCode() {
     /** What Code's access check says of this person's company from now on (undefined: none). */
     setCompany: (developerId: string, company: Record<string, unknown> | undefined) => { companies.set(developerId, company); },
     refuseDecisions: (message: string) => { decisionRefusal = message; },
+    loseDecisionReply: () => { decisionReplyLost = true; },
     answerMerge: (method: "GET" | "POST", status: number, body: unknown) => { mergeAnswers.set(method, { status, body }); },
     failRevoke: () => { revokeFails = true; },
     /** Code's gateway answers 401 on every path under this prefix from now on, as a legacy install does for /v1/app/*. */
@@ -442,11 +445,15 @@ describe("the app's API, answered from Code as the person", () => {
     const { call, signIn, code, store } = setUp();
     const { cookie } = await signIn();
     code.expireToken();
+    // The access check is a POST: refresh is saved, but that first call is not re-sent.
+    expect((await call("GET", "/v1/web/nav", { cookie }))!.status).toBe(503);
     expect((await call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
     const id = cookie.split("=")[1]!;
     expect((await store.get(id))?.accessToken).toBe("access-2");
     code.endSignIn();
-    expect((await call("GET", "/v1/web/nav", { cookie }))!.status).toBe(401);
+    expect((await call("GET", "/v1/web/nav", { cookie }))!.status).toBe(503);
+    // A read sent with the ended sign-in still ends it; no dispatched write is settled by a 401.
+    expect((await call("GET", "/v1/web/inbox", { cookie }))!.status).toBe(401);
     expect(await store.get(id)).toBeUndefined();
   });
 
@@ -882,6 +889,18 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     expect((await home(call, auth.cookie)).total).toBe(0);
   });
 
+  it("keeps the approval outcome unknown when Code commits then answers 401", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask(PLAN_WAITING);
+    code.loseDecisionReply();
+    const answer = await call("POST", `/v1/app/approve/plan-${sessionId}`, { cookie: auth.cookie, form: { csrf: auth.csrf, revision: "4", digest: PLAN_DIGEST, decision: "APPROVE" }, headers: ORIGIN });
+    expect(answer!.status).toBe(503);
+    expect(answer!.body).toContain("outcome is unknown");
+    expect(answer!.body).not.toContain("didn't take the decision");
+    expect(answer!.body).not.toContain("Rovara Code refused");
+    expect(code.calls.filter(entry => entry.path.endsWith("/workflow/decision"))).toHaveLength(1);
+  });
+
   it("asks Code for changes with the person's reason, and shows Code's refusal as a page", async () => {
     const { call, auth, code, sessionId } = await begin();
     code.setTask(PLAN_WAITING);
@@ -897,6 +916,7 @@ describe("Home's cards and plan approval (phase 2b)", () => {
   it("refreshes an expired token once when calls made together all find it expired", async () => {
     const { call, auth, code } = await begin();
     code.expireToken();
+    expect((await call("GET", "/v1/web/nav", { cookie: auth.cookie }))!.status).toBe(503);
     expect((await call("GET", "/v1/web/nav", { cookie: auth.cookie }))!.status).toBe(200);
     expect(code.calls.filter((entry) => entry.path === "/v1/auth/token" && entry.body?.includes("refresh_token"))).toHaveLength(1);
   });
@@ -1067,6 +1087,7 @@ describe("several servers on the same stores (Rovara-cloud#11)", () => {
     const id = cookie.split("=")[1]!;
     const before = structuredClone((await a.store.get(id))!);
     a.code.expireToken();
+    expect((await a.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(503);
     expect((await a.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
     const refreshed = (await a.store.get(id))!.refreshToken;
     expect(refreshed).not.toBe(before.refreshToken);
@@ -1075,6 +1096,7 @@ describe("several servers on the same stores (Rovara-cloud#11)", () => {
     const shared = Object.create(a.store) as SessionStore;
     shared.get = async (key) => (stale && key === id ? (stale = false, structuredClone(before)) : a.store.get(key));
     const b = setUp({ code: a.code, store: shared, work: a.work });
+    expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(503);
     expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
     expect((await a.store.get(id))?.refreshToken).toBe(refreshed);
   });
@@ -1084,7 +1106,8 @@ describe("several servers on the same stores (Rovara-cloud#11)", () => {
     const { cookie } = await a.signIn();
     const b = setUp({ code: a.code, store: a.store, work: a.work });
     a.code.endSignIn();
-    expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(401);
+    expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(503);
+    expect((await b.call("GET", "/v1/web/inbox", { cookie }))!.status).toBe(401);
     expect(await a.store.get(cookie.split("=")[1]!)).toBeUndefined();
   });
 

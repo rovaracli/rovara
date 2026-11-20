@@ -127,6 +127,8 @@ export async function approvalRoute(
     return { status: 303, headers: { location: sessionLink, "cache-control": "no-store" }, body: "" };
   } catch (error) {
     if (error instanceof CodeError) {
+      // A dispatched decision's missing answer is not a refusal or proof that nothing was recorded.
+      if (method === "POST" && error.status >= 500) return page(503, "Decision outcome unknown", `<h1>Decision outcome unknown</h1><p>The decision's outcome is unknown. Check the session before trying again.</p><p><a href="${sessionLink}">Check the session</a></p>`);
       const message = (error.body as { error?: { message?: unknown } } | undefined)?.error?.message;
       return page(error.status === 404 ? 404 : 409, "Rovara Code refused", `<h1>${method === "GET" ? "Rovara Code didn't show this plan" : "Rovara Code didn't take the decision"}</h1><p>${escape(typeof message === "string" ? message : "Try again from the session page.")}</p><p><a href="${sessionLink}">Back to the session</a></p>`);
     }

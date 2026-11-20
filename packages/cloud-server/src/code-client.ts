@@ -1,6 +1,6 @@
 // Rovara Cloud as a sign-in client of a Rovara Code install (Code specs 063, 065, 066): it signs people in through
 // Code with PKCE and its own secret, then calls Code's API as the signed-in person with their token. Every call that
-// answers 401 refreshes the token once and tries again.
+// answers 401 refreshes the token once; only GET/HEAD may be sent again.
 import { createHash, randomBytes } from "node:crypto";
 import type { SecretReader } from "./client-secret.js";
 import type { CodeSession, RefreshGuard } from "./sessions.js";
@@ -53,6 +53,14 @@ export class CodeError extends Error {
     super(`Rovara Code answered ${String(status)}`);
   }
 }
+
+/** Internal dispatch history, never stored with the session. The handler must not re-enter a route after a Code write. */
+const writesSent = new WeakMap<CodeSession, number>();
+export const codeWritesSent = (session: CodeSession): number => writesSent.get(session) ?? 0;
+/** Existing web unknown-outcome shape: no new public code or field, and no claim that the write was refused. */
+export const codeOutcomeUnknown = (): CodeError => new CodeError(503, {
+  error: { code: "RUNTIME_UNAVAILABLE", message: "The request's outcome is unknown. Check its status before trying again." },
+});
 
 /**
  * Code's deployed broker adds its own HTTP trace id to every `/v1/dev/*` object answer (`aws/broker.ts` json(): `{ ...value, requestId }`). It is trace
@@ -223,7 +231,7 @@ export class CodeClient {
     return access;
   }
 
-  /** A JSON call to Code as the person. Throws CodeError for Code's refusals and SignInEnded when no refresh is possible. */
+  /** A JSON call to Code as the person. CodeError carries refusals or a write's unknown outcome; an ended read throws SignInEnded. */
   async json<T>(session: CodeSession, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
     const response = await this.call(session, path, init);
     const body: unknown = await response.json().catch(() => undefined);
@@ -232,25 +240,38 @@ export class CodeClient {
   }
 
   private async call(session: CodeSession, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> }): Promise<Response> {
+    const method = (init.method ?? "GET").toUpperCase();
+    // A request id alone is insufficient: Code's receipt lookup may follow a permission check.
+    // No write replay is enabled: the verified receipt candidates check permission first.
+    const mayResend = method === "GET" || method === "HEAD";
     const send = (token: string) => this.fetchImpl(`${this.base}${path}`, {
       method: init.method ?? "GET",
       headers: { ...init.headers, authorization: `Bearer ${token}`, ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
     });
     const used = session.accessToken;
+    if (!mayResend) writesSent.set(session, codeWritesSent(session) + 1);
     const first = await send(used);
     if (first.status !== 401) return first;
-    // Another call may already have refreshed the token while this one was out.
-    if (session.accessToken === used) {
-      let pending = this.refreshing.get(session);
-      if (pending === undefined) {
-        pending = this.refresh(session).finally(() => { this.refreshing.delete(session); });
-        this.refreshing.set(session, pending);
+    try {
+      // Another call may already have refreshed the token while this one was out.
+      if (session.accessToken === used) {
+        let pending = this.refreshing.get(session);
+        if (pending === undefined) {
+          pending = this.refresh(session).finally(() => { this.refreshing.delete(session); });
+          this.refreshing.set(session, pending);
+        }
+        const outcome = await pending;
+        if (outcome === "busy") throw new CodeError(503, { error: { code: "RUNTIME_UNAVAILABLE", message: "Your Rovara sign-in is being renewed. Try again in a moment." } });
+        if (outcome !== "ok") throw new SignInEnded();
       }
-      const outcome = await pending;
-      if (outcome === "busy") throw new CodeError(503, { error: { code: "RUNTIME_UNAVAILABLE", message: "Your Rovara sign-in is being renewed. Try again in a moment." } });
-      if (outcome !== "ok") throw new SignInEnded();
+    } catch (error) {
+      // A failed/ended refresh cannot establish whether an already dispatched write committed,
+      // nor may SignInEnded escape and trigger a caller's session-recovery resend.
+      if (!mayResend) throw codeOutcomeUnknown();
+      throw error;
     }
+    if (!mayResend) throw codeOutcomeUnknown();
     const second = await send(session.accessToken);
     if (second.status === 401) {
       // A 401 on a fresh token can come from Code's gateway for a path Code doesn't serve (a legacy install has no /v1/app/*).
