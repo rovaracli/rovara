@@ -12,7 +12,7 @@ function browser(implementation: (input: string, init: RequestInit | undefined) 
  const local = new Map<string, string>(), session = new Map<string, string>();
  const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => implementation(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, init)), assign = vi.fn();
  const win = { location: { origin: ORIGIN, pathname: "/app/live", search: "", assign }, fetch,
-  localStorage: { getItem: (key: string) => local.get(key) ?? null, setItem: (key: string, value: string) => { local.set(key, value); } },
+  localStorage: { getItem: (key: string) => local.get(key) ?? null, setItem: (key: string, value: string) => { local.set(key, value); }, removeItem: (key: string) => { local.delete(key); } },
   sessionStorage: { getItem: (key: string) => session.get(key) ?? null, setItem: (key: string, value: string) => { session.set(key, value); } },
  } as unknown as BrowserWindow;
  return { win, fetch, assign, local, session };

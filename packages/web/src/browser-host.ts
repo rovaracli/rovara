@@ -12,7 +12,7 @@ export interface BrowserWindow {
  location: Pick<Location, "origin" | "pathname" | "search" | "assign"> & Partial<Pick<Location, "hash">>;
  /** The join page drops the invite link's token from the address once read (DEC 253z). Optional: a host without it keeps the address. */
  history?: Pick<History, "replaceState">;
- fetch: typeof fetch;localStorage: Pick<Storage, "getItem" | "setItem">;sessionStorage: Pick<Storage, "getItem" | "setItem">;
+ fetch: typeof fetch;localStorage: Pick<Storage, "getItem" | "setItem" | "removeItem">;sessionStorage: Pick<Storage, "getItem" | "setItem">;
  document: Pick<Document, "createElement" | "body" | "title">;URL: Pick<typeof URL, "createObjectURL" | "revokeObjectURL">;WebSocket: typeof WebSocket;
  open(url: string, target: string, features: string): unknown;
 }
@@ -52,7 +52,18 @@ export const LAST_WORKSPACE_KEY = "rovara.last-slack-workspace";
 const WORKSPACE_ID = /^T[A-Z0-9]{6,15}$/u;
 export function createBrowserHost(win: BrowserWindow): AppHost {
  let csrf: string | undefined, refreshing: Promise<void> | undefined;
+ // A hint that cannot be replaced or cleared could belong to the previous person.
+ let workspaceStorageWritable = false;
+ try {
+  const probe = LAST_WORKSPACE_KEY + ".probe";
+  win.localStorage.setItem(probe, "");win.localStorage.removeItem(probe);
+  workspaceStorageWritable = true;
+ } catch { /* Readable storage alone is not a trustworthy workspace hint. */ }
+ function saveWorkspace(id: string): void {
+  try { win.localStorage.setItem(LAST_WORKSPACE_KEY, id); } catch { workspaceStorageWritable = false; }
+ }
  function lastWorkspace(): string | undefined {
+  if (!workspaceStorageWritable) return undefined;
   try { const stored = win.localStorage.getItem(LAST_WORKSPACE_KEY);return typeof stored === "string" && WORKSPACE_ID.test(stored) ? stored : undefined; } catch { return undefined; }
  }
  async function fetchJson(path: string, init: RequestInit): Promise<ApiResponse> {
@@ -127,13 +138,15 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
    try {
     const response = await fetchJson("/v1/web/me/sign-in-workspace", { method: "GET", headers: { accept: "application/json" } });
     const id = (response.body as { slackTeamId?: unknown } | undefined)?.slackTeamId;
-    if (response.status === 200 && typeof id === "string" && WORKSPACE_ID.test(id) && id !== lastWorkspace()) win.localStorage.setItem(LAST_WORKSPACE_KEY, id);
+    if (response.status === 200 && typeof id === "string" && WORKSPACE_ID.test(id) && id !== lastWorkspace()) saveWorkspace(id);
+    // An authenticated empty answer belongs to this person, so discard any previous person's hint.
+    else if (response.status === 200 && typeof response.body === "object" && response.body !== null && !Array.isArray(response.body) && id === undefined) saveWorkspace("");
    } catch { /* The hint is optional: blocked or full storage, or a failed request, is no hint. */ }
   },
   signIn(path, options) {
    const destination = returnPath(path), key = "rovara.sign-in." + destination;
    // L4-SIGNIN: "Use a different workspace" (and a button for GitHub) sign in with no Slack hint; the remembered workspace is forgotten for the first.
-   if (options?.differentWorkspace === true) { try { win.localStorage.setItem(LAST_WORKSPACE_KEY, ""); } catch { /* Blocked storage: nothing to forget. */ } }
+   if (options?.differentWorkspace === true) saveWorkspace("");
    const hint = options?.differentWorkspace === true || options?.method === "github" ? undefined : lastWorkspace();
    try { const stored = win.sessionStorage.getItem(key);if (options?.automatic === true && stored !== null && Number.isFinite(Number(stored)) && Date.now() - Number(stored) < SIGN_IN_REPEAT_GUARD_MS) { win.location.assign("/app/signed-out?reason=failed");return; }win.sessionStorage.setItem(key, String(Date.now())); } catch { /* Blocked preference storage does not prevent a deliberate sign-in. */ }
    win.location.assign("/v1/auth/browser/authorize?return_to=" + encodeURIComponent(destination) + (options?.join === true ? "&join=1" : "")

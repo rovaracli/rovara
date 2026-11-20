@@ -1,5 +1,5 @@
 // Live switches check 2026-11-18: Cloud's web server read ROVARA_ANSWERS_ENABLED (scripts/cloud-lambda.ts) but nothing in infra set it, so the Ask boxes said "not available" on every hosted Cloud.
-// A named test environment's web stack now sets it from its AnswersEnabled parameter ("1" by default, DEC 254z-amend2 + 254zk(4)); production's template is unchanged.
+// Every web stack, including production, sets it from AnswersEnabled ("1" by default, DEC 254zzz215; ANSWERS-ON-PROD).
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,8 @@ import { App } from "aws-cdk-lib";
 import { Code } from "aws-cdk-lib/aws-lambda";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
+import { ANSWERS_ROUTES } from "../../packages/cloud-server/src/answers-routes.js";
+import { ROUTES } from "../../packages/cloud-server/src/routes.js";
 import { CLOUD_ANSWERS_ENABLED_DEFAULT, CLOUD_ANSWERS_ENABLED_ENV, CLOUD_ANSWERS_ENABLED_PARAMETER, CLOUD_ANSWERS_ENABLED_VALUES, CloudWebStack } from "../../infra/lib/cloud-web.js";
 
 const built = (() => { const dir = mkdtempSync(join(tmpdir(), "cloud-web-answers-")); mkdirSync(join(dir, "assets")); writeFileSync(join(dir, "index.html"), "<!doctype html>"); return dir; })();
@@ -21,7 +23,7 @@ const serverVariables = (t: Json): Record<string, unknown> => {
 };
 
 describe("Cloud web: the Ask boxes' switch (ROVARA_ANSWERS_ENABLED)", () => {
-  it.each([["staging", undefined], ["staging", true], ["test", undefined]] as const)("%s (productAi %s): the server gets it from the AnswersEnabled parameter, on by default, 1 or 0 only", (env, productAi) => {
+  it.each([["staging", undefined], ["staging", true], ["test", undefined], ["production", undefined], ["production", true]] as const)("%s (productAi %s): the server gets it from the AnswersEnabled parameter, on by default, 1 or 0 only", (env, productAi) => {
     const t = synth(env, productAi);
     const { Description: description, ...parameter } = t.Parameters[CLOUD_ANSWERS_ENABLED_PARAMETER] ?? {};
     expect(parameter).toEqual({ Type: "String", Default: "1", AllowedValues: ["1", "0"] });
@@ -29,10 +31,13 @@ describe("Cloud web: the Ask boxes' switch (ROVARA_ANSWERS_ENABLED)", () => {
     expect(serverVariables(t)[CLOUD_ANSWERS_ENABLED_ENV]).toEqual({ Ref: CLOUD_ANSWERS_ENABLED_PARAMETER });
   });
 
-  it("production: neither the parameter nor the variable (its template is what it was)", () => {
+  it("production: the deployed server enables the registered answers route by default", () => {
     const t = synth("production");
-    expect(t.Parameters[CLOUD_ANSWERS_ENABLED_PARAMETER]).toBeUndefined();
-    expect(serverVariables(t)).not.toHaveProperty(CLOUD_ANSWERS_ENABLED_ENV);
+    expect(t.Parameters.AnswersEnabled?.Default).toBe("1");
+    expect(serverVariables(t).ROVARA_ANSWERS_ENABLED).toEqual({ Ref: "AnswersEnabled" });
+    const matches = ROUTES.filter((route) => route.method === "POST" && route.path.test("/projects/demo/answers"));
+    expect(matches).toHaveLength(1);
+    expect(ANSWERS_ROUTES).toContain(matches[0]);
   });
 
   it("reaches the reader: the variable is the one scripts/cloud-lambda.ts reads, and the default is the one value it reads as on", () => {
