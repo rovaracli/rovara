@@ -72,6 +72,21 @@ for (const durable of [false, true]) {
     expect((await w.agent.read(scope)).every(row => row.reservedMicros === 0)).toBe(true);
   });
 }
+it.each(["product", "agent"] as const)("Dynamo %s clear refuses an absent shared record without writing a broken slot or audit", async (routeClass) => {
+  const w = world(true), pk = companyPartition(scope.iss, scope.cid);
+  const key = { pk, sk: `SOURCESTOP#bedrock_byo#${routeClass}` };
+  const stop = { ...key, source: "bedrock_byo", routeClass, stopped: true, stopId: "call:1", stoppedAt: now };
+  await w.db.put(w.a.meter, stop);
+  expect(await w.agent.sourceStop(scope.iss, scope.cid, "bedrock_byo")).toBeUndefined();
+  expect(await w.agent.clearSourceStop({ iss: scope.iss, cid: scope.cid, source: "bedrock_byo", routeClass, expectedStopId: "call:1", actor, reason: "Invoice reviewed" })).toBe(false);
+  expect(w.wire.items(w.a.meter)).toEqual([stop]);
+  expect(w.wire.items(w.a.ledger)).toEqual([]);
+  expect(await w.agent.sourceStop(scope.iss, scope.cid, "bedrock_byo")).toBeUndefined();
+  expect(await w.reserve(routeClass)).toMatchObject({ ok: false, reason: "overrun" });
+  const other = routeClass === "product" ? "agent" : "product";
+  const h = await w.reserve(other); expect(h.ok).toBe(true);
+  if (h.ok) await w.meter(other).settle(h.reservation, 0);
+});
 for (const routeClass of ["product", "agent", "legacy"] as const) it(`transaction fences raced ${routeClass} stop without acquiring hold/slot`, async () => {
   const w = world(true), transact = w.db.transact.bind(w.db); let raced = false;
   vi.spyOn(w.db, "transact").mockImplementation(async (...args) => {

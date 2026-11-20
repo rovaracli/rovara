@@ -1,7 +1,21 @@
 import { beforeAll, expect, it, vi } from "vitest";
 import { denyNetwork } from "./model-gateway-no-network.js";
 import { scope, now } from "./model-gateway-fixture.js";
+import { validClear, type ClearSourceStop } from "../../packages/model-gateway/src/source-stop.js";
 beforeAll(denyNetwork);
+it.each([undefined, "Product", "both", "", null])("operator CLI refuses invalid class %s before any stop read or clear", async (routeClass) => {
+  const { runOperatorClear } = await import("../../packages/model-gateway/src/source-stop-cli.js");
+  const actor = "arn:aws:iam::111111111111:user/operator";
+  const input = { iss: scope.iss, cid: scope.cid, source: "bedrock_byo", routeClass, reason: "Invoice reviewed" } as unknown as ClearSourceStop;
+  const sourceStop = vi.fn(async () => ({ source: "bedrock_byo" as const, stopped: true, stopId: "call:1", stoppedAt: now }));
+  const clearSourceStop = vi.fn(async () => true), preview = vi.fn(), confirm = vi.fn(async () => true);
+  await expect(runOperatorClear(input, { meter: { sourceStop, clearSourceStop }, identity: async () => actor, interactive: true, preview, confirm })).rejects.toThrow("operator clear refused");
+  expect(validClear({ ...input, actor, expectedStopId: "call:1" })).toBe(false);
+  expect(sourceStop).not.toHaveBeenCalled();
+  expect(clearSourceStop).not.toHaveBeenCalled();
+  expect(preview).not.toHaveBeenCalled();
+  expect(confirm).not.toHaveBeenCalled();
+});
 it("operator CLI previews the exact company/source/stop and audits only after human confirmation", async () => {
   const { runOperatorClear } = await import("../../packages/model-gateway/src/source-stop-cli.js");
   const events: unknown[] = [];

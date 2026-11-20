@@ -157,6 +157,8 @@ A pre-migration class-less stop continues to block **both** classes until explic
 cleared with `--class legacy`; clearing a product/agent stop never clears it.
 Legacy holds/ledger rows that lack a class continue to latch the class-less stop. Corrections
 never read or write the stop. Independent cap-overrun latches remain separate.
+Do not roll back past round C while a source stop is active. No rollback to round E
+while a class stop is active: round E ignores the product and agent stop records.
 
 Bedrock reviewer calls keep the grant's durable session/debit ceiling, and take
 an individual priced meter hold and receipt for **each** call (rather than keeping

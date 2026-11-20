@@ -198,7 +198,7 @@ export class DynamoMeter implements Meter {
         { kind: "Update", table: this.#sourceTable, key: { pk, sk: sourceStopKey(input.source, input.routeClass === "legacy" ? undefined : input.routeClass) },
           condition: e => `${e.name("stopped")} = ${e.value(true)} AND ${e.name("stopId")} = ${e.value(input.expectedStopId)} AND attribute_not_exists(${e.name("inFlight")})`,
           update: e => `SET ${e.name("stopped")} = ${e.value(false)}, ${e.name("clearedBy")} = ${e.value(input.actor)}, ${e.name("clearedAt")} = ${e.value(at)}, ${e.name("clearReason")} = ${e.value(input.reason)}` },
-        ...(input.routeClass === "legacy" ? [] : [{ kind: "Update" as const, table: this.#sourceTable, key: { pk, sk: sourceStopKey(input.source) }, condition: (e: Expr) => `attribute_not_exists(${e.name("inFlight")})`, update: (e: Expr) => `SET ${e.name("source")} = ${e.value(input.source)}` }]),
+        ...(input.routeClass === "legacy" ? [] : [{ kind: "Update" as const, table: this.#sourceTable, key: { pk, sk: sourceStopKey(input.source) }, condition: (e: Expr) => `attribute_exists(${e.name("pk")}) AND attribute_not_exists(${e.name("inFlight")})`, update: (e: Expr) => `SET ${e.name("source")} = ${e.value(input.source)}` }]),
         { kind: "Put", table: this.#t.ledger, item: { pk, sk: `SOURCESTOPCLEAR#${input.source}#${input.routeClass}#${input.expectedStopId}`, source: input.source, routeClass: input.routeClass, stopId: input.expectedStopId, actor: input.actor, at, reason: input.reason }, condition: e => `attribute_not_exists(${e.name("pk")})` },
       ], randomUUID()); return true;
     } catch (error) { if (error instanceof TransactionRefused) return false; throw error; }
