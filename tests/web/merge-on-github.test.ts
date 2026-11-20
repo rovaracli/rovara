@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // L4-TA5 + DEC 254zzz94: each open pull request keeps an "Open on GitHub" link. The Merge button shows only when Code says this person may merge (the readiness read); with no readiness (a Code
 // without the route, the default fake below) there is no button and nothing is ever pressed.
-import { expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -17,6 +17,8 @@ import { renderUi } from "./support/render.js";
 import { changedSince, pullRowsOf, shownOf } from "../../packages/ui/src/screens/session/merge-facts.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
+beforeEach(() => { localStorage.clear(); });
+afterEach(() => { localStorage.clear(); });
 type Pull = { repository: string; number: number; url: string; state: "open" | "closed" | "merged" };
 const PR: Pull = { repository: "acme/payments", number: 42, url: "https://github.com/acme/payments/pull/42", state: "open" };
 type Answer = { status: number; body: unknown };
@@ -222,7 +224,7 @@ it("a reply that never arrives leaves the original request unresolved: Merge loc
   fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Press Merge" }));
   await waitFor(() => expect(region().querySelector(".rv-merge-state")!.textContent).toBe("The result isn't confirmed yet"));
   const text = region().textContent;
-  for (const words of ["What happened", "acme/payments #42 at aaaaaaa", "no reply came back", "won't send a second merge from this page", "Nothing was deployed", "Reload this page in a moment", "MERGE-RESULT-UNKNOWN"]) expect(text).toContain(words);
+  for (const words of ["What happened", "acme/payments #42 at aaaaaaa", "no reply was seen", "won't send a second one", "Nothing was deployed", "Check again asks Rovara once more about this same request", "MERGE-RESULT-UNKNOWN"]) expect(text).toContain(words);
   expect(text).not.toContain("private provider text");
   const button = screen.getByRole("button", { name: /^Merge #42/u });
   expect(button.hasAttribute("disabled")).toBe(true);
@@ -239,6 +241,7 @@ it("a reply that never arrives leaves the original request unresolved: Merge loc
 
 it("a network failure and an unreadable pending answer are both unresolved, never a second request", async () => {
   for (const press of [async (): Promise<Answer> => { throw new Error("offline"); }, async (): Promise<Answer> => ({ status: 202, body: { status: "PENDING" } })]) {
+    localStorage.clear();
     const f = setup({ pullRequests: [PR] }, { readiness: { status: 200, body: READY }, press });
     fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Press Merge" }));
