@@ -321,9 +321,9 @@ it("B4/N2: a saved 'Merged' answer retires, for good, only to a task read ISSUED
  expect(w.posts()).toHaveLength(1);
 });
 
-it("N1/R6a: 408, 429, 401 and any unlisted 4xx are UNKNOWN and keep the lock; only the documented final refusals clear it", async () => {
+it("N1/R6a: 408, 429, 401 and any unlisted 4xx are UNKNOWN and keep the lock; only the pre-dispatch refusals clear it; MERGE_NOT_READY (which Code also returns after a provider call) keeps the lock and shows Code's words", async () => {
  const answer = (status: number, code: string): Answer => ({ status, body: { error: { code, message: "Code's words." } } });
- for (const [reply, locked] of [[answer(408, "REQUEST_TIMEOUT"), true], [answer(429, "RATE_LIMITED"), true], [answer(418, "TEAPOT"), true], [answer(401, "UNAUTHENTICATED"), true], [answer(409, "SOMETHING_ELSE"), true], [answer(500, "MERGE_FAILED"), true], [answer(409, "MERGE_NOT_READY"), false], [answer(409, "IDEMPOTENCY_CONFLICT"), false], [answer(403, "FORBIDDEN"), false], [answer(404, "TASK_NOT_FOUND"), false], [answer(404, "SESSION_NOT_FOUND"), false], [answer(400, "CONFIG_INVALID"), false]] as Array<[Answer, boolean]>) {
+ for (const [reply, locked] of [[answer(408, "REQUEST_TIMEOUT"), true], [answer(429, "RATE_LIMITED"), true], [answer(418, "TEAPOT"), true], [answer(401, "UNAUTHENTICATED"), true], [answer(409, "SOMETHING_ELSE"), true], [answer(409, "MERGE_NOT_READY"), true], [answer(500, "MERGE_FAILED"), true], [answer(409, "IDEMPOTENCY_CONFLICT"), false], [answer(403, "FORBIDDEN"), false], [answer(404, "TASK_NOT_FOUND"), false], [answer(404, "SESSION_NOT_FOUND"), false], [answer(400, "CONFIG_INVALID"), false]] as Array<[Answer, boolean]>) {
   localStorage.clear();
   const w = world({ readiness: () => ready(), press: () => reply });
   const t = w.tab(A);
@@ -378,4 +378,49 @@ it("B5/R4: the readiness answer's arrival is never shown as a fresh GitHub obser
  expect(text).toContain("Read by Rovara at");
  expect(text).toContain("Head in Rovara's latest read");
  expect(text).toContain("Tracked from GitHub");
+});
+
+it("N1: a 409 MERGE_NOT_READY after a press keeps the lock and shows Code's words without claiming nothing was merged", async () => {
+ const w = world({ readiness: () => ready(), press: () => ({ status: 409, body: { error: { code: "MERGE_NOT_READY", message: "The pull request isn't open." } } }) });
+ w.tab(A);
+ await press();
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ expect(region().textContent).toContain("Code answered: The pull request isn't open. That doesn't say nothing was merged");
+ expect(localStorage.getItem(key)).not.toBeNull();
+ expect(w.posts()).toHaveLength(1);
+});
+
+it("N2a: a presence update (a manual cache write) is NOT a completed task read: it neither voids the record nor retires a saved answer while the real read is still in flight", async () => {
+ // An unresolved press for head B (another tab); this tab shows head A and issues a new task read, which has not answered.
+ const w = world({ readiness: () => ready(HEAD_A), press: () => merged });
+ const t = w.tab(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_A })] }));
+ await screen.findByRole("button", { name: /^Merge #42/u });
+ localStorage.setItem(key, record({ heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_B }], stamp: nextStamp() }));
+ window.dispatchEvent(new StorageEvent("storage", { key }));
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ const slow = t.slowRead(A);
+ // The session screen's presence heartbeat writes the cached session; the same cached task facts (head A) are handed to the section again.
+ t.query.setQueryData(["session", A], { viewingNow: [] });
+ t.show(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_A })] }));
+ await new Promise(resolve => setTimeout(resolve, 80));
+ expect(localStorage.getItem(key)).not.toBeNull();
+ expect(screen.queryByText(/dropped because/u)).toBeNull();
+ expect(headline()).toBe(UNSURE);
+ // The real read answers (issued after the press, showing head A): only now may it resolve.
+ await slow.deliver(taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_A })] }));
+ await waitFor(() => expect(localStorage.getItem(key)).toBeNull());
+ t.unmount();
+ // A saved answer is not retired by a presence update either.
+ localStorage.clear();
+ const w2 = world({ readiness: () => ready(), press: () => merged });
+ const t2 = w2.tab(A);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ const slow2 = t2.slowRead(A);
+ t2.query.setQueryData(["session", A], { viewingNow: [] });
+ t2.show(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_B })] }));
+ await new Promise(resolve => setTimeout(resolve, 80));
+ expect(screen.queryByText("Merged acme/payments #42.")).not.toBeNull();
+ await slow2.deliver(taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_B })] }));
+ await waitFor(() => expect(screen.queryByText("Merged acme/payments #42.")).toBeNull());
 });

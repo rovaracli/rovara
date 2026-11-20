@@ -137,7 +137,7 @@ it("a person who may not merge sees no button, only the GitHub link", async () =
 });
 
 it("a refused press shows Code's words and the next press uses a fresh request id", async () => {
-  const f = setup({ pullRequests: [PR] }, { readiness: { status: 200, body: READY }, press: { status: 409, body: { error: { code: "MERGE_NOT_READY", message: "GitHub isn't allowing this merge yet." } } } });
+  const f = setup({ pullRequests: [PR] }, { readiness: { status: 200, body: READY }, press: { status: 403, body: { error: { code: "FORBIDDEN", message: "GitHub isn't allowing this merge yet." } } } });
   for (let round = 0; round < 2; round += 1) {
     fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Press Merge" }));

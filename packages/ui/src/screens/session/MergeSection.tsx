@@ -83,11 +83,12 @@ export function MergeSection(props: { sessionId: string; task: ReadTask }) {
 }
 
 /**
- * Only the refusals Code's merge route documents as final mean "nothing more will happen for this request" (R6a): `CODE_REFUSALS` in cloud-server `merge-routes.ts:97` (409 MERGE_NOT_READY, 409 IDEMPOTENCY_CONFLICT, 403 FORBIDDEN,
- * 404 TASK_NOT_FOUND, 400 CONFIG_INVALID; Code raises them at `hosted-merge-routes.ts` 163, 171, 180, 230, 240) plus Cloud's own 404 SESSION_NOT_FOUND. Everything else (408, 429, 401, any other 4xx, every 5xx, 202,
- * an unreadable body, a network failure) is UNKNOWN and keeps the lock: it does not say what GitHub did.
+ * Only refusals raised BEFORE any provider dispatch mean "nothing more will happen for this request" (R6a): task visibility 404 (`hosted-merge-routes.ts` 114, 116), malformed body 400 CONFIG_INVALID (163), stored-result
+ * identity conflict 409 IDEMPOTENCY_CONFLICT (168-173), website/standing 403 FORBIDDEN (230, 240), and Cloud's own malformed or missing session (`merge-routes.ts` 110-122). 409 MERGE_NOT_READY is NOT final: the merge core
+ * returns it AFTER a provider call too (`merge.ts` 928-955, a provider refusal or a half merge), and nothing in the answer tells the two apart. Everything else (408, 429, 401, any other 4xx, every 5xx, 202, an unreadable
+ * body, a network failure) is UNKNOWN and keeps the lock. A distinct pre-dispatch code from Code would let the page release faster (held).
  */
-const FINAL_REFUSALS: ReadonlyArray<readonly [number, string]> = [[409, "MERGE_NOT_READY"], [409, "IDEMPOTENCY_CONFLICT"], [403, "FORBIDDEN"], [404, "TASK_NOT_FOUND"], [404, "SESSION_NOT_FOUND"], [400, "CONFIG_INVALID"]];
+const FINAL_REFUSALS: ReadonlyArray<readonly [number, string]> = [[409, "IDEMPOTENCY_CONFLICT"], [403, "FORBIDDEN"], [404, "TASK_NOT_FOUND"], [404, "SESSION_NOT_FOUND"], [400, "CONFIG_INVALID"]];
 const refused = (failure: unknown): boolean => failure instanceof ApiError && FINAL_REFUSALS.some(([status, code]) => failure.status === status && failure.code === code);
 /** The saved answer to this page's own press: the pull requests the server returned, the request it answered, and the issue stamp taken when the answer arrived (a read issued after it can disagree). */
 interface Saved { words: string; keys: string[]; requestId: string; stamp: number }
@@ -167,6 +168,7 @@ function MergeSectionFor({ sessionId, task }: { sessionId: string; task: ReadTas
     // Code gave a documented final refusal to this request: nothing more will happen for it. The next press is a new one.
     clearPending(next);setError((failure as ApiError).message);
    }
+   else if (failure instanceof ApiError && failure.status === 409 && failure.code === "MERGE_NOT_READY") setNote("Code answered: " + failure.message + " That doesn't say nothing was merged, so Merge stays locked until a read shows what GitHub holds.");
    // Anything else is unknown: the record stays, a lost, throttled, timed-out or unreadable answer does not say what GitHub did.
    void query.invalidateQueries({ queryKey: readinessKey });
   } finally { sending.current = false;setBusy(false); }
