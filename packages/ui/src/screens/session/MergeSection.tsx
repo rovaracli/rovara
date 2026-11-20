@@ -121,11 +121,12 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
  const readinessKey = ["session", sessionId, "merge", subject ?? "unread"], sessionApi = useMemo(() => createSessionApi(host), [host]);
  // The read fence lives in the QueryClient (merge-fence.ts), keyed by company + person + session, so it outlives this component and is never shared between identities. Facts that may resolve anything come ONLY from reads
  // this section makes itself (`readNow`), each stamped with its own response body: never from a prop, the session screen's cache, or a cache write.
- const fence = useFence(subject ?? "unread"), read = fence.latestRead, readTask = useMemo(() => taskOfSession(read?.data), [read]);
+ const fence = useFence(subject ?? "unread"), read = fence.taskFailed === undefined ? fence.latestRead : undefined, readTask = useMemo(() => taskOfSession(read?.data), [read]);
  const readRows = useMemo(() => readTask === undefined ? [] : pullRowsOf(readTask, undefined), [readTask]);
- async function readNow(): Promise<void> {
-  if (subject === undefined) return;
-  try { await fencedRead(fence, () => sessionApi.read(sessionId)); } catch { /* a failed read resolves nothing */ }
+ /** Makes the section's own task read. True only if that very call succeeded: a failed or refused read resolves nothing and is recorded in the fence. */
+ async function readNow(): Promise<boolean> {
+  if (subject === undefined) return false;
+  try { await fencedRead(fence, () => sessionApi.read(sessionId));return true; } catch { return false; }
  }
  // A saved answer yields, for good, only to a task read THIS tab issued after the answer arrived that shows one of its pull requests open (R2).
  // The accepted answer is kept per subject in storage (H1): Code's success path does not record the merge at once, it wakes the tracker, so reads right after the answer still show the pull request OPEN at the same head.
@@ -240,10 +241,9 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
   if (sending.current) return;
   sending.current = true;setBusy(true);setNote(undefined);setError(undefined);
   try {
-   // Refetches the readiness read and the task read; whatever they show decides, the lock only clears through the rules above.
-   await Promise.all([readNow(), query.invalidateQueries({ queryKey: ["session", sessionId] })]);
-   const state = query.getQueryState(readinessKey);
-   setNote(state?.status === "error" ? (saved !== undefined ? "Rovara couldn't read the current state, so the merge is not recorded yet." : "Rovara couldn't read the current state, so this is still not confirmed.") : "Rovara read again" + (state?.dataUpdatedAt ? " at " + new Date(state.dataUpdatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "") + ". " + (saved !== undefined ? "Rovara's tracking hasn't recorded the merge yet." : "Nothing there says this request merged, so it is still not confirmed."));
+   // What Check says comes from the result of its OWN task read: a failed or refused read says so and changes nothing else; only a read that succeeded is announced as read.
+   const [ok] = await Promise.all([readNow(), query.invalidateQueries({ queryKey: ["session", sessionId] })]);
+   setNote(ok ? "Rovara read again at " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + "." : "Rovara couldn't read this just now. Nothing else changed.");
   } finally { sending.current = false;setBusy(false); }
  }
  // An open confirmation becomes inert, and says why, the instant the latest read drops the authority or what was shown moves (R6c).

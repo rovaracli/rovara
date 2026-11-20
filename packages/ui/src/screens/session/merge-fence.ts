@@ -20,6 +20,8 @@ export const tabSeq = (): number => { counter += 1; return counter; };
 export interface TaskRead { /** The body of that very call. */ data: unknown; /** tabSeq() when the call started. */ issued: number }
 export interface Fence {
  latestRead: TaskRead | undefined;
+ /** The latest FAILED or REFUSED task read this section made (by issue number). A response issued before it is dropped; resolution waits for a read issued after it that succeeds (R6b/R6e). */
+ taskFailed: { seq: number } | undefined;
  /** A readiness read failed or was refused; cleared only by a readiness read issued after it that succeeds. */
  readinessDenied: { seq: number } | undefined;
  /** Records this tab has observed, by `requestId|startedAt`, with tabSeq() at first observation. */
@@ -29,7 +31,7 @@ export interface Fence {
 }
 const fences = new WeakMap<QueryClient, Map<string, Fence>>();
 
-function make(): Fence { return { latestRead: undefined, readinessDenied: undefined, observed: new Map(), version: 0, listeners: new Set() }; }
+function make(): Fence { return { latestRead: undefined, taskFailed: undefined, readinessDenied: undefined, observed: new Map(), version: 0, listeners: new Set() }; }
 function changed(fence: Fence): void { fence.version += 1;for (const listener of fence.listeners) listener(); }
 
 /** The fence for one subject (`orgId|developerId|sessionId`) in this QueryClient. */
@@ -41,10 +43,22 @@ export function fenceFor(client: QueryClient, subject: string): Fence {
  return fence;
 }
 
-/** A task read made BY THE SECTION: the issue number is taken at the start of the call and kept with the body that same call returned. A later-issued read supersedes an earlier one, never the reverse. */
+/**
+ * A task read made BY THE SECTION: the issue number is taken at the start of the call and kept with the body that same call returned. A later-issued read supersedes an earlier one, never the reverse. A failed or refused
+ * attempt is recorded by its issue number too (like `fencedReadiness`): any response issued before it is dropped, and nothing resolves until a read issued after it succeeds. The fence survives remounts.
+ */
 export async function fencedRead<T>(fence: Fence, call: () => Promise<T>): Promise<{ issued: number; body: T }> {
- const issued = tabSeq(), body = await call();
- if (fence.latestRead === undefined || issued > fence.latestRead.issued) { fence.latestRead = { data: body, issued };changed(fence); }
+ const issued = tabSeq();
+ let body: T;
+ try { body = await call(); } catch (failure) {
+  if (fence.taskFailed === undefined || issued > fence.taskFailed.seq) { fence.taskFailed = { seq: issued };changed(fence); }
+  throw failure;
+ }
+ // Issued before a newer failed or refused read: an older response must not apply after it.
+ if (fence.taskFailed !== undefined && issued < fence.taskFailed.seq) return { issued, body };
+ if (fence.latestRead === undefined || issued > fence.latestRead.issued) fence.latestRead = { data: body, issued };
+ if (fence.taskFailed !== undefined && issued > fence.taskFailed.seq) fence.taskFailed = undefined;
+ changed(fence);
  return { issued, body };
 }
 

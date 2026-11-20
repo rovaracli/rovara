@@ -7,6 +7,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { ApiError } from "../../packages/ui/src/api/errors.js";
 import { fencedRead, fenceFor } from "../../packages/ui/src/screens/session/merge-fence.js";
 import { useSession } from "../../packages/ui/src/api/sessions.js";
 import { MergeSection } from "../../packages/ui/src/screens/session/MergeSection.js";
@@ -80,7 +81,7 @@ it("F1/B3: a remount after a lost reply stays locked and sends ZERO new POSTs; C
  let before = gets();
  fireEvent.click(screen.getByRole("button", { name: "Check again" }));
  await waitFor(() => expect(gets()).toBeGreaterThan(before));
- expect((await screen.findByRole("status", {}, { timeout: 3000 })).textContent).toMatch(/still not confirmed/u);
+ expect((await screen.findByRole("status", {}, { timeout: 3000 })).textContent).toMatch(/couldn't read this just now/u);
  expect(w.posts()).toHaveLength(1);
  first.unmount();
  // Reload, Back, sign-in return: the page is built again from nothing but storage.
@@ -764,4 +765,71 @@ it("L4: when storage refuses the accepted-answer write, the in-memory state says
  expect(screen.queryAllByRole("button", { name: /^Merge #42/u })).toHaveLength(0);
  expect(localStorage.getItem(acceptedKey)).toBeNull();
  expect(w.posts()).toHaveLength(1);
+});
+
+it("B1: Check announces what its OWN task read returned: a failed or refused read says 'couldn't read this just now' and changes nothing else; never 'read again' or 'tracking hasn't recorded'", async () => {
+ for (const state of ["unresolved", "accepted"] as const) {
+  localStorage.clear();
+  // The section's own task read always fails (default: 404); the readiness answer is fine and cached.
+  const w = world({ readiness: () => ready(), press: () => state === "accepted" ? merged : lost });
+  const t = w.tab(A);
+  await press();
+  await waitFor(() => expect(headline()).toBe(state === "accepted" ? "Merge accepted" : UNSURE));
+  fireEvent.click(await screen.findByRole("button", { name: "Check again" }));
+  const note = await waitFor(() => { const status = screen.getAllByRole("status").map(node => node.textContent ?? "").find(text => /couldn't read this just now/u.test(text)); expect(status).toBeDefined();return status!; });
+  expect(note).toContain("Nothing else changed.");
+  expect(region().textContent).not.toMatch(/Rovara read again|hasn't recorded the merge yet/u);
+  expect(headline()).toBe(state === "accepted" ? "Merge accepted" : UNSURE);
+  expect(w.posts()).toHaveLength(1);
+  t.unmount();
+ }
+});
+
+it("B1: when its own task read succeeds Check says it read again; the lock is unchanged unless that body resolves it", async () => {
+ const w = world({ readiness: () => ready(), press: () => lost, session: () => ({ mergeTracking: [tracked({ headSha: HEAD_A })] }) });
+ w.tab(A);
+ await press();
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ fireEvent.click(await screen.findByRole("button", { name: "Check again" }));
+ await waitFor(() => expect(screen.getAllByRole("status").some(node => /Rovara read again at/u.test(node.textContent ?? ""))).toBe(true));
+ expect(headline()).toBe(UNSURE);
+});
+
+it("B2: a newer REFUSED task read fences an older response: the older success arriving afterwards (even with a different head) cannot erase the unknown lock; only a read issued after the refusal that succeeds can", async () => {
+ localStorage.setItem(key, record());
+ const w = world({ readiness: () => ready(HEAD_A), press: () => merged });
+ const t = w.tab(A);
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ const older = t.slowRead(A);                                  // issued first, still in flight
+ const { fencedRead: read, fenceFor: fenceOf } = await import("../../packages/ui/src/screens/session/merge-fence.js");
+ await read(fenceOf(t.query, SUBJECT), async () => { throw new ApiError(403, "FORBIDDEN", "No."); }).catch(() => undefined);   // issued later, refused
+ expect(fenceOf(t.query, SUBJECT).taskFailed).toBeDefined();
+ await older.deliver({ mergeTracking: [tracked({ headSha: HEAD_B })] });   // the older response now arrives: a different head
+ await new Promise(resolve => setTimeout(resolve, 80));
+ expect(localStorage.getItem(key)).not.toBeNull();
+ expect(screen.queryByText(/dropped because/u)).toBeNull();
+ // A read issued AFTER the refusal that succeeds clears the failure and may resolve.
+ await t.read(A, { mergeTracking: [tracked({ headSha: HEAD_B })] });
+ await waitFor(() => expect(localStorage.getItem(key)).toBeNull());
+ expect(fenceOf(t.query, SUBJECT).taskFailed).toBeUndefined();
+});
+
+it("B2/R6e: the refusal outlives the component: after a remount on the same client an older success still cannot resolve anything", async () => {
+ localStorage.setItem(key, record());
+ const w = world({ readiness: () => ready(HEAD_A), press: () => merged });
+ const client = createQueryClient();
+ const first = w.tab(A, taskOf(A), client);
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ const { fencedRead: read, fenceFor: fenceOf } = await import("../../packages/ui/src/screens/session/merge-fence.js");
+ let release!: () => void;
+ const gate = new Promise<void>(resolve => { release = resolve; });
+ const olderPending = read(fenceOf(client, SUBJECT), async () => { await gate; return sessionOf(A, { mergeTracking: [tracked({ headSha: HEAD_B })] }); });
+ await read(fenceOf(client, SUBJECT), async () => { throw new ApiError(404, "NOT_FOUND", "x"); }).catch(() => undefined);
+ first.unmount();
+ w.tab(A, taskOf(A), client);
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ release();await olderPending;
+ await new Promise(resolve => setTimeout(resolve, 80));
+ expect(localStorage.getItem(key)).not.toBeNull();
+ expect(fenceOf(client, SUBJECT).latestRead).toBeUndefined();
 });
