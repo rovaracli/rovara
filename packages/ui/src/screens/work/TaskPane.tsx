@@ -36,17 +36,18 @@ const proofNotServed = (error: unknown): boolean => error instanceof ApiError &&
 /** The quiet card: a task that asks nothing of the person says why, in fixed words. */
 export function QuietCard({ row, decisionsError, wide = false }: { row: WorkRow; decisionsError: unknown; /** On the task's own page "the full page" is where the person already is. */ wide?: boolean }) {
  let title: string, body: ReactNode;
- if (row.group === "you") {
+ if (row.task.detailUnread === true) { title = "Task details aren't available"; body = <>Rovara can't tell yet which step this task is in. Open the task to check.</>; }
+ else if (row.group === "you") {
   title = row.need ?? "Needs you";
   // Understand's questions (Code #1057's round on the row) are answered under the row in the list, or on the task's page: no decision card is coming for them.
   if (row.need === "Answer questions") body = <>Rovara has questions before it plans this. Answer them under this task in the list, or on the task's page.</>;
   else body = decisionsError === undefined ? <>This needs you, but its decision card isn't available yet. {row.task.workflow?.blockReason !== undefined && <VisibleText text={taskWords(row.task.workflow.blockReason, row.task.hasThread)} />}</> : <>{decisionsError instanceof ApiError ? <VisibleText text={decisionsError.message} /> : "Decisions couldn't be loaded."}</>;
  } else if (row.group === "involved") { title = "You're involved in this task"; body = <>Someone added you to it. Its owner answers the agent's questions and decides. You can follow it here.</>; }
- else if (row.group === "others") { title = "Waiting on someone else"; body = <>{row.line}. It moves on when they act.</>; }
- else if (row.group === "done") { title = row.line; body = <>Nothing more to do here.</>; }
- else if (row.group === "stopped") { title = row.line; body = <>Rovara stopped before it finished and nobody has picked it up since. {wide ? (row.task.sessionId === undefined ? "Continue it in your tool from the button above." : "Close it or continue it in your tool, from the actions above.") : "Open the full page to close it, or continue it in your tool."}</>; }
- else if (row.line === "In the queue") { title = "In the queue"; body = <>It starts as soon as there is room.</>; }
- else { title = "Nothing needed from you"; body = <>Rovara is working. You get a card here when a decision is needed.</>; }
+ else if (row.group === "others") { title = "Waiting"; body = <>{row.line}. Rovara can't tell yet who will make the next move.</>; }
+ else if (row.group === "done") { title = row.line; body = <>The latest task read reports this outcome.</>; }
+ else if (row.group === "stopped") { title = row.line; body = <>The latest task read reports that it stopped. {wide ? (row.task.sessionId === undefined ? "Continue it in your tool from the button above." : "Close it or continue it in your tool, from the actions above.") : "Open the full page to close it, or continue it in your tool."}</>; }
+ else if (row.line === "In the queue") { title = "In the queue"; body = <>The task read shows it is queued. Rovara can't tell yet when it will start.</>; }
+ else { title = "Rovara is working"; body = <>Rovara can't tell yet whether any other decision needs you. This task read shows work in progress.</>; }
  return <section className="rv-decision rv-decision-pane none" aria-label="Decision" data-testid="decision-quiet"><h3>{title}</h3><p className="rv-muted">{body}</p></section>;
 }
 
@@ -71,7 +72,14 @@ export interface TaskPaneProps {
 export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPage, steer, onComment, design }: TaskPaneProps) {
  const [shown, setShown] = useState<Stage>(), stage = shown ?? stageOf(row.step), query = useQueryClient(), api = useWorkApi();
  const plan = useTaskPlan(row.id), proof = useTaskProof(row.id), events = useTaskEvents(row.id), comments = useTaskComments(row.id), actionsFor = useDecisionActions();
- const decision: ReadDecision | undefined = row.decision;
+ // A cached section is not a current read. Unaffected siblings stay visible; controls whose evidence could not be read are withdrawn.
+ const planData = plan.isSuccess && plan.failureCount === 0 ? plan.data : undefined;
+ const proofData = proof.isSuccess && proof.failureCount === 0 ? proof.data : undefined;
+ const eventData = events.isSuccess && events.failureCount === 0 ? events.data : undefined;
+ const commentData = comments.isSuccess && comments.failureCount === 0 ? comments.data : undefined;
+ const sectionFailed = plan.isError || proof.isError || events.isError || comments.isError || [plan, proof, events, comments].some(read => read.failureCount > 0);
+ const sectionNote = sectionFailed ? <div className="rv-work-note" role="status" data-testid="task-detail-partial"><p>Some task details could not be read. Rovara can't tell yet which actions are available.</p><Button onClick={() => { for (const read of [plan, proof, events, comments]) if (read.isError || read.failureCount > 0) void read.refetch(); }}>Check task details</Button></div> : null;
+ const decision: ReadDecision | undefined = sectionFailed ? undefined : row.decision;
  const actions: DecisionCardActions | undefined = decision === undefined ? undefined : (() => {
   const base = actionsFor(decision);
   return {
@@ -89,14 +97,14 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
   await Promise.all([query.invalidateQueries({ queryKey: ["decisions"] }), query.invalidateQueries({ queryKey: ["work"] })]);
   onDecided(row.id);
  }
- const question = decision?.card.kind === "answer_question" ? plan.data?.questions.find(candidate => decision.card.id.endsWith(candidate.questionId)) ?? plan.data?.questions[0] : undefined;
- const failedEval = decision?.card.kind === "choose_checks" ? proof.data?.items.find(item => item.kind === "eval" && item.verdict === "fail" && item.passed !== undefined && item.total !== undefined) : undefined;
+ const question = decision?.card.kind === "answer_question" ? planData?.questions.find(candidate => decision.card.id.endsWith(candidate.questionId)) ?? planData?.questions[0] : undefined;
+ const failedEval = decision?.card.kind === "choose_checks" ? proofData?.items.find(item => item.kind === "eval" && item.verdict === "fail" && item.passed !== undefined && item.total !== undefined) : undefined;
  const pane: DecisionPane | undefined = decision === undefined ? undefined : {
   answers: question === undefined || question.options.length === 0 ? undefined : { options: question.options.map(option => ({ id: option.optionId, label: option.label })), onAnswer: optionId => answer(question.questionId, optionId) },
   evalResult: failedEval === undefined ? undefined : { passed: failedEval.passed!, total: failedEval.total!, bar: failedEval.bar },
   quickChange: row.path === "Quick spec" && ["approve_plan", "approve_requirements", "approve_design"].includes(decision.card.kind) && decision.card.risk === "low",
  };
- const rows = plan.data === undefined ? [] : proofRows(plan.data.requirements, proof.data?.items ?? [], plan.data.tasks);
+ const rows = planData === undefined ? [] : proofRows(planData.requirements, proofData?.items ?? [], planData.tasks);
  const openAnswers = (questionId: string, optionId: string) => answer(questionId, optionId);
  const retryPlan = () => { void plan.refetch(); };
  const planNote = plan.isError ? <SectionError error={plan.error} label="this task's plan" retry={retryPlan} /> : null;
@@ -104,20 +112,20 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
  const stageBody = (): ReactNode => {
   const pulls = row.task.pullRequests;
   // Only the spec and the task list need the plan: the proof and the activity are drawn from their own reads, so one failed read does not hide the others.
-  if (stage === "spec") return plan.isPending ? <Skeleton label="Loading the task" /> : plan.data === undefined ? planNote : <><SpecStep plan={plan.data} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} />{plan.data.tasks.length > 0 && <BuildStep heading="Tasks" tasks={plan.data.tasks} events={[]} />}</>;
-  if (stage === "request") return <RequestStep row={row} plan={plan.data} />;
-  if (stage === "build") return <>{plan.isPending ? <Skeleton label="Loading the task" /> : plan.data === undefined ? planNote : <BuildStep tasks={plan.data.tasks} events={events.data ?? []} steer={row.group === "run" ? steer : undefined} />}{events.isError && <SectionError error={events.error} label="the build activity" retry={() => { void events.refetch(); }} />}
-   <div className="rv-pane-gap">{proofBody ?? <ProofStep heading="Proof so far" rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />}</div></>;
-  const proofPart = <>{plan.isError && planNote}{proofBody ?? <ProofStep rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />}</>;
+  if (stage === "spec") return plan.isPending ? <Skeleton label="Loading the task" /> : planData === undefined ? planNote : <><SpecStep plan={planData} comments={commentData ?? []} onAnswer={sectionFailed ? undefined : openAnswers} onComment={sectionFailed ? undefined : onComment} />{planData.tasks.length > 0 && <BuildStep heading="Tasks" tasks={planData.tasks} events={[]} />}</>;
+  if (stage === "request") return <RequestStep row={row} plan={planData} />;
+  if (stage === "build") return <>{plan.isPending ? <Skeleton label="Loading the task" /> : planData === undefined ? planNote : <BuildStep tasks={planData.tasks} events={eventData ?? []} steer={!sectionFailed && row.group === "run" ? steer : undefined} />}{events.isError && <SectionError error={events.error} label="the build activity" retry={() => { void events.refetch(); }} />}
+   <div className="rv-pane-gap">{proofBody ?? <ProofStep heading="Proof so far" rows={rows} items={proofData?.items ?? []} failures={proofData?.failures} failuresNotListed={proofData?.failuresNotListed} />}</div></>;
+  const proofPart = <>{plan.isError && planNote}{proofBody ?? <ProofStep rows={rows} items={proofData?.items ?? []} failures={proofData?.failures} failuresNotListed={proofData?.failuresNotListed} />}</>;
   if (stage === "proof") return proofPart;
   return <>{proofPart}<div className="rv-pane-gap">{pulls.length === 0 ? <p className="rv-muted" data-testid="no-pull-request">No pull request yet. Rovara opens it once the proof passes.</p> : pulls.map((pull, index) => <PullRequestCard key={index} pullRequest={pull} />)}</div></>;
  };
  const decisionPart = <div className="rv-pane-decision">{decision !== undefined && actions !== undefined ? <DecisionCard key={decision.card.id} decision={decision} actions={actions} pane={pane} /> : <QuietCard row={row} decisionsError={decisionsError} wide={wide} />}</div>;
- const side = <aside className="rv-pane-side" aria-label="Cost, history and lessons"><TaskSideCards task={row.task} plan={plan.data} events={events.data ?? []} /><LessonsUsedCard project={row.project} taskId={row.id} /></aside>;
+ const side = <aside className="rv-pane-side" aria-label="Cost, history and lessons"><TaskSideCards task={row.task} plan={planData} events={eventData ?? []} /><LessonsUsedCard project={row.project} taskId={row.id} /></aside>;
  const rail = <StepRail step={row.step} tone={row.tone} selected={stage} onSelect={step => setShown(stageOf(step))} />;
  if (wide) return <article className="rv-task-pane wide" aria-label={"Task: " + row.title} data-task-id={row.id}>
   <h2 className="rv-visually-hidden">This task</h2>
-  <header className="rv-pane-head">{rail}</header>
+  <header className="rv-pane-head">{rail}</header>{sectionNote}
   <div className="rv-pane-grid wide">
    <div className="rv-pane-main">{stageBody()}</div>
    <div className="rv-pane-col">{decisionPart}{side}</div>
@@ -129,6 +137,7 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
    <h2 data-testid="pane-title"><VisibleText text={row.title} /></h2>
    {rail}
   </header>
+  {sectionNote}
   <div className="rv-pane-grid">
    {decisionPart}
    <div className="rv-pane-main">{stageBody()}</div>

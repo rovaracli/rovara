@@ -93,7 +93,7 @@ it("says what a failed mark-all was and keeps the rows", async () => {
 
 it("shows a fixed empty state only after a successful empty read", async () => {
  const f = mount({ inbox: () => ({ status: 200, body: { items: [], unread: 0 } }) });
- expect(await screen.findByRole("heading", { name: "Nothing in your inbox" })).toBeTruthy();expect(screen.queryByRole("button", { name: "Mark all as read" })).toBeNull();expect(screen.queryByText(/Slack/u)).toBeNull();f.close();
+ expect(await screen.findByRole("heading", { name: "No updates shown" })).toBeTruthy();expect(screen.queryByRole("button", { name: "Mark all as read" })).toBeNull();expect(screen.queryByText(/Slack/u)).toBeNull();f.close();
 });
 
 it("says one fixed sentence when Code has no inbox on this install, with no retry, and never the cause", async () => {
