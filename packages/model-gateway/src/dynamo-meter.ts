@@ -346,7 +346,7 @@ export class DynamoMeter implements Meter {
     if (hold.charge !== undefined && receipt === undefined) {
       if (!swept) throw new Error("charge receipt required");
       receipt = { ...readSettlementReceipt(hold.charge.receipt), recordedAt: new Date(this.#now()).toISOString() };
-      estimated = estimatedReceipt(receipt);
+      estimated = estimatedReceipt(receipt, hold.charge.kind);
     }
     const held = provisional !== undefined;
     const spend = held ? 0 : actualMicros;
@@ -357,7 +357,7 @@ export class DynamoMeter implements Meter {
     const pending = estimated;
     const ledger: Item = {
       ...(provisional === undefined ? {} : { ...provisional, estimateStatus: "estimated", provisionalHeld: true, cutoffAt: now }),
-      ...(receipt === undefined ? { chargeStatus: estimated === undefined && !swept ? "legacy_unknown" : "estimated", reason: "legacy_unknown" } : { receipt: JSON.parse(JSON.stringify(receipt)) as Plain, revision: receipt.revision, chargeStatus: receipt.status, reason: receipt.reason }),
+      ...(receipt === undefined ? { chargeStatus: estimated === undefined && !swept ? "legacy_unknown" : "estimated", reason: "legacy_unknown" } : { receipt: JSON.parse(JSON.stringify(receipt)) as Plain, kind: hold.charge?.kind ?? estimated?.kind ?? "chat", revision: receipt.revision, chargeStatus: receipt.status, reason: receipt.reason }),
       ...(hold.charge === undefined ? {} : { requestFingerprint: hold.charge.requestFingerprint }),
       pk, sk: `CALL#${id}`, callKey, ...scopeFields(hold.scope), month: hold.month, settledMicros: actualMicros, estimated: estimated !== undefined || swept, targets: targetsPlain(hold.targets),
       ...(swept ? { swept: true } : {}),
@@ -424,7 +424,7 @@ export class DynamoMeter implements Meter {
     if (hold.charge !== undefined && receiptIdentity(hold.charge.receipt) !== receiptIdentity(r)) throw new Error("charge identity changed");
     const outputs = r.status === "awaiting_usage" && hold.provisional !== undefined ? await this.#history(pk, r) : [];
     const provisional = r.status === "awaiting_usage" && hold.provisional !== undefined ? provisionalEstimate(hold.estimate, hold.provisional, outputs, input.actualInputTokens) : undefined;
-    await this.#close(pk, r.callId, hold, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r), false, r, provisional);
+    await this.#close(pk, r.callId, hold, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r, hold.charge?.kind), false, r, provisional);
     // A concurrent winner must have persisted this exact receipt.
     const after = await this.#db.get(this.#t.ledger, key);
     if (after === undefined || chargeReceiptContent(after.receipt) !== chargeReceiptContent(r)) throw new Error("conflicting charge settlement");
@@ -475,7 +475,7 @@ export class DynamoMeter implements Meter {
       });
       this.#sourceSettlement(actions, pk, r);
       if (held) actions.push({ kind: "Update", table: this.#t.meter, key: { pk, sk: `HOLD#${r.callId}` }, condition: e => `${e.name("status")} = ${e.value("cut_off")}`, update: e => `SET ${e.name("status")} = ${e.value("settled")}, ${e.name("actualMicros")} = ${e.value(amount)}, ${e.name("closedAt")} = ${e.value(this.#now())} REMOVE ${e.name("openAll")}, ${e.name("openAt")}` });
-      const pending = estimatedReceipt(r);
+      const pending = estimatedReceipt(r, stored.kind === "embedding" ? "embedding" : "chat");
       const pendingFields: Item = pending === undefined ? {} : { provider: pending.provider, model: pending.model, kind: pending.kind, usage: usagePlain(pending.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }), settledAt: Date.parse(r.occurredAt), pendingAll: GATEWAY_PENDING_PARTITION, pendingKeyAt: pendingKeyAt(priceKey(pending), Date.parse(r.occurredAt), JSON.stringify([r.issuer, r.companyId, r.callId])), pendingAt: pendingAt(Date.parse(r.occurredAt), JSON.stringify([r.issuer, r.companyId, r.callId])) };
       actions.push({ kind: "Update", table: this.#t.ledger, key, condition: e => `${e.name("revision")} = ${e.value(old.revision)}`, update: e => `SET ${e.name("provisionalHeld")} = ${e.value(false)}, ${e.name("neverConfirmed")} = ${e.value(r.neverConfirmed === true)}, ${e.name("receipt")} = ${e.value(JSON.parse(JSON.stringify(r)) as Plain)}, ${e.name("revision")} = ${e.value(r.revision)}, ${e.name("settledMicros")} = ${e.value(chargeValue(r.amountMicros)!)}, ${e.name("estimated")} = ${e.value(r.status !== "final")}, ${e.name("chargeStatus")} = ${e.value(r.status)}, ${e.name("reason")} = ${e.value(r.reason)}, ${e.name("status")} = ${e.value(r.status === "final" ? "corrected" : "pending")}${r.status === "final" ? ` ${this.#closePending(e)}` : Object.entries(pendingFields).map(([k, v]) => `, ${e.name(k)} = ${e.value(v)}`).join("")}` });
       actions.push({ kind: "Put", table: this.#t.ledger, item: { pk, sk: `ADJUST#${r.callId}#${r.revision}`, receipt: JSON.parse(JSON.stringify(r)) as Plain, deltaMicros: delta }, condition: e => `attribute_not_exists(${e.name("pk")})` });

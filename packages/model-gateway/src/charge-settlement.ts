@@ -15,10 +15,10 @@ export function customerSourceOverage(r: ChargeReceiptV1 | undefined): boolean {
 export function checkReceiptScope(r: ChargeReceiptV1, scope: MeterScope, id: string, estimate: number, month: string): void {
   if (r.revision !== 1 || r.issuer !== scope.iss || r.companyId !== scope.cid || r.project !== scope.pid || r.taskId !== scope.tid || r.callId !== id || chargeValue(r.originalReservationMicros) !== estimate || r.accountingMonth !== month) throw new Error("charge receipt scope mismatch");
 }
-export function estimatedReceipt(r: ChargeReceiptV1): EstimatedSettlement | undefined {
+export function estimatedReceipt(r: ChargeReceiptV1, kind: EstimatedSettlement["kind"] = "chat"): EstimatedSettlement | undefined {
   if (r.status === "final") return undefined;
   const u = chargeValue(r.usage);
-  return { provider: r.model.provider, model: r.model.modelId, kind: "chat", settledAt: Date.parse(r.occurredAt), ...(u === undefined ? {} : { usage: { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite5m + u.cacheWrite1h + u.cacheWriteUnknown, ...(u.cacheWriteUnknown > 0 ? {} : { cacheWrite5m: u.cacheWrite5m, cacheWrite1h: u.cacheWrite1h }) } }) };
+  return { provider: r.model.provider, model: r.model.modelId, kind, settledAt: Date.parse(r.occurredAt), ...(u === undefined ? {} : { usage: { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite5m + u.cacheWrite1h + u.cacheWriteUnknown, ...(u.cacheWriteUnknown > 0 ? {} : { cacheWrite5m: u.cacheWrite5m, cacheWrite1h: u.cacheWrite1h }) } }) };
 }
 export function receiptRevision(old: ChargeReceiptV1, next: ChargeReceiptV1): "duplicate" | "older" | "applied" {
   if (receiptIdentity(old) !== receiptIdentity(next)) throw new Error("charge identity changed");

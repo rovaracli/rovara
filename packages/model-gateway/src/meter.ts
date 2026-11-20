@@ -28,7 +28,8 @@ export interface ReserveInput {
   customerSource?: CustomerSource;
   scope: MeterScope; caps: Caps; estimateMicros: number; appliedMaxOutputTokens?: number;
   provisional?: ProvisionalContext;
-  charge?: { receipt: ChargeReceiptV1; requestFingerprint: string };
+  /** Internal price kind from the admitted guard; absent on legacy chat holds. */
+  charge?: { receipt: ChargeReceiptV1; requestFingerprint: string; kind?: PriceKind };
   /** Omit only when usage is bounded by the priced hold. All times are integer seconds. */
   overrun?: { deadlineSeconds: number; tokenExpiresSeconds: number };
   /**
@@ -139,7 +140,7 @@ export class InMemoryMeter implements Meter {
   readonly #expiryOrder: string[] = [];
   readonly #ownInFlight = new Map<string, { owner: string; expiresSeconds: number }>();
   readonly #partner: InMemoryMeter | undefined;
-  readonly #receipts = new Map<string, { receipt: ChargeReceiptV1; targets: Target[]; amount: number; held: boolean; cutoffAt?: number; provisional?: ProvisionalEstimate; neverConfirmed?: true }>();
+  readonly #receipts = new Map<string, { receipt: ChargeReceiptV1; kind: PriceKind; targets: Target[]; amount: number; held: boolean; cutoffAt?: number; provisional?: ProvisionalEstimate; neverConfirmed?: true }>();
   readonly #adjustments = new Map<string, { receipt: ChargeReceiptV1; deltaMicros: number }>();
   readonly #billed = new Map<string, BilledCall>();
   constructor(private readonly now: () => number = Date.now, private readonly conflict: () => boolean = () => false, private readonly beforeWrite: (operation: "settle" | "correct" | "expire", rows?: MeterRow[]) => void | Promise<void> = () => undefined, options: InMemoryMeterOptions = {}) {
@@ -245,7 +246,7 @@ export class InMemoryMeter implements Meter {
     }
     if (receipt !== undefined) {
       const callKey = JSON.stringify([receipt.issuer, receipt.companyId, receipt.callId]);
-      this.#receipts.set(callKey, { receipt: structuredClone(receipt), targets: open.targets, amount: actualMicros, held, ...(provisional === undefined ? {} : { provisional, cutoffAt: this.now() }) });
+      this.#receipts.set(callKey, { receipt: structuredClone(receipt), kind: open.charge?.kind ?? estimated?.kind ?? "chat", targets: open.targets, amount: actualMicros, held, ...(provisional === undefined ? {} : { provisional, cutoffAt: this.now() }) });
       this.#adjustments.set(`${callKey}:${receipt.revision}`, { receipt: structuredClone(receipt), deltaMicros: actualMicros });
     }
     this.#latch(receipt);
@@ -264,7 +265,7 @@ export class InMemoryMeter implements Meter {
     const outputs = [...this.#receipts.values()].flatMap(({ receipt }) => receipt.issuer === r.issuer && receipt.companyId === r.companyId && receipt.model.provider === r.model.provider && receipt.model.modelId === r.model.modelId && historyOutput(receipt) !== undefined ? [historyOutput(receipt)!] : []);
     for (const { call } of this.#ledger.values()) if (!this.#receipts.has(call.callKey) && call.iss === r.issuer && call.cid === r.companyId && call.provider === r.model.provider && call.model === r.model.modelId && call.chargeStatus !== "awaiting_usage" && hasUsage(call.usage)) outputs.push(call.usage.output);
     const provisional = r.status === "awaiting_usage" && open.provisional !== undefined ? provisionalEstimate(open.estimate, open.provisional, outputs, input.actualInputTokens) : undefined;
-    await this.settle({ id: input.reservationId }, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r), r, provisional);
+    await this.settle({ id: input.reservationId }, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r, open.charge?.kind), r, provisional);
   }
   async applyChargeReceipt(input: ChargeReceiptV1): Promise<ApplyChargeResult> {
     const r = readSettlementReceipt(input);
@@ -295,9 +296,9 @@ export class InMemoryMeter implements Meter {
     this.#latch(r);
     const pending = this.#ledger.get(callKey);
     if (pending?.call.status === "pending") this.#removePending(pending.call);
-    const estimate = estimatedReceipt(r);
+    const estimate = estimatedReceipt(r, stored.kind);
     if (estimate !== undefined) {
-      const call: EstimatedCall = { ...(stored.provisional === undefined ? {} : { estimateBasis: stored.provisional.estimateBasis, outputEstimateBasis: stored.provisional.outputEstimateBasis, estimateStatus: "estimated" }), ...(r.neverConfirmed === true ? { neverConfirmed: true } : {}), iss: r.issuer, cid: r.companyId, pid: r.project, tid: r.taskId, callKey, month: r.accountingMonth, provider: r.model.provider, model: r.model.modelId, kind: "chat", usage: estimate.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, chargeStatus: r.status === "awaiting_usage" ? "awaiting_usage" : "estimated", settledAt: Date.parse(r.occurredAt), settledMicros: chargeValue(r.amountMicros)!, status: "pending" };
+      const call: EstimatedCall = { ...(stored.provisional === undefined ? {} : { estimateBasis: stored.provisional.estimateBasis, outputEstimateBasis: stored.provisional.outputEstimateBasis, estimateStatus: "estimated" }), ...(r.neverConfirmed === true ? { neverConfirmed: true } : {}), iss: r.issuer, cid: r.companyId, pid: r.project, tid: r.taskId, callKey, month: r.accountingMonth, provider: r.model.provider, model: r.model.modelId, kind: estimate.kind, usage: estimate.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, chargeStatus: r.status === "awaiting_usage" ? "awaiting_usage" : "estimated", settledAt: Date.parse(r.occurredAt), settledMicros: chargeValue(r.amountMicros)!, status: "pending" };
       this.#ledger.set(callKey, { call, targets: stored.targets }); this.#insertPending(call);
     } else if (pending !== undefined) pending.call = { ...pending.call, settledMicros: chargeValue(r.amountMicros)!, status: "corrected" };
     const billed = this.#billed.get(callKey);
