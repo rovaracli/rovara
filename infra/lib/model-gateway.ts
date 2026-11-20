@@ -205,6 +205,7 @@ export const MODEL_GATEWAY_ENV = {
   answersLedgerTable: "GATEWAY_ANSWERS_LEDGER_TABLE",
   answersMarkersTable: "GATEWAY_ANSWERS_MARKERS_TABLE",
   agentKeys: "GATEWAY_AGENT_KEYS",
+  rovaraAiSourceId: "GATEWAY_ROVARA_AI_SOURCE_ID",
   rovaraAiModels: "GATEWAY_ROVARA_AI_MODELS",
   rovaraAiExempt: "GATEWAY_ROVARA_AI_EXEMPT",
   agentModelsDisabled: "GATEWAY_AGENT_MODELS_DISABLED",
@@ -842,7 +843,7 @@ export class ModelGatewayStack extends Stack {
     if (inRegion.length > 0) serveRole.addToPolicy(new iam.PolicyStatement({ sid: "RovaraAiModels", actions, resources: [...new Set(inRegion.map((m) => modelArn(region, m.model)))] }));
     const disabled = settings.disabled;
     if (disabled !== undefined && disabled !== "" && (disabled.split(",").length > 64 || new Set(disabled.split(",").map((name) => name.trim())).size !== disabled.split(",").length || disabled.split(",").some((name) => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(name.trim())))) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY}: give model names, comma-separated`);
-    return { environment: { [MODEL_GATEWAY_ENV.rovaraAiModels]: models, ...(exempt === "" ? {} : { [MODEL_GATEWAY_ENV.rovaraAiExempt]: exempt }), ...(disabled === undefined ? {} : { [MODEL_GATEWAY_ENV.agentModelsDisabled]: disabled }) } };
+    return { environment: { [MODEL_GATEWAY_ENV.rovaraAiSourceId]: `${serveRole.roleArn}@${this.region}`, [MODEL_GATEWAY_ENV.rovaraAiModels]: models, ...(exempt === "" ? {} : { [MODEL_GATEWAY_ENV.rovaraAiExempt]: exempt }), ...(disabled === undefined ? {} : { [MODEL_GATEWAY_ENV.agentModelsDisabled]: disabled }) } };
   }
 
   /**

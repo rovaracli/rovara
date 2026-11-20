@@ -3,6 +3,7 @@
 // save asks the gateway to test the role for THIS company (canaries refused) before the store seals it. Company admins only (no
 // step-up since owner DEC 254zzz73), audited; the agents use it only when the admin also picks it; two companies never meet.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { bedrockView, bedrockSetup, bedrockCommand } from "../../packages/ui/src/api/bedrock.js";
 import { describe, expect, it } from "vitest";
 import type { BedrockBackend } from "../../packages/cloud-server/src/index.js";
 import { BEDROCK_NOT_ENABLED_STEPS } from "../../packages/cloud-server/src/index.js";
@@ -111,16 +112,19 @@ describe("Cloud: your own Bedrock settings", () => {
     const ada = await w.signIn("ada", 30);
     const setup = await w.call(ada, "GET", "/org/bedrock/setup/eu-west-1");
     expect(setup.status).toBe(200);
+    expect(bedrockSetup.safeParse(setup.body).success).toBe(true);
     expect(setup.body).toMatchObject({ externalId: extOf(A), brokerRoleArn: BROKER, templateUrl: TEMPLATE, companyId: A, region: "eu-west-1" });
     expect((setup.body.presets as Record<string, string>)["claude-sonnet-5-5"]).toBe("eu.anthropic.claude-sonnet-5-5");
     const command = await w.call(ada, "POST", "/org/bedrock/setup", { region: "us-west-2", models: { "claude-sonnet-5-5": SONNET }, allowGlobal: false });
     expect(command.status).toBe(200);
+    expect(bedrockCommand.safeParse(command.body).success).toBe(true);
     expect(command.body.command).toContain(`ExternalId=${extOf(A)}`);
     expect(command.body.cloudShellUrl).toBe("https://us-west-2.console.aws.amazon.com/cloudshell/home?region=us-west-2");
     // Not chooseable before it is connected.
     expect((await w.call(ada, "PUT", "/org/agent-ai", { expectedVersion: 0, source: "bedrock_byo" })).status).toBe(400);
     const saved = await w.call(ada, "PUT", "/org/bedrock", write(0, FORM(A)));
     expect(saved.status).toBe(200);
+    expect(bedrockView.safeParse(saved.body).success).toBe(true);
     expect(k.probes).toEqual([{ cid: A, roleArn: ROLE(A) }]);
     expect(saved.body.connection).toMatchObject({ connected: true, roleArn: ROLE(A), region: "us-west-2", models: [{ name: "claude-sonnet-5-5", id: SONNET, state: "not_enabled" }], notEnabledSteps: BEDROCK_NOT_ENABLED_STEPS });
     expect(saved.body.usage).toContain("your AWS bill is the record");
@@ -137,6 +141,7 @@ describe("Cloud: your own Bedrock settings", () => {
     expect(k.probes).toHaveLength(2);
     const removed = await w.call(ada, "DELETE", "/org/bedrock", write(2));
     expect(removed.body).toMatchObject({ connection: null });
+    expect(bedrockView.safeParse(removed.body).success).toBe(true);
     expect(removed.body.removedUntil).toBeGreaterThan(START);
   });
 

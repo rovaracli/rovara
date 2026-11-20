@@ -1,3 +1,4 @@
+import { BedrockConnection } from "./BedrockConnection.js";
 import type { ReactNode } from "react";
 import { z } from "zod";
 import { DataTable } from "../../../design/DataTable.js";
@@ -18,7 +19,7 @@ export function CompanyAiConnections({ children }: { children?: ReactNode }) {
   <h2>Company AI connections</h2>
   <details><summary>Connect company AI</summary><CompanyKeyConnections />
    <ReadSection read={endpoint} label="Own endpoint connection">{settings => settings.listed.includes("custom_endpoint") && settings.keysRevision !== null ? <Endpoint key={settings.keysRevision} settings={settings} reload={() => { void endpoint.refetch(); }} /> : <p>Own endpoint connection is not available on this Rovara.</p>}</ReadSection>
-   <p>Own Bedrock uses Claude for agents. <Link to="/app/admin/product-ai">Your app's tests: project AI connections</Link></p>
+   <BedrockConnection /><p>Own Bedrock uses Claude for agents. <Link to="/app/admin/product-ai">Your app's tests: project AI connections</Link></p>
   </details>
   {children}
   <ReadSection read={sources} label="AI source order">{data => <>

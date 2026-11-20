@@ -62,10 +62,10 @@ const whole = (v: unknown): v is number => typeof v === "number" && Number.isSaf
 const exactly = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 const named = (v: unknown): v is LearningAiProvider => COMPANY_KEY_PROVIDERS.some((p) => p === v);
 /** The providers this Cloud lists and connects: OpenRouter only where its kind is switched on (DEC 254t). */
-const providersOn = (context: RouteContext): readonly LearningAiProvider[] => context.company?.aiSourceKinds?.has("openrouter") === true ? COMPANY_KEY_PROVIDERS : LEARNING_AI_PROVIDERS;
+const providersOn = (): readonly LearningAiProvider[] => COMPANY_KEY_PROVIDERS;
 /** What the page shows: the providers switched on, plus OpenRouter whenever the company document still holds it (on or off), so it can always be removed. */
 const providersShown = (context: RouteContext, v: ProductAiView): readonly LearningAiProvider[] =>
-  providersOn(context).includes("openrouter") || !(v.sources.some((s) => s.provider === "openrouter") || v.removed.some((r) => r.provider === "openrouter")) ? providersOn(context) : COMPANY_KEY_PROVIDERS;
+  providersOn().includes("openrouter") || !(v.sources.some((s) => s.provider === "openrouter") || v.removed.some((r) => r.provider === "openrouter")) ? providersOn() : COMPANY_KEY_PROVIDERS;
 
 interface Admin { companyId: string; developerId: string; name: string }
 
@@ -134,7 +134,7 @@ function envelope(context: RouteContext, keys: readonly string[], gated = true):
   if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return WORDS.tooLarge;
   const body = record(context.body);
   if (body === undefined || !exactly(body, ["requestId", "expectedRevision", "provider", ...keys])) return WORDS.invalid;
-  if (typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision) || !named(body.provider) || (gated && !providersOn(context).includes(body.provider))) return WORDS.invalid;
+  if (typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision) || !named(body.provider) || (gated && !providersOn().includes(body.provider))) return WORDS.invalid;
   return { body, requestId: body.requestId, expectedRevision: body.expectedRevision, provider: body.provider };
 }
 

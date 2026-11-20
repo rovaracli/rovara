@@ -2,6 +2,8 @@ import { initialCharge, finishCharge, type ChargeSource } from "./charge-produce
 import { chargeValue, type ChargeReceiptV1 } from "./charge-receipt.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { openRouterPolicy, type OpenRouterTariff } from "./openrouter-policy.js";
+import { runPriceAllows } from "./run-price.js";
 import { AGENT_AI_SOURCES, agentSourceSwitchedOn, resolveAgentSource, type AgentAiSource, type ResolvedAgentSource, type AgentSourceVia, type AgentAiSourceReader, type ByoBedrock, type CompanyChatAi, type CompanyEndpointAi, type RovaraAi } from "./agent-ai.js";
 import { endpointTarget, ENDPOINT_ADDRESS_REFUSED, type EndpointTarget } from "./endpoint-guard.js";
 import { parseEndpointConnect, type EndpointConnection, type EndpointModel } from "./endpoint-source.js";
@@ -46,6 +48,9 @@ export const logCode = (code: string): string => REFUSAL_CODE.test(code) ? code 
 const PAYER = /^[a-z0-9_]{1,32}$/u;
 export type GatewayLogEvent = { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "settle_failed" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
 export interface GatewayDependencies {
+  /** Reviewed tariffs; injected only for offline qualification fixtures. */
+  openRouterTariffs?: readonly OpenRouterTariff[];
+  runPriceReady?: () => number | undefined;
   /** Negotiated token-only receipts. The server supplies the actual saved source identity/revision; no inferred key identity. */
   chargeReceipts?: { source(claims: TaskClaims, model: string, resolved?: ChargeSource): ChargeSource | undefined };
   verifyToken: TaskTokenVerifier; ended: EndedTasks; meter: Meter; caps: CapsSource; prices?: PriceSource;
@@ -250,7 +255,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
   let boundKey: (() => Promise<string | undefined>) | undefined;
   type Connection = { chargeSource?: ChargeSource; boundKey?: () => Promise<string | undefined> };
   const connect = async (claims: TaskClaims, provider: Parameters<LearningKeySource["connected"]>[2], signal: AbortSignal): Promise<Connection | undefined> => {
-    if (deps.chargeReceipts !== undefined && keys.resolveForCharge !== undefined) {
+    if ((deps.chargeReceipts !== undefined || claims.runPrice !== undefined) && keys.resolveForCharge !== undefined) {
       const saved = await keys.resolveForCharge(claims.iss, claims.cid, provider, signal);
       if (saved === undefined) return undefined;
       return { chargeSource: { source: saved.source, billing: "external_provider" }, boundKey: () => saved.key() };
@@ -281,6 +286,8 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     if (!agentSourceSwitchedOn(source, choice.switchedOn ?? NOTHING_SWITCHED_ON)) return soft(AGENT_SOURCE_SWITCHED_OFF);
     // A source this route does not serve is never sent on another one's key (no fallback to the company's Anthropic key).
     if (!(AGENT_AI_SOURCES as readonly string[]).includes(source)) return hard(AGENT_UNAVAILABLE);
+    if (source === "openrouter_key" && checkModel && claims.mdl.some(model => !model.includes("/"))) return soft(AGENT_MODEL_NOT_SERVED);
+    if (source === "openrouter_key" && claims.runPrice === undefined) return hard({ ok: false, status: 409, code: "run_price_authorization_required", message: "Authorize the current AI source and price before this run." });
     if (source === "bedrock_byo") {
       if (choice.byo === undefined) return soft(AGENT_SOURCE_NOT_OFFERED);
       // Only the verified company's own connection (the token's iss and cid), never another company's.
@@ -324,13 +331,15 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     }
     if (source === "openai_key" || source === "openrouter_key") {
       const provider: OpenAiAgentProvider = source === "openai_key" ? "openai" : "openrouter";
+      if (provider === "openrouter" && (deps.chargeReceipts === undefined || deps.meter.settleV2 === undefined)) return hard(AGENT_UNAVAILABLE);
+      if (provider === "openrouter" && claims.mdl.some(m => openRouterPolicy(m, (deps.now ?? Date.now)(), deps.openRouterTariffs) === undefined)) return soft(AGENT_MODEL_NOT_SERVED);
       const ai = choice[provider];
       if (ai === undefined) return soft(AGENT_CHAT_NOT_OFFERED);
       // Only the verified company's own account of THAT provider (an Anthropic key is never a stand-in).
       let connected: Connection | undefined;
       try { connected = await connect(claims, provider, signal); if (connected === undefined) return soft(AGENT_KEY_MISSING); }
       catch { return hard(AGENT_UNAVAILABLE); }
-      if (!serves(checkModel, claims, (m) => provider === "openai" ? OPENAI_KEY_AGENT_MODELS.includes(m) : OPENAI_AGENT_MODEL.test(m) && m.includes("/"))) return soft(AGENT_MODEL_NOT_SERVED);
+      if (!serves(checkModel, claims, (m) => provider === "openai" ? OPENAI_KEY_AGENT_MODELS.includes(m) : openRouterPolicy(m, (deps.now ?? Date.now)(), deps.openRouterTariffs) !== undefined)) return soft(AGENT_MODEL_NOT_SERVED);
       const saved = connected;
       return { admit() { bind(saved); chat = { provider, ai }; } };
     }
@@ -342,7 +351,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
       return { admit() {
         rovara = { ai, marker: `rovara-ai-${randomUUID()}` };
         // Rovara has no company credential: pin the offered model configuration itself.
-        chargeSource = { source: { kind: "rovara_ai", id: "rovara-ai", name: "Rovara AI", provider: "bedrock", connectionRevision: createHash("sha256").update(JSON.stringify([...ai.models].sort())).digest("hex") }, billing: ai.exempt.has(claims.cid) ? "exempt" : "customer" };
+        chargeSource = { source: { kind: "rovara_ai", id: ai.sourceId ?? "rovara-ai", name: "Rovara AI", provider: "bedrock", connectionRevision: createHash("sha256").update(JSON.stringify([...ai.models].sort())).digest("hex") }, billing: ai.exempt.has(claims.cid) ? "exempt" : "customer" };
       } };
     }
     // anthropic_key: the company's own Anthropic key (DEC 236).
@@ -429,8 +438,9 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         try { limit = chat.ai.maxOutputTokens?.(checked.model); } catch { limit = undefined; }
         const maxTokens = Math.min(checked.maxTokens, typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS);
         let translated: Record<string, unknown> | undefined;
-        try { translated = toChatCompletions(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>, checked.model, maxTokens, chat.provider); } catch { translated = undefined; }
+        try { translated = toChatCompletions(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>, checked.model, maxTokens, chat.provider, chat.provider === "openrouter" ? openRouterPolicy(checked.model, (deps.now ?? Date.now)(), deps.openRouterTariffs) : undefined); } catch { translated = undefined; }
         if (translated === undefined) return AGENT_CHAT_FEATURE;
+        if (chat.provider === "openrouter" && openRouterPolicy(checked.model, (deps.now ?? Date.now)(), deps.openRouterTariffs) === undefined) return AGENT_CHAT_FEATURE;
         let forwarded: Buffer;
         try { forwarded = Buffer.from(JSON.stringify(translated)); } catch { return AGENT_CHAT_FEATURE; }
         return { ...checked, maxTokens, bytes: forwarded, headers: { "content-type": "application/json" }, path: OPENAI_AGENT_UPSTREAM[chat.provider].path };
@@ -598,14 +608,14 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       }
       let estimateRecord: EstimatedSettlement | undefined;
       if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
-        const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: reservedMicros });
+        const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: reservedMicros, retainMissingUsage: callClaims?.runPrice !== undefined });
         cost = amount.actualMicros; estimated = amount.estimated;
         // A review is never recorded above the hold it was admitted on (the task's and the company's caps were checked for exactly that amount).
         if (callClaims?.reviewer !== undefined && cost > reservedMicros) cost = reservedMicros;
         if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
       }
       if (charge !== undefined && reservation !== undefined && route.meter.settleV2 !== undefined && settlementPrice !== undefined) {
-        const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, notSent: cost === 0, now: now() });
+        const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, retainMissingUsage: callClaims?.runPrice !== undefined, notSent: cost === 0, now: now() });
         const actualInputTokens = usage?.actualInputTokens?.();
         await route.meter.settleV2({ reservationId: reservation.id, receipt, ...(actualInputTokens === undefined ? {} : { actualInputTokens }) });
         cost = chargeValue(receipt.amountMicros)!; estimated = receipt.status !== "final";
@@ -635,7 +645,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     await wait(sink.write(Buffer.from(JSON.stringify(route?.refusalBody?.(type, message) ?? { error: { type, message } })))); sink.end(); log(notFoundAt === undefined ? refusedLine(type, status) : { ...refusedLine(type, status), ...notFoundAt });
   };
   try {
-    if (request.method === "GET" && request.url === "/healthz") { head = true; sink.head(200, JSON_HEADERS); await wait(sink.write(Buffer.from('{"ok":true}'))); sink.end(); return; }
+    if (request.method === "GET" && request.url === "/healthz") { head = true; sink.head(200, JSON_HEADERS); await wait(sink.write(Buffer.from(JSON.stringify({ ok: true, ...(deps.runPriceReady?.() === undefined ? {} : { runPrice: { version: 1, admissionVersion: 1, snapshotVersion: deps.runPriceReady() } }) })))); sink.end(); return; }
     const routed = routeFor(deps, request);
     // Which path was not found (pathname only, bounded, printable; never the query, which could carry anything), so operators can tell probes from a client on a wrong path.
     if (routed === undefined) { notFoundAt = notFoundWhere(request); await respond(404, "not_found", "not found"); return; }
@@ -686,6 +696,11 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     let resolved = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, route.provider, guarded.model, deps.cautiousCeiling, controller.signal, guarded.priceKind ?? "chat"));
     for (const also of route.alsoPricedAs?.(guarded.model) ?? []) resolved = dearerPrice(resolved, await wait(resolvePrice(deps.prices ?? UnknownPriceSource, also.provider, also.model, deps.cautiousCeiling, controller.signal, guarded.priceKind ?? "chat")));
     const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
+    const basis = claims.runPrice === undefined ? undefined : deps.prices?.quoteBasis?.(route.provider, guarded.model);
+    if ((claims.runPrice !== undefined && (!guarded.inputBounded || guarded.media !== undefined || (price.estimated && !price.knownTokenPrice) || basis === undefined || basis.hash !== claims.runPrice.snapshotHash || basis.version !== claims.runPrice.snapshotVersion)) || !runPriceAllows(claims, route.provider, guarded.model, route.chargeSource, price, now(), deps.openRouterTariffs)) {
+      await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
+    }
+    if (claims.runPrice !== undefined) shortenDeadline(claims.runPrice.expiresAt);
     if (price.operatorReview) log({ event: "price_operator_review" });
     settlementPrice = price; settlementModel = guarded.model; settlementKind = guarded.priceKind ?? "chat";
     let caps = await wait(route.caps(scope, claims, controller.signal));
@@ -729,7 +744,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       const source = deps.chargeReceipts.source(claims, guarded.model, route.chargeSource);
       if (source !== undefined) charge = initialCharge(claims, { provider: route.provider, modelId: guarded.model }, source, estimate, now(), price);
     }
-    const reserved = grant !== undefined && session !== undefined ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined ? estimate : ceilingMicros, appliedMaxOutputTokens, ...(charge === undefined ? {} : { charge: { receipt: charge, requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, provisional: { requestBytes: guarded.bytes.length, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }), ...(line === undefined ? {} : { line }),
+    const reserved = grant !== undefined && session !== undefined ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined ? estimate : ceilingMicros, appliedMaxOutputTokens, ...(charge === undefined ? {} : { charge: { receipt: charge, requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, ...(claims.runPrice !== undefined ? {} : { provisional: { requestBytes: guarded.bytes.length, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }) }), ...(line === undefined ? {} : { line }),
       ...(grant === undefined ? {} : { sweepAfter: now() + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS, review: { jti: claims.jti.toLowerCase() } }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });

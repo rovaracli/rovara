@@ -19,6 +19,7 @@
 // source row's own companyId is checked again by CompanyAgentAiSource.
 //
 // Every failure is a fixed answer: nothing from the request, a token or the store is echoed or logged.
+import { openRouterPolicy, REVIEWED_OPENROUTER_POLICIES, type OpenRouterTariff } from "./openrouter-policy.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { agentSourceSwitchedOn, resolveAgentSource, type AgentAiSource, type AgentAiSourceReader, type ByoBedrock } from "./agent-ai.js";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
@@ -34,7 +35,7 @@ export const SERVICE_TOKEN_SECONDS = 60;
 export const SERVICE_TOKEN_CLAIMS = ["iss", "aud", "jti", "iat", "nbf", "exp", "cid"] as const;
 export const OFFERED_MODELS_PATH = /^\/v1\/service\/companies\/(org_[0-9a-z]{20})\/offered-models$/u;
 /** Code's AGENT_MODEL_NAME and OFFERED_AGENT_MODELS_MAX (packages/contracts/src/agent-model-choice.ts). */
-export const OFFERED_MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+export const OFFERED_MODEL_NAME = /^(?:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}|[a-z0-9][a-z0-9._-]{0,62}\/[a-z0-9][a-z0-9._-]{0,62})$/u;
 export const OFFERED_MODELS_MAX = 64;
 /** At most this many checks at once and started per minute, per serving task, before any key fetch (the path is on the public load balancer). */
 export const OFFERED_MODELS_OPEN = 8;
@@ -191,13 +192,14 @@ export async function reviewerAccessFor(options: ReviewerAccessOptions, source: 
 }
 
 export interface OfferedModelsHandlerOptions {
+  openRouterTariffs?: readonly OpenRouterTariff[];
   /** createSignedTokenVerifier(..., SERVICE_TOKEN_KIND) over this gateway's one install. */
   verify: (token: unknown) => Promise<ServiceClaims | undefined>;
   sources: AgentAiSourceReader;
   /** The agent route's Rovara's AI allow-list, when configured, and (DEC 254zzz3(1)) its exempt companies: an exempt company with no saved choice is offered what the agent route's default serves it. */
   rovara?: { models: ReadonlyMap<string, string>; exempt?: ReadonlySet<string> };
   /** The company key source the agent route reads (needed for the default above; without it no company is defaulted). */
-  keys?: Pick<LearningKeySource, "connected">;
+  keys?: Pick<LearningKeySource, "connected"> & { identityFor?(iss: string, cid: string, provider: "openrouter"): Promise<{ sourceId: string; versionId: string } | undefined> };
   disabled: ReadonlySet<string>;
   /** The company's own Bedrock (DEC 238), when this gateway has it built (as the agent route's `agentAi.byo`). Absent: bedrock_byo is refused. */
   byo?: Pick<ByoBedrock, "connection">;
@@ -278,7 +280,16 @@ export async function answerOfferedModels(options: OfferedModelsHandlerOptions, 
     try { price = await options.priceOf!(model, servedBy.get(model)); } catch { price = undefined; }
     return price === undefined || !offeredPrice(price) ? { model } : { model, price: { inputUsdPerMillion: price.inputUsdPerMillion, outputUsdPerMillion: price.outputUsdPerMillion } };
   }));
-  return { status: 200, body: { version: 1, models: entries, ...(reviewerAccess === undefined ? {} : { reviewerAccess }) } };
+  const identities = await Promise.all(entries.map(async entry => {
+    if (servedBy.get(entry.model) !== "openrouter_key") return entry;
+    const identity = await options.keys?.identityFor?.(claims.iss, claims.cid, "openrouter");
+    if (identity === undefined || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$/u.test(identity.sourceId) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$/u.test(identity.versionId)) throw new Error("connection unavailable");
+    const policy = openRouterPolicy(entry.model, (options.now ?? Date.now)(), options.openRouterTariffs);
+    if (policy === undefined) throw new Error("price unavailable");
+    return { ...entry, identity: { provider: "openrouter", sourceId: identity.sourceId, connectionRevision: identity.versionId, modelId: entry.model }, price: { inputUsdPerMillion: policy.inputMicrosPerMTok / 1_000_000, outputUsdPerMillion: policy.outputMicrosPerMTok / 1_000_000 } };
+  })).catch(() => undefined);
+  if (identities === undefined) return ANSWERS.unavailable;
+  return { status: 200, body: { version: 1, models: identities, ...(reviewerAccess === undefined ? {} : { reviewerAccess }) } };
 }
 
 /** A model's list price in US dollars per million tokens (Code's OfferedModelPriceSchema: each 0 to OFFERED_PRICE_USD_MAX). */
@@ -318,6 +329,10 @@ async function ownKeyConnected(options: OfferedModelsHandlerOptions, source: Age
 async function offeredForSource(options: OfferedModelsHandlerOptions, source: AgentAiSource | undefined, iss: string, cid: string): Promise<OfferedModelsOutcome> {
   if (source !== undefined && !agentSourceSwitchedOn(source, options.switchedOn ?? new Set())) return OFFERED_SWITCHED_OFF;
   if ((source === "openai_key" && options.chat?.openai !== true) || (source === "openrouter_key" && options.chat?.openrouter !== true)) return OFFERED_CHAT_OFF;
+  if (source === "openrouter_key") {
+    const models = (options.openRouterTariffs ?? REVIEWED_OPENROUTER_POLICIES).filter(row => openRouterPolicy(row.model, (options.now ?? Date.now)(), options.openRouterTariffs) !== undefined).map(row => row.model);
+    return models.length === 0 ? OFFERED_EMPTY : { ok: true, models };
+  }
   if (source === "custom_endpoint") return offeredEndpointModels(options.endpointModels, iss, cid);
   return source === "bedrock_byo" ? offeredByoModels(options.byo, iss, cid) : offeredModelsFor(source, options.rovara, options.disabled);
 }

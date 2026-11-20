@@ -1,3 +1,4 @@
+import type { EndpointModel } from "./endpoint-source.js";
 // The learning call class (DEC 226): lessons' learning calls (the reflector, the curator's judge, the outcome judge) on the
 // company's OWN connected provider account, never Rovara's install key.
 //
@@ -100,6 +101,7 @@ export interface LearningKeySource {
   resolveForCharge?(iss: string, cid: string, provider: CompanyKeyProvider, signal?: AbortSignal): Promise<{ source: ChargeReceiptV1["source"]; key(): Promise<string | undefined> } | undefined>;
   /** Read-only connection identity for signed price quotes; never opens a key. */
   identityFor?(iss: string, cid: string, provider: "anthropic" | "openai" | "openrouter"): Promise<{ sourceId: string; versionId: string } | undefined>;
+  endpointMetadata?(iss: string, cid: string): Promise<{ sourceId: string; versionId: string; models: EndpointModel[] } | undefined>;
   /** Whether the company has this provider connected. `provider` is the route's: a company with only Gemini connected is not connected for OpenAI. */
   connected(iss: string, cid: string, provider: CompanyKeyProvider, signal?: AbortSignal): Promise<boolean>;
   /** The secret to send: the API key, or for Vertex the short-lived Google bearer token the adapter minted for this company. */

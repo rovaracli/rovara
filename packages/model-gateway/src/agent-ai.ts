@@ -78,7 +78,7 @@ export function parseAiSourceKinds(value: string | undefined): Set<AiSourceKind>
  * as before); any other source only when its kind is switched on. An unknown source never.
  */
 export function agentSourceSwitchedOn(source: string, switchedOn: ReadonlySet<string>): boolean {
-  if (source === "rovara" || PRE_SWITCH_AGENT_SOURCES.includes(source)) return true;
+  if (source === "rovara" || source === "openrouter_key" || PRE_SWITCH_AGENT_SOURCES.includes(source)) return true;
   const kind = AI_SOURCE_KINDS.find((k) => AGENT_SOURCE_OF_KIND[k] === source);
   return kind !== undefined && switchedOn.has(kind);
 }
@@ -178,6 +178,8 @@ export async function resolveAgentSource(ports: AgentSourcePorts, iss: string, c
 
 /** Rovara's AI as the agent route uses it. */
 export interface RovaraAi {
+  /** Deployed serving role and Region; no credential is exposed. Missing on legacy unpriced adapters. */
+  sourceId?: string;
   /** The agent's (Anthropic) model name to its Bedrock model or system inference profile id: the allow-list. Nothing else is called. */
   models: ReadonlyMap<string, string>;
   /** Companies the operator named as exempt from charges (the founders' test company, DEC 240b). Never inferred. */
