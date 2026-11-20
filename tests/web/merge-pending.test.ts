@@ -39,7 +39,8 @@ function world(script: Script) {
   const query = createQueryClient();
   const element = (id: string, t: ReadTask) => h("div", { "data-theme": "light" }, h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MergeSection, { sessionId: id, task: t }) }) }));
   const ui = renderUi(element(sessionId, task));
-  return { ...ui, query, show(id: string, t: ReadTask) { ui.rerender(element(id, t)); } };
+  return { ...ui, query, // Same wrapper depth as renderUi, so the tree is preserved (a real navigation within one mounted tree), not remounted.
+  show(id: string, t: ReadTask) { ui.rerender(h("div", { "data-theme": "light" }, element(id, t))); } };
  };
  return { ...f, posts, tab };
 }
@@ -54,33 +55,51 @@ const UNSURE = "The result isn't confirmed yet";
 beforeEach(() => { localStorage.clear(); });
 afterEach(() => { localStorage.clear();vi.restoreAllMocks(); });
 
-it("F1: a remount after a lost reply stays locked and sends ZERO new request ids; the one action re-sends the SAME id with the SAME body, and an answer ends it", async () => {
+it("F1/B3: a remount after a lost reply stays locked and sends ZERO new POSTs; Check again only READS (more GETs, still exactly one POST), in this tab, after a remount and in a second tab", async () => {
  const w = world({ readiness: () => ready(), press: () => lost });
  const first = w.tab(A);
  await press();
  await waitFor(() => expect(headline()).toBe(UNSURE));
- const original = w.posts()[0]!;
+ const gets = () => w.request.mock.calls.filter(([request]) => request.method === "GET").length;
+ let before = gets();
+ fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+ await waitFor(() => expect(gets()).toBeGreaterThan(before));
+ expect((await screen.findByRole("status", {}, { timeout: 3000 })).textContent).toMatch(/still not confirmed/u);
+ expect(w.posts()).toHaveLength(1);
  first.unmount();
  // Reload, Back, sign-in return: the page is built again from nothing but storage.
- w.tab(A);
+ const again = w.tab(A);
  await waitFor(() => expect(headline()).toBe(UNSURE));
  expect((await mergeButton()).hasAttribute("disabled")).toBe(true);
- expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
  fireEvent.click(await mergeButton());
  expect(screen.queryByRole("dialog")).toBeNull();
+ before = gets();
+ fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+ await waitFor(() => expect(gets()).toBeGreaterThan(before));
  expect(w.posts()).toHaveLength(1);
- // Check again: same id, same frozen body.
- const answers: Answer[] = [lost, merged];
- const script = w.request.getMockImplementation()!;
- w.request.mockImplementation(async request => request.method === "POST" ? answers.shift()! : script(request));
+ // A second tab (its own query cache, the shared localStorage).
+ const second = w.tab(A);
+ const checks = await screen.findAllByRole("button", { name: "Check again" });
+ before = gets();
+ fireEvent.click(checks[checks.length - 1]!);
+ await waitFor(() => expect(gets()).toBeGreaterThan(before));
+ expect(w.posts()).toHaveLength(1);
+ expect(localStorage.getItem("rovara.merge.pending.v1:" + A)).not.toBeNull();
+ second.unmount();again.unmount();
+});
+
+it("B2/B3: Check again after the readiness read is refused (403) sends no POST, drops Merge and shows the refusal; the lock stays", async () => {
+ let refuse = false;
+ const w = world({ readiness: () => refuse ? { status: 403, body: { error: { code: "FORBIDDEN", message: "You can't merge this task." } } } : ready(), press: () => lost });
+ w.tab(A);
+ await press();
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ refuse = true;
  fireEvent.click(screen.getByRole("button", { name: "Check again" }));
- await waitFor(() => expect(w.posts()).toHaveLength(2));
- expect(w.posts()[1]).toEqual(original);
- expect((await screen.findByRole("status", {}, { timeout: 3000 })).textContent).toContain("Still not confirmed");
- fireEvent.click(screen.getByRole("button", { name: "Check again" }));
- expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
- expect(w.posts().map(post => post.requestId)).toEqual([original.requestId, original.requestId, original.requestId]);
- expect(localStorage.length).toBe(0);
+ await waitFor(() => expect(screen.queryByRole("button", { name: /^Merge #42/u })).toBeNull());
+ expect(region().textContent).toContain("The latest read failed: You can't merge this task. Merge stays locked.");
+ expect(headline()).toBe(UNSURE);
+ expect(w.posts()).toHaveLength(1);
 });
 
 it("F1/R3: closing and reopening the confirmation sends one request; Escape and a second open never mint another id while one is unresolved", async () => {
@@ -148,34 +167,42 @@ it("F1/storage: a press that cannot be saved is not sent, and storage that canno
  expect(again.posts()).toHaveLength(0);
 });
 
-it("F1/clear rules: a moved head voids the record (never replayed), all merged on GitHub clears it, a definitive refusal clears it, 'still being made' and an unreadable answer keep it", async () => {
- const key = "rovara.merge.pending.v1:" + A;
- const save = () => localStorage.setItem(key, JSON.stringify({ v: 1, sessionId: A, requestId: "33333333-3333-4333-8333-333333333333", startedAt: new Date().toISOString(), heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }], risk: "low", sent: [] }));
- // Head moved: the old request cannot be replayed against new heads.
- save();
+const key = "rovara.merge.pending.v1:" + A, STARTED = "2026-11-20T08:00:00.000Z";
+const record = (over: Record<string, unknown> = {}) => JSON.stringify({ v: 1, sessionId: A, requestId: "33333333-3333-4333-8333-333333333333", startedAt: STARTED, heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }], risk: "low", sent: [], ...over });
+
+it("F1/clear rules: a tracking read taken AFTER the press that shows a moved head voids the record (never replayed); GitHub showing every PR merged clears it", async () => {
+ localStorage.setItem(key, record());
  const moved = world({ readiness: () => ready(HEAD_B), press: () => merged });
- const m = moved.tab(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_B })] }));
+ const m = moved.tab(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_B, observedAt: "2026-11-20T08:05:00.000Z" })] }));
  await waitFor(() => expect(localStorage.getItem(key)).toBeNull());
  expect(screen.getByRole("status").textContent).toContain("dropped because the pull request has a new head");
  expect(moved.posts()).toHaveLength(0);
  m.unmount();
- // Observed merged: cleared.
- save();
+ localStorage.setItem(key, record());
  const seen = world({});
  const s = seen.tab(A, taskOf(A, { mergeTracking: [tracked({ state: "merged" })] }));
  await waitFor(() => expect(localStorage.getItem(key)).toBeNull());
  s.unmount();
- // Definitive refusal for that id: cleared, with Code's words. Still being made: kept.
- for (const [answer, kept] of [[{ status: 409, body: { error: { code: "MERGE_NOT_READY", message: "The pull request isn't open." } } }, false], [{ status: 409, body: { error: { code: "MERGE_NOT_READY", message: "A merge of this task is already being made. Reload the page in a moment." } } }, true], [{ status: 502, body: { error: { code: "INVALID_RESPONSE", message: "x" } } }, true]] as Array<[Answer, boolean]>) {
-  save();
-  const w = world({ readiness: () => ready(), press: () => answer });
-  const t = w.tab(A);
-  fireEvent.click(await screen.findByRole("button", { name: "Check again" }));
-  await waitFor(() => expect(w.posts()).toHaveLength(1));
-  await waitFor(() => expect(localStorage.getItem(key) === null).toBe(!kept));
-  expect(w.posts()[0]!.requestId).toBe("33333333-3333-4333-8333-333333333333");
-  t.unmount();
- }
+});
+
+it("B1: a stale tab never deletes another tab's newer record: older tracking or a different head in a readiness answer does not void it, and a stale clear (other startedAt) removes nothing", async () => {
+ // This tab still shows head A, observed BEFORE the other tab's press; the other tab saved a request for head B.
+ localStorage.setItem(key, record({ heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_B }], startedAt: STARTED }));
+ const w = world({ readiness: () => ready(HEAD_A), press: () => merged });
+ const stale = w.tab(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_A, observedAt: "2026-11-20T07:00:00.000Z" })] }));
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ await new Promise(resolve => setTimeout(resolve, 60));
+ expect(localStorage.getItem(key)).not.toBeNull();
+ expect(screen.queryByText(/dropped because/u)).toBeNull();
+ expect(w.posts()).toHaveLength(0);
+ stale.unmount();
+ // The same rule at the storage seam: a clear for another request id or another startedAt removes nothing.
+ const { clearPending } = await import("../../packages/ui/src/screens/session/merge-pending.js");
+ clearPending({ sessionId: A, requestId: "33333333-3333-4333-8333-333333333333", startedAt: "2026-11-20T07:59:00.000Z" });
+ clearPending({ sessionId: A, requestId: "44444444-4444-4444-8444-444444444444", startedAt: STARTED });
+ expect(localStorage.getItem(key)).not.toBeNull();
+ clearPending({ sessionId: A, requestId: "33333333-3333-4333-8333-333333333333", startedAt: STARTED });
+ expect(localStorage.getItem(key)).toBeNull();
 });
 
 it("F2: one session's lock never shows on another; the first session's record is untouched and locks again when it comes back", async () => {
@@ -242,4 +269,32 @@ it("R5: the unresolved state, the locked storage state and the check-again state
  await press();
  await waitFor(() => expect(headline()).toBe(UNSURE));
  await expectNoAxeViolations(region());
+});
+
+it("B4/R2: a saved 'Merged' answer retires when a later task read disagrees (the pull request open again, observed after the answer)", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ const t = w.tab(A);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ expect(headline()).toBe("Merged");
+ // A task read from before the answer does not retire it ...
+ t.show(A, taskOf(A));
+ expect(headline()).toBe("Merged");
+ // ... one observed after it, showing the pull request open at another head, does.
+ t.show(A, taskOf(A, { mergeTracking: [tracked({ headSha: HEAD_B, observedAt: new Date(Date.now() + 60_000).toISOString() })] }));
+ await waitFor(() => expect(headline()).not.toBe("Merged"));
+ expect(screen.queryByText("Merged acme/payments #42.")).toBeNull();
+ expect(region().textContent).toContain("A later read shows a pull request open again, so the earlier answer no longer applies.");
+ expect(w.posts()).toHaveLength(1);
+});
+
+it("B5/R4: the readiness answer's arrival is never shown as a fresh GitHub observation; tracking time and the answer's time are labelled for what they are", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ w.tab(A);
+ await screen.findByRole("button", { name: /^Merge #42/u });
+ const text = region().textContent;
+ expect(text).not.toMatch(/looked just now|Head on GitHub|Rovara read GitHub at|GitHub would merge/u);
+ expect(text).toContain("Read by Rovara at");
+ expect(text).toContain("Head in Rovara's latest read");
+ expect(text).toContain("Tracked from GitHub");
 });

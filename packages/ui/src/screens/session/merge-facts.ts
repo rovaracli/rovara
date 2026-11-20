@@ -3,7 +3,7 @@ import type { ReadTask } from "./workspace-types.js";
 
 /**
  * What the Merge section may say about each pull request, from facts the page is already served: Code's merge tracking (what GitHub said when Code last read it), the task's pull request list and the
- * readiness read (a fresh read by Code, as the person). Nothing here is a receipt: a pull request GitHub shows as merged is an observation, never "merged by this request". The receipt facts the
+ * readiness read (Code's answer for this person, built from its stored tracking: not a live GitHub read, so it is never labelled as one). Nothing here is a receipt: a pull request GitHub shows as merged is an observation, never "merged by this request". The receipt facts the
  * reader will serve (CONTRACTS R1a) are presented by MergeReceiptView and are not read here.
  */
 export type TrackedPull = NonNullable<ReadTask["mergeTracking"]>[number];
@@ -50,7 +50,7 @@ export interface PullRow {
  tracked: TrackedPull | undefined;
  /** The head GitHub had when Code last read it for tracking; the head every check and review shown was read for. */
  checkedHead: string | undefined;
- /** The head Code read from GitHub just now for the readiness answer. */
+ /** The head in the readiness answer. Code builds it from its stored tracking, so it carries no observation time of its own: it is never shown as a fresh GitHub read. */
  githubHead: string | undefined;
  /** Both heads are known and differ: nothing shown for the checked head counts for what GitHub would merge. */
  drift: boolean;
@@ -103,7 +103,7 @@ export function lockOf(input: { unresolved: boolean; storage?: "unavailable" | "
  if (input.storage !== undefined) return { kind: "storage", words: input.storage === "unreadable" ? "Locked: a saved merge request in this browser can't be read. Merge it on GitHub." : "Locked: this browser's storage can't be read, so Rovara can't be sure an earlier merge wasn't sent. Merge it on GitHub, or allow site storage and reload." };
  if (input.unresolved) return { kind: "unresolved", words: "Locked: the result of your earlier merge isn't confirmed. Rovara won't send another one until it is answered." };
  const moved = input.rows.filter(row => row.drift);
- if (moved.length > 0) return { kind: "drift", words: "Locked: the head on GitHub isn't the head that was checked." };
+ if (moved.length > 0) return { kind: "drift", words: "Locked: Rovara's latest read shows a different head than the one that was checked." };
  if (input.readiness?.ready !== true) return { kind: "not_ready", words: "Locked until Code says this is ready to merge." };
  return undefined;
 }

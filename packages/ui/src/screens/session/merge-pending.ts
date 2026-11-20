@@ -1,19 +1,17 @@
 import { useCallback, useSyncExternalStore } from "react";
-import type { MergeReadiness } from "../../api/session-actions.js";
 import { pullKey, type PullRow } from "./merge-facts.js";
 
 /**
- * The press that has been sent and not answered. It is written to localStorage BEFORE the POST goes out and is cleared only by a definitive answer for that request id, by GitHub showing the pull requests merged, or
- * by a head that moved (then the old request cannot be replayed against new heads). It is shared by every tab and survives a closed tab, so a reload, a second tab or Back can never mint a second request id for an
- * unresolved press. Keyed by session id. Storage that cannot be read or written locks Merge and says so; it never unlocks blindly.
- *
- * What Code does with the same request id (hosted-merge-routes.ts, read-only at code/next): a stored answer is returned without asking GitHub (168-173); an unanswered one is re-run through the merge core, which
- * re-reads GitHub, skips pull requests already merged and returns them as merged (merge.ts 684/909), under the per-task lock (15 min) and per-pull-request claim (120 s). Code keeps no record of an unknown end.
+ * The press that has been sent and not answered. It is written to localStorage BEFORE the POST goes out. Nothing re-sends it: Code replays only a stored SUCCESS (hosted-merge-routes.ts 168-218); an unanswered id stores nothing,
+ * the task lock is released on an unknown end, and the per-pull-request claim ages out after 120 s, so a second POST could cause a second provider merge while the first lost call still lands (CONTRACTS R1a 124-128 keeps an
+ * uncertain call fenced with ZERO merge calls on replay). "Check again" therefore only re-reads. The record is shared by every tab and survives a closed tab, so a reload, a second tab or Back can never mint a request id
+ * for an unresolved press. It is removed only by the tab that made it (request id AND startedAt must match), or by a read that resolves it: GitHub showing the pull requests merged, or a tracking read taken AFTER the press
+ * showing a different head. Storage that cannot be read or written locks Merge and says so; it never unlocks blindly.
  */
 const PREFIX = "rovara.merge.pending.v1:";
 const CHANGED = "rovara-merge-pending-changed";
 const UNAVAILABLE = "\u0000unavailable";
-/** Code keeps no record of an unknown end, so there is no server retention to follow: after a day the page stops offering the plain retry first and points at GitHub (it never unlocks on its own). */
+/** Code keeps no record of an unknown end, so there is no server retention to follow: after a day the page points at GitHub first (it never unlocks on its own). */
 export const PENDING_STALE_MS = 24 * 60 * 60 * 1000;
 
 export interface PendingHead { repositoryId: string; number: number; headSha: string }
@@ -60,6 +58,9 @@ export const readPendingNow = (sessionId: string): PendingState => parsePending(
 /** Writes the record and reads it back. False means it could not be saved here, so the press must not be sent. */
 export function writePending(entry: PendingPress): boolean {
  try {
+  // Never overwrite a record this call did not make (another tab's, or one that cannot be read).
+  const existing = parsePending(globalThis.localStorage.getItem(keyOf(entry.sessionId)), entry.sessionId);
+  if (existing.kind !== "none" && !(existing.kind === "pending" && existing.entry.requestId === entry.requestId && existing.entry.startedAt === entry.startedAt)) return false;
   globalThis.localStorage.setItem(keyOf(entry.sessionId), JSON.stringify(entry));
   const back = parsePending(globalThis.localStorage.getItem(keyOf(entry.sessionId)), entry.sessionId);
   notify();
@@ -67,24 +68,26 @@ export function writePending(entry: PendingPress): boolean {
  } catch { return false; }
 }
 
-/** Removes the record, only if it is still the one the caller means (another tab's newer record is never removed by a stale caller). */
-export function clearPending(sessionId: string, requestId: string): void {
+/** Removes the record, only if it is exactly the one the caller means: request id AND startedAt must match. A stale tab never removes another tab's newer record, and a record that cannot be matched stays and keeps Merge locked. */
+export function clearPending(entry: Pick<PendingPress, "sessionId" | "requestId" | "startedAt">): void {
  try {
-  const now = parsePending(globalThis.localStorage.getItem(keyOf(sessionId)), sessionId);
-  if (now.kind === "pending" && now.entry.requestId !== requestId) return;
-  globalThis.localStorage.removeItem(keyOf(sessionId));
+  const now = parsePending(globalThis.localStorage.getItem(keyOf(entry.sessionId)), entry.sessionId);
+  if (now.kind !== "pending" || now.entry.requestId !== entry.requestId || now.entry.startedAt !== entry.startedAt) return;
+  globalThis.localStorage.removeItem(keyOf(entry.sessionId));
  } catch { /* a record that cannot be removed stays and keeps Merge locked */ }
  notify();
 }
 
-/** The heads the record sent still match what GitHub and tracking say now? A head that moved voids the record: the old request cannot be replayed against new heads. */
+/**
+ * A moved head voids the record only when a tracking read taken AFTER the press (its server instant `observedAt` is later than `startedAt`) shows a different head for a pull request the press covered. A tab still showing
+ * older data, a readiness answer (which carries no observation time) and a failed read never void it. Clock skew can only make this stricter: it stays locked.
+ */
 export function headsMoved(entry: PendingPress, rows: readonly PullRow[]): boolean {
- return entry.heads.some(head => { const row = rows.find(candidate => candidate.key === pullKey(head.repositoryId, head.number)), current = row?.githubHead ?? row?.checkedHead; return current !== undefined && current !== head.headSha; });
+ const started = Date.parse(entry.startedAt);
+ return entry.heads.some(head => { const tracked = rows.find(candidate => candidate.key === pullKey(head.repositoryId, head.number))?.tracked; return tracked !== undefined && Date.parse(tracked.observedAt) > started && tracked.headSha !== head.headSha; });
 }
 
 /** Every pull request the record covered is merged on GitHub (an observation, not an answer to the request). */
 export function allMerged(entry: PendingPress, rows: readonly PullRow[]): boolean {
  return entry.heads.length > 0 && entry.heads.every(head => rows.find(candidate => candidate.key === pullKey(head.repositoryId, head.number))?.state === "merged");
 }
-
-export const bodyOf = (entry: PendingPress): { expectedHeads: MergeReadiness["heads"]; risk: MergeReadiness["risk"] } => ({ expectedHeads: entry.heads, risk: entry.risk });

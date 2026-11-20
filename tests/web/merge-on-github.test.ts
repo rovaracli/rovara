@@ -174,8 +174,9 @@ it("head drift: when GitHub's head is not the head every check ran on, Merge is 
   const button = await screen.findByRole("button", { name: /^Merge #42/u });
   expect(region().querySelector(".rv-merge-state")!.textContent).toBe("The pull request changed after it was checked");
   expect(button.hasAttribute("disabled")).toBe(true);
-  expect(region().textContent).toContain("Locked: the head on GitHub isn't the head that was checked.");
+  expect(region().textContent).toContain("Locked: Rovara's latest read shows a different head than the one that was checked.");
   expect(region().textContent).toContain("different from the checked head");
+  expect(region().textContent).not.toMatch(/looked just now|Head on GitHub/u);
   fireEvent.click(button);
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(mergeCalls(f)).toHaveLength(0);
@@ -224,7 +225,7 @@ it("a reply that never arrives leaves the original request unresolved: Merge loc
   fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Press Merge" }));
   await waitFor(() => expect(region().querySelector(".rv-merge-state")!.textContent).toBe("The result isn't confirmed yet"));
   const text = region().textContent;
-  for (const words of ["What happened", "acme/payments #42 at aaaaaaa", "no reply was seen", "won't send a second one", "Nothing was deployed", "Check again asks Rovara once more about this same request", "MERGE-RESULT-UNKNOWN"]) expect(text).toContain(words);
+  for (const words of ["What happened", "acme/payments #42 at aaaaaaa", "no reply was seen", "won't send a second one", "Nothing was deployed", "Check again only reads: it never sends the merge again", "MERGE-RESULT-UNKNOWN"]) expect(text).toContain(words);
   expect(text).not.toContain("private provider text");
   const button = screen.getByRole("button", { name: /^Merge #42/u });
   expect(button.hasAttribute("disabled")).toBe(true);
