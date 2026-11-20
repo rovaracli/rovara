@@ -27,6 +27,7 @@ function setup(task: Record<string, unknown>, answers: { readiness?: Answer | ((
   const notFound = { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
   const f = fakeHost(async (request) => {
     if (request.path === "/v1/app/me") return { status: 200, body: { developer: { id: "a1".repeat(32), name: "Ana", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } };
+    if (/\/sessions\/[^/]+$/u.test(request.path) && request.method === "GET") return { status: 200, body: { session } };
     if (/\/merge$/u.test(request.path) && request.method === "GET") return typeof answers.readiness === "function" ? answers.readiness() : answers.readiness ?? notFound;
     if (/\/merge$/u.test(request.path) && request.method === "POST") return typeof answers.press === "function" ? answers.press() : answers.press ?? notFound;
     return notFound;
@@ -97,7 +98,7 @@ it("never makes a link of an address that is not github.com (a pull request url 
 });
 
 // DEC 254zzz94: the Merge button.
-const READY = { mayMerge: true, ready: true, pullRequests: [{ repositoryId: "payments", number: 42, url: PR.url }] };
+const READY = { mayMerge: true, ready: true, heads: [{ repositoryId: "payments", number: 42, headSha: "a".repeat(40) }], pullRequests: [{ repositoryId: "payments", number: 42, url: PR.url }] };
 
 it("a person who may merge sees an enabled Merge button when Code says ready; pressing asks once and sends one request with one request id", async () => {
   const f = setup({ pullRequests: [PR] }, { readiness: { status: 200, body: READY }, press: { status: 200, body: { status: "MERGED", pullRequests: [{ repositoryId: "payments", number: 42 }] } } });
@@ -111,7 +112,8 @@ it("a person who may merge sees an enabled Merge button when Code says ready; pr
   expect(await screen.findByText("Merged payments #42.")).toBeTruthy();
   const presses = mergeCalls(f);
   expect(presses).toHaveLength(1);
-  expect(Object.keys(presses[0]!.body as object)).toEqual(["requestId"]);
+  // P1-5: every press names the exact heads it checked.
+  expect(Object.keys(presses[0]!.body as object)).toEqual(["requestId", "expectedHeads"]);
   expect((presses[0]!.body as { requestId: string }).requestId).toMatch(/^[0-9a-f-]{36}$/u);
   expect(screen.queryByRole("button", { name: /^Merge #42/u })).toBeNull();
   await expectNoAxeViolations(f.container);

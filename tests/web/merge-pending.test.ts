@@ -10,6 +10,7 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
 import { fencedRead, fencedReadiness, fenceFor } from "../../packages/ui/src/screens/session/merge-fence.js";
 import { useSession } from "../../packages/ui/src/api/sessions.js";
+import { taskBasisOf } from "../../packages/ui/src/screens/session/merge-facts.js";
 import { MergeSection } from "../../packages/ui/src/screens/session/MergeSection.js";
 import { workspaceTask, type ReadTask } from "../../packages/ui/src/screens/session/workspace-types.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
@@ -355,7 +356,7 @@ it("N3/R6c: Press Merge checks the LATEST state at send time: a denial or not-re
   fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
   const dialog = await screen.findByRole("dialog");
   // The read lands in the cache; React has not re-rendered yet.
-  t.query.setQueryData(["session", A, "merge", SUBJECT], latest);
+  t.query.setQueryData(["session", A, "merge", SUBJECT, taskBasisOf(taskOf(A))], latest);
   fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
   expect(w.posts()).toHaveLength(0);
   expect((await screen.findByRole("alert")).textContent).toContain("Nothing was sent");
@@ -496,7 +497,7 @@ it("R6e: a refusal of the readiness read survives remount and a manual cache wri
  await waitFor(() => expect(screen.queryByRole("button", { name: /^Merge #42/u })).toBeNull());
  first.unmount();
  // Back again: the cache is handed a "ready" answer by a manual write, and the new read is still in flight.
- client.setQueryData(["session", A, "merge", SUBJECT], ready().body);
+ client.setQueryData(["session", A, "merge", SUBJECT, taskBasisOf(taskOf(A))], ready().body);
  mode = "hold";
  w.tab(A, taskOf(A), client);
  await new Promise(resolve => setTimeout(resolve, 80));
@@ -884,4 +885,163 @@ it("L1/R6b: an older FAILED readiness read arriving after a newer success never 
  expect(screen.getByRole("button", { name: /^Merge #42/u }).hasAttribute("disabled")).toBe(false);
  await fencedReadiness(fence, async () => { throw new ApiError(403, "FORBIDDEN", "No."); }).catch(() => undefined);
  expect(fence.readinessDenied).toBeDefined();
+});
+
+// Hotfix round 13 (Sol REVIEW-SHIPPED-a0f4f4ba1: five P1s). Each test below failed against the previous MergeSection before the fix.
+const pendingKey = "rovara.merge.pending.v1:" + SUBJECT;
+const webPull = { ...PR, repository: "acme/web", number: 63, url: "https://github.com/acme/web/pull/63" };
+
+it("P1-1: when the accepted-answer write fails, the saved press stays: a reload sends NOTHING and Merge stays locked; only a task read showing every covered PR merged releases it", async () => {
+ const realSet = Storage.prototype.setItem.bind(localStorage);
+ const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation((k: string, value: string) => { if (k.startsWith("rovara.merge.accepted")) throw new Error("quota"); realSet(k, value); });
+ const w = world({ readiness: () => ready(), press: () => merged });
+ const first = w.tab(A);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ expect(headline()).toBe("Merge accepted (this browser couldn't save it)");
+ // Nothing may release the saved press while only memory knows the answer (neither the direct clear nor the settle effect).
+ await new Promise(resolve => setTimeout(resolve, 50));
+ expect(localStorage.getItem(pendingKey)).not.toBeNull();
+ expect(localStorage.getItem(acceptedKey)).toBeNull();
+ first.unmount();
+ spy.mockRestore();
+ // Reload: a fresh query client. Tracking still reads open at the same head.
+ const second = w.tab(A);
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ expect(screen.queryAllByRole("button", { name: /^Merge #42/u })).toHaveLength(0);
+ expect(w.posts()).toHaveLength(1);
+ // A read issued after this tab saw the record, with every covered pull request merged, is what releases it.
+ await second.read(A, { pullRequests: [{ ...PR, state: "merged" }], mergeTracking: [tracked({ state: "merged" })] });
+ await waitFor(() => expect(localStorage.getItem(pendingKey)).toBeNull());
+ expect(w.posts()).toHaveLength(1);
+});
+
+it("P1-2: a saved press is settled only by an observed merged row for each pull request it covered: a task read that merely does not list it, or says only another PR merged, leaves it saved", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ localStorage.setItem(key, record({ heads: [{ repositoryId: "acme/web", number: 63, headSha: HEAD_B }] }));
+ const t = w.tab(A, taskOf(A, { pullRequests: [PR, webPull], mergeTracking: [tracked()] }));
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ // The read lists payments #42 merged (tracked) and web #63 open and untracked: not Merged, and the saved press stays.
+ await t.read(A, { pullRequests: [{ ...PR, state: "merged" }, webPull], mergeTracking: [tracked({ state: "merged" })] });
+ expect(headline()).not.toBe("Merged");
+ expect(localStorage.getItem(key)).not.toBeNull();
+ // The read does not list web #63 at all: tracking says every listed PR merged, which says nothing about #63. The saved press stays.
+ await t.read(A, { pullRequests: [{ ...PR, state: "merged" }], mergeTracking: [tracked({ state: "merged" })] });
+ await new Promise(resolve => setTimeout(resolve, 50));
+ expect(localStorage.getItem(key)).not.toBeNull();
+ expect(screen.queryAllByRole("button", { name: /^Merge #/u })).toHaveLength(0);
+ // An observed merged row for #63 releases it.
+ await t.read(A, { pullRequests: [{ ...PR, state: "merged" }, { ...webPull, state: "merged" }], mergeTracking: [tracked({ state: "merged" }), tracked({ state: "merged", repositoryId: "acme/web", number: 63, headSha: HEAD_B })] });
+ await waitFor(() => expect(localStorage.getItem(key)).toBeNull());
+});
+
+it("P1-3: a newer task snapshot (different digest, failing checks, status, or PR set) makes the old readiness inert: no Merge until a readiness read issued after the change succeeds, and a press in an open confirmation sends nothing", async () => {
+ const variants: Array<[string, Record<string, unknown>]> = [
+  ["digest + failing check", { mergeTracking: [tracked({ decisionDigest: "c".repeat(64), ci: "failing", failingChecks: ["security"] })] }],
+  ["pending check", { mergeTracking: [tracked({ decisionDigest: "d".repeat(64), ci: "pending" })] }],
+  ["PR set", { pullRequests: [PR, webPull] }],
+  ["status", { status: "CANCELLED" }],
+ ];
+ for (const [name, over] of variants) {
+  localStorage.clear();
+  let reads = 0, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const w = world({ readiness: async () => { reads += 1; if (reads > 1) await gate; return ready(); }, press: () => merged });
+  const t = w.tab(A);
+  fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+  const dialog = await screen.findByRole("dialog");
+  // A newer snapshot arrives; its readiness read has not answered yet.
+  t.show(A, taskOf(A, over));
+  await waitFor(() => expect(reads, name).toBeGreaterThan(1));
+  const confirm = within(screen.getByRole("dialog")).getByRole("button", { name: "Press Merge" });
+  await waitFor(() => expect(confirm.hasAttribute("disabled"), name).toBe(true));
+  fireEvent.click(confirm);
+  expect(w.posts(), name).toHaveLength(0);
+  expect(screen.queryAllByRole("button", { name: /^Merge #42/u }).filter(button => !button.hasAttribute("disabled")), name).toHaveLength(0);
+  expect(document.querySelector(".rv-merge-state")!.textContent, name).not.toBe("Ready to merge");
+  release();
+  void dialog;
+  t.unmount();
+ }
+});
+
+it("P1-4: two tabs racing the claim: the exclusive lock lets exactly one take it, the other sends nothing; with no Web Locks API Merge is not offered and nothing is sent", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ const a = w.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialogA = await screen.findByRole("dialog");
+ // The lock is held by another tab at this moment (its claim is in progress): this press must not proceed, and must not mint or save anything.
+ let freeIt!: () => void;
+ const held = new Promise<void>(resolve => { freeIt = resolve; });
+ const holding = navigator.locks.request("rovara.merge.claim:" + SUBJECT, { mode: "exclusive" }, () => held);
+ await Promise.resolve();
+ fireEvent.click(within(dialogA).getByRole("button", { name: "Press Merge" }));
+ await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Another tab is merging this task right now"));
+ expect(w.posts()).toHaveLength(0);
+ expect(localStorage.getItem(pendingKey)).toBeNull();
+ freeIt();await holding;
+ a.unmount();
+ // Without the lock API Merge is not offered in the app and nothing is read for it.
+ const saved = Object.getOwnPropertyDescriptor(navigator, "locks")!;
+ Object.defineProperty(navigator, "locks", { configurable: true, value: undefined });
+ try {
+  const w2 = world({ readiness: () => ready(), press: () => merged });
+  w2.tab(A);
+  await waitFor(() => expect(headline()).toBe("Merge it on GitHub"));
+  expect(screen.queryAllByRole("button", { name: /^Merge #/u })).toHaveLength(0);
+  expect(w2.posts()).toHaveLength(0);
+ } finally { Object.defineProperty(navigator, "locks", saved); }
+});
+
+it("P1-4: the claim re-reads the saved records inside the lock: a press another tab saved after this one passed its checks sends nothing", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ w.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog = await screen.findByRole("dialog");
+ // Another tab claims first and saves its press, then this one presses (no storage event reached this tab).
+ localStorage.setItem(key, record());
+ fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+ await new Promise(resolve => setTimeout(resolve, 50));
+ expect(w.posts()).toHaveLength(0);
+ expect((JSON.parse(localStorage.getItem(key)!) as { requestId: string }).requestId).toBe("33333333-3333-4333-8333-333333333333");
+});
+
+it("P1-5: a readiness answer with no heads, a missing head, a duplicate or an extra head binds nothing: Merge is not offered in the app and the GitHub path stays; a complete answer sends exactly the checked head", async () => {
+ const shapes: Array<[string, Record<string, unknown>]> = [
+  ["no heads", { heads: undefined }],
+  ["empty heads", { heads: [] }],
+  ["missing head", { heads: [{ repositoryId: "acme/web", number: 7, headSha: HEAD_A }] }],
+  ["extra head", { heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/web", number: 7, headSha: HEAD_A }] }],
+  ["duplicate head", { pullRequests: [{ repositoryId: "acme/payments", number: 42 }, { repositoryId: "acme/web", number: 7 }], heads: [{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }, { repositoryId: "acme/payments", number: 42, headSha: HEAD_A }] }],
+ ];
+ for (const [name, over] of shapes) {
+  localStorage.clear();
+  const w = world({ readiness: () => ({ status: 200, body: { ...(ready().body as object), ...over } }), press: () => merged });
+  const t = w.tab(A);
+  await waitFor(() => expect(w.request.mock.calls.some(([request]) => /\/merge$/u.test(request.path) && request.method === "GET"), name).toBe(true));
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(screen.queryAllByRole("button", { name: /^Merge #/u }), name).toHaveLength(0);
+  expect(region().querySelector("[data-state]")?.getAttribute("data-state") ?? region().getAttribute("data-state"), name).not.toBe("ready");
+  expect(w.posts(), name).toHaveLength(0);
+  t.unmount();
+ }
+ localStorage.clear();
+ const w = world({ readiness: () => ready(), press: () => merged });
+ w.tab(A);
+ await press();
+ await screen.findByText("Merged acme/payments #42.");
+ expect(w.posts()).toHaveLength(1);
+ expect(w.posts()[0]!.expectedHeads).toEqual([{ repositoryId: "acme/payments", number: 42, headSha: HEAD_A }]);
+});
+
+it("P2: a section whose own latest task read failed or was refused sends nothing", async () => {
+ const w = world({ readiness: () => ready(), press: () => merged });
+ const t = w.tab(A);
+ fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+ const dialog = await screen.findByRole("dialog");
+ const fence = fenceFor(t.query, SUBJECT);
+ await fencedRead(fence, async () => { throw new ApiError(403, "FORBIDDEN", "no"); }).catch(() => undefined);
+ fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+ await new Promise(resolve => setTimeout(resolve, 50));
+ expect(w.posts()).toHaveLength(0);
 });

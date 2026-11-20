@@ -132,3 +132,24 @@ export function clearAccepted(answer: Pick<AcceptedAnswer, "subject" | "requestI
  try { const now = parseAccepted(globalThis.localStorage.getItem(acceptedKey(answer.subject)), answer.subject); if (now !== undefined && now.requestId !== answer.requestId) return;globalThis.localStorage.removeItem(acceptedKey(answer.subject)); } catch { /* stays */ }
  notify();
 }
+
+/**
+ * The cross-tab claim (P1-4). Reading the stored record, writing it and reading it back are separate storage operations, so two tabs could both pass them. The claim therefore runs inside an exclusive same-origin Web Lock,
+ * one per subject (`orgId|developerId|sessionId`), taken only if it is free right now (a tab that finds it taken sends nothing). Inside it the caller re-reads the saved records and writes its own. The lock is released as soon as
+ * the record is saved; the saved record, not the lock, is what keeps every later press out. Without the Web Locks API, or if it fails, nothing is sent and the page points at GitHub.
+ */
+export type ClaimOutcome<T> = { kind: "done"; value: T } | { kind: "busy" } | { kind: "unsupported" } | { kind: "failed" };
+interface LockApi { request: (name: string, options: { mode: "exclusive"; ifAvailable: true }, callback: (lock: unknown) => Promise<unknown>) => Promise<unknown> }
+const lockApi = (): LockApi | undefined => { try { const locks = (globalThis as { navigator?: { locks?: LockApi } }).navigator?.locks; return typeof locks?.request === "function" ? locks : undefined; } catch { return undefined; } };
+/** True when this browser can take the claim lock. When it can't, Merge is not offered in the app. */
+export const claimLockSupported = (): boolean => lockApi() !== undefined;
+export async function withClaim<T>(subject: string, claim: () => T): Promise<ClaimOutcome<T>> {
+ const locks = lockApi();
+ if (locks === undefined) return { kind: "unsupported" };
+ try {
+  const result = await locks.request("rovara.merge.claim:" + subject, { mode: "exclusive", ifAvailable: true }, async (lock: unknown) => lock === null ? { kind: "busy" } as const : { kind: "done", value: claim() } as const);
+  return result as ClaimOutcome<T>;
+ } catch { return { kind: "failed" }; }
+}
+/** True only if the stored accepted answer is exactly this one. */
+export const acceptedStoredExactly = (answer: AcceptedAnswer): boolean => { const back = readAcceptedNow(answer.subject); return back !== undefined && JSON.stringify(back) === JSON.stringify({ v: 1, subject: answer.subject, requestId: answer.requestId, acceptedAt: answer.acceptedAt, words: answer.words, keys: answer.keys, heads: answer.heads }); };

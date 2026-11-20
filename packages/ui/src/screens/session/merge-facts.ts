@@ -109,4 +109,22 @@ export function lockOf(input: { unresolved: boolean; identityUnread?: boolean; s
  return undefined;
 }
 
+/**
+ * A readiness answer binds a press to what the person saw only when its heads name EXACTLY the pull requests it would merge, once each, with at least one (a shape with no heads, a missing head, a duplicate or an extra head
+ * binds nothing). Anything else is not offered in the app: the page falls back to the GitHub path (P1-5).
+ */
+export function headsBound(view: MergeReadiness): boolean {
+ const heads = (view.heads ?? []).map(head => pullKey(head.repositoryId, head.number)), pulls = view.pullRequests.map(pull => pullKey(pull.repositoryId, pull.number));
+ return heads.length > 0 && pulls.length > 0 && new Set(heads).size === heads.length && new Set(pulls).size === pulls.length && heads.length === pulls.length && pulls.every(key => heads.includes(key));
+}
+
+/**
+ * What a readiness answer was read for: the task's status and stage, its pull request set, and each pull request's state, head, review digest and the facts the digest stands for. Any change makes the readiness read under the
+ * old basis inert: the page keys its readiness read by this, so only a read issued after the change can offer or send a merge (P1-3). Observation times are left out on purpose: a refresh that changes nothing meaningful reads nothing.
+ */
+export function taskBasisOf(task: ReadTask): string {
+ const rows = pullRowsOf(task, undefined).map(row => { const item = row.tracked; return [row.key, row.state, item?.headSha ?? "", item?.decisionDigest ?? "", item?.draft === true ? "draft" : "", item?.ci ?? "", item?.failingChecks.join("+") ?? "", item?.review ?? "", item?.branch ?? ""].join(":"); });
+ return [task.status, task.workflow?.stage ?? "", task.workflow?.state ?? "", ...rows].join("|");
+}
+
 export const pullsMergedOf = (rows: readonly PullRow[]): PullRow[] => rows.filter(row => row.state === "merged");
