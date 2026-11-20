@@ -77,8 +77,8 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
  const proofData = proof.isSuccess && proof.failureCount === 0 ? proof.data : undefined;
  const eventData = events.isSuccess && events.failureCount === 0 ? events.data : undefined;
  const commentData = comments.isSuccess && comments.failureCount === 0 ? comments.data : undefined;
- const sectionFailed = plan.isError || proof.isError || events.isError || comments.isError || [plan, proof, events, comments].some(read => read.failureCount > 0);
- const sectionNote = sectionFailed ? <div className="rv-work-note" role="status" data-testid="task-detail-partial"><p>Some task details could not be read. Rovara can't tell yet which actions are available.</p><Button onClick={() => { for (const read of [plan, proof, events, comments]) if (read.isError || read.failureCount > 0) void read.refetch(); }}>Check task details</Button></div> : null;
+ const sectionFailed = decisionsError !== undefined || plan.isError || proof.isError || events.isError || comments.isError || [plan, proof, events, comments].some(read => read.failureCount > 0);
+ const sectionNote = sectionFailed ? <div className="rv-work-note" role="status" data-testid="task-detail-partial"><p>Some task details could not be read. Rovara can't tell yet which actions are available.</p><Button onClick={() => { for (const read of [plan, proof, events, comments]) if (read.isError || read.failureCount > 0) void read.refetch();if (decisionsError !== undefined) void query.invalidateQueries({ queryKey: ["decisions"] }); }}>Check task details</Button></div> : null;
  const decision: ReadDecision | undefined = sectionFailed ? undefined : row.decision;
  const actions: DecisionCardActions | undefined = decision === undefined ? undefined : (() => {
   const base = actionsFor(decision);
@@ -92,6 +92,12 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
   };
  })();
  async function answer(questionId: string, optionId: string) {
+  // Read the shared cache at send time too: a refusal can arrive before React withdraws an already-rendered control.
+  const failedRead = [["decisions"], ["work", "tasks"], ...["plan", "proof", "events", "comments"].map(section => ["work", section, row.id])].some(key => {
+   const state = query.getQueryState(key);
+   return state?.status === "error" || (state?.fetchFailureCount ?? 0) > 0;
+  });
+  if (sectionFailed || failedRead) throw new ApiError(403, "READ_REQUIRED", "Rovara can't tell yet whether this answer is available. Check task details before answering.");
   const result = await api.answer(row.task, questionId, optionId);
   if (result.kind !== "done") throw new ApiError(409, "PENDING", "Your answer is waiting for confirmation.");
   await Promise.all([query.invalidateQueries({ queryKey: ["decisions"] }), query.invalidateQueries({ queryKey: ["work"] })]);
@@ -104,7 +110,7 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
   evalResult: failedEval === undefined ? undefined : { passed: failedEval.passed!, total: failedEval.total!, bar: failedEval.bar },
   quickChange: row.path === "Quick spec" && ["approve_plan", "approve_requirements", "approve_design"].includes(decision.card.kind) && decision.card.risk === "low",
  };
- const rows = planData === undefined ? [] : proofRows(planData.requirements, proofData?.items ?? [], planData.tasks);
+ const rows = planData === undefined ? undefined : proofRows(planData.requirements, proofData?.items ?? [], planData.tasks);
  const openAnswers = (questionId: string, optionId: string) => answer(questionId, optionId);
  const retryPlan = () => { void plan.refetch(); };
  const planNote = plan.isError ? <SectionError error={plan.error} label="this task's plan" retry={retryPlan} /> : null;

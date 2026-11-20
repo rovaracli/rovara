@@ -37,7 +37,7 @@ export function WorkScreen() {
  const wanted = params.get("task"), selectedBatch = batches.find(batch => batchId(batch.project) === wanted);
  const filter = params.get("filter") ?? "all", search = params.get("q") ?? "";
  const matches = (title: string, project: string) => (title + " " + project).toLocaleLowerCase().includes(search.trim().toLocaleLowerCase());
- const visible = rows.filter(row => (filter === "running" ? row.group === "run" : filter === "needs-someone" ? row.group === "you" || row.group === "others" : filter === "finished" ? row.group === "done" : true) && matches(row.title, row.project));
+ const visible = rows.filter(row => (filter === "running" ? row.group === "run" && row.task.detailUnread !== true && row.task.status !== "STARTING" && (row.task.workflow?.state === "RUNNING" || row.task.status === "RUNNING") : filter === "needs-someone" ? row.group === "you" || row.group === "others" : filter === "finished" ? row.group === "done" : true) && matches(row.title, row.project));
  const visibleBatches = filter === "running" || filter === "finished" ? [] : batches.filter(batch => matches("Review lessons", batch.project));
  const selected = selectedBatch !== undefined ? undefined : wanted === null ? visible[0] : rows.find(row => row.id === wanted);
  const shownBatch = selectedBatch ?? (selected === undefined && !tasks.isPending && wanted === null ? visibleBatches[0] : undefined);

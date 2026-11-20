@@ -12,7 +12,7 @@ import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { navFixture } from "./support/fixtures.js";
-import { CARDS, EVENTS, ID, PLAN, PROOF, TASKS, decisionsView } from "./support/work-fixture.js";
+import { CARDS, EVENTS, ID, PLAN, PROOF, QUESTION_SESSION, TASKS, decisionsView, task } from "./support/work-fixture.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
 const fail = (status = 403): ApiResponse => ({ status, body: { error: { code: "FORBIDDEN", message: "Read refused." } } });
@@ -117,4 +117,91 @@ it("Work empty loaded rows never claim that the complete queue is empty", async 
 for (const theme of ["light", "dark"] as const) it("has accessible attention and Work filters in " + theme, async () => {
  const f = mount();document.documentElement.dataset.theme = theme;await screen.findByRole("button", { name: /Add a retry/u });await expectNoAxeViolations(f.container);f.close();
  const w = mount("/app/live");await screen.findByRole("button", { name: "Running" });await expectNoAxeViolations(w.container);w.close();
+});
+
+const answerableTasks = { status: 200, body: { tasks: [task(ID.plan, "Answerable spec", { sessionId: QUESTION_SESSION, workflow: { stage: "PLAN_REVIEW", state: "WAITING", revision: 4, round: 2, path: "QUICK" } })] } };
+it("Work decision refusal withdraws spec answers, sends nothing and preserves independently current spec facts", async () => {
+ const f = mount("/app/live?task=" + ID.plan, { "/v1/app/sessions": answerableTasks });
+ try {
+  await screen.findByRole("button", { name: "Approve and build" });
+  await screen.findByRole("button", { name: "Yes, behind a flag" });
+  await waitFor(() => expect(f.query.isFetching()).toBe(0));
+  f.replies["/v1/app/decisions"] = fail();
+  await act(async () => { await f.query.invalidateQueries({ queryKey: ["decisions"] }); });
+  await screen.findByTestId("decisions-unavailable");
+  // Exercise any surviving answer control after the refusal is visible.
+  const answer = screen.queryByRole("button", { name: "Yes, behind a flag" });
+  if (answer !== null) fireEvent.click(answer);
+  expect(f.request.mock.calls.filter(([request]) => request.method === "POST")).toHaveLength(0);
+  expect(answer).toBeNull();
+  expect(screen.getByRole("region", { name: "Spec" }).textContent).toContain("Retries are bounded");
+  expect(screen.getByTestId("task-detail-partial").textContent).toContain("can't tell yet");
+  f.replies["/v1/app/decisions"] = { status: 200, body: decisionsView() };
+  fireEvent.click(screen.getByRole("button", { name: "Reload decisions" }));
+  await screen.findByRole("button", { name: "Yes, behind a flag" });
+ } finally { f.close(); }
+});
+it("Work checks the latest decision refusal at send time before React withdraws an already-rendered answer", async () => {
+ const f = mount("/app/live?task=" + ID.plan, { "/v1/app/sessions": answerableTasks });
+ let attempted = false;
+ try {
+  const answer = await screen.findByRole("button", { name: "Yes, behind a flag" });
+  await waitFor(() => expect(f.query.isFetching()).toBe(0));
+  const decisionRead = f.query.getQueryCache().find({ queryKey: ["decisions"], exact: true });
+  expect(decisionRead).toBeDefined();
+  const unsubscribe = f.query.getQueryCache().subscribe(event => {
+   if (!attempted && event.query === decisionRead && event.query.state.status === "error") {
+    attempted = true;fireEvent.click(answer);
+   }
+  });
+  try {
+   f.replies["/v1/app/decisions"] = fail();
+   await act(async () => { await f.query.invalidateQueries({ queryKey: ["decisions"] }); });
+   await screen.findByTestId("decisions-unavailable");
+   expect(attempted).toBe(true);
+   expect(f.request.mock.calls.filter(([request]) => request.method === "POST")).toHaveLength(0);
+  } finally { unsubscribe(); }
+ } finally { f.close(); }
+});
+it.each(["Build", "Proof", "Pull request"])("Work %s retains current criterion-linked evidence after plan refusal without claiming empty criteria", async stage => {
+ const f = mount("/app/live?task=" + ID.plan);
+ try {
+  await screen.findByRole("region", { name: "Spec" });
+  fireEvent.click(within(screen.getByRole("list", { name: "Steps of this task" })).getByRole("button", { name: new RegExp("^" + stage, "u") }));
+  const heading = stage === "Build" ? "Proof so far" : "Proof";
+  const proof = await screen.findByRole("region", { name: heading });
+  await waitFor(() => expect(proof.textContent).toContain("405 of 420 cases pass"));
+  await waitFor(() => expect(f.query.isFetching()).toBe(0));
+  const proofReads = f.request.mock.calls.filter(([request]) => request.path.endsWith("/evidence")).length;
+  f.replies[`/v1/app/tasks/${ID.plan}/documents/plan`] = fail();
+  await act(async () => { await f.query.invalidateQueries({ queryKey: ["work", "plan", ID.plan] }); });
+  await screen.findByTestId("section-error");
+  expect(proof.textContent).toContain("can't tell yet");
+  expect(proof.textContent).not.toContain("No criteria yet");
+  expect(proof.textContent).not.toContain("criteria proven");
+  for (const item of PROOF.items) expect(proof.textContent).toContain(item.title);
+  expect(proof.textContent).toContain("405 of 420 cases pass");
+  expect(proof.querySelector('[data-failed="true"]')).toBeTruthy();
+  expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/evidence"))).toHaveLength(proofReads);
+  expect(f.request.mock.calls.every(([request]) => request.method === "GET")).toBe(true);
+  f.replies[`/v1/app/tasks/${ID.plan}/documents/plan`] = { status: 200, body: PLAN };
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(proof.textContent).toContain("1 of 2 criteria proven"));
+ } finally { f.close(); }
+});
+it("Work Running includes only served running work; All keeps queued and unread work distinguishable", async () => {
+ const queuedId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", unreadId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+ const f = mount("/app/live?filter=running", { "/v1/app/sessions": { status: 200, body: { tasks: [TASKS[1], task(queuedId, "Queued work", { status: "STARTING", workflow: undefined }), task(unreadId, "Unread work", { status: "SUCCEEDED", workflow: undefined, detail: "unread" })] } } });
+ try {
+  await waitFor(() => expect(document.querySelector(`button[data-task-id="${ID.running}"]`)).toBeTruthy());
+  expect(document.querySelector(`button[data-task-id="${queuedId}"]`)).toBeNull();
+  expect(document.querySelector(`button[data-task-id="${unreadId}"]`)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "All" }));
+  const queued = document.querySelector<HTMLButtonElement>(`button[data-task-id="${queuedId}"]`)!;
+  const unread = document.querySelector<HTMLButtonElement>(`button[data-task-id="${unreadId}"]`)!;
+  expect(queued.textContent).toContain("In the queue");
+  expect(unread.textContent).toContain("Open it to see its step");
+  fireEvent.click(unread);
+  expect((await screen.findByTestId("decision-quiet")).textContent).toContain("can't tell yet which step");
+ } finally { f.close(); }
 });
