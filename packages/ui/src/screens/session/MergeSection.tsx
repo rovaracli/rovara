@@ -14,7 +14,8 @@ import { workspaceTask, type ReadTask } from "./workspace-types.js";
 import type { ReadSession } from "./SessionHeader.js";
 import { branchFact, changedSince, checksFact, lockOf, pullRowsOf, reviewFact, shortSha, shownOf, type PullRow, type Shown } from "./merge-facts.js";
 import { Clock, Facts, MergeChip, Sha, ThreeParts } from "./merge-parts.js";
-import { bindIdentity, observeRecord, tabSeq, useFence } from "./merge-fence.js";
+import { fencedRead, fencedReadiness, observeRecord, tabSeq, useFence } from "./merge-fence.js";
+import { createSessionApi } from "../../api/sessions.js";
 import { allMerged, clearPending, headsMoved, readPendingNow, usePending, writePending, type PendingPress } from "./merge-pending.js";
 
 const RISK_WORDS = { low: "Low risk", medium: "Medium risk", high: "High risk" } as const;
@@ -80,9 +81,15 @@ function PullItem({ row, ready, held, many, index }: { row: PullRow; ready: bool
  * and resets when it changes; (5) a failed or refused readiness read makes older "ready" data inert; (6) times are labelled for what they are: the tracking observation time, or "Read by Rovara at" for the answer's arrival.
  * The receipt reader and original-operation adoption are held (MergeReceiptView is the unmounted presentation).
  */
+/** Who is reading (R6g/N5): company + person from /v1/app/me, then the session. */
+const subjectFrom = (me: { org: { orgId: string }; developer: { id: string } } | undefined, sessionId: string): string | undefined => me === undefined ? undefined : me.org.orgId + "|" + me.developer.id + "|" + sessionId;
+const identityKeyOf = (sessionId: string): readonly string[] => ["session", sessionId, "identity"];
 export function MergeSection(props: { sessionId: string; task: ReadTask }) {
- // One subject, one state: a different session id remounts, so one task's lock, dialog or notes can never show on another.
- return <MergeSectionFor key={props.sessionId} {...props} />;
+ const host = useAppHost(), meApi = useMemo(() => createApiClient(host), [host]);
+ const me = useQuery({ queryKey: identityKeyOf(props.sessionId), retry: false, refetchOnWindowFocus: false, queryFn: async () => meApi.get("/v1/app/me", AppMeResponseReaderSchema) });
+ const subject = me.isError ? undefined : subjectFrom(me.data, props.sessionId);
+ // One subject, one state (N6): a different session OR a different person or company remounts, so no lock, dialog, notice or accepted-answer attribution of one can show on another.
+ return <MergeSectionFor key={props.sessionId + "|" + (subject ?? "unread")} {...props} subject={subject} />;
 }
 
 /**
@@ -100,31 +107,30 @@ const recordKey = (entry: { requestId: string; startedAt: string }): string => e
 function taskOfSession(data: unknown): ReadTask | undefined { try { return typeof data === "object" && data !== null && "body" in data ? workspaceTask(data as ReadSession) : undefined; } catch { return undefined; } }
 const doneWords = (pulls: ReadonlyArray<{ repositoryId: string; number: number }>): string => "Merged " + pulls.map(pull => pull.repositoryId + " #" + String(pull.number)).join(", ") + ".";
 
-function MergeSectionFor({ sessionId, task }: { sessionId: string; task: ReadTask }) {
+function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task: ReadTask; subject: string | undefined }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionActions(host), [host]), reasonId = useId();
  const merged = mergedEverywhere(task), merge = task.merge;
  const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<Saved>(), [note, setNote] = useState<string>(), [retiredNote, setRetiredNote] = useState(false);
  const [shown, setShown] = useState<Shown>();
  const sending = useRef(false);
  const open_ = openPullRequestsOf(task);
- const readinessKey = ["session", sessionId, "merge"];
- // Who is reading (R6g): every persisted lock and fence is keyed by company + person + session, from the identity read. Until it is read there is no lock to look up and nothing may be sent.
- const meApi = useMemo(() => createApiClient(host), [host]);
- const me = useQuery({ queryKey: ["session", sessionId, "identity"], retry: false, refetchOnWindowFocus: false, queryFn: async () => meApi.get("/v1/app/me", AppMeResponseReaderSchema) });
- const identityKey = me.isError || me.data === undefined ? undefined : me.data.org.orgId + "|" + me.data.developer.id, subject = identityKey === undefined ? undefined : identityKey + "|" + sessionId;
- // The read fence lives in the QueryClient (merge-fence.ts), keyed by session, so it outlives this component. Facts that may resolve anything come ONLY from the latest real task fetch (its own data object), never from a prop or cache write.
-const fence = useFence(sessionId);
- useEffect(() => { bindIdentity(fence, identityKey); }, [fence, identityKey]);
- const fenceOk = identityKey !== undefined && fence.identity === identityKey, read = fenceOk ? fence.latestRead : undefined, readTask = useMemo(() => taskOfSession(read?.data), [read]);
+ const readinessKey = ["session", sessionId, "merge", subject ?? "unread"], sessionApi = useMemo(() => createSessionApi(host), [host]);
+ // The read fence lives in the QueryClient (merge-fence.ts), keyed by company + person + session, so it outlives this component and is never shared between identities. Facts that may resolve anything come ONLY from reads
+ // this section makes itself (`readNow`), each stamped with its own response body: never from a prop, the session screen's cache, or a cache write.
+ const fence = useFence(subject ?? "unread"), read = fence.latestRead, readTask = useMemo(() => taskOfSession(read?.data), [read]);
  const readRows = useMemo(() => readTask === undefined ? [] : pullRowsOf(readTask, undefined), [readTask]);
+ async function readNow(): Promise<void> {
+  if (subject === undefined) return;
+  try { await fencedRead(fence, () => sessionApi.read(sessionId)); } catch { /* a failed read resolves nothing */ }
+ }
  // A saved answer yields, for good, only to a task read THIS tab issued after the answer arrived that shows one of its pull requests open (R2).
  const disagrees = done !== undefined && read !== undefined && read.issued > done.seq && readRows.some(row => done.keys.includes(row.key) && row.state === "open");
  if (disagrees) { setDone(undefined);setRetiredNote(true); }
  const saved = disagrees ? undefined : done;
  // Only while something is open to merge; a refusal of the read (a Code without the route, a session gone) leaves the GitHub links only.
- const readiness = useQuery({ queryKey: readinessKey, enabled: !merged && saved === undefined && open_.length > 0, retry: false, refetchOnWindowFocus: false, queryFn: async () => api.mergeReadiness(sessionId) });
+ const readiness = useQuery({ queryKey: readinessKey, enabled: subject !== undefined && !merged && saved === undefined && open_.length > 0, retry: false, refetchOnWindowFocus: false, queryFn: async () => fencedReadiness(fence, () => api.mergeReadiness(sessionId)) });
  // React Query keeps the last good answer after a failed refresh. A read that failed makes that answer inert, until a read works again: an earlier "ready" is never actionable.
- const view = readiness.isError || (fenceOk && fence.readinessDenied !== undefined) ? undefined : readiness.data, rows = pullRowsOf(task, view), mayPress = view?.mayMerge === true && !merged && saved === undefined;
+ const view = readiness.isError || fence.readinessDenied !== undefined ? undefined : readiness.data, rows = pullRowsOf(task, view), mayPress = view?.mayMerge === true && !merged && saved === undefined;
  const stored = usePending(subject ?? "\u0000identity-unread"), entry = subject !== undefined && stored.kind === "pending" ? stored.entry : undefined;
  // A record resolves only through a task read THIS tab issued after THIS tab first observed it, or through the answer to that same request; another request's answer, an older read or a cache write settles nothing.
  const entryKey = entry === undefined ? undefined : recordKey(entry), observedAt = entryKey === undefined ? undefined : fence.observed.get(entryKey);
@@ -140,9 +146,9 @@ const fence = useFence(sessionId);
  }, [entry, voided, settled, sessionId]);
  // A refusal found in the fence once the identity is bound (an earlier visit) is read again once: a fresh manual cache write can make the cached answer look fresh, but only a real read clears the refusal.
  const deniedTried = useRef(false);
- useEffect(() => { if (fenceOk && fence.readinessDenied !== undefined && !deniedTried.current && !merged && saved === undefined && open_.length > 0) { deniedTried.current = true;void readiness.refetch(); } });
+ useEffect(() => { if (fence.readinessDenied !== undefined && !deniedTried.current && !merged && saved === undefined && open_.length > 0) { deniedTried.current = true;void readiness.refetch(); } });
  // This tab observes a record the first time it sees it (a reload starts over); only reads issued after that can resolve it. The record found (or written) is then read again at once, a GET, so a read issued after the observation exists.
- useEffect(() => { if (entryKey !== undefined) { observeRecord(fence, entryKey);void query.invalidateQueries({ queryKey: ["session", sessionId] }); } }, [fence, entryKey, query, sessionId]);
+ useEffect(() => { if (entryKey !== undefined) { observeRecord(fence, entryKey);void readNow();void query.invalidateQueries({ queryKey: ["session", sessionId] }); } }, [fence, entryKey, query, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
  const lock = lockOf({ unresolved: active !== undefined, identityUnread: subject === undefined, ...(storageLock === undefined ? {} : { storage: storageLock }), rows, readiness: view });
  const readFailed = readiness.isError && couldNotRead(readiness.error);
  const moved = rows.some(row => row.drift), stale = open && shown !== undefined && changedSince(shown, rows, view);
@@ -153,7 +159,10 @@ const fence = useFence(sessionId);
  const buttonWords = "Merge " + what;
  /** Why the latest completed readiness read does not allow a press, or undefined when it does. Read from the query cache at the moment of sending, never from what was last rendered. */
  function refusalNow(): string | undefined {
-  if (subject === undefined) return "Rovara hasn't read who you are yet. Nothing was sent.";
+  // Identity is read from the query state AT SEND, not from the last render: a failed or changed identity read means nothing is sent (N5).
+  const meNow = query.getQueryState<{ org: { orgId: string }; developer: { id: string } }>(identityKeyOf(sessionId)), nowSubject = meNow?.status === "success" ? subjectFrom(meNow.data, sessionId) : undefined;
+  if (subject === undefined || nowSubject === undefined) return "Rovara hasn't read who you are yet. Nothing was sent.";
+  if (nowSubject !== subject) return "Who you are changed since this page was shown. Nothing was sent. Review it again.";
   const latest = query.getQueryState<MergeReadiness>(readinessKey), latestView = latest?.status === "success" ? latest.data : undefined;
   if (latest?.status === "error") return "Rovara's latest read failed, so Merge isn't available. Nothing was sent.";
   if (latestView === undefined) return "Rovara hasn't read the latest state yet. Nothing was sent.";
@@ -177,7 +186,7 @@ const fence = useFence(sessionId);
   try {
    const result = await api.merge(sessionId, next.requestId, { expectedHeads: next.heads, risk: next.risk });
    if (result.kind !== "done") throw new ApiError(502, "INVALID_RESPONSE", "Rovara answered Merge in an unexpected way. Reload this page.");
-   clearPending(next);setOpen(false);setDone({ words: doneWords(result.value.pullRequests), keys: result.value.pullRequests.map(pull => pull.repositoryId + "#" + String(pull.number)), requestId: next.requestId, seq: tabSeq() });
+   clearPending(next);setOpen(false);setDone({ words: doneWords(result.value.pullRequests), keys: result.value.pullRequests.map(pull => pull.repositoryId + "#" + String(pull.number)), requestId: next.requestId, seq: tabSeq() });void readNow();
    await query.invalidateQueries({ queryKey: ["session", sessionId] });
   } catch (failure) {
    setOpen(false);
@@ -199,7 +208,7 @@ const fence = useFence(sessionId);
   sending.current = true;setBusy(true);setNote(undefined);setError(undefined);
   try {
    // Refetches the readiness read and the task read; whatever they show decides, the lock only clears through the rules above.
-   await query.invalidateQueries({ queryKey: ["session", sessionId] });
+   await Promise.all([readNow(), query.invalidateQueries({ queryKey: ["session", sessionId] })]);
    const state = query.getQueryState(readinessKey);
    setNote(state?.status === "error" ? "Rovara couldn't read the current state, so this is still not confirmed." : "Rovara read again" + (state?.dataUpdatedAt ? " at " + new Date(state.dataUpdatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "") + ". Nothing there says this request merged, so it is still not confirmed.");
   } finally { sending.current = false;setBusy(false); }

@@ -1,69 +1,64 @@
 import { useSyncExternalStore } from "react";
-import { useQueryClient, type QueryCacheNotifyEvent, type QueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 /**
- * The Merge section's read fence (SCREEN-STATE-RULES R6b/R6e), kept in the QueryClient, keyed by session id, so it outlives the component: unmounting, navigating away and coming back, or a request that is still in
- * flight while the view is gone, all meet the same fence.
+ * The Merge section's read fence (SCREEN-STATE-RULES R6b/R6e/R6g), kept in the QueryClient, keyed by the SUBJECT `orgId|developerId|sessionId`, so it outlives the component and is never shared between people or companies:
+ * unmounting, navigating away and coming back, or a request still in flight while the view is gone, all meet the same fence; another identity gets another fence.
  *
  * ONE RULE, per tab: a tab may void, settle or retire an unresolved press ONLY with a task read that THIS TAB issued AFTER THIS TAB first observed that press (when it wrote it, or when it first saw it in storage or in a
- * storage event). Order is therefore only ever compared inside one tab, by `tabSeq()`, a plain increasing counter in this page's memory. Nothing is compared across tabs, no clock is used, and nothing is persisted: after
- * a reload the tab observes the record again and needs a NEW read issued after that.
+ * storage event). Order is only ever compared inside one tab, by `tabSeq()`, a plain increasing counter in this page's memory. Nothing is compared across tabs, no clock is used, nothing is persisted: after a reload the tab
+ * observes the record again and needs a NEW read issued after that.
  *
- * The read is bound to the data it returned: the cache subscription takes `issued` when a fetch of ["session", id] STARTS and, when that same fetch succeeds, records {data, issued} for the exact data object the fetch
- * produced. A manual cache write (setQueryData: the presence heartbeat, an Understand answer) is not a read and carries no issue number; the facts used to resolve anything are the data of the latest real fetch, never
- * a later prop or cache object. The same fence holds the readiness refusal: a failed or refused readiness read is recorded here and only a readiness fetch issued after it that succeeds clears it.
+ * The read is bound to ITS OWN RESPONSE BODY. The section calls the API itself (`fencedRead`): the issue number is taken when the call STARTS and is stored together with the body that call returned, an immutable value held in
+ * this closure, never read back from the query cache or from a prop. A cache write of any kind (presence, an Understand answer, the shared session adapter keeping an older projection) cannot supply, change or stamp a fact.
+ * The same fence holds the readiness refusal: a failed or refused readiness read is recorded here and only a readiness read issued after it that succeeds clears it (`fencedReadiness`).
  */
 let counter = 0;
 /** This tab's issue sequence. Strictly increasing within the page; never compared with another tab's. */
 export const tabSeq = (): number => { counter += 1; return counter; };
 
-export interface TaskRead { /** The exact data object the fetch produced. */ data: unknown; /** tabSeq() when that fetch started. */ issued: number }
+export interface TaskRead { /** The body of that very call. */ data: unknown; /** tabSeq() when the call started. */ issued: number }
 export interface Fence {
  latestRead: TaskRead | undefined;
- inflight: number | undefined;
- /** A readiness read failed or was refused; cleared only by a readiness fetch issued after it that succeeds. */
+ /** A readiness read failed or was refused; cleared only by a readiness read issued after it that succeeds. */
  readinessDenied: { seq: number } | undefined;
- readinessInflight: number | undefined;
  /** Records this tab has observed, by `requestId|startedAt`, with tabSeq() at first observation. */
  observed: Map<string, number>;
- /** The identity (`orgId|developerId`, from /v1/app/me) this fence state belongs to (R6g); state of another identity is dropped, never shown. */
- identity: string | undefined;
  version: number;
  listeners: Set<() => void>;
 }
-const fences = new WeakMap<QueryClient, Map<string, Fence>>(), installed = new WeakSet<QueryClient>();
+const fences = new WeakMap<QueryClient, Map<string, Fence>>();
 
-function make(): Fence { return { latestRead: undefined, inflight: undefined, readinessDenied: undefined, readinessInflight: undefined, observed: new Map(), identity: undefined, version: 0, listeners: new Set() }; }
-function get(client: QueryClient, sessionId: string): Fence {
- let map = fences.get(client);
- if (map === undefined) { map = new Map();fences.set(client, map); }
- let fence = map.get(sessionId);
- if (fence === undefined) { fence = make();map.set(sessionId, fence); }
- return fence;
-}
+function make(): Fence { return { latestRead: undefined, readinessDenied: undefined, observed: new Map(), version: 0, listeners: new Set() }; }
 function changed(fence: Fence): void { fence.version += 1;for (const listener of fence.listeners) listener(); }
 
-function route(client: QueryClient, event: QueryCacheNotifyEvent): void {
- if (event.type !== "updated") return;
- const key = event.query.queryKey as readonly unknown[];
- if (key[0] !== "session" || typeof key[1] !== "string") return;
- const fence = get(client, key[1]), action = event.action;
- if (key.length === 2) {
-  if (action.type === "fetch") fence.inflight ??= tabSeq();
-  // A manual write is not a read: it neither consumes the in-flight fetch's issue number nor becomes a read of its own.
-  else if (action.type === "success" && action.manual !== true) { if (fence.inflight !== undefined) { fence.latestRead = { data: event.query.state.data, issued: fence.inflight };changed(fence); } fence.inflight = undefined; }
-  else if (action.type === "error") fence.inflight = undefined;
- } else if (key.length === 3 && key[2] === "merge") {
-  if (action.type === "fetch") fence.readinessInflight ??= tabSeq();
-  else if (action.type === "success" && action.manual !== true) { if (fence.readinessInflight !== undefined && (fence.readinessDenied === undefined || fence.readinessInflight > fence.readinessDenied.seq)) { fence.readinessDenied = undefined;changed(fence); } fence.readinessInflight = undefined; }
-  else if (action.type === "error") { fence.readinessDenied = { seq: fence.readinessInflight ?? tabSeq() };fence.readinessInflight = undefined;changed(fence); }
- }
+/** The fence for one subject (`orgId|developerId|sessionId`) in this QueryClient. */
+export function fenceFor(client: QueryClient, subject: string): Fence {
+ let map = fences.get(client);
+ if (map === undefined) { map = new Map();fences.set(client, map); }
+ let fence = map.get(subject);
+ if (fence === undefined) { fence = make();map.set(subject, fence); }
+ return fence;
 }
 
-/** The fence for one session in this QueryClient. The cache subscription is installed once per client and stays for its lifetime, so it also sees requests whose view has unmounted. */
-export function fenceFor(client: QueryClient, sessionId: string): Fence {
- if (!installed.has(client)) { installed.add(client);client.getQueryCache().subscribe(event => { route(client, event); }); }
- return get(client, sessionId);
+/** A task read made BY THE SECTION: the issue number is taken at the start of the call and kept with the body that same call returned. A later-issued read supersedes an earlier one, never the reverse. */
+export async function fencedRead<T>(fence: Fence, call: () => Promise<T>): Promise<{ issued: number; body: T }> {
+ const issued = tabSeq(), body = await call();
+ if (fence.latestRead === undefined || issued > fence.latestRead.issued) { fence.latestRead = { data: body, issued };changed(fence); }
+ return { issued, body };
+}
+
+/** A readiness read made by the section: a failure or refusal is recorded in the fence; only a read issued after it that succeeds clears it. */
+export async function fencedReadiness<T>(fence: Fence, call: () => Promise<T>): Promise<T> {
+ const issued = tabSeq();
+ try {
+  const body = await call();
+  if (fence.readinessDenied !== undefined && issued > fence.readinessDenied.seq) { fence.readinessDenied = undefined;changed(fence); }
+  return body;
+ } catch (failure) {
+  if (fence.readinessDenied === undefined || issued > fence.readinessDenied.seq) { fence.readinessDenied = { seq: issued };changed(fence); }
+  throw failure;
+ }
 }
 
 /** This tab first observes a record: when it wrote it, or when it first read it from storage. Later observations keep the first. */
@@ -71,16 +66,9 @@ export function observeRecord(fence: Fence, recordKey: string): void {
  if (!fence.observed.has(recordKey)) { fence.observed.set(recordKey, tabSeq());changed(fence); }
 }
 
-/** Binds the fence to the identity that is reading it. A different identity gets a clean fence: nothing an earlier identity observed, read or was refused can apply to it. */
-export function bindIdentity(fence: Fence, identity: string | undefined): void {
- if (identity === undefined || fence.identity === identity) return;
- if (fence.identity !== undefined) { fence.latestRead = undefined;fence.inflight = undefined;fence.readinessDenied = undefined;fence.readinessInflight = undefined;fence.observed.clear(); }
- fence.identity = identity;changed(fence);
-}
-
 /** Re-renders the caller whenever the fence changes. */
-export function useFence(sessionId: string): Fence {
- const client = useQueryClient(), fence = fenceFor(client, sessionId);
+export function useFence(subject: string): Fence {
+ const client = useQueryClient(), fence = fenceFor(client, subject);
  useSyncExternalStore(listener => { fence.listeners.add(listener); return () => { fence.listeners.delete(listener); }; }, () => fence.version, () => 0);
  return fence;
 }

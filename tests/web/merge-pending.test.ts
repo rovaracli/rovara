@@ -7,6 +7,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { fencedRead, fenceFor } from "../../packages/ui/src/screens/session/merge-fence.js";
 import { MergeSection } from "../../packages/ui/src/screens/session/MergeSection.js";
 import { workspaceTask, type ReadTask } from "../../packages/ui/src/screens/session/workspace-types.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
@@ -30,10 +31,13 @@ const subjectOf = (session: string, developerId = DEV, orgId = ORG): string => o
 const SUBJECT = subjectOf(A);
 const notFound: Answer = { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
 
-interface Script { me?: () => Answer | Promise<Answer>; readiness?: (session: string) => Answer | Promise<Answer>; press?: (body: { requestId: string; expectedHeads?: unknown; risk?: string }, session: string) => Answer | Promise<Answer> }
+interface Script { session?: (id: string) => Record<string, unknown> | undefined; me?: () => Answer | Promise<Answer>; readiness?: (session: string) => Answer | Promise<Answer>; press?: (body: { requestId: string; expectedHeads?: unknown; risk?: string }, session: string) => Answer | Promise<Answer> }
 function world(script: Script) {
  const f = fakeHost(async request => {
   if (request.path === "/v1/app/me") return script.me?.() ?? meOf(DEV);
+  // The section's own task read (a GET of the session). Unless a test says what the page reads, the read fails, so nothing is resolved by accident.
+  const own = /sessions\/([^/]+)$/u.exec(request.path);
+  if (own !== null && request.method === "GET") { const over = script.session?.(own[1]!); return over === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "x" } } } : { status: 200, body: { session: sessionOf(own[1]!, over) } }; }
   const match = /sessions\/([^/]+)\/merge$/u.exec(request.path);
   if (match === null) return notFound;
   if (request.method === "GET") return script.readiness?.(match[1]!) ?? notFound;
@@ -47,10 +51,10 @@ function world(script: Script) {
   const ui = renderUi(element(sessionId, task));
   return { ...ui, query, // Same wrapper depth as renderUi, so the tree is preserved (a real navigation within one mounted tree), not remounted.
   show(id: string, t: ReadTask) { ui.rerender(h("div", { "data-theme": "light" }, element(id, t))); },
-  /** A real task read ISSUED now (the fetch the session screen would make; its own data object is the read) and shown with the task it returned. */
-  async read(id: string, over: Record<string, unknown> = {}) { const session = sessionOf(id, over); await query.fetchQuery({ queryKey: ["session", id], queryFn: async () => session, staleTime: 0 }); ui.rerender(h("div", { "data-theme": "light" }, element(id, workspaceTask(session)!))); },
+  /** A real task read ISSUED now, made through the fence exactly as the section makes its own (issue number at the start, stored with that call's own body), and shown with the task it returned. */
+  async read(id: string, over: Record<string, unknown> = {}) { const session = sessionOf(id, over); await fencedRead(fenceFor(query, subjectOf(id)), async () => session); ui.rerender(h("div", { "data-theme": "light" }, element(id, workspaceTask(session)!))); },
   /** A real task read that is ISSUED now but answers only when `deliver()` is called (a slow read). */
-  slowRead(id: string) { let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); let answer: ReturnType<typeof sessionOf> | undefined; const pending = query.fetchQuery({ queryKey: ["session", id], queryFn: async () => { await gate; return answer!; }, staleTime: 0 }); return { async deliver(over: Record<string, unknown> = {}) { answer = sessionOf(id, over); release(); await pending; ui.rerender(h("div", { "data-theme": "light" }, element(id, workspaceTask(answer)!))); } }; },
+  slowRead(id: string) { let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); let answer: ReturnType<typeof sessionOf> | undefined; const pending = fencedRead(fenceFor(query, subjectOf(id)), async () => { await gate; return answer!; }); return { async deliver(over: Record<string, unknown> = {}) { answer = sessionOf(id, over); release(); await pending; ui.rerender(h("div", { "data-theme": "light" }, element(id, workspaceTask(answer)!))); } }; },
   };
  };
  return { ...f, posts, tab };
@@ -261,7 +265,7 @@ it("F3/R1: after one good 'ready' read, a refetch that fails makes the older dat
  const t = w.tab(A);
  await screen.findByRole("button", { name: /^Merge #42/u });
  fail = true;
- await t.query.invalidateQueries({ queryKey: ["session", A, "merge"] });
+ await t.query.invalidateQueries({ queryKey: ["session", A, "merge", SUBJECT] });
  await waitFor(() => expect(headline()).toBe("Rovara couldn't read this from GitHub just now"));
  expect(screen.queryByRole("button", { name: /^Merge #42/u })).toBeNull();
  expect(screen.getByRole("button", { name: "Read again" })).toBeTruthy();
@@ -281,7 +285,7 @@ it("F3/R1: a later refusal (403) removes the Merge button at once, even with an 
  const t = w.tab(A);
  await screen.findByRole("button", { name: /^Merge #42/u });
  refuse = true;
- await t.query.invalidateQueries({ queryKey: ["session", A, "merge"] });
+ await t.query.invalidateQueries({ queryKey: ["session", A, "merge", SUBJECT] });
  await waitFor(() => expect(screen.queryByRole("button", { name: /^Merge #42/u })).toBeNull());
  expect(headline()).toBe("Merge it on GitHub");
 });
@@ -349,7 +353,7 @@ it("N3/R6c: Press Merge checks the LATEST state at send time: a denial or not-re
   fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
   const dialog = await screen.findByRole("dialog");
   // The read lands in the cache; React has not re-rendered yet.
-  t.query.setQueryData(["session", A, "merge"], latest);
+  t.query.setQueryData(["session", A, "merge", SUBJECT], latest);
   fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
   expect(w.posts()).toHaveLength(0);
   expect((await screen.findByRole("alert")).textContent).toContain("Nothing was sent");
@@ -365,11 +369,11 @@ it("N3/R6c: an already open confirmation becomes inert and says why when the lat
  fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
  const dialog = await screen.findByRole("dialog");
  state = "no";
- await t.query.invalidateQueries({ queryKey: ["session", A, "merge"] });
+ await t.query.invalidateQueries({ queryKey: ["session", A, "merge", SUBJECT] });
  expect((await within(dialog).findByRole("alert")).textContent).toContain("Not ready now.");
  expect(within(dialog).getByRole("button", { name: "Press Merge" }).hasAttribute("disabled")).toBe(true);
  state = "fail";
- await t.query.invalidateQueries({ queryKey: ["session", A, "merge"] });
+ await t.query.invalidateQueries({ queryKey: ["session", A, "merge", SUBJECT] });
  await waitFor(() => expect(within(dialog).getByRole("alert").textContent).toContain("latest read failed"));
  fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
  expect(w.posts()).toHaveLength(0);
@@ -472,7 +476,7 @@ it("R6e: the fence outlives the component: a read issued after the tab observed 
  first.unmount();
  // While nothing is mounted, a real task read (issued after the observation) answers with a moved head.
  const session = sessionOf(A, { mergeTracking: [tracked({ headSha: HEAD_B })] });
- await client.fetchQuery({ queryKey: ["session", A], queryFn: async () => session, staleTime: 0 });
+ await fencedRead(fenceFor(client, SUBJECT), async () => session);
  w.tab(A, workspaceTask(session), client);
  await waitFor(() => expect(localStorage.getItem(key)).toBeNull());
  expect(w.posts()).toHaveLength(0);
@@ -486,11 +490,11 @@ it("R6e: a refusal of the readiness read survives remount and a manual cache wri
  const first = w.tab(A, taskOf(A), client);
  await screen.findByRole("button", { name: /^Merge #42/u });
  mode = "refuse";
- await client.invalidateQueries({ queryKey: ["session", A, "merge"] });
+ await client.invalidateQueries({ queryKey: ["session", A, "merge", SUBJECT] });
  await waitFor(() => expect(screen.queryByRole("button", { name: /^Merge #42/u })).toBeNull());
  first.unmount();
  // Back again: the cache is handed a "ready" answer by a manual write, and the new read is still in flight.
- client.setQueryData(["session", A, "merge"], ready().body);
+ client.setQueryData(["session", A, "merge", SUBJECT], ready().body);
  mode = "hold";
  w.tab(A, taskOf(A), client);
  await new Promise(resolve => setTimeout(resolve, 80));
@@ -523,14 +527,15 @@ it("R6g: the record and the fence are keyed by company + person + session: a loc
 });
 
 it("R6g: nothing is offered or sent while identity is unread; once it reads, Merge works", async () => {
- let me: Answer = { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "x" } } };
+ let me: Answer = { status: 403, body: { error: { code: "FORBIDDEN", message: "x" } } };
  const w = world({ readiness: () => ready(), press: () => merged, me: () => me });
  const t = w.tab(A);
- const button = await mergeButton();
- expect(button.hasAttribute("disabled")).toBe(true);
- expect(region().textContent).toContain("Locked until Rovara has read who you are.");
- fireEvent.click(button);
+ await waitFor(() => expect(t.query.getQueryState(["session", A, "identity"])?.status).toBe("error"));
+ await new Promise(resolve => setTimeout(resolve, 80));
+ // No identity, no readiness read, no Merge control, no lock lookup.
+ expect(screen.queryByRole("button", { name: /^Merge #42/u })).toBeNull();
  expect(screen.queryByRole("dialog")).toBeNull();
+ expect(w.request.mock.calls.some(([request]) => /\/merge$/u.test(request.path))).toBe(false);
  expect(w.posts()).toHaveLength(0);
  me = meOf(DEV);
  await t.query.invalidateQueries({ queryKey: ["session", A, "identity"] });
@@ -549,5 +554,78 @@ it("R6h: a stale-CSRF 403 is not a refusal of authority: it says Couldn't merge 
  await waitFor(() => expect(meReads()).toBeGreaterThan(1));
  expect(localStorage.getItem("rovara.merge.pending.v1:" + SUBJECT)).toBeNull();
  expect(headline()).not.toBe(UNSURE);
+ expect(w.posts()).toHaveLength(1);
+});
+
+it("N2a/body: a GET whose own body lacks a fact an earlier manual cache write added does NOT settle; the facts that resolve come from that GET's body, never from the cache", async () => {
+ localStorage.setItem(key, record());
+ let body: Record<string, unknown> = { mergeTracking: [tracked({ headSha: HEAD_A })] };   // what the GET really returns: head A, still open
+ const w = world({ readiness: () => ready(HEAD_A), press: () => merged, session: () => body });
+ const t = w.tab(A);
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ // An earlier manual write left a merged session in the cache; the shared session adapter could hand it back as the "accepted" task of a later GET.
+ t.query.setQueryData(["session", A], sessionOf(A, { mergeTracking: [tracked({ state: "merged" })] }));
+ await new Promise(resolve => setTimeout(resolve, 100));
+ fireEvent.click(await screen.findByRole("button", { name: "Check again" }));
+ await new Promise(resolve => setTimeout(resolve, 120));
+ expect(localStorage.getItem(key)).not.toBeNull();
+ expect(headline()).toBe(UNSURE);
+ // When the GET itself says merged, the record is settled.
+ body = { mergeTracking: [tracked({ state: "merged" })] };
+ fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+ await waitFor(() => expect(localStorage.getItem(key)).toBeNull());
+ expect(w.posts()).toHaveLength(0);
+});
+
+it("N5: identity is read from the query state AT SEND: a changed or failed identity read between render and press means zero POSTs", async () => {
+ for (const change of ["other", "failed"] as const) {
+  localStorage.clear();
+  const w = world({ readiness: () => ready(), press: () => merged });
+  const t = w.tab(A);
+  fireEvent.click(await screen.findByRole("button", { name: /^Merge #42/u }));
+  const dialog = await screen.findByRole("dialog");
+  // The identity query changes in the cache; React has not re-rendered yet.
+  if (change === "other") t.query.setQueryData(["session", A, "identity"], meOf(OTHER_DEV).body);
+  else await t.query.fetchQuery({ queryKey: ["session", A, "identity"], queryFn: async () => { throw new Error("identity read failed"); }, staleTime: 0 }).catch(() => undefined);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Press Merge" }));
+  expect(w.posts()).toHaveLength(0);
+  expect(Object.keys(localStorage).filter(k => k.startsWith("rovara.merge.pending"))).toHaveLength(0);
+  t.unmount();
+ }
+});
+
+it("N5: a different company for the same person gets its OWN authority: A's cached readiness never makes Merge available in B before B's readiness is read", async () => {
+ let org = ORG, hold = false, open!: () => void;
+ const gate = new Promise<void>(resolve => { open = resolve; });
+ const w = world({ readiness: async () => { if (hold) await gate; return ready(); }, press: () => lost, me: () => meOf(DEV, org) });
+ const t = w.tab(A);
+ await press();
+ await waitFor(() => expect(headline()).toBe(UNSURE));
+ // The same person is now in another company on the same page and client.
+ org = "org_bbbbbbbbbbbbbbbbbbbb";hold = true;
+ await t.query.invalidateQueries({ queryKey: ["session", A, "identity"] });
+ await waitFor(() => expect(headline()).not.toBe(UNSURE));
+ await new Promise(resolve => setTimeout(resolve, 60));
+ // B's readiness has not answered: no enabled Merge button on A's cached authority, and A's record is invisible to B yet intact.
+ const buttons = screen.queryAllByRole("button", { name: /^Merge #42/u });
+ for (const button of buttons) expect(button.hasAttribute("disabled")).toBe(true);
+ expect(localStorage.getItem("rovara.merge.pending.v1:" + subjectOf(A))).not.toBeNull();
+ open();
+ await waitFor(async () => expect((await mergeButton()).hasAttribute("disabled")).toBe(false));
+ expect(w.posts()).toHaveLength(1);
+});
+
+it("N6: a different person never inherits the previous person's accepted-success attribution or its answer line", async () => {
+ let dev = DEV;
+ const w = world({ readiness: () => ready(), press: () => merged, me: () => meOf(dev) });
+ const t = w.tab(A);
+ await press();
+ expect(await screen.findByText("Merged acme/payments #42.")).toBeTruthy();
+ expect(region().textContent).toContain("You pressed Merge and GitHub accepted it");
+ dev = OTHER_DEV;
+ await t.query.invalidateQueries({ queryKey: ["session", A, "identity"] });
+ await waitFor(() => expect(region().textContent).not.toContain("You pressed Merge and GitHub accepted it"));
+ expect(screen.queryByText("Merged acme/payments #42.")).toBeNull();
+ expect(screen.queryByText(/dropped because|A later read shows/u)).toBeNull();
  expect(w.posts()).toHaveLength(1);
 });
