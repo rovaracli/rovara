@@ -8,6 +8,10 @@ export function readSettlementReceipt(input: unknown): ChargeReceiptV1 {
   if (r === undefined || chargeValue(r.amountMicros) === undefined) throw new Error("invalid charge receipt");
   return r;
 }
+/** Customer-paid provider costs are recorded in full and latch admission closed above the hold. */
+export function customerSourceOverage(r: ChargeReceiptV1 | undefined): boolean {
+  return r !== undefined && r.billing === "external_provider" && (r.model.provider === "bedrock" || r.model.provider === "openrouter") && (chargeValue(r.amountMicros) ?? 0) > (chargeValue(r.originalReservationMicros) ?? Number.MAX_SAFE_INTEGER);
+}
 export function checkReceiptScope(r: ChargeReceiptV1, scope: MeterScope, id: string, estimate: number, month: string): void {
   if (r.revision !== 1 || r.issuer !== scope.iss || r.companyId !== scope.cid || r.project !== scope.pid || r.taskId !== scope.tid || r.callId !== id || chargeValue(r.originalReservationMicros) !== estimate || r.accountingMonth !== month) throw new Error("charge receipt scope mismatch");
 }

@@ -399,6 +399,7 @@ describe("(c) short-lived, one task, one kind, single use", () => {
     const sentRouter: ProviderRequest[] = [];
     g.deps.agentAi = { ...g.deps.agentAi!, switchedOn: new Set(["openrouter"]), openrouter: { transport: async (request) => { sentRouter.push(request); return { status: 200, body: answer() }; } } };
     expect((await call(g.deps, requestBody, grant())).status).toBe(422);
+    expect((await call(g.deps, requestBody, grant({ runPrice: { companyId: cidA, model: MODEL, provider: "openrouter", sourceId: "router", connectionRevision: "r1", catalogModel: MODEL, snapshotHash: "a".repeat(64), snapshotVersion: 1, expiresAt: now + 60000, inputUsdPerMillion: 1, outputUsdPerMillion: 2, cacheReadUsdPerMillion: 1, cacheWriteUsdPerMillion: 1 } }))).status).toBe(422);
     g.choices.saved.delete(cidA);
     const priced = (extra: Record<string, unknown>) => ({ priceFor: () => ({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, ...extra }) as never });
     for (const extra of [{ derived: [{ aboveTokens: 0, keys: ["outputMicrosPerMTok"] }] }, { uncertain: [{ aboveTokens: 0, keys: ["outputMicrosPerMTok"] }] }, { operatorReview: true }]) {

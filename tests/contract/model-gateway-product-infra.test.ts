@@ -18,8 +18,8 @@ type Resource = { Type: string; Properties: Record<string, unknown>; DeletionPol
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>>; Principal?: unknown };
 
 const synth = (context: Record<string, string>) => Template.fromStack(buildAgentXApp({ [MODEL_GATEWAY_CONTEXT_KEY]: "staging", agentxRegion: "us-west-2", ...context }).node.findChild("RovaraModelGateway") as Stack).toJSON() as { Resources: Record<string, Resource>; Parameters: Record<string, unknown>; Outputs: Record<string, unknown> };
-/** The gateway template (staging) at cloud/next d7d1edbb8, before this change (rule description reworded for EC2, 2026-11-16): SHA-256 of its JSON, less the role boundary (2026-11-17). Re-pinned 2026-11-17 for the alarm topic allow, fixed alarm names and the PricesStale math alarm. */
-const BEFORE_SHA256 = "393fd815c4096438dc84a94761b9b244d19f72bac73da813c8c8d71b1dddc4a1";
+/** The gateway template (staging) at cloud/next d7d1edbb8, before this change (rule description reworded for EC2, 2026-11-16): SHA-256 of its JSON, less the role boundary (2026-11-17). Re-pinned 2026-11-17 for the alarm topic allow, fixed alarm names and the PricesStale math alarm. Re-pinned for the common customer-source overage alarm filter and description (controller round B, DEC 254zzz253). */
+const BEFORE_SHA256 = "19c9c5ae6200f2ad0f9bc8c30c8241b4918300bbc3095714d8c8165bde7fc06f";
 // The pin is the fixed-name template (the one deployed before generated provider secret names became the default).
 const off = synth({ [MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY]: "fixed" });
 const on = synth({ [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" });

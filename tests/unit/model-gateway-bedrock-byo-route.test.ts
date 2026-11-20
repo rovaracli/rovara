@@ -9,6 +9,7 @@ import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
+import { DynamoPriceSnapshotStore } from "../../packages/model-gateway/src/dynamo-prices.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
@@ -289,13 +290,14 @@ const running: RunningGateway[] = [];
 afterEach(async () => { for (const g of running.splice(0)) await g.drain(); });
 
 describe("gateway process: each company's own Bedrock from its saved choice", () => {
-  async function serve(byoOn: boolean) {
+  async function serve(byoOn: boolean, priced = false) {
     const wire = new WireDynamo(Object.values(TABLES), { namespaceTables: true });
     const credentials = async () => ({ accessKeyId: "AKIATEST", secretAccessKey: "x" });
     const db = new Dynamo({ region: "us-west-2", credentials, transport: wire.transport });
     for (const cid of [cidA, cidB]) await db.put(TABLES.companies, { pk: `COMPANY#${cid}`, sk: "SETTINGS", companyId: cid, version: 1, settings: { budgets: { companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } } });
     await db.put(TABLES.companies, { pk: `COMPANY#${cidA}`, sk: "AGENT_AI", companyId: cidA, source: "bedrock_byo", version: 1 });
     await db.put(TABLES.companies, { pk: `COMPANY#${cidB}`, sk: "AGENT_AI", companyId: cidB, source: "anthropic_key", version: 1 });
+    if (priced) expect(await new DynamoPriceSnapshotStore(db, TABLES.prices).save({ version: 1, sources: { litellm: { fetchedAt: now - 1, count: 2, entries: [ID_A, ID_B].map(model => ({ provider: "bedrock", model, kind: "chat" as const, inputMicrosPerMTok: 3_300_000, outputMicrosPerMTok: 15_000_000 })) } } }, 0)).toBe(true);
     const g = gateway();
     const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0, agentKeys: "company", ...(byoOn ? { bedrockByo: { brokerRoleArn: BYO_ENV[GATEWAY_ENV.bedrockBrokerRole], externalIdKeyArn: BYO_ENV[GATEWAY_ENV.bedrockExternalIdKey] } } : {}) };
     const started = await startServe(config, {
@@ -315,11 +317,18 @@ describe("gateway process: each company's own Bedrock from its saved choice", ()
   }
 
   it("A goes to its own Bedrock; B on its own key; neither touches the other", async () => {
-    const s = await serve(true);
+    const s = await serve(true, true);
     expect((await post(s.started.server, mint({ cid: cidA }))).statusCode).toBe(200);
     expect((await post(s.started.server, mint({ cid: cidB }))).statusCode).toBe(200);
     expect(s.g.sent.map((x) => x.region)).toEqual(["eu-west-1"]);
     expect(s.g.companyKeys.reads).toEqual([cidB]);
+  });
+
+  it("no authoritative snapshot: A is refused before STS or transport; B on its own key works", async () => {
+    const s = await serve(true);
+    expect((await post(s.started.server, mint({ cid: cidA }))).statusCode).toBe(409);
+    expect(s.g.sessions.asked).toEqual([]); expect(s.g.sent).toEqual([]);
+    expect((await post(s.started.server, mint({ cid: cidB }))).statusCode).toBe(200);
   });
 
   it("not configured: A is refused (no fallback), B unaffected; the Bedrock service paths are not served", async () => {

@@ -73,7 +73,8 @@ it("failed contributing sources break confirmation without lowering rates or fet
   await f.fetch(low, offer(15)); await money(f, 15, 75, false);
 });
 it("L1 reported cost cannot undercut known token usage; absent usage still retains the hold", async () => {
-  const f = fixture("openrouter", "route"); await f.fetch({ route: row(150, 750, { litellm_provider: "openrouter", mode: "future-chat" }) });
+  // Exercise reported-cost arithmetic independently of the unqualified OpenRouter tariff gate.
+  const f = fixture("anthropic", "route"); await f.fetch({ route: row(150, 750, { mode: "future-chat" }) });
   const price = await f.price(); const reportedCostMicros = parseReportedCost("openrouter", { cost: 0.000001 });
   if (reportedCostMicros === undefined) throw new Error("fixture");
   expect(settleAmount({ price, usage, reservationMicros: 1, reportedCostMicros })).toMatchObject({ actualMicros: 2700e6, estimated: true });

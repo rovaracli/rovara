@@ -703,7 +703,9 @@ export class ModelGatewayStack extends Stack {
     };
     const fromLog = (id: string, group: logs.ILogGroup, event: string, period: Duration) => new logs.MetricFilter(this, `${id}Filter`, {
       logGroup: group,
-      filterPattern: logs.FilterPattern.stringValue("$.event", "=", event),
+      filterPattern: id === "SettleFailures"
+        ? logs.FilterPattern.any(logs.FilterPattern.stringValue("$.event", "=", event), logs.FilterPattern.stringValue("$.event", "=", "customer_source_over_reservation"))
+        : logs.FilterPattern.stringValue("$.event", "=", event),
       metricNamespace: MODEL_GATEWAY_METRICS_NAMESPACE,
       metricName: `${id}-${env}`,
       metricValue: "1",
@@ -714,7 +716,7 @@ export class ModelGatewayStack extends Stack {
     alarm("HealthyTasks", targetGroup.metrics.healthyHostCount({ period: Duration.minutes(1), statistic: "Minimum" }), MODEL_GATEWAY_MIN_TASKS, "Fewer than two gateway tasks are healthy", 3, cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD);
     alarm("Refusals", fromLog("Refusals", serveLogs, MODEL_GATEWAY_LOG_EVENTS.refused, fiveMinutes), MODEL_GATEWAY_ALARMS.refusals, "Many calls refused (tokens, budgets, guard)");
     alarm("BusyAnswers", fromLog("BusyAnswers", serveLogs, MODEL_GATEWAY_LOG_EVENTS.overrunBusy, fiveMinutes), MODEL_GATEWAY_ALARMS.busy, "Many busy answers: calls waiting on another estimated-price call of the same company");
-    alarm("SettleFailures", fromLog("SettleFailures", serveLogs, MODEL_GATEWAY_LOG_EVENTS.settleFailed, fiveMinutes), MODEL_GATEWAY_ALARMS.settleFailed, "A call's cost could not be settled (its hold is kept)");
+    alarm("SettleFailures", fromLog("SettleFailures", serveLogs, MODEL_GATEWAY_LOG_EVENTS.settleFailed, fiveMinutes), MODEL_GATEWAY_ALARMS.settleFailed, "A call could not settle, or customer-paid provider usage exceeded its hold (admission stopped)");
     alarm("PriceFetchFailures", fromLog("PriceFetchFailures", fetchLogs, MODEL_GATEWAY_LOG_EVENTS.priceFetchFailed, Duration.hours(1)), MODEL_GATEWAY_ALARMS.priceFetchFailed, "The daily price fetch failed (the last good prices stay)");
     // Staleness: no saved fetch on any of the last three days. A new stack has no fetch log yet, and missing data counted as
     // breaching made this alarm fire about 30 minutes after every create. So missing data does not breach; the alarm counts a

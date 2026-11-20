@@ -6,6 +6,8 @@ import { denyNetwork } from "./model-gateway-no-network.js";
 import { call, claims, now, setup, sse, scope, caps, mint } from "./model-gateway-fixture.js";
 import { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import type { ChargeReceiptV1, SettleV2 } from "../../packages/model-gateway/src/charge-receipt.js";
+import { SnapshotPriceSource } from "../../packages/model-gateway/src/price-index.js";
+import { openRouterPolicy } from "../../packages/model-gateway/src/openrouter-policy.js";
 beforeAll(denyNetwork);
 it("negotiates receipts, binds a call and fingerprint before forwarding, and retains its own reservation after truncation", async () => {
   let initial: ChargeReceiptV1 | undefined, settled: ChargeReceiptV1 | undefined, fingerprint: unknown;
@@ -98,7 +100,14 @@ it.each(["anthropic", "openai", "openrouter"] as const)("%s receipts keep the ad
     sources: { sourceFor: async () => `${provider}_key` }, switchedOn: new Set([provider]),
     ...(provider === "anthropic" ? {} : { [provider]: { transport } }),
   }, chargeReceipts: { source: (_claims, _model, resolved) => resolved } });
-  expect((await call(f.deps, { model, max_tokens: 10, messages: [{ role: "user", content: "hello" }], stream: true }, mint({ mdl: [model] }))).status).toBe(200);
+  let token = mint({ mdl: [model] });
+  if (provider === "openrouter") {
+    const tariff = { model, route: "fixture", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, verifiedAt: now - 1, expiresAt: now + 60_000, evidence: "offline-fixture" };
+    const prices = new SnapshotPriceSource({ load: async () => undefined, save: async () => false }, { now: () => now, openRouterTariffs: [tariff] }); await prices.reload();
+    f.deps.prices = prices; f.deps.openRouterTariffs = [tariff];
+    token = mint({ mdl: [model], runPrice: { companyId: claims.cid, model, provider, sourceId: source.id, connectionRevision: source.connectionRevision, catalogModel: model, snapshotHash: openRouterPolicy(model, now, [tariff])!.hash, snapshotVersion: 1, expiresAt: now + 60_000, inputUsdPerMillion: 1, outputUsdPerMillion: 2, cacheReadUsdPerMillion: 1, cacheWriteUsdPerMillion: 1 } });
+  }
+  expect((await call(f.deps, { model, max_tokens: 10, messages: [{ role: "user", content: "hello" }], stream: true }, token)).status).toBe(200);
   expect(sent).toEqual(["pinned-key"]);
   expect(reserved?.charge?.receipt.source).toEqual(source);
 });

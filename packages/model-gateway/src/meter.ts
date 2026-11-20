@@ -1,6 +1,6 @@
 import { validProvisionalContext, historyOutput, neverConfirmedReceipt, provisionalEstimate, USAGE_WAIT_MS, type ProvisionalContext, type ProvisionalEstimate } from "./provisional.js";
 import { chargeValue, chargeReceiptContent, type ApplyChargeResult, type ChargeReceiptV1, type SettleV2 } from "./charge-receipt.js";
-import { checkReceiptScope, estimatedReceipt, readSettlementReceipt, receiptIdentity, receiptRevision } from "./charge-settlement.js";
+import { customerSourceOverage, checkReceiptScope, estimatedReceipt, readSettlementReceipt, receiptIdentity, receiptRevision } from "./charge-settlement.js";
 import { comparePosition, pendingPage, type PendingPage, type PendingPosition } from "./pending-page.js";
 import { PENDING_RETENTION_DAYS, DAY_MS, CORRECTION_RUN_MS } from "./price-constants.js";
 import { hasUsage, validUsage } from "./reported-cost.js";
@@ -208,7 +208,7 @@ export class InMemoryMeter implements Meter {
     }
     for (const target of open.targets) {
       const row = this.#row(target, open.scope); const spentMicros = row.spentMicros + spend;
-      this.#store(target).set(target.key, { ...row, ...(target.item === "company" && held ? { provisionalMicros: (row.provisionalMicros ?? 0) + actualMicros } : {}), spentMicros, estimatedMicros: row.estimatedMicros + extraEstimated, reservedMicros: row.reservedMicros - release, committed: row.committed - open.estimate + actualMicros, overrun: row.overrun || (receipt?.model.provider === "openrouter" && actualMicros > open.estimate) || (target.cap !== undefined && spentMicros > target.cap) });
+      this.#store(target).set(target.key, { ...row, ...(target.item === "company" && held ? { provisionalMicros: (row.provisionalMicros ?? 0) + actualMicros } : {}), spentMicros, estimatedMicros: row.estimatedMicros + extraEstimated, reservedMicros: row.reservedMicros - release, committed: row.committed - open.estimate + actualMicros, overrun: row.overrun || customerSourceOverage(receipt) || (target.cap !== undefined && spentMicros > target.cap) });
     }
     if (open.line !== undefined) {
       const callKey = JSON.stringify([open.scope.iss, open.scope.cid, reservation.id]);
@@ -265,7 +265,7 @@ export class InMemoryMeter implements Meter {
     }
     for (const t of stored.targets) {
       const scope = { iss: r.issuer, cid: r.companyId, pid: r.project, tid: r.taskId }, row = this.#row(t, scope);
-      this.#store(t).set(t.key, { ...row, spentMicros: row.spentMicros + spendDelta, reservedMicros: row.reservedMicros - release, ...(t.item === "company" && stored.provisional !== undefined ? { provisionalMicros: (row.provisionalMicros ?? 0) + provisionalDelta } : {}), committed: row.committed + delta, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: (r.model.provider === "openrouter" && (row.overrun || amount > chargeValue(r.originalReservationMicros)!)) || (t.cap === undefined ? row.overrun : row.spentMicros + spendDelta > t.cap) });
+      this.#store(t).set(t.key, { ...row, spentMicros: row.spentMicros + spendDelta, reservedMicros: row.reservedMicros - release, ...(t.item === "company" && stored.provisional !== undefined ? { provisionalMicros: (row.provisionalMicros ?? 0) + provisionalDelta } : {}), committed: row.committed + delta, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: row.overrun || customerSourceOverage(r) || (t.cap === undefined ? row.overrun : row.spentMicros + spendDelta > t.cap) });
     }
     const pending = this.#ledger.get(callKey);
     if (pending?.call.status === "pending") this.#removePending(pending.call);

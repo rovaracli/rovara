@@ -46,7 +46,7 @@ const REFUSAL_CODE = /^[a-z0-9_]{1,64}$/u;
 /** A refusal code as it is logged: a fixed lower-case word, or "other" for anything else (a code never carries provider text). */
 export const logCode = (code: string): string => REFUSAL_CODE.test(code) ? code : "other";
 const PAYER = /^[a-z0-9_]{1,32}$/u;
-export type GatewayLogEvent = { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "settle_failed" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
+export type GatewayLogEvent = { event: "customer_source_over_reservation"; source: "bedrock_byo" | "openrouter"; company: string; costMicros: number; heldMicros: number; overageMicros: number } | { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "settle_failed" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
 export interface GatewayDependencies {
   /** Reviewed tariffs; injected only for offline qualification fixtures. */
   openRouterTariffs?: readonly OpenRouterTariff[];
@@ -287,6 +287,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     // A source this route does not serve is never sent on another one's key (no fallback to the company's Anthropic key).
     if (!(AGENT_AI_SOURCES as readonly string[]).includes(source)) return hard(AGENT_UNAVAILABLE);
     if (source === "openrouter_key" && checkModel && claims.mdl.some(model => !model.includes("/"))) return soft(AGENT_MODEL_NOT_SERVED);
+    if (source === "openrouter_key" && claims.reviewer !== undefined) return hard(REVIEWER_CEILING_REFUSED);
     if (source === "openrouter_key" && claims.runPrice === undefined) return hard({ ok: false, status: 409, code: "run_price_authorization_required", message: "Authorize the current AI source and price before this run." });
     if (source === "bedrock_byo") {
       if (choice.byo === undefined) return soft(AGENT_SOURCE_NOT_OFFERED);
@@ -616,6 +617,11 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       }
       if (charge !== undefined && reservation !== undefined && route.meter.settleV2 !== undefined && settlementPrice !== undefined) {
         const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, retainMissingUsage: callClaims?.runPrice !== undefined, notSent: cost === 0, now: now() });
+        // Record the customer's true bill, even above the hold. The meter atomically latches overrun.
+        const observed = chargeValue(receipt.amountMicros)!;
+        if (receipt.billing === "external_provider" && (route.payer === "bedrock_byo" || route.provider === "openrouter") && callClaims !== undefined && observed > reservedMicros) {
+          log({ event: "customer_source_over_reservation", source: route.payer === "bedrock_byo" ? "bedrock_byo" : "openrouter", company: callClaims.cid, costMicros: observed, heldMicros: reservedMicros, overageMicros: observed - reservedMicros });
+        }
         const actualInputTokens = usage?.actualInputTokens?.();
         await route.meter.settleV2({ reservationId: reservation.id, receipt, ...(actualInputTokens === undefined ? {} : { actualInputTokens }) });
         cost = chargeValue(receipt.amountMicros)!; estimated = receipt.status !== "final";
@@ -694,8 +700,13 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     shortenDeadline(startedAt + callDurationMs(guarded.maxTokens));
     const scope = route.scope(claims);
     let resolved = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, route.provider, guarded.model, deps.cautiousCeiling, controller.signal, guarded.priceKind ?? "chat"));
+    const providerPrice = resolved;
     for (const also of route.alsoPricedAs?.(guarded.model) ?? []) resolved = dearerPrice(resolved, await wait(resolvePrice(deps.prices ?? UnknownPriceSource, also.provider, also.model, deps.cautiousCeiling, controller.signal, guarded.priceKind ?? "chat")));
     const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
+    const legacyBedrock = route.payer === "bedrock_byo" && claims.runPrice === undefined;
+    if (legacyBedrock && (!guarded.inputBounded || guarded.media !== undefined || providerPrice.estimated || price.estimated || usageEstimated(price, { input: guarded.bytes.length + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0), output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || price.operatorReview || route.meter.settleV2 === undefined)) {
+      await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
+    }
     const basis = claims.runPrice === undefined ? undefined : deps.prices?.quoteBasis?.(route.provider, guarded.model);
     if ((claims.runPrice !== undefined && (!guarded.inputBounded || guarded.media !== undefined || (price.estimated && !price.knownTokenPrice) || basis === undefined || basis.hash !== claims.runPrice.snapshotHash || basis.version !== claims.runPrice.snapshotVersion)) || !runPriceAllows(claims, route.provider, guarded.model, route.chargeSource, price, now(), deps.openRouterTariffs)) {
       await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
@@ -740,11 +751,11 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     let session: Awaited<ReturnType<ReviewerGrantStore["read"]>>;
     if (grant !== undefined) { try { session = await wait(deps.reviewerGrants!.read(claims.iss, scope.cid, claims.jti, controller.signal)); } catch { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; } }
     const ceilingMicros = grant === undefined ? 0 : Math.floor(grant.ceilingUsd * 1_000_000);
-    if (deps.chargeReceipts !== undefined && grant === undefined && guarded.media === undefined && route.meter.settleV2 !== undefined) {
-      const source = deps.chargeReceipts.source(claims, guarded.model, route.chargeSource);
+    if ((deps.chargeReceipts !== undefined || legacyBedrock) && grant === undefined && guarded.media === undefined && route.meter.settleV2 !== undefined) {
+      const source = legacyBedrock ? route.chargeSource : deps.chargeReceipts!.source(claims, guarded.model, route.chargeSource);
       if (source !== undefined) charge = initialCharge(claims, { provider: route.provider, modelId: guarded.model }, source, estimate, now(), price);
     }
-    const reserved = grant !== undefined && session !== undefined ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined ? estimate : ceilingMicros, appliedMaxOutputTokens, ...(charge === undefined ? {} : { charge: { receipt: charge, requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, ...(claims.runPrice !== undefined ? {} : { provisional: { requestBytes: guarded.bytes.length, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }) }), ...(line === undefined ? {} : { line }),
+    const reserved = grant !== undefined && session !== undefined ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined ? estimate : ceilingMicros, appliedMaxOutputTokens, ...(charge === undefined ? {} : { charge: { receipt: charge, requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, ...(claims.runPrice !== undefined || legacyBedrock ? {} : { provisional: { requestBytes: guarded.bytes.length, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }) }), ...(line === undefined ? {} : { line }),
       ...(grant === undefined ? {} : { sweepAfter: now() + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS, review: { jti: claims.jti.toLowerCase() } }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });

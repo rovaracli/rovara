@@ -256,7 +256,7 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
     ];
     for (const [name, event, group, threshold] of expected) {
       const filter = filters.find((each) => each.MetricTransformations[0]!.MetricName === `${name}-staging`)!;
-      expect(filter.FilterPattern).toBe(`{ $.event = "${event}" }`);
+      expect(filter.FilterPattern).toBe(name === "SettleFailures" ? '{ ($.event = "settle_failed") || ($.event = "customer_source_over_reservation") }' : `{ $.event = "${event}" }`);
       expect(filter.LogGroupName).toEqual({ Ref: group });
       expect(byMetric(`${name}-staging`)).toMatchObject({ Threshold: threshold, Statistic: "Sum" });
     }
