@@ -244,6 +244,25 @@ it("disables setup Continue for required unsaved edits until a save is confirmed
  } finally { f.close(); }
 });
 
+it("a new company with no saved source and no default: Save writes the shown Rovara's AI and setup continues (#255)", async () => {
+ const f = mount({ path: "/app/onboard?step=ai", respond: r => {
+  if (r.method !== "PUT" || r.path !== "/v1/app/org/agent-ai") return undefined;
+  f.bodies[r.path] = { version: 1, source: (r.body as { source: string }).source, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }] };
+  return { status: 200, body: f.bodies[r.path] };
+ } });
+ (f.bodies["/v1/app/org/agent-models"] as { steps: Array<{ refused: boolean }> }).steps.forEach(step => { step.refused = false; });
+ // Not exempt: Cloud answers no saved choice and no effectiveSource (the gateway would not use Rovara's AI unless it is saved).
+ f.bodies["/v1/app/org/agent-ai"] = { version: 0, source: null, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }] };
+ try {
+  await ready();
+  expect(within(screen.getByTestId("ai-spend-rovara")).getByRole("radio")).toHaveProperty("checked", true);
+  expect(screen.getByTestId("onboard-continue-repos")).toHaveProperty("disabled", true);
+  fireEvent.click(within(screen.getByTestId("ai-spend-step")).getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(f.router.state.location.search).toBe("?step=repositories"));
+  expect(f.request.mock.calls.filter(([r]) => r.method !== "GET").map(([r]) => [r.method, r.path, r.body])).toEqual([["PUT", "/v1/app/org/agent-ai", { expectedVersion: 0, source: "rovara" }]]);
+ } finally { f.close(); }
+});
+
 it.each(["limit", "source"] as const)("clearing the company model keeps an unsaved %s draft on the real setup AI step", async draft => {
  const f = mount({ path: "/app/onboard?step=ai", respond: r => {
   if (r.method !== "PUT") return undefined;

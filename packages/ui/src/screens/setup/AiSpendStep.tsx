@@ -142,8 +142,10 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
  const modelChanged = modelInteracted && picked !== initialPick(loaded.model);
  const saveModel = modelChanged;
  const chosenSource: AgentAiSource = choice === "rovara" ? "rovara" : own;
- // Compare against the displayed starting choice, so returning to it is not a change.
- const sourceChanged = sourceInteracted && savedSource !== chosenSource && !(savedSource === null && loadedChoice === chosenSource);
+ // #255: nothing saved and no default the company is on (not exempt), so the shown Rovara's AI is only a suggestion: Save must write it, or nothing serves.
+ const unsavedSuggestion = savedSource === null && (loaded.source.effectiveSource ?? null) === null && loaded.source.available[chosenSource] === true;
+ // Otherwise compare against the displayed starting choice, so returning to it is not a change.
+ const sourceChanged = unsavedSuggestion || (sourceInteracted && savedSource !== chosenSource && !(savedSource === null && loadedChoice === chosenSource));
  const capUsd = dollarsOf(cap, MONTHLY_MAX_USD);
  const displayChoice = sourceInteracted ? choice : shown === null || shown === "rovara" ? "rovara" : "own";
  const displayOwn = sourceInteracted ? own : shown !== null && shown !== "rovara" ? shown : "anthropic_key";
