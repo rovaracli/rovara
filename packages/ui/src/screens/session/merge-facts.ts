@@ -97,9 +97,10 @@ export function changedSince(shown: Shown, rows: readonly PullRow[], readiness: 
 }
 
 /** Why Merge is locked, in the words the board gives, or undefined when nothing here locks it (Code's own answer still decides whether it may be pressed). */
-export type LockKind = "unresolved" | "storage" | "drift" | "not_ready";
+export type LockKind = "unresolved" | "storage" | "identity" | "drift" | "not_ready";
 export interface Lock { kind: LockKind; words: string }
-export function lockOf(input: { unresolved: boolean; storage?: "unavailable" | "unreadable"; rows: readonly PullRow[]; readiness: MergeReadiness | undefined }): Lock | undefined {
+export function lockOf(input: { unresolved: boolean; identityUnread?: boolean; storage?: "unavailable" | "unreadable"; rows: readonly PullRow[]; readiness: MergeReadiness | undefined }): Lock | undefined {
+ if (input.identityUnread === true) return { kind: "identity", words: "Locked until Rovara has read who you are." };
  if (input.storage !== undefined) return { kind: "storage", words: input.storage === "unreadable" ? "Locked: a saved merge request in this browser can't be read. Merge it on GitHub." : "Locked: this browser's storage can't be read, so Rovara can't be sure an earlier merge wasn't sent. Merge it on GitHub, or allow site storage and reload." };
  if (input.unresolved) return { kind: "unresolved", words: "Locked: the result of your earlier merge isn't confirmed. Rovara won't send another one until it is answered." };
  const moved = input.rows.filter(row => row.drift);

@@ -26,6 +26,7 @@ function setup(task: Record<string, unknown>, answers: { readiness?: Answer | ((
   const session = SessionViewReaderSchema.parse(workspaceFixture({}, task));
   const notFound = { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
   const f = fakeHost(async (request) => {
+    if (request.path === "/v1/app/me") return { status: 200, body: { developer: { id: "a1".repeat(32), name: "Ana", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } };
     if (/\/merge$/u.test(request.path) && request.method === "GET") return typeof answers.readiness === "function" ? answers.readiness() : answers.readiness ?? notFound;
     if (/\/merge$/u.test(request.path) && request.method === "POST") return typeof answers.press === "function" ? answers.press() : answers.press ?? notFound;
     return notFound;
