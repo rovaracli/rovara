@@ -305,7 +305,11 @@ async function changeComment(context: RouteContext, change: "edit" | "delete"): 
   if (comment === undefined || comment.deletedAt !== undefined) return { status: 404, body: { error: { code: "NOT_FOUND", message: "That comment isn't here any more." } } };
   if (comment.author.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: "You can change only your own comments." } } };
   const input = (context.body ?? {}) as { rev?: unknown; text?: unknown };
-  if (input.rev !== comment.rev) return { status: 409, body: { error: { code: "CONFLICT", message: "This comment changed since you opened it. Refresh and try again." } } };
+  const bodyIsEmpty = context.body === undefined || context.body === null
+    || (typeof context.body === "object" && !Array.isArray(context.body) && Object.keys(context.body).length === 0);
+  const queryRev = bodyIsEmpty ? context.query.get("rev") : null;
+  const revision = input.rev ?? (queryRev !== null && /^[1-9]\d*$/u.test(queryRev) ? Number(queryRev) : undefined);
+  if (revision !== comment.rev) return { status: 409, body: { error: { code: "CONFLICT", message: "This comment changed since you opened it. Refresh and try again." } } };
   const at = context.now().toISOString();
   let next = { ...comment, rev: comment.rev + 1 };
   if (change === "edit") {

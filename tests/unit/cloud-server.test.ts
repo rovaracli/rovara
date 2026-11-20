@@ -1049,6 +1049,28 @@ describe("the Conversation: timeline and comments (Rovara-cloud#24)", () => {
     expect((await call("PATCH", path, { ...ada, body: { rev: 3, text: "Back." } }))!.status).toBe(404);
   });
 
+  it("deletes a comment with its revision in the query when DELETE has no body", async () => {
+    const { call, ada, sessionId, post, list } = await begin();
+    const comment = SessionMessageSchema.parse(JSON.parse((await post(ada, { requestId: "55555555-5555-4555-8555-555555555555", kind: "comment", text: "Remove me." }))!.body));
+    const path = `/v1/web/sessions/${sessionId}/messages/${comment.messageId}`;
+
+    const deleted = await call("DELETE", `${path}?rev=1`, ada);
+    expect(deleted!.status).toBe(200);
+    expect(SessionMessageSchema.parse(JSON.parse(deleted!.body))).toMatchObject({ text: "Comment deleted", rev: 2 });
+    expect((await list(ada)).messages[0]).toMatchObject({ text: "Comment deleted", rev: 2 });
+  });
+
+  it("refuses a bodyless comment delete with a wrong or missing revision", async () => {
+    const { call, ada, sessionId, post, work } = await begin();
+    const comment = SessionMessageSchema.parse(JSON.parse((await post(ada, { requestId: "66666666-6666-4666-8666-666666666666", kind: "comment", text: "Keep me." }))!.body));
+    const path = `/v1/web/sessions/${sessionId}/messages/${comment.messageId}`;
+
+    expect((await call("DELETE", `${path}?rev=2`, ada))!.status).toBe(409);
+    expect((await call("DELETE", path, ada))!.status).toBe(409);
+    expect((await work.get(sessionId))?.messages?.[0]).toMatchObject({ text: "Keep me.", rev: 1 });
+    expect((await work.get(sessionId))?.messages?.[0]?.deletedAt).toBeUndefined();
+  });
+
   it("offers comment to anyone who can read the session, so the app shows the send box", async () => {
     const { call, ada, grace, sessionId, share } = await begin();
     await share();

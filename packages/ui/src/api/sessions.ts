@@ -30,7 +30,7 @@ export function createSessionApi(host: AppHost) {
  async read(id: string) { return (await api.get(sessionPath(id), SessionResponseReaderSchema, { "x-agentx-task-view": "2" })).session; },
  sendMessage(id: string, input: { kind: "comment" | "steer"; text: string; anchor?: SessionAnchorInput; threadId?: string }) { return api.send("POST", sessionPath(id) + "/messages", { ...input, requestId: crypto.randomUUID() }, SessionMessageReaderSchema); },
  editMessage(id: string, messageId: string, rev: number, text: string) { return api.send("PATCH", sessionPath(id) + "/messages/" + encodeURIComponent(SessionMessageIdSchema.parse(messageId)), { rev, text }, SessionMessageReaderSchema); },
- deleteMessage(id: string, messageId: string, rev: number) { return api.send("DELETE", sessionPath(id) + "/messages/" + encodeURIComponent(SessionMessageIdSchema.parse(messageId)), { rev }, SessionMessageReaderSchema); },
+ deleteMessage(id: string, messageId: string, rev: number) { return api.send("DELETE", sessionPath(id) + "/messages/" + encodeURIComponent(SessionMessageIdSchema.parse(messageId)) + "?rev=" + encodeURIComponent(String(rev)), undefined, SessionMessageReaderSchema); },
  setFollowing(id: string, following: boolean) { return api.send(following ? "POST" : "DELETE", sessionPath(id) + "/follow", undefined, SessionFollowResponseReaderSchema); },
  presence(id: string) { return api.send("POST", sessionPath(id) + "/presence", undefined, SessionPresenceResponseReaderSchema); },
  listShares(id: string) { return api.get(sessionPath(id) + "/shares", SessionSharesResponseReaderSchema); },
