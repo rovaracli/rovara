@@ -41,8 +41,7 @@
 .rv-ai-spend-own label{display:block;position:relative;padding:var(--rv-space-1) 0 var(--rv-space-1) 28px;cursor:pointer}
 .rv-ai-spend-step .rv-ai-spend-own label>input[type=radio]{left:0;top:calc(var(--rv-space-1) + 4px)}
 
-/* Tables sit on the card, not in a second box */
-.rv-ai-spend-step .rv-table-wrap{border:0;background:none;padding:0}
+/* Tables: full width (admin.css styles them on admin pages) */
 .rv-ai-spend-step .rv-table{width:100%}
 
 /* Fields: not the full width of the page */
