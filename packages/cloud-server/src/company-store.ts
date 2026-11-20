@@ -101,7 +101,7 @@ export function parseAiSourceKinds(value: string | undefined): Set<AiSourceKind>
 }
 /** Whether an agent source is switched on for this install: Rovara's AI and the pre-switch sources always; any other only when its kind is on. */
 export function agentSourceSwitchedOn(source: string, switchedOn: ReadonlySet<string>): boolean {
-  if (source === "rovara" || PRE_SWITCH_AGENT_SOURCES.includes(source)) return true;
+  if (source === "rovara" || source === "openrouter_key" || PRE_SWITCH_AGENT_SOURCES.includes(source)) return true;
   const kind = AI_SOURCE_KINDS.find((k) => AGENT_SOURCE_OF_KIND[k] === source);
   return kind !== undefined && switchedOn.has(kind);
 }

@@ -21,7 +21,7 @@ import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 /** The sources an admin may save. `bedrock_byo` (DEC 238) only once the company's Bedrock is connected on this Cloud. */
 export const AGENT_AI_CHOOSABLE: readonly AgentAiSource[] = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key", "custom_endpoint"];
 /** The sources every Cloud lists; the others (DEC 254t) are listed only where their kind is switched on, so this answer is unchanged elsewhere. */
-const ALWAYS_LISTED: readonly AgentAiSource[] = ["rovara", "anthropic_key", "bedrock_byo"];
+const ALWAYS_LISTED: readonly AgentAiSource[] = ["rovara", "anthropic_key", "bedrock_byo", "openrouter_key"];
 /** The company account each own-key source (DEC 254t) needs before it can be chosen (the learning document's provider). */
 const KEY_OF: Readonly<Partial<Record<AgentAiSource, "openai" | "openrouter" | "endpoint">>> = Object.freeze({ openai_key: "openai", openrouter_key: "openrouter", custom_endpoint: "endpoint" });
 const BODY_BYTES_MAX = 1_024;

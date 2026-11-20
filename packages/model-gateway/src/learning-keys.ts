@@ -4,6 +4,7 @@
 // rotates and removes them through Cloud's "Learning AI key" settings (cloud-server learning-ai-routes.ts); a project never holds
 // one and can never link to one (product-keys.ts). Each provider is answered only by ITS account: a company with only Anthropic
 // connected is not connected for OpenAI or Gemini, and Vertex learning is not connectable here (never connected).
+import { parseEndpointConnect } from "./endpoint-source.js";
 import type { CompanyKeyProvider, LearningKeySource } from "./learning-route.js";
 import { LEARNING_KEY_PROVIDERS, type LearningKeyProvider, type ProductKeyStore } from "./product-keys.js";
 
@@ -19,6 +20,15 @@ export function storedLearningKeys(store: Pick<ProductKeyStore, "learningSource"
         source: { kind: "company_key", id: saved.sourceId, name: `Company ${provider}`, provider, connectionRevision: saved.versionId },
         key: () => store.useKey(iss, cid, saved),
       };
+    },
+    async endpointMetadata(iss, cid) {
+      const saved = await store.learningSource(iss, cid, "endpoint");
+      if (saved === undefined) return undefined;
+      const text = await store.useKey(iss, cid, saved);
+      if (text === undefined) return undefined;
+      const connection = parseEndpointConnect(text);
+      if (connection === undefined) throw new Error("endpoint connection unreadable");
+      return { sourceId: saved.sourceId, versionId: saved.versionId, models: connection.models };
     },
     async identityFor(iss, cid, provider) {
       const source = await store.learningSource(iss, cid, provider);

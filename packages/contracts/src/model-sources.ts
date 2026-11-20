@@ -69,7 +69,7 @@ export interface SourceLaunch {
  * models and a member's ChatGPT plan are not company sources, so they are never refused here.
  */
 export function sourceKindProblem(kind: ModelSourceKind, api?: string, launch: SourceLaunch = {}): string | undefined {
-  if (kind === "rovara" || kind === "personal-chatgpt") return undefined;
+  if (kind === "rovara" || kind === "personal-chatgpt" || kind === "bedrock" || kind === "openrouter") return undefined;
   const refusal = `${kind} sources aren't available yet`;
   if (!SOURCE_KINDS_AT_LAUNCH.includes(kind) || !(launch.kinds ?? SOURCE_KINDS_SWITCHED_ON_DEFAULT).includes(kind)) return refusal;
   if (kind === "endpoint" && (api === undefined || !(launch.transports ?? TRANSPORTS_AT_LAUNCH).includes(api))) return refusal;
