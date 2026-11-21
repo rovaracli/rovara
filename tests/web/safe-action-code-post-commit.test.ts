@@ -4,13 +4,14 @@ import { QueryClient } from "@tanstack/react-query";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CodeSession } from "../../packages/cloud-server/src/index.js";
 import { CORE_ACTION_WORDS } from "../../packages/cloud-server/src/core-task-actions.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
-import { actionLock, actionSubject, createActionRecords, fenceFor, handleActionFailure } from "../../packages/ui/src/safe-action.js";
+import { actionLock, actionSubject, createActionRecords, fenceFor, fencedRead, handleActionFailure } from "../../packages/ui/src/safe-action.js";
 import { parseAccepted, parsePending, type AcceptedAnswer, type PendingPress } from "../../packages/ui/src/screens/session/merge-pending.js";
 import CORE_TASK_ROUTES from "../fixtures/code-core-task-routes.json" with { type: "json" };
 
 const sid = "ses_aaaaaaaaaaaaaaaaaaaa", taskId = CORE_TASK_ROUTES.page.taskId, person = "a".repeat(64), company = "org_aaaaaaaaaaaaaaaaaaaa";
 const subject = actionSubject({ orgId: company, developerId: person, subjectId: sid });
 const route = (action: string) => `/v1/web/sessions/${sid}/${action}`;
+const peopleChanged = "People changed; refresh the task and try again";
 const limit = "workspace operation read limit exceeded (10 reads, each up to 1 MB, plus a completion probe)";
 const cases: Array<[string, string, number, string, string]> = [
  // Code dev-routes.ts:649-650 projects AFTER answer-request.ts:120-134 commits.
@@ -23,6 +24,10 @@ const cases: Array<[string, string, number, string, string]> = [
  ["findings access reload", route("accept-findings"), 404, "TASK_NOT_FOUND", "no such task"],
  ["page findings projection", route("accept-findings"), 400, "CONFIG_INVALID", limit],
  ["page findings access reload", route("accept-findings"), 404, "TASK_NOT_FOUND", "no such task"],
+ // F1: hosted access reload can reconcile People AFTER the move, then throw stale.
+ ["send-back People changed", route("send-back"), 409, "IDEMPOTENCY_CONFLICT", peopleChanged],
+ ["findings People changed", route("accept-findings"), 409, "IDEMPOTENCY_CONFLICT", peopleChanged],
+ ["page findings People changed", route("accept-findings"), 409, "IDEMPOTENCY_CONFLICT", peopleChanged],
  // Legacy review queues work then reauthorizes (developer-tasks.ts:3177-3185).
  ["retry access reload", route("retry"), 404, "TASK_NOT_FOUND", "no task here that you can see"],
  ["retry task view", route("retry"), 400, "CONFIG_INVALID", limit],
@@ -52,7 +57,7 @@ it.each(cases)("%s: Code commits once then its FIRST response is %s %s %s; the p
  const client = new CodeClient({ baseUrl: "https://code.example.test", clientId: "synthetic", clientSecret: "synthetic", redirectUri: "https://cloud.example.test/callback", scopes: "", fetch: async (input, init) => {
   const target = new URL(input instanceof Request ? input.url : input).pathname;
   if (target === "/v1/dev/access") return json(200, session.access);
-  if ((init?.method ?? "GET") === "GET") return json(200, { task: { ...CORE_TASK_ROUTES.page.blockedTask, status: "RUNNING", sessionId: sid } });
+  if ((init?.method ?? "GET") === "GET") return json(200, { task: { ...CORE_TASK_ROUTES.page.blockedTask, status: "RUNNING", sessionId: sid, ...(applied > 0 && message === peopleChanged ? { workflow: undefined } : {}) } });
   writes.push(target);
   // These are the real pre-apply fallbacks, before the one simulated committed call.
   if (scenario.startsWith("core retry") && target.endsWith("/workflow/review")) return json(404, CORE_TASK_ROUTES.page.notOnCore.body);
@@ -77,5 +82,18 @@ it.each(cases)("%s: Code commits once then its FIRST response is %s %s %s; the p
  expect(reloaded.readPendingNow(subject)).toEqual({ kind: "pending", entry: pending, stale: false });
  expect(reloaded.claimPending({ ...pending, requestId: "33333333-3333-4333-8333-333333333333" }, () => undefined, "storage").stop).toBe(true);
  expect(read).not.toHaveBeenCalled();expect(words).not.toHaveBeenCalled();
+ if (message === peopleChanged) {
+  // The person's Check reads the applied task through Cloud; the ambiguous error
+  // itself neither clears the saved identity nor permits a second POST.
+  const checked = await fencedRead(fence, async () => {
+   const fresh = await handler({ method: "GET", path: `/v1/web/sessions/${sid}`, query: new URLSearchParams(), headers: { cookie: "rovara_cloud_session=cookie" } });
+   expect(fresh?.status).toBe(200);
+   return JSON.parse(fresh!.body) as { session: { status: string } };
+  });
+  expect(checked.body.session.status).toBe("running");
+  expect(saved.readPendingNow(subject)).toEqual({ kind: "pending", entry: pending, stale: false });
+  expect(reloaded.claimPending({ ...pending, requestId: "33333333-3333-4333-8333-333333333333" }, () => undefined, "storage").stop).toBe(true);
+  expect(writes).toHaveLength(scenario.startsWith("page findings") ? 2 : 1);
+ }
  expect(applied).toBe(1);
 });

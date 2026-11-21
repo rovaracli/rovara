@@ -432,7 +432,8 @@ type FinalRefusal = readonly [(path: string) => boolean, number, string, ((conte
  * ONE list. Sources/exception audit: docs/safe-action.md and the lane's POST-FORWARD-AUDIT.md.
  * A first Code 4xx can follow a commit: status/code alone is NOT proof of refusal.
  * Ambiguous CONFIG_INVALID, TASK_NOT_FOUND, retry NOT_FOUND/TASK_ACCESS_DENIED,
- * and Cloud's mapped post-commit FORBIDDEN replies must retain the pending press.
+ * send-back/accept-findings IDEMPOTENCY_CONFLICT, and Cloud's mapped
+ * post-commit FORBIDDEN replies must retain the pending press.
  * Cloud separately normalizes later failures after a Code 2xx to 5xx.
  * MERGE_NOT_READY is final only at the document gate, never on Merge; Merge's original tuple list is preserved.
  * Close TASK_NOT_FOUND and People/add CHANGE_STALE can follow effects in Code itself and are deliberately absent.
@@ -453,7 +454,10 @@ const FINAL_ACTION_REFUSALS: readonly FinalRefusal[] = [
  }],
  [path => DOCUMENT_ACTION.test(path), 404, "NOT_FOUND"],
  [path => PAID_OWNER_ROUND.test(path), 404, "NOT_FOUND", (_context, failure) => failure.message === "this task does not have a workflow record"],
- [path => SESSION_ACTION.test(path), 404, "SESSION_NOT_FOUND"], [ownerOrAnswer, 409, "IDEMPOTENCY_CONFLICT"],
+ [path => SESSION_ACTION.test(path), 404, "SESSION_NOT_FOUND"],
+ // Send-back/findings can commit before People reconciliation throws this code.
+ // All its messages stay UNKNOWN on those routes (controller option a).
+ [path => /^\/sessions\/ses_[0-9a-z]{20}\/retry$/u.test(path) || ANSWERS_ACTION.test(path), 409, "IDEMPOTENCY_CONFLICT"],
  [path => /\/retry$/u.test(path) && OWNER_ROUND.test(path), 403, "SESSION_LEVEL_REQUIRED"],
  [path => /\/retry$/u.test(path) && OWNER_ROUND.test(path), 409, "CONFIG_INVALID"], [path => OWNER_ROUND.test(path), 409, "CONFLICT"],
  [path => PAID_OWNER_ROUND.test(path), 409, "PROJECT_ARCHIVED"],

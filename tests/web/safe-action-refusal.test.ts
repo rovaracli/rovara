@@ -126,6 +126,7 @@ it("after exactly three unknown checks the exit links to the task; Check and the
  act(() => { recordUnknownActionCheck(f.fence, f.pending); });
  expect(result.current).toEqual({ message: "We couldn't confirm this. Open the task to check", href });
  unmount(); const remount = renderHook(() => useUnknownActionExit(f.fence, f.pending, href));
+ remount.rerender(); // A remount must retain counts on the next render, too (M4).
  expect(remount.result.current?.href).toBe(href); // the subject fence survives navigation
  expect(localStorage.getItem("refusal.pending:" + subject)).toBe(before);
  expect(f.records.claimPending(f.pending, () => undefined, "storage").stop).toBe(true);
@@ -150,4 +151,15 @@ it("unknown checks cannot leak to a new press, another person or a resolved reco
  expect(renderHook(() => useUnknownActionExit(other, f.pending, href)).result.current).toBeUndefined();
  const resolved = renderHook(() => useUnknownActionExit(f.fence, undefined, href));
  expect(resolved.result.current).toBeUndefined();
+});
+
+// Option (a): even Code's pre-commit words cannot unlock these two routes.
+it.each(["send-back", "accept-findings"].flatMap(action => [
+ "People changed; refresh the task and try again",
+ "this request ID was already used for another decision on this task; use a new one",
+ "this send-back is out of date; refresh the task and try again",
+ "these findings are out of date; refresh the task and try again", "", "Unreviewed words",
+].flatMap(words => ["app", "web"].map(alias => [action, words, alias]))))(
+ "%s IDEMPOTENCY_CONFLICT (%s, %s) never matches message text", (action, words, alias) => {
+ expect(isFinalActionRefusal(new ApiError(409, "IDEMPOTENCY_CONFLICT", words), { route: `/v1/${alias}/sessions/${sid}/${action}` })).toBe(false);
 });
