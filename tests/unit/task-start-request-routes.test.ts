@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { REQUEST, TIME, confirmed, httpWorld, clientFor, usingSession, codeResponse } from "../support/server-read-http.js";
+import { SERVER_READ_CALL_MS, SERVER_READ_MAX_BYTES } from "../../packages/cloud-server/src/code-client.js";
 const path = `/v1/web/task-start-requests/${REQUEST}`;
 afterEach(() => vi.useRealTimers());
 describe("original start Cloud reader through the real client and browser mount", () => {
@@ -79,3 +80,8 @@ it("keeps the original deadline when the handler recovers a concurrently refresh
     expect(sends).toBe(2);
   } finally { await vi.advanceTimersByTimeAsync(30_000); await pending; }
 }, 3_000);
+
+it("pins the shared non-merge server-read limits", () => {
+  expect(SERVER_READ_CALL_MS).toBe(25_000);
+  expect(SERVER_READ_MAX_BYTES).toBe(262_144);
+});

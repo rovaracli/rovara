@@ -116,10 +116,10 @@ const TOKEN_CALL_MS = 10_000;
 const OFFER_TTL_MS = 30_000;
 const OFFER_CALL_MS = 3_000;
 
-/** R1a permits at most 32 rows, 2,048-character URLs and 600-character refusals; 256 KiB leaves room for their JSON encoding. */
-export const MERGE_RECEIPT_MAX_BYTES = 256 * 1024;
-/** One receipt call, including a refresh and final body decode. */
-export const MERGE_RECEIPT_CALL_MS = 25_000;
+/** Shared server-read response ceiling, including the bounded access recheck. */
+export const SERVER_READ_MAX_BYTES = 256 * 1024;
+/** One server read, including a refresh and final body decode. */
+export const SERVER_READ_CALL_MS = 25_000;
 
 export class CodeResponseTooLarge extends Error {
   constructor() { super("Rovara Code's response exceeded the receipt limit"); }
@@ -451,6 +451,6 @@ export class CodeClient {
     if (!response.ok) return undefined;
     return deadline === undefined
       ? await response.json() as CodeAccess
-      : await boundedJson(response, deadline, MERGE_RECEIPT_MAX_BYTES) as CodeAccess;
+      : await boundedJson(response, deadline, SERVER_READ_MAX_BYTES) as CodeAccess;
   }
 }

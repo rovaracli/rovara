@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { AgentXNameSchema } from "@agentx/contracts";
-import { CodeError, SignInEnded, MERGE_RECEIPT_CALL_MS, MERGE_RECEIPT_MAX_BYTES } from "./code-client.js";
+import { CodeError, SignInEnded, SERVER_READ_CALL_MS, SERVER_READ_MAX_BYTES } from "./code-client.js";
 import type { Route, RouteAnswer } from "./routes.js";
 
 const ON_THE_WEBSITE_MESSAGE = "Do this on the Rovara website: the command line and AI tools cannot make this change.";
@@ -34,12 +34,12 @@ export const GITHUB_DISCONNECT_PREVIEW_ROUTES: Route[] = [
   { method: "POST", path: /^\/github\/disconnect-preview$/u, answer: async context => {
     const input = Input.safeParse(context.body);
     if (!input.success || context.query.size !== 0) return failure(400, "CONFIG_INVALID", "That disconnect preview is invalid.");
-    const deadlineMs = context.serverReadDeadline === undefined ? MERGE_RECEIPT_CALL_MS : context.serverReadDeadline - Date.now();
+    const deadlineMs = context.serverReadDeadline === undefined ? SERVER_READ_CALL_MS : context.serverReadDeadline - Date.now();
     if (deadlineMs <= 0) return failure(503, "RUNTIME_UNAVAILABLE");
     let value: unknown;
     try {
       value = await context.client.json<unknown>(context.session, "/v1/dev/company/connections/impact", {
-        method: "POST", body: input.data, expectedStatus: 200, boundedRead: { deadlineMs, maxBytes: MERGE_RECEIPT_MAX_BYTES },
+        method: "POST", body: input.data, expectedStatus: 200, boundedRead: { deadlineMs, maxBytes: SERVER_READ_MAX_BYTES },
       });
     } catch (error) { return refused(error); }
     const reply = Reply.safeParse(value);
