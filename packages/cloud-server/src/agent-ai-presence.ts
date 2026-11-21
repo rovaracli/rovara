@@ -24,7 +24,7 @@ export async function agentAiConnected(context: Pick<RouteContext, "company" | "
   // Only a confirmed absence of connections means Rovara AI; an unreadable connection is unknown.
   if (source === undefined) {
     const keyConnected = await anthropicKeyConnected(asked, companyId);
-    const bedrock = keyConnected === false ? bedrockForDefault(asked, await bedrockConnected(asked, companyId)) : null;
+    const bedrock = keyConnected === false ? await bedrockForDefault(asked, companyId, await bedrockConnected(asked, companyId)) : null;
     const effective = effectiveAgentSource({ saved: undefined, exempt: false, keyConnected, bedrockConnected: bedrock });
     return effective.source === null ? null : true;
   }

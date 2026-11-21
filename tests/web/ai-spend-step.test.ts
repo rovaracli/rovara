@@ -119,13 +119,13 @@ describe("the company step, AI and spending", () => {
   } finally { f.close(); }
  });
 
- it("inline Anthropic connect refreshes the effective source and removes the billed Rovara note", async () => {
+ it.each([false, true])("inline Anthropic connect refreshes the source; explicit Rovara save=%s", async (chooseRovara) => {
   const c = company({ cap: 500_000_000, source: null, model: null });
   let connected = false;
   const f = mountRoute("/app/admin/ai-spending", r => {
    if (r.path === "/v1/app/org/learning-ai/key" && r.method === "PUT") { connected = true; return { status: 200, body: { revision: 1 } }; }
    if (r.path === "/v1/app/org/learning-ai") return { status: 200, body: { revision: connected ? 1 : 0, accounts: { anthropic: { connected }, openai: { connected: false }, gemini: { connected: false } }, removed: [], pausedNow: [], pauseReasons: [] } };
-   if (r.path === "/v1/app/org/agent-ai" && r.method === "GET") return { status: 200, body: { ...agentAi(null, 0), anthropicKeyConnected: connected, bedrockConnected: false, effectiveSource: connected ? "anthropic_key" : "rovara", sourceIsDefault: true } };
+   if (r.path === "/v1/app/org/agent-ai" && r.method === "GET" && c.state.source === null) return { status: 200, body: { ...agentAi(null, 0), anthropicKeyConnected: connected, bedrockConnected: false, effectiveSource: connected ? "anthropic_key" : "rovara", sourceIsDefault: true } };
    return c.respond(r);
   });
   try {
@@ -141,10 +141,16 @@ describe("the company step, AI and spending", () => {
    expect(screen.getByRole<HTMLInputElement>("radio", { name: "Your own Anthropic key" }).checked).toBe(true);
    expect(screen.getByText(/Task source: Your Anthropic key/u)).toBeTruthy();
    expect(c.writes).toEqual([]);
+   if (chooseRovara) fireEvent.click(screen.getByTestId("ai-spend-rovara").querySelector<HTMLInputElement>("input")!);
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   const saved = await screen.findByTestId("ai-spend-saved");
+   expect(c.writes).toEqual(chooseRovara ? [{ method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 0, source: "rovara" } }] : []);
+   expect(saved.textContent).toContain(chooseRovara ? "Current AI source: Rovara's AI" : "Current AI source: Your Anthropic key");
+   expect(screen.getByTestId(chooseRovara ? "ai-spend-rovara" : "ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
   } finally { f.close(); }
  });
 
- it("inline Bedrock connect refreshes the effective source and removes the billed Rovara note", async () => {
+ it.each([false, true])("inline Bedrock connect refreshes the source; explicit Rovara save=%s", async (chooseRovara) => {
   const c = company({ cap: 500_000_000, source: null, model: null });
   const roleArn = "arn:aws:iam::123456789012:role/RovaraBedrockInvoke-fixture";
   let connected = false;
@@ -154,7 +160,7 @@ describe("the company step, AI and spending", () => {
     if (r.method === "PUT") connected = true;
     return { status: 200, body: { revision: connected ? 1 : 0, canChange: true, removedUntil: null, usage: "AWS bills your account.", connection: connected ? { connected: true, connectedAt: 1, updatedAt: 1, checkedAt: 1, roleArn, region: "us-west-2", allowGlobal: false, models: [{ name: "claude-haiku-4-5", id: "us.anthropic.claude-haiku-4-5-v1:0", state: "ready" }], productModels: [] } : null } };
    }
-   if (r.path === "/v1/app/org/agent-ai" && r.method === "GET") return { status: 200, body: { ...agentAi(null, 0), bedrockConnected: connected, effectiveSource: connected ? "bedrock_byo" : "rovara", sourceIsDefault: true, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: true }] } };
+   if (r.path === "/v1/app/org/agent-ai" && r.method === "GET" && c.state.source === null) return { status: 200, body: { ...agentAi(null, 0), bedrockConnected: connected, effectiveSource: connected ? "bedrock_byo" : "rovara", sourceIsDefault: true, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: true }] } };
    return c.respond(r);
   });
   try {
@@ -172,6 +178,12 @@ describe("the company step, AI and spending", () => {
    expect(screen.getByRole<HTMLInputElement>("radio", { name: "Your own Bedrock" }).checked).toBe(true);
    expect(screen.getByText(/Task source: Your Bedrock/u)).toBeTruthy();
    expect(c.writes).toEqual([]);
+   if (chooseRovara) fireEvent.click(screen.getByTestId("ai-spend-rovara").querySelector<HTMLInputElement>("input")!);
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   const saved = await screen.findByTestId("ai-spend-saved");
+   expect(c.writes).toEqual(chooseRovara ? [{ method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 0, source: "rovara" } }] : []);
+   expect(saved.textContent).toContain(chooseRovara ? "Current AI source: Rovara's AI" : "Current AI source: Your Bedrock");
+   expect(screen.getByTestId(chooseRovara ? "ai-spend-rovara" : "ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
   } finally { f.close(); }
  });
 
@@ -251,6 +263,35 @@ describe("the company step, AI and spending", () => {
    expect(c.writes.filter(w => w.path === "/v1/app/org/engine-model")).toHaveLength(1);
    expect(c.writes.some(w => w.path === "/v1/app/org/agent-ai")).toBe(false);
    expect(c.state.source).toBeNull();
+  } finally { f.close(); }
+ });
+
+ it("a source refresh preserves explicit drafts and saves against the current source version", async () => {
+  const c = company({ cap: 500_000_000, source: null, model: null });
+  let refreshed = false;
+  const f = mountRoute("/app/admin/ai-spending", async r => {
+   if (r.path === "/v1/app/org/agent-ai") {
+    if (r.method === "PUT") { await c.respond(r); return { status: 200, body: agentAi(c.state.source, 5) }; }
+    return { status: 200, body: c.state.source !== null ? agentAi(c.state.source, 5) : refreshed ? agentAi("bedrock_byo", 4) : { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } };
+   }
+   return c.respond(r);
+  });
+  try {
+   await screen.findByLabelText("Company model");
+   fireEvent.change(screen.getByLabelText("Company model"), { target: { value: "claude-sonnet-4-5" } });
+   fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+   fireEvent.click(screen.getByTestId("ai-spend-own").querySelector<HTMLInputElement>("input")!);
+   refreshed = true;
+   await act(async () => { await f.query.invalidateQueries({ queryKey: ["ai-spend"] }); });
+   expect(await screen.findByText(/Task source: Your Bedrock/u)).toBeTruthy();
+   expect(screen.getByRole<HTMLInputElement>("radio", { name: "Your own Anthropic key (not connected yet)" }).checked).toBe(true);
+   expect(screen.getByLabelText<HTMLSelectElement>("Company model").value).toBe("claude-sonnet-4-5");
+   expect(screen.getByLabelText<HTMLInputElement>(/Company monthly limit/u).value).toBe("600");
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   const saved = await screen.findByTestId("ai-spend-saved");
+   expect(c.writes.map(w => w.path)).toEqual(["/v1/app/org/settings", "/v1/app/org/agent-ai", "/v1/app/org/engine-model"]);
+   expect(c.writes[1]).toEqual({ method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 4, source: "anthropic_key" } });
+   expect(saved.textContent).toContain("Current AI source: Your Anthropic key");
   } finally { f.close(); }
  });
 

@@ -142,8 +142,8 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
  // DEC 254zzz263: what the company's agents use now (a saved choice, else the default it is on), never a guess.
  const shown = source.source ?? source.effectiveSource;
  const [loaded, setLoaded] = useState({ model, source, settings });
- const savedSource = loaded.source.source;
- const loadedChoice = loaded.source.source ?? loaded.source.effectiveSource ?? "rovara";
+ const savedSource = source.source;
+ const servedChoice = source.source ?? source.effectiveSource ?? "rovara";
  const initialPick = (value: EngineModelRead) => value.source === "company" && value.model !== null ? value.model : DEFAULT_MODEL;
  const [modelInteracted, setModelInteracted] = useState(false);
  const [choice, setChoice] = useState<Choice>(shown === null || shown === "rovara" ? "rovara" : "own");
@@ -153,14 +153,15 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
  const savedCap = typeof loaded.settings.monthlyCapUsd === "number" ? loaded.settings.monthlyCapUsd : undefined;
  const [cap, setCap] = useState(usdText(savedCap ?? COMPANY_MONTHLY_DEFAULT_USD));
  const [busy, setBusy] = useState(false);
- // Capture the loaded baseline once for this scope. Only an explicit save starts a new draft.
+ // Keep the loaded model and limit baselines for this scope. Only an explicit save starts a new draft.
  const modelChanged = modelInteracted && picked !== initialPick(loaded.model);
  const saveModel = modelChanged;
  const chosenSource: AgentAiSource = choice === "rovara" ? "rovara" : own;
  // Compatibility with an older server: without a served effective source the shown option is only a suggestion.
- const unsavedSuggestion = savedSource === null && (loaded.source.effectiveSource ?? null) === null && loaded.source.available[chosenSource] === true;
- // Otherwise compare against the displayed starting choice, so returning to it is not a change.
- const sourceChanged = unsavedSuggestion || (sourceInteracted && savedSource !== chosenSource && !(savedSource === null && loadedChoice === chosenSource));
+ const unsavedSuggestion = savedSource === null && (source.effectiveSource ?? null) === null && source.available[chosenSource] === true;
+ // Connections can refresh the served source without resetting model, limit or explicit source drafts.
+ // Compare an explicit source choice with that current read, rather than the first render's payer.
+ const sourceChanged = unsavedSuggestion || (sourceInteracted && savedSource !== chosenSource && !(savedSource === null && servedChoice === chosenSource));
  const capUsd = dollarsOf(cap, MONTHLY_MAX_USD);
  const displayChoice = sourceInteracted ? choice : shown === null || shown === "rovara" ? "rovara" : "own";
  const displayOwn = sourceInteracted ? own : shown !== null && shown !== "rovara" ? shown : "anthropic_key";
@@ -182,7 +183,7 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
     wrote = true;
     pending = typeof answer === "object" && answer !== null && "pending" in answer && !("settings" in answer);
    }
-   if (!resetModel && sourceChanged && savedSource !== chosenSource) await api.sendAnswer("PUT", AGENT_AI_PATH, { expectedVersion: loaded.source.version, source: chosenSource }, { parse: body => body }, { retry: "never" }).then(() => { wrote = true; });
+   if (!resetModel && sourceChanged && savedSource !== chosenSource) await api.sendAnswer("PUT", AGENT_AI_PATH, { expectedVersion: source.version, source: chosenSource }, { parse: body => body }, { retry: "never" }).then(() => { wrote = true; });
    // Default and offered preselects are readouts until the person makes a choice.
    if (resetModel || saveModel) { await api.sendAnswer("PUT", ENGINE_MODEL_PATH, { model: resetModel || picked === DEFAULT_MODEL ? null : picked }, { parse: readEngineModel }, { retry: "never" }); wrote = true; }
    if (!active()) return;
