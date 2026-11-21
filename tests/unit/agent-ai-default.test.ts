@@ -144,8 +144,10 @@ describe("agentAiConnected for an exempt company with no saved choice", () => {
     expect(await agentAiConnected(context([B]), A)).toBe(true);
     expect(await agentAiConnected(context([], { anthropic: true }), A)).toBe(true);
   });
-  it("an unrelated Bedrock read cannot block the default; explicit own choices keep readiness checks", async () => {
-    expect(await agentAiConnected(context([A], { bedrock: "throws" }), A)).toBe(true);
+  it("required connection faults stay unknown; irrelevant Bedrock faults and explicit choices keep readiness checks", async () => {
+    // R-1 / DEC 254zzz279: Bedrock is required when Anthropic is absent; a read fault cannot prove the billed Rovara default.
+    expect(await agentAiConnected(context([A], { bedrock: "throws" }), A)).toBeNull();
+    expect(await agentAiConnected(context([A], { anthropic: true, bedrock: "throws" }), A)).toBe(true);
     expect(await agentAiConnected(context([A], { saved: "anthropic_key" }), A)).toBe(false);
   });
 });

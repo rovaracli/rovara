@@ -6,6 +6,7 @@
 // administrator changes them (no step-up since owner DEC 254zzz73), revision-checked, never above the company's limit). Cloud must pass the person's own token,
 // never let the browser name a company, refuse first where it can (Code not asked), forward only checked members, check Code's answers, and
 // answer refusals in its fixed words.
+import { world as productAiWorld } from "./product-ai-world.js";
 import { describe, expect, it } from "vitest";
 import {
   AI_SPEND_ANSWERS, AI_SPEND_WORDS, CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, engineModelView,
@@ -94,6 +95,8 @@ function setUp(override: Override = () => undefined) {
   const audit = new LocalCloudAuditStore(undefined, {});
   const handler = createCloudHandler({
     client, store: sessions, work: new LocalWorkSessionStore(), origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" },
+    // R-1 now reads connection facts for an unsaved source. Model an installed, empty key store (not an unreadable/absent backend).
+    productAi: { issuer: `${CODE}/v1/auth`, store: productAiWorld().store },
     callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(clock.at), audit, company: { store: companies, log: () => undefined },
   });
   let tokens = 0;

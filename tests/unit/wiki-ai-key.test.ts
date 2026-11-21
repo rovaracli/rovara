@@ -46,6 +46,10 @@ async function setUp(aiKey: "connected" | "missing" | "unknown" = "unknown") {
   const cookies = { ada: await w.signIn("ada", 30), pam: await w.signIn("pam", 30), cal: await w.signIn("cal", 30), bea: await w.signIn("bea", 30), bob: await w.signIn("bob", 30) };
   return { w, cookies, calls: routes.calls };
 }
+// DEC 254zzz279 / R-1: no choice is now ready by default. Missing-AI permission/refusal controls must explicitly choose a disconnected own key.
+const chooseMissing = async (w: Awaited<ReturnType<typeof setUp>>["w"], cookie: string) => {
+  expect((await w.call(cookie, "PUT", "/org/agent-ai", { expectedVersion: 0, source: "anthropic_key" })).status).toBe(200);
+};
 const chooseRovara = async (w: Awaited<ReturnType<typeof setUp>>["w"], cookie: string, version = 0) => w.call(cookie, "PUT", "/org/agent-ai", { expectedVersion: version, source: "rovara" });
 const connectAnthropic = async (w: Awaited<ReturnType<typeof setUp>>["w"], cookie: string, key = fakeKey()) => { await w.call(cookie, "PUT", "/org/learning-ai/key", write(0, { provider: "anthropic", key })); return key; };
 afterEach(() => { vi.restoreAllMocks(); });
@@ -66,14 +70,15 @@ describe("the fact itself (agentAiConnected): yes, no, or cannot tell", () => {
   };
   const ask = (c: Ctx) => agentAiConnected(c, A);
 
-  it("Rovara's AI is connected; a saved own key or own Bedrock is connected only while it is available; no choice means the company's own Anthropic key (M6)", async () => {
+  it("Rovara's AI is connected; a saved own key or own Bedrock is connected only while it is available; no choice preserves own connections then uses Rovara AI (DEC 254zzz279 / R-1, M6)", async () => {
     expect(await ask(context("rovara"))).toBe(true);
     expect(await ask(context("anthropic_key", { anthropic: true }))).toBe(true);
     expect(await ask(context("anthropic_key", { anthropic: false }))).toBe(false);
     expect(await ask(context("bedrock_byo", { bedrock: true }))).toBe(true);
     expect(await ask(context("bedrock_byo", { bedrock: false }))).toBe(false);
     expect(await ask(context(undefined, { anthropic: true }))).toBe(true);
-    expect(await ask(context(undefined, { anthropic: false }))).toBe(false);
+    // DEC 254zzz279 / R-1: nothing connected uses billed Rovara AI; an explicitly disconnected choice below still refuses.
+    expect(await ask(context(undefined, { anthropic: false }))).toBe(true);
     // A key of the other kind does not count for the chosen source.
     expect(await ask(context("anthropic_key", { anthropic: false, bedrock: true }))).toBe(false);
     expect(await ask(context("bedrock_byo", { anthropic: true, bedrock: false }))).toBe(false);
@@ -90,6 +95,19 @@ describe("the fact itself (agentAiConnected): yes, no, or cannot tell", () => {
     expect(await ask(context("some_future_source"))).toBeNull();
   });
 
+  it("an unsaved source is unknown on required connection read failures, for either billing class (R-1)", async () => {
+    for (const exempt of [false, true]) {
+      for (const extra of [{ anthropic: "throws" }, { bedrock: "throws" }] as const) {
+        const c = context(undefined, extra);
+        c.company!.rovaraAiExempt = new Set(exempt ? [A] : []);
+        expect(await ask(c)).toBeNull();
+      }
+    }
+    // Anthropic wins without reading an irrelevant, broken Bedrock connection; absent Bedrock is not a read failure.
+    expect(await ask(context(undefined, { anthropic: true, bedrock: "throws" }))).toBe(true);
+    expect(await ask(context(undefined, { noBedrockBackend: true }))).toBe(true);
+  });
+
   it("asks only for the company it is given, and answers a boolean or null, nothing else", async () => {
     const seen: string[] = [];
     const c = { company: { store: { agentAi: async (id: string) => { seen.push(id); return { source: "anthropic_key", apiKey: "ignored" }; } } }, productAi: { issuer: "iss", store: { view: async (_i: string, id: string) => { seen.push(id); return { sources: [{ provider: "anthropic", hasKey: true, available: true, secret: "x" }] }; } } } } as unknown as Ctx;
@@ -101,11 +119,16 @@ describe("the fact itself (agentAiConnected): yes, no, or cannot tell", () => {
 describe("the build state a person who manages the project sees", () => {
   it("connected when the company's AI is connected, missing (with Code's fixed sentence) when not; no connectKey while connected (M9)", async () => {
     const { w, cookies } = await setUp();
-    // No choice and no key yet: missing.
+    // DEC 254zzz279 / R-1: no choice and nothing connected uses Rovara AI without writing a choice.
+    const defaulted = await w.call(cookies.ada, "GET", P());
+    expect(defaulted.body).toMatchObject({ aiKey: "connected" });
+    expect(defaulted.body).not.toHaveProperty("connectKey");
+    expect(await w.companies.agentAi(A)).toBeUndefined();
+    await chooseMissing(w, cookies.ada);
     const none = await w.call(cookies.ada, "GET", P());
     expect(none.status).toBe(200);
     expect(none.body).toMatchObject({ canManage: true, aiKey: "missing", connectKey: CONNECT });
-    expect((await chooseRovara(w, cookies.ada)).status).toBe(200);
+    expect((await chooseRovara(w, cookies.ada, 1)).status).toBe(200);
     const yes = await w.call(cookies.ada, "GET", P());
     expect(yes.body).toMatchObject({ canManage: true, aiKey: "connected" });
     expect(Object.keys(yes.body)).not.toContain("connectKey");
@@ -136,11 +159,12 @@ describe("the build state a person who manages the project sees", () => {
   it("two companies: each manager is told about their own company only, from Code's live company (M2, M3)", async () => {
     const { w, cookies } = await setUp();
     await chooseRovara(w, cookies.ada);
+    await chooseMissing(w, cookies.bea);
     expect((await w.call(cookies.ada, "GET", P())).body).toMatchObject({ aiKey: "connected" });
     expect((await w.call(cookies.bea, "GET", P())).body).toMatchObject({ aiKey: "missing", connectKey: CONNECT });
     expect((await w.call(cookies.bob, "GET", P())).body).toMatchObject({ aiKey: "missing" });
     // B connects theirs; A's choice and B's are separate rows.
-    expect((await w.call(cookies.bea, "PUT", "/org/agent-ai", { expectedVersion: 0, source: "anthropic_key" })).status).toBe(200);
+    expect((await w.call(cookies.bea, "PUT", "/org/agent-ai", { expectedVersion: 1, source: "anthropic_key" })).status).toBe(200);
     expect((await w.call(cookies.bea, "GET", P())).body).toMatchObject({ aiKey: "missing" });
     await connectAnthropic(w, cookies.bea);
     expect((await w.call(cookies.bea, "GET", P())).body).toMatchObject({ aiKey: "connected" });
@@ -195,6 +219,7 @@ describe("a start that would die is refused before Code is asked, for a person w
   it("build, continue and refresh with no AI connected: Code's own fixed sentence, 503, and nothing reaches Code but the read of the state (M10)", async () => {
     for (const [tail] of starts) {
       const { w, cookies, calls } = await setUp();
+      await chooseMissing(w, cookies.ada);
       const answer = await w.call(cookies.ada, "POST", P(tail), { requestId: RID });
       expect(answer.status).toBe(503);
       expect(answer.body.error).toEqual({ code: "MODEL_PROXY_UNAVAILABLE", message: CONNECT });
@@ -230,6 +255,7 @@ describe("a start that would die is refused before Code is asked, for a person w
 
   it("a person who may not start it costs no read of the company's choice, so the refusal takes the same steps whatever the AI state (M15, review L1)", async () => {
     const { w, cookies } = await setUp();
+    await chooseMissing(w, cookies.ada);
     const read = vi.spyOn(w.companies, "agentAi");
     expect((await w.call(cookies.cal, "POST", P(), { requestId: RID })).status).toBe(403);
     expect((await w.call(cookies.bob, "POST", "/projects/payments/wiki-build", { requestId: RID })).status).toBe(404);
@@ -248,6 +274,7 @@ describe("a start that would die is refused before Code is asked, for a person w
 
   it("stop, the agents switch and delete are not starts: they reach Code whatever the AI state (M8)", async () => {
     const { w, cookies, calls } = await setUp();
+    await chooseMissing(w, cookies.ada);
     expect((await w.call(cookies.ada, "POST", P("/stop"), { requestId: RID })).status).toBe(200);
     expect((await w.call(cookies.ada, "POST", P("/agents"), { requestId: RID, on: true })).status).toBe(200);
     expect((await w.call(cookies.ada, "POST", P("/delete"), { requestId: RID })).status).toBe(200);
@@ -265,6 +292,7 @@ describe("a start that would die is refused before Code is asked, for a person w
   it("company B's missing AI does not stop company A's start, and A's connected AI does not start B's (two companies)", async () => {
     const { w, cookies, calls } = await setUp();
     await chooseRovara(w, cookies.ada);
+    await chooseMissing(w, cookies.bea);
     expect((await w.call(cookies.ada, "POST", P(), { requestId: RID })).status).toBe(200);
     expect((await w.call(cookies.bea, "POST", P(), { requestId: RID })).status).toBe(503);
     expect(calls).toEqual(["GET start-or-state", "POST start-or-state", "GET start-or-state"]);
