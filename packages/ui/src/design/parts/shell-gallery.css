@@ -263,3 +263,15 @@
 @media(max-width:639px){
  .rv-ds-gallery.rv-ds-viewport-gutters{--rv-gallery-width:calc(100vw - var(--rv-gallery-gutter)*2);width:var(--rv-gallery-width);max-width:none;margin-inline:calc((100% - var(--rv-gallery-width))/2)}
 }
+
+/* FIX-4: final gallery spacing and focus polish from the 4f/3e review. */
+.rv-ds-gallery .rv-ds-gaps-frame .rv-ds-blockers{margin-top:calc(var(--rv-space-6) + var(--rv-space-2))}
+.rv-ds-gallery .rv-ds-focus-rows{overflow:hidden}
+.rv-ds-gallery #type .rv-ds-type-list code{font-variant-ligatures:none}
+@media(max-width:639px){
+ .rv-ds-gallery .rv-ds-state-rows li:has(.rv-ds-row-time){row-gap:var(--rv-space-1)}
+ .rv-ds-gallery #delivery .rv-delivery-scene{display:grid;gap:var(--rv-space-3)}
+}
+@media(max-width:359px){
+ .rv-ds-gallery .rv-ds-state-error .rv-ds-recovery{row-gap:var(--rv-space-2)}
+}
