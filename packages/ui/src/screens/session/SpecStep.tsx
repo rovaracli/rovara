@@ -24,7 +24,7 @@ export function SpecStep({ plan, comments, onAnswer, onComment }: { plan: ReadPl
    <div className="rv-requirement"><span className="rv-id-chip">{requirement.id}</span><VisibleText text={requirement.title} /></div>
    {requirement.criteria.map(criterion => {
     const question = plan.questions.find(candidate => candidate.criterionId === criterion.id), pinned = comments.filter(entry => entry.anchor === criterion.id);
-    return <CriterionRow key={criterion.id} criterion={criterion} question={question} answeredLabel={question === undefined ? undefined : answered[question.questionId]} comments={pinned} onAnswer={answer} onComment={onComment} />;
+    return <CriterionRow key={criterion.id} criterion={criterion} question={question} answeredLabel={question === undefined ? undefined : answered[question.questionId]} comments={pinned} onAnswer={onAnswer === undefined ? undefined : answer} onComment={onComment} />;
    })}
   </div>)}
   {plan.requirements.length === 0 && plan.checks.length > 0 && <><p className="rv-muted">Checks planned</p><ul className="rv-spec-checks">{plan.checks.map((check, index) => <li key={index}><VisibleText text={check} /></li>)}</ul></>}

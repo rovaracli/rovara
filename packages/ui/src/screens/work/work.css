@@ -69,3 +69,10 @@
 .rv-criterion-form{display:grid;gap:var(--rv-space-1)}.rv-criterion-form textarea{width:100%;resize:vertical}.rv-criterion-form-actions{display:flex;gap:var(--rv-space-2)}
 /* Code #1057: how the workflow ended, as a short label beside the row's age. */
 .rv-inbox-outcome{font:600 var(--rv-font-xs)/1.4 var(--rv-font-ui);color:var(--rv-text-muted)}
+/* Board 2c: loaded-row filters; narrow detail keeps a single active pane. */
+.rv-work-filters{display:flex;flex-wrap:wrap;gap:var(--rv-space-1);padding:var(--rv-space-2) var(--rv-space-3);border-bottom:1px solid var(--rv-border)}.rv-work-filters button{border:0;background:none;color:var(--rv-text-muted);border-radius:var(--rv-radius-sm);min-height:44px;padding:var(--rv-space-2);font:500 var(--rv-font-sm)/1.4 var(--rv-font-ui);cursor:pointer}.rv-work-filters button[aria-pressed=true]{background:var(--rv-accent-soft);color:var(--rv-accent-text)}.rv-work-search{display:grid;gap:var(--rv-space-1);padding:var(--rv-space-2) var(--rv-space-3);font-size:var(--rv-font-sm);color:var(--rv-text-muted)}.rv-work-search input{min-width:0;min-height:44px;width:100%;border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg);color:var(--rv-text);padding:var(--rv-space-2);font:inherit}
+@media(min-width:1024px){.rv-work{grid-template-columns:minmax(360px,46%) minmax(0,1fr)}.rv-work-hint{display:none}}
+@media(max-width:1023px){.rv-work{display:block;height:auto}.rv-work-list{max-height:none;border-right:0}.rv-work[data-detail-open=false] .rv-work-pane{display:none}.rv-work[data-detail-open=true] .rv-work-list{display:none}.rv-work-pane{min-height:75dvh}.rv-work-pane>.rv-button{margin:var(--rv-space-3)}.rv-work-head{position:static}.rv-inbox-row{grid-template-columns:8px minmax(0,1fr) auto}}
+@media(prefers-reduced-motion:reduce){.rv-attention *,.rv-work *{scroll-behavior:auto}}
+
+.rv-work-read-notes{grid-column:1/-1;background:var(--rv-bg-raised);border-bottom:1px solid var(--rv-border)}.rv-work:has(>.rv-work-read-notes){grid-template-rows:auto minmax(0,1fr)}

@@ -71,7 +71,7 @@ export function WorkList({ rows, selectedId, onSelect, onOpen, decisionsFailed =
     <h2 className="rv-inbox-group">{entry.label} <span>{group.length + batches.length}</span></h2>
     {batches.length > 0 ? <ul className="rv-inbox-list" aria-label={entry.label}>{group.map(row => <InboxRow key={row.id} row={row} selected={row.id === selectedId} onSelect={onSelect} buttonRef={keep(row.id)} />)}{batches.map(batch => <LessonBatchRow key={batch.project} batch={batch} now={now} selected={batchId(batch.project) === selectedId} onSelect={onSelect} buttonRef={keep(batchId(batch.project))} />)}</ul>
      : group.length === 0 && decisionsFailed ? <div className="rv-empty rv-empty-inline" data-testid="work-decisions-failed"><b>Decisions couldn't be loaded</b>Some of this work may need you. Try again in a moment.</div>
-     : group.length === 0 ? <div className="rv-empty rv-empty-inline" data-testid="work-nothing-needs-you"><b>Nothing needs you</b>{rows.filter(row => row.group === "run").length} {rows.filter(row => row.group === "run").length === 1 ? "task is" : "tasks are"} being built. A card appears here when one needs a decision.</div>
+     : group.length === 0 ? <div className="rv-empty rv-empty-inline" data-testid="work-nothing-needs-you"><b>No attention items shown</b>Rovara can't tell yet whether anything else needs you.</div>
      : <ul className="rv-inbox-list" aria-label={entry.label}>{group.map(row => <InboxRow key={row.id} row={row} selected={row.id === selectedId} onSelect={onSelect} buttonRef={keep(row.id)} />)}</ul>}
    </section>;
   })}
