@@ -184,7 +184,7 @@ function screenSetup(options: Setup = {}) {
   const query = createQueryClient(), where: { current: string } = { current: "" };
   const Where = () => { where.current = useLocation().pathname + useLocation().search;return null; };
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [options.path ?? "/app/live"], children: h(Announcer, { children: h(Routes, {}, h(Route, { path: "/app/live", element: h("div", {}, h(Where, {}), h(WorkScreen, {})) })) }) }) }) }));
-  return { ...f, ...ui, query, where, answerTasks(next: ApiResponse) { tasks = next; }, answerCards(next: ApiResponse) { cards = next; }, close() { ui.unmount();query.clear(); } };
+  return { ...f, ...ui, query, where, answerTasks(next: ApiResponse) { tasks = next; }, answerCards(next: ApiResponse) { cards = next; }, answerPlan(next: ApiResponse) { options.plan = next; }, close() { ui.unmount();query.clear(); } };
 }
 const rowOf = (id: string) => document.querySelector<HTMLElement>(`[data-task-id="${id}"].rv-inbox-row`)!;
 const paneTitle = () => screen.getByTestId("pane-title").textContent;
@@ -280,10 +280,10 @@ it("shows a skeleton while loading, an empty state with no work, and could-not-l
   const empty = screenSetup({ tasks: { status: 200, body: { tasks: [] } } });expect(await screen.findByTestId("work-empty")).toBeTruthy();empty.close();
   const refused = screenSetup({ tasks: { status: 403, body: { error: { code: "FORBIDDEN", message: "Your access ended." } } } });expect((await screen.findByTestId("load-error")).textContent).toContain("Your access ended.");refused.close();
 });
-it("says nothing needs you inside the Needs you group when it is empty but work is running", async () => {
+it("does not infer an all-clear from an empty Needs you group while work is running", async () => {
   const f = screenSetup({ tasks: { status: 200, body: { tasks: [TASKS[1]] } }, decisions: { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } } });
-  expect((await screen.findByTestId("work-nothing-needs-you")).textContent).toContain("Nothing needs you");expect(screen.getByRole("list", { name: "Rovara is working" })).toBeTruthy();
-  await screen.findByTestId("decision-quiet");expect(screen.getByTestId("decision-quiet").textContent).toContain("Nothing needed from you");
+  expect((await screen.findByTestId("work-nothing-needs-you")).textContent).toContain("No attention items shown");expect(screen.getByRole("list", { name: "Rovara is working" })).toBeTruthy();
+  await screen.findByTestId("decision-quiet");expect(screen.getByTestId("decision-quiet").textContent).toContain("can't tell yet");
   f.close();
 });
 it("says decisions aren't connected yet in the pane of a task that needs a person but has no card", async () => {
@@ -497,4 +497,16 @@ it("the Proof tab shows Code's items and failing tests from the proof read", asy
   const pane = screen.getByRole("region", { name: "Selected task" });expect(pane.textContent).toContain("Also checked.");expect(pane.textContent).toContain("pytest -q (failed)");expect(pane.textContent).toContain("Code review");
   expect(screen.queryByTestId("proof-not-yet")).toBeNull();
   f.close();
+});
+
+it("drops a cached spec and its decision controls after the latest plan refusal, while retaining current proof", async () => {
+ const f = screenSetup({ path: `/app/live?task=${ID.plan}` });
+ await screen.findByRole("region", { name: "Spec" });
+ f.answerPlan({ status: 403, body: { error: { code: "FORBIDDEN", message: "Latest plan refused" } } });
+ await act(async () => { await f.query.invalidateQueries({ queryKey: ["work", "plan", ID.plan] }); });
+ await waitFor(() => expect(screen.queryByRole("region", { name: "Spec" })).toBeNull());
+ expect(screen.queryByRole("button", { name: "Approve and build" })).toBeNull();
+ expect(screen.getByTestId("section-error")).toBeTruthy();
+ fireEvent.click(within(screen.getByRole("list", { name: "Steps of this task" })).getByRole("button", { name: /^Proof/u }));
+ expect(await screen.findByRole("region", { name: "Proof" })).toBeTruthy();f.close();
 });
