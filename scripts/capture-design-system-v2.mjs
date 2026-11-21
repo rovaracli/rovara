@@ -15,6 +15,11 @@ export function localBaseUrl(value) {
  if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || !url.port || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("--base-url must be a dedicated loopback HTTP origin with an explicit port");
  return url;
 }
+export const heldPreflightLabels = ["Integration tests", "The runner disconnected before the first test.", "acme/payments · 4 min ago · head 5b81d0c"];
+export function assertHeldPreflight({ text, unknownCount }) {
+ for (const label of heldPreflightLabels) if (!text.includes(label)) throw new Error(`held: missing intended label ${label}`);
+ if (unknownCount !== 1) throw new Error(`held: expected exactly one Unknown chip; found ${unknownCount}`);
+}
 async function fingerprint() {
  const git = (...args) => execFileSync("git", args, { encoding: "utf8" });
  const head = git("rev-parse", "HEAD").trim(), hash = createHash("sha256").update(head).update(git("diff", "HEAD", "--binary"));
@@ -40,13 +45,14 @@ async function assertScene(page, scene, width, theme) {
   "toast": ["Undo"], "confirmation": ["Keep changes and close", "Discard changes and close"], "outcome": ["What happened", "What is safe", "What to do"],
   "focus": ["New in v2: selection, focus and outlines", "LIGHT", "DARK", "Not started"],
   "shell-running": ["Writing the POST /refunds handler", "Where this task is"], "shell-plan": ["Approve plan v3?", "Risks to know"], "shell-gaps": ["2 required results are missing", "Could not run", "Not run"],
-  "delivery": ["Queued for this build", "Applied", "Checking delivery", "Not delivered", "Not applied: outside the plan"], "held": ["Unknown", "checking"],
+  "delivery": ["Queued for this build", "Applied", "Checking delivery", "Not delivered", "Not applied: outside the plan"], "held": heldPreflightLabels,
   "states-loading": ["Tasks"], "states-empty": ["No tasks yet"], "states-slow": ["Longer than usual"], "states-error": ["couldn't refresh"], "states-stale": ["Unknown", "3 min ago"], "states-phone": ["Plan v3", "Start a task"],
   "states-first-load-failed": ["couldn't load this project's tasks"], "states-stale-or-heartbeat": ["Was Running at 14:20", "Unknown"], "states-write-unconfirmed": ["didn't hear back", "Check current limit"],
  };
  if (await page.locator("html").getAttribute("data-theme") !== theme) throw new Error(`${scene}: explicit theme not applied`);
  const text = await root.innerText();
  for (const label of labels[scene] ?? []) if (!text.includes(label)) throw new Error(`${scene}: missing intended label ${label}`);
+ if (scene === "held") await assertHeldPreflight({ text, unknownCount: await root.getByRole("img", { name: "Unknown", exact: true }).count() });
  if (scene === "states-loading" && !await root.getByRole("progressbar").count()) throw new Error("Loading scene lacks its row skeleton");
  const fonts = await page.evaluate(async () => {
   for (const face of ['400 14px Inter', '600 28px Inter', '400 12px "JetBrains Mono"']) await document.fonts.load(face);
