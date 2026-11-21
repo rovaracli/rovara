@@ -43,12 +43,13 @@
 @media(max-width:639px){
  .rv-p3-phone-detail{display:block;color:var(--rv-text-muted);font-size:var(--rv-font-sm);font-weight:400}
  .rv-p3-table-scene :is(table,thead,tbody){display:block}
- .rv-p3-table-scene tr{display:grid;grid-template-columns:minmax(0,1fr) auto}
+ .rv-p3-table-scene tr{display:flex}
  .rv-p3-table-scene tbody tr{height:auto;min-height:var(--rv-table-row-h)}
  .rv-p3-table-scene :is(th,td):nth-child(n+3){display:none}
  .rv-p3-table-scene :is(th,td){padding:var(--rv-space-3) var(--rv-space-4);align-content:center}
  .rv-p3-table-scene thead tr{height:calc(var(--rv-space-6) + var(--rv-space-2))}
  .rv-p3-table-scene thead th{padding-block:var(--rv-space-2)}
  .rv-p3-table-scene :is(th,td):nth-child(2){width:auto;text-align:right}
- .rv-p3-table-scene :is(th,td):first-child{min-width:0;overflow-wrap:normal}
+ .rv-p3-table-scene :is(th,td):first-child{flex:1 1 auto;min-width:0;overflow-wrap:normal}
+ .rv-p3-table-scene :is(th,td):nth-child(2){flex:none}
 }

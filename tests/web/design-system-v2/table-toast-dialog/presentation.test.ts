@@ -31,18 +31,22 @@ function applyStyles(theme: "light" | "dark", width?: number) {
    ? [...rule.cssRules].map(child => child.cssText).join("\n") : rule.cssText;
  }).join("\n");
 }
-for (const width of [320, 390]) it(`uses the phone table inset and header height at ${width}px`, () => {
- renderUi(h(tableToastDialogGalleryScenes[0].render));
- applyStyles("light", width);
+for (const width of [320, 390]) for (const theme of ["light", "dark"] as const) it(`uses the phone title and chip layout at ${width}px in ${theme}`, () => {
+ renderUi(h(tableToastDialogGalleryScenes[0].render), { theme });
+ applyStyles(theme, width);
  const table = screen.getByRole("table", { name: "Tasks" });
  for (const row of table.querySelectorAll("tr")) {
-  expect(getComputedStyle(row).display).toBe("grid");
-  expect(getComputedStyle(row).gridTemplateColumns).toBe("minmax(0,1fr) auto");
+  expect(getComputedStyle(row).display).toBe("flex");
   expect(getComputedStyle(row.children[1]!).width).toBe("auto");
   expect(getComputedStyle(row.children[2]!).display).toBe("none");
  }
  const title = screen.getByText("Add refunds endpoint");
  expect(getComputedStyle(title.closest("td")!).minWidth).toBe("0px");
+ expect(getComputedStyle(title.closest("td")!).flex).toBe("1 1 auto");
+ const longTitle = screen.getByText("Fix webhook retry backoff");
+ expect(getComputedStyle(longTitle.closest("td")!).minWidth).toBe("0px");
+ expect(getComputedStyle(longTitle.closest("td")!).flex).toBe("1 1 auto");
+ expect(getComputedStyle(longTitle.closest("tr")!.children[1]!).flex).toBe("0 0 auto");
  expect(getComputedStyle(title.closest("tr")!).height).toBe("auto");
  expect(getComputedStyle(title.closest("tr")!).minHeight).toBe("48px");
  for (const cell of table.querySelectorAll("th, td")) {
