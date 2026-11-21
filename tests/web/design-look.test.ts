@@ -66,7 +66,7 @@ describe("v2 values agree with the design mock-ups (tokens.css)", () => {
 describe("the four new tokens", () => {
  it("are emitted with the mock-up values, Comfortable and Compact", () => {
   const sheet = rules(lookV2Css());
-  expect(sheet.get(ROOT)).toMatchObject({ "--rv-font-xs": "11px", "--rv-font-title": '"Source Serif 4",Georgia,serif', "--rv-font-title-size": "21px", "--rv-density-row-y-dense": "9px" });
+  expect(sheet.get(ROOT)).toMatchObject({ "--rv-font-xs": "11px", "--rv-font-title": 'system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif', "--rv-font-title-size": "21px", "--rv-density-row-y-dense": "9px" });
   expect(sheet.get(`${ROOT}[data-density="compact"]`)).toMatchObject({ "--rv-font-title-size": "19px", "--rv-density-row-y-dense": "5px" });
  });
  it("do not leak into the base token sheet", () => {

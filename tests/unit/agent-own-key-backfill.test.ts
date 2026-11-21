@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { applyAgentOwnKeyBackfill, planAgentOwnKeyBackfill } from "../../packages/model-gateway/src/agent-own-key-backfill.js";
 import { CompanyAgentAiSource, resolveAgentSource } from "../../packages/model-gateway/src/agent-ai.js";
+import { DynamoProductKeyTable } from "../../packages/model-gateway/src/dynamo-product-keys.js";
+import { ProductKeySealer } from "../../packages/model-gateway/src/product-seal.js";
+import { ProductKeyStore } from "../../packages/model-gateway/src/product-keys.js";
+import { storedLearningKeys } from "../../packages/model-gateway/src/learning-keys.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 
 const iss = "https://code.example.test";
@@ -90,7 +94,8 @@ describe("C-1 own-key backfill", () => {
     expect(await applyAgentOwnKeyBackfill(w.input, plan)).toEqual({ written: 1, conflicted: 0 });
     const sources = new CompanyAgentAiSource(w.db, companyTable);
     expect(await resolveAgentSource({ sources, keys: { connected: denied } }, iss, A)).toEqual({ source: "anthropic_key", via: "chosen" });
-    expect(await resolveAgentSource({ sources, keys: { connected: denied } }, iss, C)).toEqual({ source: "rovara", via: "default" });
+    const store = new ProductKeyStore({ table: new DynamoProductKeyTable(w.db, productTable), sealer: new ProductKeySealer({ generateDataKey: denied, unwrapDataKey: denied }), fingerprint: denied });
+    expect(await resolveAgentSource({ sources, keys: storedLearningKeys(store) }, iss, C)).toEqual({ source: "rovara", via: "default" });
   });
 
   it("unreadable metadata fails the whole preview before any application", async () => {

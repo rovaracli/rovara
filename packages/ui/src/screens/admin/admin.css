@@ -10,12 +10,18 @@
 .rv-admin-nav a[aria-current=page]{background:var(--rv-accent-soft);color:var(--rv-accent-text);font-weight:600;box-shadow:inset 2px 0 0 var(--rv-accent)}
 .rv-admin-surface{padding:var(--rv-space-6) clamp(20px,3vw,48px) var(--rv-space-7);min-width:0;max-width:1180px;width:100%}
 .rv-admin-surface .rv-page-header{margin-bottom:var(--rv-space-4)}
-.rv-admin-surface h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:0;margin:0}
-.rv-admin-surface .rv-table{font-size:var(--rv-font-sm)}
-.rv-admin-surface .rv-table caption{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui);padding-bottom:var(--rv-space-2)}
-.rv-admin-surface .rv-table th{font:600 10.5px/1 var(--rv-font-ui);letter-spacing:.06em;text-transform:uppercase;color:var(--rv-text-subtle);padding:var(--rv-space-1) var(--rv-space-2);border-bottom:1px solid var(--rv-border-medium);white-space:nowrap}
-.rv-admin-surface .rv-table td{padding:var(--rv-density-row-y-dense,9px) var(--rv-space-2);vertical-align:top}
-.rv-admin-surface .rv-table-wrap{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3) var(--rv-space-3) var(--rv-space-1)}
+.rv-admin-surface h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:-.015em;margin:0}
+.rv-admin-surface .rv-table,.rv-admin-who{font-size:var(--rv-font-md)}
+/* The caption names the table for screen readers; the heading above it names it on screen. */
+.rv-admin-surface .rv-table caption{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.rv-admin-surface .rv-table th{font:600 var(--rv-font-sm)/1.3 var(--rv-font-ui);color:var(--rv-text-muted);background:var(--rv-bg-sunken);padding:var(--rv-space-2) var(--rv-space-4);border-bottom:1px solid var(--rv-border);white-space:nowrap}
+.rv-admin-surface .rv-table td{padding:var(--rv-space-3) var(--rv-space-4);vertical-align:middle}
+/* Buttons in a row: compact, no stray margins, so text and buttons share one line. */
+.rv-admin-surface .rv-table td .rv-button{min-height:36px;padding:var(--rv-space-1) var(--rv-space-3);margin:0}
+.rv-admin-surface .rv-table td :is(.rv-admin-role-actions,.rv-row-actions){gap:var(--rv-space-2)}
+.rv-admin-surface .rv-table tbody tr:last-child>td{border-bottom:0}
+.rv-admin-surface .rv-table tbody tr:hover>td{background:var(--rv-bg-sunken)}
+.rv-admin-surface .rv-table-wrap{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);padding:0}
 .rv-admin-card{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);padding:var(--rv-space-4) var(--rv-space-5);margin-block:var(--rv-space-4);min-width:0}
 .rv-admin-card>.rv-section-head h2{font:600 var(--rv-font-lg)/1.3 var(--rv-font-ui);margin:0}
 .rv-admin-card p+p{margin-top:var(--rv-space-2)}
@@ -82,11 +88,38 @@
 .rv-admin-card .rv-section-head,.rv-admin-groups .rv-section-head{display:flex;justify-content:space-between;align-items:baseline;gap:var(--rv-space-3);flex-wrap:wrap;margin-bottom:var(--rv-space-2)}
 .rv-admin-card .rv-section-head>span{font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
 .rv-admin-card .rv-table-wrap{border:0;background:none;padding:0}
+.rv-admin-card .rv-table th{background:none}
+.rv-admin-card .rv-table :is(th,td):first-child{padding-left:0}.rv-admin-card .rv-table :is(th,td):last-child{padding-right:0}
 .rv-admin-card .rv-table caption{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .rv-admin-card .rv-field{margin-bottom:var(--rv-space-2)}
 .rv-meter-caption{font-size:var(--rv-font-xs);color:var(--rv-text-muted);margin:0 0 var(--rv-space-2)}
-.rv-account{max-width:920px}.rv-shell-main .rv-account h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:0;margin:0}.rv-account .rv-page-header{margin-bottom:var(--rv-space-4)}
+.rv-account{max-width:920px}.rv-shell-main .rv-account h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:-.015em;margin:0}.rv-account .rv-page-header{margin-bottom:var(--rv-space-4)}
 .rv-admin[hidden]{display:none}
 .rv-people-limits-filter{max-width:22rem;margin-block:var(--rv-space-3,12px)}
 .rv-vertex-guide pre{overflow-x:auto;background:var(--rv-bg-sunken);border:1px solid var(--rv-border-medium);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3);font-size:var(--rv-font-sm)}
 .rv-vertex-guide li[data-redo]{border-left:3px solid var(--rv-border-medium);padding-left:var(--rv-space-3)}
+
+/* Consistent spacing on every admin page. The base reset sets p and h margins to 0, so a page without cards ran its parts
+   together. These rules use element-level specificity only (html body ... = 0,0,2+): any page's own class rule still wins. */
+html body :where(.rv-admin-surface) p+p{margin-top:var(--rv-space-2)}
+html body :where(.rv-admin-surface) :where(p,ul,ol,dl,details,fieldset,form,table,div,section,.rv-button)+:where(p,ul,ol,dl,details,fieldset,form):where(:not(p+p)){margin-top:var(--rv-space-3)}
+html body :where(.rv-admin-surface) :where(p,ul,ol,dl,details,fieldset,form,div,section)+:where(.rv-field,.rv-table-wrap){margin-top:var(--rv-space-3)}
+html body :where(.rv-admin-surface) :where(p,ul,ol,dl,details,.rv-field,.rv-table-wrap,section)+:where(.rv-button){margin-top:var(--rv-space-3)}
+html body :where(.rv-admin-surface) *+:where(h2){margin-top:var(--rv-space-6)}
+html body :where(.rv-admin-surface) *+:where(h3){margin-top:var(--rv-space-5)}
+html body :where(.rv-admin-surface) :where(h2,h3)+:where(p,ul,ol,dl,details,fieldset,form,.rv-field,.rv-table-wrap,.rv-button){margin-top:var(--rv-space-2)}
+/* Plain selects look like the other inputs; fields don't stretch across the whole page. */
+html body :where(.rv-admin-surface) select:where(:not(.rv-input)){display:block;width:100%;min-height:44px;padding:var(--rv-space-2) var(--rv-space-3);color:var(--rv-text);background:var(--rv-bg-raised);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm)}
+:where(.rv-admin-surface) .rv-field{max-width:40rem}
+/* Disclosures: a chevron instead of the browser triangle. */
+html body :where(.rv-admin-surface) summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:var(--rv-space-2);font-weight:550}
+html body :where(.rv-admin-surface) summary::-webkit-details-marker{display:none}
+html body :where(.rv-admin-surface) summary::before{content:"";flex:none;width:6px;height:6px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
+html body :where(.rv-admin-surface) details[open]>summary::before{transform:rotate(45deg)}
+html body :where(.rv-admin-surface) :where(p,ul,ol,dl,.rv-table-wrap)+:where(div:has(>.rv-button)){margin-top:var(--rv-space-3)}
+html body :where(.rv-admin-surface) :where(.rv-button)+:where(section){margin-top:var(--rv-space-3)}
+/* "Who can do what": the same card table as the shared tables, so the two tables on People line up. */
+.rv-admin-who{border-collapse:separate;border-spacing:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised);overflow:hidden}
+.rv-admin-who caption{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui)}
+.rv-admin-who th,.rv-admin-who td{padding:var(--rv-space-3) var(--rv-space-4);vertical-align:middle}
+.rv-admin-who thead th{border-top:0;background:var(--rv-bg-sunken);font:600 var(--rv-font-sm)/1.3 var(--rv-font-ui);color:var(--rv-text-muted);padding-block:var(--rv-space-2)}

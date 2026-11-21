@@ -294,10 +294,14 @@ describe(`-c ${AI_SOURCE_KINDS_CONTEXT_KEY}`, () => {
   });
 });
 
-it("the no-choice default fails closed without operator configuration, independent of source-kind switches", async () => {
+it("R-1: no-choice own keys work without operator AI; no connection still refuses before send, independent of source switches", async () => {
  for (const switchedOn of [undefined, new Set<string>(), new Set(GATEWAY_KINDS)]) {
   const g = gateway(undefined, switchedOn);
-  expect((await call(g.deps)).status).toBe(403);
-  expect(g.sent).toEqual([]); expect(g.keys.asked).toEqual([]); expect(g.keys.reads).toEqual([]);
+  expect((await call(g.deps)).status).toBe(200);
+  expect(g.sent.map(r => r.key)).toEqual([keyOf(claims.cid)]);
+  const missing = gateway(undefined, switchedOn);
+  missing.keys.connected = async () => false;
+  expect((await call(missing.deps)).status).toBe(403);
+  expect(missing.sent).toEqual([]); expect(missing.keys.reads).toEqual([]);
  }
 });

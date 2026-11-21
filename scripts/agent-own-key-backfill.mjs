@@ -20,14 +20,14 @@ try {
   let issuer = values.issuer, companyTable = values["company-table"], productTable = values["product-table"], env = process.env;
   if (values["release-stack"]) {
     if (!values.check || !values["lookup-role"] || issuer || companyTable || productTable) throw new Error("invalid release scope");
-    // DescribeStacks and AssumeRole are already allowed to the release job. The standard CDK lookup role is read-only.
-    const stack = aws(["cloudformation", "describe-stacks", "--stack-name", values["release-stack"]]).Stacks?.[0];
-    issuer = installedIssuer(stack?.Parameters?.find(p => p.ParameterKey === "CodeUrl")?.ParameterValue);
-    productTable = stack?.Parameters?.find(p => p.ParameterKey === "ProductKeysTableName")?.ParameterValue;
-    companyTable = stack?.Outputs?.find(o => o.OutputKey === "CompanyTableName")?.OutputValue;
     const credentials = aws(["sts", "assume-role", "--role-arn", values["lookup-role"], "--role-session-name", "c1-required-backfill"]).Credentials;
     if (!credentials?.AccessKeyId || !credentials.SecretAccessKey || !credentials.SessionToken) throw new Error("lookup role unavailable");
     env = { ...process.env, AWS_ACCESS_KEY_ID: credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: credentials.SecretAccessKey, AWS_SESSION_TOKEN: credentials.SessionToken };
+    // The stack and its tables live in the deploy account; read all of them through its existing read-only lookup role.
+    const stack = aws(["cloudformation", "describe-stacks", "--stack-name", values["release-stack"]], env).Stacks?.[0];
+    issuer = installedIssuer(stack?.Parameters?.find(p => p.ParameterKey === "CodeUrl")?.ParameterValue);
+    productTable = stack?.Parameters?.find(p => p.ParameterKey === "ProductKeysTableName")?.ParameterValue;
+    companyTable = stack?.Outputs?.find(o => o.OutputKey === "CompanyTableName")?.OutputValue;
   } else if (values["lookup-role"]) throw new Error("invalid role scope");
   if (!issuer || !companyTable || !productTable || companyTable === productTable) throw new Error("missing backfill scope");
   if (!issuer.endsWith("/v1/auth") || installedIssuer(issuer.slice(0, -"/v1/auth".length)) !== issuer) throw new Error("invalid issuer scope");

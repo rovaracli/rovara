@@ -364,15 +364,15 @@ describe("gateway process: two companies, one server", () => {
       else expect(names(JSON.parse(answer.text()))).toEqual([...OPENAI_KEY_AGENT_MODELS]);
     }
   });
-  it("DEC 263: deployed no-choice companies get Rovara models regardless of exemption or connected credentials", async () => {
+  it("R-1: deployed no-choice companies keep connected own keys; unconnected companies get Rovara models", async () => {
     const cidC = `org_${"c".repeat(20)}`;
     const exemptEnv = { [GATEWAY_ENV.rovaraAiExempt]: `${cidA},${cidC}` };
     // C: exempt, nothing saved, no key connected: Rovara's AI.
     const none = await serve(exemptEnv, true, false);
     expect(names(JSON.parse((await ask(none.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
-    // Connected credentials are not a saved choice; non-exempt companies receive the same default list.
+    // A connection made after backfill must immediately advertise the own-key models.
     const keyed = await serve(exemptEnv, true, true);
-    expect(names(JSON.parse((await ask(keyed.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
+    expect(names(JSON.parse((await ask(keyed.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
     const notExempt = await serve({}, true, false);
     expect(names(JSON.parse((await ask(notExempt.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
   });

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const directories: string[] = [];
 afterEach(() => { for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true }); });
 type FixtureRow = { table: string; item: Record<string, unknown> };
-function run(args: string[], replies: Array<{ value?: unknown; error?: string }> = [{ value: { Items: [] } }, { value: { Items: [] } }], rows: FixtureRow[] = [], readError = false) {
+function run(args: string[], replies: Array<{ value?: unknown; error?: string; accessKey?: string }> = [{ value: { Items: [] } }, { value: { Items: [] } }], rows: FixtureRow[] = [], readError = false) {
   const dir = mkdtempSync(join(tmpdir(), "c1-cli-")); directories.push(dir);
   const log = join(dir, "calls.jsonl"), responses = join(dir, "responses.json");
   writeFileSync(join(dir, "package.json"), '{"type":"commonjs"}');
@@ -36,7 +36,7 @@ Dynamo.prototype.transact = function (...args) { return transact.apply(db, args)
 process.on("exit", () => writeFileSync(${JSON.stringify(state)}, JSON.stringify({ calls: wire.calls, choices: [...wire.fake.items.values()].filter(row => row.sk === "AGENT_AI") })));
 `);
   const executable = join(dir, "aws");
-  writeFileSync(executable, `#!${process.execPath}\nconst fs = require("node:fs"); const replies = JSON.parse(fs.readFileSync(${JSON.stringify(responses)}, "utf8")); fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n"); const reply = replies.shift(); fs.writeFileSync(${JSON.stringify(responses)}, JSON.stringify(replies)); if (!reply || reply.error) { process.stderr.write(reply?.error ?? "unexpected AWS call"); process.exit(1); } process.stdout.write(JSON.stringify(reply.value));\n`);
+  writeFileSync(executable, `#!${process.execPath}\nconst fs = require("node:fs"); const replies = JSON.parse(fs.readFileSync(${JSON.stringify(responses)}, "utf8")); fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n"); const reply = replies.shift(); if (reply?.accessKey && process.env.AWS_ACCESS_KEY_ID !== reply.accessKey) { process.stderr.write("wrong account credentials"); process.exit(1); } fs.writeFileSync(${JSON.stringify(responses)}, JSON.stringify(replies)); if (!reply || reply.error) { process.stderr.write(reply?.error ?? "unexpected AWS call"); process.exit(1); } process.stdout.write(JSON.stringify(reply.value));\n`);
   chmodSync(executable, 0o755);
   const result = spawnSync(process.execPath, ["--import", "tsx", "--import", pathToFileURL(preload).href, "scripts/agent-own-key-backfill.mjs", ...args], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}`, AWS_ACCESS_KEY_ID: "TEST", AWS_SECRET_ACCESS_KEY: "not-real" }, timeout: 10_000 });
   let calls: string[][] = [];
@@ -82,20 +82,26 @@ describe("C-1 operator command and required release preflight", () => {
   });
   it("blocks release when the installed scope cannot be read, including a missing stack", () => {
     for (const error of ["(ValidationError) Stack with id cloud-web does not exist", "AccessDenied"]) {
-      const result = run(release, [{ error }]);
+      const result = run(release, [role, { error }]);
       expect(result.status).toBe(1); expect(result.stdout).not.toContain("PASS");
     }
   });
   it("the installed release checks the stack's own tables and issuer through its read-only lookup role", () => {
-    const result = run(release, [stack(), role, empty, empty]);
+    const result = run(release, [role, stack(), empty, empty]);
     expect(result.status).toBe(0); expect(result.stdout).toContain("C-1 REQUIRED RELEASE STEP PASS");
-    expect(result.calls.map((call) => call.slice(0, 2))).toEqual([["cloudformation", "describe-stacks"], ["sts", "assume-role"], ["dynamodb", "scan"], ["dynamodb", "scan"]]);
+    expect(result.calls.map((call) => call.slice(0, 2))).toEqual([["sts", "assume-role"], ["cloudformation", "describe-stacks"], ["dynamodb", "scan"], ["dynamodb", "scan"]]);
     expect(result.stdout).toContain(issuer);
     expect(result.stdout).not.toContain("LOOKUP");
   });
+  it("M-1: cross-account stack discovery and both table scans use the deploy lookup credentials", () => {
+    const result = run(release, [{ ...role, accessKey: "TEST" }, { ...stack(), accessKey: "LOOKUP" }, { ...empty, accessKey: "LOOKUP" }, { ...empty, accessKey: "LOOKUP" }]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("C-1 REQUIRED RELEASE STEP PASS");
+    expect(result.calls[0]).toContain("arn:aws:iam::123456789012:role/lookup");
+  });
   it("the populated release check reads CodeUrl + /v1/auth and blocks every pending company", () => {
     const row = connected(A);
-    const result = run(release, [stack(), role, { value: { Items: [{ pk: { S: `COMPANY#${A}` } }] } }, identifiers([row])], [row]);
+    const result = run(release, [role, stack(), { value: { Items: [{ pk: { S: `COMPANY#${A}` } }] } }, identifiers([row])], [row]);
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('"count":1');
     expect(result.stdout).toContain(`"companyId":"${A}"`);
@@ -104,13 +110,13 @@ describe("C-1 operator command and required release preflight", () => {
   });
   it("refuses missing or malformed installed issuers instead of checking an empty partition", () => {
     for (const codeUrl of [undefined, "", "http://code.example.test", "https://code.example.test/wrong", "https://code.example.test?wrong", "not-a-url"]) {
-      const result = run(release, [stack(codeUrl === undefined ? null : codeUrl), role, empty, empty]);
+      const result = run(release, [role, stack(codeUrl === undefined ? null : codeUrl), empty, empty]);
       expect(result.status, String(codeUrl)).toBe(1);
       expect(result.stdout).not.toContain("PASS");
     }
   });
   it("blocks release on unreadable installed metadata without leaking the error", () => {
-    const result = run(release, [stack(), role, { value: { Items: [{ pk: { S: `COMPANY#${A}` } }] } }, empty], [], true);
+    const result = run(release, [role, stack(), { value: { Items: [{ pk: { S: `COMPANY#${A}` } }] } }, empty], [], true);
     expect(result.status).toBe(1); expect(result.stdout).not.toContain("PASS");
     expect(result.stderr).not.toContain("private-response-never-echo");
   });

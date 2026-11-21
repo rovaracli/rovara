@@ -130,13 +130,35 @@ npx cdk deploy RovaraCloudPipeline --app 'node infra/dist/bin/agentx.js' \
 Each environment's deploy switches come from `CLOUD_PIPELINE_SWITCHES` in `infra/lib/cloud-release-pipeline.ts`, never from
 the run: the `staging` pipeline deploys with `-c rovaraModelGatewayProductAi=on` (the product AI settings: switch the web stack on
 by hand first, with its `ProductKeys*` parameters and `ModelGatewayUrl`, which later deploys keep: a release deploy of a staging
-web stack that never had them fails), and `production` is refused. The pipeline stack itself must be redeployed once for a
+web stack that never had them fails), `production` and `beta` carry the same switch (each switched on by hand first, with its own gateway). The pipeline stack itself must be redeployed once for a
 changed switch to take effect. Run the pipeline
 command above again after changing them.
 
 The deploy job has no administrator access. It can assume only the account's CDK bootstrap roles, and read
 the web stack's outputs for the release check. The pipeline never deploys itself: run the command above
 again after a change to `cloud-release-pipeline.ts`.
+
+### Beta: a pipeline that deploys into another account
+
+Beta Cloud (`app.beta.rovara.dev`, on beta Code at `https://beta.rovara.dev`) lives in the beta account, `233082642592`. Its
+pipeline, `rovara-cloud-beta-pipeline`, runs in the production account, `944937319445`, which holds the GitHub connection. This is
+how Rovara Code's beta release works too (Rovara-cloud#269).
+
+- `CLOUD_PIPELINE_DEPLOY_ACCOUNTS` in `cloud-release-pipeline.ts` names beta's account.
+- The deploy job passes `-c agentxAccount=<that account>`, so `cdk deploy` goes through beta's CDK bootstrap roles.
+- The release check reads the web stack's address through beta's lookup role.
+- The pipeline's role boundary allows exactly those roles.
+
+The beta account's bootstrap must trust the production account. Run this once, as the beta account:
+
+```sh
+npx cdk bootstrap aws://233082642592/us-east-1 --trust 944937319445 --trust-for-lookup 944937319445 \
+  --cloudformation-execution-policies arn:aws:iam::aws:policy/AdministratorAccess
+```
+
+Deploy the pipeline as the production account, with `-c rovaraCloudPipeline=beta`, the production GitHub connection and
+`CodeUrl=https://beta.rovara.dev`. A `vX.Y.Z` tag then starts both `rovara-cloud-production-release` and `rovara-cloud-beta-release`,
+each waiting for its own approval: approve beta first.
 
 ## Releasing
 
@@ -253,10 +275,10 @@ node scripts/agent-own-key-backfill.mjs --check --region "$AWS_REGION" --issuer 
 1. Review and retain the dry-run count and company/source list. Dry-run is also the default; it performs no writes.
 2. Apply prints a complete read-only preview before the first write. Each candidate uses a transaction: its connection document revisions must still match and its AGENT_AI row must still be absent. Anthropic precedes Bedrock when both are connected, matching former own-key precedence. Only an existing AGENT_AI record kind is written, with source, version 1, timestamp and `updatedBy: backfill:DEC254zzz279`. No fallback is invented.
 3. A concurrent choice or connection change refuses that company's transaction and exits unsuccessfully. Rerun dry-run and review the fresh list; do not force an overwrite. Uncertain writes or unreadable metadata also fail the run; a rerun safely discovers any write that already committed.
-4. The final dry-run must show count 0. A rerun makes no write attempts and preserves saved versions/timestamps. Retain the apply and zero-candidate logs with release evidence. Run the check again immediately before the gateway rollout.
+4. The final dry-run must show count 0. A rerun makes no write attempts and preserves saved versions/timestamps. Retain the apply and zero-candidate logs with release evidence. Run the `--check` command above again against the target environment immediately before the gateway rollout; a nonzero exit stops that rollout. A key connected after the backfill with no saved choice is preserved by gateway admission (Anthropic first, then Bedrock); only a company with neither defaults to company-billed Rovara AI. An explicit saved Rovara choice still wins. Connection-read failures refuse before any hold or send.
 
 The command scans every page of both tables with consistent reads. Companies contributes company identifiers; ProductKeys contributes only partition/sort-key identifiers for `_learning` and `_company` metadata under the exact installed issuer. This includes connected companies with no Companies rows. It then reads only the two relevant parsed connection documents. Discovery errors abort the complete preview before any write. It never reads sealed key contents, decrypts a key, calls a provider or creates a feature switch. Operator apply requires the controller's existing DynamoDB transaction authority for these tables; no grant is added by this change.
 
-Cloud's existing release-check command now runs the read-only `--check --release-stack ... --lookup-role ...` preflight before starting its deploy or monitor. It derives the issuer as the installed web stack's `CodeUrl` plus `/v1/auth`, reads that stack's table names and assumes the CDK lookup role already allowed to the deploy job. A missing/malformed issuer, nonexistent/unreadable stack, inaccessible table, malformed document or nonzero pending count blocks release. There is no first-install PASS exception: without readable installed scope this check cannot certify a rollout. The pipeline never applies the backfill. Redeploy the pipeline stack with this version before releasing the default; the gateway's separate manual release must follow the same required sequence.
+Cloud's existing release-check command now runs the read-only `--check --release-stack ... --lookup-role ...` preflight before starting its deploy or monitor. It derives the issuer as the installed web stack's `CodeUrl` plus `/v1/auth`, assumes the deploy account's CDK lookup role already allowed to the deploy job before reading that stack or either table. This also applies to cross-account beta: the lookup role must belong to the deploy account, not the pipeline account. A missing/malformed issuer, nonexistent/unreadable stack, inaccessible table, malformed document or nonzero pending count blocks release. There is no first-install PASS exception: without readable installed scope this check cannot certify a rollout. The pipeline never applies the backfill. Redeploy the pipeline stack with this version before releasing the default; the gateway's separate manual release must follow the same required sequence.
 
 After installation, prove on staging that a backfilled own-key company still uses that source, an explicit choice is unchanged, and an unconnected company defaults to company-billed Rovara AI under its caps. Sol and lead 4 Opus review the exact committed SHA before rollout.

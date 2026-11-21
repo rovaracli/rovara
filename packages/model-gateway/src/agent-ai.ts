@@ -9,8 +9,8 @@
 //   openrouter_key the company's own OpenRouter key (DEC 254t), the same way; its reported cost is used by settleAmount's rules.
 //   custom_endpoint the company's own OpenAI-compatible endpoint (DEC 254t), behind the SSRF guard (endpoint-guard.ts).
 //
-// DEC 254zzz263: no saved choice defaults to Rovara's AI, billed to the company under its caps. Only the operator's
-// explicit exemption list makes a call exempt. Connected credentials alone are not an explicit choice. Saved choices and
+// DEC 254zzz263 + controller R-1: without a saved choice, keep a connected Anthropic key or Bedrock; only companies
+// with nothing connected default to company-billed Rovara AI. Only the operator exemption list makes a call exempt. Saved choices and
 // fallback order win at admission, before any hold or send; never retry another source after a provider answered.
 import { BEDROCK_CONVERSE_ID } from "./bedrock-converse.js";
 import type { CredentialSource } from "./aws.js";
@@ -129,16 +129,17 @@ export class CompanyAgentAiSource implements AgentAiSourceReader {
   }
 }
 
-/** DEC 254zzz263: an explicit saved choice wins; otherwise Rovara's AI is the default for every company. Billing is decided at admission. */
+/** Saved choices win; R-1 preserves unsaved own keys before the billed Rovara default. Billing is decided at admission. */
 export type AgentSourceVia = "chosen" | "default" | "own_key" | "none";
 export interface ResolvedAgentSource {
   source: AgentAiSource | undefined; via: AgentSourceVia;
   /** DEC 254zzz84(4): the saved order's sources after `source`, only when the company saved some (absent: no fallback, exactly as before). */
   fallback?: AgentAiSource[];
 }
-/** The no-choice rule. Provider connection facts do not choose a source; Cloud's copy is held equal by a contract test. */
-export function defaultAgentSource(_input: { keyConnected: boolean; bedrockConnected: boolean }): { source: AgentAiSource | undefined; via: "own_key" | "default" } {
-  void _input; // Retain the existing helper signature; connection facts no longer choose the default.
+/** Controller R-1: Anthropic precedes Bedrock, matching the backfill; only an unconnected company defaults to Rovara AI. */
+export function defaultAgentSource(input: { keyConnected: boolean; bedrockConnected: boolean }): { source: AgentAiSource | undefined; via: "own_key" | "default" } {
+  if (input.keyConnected) return { source: "anthropic_key", via: "own_key" };
+  if (input.bedrockConnected) return { source: "bedrock_byo", via: "own_key" };
   return { source: "rovara", via: "default" };
 }
 export interface AgentSourcePorts {
@@ -148,8 +149,8 @@ export interface AgentSourcePorts {
   keys: Pick<LearningKeySource, "connected">;
   byo?: Pick<ByoBedrock, "connection">;
 }
-/** Saved source/order first; an unreadable saved row throws. No choice defaults to Rovara AI without reading unrelated credentials. */
-export async function resolveAgentSource(ports: AgentSourcePorts, _iss: string, cid: string, signal?: AbortSignal): Promise<ResolvedAgentSource> {
+/** Saved source/order first. Without one, preserve this issuer/company's own connections, even after backfill. Read faults throw before any hold or send. */
+export async function resolveAgentSource(ports: AgentSourcePorts, iss: string, cid: string, signal?: AbortSignal): Promise<ResolvedAgentSource> {
   if (ports.sources.orderFor !== undefined) {
     const order = await ports.sources.orderFor(cid, signal);
     if (order !== undefined) return order.fallback.length === 0 ? { source: order.source, via: "chosen" } : { source: order.source, via: "chosen", fallback: order.fallback.slice() };
@@ -157,7 +158,9 @@ export async function resolveAgentSource(ports: AgentSourcePorts, _iss: string, 
     const saved = await ports.sources.sourceFor(cid, signal);
     if (saved !== undefined) return { source: saved, via: "chosen" };
   }
-  return defaultAgentSource({ keyConnected: false, bedrockConnected: false });
+  const keyConnected = (await ports.keys.connected(iss, cid, "anthropic", signal)) === true;
+  const bedrockConnected = !keyConnected && ports.byo !== undefined && (await ports.byo.connection(iss, cid, signal)) !== undefined;
+  return defaultAgentSource({ keyConnected, bedrockConnected });
 }
 
 /** Rovara's AI as the agent route uses it. */

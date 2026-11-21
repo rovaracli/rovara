@@ -60,6 +60,8 @@ export interface BoundaryScope {
   readonly partition: string;
   readonly region: string;
   readonly account: string;
+  /** Pipeline only (Rovara-cloud#269): the account its deploy job deploys into, through that account's CDK bootstrap roles. Absent: its own. */
+  readonly deployAccount?: string;
 }
 
 export interface BoundaryStatement {
@@ -102,6 +104,8 @@ export const GATEWAY_PROVIDER_SECRET_LOGICAL_IDS = ["ProviderKeyanthropic"] as c
 /** The boundary of one part of one environment. Pure: tests and the controller's simulation call it with plain strings. */
 export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPart): BoundaryStatement[] {
   const { env, partition: p, region: r, account: a } = scope;
+  // The account the pipeline deploys into: its own, or (beta) another account whose bootstrap roles trust this one.
+  const d = scope.deployAccount ?? a;
   const path = cloudRolePath(env);
   const rolesOf = (which: CloudStackPart) => `arn:${p}:iam::${a}:role${cloudPartRolePath(env, which)}*`;
   // Generated names start with the stack name; never `rovara-cloud-<env>-*` (that would match an environment named <env>-eu too).
@@ -147,11 +151,13 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
         Action: ["codeconnections:UseConnection", "codeconnections:GetConnectionToken", "codestar-connections:UseConnection", "codestar-connections:GetConnectionToken"],
         Resource: [`arn:${p}:codeconnections:*:${a}:connection/*`, `arn:${p}:codestar-connections:*:${a}:connection/*`],
       },
-      { Sid: "ReleaseCheckReadsWebStack", Effect: "Allow", Action: ["cloudformation:DescribeStacks"], Resource: [`arn:${p}:cloudformation:${r}:${a}:stack/${stack("web")}/*`] },
+      // In another account the release check reads the web stack through that account's lookup role (AssumeDeployRoles) instead.
+      ...(d === a ? [{ Sid: "ReleaseCheckReadsWebStack", Effect: "Allow" as const, Action: ["cloudformation:DescribeStacks"], Resource: [`arn:${p}:cloudformation:${r}:${a}:stack/${stack("web")}/*`] }] : []),
       {
-        // The pipeline assumes its own action roles (under the path) and the bootstrap roles cdk deploy uses. Only this part may.
+        // The pipeline assumes its own action roles (under the path) and the bootstrap roles cdk deploy uses, in the account it deploys
+        // into. Only this part may.
         Sid: "AssumeDeployRoles", Effect: "Allow", Action: ["sts:AssumeRole"],
-        Resource: [rolesOf("pipeline"), ...CDK_BOOTSTRAP_ASSUMED_ROLES.map((role) => `arn:${p}:iam::${a}:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-${role}-${a}-${r}`)],
+        Resource: [rolesOf("pipeline"), ...CDK_BOOTSTRAP_ASSUMED_ROLES.map((role) => `arn:${p}:iam::${d}:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-${role}-${d}-${r}`)],
       },
     ],
     "gateway-images": [],
@@ -252,7 +258,8 @@ const bounded = new WeakMap<Stack, iam.CfnManagedPolicy>();
  * actions above already fit). Called once, last, by each Cloud stack's constructor; a second call throws. The gateway's boundary is retained:
  * its Bedrock broker role is retained, and a policy still in use as a role's boundary can't be deleted.
  */
-export function applyCloudBoundary(stack: Stack, env: string, part: CloudStackPart, gatewayMeterTableArn?: string): iam.CfnManagedPolicy {
+export function applyCloudBoundary(stack: Stack, env: string, part: CloudStackPart, gatewayMeterTableArn?: string, deployAccount?: string): iam.CfnManagedPolicy {
+  if (deployAccount !== undefined && part !== "pipeline") throw new Error("only the pipeline deploys into another account");
   if (bounded.has(stack)) throw new Error(`${stack.node.path} already has its boundary`);
   // Only the web stack's approved meter reads extend the boundary, on the same exact ARN and company keys as its identity policy.
   const meterReads = part === "web" && gatewayMeterTableArn !== undefined ? [new iam.PolicyStatement({
@@ -262,7 +269,7 @@ export function applyCloudBoundary(stack: Stack, env: string, part: CloudStackPa
   const policy = new iam.CfnManagedPolicy(stack, BOUNDARY_LOGICAL_ID, {
     path: cloudRolePath(env),
     description: `Rovara Cloud ${env} (${part}): the permissions boundary of every role this stack makes`,
-    policyDocument: { Version: "2012-10-17", Statement: [...cloudBoundaryStatements({ env, partition: stack.partition, region: stack.region, account: stack.account }, part), ...meterReads] },
+    policyDocument: { Version: "2012-10-17", Statement: [...cloudBoundaryStatements({ env, partition: stack.partition, region: stack.region, account: stack.account, ...(deployAccount === undefined ? {} : { deployAccount }) }, part), ...meterReads] },
   });
   if (part === "gateway") {
     policy.cfnOptions.deletionPolicy = CfnDeletionPolicy.RETAIN;

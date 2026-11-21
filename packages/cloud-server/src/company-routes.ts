@@ -366,6 +366,8 @@ async function createInvite(context: RouteContext, withReceipt: boolean): Promis
     throw error;
   }
   let confirmed = false, told: "told" | "notOnCode" | "notFound" | "failed" | undefined, link = token;
+  // The record as finally stored: the receipt is built from it, so its expiry is the one a status read returns (#260).
+  let stored: InviteRecord;
   try {
     // Kept first and usable only once Code took it: the invite's expiry and Code's are the same seven days.
     const asked = await askCodeFor(context, PREAPPROVALS_PATH, { method: "POST", body: { email: input.email, role: "member", expiresInHours: INVITE_DAYS * 24 } });
@@ -376,11 +378,13 @@ async function createInvite(context: RouteContext, withReceipt: boolean): Promis
     if (minted === "unreadable") return WORDS.codeUnreadable;
     if (minted === undefined) {
       // An older Code (no secret): Cloud's own token, as before.
-      await store.updateInvite({ ...invite, state: "pending" }, { revision: 0, state: "unconfirmed" });
+      stored = { ...invite, state: "pending" };
+      await store.updateInvite(stored, { revision: 0, state: "unconfirmed" });
     } else {
       // The link carries Code's secret; Cloud keeps only its hash, and the invite lapses no later than Code's.
       const expiresAt = Date.parse(minted.expiresAt) < Date.parse(invite.expiresAt) ? new Date(Date.parse(minted.expiresAt)).toISOString() : invite.expiresAt;
-      await store.confirmInvite(invite, { ...invite, state: "pending", tokenHash: tokenHash(minted.secret), codeSecret: true, expiresAt });
+      stored = { ...invite, state: "pending", tokenHash: tokenHash(minted.secret), codeSecret: true, expiresAt };
+      await store.confirmInvite(invite, stored);
       link = minted.secret;
     }
     confirmed = true;
@@ -402,7 +406,7 @@ async function createInvite(context: RouteContext, withReceipt: boolean): Promis
   log(who, { event: "cloud.invite_created", inviteId: invite.inviteId, role: invite.role });
   await audited(context, who, "company.invite.created", `invite:${invite.inviteId}`);
   const inviteUrl = `${context.origin}/app/join#invite=${link}`;
-  return ok(withReceipt ? { receipt: receipt(invite), inviteUrl } : { inviteUrl });
+  return ok(withReceipt ? { receipt: receipt(stored), inviteUrl } : { inviteUrl });
 }
 
 function statusOf(invite: InviteRecord, nowMs: number): "pending" | "accepted" | "revoked" | "expired" {

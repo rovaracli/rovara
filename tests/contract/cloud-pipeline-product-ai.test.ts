@@ -25,6 +25,12 @@ describe("Cloud release pipeline: per-environment deploy switches", () => {
     expect(command).toBe(`npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" ${SWITCH} --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`);
   });
 
+  it("beta's deploy carries it too, now that beta's gateway is deployed (Rovara-cloud#273)", () => {
+    expect(CLOUD_PIPELINE_SWITCHES.beta).toEqual({ productAi: true });
+    expect(pipelineDeployContext("beta")).toEqual([SWITCH]);
+    expect(deployCommand("beta")).toContain(SWITCH);
+  });
+
   it("production's deploy carries it too, now that production's gateway is deployed (Rovara-cloud#247)", () => {
     expect(CLOUD_PIPELINE_SWITCHES.production).toEqual({ productAi: true });
     expect(deployCommand("production")).toContain(SWITCH);
