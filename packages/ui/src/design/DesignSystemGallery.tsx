@@ -1,14 +1,19 @@
-/// <reference types="vite/client" />
 import { useState, type CSSProperties } from "react";
 import { LOOK_COLORS } from "@agentx/design-tokens";
 import { colourRoles, galleryScenes, collectPartScenes, spaceExamples, statusRoles } from "./design-system-gallery-data.js";
-import { StatusDot } from "./StatusDot.js";
+import { StatusChip } from "./StatusChip.js";
 import { useInRouterContext, useLocation } from "react-router";
 import { shellGalleryScenes } from "./parts/shell-gallery-scenes.js";
 import "./parts/shell-gallery.css";
-// Vite resolves the source .tsx and built .js forms; the literal glob stays
-// optional until P1-P4 merge. No missing-module shim or cross-lane edit.
-const partScenes = collectPartScenes(import.meta.glob("./parts/{chips-buttons,decision-timeline,table-toast-dialog,outcome-delivery-held}-scenes.{js,tsx}", { eager: true }));
+import { chipsButtonsGalleryScenes } from "./parts/chips-buttons-scenes.js";
+import { decisionTimelineGalleryScenes } from "./parts/decision-timeline-scenes.js";
+import { tableToastDialogGalleryScenes } from "./parts/table-toast-dialog-scenes.js";
+import { outcomeDeliveryHeldGalleryScenes } from "./parts/outcome-delivery-held-scenes.js";
+const partScenes = collectPartScenes({
+ chips: { chipsButtonsGalleryScenes }, decisions: { decisionTimelineGalleryScenes },
+ table: { tableToastDialogGalleryScenes }, outcomes: { outcomeDeliveryHeldGalleryScenes },
+ shell: { shellGalleryScenes },
+});
 function themeStyle(theme: "light" | "dark"): CSSProperties {
  return { ...Object.fromEntries(Object.entries(LOOK_COLORS[theme]).map(([key, value]) => [`--rv-${key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`, value])), colorScheme: theme };
 }
@@ -25,10 +30,11 @@ function Gallery({ search }: { search: string }) {
   <nav aria-label="Gallery scenes">{galleryScenes.map(scene => <a key={scene.id} href={`?scene=${scene.id}`} aria-current={sceneId === scene.id ? "page" : undefined}>{scene.title}</a>)}</nav>
   {!known && <h2>Scene not found</h2>}
   {galleryScenes.filter(scene => !sceneId || scene.id === sceneId).map(scene => {
-   const part = partScenes.find(entry => entry.id === scene.id) ?? shellGalleryScenes.find(entry => entry.id === scene.id);
+   const part = partScenes.find(entry => entry.id === scene.id);
    if (["colours", "type", "space", "focus"].includes(scene.id)) return <Foundation key={scene.id} sceneId={scene.id} />;
-   const Part = part?.render, ownsHeading = Part !== undefined && ["statuses", "buttons"].includes(scene.id);
-   return <section key={scene.id} id={scene.id} data-gallery-scene={scene.id} aria-label={ownsHeading ? scene.title : undefined} aria-labelledby={ownsHeading ? undefined : `ds-${scene.id}`}>{!ownsHeading && <h2 id={`ds-${scene.id}`}>{scene.title}</h2>}{Part ? <Part /> : <div className="rv-ds-panel" data-gallery-placeholder={scene.id}><p>Component example awaiting its part&apos;s integration.</p></div>}</section>;
+   if (!part) throw new Error(`Missing gallery scene: ${scene.id}`);
+   const Part = part.render, ownsHeading = ["statuses", "buttons"].includes(scene.id);
+   return <section key={scene.id} id={scene.id} data-gallery-scene={scene.id} aria-label={ownsHeading ? scene.title : undefined} aria-labelledby={ownsHeading ? undefined : `ds-${scene.id}`}>{!ownsHeading && <h2 id={`ds-${scene.id}`}>{scene.title}</h2>}<Part /></section>;
   })}
  </div>;
 }
@@ -59,9 +65,9 @@ function FocusPanel({ theme }: { theme: "light" | "dark" }) {
   <h3 className="rv-ds-meta">{theme.toUpperCase()}</h3>
   <div className="rv-ds-focus-examples">
    <div><div className="rv-ds-selection" role="group" aria-label={`Selection example${suffix}`}>{["Inbox", "Work"].map(label => <button key={label} type="button" className={selected === label ? "rv-selected" : ""} aria-label={`${label === "Inbox" ? "Inbox, 3 waiting" : label}${suffix}`} aria-pressed={selected === label} onClick={() => setSelected(label)}><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">{label === "Inbox" ? <path d="M4 5h16l2 13H2L4 5Zm-1 8h6l1 3h4l1-3h6" /> : <path d="M4 6h16M4 12h16M4 18h16" />}</svg>{label}{label === "Inbox" ? <span className="rv-ds-nav-count" aria-hidden="true">3</span> : null}</button>)}</div><p className="rv-ds-meta">Selected: bar, weight and text colour</p></div>
-   <div className="rv-ds-focus-rows"><div className="rv-selected">Add refunds endpoint<StatusDot status="needs_person" words="Needs you" /></div><button type="button" className="is-focus-demo" aria-label={`Rotate webhook signing secrets${suffix}`} aria-describedby={`ds-keyboard-focus-${theme}`}>Rotate webhook signing secrets<span id={`ds-keyboard-focus-${theme}`} className="rv-ds-meta">keyboard focus</span></button></div>
+   <div className="rv-ds-focus-rows"><div className="rv-selected">Add refunds endpoint<StatusChip state="needs_you" /></div><button type="button" className="is-focus-demo" aria-label={`Rotate webhook signing secrets${suffix}`} aria-describedby={`ds-keyboard-focus-${theme}`}>Rotate webhook signing secrets<span id={`ds-keyboard-focus-${theme}`} className="rv-ds-meta">keyboard focus</span></button></div>
   </div>
-  <div className="rv-actions rv-ds-ring-buttons"><button type="button" className="rv-button is-focus-demo" aria-label={`Request changes${suffix}`}>Request changes</button><button type="button" className="rv-button rv-button-primary is-focus-demo" aria-label={`Review evidence${suffix}`}>Review evidence</button><span className="rv-ds-outline-chip">Not started</span></div>
+  <div className="rv-actions rv-ds-ring-buttons"><button type="button" className="rv-button is-focus-demo" aria-label={`Request changes${suffix}`}>Request changes</button><button type="button" className="rv-button rv-button-primary is-focus-demo" aria-label={`Review evidence${suffix}`}>Review evidence</button><StatusChip state="not_run" /></div>
   <p className="rv-ds-meta rv-ds-focus-caption">Focus ring: 2 px, running blue, 2 px offset</p>
   <label className="rv-field rv-ds-composer-field"><span className="rv-ds-meta">Composer with focus{suffix}</span><input type="text" className="rv-input rv-ds-composer is-focus-demo" defaultValue="Test repeated refunds." /></label>
  </section>;

@@ -48,7 +48,7 @@ for (const theme of ["light", "dark"] as const) it(`${theme}: shows both focus p
  expect(screen.getByText(/Where an outline or a fill is the only way/)).toBeTruthy();
  for (const mode of ["light", "dark"]) {
   const panel = document.querySelector<HTMLElement>(`[data-focus-theme=${mode}]`);expect(panel).toBeTruthy();
-  expect(panel?.textContent).toContain("Needs you");expect(panel?.textContent).toContain("Not started");
+  expect(panel?.textContent).toContain("Needs you");expect(panel?.textContent).toContain("Not run");
  }
  await expectNoAxeViolations(document.body);
 });

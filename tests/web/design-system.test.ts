@@ -66,7 +66,7 @@ for (const theme of ["light", "dark"] as const) {
     h(EmptyState, { title: "No work needs you", description: "You can return when a decision is needed" }),
     h(Skeleton, { label: "Loading session" }),
     h(DataTable<{ name: string }>, { caption: "Shared workflows", columns: [{ key: "name", title: "Name", render: row => row.name }], rows: [{ name: "Payments expert" }], rowKey: row => row.name }),
-    h(RelativeTime, { at: "2026-10-23T12:00:00Z" }), h(Toast, { message: "Draft saved", onDismiss: vi.fn() }), h(VisuallyHidden, null, "Additional context")
+    h(RelativeTime, { at: "2026-10-23T12:00:00Z" }), h(Toast, { message: "Stopped following this task.", onUndo: vi.fn(), onDismiss: vi.fn() }), h(VisuallyHidden, null, "Additional context")
    ) }), { theme });
    const user = userEvent.setup();
    await user.click(screen.getByRole("checkbox", { name: "Ask before external writes" }));expect(onChecked).toHaveBeenCalledWith(true);

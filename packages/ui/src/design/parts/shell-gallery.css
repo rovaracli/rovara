@@ -17,7 +17,6 @@
 .rv-ds-gallery .rv-ds-ring-buttons{gap:calc(var(--rv-space-3) + var(--rv-space-2));padding:0;flex-wrap:wrap}
 .rv-ds-gallery .rv-ds-composer-field{padding:0}
 .rv-ds-gallery .rv-ds-composer{height:var(--rv-control-size)}
-.rv-ds-outline-chip{display:inline-flex;align-items:center;border:calc(var(--rv-space-1)/4) solid var(--rv-border-strong);border-radius:var(--rv-radius-lg);padding-inline:var(--rv-space-2);font-size:var(--rv-font-sm);font-weight:600;color:var(--rv-text-muted);white-space:nowrap}
 .rv-ds-gallery .rv-page-header{display:flex;max-width:none;gap:var(--rv-space-5)}
 .rv-page-header .rv-page-breadcrumbs ol{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2);list-style:none;margin:0 0 var(--rv-space-3);padding:0;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
 .rv-page-breadcrumbs li+li::before{content:"/";margin-inline-end:var(--rv-space-2)}
@@ -35,11 +34,6 @@
 .rv-ds-plan-items{display:grid;gap:var(--rv-space-3);padding-inline-start:var(--rv-space-5);color:var(--rv-text-muted)}
 .rv-ds-plan-items [aria-current]{color:var(--rv-text)}
 .rv-ds-demo-note{color:var(--rv-text-muted);font-size:var(--rv-font-sm);border-top:calc(var(--rv-space-1)/4) solid var(--rv-border);padding-top:var(--rv-space-4)}
-.rv-ds-demo-timeline{display:grid;gap:var(--rv-space-5);list-style:none;padding:0;margin-block:var(--rv-space-5)}
-.rv-ds-demo-timeline li{border-inline-start:var(--rv-space-1) solid var(--rv-border-strong);padding-inline-start:var(--rv-space-3);min-width:0}
-.rv-ds-demo-timeline li[data-step=done]{border-color:var(--rv-status-done)}
-.rv-ds-demo-timeline li[data-step=current]{border-color:var(--rv-status-running)}
-.rv-ds-demo-timeline code{color:var(--rv-text-muted)}
 .rv-ds-gap-row{padding-block:var(--rv-space-4);border-block-end:calc(var(--rv-space-1)/4) solid var(--rv-border)}
 .rv-ds-state-list{max-width:var(--rv-table-width);border:calc(var(--rv-space-1)/4) solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);overflow:hidden}
 .rv-ds-state-heading{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3);padding:var(--rv-space-4);border-block-end:calc(var(--rv-space-1)/4) solid var(--rv-border)}

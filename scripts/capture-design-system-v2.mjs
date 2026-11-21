@@ -38,7 +38,7 @@ async function assertScene(page, scene, width, theme) {
   "statuses": ["Queued", "Not run", "Unknown"], "buttons": ["Review evidence", "Request changes"],
   "decisions": ["Answer", "Needs you"], "timeline": ["Build", "Checks"], "table": ["Add refunds endpoint"],
   "toast": ["Undo"], "confirmation": ["Preview Close confirmation"], "outcome": ["What happened", "What is safe", "What to do"],
-  "focus": ["New in v2: selection, focus and outlines", "LIGHT", "DARK", "Not started"],
+  "focus": ["New in v2: selection, focus and outlines", "LIGHT", "DARK", "Not run"],
   "shell-running": ["Writing the POST /refunds handler", "Where this task is"], "shell-plan": ["Approve plan v3?", "Risks to know"], "shell-gaps": ["2 required results are missing", "Could not run", "Not run"],
   "delivery": ["Queued for this build", "Applied", "Checking delivery", "Not delivered", "Not applied: outside the plan"], "held": ["Unknown", "checking"],
   "states-loading": ["Tasks"], "states-empty": ["No tasks yet"], "states-slow": ["Longer than usual"], "states-error": ["couldn't refresh"], "states-stale": ["Unknown", "3 min ago"], "states-phone": ["Plan v3", "Start a task"],

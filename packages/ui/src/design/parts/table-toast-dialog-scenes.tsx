@@ -4,15 +4,15 @@ import { Toast } from "../Toast.js";
 import { Announcer } from "../Announcer.js";
 import { ConfirmationDialog } from "../ConfirmationDialog.js";
 import { Button } from "../Button.js";
-import { StatusDot } from "../StatusDot.js";
+import { StatusChip } from "../StatusChip.js";
 
 const exampleTasks = [
- { id: "refunds", title: "Add refunds endpoint", status: "running", words: "Running", owner: "A", updated: "20 s" },
- { id: "webhook", title: "Fix webhook retry backoff", status: "unknown", words: "Could not run", owner: "S", updated: "4 min" },
+ { id: "refunds", title: "Add refunds endpoint", status: "running", owner: "A", updated: "20 s" },
+ { id: "webhook", title: "Fix webhook retry backoff", status: "could_not_run", owner: "S", updated: "4 min" },
 ] as const;
 const exampleColumns: readonly Column<(typeof exampleTasks)[number]>[] = [
  { key: "task", title: "Task", render: row => <><strong>{row.title}</strong><span className="rv-p3-phone-detail">{row.owner === "A" ? "Ana" : "Sam"} · {row.updated}</span></> },
- { key: "status", title: "Status", render: row => <StatusDot status={row.status} words={row.words} /> },
+ { key: "status", title: "Status", render: row => <StatusChip state={row.status} /> },
  { key: "owner", title: "Owner", render: row => <span className="rv-p3-example-owner" aria-label={row.owner === "A" ? "Ana" : "Sam"}>{row.owner}</span> },
  { key: "updated", title: "Updated", render: row => row.updated },
 ];

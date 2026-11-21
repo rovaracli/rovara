@@ -58,8 +58,9 @@ describe("a plan card with choices and a run limit", () => {
     const approve = screen.getByRole<HTMLButtonElement>("button", { name: "Approve" });
     expect(approve.disabled).toBe(true);
     fireEvent.click(screen.getByRole("checkbox", { name: /I agree Rovara may spend up to \$5.00/u }));
-    expect(approve.disabled).toBe(false);
-    fireEvent.click(approve);
+    const unlockedApprove = screen.getByRole<HTMLButtonElement>("button", { name: "Approve" });
+    expect(unlockedApprove.disabled).toBe(false);
+    fireEvent.click(unlockedApprove);
     await waitFor(() => expect(f.posts()).toHaveLength(1));
     const sent = f.posts()[0]!;
     expect(sent.path).toBe("/v1/app/decisions/approve_plan/plan2/approve");
@@ -163,10 +164,10 @@ describe("requirements and design cards", () => {
     const approve = screen.getByRole<HTMLButtonElement>("button", { name: "Approve" });
     expect(approve.disabled).toBe(true);
     expect(approve.getAttribute("aria-describedby")).toBeTruthy();
-    expect(document.getElementById(approve.getAttribute("aria-describedby")!)?.textContent).toContain("Tick the box");
+    expect(approve.getAttribute("aria-describedby")!.split(/\s+/u).map(id => document.getElementById(id)?.textContent).join(" ")).toContain("Tick the box");
     fireEvent.touchStart(f.container.querySelector("article")!, { touches: [{ clientX: 0, clientY: 0 }] });fireEvent.touchEnd(f.container.querySelector("article")!, { changedTouches: [{ clientX: 300, clientY: 0 }] });
     fireEvent.click(screen.getByRole("checkbox", { name: /I agree Rovara may spend/u }));
-    fireEvent.click(approve);
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(f.posts()).toHaveLength(1));
     expect(Object.keys(f.posts()[0]!.body as object).sort()).toEqual(["acknowledgedRunLimitUsd", "requestId", "shownDigest"]);
   });
