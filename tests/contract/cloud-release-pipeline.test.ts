@@ -22,6 +22,14 @@ describe("Rovara Cloud release pipeline", () => {
     return { variables: spec.env.variables, phases: spec.phases, commands: Object.values(spec.phases).flatMap((phase) => phase.commands).join("\n") };
   };
 
+  it("requires the read-only C-1 preflight before deploy, with no new data or IAM grant", () => {
+    const { commands } = deploySpec();
+    expect(commands).toContain("npx tsc -b packages/model-gateway");
+    expect(commands).toContain("node scripts/agent-own-key-backfill.mjs --check --release-stack");
+    expect(commands.indexOf("node scripts/agent-own-key-backfill.mjs --check --release-stack")).toBeLessThan(commands.indexOf("npx cdk deploy"));
+    expect(commands).not.toContain("agent-own-key-backfill.mjs --apply");
+  });
+
   it("runs on vX.Y.Z release tags of Rovara-cloud only, never on a branch push or a prerelease tag", () => {
     const properties = pipeline();
     expect(properties.Triggers).toEqual([{ ProviderType: "CodeStarSourceConnection", GitConfiguration: { SourceActionName: "GitHub", Push: [{ Tags: { Includes: ["v*.*.*"], Excludes: ["v*-*"] } }] } }]);
@@ -55,7 +63,7 @@ describe("Rovara Cloud release pipeline", () => {
     expect(variables).toMatchObject({ ROVARA_ENV: "production", STACK_PREFIX: "rovara-cloud-production", CODE_URL: "<token>", NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS });
     expect(commands).toContain('RELEASE_TAG="$(git tag --points-at HEAD');
     // The web build comes first: cloud-web.ts uploads the app's files and puts the page shell in the function.
-    expect(phases.pre_build!.commands.slice(-3)).toEqual(["npm ci", "npx tsc -b infra", "npm run build:web"]);
+    expect(phases.pre_build!.commands.slice(-4)).toEqual(["npm ci", "npx tsc -b infra", "npx tsc -b packages/model-gateway", "npm run build:web"]);
     // One command: the release check's poller runs around the deploy in the same shell (tests/contract/cloud-release-check.test.ts runs it).
     expect(phases.build!.commands).toHaveLength(1);
     expect(phases.build!.commands[0]).toContain(
@@ -91,7 +99,7 @@ describe("Rovara Cloud release pipeline", () => {
     expect(check.phases.build!.commands).toEqual([...FIND_RELEASE_TAG, ...RELEASE_TAG_ON_BRANCH]);
     expect(RELEASE_TAG_ON_BRANCH.join("\n")).toContain('git merge-base --is-ancestor HEAD "origin/cloud/next"');
     const deploy = deploySpec();
-    expect(deploy.phases.pre_build!.commands.slice(-6, -3)).toEqual([...RELEASE_TAG_ON_BRANCH]);
+    expect(deploy.phases.pre_build!.commands.slice(-7, -4)).toEqual([...RELEASE_TAG_ON_BRANCH]);
     // The Check job can read the repository through the connection, and nothing else of note: no admin, no assumed roles.
     const checkRole = (Object.values(template.findResources("AWS::CodeBuild::Project")).find((each) => (each.Properties as { Name: string }).Name === "rovara-cloud-production-check")!.Properties as { ServiceRole: { "Fn::GetAtt": [string, string] } }).ServiceRole["Fn::GetAtt"][0];
     const statements = Object.values(template.findResources("AWS::IAM::Policy")).map((policy) => policy.Properties as { Roles: Array<{ Ref: string }>; PolicyDocument: { Statement: Array<{ Action: string | string[] }> } })

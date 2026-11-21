@@ -40,11 +40,12 @@ async function site(broken: boolean): Promise<number> {
 }
 
 /** Runs the deploy command with fake tools; `address` is what the web stack's CloudUrl output says ("None": no stack yet). Not spawnSync: the site answers from this process. */
-async function run(address: string, deployExit: number): Promise<{ status: number | null; output: string }> {
+async function run(address: string, deployExit: number, backfillExit = 0): Promise<{ status: number | null; output: string }> {
   const bin = mkdtempSync(join(tmpdir(), "release-check-"));
   writeFileSync(join(bin, "aws"), `#!/bin/bash\necho "${address}"\n`);
   writeFileSync(join(bin, "npx"), `#!/bin/bash\nsleep 3\nexit ${String(deployExit)}\n`);
-  for (const tool of ["aws", "npx"]) chmodSync(join(bin, tool), 0o755);
+  writeFileSync(join(bin, "node"), `#!/bin/bash\necho "C-1 required release preflight"\nexit ${String(backfillExit)}\n`);
+  for (const tool of ["aws", "npx", "node"]) chmodSync(join(bin, tool), 0o755);
   const child = spawn("bash", ["-c", command], { env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, STACK_PREFIX: "rovara-cloud-production" } });
   let output = "";
   child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
@@ -54,6 +55,13 @@ async function run(address: string, deployExit: number): Promise<{ status: numbe
 }
 
 describe("the release check around a Cloud deploy", () => {
+  it("blocks deployment when the required own-key backfill check fails", async () => {
+    const { status, output } = await run("None", 0, 1);
+    expect(status).toBe(1);
+    expect(output).toContain("C-1 required release preflight");
+    expect(output).not.toContain("release check: no live address yet");
+  });
+
   it("asks for the page shell and the API", () => {
     expect(RELEASE_CHECK_PATHS).toEqual(["/app", "/v1/web/me"]);
   });

@@ -52,11 +52,11 @@ for (const durable of [false, true]) it(`retains missing usage, records an above
  const meter = durable ? new DynamoMeter({ db: new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "fixture", secretAccessKey: "fixture" }), transport: wire.transport }), tables, now: () => now }) : new InMemoryMeter(() => now);
  const price = openRouterRates(openRouterPolicy(model, now, [tariff])!);
  const receipt = initialCharge({ ...claims, aud: "rovara-model-gateway", src: "app", pay: { kind: "member", developerId: claims.per }, mdl: [model] }, { provider: "openrouter", modelId: model }, { source, billing: "external_provider" }, 50, now, price);
- const reserved = await meter.reserve({ scope, caps, estimateMicros: 50, charge: { receipt, requestFingerprint: "f".repeat(64) } }); expect(reserved.ok).toBe(true); if (!reserved.ok) return;
+ const reserved = await meter.reserve({ scope, caps, estimateMicros: 50, routeClass: "agent", charge: { receipt, requestFingerprint: "f".repeat(64) } }); expect(reserved.ok).toBe(true); if (!reserved.ok) return;
  const missing = finishCharge(receipt, { price, notSent: false, now, reportedCostMicros: 5, retainMissingUsage: true }); expect(missing.amountMicros).toEqual({ state: "available", value: 50 }); expect(missing.status).toBe("awaiting_usage");
  const final = finishCharge(receipt, { price, notSent: false, now, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, reportedCostMicros: 60 });
  await meter.settleV2({ reservationId: reserved.reservation.id, receipt: final }); await meter.settleV2({ reservationId: reserved.reservation.id, receipt: final });
  expect((await meter.read(scope)).every(row => row.spentMicros === 60)).toBe(true);
- expect(await meter.sourceStop(scope.iss, scope.cid, "openrouter")).toMatchObject({ stopped: true });
- expect((await meter.reserve({ scope, caps, estimateMicros: 1, customerSource: "openrouter" })).ok).toBe(false);
+ expect(await meter.sourceStop(scope.iss, scope.cid, "openrouter", "agent")).toMatchObject({ stopped: true });
+ expect((await meter.reserve({ scope, caps, estimateMicros: 1, customerSource: "openrouter", routeClass: "agent" })).ok).toBe(false);
 });

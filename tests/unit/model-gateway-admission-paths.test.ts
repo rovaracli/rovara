@@ -34,26 +34,36 @@ function agentWorld(durable: boolean, task = caps.task) {
   w.deps.agentAi = { sources: { sourceFor: async () => source }, byo: { connection: async (iss, cid) => ({ row: { iss, cid, owner: "_company", sourceId: "own", versionId: revision }, connection: { scheme: "assume_role", roleArn: "arn:aws:iam::111111111111:role/RovaraBedrockInvoke-fixture", region: "us-west-2", models: { [alias]: id }, allowGlobal: false } }), sessions: { credentials: assumed, forget: () => undefined }, transport: () => send } };
   return { ...w, ...m, send, assumed, select: (value: AgentAiSource) => { source = value; }, revise: () => { revision = "r2"; }, usage: (value: number) => { input = value; } };
 }
-async function productWorld(w: ReturnType<typeof agentWorld>, blocked?: Promise<void>) {
+async function productWorld(w: ReturnType<typeof agentWorld>, blocked?: Promise<void>, input = 2) {
   const kit = storeKit({ bedrockCheck: async (_cid, c) => ({ result: "ok", models: Object.fromEntries(Object.values(c.models).map(model => [model, "ready"])) }) });
   await kit.store.connect({ iss: claims.iss, cid: claims.cid, owner: PRODUCT_COMPANY_OWNER, requestId: crypto.randomUUID(), expectedRevision: 0, actor: admin, sourceId: "src_bedrock", provider: "bedrock", key: JSON.stringify({ scheme: "assume_role", roleArn: "arn:aws:iam::111111111111:role/RovaraBedrockInvoke-fixture", region: "us-west-2", models: { [alias]: id }, allowGlobal: false }) });
   await kit.store.link({ iss: claims.iss, cid: claims.cid, owner: claims.pid, requestId: crypto.randomUUID(), expectedRevision: 0, actor: maintainer, sourceId: "src_link", companySourceId: "src_bedrock" });
-  const send = vi.fn(async () => { await blocked; return { status: 200, body: (async function* () { yield Buffer.from(JSON.stringify({ output: { message: { role: "assistant", content: [{ text: "hi" }] } }, stopReason: "end_turn", usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 } })); })() }; });
+  const send = vi.fn(async () => { await blocked; return { status: 200, body: (async function* () { yield Buffer.from(JSON.stringify({ output: { message: { role: "assistant", content: [{ text: "hi" }] } }, stopReason: "end_turn", usage: { inputTokens: input, outputTokens: 1, totalTokens: input + 1 } })); })() }; });
   const g = await productGateway({ kit, connect: false, productMeter: w.product, overrides: { meter: w.agent, chargeReceipts: { source: (_c, _m, resolved) => resolved } }, bedrock: { sessions: { credentials: w.assumed, forget: () => undefined }, transport: () => send } });
   return { ...g, send, invoke: (tid: string, headers: Record<string, string> = {}) => productCall(g.deps, `/v1/product/bedrock/model/${encodeURIComponent(id)}/converse`, { messages: [{ role: "user", content: [{ text: "hello" }] }], inferenceConfig: { maxTokens: 10 } }, mint({ mdl: [alias], tid }), headers) };
 }
 for (const durable of [false, true]) {
-  it(`S1 real product route refuses an agent-latched source stop before STS/send (${durable})`, async () => {
+  it(`agent overage stops agents while real product calls continue (${durable})`, async () => {
     const w = agentWorld(durable); w.usage(100_000);
     expect((await call(w.deps, body, mint({ mdl: [alias] }))).status).toBe(200);
-    expect(await w.agent.sourceStop(scope.iss, scope.cid, "bedrock_byo")).toMatchObject({ stopped: true });
     const g = await productWorld(w); w.assumed.mockClear();
-    expect((await g.invoke("task_product")).status).toBe(422);
-    expect(w.assumed).not.toHaveBeenCalled(); expect(g.send).not.toHaveBeenCalled();
-    expect((await w.product.read(scope)).every(row => row.reservedMicros === 0)).toBe(true);
+    expect((await g.invoke("task_product")).status).toBe(200);
+    expect(w.assumed).toHaveBeenCalledTimes(1); expect(g.send).toHaveBeenCalledTimes(1);
+    expect((await call(w.deps, body, mint({ mdl: [alias], tid: "task_blocked" }))).status).toBe(422);
+    expect(w.send).toHaveBeenCalledTimes(1);
+  });
+  it(`product overage stops products while real agent calls continue (${durable})`, async () => {
+    const w = agentWorld(durable), g = await productWorld(w, undefined, 100_000);
+    const reserve = vi.spyOn(w.product, "reserve");
+    expect((await g.invoke("task_product_over")).status).toBe(200);
+    expect(reserve.mock.calls[0]?.[0]).toMatchObject({ customerSource: "bedrock_byo", routeClass: "product" });
+    expect((await w.product.read(reserve.mock.calls[0]![0].scope)).every(row => row.spentMicros === 100002)).toBe(true);
+    expect((await call(w.deps, body, mint({ mdl: [alias] }))).status).toBe(200);
+    expect((await g.invoke("task_product_blocked")).status).toBe(422);
+    expect(g.send).toHaveBeenCalledTimes(1); expect(w.send).toHaveBeenCalledTimes(1);
   });
   it(`S1 four real product calls cannot bypass a live agent source slot (${durable})`, async () => {
-    const w = agentWorld(durable); const h = await w.agent.reserve({ scope, caps, estimateMicros: 10, customerSource: "bedrock_byo" });
+    const w = agentWorld(durable); const h = await w.agent.reserve({ scope, caps, estimateMicros: 10, customerSource: "bedrock_byo", routeClass: "agent" });
     expect(h.ok).toBe(true);
     const g = await productWorld(w); w.assumed.mockClear();
     const results = await Promise.all(Array.from({ length: 4 }, (_, i) => g.invoke(`task_product_${i}`)));
@@ -67,7 +77,7 @@ for (const durable of [false, true]) {
     const pending = g.invoke("task_product");
     try {
       await vi.waitFor(() => expect(g.send).toHaveBeenCalledTimes(1));
-      expect(reserve.mock.calls[0]![0]).toMatchObject({ customerSource: "bedrock_byo", charge: { receipt: { billing: "external_provider", source: { id: "src_bedrock", provider: "bedrock" } } } });
+      expect(reserve.mock.calls[0]![0]).toMatchObject({ customerSource: "bedrock_byo", routeClass: "product", charge: { receipt: { billing: "external_provider", source: { id: "src_bedrock", provider: "bedrock" } } } });
       expect((await call(w.deps, body, mint({ mdl: [alias] }))).status).toBe(429);
     } finally { release(); }
     expect((await pending).status).toBe(200);

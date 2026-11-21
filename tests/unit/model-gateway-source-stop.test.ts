@@ -15,7 +15,7 @@ function world(durable: boolean) {
   const db = new Dynamo({ region: "us-west-2", credentials, transport: wire.transport });
   const fresh = () => new DynamoMeter({ db, tables, now: () => now });
   const meter = durable ? fresh() : new InMemoryMeter(() => now);
-  const reserve = (source: "bedrock_byo" | "openrouter" = "bedrock_byo", tid = "task_fresh") => meter.reserve({ scope: { ...scope, tid }, caps, estimateMicros: 10, customerSource: source });
+  const reserve = (source: "bedrock_byo" | "openrouter" = "bedrock_byo", tid = "task_fresh") => meter.reserve({ scope: { ...scope, tid }, caps, estimateMicros: 10, customerSource: source, routeClass: "agent" });
   async function overage(source: "bedrock_byo" | "openrouter", above = true) {
     const held = await reserve(source, "task_over"); if (!held.ok) throw new Error("hold");
     const receipt = chargeReceipt({ issuer: scope.iss, companyId: scope.cid, project: scope.pid, taskId: "task_over", callId: held.reservation.id, model: { provider: source === "bedrock_byo" ? "bedrock" : "openrouter", modelId: "claude-x" }, billing: "external_provider", billableMicros: { state: "available", value: 0 }, providerCostMicros: { state: "available", value: 100002 }, originalReservationMicros: { state: "available", value: 10 }, amountMicros: { state: "available", value: above ? 100002 : 5 }, status: "final", reason: "reported_cost", occurredAt: new Date(now).toISOString(), recordedAt: new Date(now).toISOString(), accountingMonth: "2026-11", accountingDay: "2026-11-30" });
@@ -36,10 +36,10 @@ for (const durable of [false, true]) for (const source of ["bedrock_byo", "openr
     w.december(); expect(await w.reserve(source)).toMatchObject(blocked);
     // A different source, company and issuer stay independent.
     expect((await w.reserve(source === "bedrock_byo" ? "openrouter" : "bedrock_byo")).ok).toBe(true);
-    expect((await w.meter.reserve({ scope: { ...scope, cid: `org_${"b".repeat(20)}` }, caps, estimateMicros: 1, customerSource: source })).ok).toBe(true);
+    expect((await w.meter.reserve({ scope: { ...scope, cid: `org_${"b".repeat(20)}` }, caps, estimateMicros: 1, customerSource: source, routeClass: "agent" })).ok).toBe(true);
     if (durable) {
-      expect(await w.fresh().reserve({ scope: { ...scope, tid: "task_restart" }, caps, estimateMicros: 1, customerSource: source })).toMatchObject(blocked);
-      expect(w.wire.items(tables.meter).filter(row => String(row.sk).startsWith("SOURCESTOP#"))).toHaveLength(3);
+      expect(await w.fresh().reserve({ scope: { ...scope, tid: "task_restart" }, caps, estimateMicros: 1, customerSource: source, routeClass: "agent" })).toMatchObject(blocked);
+      expect(w.wire.items(tables.meter).filter(row => String(row.sk).startsWith("SOURCESTOP#"))).toHaveLength(6);
     }
   });
   it(`one in-flight customer call, including across month/restart; settlement releases only its slot (${durable}, ${source})`, async () => {
@@ -47,7 +47,7 @@ for (const durable of [false, true]) for (const source of ["bedrock_byo", "openr
     expect(await w.reserve(source, "task_second")).toMatchObject({ ok: false, reason: "busy", overrunInFlight: true });
     w.december();
     expect(await w.reserve(source, "task_december")).toMatchObject({ ok: false, reason: "busy", overrunInFlight: true });
-    if (durable) expect(await w.fresh().reserve({ scope: { ...scope, tid: "task_restart" }, caps, estimateMicros: 1, customerSource: source })).toMatchObject({ ok: false, reason: "busy" });
+    if (durable) expect(await w.fresh().reserve({ scope: { ...scope, tid: "task_restart" }, caps, estimateMicros: 1, customerSource: source, routeClass: "agent" })).toMatchObject({ ok: false, reason: "busy" });
     await w.meter.settle(first.reservation, 0);
     expect((await w.reserve(source, "task_released")).ok).toBe(true);
     await w.meter.settle(first.reservation, 0);
