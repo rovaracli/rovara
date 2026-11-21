@@ -1,6 +1,12 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.css", "screens/inbox/inbox.css", "screens/live/live.css", "screens/work/work.css", "screens/project/project.css", "screens/session/session.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
+for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-latin-600.woff2", "design/fonts/jetbrains-mono-latin-400.woff2", "design/fonts/Inter-OFL.txt", "design/fonts/JetBrainsMono-OFL.txt", "design/design.css", "shell/shell.css", "screens/home/home.css", "screens/inbox/inbox.css", "screens/live/live.css", "screens/work/work.css", "screens/project/project.css", "screens/session/session.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
+ // Design system v2: shared part styles, including mounted gallery consumers.
+ "design/parts/chips-buttons.css",
+ "design/parts/decision-timeline.css",
+ "design/parts/table-toast-dialog.css",
+ "design/parts/outcome-delivery-held.css",
+ "design/parts/shell-gallery.css",
  // Lane B: allowed-websites editor, shared by admin and own-project surfaces.
  "screens/admin/projects/allowed-websites.css",
  "screens/admin/projects/project-slack.css",

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor, act } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
@@ -65,7 +66,7 @@ for (const theme of ["light", "dark"] as const) {
     h(EmptyState, { title: "No work needs you", description: "You can return when a decision is needed" }),
     h(Skeleton, { label: "Loading session" }),
     h(DataTable<{ name: string }>, { caption: "Shared workflows", columns: [{ key: "name", title: "Name", render: row => row.name }], rows: [{ name: "Payments expert" }], rowKey: row => row.name }),
-    h(RelativeTime, { at: "2026-10-23T12:00:00Z" }), h(Toast, { message: "Draft saved", onDismiss: vi.fn() }), h(VisuallyHidden, null, "Additional context")
+    h(RelativeTime, { at: "2026-10-23T12:00:00Z" }), h(Toast, { message: "Stopped following this task.", onUndo: vi.fn(), onDismiss: vi.fn() }), h(VisuallyHidden, null, "Additional context")
    ) }), { theme });
    const user = userEvent.setup();
    await user.click(screen.getByRole("checkbox", { name: "Ask before external writes" }));expect(onChecked).toHaveBeenCalledWith(true);
@@ -146,4 +147,12 @@ it("makes invisible controls visible in dialog identity and description", async 
 });
 it("prints invisible controls in native choice labels without changing their values", () => {
  renderUi(h(Select, { label: "Owner\u202E", placeholder: "Choose\u0001", options: [{ value: "member-a", label: "Priya\u202E" }] }));expect(screen.getByRole("combobox", { name: "Owner[U+202E]" })).toBeTruthy();expect(screen.getByRole<HTMLOptionElement>("option", { name: "Priya[U+202E]" }).value).toBe("member-a");expect(screen.getByRole("option", { name: "Choose[U+0001]" })).toBeTruthy();
+});
+
+it("gives inputs and textareas the shared running-blue ring on focus", () => {
+ const css = readFileSync("packages/ui/src/design/design.css", "utf8");
+ const selectors = css.match(/([^{}]+)\{outline:2px solid var\(--rv-focus\);outline-offset:2px\}/)?.[1]?.split(",");
+ expect(selectors).toContain("input:focus");
+ expect(selectors).toContain("textarea:focus");
+ expect(css).toContain("@media(forced-colors:active){:focus-visible,input:focus,textarea:focus,.rv-ds-gallery .is-focus-demo{outline-color:Highlight}");
 });

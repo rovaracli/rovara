@@ -82,3 +82,11 @@ it("starts signup without navigation reads and welcome with only a me read", asy
 });
 
 it("preserves the server refusal message on a failed page", () => { const f = renderUi(h(PageError, { error: new ApiError(403, "FORBIDDEN", "Ask the project owner to restore your access.") }));expect(screen.getByText("Ask the project owner to restore your access.")).toBeTruthy();f.unmount(); });
+
+it("mounts the foundation gallery from its real lazy route without a feature switch", async () => {
+ const f = shell("/app/design-system");
+ expect(await screen.findByRole("heading", { name: "A calm control room", level: 1 })).toBeTruthy();
+ expect(f.container.querySelector("main")?.getAttribute("data-bleed")).toBe("true");
+ for (const name of ["Colour roles", "Type: five sizes, two weights", "Space: 4px base", "Focus and selection"]) expect(screen.getByRole("region", { name })).toBeTruthy();
+ f.close();
+});

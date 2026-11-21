@@ -19,6 +19,7 @@ function ModelSettingsRedirect({ section }: { section?: string }) {
 }
 export function appRoutes(features: AppNav["features"]): RouteObject[] {
  const children: RouteObject[] = [
+ { path: "design-system", handle: { bleed: true }, lazy: async () => ({ Component: (await import("./design/DesignSystemGallery.js")).DesignSystemGallery }) },
  { index: true, element: <HomeScreen /> }, // Work (the route stays /app/live): the split inbox. The shell lets it run edge to edge.
  { path: "live", handle: { bleed: true }, lazy: async () => ({ Component: (await import("./screens/work/WorkScreen.js")).WorkScreen }) },
  { path: "inbox", lazy: async () => ({ Component: (await import("./screens/inbox/InboxScreen.js")).InboxScreen }) },

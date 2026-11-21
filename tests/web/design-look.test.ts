@@ -43,10 +43,10 @@ describe("v2 look tokens: the emitted CSS variables match look.ts (no drift)", (
  it("emits the shape values and the touch rule", () => {
   expect(sheet.get(ROOT)).toMatchObject({ "--rv-radius-sm": `${String(LOOK_SHAPE.radius.sm)}px`, "--rv-radius-md": `${String(LOOK_SHAPE.radius.md)}px`, "--rv-radius-lg": `${String(LOOK_SHAPE.radius.lg)}px`, "--rv-radius-card": "var(--rv-radius-md)", "--rv-motion-fast": `${String(LOOK_SHAPE.motionFastMs)}ms`, "--rv-control-size": "max(var(--rv-control-h),var(--rv-touch-min))" });
   expect(lookV2Css()).toContain("--rv-touch-min:0px;");
-  expect(lookV2Css()).toContain(`@media (max-width: 767px), (pointer: coarse){${ROOT}{--rv-touch-min:${String(LOOK_SHAPE.touchMinPx)}px}}`);
+  expect(lookV2Css()).toContain(`@media (max-width: 639px){${ROOT}{--rv-touch-min:${String(LOOK_SHAPE.touchMinPx)}px}}`);
  });
  it("declares nothing else: every emitted name is accounted for", () => {
-  const known = new Set([...Object.keys(expectedColors("light")), ...Object.keys(expectedDensity("comfortable")), "--rv-radius-sm", "--rv-radius-md", "--rv-radius-lg", "--rv-radius-card", "--rv-motion-fast", "--rv-font-xs", "--rv-font-title", "--rv-touch-min", "--rv-control-size", "--rv-focus-offset"]);
+  const known = new Set([...Object.keys(expectedColors("light")), ...Object.keys(expectedDensity("comfortable")), "--rv-radius-sm", "--rv-radius-md", "--rv-radius-lg", "--rv-radius-card", "--rv-motion-fast", "--rv-font-xs", "--rv-font-title", "--rv-touch-min", "--rv-control-size", "--rv-focus-offset", "--rv-font-ui", "--rv-font-mono", "--rv-font-sm", "--rv-font-md", "--rv-reading-width", "--rv-table-width", "--rv-table-row-h", ...Array.from({ length: 7 }, (_, i) => `--rv-space-${String(i + 1)}`)]);
   for (const declared of sheet.values()) for (const name of Object.keys(declared)) expect(known.has(name), name).toBe(true);
  });
  it("reaches the page: the theme provider writes the same sheet after the base tokens", () => {
@@ -58,16 +58,16 @@ describe("v2 look tokens: the emitted CSS variables match look.ts (no drift)", (
 describe("v2 values agree with the design mock-ups (tokens.css)", () => {
  it("keeps the published light and dark values for the key tokens", () => {
   const sheet = rules(lookV2Css());
-  expect(sheet.get(ROOT)).toMatchObject({ "--rv-bg": "#f9fafb", "--rv-accent": "#3157d5", "--rv-accent-soft": "#eef2ff", "--rv-status-needs-you": "#8a5300", "--rv-text-subtle": "#626b7d", "--rv-radius-md": "10px", "--rv-density-row-y": "14px" });
-  expect(sheet.get(`${ROOT}[data-theme="dark"]`)).toMatchObject({ "--rv-bg": "#0e1116", "--rv-accent": "#6f8ff6", "--rv-accent-soft": "#1c2440", "--rv-status-done": "#6fd3a2", "--rv-text-subtle": "#8792a3" });
-  expect(sheet.get(`${ROOT}[data-density="compact"]`)).toMatchObject({ "--rv-density-row-y": "10px", "--rv-control-h": "36px", "--rv-font-xxl": "26px" });
+  expect(sheet.get(ROOT)).toMatchObject({ "--rv-bg": "#f5f6f7", "--rv-accent": "#15181d", "--rv-accent-soft": "#eceef1", "--rv-status-needs-you": "#8a5300", "--rv-text-subtle": "#59616e", "--rv-radius-md": "10px", "--rv-density-row-y": "14px" });
+  expect(sheet.get(`${ROOT}[data-theme="dark"]`)).toMatchObject({ "--rv-bg": "#0e1013", "--rv-accent": "#eceef1", "--rv-accent-soft": "#0a0c0e", "--rv-status-done": "#7ed69c", "--rv-text-subtle": "#9ba4b1" });
+  expect(sheet.get(`${ROOT}[data-density="compact"]`)).toMatchObject({ "--rv-density-row-y": "10px", "--rv-control-h": "36px", "--rv-font-xxl": "28px" });
  });
 });
 describe("the four new tokens", () => {
  it("are emitted with the mock-up values, Comfortable and Compact", () => {
   const sheet = rules(lookV2Css());
-  expect(sheet.get(ROOT)).toMatchObject({ "--rv-font-xs": "11px", "--rv-font-title": 'system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif', "--rv-font-title-size": "21px", "--rv-density-row-y-dense": "9px" });
-  expect(sheet.get(`${ROOT}[data-density="compact"]`)).toMatchObject({ "--rv-font-title-size": "19px", "--rv-density-row-y-dense": "5px" });
+  expect(sheet.get(ROOT)).toMatchObject({ "--rv-font-xs": "12px", "--rv-font-title": 'Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif', "--rv-font-title-size": "20px", "--rv-density-row-y-dense": "9px" });
+  expect(sheet.get(`${ROOT}[data-density="compact"]`)).toMatchObject({ "--rv-font-title-size": "20px", "--rv-density-row-y-dense": "5px" });
  });
  it("do not leak into the base token sheet", () => {
   for (const name of ["--rv-font-xs", "--rv-font-title", "--rv-density-row-y-dense"]) expect(tokensCss()).not.toContain(name);
@@ -90,7 +90,7 @@ describe("v2 look tokens", () => {
   expect(selectors.length).toBeGreaterThan(4);
   for (const selector of selectors) expect(selector, selector).toContain(ROOT);
   expect(lookV2Css()).toContain("prefers-color-scheme: dark");
-  expect(LOOK_DENSITY.comfortable.controlH).toBeGreaterThan(LOOK_DENSITY.compact.controlH);
+  expect(LOOK_DENSITY.comfortable.controlH).toBe(LOOK_DENSITY.compact.controlH);
  });
 });
 describe("density switch (tokens only)", () => {

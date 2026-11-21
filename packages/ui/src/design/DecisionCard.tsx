@@ -9,6 +9,7 @@ import { PlanChoices } from "./PlanChoices.js";
 import { spendChoiceOf } from "../api/design-review.js";
 import { APPROVE_REASON_HINT, cleanApproveReason, openBlockersOnCard } from "./design-review-card.js";
 import { Button } from "./Button.js";
+import { DecisionFrame } from "./DecisionFrame.js";
 import { Tabs } from "./Tabs.js";
 import { EvalResult, type EvalResultProps } from "./EvalResult.js";
 import { VisibleText } from "./VisibleText.js";
@@ -136,18 +137,20 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
   </details>;
  };
  const reasonField = (which: DecisionTabId | undefined) => canApprove && blockers(which) > 0 && <div className="rv-decision-reason"><label htmlFor={"reason-" + card.id}>Why approve with an open blocker?</label><input id={"reason-" + card.id} type="text" maxLength={200} value={reason} onChange={event => setReason(event.target.value)} aria-describedby={"reason-hint-" + card.id} /><p id={"reason-hint-" + card.id} className="rv-muted">{APPROVE_REASON_HINT}</p></div>;
- const approveButton = (which: DecisionTabId | undefined) => canApprove && <>{reasonField(which)}<Button variant="primary" busy={busy} aria-describedby={approveWaitsForLimit(card, pick) ? "limit-hint-" + card.id.replace(/[^A-Za-z0-9_-]/gu, "_") : undefined} disabled={(needsEvidence && !isOpened(which)) || designBlocked(which) || approveWaitsForLimit(card, pick) || (blockers(which) > 0 && reasonOf(which) === undefined)} onClick={() => { void approve(which); }}>{which === undefined ? (blockers(which) > 0 ? "Approve with a reason" : pane !== undefined ? card.actions.find(action => action.kind === "approve")?.label ?? "Approve" : "Approve") : "Approve " + (which === "requirements" ? "requirements" : "design")}</Button></>;
+ const approvalLockReason = (which: DecisionTabId | undefined) => needsEvidence && !isOpened(which) ? "Open the evidence for this version before approving."
+  : designBlocked(which) ? "Approve the requirements before approving the design."
+  : approveWaitsForLimit(card, pick) ? "Agree to the shown run limit before approving."
+  : blockers(which) > 0 && reasonOf(which) === undefined ? "Give a reason before approving with an open blocker." : undefined;
+ const approveButton = (which: DecisionTabId | undefined) => canApprove && <>{reasonField(which)}<Button variant="primary" busy={busy} {...(approvalLockReason(which) === undefined ? {} : { lockedReason: approvalLockReason(which)! })} aria-describedby={approveWaitsForLimit(card, pick) ? "limit-hint-" + card.id.replace(/[^A-Za-z0-9_-]/gu, "_") : undefined} disabled={(needsEvidence && !isOpened(which)) || designBlocked(which) || approveWaitsForLimit(card, pick) || (blockers(which) > 0 && reasonOf(which) === undefined)} onClick={() => { void approve(which); }}>{which === undefined ? (blockers(which) > 0 ? "Approve with a reason" : pane !== undefined ? card.actions.find(action => action.kind === "approve")?.label ?? "Approve" : "Approve") : "Approve " + (which === "requirements" ? "requirements" : "design")}</Button></>;
  const choices = card.kind === "approve_spend" && card.risk !== "high" && actions.onChoose !== undefined ? card.actions.filter(action => spendChoiceOf(card, action) !== undefined) : [];
  const choiceButtons = choices.map(action => <Button key={action.href} variant={action.kind === card.recommended.action ? "primary" : "secondary"} busy={busy} disabled={needsEvidence && !isOpened(undefined)} onClick={() => { void run(async () => { await actions.onChoose!(action);setNote(<p role="status">Done. Rovara goes on from here.</p>); }); }}><VisibleText text={action.label} /></Button>);
  const design = card.kind === "approve_plan" ? actions.design : undefined;
  const designBox = design !== undefined && <div className="rv-decision-design">{design.hint && <p className="rv-design-hint" role="status">This may need design review.</p>}<Button busy={busy} onClick={() => { void run(async () => { await design.onDesignFirst();setNote(<p role="status">Asked for design review first. Rovara reviews the design before it builds.</p>); }); }}>Design first</Button></div>;
- const confirmPage = target?.kind === "external";
  if (pane !== undefined) {
   const heading = PANE_HEADINGS[card.kind] ?? "Your decision", facts = [...card.evidence.map(chip => [chip.label, chip.value + (STATE_WORDS[chip.state] ?? "")] as const), ["Risk", (RISK_WORDS[card.risk] ?? "Risk unknown") + (card.riskReasons.length > 0 ? " · " + card.riskReasons.join(", ") : "")] as const, ["Next", card.next.text] as const];
   const answers = pane.answers, bad = card.kind === "choose_checks" || card.kind === "approve_spend" ? "bad" : undefined;
   const answerButtons = answers !== undefined && answers.options.map(option => <Button key={option.id} busy={busy} onClick={() => { void run(async () => { await answers.onAnswer(option.id);setNote(<p role="status">Answer saved. Rovara goes on from here.</p>); }); }}>{option.label}</Button>);
-  return <section className="rv-decision rv-decision-pane" data-risk={card.risk} data-kind={card.kind} data-tone={bad} aria-label={heading} {...swipe}>
-   <h3>{heading}</h3>
+  return <DecisionFrame as="section" headingLevel={3} title={heading} actions={null} className="rv-decision rv-decision-pane" data-risk={card.risk} data-kind={card.kind} data-tone={bad} {...swipe}>
    <p className="rv-decision-summary"><VisibleText text={card.question} /></p>
    {card.kind === "approve_plan" && card.planFeature !== undefined && <PlanFeatureLine card={card} />}
    {pane.evalResult !== undefined && <EvalResult {...pane.evalResult} failed />}
@@ -156,7 +159,7 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
    {tabs === undefined && needsEvidence && evidencePanel(undefined)}
    {card.risk !== "high" && <PlanChoices decision={decision} pick={pick} onPick={setPick} disabled={busy} />}
    {pane.quickChange === true && canApprove && <label className="rv-merge-when-ready"><input type="checkbox" disabled aria-describedby={"merge-self-" + card.id} /><span id={"merge-self-" + card.id}>Merge by itself once the proof passes and a reviewer approves (not connected yet)</span></label>}
-   {card.risk === "high" && <p className="rv-decision-high">{confirmPage ? "This decision is made on its own page, after you sign in again." : "This decision is made on its own page."}</p>}
+   {card.risk === "high" && <p className="rv-decision-high">This decision is made on its own page.</p>}
    <div className="rv-decision-actions">
     {card.risk === "high" ? <>{link}{designBox}</> : <>{answerButtons}{approveButton(activeTab)}{changesBox}{choiceButtons}{designBox}{canReject && <details className="rv-decision-reject"><summary>Not now</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
    </div>
@@ -165,10 +168,9 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
    {evidenceError}
    {note}
    {error && <p role="alert" data-testid="decision-error"><VisibleText text={error} /></p>}
-  </section>;
+  </DecisionFrame>;
  }
- return <article className="rv-decision" data-risk={card.risk} aria-label={card.title} {...swipe}>
-  <header><h2><VisibleText text={card.title} /></h2><p className="rv-decision-risk">{RISK_WORDS[card.risk] ?? "Risk unknown"}</p></header>
+ return <DecisionFrame title={card.title} meta={RISK_WORDS[card.risk] ?? "Risk unknown"} actions={null} className="rv-decision" data-risk={card.risk} {...swipe}>
   <p className="rv-decision-question"><VisibleText text={card.question} /></p>
   <p className="rv-decision-recommended">Recommended: <VisibleText text={card.recommended.action + ". " + card.recommended.why} /></p>
   <p className="rv-decision-next">Next: <VisibleText text={card.next.text} /></p>
@@ -176,7 +178,7 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
   {tabs === undefined ? <Chips chips={card.evidence} /> : <Tabs label={"Documents to approve for " + card.title} value={tab} onValueChange={value => { if (value === "requirements" || value === "design") setTab(value); }} items={tabs.map(item => ({ value: item.id, label: item.title + (item.approved ? " (approved)" : ""), content: <><Chips chips={item.evidence} />{needsEvidence && evidencePanel(item.id)}</> }))} />}
   {tabs === undefined && needsEvidence && evidencePanel(undefined)}
   {card.risk !== "high" && <PlanChoices decision={decision} pick={pick} onPick={setPick} disabled={busy} />}
-  {card.risk === "high" && <p className="rv-decision-high">{confirmPage ? "This decision is made on its own page, after you sign in again." : "This decision is made on its own page."}</p>}
+  {card.risk === "high" && <p className="rv-decision-high">This decision is made on its own page.</p>}
   <div className="rv-decision-actions">
    {card.risk === "high" ? <>{link}{designBox}</> : <>{approveButton(activeTab)}{changesBox}{choiceButtons}{designBox}{canReject && <details className="rv-decision-reject"><summary>Not now</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
   </div>
@@ -185,5 +187,5 @@ export function DecisionCard({ decision, actions, pane }: { decision: ReadDecisi
   {evidenceError}
   {note}
   {error && <p role="alert"><VisibleText text={error} /></p>}
- </article>;
+ </DecisionFrame>;
 }
