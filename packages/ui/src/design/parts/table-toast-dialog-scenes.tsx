@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { DataTable, type Column } from "../DataTable.js";
 import { Toast } from "../Toast.js";
 import { Announcer } from "../Announcer.js";
@@ -29,10 +29,11 @@ function ToastScene() {
  </Announcer>;
 }
 function ConfirmationScene() {
+ const requestKey = useId(); // Each mounted gallery example is a new local demonstration.
  const [open, setOpen] = useState(true), [receipt, setReceipt] = useState<string>();
  function finish(message: string) { setReceipt(message); setOpen(false); }
  return <div className="rv-p3-confirmation-scene">
-  <ConfirmationDialog preview consequenceEmphasis="3 changed files are not in a pull request yet." kind="close" open={open} onOpenChange={setOpen} title={'Close "Add refunds endpoint"?'} consequence="Rovara checked this task: 3 changed files are not in a pull request yet. Closing keeps them for 30 days unless you discard them." confirm={{ label: "Keep changes and close", onConfirm: () => finish("Closed with changes kept.") }} discard={{ label: "Discard changes and close", consequence: "Deletes the 3 unpublished files. This can't be undone.", onDiscard: () => finish("Closed with unpublished changes discarded.") }} />
+  <ConfirmationDialog requestKey={`gallery:close:${requestKey}`} preview consequenceEmphasis="3 changed files are not in a pull request yet." kind="close" open={open} onOpenChange={setOpen} title={'Close "Add refunds endpoint"?'} consequence="Rovara checked this task: 3 changed files are not in a pull request yet. Closing keeps them for 30 days unless you discard them." confirm={{ label: "Keep changes and close", onConfirm: () => finish("Closed with changes kept.") }} discard={{ label: "Discard changes and close", consequence: "Deletes the 3 unpublished files. This can't be undone.", onDiscard: () => finish("Closed with unpublished changes discarded.") }} />
   <p className="rv-p3-note">Only for destructive or money-raising actions. Names the consequence; the button repeats the verb. Discard exists only here, inside Close.</p>
   {receipt && <p>{receipt}</p>}
  </div>;

@@ -1,10 +1,21 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useSyncExternalStore } from "react";
 import { Dialog } from "./Dialog.js";
 import { Button } from "./Button.js";
 import { VisibleText } from "./VisibleText.js";
 import "./parts/table-toast-dialog.css";
 
+// A request stays sent for this page's lifetime, including dialog/action remounts.
+// Durable unknown-outcome storage and identity scoping remain the caller's responsibility.
+const sentRequests = new Set<string>();
+const requestListeners = new Set<() => void>();
+function subscribeToRequests(listener: () => void) {
+ requestListeners.add(listener);
+ return () => { requestListeners.delete(listener); };
+}
+
 type ConfirmationDialogBase = {
+ /** Stable, identity-scoped request id. Only a genuinely new request may use a new key. */
+ requestKey: string;
  open: boolean;
  onOpenChange: (open: boolean) => void;
  title: string;
@@ -25,10 +36,14 @@ export type ConfirmationDialogProps = ConfirmationDialogBase & (
 export function ConfirmationDialog(props: ConfirmationDialogProps) {
  const { open, onOpenChange, title, consequence, busy = false } = props;
  const opener = useRef<HTMLElement | null>(null);
- const dispatched = useRef(false);
- const [submitted, setSubmitted] = useState(false);
+ const submitted = useSyncExternalStore(subscribeToRequests, () => sentRequests.has(props.requestKey), () => false);
  const previewId = useId();
- function dispatch(action: () => void) { if (busy || submitted || dispatched.current) return; dispatched.current = true; setSubmitted(true); action(); }
+ function dispatch(action: () => void) {
+  if (busy || sentRequests.has(props.requestKey)) return;
+  sentRequests.add(props.requestKey);
+  for (const listener of requestListeners) listener();
+  action();
+ }
  useEffect(() => {
   if (open) return;
   const rememberOpener = () => { const active = document.activeElement; if (active instanceof HTMLElement && active !== document.body && !active.closest('[role="dialog"]')) opener.current = active; };

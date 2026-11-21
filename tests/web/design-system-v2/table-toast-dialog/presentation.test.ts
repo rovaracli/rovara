@@ -42,11 +42,13 @@ for (const width of [320, 390]) for (const theme of ["light", "dark"] as const) 
  }
  const title = screen.getByText("Add refunds endpoint");
  expect(getComputedStyle(title.closest("td")!).minWidth).toBe("0px");
- expect(getComputedStyle(title.closest("td")!).flex).toBe("1 1 auto");
+ expect(getComputedStyle(title.closest("td")!).flex).toBe("1 1 100%");
  const longTitle = screen.getByText("Fix webhook retry backoff");
  expect(getComputedStyle(longTitle.closest("td")!).minWidth).toBe("0px");
- expect(getComputedStyle(longTitle.closest("td")!).flex).toBe("1 1 auto");
- expect(getComputedStyle(longTitle.closest("tr")!.children[1]!).flex).toBe("0 0 auto");
+ expect(getComputedStyle(longTitle.closest("td")!).flex).toBe("1 1 100%");
+ expect(getComputedStyle(longTitle.closest("tr")!.children[1]!).flex).toBe("1 1 100%");
+ expect(getComputedStyle(title.closest("tr")!).flexWrap).toBe("wrap");
+ expect(getComputedStyle(longTitle.closest("tr")!.children[1]!).textAlign).toBe("left");
  expect(getComputedStyle(title.closest("tr")!).height).toBe("auto");
  expect(getComputedStyle(title.closest("tr")!).minHeight).toBe("48px");
  for (const cell of table.querySelectorAll("th, td")) {
