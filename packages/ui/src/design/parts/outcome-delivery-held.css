@@ -20,7 +20,7 @@
 .rv-delivery-detail{color:var(--rv-text-muted)}
 .rv-held-line{margin:0;color:var(--rv-status-stopped);font-size:var(--rv-font-md)}
 .rv-outcome-scenes,.rv-delivery-scene,.rv-held-scene{display:grid;gap:var(--rv-space-4)}
-.rv-delivery-scene{padding:var(--rv-space-3);background:var(--rv-bg-sunken);border-radius:var(--rv-radius-sm);gap:0}
+.rv-delivery-scene{padding:var(--rv-space-3);background:var(--rv-bg-sunken);border-radius:var(--rv-radius-sm);gap:var(--rv-space-2)}
 .rv-delivery-scene .rv-delivery{min-height:calc(var(--rv-space-6) + var(--rv-space-1));padding-block:calc(var(--rv-space-1)/2)}
 .rv-outcome-caption{margin:0;color:var(--rv-text-muted);font-size:var(--rv-font-md)}
 .rv-held-observation{display:grid;gap:var(--rv-space-1);font-size:var(--rv-font-md)}

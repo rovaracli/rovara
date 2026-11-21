@@ -26,7 +26,7 @@ function DeliveryExample() {
    <MessageDelivery receipt={{ state: "queued", detail: "Rovara has the message" }} />
    <MessageDelivery receipt={{ state: "delivered", detail: "the build acknowledged it" }} />
    <MessageDelivery receipt={{ state: "applied", detail: "an event names the work it changed" }} />
-   <MessageDelivery receipt={{ state: "checking", detail: "no reply yet; the same message is looked up, never re-sent" }} />
+   <MessageDelivery receipt={{ state: "checking", detail: "no reply yet; the same message is looked up, never re‑sent" }} />
    <MessageDelivery receipt={{ state: "not_delivered", detail: "refused, with the reason and the text kept" }} />
    <MessageDelivery receipt={{ state: "outside_plan", detail: "becomes a plan change that needs approval" }} />
    <MessageDelivery />
