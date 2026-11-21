@@ -41,8 +41,20 @@ it("shows six explicit presentation receipts and no invented seventh missing-rec
  renderUi(h("main", {}, outcomeDeliveryHeldGalleryScenes.find(item => item.id === "delivery")!.render()));
  expect(screen.getAllByRole("status")).toHaveLength(6);
  expect(screen.getByText("Applied")).toBeTruthy(); expect(screen.getByText("Not applied: outside the plan")).toBeTruthy();
+ expect(screen.getByText(/never re\u2011sent/)).toBeTruthy();
  expect(screen.getByText(/A second, smaller vocabulary/)).toBeTruthy(); expect(screen.queryByRole("button")).toBeNull();
  expect(screen.getAllByRole("status")[4]?.textContent).toBe("Not delivered refused, with the reason and the text kept");
+});
+it("keeps a uniform grid gap between delivery rows, including wrapped rows", () => {
+ const tokens = new Map([...lookV2Css().matchAll(/(--rv-[\w-]+):([^;{}]+)/g)].map(match => [match[1], match[2]]));
+ const style = document.createElement("style");
+ style.textContent = readFileSync("packages/ui/src/design/parts/outcome-delivery-held.css", "utf8")
+  .replace(/var\((--rv-[\w-]+)\)/g, (value: string, token: string) => tokens.get(token) ?? value);
+ document.head.append(style);
+ try {
+  const f = renderUi(h("main", {}, outcomeDeliveryHeldGalleryScenes.find(scene => scene.id === "delivery")!.render()));
+  expect(getComputedStyle(f.container.querySelector(".rv-delivery-scene")!).gap).toBe("8px");
+ } finally { style.remove(); }
 });
 it("shows the held example's known heading, consequence and shared source line with only one Unknown", () => {
  const f = renderUi(h("main", {}, outcomeDeliveryHeldGalleryScenes.find(item => item.id === "held")!.render()));
