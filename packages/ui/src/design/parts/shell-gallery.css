@@ -1,0 +1,71 @@
+/* P5 owns these overrides; R1 values stay in the shared tokens. */
+.rv-ds-gallery.rv-ds-gallery{--rv-gallery-gutter:var(--rv-space-7);max-width:calc(var(--rv-table-width) + var(--rv-space-7)*3);width:calc(100% - var(--rv-gallery-gutter)*2);overflow-wrap:normal}
+.rv-ds-gallery.rv-ds-gallery header{max-width:none}
+.rv-ds-gallery.rv-ds-gallery nav{gap:var(--rv-space-3)}
+.rv-ds-gallery .rv-ds-foundations{grid-template-columns:minmax(0,1fr)}
+.rv-ds-gallery .rv-ds-swatches dd code{white-space:nowrap;font-size:var(--rv-font-sm)}
+.rv-ds-gallery .rv-ds-type-list>div{grid-template-columns:calc(var(--rv-space-7)*2) minmax(0,1fr)}
+.rv-ds-gallery .rv-ds-type-list>div>span{white-space:nowrap}
+.rv-ds-gallery code,.rv-ds-gallery pre{white-space:nowrap;overflow-x:auto;max-width:100%;display:block;min-width:0}
+.rv-ds-gallery .rv-ds-space-list dt{flex:0 0 var(--rv-space-5);white-space:nowrap}
+.rv-ds-gallery .rv-ds-space-list dd{min-width:0;flex:1;display:grid;grid-template-columns:var(--rv-space-7) minmax(0,1fr)}
+.rv-ds-gallery .rv-ds-focus-intro{color:var(--rv-text-muted);margin-bottom:var(--rv-space-4)}
+.rv-ds-gallery .rv-ds-focus-examples{grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:var(--rv-space-5);margin-top:var(--rv-space-4)}
+.rv-ds-gallery .rv-ds-focus-rows{padding:0;gap:0}
+.rv-ds-gallery .rv-ds-focus-rows>.rv-selected{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--rv-space-3);border-start-start-radius:var(--rv-radius-md);border-start-end-radius:var(--rv-radius-md)}
+.rv-ds-gallery .rv-ds-focus-rows>button{border-end-start-radius:var(--rv-radius-md);border-end-end-radius:var(--rv-radius-md)}
+.rv-ds-gallery .rv-ds-ring-buttons{gap:calc(var(--rv-space-3) + var(--rv-space-2));padding:0;flex-wrap:wrap}
+.rv-ds-gallery .rv-ds-composer-field{padding:0}
+.rv-ds-gallery .rv-ds-composer{height:var(--rv-control-size)}
+.rv-ds-outline-chip{display:inline-flex;align-items:center;border:calc(var(--rv-space-1)/4) solid var(--rv-border-strong);border-radius:var(--rv-radius-lg);padding-inline:var(--rv-space-2);font-size:var(--rv-font-sm);font-weight:600;color:var(--rv-text-muted);white-space:nowrap}
+.rv-ds-gallery .rv-page-header{display:flex;max-width:none;gap:var(--rv-space-5)}
+.rv-page-header .rv-page-breadcrumbs ol{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2);list-style:none;margin:0 0 var(--rv-space-3);padding:0;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-page-breadcrumbs li+li::before{content:"/";margin-inline-end:var(--rv-space-2)}
+.rv-page-header h1,.rv-shell-main .rv-page-header h1{margin:0}
+.rv-page-meta{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2);margin-top:var(--rv-space-2);color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.rv-page-meta .rv-status-pill{flex-shrink:0}
+.rv-ds-shell-columns{display:grid;grid-template-columns:minmax(0,var(--rv-reading-width)) minmax(0,1fr);gap:var(--rv-space-6)}
+.rv-ds-reading{max-width:var(--rv-reading-width);min-width:0}
+.rv-ds-shell-example p,.rv-ds-state-list p{margin-block:var(--rv-space-3)}
+.rv-ds-shell-example h3,.rv-ds-state-list h3{font-size:var(--rv-font-xl)}
+.rv-ds-shell-example h4{font-size:var(--rv-font-lg);margin-block:var(--rv-space-5) var(--rv-space-3)}
+.rv-ds-gallery details{padding-block:var(--rv-space-4);border-block-end:calc(var(--rv-space-1)/4) solid var(--rv-border)}
+.rv-ds-gallery summary{cursor:pointer;min-height:var(--rv-control-size);align-content:center;font-weight:600}
+.rv-ds-session-entry{border:calc(var(--rv-space-1)/4) solid var(--rv-border-strong);border-radius:var(--rv-radius-md);padding:var(--rv-space-4);margin-block:var(--rv-space-5)}
+.rv-ds-plan-items{display:grid;gap:var(--rv-space-3);padding-inline-start:var(--rv-space-5);color:var(--rv-text-muted)}
+.rv-ds-plan-items [aria-current]{color:var(--rv-text)}
+.rv-ds-demo-note{color:var(--rv-text-muted);font-size:var(--rv-font-sm);border-top:calc(var(--rv-space-1)/4) solid var(--rv-border);padding-top:var(--rv-space-4)}
+.rv-ds-demo-timeline{display:grid;gap:var(--rv-space-5);list-style:none;padding:0;margin-block:var(--rv-space-5)}
+.rv-ds-demo-timeline li{border-inline-start:var(--rv-space-1) solid var(--rv-border-strong);padding-inline-start:var(--rv-space-3);min-width:0}
+.rv-ds-demo-timeline li[data-step=done]{border-color:var(--rv-status-done)}
+.rv-ds-demo-timeline li[data-step=current]{border-color:var(--rv-status-running)}
+.rv-ds-demo-timeline code{color:var(--rv-text-muted)}
+.rv-ds-gap-row{padding-block:var(--rv-space-4);border-block-end:calc(var(--rv-space-1)/4) solid var(--rv-border)}
+.rv-ds-state-list{max-width:var(--rv-table-width);border:calc(var(--rv-space-1)/4) solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);overflow:hidden}
+.rv-ds-state-heading{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3);padding:var(--rv-space-4);border-block-end:calc(var(--rv-space-1)/4) solid var(--rv-border)}
+.rv-ds-state-content{padding:var(--rv-space-5);display:grid;justify-items:start;gap:var(--rv-space-3)}
+.rv-ds-state-notice{background:var(--rv-bg-sunken)}
+.rv-ds-state-error{background:var(--rv-status-failed-bg)}
+.rv-ds-state-error h3{color:var(--rv-status-failed)}
+.rv-ds-state-rows{list-style:none;padding:0;margin:0}
+.rv-ds-state-rows li{display:flex;align-items:center;justify-content:space-between;gap:var(--rv-space-4);padding:var(--rv-space-4);min-height:var(--rv-table-row-h);border-block-end:calc(var(--rv-space-1)/4) solid var(--rv-border)}
+.rv-ds-state-rows li>div{min-width:0;overflow-wrap:anywhere}
+.rv-ds-state-rows .rv-status-pill{flex-shrink:0}
+.rv-ds-phone-example{max-width:var(--rv-reading-width)}
+.rv-ds-phone-action{position:sticky;bottom:0;padding:var(--rv-space-4);padding-bottom:max(var(--rv-space-4),env(safe-area-inset-bottom));background:var(--rv-bg-raised)}
+.rv-ds-phone-action button{width:100%}
+@media(max-width:1023px){.rv-ds-gallery.rv-ds-gallery{--rv-gallery-gutter:var(--rv-space-5)}.rv-ds-shell-columns{grid-template-columns:minmax(0,1fr)}.rv-ds-task-context{max-width:var(--rv-reading-width)}}
+@media(max-width:639px){.rv-ds-gallery.rv-ds-gallery{--rv-gallery-gutter:var(--rv-space-4)}.rv-ds-gallery .rv-ds-type-list>div{grid-template-columns:minmax(0,1fr)}.rv-ds-gallery .rv-ds-focus-examples{grid-template-columns:minmax(0,1fr)}.rv-ds-gallery .rv-page-header{flex-direction:column}.rv-ds-state-rows li{align-items:flex-start;flex-direction:column;gap:var(--rv-space-2)}.rv-ds-gallery .rv-ds-swatches dd code{white-space:normal;overflow-wrap:normal}.rv-ds-ring-buttons button{min-height:var(--rv-control-size)}.rv-ds-reading>p{margin-block:var(--rv-space-3)}}
+
+/* The complete sheet keeps 4e's pairs and three small example cards. */
+@media(min-width:1024px){
+.rv-ds-gallery:not(.rv-ds-isolated){grid-template-columns:repeat(6,minmax(0,1fr))}
+.rv-ds-gallery:not(.rv-ds-isolated)>header,.rv-ds-gallery:not(.rv-ds-isolated)>nav{grid-column:span 6}
+.rv-ds-gallery:not(.rv-ds-isolated)>[data-gallery-scene]{grid-column:span 3;min-width:0}
+.rv-ds-gallery:not(.rv-ds-isolated)>[data-gallery-scene=colours],.rv-ds-gallery:not(.rv-ds-isolated)>[data-gallery-scene=statuses],.rv-ds-gallery:not(.rv-ds-isolated)>[data-gallery-scene=focus],.rv-ds-gallery:not(.rv-ds-isolated)>[data-gallery-scene^=shell-]{grid-column:span 6}
+.rv-ds-gallery:not(.rv-ds-isolated)>[data-gallery-scene=toast],.rv-ds-gallery:not(.rv-ds-isolated)>[data-gallery-scene=confirmation],.rv-ds-gallery:not(.rv-ds-isolated)>[data-gallery-scene=outcome],.rv-ds-gallery:not(.rv-ds-isolated)>[data-gallery-scene^=states-]{grid-column:span 2}
+}
+
+.rv-ds-loading-rows{list-style:none;margin:0;padding:0}
+.rv-ds-loading-rows li{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1fr) var(--rv-space-6);gap:var(--rv-space-5);padding:var(--rv-space-4);min-height:var(--rv-table-row-h);border-bottom:calc(var(--rv-space-1)/4) solid var(--rv-border)}
+.rv-ds-loading-rows .rv-skeleton{height:var(--rv-space-4);align-self:center}
