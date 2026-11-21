@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { cleanup, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { h } from "../../support/h.js";
@@ -52,22 +53,41 @@ it.each([undefined, "", "   "])("a waiting recipient missing at runtime (%s) sta
  renderUi(h(StatusChip, { state: "waiting_for", waitingFor } as unknown as StatusChipProps));
  expect(screen.getByRole("img", { name: "Unknown" })).toBeTruthy();
 });
-it("shows the description on hover and keyboard focus, and dismisses it with Escape", async () => {
+it("keeps the meaning accessible on focus without opening an overlay over adjacent rows", async () => {
  const { StatusChip } = await import("../../../../packages/ui/src/design/StatusChip.js");
  const user = userEvent.setup();
  renderUi(h(StatusChip, { state: "could_not_run" }));
  const chip = screen.getByRole("img", { name: "Could not run" });
  expect(screen.queryByRole("tooltip")).toBeNull();
- await user.hover(chip);
- expect(screen.getByRole("tooltip").textContent).toBe("A check or step never ran. Not a pass and not a fail.");
- await user.unhover(chip);
- expect(screen.queryByRole("tooltip")).toBeNull();
  await user.tab();
  expect(document.activeElement).toBe(chip);
- expect(screen.getByRole("tooltip")).toBeTruthy();
+ expect(screen.queryByRole("tooltip")).toBeNull();
+ expect(screen.getByRole("img", { name: "Could not run", description: "A check or step never ran. Not a pass and not a fail." })).toBe(chip);
+ const description = document.getElementById(chip.getAttribute("aria-describedby") ?? "");
+ expect(description?.textContent).toBe("A check or step never ran. Not a pass and not a fail.");
+ expect(description?.hidden).toBe(true);
+ // The browser owns hover placement, so clipped cards cannot clip the explanation.
+ expect(chip.title).toBe(description?.textContent);
  await user.keyboard("{Escape}");
  expect(screen.queryByRole("tooltip")).toBeNull();
  expect(document.getElementById(chip.getAttribute("aria-describedby") ?? "")?.textContent).toContain("Not a pass");
+});
+it("keeps chip labels on one line even inside narrow cells that allow word breaks", async () => {
+ const { StatusChip } = await import("../../../../packages/ui/src/design/StatusChip.js");
+ const style = document.createElement("style");
+ style.textContent = readFileSync("packages/ui/src/design/parts/chips-buttons.css", "utf8");
+ document.head.append(style);
+ try {
+  renderUi(h("div", { style: { width: "40px", overflowWrap: "anywhere" } },
+   h(StatusChip, { state: "running" }), h(StatusChip, { state: "waiting_for", waitingFor: "Ana" }),
+   h(StatusChip, { state: "ready_to_merge" }), h(StatusChip, { state: "could_not_run" })));
+  for (const chip of screen.getAllByRole("img")) {
+   const css = getComputedStyle(chip);
+   expect(css.whiteSpace).toBe("nowrap");
+   expect(css.overflowWrap).toBe("normal");
+   expect(getComputedStyle(chip.parentElement!).flexShrink).toBe("0");
+  }
+ } finally { style.remove(); }
 });
 it("keeps legacy free-text metadata and aggregate tones separate from canonical task states", () => {
  renderUi(h("div", null,

@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { VisibleText, visibleText } from "./VisibleText.js";
 import "./parts/chips-buttons.css";
 
@@ -41,16 +41,15 @@ const ICONS: Record<(typeof COPY)[StatusChipState]["icon"], ReactNode> = {
 /** Presentation only: unknown inputs never imply a successful or ready state. */
 export function StatusChip(props: StatusChipProps) {
  const id = useId();
- const [hovered, setHovered] = useState(false), [focused, setFocused] = useState(false), [dismissed, setDismissed] = useState(false);
  const state = Object.hasOwn(COPY, props.state) && (props.state !== "waiting_for" || (typeof props.waitingFor === "string" && props.waitingFor.trim().length > 0)) ? props.state : "unknown";
  const copy = COPY[state];
  const label = state === "waiting_for" && props.state === "waiting_for" ? `${copy.label} ${visibleText(props.waitingFor)}` : copy.label;
- return <span className="rv-status-chip-wrap" onMouseEnter={() => { setHovered(true); setDismissed(false); }} onMouseLeave={() => setHovered(false)}>
-  <span className="rv-status-chip" role="img" tabIndex={0} aria-label={label} aria-describedby={id} data-state={state} data-hue={copy.hue}
-   onFocus={() => { setFocused(true); setDismissed(false); }} onBlur={() => setFocused(false)} onKeyDown={event => { if (event.key === "Escape") setDismissed(true); }}>
+ return <span className="rv-status-chip-wrap">
+  <span className="rv-status-chip" role="img" tabIndex={0} aria-label={label} aria-describedby={id} title={copy.description} data-state={state} data-hue={copy.hue}>
    <svg className="rv-status-chip-icon" data-icon={copy.icon} aria-hidden="true" focusable="false" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{ICONS[copy.icon]}</svg>
    <VisibleText text={label} />
   </span>
-  <span id={id} role="tooltip" className="rv-status-chip-description" hidden={dismissed || (!hovered && !focused)}>{copy.description}</span>
+  {/* Always available to assistive technology; native hover help cannot be clipped by a card. */}
+  <span id={id} hidden>{copy.description}</span>
  </span>;
 }

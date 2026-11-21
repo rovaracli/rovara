@@ -26,7 +26,7 @@ const darkRoles = Object.fromEntries(Object.entries(LOOK_COLORS.dark).map(([key,
 export const chipsButtonsGalleryScenes = [
  { id: "statuses", title: "Status chips: the only vocabulary", render: () => <>
   <h2>Status chips: the only vocabulary</h2>
-  <p>Fifteen states. One hue, one icon and one sentence each. Screens do not invent their own words.</p>
+  <p className="rv-ds-chip-intro">Fifteen states. One hue, one icon and one sentence each. Screens do not invent their own words.</p>
   <div className="rv-ds-panel"><dl className="rv-ds-chip-list">{examples.map(([props, description]) => <div className="rv-ds-chip-row" key={props.state}><dt><StatusChip {...props} /></dt><dd>{description}</dd></div>)}</dl></div>
   <div className="rv-ds-panel" style={{ ...darkRoles, colorScheme: "dark" }}><h3>The same parts in dark</h3><p className="rv-ds-meta">Only the role values change. Names, sizes and layout stay.</p><div className="rv-ds-chip-strip">{examples.map(([props]) => <StatusChip key={props.state} {...props} />)}</div></div>
  </> },
