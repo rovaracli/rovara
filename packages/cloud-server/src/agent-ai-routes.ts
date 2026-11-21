@@ -99,7 +99,13 @@ export async function agentSourceAvailability(context: RouteContext, companyId: 
 async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
   let saved;
   try { saved = await context.company!.store.agentAi(who.companyId); } catch { return WORDS.unavailable; }
+  const anthropic = await anthropicKeyConnected(context, who.companyId);
+  if (saved === undefined && anthropic === null) return WORDS.unavailable;
   const bedrock = await bedrockConnected(context, who.companyId);
+  // Match gateway admission, including connections made after backfill. No Bedrock backend means no own Bedrock;
+  // an unreadable configured connection cannot be reported as company-billed Rovara AI.
+  const effective = effectiveAgentSource({ saved: saved?.source, exempt: false, keyConnected: anthropic, bedrockConnected: bedrockForDefault(context, bedrock) });
+  if (saved === undefined && effective.source === null) return WORDS.unavailable;
   // DEC 254t: an own-key source is listed only where its kind is switched on (elsewhere this answer is exactly as before), and
   // available only once its key is connected (the gateway would refuse every call otherwise).
   // A stored endpoint stays listed (not choosable) after its kind is switched off, so it can still be seen and removed (A3-REVIEW-1 L3).
@@ -107,8 +113,6 @@ async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
   const listed = AGENT_AI_SOURCES.filter((source) => ALWAYS_LISTED.includes(source) || switchedOn(context, source) || (source === "custom_endpoint" && storedEndpoint));
   const keys: Partial<Record<AgentAiSource, boolean | null>> = {};
   for (const source of listed) { const provider = KEY_OF[source]; if (provider !== undefined) keys[source] = await keyConnected(context, who.companyId, provider); }
-  // DEC 254zzz263: after a successful saved-choice read, no choice is the served Rovara default for every company.
-  const effective = effectiveAgentSource({ saved: saved?.source, exempt: false, keyConnected: null, bedrockConnected: null });
   return ok({
     source: saved?.source ?? null,
     // No row is written merely to accept the default. Explicit choices keep their saved source/version.
@@ -116,7 +120,7 @@ async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
     version: saved?.version ?? 0,
     canChange: true,
     choices: listed.map((source) => ({ source, available: AGENT_AI_CHOOSABLE.includes(source) && switchedOn(context, source) && (source !== "bedrock_byo" || bedrock === true) && (KEY_OF[source] === undefined || keys[source] === true) })),
-    anthropicKeyConnected: await anthropicKeyConnected(context, who.companyId),
+    anthropicKeyConnected: anthropic,
     bedrockConnected: bedrock,
     ...(keys.openai_key === undefined ? {} : { openaiKeyConnected: keys.openai_key }),
     ...(keys.openrouter_key === undefined ? {} : { openrouterKeyConnected: keys.openrouter_key }),

@@ -106,10 +106,14 @@ export function agentSourceSwitchedOn(source: string, switchedOn: ReadonlySet<st
   return kind !== undefined && switchedOn.has(kind);
 }
 
-/** DEC 254zzz263: a saved source wins; no choice defaults to Rovara AI for every company. Provider connections and billing exemptions do not choose a source. */
+/** R-1 / DEC 254zzz279: saved choices win; otherwise own Anthropic, then own Bedrock, then Rovara AI. Unknown connections are never guessed. Exemption affects billing only. */
 export type EffectiveAgentSource = { source: AgentAiSource | null; isDefault: boolean };
 export function effectiveAgentSource(input: { saved: AgentAiSource | undefined; exempt: boolean; keyConnected: boolean | null; bedrockConnected: boolean | null }): EffectiveAgentSource {
   if (input.saved !== undefined) return { source: input.saved, isDefault: false };
+  if (input.keyConnected === null) return { source: null, isDefault: false };
+  if (input.keyConnected) return { source: "anthropic_key", isDefault: true };
+  if (input.bedrockConnected === null) return { source: null, isDefault: false };
+  if (input.bedrockConnected) return { source: "bedrock_byo", isDefault: true };
   return { source: "rovara", isDefault: true };
 }
 export const ROVARA_AI_EXEMPT_MAX = 10;

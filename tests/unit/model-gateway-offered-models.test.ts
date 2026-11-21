@@ -376,6 +376,15 @@ describe("gateway process: two companies, one server", () => {
     const notExempt = await serve({}, true, false);
     expect(names(JSON.parse((await ask(notExempt.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
   });
+  it("F-2: without Rovara AI, an unsaved own-key company still gets its models; an unconnected company is refused", async () => {
+    const cidC = `org_${"c".repeat(20)}`;
+    const keyed = await serve({}, false, true);
+    const got = await ask(keyed.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })));
+    expect(got.statusCode).toBe(200);
+    expect(names(JSON.parse(got.text()))).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
+    const none = await serve({}, false, false);
+    expect((await ask(none.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).statusCode).toBe(403);
+  });
   it("task tokens and service tokens are not interchangeable between the two routes", async () => {
     const s = await serve();
     expect((await ask(s.gateway.server, pathOf(cidA), bearer(mint({ cid: cidA })))).statusCode).toBe(401);
