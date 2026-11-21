@@ -6,7 +6,7 @@
 .rv-button-with-reason{display:inline-flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-3);max-width:100%;vertical-align:middle}
 .rv-button.rv-button-primary,.rv-button.rv-button-secondary,.rv-button.rv-button-quiet,.rv-button.rv-button-danger{min-height:var(--rv-control-size);font-size:var(--rv-font-md)}
 .rv-button[data-locked=true]{background:var(--rv-bg-sunken);border-color:var(--rv-border);color:var(--rv-text-muted);opacity:1}
-.rv-button-locked-reason{font-size:var(--rv-font-sm);font-weight:400;color:var(--rv-text-muted);overflow-wrap:anywhere}
+.rv-button-locked-reason{font-size:var(--rv-font-md);font-weight:400;color:var(--rv-text-muted);overflow-wrap:anywhere}
 .rv-button-lock{width:var(--rv-font-md);height:var(--rv-font-md);flex-shrink:0}
 .rv-status-chip-wrap{display:inline-flex;flex-shrink:0;vertical-align:middle}
 .rv-status-chip{display:inline-flex;align-items:center;gap:var(--rv-space-1);padding:var(--rv-space-1) var(--rv-space-2);border:calc(var(--rv-space-1) / 4) solid transparent;border-radius:var(--rv-radius-lg);font:600 var(--rv-font-md)/1 var(--rv-font-ui);color:var(--rv-status-stopped);background:var(--rv-status-stopped-bg);white-space:nowrap;overflow-wrap:normal}
@@ -16,11 +16,16 @@
 .rv-status-chip[data-hue=ok]{color:var(--rv-status-done);background:var(--rv-status-done-bg)}
 .rv-status-chip[data-hue=bad]{color:var(--rv-status-failed);background:var(--rv-status-failed-bg)}
 .rv-status-chip[data-state=could_not_run],.rv-status-chip[data-state=not_run]{border-style:dashed;border-color:var(--rv-border-strong);background:var(--rv-bg-raised)}
-.rv-ds-chip-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:1fr;column-gap:var(--rv-space-6);margin:0}
-.rv-ds-chip-row{display:grid;grid-template-columns:calc(var(--rv-space-7)*3 + var(--rv-space-5)) minmax(0,1fr);min-height:calc(var(--rv-space-7) + var(--rv-space-1));align-items:center;gap:var(--rv-space-3)}
+/* Only the status sheet escapes the app's reading column, including on phones. */
+.rv-ds-gallery>[data-gallery-scene=statuses]{--rv-chip-sheet-width:min(calc(100vw - var(--rv-gallery-gutter)*2),calc(var(--rv-table-width) + var(--rv-space-7)*3));width:var(--rv-chip-sheet-width);margin-inline:calc((100% - var(--rv-chip-sheet-width))/2)}
+.rv-ds-chip-heading{display:grid;gap:var(--rv-space-5);margin-bottom:var(--rv-space-4)}
+.rv-ds-gallery .rv-ds-chip-heading>h2{margin:0}
+/* The right pair holds the longest sentence; preserve its natural wrapping. */
+.rv-ds-chip-list{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);grid-auto-rows:1fr;column-gap:var(--rv-space-4);margin:0}
+.rv-ds-chip-row{display:grid;grid-template-columns:calc(var(--rv-space-7)*3) minmax(0,1fr);min-height:calc(var(--rv-space-7) + var(--rv-space-1));align-items:center;gap:var(--rv-space-2)}
 .rv-ds-chip-row dd{margin:0;color:var(--rv-text-muted);font-size:var(--rv-font-md)}
 .rv-ds-chip-row dt{min-width:0}
-.rv-ds-chip-intro{color:var(--rv-text-muted);margin-block:var(--rv-space-2) var(--rv-space-4)}
+.rv-ds-chip-intro{color:var(--rv-text-muted);margin-block:0}
 .rv-ds-chip-dark{margin-block-start:var(--rv-space-5)}
 .rv-ds-chip-dark-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:var(--rv-space-2) var(--rv-space-3)}
 .rv-ds-chip-dark .rv-ds-chip-strip{margin-block-start:var(--rv-space-4)}
