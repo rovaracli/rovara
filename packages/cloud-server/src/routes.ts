@@ -1003,16 +1003,17 @@ export const ROUTES: Route[] = [
     },
   },
   {
-    // POST /v1/app/sessions/{id}/take-over: the person becomes the task's owner in Code (asked against the people revision Code shows now).
+    // POST /v1/app/sessions/{id}/take-over: the person becomes the task's owner in Code (against the People revision the caller was shown).
     method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/take-over$/u,
     answer: async (context) => {
       const record = await context.work.get(context.params[0]!);
       if (record === undefined) return sessionNotFound;
-      const requestId = (context.body as { requestId?: unknown } | undefined)?.requestId;
+      const { requestId, expectedPeopleRevision } = (context.body ?? {}) as { requestId?: unknown; expectedPeopleRevision?: unknown };
       if (typeof requestId !== "string" || !UUID.test(requestId)) return badRequest("requestId must be a UUID.");
+      if (typeof expectedPeopleRevision !== "number" || !Number.isSafeInteger(expectedPeopleRevision) || expectedPeopleRevision < 1) return badRequest("expectedPeopleRevision must be a positive safe integer.");
       const path = `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/people`;
-      const { view } = await context.client.json<{ view: { revision: number } }>(context.session, path);
-      const answer = await context.client.json<unknown>(context.session, `${path}/take-ownership`, { method: "POST", body: { requestId, expectedPeopleRevision: view.revision } });
+      // Never rebase the person's consent onto a fresh read. Code checks this exact shown revision before changing ownership.
+      const answer = await context.client.json<unknown>(context.session, `${path}/take-ownership`, { method: "POST", body: { requestId, expectedPeopleRevision } });
       // Code's answer (TaskPeopleChangeResultSchema): COMMITTED made the person the owner now; PENDING waits for them to confirm on Code's page, and until then the
       // old owner stays the owner, in Code and here. Anything else is not a take-over Cloud records.
       const change = typeof answer === "object" && answer !== null && typeof (answer as { change?: unknown }).change === "object" ? (answer as { change: Record<string, unknown> }).change : undefined;

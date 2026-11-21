@@ -13,7 +13,7 @@ export const MergeReadinessReader = z.object({
 export type MergeReadiness = z.infer<typeof MergeReadinessReader>;
 export function createSessionActions(host: AppHost) {
  const api = createApiClient(host), path = (id: string) => "/v1/app/sessions/" + encodeURIComponent(SessionIdSchema.parse(id));
- const control = (id: string, action: "stop" | "retry" | "take-over") => api.send("POST", path(id) + "/" + action, { requestId: crypto.randomUUID() }, SessionResponseReaderSchema);
+ const control = (id: string, action: "stop" | "retry") => api.send("POST", path(id) + "/" + action, { requestId: crypto.randomUUID() }, SessionResponseReaderSchema);
  return {
   // DEC 254zzz94: whether this person may merge the task and whether it would merge now (Code re-reads GitHub), and the press itself (one request id is one merge; the website's own client only).
   mergeReadiness: (id: string) => api.get(path(id) + "/merge", MergeReadinessReader, undefined, { retry: "never" }),
@@ -31,6 +31,9 @@ export function createSessionActions(host: AppHost) {
   // Rovara-cloud#25: a task stopped by review findings. Send it back to coding with the owner's note, or accept the findings (with a reason) so the pull request opens.
   sendBack: (id: string, body: { requestId: string; note?: string }) => api.send("POST", path(id) + "/send-back", body, SessionResponseReaderSchema),
   acceptFindings: (id: string, body: { requestId: string; reason: string }) => api.send("POST", path(id) + "/accept-findings", body, SessionResponseReaderSchema),
-  stop: (id: string) => control(id, "stop"), retry: (id: string) => control(id, "retry"), takeOver: (id: string) => control(id, "take-over"),
+  stop: (id: string) => control(id, "stop"), retry: (id: string) => control(id, "retry"), takeOver: (id: string, expectedPeopleRevision: number) => {
+   if (!Number.isSafeInteger(expectedPeopleRevision) || expectedPeopleRevision < 1) throw new Error("Take over needs the People revision shown on the page.");
+   return api.send("POST", path(id) + "/take-over", { requestId: crypto.randomUUID(), expectedPeopleRevision }, SessionResponseReaderSchema);
+  },
  };
 }

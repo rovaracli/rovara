@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import { screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { SessionTile } from "../../packages/ui/src/screens/live/SessionTile.js";
@@ -23,6 +23,7 @@ function setup(options: { tile?: ReturnType<typeof liveFixture>; path?: string; 
  const f = fakeHost(async request => {
  if (request.path.startsWith("/v1/app/live") && options.liveRead) return options.liveRead(request);
  if (request.path.startsWith("/v1/app/live")) return { status, body: status === 200 ? { tiles } : { error: { code: "FORBIDDEN", message: "Your access ended." } } };
+ if (request.path.endsWith("/people")) return { status: 200, body: { people: { revision: 3, orphaned: true, canManage: false, canTakeOwnership: true, people: [{ personId: "22222222-2222-4222-8222-222222222222", name: "Ada", role: "owner", you: false, effectiveRole: "owner" }] } } };
  if (request.path === "/v1/app/nav") return { status: 200, body: navFixture() };
  if (request.path === "/v1/app/changes") return { status: 200, body: { notices: [], next: "settled" } };
  if (request.method === "GET" && request.path === "/v1/app/sessions/" + SESSION_FIXTURE_ID) return { status: 200, body: { session: sessionFixture({ revision: owner ? 2 : 1, you: { level: "edit", owner, following: false, actions: ["watch", "take_over", "stop", "retry"] } }) } };
@@ -46,7 +47,7 @@ it("opens only a valid caller confirmation destination externally", () => {
 });
 it("keeps takeover pending until a real read says the caller owns it", async () => {
  const f = setup({ tile: liveFixture({ actions: ["take_over"] }), send: async () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: ["You will own this session."] } }) });
- fireEvent.click(screen.getByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");fireEvent.click(screen.getByRole("button", { name: "Open confirmation" }));expect(f.host.openExternal).toHaveBeenCalledTimes(1);expect(screen.queryByText("You now own this session.")).toBeNull();await act(() => f.query.setQueryData(["session", SESSION_FIXTURE_ID], sessionFixture({ revision: 2, you: { level: "edit", owner: true, following: false, actions: ["watch"] } })));expect(screen.queryByText("You now own this session.")).toBeNull();f.owned();await f.query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID] });await screen.findByText("You now own this session.");f.close();
+ fireEvent.click(screen.getByRole("button", { name: "Take over" }));const takeover = await screen.findByRole("dialog", { name: "Take over this task?" });await within(takeover).findByText("Ada · Owner");fireEvent.click(within(takeover).getByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");fireEvent.click(screen.getByRole("button", { name: "Open confirmation" }));expect(f.host.openExternal).toHaveBeenCalledTimes(1);expect(screen.queryByText("You now own this session.")).toBeNull();await act(() => f.query.setQueryData(["session", SESSION_FIXTURE_ID], sessionFixture({ revision: 2, you: { level: "edit", owner: true, following: false, actions: ["watch"] } })));expect(screen.queryByText("You now own this session.")).toBeNull();f.owned();await f.query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID] });await screen.findByText("You now own this session.");f.close();
 });
 it("renders a plain-text peek, actual cost, people and offline location", () => {
  const f = setup({ tile: { ...liveFixture({ where: { kind: "mac", label: "Priya's MacBook", offline: true }, viewingNowCount: 7 }), peek: "\u001b[31mBuilding safely\u001b[0m" } });expect(screen.getByText("Building safely")).toBeTruthy();expect(f.container.textContent).not.toContain("[31m");expect(screen.getByText("Cost unavailable")).toBeTruthy();expect(f.container.textContent).not.toContain("$1.20");expect(screen.getByText("on Priya's MacBook")).toBeTruthy();expect(screen.getByText("offline")).toBeTruthy();expect(screen.getByText("+6")).toBeTruthy();f.close();
@@ -62,8 +63,9 @@ it("keeps a newer tile when an older answer arrives and honors actual removals",
 });
 it("sends canonical control routes with fresh request IDs and refuses an invalid session id", async () => {
  const f = fakeHost(async request => ({ status: 200, body: request.path.endsWith("/follow") ? { following: request.method === "POST" } : { session: sessionFixture() } })), api = createSessionActions(f.host);
- await api.follow(SESSION_FIXTURE_ID);await api.unfollow(SESSION_FIXTURE_ID);await api.stop(SESSION_FIXTURE_ID);await api.retry(SESSION_FIXTURE_ID);await api.takeOver(SESSION_FIXTURE_ID);
+ await api.follow(SESSION_FIXTURE_ID);await api.unfollow(SESSION_FIXTURE_ID);await api.stop(SESSION_FIXTURE_ID);await api.retry(SESSION_FIXTURE_ID);await api.takeOver(SESSION_FIXTURE_ID, 3);
  expect(f.request.mock.calls.map(([request]) => [request.method, request.path.split("/").at(-1)])).toEqual([["POST", "follow"], ["DELETE", "follow"], ["POST", "stop"], ["POST", "retry"], ["POST", "take-over"]]);
+ expect(f.request.mock.calls.at(-1)?.[0].body).toMatchObject({ expectedPeopleRevision: 3 });
  const writes = f.request.mock.calls.slice(2).map(([request]) => request.body as { requestId: string });expect(new Set(writes.map(body => body.requestId)).size).toBe(3);expect(writes.every(body => /^[0-9a-f-]{36}$/u.test(body.requestId))).toBe(true);await expect(async () => api.stop("../outside")).rejects.toThrow();expect(f.request).toHaveBeenCalledTimes(5);
 });
 for (const theme of ["light", "dark"] as const) it("has accessible permitted session controls in " + theme, async () => { const f = setup({ tile: liveFixture({ actions: ["watch", "take_over", "stop", "retry"] }), theme });await expectNoAxeViolations(f.container);f.close(); });

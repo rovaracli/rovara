@@ -204,7 +204,7 @@ describe("opening a task by its Code id", () => {
   it("taking the task over clears the placeholder mark, so the new owner is not healed over later", async () => {
     const w = setUp();
     const { sessionId } = (await w.post(OPEN, undefined, await w.sam())).body as { sessionId: string };
-    const taken = await w.post(`/v1/web/sessions/${sessionId}/take-over`, { requestId: "55555555-5555-4555-8555-555555555555" }, await w.sam());
+    const taken = await w.post(`/v1/web/sessions/${sessionId}/take-over`, { requestId: "55555555-5555-4555-8555-555555555555", expectedPeopleRevision: 3 }, await w.sam());
     expect(taken.status).toBe(200);
     expect(w.sessions()[0]).toMatchObject({ owner: { developerId: SAM, name: "Sam" } });
     expect(w.sessions()[0]!.ownerUnresolved).toBeUndefined();
