@@ -1,3 +1,4 @@
+import { postWithTimeout } from "../safe-action.js";
 import { SessionIdSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, MergeDoneReaderSchema } from "@agentx/contracts/web";
 import { z } from "zod";
 import type { AppHost } from "../host.js";
@@ -19,7 +20,7 @@ export function createSessionActions(host: AppHost) {
   // The strict body Code reads names the heads and the risk the person saw; neither is ever dropped. With either missing nothing is sent.
   merge: (id: string, requestId: string, shown: { expectedHeads: NonNullable<MergeReadiness["heads"]>; risk: NonNullable<MergeReadiness["risk"]> }) => {
    if (shown.expectedHeads.length === 0 || shown.risk === undefined) throw new Error("A merge is never sent without the heads and the risk the person saw.");
-   return api.send("POST", path(id) + "/merge", { requestId, expectedHeads: shown.expectedHeads, risk: shown.risk }, MergeDoneReaderSchema, { retry: "never" });
+   return postWithTimeout(() => api.send("POST", path(id) + "/merge", { requestId, expectedHeads: shown.expectedHeads, risk: shown.risk }, MergeDoneReaderSchema, { retry: "never" }), 120_000);
   },
   // Understand's questions: `round` and `revision` are the ones the page read, so a stale form is refused by the server (INTENT_NOT_WAITING) rather than answered late.
   answer: (id: string, body: { requestId: string; round: number; revision: number; answers: Array<{ questionId: string; optionId?: string; text?: string }> }) => api.send("POST", path(id) + "/answers", body, SessionResponseReaderSchema),

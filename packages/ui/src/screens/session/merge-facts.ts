@@ -1,3 +1,5 @@
+import { actionLock, basisOf, sameItems, itemsBound, type LockKind } from "../../safe-action.js";
+export type { LockKind } from "../../safe-action.js";
 import type { MergeReadiness } from "../../api/session-actions.js";
 import type { ReadTask } from "./workspace-types.js";
 
@@ -94,19 +96,18 @@ export function changedSince(shown: Shown, rows: readonly PullRow[], readiness: 
  if (headsKey(shown.heads) !== headsKey(readiness?.heads)) return true;
  if (shown.risk !== readiness?.risk) return true;
  const now = shownOf(rows, readiness).tracked;
- return now.length !== shown.tracked.length || shown.tracked.some(before => !now.some(after => after.key === before.key && after.head === before.head && after.digest === before.digest));
+ return !sameItems(shown.tracked, now, item => JSON.stringify([item.key, item.head, item.digest]));
 }
 
 /** Why Merge is locked, in the words the board gives, or undefined when nothing here locks it (Code's own answer still decides whether it may be pressed). */
-export type LockKind = "unresolved" | "storage" | "identity" | "drift" | "not_ready";
 export interface Lock { kind: LockKind; words: string }
 export function lockOf(input: { unresolved: boolean; identityUnread?: boolean; storage?: "unavailable" | "unreadable"; rows: readonly PullRow[]; readiness: MergeReadiness | undefined }): Lock | undefined {
- if (input.identityUnread === true) return { kind: "identity", words: "Locked until Rovara has read who you are." };
- if (input.storage !== undefined) return { kind: "storage", words: input.storage === "unreadable" ? "Locked: a saved merge request in this browser can't be read. Merge it on GitHub." : "Locked: this browser's storage can't be read, so Rovara can't be sure an earlier merge wasn't sent. Merge it on GitHub, or allow site storage and reload." };
- if (input.unresolved) return { kind: "unresolved", words: "Locked: the result of your earlier merge isn't confirmed. Rovara won't send another one until it is answered." };
- const moved = input.rows.filter(row => row.drift);
- if (moved.length > 0) return { kind: "drift", words: "Locked: Rovara's latest read shows a different head than the one that was checked." };
- if (input.readiness?.ready !== true) return { kind: "not_ready", words: "Locked until Code says this is ready to merge." };
+ const kind = actionLock({ ...input, drift: input.rows.some(row => row.drift), ready: input.readiness?.ready === true });
+ if (kind === "identity") return { kind: "identity", words: "Locked until Rovara has read who you are." };
+ if (kind === "storage") return { kind: "storage", words: input.storage === "unreadable" ? "Locked: a saved merge request in this browser can't be read. Merge it on GitHub." : "Locked: this browser's storage can't be read, so Rovara can't be sure an earlier merge wasn't sent. Merge it on GitHub, or allow site storage and reload." };
+ if (kind === "unresolved") return { kind: "unresolved", words: "Locked: the result of your earlier merge isn't confirmed. Rovara won't send another one until it is answered." };
+ if (kind === "drift") return { kind: "drift", words: "Locked: Rovara's latest read shows a different head than the one that was checked." };
+ if (kind === "not_ready") return { kind: "not_ready", words: "Locked until Code says this is ready to merge." };
  return undefined;
 }
 
@@ -116,7 +117,7 @@ export function lockOf(input: { unresolved: boolean; identityUnread?: boolean; s
  */
 export function headsBound(view: MergeReadiness): boolean {
  const heads = (view.heads ?? []).map(head => pullKey(head.repositoryId, head.number)), pulls = view.pullRequests.map(pull => pullKey(pull.repositoryId, pull.number));
- return heads.length > 0 && pulls.length > 0 && new Set(heads).size === heads.length && new Set(pulls).size === pulls.length && heads.length === pulls.length && pulls.every(key => heads.includes(key));
+ return itemsBound(heads, pulls);
 }
 
 /**
@@ -125,7 +126,7 @@ export function headsBound(view: MergeReadiness): boolean {
  */
 export function taskBasisOf(task: ReadTask): string {
  const rows = pullRowsOf(task, undefined).map(row => { const item = row.tracked; return [row.key, row.state, item?.headSha ?? "", item?.decisionDigest ?? "", item?.draft === true ? "draft" : "", item?.ci ?? "", item?.failingChecks.join("+") ?? "", item?.review ?? "", item?.branch ?? ""].join(":"); });
- return [task.status, task.workflow?.stage ?? "", task.workflow?.state ?? "", task.merge?.risk?.level ?? "", ...rows].join("|");
+ return basisOf([task.status, task.workflow?.stage ?? "", task.workflow?.state ?? "", task.merge?.risk?.level ?? "", ...rows]);
 }
 
 /**
