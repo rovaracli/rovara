@@ -23,11 +23,11 @@ afterEach(() => { vi.restoreAllMocks();vi.useRealTimers();localStorage.clear(); 
 
 // Literal tuples from Code answer-request, owner-round, retry/send-back/review-findings,
 // decision routes and Cloud routes; removing one guard must retain pending and fail its row.
-const finals: Array<[string, number, string]> = [
- [route("retry"), 403, "FORBIDDEN"], [route("retry"), 400, "CONFIG_INVALID"],
- [route("retry"), 404, "NOT_FOUND"], [route("retry"), 404, "TASK_NOT_FOUND"], [route("retry"), 404, "SESSION_NOT_FOUND"],
+const finals: Array<[string, number, string, string?]> = [
+ [route("retry"), 403, "FORBIDDEN", "Only Ada can retry this session."], [route("retry"), 400, "CONFIG_INVALID", "requestId must be a UUID."],
+ [route("send-back"), 404, "NOT_FOUND", "this task does not have a workflow record"], [route("retry"), 404, "SESSION_NOT_FOUND"],
  [route("retry"), 409, "IDEMPOTENCY_CONFLICT"], [route("retry"), 409, "CONFLICT"],
- [route("retry"), 403, "SESSION_LEVEL_REQUIRED"], [route("retry"), 403, "TASK_ACCESS_DENIED"],
+ [route("retry"), 403, "SESSION_LEVEL_REQUIRED"],
  [route("retry"), 409, "CONFIG_INVALID"],
  [route("send-back"), 409, "CONFLICT"], [route("accept-findings"), 409, "CONFLICT"],
  [route("accept-findings"), 409, "SECURITY_ACCEPT_NOT_HERE"],
@@ -40,14 +40,15 @@ const finals: Array<[string, number, string]> = [
  [route("merge"), 409, "IDEMPOTENCY_CONFLICT"], [route("merge"), 403, "FORBIDDEN"],
  [route("merge"), 404, "TASK_NOT_FOUND"], [route("merge"), 404, "SESSION_NOT_FOUND"], [route("merge"), 400, "CONFIG_INVALID"],
 ];
-it.each(finals)("%s %s %s clears only this press, keeps server words, and permits use only after a fresh read", async (path, status, code) => {
+it.each(finals)("%s %s %s clears only this press, keeps server words, and permits use only after a fresh read", async (path, status, code, serverWords) => {
  const f = fixture(), words: string[] = [];
  let finish!: (value: string) => void;
  const read = () => fencedRead(f.fence, () => new Promise<string>(resolve => { finish = resolve; }));
- const failure = new ApiError(status, code, `Server says: ${code}`);
+ const wordsFromServer = serverWords ?? `Server says: ${code}`;
+ const failure = new ApiError(status, code, wordsFromServer);
  expect(handleActionFailure({ ...f, entry: f.pending, subject, failure, route: path, pullCount: 1, message: word => { words.push(word); }, read, readIdentity: async () => undefined })).toBe("refused");
  expect(f.records.readPendingNow(subject).kind).toBe("none");
- expect(words).toEqual([`Server says: ${code}`]);
+ expect(words).toEqual([wordsFromServer]);
  expect(f.fence.taskFailed).toBeDefined();
  expect(actionLock({ unresolved: false, drift: false, ready: f.fence.taskFailed === undefined })).toBe("not_ready");
  finish("fresh task body"); await Promise.resolve(); await Promise.resolve();
@@ -56,7 +57,27 @@ it.each(finals)("%s %s %s clears only this press, keeps server words, and permit
  expect(f.records.claimPending({ ...f.pending, requestId: "33333333-3333-4333-8333-333333333333" }, () => undefined, "storage").stop).toBe(false);
 });
 
+// Keep the pre-dispatch validations usable, but bind the sentence to its own route.
 it.each([
+ ...["retry", "send-back", "accept-findings", "answers"].map(action => [route(action), "requestId must be a UUID."]),
+ [route("send-back"), "The note is at most 1,000 characters."],
+ [route("accept-findings"), "Give a reason of up to 500 characters for accepting the findings."],
+ ...[route("answers"), `/v1/app/tasks/${task}/answers`].flatMap(path => [
+  "The answers must be a JSON object.", "requestId must be a UUID.",
+  "round must be a whole number from 1 to 1,000,000.", "revision must be a whole number from 0 to 1,000,000.",
+  "answers must list 1 to 3 answers.", "Each answer needs a questionId (q1 to q3) and an optionId (a to d), some text, or both.",
+  "An answer's text is 1 to 2,000 characters.",
+ ].map(words => [path, words])),
+])("%s: exact Cloud validation %s stays final and route-scoped", (path, words) => {
+ expect(isFinalActionRefusal(new ApiError(400, "CONFIG_INVALID", words), { route: path })).toBe(true);
+ expect(isFinalActionRefusal(new ApiError(400, "CONFIG_INVALID", words), { route: "/v1/app/unreviewed" })).toBe(false);
+ expect(isFinalActionRefusal(new ApiError(400, "CONFIG_INVALID", words + " after applying"), { route: path })).toBe(false);
+});
+
+it.each([
+ [route("retry"), 404, "TASK_NOT_FOUND", 1], [route("retry"), 403, "TASK_ACCESS_DENIED", 1],
+ [route("retry"), 404, "NOT_FOUND", 1], [route("retry"), 403, "FORBIDDEN", 1],
+ [route("accept-findings"), 403, "FORBIDDEN", 1], [route("retry"), 400, "CONFIG_INVALID", 1],
  [route("merge"), 409, "MERGE_NOT_READY", 1], [route("merge"), 400, "CONFIG_INVALID", 2],
  [route("merge"), 400, "CONFIG_INVALID", undefined], [route("merge"), 404, "NOT_FOUND", 1],
  ["/v1/app/decisions/merge/task-a/approve", 409, "MERGE_NOT_READY", 1],

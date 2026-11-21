@@ -405,6 +405,7 @@ export const isCsrfFailure = (failure: unknown): boolean => failure instanceof A
 /** Audited Cloud write route (browser /v1/app or /v1/web alias); never an arbitrary 4xx policy. */
 export interface ActionRefusalContext { route: string; /** Required for Merge CONFIG_INVALID: several PRs can already have partly merged. */ pullCount?: number }
 const SESSION_ACTION = /^\/sessions\/ses_[0-9a-z]{20}\/(retry|send-back|accept-findings|answers)$/u;
+const PAID_OWNER_ROUND = /^\/sessions\/ses_[0-9a-z]{20}\/(send-back|accept-findings)$/u;
 const OWNER_ROUND = /^\/sessions\/ses_[0-9a-z]{20}\/(retry|send-back|accept-findings)$/u;
 const ANSWERS_ACTION = /^(?:\/sessions\/ses_[0-9a-z]{20}|\/tasks\/[0-9a-f-]{36})\/answers$/iu;
 // Only the document gate is audited here. Other card handlers may have provider effects.
@@ -412,10 +413,27 @@ const DOCUMENT_ACTION = /^\/decisions\/(approve_requirements|approve_plan|approv
 const MERGE_ACTION = /^\/sessions\/ses_[0-9a-z]{20}\/merge$/u;
 const ownerOrAnswer = (path: string): boolean => SESSION_ACTION.test(path) || ANSWERS_ACTION.test(path);
 const documented = (path: string): boolean => ownerOrAnswer(path) || DOCUMENT_ACTION.test(path);
+// These exact sentences belong to Cloud's validation BEFORE its Code call. The
+// same status/code with any other words can be Code's post-commit projection.
+const cloudValidation = (path: string, words: string): boolean => {
+ if (words === "requestId must be a UUID.") return ownerOrAnswer(path);
+ if (path.endsWith("/send-back")) return words === "The note is at most 1,000 characters.";
+ if (path.endsWith("/accept-findings")) return words === "Give a reason of up to 500 characters for accepting the findings.";
+ return ANSWERS_ACTION.test(path) && [
+  "The answers must be a JSON object.", "round must be a whole number from 1 to 1,000,000.",
+  "revision must be a whole number from 0 to 1,000,000.", "answers must list 1 to 3 answers.",
+  "Each answer needs a questionId (q1 to q3) and an optionId (a to d), some text, or both.",
+  "An answer's text is 1 to 2,000 characters.",
+ ].includes(words);
+};
+const actionPath = (route: string): string => route.replace(/^\/v1\/(?:app|web)(?=\/)/u, "").split("?", 1)[0]!;
 type FinalRefusal = readonly [(path: string) => boolean, number, string, ((context: ActionRefusalContext, failure: ApiError) => boolean)?];
 /**
  * ONE list. Sources/exception audit: docs/safe-action.md and the lane's POST-FORWARD-AUDIT.md.
- * Code validates these before applying the action. Cloud normalizes any later failure after a Code 2xx to 5xx.
+ * A first Code 4xx can follow a commit: status/code alone is NOT proof of refusal.
+ * Ambiguous CONFIG_INVALID, TASK_NOT_FOUND, retry NOT_FOUND/TASK_ACCESS_DENIED,
+ * and Cloud's mapped post-commit FORBIDDEN replies must retain the pending press.
+ * Cloud separately normalizes later failures after a Code 2xx to 5xx.
  * MERGE_NOT_READY is final only at the document gate, never on Merge; Merge's original tuple list is preserved.
  * Close TASK_NOT_FOUND and People/add CHANGE_STALE can follow effects in Code itself and are deliberately absent.
  */
@@ -423,14 +441,25 @@ const FINAL_ACTION_REFUSALS: readonly FinalRefusal[] = [
  // Only Cloud's own exact validation sentence: Code may raise other errors after effects.
  [path => /^\/sessions\/ses_[0-9a-z]{20}\/(stop|close|take-over)$/u.test(path), 400, "CONFIG_INVALID", (_context, failure) => failure.message === "requestId must be a UUID."],
  [path => /^\/sessions\/ses_[0-9a-z]{20}\/(stop|close|take-over)$/u.test(path), 404, "SESSION_NOT_FOUND"],
- [documented, 400, "CONFIG_INVALID"], [documented, 403, "FORBIDDEN"], [documented, 404, "NOT_FOUND"],
- [ownerOrAnswer, 404, "TASK_NOT_FOUND"], [ownerOrAnswer, 404, "SESSION_NOT_FOUND"], [ownerOrAnswer, 409, "IDEMPOTENCY_CONFLICT"],
- [path => OWNER_ROUND.test(path), 403, "SESSION_LEVEL_REQUIRED"], [path => OWNER_ROUND.test(path), 403, "TASK_ACCESS_DENIED"],
- [path => OWNER_ROUND.test(path), 409, "CONFIG_INVALID"], [path => OWNER_ROUND.test(path), 409, "CONFLICT"],
- [path => OWNER_ROUND.test(path), 409, "PROJECT_ARCHIVED"],
- [path => OWNER_ROUND.test(path), 402, "BUDGET_EXCEEDED"], [path => OWNER_ROUND.test(path), 402, "ORG_BUDGET_EXCEEDED"],
- [path => OWNER_ROUND.test(path), 402, "PROJECT_BUDGET_EXCEEDED"], [path => OWNER_ROUND.test(path), 402, "AGENT_BUDGET_EXCEEDED"],
- [path => OWNER_ROUND.test(path), 402, "MACHINE_TIME_EXCEEDED"], [path => OWNER_ROUND.test(path), 403, "TRIAL_LOCKED"],
+ [ownerOrAnswer, 400, "CONFIG_INVALID", (context, failure) => cloudValidation(actionPath(context.route), failure.message)],
+ [path => DOCUMENT_ACTION.test(path), 400, "CONFIG_INVALID"],
+ [documented, 403, "FORBIDDEN", (context, failure) => {
+  const path = actionPath(context.route);
+  // Core retry's missing-session projection and page-findings' post-commit
+  // access reload are both remapped to FORBIDDEN by Cloud's fallback adapter.
+  if (path.endsWith("/retry")) return /^Only [\s\S]+ can retry this session\.$/u.test(failure.message);
+  if (path.endsWith("/accept-findings")) return /^Only [\s\S]+ or a co-owner can accept these findings\.$/u.test(failure.message);
+  return true;
+ }],
+ [path => DOCUMENT_ACTION.test(path), 404, "NOT_FOUND"],
+ [path => PAID_OWNER_ROUND.test(path), 404, "NOT_FOUND", (_context, failure) => failure.message === "this task does not have a workflow record"],
+ [path => SESSION_ACTION.test(path), 404, "SESSION_NOT_FOUND"], [ownerOrAnswer, 409, "IDEMPOTENCY_CONFLICT"],
+ [path => /\/retry$/u.test(path) && OWNER_ROUND.test(path), 403, "SESSION_LEVEL_REQUIRED"],
+ [path => /\/retry$/u.test(path) && OWNER_ROUND.test(path), 409, "CONFIG_INVALID"], [path => OWNER_ROUND.test(path), 409, "CONFLICT"],
+ [path => PAID_OWNER_ROUND.test(path), 409, "PROJECT_ARCHIVED"],
+ [path => PAID_OWNER_ROUND.test(path), 402, "BUDGET_EXCEEDED"], [path => PAID_OWNER_ROUND.test(path), 402, "ORG_BUDGET_EXCEEDED"],
+ [path => PAID_OWNER_ROUND.test(path), 402, "PROJECT_BUDGET_EXCEEDED"], [path => PAID_OWNER_ROUND.test(path), 402, "AGENT_BUDGET_EXCEEDED"],
+ [path => PAID_OWNER_ROUND.test(path), 402, "MACHINE_TIME_EXCEEDED"], [path => PAID_OWNER_ROUND.test(path), 403, "TRIAL_LOCKED"],
  [path => /^\/sessions\/ses_[0-9a-z]{20}\/accept-findings$/u.test(path), 409, "SECURITY_ACCEPT_NOT_HERE"],
  [path => ANSWERS_ACTION.test(path), 409, "INTENT_NOT_WAITING"],
  [path => DOCUMENT_ACTION.test(path), 409, "CHANGE_STALE"], [path => DOCUMENT_ACTION.test(path), 409, "MERGE_NOT_READY"],
@@ -441,7 +470,7 @@ const FINAL_ACTION_REFUSALS: readonly FinalRefusal[] = [
 /** A proven pre-apply refusal. 401, timeouts, 408, 429, all 5xx and unreadable 2xx are always unknown. */
 export function isFinalActionRefusal(failure: unknown, context: ActionRefusalContext): failure is ApiError {
  if (!(failure instanceof ApiError)) return false;
- const path = context.route.replace(/^\/v1\/(?:app|web)(?=\/)/u, "").split("?", 1)[0]!;
+ const path = actionPath(context.route);
  return FINAL_ACTION_REFUSALS.some(([route, status, code, allows]) => route(path) && failure.status === status && failure.code === code && (allows === undefined || allows(context, failure)));
 }
 
