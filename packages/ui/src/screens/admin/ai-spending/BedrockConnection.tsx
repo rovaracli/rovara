@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { AppMeResponseReaderSchema } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../../../host.js";
 import type { Reader } from "../../../api/client.js";
@@ -31,7 +32,7 @@ export function BedrockConnection() {
  return <BedrockForm key={`${context.orgId}:${context.developerId}`} />;
 }
 function BedrockForm() {
- const context = useAdminContext(), host = useAppHost();
+ const context = useAdminContext(), host = useAppHost(), query = useQueryClient();
  async function get<T>(path: string, schema: Reader<T>): Promise<T> { const result = await host.transport.request({ method: "GET", path, retry: "never" }); if (result.status !== 200) throw apiError(result.status, result.body, host.origin); return schema.parse(result.body); }
  const key = `bedrock:${context.orgId}:${context.developerId}:connection`;
  const store = useMemo(() => storeFor(key), [key]);
@@ -103,6 +104,7 @@ function BedrockForm() {
    if (result.revision <= current.revision) throw new Error("unconfirmed revision");
    host.storage.set(key, "");
    if (sequence === store.get().sequence) store.set({ read: result, error: undefined, lock: undefined });
+   await query.invalidateQueries({ queryKey: ["ai-spend", context.orgId, context.developerId, context.role, "agent-ai"], exact: true });
   } catch (error) {
    if (error instanceof ApiError && ["CSRF_INVALID", "CSRF_STALE"].includes(error.code)) { host.storage.set(key, ""); store.set({ lock: undefined, error: "Couldn't change that. Check your sign-in and try again." }); }
    else if (sent) setNotice(unknown);
