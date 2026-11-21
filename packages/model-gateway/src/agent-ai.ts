@@ -146,7 +146,7 @@ export interface AgentSourcePorts {
   sources: AgentAiSourceReader;
   /** Operator billing exemptions only; never eligibility for the default. */
   exempt?: ReadonlySet<string>;
-  keys: Pick<LearningKeySource, "connected">;
+  keys: Pick<LearningKeySource, "connected" | "bedrockConnected">;
   byo?: Pick<ByoBedrock, "connection">;
 }
 /** Saved source/order first. Without one, preserve this issuer/company's own connections, even after backfill. Read faults throw before any hold or send. */
@@ -159,7 +159,11 @@ export async function resolveAgentSource(ports: AgentSourcePorts, iss: string, c
     if (saved !== undefined) return { source: saved, via: "chosen" };
   }
   const keyConnected = (await ports.keys.connected(iss, cid, "anthropic", signal)) === true;
-  const bedrockConnected = !keyConnected && ports.byo !== undefined && (await ports.byo.connection(iss, cid, signal)) !== undefined;
+  // An unavailable adapter says nothing about saved connections. Preserve the payer from metadata;
+  // admission then refuses bedrock_byo as not offered, before any hold, credential read or send.
+  const bedrockConnected = !keyConnected && (ports.byo === undefined
+    ? (await ports.keys.bedrockConnected?.(iss, cid)) === true
+    : (await ports.byo.connection(iss, cid, signal)) !== undefined);
   return defaultAgentSource({ keyConnected, bedrockConnected });
 }
 

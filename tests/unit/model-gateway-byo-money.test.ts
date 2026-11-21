@@ -15,6 +15,15 @@ import { answerRateQuote, RATE_QUOTE_AUDIENCE } from "../../packages/model-gatew
 import type { RunPrice } from "../../packages/model-gateway/src/model-gateway-token.js";
 import { translatedAnswer } from "../../packages/model-gateway/src/agent-openai.js";
 import { openRouterPolicy } from "../../packages/model-gateway/src/openrouter-policy.js";
+import { storedLearningKeys } from "../../packages/model-gateway/src/learning-keys.js";
+import { createAnswersRoutes, ANSWERS_PATH, ANSWERS_STEP, ANSWERS_PAUSE_HEADER } from "../../packages/model-gateway/src/answers-route.js";
+import { createLearningRoutes, LEARNING_PATH, LEARNING_STEP, LEARNING_PAUSE_HEADER } from "../../packages/model-gateway/src/learning-route.js";
+import { handleGateway } from "../../packages/model-gateway/src/server.js";
+import { MemorySink } from "./model-gateway-fixture.js";
+import { AGENT_SOURCE_NOT_OFFERED } from "../../packages/model-gateway/src/server.js";
+import { answerOfferedModels } from "../../packages/model-gateway/src/offered-models.js";
+import { BEDROCK_SOURCE_ID } from "../../packages/model-gateway/src/product-keys.js";
+import { storeKit, change, PRODUCT_COMPANY_OWNER } from "./model-gateway-product-fixture.js";
 import { resolvePrice } from "../../packages/model-gateway/src/price.js";
 beforeAll(denyNetwork);
 async function meterStop(meter: InMemoryMeter | DynamoMeter, source: "bedrock_byo" | "openrouter") { return (await meter.sourceStop(scope.iss, scope.cid, source, "agent"))?.stopId; }
@@ -234,4 +243,66 @@ for (const durable of [false, true]) for (const limit of ["task", "companyMonth"
   expect((await call(w.deps, body, mint({ mdl: [alias] }))).status).toBe(422);
   expect(w.sent).not.toHaveBeenCalled(); expect(w.assumed).not.toHaveBeenCalled();
   expect((await w.meter.read(scope)).every(row => row.committed === 0)).toBe(true);
+});
+
+// C-1 / Opus fa9c3427a: removing the adapter cannot change a connected company's payer.
+async function missingBedrockAdapter(durable: boolean) {
+  const w = world(undefined, 2, durable);
+  const kit = storeKit({ bedrockCheck: async () => ({ result: "ok", models: { [id]: "ready" } }) });
+  await kit.store.connect({ ...change(PRODUCT_COMPANY_OWNER, 0), sourceId: BEDROCK_SOURCE_ID, provider: "bedrock", key: JSON.stringify({ scheme: "assume_role", roleArn: "arn:aws:iam::111111111111:role/RovaraBedrockInvoke-fixture", region: "us-west-2", models: { [alias]: id }, allowGlobal: false }) });
+  const opened = vi.spyOn(kit.store, "useKey").mockImplementation(async () => { throw new Error("metadata must not open credentials"); });
+  w.deps.agentKeys = storedLearningKeys(kit.store);
+  w.deps.agentAi = { sources: { sourceFor: async () => undefined }, rovara: { models: new Map([[alias, id]]), exempt: new Set(), transport: w.sent } };
+  w.deps.chargeReceipts = { source: (_claims, _model, resolved) => resolved };
+  w.deps.upkeep = { limitFor: async () => 1_000_000_000 };
+  return { ...w, kit, opened };
+}
+for (const durable of [false, true]) for (const mode of ["agent", "nonstream", "setup_draft", "nightly"] as const) it(`missing Bedrock adapter refuses ${mode} without a Rovara receipt or ledger line (${durable})`, async () => {
+  const w = await missingBedrockAdapter(durable);
+  const result = await call(w.deps, { ...body, stream: mode !== "nonstream" }, mint({ mdl: [alias], ...(mode === "setup_draft" ? { stp: "setup_draft" } : {}), ...(mode === "nightly" ? { src: "nightly" } : {}) }));
+  // Assert money side effects first: the pre-fix route sends and settles on the wrong payer.
+  expect(w.sent).not.toHaveBeenCalled();
+  expect(w.holds).toEqual([]); expect(w.settlements).not.toHaveBeenCalled();
+  if (w.wire !== undefined) expect(w.wire.items("ledger")).toEqual([]);
+  else expect((w.meter as InMemoryMeter).billedCalls(claims.iss, claims.cid)).toEqual([]);
+  expect(result.status).toBe(AGENT_SOURCE_NOT_OFFERED.status);
+  expect(JSON.parse(result.text())).toMatchObject({ error: { type: AGENT_SOURCE_NOT_OFFERED.code } });
+  expect(w.opened).not.toHaveBeenCalled(); expect(w.assumed).not.toHaveBeenCalled();
+  expect((await w.meter.read(scope)).every(row => row.committed === 0)).toBe(true);
+});
+it("missing Bedrock adapter refuses offered models using metadata only", async () => {
+  const w = await missingBedrockAdapter(false);
+  const sources = w.deps.agentAi!.sources, keys = w.deps.agentKeys!, rovara = w.deps.agentAi!.rovara!;
+  const offered = await answerOfferedModels({ sources, keys, rovara, disabled: new Set(), verify: async () => ({ ...claims, aud: "rovara-model-gateway-offered-models" }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/offered-models`, headers: { authorization: "Bearer fixture" } });
+  expect(offered).toMatchObject({ status: 403, body: { error: { type: AGENT_SOURCE_NOT_OFFERED.code } } });
+  expect(w.opened).not.toHaveBeenCalled(); expect(w.sent).not.toHaveBeenCalled();
+});
+it("missing Bedrock adapter never quotes Rovara AI using metadata only", async () => {
+  const w = await missingBedrockAdapter(false);
+  const sources = w.deps.agentAi!.sources, keys = w.deps.agentKeys!, rovara = w.deps.agentAi!.rovara!;
+  const prices = new SnapshotPriceSource({ load: async () => ({ version: 1, sources: { litellm: { fetchedAt: now - 1, count: 1, entries: [{ provider: "bedrock", model: id, kind: "chat", ...price }] } } }), save: async () => false }, { now: () => now, overrides: [] }); await prices.reload();
+  const quote = await answerRateQuote({ sources, keys, rovara, prices, now: () => now, region: "us-west-2", switchedOn: new Set(), offeredProviders: new Set(["bedrock"]), verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${alias}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
+  expect(quote).toEqual({ status: 200, body: { state: "unavailable", reason: "missing_price" } });
+  expect(w.opened).not.toHaveBeenCalled(); expect(w.sent).not.toHaveBeenCalled();
+});
+it("missing Bedrock adapter with unreadable metadata refuses before hold or send", async () => {
+  const w = await missingBedrockAdapter(true);
+  vi.spyOn(w.kit.store, "companyBedrock").mockRejectedValue(new Error("metadata unavailable"));
+  expect((await call(w.deps, body, mint({ mdl: [alias] }))).status).toBe(503);
+  expect(w.holds).toEqual([]); expect(w.settlements).not.toHaveBeenCalled();
+  expect(w.wire!.items("ledger")).toEqual([]); expect(w.opened).not.toHaveBeenCalled(); expect(w.sent).not.toHaveBeenCalled();
+});
+
+for (const purpose of ["answers", "learning"] as const) it(`missing Bedrock adapter preserves ${purpose} no_provider for an exempt company`, async () => {
+  const w = await missingBedrockAdapter(false);
+  const ai = w.deps.agentAi!.rovara!;
+  const common = { keys: w.deps.agentKeys!, meter: w.meter, companyCaps: new FixedCapsSource(caps), modelLimits: w.deps.modelLimits, transport: w.sent,
+    rovaraDefault: { ai: { ...ai, exempt: new Set([claims.cid]) }, sources: w.deps.agentAi!.sources } };
+  if (purpose === "answers") w.deps.answers = createAnswersRoutes({ ...common, limits: { limitFor: async () => 1_000_000_000 } });
+  else w.deps.learning = createLearningRoutes({ ...common, lessons: { isOn: async () => true } });
+  const sink = new MemorySink();
+  await handleGateway(w.deps, { method: "POST", url: purpose === "answers" ? ANSWERS_PATH : LEARNING_PATH, headers: { "content-type": "application/json", "x-api-key": mint({ mdl: [alias], stp: purpose === "answers" ? ANSWERS_STEP : LEARNING_STEP }) }, body: (async function* () { yield Buffer.from(JSON.stringify({ ...body, stream: true })); })() }, sink);
+  expect(sink.status).toBe(403);
+  expect(sink.headers[purpose === "answers" ? ANSWERS_PAUSE_HEADER : LEARNING_PAUSE_HEADER]).toBe("no_provider");
+  expect(w.sent).not.toHaveBeenCalled(); expect(w.opened).not.toHaveBeenCalled(); expect(w.settlements).not.toHaveBeenCalled();
 });

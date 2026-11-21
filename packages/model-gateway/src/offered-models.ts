@@ -199,7 +199,7 @@ export interface OfferedModelsHandlerOptions {
   /** The agent route's Rovara's AI allow-list, when configured, and (DEC 254zzz3(1)) its exempt companies: an exempt company with no saved choice is offered what the agent route's default serves it. */
   rovara?: { models: ReadonlyMap<string, string>; exempt?: ReadonlySet<string> };
   /** The company key source the agent route reads (needed for the default above; without it no company is defaulted). */
-  keys?: Pick<LearningKeySource, "connected"> & { identityFor?(iss: string, cid: string, provider: "openrouter"): Promise<{ sourceId: string; versionId: string } | undefined> };
+  keys?: Pick<LearningKeySource, "connected" | "bedrockConnected"> & { identityFor?(iss: string, cid: string, provider: "openrouter"): Promise<{ sourceId: string; versionId: string } | undefined> };
   disabled: ReadonlySet<string>;
   /** The company's own Bedrock (DEC 238), when this gateway has it built (as the agent route's `agentAi.byo`). Absent: bedrock_byo is refused. */
   byo?: Pick<ByoBedrock, "connection">;

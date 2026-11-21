@@ -10,8 +10,9 @@ import { LEARNING_KEY_PROVIDERS, type LearningKeyProvider, type ProductKeyStore 
 
 const connectable = (provider: CompanyKeyProvider): provider is LearningKeyProvider => LEARNING_KEY_PROVIDERS.some((p) => p === provider);
 
-export function storedLearningKeys(store: Pick<ProductKeyStore, "learningSource" | "useKey" | "recordWarning">): LearningKeySource {
+export function storedLearningKeys(store: Pick<ProductKeyStore, "learningSource" | "companyBedrock" | "useKey" | "recordWarning">): LearningKeySource {
   return {
+    async bedrockConnected(iss, cid) { return (await store.companyBedrock(iss, cid)) !== undefined; },
     async resolveForCharge(iss, cid, provider) {
       if (!connectable(provider)) return undefined;
       const saved = await store.learningSource(iss, cid, provider);
