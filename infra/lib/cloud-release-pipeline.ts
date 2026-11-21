@@ -48,9 +48,9 @@ export const CLOUD_PIPELINE_SWITCHES: Readonly<Record<string, Readonly<{ product
   staging: Object.freeze({ productAi: true as const }),
   // Rovara-cloud#247: production's gateway is deployed, and its web stack was switched on by hand with the gateway's ProductKeys* parameters.
   production: Object.freeze({ productAi: true as const }),
-  // Rovara-cloud#269: beta, on beta Code (https://beta.rovara.dev, account 233082642592). No product AI: that switch needs a model gateway
-  // (ModelGatewayUrl and the ProductKeys* parameters set by hand first), and beta has none yet; People and limits says "not connected yet".
-  beta: Object.freeze({}),
+  // Rovara-cloud#269, #273: beta, on beta Code (account 233082642592). Its gateway is gateway.beta.rovara.dev, and its web stack was
+  // switched on by hand with that gateway's ProductKeys* parameters, ModelGatewayUrl and GatewayMeterTableName, as production's was.
+  beta: Object.freeze({ productAi: true as const }),
 });
 /**
  * Rovara-cloud#269: an environment whose Cloud lives in another account. Its pipeline runs in the account that holds the GitHub
