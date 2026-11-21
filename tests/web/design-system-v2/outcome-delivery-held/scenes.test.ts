@@ -53,7 +53,13 @@ it("keeps a uniform grid gap between delivery rows, including wrapped rows", () 
  document.head.append(style);
  try {
   const f = renderUi(h("main", {}, outcomeDeliveryHeldGalleryScenes.find(scene => scene.id === "delivery")!.render()));
-  expect(getComputedStyle(f.container.querySelector(".rv-delivery-scene")!).gap).toBe("8px");
+  const scene = f.container.querySelector(".rv-delivery-scene")!;
+  const rows = [...scene.querySelectorAll<HTMLElement>(".rv-delivery")];
+  expect(getComputedStyle(scene).gap).toBe("8px");
+  expect(rows).toHaveLength(6);
+  const css = readFileSync("packages/ui/src/design/parts/outcome-delivery-held.css", "utf8");
+  expect(css).not.toMatch(/\.rv-delivery-scene\s+\.rv-delivery\s*\{[^}]*min-height/u);
+  expect(css).toContain(".rv-delivery strong{margin-inline-end:var(--rv-space-1)}");
  } finally { style.remove(); }
 });
 it("shows the held example's known heading, consequence and shared source line with only one Unknown", () => {
