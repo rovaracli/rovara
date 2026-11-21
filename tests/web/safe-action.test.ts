@@ -140,7 +140,7 @@ it("R6b/e/g: cache/old reads do not resolve an observed press; identity scopes a
  old.resolve("done before press");await read;expect(f.latestRead!.issued).toBeLessThan(observed);
  client.setQueryData(["subject", subject], "done in cache");expect(f.latestRead!.data).toBe("done before press");
  expect(fenceFor(client, subject.replace("person-a", "person-b"))).not.toBe(f);
- const records = store();records.writePending(pending());expect(records.readPendingNow(subject + "other").kind).toBe("none");
+ const records = store();records.writePending(pending());expect(records.readPendingNow(actionSubject({ orgId: "org_aaaaaaaaaaaaaaaaaaaa", developerId: "person-a", subjectId: "subject-aother" })).kind).toBe("none");
 });
 it("records retain stale flag, refuse corrupt records and never clear a different press", () => {
  const records = store();records.writePending(pending());const stale = records.parsePending(localStorage.getItem("fixture.pending:" + subject), subject, Date.parse(pending().startedAt) + 24 * 60 * 60 * 1000);expect(stale.kind === "pending" && stale.stale).toBe(true);
@@ -263,7 +263,7 @@ it("F1: exact stored answer with pending cleared is durable; another request or 
  const records = store();records.writePending(pending());expect(records.recordAccepted(pending(), answer())).toBe("durable");
  expect(records.readPendingNow(subject).kind).toBe("none");expect(records.readAcceptedNow(subject)).toEqual(answer());
  expect(records.recordAccepted(pending(), { ...answer(), requestId: "another" })).toBe("not-stored");
- expect(records.recordAccepted(pending(), { ...answer(), subject: "another" })).toBe("not-stored");
+ expect(records.recordAccepted(pending(), { ...answer(), subject: actionSubject({ orgId: "other-org", developerId: "person-a", subjectId: "subject-a" }) })).toBe("not-stored");
 });
 
 
@@ -307,4 +307,19 @@ it("F4: accepted-only hook observes another tab adding and removing pending", ()
  expect(hook.result.current).toBeUndefined();
  act(() => { localStorage.removeItem("fixture.pending:" + subject);globalThis.dispatchEvent(new StorageEvent("storage", { key: "fixture.pending:" + subject })); });
  expect(hook.result.current).toEqual(answer());hook.unmount();
+});
+
+it.each(["unavailable", "unreadable"])("legacy candidate: tampered unmarked receipt is hidden while pending is %s", fault => {
+ const records = store(), read = Storage.prototype.getItem.bind(localStorage);
+ records.writePending(pending());
+ // A pre-upgrade v1 receipt has no canonical copy. Direct storage writes
+ // change otherwise reader-valid fields, including the request id.
+ localStorage.setItem("fixture.accepted:" + subject, JSON.stringify({ ...answer(), requestId: "22222222-2222-4222-8222-222222222222", words: "NOT THE SERVER ANSWER" }));
+ if (fault === "unreadable") localStorage.setItem("fixture.pending:" + subject, "unreadable");
+ else vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) { if (key === "fixture.pending:" + subject) throw new Error("read denied");return read(key); });
+ expect(records.readPendingNow(subject).kind).toBe(fault);
+ expect(store().readAcceptedNow(subject)).toBeUndefined();
+ const hook = renderHook(() => records.useAccepted(subject));expect(hook.result.current).toBeUndefined();hook.unmount();
+ expect(records.claimPending(pending(), () => undefined, "storage").stop).toBe(true);
+ expect(read("fixture.pending:" + subject)).not.toBeNull();
 });

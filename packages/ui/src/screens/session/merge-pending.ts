@@ -1,4 +1,4 @@
-import { createActionRecords, withActionClaim, everyCovered, type ActionPendingState } from "../../safe-action.js";
+import { createActionRecords, withActionClaim, everyCovered, type ActionSubject, type ActionPendingState } from "../../safe-action.js";
 import { pullKey, type PullRow } from "./merge-facts.js";
 export { PENDING_STALE_MS, claimLockSupported, type ClaimOutcome } from "../../safe-action.js";
 import { PENDING_STALE_MS } from "../../safe-action.js";
@@ -9,10 +9,10 @@ import { PENDING_STALE_MS } from "../../safe-action.js";
 const UNAVAILABLE = "\u0000unavailable";
 const SHA = /^[a-f0-9]{40}$/u, UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 export interface PendingHead { repositoryId: string; number: number; headSha: string }
-export interface PendingPress { v: 1; sessionId: string; requestId: string; startedAt: string; heads: PendingHead[]; risk: "low" | "medium" | "high" | undefined; sent: string[] }
+export interface PendingPress { v: 1; sessionId: ActionSubject; requestId: string; startedAt: string; heads: PendingHead[]; risk: "low" | "medium" | "high" | undefined; sent: string[] }
 export type PendingState = ActionPendingState<PendingPress>;
 /** The record, strictly checked: anything that does not read as exactly what this module wrote is "unreadable", which stays locked. */
-export function parsePending(raw: string | null, sessionId: string, now = Date.now()): PendingState {
+export function parsePending(raw: string | null, sessionId: ActionSubject, now = Date.now()): PendingState {
  if (raw === UNAVAILABLE) return { kind: "unavailable" };
  if (raw === null) return { kind: "none" };
  try {
@@ -40,8 +40,8 @@ export function allMerged(entry: PendingPress, resolvingRows: readonly PullRow[]
 }
 
 
-export interface AcceptedAnswer { v: 1; subject: string; requestId: string; acceptedAt: string; words: string; keys: string[]; heads: PendingHead[] }
-export function parseAccepted(raw: string | null, subject: string): AcceptedAnswer | undefined {
+export interface AcceptedAnswer { v: 1; subject: ActionSubject; requestId: string; acceptedAt: string; words: string; keys: string[]; heads: PendingHead[] }
+export function parseAccepted(raw: string | null, subject: ActionSubject): AcceptedAnswer | undefined {
  if (raw === null) return undefined;
  try {
   const v = JSON.parse(raw) as Partial<AcceptedAnswer> | null;

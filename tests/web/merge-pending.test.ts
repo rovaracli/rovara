@@ -7,6 +7,7 @@ import { QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { actionSubject } from "../../packages/ui/src/safe-action.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
 import { fencedRead, fencedReadiness, fenceFor } from "../../packages/ui/src/screens/session/merge-fence.js";
 import { useSession } from "../../packages/ui/src/api/sessions.js";
@@ -30,7 +31,7 @@ const lost: Answer = { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE"
 const merged: Answer = { status: 200, body: { status: "MERGED", pullRequests: [{ repositoryId: "acme/payments", number: 42 }] } };
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa", DEV = "a1".repeat(32), OTHER_DEV = "b2".repeat(32);
 const meOf = (developerId: string, orgId = ORG): Answer => ({ status: 200, body: { developer: { id: developerId, name: "Ana", orgRole: "owner" }, org: { orgId, name: "Acme", plan: "team" }, identities: [] } });
-const subjectOf = (session: string, developerId = DEV, orgId = ORG): string => orgId + "|" + developerId + "|" + session;
+const subjectOf = (session: string, developerId = DEV, orgId = ORG) => actionSubject({ orgId, developerId, subjectId: session });
 const SUBJECT = subjectOf(A);
 const notFound: Answer = { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
 
