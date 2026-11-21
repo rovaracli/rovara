@@ -48,7 +48,7 @@ function ShellExample({ kind }: { kind: "running" | "plan" | "gaps" }) {
 const tasks = [
  { title: "Add refunds endpoint", detail: "Plan v3 is ready · 2 min", time: "2 min", status: { state: "needs_you" } },
  { title: "Fix webhook retry backoff", detail: "Building · heard 20 s ago", time: "20 s", status: { state: "running" } },
- { title: "Upgrade payment SDK to v4", detail: "Review asked 1 h ago", time: "1 h", status: { state: "waiting_for", waitingFor: "Sam" } },
+ { title: "Upgrade payment SDK to v4", detail: "Review asked 1 h ago", time: "1 h", status: { state: "waiting_for", waitingFor: "Sam" } },
  { title: "Remove old ledger export", detail: "#39 merged by Ana · Tue", time: "Tue", status: { state: "merged" } },
 ] as const;
 function TaskRows({ stale = false, phone = false }: { stale?: boolean; phone?: boolean }) {

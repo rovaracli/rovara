@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { ConfirmationDialog, type ConfirmationDialogProps } from "../../../../packages/ui/src/design/ConfirmationDialog.js";
 import { h } from "../../support/h.js";
@@ -92,6 +92,31 @@ it("shows and sends the same typed raise-money amount", () => {
  expect(document.querySelector(".rv-confirmation-amount")?.textContent).toBe("Amount: $12.34");
  fireEvent.click(screen.getByRole("button", { name: "Raise funds" }));
  expect(onConfirm).toHaveBeenCalledWith(amountCents);
+});
+it("dispatches exactly once for two synchronous Confirm clicks in the same tick", () => {
+ const onConfirm = vi.fn();
+ renderUi(h(ConfirmationDialog, { requestKey: "same-tick-confirm", kind: "destructive", title: "Remove Sam?", consequence: "Sam loses project access.", open: true, preview: true, onOpenChange: vi.fn(), confirm: { label: "Remove Sam", onConfirm } }));
+ const button = screen.getByRole<HTMLButtonElement>("button", { name: "Remove Sam" });
+ // One act() batches both native clicks, so React has not yet rendered the disabled state between them.
+ act(() => { button.click(); button.click(); });
+ expect(onConfirm).toHaveBeenCalledTimes(1);
+ expect(button.disabled).toBe(true);
+});
+it("keeps raise-money Confirm disabled and reports an error unless amountCents is a positive integer", () => {
+ const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+ try {
+  for (const [index, amountCents] of [0, -5, 12.5, Number.NaN, Number.POSITIVE_INFINITY].entries()) {
+   const onConfirm = vi.fn();
+   const view = renderUi(h(ConfirmationDialog, { requestKey: `bad-money-${index}`, kind: "raise_money", amountCents, title: "Raise funds?", consequence: "The company will request additional funding.", open: true, preview: true, onOpenChange: vi.fn(), confirm: { label: "Raise funds", onConfirm } }));
+   const button = screen.getByRole<HTMLButtonElement>("button", { name: "Raise funds" });
+   expect(button.disabled).toBe(true);
+   fireEvent.click(button); expect(onConfirm).not.toHaveBeenCalled();
+   expect(document.querySelector(".rv-confirmation-amount")?.textContent).not.toContain("NaN");
+   view.unmount();
+  }
+  expect(error).toHaveBeenCalledTimes(5);
+  expect(String(error.mock.calls[0]?.[0])).toContain("amountCents");
+ } finally { error.mockRestore(); }
 });
 it("dispatches Discard once and renders no discard for non-Close kinds even at the runtime boundary", () => {
  const onDiscard = vi.fn(); const common = { requestKey: "discard-runtime", title: "Remove Sam?", consequence: "Sam loses project access.", open: true, onOpenChange: vi.fn(), confirm: { label: "Remove Sam", onConfirm: vi.fn() } };

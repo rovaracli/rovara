@@ -35,27 +35,33 @@ for (const width of [320, 390]) for (const theme of ["light", "dark"] as const) 
  renderUi(h(tableToastDialogGalleryScenes[0].render), { theme });
  applyStyles(theme, width);
  const table = screen.getByRole("table", { name: "Tasks" });
- for (const row of table.querySelectorAll("tr")) {
-  expect(getComputedStyle(row).display).toBe("flex");
-  expect(getComputedStyle(row.children[1]!).width).toBe("auto");
-  expect(getComputedStyle(row.children[2]!).display).toBe("none");
+ // One grid row per task: title with meta under it, chip on the right (inline on the meta line below 360px), no inner divider, no header.
+ expect(getComputedStyle(table.querySelector("thead")!).display).toBe("none");
+ const tableDisplay = getComputedStyle(table).display; expect(tableDisplay).toBe("block");
+ const body = table.querySelector("tbody")!;
+ const rows = [...body.querySelectorAll("tr")]; expect(rows).toHaveLength(2);
+ for (const row of rows) {
+  const style = getComputedStyle(row);
+  expect(style.display).toBe("grid");
+  expect(style.height).toBe("auto");
+  expect(style.minHeight).toBe("48px");
+  expect(style.paddingLeft).toBe("16px"); expect(style.paddingRight).toBe("16px");
+  expect(row.children[2] && getComputedStyle(row.children[2]).display).toBe("none");
+  expect(getComputedStyle(row.children[0]!).display).toBe("contents");
+  for (const cell of [row.children[0]!, row.children[1]!]) {
+   expect(getComputedStyle(cell).borderBottomWidth === "" || getComputedStyle(cell).borderBottomWidth === "0px").toBe(true);
+   expect(getComputedStyle(cell).textAlign).toBe("left");
+  }
+  const chipCell = getComputedStyle(row.children[1]!);
+  expect(chipCell.gridColumn).toBe("2");
+  expect(chipCell.gridRow).toBe(width < 360 ? "2" : "1 / span 2");
  }
- const title = screen.getByText("Add refunds endpoint");
- expect(getComputedStyle(title.closest("td")!).minWidth).toBe("0px");
- expect(getComputedStyle(title.closest("td")!).flex).toBe("1 1 100%");
- const longTitle = screen.getByText("Fix webhook retry backoff");
- expect(getComputedStyle(longTitle.closest("td")!).minWidth).toBe("0px");
- expect(getComputedStyle(longTitle.closest("td")!).flex).toBe("1 1 100%");
- expect(getComputedStyle(longTitle.closest("tr")!.children[1]!).flex).toBe("1 1 100%");
- expect(getComputedStyle(title.closest("tr")!).flexWrap).toBe("wrap");
- expect(getComputedStyle(longTitle.closest("tr")!.children[1]!).textAlign).toBe("left");
- expect(getComputedStyle(title.closest("tr")!).height).toBe("auto");
- expect(getComputedStyle(title.closest("tr")!).minHeight).toBe("48px");
- for (const cell of table.querySelectorAll("th, td")) {
-  expect(getComputedStyle(cell).paddingLeft).toBe("16px");
-  expect(getComputedStyle(cell).paddingRight).toBe("16px");
- }
- expect(getComputedStyle(table.querySelector("thead tr")!).height).toBe("calc(40px)");
+ expect(getComputedStyle(rows[0]!).borderBottomWidth).toBe("thin");
+ expect(getComputedStyle(rows[1]!).borderBottomWidth).toBe("0px");
+ const selected = rows[1]!; expect(selected.getAttribute("aria-current")).toBe("true");
+ expect(getComputedStyle(selected).boxShadow).toContain("inset");
+ expect(getComputedStyle(selected.querySelector("strong")!).gridColumn).toBe(width < 360 ? "1 / -1" : "1");
+ expect(getComputedStyle(selected.querySelector(".rv-p3-phone-detail")!).gridRow).toBe("2");
  expect(screen.getByText(/on phone, two lines with the owner and time under the title/i)).toBeTruthy();
 });
 for (const theme of ["light", "dark"] as const) {
