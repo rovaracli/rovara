@@ -26,7 +26,7 @@ function Gallery({ search }: { search: string }) {
  const sceneId = new URLSearchParams(search).get("scene");
  const known = !sceneId || galleryScenes.some(scene => scene.id === sceneId);
  return <div className={`rv-ds-gallery${sceneId ? " rv-ds-isolated" : ""}`}>
-  <header><p className="rv-ds-meta">ROVARA DESIGN SYSTEM · SHEET V2</p><h1 tabIndex={-1}>A calm control room</h1><p className="rv-ds-lead">Quiet, dense, exact. Colour only means status, and always comes with an icon and a word. The interface speaks like a good colleague&apos;s hand-over note.</p><p className="rv-ds-meta">Local examples only. Controls never change real tasks.</p></header>
+  <header><p className="rv-ds-meta">ROVARA DESIGN SYSTEM · SHEET V2</p><h1 tabIndex={-1}>A calm control room</h1><p className="rv-ds-lead">Quiet, dense, exact. Colour only means status, and always comes with an icon and a word. The interface speaks like a good colleague&apos;s hand-over note.</p></header>
   <nav aria-label="Gallery scenes">{galleryScenes.map(scene => <a key={scene.id} href={`?scene=${scene.id}`} aria-current={sceneId === scene.id ? "page" : undefined}>{scene.title}</a>)}</nav>
   {!known && <h2>Scene not found</h2>}
   {galleryScenes.filter(scene => !sceneId || scene.id === sceneId).map(scene => {
@@ -34,7 +34,7 @@ function Gallery({ search }: { search: string }) {
    if (["colours", "type", "space", "focus"].includes(scene.id)) return <Foundation key={scene.id} sceneId={scene.id} />;
    if (!part) throw new Error(`Missing gallery scene: ${scene.id}`);
    const Part = part.render, ownsHeading = ["statuses", "buttons"].includes(scene.id);
-   return <section key={scene.id} id={scene.id} data-gallery-scene={scene.id} aria-label={ownsHeading ? scene.title : undefined} aria-labelledby={ownsHeading ? undefined : `ds-${scene.id}`}>{!ownsHeading && <h2 id={`ds-${scene.id}`}>{scene.title}</h2>}<Part /></section>;
+   return <section key={scene.id} id={scene.id} data-gallery-scene={scene.id} aria-label={ownsHeading ? scene.title : undefined} aria-labelledby={ownsHeading ? undefined : `ds-${scene.id}`}>{!ownsHeading && <h2 id={`ds-${scene.id}`} className={scene.id.startsWith("shell-") ? "rv-visually-hidden" : undefined}>{scene.title}</h2>}<Part /></section>;
   })}
  </div>;
 }
@@ -67,8 +67,8 @@ function FocusPanel({ theme }: { theme: "light" | "dark" }) {
    <div><div className="rv-ds-selection" role="group" aria-label={`Selection example${suffix}`}>{["Inbox", "Work"].map(label => <button key={label} type="button" className={selected === label ? "rv-selected" : ""} aria-label={`${label === "Inbox" ? "Inbox, 3 waiting" : label}${suffix}`} aria-pressed={selected === label} onClick={() => setSelected(label)}><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">{label === "Inbox" ? <path d="M4 5h16l2 13H2L4 5Zm-1 8h6l1 3h4l1-3h6" /> : <path d="M4 6h16M4 12h16M4 18h16" />}</svg>{label}{label === "Inbox" ? <span className="rv-ds-nav-count" aria-hidden="true">3</span> : null}</button>)}</div><p className="rv-ds-meta">Selected: bar, weight and text colour</p></div>
    <div className="rv-ds-focus-rows"><div className="rv-selected">Add refunds endpoint<StatusChip state="needs_you" /></div><button type="button" className="is-focus-demo" aria-label={`Rotate webhook signing secrets${suffix}`} aria-describedby={`ds-keyboard-focus-${theme}`}>Rotate webhook signing secrets<span id={`ds-keyboard-focus-${theme}`} className="rv-ds-meta">keyboard focus</span></button></div>
   </div>
-  <div className="rv-actions rv-ds-ring-buttons"><button type="button" className="rv-button is-focus-demo" aria-label={`Request changes${suffix}`}>Request changes</button><button type="button" className="rv-button rv-button-primary is-focus-demo" aria-label={`Review evidence${suffix}`}>Review evidence</button><StatusChip state="not_run" /></div>
+  <div className="rv-actions rv-ds-ring-buttons"><button type="button" className="rv-button is-focus-demo" aria-label={`Request changes${suffix}`}>Request changes</button><button type="button" className="rv-button rv-button-primary is-focus-demo" aria-label={`Review evidence${suffix}`}>Review evidence</button><span className="rv-ds-not-started"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><circle cx="8" cy="8" r="5" /></svg>Not started</span></div>
   <p className="rv-ds-meta rv-ds-focus-caption">Focus ring: 2 px, running blue, 2 px offset</p>
-  <label className="rv-field rv-ds-composer-field"><span className="rv-ds-meta">Composer with focus{suffix}</span><input type="text" className="rv-input rv-ds-composer is-focus-demo" defaultValue="Test repeated refunds." /></label>
+  <label className="rv-field rv-ds-composer-field"><span className="rv-ds-meta">Composer with focus{suffix}</span><input type="text" className="rv-input rv-ds-composer is-focus-demo" defaultValue="Add a test for a repeated refund request." /></label>
  </section>;
 }

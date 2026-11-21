@@ -48,7 +48,7 @@ for (const theme of ["light", "dark"] as const) it(`${theme}: shows both focus p
  expect(screen.getByText(/Where an outline or a fill is the only way/)).toBeTruthy();
  for (const mode of ["light", "dark"]) {
   const panel = document.querySelector<HTMLElement>(`[data-focus-theme=${mode}]`);expect(panel).toBeTruthy();
-  expect(panel?.textContent).toContain("Needs you");expect(panel?.textContent).toContain("Not run");
+  expect(panel?.textContent).toContain("Needs you");expect(panel?.textContent).toContain("Not started");
  }
  await expectNoAxeViolations(document.body);
 });
@@ -72,7 +72,7 @@ it("an unconfirmed write offers only a local check and reports the observed valu
 it("the shell demo uses the existing menu, preserves focus return and expands the live log", async () => {
  gallery("shell-running");const user = userEvent.setup(), trigger = screen.getByRole("button", { name: "Task actions" });
  await user.click(trigger);expect(await screen.findByRole("menu")).toBeTruthy();await user.keyboard("{Escape}");expect(document.activeElement).toBe(trigger);
- await user.click(screen.getByText("Live log"));expect(screen.getByText("edit src/refunds/handlers.py (+48 -0)")).toBeTruthy();
+ await user.click(screen.getByText("Live log"));expect(screen.getAllByText("edit src/refunds/handlers.py (+48 -0)")).toHaveLength(2);
 });
 
 it("mounts the selected scene in the real authenticated app shell with landmarks and workspace access", async () => {
@@ -93,4 +93,49 @@ for (const theme of ["light", "dark"] as const) it(`${theme}: shell and nine sta
  for (const id of ["shell-running", "shell-plan", "shell-gaps", ...ids.filter(id => id.startsWith("states-"))]) {
   const ui = gallery(id, theme);await expectNoAxeViolations(ui.container);ui.unmount();
  }
+});
+
+it("renders the mock sidebar locally in every shell with both breadcrumb links", () => {
+ for (const id of ["shell-running", "shell-plan", "shell-gaps"]) {
+  const ui = gallery(id), nav = within(screen.getByRole("navigation", { name: "Example workspace" }));
+  for (const name of ["Inbox", "Work", "Projects", "Company"]) expect(nav.getByRole("button", { name: new RegExp(name) })).toBeTruthy();
+  expect(nav.getByText("Pinned projects")).toBeTruthy();expect(nav.getByText("Acme")).toBeTruthy();expect(nav.getByText("Ana")).toBeTruthy();expect(nav.getByText("⌘K")).toBeTruthy();
+  expect(within(screen.getByRole("navigation", { name: "Breadcrumb" })).getAllByRole("link")).toHaveLength(2);
+  expect(ui.container.querySelector('[data-shell-scene]')).toBeTruthy();ui.unmount();
+ }
+});
+it("shows the session entry as an icon row with its delivery subline and the running safeguards", () => {
+ const ui = gallery("shell-running");
+ const entry = screen.getByRole("button", { name: /Talk to this session/ });
+ expect(entry.querySelector("svg")).toBeTruthy();expect(entry.textContent).toContain("Queued for this build · 14:02");
+ expect(entry.closest("details")).toBeNull();expect(screen.getByRole("button", { name: "Stop work" })).toBeTruthy();
+ expect(screen.getByText(/Files are kept/)).toBeTruthy();expect(screen.getByText(/Nothing is needed from you. Next/)).toBeTruthy();
+ expect(ui.container.querySelectorAll(".rv-ds-plan-items svg")).toHaveLength(4);
+ for (const name of ["Plan and changes", "Checks and reviews", "Activity"]) expect(screen.getByText(name).closest("summary")?.querySelector("svg")).toBeTruthy();
+});
+it("keeps every merge blocker and its action in one box, with merge evidence expanded", () => {
+ const ui = gallery("shell-gaps"), box = ui.container.querySelector(".rv-ds-blockers");expect(box).toBeTruthy();
+ expect(box?.contains(screen.getByRole("button", { name: "Retry integration tests" }))).toBe(true);
+ expect(box?.contains(screen.getByRole("button", { name: "Run second review" }))).toBe(true);
+ const evidence = screen.getByRole("region", { name: "What would be merged" });expect(evidence.closest("details")).toBeNull();
+ expect(within(evidence).getByRole("button", { name: "Merge #42 into main" }).hasAttribute("disabled")).toBe(true);
+ expect(screen.getByRole("button", { name: "Review changes" })).toBeTruthy();
+});
+it("does not present a running heartbeat alongside Unknown in stale rows (R1/R4)", () => {
+ gallery("states-stale");const row = screen.getByText("Fix webhook retry backoff").closest("li");
+ expect(row?.textContent).toContain("Unknown");expect(row?.textContent).toContain("3 min");expect(row?.textContent).not.toMatch(/Building|heard 20/);
+});
+it("keeps the phone primary active and local, and first-load recovery primary with a copy reference", async () => {
+ const phone = gallery("states-phone"), start = screen.getByRole("button", { name: "Start a task" });
+ expect(start.classList.contains("rv-button-primary")).toBe(true);expect(start.hasAttribute("disabled")).toBe(false);
+ await userEvent.click(start);expect(screen.getByRole("textbox", { name: "Task description" })).toBeTruthy();phone.unmount();
+ gallery("states-first-load-failed");expect(screen.getByRole("button", { name: "Load again" }).classList.contains("rv-button-primary")).toBe(true);
+ expect(screen.getByRole("button", { name: "Copy reference" })).toBeTruthy();
+});
+it("uses product captions only in P5 scenes and a compact write check with a visible after-check strip (R2/R4)", () => {
+ for (const id of ["shell-running", "shell-plan", "shell-gaps", ...ids.filter(id => id.startsWith("states-"))]) {
+  const ui = gallery(id);expect(ui.container.querySelector("[data-gallery-scene]")?.textContent).not.toMatch(/Example only|fixture|Live callers must supply|presentation example|Local example/i);ui.unmount();
+ }
+ gallery("states-write-unconfirmed");expect(screen.queryByRole("textbox")).toBeNull();
+ expect(screen.getByText("After the check")).toBeTruthy();expect(screen.getByText(/Checked 14:07/)).toBeTruthy();
 });

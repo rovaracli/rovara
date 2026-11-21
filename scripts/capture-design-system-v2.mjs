@@ -32,13 +32,13 @@ async function assertScene(page, scene, width, theme) {
  await root.waitFor({ state: "visible" });
  if (await page.locator("[data-gallery-scene]").count() !== 1) throw new Error(`${scene}: scene isolation failed`);
  if (await root.locator("[data-gallery-placeholder]").count()) throw new Error(`${scene}: part not integrated; a placeholder is not visual proof`);
- if (!await root.locator("h2").first().isVisible()) throw new Error(`${scene}: intended scene heading missing`);
+ if (!await root.locator(scene.startsWith("shell-") ? "h1" : "h2").first().isVisible()) throw new Error(`${scene}: intended scene heading missing`);
  const labels = {
   "colours": ["Colour roles", "LIGHT", "DARK"], "type": ["Type: five sizes", "--no-interaction"], "space": ["Space: 4px base", "48"],
   "statuses": ["Queued", "Not run", "Unknown"], "buttons": ["Review evidence", "Request changes"],
   "decisions": ["Answer", "Needs you"], "timeline": ["Build", "Checks"], "table": ["Add refunds endpoint"],
-  "toast": ["Undo"], "confirmation": ["Preview Close confirmation"], "outcome": ["What happened", "What is safe", "What to do"],
-  "focus": ["New in v2: selection, focus and outlines", "LIGHT", "DARK", "Not run"],
+  "toast": ["Undo"], "confirmation": ["Keep changes and close", "Discard changes and close"], "outcome": ["What happened", "What is safe", "What to do"],
+  "focus": ["New in v2: selection, focus and outlines", "LIGHT", "DARK", "Not started"],
   "shell-running": ["Writing the POST /refunds handler", "Where this task is"], "shell-plan": ["Approve plan v3?", "Risks to know"], "shell-gaps": ["2 required results are missing", "Could not run", "Not run"],
   "delivery": ["Queued for this build", "Applied", "Checking delivery", "Not delivered", "Not applied: outside the plan"], "held": ["Unknown", "checking"],
   "states-loading": ["Tasks"], "states-empty": ["No tasks yet"], "states-slow": ["Longer than usual"], "states-error": ["couldn't refresh"], "states-stale": ["Unknown", "3 min ago"], "states-phone": ["Plan v3", "Start a task"],
