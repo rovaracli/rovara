@@ -53,3 +53,8 @@
  .rv-p3-table-scene :is(th,td):first-child{flex:1 1 auto;min-width:0;overflow-wrap:normal}
  .rv-p3-table-scene :is(th,td):nth-child(2){flex:none}
 }
+@media(max-width:399px){
+ .rv-p3-table-scene tbody tr{flex-wrap:wrap}
+ .rv-p3-table-scene tbody tr td:first-child{flex:1 1 100%}
+ .rv-p3-table-scene tbody tr td:nth-child(2){flex:1 1 100%;text-align:left}
+}

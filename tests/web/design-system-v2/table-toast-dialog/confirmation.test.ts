@@ -37,6 +37,25 @@ it("busy suppresses both actions while Cancel closes without executing either", 
  fireEvent.click(screen.getByRole("button", { name: confirmLabel })); fireEvent.click(screen.getByRole("button", { name: "Discard changes and close" }));
  await userEvent.click(screen.getByRole("button", { name: "Cancel" })); expect(close).toHaveBeenCalledWith(false); expect(confirm).not.toHaveBeenCalled(); expect(discard).not.toHaveBeenCalled();
 });
+it("keeps an unknown confirm outcome locked after busy clears", async () => {
+ const onConfirm = vi.fn(), onOpenChange = vi.fn();
+ const props = { kind: "destructive" as const, title: "Remove Sam?", consequence: "Sam loses project access.", open: true, preview: true, onOpenChange, confirm: { label: "Remove Sam", onConfirm } };
+ const view = renderUi(h(ConfirmationDialog, { ...props, busy: false }));
+ fireEvent.click(screen.getByRole("button", { name: "Remove Sam" }));
+ expect(onConfirm).toHaveBeenCalledTimes(1);
+ view.rerender(h(ConfirmationDialog, { ...props, busy: true }));
+ view.rerender(h(ConfirmationDialog, { ...props, busy: false }));
+ fireEvent.click(screen.getByRole("button", { name: "Remove Sam" }));
+ expect(onConfirm).toHaveBeenCalledTimes(1);
+});
+it("shows and sends the same typed raise-money amount", () => {
+ const amountCents = 1234;
+ const onConfirm = vi.fn();
+ renderUi(h(ConfirmationDialog, { kind: "raise_money", amountCents, title: "Raise funds?", consequence: "The company will request additional funding.", open: true, onOpenChange: vi.fn(), confirm: { label: "Raise funds", onConfirm } }));
+ expect(document.querySelector(".rv-confirmation-amount")?.textContent).toBe("Amount: $12.34");
+ fireEvent.click(screen.getByRole("button", { name: "Raise funds" }));
+ expect(onConfirm).toHaveBeenCalledWith(amountCents);
+});
 it("dispatches Discard once and renders no discard for non-Close kinds even at the runtime boundary", () => {
  const onDiscard = vi.fn(); const common = { title: "Remove Sam?", consequence: "Sam loses project access.", open: true, onOpenChange: vi.fn(), confirm: { label: "Remove Sam", onConfirm: vi.fn() } };
  const discard = { label: "Discard changes and close", consequence: "Deletes unpublished files.", onDiscard };
@@ -46,5 +65,5 @@ it("dispatches Discard once and renders no discard for non-Close kinds even at t
  expect(screen.queryByRole("button", { name: discard.label })).toBeNull();
 });
 // @ts-expect-error Discard is only valid inside the Close composition.
-const invalid: ConfirmationDialogProps = { kind: "raise_money", open: false, onOpenChange: () => undefined, title, consequence, confirm: { label: confirmLabel, onConfirm: () => undefined }, discard: { label: "Discard", consequence: "Deletes files", onDiscard: () => undefined } };
+const invalid: ConfirmationDialogProps = { kind: "raise_money", amountCents: 100, open: false, onOpenChange: () => undefined, title, consequence, confirm: { label: confirmLabel, onConfirm: () => undefined }, discard: { label: "Discard", consequence: "Deletes files", onDiscard: () => undefined } };
 void invalid;
