@@ -4,9 +4,9 @@ import { MessageDelivery } from "../MessageDelivery.js";
 import { HeldState } from "../HeldState.js";
 
 function OutcomeExample() {
- const [afterCheck, setAfterCheck] = useState<string>();
+ // The board shows both observations together. This verified fact is local demo data.
+ const [afterCheck, setAfterCheck] = useState("After the check: the limit is $600. Your change was saved at 14:06.");
  return <div className="rv-outcome-scenes">
-  <p className="rv-muted">Example: a lost save reply and a demonstration read of the current limit. No company setting is changed.</p>
   <OutcomeNotConfirmed
    title="Rovara didn't hear back about the monthly limit."
    happened="The save was sent, but no reply came back. The limit may be $400 or $600."
@@ -14,13 +14,14 @@ function OutcomeExample() {
    next=""
    check={{ label: "Check current limit", onCheck: () => setAfterCheck("After the check: the limit is $600. Your change was saved at 14:06.") }}
    refCode="MONEY-SAVE-NO-REPLY"
-   {...(afterCheck === undefined ? {} : { afterCheck })}
+   afterCheck={afterCheck}
   />
+  <p className="rv-outcome-caption">Three parts, one button. After a lost reply the button is Check, never Try again: Try again is only for a write Rovara knows did not apply.</p>
  </div>;
 }
 function DeliveryExample() {
  return <div className="rv-outcome-scenes">
-  <p className="rv-muted">Presentation examples: all six observations. Live messages currently serve only queued, delivered and not delivered.</p>
+  <p className="rv-outcome-caption">A second, smaller vocabulary, used only on instructions sent to a running session. Each word is shown only when its event exists.</p>
   <div className="rv-delivery-scene">
    <MessageDelivery receipt={{ state: "queued", detail: "Rovara has the message" }} />
    <MessageDelivery receipt={{ state: "delivered", detail: "the build acknowledged it" }} />
@@ -34,9 +35,12 @@ function DeliveryExample() {
 }
 function HeldExample() {
  return <div className="rv-held-scene">
-  <p className="rv-muted">Examples: use one chip or one line for each subject whose state is unconfirmed. Known facts and lock reasons stay visible.</p>
-  <div role="group" aria-label="Compact example"><HeldState /></div>
-  <div role="group" aria-label="Sentence example"><HeldState presentation="line" /></div>
+  <div className="rv-held-observation">
+   <div className="rv-held-scene-heading"><h3>Integration tests</h3><HeldState /></div>
+   <p>The runner disconnected before the first test.</p>
+   <p className="rv-held-meta">acme/payments · 4 min ago · head 5b81d0c</p>
+  </div>
+  <p className="rv-outcome-caption">One 16 or 20 semibold heading for the thing a person can act on. One 14 regular sentence for the consequence. Source, elapsed time and revision share one 12 secondary line. Uppercase 12 labels are for sheet headings like this page, not for product screens. At most one semibold run per row.</p>
  </div>;
 }
 
@@ -44,5 +48,5 @@ function HeldExample() {
 export const outcomeDeliveryHeldGalleryScenes = [
  { id: "outcome", title: "Error: outcome not confirmed", render: () => <OutcomeExample /> },
  { id: "delivery", title: "New in v2: delivery states for a message", render: () => <DeliveryExample /> },
- { id: "held", title: "Held and unknown", render: () => <HeldExample /> },
+ { id: "held", title: "New in v2: fewer competing labels", render: () => <HeldExample /> },
 ] as const;
