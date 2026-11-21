@@ -21,7 +21,7 @@ export function AppShell() {
  const [menu, setMenu] = useState(false), bleed = useMatches().some(match => (match.handle as { bleed?: boolean } | undefined)?.bleed === true);
  const nav = useQuery({ queryKey: ["nav"], queryFn: () => api.get("/v1/app/nav", AppNavReaderSchema) });
  const ready = nav.data !== undefined;
- const sheet = location.pathname === "/app/design-system" && !new URLSearchParams(location.search).get("scene")?.startsWith("shell-");
+ const sheet = location.pathname === "/app/design-system";
  useEffect(() => { main.current?.querySelector<HTMLElement>("h1")?.focus(); }, [location.pathname, ready]);
  if (nav.isPending) return <Skeleton label="Loading workspace" />;
  if (nav.data === undefined) return <PageError error={nav.error} reload={() => host.navigate(host.currentPath())} />;
