@@ -63,3 +63,34 @@ for (const theme of ["light", "dark"] as const) it(`${theme}: timeline has no ax
  const f = renderUi(h(TaskTimeline, { items }), { theme });
  await expectNoAxeViolations(f.container);
 });
+
+
+it("shows a caller-supplied waiting decision in amber, and next only on the immediate upcoming step", () => {
+ const { container } = renderUi(h(TaskTimeline, { items: [
+  { id: "done", title: "3 steps finished", state: "done", href: "#finished", detail: "Accepted and workspace ready" },
+  { id: "plan", title: "Plan", state: "needs_you", elapsed: "waiting 12 min", detail: "Waiting for your decision on v3" },
+  { id: "build", title: "Build", state: "next" },
+  { id: "review", title: "Review", state: "next", note: "may need you" },
+  { id: "merge", title: "Merge", state: "next", note: "needs you" },
+  { id: "later", title: "Later step", state: "next" },
+ ] }));
+ expect(screen.getByRole("link", { name: "3 steps finished" }).getAttribute("href")).toBe("#finished");
+ const waiting = screen.getByText("Plan").closest("li")!;
+ expect(waiting.getAttribute("aria-current")).toBe("step");
+ expect(within(waiting).getByText("Needs you")).toBeTruthy();
+ expect(within(waiting).getByText("waiting 12 min")).toBeTruthy();
+ expect(waiting.querySelector('svg circle')).toBeTruthy();
+ expect(container.querySelectorAll(".rv-task-timeline-next")).toHaveLength(1);
+ expect(screen.getByText("may need you")).toBeTruthy();
+ expect(screen.getByText("needs you")).toBeTruthy();
+});
+
+it("keeps the supplied log preview inline while the full running log folds separately", () => {
+ renderUi(h(TaskTimeline, { items: [{ id: "build", title: "Build", state: "running", logPreview: "edit handler.py (+48 -0)", log: h("pre", null, "Full real log") }] }));
+ const summary = screen.getByText("Live log").closest("summary")!;
+ expect(within(summary).getByText("edit handler.py (+48 -0)").tagName).toBe("CODE");
+ expect(summary.querySelector('svg[aria-hidden="true"]')).toBeTruthy();
+ expect(summary.closest("details")!.open).toBe(false);
+ fireEvent.click(summary);
+ expect(summary.closest("details")!.open).toBe(true);
+});
