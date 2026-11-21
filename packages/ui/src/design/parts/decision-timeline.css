@@ -49,6 +49,7 @@
 .rv-decision-frame .rv-decision-scene-intro{font-size:var(--rv-font-lg);color:var(--rv-text-muted)}
 .rv-decision-frame .rv-decision-scene-outcome{font-size:var(--rv-font-lg)}
 .rv-decision-scene-plan>.rv-decision-frame-body{gap:var(--rv-space-4)}
+.rv-decision-frame.rv-decision-scene-plan>.rv-decision-frame-header>.rv-decision-frame-title{font:600 var(--rv-font-xl)/1.3 var(--rv-font-ui)}
 .rv-decision-scene-risk-section{margin-top:var(--rv-space-3)}
 .rv-decision-scene-risk-section>h3{margin:0 0 var(--rv-space-3);font-size:var(--rv-font-md)}
 .rv-decision-scene-risks{display:grid;gap:var(--rv-space-2);padding:0;margin:0;list-style:none}
@@ -78,7 +79,7 @@
 .rv-task-timeline>li[data-state=needs_you]>.rv-task-timeline-marker{color:var(--rv-status-needs-you);background:var(--rv-status-needs-you-bg)}
 .rv-task-timeline>li[data-state=needs_you] .rv-task-timeline-elapsed{color:var(--rv-status-needs-you)}
 .rv-task-timeline-content>.rv-task-timeline-detail{margin:var(--rv-space-1) 0 0}
-.rv-task-timeline-note{color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.rv-task-timeline-note{color:var(--rv-text-muted);font:400 var(--rv-font-md)/1.55 var(--rv-font-ui)}
 .rv-task-timeline-title>a{font-weight:400}
 .rv-task-timeline-content>details.rv-task-timeline-log{margin-top:var(--rv-space-3);padding:0;border:0}
 .rv-task-timeline-log>summary{display:flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-2);padding:0;list-style:none;text-decoration:none;font-weight:400}
@@ -88,6 +89,12 @@
 .rv-task-timeline-log[open]>summary>svg{transform:rotate(90deg)}
 .rv-task-timeline-log>summary>span{text-decoration:underline;text-underline-offset:var(--rv-space-1)}
 .rv-task-timeline-log>summary>code{display:inline;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--rv-text-muted);font:400 var(--rv-font-sm)/1.55 var(--rv-font-mono)}
+/* Keep the composed plan's hierarchy with the decision part, scoped away from
+   the shell's running and merge cards and their section headings. */
+.rv-decision-frame.rv-ds-plan-frame>.rv-decision-frame-body{gap:var(--rv-space-4)}
+.rv-decision-frame.rv-ds-plan-frame>.rv-decision-frame-body>h4{margin:var(--rv-space-3) 0 0;font:600 var(--rv-font-md)/1.55 var(--rv-font-ui)}
+.rv-decision-frame.rv-ds-plan-frame .rv-ds-plan-step>strong{font:600 var(--rv-font-lg)/1.55 var(--rv-font-ui)}
+.rv-decision-frame.rv-ds-plan-frame>.rv-decision-frame-body>.rv-ds-evidence{margin-block:0;margin-inline-start:calc(var(--rv-space-5) + var(--rv-space-3));margin-inline-end:0}
 @media(max-width:639px){
  .rv-decision-frame>.rv-decision-frame-header{grid-template-columns:auto minmax(0,1fr);gap:var(--rv-space-2)}
  .rv-decision-frame-header>.rv-decision-frame-meta{grid-column:1 / -1}
