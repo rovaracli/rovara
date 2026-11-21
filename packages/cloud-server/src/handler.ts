@@ -5,7 +5,7 @@
 import { renameInSessions } from "./rename.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { CloudAuditStore } from "./audit-log.js";
-import { isCodeOutcomeUnknown, MERGE_RECEIPT_CALL_MS, CodeError, SignInEnded, codeOutcomeUnknown, codeWritesSent, slackWorkspaceHint, type CodeClient } from "./code-client.js";
+import { isCodeOutcomeUnknown, SERVER_READ_CALL_MS, CodeError, SignInEnded, codeOutcomeUnknown, codeWritesSent, slackWorkspaceHint, type CodeClient } from "./code-client.js";
 import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
 import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
 import { POLICY_HOOK_PATH } from "./policy-hook.js";
@@ -373,7 +373,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       if (match === null) continue;
       const startRequestRead = method === "GET" && /^\/task-start-requests(?:\/|$)/u.test(apiPath);
       const disconnectPreview = method === "POST" && apiPath === "/github/disconnect-preview";
-      const serverReadDeadline = startRequestRead || disconnectPreview ? Date.now() + MERGE_RECEIPT_CALL_MS : undefined;
+      const serverReadDeadline = startRequestRead || disconnectPreview ? Date.now() + SERVER_READ_CALL_MS : undefined;
       if (startRequestRead && request.body !== undefined && request.body !== "") return json(400, { error: { code: "CONFIG_INVALID", message: "That start request is invalid." } });
       let body: unknown;
       try {
