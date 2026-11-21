@@ -214,13 +214,12 @@ describe("the Work list and Home rows (audit item 7)", () => {
   it("take-over: Code's PENDING answer keeps the old owner and asks the person to confirm on Code's page", async () => {
     const requestId = randomUUID();
     const w = setUp((call) => {
-      if (call.path === `/v1/dev/tasks/${TASK}/people` && call.method === "GET") return json(200, devAnswer({ view: { revision: 4 } }));
       if (call.path === `/v1/dev/tasks/${TASK}/people/take-ownership`) return json(200, devAnswer(takeOwnershipPending(TASK, requestId)));
       return undefined;
     });
     const sessionId = newSessionId();
     await w.work.put({ sessionId, taskId: TASK, project: "payments", startedBy: { developerId: OTHER, name: "Ben" }, owner: { developerId: OTHER, name: "Ben" }, createdAt: new Date(START).toISOString(), revision: 1, companyId: A });
-    const answer = await w.send("POST", `/v1/web/sessions/${sessionId}/take-over`, { requestId });
+    const answer = await w.send("POST", `/v1/web/sessions/${sessionId}/take-over`, { requestId, expectedPeopleRevision: 4 });
     expect(answer).toEqual({ status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: `${CODE}/review/${TASK}/task/people/confirm/${requestId}`, changes: ["Make you the owner of this task"] } });
     expect((await w.work.get(sessionId))?.owner.developerId).toBe(OTHER);
   });

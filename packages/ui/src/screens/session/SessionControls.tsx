@@ -40,7 +40,11 @@ export function SessionControls({ id, agent, actions, following, onChanged, resp
     if (action === "stop") { setStopOpen(false);{ const answer = result.value as { stop?: string; message?: string };setMessage(answer.stop === "NOTHING_RUNNING" ? (answer.message ?? "Nothing was running to stop.") : "Stop requested."); } }
    }
    await query.invalidateQueries({ queryKey: key });await onChanged();
-  } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't change this session. Try again."); }
+  } catch (failure) {
+   setError(failure instanceof ApiError ? failure.message : "Couldn't change this session. Try again.");
+   // A refused People revision needs a new displayed list before another explicit send.
+   if (action === "take_over" && failure instanceof ApiError && failure.status === 409) await query.invalidateQueries({ queryKey: [...key, "people"] });
+  }
   finally { sending.current = false;setBusy(false); }
  }
  const [shareOpen, setShareOpen] = useState(false), [makeOpen, setMakeOpen] = useState(false), [closeOpen, setCloseOpen] = useState(false);

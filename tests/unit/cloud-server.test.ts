@@ -50,6 +50,7 @@ function fakeCode() {
   };
   let peopleRevision = 3;
   let ownershipWrites = 0;
+  let beforeOwnership: (() => Promise<void>) | undefined;
   let adaName = "Ada";
   let graceName: string | undefined;
   // DEC 253z: the person's company and company role, from Code's live membership. Ada owns Acme; Grace is a member of it.
@@ -142,6 +143,7 @@ function fakeCode() {
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/people/take-ownership`) {
       const body = JSON.parse(call.body ?? "{}") as { expectedPeopleRevision?: number };
       if (body.expectedPeopleRevision !== peopleRevision) return respond(409, { error: { code: "CONFLICT", message: "people changed" } });
+      await beforeOwnership?.();
       peopleRevision += 1;
       ownershipWrites += 1;
       // Code's answer (TaskPeopleChangeResultSchema, its COMMITTED branch): the change is made now.
@@ -153,6 +155,7 @@ function fakeCode() {
   return {
     fetchImpl, calls, taskId: TASK_ID,
     setPeopleRevision: (revision: number) => { peopleRevision = revision; },
+    beforeOwnership: (callback: () => Promise<void>) => { beforeOwnership = callback; },
     ownershipWrites: () => ownershipWrites,
     setProjectRevision: (revision: number) => { projectRevision = revision; },
     setTask: (change: Record<string, unknown>) => { task = { ...task, ...change }; },
@@ -645,6 +648,36 @@ describe("sessions on Code's tasks (phase 2a)", () => {
     expect(code.ownershipWrites()).toBe(0);
     expect(put).not.toHaveBeenCalled();
     expect(await work.get(sessionId)).toEqual(before);
+  });
+
+  it("refuses the stale Cloud record after Code commits, preserving a concurrent follower with zero take-over writes or replay", async () => {
+    const { call, signIn, code, work } = setUp();
+    const auth = await signIn();
+    const { sessionId } = JSON.parse((await start(call, auth))!.body) as { sessionId: string };
+    let codeReached!: () => void, releaseCode!: () => void;
+    const reached = new Promise<void>(resolve => { codeReached = resolve; });
+    const waiting = new Promise<void>(resolve => { releaseCode = resolve; });
+    code.beforeOwnership(async () => { codeReached();await waiting; });
+    const takingOver = call("POST", `/v1/web/sessions/${sessionId}/take-over`, { ...auth, body: { requestId: "55555555-5555-4555-8555-555555555555", expectedPeopleRevision: 3 } });
+    await reached;
+    const current = (await work.get(sessionId))!;
+    // A follow write changes storeVersion, without changing the People or session revision.
+    await work.put({ ...current, followers: [{ developerId: GRACE, name: "Grace" }] });
+    const afterFollow = await work.get(sessionId);
+    const put = vi.spyOn(work, "put");
+    releaseCode();
+    const answer = await takingOver;
+    expect(answer!.status).toBe(503);
+    expect(JSON.parse(answer!.body)).toEqual({ error: { code: "RUNTIME_UNAVAILABLE", message: "The request's outcome is unknown. Check its status before trying again." } });
+    expect(code.ownershipWrites()).toBe(1); // Code committed; only the Cloud write is refused.
+    expect(code.calls.filter(entry => entry.path.endsWith("/take-ownership"))).toHaveLength(1);
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(put.mock.calls[0]![0].storeVersion).toBe(current.storeVersion);
+    expect(put.mock.settledResults).toHaveLength(1);
+    expect(put.mock.settledResults[0]?.type).toBe("rejected");
+    expect(put.mock.settledResults[0]?.value).toBeInstanceOf(StoreConflict);
+    expect(await work.get(sessionId)).toEqual(afterFollow);
+    put.mockRestore();
   });
 
   it("does not reject take-over for unrelated task or Cloud session changes", async () => {
