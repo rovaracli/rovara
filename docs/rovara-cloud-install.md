@@ -130,7 +130,7 @@ npx cdk deploy RovaraCloudPipeline --app 'node infra/dist/bin/agentx.js' \
 Each environment's deploy switches come from `CLOUD_PIPELINE_SWITCHES` in `infra/lib/cloud-release-pipeline.ts`, never from
 the run: the `staging` pipeline deploys with `-c rovaraModelGatewayProductAi=on` (the product AI settings: switch the web stack on
 by hand first, with its `ProductKeys*` parameters and `ModelGatewayUrl`, which later deploys keep: a release deploy of a staging
-web stack that never had them fails), `production` carries the same switch, and `beta` carries none (it has no model gateway). The pipeline stack itself must be redeployed once for a
+web stack that never had them fails), `production` and `beta` carry the same switch (each switched on by hand first, with its own gateway). The pipeline stack itself must be redeployed once for a
 changed switch to take effect. Run the pipeline
 command above again after changing them.
 
