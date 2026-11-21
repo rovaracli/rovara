@@ -6,6 +6,7 @@ cdk.out/
 .release-synth/
 # docs/ stays ignored except the trees the-loop records into (they must be committed).
 docs/*
+!docs/safe-action.md
 !docs/model-gateway-r3.md
 !docs/company-and-projects.md
 !docs/model-gateway-product-ai.md
