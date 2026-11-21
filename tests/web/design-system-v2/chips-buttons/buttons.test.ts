@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { createRef } from "react";
+import { lookV2Css } from "@agentx/design-tokens";
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
@@ -68,4 +69,18 @@ it("renders quiet underlines, outlined danger, dashed missing results and token-
 for (const theme of ["light", "dark"] as const) it(`${theme}: four variants and a visible locked reason pass axe`, async () => {
  renderUi(h("section", { "aria-label": "Buttons" }, h(Button, { variant: "primary" }, "Review evidence"), h(Button, null, "Request changes"), h(Button, { variant: "quiet" }, "Other choices"), h(Button, { variant: "danger" }, "Remove Sam"), h(Button, { lockedReason: "A required check couldn't run." }, "Merge #42")), { theme });
  await expectNoAxeViolations(document.body);
+});
+
+it("keeps a locked reason at the 14px body size beside the disabled action", () => {
+ const style = document.createElement("style");
+ const roles = new Map([...lookV2Css().matchAll(/(--rv-font-(?:sm|md)):([^;]+);/g)].map(match => [match[1], match[2]]));
+ style.textContent = readFileSync("packages/ui/src/design/parts/chips-buttons.css", "utf8")
+  .replace(/var\((--rv-font-(?:sm|md))\)/g, (source, name: string) => roles.get(name) ?? source);
+ document.head.append(style);
+ try {
+  renderUi(h(Button, { lockedReason: "A required check couldn't run." }, "Merge #42"));
+  const reason = screen.getByText("Locked: A required check couldn't run.");
+  expect(getComputedStyle(reason).fontSize).toBe("14px");
+  expect(screen.getByRole<HTMLButtonElement>("button").disabled).toBe(true);
+ } finally { style.remove(); }
 });
