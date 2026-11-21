@@ -36,6 +36,8 @@ const fences = new WeakMap<QueryClient, Map<string, Fence>>();
 
 function make(): Fence { return { latestRead: undefined, taskFailed: undefined, readinessDenied: undefined, readinessLatest: undefined, observed: new Map(), version: 0, listeners: new Set() }; }
 function changed(fence: Fence): void { fence.version += 1;for (const listener of fence.listeners) listener(); }
+function awaitFreshRead(fence: Fence): void { fence.taskFailed = { seq: tabSeq() };changed(fence); }
+function readInBackground(read: () => Promise<unknown>): void { try { void read().catch(() => undefined); } catch { /* failed read keeps the fence */ } }
 
 /** The fence for one subject (`orgId|developerId|subjectId`) in this QueryClient. */
 export function fenceFor(client: QueryClient, subject: string, action: string): Fence {
@@ -147,6 +149,24 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
   return raw === UNAVAILABLE ? { kind: "unavailable" } : config.parsePending(raw, subject, now);
  }
  const readPendingNow = (subject: ActionSubject): ActionPendingState<P> => parsePending(rawOf(subject), subject);
+ // New consumers bind their records to their own identity/action fence. The
+ // claim checks disappearance synchronously too: storage is visible before a
+ // peer's StorageEvent is delivered, so notification alone is not a send fence.
+ const pendingFences = new Map<ActionSubject, { fence: Fence; read: () => Promise<unknown>; observedPending: boolean; removedAt: number | undefined }>();
+ function removalReadReady(subject: ActionSubject): boolean {
+  const watching = pendingFences.get(subject);
+  if (watching === undefined) return true; // legacy adapter (Merge keeps its reviewed behavior)
+  const pending = readPendingNow(subject);
+  if (pending.kind === "pending") { watching.observedPending = true;watching.removedAt = undefined;return true; }
+  if (pending.kind !== "none" || !watching.observedPending) return true;
+  if (watching.removedAt === undefined) {
+   watching.removedAt = tabSeq();watching.fence.taskFailed = { seq: watching.removedAt };changed(watching.fence);
+   readInBackground(watching.read);
+  }
+  const read = watching.fence.latestRead;
+  if (watching.fence.taskFailed !== undefined || read === undefined || read.issued <= watching.removedAt) return false;
+  watching.observedPending = false;watching.removedAt = undefined;return true;
+ }
  // Keep the expected canonical answer INSIDE the existing accepted record. A
  // reload can distinguish an exact answer from a mismatched candidate even if
  // candidate removal also failed. Legacy records without pending still read.
@@ -170,13 +190,30 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
   return needsCanonical && !candidateMatches(raw, answer) ? undefined : answer;
  };
  const readAcceptedNow = (subject: ActionSubject): A | undefined => visibleAccepted(subject, rawAccepted(subject));
- function useRaw(subject: ActionSubject | undefined, accepted: boolean): string | null {
+ function useRaw(subject: ActionSubject | undefined, accepted: boolean, removal?: { fence: Fence; read: () => Promise<unknown> }): string | null {
   const pendingKey = subject === undefined ? undefined : keyOf(subject), key = accepted && subject !== undefined ? acceptedKey(subject) : pendingKey;
+  const removalFence = removal?.fence, removalRead = removal?.read;
   const subscribe = useCallback((onChange: () => void) => {
-   const onStorage = (event: Event): void => { if (!(event instanceof StorageEvent) || event.key === null || event.key === key || (accepted && event.key === pendingKey)) onChange(); };
-   globalThis.addEventListener("storage", onStorage);globalThis.addEventListener(config.changedEvent, onChange);
-   return () => { globalThis.removeEventListener("storage", onStorage);globalThis.removeEventListener(config.changedEvent, onChange); };
-  }, [key, pendingKey, accepted]);
+   if (!accepted && subject !== undefined && removalFence !== undefined && removalRead !== undefined) {
+    const before = pendingFences.get(subject);
+    pendingFences.set(subject, before?.fence === removalFence ? { ...before, read: removalRead } : { fence: removalFence, read: removalRead, observedPending: readPendingNow(subject).kind === "pending", removedAt: undefined });
+    removalReadReady(subject);
+   }
+   const onStorage = (event: Event): void => {
+    if (event instanceof StorageEvent && event.key !== null && event.key !== key && !(accepted && event.key === pendingKey)) return;
+    // Another tab cleared a strictly readable press. Its read cannot stamp this
+    // tab's fence: deny use BEFORE announcing removal, then issue our own read.
+    if (!accepted && removalFence !== undefined && removalRead !== undefined && subject !== undefined) {
+     if (event instanceof StorageEvent && event.key === pendingKey && parsePending(event.oldValue, subject).kind === "pending") {
+      const watching = pendingFences.get(subject);if (watching !== undefined) watching.observedPending = true;
+     }
+     removalReadReady(subject);
+    }
+    onChange();
+   };
+   globalThis.addEventListener("storage", onStorage);globalThis.addEventListener(config.changedEvent, onStorage);
+   return () => { globalThis.removeEventListener("storage", onStorage);globalThis.removeEventListener(config.changedEvent, onStorage); };
+  }, [key, pendingKey, accepted, subject, removalFence, removalRead]);
   return useSyncExternalStore(subscribe, () => {
    if (subject === undefined) return accepted ? null : UNAVAILABLE;
    if (!accepted) return rawOf(subject);
@@ -185,6 +222,10 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
   }, () => null);
  }
  function usePending(subject: ActionSubject | undefined): ActionPendingState<P> { const raw = useRaw(subject, false);return subject === undefined ? { kind: "unavailable" } : parsePending(raw, subject); }
+ /** New action consumers use this form: a peer tab's pending removal needs this tab's own fresh read. */
+ function usePendingWithFence(subject: ActionSubject | undefined, fence: Fence, read: () => Promise<unknown>): ActionPendingState<P> {
+  const raw = useRaw(subject, false, { fence, read });return subject === undefined ? { kind: "unavailable" } : parsePending(raw, subject);
+ }
  function useAccepted(subject: ActionSubject | undefined): A | undefined { const raw = useRaw(subject, true);return subject === undefined ? undefined : visibleAccepted(subject, raw); }
  function writePending(entry: P): boolean {
   try {
@@ -224,6 +265,7 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
   notify();
  }
  function claimPending(entry: P, refusalNow: () => string | undefined, storageWords: string): { stop: true; words: string | undefined } | { stop: false } {
+  if (!removalReadReady(config.pendingSubject(entry))) return { stop: true, words: "Rovara is reading this again. Check the latest state before trying again." };
   const why = refusalNow();
   if (why !== undefined) return { stop: true, words: why };
   const subject = config.pendingSubject(entry);
@@ -242,7 +284,7 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
   }
   return removePending(config.pendingSubject(entry), entry.requestId, entry.startedAt, true) ? "durable" : "stored-but-pending-kept";
  }
- return { lockName: (entry: P): string => config.lockPrefix + config.pendingSubject(entry), recordAccepted, claimPending, parsePending, parseAccepted: config.parseAccepted, usePending, readPendingNow, writePending, clearPending, useAccepted, readAcceptedNow, writeAccepted, clearAccepted, acceptedStoredExactly };
+ return { lockName: (entry: P): string => config.lockPrefix + config.pendingSubject(entry), recordAccepted, claimPending, parsePending, parseAccepted: config.parseAccepted, usePending, usePendingWithFence, readPendingNow, writePending, clearPending, useAccepted, readAcceptedNow, writeAccepted, clearAccepted, acceptedStoredExactly };
 }
 
 export type ClaimOutcome<T> = { kind: "done"; value: T; release: () => void } | { kind: "busy" } | { kind: "unsupported" } | { kind: "failed" };
@@ -359,3 +401,95 @@ export const answerHeld = (answer: { requestId: string } | undefined, retiredId:
 
 /** Cloud checks these before dispatch (R6h); they never imply an authority refusal. */
 export const isCsrfFailure = (failure: unknown): boolean => failure instanceof ApiError && failure.status === 403 && (failure.code === "CSRF_INVALID" || failure.code === "CSRF_STALE");
+
+/** Audited Cloud write route (browser /v1/app or /v1/web alias); never an arbitrary 4xx policy. */
+export interface ActionRefusalContext { route: string; /** Required for Merge CONFIG_INVALID: several PRs can already have partly merged. */ pullCount?: number }
+const SESSION_ACTION = /^\/sessions\/ses_[0-9a-z]{20}\/(retry|send-back|accept-findings|answers)$/u;
+const OWNER_ROUND = /^\/sessions\/ses_[0-9a-z]{20}\/(retry|send-back|accept-findings)$/u;
+const ANSWERS_ACTION = /^(?:\/sessions\/ses_[0-9a-z]{20}|\/tasks\/[0-9a-f-]{36})\/answers$/iu;
+// Only the document gate is audited here. Other card handlers may have provider effects.
+const DOCUMENT_ACTION = /^\/decisions\/(approve_requirements|approve_plan|approve_design)\/[A-Za-z0-9_-]{1,150}\/(approve|request-changes|reject)$/u;
+const MERGE_ACTION = /^\/sessions\/ses_[0-9a-z]{20}\/merge$/u;
+const ownerOrAnswer = (path: string): boolean => SESSION_ACTION.test(path) || ANSWERS_ACTION.test(path);
+const documented = (path: string): boolean => ownerOrAnswer(path) || DOCUMENT_ACTION.test(path);
+type FinalRefusal = readonly [(path: string) => boolean, number, string, ((context: ActionRefusalContext, failure: ApiError) => boolean)?];
+/**
+ * ONE list. Sources/exception audit: docs/safe-action.md and the lane's POST-FORWARD-AUDIT.md.
+ * Code validates these before applying the action. Cloud normalizes any later failure after a Code 2xx to 5xx.
+ * MERGE_NOT_READY is final only at the document gate, never on Merge; Merge's original tuple list is preserved.
+ * Close TASK_NOT_FOUND and People/add CHANGE_STALE can follow effects in Code itself and are deliberately absent.
+ */
+const FINAL_ACTION_REFUSALS: readonly FinalRefusal[] = [
+ // Only Cloud's own exact validation sentence: Code may raise other errors after effects.
+ [path => /^\/sessions\/ses_[0-9a-z]{20}\/(stop|close|take-over)$/u.test(path), 400, "CONFIG_INVALID", (_context, failure) => failure.message === "requestId must be a UUID."],
+ [path => /^\/sessions\/ses_[0-9a-z]{20}\/(stop|close|take-over)$/u.test(path), 404, "SESSION_NOT_FOUND"],
+ [documented, 400, "CONFIG_INVALID"], [documented, 403, "FORBIDDEN"], [documented, 404, "NOT_FOUND"],
+ [ownerOrAnswer, 404, "TASK_NOT_FOUND"], [ownerOrAnswer, 404, "SESSION_NOT_FOUND"], [ownerOrAnswer, 409, "IDEMPOTENCY_CONFLICT"],
+ [path => OWNER_ROUND.test(path), 403, "SESSION_LEVEL_REQUIRED"], [path => OWNER_ROUND.test(path), 403, "TASK_ACCESS_DENIED"],
+ [path => OWNER_ROUND.test(path), 409, "CONFIG_INVALID"], [path => OWNER_ROUND.test(path), 409, "CONFLICT"],
+ [path => OWNER_ROUND.test(path), 409, "PROJECT_ARCHIVED"],
+ [path => OWNER_ROUND.test(path), 402, "BUDGET_EXCEEDED"], [path => OWNER_ROUND.test(path), 402, "ORG_BUDGET_EXCEEDED"],
+ [path => OWNER_ROUND.test(path), 402, "PROJECT_BUDGET_EXCEEDED"], [path => OWNER_ROUND.test(path), 402, "AGENT_BUDGET_EXCEEDED"],
+ [path => OWNER_ROUND.test(path), 402, "MACHINE_TIME_EXCEEDED"], [path => OWNER_ROUND.test(path), 403, "TRIAL_LOCKED"],
+ [path => /^\/sessions\/ses_[0-9a-z]{20}\/accept-findings$/u.test(path), 409, "SECURITY_ACCEPT_NOT_HERE"],
+ [path => ANSWERS_ACTION.test(path), 409, "INTENT_NOT_WAITING"],
+ [path => DOCUMENT_ACTION.test(path), 409, "CHANGE_STALE"], [path => DOCUMENT_ACTION.test(path), 409, "MERGE_NOT_READY"],
+ [path => MERGE_ACTION.test(path), 409, "IDEMPOTENCY_CONFLICT"], [path => MERGE_ACTION.test(path), 403, "FORBIDDEN"],
+ [path => MERGE_ACTION.test(path), 404, "TASK_NOT_FOUND"], [path => MERGE_ACTION.test(path), 404, "SESSION_NOT_FOUND"],
+ [path => MERGE_ACTION.test(path), 400, "CONFIG_INVALID", context => context.pullCount !== undefined && context.pullCount <= 1],
+];
+/** A proven pre-apply refusal. 401, timeouts, 408, 429, all 5xx and unreadable 2xx are always unknown. */
+export function isFinalActionRefusal(failure: unknown, context: ActionRefusalContext): failure is ApiError {
+ if (!(failure instanceof ApiError)) return false;
+ const path = context.route.replace(/^\/v1\/(?:app|web)(?=\/)/u, "").split("?", 1)[0]!;
+ return FINAL_ACTION_REFUSALS.some(([route, status, code, allows]) => route(path) && failure.status === status && failure.code === code && (allows === undefined || allows(context, failure)));
+}
+
+/** Shared failure handling for consumers: no resend, no manual clear, fresh fenced read before use.
+ * Reads are fired, never awaited by the press runner (a stalled refresh must not retain its claim).
+ */
+export function handleActionFailure<P extends { requestId: string; startedAt: string }>(input: ActionRefusalContext & {
+ failure: unknown; entry: P; subject: ActionSubject; fence: Fence;
+ records: { clearPending(subject: ActionSubject, requestId: string, startedAt: string): void };
+ message(words: string): void; read(): Promise<unknown>; readIdentity(): Promise<unknown>;
+}): "refused" | "csrf" | "unknown" {
+ const csrf = isCsrfFailure(input.failure);
+ if (!csrf && !isFinalActionRefusal(input.failure, input)) return "unknown";
+ // Install the read fence BEFORE notifying storage subscribers that pending was cleared.
+ awaitFreshRead(input.fence);
+ input.records.clearPending(input.subject, input.entry.requestId, input.entry.startedAt);
+ input.message((input.failure as ApiError).message);
+ if (csrf) readInBackground(() => input.readIdentity());
+ readInBackground(() => input.read());
+ return csrf ? "csrf" : "refused";
+}
+
+const unknownChecks = new WeakMap<Fence, Map<string, number>>();
+const unknownKey = (entry: { requestId: string; startedAt: string }): string => JSON.stringify([entry.requestId, entry.startedAt]);
+const UNKNOWN_EXIT_MS = 10 * 60 * 1000;
+/** Call once when a Check's own reads still cannot settle this press, never on the initial POST. */
+export function recordUnknownActionCheck(fence: Fence, entry: { requestId: string; startedAt: string }): void {
+ let counts = unknownChecks.get(fence);
+ if (counts === undefined) { counts = new Map();unknownChecks.set(fence, counts); }
+ const key = unknownKey(entry);counts.set(key, (counts.get(key) ?? 0) + 1);changed(fence);
+}
+/**
+ * Presentation only. At three unknown Checks OR ten minutes from the saved press, show this link alongside Check.
+ * Pass the unresolved entry only, and the task's app link. Never clear pending, resend, or disable Check on this hint.
+ * Counts survive navigation in the subject/action fence; after reload the saved startedAt still supplies the ten-minute exit.
+ */
+export function useUnknownActionExit(fence: Fence, entry: { requestId: string; startedAt: string } | undefined, taskHref: string): { message: string; href: string } | undefined {
+ useSyncExternalStore(listener => { fence.listeners.add(listener);return () => { fence.listeners.delete(listener); }; }, () => fence.version, () => 0);
+ const startedAt = entry?.startedAt, key = entry === undefined ? undefined : unknownKey(entry);
+ const deadline = startedAt === undefined ? NaN : Date.parse(startedAt) + UNKNOWN_EXIT_MS;
+ // The deadline is an external clock snapshot, not an impure render-time read.
+ const elapsed = useSyncExternalStore(useCallback(listener => {
+  const remaining = deadline - Date.now();
+  if (!Number.isFinite(remaining) || remaining <= 0) return () => undefined;
+  const timer = setTimeout(listener, remaining);
+  return () => { clearTimeout(timer); };
+ }, [deadline]), () => Date.now() >= deadline, () => false);
+ const count = key === undefined ? 0 : unknownChecks.get(fence)?.get(key) ?? 0;
+ if (key === undefined || (count < 3 && !elapsed)) return undefined;
+ return { message: "We couldn't confirm this. Open the task to check", href: taskHref };
+}

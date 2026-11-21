@@ -55,8 +55,15 @@ export class CodeError extends Error {
 }
 
 /** Internal dispatch history, never stored with the session. The handler must not re-enter a route after a Code write. */
+const mayResendCodeCall = (method: string, path: string): boolean => method === "GET" || method === "HEAD" || (method === "POST" && path.split("?", 1)[0] === "/v1/dev/access");
 const writesSent = new WeakMap<CodeSession, number>();
 export const codeWritesSent = (session: CodeSession): number => writesSent.get(session) ?? 0;
+/** Internal evidence only: a dispatched write answered 2xx, before its body is decoded.
+ * A later local failure or Code read cannot turn that answer into a pre-apply refusal.
+ * Includes 202 and unreadable bodies conservatively; never persisted or sent to the browser.
+ */
+const writesAnswered = new WeakMap<CodeSession, number>();
+export const codeWritesAnswered = (session: CodeSession): number => writesAnswered.get(session) ?? 0;
 /** Internal classification: adapters must not turn this locally generated result into a Code refusal. */
 class CodeOutcomeUnknown extends CodeError { readonly outcomeUnknown = true; }
 export const isCodeOutcomeUnknown = (error: unknown): error is CodeOutcomeUnknown => error instanceof CodeOutcomeUnknown;
@@ -317,6 +324,9 @@ export class CodeClient {
     } else {
       body = await response.json().catch(() => undefined);
     }
+    // Even an adapter that ignores a write's body cannot turn an unreadable
+    // successful response into a confirmed action. The write is never replayed.
+    if (response.ok && body === undefined && !mayResendCodeCall((init.method ?? "GET").toUpperCase(), path)) throw codeOutcomeUnknown();
     if (init.expectedStatus !== undefined && response.status !== init.expectedStatus) throw new CodeError(response.status, body);
     if (!response.ok) throw new CodeError(response.status, body);
     return withoutTraceId(path, body, init.method) as T;
@@ -327,7 +337,7 @@ export class CodeClient {
     // A request id alone is insufficient: Code's receipt lookup may follow a permission check.
     // No write replay is enabled: the verified receipt candidates check permission first.
     // Code's access POST only reads sign-in/membership; it is safe to retry and is not a dispatched write.
-    const mayResend = method === "GET" || method === "HEAD" || (method === "POST" && path.split("?", 1)[0] === "/v1/dev/access");
+    const mayResend = mayResendCodeCall(method, path);
     const send = (token: string) => this.fetchImpl(`${this.base}${path}`, {
       method: init.method ?? "GET",
       headers: { ...init.headers, authorization: `Bearer ${token}`, ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
@@ -338,6 +348,7 @@ export class CodeClient {
     if (!mayResend) writesSent.set(session, codeWritesSent(session) + 1);
     const firstWork = send(used);
     const first = deadline === undefined ? await firstWork : await beforeDeadline(firstWork, deadline);
+    if (!mayResend && first.ok) writesAnswered.set(session, codeWritesAnswered(session) + 1);
     if (first.status !== 401) return first;
     try {
       // Another call may already have refreshed the token while this one was out.

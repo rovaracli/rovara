@@ -5,8 +5,8 @@
 import { renameInSessions } from "./rename.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { CloudAuditStore } from "./audit-log.js";
-import { isCodeOutcomeUnknown, SERVER_READ_CALL_MS, CodeError, SignInEnded, codeOutcomeUnknown, codeWritesSent, slackWorkspaceHint, type CodeClient } from "./code-client.js";
-import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
+import { isCodeOutcomeUnknown, SERVER_READ_CALL_MS, CodeError, SignInEnded, codeOutcomeUnknown, codeWritesSent, codeWritesAnswered, slackWorkspaceHint, type CodeClient } from "./code-client.js";
+import { APPROVAL_PATH, approvalRoute, page, signInPage } from "./approve.js";
 import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
 import { POLICY_HOOK_PATH } from "./policy-hook.js";
 import { COMPANY_ROUTES, type CompanyBackend } from "./company-routes.js";
@@ -18,7 +18,7 @@ import { SPEND_ROUTES } from "./spend-routes.js";
 import { SPEND_LIMIT_ROUTES } from "./spend-limits-routes.js";
 import { BEDROCK_BYO_ROUTES } from "./bedrock-byo-routes.js";
 import { ROUTES, type OrgView, type Route, type RouteAnswer } from "./routes.js";
-import type { SessionStore } from "./sessions.js";
+import type { CodeSession, SessionStore } from "./sessions.js";
 import { StoreConflict, companyScopedWork, type WorkSessionStore } from "./work-sessions.js";
 import { companyOf } from "./company-caller.js";
 import { JOIN_UNUSABLE, inviteTokenHash, linkToken, openSecret, sealSecret, ticketKey, usableInvite } from "./onboarding-routes.js";
@@ -299,15 +299,19 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       const session = id === undefined ? undefined : await options.store.get(id);
       if (id === undefined || session === undefined) return signInPage();
       const form = method === "POST" && (request.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded") ? new URLSearchParams(request.body ?? "") : undefined;
+      const answeredBefore = codeWritesAnswered(session);
+      const unknownApproval = () => page(503, "Decision outcome unknown", `<h1>Decision outcome unknown</h1><p>The decision's outcome is unknown. Check the session before trying again.</p><p><a href="/s/${approval[1]!}">Check the session</a></p>`);
       try {
         const answer = await approvalRoute({ client: options.client, session, work: companyScopedWork(options.work, () => companyOf(session.access)?.companyId), origin: options.origin }, approval[1]!, method, request.headers, form);
         if (session.changed === true) {
           delete session.changed;
           await options.store.save(id, session);
         }
+        if (codeWritesAnswered(session) !== answeredBefore && answer.status >= 400 && answer.status < 500) return unknownApproval();
         if (method === "POST" && answer.status === 303) log({ event: "cloud.plan_decided", sessionId: approval[1], decision: form?.get("decision") });
         return answer;
       } catch (error) {
+        if (codeWritesAnswered(session) !== answeredBefore) return unknownApproval();
         if (error instanceof SignInEnded) {
           await options.store.delete(id);
           return signInPage();
@@ -327,6 +331,19 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       return json(403, { error: { code: "CSRF_INVALID", message: "Refresh the page and try again." } });
     }
     const apiPath = path.slice("/v1/web".length);
+    // DEC 285: after Code answered a write, no local record/projection/save failure
+    // may say the action was refused. Keep this evidence for the final session save too.
+    let writeAnswered = false;
+    async function afterForward<T extends RouteAnswer>(using: CodeSession, call: () => Promise<T>): Promise<T> {
+      const before = codeWritesAnswered(using);
+      try {
+        const answer = await call();
+        if (codeWritesAnswered(using) !== before && answer.status >= 400 && answer.status < 500) throw codeOutcomeUnknown();
+        return answer;
+      } finally {
+        writeAnswered ||= codeWritesAnswered(using) !== before;
+      }
+    }
     // Guided onboarding PR 2: the GitHub connect routes need this sign-in's cookie (the binding and the kept outcome are keyed by it).
     const githubCall: (() => Promise<GithubAnswer>) | undefined =
       method === "POST" && apiPath === GITHUB_APP_PATHS.start ? () => github.start(session!, id, parsedBody(request.body))
@@ -343,15 +360,16 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         let answer: GithubAnswer;
         const writesBefore = codeWritesSent(session);
         try {
-          answer = await connectCall();
+          answer = await afterForward(session, connectCall);
         } catch (error) {
           // Another server refreshed this sign-in first (its refresh token was used once): run once more on what the store holds, as the route loop does.
+          if (writeAnswered) throw codeOutcomeUnknown();
           if (!(error instanceof SignInEnded)) throw error;
           if (codeWritesSent(session) !== writesBefore) throw codeOutcomeUnknown();
           const stored = await options.store.get(id);
           if (stored === undefined || stored.refreshToken === session.refreshToken) throw error;
           session = stored;
-          answer = await connectCall();
+          answer = await afterForward(session, connectCall);
         }
         if (session.changed === true) {
           delete session.changed;
@@ -359,6 +377,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         }
         return json(answer.status, answer.body, answer.setCookie === undefined ? {} : { "set-cookie": answer.setCookie });
       } catch (error) {
+        if (writeAnswered) { const unknown = codeOutcomeUnknown(); return json(unknown.status, unknown.body); }
         if (error instanceof SignInEnded) {
           await options.store.delete(id);
           return signInAgain();
@@ -390,7 +409,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
           const using = session;
           const writesBefore = codeWritesSent(using);
           try {
-            answer = await route.answer({
+            answer = await afterForward(using, () => route.answer({
               ...(serverReadDeadline === undefined ? {} : { serverReadDeadline }),
               client: options.client, session: using, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
               // Cloud's sessions as the person's company sees them, by the company Code named in its latest access check for this sign-in (kept
@@ -400,8 +419,9 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
               ...(options.productAi === undefined ? {} : { productAi: options.productAi }),
               ...(options.answersEnabled === true ? { answersEnabled: true } : {}),
               log,
-            });
+            }));
           } catch (error) {
+            if (writeAnswered) throw codeOutcomeUnknown();
             // A local-only conflict can be retried. Once Code received a write, re-entering
             // the route can send it twice or turn a later refusal into a false no-write answer.
             if ((error instanceof StoreConflict || error instanceof SignInEnded) && codeWritesSent(using) !== writesBefore) throw codeOutcomeUnknown();
@@ -421,6 +441,8 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         }
         return json(answer.status, answer.body);
       } catch (error) {
+        // A final session-save error is after the same write boundary.
+        if (writeAnswered) { const unknown = codeOutcomeUnknown(); return json(unknown.status, unknown.body); }
         if (error instanceof SignInEnded) {
           await options.store.delete(id);
           return signInAgain();
