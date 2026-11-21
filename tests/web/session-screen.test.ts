@@ -19,6 +19,7 @@ function setup(initialMessages: ReturnType<typeof messageFixture>[] = [], cursor
  let session = initialSession, messages = initialMessages;
  const f = fakeHost(async request => {
  if (request.path.split("?", 1)[0]!.endsWith("/messages")) { if (request.method === "POST") { messages = [messageFixture()];return { status: 200, body: messages[0] }; }return { status: 200, body: { messages: request.path.includes("?after=") ? [] : messages, ...(cursor === undefined ? {} : { next: cursor }) } }; }
+ if (request.path.endsWith("/people")) return { status: 200, body: { people: { revision: 3, orphaned: true, canManage: false, canTakeOwnership: true, people: [{ personId: "22222222-2222-4222-8222-222222222222", name: "Ada", role: "owner", you: false, effectiveRole: "owner" }] } } };
  if (request.path.endsWith("/events")) return { status: 200, body: { events: [] } };
  if (request.path.endsWith("/presence")) return { status: 200, body: { viewingNow: session.viewingNow } };
  if (request.path.endsWith("/follow")) { session = sessionFixture({ you: { ...session.you, following: true } });return { status: 200, body: { following: true } }; }
@@ -110,7 +111,8 @@ it("offers retry and takeover independently from the session capability list", a
 it("keeps a header takeover pending until ownership arrives in a real session read", async () => {
  const base = sessionFixture(), initial = sessionFixture({ you: { ...base.you, owner: false, actions: ["take_over"] } });
  const f = setup([], undefined, initial, async () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: ["You will own this session."] } }));
- fireEvent.click(await screen.findByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");
+ fireEvent.click(await screen.findByRole("button", { name: "Take over" }));
+ const takeover = await screen.findByRole("dialog", { name: "Take over this task?" });await within(takeover).findByText("Ada · Owner");fireEvent.click(within(takeover).getByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");
  fireEvent.click(screen.getByRole("button", { name: "Open confirmation" }));expect(f.host.openExternal).toHaveBeenCalledTimes(1);
  const owned = sessionFixture({ revision: 2, you: { ...base.you, owner: true, actions: ["watch"] } });
  await act(() => f.query.setQueryData(["session", SESSION_FIXTURE_ID], owned));expect(screen.queryByText("You now own this session.")).toBeNull();
@@ -179,7 +181,8 @@ it("shows the broker's own words when a stop of a blocked task left it as it was
 
 it("does not carry a pending takeover into a different already-cached session", async () => {
  const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, owner: false, actions: ["take_over"] } }), async () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: ["You will own this session."] } }));
- fireEvent.click(await screen.findByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");
+ fireEvent.click(await screen.findByRole("button", { name: "Take over" }));
+ const takeover = await screen.findByRole("dialog", { name: "Take over this task?" });await within(takeover).findByText("Ada · Owner");fireEvent.click(within(takeover).getByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");
  const next = sessionFixture({ sessionId: "ses_bbbbbbbbbbbbbbbbbbbb", title: "Another task", you: { ...base.you, actions: ["watch"] } });f.setSession(next);f.query.setQueryData(["session", next.sessionId], next);
  await act(() => f.router.navigate("/app/sessions/" + next.sessionId));await screen.findByRole("heading", { name: "Another task" });
  expect(screen.queryByText("Waiting for you to confirm in your browser")).toBeNull();expect(screen.getByRole<HTMLButtonElement>("button", { name: "Follow" }).disabled).toBe(false);f.close();

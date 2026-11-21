@@ -3,7 +3,7 @@
 // refreshed once on 401 (one refresh shared by calls made together), every route not on Code yet answering 501; and
 // phase 2: sessions on Code's tasks, Home's cards and the plan approval page.
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { APPROVAL_FORM_SCRIPT } from "../../packages/cloud-server/src/approve.js";
 import { CODE_TASK_PAGE, CodeClient, LocalSessionStore, LocalWorkSessionStore, StoreConflict, createCloudHandler, type SessionStore, type WorkSessionStore, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
 import {
@@ -49,6 +49,7 @@ function fakeCode() {
     createdAt: "2026-11-14T10:00:00.000Z", updatedAt: "2026-11-14T10:05:00.000Z", events: [], changedFiles: [], artifacts: [], pullRequests: [], pageActions: [],
   };
   let peopleRevision = 3;
+  let ownershipWrites = 0;
   let adaName = "Ada";
   let graceName: string | undefined;
   // DEC 253z: the person's company and company role, from Code's live membership. Ada owns Acme; Grace is a member of it.
@@ -142,6 +143,7 @@ function fakeCode() {
       const body = JSON.parse(call.body ?? "{}") as { expectedPeopleRevision?: number };
       if (body.expectedPeopleRevision !== peopleRevision) return respond(409, { error: { code: "CONFLICT", message: "people changed" } });
       peopleRevision += 1;
+      ownershipWrites += 1;
       // Code's answer (TaskPeopleChangeResultSchema, its COMMITTED branch): the change is made now.
       return respond(200, { change: { status: "COMMITTED", view: { revision: peopleRevision } } });
     }
@@ -150,6 +152,8 @@ function fakeCode() {
   }) as typeof fetch;
   return {
     fetchImpl, calls, taskId: TASK_ID,
+    setPeopleRevision: (revision: number) => { peopleRevision = revision; },
+    ownershipWrites: () => ownershipWrites,
     setProjectRevision: (revision: number) => { projectRevision = revision; },
     setTask: (change: Record<string, unknown>) => { task = { ...task, ...change }; },
     /** Ada's name in Code from now on (her next sign-in reads it). */
@@ -617,15 +621,69 @@ describe("sessions on Code's tasks (phase 2a)", () => {
     expect(SessionCloseResponseReaderSchema.parse(JSON.parse(closed!.body))).toMatchObject({ closed: true, session: { status: "stopped" } });
   });
 
-  it("takes over a session against the people revision Code shows, and makes the person its owner", async () => {
+  it("takes over a session against the people revision the caller saw, and makes the person its owner", async () => {
     const { call, signIn, code, work } = setUp();
     const auth = await signIn();
     const { sessionId } = JSON.parse((await start(call, auth))!.body) as { sessionId: string };
-    const taken = await call("POST", `/v1/web/sessions/${sessionId}/take-over`, { ...auth, body: { requestId: "55555555-5555-4555-8555-555555555555" } });
+    const taken = await call("POST", `/v1/web/sessions/${sessionId}/take-over`, { ...auth, body: { requestId: "55555555-5555-4555-8555-555555555555", expectedPeopleRevision: 3 } });
     expect(taken!.status).toBe(200);
     const sent = code.calls.find((entry) => entry.path.endsWith("/take-ownership"))!;
     expect(JSON.parse(sent.body!)).toEqual({ requestId: "55555555-5555-4555-8555-555555555555", expectedPeopleRevision: 3 });
     expect((await work.get(sessionId))?.revision).toBe(2);
+  });
+
+  it("refuses a take-over when People changed after display: Code 409 passes through with zero Code or Cloud writes", async () => {
+    const { call, signIn, code, work } = setUp();
+    const auth = await signIn();
+    const { sessionId } = JSON.parse((await start(call, auth))!.body) as { sessionId: string };
+    const before = await work.get(sessionId);
+    const put = vi.spyOn(work, "put");
+    code.setPeopleRevision(4); // The page showed 3, before another person changed access.
+    const answer = await call("POST", `/v1/web/sessions/${sessionId}/take-over`, { ...auth, body: { requestId: "55555555-5555-4555-8555-555555555555", expectedPeopleRevision: 3 } });
+    expect(answer!.status).toBe(409);
+    expect(JSON.parse(answer!.body)).toEqual({ error: { code: "CONFLICT", message: "people changed" } });
+    expect(code.ownershipWrites()).toBe(0);
+    expect(put).not.toHaveBeenCalled();
+    expect(await work.get(sessionId)).toEqual(before);
+  });
+
+  it("does not reject take-over for unrelated task or Cloud session changes", async () => {
+    const { call, signIn, code, work } = setUp();
+    const auth = await signIn();
+    const { sessionId } = JSON.parse((await start(call, auth))!.body) as { sessionId: string };
+    const record = (await work.get(sessionId))!;
+    await work.put({ ...record, revision: record.revision + 1 });
+    code.setTask({ title: "An unrelated title edit", startingRevision: 9 });
+    const answer = await call("POST", `/v1/web/sessions/${sessionId}/take-over`, { ...auth, body: { requestId: "55555555-5555-4555-8555-555555555555", expectedPeopleRevision: 3 } });
+    expect(answer!.status).toBe(200);
+    expect(code.ownershipWrites()).toBe(1);
+    expect((await work.get(sessionId))?.revision).toBe(3);
+  });
+
+  it("refuses missing or invalid take-over revisions before any Code call or write", async () => {
+    const { call, signIn, code, work } = setUp();
+    const auth = await signIn();
+    const { sessionId } = JSON.parse((await start(call, auth))!.body) as { sessionId: string };
+    const put = vi.spyOn(work, "put");
+    code.calls.length = 0;
+    for (const expectedPeopleRevision of [undefined, null, "3", 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      const answer = await call("POST", `/v1/web/sessions/${sessionId}/take-over`, { ...auth, body: { requestId: "55555555-5555-4555-8555-555555555555", ...(expectedPeopleRevision === undefined ? {} : { expectedPeopleRevision }) } });
+      expect(answer!.status).toBe(400);
+    }
+    expect(code.calls).toEqual([]);
+    expect(code.ownershipWrites()).toBe(0);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("never reads a fresh People revision during take-over and forwards the shown one unchanged", async () => {
+    const { call, signIn, code } = setUp();
+    const auth = await signIn();
+    const { sessionId } = JSON.parse((await start(call, auth))!.body) as { sessionId: string };
+    code.setPeopleRevision(17);
+    code.calls.length = 0;
+    const answer = await call("POST", `/v1/web/sessions/${sessionId}/take-over`, { ...auth, body: { requestId: "55555555-5555-4555-8555-555555555555", expectedPeopleRevision: 17 } });
+    expect(answer!.status).toBe(200);
+    expect(code.calls.filter(entry => entry.path.includes("/people"))).toEqual([{ method: "POST", path: `/v1/dev/tasks/${code.taskId}/people/take-ownership`, authorization: "Bearer access-1", body: JSON.stringify({ requestId: "55555555-5555-4555-8555-555555555555", expectedPeopleRevision: 17 }) }]);
   });
 
   it("needs the CSRF token for each change", async () => {
