@@ -309,7 +309,9 @@ it("takes a real member from the project's model link to the read-only company s
   return undefined;
  } });
  try {
-  fireEvent.click(await screen.findByRole("link", { name: "AI models for each step" }));
+  const howWeWork = await screen.findByRole("region", { name: "How we work" }, { timeout: 10_000 });
+  await within(howWeWork).findByText("How Rovara Code works in this project, stage by stage. Every setting says where it comes from.", {}, { timeout: 10_000 });
+  fireEvent.click(await within(howWeWork).findByRole("link", { name: "AI models for each step" }, { timeout: 10_000 }));
   await ready(); expect(f.router.state.location).toMatchObject({ pathname: "/app/admin/ai-spending", hash: "#ai-models" });
   await waitFor(() => expect(document.activeElement).toBe(document.getElementById("ai-models")));
   expect(screen.queryByRole("combobox")).toBeNull();
