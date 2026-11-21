@@ -50,20 +50,20 @@ it("separates the dark sample card and keeps its title and subtitle together abo
  } finally { style.remove(); }
 });
 
-it("gives the status sheet its own full-width budget and a single 24px heading gap", async () => {
+it("gives the status sheet its own full-width budget and a tight 12px heading gap", async () => {
  const { chipsButtonsGalleryScenes } = await import("../../../../packages/ui/src/design/parts/chips-buttons-scenes.js");
  const style = document.createElement("style");
- const roles = new Map([...lookV2Css().matchAll(/(--rv-(?:space-\d+|table-width)):([^;]+);/g)].map(match => [match[1], match[2]]));
+ const roles = new Map([...lookV2Css().matchAll(/(--rv-(?:space-\d+|font-(?:sm|md)|table-width)):([^;]+);/g)].map(match => [match[1], match[2]]));
  style.textContent = ["packages/ui/src/design/design.css", "packages/ui/src/design/parts/shell-gallery.css", "packages/ui/src/design/parts/chips-buttons.css"]
   .map(path => readFileSync(path, "utf8")).join("\n")
-  .replace(/var\((--rv-(?:space-\d+|table-width))\)/g, (source, name: string) => roles.get(name) ?? source);
+  .replace(/var\((--rv-(?:space-\d+|font-(?:sm|md)|table-width))\)/g, (source, name: string) => roles.get(name) ?? source);
  document.head.append(style);
  try {
   renderUi(h("div", { className: "rv-ds-gallery rv-ds-isolated" }, h("section", { "data-gallery-scene": "statuses" }, chipsButtonsGalleryScenes[0].render())));
   const heading = screen.getByRole("heading", { name: "Status chips: the only vocabulary" });
   const intro = screen.getByText(/^Fifteen states/);
   expect(heading.parentElement).toBe(intro.parentElement);
-  expect(getComputedStyle(heading.parentElement!).gap).toBe("24px");
+  expect(getComputedStyle(heading.parentElement!).gap).toBe("12px");
   expect(getComputedStyle(heading).marginBottom).toBe("0px");
   expect(getComputedStyle(intro).marginBlockStart).toBe("0");
   const sheet = document.querySelector("[data-gallery-scene=statuses]")!;
@@ -73,6 +73,8 @@ it("gives the status sheet its own full-width budget and a single 24px heading g
   expect(getComputedStyle(row).gridTemplateColumns).toBe("calc(48px*3) minmax(0,1fr)");
   expect(getComputedStyle(row).gap).toBe("8px");
   expect(getComputedStyle(sheet.querySelector("dl")!).columnGap).toBe("16px");
+  expect(readFileSync("packages/ui/src/design/parts/chips-buttons.css", "utf8"))
+   .toContain("font-size:calc(var(--rv-font-sm) + var(--rv-space-1)/4)");
   // Descriptions remain natural wrapping text; no clipping/ellipsis/nowrap to fake a fit.
   const description = sheet.querySelector("dd")!;
   expect(getComputedStyle(description).whiteSpace).not.toBe("nowrap");
