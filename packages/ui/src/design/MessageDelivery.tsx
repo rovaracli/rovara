@@ -24,6 +24,6 @@ export function MessageDelivery({ receipt }: MessageDeliveryProps) {
  if (observation === undefined) return <HeldState />;
  return <p className="rv-message-delivery rv-delivery" data-tone={observation.tone} role="status">
   <span className="rv-delivery-dot" aria-hidden="true" />
-  <span><strong>{observation.label}</strong>{receipt.detail === undefined || receipt.detail === "" ? null : <><span>{receipt.state === "not_delivered" ? ": " : " "}</span><span className="rv-delivery-detail"><VisibleText text={receipt.detail} /></span></>}</span>
+  <span><strong>{observation.label}</strong>{receipt.detail === undefined || receipt.detail === "" ? null : <><span> </span><span className="rv-delivery-detail"><VisibleText text={receipt.detail} /></span></>}</span>
  </p>;
 }

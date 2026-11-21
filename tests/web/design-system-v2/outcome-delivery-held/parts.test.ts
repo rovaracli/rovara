@@ -80,7 +80,7 @@ it("keeps missing delivery absent rather than fabricating Applied", () => {
 });
 it("keeps a refused message's served detail inert", () => {
  const f = renderUi(h(MessageDelivery, { receipt: { state: "not_delivered", detail: "<img src=x onerror=alert(1)>" } }));
- expect(screen.getByRole("status").textContent).toBe("Not delivered: <img src=x onerror=alert(1)>"); expect(f.container.querySelector("img")).toBeNull();
+ expect(screen.getByRole("status").textContent).toBe("Not delivered <img src=x onerror=alert(1)>"); expect(f.container.querySelector("img")).toBeNull();
 });
 it("renders exactly one Unknown chip by default, without a line, list, clock or action", () => {
  const f = renderUi(h(HeldState, {})); expect(screen.getAllByText("Unknown")).toHaveLength(1);
@@ -97,7 +97,7 @@ it("falls back to Unknown for an unsupported presentation receipt", () => {
  renderUi(h(MessageDelivery, { receipt })); expect(screen.getByText("Unknown")).toBeTruthy(); expect(screen.queryByText("Applied")).toBeNull();
 });
 it.each([
- ["queued", "Queued for this build"], ["delivered", "Delivered"], ["not_delivered", "Not delivered: This session has ended."],
+ ["queued", "Queued for this build"], ["delivered", "Delivered"], ["not_delivered", "Not delivered This session has ended."],
 ] as const)("maps only the served %s state in Conversation (R2/R4)", (state, label) => {
  const message = SessionMessageReaderSchema.parse(messageFixture({ kind: "steer", delivery: { state, at: "2026-10-23T12:00:00.000Z", ...(state === "not_delivered" ? { reason: "This session has ended." } : {}) } }));
  renderUi(h(Conversation, { agent: "Payments expert", messages: [message], events: [] }));
