@@ -150,7 +150,8 @@ describe("the company step, AI and spending", () => {
   } finally { f.close(); }
  });
 
- it.each([false, true])("inline Bedrock connect refreshes the source; explicit Rovara save=%s", async (chooseRovara) => {
+ it.each([false, true, "anthropic_key"] as const)("inline Bedrock connect refreshes the source; explicit choice=%s", async (choice) => {
+  const chooseRovara = choice === true;
   const c = company({ cap: 500_000_000, source: null, model: null });
   const roleArn = "arn:aws:iam::123456789012:role/RovaraBedrockInvoke-fixture";
   let connected = false;
@@ -178,12 +179,54 @@ describe("the company step, AI and spending", () => {
    expect(screen.getByRole<HTMLInputElement>("radio", { name: "Your own Bedrock" }).checked).toBe(true);
    expect(screen.getByText(/Task source: Your Bedrock/u)).toBeTruthy();
    expect(c.writes).toEqual([]);
+   if (choice === "anthropic_key") {
+    fireEvent.click(screen.getByRole("radio", { name: "Your own Anthropic key (not connected yet)" }));
+    expect.soft(screen.getByTestId("ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+    expect.soft(screen.queryByRole<HTMLInputElement>("radio", { name: "Your own Anthropic key (not connected yet)" })?.checked).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByTestId("ai-spend-saved");
+    expect(c.writes).toEqual([{ method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 0, source: "anthropic_key" } }]);
+    return;
+   }
    if (chooseRovara) fireEvent.click(screen.getByTestId("ai-spend-rovara").querySelector<HTMLInputElement>("input")!);
    fireEvent.click(screen.getByRole("button", { name: "Save" }));
    const saved = await screen.findByTestId("ai-spend-saved");
    expect(c.writes).toEqual(chooseRovara ? [{ method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 0, source: "rovara" } }] : []);
    expect(saved.textContent).toContain(chooseRovara ? "Current AI source: Rovara's AI" : "Current AI source: Your Bedrock");
    expect(screen.getByTestId(chooseRovara ? "ai-spend-rovara" : "ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+  } finally { f.close(); }
+ });
+
+ it.each([
+  { effectiveSource: "anthropic_key", provider: "Your own Bedrock", source: "bedrock_byo" },
+  { effectiveSource: "bedrock_byo", provider: "Your own Anthropic key (not connected yet)", source: "anthropic_key" },
+ ])("selecting $provider after a source refresh keeps Own selected and saves $source", async ({ effectiveSource, provider, source }) => {
+  const c = company({ cap: 500_000_000, source: null, model: null });
+  let refreshed = false;
+  const f = mountRoute("/app/admin/ai-spending", r => {
+   if (r.path === "/v1/app/org/agent-ai" && r.method === "GET" && c.state.source === null) return { status: 200, body: {
+    ...agentAi(null, 0), anthropicKeyConnected: refreshed && effectiveSource === "anthropic_key", bedrockConnected: refreshed,
+    effectiveSource: refreshed ? effectiveSource : "rovara", sourceIsDefault: true,
+    choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: true }],
+   } };
+   return c.respond(r);
+  });
+  try {
+   await screen.findByTestId("ai-spend-default");
+   expect(screen.getByTestId("ai-spend-rovara").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+   refreshed = true;
+   await act(async () => { await f.query.invalidateQueries({ queryKey: ["ai-spend"] }); });
+   await waitFor(() => expect(screen.queryByTestId("ai-spend-default")).toBeNull());
+   expect(screen.getByTestId("ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+   const providerRadio = screen.getByRole<HTMLInputElement>("radio", { name: provider });
+   expect(providerRadio.checked).toBe(false);
+   expect(c.writes).toEqual([]);
+   fireEvent.click(providerRadio);
+   expect.soft(screen.getByTestId("ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+   expect.soft(screen.queryByRole<HTMLInputElement>("radio", { name: provider })?.checked).toBe(true);
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   await screen.findByTestId("ai-spend-saved");
+   expect(c.writes).toEqual([{ method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 0, source } }]);
   } finally { f.close(); }
  });
 
