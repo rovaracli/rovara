@@ -14,7 +14,9 @@ it("registers the exact P5 scene ids and shows questions, outcome-first plan/evi
  expect(screen.getByRole("article", { name: "Answer 2 questions" })).toBeTruthy();
  const plan = screen.getByRole("article", { name: "Approve plan v3?" });
  expect(plan.textContent.indexOf("Outcome:")).toBeLessThan(plan.textContent.indexOf("Review evidence"));
- expect(within(plan).getByRole<HTMLButtonElement>("button", { name: "Approve plan v3" }).disabled).toBe(true);
+ expect(within(plan).queryByRole("button", { name: "Approve plan v3" })).toBeNull();
+ expect(within(plan).getByRole("heading", { name: "2 Approve plan v3" })).toBeTruthy();
+ expect(within(plan).getByRole("button", { name: "Read the test plan" })).toBeTruthy();
  const merge = screen.getByRole("article", { name: "Merge #42 into main?" });
  expect(within(merge).getByText("Could not run")).toBeTruthy();
  expect(within(merge).getByText("Not run")).toBeTruthy();
@@ -33,10 +35,31 @@ it("gives enabled gallery actions local feedback and uses native locks with an a
  for (const name of ["Answer questions", "Ask Sam instead", "Request changes", "Design first"]) {
   await userEvent.click(screen.getByRole("button", { name }));
   expect(screen.getByRole("status").textContent).toContain(name);
-  expect(screen.getByRole("status").textContent).toContain("Example only");
+  expect(screen.getByRole("status").textContent).not.toMatch(/example|fixture|presentation/iu);
  }
  const merge = screen.getByRole<HTMLButtonElement>("button", { name: "Merge #42" });
  expect(merge.disabled).toBe(true);
  expect(merge.querySelector("svg[aria-hidden=true]")).toBeTruthy();
  expect(merge.getAttribute("aria-describedby")).toBeTruthy();
+});
+
+
+it("matches the plan's risk leads, numbered evidence steps and action-first reading layout", async () => {
+ const { container } = renderUi(h(decisionTimelineGalleryScenes[0].render));
+ const plan = screen.getByRole("article", { name: "Approve plan v3?" });
+ const risks = plan.querySelectorAll(".rv-decision-scene-risks>li");
+ expect(risks).toHaveLength(3);
+ expect([...risks].every(row => row.querySelector("svg") && row.querySelector("strong"))).toBe(true);
+ expect(within(plan).getByRole("heading", { name: "1 Review evidence" })).toBeTruthy();
+ expect(within(plan).getByText("2 of 3 read by you, for v3")).toBeTruthy();
+ const row = within(plan).getByText("Test plan").closest("li")!;
+ expect(row.querySelector("details,summary")).toBeNull();
+ expect(row.querySelector("svg circle")).toBeTruthy();
+ expect(within(plan).getByRole("link", { name: "Read full plan v3" })).toBeTruthy();
+ const button = within(plan).getByRole("button", { name: "Read the test plan" });
+ await userEvent.click(button);
+ expect(within(plan).getByRole("region", { name: "Test plan" })).toBeTruthy();
+ expect(within(plan).queryByRole("button", { name: "Approve plan v3" })).toBeNull();
+ expect(plan.querySelector(".rv-decision-frame-footer")).toBeTruthy();
+ expect(container.textContent).not.toMatch(/Example only|fixture|live callers/iu);
 });
