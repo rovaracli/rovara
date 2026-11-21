@@ -59,6 +59,8 @@ describe("own OpenAI / OpenRouter keys for agents (Cloud)", () => {
     const refused = await off.call(adaOff, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key: routerKey() }));
     expect(refused.status).toBe(400);
     expect(await off.store.view(ISS, A, "_learning")).toMatchObject({ sources: [] });
+    expect((await off.store.view(ISS, A, "_learning")).revision).toBe(0);
+    expect((await off.audit.read(A, { max: 50 })).rows).toEqual([]);
 
     const w = world({ company: true, aiSourceKinds: new Set(["openrouter"]) });
     const ada = await w.signIn("ada", 30);
@@ -93,10 +95,14 @@ describe("own OpenAI / OpenRouter keys for agents (Cloud)", () => {
     const ada = await w.signIn("ada", 30);
     const key = routerKey();
     expect((await w.call(ada, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key }))).status).toBe(200);
+    const connected = await w.store.learningSource(ISS, A, "openrouter");
     kinds.delete("openrouter");
     expect((await w.call(ada, "GET", KEYS)).body).toMatchObject({ accounts: { openrouter: { connected: true } } });
     // Connecting or replacing stays gated...
     expect((await w.call(ada, "PUT", `${KEYS}/key`, write(1, { provider: "openrouter", key: routerKey() }))).status).toBe(400);
+    expect(await w.store.learningSource(ISS, A, "openrouter")).toEqual(connected);
+    expect(await storedLearningKeys(w.store).keyFor(ISS, A, "openrouter")).toBe(key);
+    expect((await w.audit.read(A, { max: 50 })).rows.map((r) => r.action)).toEqual(["learning_ai.key.connected"]);
     // ...removing never is.
     const removed = await w.call(ada, "DELETE", `${KEYS}/key`, write(1, { provider: "openrouter" }));
     expect(removed.status).toBe(200);
