@@ -267,11 +267,17 @@
 /* FIX-4: final gallery spacing and focus polish from the 4f/3e review. */
 .rv-ds-gallery .rv-ds-gaps-frame .rv-ds-blockers{margin-top:calc(var(--rv-space-6) + var(--rv-space-2))}
 .rv-ds-gallery .rv-ds-focus-rows{overflow:hidden}
+.rv-ds-gallery .rv-ds-focus-rows>.rv-selected{border-inline-start-width:var(--rv-space-1);padding-inline:var(--rv-space-3)}
+.rv-ds-gallery .rv-ds-focus-rows>button{border-inline-start:var(--rv-space-1) solid transparent;padding-inline:var(--rv-space-3)}
+.rv-ds-gallery .rv-ds-focus-rows>button.is-focus-demo{outline-offset:-2px}
+.rv-ds-gallery .rv-ds-plan-step .rv-ds-plan-lock{font-size:var(--rv-font-md)}
+.rv-ds-gallery .rv-ds-state-error .rv-ds-state-content>p{color:var(--rv-text)}
+.rv-ds-gallery .rv-ds-shell-menu .rv-button{font-weight:400}
 .rv-ds-gallery #type .rv-ds-type-list code{font-variant-ligatures:none}
 @media(max-width:639px){
  .rv-ds-gallery .rv-ds-state-rows li:has(.rv-ds-row-time){row-gap:var(--rv-space-1)}
  .rv-ds-gallery #delivery .rv-delivery-scene{display:grid;gap:var(--rv-space-3)}
 }
 @media(max-width:359px){
- .rv-ds-gallery .rv-ds-state-error .rv-ds-recovery{row-gap:var(--rv-space-2)}
+ .rv-ds-gallery .rv-ds-state-error .rv-ds-recovery{row-gap:0}
 }
