@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { createElement as h } from "react";
+import { readFileSync } from "node:fs";
+import { lookV2Css } from "@agentx/design-tokens";
 import { expect, it } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
 import { outcomeDeliveryHeldGalleryScenes } from "../../../../packages/ui/src/design/parts/outcome-delivery-held-scenes.js";
@@ -8,6 +10,23 @@ import { expectNoAxeViolations } from "../../support/axe.js";
 
 it("exports the three P4 scenes for P5 to mount", () => {
  expect(outcomeDeliveryHeldGalleryScenes.map(scene => scene.id)).toEqual(["outcome", "delivery", "held"]);
+});
+it("paints the outcome header help ring at about 14px rather than a tiny 9px", () => {
+ const tokens = new Map([...lookV2Css().matchAll(/(--rv-[\w-]+):([^;{}]+)/g)].map(match => [match[1], match[2]]));
+ const style = document.createElement("style");
+ style.textContent = readFileSync("packages/ui/src/design/parts/outcome-delivery-held.css", "utf8")
+  .replace(/var\((--rv-[\w-]+)\)/g, (value: string, token: string) => tokens.get(token) ?? value);
+ document.head.append(style);
+ try {
+  const f = renderUi(h("main", {}, outcomeDeliveryHeldGalleryScenes.find(scene => scene.id === "outcome")!.render()));
+  const icon = f.container.querySelector<SVGSVGElement>(".rv-outcome-header svg")!;
+  const circle = icon.querySelector("circle")!;
+  const size = getComputedStyle(icon);
+  const paintedWidth = (2 * Number(circle.getAttribute("r")) + Number(icon.getAttribute("stroke-width"))) / 16 * Number.parseFloat(size.width);
+  expect(size.height).toBe(size.width);
+  expect(paintedWidth).toBeGreaterThanOrEqual(13);
+  expect(paintedWidth).toBeLessThanOrEqual(15);
+ } finally { style.remove(); }
 });
 it("includes the mock's supplied after-check strip on first render without offering a repeat write", () => {
  const scene = outcomeDeliveryHeldGalleryScenes.find(item => item.id === "outcome")!;

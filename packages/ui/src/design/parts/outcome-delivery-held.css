@@ -1,7 +1,7 @@
 .rv-outcome{max-width:var(--rv-reading-width);min-width:0;border:calc(var(--rv-space-1)/4) solid var(--rv-border-strong);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);font-size:var(--rv-font-md);overflow-wrap:anywhere}
 .rv-outcome .rv-outcome-header{display:flex;align-items:baseline;gap:var(--rv-space-3);padding:var(--rv-space-4);background:var(--rv-status-stopped-bg);color:var(--rv-text);border-radius:var(--rv-radius-md) var(--rv-radius-md) 0 0}
 .rv-outcome .rv-outcome-header h3{margin:0;font:600 var(--rv-font-lg)/1.55 var(--rv-font-ui)}
-.rv-outcome-icon{flex:none;width:var(--rv-space-3);height:var(--rv-space-3);color:var(--rv-status-stopped)}
+.rv-outcome-icon{flex:none;width:var(--rv-space-4);height:var(--rv-space-4);color:var(--rv-status-stopped)}
 .rv-outcome-body{display:grid;gap:var(--rv-space-4);padding:var(--rv-space-4)}
 .rv-outcome h4{margin:0;font:600 var(--rv-font-md)/1.55 var(--rv-font-ui)}
 .rv-outcome p{margin:0}
