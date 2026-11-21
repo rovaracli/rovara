@@ -18,7 +18,7 @@ const exampleColumns: readonly Column<(typeof exampleTasks)[number]>[] = [
 function TableScene() {
  const [selectedKey, setSelectedKey] = useState("webhook"), [opened, setOpened] = useState<string>();
  return <div className="rv-p3-table-scene"><DataTable caption="Tasks" columns={exampleColumns} rows={exampleTasks} rowKey={row => row.id} selection={{ selectedKey, onSelect: setSelectedKey, onOpen: key => setOpened(exampleTasks.find(row => row.id === key)?.title) }} />
-  <p className="rv-p3-note">One line, 48 high. Selected row sits on sunken with a marker bar and opens the side peek. Enter opens the full task; J and K move.</p>
+  <p className="rv-p3-note">One line, 48 high on desktop; on phone, two lines with the owner and time under the title. Selected row sits on sunken with a marker bar and opens the side peek. Enter opens the full task; J and K move.</p>
   {opened && <p>Opened task: {opened}</p>}
  </div>;
 }
