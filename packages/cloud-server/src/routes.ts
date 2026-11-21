@@ -34,6 +34,8 @@ import { EVAL_CHECK_ROUTES } from "./eval-check-routes.js";
 import { ANSWERS_ROUTES } from "./answers-routes.js";
 import { AGENT_DIRECTORY_ROUTES } from "./agent-directory-routes.js";
 import { SYSTEM_RUNS_ROUTES } from "./system-runs-routes.js";
+import { TASK_START_REQUEST_ROUTES } from "./task-start-request-routes.js";
+import { GITHUB_DISCONNECT_PREVIEW_ROUTES } from "./github-disconnect-preview-routes.js";
 import { MERGE_ROUTES } from "./merge-routes.js";
 import { SETUP_REPAIR_ROUTES } from "./setup-repair-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
@@ -68,6 +70,8 @@ export interface RouteContext {
   body: unknown;
   org: OrgView;
   now: () => Date;
+  /** Selected bounded readers retain one deadline across session-recovery attempts. */
+  serverReadDeadline?: number;
   /** Cloud's sessions (phase 2). */
   work: WorkSessionStore;
   /** The address the app is served at, for session links. */
@@ -1173,6 +1177,8 @@ export const ROUTES: Route[] = [
   // L4-P3: the company's one control over nightly upkeep (read, allow, withdraw): company owners and admins only; Code decides again.
   ...SYSTEM_RUNS_ROUTES,
   ...MERGE_ROUTES,
+  ...TASK_START_REQUEST_ROUTES,
+  ...GITHUB_DISCONNECT_PREVIEW_ROUTES,
   // L4-U5: the "Setup needs repair" card on a project's setup page and its "Re-check setup" button, passed to Code as the person; Code decides who may.
   ...SETUP_REPAIR_ROUTES,
   // The admin portal's Cost and time report (Feature A, slice A3): Code's one-row-per-task read, grouped here for a company owner or admin.

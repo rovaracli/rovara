@@ -70,7 +70,10 @@ export const codeOutcomeUnknown = (): CodeError => new CodeOutcomeUnknown(503, {
  * metadata, never part of the answer, so it is set aside here once, before any route checks the answer strictly (an exact-keys check would refuse every
  * answer otherwise). Only a plain object's top-level string `requestId` on a `/v1/dev/` path is removed; nothing else is touched.
  */
-export function withoutTraceId(path: string, body: unknown): unknown {
+export function withoutTraceId(path: string, body: unknown, method = "GET"): unknown {
+  if (method.toUpperCase() === "POST" && path === "/v1/dev/company/connections/impact") return body;
+  // This exact GET carries the original domain ID, not a broker trace.
+  if (method.toUpperCase() === "GET" && /^\/v1\/dev\/tasks\/start-requests\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(path)) return body;
   if (!path.startsWith("/v1/dev/") || body === null || typeof body !== "object" || Array.isArray(body) || Object.getPrototypeOf(body) !== Object.prototype) return body;
   const value = body as Record<string, unknown>;
   if (typeof value["requestId"] !== "string") return body;
@@ -112,6 +115,72 @@ const TOKEN_CALL_MS = 10_000;
 /** The sign-in page's offer: how long an answer is kept, and how long Code gets to give it (a slow Code must not hold the page). */
 const OFFER_TTL_MS = 30_000;
 const OFFER_CALL_MS = 3_000;
+
+/** R1a permits at most 32 rows, 2,048-character URLs and 600-character refusals; 256 KiB leaves room for their JSON encoding. */
+export const MERGE_RECEIPT_MAX_BYTES = 256 * 1024;
+/** One receipt call, including a refresh and final body decode. */
+export const MERGE_RECEIPT_CALL_MS = 25_000;
+
+export class CodeResponseTooLarge extends Error {
+  constructor() { super("Rovara Code's response exceeded the receipt limit"); }
+}
+
+class CodeResponseDeadline extends Error {
+  constructor() { super("Rovara Code's response exceeded the receipt deadline"); }
+}
+
+function remaining(deadline: number): number {
+  const value = deadline - Date.now();
+  if (value <= 0) throw new CodeResponseDeadline();
+  return value;
+}
+
+async function beforeDeadline<T>(work: Promise<T>, deadline: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new CodeResponseDeadline()), remaining(deadline));
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function boundedJson(response: Response, deadline: number, maxBytes: number): Promise<unknown> {
+  if (response.body === null) throw new SyntaxError("Missing JSON response body");
+  const declared = response.headers.get("content-length");
+  if (declared !== null && /^\d+$/u.test(declared) && Number(declared) > maxBytes) {
+    void response.body.cancel().catch(() => undefined);
+    throw new CodeResponseTooLarge();
+  }
+  const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await beforeDeadline(reader.read(), deadline);
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        void reader.cancel().catch(() => undefined);
+        throw new CodeResponseTooLarge();
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    void reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    try { reader.releaseLock(); } catch { /* Cancellation may still be resolving a stalled read. */ }
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+}
 
 export class CodeClient {
   private readonly base: string;
@@ -234,15 +303,26 @@ export class CodeClient {
     return access;
   }
 
-  /** A JSON call to Code as the person. CodeError carries refusals or a write's unknown outcome; an ended read throws SignInEnded. */
-  async json<T>(session: CodeSession, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
-    const response = await this.call(session, path, init);
-    const body: unknown = await response.json().catch(() => undefined);
+  /** A JSON call to Code as the person. Throws CodeError for Code's refusals and SignInEnded when no refresh is possible. */
+  async json<T>(session: CodeSession, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string>; expectedStatus?: 200; boundedRead?: { deadlineMs: number; maxBytes: number } } = {}): Promise<T> {
+    const deadline = init.boundedRead === undefined ? undefined : Date.now() + init.boundedRead.deadlineMs;
+    const response = await this.call(session, path, init, deadline);
+    let body: unknown;
+    if (deadline !== undefined) {
+      try { body = await boundedJson(response, deadline, init.boundedRead!.maxBytes); }
+      catch (error) {
+        if (error instanceof CodeResponseTooLarge || error instanceof CodeResponseDeadline) throw error;
+        body = undefined;
+      }
+    } else {
+      body = await response.json().catch(() => undefined);
+    }
+    if (init.expectedStatus !== undefined && response.status !== init.expectedStatus) throw new CodeError(response.status, body);
     if (!response.ok) throw new CodeError(response.status, body);
-    return withoutTraceId(path, body) as T;
+    return withoutTraceId(path, body, init.method) as T;
   }
 
-  private async call(session: CodeSession, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> }): Promise<Response> {
+  private async call(session: CodeSession, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string>; expectedStatus?: 200; boundedRead?: { deadlineMs: number; maxBytes: number } }, deadline?: number): Promise<Response> {
     const method = (init.method ?? "GET").toUpperCase();
     // A request id alone is insufficient: Code's receipt lookup may follow a permission check.
     // No write replay is enabled: the verified receipt candidates check permission first.
@@ -252,10 +332,12 @@ export class CodeClient {
       method: init.method ?? "GET",
       headers: { ...init.headers, authorization: `Bearer ${token}`, ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+      ...(deadline === undefined ? {} : { signal: AbortSignal.timeout(remaining(deadline)), redirect: "error" }),
     });
     const used = session.accessToken;
     if (!mayResend) writesSent.set(session, codeWritesSent(session) + 1);
-    const first = await send(used);
+    const firstWork = send(used);
+    const first = deadline === undefined ? await firstWork : await beforeDeadline(firstWork, deadline);
     if (first.status !== 401) return first;
     try {
       // Another call may already have refreshed the token while this one was out.
@@ -265,7 +347,7 @@ export class CodeClient {
           pending = this.refresh(session).finally(() => { this.refreshing.delete(session); });
           this.refreshing.set(session, pending);
         }
-        const outcome = await pending;
+        const outcome = deadline === undefined ? await pending : await beforeDeadline(pending, deadline);
         if (outcome === "busy") throw new CodeError(503, { error: { code: "RUNTIME_UNAVAILABLE", message: "Your Rovara sign-in is being renewed. Try again in a moment." } });
         if (outcome !== "ok") throw new SignInEnded();
       }
@@ -276,11 +358,12 @@ export class CodeClient {
       throw error;
     }
     if (!mayResend) throw codeOutcomeUnknown();
-    const second = await send(session.accessToken);
+    const secondWork = send(session.accessToken);
+    const second = deadline === undefined ? await secondWork : await beforeDeadline(secondWork, deadline);
     if (second.status === 401) {
       // A 401 on a fresh token can come from Code's gateway for a path Code doesn't serve (a legacy install has no /v1/app/*).
       // Only Code's own access check refusing the sign-in ends it; otherwise the path is answered as not on Code yet.
-      if (path !== "/v1/dev/access" && await this.accessWith(session.accessToken) !== undefined) {
+      if (path !== "/v1/dev/access" && await this.accessWith(session.accessToken, deadline) !== undefined) {
         throw new CodeError(501, { error: { code: "NOT_ON_CODE_YET", message: "This isn't available on this Rovara Code yet." } });
       }
       throw new SignInEnded();
@@ -359,8 +442,15 @@ export class CodeClient {
     return response.status === 400 && body.error === "invalid_grant" ? { kind: "refused" } : { kind: "failed" };
   }
 
-  private async accessWith(accessToken: string): Promise<CodeAccess | undefined> {
-    const response = await this.fetchImpl(`${this.base}/v1/dev/access`, { method: "POST", headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" }, body: "{}" });
-    return response.ok ? await response.json() as CodeAccess : undefined;
+  private async accessWith(accessToken: string, deadline?: number): Promise<CodeAccess | undefined> {
+    const responseWork = this.fetchImpl(`${this.base}/v1/dev/access`, {
+      method: "POST", headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" }, body: "{}",
+      ...(deadline === undefined ? {} : { signal: AbortSignal.timeout(remaining(deadline)) }),
+    });
+    const response = deadline === undefined ? await responseWork : await beforeDeadline(responseWork, deadline);
+    if (!response.ok) return undefined;
+    return deadline === undefined
+      ? await response.json() as CodeAccess
+      : await boundedJson(response, deadline, MERGE_RECEIPT_MAX_BYTES) as CodeAccess;
   }
 }
