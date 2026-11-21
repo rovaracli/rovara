@@ -86,6 +86,7 @@ it("preserves the server refusal message on a failed page", () => { const f = re
 it("mounts the foundation gallery from its real lazy route without a feature switch", async () => {
  const f = shell("/app/design-system");
  expect(await screen.findByRole("heading", { name: "A calm control room", level: 1 })).toBeTruthy();
+ expect(f.container.querySelector("main")?.getAttribute("data-bleed")).toBe("true");
  for (const name of ["Colour roles", "Type: five sizes, two weights", "Space: 4px base", "Focus and selection"]) expect(screen.getByRole("region", { name })).toBeTruthy();
  f.close();
 });

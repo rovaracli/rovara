@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, expect, it } from "vitest";
-import { cleanup, screen } from "@testing-library/react";
+import { cleanup, screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { LOOK_COLORS, contrastRatio, lookV2Css } from "../../packages/design-tokens/src/index.js";
 import { renderUi } from "./support/render.js";
@@ -55,7 +55,7 @@ it("copies each bundled font with its OFL licence next to it", () => {
 it("gives keyboard focus a two-pixel offset and selection a separate text-coloured bar", () => {
  const css = read("packages/ui/src/design/design.css"), shell = read("packages/ui/src/shell/shell.css");
  expect(css).toContain("text-overflow:ellipsis;min-height:var(--rv-control-size,36px)");
- expect(css).toContain(":focus-visible{outline:2px solid var(--rv-focus);outline-offset:2px}");
+ expect(css).toContain(":focus-visible,input:focus,textarea:focus,.rv-ds-gallery .is-focus-demo{outline:2px solid var(--rv-focus);outline-offset:2px}");
  expect(css).toContain('.rv-selected{background:var(--rv-bg-sunken);color:var(--rv-text);font-weight:600;');
  expect(css).toContain("border-inline-start:3px solid var(--rv-text)");
  expect(shell).toContain("border-inline-start:3px solid var(--rv-text)");
@@ -68,12 +68,51 @@ for (const theme of ["light", "dark"] as const) it(`${theme}: gallery demonstrat
  renderUi(h(DesignSystemGallery), { theme });
  expect(screen.getByRole("heading", { level: 1, name: "A calm control room" })).toBeTruthy();
  expect(screen.getByText("a3f9c1e · poetry install --no-interaction").tagName).toBe("CODE");
- expect(screen.getByRole("button", { name: "Inbox", pressed: true }).className).toContain("rv-selected");
+ expect(screen.getByRole("button", { name: "Inbox, 3 waiting", pressed: true }).className).toContain("rv-selected");
  const next = screen.getByRole("button", { name: "Work", pressed: false });
  await userEvent.click(next);
  expect(next.getAttribute("aria-pressed")).toBe("true");
- expect(screen.getByRole("button", { name: "Inbox" }).getAttribute("aria-pressed")).toBe("false");
+ expect(screen.getByRole("button", { name: "Inbox, 3 waiting" }).getAttribute("aria-pressed")).toBe("false");
  const composer = screen.getByRole("textbox", { name: "Composer with focus" });composer.focus();
  expect(document.activeElement).toBe(composer);
+ expect(composer.tagName).toBe("INPUT");
+ expect(composer.classList.contains("is-focus-demo")).toBe(true);
+ const focus = screen.getByRole("region", { name: "Focus and selection" });
+ for (const name of ["Request changes", "Review evidence", "Rotate webhook signing secrets"]) expect(within(focus).getByRole("button", { name }).classList.contains("is-focus-demo")).toBe(true);
+ expect(within(focus).getByText("Add refunds endpoint").classList.contains("rv-selected")).toBe(true);
+ expect(within(focus).getByText("keyboard focus")).toBeTruthy();
+ const inbox = within(focus).getByRole("button", { name: "Inbox, 3 waiting" });
+ expect(inbox.querySelector("svg[aria-hidden=true]")).toBeTruthy();
+ expect(within(inbox).getByText("3")).toBeTruthy();
+ expect(within(focus).getByText("Selected: bar, weight and text colour")).toBeTruthy();
+ expect(within(focus).getByText("Focus ring: 2 px, running blue, 2 px offset")).toBeTruthy();
  await expectNoAxeViolations(document.body);
+});
+
+it("statically exports the mounted gallery from the design barrel", async () => {
+ const { DesignSystemGallery } = await import("../../packages/ui/src/design/index.js");
+ renderUi(h(DesignSystemGallery));
+ expect(screen.getByRole("heading", { name: "A calm control room", level: 1 })).toBeTruthy();
+});
+it("keeps control notes and reversed accent text in both role panels", async () => {
+ const { DesignSystemGallery } = await import("../../packages/ui/src/design/DesignSystemGallery.js");
+ renderUi(h(DesignSystemGallery));
+ for (const label of screen.getAllByText("border-strong")) expect(label.parentElement?.textContent).toContain("· controls");
+ for (const label of screen.getAllByText("accent")) {
+  expect(label.parentElement?.textContent).toContain("· actions only");
+  expect(label.parentElement?.querySelector(".rv-ds-swatch")?.textContent).toBe("Aa");
+ }
+ expect(screen.queryByText("Reading column · 760px")).toBeNull();
+ expect(screen.queryByText("Tables · 1200px · rows 48px")).toBeNull();
+ expect(screen.getByText(/Reading column 760, tables 1,200/)).toBeTruthy();
+});
+it("preserves desktop sample space and readable phone role names", () => {
+ const css = read("packages/ui/src/design/design.css");
+ expect(css).toContain(".rv-ds-gallery{max-width:1344px;");
+ expect(css).toContain("grid-template-columns:140px minmax(0,1fr)");
+ expect(css).toContain(".rv-ds-swatches dt{white-space:nowrap;");
+ expect(css).toContain("@media(max-width:359px){.rv-ds-swatches{grid-template-columns:minmax(0,1fr)}}");
+ expect(css).toContain(".rv-ds-space-list dt{width:24px;font:400 var(--rv-font-md)/1.55 var(--rv-font-ui)");
+ expect(css).toContain(".rv-ds-space-list>div{display:flex;align-items:baseline;");
+ expect(css).toContain(".rv-ds-composer{height:max(44px,var(--rv-control-size));border-radius:8px}");
 });
