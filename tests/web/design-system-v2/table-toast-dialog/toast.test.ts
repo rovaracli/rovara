@@ -11,7 +11,10 @@ for (const theme of ["light", "dark"] as const) describe(`${theme} toast`, () =>
  it("offers Undo only for a reversible action and invokes it once", async () => {
   const onUndo = vi.fn(), onDismiss = vi.fn();
   renderUi(h(Announcer, null, h(Toast, { message: "Stopped following this task.", onUndo, onDismiss })), { theme });
-  const undo = screen.getByRole("button", { name: "Undo" }); fireEvent.click(undo); fireEvent.click(undo);
+  const undo = screen.getByRole("button", { name: "Undo" });
+  expect(screen.queryByRole("button", { name: "Dismiss notification" })).toBeNull();
+  expect(screen.getAllByRole("button")).toHaveLength(1);
+  fireEvent.click(undo); fireEvent.click(undo);
   expect(onUndo).toHaveBeenCalledTimes(1); expect(onDismiss).toHaveBeenCalledTimes(1);
   expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
   await expectNoAxeViolations(document.body);
