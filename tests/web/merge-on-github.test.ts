@@ -228,7 +228,7 @@ it("a reply that never arrives leaves the original request unresolved: Merge loc
   fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Press Merge" }));
   await waitFor(() => expect(region().querySelector(".rv-merge-state")!.textContent).toBe("The result isn't confirmed yet"));
   const text = region().textContent;
-  for (const words of ["What happened", "acme/payments #42 at aaaaaaa", "no reply was seen", "won't send a second one", "Nothing was deployed", "Check again only reads: it never sends the merge again", "MERGE-RESULT-UNKNOWN"]) expect(text).toContain(words);
+  for (const words of ["What happened", "acme/payments #42 at aaaaaaa", "Its result isn't confirmed", "won't send a second one", "Nothing was deployed", "Check again only reads: it never sends the merge again", "MERGE-RESULT-UNKNOWN"]) expect(text).toContain(words);
   expect(text).not.toContain("private provider text");
   const button = screen.getByRole("button", { name: /^Merge #42/u });
   expect(button.hasAttribute("disabled")).toBe(true);

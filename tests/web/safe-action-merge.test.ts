@@ -16,18 +16,20 @@ const id = "ses_aaaaaaaaaaaaaaaaaaaa", org = "org_aaaaaaaaaaaaaaaaaaaa", person 
 const subject = org + "|" + person + "|" + id, key = "rovara.merge.pending.v1:" + subject;
 const success = { status: 200, body: { status: "MERGED", pullRequests: [{ repositoryId: "acme/payments", number: 42 }] } };
 const tracked = { orgId: org, taskId: "11111111-1111-4111-8111-111111111111", repositoryId: "acme/payments", number: 42, version: 1, headSha: sha, draft: false, state: "open", baseBranch: "main", ci: "passing", ciBasis: "required", checksEverSeen: true, failingChecks: [], review: "approved", branch: "up_to_date", headByRovara: true, nudges: { count: 0 }, syncs: { day: "2026-10-23", count: 0 }, decisionDigest: "b".repeat(64), observedAt: "2026-10-23T12:00:00.000Z" };
-function setup(post: () => Promise<typeof success>) {
+function setup(post: () => Promise<typeof success>, state: () => "open" | "closed" = () => "open") {
  localStorage.clear();
- const session = SessionViewReaderSchema.parse(workspaceFixture({ sessionId: id }, { pullRequests: [{ repository: "acme/payments", number: 42, url: "https://github.com/acme/payments/pull/42", state: "open" }], mergeTracking: [tracked], merge: { ready: true, risk: { level: "low", reasons: [] } } }));
+ const session = () => SessionViewReaderSchema.parse(workspaceFixture({ sessionId: id }, { pullRequests: [{ repository: "acme/payments", number: 42, url: "https://github.com/acme/payments/pull/42", state: state() }], mergeTracking: [{ ...tracked, state: state() }], merge: { ready: true, risk: { level: "low", reasons: [] } } }));
  const f = fakeHost(async request => {
   if (request.path === "/v1/app/me") return { status: 200, body: { developer: { id: person, name: "Ana", orgRole: "owner" }, org: { orgId: org, name: "Acme", plan: "team" }, identities: [] } };
   if (request.path.endsWith("/merge") && request.method === "POST") return post();
   if (request.path.endsWith("/merge")) return { status: 200, body: { mayMerge: true, ready: true, risk: "low", heads: [{ repositoryId: "acme/payments", number: 42, headSha: sha }], pullRequests: [{ repositoryId: "acme/payments", number: 42 }] } };
-  return { status: 200, body: { session } };
+  return { status: 200, body: { session: session() } };
  });
  const mount = () => {
   const query = createQueryClient();
-  return renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MergeSection, { sessionId: id, task: workspaceTask(session)! }) }) }));
+  const element = () => h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MergeSection, { sessionId: id, task: workspaceTask(session())! }) }) });
+  const ui = renderUi(element());
+  return { ...ui, show: () => ui.rerender(h("div", { "data-theme": "light" }, element())) };
  };
  return { ...f, mount, posts: () => f.request.mock.calls.filter(([request]) => request.method === "POST") };
 }
@@ -146,4 +148,53 @@ it.each(["unsupported", "failed"] as const)("mounted Merge maps %s claim to the 
   expect(alert.textContent).toBe("This browser can't make sure two tabs don't merge at once, so nothing was sent. Merge it on GitHub.");
   expect(screen.queryByRole("dialog")).toBeNull();expect(f.posts()).toHaveLength(0);expect(localStorage.getItem(key)).toBeNull();
  } finally { Object.defineProperty(navigator, "locks", saved); }
+});
+
+it("Edge-B: received MERGED then read CLOSED tells the truth, keeps pending and only checks across reload", async () => {
+ let closed = false;
+ const f = setup(async () => success, () => closed ? "closed" : "open"), first = f.mount(), button = await confirm(), remove = Storage.prototype.removeItem.bind(localStorage);
+ let denied = false;
+ vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, name) { if (name === key && !denied) { denied = true;throw new Error("pending clear denied once"); }remove(name); });
+ fireEvent.click(button);
+ await screen.findByRole("heading", { name: "Merge accepted" });
+ expect(screen.getByText("Merged acme/payments #42.")).toBeTruthy();
+ const frozen = localStorage.getItem(key);expect(frozen).not.toBeNull();
+ closed = true;first.show();
+ fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+ await screen.findByRole("heading", { name: "The result isn't confirmed yet" });
+ const region = screen.getByRole("region", { name: "Merge" });
+ expect(region.textContent).toContain("Code answered that these were merged");
+ expect(region.textContent).toContain("closed without a merge");
+ expect(region.textContent).not.toContain("no reply was seen");
+ expect(screen.queryByText("Merged acme/payments #42.")).toBeNull();expect(screen.getByText("Closed")).toBeTruthy();
+ expect(screen.queryByRole("button", { name: /^Merge #/u })).toBeNull();
+ expect(localStorage.getItem(key)).toBe(frozen);expect(f.posts()).toHaveLength(1);
+ const checkOnly = async () => {
+  const reads = f.request.mock.calls.filter(([request]) => request.method === "GET").length;
+  fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+  await waitFor(() => expect(f.request.mock.calls.filter(([request]) => request.method === "GET").length).toBeGreaterThan(reads));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Check again" }).disabled).toBe(false));
+  expect(localStorage.getItem(key)).toBe(frozen);expect(f.posts()).toHaveLength(1);
+ };
+ await checkOnly();first.unmount();f.mount();
+ await screen.findByRole("heading", { name: "The result isn't confirmed yet" });
+ expect(screen.getByRole("region", { name: "Merge" }).textContent).not.toContain("no reply was seen");
+ expect(screen.getByText("Closed")).toBeTruthy();expect(screen.queryByRole("button", { name: /^Merge #/u })).toBeNull();
+ await checkOnly();
+});
+it("legacy candidate: unavailable pending cannot display a tampered pre-upgrade receipt or send after reload", async () => {
+ const f = setup(async () => success), first = f.mount(), button = await confirm(), remove = Storage.prototype.removeItem.bind(localStorage), read = Storage.prototype.getItem.bind(localStorage);
+ vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, name) { if (name === key) throw new Error("pending retained");remove(name); });
+ fireEvent.click(button);await screen.findByRole("heading", { name: "Merge accepted" });
+ const acceptedKey = "rovara.merge.accepted.v1:" + subject, raw = JSON.parse(read(acceptedKey)!) as Record<string, unknown>;
+ first.unmount();delete raw.__safeActionCanonical;
+ localStorage.setItem(acceptedKey, JSON.stringify({ ...raw, requestId: "22222222-2222-4222-8222-222222222222", words: "NOT THE SERVER ANSWER" }));
+ const frozen = read(key);expect(frozen).not.toBeNull();
+ vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, name) { if (name === key) throw new Error("pending unavailable");return read(name); });
+ f.mount();await screen.findByRole("heading", { name: /Merge accepted|Merge is locked in this browser/u });
+ expect(screen.queryByRole("heading", { name: /Merge accepted/u })).toBeNull();
+ expect(screen.getByRole("heading", { name: "Merge is locked in this browser" })).toBeTruthy();
+ expect(screen.queryByText("NOT THE SERVER ANSWER")).toBeNull();
+ const merge = await screen.findByRole<HTMLButtonElement>("button", { name: /^Merge #42/u });expect(merge.disabled).toBe(true);fireEvent.click(merge);
+ expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();expect(read(key)).toBe(frozen);expect(f.posts()).toHaveLength(1);
 });
