@@ -31,7 +31,7 @@ function applyStyles(theme: "light" | "dark", width?: number) {
    ? [...rule.cssRules].map(child => child.cssText).join("\n") : rule.cssText;
  }).join("\n");
 }
-for (const width of [320, 390]) it(`gives the task title the remaining width beside an intrinsic status at ${width}px`, () => {
+for (const width of [320, 390]) it(`uses the phone table inset and header height at ${width}px`, () => {
  renderUi(h(tableToastDialogGalleryScenes[0].render));
  applyStyles("light", width);
  const table = screen.getByRole("table", { name: "Tasks" });
@@ -45,6 +45,12 @@ for (const width of [320, 390]) it(`gives the task title the remaining width bes
  expect(getComputedStyle(title.closest("td")!).minWidth).toBe("0px");
  expect(getComputedStyle(title.closest("tr")!).height).toBe("auto");
  expect(getComputedStyle(title.closest("tr")!).minHeight).toBe("48px");
+ for (const cell of table.querySelectorAll("th, td")) {
+  expect(getComputedStyle(cell).paddingLeft).toBe("16px");
+  expect(getComputedStyle(cell).paddingRight).toBe("16px");
+ }
+ expect(getComputedStyle(table.querySelector("thead tr")!).height).toBe("calc(40px)");
+ expect(screen.getByText(/on phone, two lines with the owner and time under the title/i)).toBeTruthy();
 });
 for (const theme of ["light", "dark"] as const) {
  it(`uses a visible ok-green check and 16px text on the ${theme} inverse toast`, () => {
