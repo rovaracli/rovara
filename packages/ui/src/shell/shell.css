@@ -14,3 +14,14 @@
 }
 
 @media(max-width:639px){.rv-shell-main{padding:48px 16px}.rv-shell-main[data-bleed]{padding:0}}
+
+/* Sheet gallery uses the full board width; all other pages retain workspace navigation. */
+.rv-shell-sheet{grid-template-columns:minmax(0,1fr)}
+.rv-shell-sheet>.rv-shell-sidebar{display:none}
+.rv-shell-sheet .rv-mobile-menu{display:inline-flex}
+.rv-shell-main{padding:var(--rv-space-7);min-width:0}
+.rv-shell-main[data-bleed]{padding:0}
+.rv-sidebar-nav{gap:var(--rv-space-6)}
+.rv-sidebar-nav a{min-height:var(--rv-control-size);overflow-wrap:anywhere}
+@media(max-width:1023px){.rv-shell-main{padding:var(--rv-space-6) var(--rv-space-5)}.rv-shell-main[data-bleed]{padding:0}}
+@media(max-width:639px){.rv-shell-main{padding:var(--rv-space-7) var(--rv-space-4)}.rv-shell-main[data-bleed]{padding:0}}
