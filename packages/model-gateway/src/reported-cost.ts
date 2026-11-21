@@ -22,8 +22,9 @@ export function validUsage(value: unknown): value is TokenUsage {
   return whole(u.cacheWrite5m) && whole(u.cacheWrite1h) && u.cacheWrite5m + u.cacheWrite1h === u.cacheWrite;
 }
 export function hasUsage(usage: TokenUsage): boolean { return usage.input + usage.output + usage.cacheRead + usage.cacheWrite > 0; }
-export function settleChargeAmount(input: { reportedCostMicros?: number; usage?: TokenUsage; price: ResolvedPrice; reservationMicros: number }): { actualMicros: number; estimated: boolean; status: "final" | "estimated" | "awaiting_usage"; reason: "rated_usage" | "reported_cost" | "derived_rate" | "missing_usage"; usage?: TokenUsage } {
+export function settleChargeAmount(input: { reportedCostMicros?: number; retainMissingUsage?: boolean; usage?: TokenUsage; price: ResolvedPrice; reservationMicros: number }): { actualMicros: number; estimated: boolean; status: "final" | "estimated" | "awaiting_usage"; reason: "rated_usage" | "reported_cost" | "derived_rate" | "missing_usage"; usage?: TokenUsage } {
   if (!validUsage(input.usage) || !hasUsage(input.usage)) {
+    if (input.retainMissingUsage) return { actualMicros: Math.max(input.reservationMicros, whole(input.reportedCostMicros) ? input.reportedCostMicros : 0), estimated: true, status: "awaiting_usage", reason: "missing_usage" };
     if (whole(input.reportedCostMicros) && input.reportedCostMicros > 0) return { actualMicros: input.reportedCostMicros, estimated: false, status: "final", reason: "reported_cost" };
     return { actualMicros: input.reservationMicros, estimated: true, status: "awaiting_usage", reason: "missing_usage" };
   }

@@ -48,7 +48,7 @@ function gateway(options: { rovaraModels?: string[]; noRovara?: boolean; disable
   const bedrockConnected = new Set<string>();
   let byoFail = false;
   const rovaraSent: ProviderRequest[] = []; const keySent: ProviderRequest[] = []; const byoSent: ProviderRequest[] = [];
-  const rovara: RovaraAi = { models: new Map((options.rovaraModels ?? [SHARED, ROVARA_ONLY]).map((m) => [m, m === SHARED ? BEDROCK_ID_2 : BEDROCK_ID])), exempt: new Set(), transport: async (request) => { rovaraSent.push(request); return { status: 200, body: answer() }; } };
+  const rovara: RovaraAi = { models: new Map((options.rovaraModels ?? [SHARED, ROVARA_ONLY]).map((m) => [m, m === SHARED ? BEDROCK_ID_2 : BEDROCK_ID])), exempt: new Set([cidA]), transport: async (request) => { rovaraSent.push(request); return { status: 200, body: answer() }; } };
   const byo = {
     async connection(iss: string, cid: string) { if (byoFail) throw new Error("down"); return bedrockConnected.has(cid) ? { row: { iss, cid, owner: "_company", sourceId: "src_bedrock", versionId: "11111111-1111-4111-8111-111111111111" }, connection: conn() } : undefined; },
     sessions: { credentials: async () => ({ ok: true as const, credentials: { accessKeyId: "ASIAEXAMPLE", secretAccessKey: "s", sessionToken: "t", expiresAt: Date.now() + 3_600_000 } }), forget: () => undefined },
@@ -78,13 +78,13 @@ describe("agent route: the company's saved order", () => {
     expect(sources(g)).toEqual([{ event: "agent_source", company: cidA, source: "company_key", via: "chosen" }]);
   });
 
-  it("own key first, then Rovara's AI: with no key connected the call goes to Rovara's AI, billed to the company, logged as a fallback", async () => {
+  it("own key first, then Rovara's AI: with no key connected the call goes to Rovara's AI, recorded as exempt, logged as a fallback", async () => {
     const g = gateway();
     g.orders.saved.set(cidA, { source: "anthropic_key", fallback: ["rovara"] });
     expect((await agent(g, SHARED)).status).toBe(200);
     expect(g.rovaraSent).toHaveLength(1);
     expect(g.keySent).toEqual([]);
-    expect(g.meter.billedCalls(claims.iss, cidA)).toMatchObject([{ line: { source: "rovara_ai", charge: "customer" } }]);
+    expect(g.meter.billedCalls(claims.iss, cidA)).toMatchObject([{ line: { source: "rovara_ai", charge: "exempt" } }]);
     expect(sources(g)).toEqual([{ event: "agent_source", company: cidA, source: "rovara", via: "fallback" }]);
   });
 

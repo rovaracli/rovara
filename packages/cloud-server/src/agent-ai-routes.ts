@@ -14,7 +14,7 @@
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction } from "./audit-log.js";
 import { AGENT_AI_SOURCES, agentSourceSwitchedOn, CompanyStoreConflict, effectiveAgentSource, type AgentAiChoice, type AgentAiSource } from "./company-store.js";
-import { bedrockConnected } from "./bedrock-byo-routes.js";
+import { BEDROCK_OWNER, bedrockConnected } from "./bedrock-byo-routes.js";
 import { LEARNING_AI_OWNER } from "./learning-ai-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
@@ -67,8 +67,16 @@ async function keyConnected(context: RouteContext, companyId: string, provider: 
     return view.sources.some((s) => s.provider === provider && s.hasKey && s.available);
   } catch { return null; }
 }
-/** For the default only: a Cloud with no Bedrock backend has no own Bedrock to prefer (the gateway builds it from the same switch), so that reads "not connected"; a backend that cannot be read stays null (cannot tell). */
-export const bedrockForDefault = (context: Pick<RouteContext, "productAi">, read: boolean | null): boolean | null => context.productAi?.bedrock === undefined ? false : read;
+/** Source identity survives an absent transport adapter. Read metadata only, as the gateway does; availability still requires the backend. */
+export async function bedrockForDefault(context: Pick<RouteContext, "productAi">, companyId: string, read: boolean | null): Promise<boolean | null> {
+  const backend = context.productAi;
+  if (backend === undefined) return null;
+  if (backend.bedrock !== undefined) return read;
+  try {
+    const view = await backend.store.view(backend.issuer, companyId, BEDROCK_OWNER);
+    return view.sources.some((s) => s.provider === "bedrock" && s.hasKey && s.available);
+  } catch { return null; }
+}
 export const anthropicKeyConnected = (context: RouteContext, companyId: string) => keyConnected(context, companyId, "anthropic");
 /** The learning document's revision (what an endpoint write sends as expectedRevision), or null when this Cloud can't tell. */
 async function keysRevision(context: RouteContext, companyId: string): Promise<number | null> {
@@ -99,7 +107,13 @@ export async function agentSourceAvailability(context: RouteContext, companyId: 
 async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
   let saved;
   try { saved = await context.company!.store.agentAi(who.companyId); } catch { return WORDS.unavailable; }
+  const anthropic = await anthropicKeyConnected(context, who.companyId);
+  if (saved === undefined && anthropic === null) return WORDS.unavailable;
   const bedrock = await bedrockConnected(context, who.companyId);
+  // Match gateway source resolution even without an adapter. A stored own source is then not offered;
+  // unreadable metadata cannot be reported as company-billed Rovara AI.
+  const effective = effectiveAgentSource({ saved: saved?.source, exempt: false, keyConnected: anthropic, bedrockConnected: await bedrockForDefault(context, who.companyId, bedrock) });
+  if (saved === undefined && effective.source === null) return WORDS.unavailable;
   // DEC 254t: an own-key source is listed only where its kind is switched on (elsewhere this answer is exactly as before), and
   // available only once its key is connected (the gateway would refuse every call otherwise).
   // A stored endpoint stays listed (not choosable) after its kind is switched off, so it can still be seen and removed (A3-REVIEW-1 L3).
@@ -107,18 +121,14 @@ async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
   const listed = AGENT_AI_SOURCES.filter((source) => ALWAYS_LISTED.includes(source) || switchedOn(context, source) || (source === "custom_endpoint" && storedEndpoint));
   const keys: Partial<Record<AgentAiSource, boolean | null>> = {};
   for (const source of listed) { const provider = KEY_OF[source]; if (provider !== undefined) keys[source] = await keyConnected(context, who.companyId, provider); }
-  // DEC 254zzz3(1): for an exempt company with no saved choice, what its agents use now (the gateway's default). Only for such a company is a
-  // connection read for it; anyone else is answered exactly as before (neither field is added).
-  const exempt = saved === undefined && context.company?.rovaraAiExempt?.has(who.companyId) === true;
-  const effective = effectiveAgentSource({ saved: saved?.source, exempt, keyConnected: exempt ? await anthropicKeyConnected(context, who.companyId) : null, bedrockConnected: exempt ? bedrockForDefault(context, bedrock) : null });
   return ok({
     source: saved?.source ?? null,
-    // Added only for a company on the default: every other answer is byte for byte what it was.
+    // No row is written merely to accept the default. Explicit choices keep their saved source/version.
     ...(effective.isDefault ? { effectiveSource: effective.source, sourceIsDefault: true } : {}),
     version: saved?.version ?? 0,
     canChange: true,
     choices: listed.map((source) => ({ source, available: AGENT_AI_CHOOSABLE.includes(source) && switchedOn(context, source) && (source !== "bedrock_byo" || bedrock === true) && (KEY_OF[source] === undefined || keys[source] === true) })),
-    anthropicKeyConnected: await anthropicKeyConnected(context, who.companyId),
+    anthropicKeyConnected: anthropic,
     bedrockConnected: bedrock,
     ...(keys.openai_key === undefined ? {} : { openaiKeyConnected: keys.openai_key }),
     ...(keys.openrouter_key === undefined ? {} : { openrouterKeyConnected: keys.openrouter_key }),

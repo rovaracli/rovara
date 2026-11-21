@@ -16,7 +16,8 @@ const buildCommands = (environmentName: string) => {
   const project = Object.values(template.findResources("AWS::CodeBuild::Project")).map((each) => each.Properties as { Name: string; Source: { BuildSpec: string | { "Fn::Join": [string, unknown[]] } } }).find((each) => each.Name === `rovara-cloud-${environmentName}-deploy`)!;
   const source = project.Source.BuildSpec;
   const text = typeof source === "string" ? source : source["Fn::Join"][1].map((part) => (typeof part === "string" ? part : "<token>")).join("");
-  return { template, script: (JSON.parse(text) as { phases: { build: { commands: string[] } } }).phases.build.commands[0]! };
+  const spec = JSON.parse(text) as { env: { variables: Record<string, string> }; phases: { build: { commands: string[] } } };
+  return { template, variables: spec.env.variables, script: spec.phases.build.commands[0]! };
 };
 const bootstrapRoles = (account: string) => CDK_BOOTSTRAP_ASSUMED_ROLES.map((role) => `arn:aws:iam::${account}:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-${role}-${account}-us-east-1`);
 
@@ -32,6 +33,15 @@ describe("Cloud release pipeline: the account it deploys into", () => {
     const { script } = buildCommands("beta");
     expect(script.split("\n").find((line) => line.startsWith("npx cdk deploy"))).toContain(`-c ${DEPLOY_ACCOUNT_CONTEXT_KEY}=${BETA}`);
     expect(script).toContain(`arn:aws:iam::${BETA}:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-lookup-role-${BETA}-$AWS_REGION`);
+  });
+
+  it.each([["beta", BETA], ["production", OWN], ["staging", OWN]])("M-1: %s requires the own-key preflight through the deploy account lookup role before any deploy", (environment, account) => {
+    const { script, variables } = buildCommands(environment);
+    expect(variables.C1_LOOKUP_ROLE).toBe(`arn:<token>:iam::${account}:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-lookup-role-${account}-us-east-1`);
+    const preflight = script.split("\n")[0]!;
+    expect(preflight).toContain('agent-own-key-backfill.mjs --check --release-stack "${STACK_PREFIX}-web" --lookup-role "$C1_LOOKUP_ROLE"');
+    expect(preflight).toContain("|| exit 1");
+    expect(script).not.toContain("--apply");
   });
 
   it("production's deploy is as before: its own account, no deploy account, the web stack read directly", () => {

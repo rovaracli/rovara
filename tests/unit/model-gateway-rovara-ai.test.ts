@@ -47,7 +47,7 @@ function gateway(options: { rovara?: Partial<RovaraAi> | false; overrides?: Part
   const installKeyReads: string[] = [];
   const priced: Array<[string, string]> = [];
   const rovara: RovaraAi | undefined = options.rovara === false ? undefined : {
-    models: new Map([[MODEL, BEDROCK_ID]]), exempt: new Set(),
+    models: new Map([[MODEL, BEDROCK_ID]]), exempt: new Set([cidA, cidB]),
     transport: options.bedrock ?? (async (request) => { bedrockSent.push(request); return { status: 200, body: answer() }; }),
     ...options.rovara,
   };
@@ -100,7 +100,7 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     expect(g.bedrockSent[0]!.path).toBe("/model/us.anthropic.claude-sonnet-4-5-20250929-v1%3A0/invoke");
     // 100 x $3/M + 10 x $15/M = 450 micro-dollars, the company's spend and its billable line.
     expect(await committed(g.meter)).toBe(450);
-    expect(g.meter.billedCalls(claims.iss, cidA)).toMatchObject([{ settledMicros: 450, estimated: false, line: { source: "rovara_ai", charge: "customer", model: BEDROCK_ID } }]);
+    expect(g.meter.billedCalls(claims.iss, cidA)).toMatchObject([{ settledMicros: 450, estimated: false, line: { source: "rovara_ai", charge: "exempt", model: BEDROCK_ID } }]);
   });
 
   it("each settled call is one billable line for the company that made it, under its own combined cap (two companies)", async () => {
@@ -116,16 +116,16 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     expect(g.companyKeys.reads).toEqual([cidB]);
     const linesA = g.meter.billedCalls(claims.iss, cidA);
     expect(linesA).toHaveLength(2);
-    expect(linesA.every((l) => l.cid === cidA && l.line.charge === "customer" && l.settledMicros > 0)).toBe(true);
+    expect(linesA.every((l) => l.cid === cidA && l.line.charge === "exempt" && l.settledMicros > 0)).toBe(true);
     // B pays its own provider directly: no line, and none of A's lines on B.
     expect(g.meter.billedCalls(claims.iss, cidB)).toEqual([]);
     expect(await committed(g.meter, cidA)).toBe(linesA.reduce((s, l) => s + l.settledMicros, 0));
     expect(await committed(g.meter, cidB)).toBeGreaterThan(0);
   });
 
-  it("no saved choice, or anthropic_key, answers byte for byte as DEC 236 (company-key mode)", async () => {
-    for (const saved of [undefined, "anthropic_key"] as const) {
-      const g = gateway();
+  it("an explicit anthropic_key choice preserves DEC 236 company-key behavior", async () => {
+    for (const saved of ["anthropic_key"] as const) {
+      const g = gateway({ rovara: { exempt: new Set() } });
       if (saved !== undefined) g.choices.saved.set(cidA, saved);
       const plain = setup({ agentKeys: new CompanyKeys(), keys: { keyFor: async () => "rovara-install-key" }, transport: async () => ({ status: 200, body: answer() }), prices: g.deps.prices! });
       const sentPlain: ProviderRequest[] = [];
@@ -151,7 +151,8 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     expect(error(sink)).toEqual({ type: ROVARA_AI_OFF.code, message: ROVARA_AI_OFF.message });
     expect(g.keySent).toEqual([]); expect(g.companyKeys.reads).toEqual([]); expect(g.companyKeys.asked).toEqual([]); expect(g.installKeyReads).toEqual([]);
     expect(await committed(g.meter)).toBe(0);
-    // B, on its own key, is unaffected.
+    // B, explicitly on its own key, is unaffected.
+    g.choices.saved.set(cidB, "anthropic_key");
     expect((await call(g.deps, requestBody, mint({ cid: cidB }))).status).toBe(200);
   });
 
@@ -197,13 +198,13 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     expect(await committed(g.meter)).toBe(0);
   });
 
-  it("the operator-named founders' company is exempt; every other company is charged (two companies)", async () => {
+  it("only the operator-named company is exempt; the other company is charged (two companies)", async () => {
     const g = gateway({ rovara: { exempt: new Set([cidA]) } });
     g.choices.saved.set(cidA, "rovara"); g.choices.saved.set(cidB, "rovara");
     await call(g.deps, requestBody, mint({ cid: cidA }));
-    await call(g.deps, requestBody, mint({ cid: cidB }));
+    expect((await call(g.deps, requestBody, mint({ cid: cidB }))).status).toBe(200);
     expect(g.meter.billedCalls(claims.iss, cidA).map((l) => l.line.charge)).toEqual(["exempt"]);
-    expect(g.meter.billedCalls(claims.iss, cidB).map((l) => l.line.charge)).toEqual(["customer"]);
+    expect(g.meter.billedCalls(claims.iss, cidB).map(l => l.line.charge)).toEqual(["customer"]);
     // Exempt from the charge, never from the cap: the spend still counts.
     expect(await committed(g.meter, cidA)).toBeGreaterThan(0);
   });
@@ -449,7 +450,7 @@ describe("gateway process: Rovara's AI from each company's saved choice", () => 
     await db.put(TABLES.companies, { pk: `COMPANY#${cidA}`, sk: "AGENT_AI", companyId: cidA, source: "rovara", version: 1 });
     await db.put(TABLES.companies, { pk: `COMPANY#${cidB}`, sk: "AGENT_AI", companyId: cidB, source: "anthropic_key", version: 1 });
     const keySent: ProviderRequest[] = []; const bedrockSent: ProviderRequest[] = [];
-    const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0, agentKeys: "company", ...(rovaraAi ? { rovaraAi: { models: new Map([[MODEL, BEDROCK_ID]]), exempt: new Set<string>() } } : {}) };
+    const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0, agentKeys: "company", ...(rovaraAi ? { rovaraAi: { models: new Map([[MODEL, BEDROCK_ID]]), exempt: new Set([cidA]) } } : {}) };
     const gateway = await startServe(config, {
       db, fetch: async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }), now: () => now, listen: false, log: () => undefined,
       keys: { keyFor: async () => "rovara-install-key" }, agentKeys: new CompanyKeys(),
@@ -474,7 +475,7 @@ describe("gateway process: Rovara's AI from each company's saved choice", () => 
     expect(s.bedrockSent).toHaveLength(1);
     expect(s.keySent.map((r) => r.key)).toEqual([keyOf(cidB)]);
     const ledger = s.wire.items(TABLES.ledger);
-    expect(ledger.filter((r) => r.line !== undefined).map((r) => [r.cid, (r.line as { charge: string }).charge])).toEqual([[cidA, "customer"]]);
+    expect(ledger.filter((r) => r.line !== undefined).map((r) => [r.cid, (r.line as { charge: string }).charge])).toEqual([[cidA, "exempt"]]);
   });
 
   it("without Rovara's AI configured, A is refused (no fallback to any key) and B is unaffected", async () => {

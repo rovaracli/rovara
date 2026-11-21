@@ -14,6 +14,7 @@ import { SecretField } from "../../../design/SecretField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ReadSection, useAdminRead } from "../models/read.js";
 import { AdminSection, NotConnected } from "../parts.js";
+import { useAdminContext } from "../AdminLayout.js";
 
 const reader = { parse: readLearningAi };
 const when = (ms: number) => new Date(ms).toLocaleString("en-US", { timeZone: "UTC", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) + " UTC";
@@ -28,12 +29,14 @@ export function CompanyKeyConnections() {
 
 function Settings({ settings, reload }: { settings: LearningAiRead; reload: () => void }) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
+ const context = useAdminContext();
  const [busy, setBusy] = useState(false), [notice, setNotice] = useState<{ ok: boolean; text: string }>();
  async function send(method: "PUT" | "DELETE", body: Record<string, unknown>, done: string) {
   setBusy(true); setNotice(undefined);
   try {
    await api.sendAnswer(method, `${LEARNING_AI_PATH}/key`, { requestId: crypto.randomUUID(), expectedRevision: settings.revision, ...body }, { parse: answer => answer }, { retry: "never" });
    setNotice({ ok: true, text: done });
+   await query.invalidateQueries({ queryKey: ["ai-spend", context.orgId, context.developerId, context.role, "agent-ai"], exact: true });
    await query.invalidateQueries({ queryKey: ["admin", "lane-c", "learning-ai"] }); reload();
   } catch (error) {
    setNotice({ ok: false, text: error instanceof ApiError ? error.message : "Couldn't save that. Try again." });

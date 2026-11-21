@@ -75,10 +75,10 @@ const mutableCaps = (initial: Caps) => { const current = { ...initial }; return 
 
 function gateway(options: { grants?: ReviewerGrantStore | false; caps?: Caps; heavy?: boolean; overrides?: Partial<GatewayDependencies> } = {}) {
   const companyKeys = new CompanyKeys();
-  const choices = new Choices();
+  const choices = new Choices(); choices.saved.set(cidA, "anthropic_key"); choices.saved.set(cidB, "anthropic_key");
   const keySent: ProviderRequest[] = [];
   const bedrockSent: ProviderRequest[] = [];
-  const rovara: RovaraAi = { models: new Map([[MODEL, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"]]), exempt: new Set(), transport: async (request) => { bedrockSent.push(request); return { status: 200, body: options.heavy === true ? heavyAnswer() : answer() }; } };
+  const rovara: RovaraAi = { models: new Map([[MODEL, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"]]), exempt: new Set([cidA]), transport: async (request) => { bedrockSent.push(request); return { status: 200, body: options.heavy === true ? heavyAnswer() : answer() }; } };
   const limits = mutableCaps(options.caps ?? { task: 1_000_000_000, personMonth: 1_000_000_000, projectMonth: 1_000_000_000, companyMonth: 1_000_000_000 });
   const grants = options.grants === false ? undefined : options.grants ?? new InMemoryReviewerGrants();
   const base = setup({
@@ -399,6 +399,7 @@ describe("(c) short-lived, one task, one kind, single use", () => {
     const sentRouter: ProviderRequest[] = [];
     g.deps.agentAi = { ...g.deps.agentAi!, switchedOn: new Set(["openrouter"]), openrouter: { transport: async (request) => { sentRouter.push(request); return { status: 200, body: answer() }; } } };
     expect((await call(g.deps, requestBody, grant())).status).toBe(422);
+    expect((await call(g.deps, requestBody, grant({ runPrice: { companyId: cidA, model: MODEL, provider: "openrouter", sourceId: "router", connectionRevision: "r1", catalogModel: MODEL, snapshotHash: "a".repeat(64), snapshotVersion: 1, expiresAt: now + 60000, inputUsdPerMillion: 1, outputUsdPerMillion: 2, cacheReadUsdPerMillion: 1, cacheWriteUsdPerMillion: 1 } }))).status).toBe(422);
     g.choices.saved.delete(cidA);
     const priced = (extra: Record<string, unknown>) => ({ priceFor: () => ({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, ...extra }) as never });
     for (const extra of [{ derived: [{ aboveTokens: 0, keys: ["outputMicrosPerMTok"] }] }, { uncertain: [{ aboveTokens: 0, keys: ["outputMicrosPerMTok"] }] }, { operatorReview: true }]) {
@@ -472,7 +473,7 @@ describe("(c) short-lived, one task, one kind, single use", () => {
   });
   it("REVIEW-3 M2: a failed claim that finds ANOTHER call's session leaves it alone, releases its own hold and continues that review", async () => {
     const spy = spyStore(); const jti = randomUUID();
-    await spy.inner.open({ iss: claims.iss, cid: cidA, jti, bind: JSON.stringify([cidA, claims.pid, claims.tid, claims.ws, claims.op, "second_review", "second_review", MODEL]), holdId: randomUUID(), ceilingMicros: 1_000_000, firstDebitMicros: 10, endsAt: secs + REVIEW_SESSION_SECONDS });
+    await spy.inner.open({ iss: claims.iss, cid: cidA, jti, bind: JSON.stringify([cidA, claims.pid, claims.tid, claims.ws, claims.op, "second_review", "second_review", MODEL, "anthropic_key", "anthropic", null, "session_ceiling"]), holdId: randomUUID(), ceilingMicros: 1_000_000, firstDebitMicros: 10, endsAt: secs + REVIEW_SESSION_SECONDS });
     const g = gateway({ grants: { ...spy.store, read: (iss, cid, j) => spy.inner.read(iss, cid, j), open: async () => { throw new Error("answer lost"); } } });
     // The first read (before the hold) already sees the winner's session, so make the pre-read miss it once and the post-failure read find it.
     let reads = 0; const realRead = spy.inner.read.bind(spy.inner);
@@ -744,6 +745,7 @@ describe("the deployed process wires the durable store", () => {
   async function serve(wire: WireDynamo, mode: "company" | "install", sent: ProviderRequest[]) {
     const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
     await db.put(T.companies, { pk: `COMPANY#${cidA}`, sk: "SETTINGS", companyId: cidA, version: 1, settings: { budgets: { companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } } });
+    await db.put(T.companies, { pk: `COMPANY#${cidA}`, sk: "AGENT_AI", companyId: cidA, source: "anthropic_key", version: 1 });
     // One exact price row, so a review (which needs an exact price) is admitted; the deployed price source reads this table.
     await new DynamoPriceSnapshotStore(db, T.prices).save({ version: 1, sources: { litellm: { fetchedAt: now, count: 1, entries: [{ provider: "anthropic", model: MODEL, kind: "chat", inputMicrosPerMTok: 3_000_000, outputMicrosPerMTok: 15_000_000, cacheReadMicrosPerMTok: 300_000, cacheWrite5mMicrosPerMTok: 3_750_000, cacheWrite1hMicrosPerMTok: 6_000_000 }] } } } as never, 0);
     const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0, ...(mode === "company" ? { agentKeys: "company" as const } : {}) };

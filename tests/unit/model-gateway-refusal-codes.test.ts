@@ -60,7 +60,7 @@ describe("gateway refusal log lines carry a fixed reason", () => {
   });
 
   it("the company-key route names the payer of the refused call (two companies, two payers)", async () => {
-    const rovara: RovaraAi = { models: new Map([[MODEL, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"]]), exempt: new Set(), transport: async () => ({ status: 200, body: answer() }) };
+    const rovara: RovaraAi = { models: new Map([[MODEL, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"]]), exempt: new Set([claims.cid]), transport: async () => ({ status: 200, body: answer() }) };
     const cidB = `org_${"b".repeat(20)}`;
     const choices = new Choices(); choices.saved.set(claims.cid, "rovara"); choices.saved.set(cidB, "anthropic_key");
     const f = setup({ agentKeys: new Keys(), agentAi: { sources: choices, rovara }, caps: new FixedCapsSource({ ...caps, task: 0 }) });

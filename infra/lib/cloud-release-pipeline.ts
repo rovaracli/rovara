@@ -119,6 +119,9 @@ export const RELEASE_CHECK_PATHS = ["/app", "/v1/web/me"] as const;
  * stack has no address yet, so it isn't checked.
  */
 const releaseCheckedDeploy = (context: readonly string[], deployAccount?: string) => [
+  // DEC 254zzz279: never release the new default before existing own-key choices are saved.
+  // Only reads through the already allowed CDK lookup role; the pipeline never applies the migration.
+  'node scripts/agent-own-key-backfill.mjs --check --release-stack "${STACK_PREFIX}-web" --lookup-role "$C1_LOOKUP_ROLE" --region "$AWS_REGION" || exit 1',
   ...(deployAccount === undefined
     ? ['base="$(aws cloudformation describe-stacks --stack-name "${STACK_PREFIX}-web" --query "Stacks[0].Outputs[?OutputKey==\'CloudUrl\'].OutputValue" --output text 2>/dev/null | sed "s#/app\\$##")"']
     // The web stack is in the deploy account: read its address through that account's lookup role (read only).
@@ -193,12 +196,12 @@ export class CloudReleasePipelineStack extends Stack {
         env: {
           shell: "bash",
           "git-credential-helper": "yes",
-          variables: { ROVARA_ENV: env, STACK_PREFIX: `${RESOURCE_PREFIX}-${env}`, CODE_URL: codeUrl.valueAsString, NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS },
+          variables: { ROVARA_ENV: env, STACK_PREFIX: `${RESOURCE_PREFIX}-${env}`, CODE_URL: codeUrl.valueAsString, NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS, C1_LOOKUP_ROLE: `arn:${this.partition}:iam::${target}:role/cdk-${CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER}-lookup-role-${target}-${this.region}` },
         },
         phases: {
           install: { commands: INSTALL_NODE },
           // The web build: cloud-web.ts uploads the app's files to S3 and puts the page shell in the function.
-          pre_build: { commands: [...FIND_RELEASE_TAG, ...RELEASE_TAG_ON_BRANCH, "npm ci", "npx tsc -b infra", "npm run build:web"] },
+          pre_build: { commands: [...FIND_RELEASE_TAG, ...RELEASE_TAG_ON_BRANCH, "npm ci", "npx tsc -b infra", "npx tsc -b packages/model-gateway", "npm run build:web"] },
           build: {
             // One command: the release check's poller and the deploy share one shell.
             commands: [releaseCheckedDeploy(pipelineDeployContext(env), deployAccount)],

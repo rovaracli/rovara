@@ -1,3 +1,4 @@
+import type { EndpointModel } from "./endpoint-source.js";
 // The learning call class (DEC 226): lessons' learning calls (the reflector, the curator's judge, the outcome judge) on the
 // company's OWN connected provider account, never Rovara's install key.
 //
@@ -96,10 +97,13 @@ export interface LessonsSwitch { isOn(cid: string, signal?: AbortSignal): Promis
  * `connected` is read at admission (before any hold); `keyFor` just before sending; undefined there means "not sent" ($0).
  */
 export interface LearningKeySource {
+  /** C-1: connection existence only, even without a Bedrock adapter; never opens a credential. */
+  bedrockConnected?(iss: string, cid: string): Promise<boolean>;
   /** Optional receipt capability: pin saved source/version before the hold, and open exactly that credential after it. */
   resolveForCharge?(iss: string, cid: string, provider: CompanyKeyProvider, signal?: AbortSignal): Promise<{ source: ChargeReceiptV1["source"]; key(): Promise<string | undefined> } | undefined>;
   /** Read-only connection identity for signed price quotes; never opens a key. */
   identityFor?(iss: string, cid: string, provider: "anthropic" | "openai" | "openrouter"): Promise<{ sourceId: string; versionId: string } | undefined>;
+  endpointMetadata?(iss: string, cid: string): Promise<{ sourceId: string; versionId: string; models: EndpointModel[] } | undefined>;
   /** Whether the company has this provider connected. `provider` is the route's: a company with only Gemini connected is not connected for OpenAI. */
   connected(iss: string, cid: string, provider: CompanyKeyProvider, signal?: AbortSignal): Promise<boolean>;
   /** The secret to send: the API key, or for Vertex the short-lived Google bearer token the adapter minted for this company. */
@@ -221,8 +225,10 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
               // Only the Anthropic path, only an exempt company whose effective source is Rovara's AI; its own account was just found missing.
               const ai = options.rovaraDefault;
               if (provider !== "anthropic" || ai === undefined || !ai.ai.exempt.has(claims.cid)) return paused("no_provider");
-              const resolved = await resolveAgentSource({ sources: ai.sources, exempt: ai.ai.exempt, keys: { connected: async () => false }, ...(ai.byo === undefined ? {} : { byo: ai.byo }) }, claims.iss, claims.cid, signal);
+              const resolved = await resolveAgentSource({ sources: ai.sources, exempt: ai.ai.exempt, keys: { connected: async () => false, ...(options.keys.bedrockConnected === undefined ? {} : { bedrockConnected: options.keys.bedrockConnected.bind(options.keys) }) }, ...(ai.byo === undefined ? {} : { byo: ai.byo }) }, claims.iss, claims.cid, signal);
               if (resolved.source !== "rovara") return paused("no_provider");
+              // Preserve the purpose-specific rule: connected own Bedrock without a saved choice never enables this exempt fallback.
+              if (resolved.via === "default" && ai.byo !== undefined && (await ai.byo.connection(claims.iss, claims.cid, signal)) !== undefined) return paused("no_provider");
               rovara = { ai: ai.ai, marker: `rovara-ai-${randomUUID()}` };
             } else if (provider === "vertex") {
               target = await options.keys.vertexTarget?.(claims.iss, claims.cid, signal);

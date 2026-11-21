@@ -14,7 +14,8 @@ describe("AI for your agents", () => {
     const ada = await w.signIn("ada", 30);
     const empty = await w.call(ada, "GET", PATH);
     expect(empty.status).toBe(200);
-    expect(empty.body).toEqual({ source: null, version: 0, canChange: true, anthropicKeyConnected: false, bedrockConnected: null, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }] });
+    // Round F keeps three launch choices; DEC 263 adds the served default without OpenRouter fields.
+    expect(empty.body).toEqual({ source: null, version: 0, effectiveSource: "rovara", sourceIsDefault: true, canChange: true, anthropicKeyConnected: false, bedrockConnected: null, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }] });
     const one = await w.call(ada, "PUT", PATH, choose(0, "rovara"));
     expect(one.status).toBe(200);
     expect(one.body).toMatchObject({ source: "rovara", version: 1 });

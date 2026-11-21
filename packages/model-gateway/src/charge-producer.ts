@@ -15,7 +15,7 @@ export function initialCharge(claims: TaskClaims, model: ChargeReceiptV1["model"
     price: available({ authority: "gateway", version: String(price.priceVersion ?? 0), hash: createHash("sha256").update(JSON.stringify(price)).digest("hex"), fetchedAt: time }), model, ...context,
     payer: { kind: payer.kind, id, name: id }, requesterId: claims.per === undefined ? missing() : available(claims.per), billableMicros: context.billing === "customer" ? missing() : available(0), providerCostMicros: missing(), occurredAt: time, accountingDay: time.slice(0, 10), accountingMonth: time.slice(0, 7), recordedAt: time };
 }
-export function finishCharge(initial: ChargeReceiptV1, input: { usage?: TokenUsage; reportedCostMicros?: number; price: ResolvedPrice; notSent: boolean; now: number }): ChargeReceiptV1 {
+export function finishCharge(initial: ChargeReceiptV1, input: { usage?: TokenUsage; reportedCostMicros?: number; retainMissingUsage?: boolean; price: ResolvedPrice; notSent: boolean; now: number }): ChargeReceiptV1 {
   const reservation = initial.originalReservationMicros.state === "available" ? initial.originalReservationMicros.value : undefined;
   if (reservation === undefined) throw new Error("charge reservation unavailable");
   const amount = settleChargeAmount({ ...input, reservationMicros: reservation });

@@ -1,3 +1,4 @@
+import { validRouteClass, validCustomerSource, receiptCustomerSource, stoppedBy, validClear, type RouteClass, type CustomerSource, type SourceStop, type ClearSourceStop } from "./source-stop.js";
 import { validProvisionalContext, historyOutput, neverConfirmedReceipt, provisionalEstimate, USAGE_WAIT_MS, type ProvisionalContext, type ProvisionalEstimate } from "./provisional.js";
 import { chargeValue, chargeReceiptContent, type ApplyChargeResult, type ChargeReceiptV1, type SettleV2 } from "./charge-receipt.js";
 import { checkReceiptScope, estimatedReceipt, readSettlementReceipt, receiptIdentity, receiptRevision } from "./charge-settlement.js";
@@ -19,13 +20,17 @@ export interface MeterScope { iss: string; cid: string; pid: string; tid: string
  * call (the task, person, project and company rows still count it), present only when the call's caps carry `upkeepMonth`, so it can only tighten.
  */
 export type MeterItem = "task" | "person" | "project" | "company" | "upkeep";
-export interface MeterRow { item: MeterItem; company: string; spentMicros: number; estimatedMicros: number; reservedMicros: number; committed: number; overrun: boolean; provisionalMicros?: number }
+export interface MeterRow { item: MeterItem; company: string; spentMicros: number; estimatedMicros: number; reservedMicros: number; committed: number; overrun: boolean; provisionalMicros?: number; overrunOwner?: string }
 export interface Reservation { readonly id: string; readonly appliedMaxOutputTokens?: number }
 export type ReserveResult = { ok: true; reservation: Reservation } | { ok: false; reason: "cap" | "overrun"; item: MeterItem; held: boolean } | { ok: false; reason: "busy"; overrunInFlight?: true };
 export interface ReserveInput {
+  /** One shared in-flight slot per company/source, with a human-cleared stop per route class. */
+  customerSource?: CustomerSource;
+  routeClass?: RouteClass;
   scope: MeterScope; caps: Caps; estimateMicros: number; appliedMaxOutputTokens?: number;
   provisional?: ProvisionalContext;
-  charge?: { receipt: ChargeReceiptV1; requestFingerprint: string };
+  /** Internal price kind from the admitted guard; absent on legacy chat holds. */
+  charge?: { receipt: ChargeReceiptV1; requestFingerprint: string; kind?: PriceKind };
   /** Omit only when usage is bounded by the priced hold. All times are integer seconds. */
   overrun?: { deadlineSeconds: number; tokenExpiresSeconds: number };
   /**
@@ -93,7 +98,7 @@ export function costView(rows: readonly MeterRow[]): Array<{ item: MeterItem; sp
 }
 /** `combined`: the partner (agent) meter's company row, the one combined company monthly cap (DEC 228c). */
 interface Target { key: string; item: MeterItem; cap: number | undefined; combined?: true }
-interface Open { provisional?: ProvisionalContext; charge?: ReserveInput["charge"]; month: string; appliedMaxOutputTokens?: number; scope: MeterScope; estimate: number; targets: Target[]; line?: BillLine }
+interface Open { routeClass?: RouteClass; customerSource?: CustomerSource; provisional?: ProvisionalContext; charge?: ReserveInput["charge"]; month: string; appliedMaxOutputTokens?: number; scope: MeterScope; estimate: number; targets: Target[]; line?: BillLine }
 function validScope(value: unknown): value is MeterScope {
   const s = record(value);
   return s !== undefined && typeof s.iss === "string" && s.iss.length > 0 && s.iss.length <= 2048 && typeof s.cid === "string" && COMPANY.test(s.cid) && typeof s.pid === "string" && PROJECT.test(s.pid) && typeof s.tid === "string" && TASK.test(s.tid) && (s.per === undefined || (typeof s.per === "string" && PERSON.test(s.per)));
@@ -116,6 +121,18 @@ export interface InMemoryMeterOptions {
 }
 /** Conditional transaction fake: no await between checking all rows and writing all rows. Conflict hook writes nothing. */
 export class InMemoryMeter implements Meter {
+  readonly #sourceStops = new Map<string, SourceStop>();
+  get #stops(): Map<string, SourceStop> { return this.#partner === undefined ? this.#sourceStops : this.#partner.#sourceStops; }
+  #sourceKey(iss: string, cid: string, source: CustomerSource, routeClass?: RouteClass): string { return JSON.stringify([iss, cid, source, routeClass ?? "legacy"]); }
+  async sourceStop(iss: string, cid: string, source: CustomerSource, routeClass?: RouteClass): Promise<SourceStop | undefined> { const row = this.#stops.get(this.#sourceKey(iss, cid, source, routeClass)); return row === undefined ? undefined : { ...row }; }
+
+  async clearSourceStop(input: ClearSourceStop): Promise<boolean> {
+    if (!validClear(input)) throw new Error("operator clear refused");
+    const key = this.#sourceKey(input.iss, input.cid, input.source, input.routeClass === "legacy" ? undefined : input.routeClass), row = this.#stops.get(key);
+    if (row?.stopped !== true || row.stopId !== input.expectedStopId || row.inFlight !== undefined || this.#stops.get(this.#sourceKey(input.iss, input.cid, input.source))?.inFlight !== undefined) return false;
+    this.#stops.set(key, { ...row, stopped: false, clearedBy: input.actor, clearedAt: this.now(), clearReason: input.reason }); return true;
+  }
+  #latch(receipt: ChargeReceiptV1 | undefined, routeClass?: RouteClass): void { const stop = stoppedBy(receipt, this.now(), routeClass); if (stop !== undefined) { const key = this.#sourceKey(receipt!.issuer, receipt!.companyId, stop.source, routeClass); this.#stops.set(key, { ...this.#stops.get(key), ...stop }); } }
   readonly #rows = new Map<string, MeterRow>();
   readonly #open = new Map<string, Open>();
   readonly #ledger = new Map<string, { call: EstimatedCall; targets: Target[] }>();
@@ -124,7 +141,7 @@ export class InMemoryMeter implements Meter {
   readonly #expiryOrder: string[] = [];
   readonly #ownInFlight = new Map<string, { owner: string; expiresSeconds: number }>();
   readonly #partner: InMemoryMeter | undefined;
-  readonly #receipts = new Map<string, { receipt: ChargeReceiptV1; targets: Target[]; amount: number; held: boolean; cutoffAt?: number; provisional?: ProvisionalEstimate; neverConfirmed?: true }>();
+  readonly #receipts = new Map<string, { routeClass?: RouteClass; receipt: ChargeReceiptV1; kind: PriceKind; targets: Target[]; amount: number; held: boolean; cutoffAt?: number; provisional?: ProvisionalEstimate; neverConfirmed?: true }>();
   readonly #adjustments = new Map<string, { receipt: ChargeReceiptV1; deltaMicros: number }>();
   readonly #billed = new Map<string, BilledCall>();
   constructor(private readonly now: () => number = Date.now, private readonly conflict: () => boolean = () => false, private readonly beforeWrite: (operation: "settle" | "correct" | "expire", rows?: MeterRow[]) => void | Promise<void> = () => undefined, options: InMemoryMeterOptions = {}) {
@@ -140,6 +157,10 @@ export class InMemoryMeter implements Meter {
   async reserve(input: ReserveInput): Promise<ReserveResult> {
     if (record(input) === undefined || !validScope(input.scope) || !validCaps(input.caps) || !whole(input.estimateMicros)) return { ok: false, reason: "busy" };
     const { scope, caps, estimateMicros } = input;
+    if (input.routeClass !== undefined && !validRouteClass(input.routeClass)) return { ok: false, reason: "busy" };
+    if (input.customerSource !== undefined && !validCustomerSource(input.customerSource)) return { ok: false, reason: "busy" };
+    const customerSource = input.customerSource ?? receiptCustomerSource(input.charge?.receipt);
+    if (customerSource !== undefined && (!validRouteClass(input.routeClass) || !validCustomerSource(customerSource) || (input.charge !== undefined && receiptCustomerSource(input.charge.receipt) !== customerSource))) return { ok: false, reason: "busy" };
     if (input.appliedMaxOutputTokens !== undefined && (!whole(input.appliedMaxOutputTokens) || input.appliedMaxOutputTokens < 1)) return { ok: false, reason: "busy" };
     if (input.sweepAfter !== undefined && (!whole(input.sweepAfter) || input.sweepAfter > this.now() + SWEEP_AFTER_MAX_MS)) return { ok: false, reason: "busy" };
     if (input.provisional !== undefined && !validProvisionalContext(input.provisional)) return { ok: false, reason: "busy" };
@@ -163,6 +184,11 @@ export class InMemoryMeter implements Meter {
     const items = targets(scope, caps, month, this.#partner !== undefined);
     for (let attempt = 0; attempt < 3; attempt++) {
       if (this.conflict()) continue;
+      const sourceKey = customerSource === undefined ? undefined : this.#sourceKey(scope.iss, scope.cid, customerSource);
+      const sourceStop = sourceKey === undefined ? undefined : this.#stops.get(sourceKey);
+      const classStop = customerSource === undefined ? undefined : this.#stops.get(this.#sourceKey(scope.iss, scope.cid, customerSource, input.routeClass));
+      if (sourceStop?.stopped === true || classStop?.stopped === true) return { ok: false, reason: "overrun", item: "company", held: false };
+      if (sourceStop?.inFlight !== undefined) return { ok: false, reason: "busy", overrunInFlight: true };
       let blocked: Extract<ReserveResult, { reason: "cap" | "overrun" }> | undefined;
       for (const target of items) {
         const row = this.#row(target, scope);
@@ -183,7 +209,8 @@ export class InMemoryMeter implements Meter {
       const reservation = Object.freeze({ id: input.charge?.receipt.callId ?? randomUUID(), ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }) });
       for (const target of items) { const row = this.#row(target, scope); this.#store(target).set(target.key, { ...row, reservedMicros: row.reservedMicros + estimateMicros, committed: row.committed + estimateMicros }); }
       if (expiresSeconds !== undefined) this.#inFlight.set(companyKey, { owner: reservation.id, expiresSeconds });
-      this.#open.set(reservation.id, { ...(input.provisional === undefined ? {} : { provisional: structuredClone(input.provisional) }), ...(input.charge === undefined ? {} : { charge: structuredClone(input.charge) }), month, ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }), scope: { ...scope }, estimate: estimateMicros, targets: items, ...(input.line === undefined ? {} : { line: { ...input.line } }) });
+      if (customerSource !== undefined && sourceKey !== undefined) this.#stops.set(sourceKey, { source: customerSource, stopped: false, ...sourceStop, inFlight: reservation.id });
+      this.#open.set(reservation.id, { ...(input.routeClass === undefined ? {} : { routeClass: input.routeClass }), ...(customerSource === undefined ? {} : { customerSource }), ...(input.provisional === undefined ? {} : { provisional: structuredClone(input.provisional) }), ...(input.charge === undefined ? {} : { charge: structuredClone(input.charge) }), month, ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }), scope: { ...scope }, estimate: estimateMicros, targets: items, ...(input.line === undefined ? {} : { line: { ...input.line } }) });
       return { ok: true, reservation };
     }
     return { ok: false, reason: "busy" };
@@ -208,7 +235,7 @@ export class InMemoryMeter implements Meter {
     }
     for (const target of open.targets) {
       const row = this.#row(target, open.scope); const spentMicros = row.spentMicros + spend;
-      this.#store(target).set(target.key, { ...row, ...(target.item === "company" && held ? { provisionalMicros: (row.provisionalMicros ?? 0) + actualMicros } : {}), spentMicros, estimatedMicros: row.estimatedMicros + extraEstimated, reservedMicros: row.reservedMicros - release, committed: row.committed - open.estimate + actualMicros, overrun: row.overrun || (target.cap !== undefined && spentMicros > target.cap) });
+      this.#store(target).set(target.key, { ...row, ...(target.item === "company" && held ? { provisionalMicros: (row.provisionalMicros ?? 0) + actualMicros } : {}), spentMicros, estimatedMicros: row.estimatedMicros + extraEstimated, reservedMicros: row.reservedMicros - release, committed: row.committed - open.estimate + actualMicros, overrun: row.overrun || (target.cap !== undefined && spentMicros > target.cap), ...(target.cap !== undefined && spentMicros > target.cap ? { overrunOwner: estimated !== undefined && (!row.overrun || row.overrunOwner === JSON.stringify([open.scope.iss, open.scope.cid, reservation.id])) ? JSON.stringify([open.scope.iss, open.scope.cid, reservation.id]) : "" } : {}) });
     }
     if (open.line !== undefined) {
       const callKey = JSON.stringify([open.scope.iss, open.scope.cid, reservation.id]);
@@ -222,9 +249,11 @@ export class InMemoryMeter implements Meter {
     }
     if (receipt !== undefined) {
       const callKey = JSON.stringify([receipt.issuer, receipt.companyId, receipt.callId]);
-      this.#receipts.set(callKey, { receipt: structuredClone(receipt), targets: open.targets, amount: actualMicros, held, ...(provisional === undefined ? {} : { provisional, cutoffAt: this.now() }) });
+      this.#receipts.set(callKey, { ...(open.routeClass === undefined ? {} : { routeClass: open.routeClass }), receipt: structuredClone(receipt), kind: open.charge?.kind ?? estimated?.kind ?? "chat", targets: open.targets, amount: actualMicros, held, ...(provisional === undefined ? {} : { provisional, cutoffAt: this.now() }) });
       this.#adjustments.set(`${callKey}:${receipt.revision}`, { receipt: structuredClone(receipt), deltaMicros: actualMicros });
     }
+    this.#latch(receipt, open.routeClass);
+    if (open.customerSource !== undefined) { const key = this.#sourceKey(open.scope.iss, open.scope.cid, open.customerSource), row = this.#stops.get(key); if (row?.inFlight === reservation.id) { const next = { ...row }; delete next.inFlight; this.#stops.set(key, next); } }
     this.#open.delete(reservation.id);
     const companyKey = JSON.stringify([open.scope.iss, open.scope.cid]);
     if (this.#inFlight.get(companyKey)?.owner === reservation.id) this.#inFlight.delete(companyKey);
@@ -239,7 +268,7 @@ export class InMemoryMeter implements Meter {
     const outputs = [...this.#receipts.values()].flatMap(({ receipt }) => receipt.issuer === r.issuer && receipt.companyId === r.companyId && receipt.model.provider === r.model.provider && receipt.model.modelId === r.model.modelId && historyOutput(receipt) !== undefined ? [historyOutput(receipt)!] : []);
     for (const { call } of this.#ledger.values()) if (!this.#receipts.has(call.callKey) && call.iss === r.issuer && call.cid === r.companyId && call.provider === r.model.provider && call.model === r.model.modelId && call.chargeStatus !== "awaiting_usage" && hasUsage(call.usage)) outputs.push(call.usage.output);
     const provisional = r.status === "awaiting_usage" && open.provisional !== undefined ? provisionalEstimate(open.estimate, open.provisional, outputs, input.actualInputTokens) : undefined;
-    await this.settle({ id: input.reservationId }, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r), r, provisional);
+    await this.settle({ id: input.reservationId }, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r, open.charge?.kind), r, provisional);
   }
   async applyChargeReceipt(input: ChargeReceiptV1): Promise<ApplyChargeResult> {
     const r = readSettlementReceipt(input);
@@ -265,13 +294,14 @@ export class InMemoryMeter implements Meter {
     }
     for (const t of stored.targets) {
       const scope = { iss: r.issuer, cid: r.companyId, pid: r.project, tid: r.taskId }, row = this.#row(t, scope);
-      this.#store(t).set(t.key, { ...row, spentMicros: row.spentMicros + spendDelta, reservedMicros: row.reservedMicros - release, ...(t.item === "company" && stored.provisional !== undefined ? { provisionalMicros: (row.provisionalMicros ?? 0) + provisionalDelta } : {}), committed: row.committed + delta, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: t.cap === undefined ? row.overrun : row.spentMicros + spendDelta > t.cap });
+      this.#store(t).set(t.key, { ...row, spentMicros: row.spentMicros + spendDelta, reservedMicros: row.reservedMicros - release, ...(t.item === "company" && stored.provisional !== undefined ? { provisionalMicros: (row.provisionalMicros ?? 0) + provisionalDelta } : {}), committed: row.committed + delta, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: row.overrun || (t.cap !== undefined && row.spentMicros + spendDelta > t.cap), ...(t.cap !== undefined && row.spentMicros + spendDelta > t.cap ? { overrunOwner: "" } : {}) });
     }
+    this.#latch(r, stored.routeClass);
     const pending = this.#ledger.get(callKey);
     if (pending?.call.status === "pending") this.#removePending(pending.call);
-    const estimate = estimatedReceipt(r);
+    const estimate = estimatedReceipt(r, stored.kind);
     if (estimate !== undefined) {
-      const call: EstimatedCall = { ...(stored.provisional === undefined ? {} : { estimateBasis: stored.provisional.estimateBasis, outputEstimateBasis: stored.provisional.outputEstimateBasis, estimateStatus: "estimated" }), ...(r.neverConfirmed === true ? { neverConfirmed: true } : {}), iss: r.issuer, cid: r.companyId, pid: r.project, tid: r.taskId, callKey, month: r.accountingMonth, provider: r.model.provider, model: r.model.modelId, kind: "chat", usage: estimate.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, chargeStatus: r.status === "awaiting_usage" ? "awaiting_usage" : "estimated", settledAt: Date.parse(r.occurredAt), settledMicros: chargeValue(r.amountMicros)!, status: "pending" };
+      const call: EstimatedCall = { ...(stored.provisional === undefined ? {} : { estimateBasis: stored.provisional.estimateBasis, outputEstimateBasis: stored.provisional.outputEstimateBasis, estimateStatus: "estimated" }), ...(r.neverConfirmed === true ? { neverConfirmed: true } : {}), iss: r.issuer, cid: r.companyId, pid: r.project, tid: r.taskId, callKey, month: r.accountingMonth, provider: r.model.provider, model: r.model.modelId, kind: estimate.kind, usage: estimate.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, chargeStatus: r.status === "awaiting_usage" ? "awaiting_usage" : "estimated", settledAt: Date.parse(r.occurredAt), settledMicros: chargeValue(r.amountMicros)!, status: "pending" };
       this.#ledger.set(callKey, { call, targets: stored.targets }); this.#insertPending(call);
     } else if (pending !== undefined) pending.call = { ...pending.call, settledMicros: chargeValue(r.amountMicros)!, status: "corrected" };
     const billed = this.#billed.get(callKey);
@@ -381,7 +411,7 @@ export class InMemoryMeter implements Meter {
         const row = this.#row(target, call); const spentMicros = row.spentMicros + deltaMicros; // The upkeep row's cap is not in the corrections' caps (they carry no origin): the one stored with the hold applies.
         const cap = target.combined === true ? input.caps.combinedCompanyMonth : target.item === "upkeep" ? capFor.upkeep ?? target.cap : capFor[target.item];
         if (deltaMicros > 0 && cap !== undefined && row.committed + deltaMicros > cap) capExceeded = true;
-        this.#store(target).set(target.key, { ...row, spentMicros, committed: row.committed + deltaMicros, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: cap === undefined ? row.overrun : spentMicros > cap });
+        this.#store(target).set(target.key, { ...row, spentMicros, committed: row.committed + deltaMicros, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: cap === undefined ? row.overrun : (row.overrun && row.overrunOwner !== input.callKey) || spentMicros > cap, ...(cap !== undefined && spentMicros > cap && !row.overrun ? { overrunOwner: input.callKey } : {}) });
       }
     }
     ledger.call = expire ? { ...call, status: "expired", expiredAt: input.now, runId: input.runId } : { ...call, status: input.estimated === true ? "pending" : "corrected", settledMicros: input.realMicros, ...(input.priceVersion === undefined ? {} : { priceVersion: input.priceVersion }), correctedFrom: call.settledMicros, correctedTo: input.realMicros, deltaMicros, correctedAt: input.now, runId: input.runId, priceSource: { ...input.priceSource }, ...(capExceeded ? { capExceeded: true } : {}) };
