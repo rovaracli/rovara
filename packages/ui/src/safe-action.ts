@@ -119,31 +119,34 @@ export const PENDING_STALE_MS = 24 * 60 * 60 * 1000;
 const UNAVAILABLE = "\u0000unavailable";
 export type AcceptedStorage = "durable" | "stored-but-pending-kept" | "not-stored";
 export type ActionPendingState<P> = { kind: "none" } | { kind: "unavailable" } | { kind: "unreadable" } | { kind: "pending"; entry: P; stale: boolean };
+declare const actionSubjectBrand: unique symbol;
+/** Constructed only after company, person and subject are supplied. */
+export type ActionSubject = string & { readonly [actionSubjectBrand]: true };
 /** Existing record namespace: identity is required before constructing a subject. */
-export function actionSubject(input: { orgId: string; developerId: string; subjectId: string }): string {
+export function actionSubject(input: { orgId: string; developerId: string; subjectId: string }): ActionSubject {
  const parts = [input.orgId, input.developerId, input.subjectId];
  if (parts.some(part => typeof part !== "string" || part.trim().length === 0)) throw new Error("An action subject requires company, person and subject id.");
- return parts.join("|");
+ return parts.join("|") as ActionSubject;
 }
 export interface RecordConfig<P extends { requestId: string; startedAt: string }, A extends { requestId: string }> {
  lockPrefix: string; pendingPrefix: string; acceptedPrefix: string; changedEvent: string;
- parsePending(raw: string | null, subject: string, now?: number): ActionPendingState<P>;
- parseAccepted(this: void, raw: string | null, subject: string): A | undefined;
- pendingSubject(entry: P): string; acceptedSubject(answer: A): string;
+ parsePending(raw: string | null, subject: ActionSubject, now?: number): ActionPendingState<P>;
+ parseAccepted(this: void, raw: string | null, subject: ActionSubject): A | undefined;
+ pendingSubject(entry: P): ActionSubject; acceptedSubject(answer: A): ActionSubject;
  /** Existing reader's canonical field order, for exact read-back comparison. */
  canonicalAccepted(answer: A): A;
 }
 /** Lifted storage mechanics; strict route-owned readers and existing namespaces stay at the caller. */
 export function createActionRecords<P extends { requestId: string; startedAt: string }, A extends { requestId: string }>(config: RecordConfig<P, A>) {
- const keyOf = (subject: string): string => config.pendingPrefix + subject;
- const acceptedKey = (subject: string): string => config.acceptedPrefix + subject;
+ const keyOf = (subject: ActionSubject): string => config.pendingPrefix + subject;
+ const acceptedKey = (subject: ActionSubject): string => config.acceptedPrefix + subject;
  function notify(): void { try { globalThis.dispatchEvent(new Event(config.changedEvent)); } catch { /* no window */ } }
- function rawOf(subject: string): string | null { try { return globalThis.localStorage.getItem(keyOf(subject)); } catch { return UNAVAILABLE; } }
- function rawAccepted(subject: string): string | null { try { return globalThis.localStorage.getItem(acceptedKey(subject)); } catch { return null; } }
- function parsePending(raw: string | null, subject: string, now = Date.now()): ActionPendingState<P> {
+ function rawOf(subject: ActionSubject): string | null { try { return globalThis.localStorage.getItem(keyOf(subject)); } catch { return UNAVAILABLE; } }
+ function rawAccepted(subject: ActionSubject): string | null { try { return globalThis.localStorage.getItem(acceptedKey(subject)); } catch { return null; } }
+ function parsePending(raw: string | null, subject: ActionSubject, now = Date.now()): ActionPendingState<P> {
   return raw === UNAVAILABLE ? { kind: "unavailable" } : config.parsePending(raw, subject, now);
  }
- const readPendingNow = (subject: string): ActionPendingState<P> => parsePending(rawOf(subject), subject);
+ const readPendingNow = (subject: ActionSubject): ActionPendingState<P> => parsePending(rawOf(subject), subject);
  // Keep the expected canonical answer INSIDE the existing accepted record. A
  // reload can distinguish an exact answer from a mismatched candidate even if
  // candidate removal also failed. Legacy records without pending still read.
@@ -155,30 +158,34 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
  function markedCandidateMismatch(raw: string | null, answer: A): boolean {
   try { return raw !== null && Object.prototype.hasOwnProperty.call(JSON.parse(raw), canonicalField) && !candidateMatches(raw, answer); } catch { return true; }
  }
- const visibleAccepted = (subject: string, raw: string | null): A | undefined => {
+ const visibleAccepted = (subject: ActionSubject, raw: string | null): A | undefined => {
   const answer = config.parseAccepted(raw, subject);
   // A rejected marked candidate never becomes a saved answer when pending
   // cannot be read, disappears, or belongs to a different request id.
   if (answer === undefined || markedCandidateMismatch(raw, answer)) return undefined;
   const pending = readPendingNow(subject);
-  return pending.kind === "pending" && pending.entry.requestId === answer.requestId && !candidateMatches(raw, answer) ? undefined : answer;
+  // Without readable pending storage a legacy receipt cannot prove it is
+  // an exact saved answer. Keep the lock; exact marked answers still read.
+  const needsCanonical = pending.kind === "unavailable" || pending.kind === "unreadable" || (pending.kind === "pending" && pending.entry.requestId === answer.requestId);
+  return needsCanonical && !candidateMatches(raw, answer) ? undefined : answer;
  };
- const readAcceptedNow = (subject: string): A | undefined => visibleAccepted(subject, rawAccepted(subject));
- function useRaw(subject: string, accepted: boolean): string | null {
-  const pendingKey = keyOf(subject), key = accepted ? acceptedKey(subject) : pendingKey;
+ const readAcceptedNow = (subject: ActionSubject): A | undefined => visibleAccepted(subject, rawAccepted(subject));
+ function useRaw(subject: ActionSubject | undefined, accepted: boolean): string | null {
+  const pendingKey = subject === undefined ? undefined : keyOf(subject), key = accepted && subject !== undefined ? acceptedKey(subject) : pendingKey;
   const subscribe = useCallback((onChange: () => void) => {
    const onStorage = (event: Event): void => { if (!(event instanceof StorageEvent) || event.key === null || event.key === key || (accepted && event.key === pendingKey)) onChange(); };
    globalThis.addEventListener("storage", onStorage);globalThis.addEventListener(config.changedEvent, onChange);
    return () => { globalThis.removeEventListener("storage", onStorage);globalThis.removeEventListener(config.changedEvent, onChange); };
   }, [key, pendingKey, accepted]);
   return useSyncExternalStore(subscribe, () => {
+   if (subject === undefined) return accepted ? null : UNAVAILABLE;
    if (!accepted) return rawOf(subject);
    const raw = rawAccepted(subject);
    return visibleAccepted(subject, raw) === undefined ? null : raw;
   }, () => null);
  }
- function usePending(subject: string): ActionPendingState<P> { return parsePending(useRaw(subject, false), subject); }
- function useAccepted(subject: string): A | undefined { return visibleAccepted(subject, useRaw(subject, true)); }
+ function usePending(subject: ActionSubject | undefined): ActionPendingState<P> { const raw = useRaw(subject, false);return subject === undefined ? { kind: "unavailable" } : parsePending(raw, subject); }
+ function useAccepted(subject: ActionSubject | undefined): A | undefined { const raw = useRaw(subject, true);return subject === undefined ? undefined : visibleAccepted(subject, raw); }
  function writePending(entry: P): boolean {
   try {
    const subject = config.pendingSubject(entry), key = keyOf(subject);
@@ -190,7 +197,7 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
    return back.kind === "pending" && JSON.stringify(back.entry) === JSON.stringify(entry);
   } catch { return false; }
  }
- function removePending(subject: string, requestId: string, startedAt: string, verifiedAnswer: boolean): boolean {
+ function removePending(subject: ActionSubject, requestId: string, startedAt: string, verifiedAnswer: boolean): boolean {
   try {
    const now = parsePending(globalThis.localStorage.getItem(keyOf(subject)), subject);
    if (verifiedAnswer && now.kind === "none") return true;
@@ -208,11 +215,11 @@ export function createActionRecords<P extends { requestId: string; startedAt: st
    notify();return removed;
   } catch { return false; /* storage failure retains the lock */ }
  }
- const clearPending = (subject: string, requestId: string, startedAt: string): void => { removePending(subject, requestId, startedAt, false); };
+ const clearPending = (subject: ActionSubject, requestId: string, startedAt: string): void => { removePending(subject, requestId, startedAt, false); };
  function writeAccepted(answer: A): boolean {
   try { globalThis.localStorage.setItem(acceptedKey(config.acceptedSubject(answer)), JSON.stringify({ ...answer, [canonicalField]: canonicalOf(answer) }));notify();return true; } catch { return false; }
  }
- function clearAccepted(subject: string, requestId: string): void {
+ function clearAccepted(subject: ActionSubject, requestId: string): void {
   try { const now = config.parseAccepted(globalThis.localStorage.getItem(acceptedKey(subject)), subject); if (now !== undefined && now.requestId !== requestId) return;globalThis.localStorage.removeItem(acceptedKey(subject)); } catch { /* stays */ }
   notify();
  }

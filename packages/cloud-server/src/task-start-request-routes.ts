@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { AgentXNameSchema, StartDeveloperTaskRequestSchema } from "@agentx/contracts";
-import { CodeError, SignInEnded, MERGE_RECEIPT_CALL_MS, MERGE_RECEIPT_MAX_BYTES } from "./code-client.js";
+import { CodeError, SignInEnded, SERVER_READ_CALL_MS, SERVER_READ_MAX_BYTES } from "./code-client.js";
 import type { Route, RouteAnswer } from "./routes.js";
 
 const RequestId = StartDeveloperTaskRequestSchema.shape.requestId;
@@ -31,12 +31,12 @@ export const TASK_START_REQUEST_ROUTES: Route[] = [
   { method: "GET", path: /^\/task-start-requests\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu, answer: async context => {
     const id = RequestId.safeParse(context.params[0]);
     if (!id.success || context.query.size !== 0 || context.body !== undefined) return failure(400, "CONFIG_INVALID", "That start request is invalid.");
-    const deadlineMs = context.serverReadDeadline === undefined ? MERGE_RECEIPT_CALL_MS : context.serverReadDeadline - Date.now();
+    const deadlineMs = context.serverReadDeadline === undefined ? SERVER_READ_CALL_MS : context.serverReadDeadline - Date.now();
     if (deadlineMs <= 0) return unavailable();
     let value: unknown;
     try {
       value = await context.client.json<unknown>(context.session, `/v1/dev/tasks/start-requests/${id.data}`, {
-        method: "GET", expectedStatus: 200, boundedRead: { deadlineMs, maxBytes: MERGE_RECEIPT_MAX_BYTES },
+        method: "GET", expectedStatus: 200, boundedRead: { deadlineMs, maxBytes: SERVER_READ_MAX_BYTES },
       });
     } catch (error) { return refused(error); }
     const reply = Reply.safeParse(value);

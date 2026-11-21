@@ -1,4 +1,4 @@
-import { actionSubject, runActionPress, recoverActionBasis, answerHeld, isCsrfFailure } from "../../safe-action.js";
+import { actionSubject, runActionPress, recoverActionBasis, answerHeld, isCsrfFailure, type ActionSubject } from "../../safe-action.js";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
@@ -89,7 +89,7 @@ function PullItem({ row, ready, held, accepted, many, index }: { row: PullRow; r
  * The receipt reader and original-operation adoption are held (the receipt presentation is kept on branch held/merge-receipt-view, not mounted).
  */
 /** Who is reading (R6g/N5): company + person from /v1/app/me, then the session. */
-const subjectFrom = (me: { org: { orgId: string }; developer: { id: string } } | undefined, sessionId: string): string | undefined => me === undefined ? undefined : actionSubject({ orgId: me.org.orgId, developerId: me.developer.id, subjectId: sessionId });
+const subjectFrom = (me: { org: { orgId: string }; developer: { id: string } } | undefined, sessionId: string): ActionSubject | undefined => me === undefined ? undefined : actionSubject({ orgId: me.org.orgId, developerId: me.developer.id, subjectId: sessionId });
 const identityKeyOf = (sessionId: string): readonly string[] => ["session", sessionId, "identity"];
 export function MergeSection(props: { sessionId: string; task: ReadTask }) {
  const host = useAppHost(), meApi = useMemo(() => createApiClient(host), [host]);
@@ -118,7 +118,7 @@ const recordKey = (entry: { requestId: string; startedAt: string }): string => e
 function taskOfSession(data: unknown): ReadTask | undefined { try { return typeof data === "object" && data !== null && "body" in data ? workspaceTask(data as ReadSession) : undefined; } catch { return undefined; } }
 const doneWords = (pulls: ReadonlyArray<{ repositoryId: string; number: number }>): string => "Merged " + pulls.map(pull => pull.repositoryId + " #" + String(pull.number)).join(", ") + ".";
 
-function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task: ReadTask; subject: string | undefined }) {
+function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task: ReadTask; subject: ActionSubject | undefined }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionActions(host), [host]), reasonId = useId();
  const merged = mergedEverywhere(task), merge = task.merge;
  const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [memoryDone, setMemoryDone] = useState<AcceptedAnswer>(), [retiredInfo, setRetiredInfo] = useState<{ id: string; why: "head" | "closed" }>(), [note, setNote] = useState<string>();
@@ -146,7 +146,7 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
  // The accepted answer is kept per subject in storage (H1): Code's success path does not record the merge at once, it wakes the tracker, so reads right after the answer still show the pull request OPEN at the same head.
  // "Open at the same head" therefore never retires it. It yields only to facts that truly contradict it, in a body-bound read THIS tab issued after it first saw the answer: a DIFFERENT head for a covered pull request
  // (new commits), or the pull request CLOSED without a merge (R2). Until a read shows every covered pull request merged it is "accepted, waiting for Rovara to record it" and Merge stays locked, across reloads and tabs.
- const storedAccepted = useAccepted(subject ?? "\u0000identity-unread"), done = subject === undefined ? undefined : (storedAccepted ?? memoryDone);
+ const storedAccepted = useAccepted(subject), done = subject === undefined ? undefined : (storedAccepted ?? memoryDone);
  const doneObserved = done === undefined ? undefined : fence.observed.get("acc|" + done.requestId);
  const afterAnswer = done !== undefined && read !== undefined && doneObserved !== undefined && read.issued > doneObserved;
  const contradicts = (row: PullRow): boolean => done !== undefined && done.keys.includes(row.key) && (row.state === "closed" || (row.tracked !== undefined && done.heads.some(head => pullKey(head.repositoryId, head.number) === row.key && head.headSha !== row.tracked!.headSha)));
@@ -175,7 +175,7 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
  const readAnswer = readiness.isError || fence.readinessDenied !== undefined ? undefined : readiness.data;
  // An answer that would let a press through but does not bind every pull request to one head is not offered in the app (P1-5): the GitHub path stays.
  const view = readAnswer !== undefined && readAnswer.mayMerge === true && readAnswer.ready === true && !pressBound(readAnswer) ? undefined : readAnswer, rows = pullRowsOf(task, view), mayPress = view?.mayMerge === true && !merged && saved === undefined;
- const stored = usePending(subject ?? "\u0000identity-unread"), entry = subject !== undefined && stored.kind === "pending" ? stored.entry : undefined;
+ const stored = usePending(subject), entry = subject !== undefined && stored.kind === "pending" ? stored.entry : undefined;
  // A record resolves only through a task read THIS tab issued after THIS tab first observed it, or through the answer to that same request; another request's answer, an older read or a cache write settles nothing.
  const entryKey = entry === undefined ? undefined : recordKey(entry), observedAt = entryKey === undefined ? undefined : fence.observed.get(entryKey);
  const resolving = read !== undefined && observedAt !== undefined && read.issued > observedAt && readTask !== undefined;
@@ -344,7 +344,7 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
    {lede !== undefined && <p className="rv-merge-lede"><VisibleText text={lede} /></p>}
    {kind === "ready" && readAt !== undefined && <p className="rv-merge-muted">Read by Rovara at <Clock at={readAt} />.</p>}</header>
   {kind === "unknown" && active !== undefined && <ThreeParts
-   happened={<>Your merge{active.sent.length > 0 ? " of " + active.sent.join(", ") : ""} was sent at <Clock at={active.startedAt} /> and no reply was seen.</>}
+   happened={retiredNote?.id === active.requestId ? <>Code answered that these were merged. {retiredNote.why === "closed" ? "A later read shows a covered pull request closed without a merge." : "A later read shows a different head for a covered pull request."} The earlier answer no longer applies.</> : <>Your merge{active.sent.length > 0 ? " of " + active.sent.join(", ") : ""} was sent at <Clock at={active.startedAt} />. Its result isn't confirmed.</>}
    safe={<>Rovara keeps this request in this browser, so a reload or another tab won't send a second one, and nothing here sends it again. {active.sent.length > 0 ? "If GitHub did merge, it merged exactly what you authorized. " : ""}Nothing was deployed.</>}
    next={<>Check again only reads: it never sends the merge again. To merge now, use GitHub.{staleEntry ? " This request is more than a day old: check on GitHub first." : ""} <span className="rv-merge-muted">Ref MERGE-RESULT-UNKNOWN</span></>} />}
   {kind === "unknown" && readiness.isError && <p role="status" className="rv-merge-muted"><VisibleText text={"The latest read failed: " + (readiness.error instanceof ApiError ? readiness.error.message : "Rovara couldn't read it just now.") + " Merge stays locked."} /></p>}
