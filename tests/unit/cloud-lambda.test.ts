@@ -72,3 +72,22 @@ describe("the address and secret read at run time", () => {
     await expect(fakes("https://d1.cloudfront.net", "  ").read()).rejects.toThrow(/is empty/);
   });
 });
+
+
+describe("original-start reader raw request validation", () => {
+  it.each([false, true])("preserves forbidden GET bodies through the production adapter (base64 %s)", async encoded => {
+    const { httpWorld, confirmed, REQUEST } = await import("../support/server-read-http.js");
+    const w = await httpWorld(confirmed);
+    const adapted = cloudRequest(event({ rawPath: `/v1/web/task-start-requests/${REQUEST}`, method: "GET", cookies: ["rovara_cloud_session=cookie"], body: encoded ? Buffer.from("{}").toString("base64") : "{}", isBase64Encoded: encoded }));
+    const result = await w.handler(adapted);
+    expect(result?.status).toBe(400); expect(JSON.parse(result!.body)).toEqual({ error: { code: "CONFIG_INVALID", message: "That start request is invalid." } });
+    expect(w.calls).toHaveLength(0);
+  });
+  it("rejects malformed body bytes with the fixed domain error before parsing", async () => {
+    const { httpWorld, confirmed, REQUEST } = await import("../support/server-read-http.js");
+    const w = await httpWorld(confirmed);
+    const result = await w.handler({ method: "GET", path: `/v1/web/task-start-requests/${REQUEST}`, query: new URLSearchParams(), headers: { cookie: "rovara_cloud_session=cookie" }, body: "{" });
+    expect(result?.status).toBe(400); expect(JSON.parse(result!.body)).toEqual({ error: { code: "CONFIG_INVALID", message: "That start request is invalid." } });
+    expect(w.calls).toHaveLength(0);
+  });
+});

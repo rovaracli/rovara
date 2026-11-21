@@ -111,7 +111,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
   const headers = Object.fromEntries(Object.entries(req.headers).map(([name, value]) => [name.toLowerCase(), Array.isArray(value) ? value.join(", ") : value]));
-  const answer = await cloud({ method, path: url.pathname, query: url.searchParams, headers, ...(method === "GET" || method === "HEAD" ? {} : { body: await readBody(req) }) });
+  const answer = await cloud({ method, path: url.pathname, query: url.searchParams, headers, ...((method === "GET" && !/^\/v1\/web\/task-start-requests(?:\/|$)/u.test(url.pathname)) || method === "HEAD" ? {} : { body: await readBody(req) }) });
   if (answer !== undefined) {
     res.writeHead(answer.status, answer.headers).end(answer.body);
     return;
