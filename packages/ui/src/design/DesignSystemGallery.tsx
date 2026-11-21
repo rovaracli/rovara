@@ -24,8 +24,10 @@ export function DesignSystemGallery() {
 function RoutedGallery() { return <Gallery search={useLocation().search} />; }
 function Gallery({ search }: { search: string }) {
  const sceneId = new URLSearchParams(search).get("scene");
+ const shellScene = sceneId !== null && ["shell-running", "shell-plan", "shell-gaps"].includes(sceneId);
+ const wideFoundation = sceneId === "colours" || sceneId === "focus";
  const known = !sceneId || galleryScenes.some(scene => scene.id === sceneId);
- return <div className={`rv-ds-gallery${sceneId ? " rv-ds-isolated" : ""}`}>
+ return <div className={`rv-ds-gallery${sceneId ? " rv-ds-isolated" : ""}${shellScene ? " rv-ds-shell-gallery" : ""}${wideFoundation ? " rv-ds-wide-foundation" : ""}`}>
   <header><p className="rv-ds-meta">ROVARA DESIGN SYSTEM · SHEET V2</p><h1 tabIndex={-1}>A calm control room</h1><p className="rv-ds-lead">Quiet, dense, exact. Colour only means status, and always comes with an icon and a word. The interface speaks like a good colleague&apos;s hand-over note.</p></header>
   <nav aria-label="Gallery scenes">{galleryScenes.map(scene => <a key={scene.id} href={`?scene=${scene.id}`} aria-current={sceneId === scene.id ? "page" : undefined}>{scene.title}</a>)}</nav>
   {!known && <h2>Scene not found</h2>}
