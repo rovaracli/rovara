@@ -67,7 +67,7 @@ it("keeps first-load failure separate from empty and a silent build separate fro
 it("an unconfirmed write offers only a local check and reports the observed value (R2/R4)", async () => {
  gallery("states-write-unconfirmed");expect(screen.queryByRole("button", { name: /save|try again/i })).toBeNull();
  await userEvent.click(screen.getByRole("button", { name: "Check current limit" }));
- expect(screen.getByText(/Checked 14:07: the limit is \$600/)).toBeTruthy();expect(screen.queryByText(/your change was saved/i)).toBeNull();
+ expect(screen.getByText(/Checked 14:07: the limit is \$600/)).toBeTruthy();expect(screen.getByText("Checked 14:07: the limit is $600. Your change was saved by Ana at 14:06.")).toBeTruthy();
 });
 it("the shell demo uses the existing menu, preserves focus return and expands the live log", async () => {
  gallery("shell-running");const user = userEvent.setup(), trigger = screen.getByRole("button", { name: "Task actions" });

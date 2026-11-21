@@ -50,7 +50,7 @@ const tasks = [
  { title: "Remove old ledger export", detail: "#39 merged by Ana · Tue", time: "Tue", status: { state: "merged" } },
 ] as const;
 function TaskRows({ stale = false, phone = false }: { stale?: boolean; phone?: boolean }) {
- return <ul className={`rv-ds-state-rows${phone ? " rv-ds-two-line-rows" : ""}`}>{tasks.map((task, index) => <li key={task.title}><div><strong>{task.title}</strong>{phone && <p className="rv-ds-meta">{task.detail}</p>}</div>{stale && index === 1 ? <HeldState /> : <StatusChip {...task.status} />}{!phone && <span className="rv-ds-row-time">{stale && index === 1 ? "3 min" : stale && index === 0 ? "5 min" : task.time}</span>}</li>)}</ul>;
+ return <ul className={`rv-ds-state-rows${phone ? " rv-ds-two-line-rows" : ""}`}>{tasks.map((task, index) => <li key={task.title}><div><strong>{task.title}</strong>{phone && <p className="rv-ds-meta">{stale && index === 1 ? "3 min" : task.detail}</p>}</div>{stale && index === 1 ? <HeldState /> : <StatusChip {...task.status} />}{!phone && <span className="rv-ds-row-time">{stale && index === 1 ? "3 min" : stale && index === 0 ? "5 min" : task.time}</span>}</li>)}</ul>;
 }
 function Reference({ code }: { code: string }) {
  const [copied, setCopied] = useState(false);
@@ -58,7 +58,20 @@ function Reference({ code }: { code: string }) {
 }
 function StateExample({ kind }: { kind: string }) {
  const [checked, setChecked] = useState(false), [saved, setSaved] = useState(false), [starting, setStarting] = useState(false);
- if (kind === "write-unconfirmed") return <><div className="rv-ds-state-list rv-ds-write"><div className="rv-ds-state-heading"><h3>Monthly limit</h3><span className="rv-ds-meta">Company, Money</span></div><div className="rv-ds-state-content"><p><strong>Rovara didn&apos;t hear back about this save.</strong> The limit may be $400 or $600. Your $600 is kept in the field. Nothing was charged.</p><h4 className="rv-visually-hidden">What is safe</h4><Button variant="primary" onClick={() => setChecked(true)}>Check current limit</Button>{checked && <p role="status">Rovara now reads the limit as $600.</p>}</div><div className="rv-ds-after-check"><strong>After the check</strong><p><Mark kind="done" /><span>Checked 14:07: the limit is $600. Last recorded by Ana at 14:06.</span></p></div></div><p className="rv-ds-meta rv-ds-state-caption">Try again appears only when the check shows the write did not apply.</p></>;
+ if (kind === "write-unconfirmed") return <div className="rv-ds-reading">
+  <div className="rv-ds-write-card">
+   <div className="rv-ds-write-heading"><h3>Monthly limit</h3><span>Company, Money</span></div>
+   <div className="rv-ds-write-body">
+    <p><strong>Rovara didn&apos;t hear back about this save.</strong> The limit may be $400 or $600. Your $600 is kept in the field. Nothing was charged.</p>
+    <Button variant="primary" onClick={() => setChecked(true)}>Check current limit</Button>
+   </div>
+   <div className="rv-ds-write-after" aria-live={checked ? "polite" : "off"}>
+    <h4>After the check</h4>
+    <p><span aria-hidden="true">✓</span>Checked 14:07: the limit is $600. Your change was saved by Ana at 14:06.</p>
+   </div>
+  </div>
+  <p className="rv-ds-meta">Try again appears only when the check shows the write did not apply.</p>
+ </div>;
  const stale = kind === "stale" || kind === "stale-or-heartbeat";
  const start = <><Button variant="primary" onClick={() => setStarting(value => !value)}>Start a task</Button>{starting && <label className="rv-field">Task description<textarea className="rv-input" /></label>}</>;
  return <><div className={`rv-ds-state-list${kind === "phone" ? " rv-ds-phone-example" : ""}`}><div className="rv-ds-state-heading"><h3>Tasks</h3>{kind !== "stale-or-heartbeat" && <span className="rv-ds-meta">acme/payments</span>}{stale && <span className="rv-ds-state-age"><Mark kind="running" />{kind === "stale-or-heartbeat" ? "This list: updated 3 min ago · reconnecting" : "Updated 3 min ago · Reconnecting"}</span>}</div>

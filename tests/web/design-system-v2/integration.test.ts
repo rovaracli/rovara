@@ -36,6 +36,9 @@ it.each(ids)("mounts the actual %s scene without placeholders", id => {
    expect(screen.getByRole("img", { name: "Not run" })).toBeTruthy();
   }
   if (id === "states-phone") expect(screen.getByRole("img", { name: "Waiting for Sam" })).toBeTruthy();
-  if (id === "states-write-unconfirmed") expect(screen.getByRole("heading", { name: "What is safe" })).toBeTruthy();
+  if (id === "states-write-unconfirmed") {
+    expect(screen.getByRole("heading", { name: "After the check" })).toBeTruthy();
+    expect(screen.getByText(/Rovara didn't hear back about this save\./)).toBeTruthy();
+  }
   ui.unmount();
 });
