@@ -12,7 +12,7 @@
 .rv-ds-gallery .rv-ds-focus-intro{color:var(--rv-text-muted);margin-bottom:var(--rv-space-4)}
 .rv-ds-gallery .rv-ds-focus-examples{grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:var(--rv-space-5);margin-top:var(--rv-space-4)}
 .rv-ds-gallery .rv-ds-focus-rows{padding:0;gap:0}
-.rv-ds-gallery .rv-ds-focus-rows>.rv-selected{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--rv-space-3);border-start-start-radius:var(--rv-radius-md);border-start-end-radius:var(--rv-radius-md)}
+.rv-ds-gallery .rv-ds-focus-rows>.rv-selected{display:flex;align-items:center;justify-content:space-between;flex-wrap:nowrap;gap:var(--rv-space-3);border-start-start-radius:var(--rv-radius-md);border-start-end-radius:var(--rv-radius-md)}
 .rv-ds-gallery .rv-ds-focus-rows>button{border-end-start-radius:var(--rv-radius-md);border-end-end-radius:var(--rv-radius-md)}
 .rv-ds-gallery .rv-ds-ring-buttons{gap:calc(var(--rv-space-3) + var(--rv-space-2));padding:0;flex-wrap:wrap}
 .rv-ds-gallery .rv-ds-composer-field{padding:0}
@@ -66,22 +66,24 @@
 
 /* FIX-1: the mock's page shell and compact 4f forms. All metrics use R1 roles. */
 .rv-shell-sheet .rv-shell-main{padding:0}
-.rv-ds-gallery.rv-ds-isolated:has([data-shell-scene]){width:100%;max-width:none;padding:0;margin:0}
+/* Isolated shells escape the capture host's reading column as well as the app shell. */
+.rv-ds-gallery.rv-ds-shell-gallery{position:absolute;top:0;left:calc(50% - 50vw);width:100vw;max-width:none;padding:0;margin:0}
+.rv-ds-gallery.rv-ds-wide-foundation{--rv-gallery-width:min(calc(100vw - var(--rv-gallery-gutter)*2),calc(var(--rv-table-width) + var(--rv-space-7)*3));width:var(--rv-gallery-width);max-width:none;margin-inline:calc((100% - var(--rv-gallery-width))/2)}
 .rv-ds-isolated:has([data-shell-scene])>header,.rv-ds-isolated:has([data-shell-scene])>nav{display:none}
 .rv-ds-gallery .rv-ds-swatches dd code{white-space:normal;overflow-wrap:normal;overflow:visible}
 .rv-ds-gallery .rv-ds-swatches>div{min-width:0}
-.rv-ds-gallery .rv-ds-swatches dt{white-space:normal;overflow-wrap:normal}
+.rv-ds-gallery .rv-ds-swatches dt{white-space:nowrap;overflow-wrap:normal}
 .rv-ds-gallery .rv-ds-swatches{grid-template-columns:repeat(2,minmax(0,1fr))}
 .rv-ds-gallery .rv-ds-type-list code{white-space:pre-wrap;overflow-wrap:normal;overflow:visible}
 .rv-ds-gallery #focus>h2{margin-bottom:var(--rv-space-2)}
 .rv-ds-gallery .rv-ds-focus-rows>button{flex-wrap:nowrap}
 .rv-ds-gallery .rv-ds-focus-rows>button>.rv-ds-meta{flex-shrink:0;margin-left:auto}
-.rv-ds-not-started{display:inline-flex;align-items:center;gap:var(--rv-space-1);padding:var(--rv-space-1) var(--rv-space-2);border:calc(var(--rv-space-1)/2) solid var(--rv-border-strong);border-radius:var(--rv-space-7);color:var(--rv-text-muted);font-size:var(--rv-font-sm);font-weight:600;white-space:nowrap}
+.rv-ds-not-started{align-self:center;display:inline-flex;align-items:center;gap:var(--rv-space-1);padding:var(--rv-space-1) var(--rv-space-2);border:calc(var(--rv-space-1)/2) solid var(--rv-border-strong);border-radius:var(--rv-space-7);color:var(--rv-text-muted);font-size:var(--rv-font-sm);font-weight:600;white-space:nowrap}
 .rv-ds-not-started svg{width:var(--rv-space-3);height:var(--rv-space-3)}
 .rv-page-meta{font-size:var(--rv-font-lg)}
 .rv-page-breadcrumbs a{text-decoration:underline}
 .rv-ds-shell-example{display:grid;grid-template-columns:calc(var(--rv-space-7)*4 + var(--rv-space-6) + var(--rv-space-2)) minmax(0,1fr);min-height:100dvh;background:var(--rv-bg)}
-.rv-ds-gallery .rv-ds-sidebar{display:flex;flex-direction:column;align-items:stretch;flex-wrap:nowrap;gap:var(--rv-space-2);padding:var(--rv-space-5) var(--rv-space-3);border-inline-end:calc(var(--rv-space-1)/4) solid var(--rv-border);color:var(--rv-text-muted);min-width:0}
+.rv-ds-gallery .rv-ds-sidebar{display:flex;flex-direction:column;align-items:stretch;flex-wrap:nowrap;gap:var(--rv-space-2);padding:var(--rv-space-5) var(--rv-space-3);border-inline-end:calc(var(--rv-space-1)/4) solid var(--rv-border);color:var(--rv-text-muted);min-width:0;position:sticky;top:0;align-self:start;height:100dvh;overflow-y:auto}
 .rv-ds-sidebar-brand{display:flex;align-items:center;gap:var(--rv-space-2);margin-bottom:var(--rv-space-5);padding-inline:var(--rv-space-2);color:var(--rv-text)}
 .rv-ds-sidebar-brand>span:last-child{margin-left:auto;color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
 .rv-ds-brand-icon{display:grid;place-items:center;width:var(--rv-space-5);height:var(--rv-space-5);border-radius:var(--rv-radius-sm);background:var(--rv-accent);color:var(--rv-on-accent);font-weight:600}
@@ -96,7 +98,7 @@
 .rv-ds-shell-page{padding:var(--rv-space-7);min-width:0}
 .rv-ds-gallery .rv-ds-shell-page>.rv-page-header{margin-bottom:var(--rv-space-6);justify-content:space-between;align-items:center}
 .rv-ds-shell-page .rv-page-header>.rv-actions{flex-shrink:0}
-.rv-ds-shell-columns{grid-template-columns:minmax(0,var(--rv-reading-width)) minmax(0,1fr);gap:calc(var(--rv-space-5) + var(--rv-space-4))}
+.rv-ds-shell-columns{grid-template-columns:minmax(0,var(--rv-reading-width)) minmax(calc(var(--rv-space-7)*6 + var(--rv-space-5)),1fr);gap:calc(var(--rv-space-5) + var(--rv-space-4))}
 .rv-ds-shell-page .rv-ds-panel,.rv-ds-shell-page .rv-decision-frame{padding:var(--rv-space-5);background:var(--rv-bg-raised)}
 .rv-ds-mark{display:inline-block;flex-shrink:0;vertical-align:middle;width:var(--rv-space-4);height:var(--rv-space-4)}
 .rv-ds-mark-done{color:var(--rv-status-done)}
@@ -117,7 +119,8 @@
 .rv-ds-gallery .rv-ds-log{border-bottom:0}
 .rv-ds-log>summary{display:flex;min-height:var(--rv-control-size);flex-wrap:wrap;gap:var(--rv-space-2)}
 .rv-ds-log>summary>strong{font-weight:400;text-decoration:underline}
-.rv-ds-log .rv-ds-disclosure-summary{flex:1}
+.rv-ds-log .rv-ds-disclosure-summary{flex:1 1 max-content}
+.rv-ds-gallery .rv-ds-log code{white-space:normal;overflow-wrap:normal;overflow-x:visible}
 .rv-ds-stop-row{display:flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-3);padding-top:var(--rv-space-4);margin-top:var(--rv-space-3);border-top:calc(var(--rv-space-1)/4) solid var(--rv-border)}
 .rv-ds-shell-example .rv-ds-running-next{margin-block:var(--rv-space-5)}
 .rv-ds-shell-timeline .rv-task-timeline-detail{margin:var(--rv-space-1) 0 0}
@@ -220,9 +223,18 @@
 .rv-ds-write-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--rv-space-3);padding:var(--rv-space-4);border-bottom:calc(var(--rv-space-1)/4) solid var(--rv-border)}
 .rv-ds-write-heading h3{margin:0;font:600 var(--rv-font-md)/1.55 var(--rv-font-ui)}
 .rv-ds-write-heading>span{font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
-.rv-ds-write-body{display:grid;justify-items:start;gap:var(--rv-space-3);padding:var(--rv-space-5);color:var(--rv-text-muted);font-size:var(--rv-font-md)}
+.rv-ds-write-body{display:grid;justify-items:start;gap:var(--rv-space-3);padding:var(--rv-space-4);color:var(--rv-text-muted);font-size:var(--rv-font-md)}
 .rv-ds-write-body strong{color:var(--rv-text)}
 .rv-ds-write-after{display:grid;gap:var(--rv-space-2);padding:var(--rv-space-4);background:var(--rv-bg-sunken);border-top:calc(var(--rv-space-1)/4) solid var(--rv-border);border-radius:0 0 var(--rv-radius-md) var(--rv-radius-md)}
 .rv-ds-write-after h4{margin:0;font:600 var(--rv-font-md)/1.55 var(--rv-font-ui)}
 .rv-ds-write-after p{display:flex;align-items:baseline;gap:var(--rv-space-3);margin:0}
 .rv-ds-write-after p>span{color:var(--rv-status-done);flex:none}
+
+/* FIX-2: scoped hierarchy and alignment; other parts retain their own sheet rules. */
+.rv-ds-shell-example .rv-ds-running>h3,.rv-ds-shell-example .rv-decision-frame>.rv-decision-frame-header>.rv-decision-frame-title{font-size:var(--rv-font-xl);font-weight:600}
+.rv-ds-gaps-frame>.rv-decision-frame-body{gap:0}
+.rv-ds-evidence .rv-ds-meta{font-weight:400;color:var(--rv-text-muted)}
+.rv-ds-plan-lock{display:inline-flex;align-items:center;gap:var(--rv-space-2)}
+.rv-ds-gallery .rv-ds-plan-frame .rv-actions{padding:0}
+.rv-ds-write-card+.rv-ds-meta{margin-top:var(--rv-space-5)}
+.rv-ds-gallery .rv-ds-composer{min-width:0;max-width:100%}
