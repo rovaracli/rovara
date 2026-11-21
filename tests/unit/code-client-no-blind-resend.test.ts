@@ -204,7 +204,7 @@ describe("post-forward failures never masquerade as refusals", () => {
       if (init?.method === "POST") { owner = "Ada"; writes += 1; return json(200, { change: { status: "COMMITTED" } }); }
       return path.endsWith("/people") ? json(200, { view: { revision: 1 } }) : json(404, { error: { code: "TASK_NOT_FOUND", message: "Can't read task" } });
     }, work);
-    expect(await send(`/v1/web/sessions/${sessionId}/take-over`, { requestId: "22222222-2222-4222-8222-222222222222" })).toEqual(unknown);
+    expect(await send(`/v1/web/sessions/${sessionId}/take-over`, { requestId: "22222222-2222-4222-8222-222222222222", expectedPeopleRevision: 1 })).toEqual(unknown);
     expect(owner).toBe("Ada"); expect(writes).toBe(1);
   });
 
