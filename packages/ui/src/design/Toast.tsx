@@ -15,6 +15,6 @@ function ToastReceipt({ message, onDismiss, onUndo }: { message: string; onDismi
  return <aside className={onUndo ? "rv-toast rv-toast-v2" : "rv-inline-receipt"} aria-label="Notification">
   {onUndo && <span className="rv-toast-v2-tick" aria-hidden="true">✓</span>}<span><VisibleText text={message} /></span>
   {onUndo && <button type="button" className="rv-toast-v2-undo" disabled={disabled} onClick={undo}>Undo</button>}
-  <IconButton label="Dismiss notification" variant="quiet" onClick={onDismiss}>×</IconButton>
+  {!onUndo && <IconButton label="Dismiss notification" variant="quiet" onClick={onDismiss}>×</IconButton>}
  </aside>;
 }
