@@ -139,3 +139,96 @@ describe("the handler cannot re-enter after a Code write", () => {
     expect((await store.get("cookie"))?.accessToken).toBe("fresh");
   });
 });
+
+// Lead 4 DEC 285: only a refusal before apply may release a one-shot action.
+describe("post-forward failures never masquerade as refusals", () => {
+  async function world(route: Route | undefined, fetchImpl: typeof fetch, work = new LocalWorkSessionStore(), store = new LocalSessionStore(undefined, { environment: {} })) {
+    await store.create("cookie", session());
+    const handler = createCloudHandler({ client: clientFor(fetchImpl), store, work, ...(route === undefined ? {} : { routes: [route] }), origin: "https://cloud.example.test", callbackPath: "/callback", secureCookies: true, org: { orgId: "acme", name: "Acme", plan: "test" }, log: () => undefined });
+    return async (path = "/v1/web/change", body: unknown = {}) => {
+      const answer = await handler({ method: "POST", path, query: new URLSearchParams(), headers: { cookie: "rovara_cloud_session=cookie", "x-rovara-csrf": "csrf" }, body: JSON.stringify(body) });
+      return { status: answer!.status, body: JSON.parse(answer!.body) as unknown };
+    };
+  }
+
+  it.each([400, 401, 403, 404, 409, 429])("a returned %s after Code accepted becomes unknown, with one dispatch", async status => {
+    let writes = 0;
+    const route: Route = { method: "POST", path: /^\/change$/u, answer: async context => {
+      await context.client.json(context.session, "/v1/app/change", { method: "POST" });
+      return { status, body: { error: { code: "CONFLICT", message: "Local record could not be saved" } } };
+    } };
+    const send = await world(route, async () => { writes += 1; return json(200, { status: "COMMITTED" }); });
+    expect(await send()).toEqual(unknown);
+    expect(writes).toBe(1);
+  });
+
+  it.each([403, 404, 409])("a follow-up Code read's %s cannot refuse the applied action", async status => {
+    let applied = 0;
+    const route: Route = { method: "POST", path: /^\/change$/u, answer: async context => {
+      await context.client.json(context.session, "/v1/app/change", { method: "POST" });
+      return { status: 200, body: await context.client.json(context.session, "/v1/app/changed") };
+    } };
+    const send = await world(route, async (_input, init) => init?.method === "POST" ? (applied += 1, json(200, { applied: true })) : json(status, { error: { code: "FORBIDDEN", message: "Read refused" } }));
+    expect(await send()).toEqual(unknown);
+    expect(applied).toBe(1);
+  });
+
+  it("even an unreadable 2xx counts before decode or later local failure", async () => {
+    const route: Route = { method: "POST", path: /^\/change$/u, answer: async context => {
+      await context.client.json(context.session, "/v1/app/change", { method: "POST" });
+      throw new CodeError(409, { error: { code: "CONFLICT", message: "Local conflict" } });
+    } };
+    const send = await world(route, async () => new Response("not JSON", { status: 202 }));
+    expect(await send()).toEqual(unknown);
+  });
+
+  it.each(["plain", "CodeError"])("a %s failure in the final sign-in save stays unknown after Code applied", async kind => {
+    const store = new LocalSessionStore(undefined, { environment: {} });
+    const route: Route = { method: "POST", path: /^\/change$/u, answer: async context => {
+      await context.client.json(context.session, "/v1/app/change", { method: "POST" });
+      context.session.changed = true;
+      store.save = async () => { throw kind === "plain" ? new Error("local save failed") : new CodeError(403, { error: { code: "FORBIDDEN", message: "local" } }); };
+      return { status: 200, body: { done: true } };
+    } };
+    const send = await world(route, async () => json(200, { committed: true }), undefined, store);
+    expect(await send()).toEqual(unknown);
+  });
+
+  it("real take-over: COMMITTED then task-read 404 is unknown; Code's owner changed once", async () => {
+    const work = new LocalWorkSessionStore();
+    const sessionId = "ses_aaaaaaaaaaaaaaaaaaaa", taskId = "11111111-1111-4111-8111-111111111111";
+    await work.put({ sessionId, taskId, companyId: COMPANY, project: "alpha", startedBy: { developerId: "b".repeat(64), name: "Bea" }, owner: { developerId: "b".repeat(64), name: "Bea" }, revision: 1, createdAt: "2026-11-20T00:00:00.000Z" });
+    let owner = "Bea", writes = 0;
+    const send = await world(undefined, async (input, init) => {
+      const path = new URL(input instanceof Request ? input.url : input).pathname;
+      if (init?.method === "POST") { owner = "Ada"; writes += 1; return json(200, { change: { status: "COMMITTED" } }); }
+      return path.endsWith("/people") ? json(200, { view: { revision: 1 } }) : json(404, { error: { code: "TASK_NOT_FOUND", message: "Can't read task" } });
+    }, work);
+    expect(await send(`/v1/web/sessions/${sessionId}/take-over`, { requestId: "22222222-2222-4222-8222-222222222222" })).toEqual(unknown);
+    expect(owner).toBe("Ada"); expect(writes).toBe(1);
+  });
+
+  it("a connector's pending-store failure after Code accepted is unknown too", async () => {
+    const store = new LocalSessionStore(undefined, { environment: {} });
+    store.putPending = async () => { throw new CodeError(409, { error: { code: "CONFLICT", message: "local pending conflict" } }); };
+    const state = "a".repeat(43);
+    const send = await world(undefined, async () => json(200, { state, authorizeUrl: `https://github.com/login/oauth/authorize?client_id=synthetic&state=${state}` }), undefined, store);
+    expect(await send("/v1/web/me/github/link")).toEqual(unknown);
+  });
+
+  it.each([400, 403, 404, 409])("a first-call %s refusal keeps the server's own words", async status => {
+    const refusal = { error: { code: "CONFIG_INVALID", message: "The server's own refusal" } };
+    const route: Route = { method: "POST", path: /^\/change$/u, answer: async context => ({ status: 200, body: await context.client.json(context.session, "/v1/app/change", { method: "POST" }) }) };
+    const send = await world(route, async () => json(status, refusal));
+    expect(await send()).toEqual({ status, body: refusal });
+  });
+
+  it("a successful preflight GET does not turn a local pre-dispatch conflict into unknown", async () => {
+    const route: Route = { method: "POST", path: /^\/change$/u, answer: async context => {
+      await context.client.json(context.session, "/v1/app/read");
+      return { status: 409, body: { error: { code: "CONFLICT", message: "Nothing to retry" } } };
+    } };
+    const send = await world(route, async () => json(200, {}));
+    expect(await send()).toEqual({ status: 409, body: { error: { code: "CONFLICT", message: "Nothing to retry" } } });
+  });
+});

@@ -1,4 +1,4 @@
-import { actionSubject, runActionPress, recoverActionBasis, answerHeld, isCsrfFailure, type ActionSubject } from "../../safe-action.js";
+import { actionSubject, runActionPress, recoverActionBasis, answerHeld, isCsrfFailure, isFinalActionRefusal, type ActionSubject } from "../../safe-action.js";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
@@ -99,18 +99,6 @@ export function MergeSection(props: { sessionId: string; task: ReadTask }) {
  return <MergeSectionFor key={props.sessionId + "|" + (subject ?? "unread")} {...props} subject={subject} />;
 }
 
-/**
- * Only refusals raised BEFORE any provider dispatch mean "nothing more will happen for this request" (R6a): task visibility 404 (`hosted-merge-routes.ts` 114, 116), malformed body 400 CONFIG_INVALID (163), stored-result
- * identity conflict 409 IDEMPOTENCY_CONFLICT (168-173), website/standing 403 FORBIDDEN (230, 240), and Cloud's own malformed or missing session (`merge-routes.ts` 110-122). 409 MERGE_NOT_READY is NOT final: the merge core
- * returns it AFTER a provider call too (`merge.ts` 928-955, a provider refusal or a half merge), and nothing in the answer tells the two apart. Everything else (408, 429, 401, any other 4xx, every 5xx, 202, an unreadable
- * body, a network failure) is UNKNOWN and keeps the lock. A distinct pre-dispatch code from Code would let the page release faster (held).
- */
-const FINAL_REFUSALS: ReadonlyArray<readonly [number, string]> = [[409, "IDEMPOTENCY_CONFLICT"], [403, "FORBIDDEN"], [404, "TASK_NOT_FOUND"], [404, "SESSION_NOT_FOUND"]];
-/**
- * 400 CONFIG_INVALID is final only for a press that covers ONE pull request. With several, the merge core can raise it after an earlier pull request was already merged (an installation lookup failing for the second
- * repository, `merge.ts` 916-956 with the GitHub client's lookUpInstallation), and Code neither reports that as a half merge nor wakes tracking: a Code-side gap (held). So it stays unknown for a multi-PR press.
- */
-const refused = (failure: unknown, pullCount: number): boolean => failure instanceof ApiError && (FINAL_REFUSALS.some(([status, code]) => failure.status === status && failure.code === code) || (pullCount <= 1 && failure.status === 400 && failure.code === "CONFIG_INVALID"));
 /** The meaningful facts of the task a session read returned (undefined if the body is not a task session). */
 const basisOfRead = (data: unknown): string | undefined => { const task = taskOfSession(data); return task === undefined ? undefined : taskBasisOf(task); };
 const recordKey = (entry: { requestId: string; startedAt: string }): string => entry.requestId + "|" + entry.startedAt;
@@ -280,9 +268,9 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
     if (isCsrfFailure(failure)) {
      // Cloud's CSRF check (403 CSRF_INVALID, handler.ts:315-316) runs before anything is routed or forwarded, so nothing was sent; it is not a refusal of authority (R6h). Say so plainly and read who you are again.
      clearPending(next);setError("Couldn't merge that. Your sign-in changed, so nothing was sent. Rovara is reading who you are again; try again in a moment.");void query.invalidateQueries({ queryKey: ["session", sessionId, "identity"] });
-    } else if (refused(failure, next.heads.length)) {
+    } else if (isFinalActionRefusal(failure, { route: `/v1/app/sessions/${sessionId}/merge`, pullCount: next.heads.length })) {
      // Code gave a documented final refusal to this request: nothing more will happen for it. The next press is a new one.
-     clearPending(next);setError((failure as ApiError).message);
+     clearPending(next);setError(failure.message);
     }
     else if (failure instanceof ApiError && failure.status === 409 && failure.code === "MERGE_NOT_READY") setNote("Code answered: " + failure.message + " That doesn't say nothing was merged, so Merge stays locked until a read shows what GitHub holds.");
     // Anything else is unknown: the record stays, a lost, throttled, timed-out or unreadable answer does not say what GitHub did.
