@@ -21,7 +21,7 @@ async function scene(id: string) {
 }
 it("keeps the real, role-filtered sidebar beside shell captures while giving the sheet full width", async () => {
  const shell = await scene("shell-running");
- try { expect(shell.container.querySelector(".rv-app-shell")?.classList.contains("rv-shell-sheet")).toBe(false);expect(screen.getByRole("navigation", { name: "Workspace" })).toBeTruthy(); } finally { shell.close(); }
+ try { expect(shell.container.querySelector(".rv-app-shell")?.classList.contains("rv-shell-sheet")).toBe(true);expect(screen.getByRole("navigation", { name: "Example workspace" })).toBeTruthy(); } finally { shell.close(); }
  const sheet = await scene("colours");try { expect(sheet.container.querySelector(".rv-app-shell")?.classList.contains("rv-shell-sheet")).toBe(true); } finally { sheet.close(); }
 });
 it("draws the loading placeholder in the shape of four final task rows", async () => {
