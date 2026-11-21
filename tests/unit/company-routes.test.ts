@@ -626,7 +626,8 @@ describe("invites", () => {
     const store = w.store as LocalCompanyStore;
     const real = store.updateInvite.bind(store);
     store.updateInvite = async () => { throw new Error("store down"); };
-    await expect(create(w, ada, "member", "half@example.com")).rejects.toThrow();
+    // Code answered the pre-approval write, so a local failure after it is an unknown outcome, never a refusal or a crash (DEC 254zzz285).
+    expect(await create(w, ada, "member", "half@example.com")).toEqual({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "The request's outcome is unknown. Check its status before trying again." } } });
     store.updateInvite = real;
     expect(w.live.size).toBe(0);
     expect(w.preApproved.map((call) => call.method)).toEqual(["POST", "DELETE"]);
@@ -705,7 +706,8 @@ describe("invites", () => {
     let fail = true;
     store.updateInvite = async (invite, expected) => { if (fail && invite.state === "pending") throw new Error("store down"); return real(invite, expected); };
     w.setDeleteAnswer({ status: 503, body: {} });
-    await expect(create(w, ada, "member", "half@example.com")).rejects.toThrow();
+    // Code answered the pre-approval write, so a local failure after it is an unknown outcome, never a refusal or a crash (DEC 254zzz285).
+    expect(await create(w, ada, "member", "half@example.com")).toEqual({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "The request's outcome is unknown. Check its status before trying again." } } });
     fail = false;
     const kept = (await w.store.invites(A)).invites;
     expect(kept.map((invite) => invite.state)).toEqual(["revoking"]);
