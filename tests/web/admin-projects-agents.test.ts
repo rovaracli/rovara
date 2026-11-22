@@ -65,12 +65,12 @@ for(const area of ["projects","agents"]) it(`keeps ${area} focus during refresh,
  let refresh!:Promise<unknown>;await act(async()=>{refresh=f.query.invalidateQueries({queryKey:["admin",area]});});expect(screen.getByRole("table")).toBe(table);expect(document.activeElement).toBe(input);
  await act(async()=>{resolve({status:403,body:{}});await refresh;});await waitFor(()=>expect(screen.queryByRole("table")).toBeNull());f.close();
 });
-for(const area of ["projects","agents"]) it(`distinguishes successful empty ${area} and rejects malformed lists`,async()=>{
+for(const area of ["projects","agents"]) it(`keeps the successful empty ${area} read after a malformed refresh`,async()=>{
  const f=mount("/app/admin/"+area,{respond:async()=>({status:200,body:area==="projects"?{projects:[]}:{agents:[]}})});await screen.findByText(area==="projects"?"No projects were returned.":/No visible agents were returned/);
- f.request.mockImplementation(async()=>({status:200,body:area==="projects"?{projects:[{name:"bad"}]}:{agents:[{name:"bad"}]}}));await act(async()=>{await f.query.invalidateQueries({queryKey:["admin",area]});});await screen.findAllByRole("alert");expect(screen.queryByText("bad")).toBeNull();f.close();
+ f.request.mockImplementation(async()=>({status:200,body:{[area]:"unreadable"}}));await act(async()=>{await f.query.invalidateQueries({queryKey:["admin",area]});});expect(await screen.findByText(/Updated .* · Reconnecting/u)).toBeTruthy();expect(screen.getByText(area==="projects"?"No projects were returned.":/No visible agents were returned/)).toBeTruthy();expect(screen.queryByText("unreadable")).toBeNull();f.close();
 });
 for(const area of ["projects","agents"]) it(`labels cached ${area} stale after a temporary failure and recovers`,async()=>{
- const f=mount("/app/admin/"+area);await screen.findByRole("table");f.request.mockImplementation(async()=>({status:503,body:{}}));await act(async()=>{await f.query.invalidateQueries({queryKey:["admin",area]});});expect(screen.getByRole("table")).toBeTruthy();expect((await screen.findAllByRole("alert")).some(n=>n.textContent?.includes("stale"))).toBe(true);
+ const f=mount("/app/admin/"+area);await screen.findByRole("table");f.request.mockImplementation(async()=>({status:503,body:{}}));await act(async()=>{await f.query.invalidateQueries({queryKey:["admin",area]});});expect(screen.getByRole("table")).toBeTruthy();expect(await screen.findByText(/Updated .* · Reconnecting/u)).toBeTruthy();
  f.request.mockImplementation(async()=>({status:200,body:area==="projects"?{projects:[]}:{agents:[]}}));await act(async()=>{await f.query.invalidateQueries({queryKey:["admin",area]});});await waitFor(()=>expect(screen.queryByRole("table")).toBeNull());f.close();
 });
 for(const area of ["projects","agents"]) it(`drops late ${area} responses from the previous company`,async()=>{
