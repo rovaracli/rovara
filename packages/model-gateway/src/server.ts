@@ -1,4 +1,5 @@
 import { initialCharge, finishCharge, type ChargeSource } from "./charge-producer.js";
+import { ROVARA_AI_PAUSED } from "./rovara-ai-stop.js";
 import { chargeValue, type ChargeReceiptV1 } from "./charge-receipt.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -48,6 +49,8 @@ export const logCode = (code: string): string => REFUSAL_CODE.test(code) ? code 
 const PAYER = /^[a-z0-9_]{1,32}$/u;
 export type GatewayLogEvent = { event: "customer_source_over_reservation"; source: "bedrock_byo" | "openrouter"; company: string; costMicros: number; heldMicros: number; overageMicros: number } | { event: "openrouter_over_reservation"; costMicros: number; holdMicros: number; sourceId: string } | { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "settle_failed" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
 export interface GatewayDependencies {
+  /** DEC 328: production always supplies the live install setting. Own sources never read it. */
+  rovaraAiSetting?: { enabled(): Promise<boolean> };
   /** Reviewed tariffs; injected only for offline qualification fixtures. */
   openRouterTariffs?: readonly OpenRouterTariff[];
   runPriceReady?: () => number | undefined;
@@ -705,6 +708,13 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     }
     if (route === undefined) { await respond(404, "not_found", "not found"); return; }
     if (route.admit !== undefined) { const refused = await wait(route.admit(claims, controller.signal)); if (refused !== undefined) { await respond(refused.status, refused.code, refused.message, refused.headers); return; } }
+    // Every resolved Rovara purpose, including exempt companies, before holds, reviewer
+    // debits or sends. A pause never falls back or retries.
+    if (route.chargeSource?.source.kind === "rovara_ai") {
+      let enabled = false;
+      try { enabled = deps.rovaraAiSetting === undefined || await wait(deps.rovaraAiSetting.enabled()); } catch { /* fail closed */ }
+      if (!enabled) { await respond(ROVARA_AI_PAUSED.status, ROVARA_AI_PAUSED.code, ROVARA_AI_PAUSED.message); return; }
+    }
     const declared = request.headers["content-length"];
     if (declared !== undefined && /^\d+$/u.test(declared) && Number(declared) > MAX_BODY_BYTES) { const e = tooLarge(); await respond(e.status, e.code, e.message); return; }
     const parts: Uint8Array[] = []; let size = 0;

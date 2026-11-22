@@ -526,6 +526,12 @@ export class ModelGatewayStack extends Stack {
       resources: [`arn:${this.partition}:dynamodb:${this.region}:${this.account}:table/${companyTableName.valueAsString}`],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${MODEL_GATEWAY_COMPANY_PARTITION_PREFIX}*`] }, Null: { "dynamodb:LeadingKeys": "false" } },
     }));
+    // DEC 328: a reserved single-record partition, not a company. No query, scan or write.
+    serveRole.addToPolicy(new iam.PolicyStatement({
+      sid: "ReadInstallRovaraAi", actions: ["dynamodb:GetItem"],
+      resources: [`arn:${this.partition}:dynamodb:${this.region}:${this.account}:table/${companyTableName.valueAsString}`],
+      conditions: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["INSTALL#ROVARA_AI"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+    }));
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadPrices", actions: ["dynamodb:GetItem", "dynamodb:Query"], resources: [prices.tableArn] }));
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadProviderKeys", actions: ["secretsmanager:GetSecretValue"], resources: secrets.map((secret) => secret.secretArn) }));
     serveRole.addToPolicy(new iam.PolicyStatement({

@@ -147,7 +147,7 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
     expect(actions(bySid.MeterAndLedgerCompanyKeys!).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
     expect(bySid.MarkersCompanyKeys).toMatchObject({ Condition: companyKeys, Resource: { "Fn::GetAtt": [tableId("Markers"), "Arn"] } });
     expect(bySid.ReadPrices).toMatchObject({ Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: { "Fn::GetAtt": [tableId("Prices"), "Arn"] } });
-    expect(Object.keys(bySid).sort()).toEqual(["DecryptProviderKeys", "MarkersCompanyKeys", "MeterAndLedgerCompanyKeys", "QueryOpenHolds", "QueryPendingCorrections", "ReadCompanyBudgets", "ReadPrices", "ReadProviderKeys"]);
+    expect(Object.keys(bySid).sort()).toEqual(["DecryptProviderKeys", "MarkersCompanyKeys", "MeterAndLedgerCompanyKeys", "QueryOpenHolds", "QueryPendingCorrections", "ReadCompanyBudgets", "ReadInstallRovaraAi", "ReadPrices", "ReadProviderKeys"]);
     expect(bySid.QueryOpenHolds).toMatchObject({ Action: "dynamodb:Query", Resource: { "Fn::Join": ["", [{ "Fn::GetAtt": [tableId("Meter"), "Arn"] }, `/index/${GATEWAY_METER_INDEXES.openHolds.name}`]] } });
     // Budgets: GetItem only, the named Companies table only, the backend's COMPANY# keys only.
     expect(bySid.ReadCompanyBudgets).toMatchObject({

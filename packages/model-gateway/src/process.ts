@@ -17,6 +17,7 @@ import { createVertexTransport } from "./product-vertex.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
 import { awsKms } from "./aws-kms.js";
 import { CompanyAgentAiSource, parseAiSourceKinds, parseRovaraAiExempt, parseRovaraAiModels, storedBedrock, type AgentAiSource, type AgentAiSourceReader, type ByoBedrock, type RovaraAi } from "./agent-ai.js";
+import { InstallRovaraAi } from "./rovara-ai-stop.js";
 import { BedrockExternalIds, type MacGenerator } from "./bedrock-byo.js";
 import { BedrockSessions } from "./bedrock-byo-sessions.js";
 import { createBedrockTransport } from "./bedrock-transport.js";
@@ -345,6 +346,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(deps.answers.monthDefaultMicros === undefined ? {} : { monthDefaultMicros: deps.answers.monthDefaultMicros }),
   });
   const handlerDeps: GatewayDependencies = {
+    rovaraAiSetting: new InstallRovaraAi(db, config.tables.companies, now),
     ...(companyKeys === undefined ? {} : { runPriceReady: () => prices.runPriceSnapshotVersion() }),
     // Only the route's admitted, revision-bound source can produce a receipt. Older adapters
     // without that evidence keep legacy provisional settlement; nothing is inferred from a token.

@@ -13,6 +13,7 @@ docs/*
 !docs/model-gateway-learning.md
 !docs/model-gateway-bedrock-byo.md
 !docs/model-gateway-spend-limits.md
+!docs/model-gateway-rovara-ai-stop.md
 !docs/bedrock/
 !docs/npm-package.md
 !docs/ordered-work.md
