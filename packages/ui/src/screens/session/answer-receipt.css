@@ -1,0 +1,30 @@
+/* Answer-only receipt (boards AnswerOnly / AnswerOnlyPhone). Private to AnswerReceiptView: design tokens only, no shared rule is touched.
+   Phone < 640px (no card chrome, as AnswerOnlyPhone draws it), tablet 640-1023px, desktop >= 1024px. Nothing here is interactive, so there is no hover, focus or press state to style. */
+.rv-answer-receipt{display:grid;gap:var(--rv-space-4);min-width:0;max-width:760px;padding:0;border:0;background:transparent;color:var(--rv-text)}
+.rv-answer-receipt :is(h2,h3,h4,p,dl,dd,ul){margin:0}
+.rv-answer-receipt-question{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--rv-space-2);min-width:0}
+.rv-answer-receipt-tag{flex:none;padding:0 var(--rv-space-2);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-lg);font-size:var(--rv-font-sm);line-height:20px;font-weight:600;color:var(--rv-text-muted)}
+.rv-answer-receipt-quote{min-width:0;font-size:var(--rv-font-sm);line-height:1.4;color:var(--rv-text-muted);overflow-wrap:anywhere}
+.rv-answer-receipt-quote::before{content:"\201C"}.rv-answer-receipt-quote::after{content:"\201D"}
+.rv-answer-receipt-heading{font-size:var(--rv-font-xl);line-height:1.4;font-weight:600;letter-spacing:-.01em;overflow-wrap:anywhere}
+.rv-answer-receipt-text{font-size:var(--rv-font-lg);line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal}
+.rv-answer-receipt-block{display:grid;gap:var(--rv-space-2);min-width:0}
+.rv-answer-receipt-sub{font-size:var(--rv-font-md);line-height:1.4;font-weight:600}
+.rv-answer-receipt-sources{list-style:none;padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);overflow:hidden;background:var(--rv-bg-raised)}
+.rv-answer-receipt-sources li{display:flex;flex-direction:column;gap:var(--rv-space-1);min-height:48px;justify-content:center;padding:var(--rv-space-2) var(--rv-space-3);min-width:0}
+.rv-answer-receipt-sources li+li{border-top:1px solid var(--rv-border)}
+.rv-answer-receipt-sources code{min-width:0;font:var(--rv-font-sm)/1.5 var(--rv-font-mono);overflow-wrap:anywhere;white-space:pre-wrap}
+.rv-answer-receipt-note{min-width:0;font-size:var(--rv-font-sm);line-height:1.4;color:var(--rv-text-muted);overflow-wrap:anywhere}
+.rv-answer-receipt-none{font-size:var(--rv-font-md);overflow-wrap:anywhere}
+.rv-answer-receipt-facts{display:grid;gap:var(--rv-space-2);padding-top:var(--rv-space-3);border-top:1px solid var(--rv-border);font-size:var(--rv-font-md);line-height:1.45;min-width:0}
+.rv-answer-receipt-fact{display:grid;grid-template-columns:72px minmax(0,1fr);gap:var(--rv-space-3);min-width:0}
+.rv-answer-receipt-fact dt{color:var(--rv-text-muted)}
+.rv-answer-receipt-fact dd{min-width:0;overflow-wrap:anywhere}
+.rv-answer-receipt-follow{font-size:var(--rv-font-sm);line-height:1.45;overflow-wrap:anywhere}
+@media (min-width:640px){
+ .rv-answer-receipt{padding:var(--rv-space-5);border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg);background:var(--rv-bg-raised)}
+ .rv-answer-receipt-sources li{gap:var(--rv-space-2)}
+ .rv-answer-receipt-sources code{flex:1 1 auto}
+ .rv-answer-receipt-note{width:100%;text-align:left}
+ .rv-answer-receipt-fact{grid-template-columns:132px minmax(0,1fr);gap:var(--rv-space-4)}
+}

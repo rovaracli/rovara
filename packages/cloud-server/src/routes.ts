@@ -8,7 +8,7 @@ import type { CodeSession } from "./sessions.js";
 import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } from "./work-sessions.js";
 import { renameInSessions } from "./rename.js";
 import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
-import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask, type SessionExtras } from "./session-view.js";
+import { approvalUrl, blockedReview, blockedStepRetry, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask, type SessionExtras } from "./session-view.js";
 import { CORE_ACTION_WORDS, acceptOnPage, actOnCoreSession, codeSessionOf, isCoreNotYet, noSession, pendingPlanCards, securityAcceptRefusal, type FindingsAccept } from "./core-task-actions.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError, SignInEnded, slackWorkspaceHint } from "./code-client.js";
@@ -271,8 +271,8 @@ const planCardsRead = new WeakMap<RouteContext, Promise<ReadonlySet<string>>>();
  */
 async function extrasOf(context: RouteContext, record: WorkSession, task: CodeTask): Promise<SessionExtras> {
   if (record.owner.developerId !== context.session.access.developerId) {
-    // A People co-owner may send back or accept review findings (DEC 254zzz39 (6), 254zzz44 (3)): asked of Code only while there are findings to answer.
-    return reviewChoices(task) !== undefined && await coOwnerOf(context, record) ? { coOwner: true } : {};
+    // A live People co-owner may answer review findings or retry a blocked step (Code checks again in the move).
+    return (reviewChoices(task) !== undefined || blockedStepRetry(task) !== undefined) && await coOwnerOf(context, record) ? { coOwner: true } : {};
   }
   if (waitingPlan(task) === undefined) return {};
   let cards = planCardsRead.get(context);
@@ -814,31 +814,42 @@ export const ROUTES: Route[] = [
     },
   },
   {
-    // POST /v1/app/sessions/{id}/retry (Rovara-cloud#15): for a task stopped at review, Code reviews the same checked code again (its
-    // workflow/review route, as Slack's Retry reviews). Only the owner; Code checks the owner, the revision and the candidate again.
+    // One Retry: blocked non-review steps use Code's served workflow/retry, as owner/co-owner.
+    // Review Retry retains its candidate-bound workflow/review implementation. No session fallback.
     method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/retry$/u,
     answer: async (context) => {
       const found = await sessionAndTask(context);
       if (found === undefined) return sessionNotFound;
       const requestId = (context.body as { requestId?: unknown } | undefined)?.requestId;
       if (typeof requestId !== "string" || !UUID.test(requestId)) return badRequest("requestId must be a UUID.");
-      if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can retry this session.` } } };
-      const retry = blockedReview(found.task)?.retry;
+      const stepRetry = blockedStepRetry(found.task);
+      if (!(stepRetry === undefined ? found.record.owner.developerId === context.session.access.developerId : await ownerOrCoOwner(context, found.record))) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name}${stepRetry === undefined ? "" : " or a co-owner"} can retry this session.` } } };
+      const retry = stepRetry ?? blockedReview(found.task)?.retry;
       if (retry === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There's nothing to retry on this session right now." } } };
-      let task: CodeTask;
-      try {
-        ({ task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review`, {
+      const shown = context.body as { expectedRevision?: unknown; candidateDigest?: unknown };
+      if (stepRetry !== undefined) {
+        if (shown.expectedRevision !== stepRetry.expectedRevision) return { status: 409, body: { error: { code: "CONFLICT", message: "This step changed since you read it. Read the task again." } } };
+        // Code's exact 402 admission refusals precede any run (owner-round/admitRound).
+        // Other failures may follow paid work and must keep the request unknown.
+        const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/retry`, {
           method: "POST", headers: TASK_VIEW,
-          body: { requestId, ...retry, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
-        }));
-      } catch (error) {
-        // A core task (audit 2026-11-18 item 6): the core retries the blocked review through the task's session, after its own session-level check. The core's retry takes no
-        // revision or candidate: it retries what is blocked now (core/task-flow/retry.ts), and only re-runs the read-only reviews of the same checked code.
-        if (!isCoreNotYet(error)) throw error;
-        const done = await actOnCoreSession(context.client, context.session, found.task, "retry", requestId);
-        if ("answer" in done) return done.answer;
-        task = done.task;
+          body: { requestId, expectedRevision: shown.expectedRevision, instructions: "Retry the blocked workflow step." },
+        }).catch((failure: unknown) => {
+          if (failure instanceof CodeError && failure.status === 402) {
+            const code = (failure.body as { error?: { code?: string } } | undefined)?.error?.code;
+            if (["BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "MACHINE_TIME_EXCEEDED"].includes(code ?? "")) throw failure;
+          }
+          throw new CodeError(502, { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara didn't confirm this retry. Check the task before retrying again." } });
+        });
+        return ok({ session: await viewOf(context, found.record, task, await peopleOf(context, found.record)) });
       }
+      if (!Number.isSafeInteger(shown.expectedRevision) || (shown.expectedRevision as number) < 0 || typeof shown.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(shown.candidateDigest)) return badRequest("The displayed revision and candidate digest are required.");
+      // The caller's displayed pins belong to this intent. Never replace them
+      // with retry from this authorization read, or downgrade to core Retry.
+      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review`, {
+        method: "POST", headers: TASK_VIEW,
+        body: { requestId, expectedRevision: shown.expectedRevision, candidateDigest: shown.candidateDigest, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
+      });
       return ok({ session: await viewOf(context, found.record, task, await peopleOf(context, found.record)) });
     },
   },
@@ -849,15 +860,16 @@ export const ROUTES: Route[] = [
     answer: async (context) => {
       const found = await sessionAndTask(context);
       if (found === undefined) return sessionNotFound;
-      const input = (context.body ?? {}) as { requestId?: unknown; note?: unknown };
+      const input = (context.body ?? {}) as { requestId?: unknown; note?: unknown; expectedRevision?: unknown; candidateDigest?: unknown };
       if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
       if (input.note !== undefined && (typeof input.note !== "string" || input.note.trim().length > 1000)) return badRequest("The note is at most 1,000 characters.");
       const choices = reviewChoices(found.task);
       if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to send back right now." } } };
       if (!await ownerOrCoOwner(context, found.record)) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} or a co-owner can send this back to coding.` } } };
+      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("The displayed revision and candidate digest are required.");
       const note = typeof input.note === "string" && input.note.trim() !== "" ? input.note.trim() : "Fix the review findings.";
       const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/send-back`, {
-        method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, instructions: note },
+        method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, expectedRevision: input.expectedRevision, instructions: note },
       });
       return ok({ session: await viewOf(context, found.record, task, await peopleOf(context, found.record)) });
     },
@@ -869,14 +881,15 @@ export const ROUTES: Route[] = [
     answer: async (context) => {
       const found = await sessionAndTask(context);
       if (found === undefined) return sessionNotFound;
-      const input = (context.body ?? {}) as { requestId?: unknown; reason?: unknown };
+      const input = (context.body ?? {}) as { requestId?: unknown; reason?: unknown; expectedRevision?: unknown; candidateDigest?: unknown };
       if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
       const reason = typeof input.reason === "string" ? input.reason.trim() : "";
       if (reason === "" || reason.length > 500) return badRequest("Give a reason of up to 500 characters for accepting the findings.");
       const choices = reviewChoices(found.task);
       if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to accept right now." } } };
       if (!await ownerOrCoOwner(context, found.record)) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} or a co-owner can accept these findings.` } } };
-      const accept: FindingsAccept = { requestId: input.requestId, expectedRevision: choices.expectedRevision, candidateDigest: choices.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) };
+      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("The displayed revision and candidate digest are required.");
+      const accept: FindingsAccept = { requestId: input.requestId, expectedRevision: input.expectedRevision as number, candidateDigest: input.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) };
       let task: CodeTask;
       try {
         ({ task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review-findings`, { method: "POST", headers: TASK_VIEW, body: accept }));

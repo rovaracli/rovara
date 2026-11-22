@@ -1,5 +1,10 @@
+import { DecisionFrame } from "../../design/DecisionFrame.js";
 import { actionSubject, runActionPress, recoverActionBasis, answerHeld, isCsrfFailure, isFinalActionRefusal, type ActionSubject } from "../../safe-action.js";
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTaskPagePolicy } from "./task-page-policy.js";
+import { StatusChip } from "../../design/StatusChip.js";
+import { TaskMark } from "./task-marks.js";
+import { clockTime } from "./task-time.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
 import { AppMeResponseReaderSchema } from "@agentx/contracts/web";
@@ -8,6 +13,8 @@ import { createSessionActions, type MergeReadiness } from "../../api/session-act
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";
+import { HeldState } from "../../design/HeldState.js";
+import { useRegisterTaskChip } from "./task-slots.js";
 import { RelativeTime } from "../../design/RelativeTime.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { isGithubUrl, safeExternalUrl } from "../../text/links.js";
@@ -17,6 +24,7 @@ import { branchFact, changedSince, checksFact, lockOf, pressBound, pullKey, pull
 import { Clock, Facts, MergeChip, Sha, ThreeParts } from "./merge-parts.js";
 import { fencedRead, fencedReadiness, observeRecord, useFence } from "./merge-fence.js";
 import { createSessionApi } from "../../api/sessions.js";
+import { useTaskPlan } from "../../api/work.js";
 import { mergeActionRecords, claimLockSupported, clearAccepted, readAcceptedNow, useAccepted, type AcceptedAnswer, allMerged, clearPending, headsMoved, usePending } from "./merge-pending.js";
 
 const RISK_WORDS = { low: "Low risk", medium: "Medium risk", high: "High risk" } as const;
@@ -55,22 +63,39 @@ function rowChip(row: PullRow, ready: boolean | undefined, held: boolean, accept
  return ready === true ? { tone: "ok", words: "Ready" } : { tone: "wait", words: "Not ready" };
 }
 
-function PullItem({ row, ready, held, accepted, many, index }: { row: PullRow; ready: boolean | undefined; held: boolean; accepted: boolean; many: boolean; index: number }) {
- const url = row.url === undefined || !isGithubUrl(row.url) ? undefined : safeExternalUrl(row.url), chip = rowChip(row, ready, held, accepted), item = row.tracked;
- const detail = item === undefined || item.state !== "open" || item.draft ? undefined : [
-  { label: "Checks", value: checksFact(item).words, tone: checksFact(item).tone },
-  { label: "Review", value: reviewFact(item).words, tone: reviewFact(item).tone },
+/** The facts the page shows for one open, ready-to-read pull request (also the blockers the task page lists first). */
+function detailOf(row: PullRow, clock: boolean): Array<{ label: string; value: ReactNode; tone?: "ok" | "wait" | "bad" | "idle" | "run" }> | undefined {
+ const item = row.tracked;
+ if (item === undefined || item.state !== "open" || item.draft) return undefined;
+ return [
+  { label: clock && row.drift ? "Checks on the old head" : "Checks", value: checksFact(item).words, tone: checksFact(item).tone },
+  { label: clock && row.drift ? "Review on the old head" : "Review", value: reviewFact(item).words, tone: reviewFact(item).tone },
   { label: "Branch", value: branchFact(item).words, tone: branchFact(item).tone },
+  // The base branch is served by the tracked pull request; its commit is not, so the row names the branch only (never an Unknown beside "into main").
+  ...(clock ? [{ label: "Base", value: <code className="rv-merge-sha">{item.baseBranch}</code> }] : []),
   { label: "Checked head", value: <><Sha value={item.headSha} /> · every check and review shown ran on this</> },
-  ...(row.githubHead === undefined ? [] : [{ label: "Head in Rovara's latest read", value: row.drift ? <><Sha value={row.githubHead} /> · different from the checked head</> : <><Sha value={row.githubHead} /> · same as checked</>, tone: row.drift ? "wait" as const : "ok" as const }]),
-  { label: "Tracked from GitHub", value: <RelativeTime at={item.observedAt} /> },
+  ...(row.githubHead === undefined ? [] : [{ label: clock ? "Head on GitHub" : "Head in Rovara's latest read", value: row.drift ? <><Sha value={row.githubHead} /> · different from the checked head</> : <><Sha value={row.githubHead} /> · same as checked</>, tone: row.drift ? (clock ? "bad" as const : "wait" as const) : "ok" as const }]),
+  ...(clock ? [{ label: "GitHub says", value: <HeldState /> }] : []),
+  { label: clock ? "Last seen on GitHub" : "Tracked from GitHub", value: clock ? <time dateTime={item.observedAt}>{clockTime(item.observedAt)}</time> : <RelativeTime at={item.observedAt} /> },
  ];
- const merged = item !== undefined && item.state === "merged" ? [{ label: "Head", value: <Sha value={item.headSha} /> }, { label: "Tracked from GitHub", value: <RelativeTime at={item.observedAt} /> }] : undefined;
- return <li className="rv-merge-pr" data-state={row.state}>
-  <div className="rv-merge-pr-head">{many && <span className="rv-merge-order" aria-hidden="true">{index + 1}</span>}<h3><VisibleText text={row.label} /></h3><MergeChip tone={chip.tone}>{chip.words}</MergeChip>
+}
+
+/** Copies this page's address: the receipt is the page itself. Nothing is sent anywhere. */
+function CopyReceiptLink() {
+ const [state, setState] = useState<string>(), host = useAppHost();
+ async function copy() { try { await navigator.clipboard.writeText(host.origin + host.currentPath());setState("Copied"); } catch { setState("Couldn't copy the link."); } }
+ return <><Button onClick={() => { void copy(); }}>Copy receipt link</Button>{state !== undefined && <span role="status" className="rv-merge-muted">{state}</span>}</>;
+}
+
+function PullItem({ row, ready, held, accepted, many, index, taskPage, receipt = false, planVersion }: { row: PullRow; ready: boolean | undefined; held: boolean; accepted: boolean; many: boolean; index: number; taskPage: boolean; receipt?: boolean; planVersion?: number | undefined }) {
+ const url = row.url === undefined || !isGithubUrl(row.url) ? undefined : safeExternalUrl(row.url), chip = rowChip(row, ready, held, accepted), item = row.tracked;
+ const detail = detailOf(row, taskPage)?.filter(fact => !taskPage || fact.tone !== "bad" || fact.label === "Head on GitHub");
+ const merged = item !== undefined && item.state === "merged" ? [...(receipt ? [{ label: "Merged by", value: <HeldState /> }, { label: "Checks and reviews", value: <HeldState /> }] : []), { label: receipt ? "Merged head" : "Head", value: <><Sha value={item.headSha} />{receipt ? " · the head that was checked" : null}</> }, ...(receipt ? ["Merge commit", "Plan", "Changed", "Cost", "Told"].map(label => ({ label, value: label === "Plan" && planVersion !== undefined ? "v" + String(planVersion) : <HeldState /> })) : []), ...(receipt ? [] : [{ label: taskPage ? "Last seen on GitHub" : "Tracked from GitHub", value: taskPage ? <time dateTime={item.observedAt}>{clockTime(item.observedAt)}</time> : <RelativeTime at={item.observedAt} /> }])] : undefined;
+ return <li className={receipt ? "rv-merge-pr rv-merge-pr-receipt" : "rv-merge-pr"} data-state={row.state}>
+  <div className="rv-merge-pr-head">{many && <span className="rv-merge-order" aria-hidden="true">{index + 1}</span>}<h3><VisibleText text={row.label} /></h3>{!(taskPage && chip.words === "Blocked") && <MergeChip tone={chip.tone}>{chip.words}</MergeChip>}
    {row.state === "open" && (url === undefined ? null : <a className="rv-merge-link" href={url} target="_blank" rel="noopener noreferrer">Open on GitHub: <VisibleText text={row.label} /></a>)}
    {row.state === "open" && url === undefined && <span className="rv-merge-muted"><VisibleText text={"Open on GitHub: " + row.label} /></span>}</div>
-  {row.drift && <p>Rovara's latest read shows a different head than the one checked. Every result shown is kept for reference and doesn't count for the new head.</p>}
+  {row.drift && !taskPage && <p>Rovara's latest read shows a different head than the one checked. Every result shown is kept for reference and doesn't count for the new head.</p>}
   {(detail ?? merged) && <Facts rows={detail ?? merged!} />}
  </li>;
 }
@@ -85,7 +110,7 @@ function PullItem({ row, ready, held, accepted, many, index }: { row: PullRow; r
  * tab and Back until GitHub shows the pull requests merged, a tracking read taken after the press shows a different head, or Code answers the original press with a definitive refusal. Nothing re-sends it: "Check again" only
  * RE-READS (readiness and the task), because Code replays only a stored success and an unanswered id could cause a second provider merge (retry waits for the R1a journal); (3) a pull request GitHub shows merged is an
  * observation ("Merged on GitHub"), and only this page's own accepted answer says "Merged ... on your request", and that line yields to any later task read that disagrees; (4) every piece of state belongs to one session id
- * and resets when it changes; (5) a failed or refused readiness read makes older "ready" data inert; (6) times are labelled for what they are: the tracking observation time, or "Read by Rovara at" for the answer's arrival.
+ * and resets when it changes; (5) a failed or refused readiness read makes older "ready" data inert; (6) times are labelled for what they are: the tracking observation time, or "Merge check read at" for the answer's arrival (two different facts, so two different labels).
  * The receipt reader and original-operation adoption are held (the receipt presentation is kept on branch held/merge-receipt-view, not mounted).
  */
 /** Who is reading (R6g/N5): company + person from /v1/app/me, then the session. */
@@ -107,6 +132,9 @@ function taskOfSession(data: unknown): ReadTask | undefined { try { return typeo
 const doneWords = (pulls: ReadonlyArray<{ repositoryId: string; number: number }>): string => "Merged " + pulls.map(pull => pull.repositoryId + " #" + String(pull.number)).join(", ") + ".";
 
 function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task: ReadTask; subject: ActionSubject | undefined }) {
+ const taskPage = useTaskPagePolicy() !== undefined, Panel = taskPage ? "div" : Fragment;
+ // The receipt names the plan version the plan document serves; where it is not served the row stays one Unknown (same read the "Plan and changes" row uses).
+ const planVersion = useTaskPlan(taskPage ? task.taskId : undefined).data?.version;
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionActions(host), [host]), reasonId = useId();
  const merged = mergedEverywhere(task), merge = task.merge;
  const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [memoryDone, setMemoryDone] = useState<AcceptedAnswer>(), [retiredInfo, setRetiredInfo] = useState<{ id: string; why: "head" | "closed" }>(), [note, setNote] = useState<string>();
@@ -189,6 +217,11 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
  const base = [...new Set(rows.filter(row => row.state === "open").flatMap(row => row.tracked === undefined ? [] : [row.tracked.baseBranch]))];
  const openRows = rows.filter(row => row.state === "open"), mergedRows = rows.filter(row => row.state === "merged");
  const into = base.length === 1 ? " into " + base[0]! : "";
+ // One merged pull request on the task page reads as a receipt: "#42 is merged into main", one confirmation line, and a Merged-by row that is one Unknown (who pressed Merge is not served).
+ const receipt = taskPage && saved === undefined && mergedRows.length === 1 && openRows.length === 0 && merged;
+ const mergedBase = [...new Set(mergedRows.flatMap(row => row.tracked === undefined ? [] : [row.tracked.baseBranch]))], mergedInto = mergedBase.length === 1 ? " into " + mergedBase[0]! : "";
+ const receiptAt = receipt ? mergedRows[0]!.tracked?.observedAt : undefined;
+ const confirmedAt = receiptAt === undefined || clockTime(receiptAt) === undefined ? undefined : new Date(receiptAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) + ", " + clockTime(receiptAt);
  const what = openRows.length === 1 ? "#" + String(openRows[0]!.number) + into : String(openRows.length) + " pull requests";
  const buttonWords = "Merge " + what;
  /** Why the latest completed readiness read does not allow a press, or undefined when it does. Read from the query cache at the moment of sending, never from what was last rendered. */
@@ -296,41 +329,49 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
  const partial = !everyMerged && mergedRows.length > 0 && openRows.length > 0;
  const waiting = saved !== undefined && !recorded && !merged;
  const kind = waiting ? "accepted" : everyMerged ? "merged" : active !== undefined ? "unknown" : storageLock !== undefined && mayPress ? "storage" : partial ? "partial" : moved ? "changed" : readFailed ? "read_failed" : view?.mayMerge === true ? (view.ready ? "ready" : "not_ready") : merge === undefined ? "github" : merge.ready ? "github_ready" : "github_not_ready";
+ const setChip = useRegisterTaskChip();
+ useEffect(() => { if (!taskPage || setChip === undefined) return;setChip(kind === "ready" ? "ready_to_merge" : undefined);return () => { setChip(undefined); }; }, [taskPage, setChip, kind]);
+ const blockers = taskPage ? openRows.flatMap(row => (detailOf(row, true) ?? []).filter(fact => fact.tone === "bad").map(fact => ({ label: fact.label, words: fact.value, pull: row.label, url: row.url === undefined || !isGithubUrl(row.url) ? undefined : safeExternalUrl(row.url) }))) : [];
  const headline = ({
-  merged: <>Merged</>,
-  accepted: <>Merge accepted{storedAccepted === undefined && memoryDone !== undefined ? " (this browser couldn't save it)" : ""}</>,
-  unknown: <>The result isn't confirmed yet</>,
-  storage: <>Merge is locked in this browser</>,
-  partial: <>{String(mergedRows.length)} of {String(mergedRows.length + openRows.length)} pull requests {mergedRows.length === 1 ? "is" : "are"} merged on GitHub</>,
-  changed: <>The pull request changed after it was checked</>,
-  read_failed: <>Rovara couldn't read this from GitHub just now</>,
-  ready: <>Ready to merge</>,
-  not_ready: <>Not ready to merge{view?.message ? "." : ""}</>,
-  github: <>Merge it on GitHub</>,
-  github_ready: <>Ready to merge on GitHub</>,
-  github_not_ready: <>Not ready to merge.</>,
- } as Record<string, ReactNode>)[kind];
+  merged: receipt ? "#" + String(mergedRows[0]!.number) + " is merged" + mergedInto : "Merged",
+  accepted: "Merge accepted" + (storedAccepted === undefined && memoryDone !== undefined ? " (this browser couldn't save it)" : ""),
+  unknown: "The result isn't confirmed yet",
+  storage: "Merge is locked in this browser",
+  partial: String(mergedRows.length) + " of " + String(mergedRows.length + openRows.length) + " pull requests " + (mergedRows.length === 1 ? "is" : "are") + " merged on GitHub",
+  changed: "The pull request changed after it was checked",
+  read_failed: "Rovara couldn't read this from GitHub just now",
+  ready: "Ready to merge",
+  not_ready: blockers.length > 0 ? "Not ready to merge: " + String(blockers.length) + (blockers.length === 1 ? " required result is blocked" : " required results are blocked") : "Not ready to merge" + (view?.message ? "." : ""),
+  github: "Merge it on GitHub",
+  github_ready: "Ready to merge on GitHub",
+  github_not_ready: "Not ready to merge.",
+ } as Record<string, string>)[kind];
  const tone = ({ accepted: "wait", merged: "ok", ready: "ok", github_ready: "ok", unknown: "wait", storage: "wait", changed: "wait", partial: "wait", read_failed: "wait", not_ready: "wait", github_not_ready: "wait", github: "idle" } as Record<string, "ok" | "wait" | "idle">)[kind]!;
  const chipWords = ({ accepted: "Waiting for Rovara", merged: "Merged", ready: "Ready to merge", github_ready: "Ready to merge", unknown: "Unknown", storage: "Locked", changed: "Locked", partial: "Partly merged", read_failed: "Unknown", not_ready: "Blocked", github_not_ready: "Blocked", github: "Merge on GitHub" } as Record<string, string>)[kind]!;
+ const changedRow = openRows.find(row => row.drift);
  const lede = ({
   accepted: "Code answered that these are merged, and GitHub reports them merged. Rovara's tracking hasn't recorded it yet, so the pull request below can still show as open. Merge stays locked until it has. " + NOT_INCLUDED,
-  merged: saved !== undefined ? "Code answered that these are merged, and GitHub reports them merged. Code's answer doesn't say whether this press or an earlier merge did it. " + NOT_INCLUDED : "GitHub shows every pull request merged. Rovara read this from GitHub; it doesn't say who pressed Merge. " + NOT_INCLUDED,
+  merged: saved !== undefined ? "Code answered that these are merged, and GitHub reports them merged. Code's answer doesn't say whether this press or an earlier merge did it. " + NOT_INCLUDED : (receipt ? "Confirmed by GitHub" + (confirmedAt === undefined ? "" : " at " + confirmedAt) + ". Nothing was deployed; deploying is separate." : (taskPage ? "GitHub shows this pull request merged. It doesn't say who pressed Merge. " : "GitHub shows every pull request merged. Rovara read this from GitHub; it doesn't say who pressed Merge. ") + NOT_INCLUDED),
   storage: stored.kind === "unreadable" ? "A merge request saved in this browser can't be read, so Rovara can't tell whether one is unresolved. Merge it on GitHub." : "This browser's storage can't be read, so Rovara can't be sure an earlier merge wasn't sent. Merge it on GitHub, or allow site storage for Rovara and reload.",
   partial: "Merged on GitHub: " + mergedRows.map(row => row.label).join(", ") + ". Still open: " + openRows.map(row => row.label).join(", ") + ". Rovara read this from GitHub; it doesn't say who merged what. " + NOT_INCLUDED,
-  changed: "Rovara's latest read shows a different head than the one every check and review below covered. Merge stays locked until Rovara has checked the new head.",
+  changed: taskPage && changedRow?.githubHead !== undefined ? "The pull request has a new head, " + shortSha(changedRow.githubHead) + ". Every check and review below ran on " + shortSha(changedRow.checkedHead ?? "") + " and does not count for the new head." : "Rovara's latest read shows a different head than the one every check and review below covered. Merge stays locked until Rovara has checked the new head.",
   read_failed: "That is not a pass and not a failure. Merge stays locked until Rovara can read it.",
   ready: "Everything required is in for the head Rovara has checked.",
-  not_ready: view?.message,
+  not_ready: blockers.length > 0 ? "Merge stays locked until every blocked result below is resolved." : view?.message,
   github: "You can't merge this here. Open the pull request on GitHub to merge it.",
   github_ready: undefined,
   github_not_ready: merge?.message,
  } as Record<string, string | undefined>)[kind];
  const rowReady = view?.mayMerge === true ? view.ready : merge?.ready;
  const readAt = readiness.dataUpdatedAt > 0 ? new Date(readiness.dataUpdatedAt).toISOString() : undefined;
- return <section aria-label="Merge" className="rv-merge" data-state={kind} aria-busy={readiness.isFetching || undefined}>
-  <header className="rv-merge-head"><MergeChip tone={tone}>{chipWords}</MergeChip><h2 className="rv-merge-state">{headline}</h2>
+ return <DecisionFrame as="section" title={headline ?? "Merge"} titleClassName="rv-merge-state" actions={null} aria-label="Merge" aria-labelledby={undefined} className="rv-merge rv-merge-frame" data-state={kind} aria-busy={readiness.isFetching || undefined}>
+  <header className="rv-merge-head">{!taskPage && <MergeChip tone={tone}>{chipWords}</MergeChip>}
    {lede !== undefined && <p className="rv-merge-lede"><VisibleText text={lede} /></p>}
-   {kind === "ready" && readAt !== undefined && <p className="rv-merge-muted">Read by Rovara at <Clock at={readAt} />.</p>}</header>
+   {kind === "ready" && readAt !== undefined && <p className="rv-merge-muted">Merge check read at <Clock at={readAt} />.</p>}</header>
+  {blockers.length > 0 && <div className="rv-merge-blockers" role="group" aria-label="Blocked results">{blockers.map(blocker => <div className="rv-merge-gap" key={blocker.pull + blocker.label}><div><h4>{blocker.label} <StatusChip state={blocker.label === "Checks" ? "failed" : "blocked"} /></h4><p>{typeof blocker.words === "string" ? <VisibleText text={blocker.words} /> : blocker.words}</p>{blocker.label === "Checks" && <p className="rv-merge-held">Retry this check <HeldState /></p>}</div>{blocker.url !== undefined && <a className="rv-button" href={blocker.label === "Checks" ? blocker.url + "/checks" : blocker.url} target="_blank" rel="noopener noreferrer">{blocker.label === "Checks" ? "Open the failing check" : blocker.label === "Review" ? "Open the review" : "Open on GitHub"}</a>}</div>)}</div>}
+  {/* ONE "Check again" (it only reads): the primary one under the explanation when the head changed, the quiet one under the blockers otherwise. */}
+  {blockers.length > 0 && !(taskPage && kind === "changed") && kind !== "unknown" && kind !== "accepted" && <p className="rv-merge-recheck"><Button variant="quiet" busy={readiness.isFetching} onClick={() => { void Promise.all([readiness.refetch(), readNow()]); }}>Check again</Button></p>}
+  {taskPage && kind === "changed" && <div className="rv-merge-top"><Button variant="primary" busy={readiness.isFetching} onClick={() => { void Promise.all([readiness.refetch(), readNow()]); }}>Check again</Button></div>}
   {kind === "unknown" && active !== undefined && <ThreeParts
    happened={retiredNote?.id === active.requestId ? <>Code answered that these were merged. {retiredNote.why === "closed" ? "A later read shows a covered pull request closed without a merge." : "A later read shows a different head for a covered pull request."} The earlier answer no longer applies.</> : <>Your merge{active.sent.length > 0 ? " of " + active.sent.join(", ") : ""} was sent at <Clock at={active.startedAt} />. Its result isn't confirmed.</>}
    safe={<>Rovara keeps this request in this browser, so a reload or another tab won't send a second one, and nothing here sends it again. {active.sent.length > 0 ? "If GitHub did merge, it merged exactly what you authorized. " : ""}Nothing was deployed.</>}
@@ -344,17 +385,22 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
   {merge?.risk && <div className="rv-merge-risk" aria-label="Risk"><p><strong>{RISK_WORDS[levelOf(merge.risk)]}</strong></p>{merge.risk.reasons.length > 0 && <ul>{merge.risk.reasons.map(reason => <li key={reason}><VisibleText text={reason} /></li>)}</ul>}</div>}
   {saved && <p role="status" className="rv-merge-receipt-line"><VisibleText text={saved.words} /></p>}
   {retiredNote && <p role="status" className="rv-merge-muted">{retiredNote.why === "closed" ? "A later read shows a pull request this merge covered closed without a merge, so the earlier answer no longer applies." : "A later read shows a different head for a pull request this merge covered, so the earlier answer no longer applies."}</p>}
-  {rows.length > 0 && <ol className="rv-merge-prs" aria-label="Pull requests to merge">{rows.map((row, index) => <PullItem key={row.key} row={row} ready={rowReady} held={active !== undefined} accepted={saved !== undefined && saved.keys.includes(row.key)} many={rows.length > 1} index={index} />)}</ol>}
+  <Panel {...(taskPage ? { className: receipt ? "rv-merge-panel rv-merge-panel-receipt" : "rv-merge-panel" } : {})}>
+  {taskPage && !receipt && rows.length > 0 && <h3 className="rv-merge-would">{mergedRows.length > 0 && openRows.length === 0 ? "What was merged" : kind === "ready" ? "You are merging" : "What would be merged"}</h3>}
+  {rows.length > 0 && <ol className="rv-merge-prs" aria-label="Pull requests to merge">{rows.map((row, index) => <PullItem key={row.key} row={row} ready={rowReady} held={active !== undefined} accepted={saved !== undefined && saved.keys.includes(row.key)} many={rows.length > 1} index={index} taskPage={taskPage} receipt={receipt} planVersion={planVersion} />)}</ol>}
   {kind === "ready" && lock === undefined && <div className="rv-merge-authorize"><p><strong>You authorize</strong> {openRows.map(row => row.githubHead ?? row.checkedHead).filter(head => head !== undefined).length > 0 ? "merging " + openRows.map(row => { const head = row.githubHead ?? row.checkedHead; return head === undefined ? row.label : "head " + shortSha(head) + " of " + row.label; }).join(", ") + into + "." : "merging the open pull request" + (openRows.length === 1 ? "" : "s") + into + "."}</p><p className="rv-merge-muted">Not included: deploying. If the head changes before GitHub merges, nothing is merged and you are asked again.</p></div>}
-  {(mayPress || open) && <div className="rv-merge-actions"><Dialog title={"Merge " + what + "?"} description="Rovara asks GitHub to merge it now, with the project's merge method. GitHub's branch rules, required reviews and required checks still apply." open={open} onOpenChange={value => { if (busy) return; if (value) setShown(shownOf(rows, view)); setOpen(value); }}
-   trigger={<Button variant="primary" disabled={lock !== undefined} aria-describedby={lock === undefined ? undefined : reasonId}>{buttonWords}</Button>}>
+  {(mayPress || open) && <div className="rv-merge-actions"><Dialog className={taskPage ? "rv-merge-dialog" : ""} title={"Merge " + what + "?"} description="Rovara asks GitHub to merge it now, with the project's merge method. GitHub's branch rules, required reviews and required checks still apply." open={open} onOpenChange={value => { if (busy) return; if (value) setShown(shownOf(rows, view)); setOpen(value); }}
+   trigger={<Button variant={taskPage && lock !== undefined ? "secondary" : "primary"} disabled={lock !== undefined} data-locked={lock === undefined ? undefined : "true"} aria-describedby={lock === undefined ? undefined : reasonId}>{taskPage && lock !== undefined && <TaskMark kind="lock" />}{buttonWords}</Button>}>
    <ol className="rv-merge-items">{dialogPulls.map(pull => { const head = shown?.heads?.find(candidate => candidate.repositoryId === pull.repositoryId && candidate.number === pull.number); return <li key={pull.repositoryId + "#" + String(pull.number)}><VisibleText text={pull.repositoryId + " #" + String(pull.number)} />{head === undefined ? null : <> at <Sha value={head.headSha} /></>}</li>; })}</ol>
    {dialogPulls.length > 1 && <p className="rv-merge-muted">Rovara merges them one at a time, in the order listed. If one is refused, the ones after it are not tried and the ones already merged stay merged.</p>}
    {inertWhy !== undefined && <p role="alert" className="rv-merge-stale"><VisibleText text={inertWhy} /></p>}
-   <div className="rv-actions"><Button disabled={busy} onClick={() => setOpen(false)}>Not now</Button><Button variant="primary" busy={busy} disabled={inertWhy !== undefined} onClick={() => { void press(); }}>Press Merge</Button></div>
+   <div className="rv-actions"><Button disabled={busy} onClick={() => setOpen(false)}>Not now</Button><Button variant="primary" busy={busy} disabled={inertWhy !== undefined} onClick={() => { void press(); }}>{taskPage ? buttonWords : "Press Merge"}</Button></div>
   </Dialog>
-   {lock !== undefined && <p id={reasonId} className="rv-merge-muted"><VisibleText text={lock.words} /></p>}
-   {lock?.kind === "drift" && <Button busy={readiness.isFetching} onClick={() => { void readiness.refetch(); }}>Read again</Button>}</div>}
+   {lock !== undefined && <p id={reasonId} className="rv-merge-muted rv-merge-lock-reason"><VisibleText text={taskPage && lock.kind === "not_ready" ? "Unlocks when every blocked result above is resolved." : taskPage && lock.kind === "drift" ? "Unlocks when Rovara has checked the new head." : lock.words} /></p>}
+   {lock?.kind === "drift" && !taskPage && <Button busy={readiness.isFetching} onClick={() => { void readiness.refetch(); }}>Read again</Button>}</div>}
+  {receipt && <div className="rv-merge-receipt-actions"><CopyReceiptLink /></div>}
+  {taskPage && blockers.length > 0 && <p className="rv-merge-footnote">Want a code change instead? Sending a pull request back with a note isn't available here yet.</p>}
+  </Panel>
   {error && <p role="alert"><VisibleText text={error} /></p>}
- </section>;
+ </DecisionFrame>;
 }

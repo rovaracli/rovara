@@ -3,13 +3,24 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { ConfirmationDialog, type ConfirmationDialogProps } from "../../../../packages/ui/src/design/ConfirmationDialog.js";
+import { ConfirmationDialog, ConfirmationDialogScope, type ConfirmationDialogProps } from "../../../../packages/ui/src/design/ConfirmationDialog.js";
 import { h } from "../../support/h.js";
 import { renderUi } from "../../support/render.js";
 import { expectNoAxeViolations } from "../../support/axe.js";
 const title = 'Close "Add refunds endpoint"?';
 const consequence = "3 changed files are not in a pull request yet. Closing keeps them for the served retention period unless you discard them.";
 const confirmLabel = "Keep changes and close";
+it("lets two separate pages each dispatch the same request key once", () => {
+ const onConfirm = vi.fn();
+ const props = { requestKey: "separate-pages", kind: "destructive" as const, title: "Remove Sam?", consequence: "Sam loses project access.", open: true, preview: true, onOpenChange: vi.fn(), confirm: { label: "Remove Sam", onConfirm } };
+ const first = renderUi(h(ConfirmationDialog, props));
+ act(() => { const button = screen.getByRole<HTMLButtonElement>("button", { name: "Remove Sam" });button.click();button.click(); });
+ expect(onConfirm).toHaveBeenCalledTimes(1);
+ first.unmount();
+ renderUi(h(ConfirmationDialog, props));
+ act(() => { const button = screen.getByRole<HTMLButtonElement>("button", { name: "Remove Sam" });button.click();button.click(); });
+ expect(onConfirm).toHaveBeenCalledTimes(2);
+});
 function fixture(requestKey: string) {
  const confirm = vi.fn(), discard = vi.fn();
  function Demo() { const [open, setOpen] = useState(false); return h("div", null, h("button", { onClick: () => setOpen(true) }, "Close task"), h(ConfirmationDialog, { requestKey, kind: "close", title, consequence, open, onOpenChange: setOpen, confirm: { label: confirmLabel, onConfirm: confirm }, discard: { label: "Discard changes and close", consequence: "Deletes the 3 unpublished files. This can't be undone.", onDiscard: discard } })); }
@@ -43,8 +54,9 @@ it("keeps an unknown confirm outcome locked after busy clears", async () => {
  const view = renderUi(h(ConfirmationDialog, { ...props, busy: false }));
  fireEvent.click(screen.getByRole("button", { name: "Remove Sam" }));
  expect(onConfirm).toHaveBeenCalledTimes(1);
- view.rerender(h(ConfirmationDialog, { ...props, busy: true }));
- view.rerender(h(ConfirmationDialog, { ...props, busy: false }));
+ // Keep renderUi's root wrapper: this is a busy re-render of the same page.
+ view.rerender(h("div", { "data-theme": "light" }, h(ConfirmationDialog, { ...props, busy: true })));
+ view.rerender(h("div", { "data-theme": "light" }, h(ConfirmationDialog, { ...props, busy: false })));
  fireEvent.click(screen.getByRole("button", { name: "Remove Sam" }));
  expect(onConfirm).toHaveBeenCalledTimes(1);
 });
@@ -76,14 +88,29 @@ it("keeps confirm and discard locked through busy, close and action remounts unt
 it("retains an unknown discard lock across a complete dialog unmount", () => {
  const onConfirm = vi.fn(), onDiscard = vi.fn();
  const props = { requestKey: "discard-remount", kind: "close" as const, title, consequence, open: true, preview: true, onOpenChange: vi.fn(), confirm: { label: confirmLabel, onConfirm }, discard: { label: "Discard changes and close", consequence: "Deletes unpublished files.", onDiscard } };
- const first = renderUi(h(ConfirmationDialog, props));
+ const page = (show: boolean) => h("div", { "data-theme": "light" }, h(ConfirmationDialogScope, { children: show ? h(ConfirmationDialog, props) : null }));
+ const first = renderUi(h(ConfirmationDialogScope, { children: h(ConfirmationDialog, props) }));
  fireEvent.click(screen.getByRole("button", { name: props.discard.label }));
- first.unmount();
- renderUi(h(ConfirmationDialog, props));
+ first.rerender(page(false));
+ expect(screen.queryByRole("dialog")).toBeNull();
+ first.rerender(page(true));
  fireEvent.click(screen.getByRole("button", { name: props.discard.label }));
  fireEvent.click(screen.getByRole("button", { name: confirmLabel }));
  expect(onDiscard).toHaveBeenCalledTimes(1); expect(onConfirm).not.toHaveBeenCalled();
  expect(screen.getByRole<HTMLButtonElement>("button", { name: props.discard.label }).disabled).toBe(true);
+});
+it("starts a fresh page scope when navigating to another task with the same local request key", () => {
+ const onConfirm = vi.fn();
+ const props = { requestKey: "task-local-request", kind: "destructive" as const, title: "Remove Sam?", consequence: "Sam loses project access.", open: true, preview: true, onOpenChange: vi.fn(), confirm: { label: "Remove Sam", onConfirm } };
+ const page = (task: string) => h("div", { "data-theme": "light" }, h(ConfirmationDialogScope, { key: task, children: h(ConfirmationDialog, props) }));
+ const first = renderUi(h(ConfirmationDialogScope, { key: "task-a", children: h(ConfirmationDialog, props) }));
+ fireEvent.click(screen.getByRole("button", { name: "Remove Sam" }));
+ first.rerender(page("task-a"));
+ fireEvent.click(screen.getByRole("button", { name: "Remove Sam" }));
+ expect(onConfirm).toHaveBeenCalledTimes(1);
+ first.rerender(page("task-b"));
+ act(() => { const button = screen.getByRole<HTMLButtonElement>("button", { name: "Remove Sam" });button.click();button.click(); });
+ expect(onConfirm).toHaveBeenCalledTimes(2);
 });
 it("shows and sends the same typed raise-money amount", () => {
  const amountCents = 1234;

@@ -28,10 +28,12 @@ test("the Work pane opens the task on its own page, with the pane at full width 
   await expect(page).toHaveURL(TASK_ADDRESS);
   const task = new SessionPage(page);
   await expect(task.title).toHaveText(PLAN_TASK);
+  await task.openSection("Plan and changes");
   await expect(task.stepRail).toBeVisible();
   await expect(task.decision()).toBeVisible();
   await expect(task.pane.getByRole("region", { name: "Spec" })).toContainText("1.1");
   // The fake Code has no measured TaskMoneyV1: show unavailable rather than inventing zero.
+  await task.openSection("Activity");
   const cost = task.pane.getByRole("region", { name: "Cost", exact: true });
   await expect(cost).toContainText("Cost unavailable");
   await expect(cost).not.toContainText("No spend yet");
@@ -56,19 +58,19 @@ test("o on the focused list opens the selected task", async ({ page }) => {
 
 test("each step shows its own stage: Request is the request, Pull request says when there is none", async ({ page }) => {
   const task = await openFromWork(page, PLAN_TASK);
-  await task.step("Request").click();
+  await task.selectStep("Request");
   await expect(task.pane.getByRole("region", { name: "Request" })).toContainText("Questions Rovara asked");
   await expect(task.pane.getByRole("region", { name: "Spec" })).toHaveCount(0);
-  await task.step("Pull request").click();
+  await task.selectStep("Pull request");
   await expect(page.getByTestId("no-pull-request")).toContainText("No pull request yet");
-  await task.step("Proof").click();
+  await task.selectStep("Proof");
   await expect(task.pane.getByRole("region", { name: "Proof", exact: true })).toContainText("criteria proven");
 });
 
 test("a task Cloud did not start says steering and stopping work only for tasks started in Cloud", async ({ page }) => {
   const task = await openFromWork(page, RUNNING_TASK);
   await expect(page.getByTestId("stop-unavailable")).toContainText("started in Rovara Cloud");
-  await task.step("Build").click();
+  await task.selectStep("Build");
   await expect(page.getByTestId("steer-unavailable")).toContainText("started in Rovara Cloud");
   await expect(task.steerBox).toHaveCount(0);
   await expect(task.more).toHaveCount(0); // no session, so no earlier tabs
@@ -82,13 +84,13 @@ test("a task started in Cloud has the steer box, which says Cloud does not take 
   await expect(page).toHaveURL(SessionPage.SHARE_ADDRESS);
   const task = new SessionPage(page);
   await task.expectLoaded(title);
-  await task.step("Build").click();
-  await expect(task.steerBox).toBeVisible();
-  const note = task.steerBox.getByRole("textbox", { name: "Steer this task" });
-  await note.fill("use the existing helper");
-  await task.steerBox.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByTestId("steer-error")).toContainText("aren't available in Rovara Cloud yet");
-  await expect(note).toHaveValue("use the existing helper");
+  await task.selectStep("Build");
+  // The rebuilt page does not draw a steer form the session's own actions do not allow (Cloud refuses steering on a workflow task): it says so up front, and nothing can be sent.
+  const sent: string[] = [];
+  page.on("request", (request) => { if (request.method() !== "GET" && !request.url().endsWith("/presence")) sent.push(`${request.method()} ${request.url()}`); });
+  await expect(page.getByTestId("steer-unavailable")).toContainText("does not allow steering");
+  await expect(task.steerBox).toHaveCount(0);
+  expect(sent).toEqual([]);
   expect(await violations(page)).toEqual([]); // the error state, too
   await expect(page.getByRole("progressbar")).toHaveCount(0);
   // The earlier tabs stay one click away.
@@ -103,7 +105,7 @@ test("Stop on a task started in Cloud asks Code to stop it, and the task says so
   await project.startWork(title);
   const task = new SessionPage(page);
   await task.expectLoaded(title);
-  await page.getByRole("button", { name: "Stop", exact: true }).first().click();
+  await task.taskAction("Stop");
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: /^Stop/u }).last().click();
@@ -111,16 +113,35 @@ test("Stop on a task started in Cloud asks Code to stop it, and the task says so
 });
 
 test("Continue in my tool and a comment on a criterion say not connected yet, and keep the draft", async ({ page }) => {
-  const task = await openFromWork(page, PLAN_TASK);
-  await page.getByRole("button", { name: "Continue in my tool" }).click();
+  // DEC 254zzz374: Continue is for a task that is running (or approved); a task waiting at plan review refuses it, see the next test.
+  const running = await openFromWork(page, RUNNING_TASK);
+  await running.taskAction("Continue in my tool");
   await expect(page.getByTestId("continue-message")).toContainText("isn't connected to Rovara Code yet");
+  const task = await openFromWork(page, PLAN_TASK);
+  await task.openSection("Plan and changes");
   const spec = task.pane.getByRole("region", { name: "Spec" });
   await spec.getByRole("button", { name: /^Comment on 1\.1/u }).click();
   const box = spec.getByRole("textbox", { name: "Comment on 1.1" });
   await box.fill("Count the retries");
   await spec.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByTestId("comment-error").first()).toContainText("isn't connected to Rovara Code yet");
+  await expect(page.getByTestId("criterion-comment-unavailable").first()).toContainText("not available on this installation");
   await expect(box).toHaveValue("Count the retries");
+});
+
+test("a task waiting at plan review refuses Continue in my tool with \"Approve the plan first\" and sends nothing", async ({ page }) => {
+  const sent: string[] = [];
+  page.on("request", (request) => { if (request.method() !== "GET" && !request.url().endsWith("/presence")) sent.push(`${request.method()} ${request.url()}`); });
+  const task = await openFromWork(page, PLAN_TASK);
+  await expect(task.decision()).toBeVisible(); // the plan is still waiting for its approval
+  await page.getByRole("button", { name: "Task actions", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "Continue in my tool", exact: true })).toHaveCount(0);
+  const blocked = page.getByRole("menuitem", { name: "Continue in my tool (approve the plan first)", exact: true });
+  await expect(blocked).toBeVisible();
+  await expect(blocked).toHaveAttribute("aria-disabled", "true");
+  await blocked.click({ force: true });
+  await expect(page.getByTestId("continue-message")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Continue in my tool", exact: true })).toHaveCount(0);
+  expect(sent).toEqual([]);
 });
 
 test("a task nobody has says it was not found, and an unserved list says not connected yet", async ({ page }) => {
@@ -128,7 +149,7 @@ test("a task nobody has says it was not found, and an unserved list says not con
   await expect(new SessionPage(page).notFound).toBeVisible();
   await page.route("**/v1/web/sessions", (route) => route.fulfill({ status: 501, contentType: "application/json", body: JSON.stringify({ error: { code: "NOT_ON_CODE_YET", message: "/v1/app/sessions isn't connected to Rovara Code yet." } }) }));
   await page.goto("/app/sessions/11111111-1111-4111-8111-111111111111");
-  await expect(new SessionPage(page).loadError).toContainText("Not available yet.");
+  await expect(page.getByTestId("task-error-block")).toContainText("Rovara couldn't load this task");
   await expect(page.getByRole("progressbar")).toHaveCount(0);
 });
 
@@ -146,7 +167,7 @@ for (const scheme of ["light", "dark"] as const) {
     const task = await openFromWork(page, PLAN_TASK);
     await expect(task.pane.getByRole("region", { name: "Spec" })).toBeVisible();
     expect(await violations(page)).toEqual([]);
-    await task.step("Build").click();
+    await task.selectStep("Build");
     await expect(task.pane.getByRole("region", { name: "Build" })).toBeVisible();
     expect(await violations(page)).toEqual([]);
   });
@@ -155,6 +176,7 @@ for (const scheme of ["light", "dark"] as const) {
 test("Compact density tightens the task page, and it still loads", async ({ page }) => {
   await page.addInitScript(() => { try { window.localStorage.setItem("rovara.density", "compact"); } catch { /* a blocked store leaves Comfortable */ } });
   const task = await openFromWork(page, PLAN_TASK);
+  await task.openSection("Plan and changes");
   await expect(task.stepRail).toBeVisible();
   // The criterion rows use the dense row padding: 5px in Compact (9px otherwise), so the page itself, not only the variable, follows the density.
   const criterion = task.pane.locator(".rv-criterion").first();

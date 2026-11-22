@@ -1,0 +1,901 @@
+/* Task composition follows the shared shell gallery. State and actions belong to the existing readers. */
+.rv-task-rebuild{max-width:var(--rv-table-width);margin-inline:auto;min-width:0}
+.rv-task-rebuild>.rv-session-header.rv-page-header{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--rv-space-5);border:0;padding:0;margin:0 0 var(--rv-space-6)}
+.rv-task-rebuild .rv-session-heading{min-width:0;flex:1}
+.rv-task-rebuild .rv-session-heading .rv-page-breadcrumbs ol{margin-bottom:var(--rv-space-2)}
+.rv-task-rebuild .rv-session-heading .rv-page-breadcrumbs a{color:inherit}
+.rv-task-rebuild .rv-session-header h1{margin:0;font-size:var(--rv-font-xxl);line-height:1.15;letter-spacing:-.02em}
+.rv-task-rebuild .rv-session-header .rv-page-meta{font-size:var(--rv-font-md);margin-top:var(--rv-space-3)}
+.rv-task-rebuild .rv-session-people{margin:0;padding:0;border:0;justify-content:flex-start;flex-shrink:0;flex-direction:column;align-items:flex-end;gap:var(--rv-space-2)}
+.rv-task-rebuild .rv-session-people:not(:has(*)){display:none}
+.rv-task-rebuild .rv-session-controls{display:flex;flex-direction:column;align-items:flex-end;gap:var(--rv-space-2);min-width:0}
+.rv-task-rebuild .rv-session-controls>span{order:2;display:inline-flex;align-items:baseline;gap:var(--rv-space-2);font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-session-controls>span button{border:0;background:none;padding:0;min-height:0;color:var(--rv-text-muted);font-weight:400;opacity:1}
+.rv-task-rebuild .rv-session-controls>span button::after{content:":"}
+.rv-task-rebuild .rv-controls-overflow>.rv-button::before,.rv-task-rebuild .rv-controls-overflow button::before{content:"\00b7\00b7\00b7" / "";letter-spacing:.12em;margin-inline-end:var(--rv-space-2)}
+.rv-task-rebuild .rv-session-people .rv-task-actions-note{display:none}
+.rv-task-rebuild .rv-session-people .rv-task-actions>.rv-actions:empty{display:none}
+.rv-task-rebuild .rv-session-more-facts{display:flex;flex-wrap:wrap;gap:var(--rv-space-2) var(--rv-space-4);color:var(--rv-text-muted);font-size:var(--rv-font-sm);margin:0 0 var(--rv-space-3)}
+.rv-task-rebuild .rv-session-status{padding:0;border:0;background:none;display:inline-flex;align-items:center}
+.rv-task-composition.rv-task-pane.wide{border:0;background:transparent;border-radius:0;max-width:none}
+.rv-task-columns{display:grid;grid-template-columns:minmax(0,var(--rv-reading-width)) minmax(220px,1fr);gap:var(--rv-space-6);align-items:start}
+.rv-task-reading{min-width:0}
+.rv-task-reading>.rv-task-content-guard>.rv-pane-decision{position:static;background:transparent;margin:0 0 var(--rv-space-5)}
+.rv-task-reading .rv-decision-frame,.rv-task-primary{margin:0 0 var(--rv-space-5);padding:var(--rv-space-5);border-radius:var(--rv-radius-lg)}
+.rv-task-reading .rv-decision-frame-header{padding:0 0 var(--rv-space-3)}
+.rv-task-reading .rv-decision-frame-body{padding:0}
+.rv-task-context{min-width:0;padding-top:var(--rv-space-4)}
+.rv-task-context h2{font-size:var(--rv-font-lg);margin:0 0 var(--rv-space-5)}
+.rv-task-context .rv-task-timeline{margin-block:var(--rv-space-3)}
+.rv-task-context .rv-task-timeline-title{font-size:var(--rv-font-sm)}
+.rv-task-context .rv-task-timeline-detail{font-size:var(--rv-font-xs)}
+.rv-task-section{border:0;border-top:1px solid var(--rv-border);margin:0;padding:0;min-width:0}
+.rv-task-section>summary{display:flex;align-items:baseline;flex-wrap:wrap;gap:var(--rv-space-3);padding:var(--rv-space-4) 0;min-height:var(--rv-control-size);cursor:pointer;list-style:none;font-size:var(--rv-font-sm)}
+.rv-task-section>summary::-webkit-details-marker{display:none}
+.rv-task-section>summary::before{content:"";width:6px;height:6px;border-right:2px solid currentColor;border-top:2px solid currentColor;transform:rotate(45deg);margin-inline:var(--rv-space-2);align-self:center;flex:none}
+.rv-task-section[open]>summary::before{transform:rotate(135deg)}
+.rv-task-section>summary>strong{min-width:140px}
+.rv-task-section-summary{color:var(--rv-text-muted);flex:1;min-width:0;font-weight:400;overflow-wrap:anywhere}
+.rv-task-section-body{padding-block:var(--rv-space-3) var(--rv-space-5);min-width:0}
+.rv-task-section .rv-step-rail{margin-top:var(--rv-space-5)}
+.rv-task-held{display:flex;align-items:center;gap:var(--rv-space-2);font-size:var(--rv-font-xs);margin-block:var(--rv-space-3)}
+.rv-task-rebuild>[data-testid=held-session]{margin-top:0;justify-content:flex-end}
+.rv-task-session-entry.rv-button{display:flex;width:100%;justify-content:space-between;min-height:64px;text-align:start;margin-block:var(--rv-space-3) var(--rv-space-5)}
+.rv-task-session-entry::after{content:"";width:7px;height:7px;border-top:2px solid currentColor;border-right:2px solid currentColor;transform:rotate(45deg);margin-inline:var(--rv-space-2)}
+.rv-task-primary .rv-decision.none{border:0;padding:0;margin-top:var(--rv-space-4)}
+.rv-task-primary .rv-decision.none h3{font-size:var(--rv-font-sm)}
+.rv-task-plan-view>.rv-pane-head{background:transparent;padding:0 0 var(--rv-space-3);border:0}
+.rv-task-plan-view .rv-pane-main{padding:0;border:0;background:none}
+.rv-task-reading .rv-merge{display:block}
+.rv-task-reading .rv-merge-head{margin-bottom:var(--rv-space-4)}
+.rv-task-reading .rv-merge-prs{padding:var(--rv-space-4);background:var(--rv-bg-sunken);border-radius:var(--rv-radius-md)}
+.rv-task-reading .rv-merge-actions{margin-top:var(--rv-space-4)}
+.rv-task-reading .rv-proof-table{font-size:var(--rv-font-sm)}
+.rv-task-rebuild-conversation .rv-conversation>li{padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);margin-bottom:var(--rv-space-4)}
+.rv-task-rebuild-conversation .rv-message-meta{gap:var(--rv-space-2)}
+.rv-task-rebuild-conversation .rv-composer{position:sticky;bottom:0;background:var(--rv-bg-raised);padding-block:var(--rv-space-3);border-top:1px solid var(--rv-border)}
+.rv-task-rebuild-conversation .rv-composer-modes{display:flex;flex-wrap:nowrap;gap:0}
+.rv-task-rebuild-conversation .rv-composer-modes>button{flex:1;border-radius:0}
+.rv-task-rebuild-conversation .rv-composer-modes [aria-pressed=true]{color:var(--rv-bg);background:var(--rv-text)}
+@media(max-width:1023px){.rv-task-columns{grid-template-columns:minmax(0,1fr)}.rv-task-context{border-top:1px solid var(--rv-border)}.rv-task-rebuild>.rv-session-header.rv-page-header{grid-template-columns:minmax(0,1fr)}.rv-task-rebuild>.rv-session-header>.rv-session-people{grid-column:1;grid-row:auto}.rv-task-reading .rv-decision-frame{padding:var(--rv-space-4)}}
+@media(max-width:639px){.rv-task-section-summary{flex-basis:calc(100% - var(--rv-space-6));margin-inline-start:var(--rv-space-6)}.rv-task-section>summary{gap:var(--rv-space-2)}.rv-task-context{padding-top:var(--rv-space-4)}.rv-task-rebuild>.rv-session-header h1{font-size:var(--rv-font-xl)}.rv-task-rebuild .rv-task-controls{gap:var(--rv-space-2)}.rv-task-rebuild-conversation{width:100vw;max-width:100vw;padding:var(--rv-space-4);border-radius:0}.rv-task-rebuild .rv-session-facts{font-size:var(--rv-font-xs)}}
+
+.rv-task-selected-section{margin-block:var(--rv-space-4)}
+
+.rv-task-content-guard{border:0;padding:0;margin:0;min-width:0}
+
+.rv-task-reading>.rv-task-session-slot:empty{display:none}
+
+/* The action menu owns the secondary controls at every viewport; Stop remains in reach. */
+.rv-task-rebuild .rv-controls-overflow{display:block}
+.rv-task-rebuild .rv-controls-inline{display:flex}
+.rv-task-rebuild .rv-controls-inline>.rv-button-with-reason:not(:has(.rv-task-stop)){display:none}
+
+/* Shell composition (mock 1a/3a/3e): current-step card, Talk entry, checklist, log, stop row, disclosure rows, rail. */
+.rv-task-rebuild .rv-task-section>summary{display:grid;grid-template-columns:var(--rv-space-4) minmax(0,1fr) minmax(0,2fr);align-items:center;gap:var(--rv-space-3);min-height:calc(var(--rv-control-size) * 1.5);padding:var(--rv-space-3) 0;list-style:none}
+.rv-task-rebuild .rv-task-section>summary::before{content:none}
+.rv-task-rebuild .rv-task-section>summary>strong{min-width:0}
+.rv-task-rebuild .rv-task-section>summary>.rv-ds-mark{transition:transform var(--rv-motion-fast,.1s)}
+.rv-task-rebuild .rv-task-section[open]>summary>.rv-ds-mark{transform:rotate(90deg)}
+.rv-task-rebuild .rv-task-section-summary{grid-column:3;color:var(--rv-text-muted);min-width:0}
+.rv-task-rebuild .rv-task-section:last-of-type{border-bottom:1px solid var(--rv-border)}
+.rv-task-rebuild .rv-task-section-body{padding:var(--rv-space-3) 0 var(--rv-space-5) calc(var(--rv-space-4) + var(--rv-space-3))}
+.rv-task-rebuild .rv-task-current .rv-decision-frame-title{font-size:var(--rv-font-xl)}
+.rv-task-rebuild .rv-task-subline{margin:0;color:var(--rv-text-muted);display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2)}
+.rv-task-rebuild .rv-task-subline .rv-task-held{margin:0}
+.rv-task-rebuild .rv-task-session-slot:empty{display:none}
+.rv-task-rebuild .rv-task-session-entry.rv-button{display:flex;align-items:center;gap:var(--rv-space-3);width:100%;min-height:64px;margin-block:var(--rv-space-2) var(--rv-space-3);padding:var(--rv-space-3) var(--rv-space-4);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);text-align:start;font-weight:400}
+.rv-task-rebuild .rv-task-session-entry::after{content:none}
+.rv-task-rebuild .rv-task-session-entry-text{flex:1;min-width:0;display:grid;gap:2px}
+.rv-task-rebuild .rv-task-session-entry-text>strong{font-weight:600}
+.rv-task-rebuild .rv-task-session-subline{color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.rv-task-rebuild .rv-task-checklist{list-style:none;margin:var(--rv-space-3) 0;padding:0;display:grid;gap:var(--rv-space-2);color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-task-checklist li{display:flex;align-items:center;gap:var(--rv-space-3)}
+.rv-task-rebuild .rv-task-checklist li[aria-current]{color:var(--rv-text);font-weight:600}
+.rv-task-rebuild .rv-task-log{border:0;margin:var(--rv-space-2) 0;padding:0}
+.rv-task-rebuild .rv-task-log>summary{display:flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-2);min-height:var(--rv-control-size);list-style:none;cursor:pointer}
+.rv-task-rebuild .rv-task-log>summary::-webkit-details-marker{display:none}
+.rv-task-rebuild .rv-task-log[open]>summary>.rv-ds-mark{transform:rotate(90deg)}
+.rv-task-rebuild .rv-task-log-label{text-decoration:underline;text-underline-offset:var(--rv-space-1)}
+.rv-task-rebuild .rv-task-log>summary>code{color:var(--rv-text-muted);font:400 var(--rv-font-sm)/1.55 var(--rv-font-mono);overflow-wrap:anywhere;min-width:0}
+.rv-task-rebuild .rv-task-log .rv-live{padding:var(--rv-space-3);background:var(--rv-bg-sunken);border-radius:var(--rv-radius-sm);font:400 var(--rv-font-sm)/1.6 var(--rv-font-mono)}
+.rv-task-rebuild .rv-task-stop-row{display:flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-3);padding-top:var(--rv-space-4);margin-top:var(--rv-space-3);border-top:1px solid var(--rv-border)}
+.rv-task-rebuild .rv-task-stop-slot{display:contents}
+.rv-task-rebuild .rv-task-stop-row:not(:has(.rv-task-stop)){display:none}
+.rv-task-rebuild .rv-steer{margin-block:var(--rv-space-2)}
+.rv-task-rebuild .rv-steer-row{display:flex;gap:var(--rv-space-2)}
+.rv-task-rebuild .rv-task-primary+.rv-decision.none,.rv-task-rebuild .rv-task-reading>.rv-decision.none{border:0;padding:0;background:none;margin:0 0 var(--rv-space-6);box-shadow:none}
+.rv-task-rebuild .rv-task-reading>.rv-decision.none h3{display:inline;font-size:var(--rv-font-md);font-weight:400;margin:0 var(--rv-space-1) 0 0;color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-task-reading>.rv-decision.none h3::after{content:"."}
+.rv-task-rebuild .rv-task-reading>.rv-decision.none p{display:inline;color:var(--rv-text-muted);font-size:var(--rv-font-md);margin:0}
+.rv-task-rebuild .rv-task-context>h2{font-size:var(--rv-font-xl);margin:0 0 var(--rv-space-5)}
+.rv-task-rebuild .rv-task-change-summary{margin-bottom:var(--rv-space-6)}
+.rv-task-rebuild .rv-task-change-summary h2{font-size:var(--rv-font-xl);margin:0 0 var(--rv-space-3)}
+.rv-task-rebuild .rv-task-change-summary p{margin:0;color:var(--rv-text)}
+.rv-task-rebuild .rv-task-timeline>li[data-state=needs_you] .rv-task-timeline-detail{color:var(--rv-text-muted)}
+@media(max-width:639px){
+ .rv-task-rebuild>.rv-session-header.rv-page-header{flex-direction:column;gap:var(--rv-space-3)}
+ .rv-task-rebuild .rv-session-people{align-items:flex-start;flex-direction:row;flex-wrap:wrap}
+ .rv-task-rebuild .rv-session-controls{align-items:flex-start}
+ .rv-task-rebuild .rv-session-header h1{font-size:var(--rv-font-xl)}
+ .rv-task-rebuild .rv-task-section>summary{grid-template-columns:var(--rv-space-4) minmax(0,1fr)}
+ .rv-task-rebuild .rv-task-section-summary{grid-column:2}
+ .rv-task-rebuild .rv-task-section-body{padding-inline-start:0}
+}
+
+.rv-task-rebuild .rv-task-current>.rv-decision-frame-header>.rv-decision-frame-title{font-size:var(--rv-font-xl)}
+.rv-task-rebuild .rv-task-context .rv-task-timeline-title{font-size:var(--rv-font-md)}
+.rv-task-rebuild .rv-task-context .rv-task-timeline-detail{font-size:var(--rv-font-sm)}
+.rv-task-rebuild .rv-task-subline .rv-button{font-size:var(--rv-font-sm)}
+.rv-task-rebuild .rv-session-people section[aria-label="Task continuation refusal"]{display:none}
+.rv-task-rebuild .rv-session-status{gap:var(--rv-space-2)}
+.rv-task-rebuild .rv-decision-scene-plan .rv-decision-actions{display:flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-3)}
+.rv-task-rebuild .rv-decision-scene-plan .rv-decision-changes{border:0;padding:0}
+.rv-task-rebuild .rv-decision-scene-plan .rv-decision-changes>summary{cursor:pointer;text-decoration:underline;text-underline-offset:var(--rv-space-1);list-style:none;min-height:var(--rv-control-size);display:inline-flex;align-items:center}
+.rv-task-rebuild .rv-decision-scene-plan .rv-decision-changes>summary::-webkit-details-marker{display:none}
+.rv-task-rebuild .rv-decision-scene-plan .rv-decision-open{text-decoration:underline;text-underline-offset:var(--rv-space-1)}
+.rv-task-rebuild .rv-decision-actions-above{display:grid;gap:var(--rv-space-2)}
+
+/* Merge composition (mock 3e): blockers first, one action each, then what would be merged and the locked Merge. */
+.rv-task-rebuild .rv-merge-frame{background:var(--rv-bg-raised);padding:var(--rv-space-5);gap:var(--rv-space-4)}
+.rv-task-rebuild .rv-merge-frame>.rv-decision-frame-header>.rv-decision-frame-title{font-size:var(--rv-font-xl)}
+.rv-task-rebuild .rv-merge-blockers{border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-md);overflow:hidden}
+.rv-task-rebuild .rv-merge-gap{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--rv-space-4);padding:var(--rv-space-4)}
+.rv-task-rebuild .rv-merge-gap+.rv-merge-gap{border-top:1px solid var(--rv-border)}
+.rv-task-rebuild .rv-merge-gap h4{display:flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-2);margin:0;font-size:var(--rv-font-lg)}
+.rv-task-rebuild .rv-merge-gap p{margin:var(--rv-space-2) 0 0}
+.rv-task-rebuild .rv-merge-gap>.rv-button,.rv-task-rebuild .rv-merge-gap>.rv-button-with-reason{flex-shrink:0}
+.rv-task-rebuild .rv-merge-would{font-size:var(--rv-font-lg);margin:var(--rv-space-3) 0 0}
+.rv-task-rebuild .rv-merge-prs{border:0;background:var(--rv-bg-sunken)}
+.rv-task-rebuild .rv-merge-pr-head h3{font-size:var(--rv-font-md)}
+.rv-task-rebuild .rv-merge-facts>div{grid-template-columns:minmax(96px,1fr) minmax(0,3fr)}
+.rv-task-rebuild .rv-merge-actions{align-items:center}
+.rv-task-rebuild .rv-merge-actions .rv-button[data-locked]{color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-merge-lock-reason{flex:1;min-width:calc(var(--rv-space-7) * 3)}
+.rv-task-rebuild .rv-decision-facts li>span:last-child{min-width:0;text-align:right}
+@media(max-width:639px){
+ .rv-task-rebuild .rv-merge-gap{flex-direction:column}
+ .rv-task-rebuild .rv-merge-gap>.rv-button,.rv-task-rebuild .rv-merge-gap>.rv-button-with-reason{width:100%}
+ .rv-task-rebuild .rv-merge-facts>div{grid-template-columns:minmax(0,1fr)}
+ .rv-task-rebuild .rv-decision-facts li{flex-wrap:wrap}
+ .rv-task-rebuild .rv-decision-facts li>span:last-child{margin-left:0;width:100%;text-align:left}
+}
+
+/* Talk panel (mocks 1b-1l): one message card with its receipt; no second copy of the same outcome. */
+.rv-task-rebuild-conversation .rv-task-back{display:none}
+.rv-task-rebuild-conversation:has(.rv-message-delivery) section[aria-label="Talk delivery outcome"]:not([data-talk-outcome=unknown]){display:none}
+.rv-task-rebuild-conversation>.rv-dialog-heading h2{font-size:var(--rv-font-xl)}
+.rv-task-rebuild-conversation>[id]{margin:calc(var(--rv-space-2) * -1) 0 var(--rv-space-4);color:var(--rv-text-muted)}
+.rv-task-rebuild-conversation .rv-task-held{margin-block:var(--rv-space-2)}
+.rv-task-rebuild-conversation .rv-message-delivery{padding:var(--rv-space-3);border-radius:var(--rv-radius-md);background:var(--rv-bg-sunken);margin:var(--rv-space-3) 0 0}
+.rv-task-rebuild-conversation .rv-message-meta{align-items:center}
+.rv-task-rebuild-conversation:has(section[aria-label="Talk delivery outcome"]) .rv-talk-unconfirmed{display:none}
+/* The plan handoff is a 4e callout in the reading column, not a page-wide box. */
+.rv-task-rebuild>[data-testid=talk-plan-change-handoff]{box-sizing:border-box;max-width:var(--rv-reading-width);margin:0 0 var(--rv-space-5);padding:var(--rv-space-4) var(--rv-space-5);border:1px solid var(--rv-border);border-inline-start:4px solid var(--rv-status-needs-you);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);box-shadow:none;display:grid;gap:var(--rv-space-2);justify-items:start}
+.rv-task-rebuild>[data-testid=talk-plan-change-handoff] h3{margin:0;font-size:var(--rv-font-lg)}
+.rv-task-rebuild>[data-testid=talk-plan-change-handoff] p{margin:0;color:var(--rv-text-muted)}
+.rv-task-rebuild>[role=alert][aria-label="Plan change handoff"]{max-width:var(--rv-reading-width);margin:0 0 var(--rv-space-5);padding:var(--rv-space-4) var(--rv-space-5);border:1px solid var(--rv-border);border-inline-start:4px solid var(--rv-status-failed);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);display:grid;gap:var(--rv-space-2);justify-items:start}
+.rv-task-rebuild>[role=alert][aria-label="Plan change handoff"] p{margin:0}
+/* A sent draft is the message below it (with its receipt): shown once. */
+.rv-task-rebuild-conversation .rv-task-draft-return[data-operation=sent]{display:none!important}
+
+/* The 4e error block: red outline and a red-tinted header; used for access lost and failed page reads. */
+.rv-task-error-block{border-color:var(--rv-status-failed)!important;margin-block:var(--rv-space-6)}
+.rv-task-error-block .rv-outcome-header{background:var(--rv-status-failed-bg)}
+.rv-task-error-block .rv-outcome-icon{color:var(--rv-status-failed)}
+.rv-task-error-block .rv-outcome-header h1,.rv-task-error-block .rv-outcome-header h2{margin:0;font:600 var(--rv-font-lg)/1.55 var(--rv-font-ui)}
+
+/* Evidence tab (mock 3c): a section hierarchy instead of an unstyled heading stack. */
+.rv-task-rebuild [aria-label="Test evidence"]{display:grid;gap:var(--rv-space-5);max-width:var(--rv-reading-width)}
+.rv-task-rebuild [aria-label="Test evidence"] h2{font-size:var(--rv-font-lg);margin:0 0 var(--rv-space-2)}
+.rv-task-rebuild [aria-label="Test evidence"] h3{font-size:var(--rv-font-md);margin:var(--rv-space-5) 0 var(--rv-space-2);padding-top:var(--rv-space-4);border-top:1px solid var(--rv-border)}
+.rv-task-rebuild [aria-label="Test evidence"] h4{font-size:var(--rv-font-md);margin:var(--rv-space-3) 0 var(--rv-space-1)}
+.rv-task-rebuild [aria-label="Test evidence"] p{margin:var(--rv-space-1) 0}
+.rv-task-rebuild [aria-label="Test evidence"] ul{margin:var(--rv-space-2) 0;padding-inline-start:var(--rv-space-5)}
+.rv-task-rebuild [aria-label="Test evidence"] .rv-task-held{margin:0}
+.rv-task-rebuild [aria-label="Evidence from the checks"]>h3:first-child{margin-top:0;border-top:0;padding-top:0}
+
+/* Review round 1 fixes. */
+.rv-task-rebuild .rv-session-controls>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.rv-task-rebuild .rv-avatars:empty{display:none}
+.rv-task-rebuild .rv-task-session-slot{display:block;width:100%}
+.rv-task-rebuild .rv-task-session-slot .rv-task-session-entry{width:100%!important;max-width:none!important;justify-content:flex-start}
+.rv-task-rebuild .rv-task-timeline-next{display:none}
+.rv-task-rebuild>.rv-task-section{max-width:var(--rv-reading-width)}
+.rv-task-rebuild .rv-task-steer{margin:var(--rv-space-2) 0}
+.rv-task-rebuild .rv-task-steer>summary{cursor:pointer;color:var(--rv-text-muted);min-height:var(--rv-control-size);display:flex;align-items:center}
+.rv-task-rebuild-conversation .rv-composer-modes .rv-button-with-reason{flex:1;display:flex}
+.rv-task-rebuild-conversation .rv-composer-modes .rv-button{flex:1;border-radius:0;margin-inline-start:-1px}
+.rv-task-rebuild-conversation .rv-composer-modes .rv-button-with-reason:first-child .rv-button{border-radius:var(--rv-radius-md) 0 0 var(--rv-radius-md);margin-inline-start:0}
+.rv-task-rebuild-conversation .rv-composer-modes .rv-button-with-reason:last-child .rv-button{border-radius:0 var(--rv-radius-md) var(--rv-radius-md) 0}
+.rv-task-rebuild-conversation:has(section[aria-label="Talk delivery outcome"]) .rv-task-draft-return{display:none!important}
+.rv-task-rebuild-conversation details>summary{list-style:none;cursor:pointer}
+.rv-task-rebuild-conversation details>summary::-webkit-details-marker{display:none}
+.rv-task-rebuild .rv-decision-scene-plan .rv-decision-actions>*{align-self:center}
+.rv-task-rebuild .rv-task-session-slot .rv-button-with-reason{display:flex;width:100%}
+.rv-task-rebuild .rv-task-session-slot{grid-column:1/-1}
+
+/* Round 2 fixes. */
+.rv-task-rebuild .rv-task-steer>summary{list-style:none;gap:var(--rv-space-2);min-height:var(--rv-control-size);margin:0}
+.rv-task-rebuild .rv-task-steer>summary::-webkit-details-marker{display:none}
+.rv-task-rebuild .rv-task-steer[open]>summary>.rv-ds-mark{transform:rotate(90deg)}
+.rv-task-rebuild .rv-task-steer>summary>span{text-decoration:underline;text-underline-offset:var(--rv-space-1);color:var(--rv-text)}
+.rv-task-held-label{color:var(--rv-text-muted)}
+.rv-task-rebuild-conversation .rv-message-card{position:relative}
+.rv-task-rebuild-conversation .rv-message-kind-chip{position:absolute;top:var(--rv-space-3);inset-inline-end:var(--rv-space-3);padding:2px var(--rv-space-3);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-lg);font-size:var(--rv-font-sm);font-weight:600;color:var(--rv-text);background:var(--rv-bg-raised)}
+.rv-task-rebuild-conversation .rv-dialog-heading button,.rv-task-rebuild-conversation .rv-dialog-heading button *{text-decoration:none}
+.rv-task-rebuild-conversation .rv-composer-modes .rv-button{min-height:var(--rv-control-size);padding-inline:var(--rv-space-2);font-size:var(--rv-font-sm);line-height:1.2}
+.rv-task-rebuild-conversation .rv-composer-modes{align-items:stretch}
+.rv-task-rebuild .rv-session-controls .rv-button-with-reason,.rv-task-rebuild .rv-controls-overflow{margin:0}
+.rv-task-rebuild .rv-session-people>*{margin-inline-start:0}
+.rv-task-rebuild .rv-session-people .rv-task-controls{margin:0;padding:0}
+
+/* Rework B: the Talk panel is a floating card beside the page (no scrim); on a phone it is the full-height sheet. */
+.rv-task-rebuild-conversation.rv-conversation-tray{top:var(--rv-space-4);right:var(--rv-space-4);bottom:var(--rv-space-4);height:auto;max-height:none;width:min(440px,calc(100vw - var(--rv-space-6)));border-radius:var(--rv-radius-lg);padding:0 var(--rv-space-5) 0;box-shadow:0 12px 40px color-mix(in srgb,var(--rv-text) 16%,transparent);overflow:auto;display:flex;flex-direction:column;gap:0}
+.rv-task-rebuild-conversation>.rv-dialog-heading{position:sticky;top:0;z-index:2;margin:0 calc(var(--rv-space-5) * -1);padding:var(--rv-space-5) var(--rv-space-5) var(--rv-space-3);background:var(--rv-bg-raised);border-bottom:1px solid var(--rv-border)}
+.rv-task-rebuild-conversation>.rv-dialog-heading h2{font-size:var(--rv-font-xl);outline:none}
+.rv-task-rebuild-conversation h2:focus,.rv-task-rebuild-conversation h2:focus-visible,.rv-task-rebuild-conversation [data-radix-focus-guard]{outline:none;box-shadow:none}
+.rv-task-rebuild-conversation>[id]:not(#task-talk){margin:calc(var(--rv-space-3) * -1) calc(var(--rv-space-5) * -1) var(--rv-space-4);padding:var(--rv-space-3) var(--rv-space-5) var(--rv-space-3);color:var(--rv-text-muted);background:var(--rv-bg-raised);position:sticky;top:60px;z-index:2;border-bottom:1px solid var(--rv-border)}
+.rv-task-rebuild-conversation .rv-conversation{margin:var(--rv-space-4) 0;flex:1}
+.rv-task-rebuild-conversation .rv-conversation>li{padding:0;border:0;background:none;margin:0 0 var(--rv-space-4)}
+.rv-task-rebuild-conversation .rv-message-card{position:static;padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);display:grid;gap:var(--rv-space-3);min-width:0}
+.rv-task-rebuild-conversation .rv-message-card[data-tone=bad]{border-color:var(--rv-status-failed)}
+.rv-task-rebuild-conversation .rv-message-top{display:flex;align-items:center;gap:var(--rv-space-3);min-width:0}
+.rv-task-rebuild-conversation .rv-message-top>.rv-message-meta,.rv-task-rebuild-conversation .rv-message-top>[data-testid=talk-comment-provenance]{flex:1;min-width:0;margin:0;color:var(--rv-text-muted);font-size:var(--rv-font-md)}
+.rv-task-rebuild-conversation .rv-message-meta strong{color:var(--rv-text)}
+.rv-task-rebuild-conversation .rv-message-avatar{flex:none;width:32px;height:32px;border:1px solid var(--rv-border-strong);border-radius:50%;display:inline-grid;place-items:center;font-weight:600;font-size:var(--rv-font-sm);color:var(--rv-text);background:var(--rv-bg-raised)}
+.rv-task-rebuild-conversation .rv-message-kind-chip{position:static;flex:none;display:inline-flex;align-items:center;gap:var(--rv-space-2);padding:2px var(--rv-space-3);border:1px solid var(--rv-border-strong);border-radius:999px;font-size:var(--rv-font-sm);font-weight:600;background:var(--rv-bg-raised);color:var(--rv-text)}
+.rv-task-rebuild-conversation .rv-message-kind-chip svg{width:14px;height:14px}
+.rv-task-rebuild-conversation .rv-message-text{margin:0;font-size:var(--rv-font-lg)}
+.rv-task-rebuild-conversation .rv-message-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3);margin:0}
+.rv-task-rebuild-conversation .rv-message-actions .rv-button{min-height:0;padding:0;font-size:var(--rv-font-sm);text-decoration:underline;text-underline-offset:var(--rv-space-1)}
+.rv-task-rebuild-conversation .rv-receipt-ladder{list-style:none;margin:0;padding:var(--rv-space-3) var(--rv-space-4);background:var(--rv-bg-sunken);border-radius:var(--rv-radius-md);display:grid;gap:var(--rv-space-2);font-size:var(--rv-font-md)}
+.rv-task-rebuild-conversation .rv-receipt-ladder li{display:flex;align-items:baseline;gap:var(--rv-space-3);min-width:0}
+.rv-task-rebuild-conversation .rv-receipt-ladder li>span:last-child{min-width:0;overflow-wrap:anywhere}
+.rv-task-rebuild-conversation .rv-receipt-dot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--rv-status-done);align-self:center}
+.rv-task-rebuild-conversation .rv-receipt-ladder li[data-tone=bad] .rv-receipt-dot{background:var(--rv-status-failed)}
+.rv-task-rebuild-conversation .rv-receipt-ladder li[data-tone=running] .rv-receipt-dot{background:var(--rv-status-running)}
+.rv-task-rebuild-conversation .rv-receipt-ladder li[data-tone=pending] .rv-receipt-dot{background:transparent;border:2px solid var(--rv-text-muted)}
+.rv-task-rebuild-conversation .rv-receipt-ladder li[data-tone=pending],.rv-task-rebuild-conversation .rv-receipt-ladder li[data-tone=pending] strong{color:var(--rv-text-muted);font-weight:400}
+.rv-task-rebuild-conversation .rv-receipt-detail{color:var(--rv-text-muted)}
+.rv-task-rebuild-conversation .rv-receipt-ladder time{color:var(--rv-text-muted)}
+.rv-task-rebuild-conversation .rv-talk-refusal{display:grid;gap:var(--rv-space-3)}
+.rv-task-rebuild-conversation .rv-talk-refusal p,.rv-task-rebuild-conversation .rv-talk-next p{margin:0}
+.rv-task-rebuild-conversation .rv-talk-next{display:grid;gap:var(--rv-space-3);border-top:1px solid var(--rv-border);padding-top:var(--rv-space-3)}
+.rv-task-rebuild-conversation .rv-talk-next h4{margin:0;font-size:var(--rv-font-lg)}
+.rv-task-rebuild-conversation .rv-talk-refusal .rv-button,.rv-task-rebuild-conversation .rv-talk-next .rv-button{width:100%}
+.rv-task-rebuild-conversation .rv-talk-unconfirmed-card{margin:0 0 var(--rv-space-4)}
+.rv-task-rebuild-conversation .rv-ask-recovery{margin:0 0 var(--rv-space-4)}
+.rv-task-rebuild-conversation .rv-ask-recovery .rv-message-card{border-color:var(--rv-border-strong)}
+.rv-task-rebuild-conversation .rv-task-held{margin:var(--rv-space-3) 0;flex-wrap:nowrap;white-space:nowrap}
+.rv-task-rebuild-conversation .rv-task-held .rv-button{min-height:0;padding:0;text-decoration:underline;text-underline-offset:var(--rv-space-1);font-size:var(--rv-font-sm);margin-inline-start:auto}
+.rv-task-rebuild-conversation #task-talk{position:sticky;bottom:0;margin:auto calc(var(--rv-space-5) * -1) 0;padding:0 var(--rv-space-5);background:var(--rv-bg-raised);z-index:2}
+.rv-task-rebuild-conversation .rv-composer{position:static;margin:0;padding:var(--rv-space-4) 0 var(--rv-space-5);border-top:1px solid var(--rv-border)}
+.rv-task-rebuild-conversation .rv-composer-modes{border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-md);overflow:hidden;gap:0}
+.rv-task-rebuild-conversation .rv-composer-modes .rv-button,.rv-task-rebuild-conversation .rv-composer-modes .rv-button-with-reason .rv-button{border:0;border-radius:0;margin:0;background:var(--rv-bg-raised);color:var(--rv-text);font-weight:400}
+.rv-task-rebuild-conversation .rv-composer-modes>.rv-button+.rv-button,.rv-task-rebuild-conversation .rv-composer-modes>.rv-button-with-reason+.rv-button-with-reason,.rv-task-rebuild-conversation .rv-composer-modes>.rv-button-with-reason+.rv-button{border-inline-start:1px solid var(--rv-border)}
+.rv-task-rebuild-conversation .rv-composer-modes [aria-pressed=true]{background:var(--rv-text);color:var(--rv-bg);font-weight:600}
+.rv-task-rebuild-conversation .rv-composer-modes>*{flex:1 1 0;min-width:0}
+.rv-task-rebuild-conversation .rv-composer-help{font-size:var(--rv-font-md);margin:var(--rv-space-3) 0}
+@media(min-width:1280px){
+ .rv-task-rebuild[data-talk-open]{margin-inline:0;max-width:calc(100% - 464px)}
+}
+@media(max-width:639px){
+ .rv-task-rebuild-conversation.rv-conversation-tray{inset:0;width:100vw;max-width:100vw;height:100dvh;border-radius:0;box-shadow:none;padding-inline:var(--rv-space-4)}
+ .rv-task-rebuild-conversation>.rv-dialog-heading{margin-inline:calc(var(--rv-space-4) * -1);padding-inline:var(--rv-space-4)}
+ .rv-task-rebuild-conversation>[id]:not(#task-talk){margin-inline:calc(var(--rv-space-4) * -1);padding-inline:var(--rv-space-4)}
+ .rv-task-rebuild-conversation #task-talk{margin-inline:calc(var(--rv-space-4) * -1);padding-inline:var(--rv-space-4)}
+ .rv-task-rebuild-conversation .rv-message-text{font-size:var(--rv-font-md)}
+}
+.rv-task-rebuild-conversation fieldset[aria-label="Task question"]{border:0;padding:0;margin:var(--rv-space-3) 0 0;min-width:0}
+.rv-task-rebuild-conversation .rv-ask{border:0;padding:0;margin:0}
+.rv-task-rebuild-conversation .rv-ask>summary{min-height:var(--rv-control-size);display:flex;align-items:center;color:var(--rv-text-muted)}
+.rv-task-rebuild-conversation .rv-ask-box label:first-of-type{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media(max-width:639px){
+ .rv-task-rebuild-conversation .rv-composer-help{font-size:var(--rv-font-sm);margin:var(--rv-space-2) 0;line-height:1.35}
+ .rv-task-rebuild-conversation .rv-composer{padding-block:var(--rv-space-3)}
+ .rv-task-rebuild-conversation .rv-composer textarea{min-height:0;height:calc(var(--rv-control-size) * 1.6)}
+ .rv-task-rebuild-conversation .rv-composer .rv-field{gap:var(--rv-space-1)}
+ .rv-task-rebuild-conversation .rv-composer label{font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+ .rv-task-rebuild-conversation .rv-composer-footer{margin-top:var(--rv-space-2);flex-wrap:nowrap}
+ .rv-task-rebuild-conversation .rv-composer-footer .rv-button{flex:1}
+}
+
+/* Rework B: plan decision. Outcome first, then the choices, then one action row; 4e choice rows instead of browser controls. */
+.rv-task-rebuild .rv-plan-handoff-note{max-width:var(--rv-reading-width);margin:0 0 var(--rv-space-4);display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2) var(--rv-space-3);color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-plan-handoff-note strong{color:var(--rv-text)}
+.rv-task-rebuild .rv-plan-handoff-link{display:inline-flex;align-items:center;gap:var(--rv-space-2)}
+.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>*{order:5}
+.rv-task-rebuild .rv-ds-plan-frame .rv-decision-outcome{order:1}
+.rv-task-rebuild .rv-ds-plan-frame .rv-decision-summary{order:2}
+.rv-task-rebuild .rv-ds-plan-frame .rv-decision-plan{display:contents}
+.rv-task-rebuild .rv-ds-plan-frame .rv-plan-summary{order:3}
+.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>h4,.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>.rv-ds-risks{order:4}
+.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>.rv-ds-plan-step~.rv-ds-plan-step{order:6}
+.rv-task-rebuild .rv-ds-plan-frame .rv-plan-question,.rv-task-rebuild .rv-ds-plan-frame .rv-plan-checks,.rv-task-rebuild .rv-ds-plan-frame .rv-plan-comments,.rv-task-rebuild .rv-ds-plan-frame .rv-plan-note,.rv-task-rebuild .rv-ds-plan-frame .rv-plan-limit{order:9}
+.rv-task-rebuild .rv-ds-plan-frame .rv-decision-actions-above{order:10}
+.rv-task-rebuild .rv-ds-plan-frame .rv-plan-takes{order:9}
+.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>[role=alert],.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>[role=status]{order:11}
+.rv-task-rebuild .rv-plan-summary{display:grid;gap:var(--rv-space-2);color:var(--rv-text)}
+.rv-task-rebuild .rv-plan-summary p,.rv-task-rebuild .rv-plan-summary ul{margin:0}
+.rv-task-rebuild .rv-plan-summary ul{padding-inline-start:var(--rv-space-5)}
+.rv-task-rebuild .rv-plan-risk::before{content:"· "}
+.rv-task-rebuild .rv-plan-read{display:inline-flex;align-items:center;gap:var(--rv-space-2);margin-left:auto}
+.rv-task-rebuild .rv-ds-plan-step>.rv-plan-read{margin-left:auto}
+.rv-task-rebuild .rv-ds-plan-step>.rv-plan-risk{margin-left:0}
+.rv-task-rebuild .rv-ds-plan-step>span:last-child{margin-left:auto}
+.rv-task-rebuild .rv-ds-plan-step>.rv-plan-risk+.rv-plan-read{margin-left:auto}
+.rv-task-rebuild .rv-ds-evidence li{font-size:var(--rv-font-md)}
+.rv-task-rebuild .rv-decision-plan fieldset{border:0;padding:0;margin:0;min-width:0;display:grid;gap:var(--rv-space-2)}
+.rv-task-rebuild .rv-decision-plan legend{padding:0;margin:0 0 var(--rv-space-2);font-weight:600;font-size:var(--rv-font-md)}
+.rv-task-rebuild .rv-decision-plan fieldset>label,.rv-task-rebuild .rv-plan-limit>label{display:flex;align-items:center;gap:var(--rv-space-3);padding:var(--rv-space-3) var(--rv-space-4);min-height:var(--rv-control-size);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);cursor:pointer;margin:0}
+.rv-task-rebuild .rv-decision-plan fieldset>label:has(input:checked),.rv-task-rebuild .rv-plan-limit>label:has(input:checked){border-color:var(--rv-text);box-shadow:inset 0 0 0 1px var(--rv-text)}
+.rv-task-rebuild .rv-decision-plan input[type=radio],.rv-task-rebuild .rv-decision-plan input[type=checkbox]{appearance:none;-webkit-appearance:none;flex:none;width:20px;height:20px;margin:0;border:2px solid var(--rv-border-strong);border-radius:50%;background:var(--rv-bg-raised);display:inline-grid;place-content:center}
+.rv-task-rebuild .rv-decision-plan input[type=checkbox]{border-radius:var(--rv-radius-sm)}
+.rv-task-rebuild .rv-decision-plan input[type=radio]::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--rv-bg);transform:scale(0)}
+.rv-task-rebuild .rv-decision-plan input[type=checkbox]::before{content:"";width:10px;height:6px;border-left:2px solid var(--rv-bg);border-bottom:2px solid var(--rv-bg);transform:rotate(-45deg) scale(0);margin-top:-2px}
+.rv-task-rebuild .rv-decision-plan input[type=radio]:checked::before{transform:scale(1)}
+.rv-task-rebuild .rv-decision-plan input[type=checkbox]:checked::before{transform:rotate(-45deg) scale(1)}
+.rv-task-rebuild .rv-decision-plan input:checked{background:var(--rv-text);border-color:var(--rv-text)}
+.rv-task-rebuild .rv-decision-plan input:focus-visible{outline:2px solid var(--rv-focus);outline-offset:2px}
+.rv-task-rebuild .rv-decision-plan input:disabled{opacity:.5}
+.rv-task-rebuild .rv-decision-plan .rv-plan-question .rv-muted,.rv-task-rebuild .rv-decision-plan fieldset>p{margin:0}
+.rv-task-rebuild .rv-plan-limit{display:grid;gap:var(--rv-space-2)}
+.rv-task-rebuild .rv-plan-limit p{margin:0}
+.rv-task-rebuild .rv-plan-note{display:grid;gap:var(--rv-space-2)}
+.rv-task-rebuild .rv-plan-note label{font-weight:600}
+.rv-task-rebuild .rv-decision-scene-plan .rv-decision-actions{align-items:center;gap:var(--rv-space-2) var(--rv-space-4)}
+.rv-task-rebuild .rv-decision-scene-plan .rv-decision-open,.rv-task-rebuild .rv-decision-scene-plan .rv-decision-changes>summary{display:inline-flex;align-items:center;min-height:var(--rv-control-size);line-height:1.2;padding:0}
+.rv-task-rebuild .rv-decision-scene-plan .rv-decision-changes{display:inline-flex;align-items:center;flex-wrap:wrap}
+@media(max-width:639px){
+ .rv-task-rebuild .rv-ds-evidence li{flex-direction:column;align-items:flex-start}
+ .rv-task-rebuild .rv-ds-evidence li>span:last-child{margin-left:0;width:100%}
+ .rv-task-rebuild .rv-ds-plan-step{align-items:center}
+ .rv-task-rebuild .rv-ds-plan-frame .rv-decision-actions-above{position:sticky;bottom:0;background:var(--rv-bg-raised);padding-block:var(--rv-space-3);border-top:1px solid var(--rv-border);margin-inline:calc(var(--rv-space-4) * -1);padding-inline:var(--rv-space-4);z-index:1}
+}
+.rv-task-rebuild .rv-ds-plan-frame .rv-merge-when-ready{order:12}
+@media(max-width:639px){
+ .rv-task-rebuild .rv-decision-scene-plan .rv-decision-actions>.rv-button-primary{flex:1 1 100%}
+ .rv-task-rebuild .rv-decision-scene-plan .rv-decision-actions{justify-content:space-between}
+}
+
+/* Rework B: merge. One panel holds what would be merged and the locked Merge; each blocker has its own action. */
+.rv-task-rebuild .rv-merge-panel{background:var(--rv-bg-sunken);border-radius:var(--rv-radius-md);padding:var(--rv-space-4) var(--rv-space-5) var(--rv-space-5);display:grid;gap:var(--rv-space-3)}
+.rv-task-rebuild .rv-merge-panel .rv-merge-would{margin:0}
+.rv-task-rebuild .rv-merge-panel .rv-merge-prs{background:none;padding:0;margin:0}
+.rv-task-rebuild .rv-merge-panel .rv-merge-actions{margin:0;padding-top:var(--rv-space-2)}
+.rv-task-rebuild .rv-merge-panel .rv-merge-authorize p{margin:0 0 var(--rv-space-2)}
+.rv-task-rebuild .rv-merge-footnote{margin:0;display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2);color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-merge-held{display:flex;align-items:center;gap:var(--rv-space-2);color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-merge-recheck{margin:0;display:flex;justify-content:flex-end}
+.rv-task-rebuild .rv-merge-recheck .rv-button{min-height:0;padding:0;text-decoration:underline;text-underline-offset:var(--rv-space-1)}
+.rv-task-rebuild .rv-merge-top{display:flex}
+.rv-task-rebuild .rv-merge-gap>.rv-button,.rv-task-rebuild .rv-merge-gap>a.rv-button{flex-shrink:0;align-self:flex-start;white-space:nowrap}
+.rv-task-rebuild .rv-merge-head{margin-bottom:0}
+.rv-task-rebuild .rv-merge-frame>.rv-decision-frame-body{gap:var(--rv-space-4)}
+@media(max-width:639px){
+ .rv-task-rebuild .rv-merge-gap>a.rv-button{width:100%;align-self:stretch;justify-content:center}
+ .rv-task-rebuild .rv-merge-panel .rv-merge-actions{position:sticky;bottom:0;z-index:1;background:var(--rv-bg-sunken);padding-block:var(--rv-space-3);margin-inline:calc(var(--rv-space-4) * -1);padding-inline:var(--rv-space-4);border-top:1px solid var(--rv-border);display:grid}
+ .rv-task-rebuild .rv-merge-panel .rv-merge-actions>.rv-button{width:100%}
+}
+.rv-dialog-heading>button,.rv-dialog-heading>button *{text-decoration:none}
+@media(max-width:639px){
+ .rv-task-rebuild .rv-session-people,.rv-task-rebuild .rv-task-controls,.rv-task-rebuild .rv-session-controls{margin-inline:0;padding-inline:0;gap:0;align-items:flex-start;width:100%}
+ .rv-task-rebuild .rv-session-controls .rv-controls-overflow,.rv-task-rebuild .rv-session-controls .rv-controls-inline{margin:0;padding:0}
+ .rv-task-rebuild .rv-session-controls .rv-controls-inline:empty{display:none}
+}
+
+@media(max-width:639px){.rv-task-rebuild .rv-session-people .rv-avatars{display:none}}
+
+/* Rework B: the error block is the neutral 4f card, not a red band. */
+.rv-task-error-block{border-color:var(--rv-border-strong)!important;margin:0;max-width:var(--rv-reading-width)}
+.rv-task-error-block .rv-outcome-body{gap:var(--rv-space-3);padding:var(--rv-space-5)}
+.rv-task-error-block h1,.rv-task-error-block h2{margin:0;font:600 var(--rv-font-xl)/1.3 var(--rv-font-ui)}
+.rv-task-error-block .rv-outcome-reference code{font-family:var(--rv-font-mono,ui-monospace,"SF Mono",Menlo,Consolas,monospace)}
+
+/* Rework B: an approval that was not confirmed leads the card; the comment-only note sits above the conversation. */
+.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>[data-testid=decision-error]{order:-2;margin:0;padding:var(--rv-space-3) var(--rv-space-4);border:1px solid var(--rv-border-strong);border-inline-start:4px solid var(--rv-status-needs-you);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>[data-testid=decision-error]::before{content:"Approval not confirmed yet" / "";display:block;font-weight:600;margin-bottom:var(--rv-space-1)}
+.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>.rv-button-secondary,.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>button.rv-button{order:-1;justify-self:start}
+.rv-task-rebuild-conversation .rv-talk-note{margin:var(--rv-space-3) 0 0;padding:var(--rv-space-3) var(--rv-space-4);border-radius:var(--rv-radius-md);background:var(--rv-bg-sunken);color:var(--rv-text-muted)}
+.rv-task-rebuild>p.rv-plan-handoff-note{border:0;border-inline-start:0;border-radius:0;padding:0;background:none;display:flex;justify-items:normal}
+.rv-task-rebuild .rv-task-progress-held{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2)}
+
+/* Rework B round 2 (review VISION-REWORK-B1.md). */
+.rv-task-rebuild-conversation .rv-composer-modes .rv-button[aria-pressed=true],.rv-task-rebuild-conversation .rv-composer-modes .rv-button-with-reason .rv-button[aria-pressed=true]{background:var(--rv-text)!important;color:var(--rv-bg)!important;font-weight:600}
+.rv-task-rebuild-conversation .rv-composer textarea{resize:none}
+.rv-task-rebuild-conversation .rv-receipt-ladder li{align-items:flex-start}
+.rv-task-rebuild-conversation .rv-receipt-dot{align-self:flex-start;margin-top:.42em}
+.rv-task-rebuild-conversation .rv-dialog-heading>button,.rv-dialog-heading>button{width:44px;height:44px;font-size:24px;line-height:1;text-decoration:none;display:inline-grid;place-items:center}
+h1:focus-visible,h2:focus-visible,.rv-dialog-heading h2:focus-visible,.rv-task-error-block h1:focus-visible{outline:none}
+.rv-task-rebuild-conversation .rv-talk-unconfirmed-card.rv-answered{border:0;padding:0;background:none;box-shadow:none}
+.rv-task-rebuild-conversation .rv-talk-held{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2);color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>[data-testid=decision-error]::before{content:none}
+.rv-task-rebuild .rv-plan-read,.rv-task-rebuild .rv-task-held{white-space:nowrap}
+.rv-task-rebuild .rv-merge-prs,.rv-task-rebuild .rv-merge-prs>li,.rv-task-rebuild .rv-merge-pr{padding:0;margin:0}
+.rv-task-rebuild .rv-merge-panel .rv-merge-pr-head{margin:0 0 var(--rv-space-3);padding:0}
+.rv-task-rebuild .rv-merge-panel .rv-merge-facts{margin:0;padding:0}
+.rv-task-rebuild .rv-merge-panel{gap:var(--rv-space-3)}
+@media(max-width:639px){
+ .rv-task-rebuild>.rv-session-header.rv-page-header{position:relative}
+ .rv-task-rebuild>.rv-session-header .rv-session-heading h1{padding-inline-end:56px}
+ .rv-task-rebuild>.rv-session-header>.rv-session-people{position:absolute;top:0;right:0;width:auto;z-index:1}
+ .rv-task-rebuild .rv-session-people .rv-session-controls,.rv-task-rebuild .rv-session-people .rv-task-controls{width:auto}
+ .rv-task-rebuild .rv-controls-overflow button{font-size:0;width:44px;min-width:44px;padding:0;display:inline-grid;place-items:center}
+ .rv-task-rebuild .rv-controls-overflow button::before{font-size:var(--rv-font-lg);margin:0;content:"\00b7\00b7\00b7" / "Task actions"}
+ .rv-task-rebuild .rv-ds-plan-frame .rv-decision-actions-above,.rv-task-rebuild .rv-merge-panel .rv-merge-actions{margin-inline:calc(50% - 50vw);padding-inline:var(--rv-space-4);width:100vw;box-sizing:border-box}
+ .rv-task-rebuild .rv-decision-scene-plan .rv-decision-actions{display:grid;grid-template-columns:1fr 1fr;gap:var(--rv-space-2)}
+ .rv-task-rebuild .rv-decision-scene-plan .rv-decision-actions>.rv-button-primary,.rv-task-rebuild .rv-decision-scene-plan .rv-decision-actions>.rv-button-with-reason{grid-column:1/-1;width:100%}
+ .rv-task-rebuild .rv-decision-scene-plan .rv-decision-open,.rv-task-rebuild .rv-decision-scene-plan .rv-decision-changes>summary{justify-content:center;width:100%;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-md);text-decoration:none;font-weight:600;box-sizing:border-box}
+ .rv-task-rebuild .rv-decision-scene-plan .rv-decision-changes{display:block}
+}
+/* The design system's mono (JetBrains Mono, bundled) for shas, commands, logs and reference codes on this page. */
+:is(.rv-task-rebuild,.rv-task-error-block,[role=dialog]) :is(code,pre,kbd,samp,.rv-live,.rv-merge-sha){font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.92em}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400;font-display:block;src:url("../../design/fonts/jetbrains-mono-latin-400.woff2") format("woff2")}
+@font-face{font-family:Inter;font-style:normal;font-weight:400;font-display:block;src:url("../../design/fonts/inter-latin-400.woff2") format("woff2")}
+@font-face{font-family:Inter;font-style:normal;font-weight:600;font-display:block;src:url("../../design/fonts/inter-latin-600.woff2") format("woff2")}
+
+/* Rework C: after a send the composer is one line with an arrow, as in mocks 1f-1h. */
+.rv-task-rebuild-conversation .rv-composer-collapsed form{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:0 var(--rv-space-3)}
+.rv-task-rebuild-conversation .rv-composer-collapsed .rv-composer-help{grid-column:1 / -1}
+.rv-task-rebuild-conversation .rv-composer-collapsed .rv-composer-settle{margin:var(--rv-space-3) 0 var(--rv-space-2);color:var(--rv-text-muted)}
+.rv-task-rebuild-conversation .rv-composer-collapsed label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.rv-task-rebuild-conversation .rv-composer-collapsed textarea{min-height:var(--rv-control-size);height:var(--rv-control-size);padding-block:var(--rv-space-3);overflow:hidden}
+.rv-task-rebuild-conversation .rv-composer-collapsed .rv-composer-footer{margin:0}
+.rv-task-rebuild-conversation .rv-composer-collapsed .rv-composer-footer .rv-button{flex:none;width:var(--rv-control-size);min-width:var(--rv-control-size);padding:0}
+.rv-task-rebuild-conversation .rv-composer-collapsed .rv-composer-modes{margin-bottom:var(--rv-space-3)}
+/* Rework C: the question form sits below the question card, not over it. */
+.rv-task-rebuild-conversation #task-talk:has(fieldset[aria-label="Task question"]){position:static}
+.rv-task-rebuild-conversation .rv-ask[open]>summary{display:none}
+.rv-task-rebuild-conversation .rv-composer-modes .rv-button[aria-pressed=true]:disabled{opacity:1}
+/* Rework C (1a): "Steer this task" duplicated Talk. Sending an instruction is the Talk row's job; the inline row stays out of the page unless it has to explain why steering is unavailable. */
+.rv-task-rebuild .rv-task-steer:not([open]){display:none}
+/* Rework C (3h): one merged pull request is a plain receipt in the card, not a grey panel with its own heading and chip. */
+.rv-task-rebuild .rv-merge-panel-receipt{background:none;padding:0}
+.rv-task-rebuild .rv-merge-pr-receipt>.rv-merge-pr-head{display:none}
+.rv-task-rebuild .rv-merge-panel-receipt .rv-merge-prs,.rv-task-reading .rv-merge-panel-receipt .rv-merge-prs{background:none;padding:0}
+.rv-task-rebuild .rv-merge-pr-receipt .rv-merge-facts>div{align-items:baseline}
+/* Rework C (1c/1j): the handoff note is the card's subtitle, not a line floating above it. */
+.rv-task-rebuild .rv-plan-note-slot:empty{display:none}
+.rv-task-rebuild .rv-ds-plan-frame>.rv-decision-frame-body>.rv-plan-note-slot{order:0}
+.rv-task-rebuild .rv-plan-note-slot .rv-plan-handoff-note{margin:0 0 var(--rv-space-3)}
+/* Rework C: the plan's facts (Files, Planned proof, Next) are plain label/value lines under step 1, not a box inside the card. */
+.rv-task-rebuild .rv-ds-plan-frame .rv-decision-facts{border:0;border-radius:0;overflow:visible}
+.rv-task-rebuild .rv-ds-plan-frame .rv-decision-facts li{min-height:0;padding:var(--rv-space-1) 0;border:0;flex-wrap:nowrap;align-items:baseline;gap:var(--rv-space-5)}
+.rv-task-rebuild .rv-ds-plan-frame .rv-decision-facts li>span:first-child{flex:0 0 7.5em;color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-ds-plan-frame .rv-decision-facts li>span:last-child{margin-left:0;width:auto;flex:1 1 auto;text-align:left;color:var(--rv-text)}
+@media(max-width:639px){.rv-task-rebuild .rv-ds-plan-frame .rv-decision-facts li{flex-wrap:wrap;gap:0}.rv-task-rebuild .rv-ds-plan-frame .rv-decision-facts li>span:first-child{flex-basis:100%}}
+@media(max-width:639px){
+ .rv-task-rebuild .rv-decision-scene-plan .rv-decision-actions .rv-button-with-reason>.rv-button{width:100%}
+ .rv-task-rebuild .rv-ds-plan-step>.rv-plan-read,.rv-task-rebuild .rv-ds-plan-step>.rv-plan-risk+.rv-plan-read{margin-left:calc(var(--rv-space-5) + var(--rv-space-3));flex-basis:100%}
+}
+.rv-task-rebuild-conversation .rv-message-top>[data-testid=talk-comment-provenance]{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 var(--rv-space-2)}
+/* Rework C: on a phone the sheet header is title over subtitle, close together, so the message cards get the height (1i, 1l at 320). */
+@media(max-width:639px){
+ .rv-task-rebuild-conversation>.rv-dialog-heading{padding-block:var(--rv-space-4) 0;margin-bottom:0;border-bottom:0}
+ .rv-task-rebuild-conversation>[id]:not(#task-talk){margin-top:0;margin-bottom:var(--rv-space-3);padding-block:var(--rv-space-1) var(--rv-space-3);top:48px}
+ .rv-task-rebuild-conversation .rv-conversation{margin:var(--rv-space-3) 0}
+ .rv-task-rebuild-conversation .rv-task-held{margin-block:0}
+}
+
+/* Rework C round 2 */
+/* Card titles sit close to their first line, as in the mocks. */
+.rv-task-rebuild .rv-decision-frame>.rv-decision-frame-header{margin-bottom:var(--rv-space-1);padding-bottom:0}
+.rv-task-reading .rv-decision-frame-header{padding:0}
+.rv-task-rebuild .rv-task-subline,.rv-task-rebuild .rv-merge-head{margin-top:0}
+.rv-task-rebuild .rv-task-subline{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--rv-space-1) var(--rv-space-3);font-size:var(--rv-font-md);color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-task-subline *{font-size:inherit}
+/* One body size for disclosure rows and label/value rows (12px stays for meta only). */
+.rv-task-section>summary,.rv-task-section-summary{font-size:var(--rv-font-md)}
+.rv-task-rebuild .rv-decision-facts .rv-ds-meta,.rv-task-rebuild .rv-decision-facts li,.rv-task-rebuild .rv-merge-facts dt,.rv-task-rebuild .rv-merge-facts dd,.rv-task-rebuild .rv-merge-facts div{font-size:var(--rv-font-md)}
+/* The Talk composer's arrow sits on the input's centre line. */
+.rv-task-rebuild-conversation .rv-composer-collapsed form{align-items:center}
+.rv-task-rebuild-conversation .rv-composer-collapsed .rv-field{margin:0}
+.rv-task-rebuild-conversation .rv-composer-collapsed .rv-composer-footer .rv-button{height:var(--rv-control-size);align-self:center}
+.rv-task-rebuild-conversation>.rv-dialog-heading>button{font-size:var(--rv-font-xl);min-width:var(--rv-control-size);min-height:var(--rv-control-size)}
+.rv-task-rebuild-conversation .rv-composer-help strong{color:var(--rv-text);font-weight:600}
+/* 1b: with the panel open the rail steps aside and the panel starts below the shell. */
+.rv-task-rebuild[data-talk-open] .rv-task-context{display:none}
+.rv-task-rebuild[data-talk-open] .rv-task-columns{grid-template-columns:minmax(0,1fr);row-gap:0}
+@media(min-width:640px){.rv-task-rebuild-conversation.rv-conversation-tray{top:calc(var(--rv-space-7) + var(--rv-space-4))}}
+/* 3f: room between the action and the box under it. */
+.rv-task-rebuild .rv-merge-top{margin-bottom:var(--rv-space-4)}
+.rv-task-rebuild .rv-merge-head .rv-merge-lede{max-width:none}
+@media(max-width:639px){
+ /* Phone decisions sit on the page, not in a card in a card. */
+ .rv-task-reading .rv-decision-frame.rv-ds-plan-frame,.rv-task-reading .rv-decision-frame.rv-merge-frame{border:0;background:transparent;padding:0}
+ /* The locked/ready Merge bar is pinned to the screen bottom at every phone width. */
+ .rv-task-rebuild .rv-merge-panel .rv-merge-actions{position:fixed;left:0;right:0;bottom:0;margin:0;width:auto;box-sizing:border-box;padding:var(--rv-space-3) var(--rv-space-4);background:var(--rv-bg-raised);z-index:5;display:grid;gap:var(--rv-space-2)}
+ .rv-task-rebuild .rv-merge-panel .rv-merge-actions .rv-merge-lock-reason{min-width:0;margin:0}
+ .rv-task-rebuild:has(.rv-merge-panel .rv-merge-actions){padding-bottom:calc(var(--rv-space-7) * 3)}
+ .rv-task-rebuild-conversation .rv-banner,.rv-task-rebuild-conversation .rv-talk-note{margin-bottom:var(--rv-space-4)}
+}
+.rv-task-rebuild-conversation .rv-conversation:not(:has(li)){flex:0 0 auto;margin:0}
+
+/* ---- Round D: plan-change frame (1c page card + rail, 1j Talk-sheet card) ---- */
+.rv-task-rebuild .rv-plan-change{padding:var(--rv-space-6);gap:var(--rv-space-4)}
+.rv-task-rebuild .rv-plan-change>.rv-decision-frame-header .rv-decision-frame-title{font-size:var(--rv-font-xl);line-height:1.25}
+.rv-task-rebuild .rv-plan-change>.rv-decision-frame-body{display:flex;flex-direction:column;gap:var(--rv-space-4)}
+.rv-task-rebuild .rv-plan-change>.rv-decision-frame-body>*{order:0;margin:0}
+.rv-task-rebuild .rv-plan-change .rv-plan-note-slot .rv-plan-handoff-note{margin:0}
+.rv-task-rebuild .rv-plan-change-callout{display:flex;align-items:flex-start;gap:var(--rv-space-3);padding:var(--rv-space-4);border-radius:var(--rv-radius-md);background:var(--rv-bg-sunken)}
+.rv-task-rebuild .rv-plan-change-callout p{margin:0}
+.rv-task-rebuild .rv-plan-change-callout .rv-ds-mark{flex:none;width:18px;height:18px;margin-top:2px;color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-plan-change-table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);overflow:hidden;table-layout:fixed}
+.rv-task-rebuild .rv-plan-change-table th,.rv-task-rebuild .rv-plan-change-table td{padding:var(--rv-space-3) var(--rv-space-4);text-align:left;vertical-align:top;border-top:1px solid var(--rv-border);font-weight:400;overflow-wrap:anywhere}
+.rv-task-rebuild .rv-plan-change-table thead th{background:var(--rv-bg-sunken);border-top:0;font-weight:600;font-size:var(--rv-font-sm)}
+.rv-task-rebuild .rv-plan-change-table thead th:first-child,.rv-task-rebuild .rv-plan-change-table tbody th{width:7.5em;white-space:nowrap}
+.rv-task-rebuild .rv-plan-change-table tbody th{font-weight:600}
+.rv-task-rebuild .rv-plan-change-table .rv-plan-change-held{vertical-align:middle;border-inline-start:0}
+.rv-task-rebuild .rv-plan-change .rv-decision-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3) var(--rv-space-4)}
+.rv-task-rebuild .rv-plan-change-keep{display:inline-flex;align-items:center;gap:var(--rv-space-2)}
+.rv-task-rebuild .rv-plan-change-foot{color:var(--rv-text-muted);font-size:var(--rv-font-sm);margin:0}
+.rv-task-rebuild .rv-plan-change-rail h2{font-size:var(--rv-font-xl);margin:0 0 var(--rv-space-4)}
+.rv-task-rebuild .rv-plan-change-rail h3{font-size:var(--rv-font-md);margin:var(--rv-space-4) 0 var(--rv-space-1)}
+.rv-task-rebuild .rv-plan-change-rail p{margin:0;color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-plan-change-rail .rv-plan-change-history{margin-top:var(--rv-space-6);padding-top:var(--rv-space-5);border-top:1px solid var(--rv-border);font-size:var(--rv-font-lg)}
+.rv-task-rebuild-conversation .rv-plan-change-sheet{display:grid;gap:var(--rv-space-4);margin-top:var(--rv-space-4)}
+.rv-task-rebuild-conversation .rv-plan-change-sheet-card{border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-lg);padding:var(--rv-space-4);background:var(--rv-bg-raised)}
+.rv-task-rebuild-conversation .rv-plan-change-sheet-card header{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3);margin-bottom:var(--rv-space-3)}
+.rv-task-rebuild-conversation .rv-plan-change-sheet-card h3{margin:0;font-size:var(--rv-font-lg)}
+.rv-task-rebuild-conversation .rv-plan-change-sheet-card dl{display:grid;gap:var(--rv-space-3);margin:0}
+.rv-task-rebuild-conversation .rv-plan-change-sheet-card dl>div{display:grid;grid-template-columns:5.5em minmax(0,1fr);gap:var(--rv-space-3);align-items:baseline}
+.rv-task-rebuild-conversation .rv-plan-change-sheet-card dt{color:var(--rv-text-muted)}
+.rv-task-rebuild-conversation .rv-plan-change-sheet-card dd{margin:0;overflow-wrap:anywhere}
+.rv-task-rebuild-conversation .rv-plan-change-bar{position:sticky;bottom:0;z-index:2;display:grid;gap:var(--rv-space-2);justify-items:center;padding:var(--rv-space-3) 0;background:var(--rv-bg-raised);border-top:1px solid var(--rv-border)}
+.rv-task-rebuild-conversation .rv-plan-change-bar .rv-button{width:100%;min-height:calc(var(--rv-control-size) * 1.1)}
+.rv-task-rebuild-conversation .rv-plan-change-bar p{margin:0;color:var(--rv-text-muted);font-size:var(--rv-font-sm);text-align:center}
+
+/* ---- Round D: Talk sheet header, dock, type scale, receipts ---- */
+.rv-task-rebuild-conversation.rv-conversation-tray{--talk-pad:var(--rv-space-5)}
+@media(max-width:639px){.rv-task-rebuild-conversation.rv-conversation-tray{--talk-pad:var(--rv-space-4)}}
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-dialog-heading{position:sticky;top:0;z-index:20;display:block;box-sizing:border-box;min-height:0;height:auto;margin:0 calc(var(--talk-pad) * -1);padding:var(--rv-space-3) var(--talk-pad) 0 calc(var(--talk-pad) + 40px);border:0;background:var(--rv-bg-raised)}
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-dialog-heading h2{margin:0;padding-inline-end:44px;font-size:var(--rv-font-xl);line-height:28px}
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-dialog-heading>.rv-button-with-reason{position:absolute;top:var(--rv-space-1);inset-inline-end:calc(var(--talk-pad) - 10px);display:block;width:44px;height:44px}
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-dialog-heading>.rv-button-with-reason>button{width:44px;height:44px;min-width:44px;min-height:44px;padding:0;font-size:0;line-height:0;text-decoration:none;display:inline-grid;place-items:center;color:var(--rv-text)}
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-dialog-heading>.rv-button-with-reason>button::before{content:"";width:22px;height:22px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6L6 18'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6L6 18'/%3E%3C/svg%3E") center/contain no-repeat}
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-dialog-heading+p[id]:not(#talk-x){position:sticky;top:40px;z-index:20;box-sizing:border-box;height:32px;margin:0 calc(var(--talk-pad) * -1);padding:0 var(--talk-pad) var(--rv-space-3) calc(var(--talk-pad) + 40px);background:var(--rv-bg-raised);box-shadow:0 1px 0 var(--rv-border);color:var(--rv-text-muted);font-size:var(--rv-font-md);line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rv-task-rebuild-conversation .rv-talk-back{position:sticky;top:0;z-index:21;height:0;margin:-72px calc(var(--talk-pad) * -1) 72px;padding:0}
+.rv-task-rebuild-conversation .rv-talk-back>button{position:absolute;top:var(--rv-space-1);inset-inline-start:calc(var(--talk-pad) - 10px);width:44px;height:44px;min-width:44px;min-height:44px;padding:0;display:inline-grid;place-items:center;border:0;background:none;color:var(--rv-text);text-decoration:none}
+.rv-task-rebuild-conversation .rv-task-held{margin-block:var(--rv-space-3) var(--rv-space-3)}
+.rv-task-rebuild-conversation .rv-conversation{margin-top:var(--rv-space-3)}
+.rv-task-rebuild-conversation .rv-talk-held-channel{margin:0;display:flex;align-items:center;gap:var(--rv-space-2);color:var(--rv-text-muted);font-size:var(--rv-font-md)}
+.rv-task-rebuild-conversation .rv-receipt-note{margin:0;color:var(--rv-text-muted);font-size:var(--rv-font-md)}
+.rv-task-rebuild-conversation .rv-receipt-ladder li strong,.rv-task-rebuild-conversation .rv-receipt-ladder time{white-space:nowrap}
+.rv-task-rebuild-conversation .rv-receipt-detail{display:inline-block;margin-inline-start:.25em}
+.rv-task-rebuild-conversation .rv-talk-lead{margin:0;font-size:var(--rv-font-lg)}
+.rv-task-rebuild-conversation .rv-composer-saved{margin:var(--rv-space-2) 0 0;color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed) .rv-composer-footer{flex-wrap:wrap;gap:var(--rv-space-2)}
+.rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed) .rv-composer-footer>.rv-muted{order:-1;flex:1 0 100%;text-align:end;font-size:var(--rv-font-sm)}
+.rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed) .rv-composer-footer>.rv-button-with-reason{flex:1 0 100%;display:flex}
+.rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed) .rv-composer-footer .rv-button{flex:1 0 100%;width:100%}
+.rv-task-rebuild-conversation .rv-composer .rv-button-primary:disabled,.rv-task-rebuild-conversation .rv-composer .rv-button-primary[aria-disabled=true]{background:color-mix(in srgb,var(--rv-text) 14%,var(--rv-bg-raised));color:var(--rv-text-muted);border-color:transparent;opacity:1}
+.rv-task-rebuild-conversation .rv-plan-change-bar{position:static;border-top:0;padding:var(--rv-space-3) 0 var(--rv-space-1)}
+.rv-task-rebuild-conversation .rv-plan-change-bar+.rv-composer{border-top:0;padding-top:var(--rv-space-2)}
+.rv-task-rebuild-conversation .rv-talk-ref-footer{display:flex;align-items:center;gap:var(--rv-space-2);padding:var(--rv-space-4) 0 var(--rv-space-5);border-top:1px solid var(--rv-border);color:var(--rv-text-muted);font-size:var(--rv-font-md)}
+.rv-task-rebuild-conversation .rv-talk-ref-footer code{font-family:var(--rv-font-mono)}
+.rv-task-rebuild-conversation .rv-talk-ref-footer .rv-button{min-height:0;padding:0;text-decoration:underline;text-underline-offset:var(--rv-space-1)}
+@media(max-width:639px){
+ .rv-task-rebuild-conversation .rv-composer-modes .rv-button{font-size:15px;line-height:1.2;min-height:48px}
+ .rv-task-rebuild-conversation .rv-composer-help{font-size:15px;line-height:1.4;margin:var(--rv-space-3) 0}
+ .rv-task-rebuild-conversation .rv-composer label{font-size:var(--rv-font-md)}
+ .rv-task-rebuild-conversation .rv-composer textarea{font-size:16px}
+ .rv-task-rebuild-conversation .rv-message-text{font-size:16px}
+ .rv-task-rebuild-conversation .rv-message-top>.rv-message-meta,.rv-task-rebuild-conversation .rv-message-top>[data-testid=talk-comment-provenance]{font-size:15px}
+ .rv-task-rebuild-conversation .rv-talk-note,.rv-task-rebuild-conversation .rv-banner{font-size:15px}
+ .rv-task-rebuild-conversation .rv-composer-modes{margin-bottom:var(--rv-space-2)}
+ .rv-task-rebuild .rv-task-stop-row{position:sticky;bottom:0;z-index:3;margin-inline:calc(var(--rv-space-4) * -1);padding:var(--rv-space-3) var(--rv-space-4) var(--rv-space-3);background:var(--rv-bg-raised);border-top:1px solid var(--rv-border);flex-direction:column;align-items:stretch}
+ .rv-task-rebuild .rv-task-stop-row .rv-button{width:100%}
+}
+@media(min-width:640px) and (max-width:1279px){.rv-task-rebuild[data-talk-open]::after{content:"";position:fixed;inset:0;z-index:90;background:var(--rv-text);opacity:.32;pointer-events:none}}
+@media(min-width:1024px){.rv-task-rebuild:not([data-talk-open])>.rv-session-header.rv-page-header{max-width:var(--rv-reading-width)}}
+
+/* ---- Round D: merged receipt, spec heading ---- */
+.rv-task-rebuild .rv-merge-pr-receipt,.rv-task-rebuild .rv-merge-pr-receipt[data-state=merged]{background:none;padding:var(--rv-space-3) 0}
+.rv-task-rebuild .rv-merge-panel-receipt .rv-merge-prs{border:0;border-radius:0}
+.rv-task-rebuild .rv-merge-pr-receipt .rv-merge-facts{gap:var(--rv-space-1)}
+.rv-task-rebuild .rv-merge-receipt-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3);margin-top:var(--rv-space-4)}
+.rv-task-rebuild .rv-task-primary .rv-spec>.rv-section-head{display:flex;flex-wrap:wrap;justify-content:flex-start;gap:var(--rv-space-2);color:var(--rv-text-muted);font-size:var(--rv-font-md)}
+.rv-task-rebuild .rv-task-primary .rv-spec>.rv-section-head>h3{display:none}
+.rv-task-rebuild .rv-task-primary .rv-spec>.rv-section-head>span{margin:0}
+
+/* Header pieces never shrink inside the tray's column when the content is taller than the screen. */
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-dialog-heading,.rv-task-rebuild-conversation.rv-conversation-tray>.rv-dialog-heading+p[id]:not(#talk-x),.rv-task-rebuild-conversation .rv-talk-back{flex:none}
+.rv-task-rebuild-conversation.rv-conversation-tray>*{flex-shrink:0}
+.rv-task-rebuild-conversation.rv-conversation-tray>#task-talk{margin-top:auto}
+@media(max-width:360px){
+ .rv-task-rebuild-conversation .rv-message-kind-chip{font-size:0;gap:0;padding:var(--rv-space-1) var(--rv-space-2)}
+ .rv-task-rebuild-conversation .rv-message-kind-chip svg{width:16px;height:16px}
+ .rv-task-rebuild-conversation .rv-message-top>[data-testid=talk-comment-provenance]>span{white-space:nowrap}
+}
+
+/* ---- Round D1 ---- */
+.rv-task-rebuild .rv-plan-change-earlier{display:flex;align-items:center;gap:var(--rv-space-3);margin:0;color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-plan-change-table thead th:first-child,.rv-task-rebuild .rv-plan-change-table tbody th{width:7.5em}
+.rv-task-rebuild-conversation .rv-receipt-detail{display:inline}
+.rv-task-rebuild .rv-task-content-guard .rv-task-section:last-of-type{border-bottom:0}
+.rv-task-rebuild .rv-task-more{margin-top:0;padding-top:0}
+.rv-task-rebuild .rv-merge-panel .rv-merge-authorize{background:none;padding:0;border-radius:0}
+.rv-task-rebuild .rv-merge-muted{font-size:var(--rv-font-md)}
+.rv-task-rebuild .rv-merge-actions .rv-button:disabled,.rv-task-rebuild .rv-merge-actions .rv-button[data-locked=true]{background:color-mix(in srgb,var(--rv-text) 14%,var(--rv-bg-raised));color:var(--rv-text-muted);border-color:transparent;opacity:1}
+/* Phone type scale: body about 15px, helper 13px (the mocks read about 16 and 14). */
+@media(max-width:639px){
+ .rv-task-rebuild,.rv-task-rebuild-conversation{--rv-font-sm:13px;--rv-font-md:15px;--rv-font-lg:17px}
+}
+.rv-task-rebuild-conversation .rv-receipt-detail{display:block;color:var(--rv-text-muted);font-size:var(--rv-font-sm);font-weight:400}
+.rv-task-rebuild-conversation .rv-ask-recovery .rv-message-card[data-tone=bad]{border-color:var(--rv-status-failed)}
+.rv-task-rebuild .rv-task-reading,.rv-task-rebuild .rv-task-columns>*,.rv-task-rebuild .rv-task-current,.rv-task-rebuild .rv-task-session-slot,.rv-task-rebuild .rv-task-checklist li>span{min-width:0}
+.rv-task-rebuild .rv-task-checklist li>span{overflow-wrap:anywhere}
+.rv-task-rebuild .rv-task-session-entry.rv-button{box-sizing:border-box;max-width:100%;white-space:normal}
+.rv-task-rebuild .rv-task-held{flex-wrap:wrap;white-space:normal;max-width:100%}
+@media(max-width:639px){.rv-task-rebuild,.rv-task-rebuild-conversation{--rv-font-lg:16px}}
+
+/* ---- Round D2 ---- */
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder{list-style:none;margin:0;padding:var(--rv-space-3) var(--rv-space-4);background:var(--rv-bg-sunken);border-radius:var(--rv-radius-md);display:grid;gap:var(--rv-space-2);font-size:var(--rv-font-md)}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder li{display:flex;align-items:baseline;gap:var(--rv-space-3);min-width:0}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder li>span:last-child{min-width:0;overflow-wrap:anywhere}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-dot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--rv-status-done);align-self:center}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder li[data-tone=bad] .rv-receipt-dot{background:var(--rv-status-failed)}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder li[data-tone=running] .rv-receipt-dot{background:var(--rv-status-running)}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder li[data-tone=pending] .rv-receipt-dot{background:transparent;border:2px solid var(--rv-text-muted)}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder li[data-tone=pending],.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder li[data-tone=pending] strong{color:var(--rv-text-muted);font-weight:400}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-detail{color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder time{color:var(--rv-text-muted)}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder li{align-items:flex-start}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-dot{align-self:flex-start;margin-top:.42em}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder li strong,.rv-task-rebuild .rv-approval-receipt .rv-receipt-ladder time{white-space:nowrap}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-detail{display:inline-block;margin-inline-start:.25em}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-detail{display:inline}
+.rv-task-rebuild .rv-approval-receipt .rv-receipt-detail{display:block;color:var(--rv-text-muted);font-size:var(--rv-font-sm);font-weight:400}
+.rv-task-rebuild .rv-approval-receipt-lead{margin:0;padding:var(--rv-space-3) var(--rv-space-4);border:0;border-radius:var(--rv-radius-md);background:var(--rv-bg-sunken);color:var(--rv-text)}
+.rv-task-rebuild .rv-approval-receipt>.rv-decision-frame-body{display:flex;flex-direction:column;gap:var(--rv-space-4)}
+.rv-task-rebuild .rv-approval-receipt>.rv-decision-frame-body>*:not(.rv-decision-actions-above){order:0;margin:0}
+.rv-task-rebuild .rv-approval-receipt>.rv-decision-frame-body>.rv-decision-actions-above{order:8}
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-talk-dock-plain{display:contents}
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-talk-dock-plain>#task-talk{margin-top:auto}
+/* The Review plan bar and the collapsed composer are one sticky dock: the composer is whole, never cut off under the bar. */
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-talk-dock:not(.rv-talk-dock-plain){position:sticky;bottom:0;z-index:3;margin:auto calc(var(--talk-pad) * -1) 0;padding:0 var(--talk-pad);background:var(--rv-bg-raised);border-top:1px solid var(--rv-border)}
+.rv-task-rebuild-conversation .rv-talk-dock .rv-plan-change-bar-wrap+#task-talk{margin-top:0;position:static;border-top:0}
+.rv-task-rebuild-conversation:has(.rv-talk-note) .rv-composer-help-body{display:none}
+.rv-task-rebuild-conversation .rv-talk-note{margin-top:var(--rv-space-4)}
+.rv-task-rebuild .rv-merge-pr-receipt .rv-merge-facts>div{min-height:22px;align-items:center}
+.rv-task-capture-dialog .rv-dialog-heading>.rv-button-with-reason>button{width:44px;height:44px;font-size:0;line-height:0;display:inline-grid;place-items:center;text-decoration:none}
+.rv-task-rebuild .rv-approval-receipt.rv-ds-plan-frame>.rv-decision-frame-body>[data-testid=decision-error]{order:0;border:0;border-radius:var(--rv-radius-md);background:var(--rv-bg-sunken);padding:var(--rv-space-3) var(--rv-space-4)}
+.rv-task-rebuild .rv-approval-receipt.rv-ds-plan-frame>.rv-decision-frame-body>.rv-receipt-ladder{order:1}
+.rv-task-rebuild .rv-approval-receipt.rv-ds-plan-frame>.rv-decision-frame-body>.rv-decision-actions-above{order:8}
+
+/* Round E: one 16px gap between the cards of a Talk sheet (messages, outcome, plan change, recovery). */
+.rv-task-rebuild-conversation .rv-conversation{margin-bottom:0;flex:0 0 auto}
+.rv-task-rebuild-conversation .rv-conversation>li:last-child{margin-bottom:0}
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-conversation:not(:empty)~*:not(.rv-talk-dock):not(.rv-plan-change-sheet){margin-top:var(--rv-space-4)}
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-conversation:empty{display:none}
+.rv-task-rebuild-conversation .rv-task-held+.rv-conversation{margin-top:var(--rv-space-1)}
+.rv-task-rebuild-conversation .rv-plan-change-sheet-card header{flex-wrap:nowrap}
+.rv-task-rebuild-conversation .rv-plan-change-sheet-card header h3{min-width:0;font-size:var(--rv-font-md);line-height:1.25}
+/* The empty continue-actions wrapper must not add a flex gap after the Task actions button: its right edge is the card's. */
+.rv-task-rebuild .rv-session-people .rv-task-controls>div.rv-task-actions{display:contents}
+/* Round E (3d): on a phone the approval receipt's Check bar is pinned to the bottom of the screen, and the page keeps room for it. */
+@media(max-width:639px){
+ .rv-task-rebuild .rv-approval-receipt.rv-ds-plan-frame .rv-decision-actions-above{position:fixed;inset-inline:0;bottom:0;margin:0;width:auto;z-index:30}
+ .rv-task-rebuild:has(.rv-approval-receipt){padding-bottom:calc(var(--rv-control-size) * 2 + var(--rv-space-6))}
+}
+/* Round E: the "You are merging" panel has no dead band between its pull request line and the first fact row. */
+@media(min-width:640px){
+ .rv-task-rebuild .rv-merge-panel .rv-merge-pr-head{min-height:0;margin-bottom:var(--rv-space-2)}
+ .rv-task-rebuild .rv-merge-panel .rv-merge-pr-head a{min-height:0}
+}
+/* Round E: the running card's "Latest activity Unknown Check" stays on one line; Check has no extra indent. */
+.rv-task-rebuild .rv-task-subline .rv-task-held{flex-wrap:nowrap;white-space:nowrap}
+.rv-task-rebuild .rv-task-subline .rv-task-held .rv-button{min-height:0;padding:0;text-decoration:underline;text-underline-offset:var(--rv-space-1)}
+@media(max-width:359px){.rv-task-rebuild .rv-task-subline .rv-task-held{gap:var(--rv-space-1) var(--rv-space-2)}.rv-task-rebuild .rv-task-subline .rv-task-held-label{font-size:var(--rv-font-sm)}}
+/* Round E2: phone disclosure summaries sit under their titles; the Stop bar is a full-bleed row pinned to the bottom (button left, note right). */
+@media(max-width:639px){
+ .rv-task-rebuild .rv-task-section>summary>.rv-task-section-summary{margin-inline-start:0;flex-basis:auto}
+ .rv-task-rebuild .rv-task-stop-row{position:fixed;inset-inline:0;bottom:0;margin:0;z-index:30;flex-direction:row;flex-wrap:nowrap;align-items:center;gap:var(--rv-space-4);padding:var(--rv-space-3) var(--rv-space-4);border-top:1px solid var(--rv-border);background:var(--rv-bg-raised)}
+ .rv-task-rebuild .rv-task-stop-row .rv-button{width:auto;flex:none}
+ .rv-task-rebuild .rv-task-stop-row .rv-task-stop-note{font-size:var(--rv-font-sm);line-height:1.35;min-width:0}
+ .rv-task-rebuild:has(.rv-task-stop-row .rv-task-stop){padding-bottom:calc(var(--rv-control-size) * 2 + var(--rv-space-5))}
+}
+@media(max-width:639px){.rv-task-rebuild .rv-task-stop-row .rv-task-stop-note{margin-inline-start:var(--rv-space-3)}}
+/* Round E2 (3b): the plan facts keep label and value on one row on a phone, so step 2 and the sticky bar fit the first screen. */
+@media(max-width:639px){
+ .rv-task-rebuild .rv-ds-plan-frame .rv-ds-evidence li{flex-direction:row;align-items:baseline;gap:var(--rv-space-3)}
+ .rv-task-rebuild .rv-ds-plan-frame .rv-ds-evidence li>span:first-child{flex:0 0 7.5em}
+ .rv-task-rebuild .rv-ds-plan-frame .rv-ds-evidence li>span:last-child{width:auto;flex:1;min-width:0}
+}
+@media(max-width:639px){
+ .rv-task-rebuild .rv-ds-plan-frame .rv-plan-question,.rv-task-rebuild .rv-ds-plan-frame .rv-plan-checks,.rv-task-rebuild .rv-ds-plan-frame .rv-plan-comments,.rv-task-rebuild .rv-ds-plan-frame .rv-plan-note,.rv-task-rebuild .rv-ds-plan-frame .rv-plan-limit{order:7}
+}
+.rv-task-rebuild-conversation .rv-plan-change-sheet-card header h3{font-size:17px}
+/* Round E2 (1e): while a message is being written on a phone the history steps aside (the "Earlier messages" row stays), and Send is its own bar under a divider. */
+@media(max-width:639px){
+ .rv-task-rebuild-conversation .rv-conversation-brief{display:none;margin:0;padding:var(--rv-space-3) 0;border-bottom:1px solid var(--rv-border);color:var(--rv-text-muted);font-size:var(--rv-font-md);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .rv-task-rebuild-conversation .rv-conversation-brief::before{content:"";display:inline-block;width:16px;height:16px;margin-inline-end:var(--rv-space-3);vertical-align:-3px;background:var(--rv-text);-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 5 7 7-7 7'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 5 7 7-7 7'/%3E%3C/svg%3E") center/contain no-repeat}
+ .rv-task-rebuild-conversation:has(.rv-composer:not(.rv-composer-collapsed) textarea:focus)>.rv-conversation{display:none}
+ .rv-task-rebuild-conversation:has(.rv-composer:not(.rv-composer-collapsed) textarea:focus)>.rv-conversation-brief{display:block}
+ .rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed) .rv-composer-footer{border-top:1px solid var(--rv-border);margin-inline:calc(var(--talk-pad) * -1);padding:var(--rv-space-3) var(--talk-pad) 0}
+}
+/* Round E2 (3d): the pending approval reads as one bordered receipt card on a phone. */
+@media(max-width:639px){
+ .rv-task-rebuild .rv-approval-receipt.rv-decision-frame,.rv-task-rebuild .rv-approval-receipt.rv-ds-plan-frame{border:1px solid var(--rv-border-strong)!important;border-radius:var(--rv-radius-lg);padding:var(--rv-space-4)!important;background:var(--rv-bg-raised)}
+}
+@media(max-width:639px){.rv-task-rebuild .rv-task-stop-row .rv-button-with-reason{flex:none;width:auto}.rv-task-rebuild .rv-task-stop-row .rv-button{white-space:nowrap;min-width:max-content;padding-inline:var(--rv-space-4)}.rv-task-rebuild .rv-task-stop-row{gap:var(--rv-space-3)}}
+/* Round E3: the choice rows are compact (the brief puts Approve on the first screen, ahead of the choices). */
+@media(min-width:640px){
+ .rv-task-rebuild .rv-ds-plan-frame .rv-decision-plan fieldset{gap:var(--rv-space-1)}
+ .rv-task-rebuild .rv-ds-plan-frame .rv-decision-plan fieldset>label,.rv-task-rebuild .rv-ds-plan-frame .rv-plan-limit>label{min-height:36px;padding-block:var(--rv-space-1)}
+ .rv-task-rebuild .rv-ds-plan-frame .rv-decision-plan legend{margin-bottom:var(--rv-space-1)}
+}
+
+/* Round E3 */
+/* Desktop: the Merge button and the sentence it authorizes share one row (mocks 3e-3g). */
+@media(min-width:640px){
+ .rv-task-rebuild .rv-merge-panel:has(>.rv-merge-authorize){display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:var(--rv-space-4);align-items:center}
+ .rv-task-rebuild .rv-merge-panel:has(>.rv-merge-authorize)>*{grid-column:1/-1}
+ .rv-task-rebuild .rv-merge-panel:has(>.rv-merge-authorize)>.rv-merge-actions{grid-column:1;order:1;padding-top:0}
+ .rv-task-rebuild .rv-merge-panel:has(>.rv-merge-authorize)>.rv-merge-authorize{grid-column:2;order:2}
+ .rv-task-rebuild .rv-merge-panel:has(>.rv-merge-authorize)>.rv-merge-authorize p:last-child{margin-bottom:0}
+}
+/* Task actions sits on the title row; the Talk card has one block gap above and below. */
+@media(min-width:640px){
+ .rv-task-rebuild>.rv-session-header .rv-session-people{margin-top:25px}
+ .rv-task-reading>.rv-task-session-slot{margin-block:var(--rv-space-6)}
+ .rv-task-reading>.rv-task-session-slot .rv-task-session-entry.rv-button{margin-block:0}
+}
+/* Sheet header: one title size for the Talk sheet and the evidence reader; no desktop back chevron (the panel has close only). */
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-dialog-heading h2{font-size:17px}
+@media(min-width:1024px){.rv-task-rebuild-conversation .rv-talk-back{display:none}.rv-task-rebuild-conversation.rv-conversation-tray>.rv-dialog-heading,.rv-task-rebuild-conversation.rv-conversation-tray>.rv-dialog-heading+p[id]:not(#talk-x){padding-inline-start:var(--talk-pad)}}
+/* The one-line history only exists while a phone message is being written. */
+.rv-task-rebuild-conversation .rv-conversation-brief{display:none}
+@media(min-width:640px){.rv-task-rebuild-conversation .rv-conversation-brief{display:none!important}}
+/* Round F (1b, 1e, 1k): every composer, open or collapsed, is docked to the bottom of the sheet; the history takes the free height (no blank band under Send). */
+/* Receipt rows share one fixed height. */
+.rv-task-rebuild .rv-merge-pr-receipt .rv-merge-facts>div{min-height:24px}
+/* Phone: the sticky bars centre their helper line; the narrowest phones get tighter button padding. */
+@media(max-width:639px){
+ .rv-task-rebuild .rv-merge-panel .rv-merge-actions .rv-merge-lock-reason{text-align:center}
+ .rv-task-rebuild .rv-task-checklist li:not([aria-current]){display:none}
+}
+@media(max-width:359px){.rv-task-rebuild .rv-decision-scene-plan .rv-decision-actions .rv-button{padding-inline:var(--rv-space-2)}}
+
+/* Round E3 follow-ups (applied after the third and last review; not re-reviewed). */
+.rv-task-reading>.rv-task-content-guard+.rv-task-session-slot{margin-top:var(--rv-space-2)}
+.rv-task-rebuild-conversation .rv-plan-change-sheet{padding-bottom:var(--rv-space-4)}
+@media(max-width:639px){
+ .rv-task-rebuild .rv-task-section>summary{row-gap:2px;padding-block:var(--rv-space-3);min-height:52px}
+}
+@media(max-width:639px){
+ .rv-task-rebuild .rv-task-section>summary{padding-block:var(--rv-space-2);min-height:0;line-height:1.3}
+}
+
+/* Round F (owner DEC 254zzz353, 3a): the choices come BEFORE the Approve row, and Approve stays reachable in a bar pinned to the bottom of the page. */
+/* A flex column (not a grid) so the sticky Approve row and the pinned bar stick against the whole card, not against their own grid row. */
+.rv-task-rebuild .rv-decision-frame.rv-ds-plan-frame:not(.rv-approval-receipt)>.rv-decision-frame-body{display:flex;flex-direction:column}
+.rv-task-rebuild .rv-ds-plan-frame .rv-approve-pinned{order:20;position:sticky;bottom:0;z-index:4;display:flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-3) var(--rv-space-4);margin-inline:calc(var(--rv-space-5) * -1);margin-bottom:calc(var(--rv-space-5) * -1);padding:var(--rv-space-3) var(--rv-space-5);background:var(--rv-bg-raised);border-top:1px solid var(--rv-border);border-radius:0 0 var(--rv-radius-card) var(--rv-radius-card);box-shadow:0 -8px 16px -10px color-mix(in srgb,var(--rv-text) 24%,transparent)}
+.rv-task-rebuild .rv-ds-plan-frame .rv-approve-pinned .rv-button-with-reason{display:inline-flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-3)}
+@media(max-width:639px){.rv-task-rebuild .rv-ds-plan-frame .rv-approve-pinned{display:none}}
+/* Keyboard focus on a choice never lands under the pinned bar. */
+.rv-task-rebuild .rv-ds-plan-frame .rv-decision-plan :is(fieldset,.rv-plan-note,.rv-plan-limit),.rv-task-rebuild .rv-ds-plan-frame .rv-decision-actions-above{scroll-margin-bottom:96px}
+
+/* 1k: the comment-only composer is docked to the bottom of the sheet, like the instruction and question composers (no blank band under Send). */
+.rv-task-rebuild-conversation.rv-conversation-tray:has(.rv-talk-note)>.rv-talk-dock-plain>#task-talk:has(.rv-composer:not(.rv-composer-collapsed)){margin-top:auto}
+/* 1d / 3g: the workspace menu and the merge dialog close with the same X icon as the Talk sheet (the shared icon button, drawn as an icon, never an underlined glyph). */
+body:has(.rv-task-rebuild) .rv-workspace-menu .rv-dialog-heading>.rv-button-with-reason>button,.rv-merge-dialog .rv-dialog-heading>.rv-button-with-reason>button{width:44px;height:44px;min-width:44px;min-height:44px;padding:0;font-size:0;line-height:0;text-decoration:none;display:inline-grid;place-items:center;color:var(--rv-text)}
+body:has(.rv-task-rebuild) .rv-workspace-menu .rv-dialog-heading>.rv-button-with-reason>button::before,.rv-merge-dialog .rv-dialog-heading>.rv-button-with-reason>button::before{content:"";width:22px;height:22px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6L6 18'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6L6 18'/%3E%3C/svg%3E") center/contain no-repeat}
+/* The Home item does not draw a focus ring on a touch open; the keyboard ring stays on :focus-visible. */
+body:has(.rv-task-rebuild) .rv-workspace-menu a:focus:not(:focus-visible){outline:none;box-shadow:none}
+/* Round F (1b): on a wide screen the Talk panel is as tall as its content, like the mock (it ends right after the composer); it scrolls when the content is taller than the screen. */
+@media(min-width:640px){.rv-task-rebuild-conversation.rv-conversation-tray{bottom:auto;max-height:calc(100dvh - var(--rv-space-7) - var(--rv-space-6))}}
+@media(min-width:1024px){.rv-task-rebuild-conversation.rv-conversation-tray{max-height:calc(100dvh - var(--rv-space-4) - var(--rv-space-4) - 52px)}}
+.rv-task-rebuild-conversation.rv-conversation-tray>.rv-conversation:not(:empty){margin-bottom:var(--rv-space-4)}
+/* Round G (1e, DEC 254zzz356): a phone with its keyboard open has about 470 px. While the instruction box has focus on such a screen, the sheet shows the header, the one "Earlier" line and the whole composer (mode switch to Send) with Send flush at the bottom edge and nothing clipped. Taller windows keep the closed-keyboard layout. */
+@media(max-width:639px) and (max-height:560px){
+ .rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed){padding-block:6px 0}
+ .rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed) .rv-composer-modes .rv-button{min-height:44px}
+ .rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed) .rv-composer-help{margin:6px 0}
+ .rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed) .rv-composer-footer{flex-wrap:nowrap;align-items:center;margin-top:var(--rv-space-2);padding-block:6px var(--rv-space-2)}
+ .rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed) .rv-composer-footer>.rv-muted{order:0;flex:0 0 auto;text-align:start}
+ .rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed) .rv-composer-footer>.rv-button-with-reason{flex:1 1 0;min-width:0}
+ .rv-task-rebuild-conversation .rv-composer:not(.rv-composer-collapsed) .rv-composer-footer .rv-button{flex:1 1 0;width:100%;min-height:44px}
+ .rv-task-rebuild-conversation.rv-conversation-tray:has(.rv-composer:not(.rv-composer-collapsed) textarea:focus)>.rv-task-held{display:none}
+ .rv-task-rebuild-conversation.rv-conversation-tray:has(.rv-composer:not(.rv-composer-collapsed) textarea:focus)>.rv-conversation-brief{margin-top:0;padding-block:6px}
+}
+/* Round G (768): on a wide screen the three Talk tabs sit on one line, selected tab included (it is bolder, so it was the one that wrapped). The phone keeps the mock's two-line tabs. */
+@media(min-width:640px){
+ .rv-task-rebuild-conversation .rv-composer-modes .rv-button{white-space:nowrap;font-size:13px;padding-inline:var(--rv-space-1)}
+}
+/* Round G (320): the date line may wrap before the kind chip, so it never runs under it. */
+@media(max-width:359px){
+ .rv-task-rebuild-conversation .rv-message-top>[data-testid=talk-comment-provenance]>span,.rv-task-rebuild-conversation .rv-message-top>.rv-message-meta{white-space:normal;min-width:0}
+}
+/* ACTIONS-LAYOUT: "Task actions" is the header's one control (mocks 1a, 3a, 22f). Continue in my tool lives inside its menu (mock 4d); the inline row (Follow, Take over, Share, Stop, Close) is the menu's duplicate and is never drawn here. Presence avatars sit beside the button, never above it. */
+.rv-task-rebuild .rv-controls-inline,.rv-task-rebuild .rv-task-actions>.rv-actions{display:none}
+@media(min-width:640px){
+ .rv-task-rebuild>.rv-session-header>.rv-session-people{flex-direction:row;flex-wrap:nowrap;align-items:flex-start;justify-content:flex-end;gap:var(--rv-space-3)}
+ .rv-task-rebuild>.rv-session-header>.rv-session-people .rv-avatars{align-self:flex-start;margin-top:calc((var(--rv-control-size) - 28px) / 2)}
+}
+/* The Task actions list (mock 4d): right-aligned to its button, at least as wide as it, with the destructive pair set apart. */
+.rv-popover.rv-menu-task{min-width:max(var(--radix-dropdown-menu-trigger-width),208px)}
+.rv-popover.rv-menu-task .rv-menu-item{min-height:44px}
+/* Design review strip: one quiet block in the reading column (no card around the buttons), controls as tall as the decision actions. The strip is the page's single, guarded copy of Design first / Skip design review. */
+.rv-task-rebuild .rv-design-actions{display:grid;gap:var(--rv-space-3);padding:0;margin:0 0 var(--rv-space-5);border:0;border-radius:0;background:none;max-width:var(--rv-reading-width)}
+.rv-task-rebuild .rv-design-actions .rv-design-hint,.rv-task-rebuild .rv-design-actions .rv-design-line,.rv-task-rebuild .rv-design-actions>p{margin:0;padding:0;border:0;border-radius:0;background:none;color:var(--rv-text-muted);font-size:var(--rv-font-md);line-height:1.4}
+.rv-task-rebuild .rv-design-actions>.rv-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3)}
+.rv-task-rebuild .rv-design-actions>.rv-actions:empty{display:none}
+.rv-task-rebuild .rv-design-actions .rv-button{min-height:var(--rv-control-size)}
+.rv-task-rebuild .rv-design-actions [role=group]{display:grid;gap:var(--rv-space-3);padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.rv-task-rebuild .rv-design-actions [role=group]>p{margin:0}
+@media(max-width:639px){
+ .rv-task-rebuild .rv-design-actions .rv-actions{display:grid;grid-template-columns:1fr 1fr;gap:var(--rv-space-2)}
+ .rv-task-rebuild .rv-design-actions .rv-actions>.rv-button-with-reason{display:flex}
+ .rv-task-rebuild .rv-design-actions .rv-actions>.rv-button-with-reason:only-child{grid-column:1/-1}
+ .rv-task-rebuild .rv-design-actions .rv-actions .rv-button{flex:1;width:100%;min-height:44px}
+}
+/* People (mock 22f in the page's own disclosure): a bordered list of rows (who, role, one outlined action), "Add someone" below as two fields and one outlined button. */
+.rv-task-rebuild .rv-people{margin:0;padding:0;border:0;border-top:1px solid var(--rv-border);min-width:0}
+.rv-task-rebuild .rv-people>summary{display:grid;grid-template-columns:var(--rv-space-4) minmax(0,1fr) minmax(0,2fr);align-items:center;gap:var(--rv-space-3);min-height:calc(var(--rv-control-size) * 1.5);padding:var(--rv-space-3) 0;list-style:none;cursor:pointer;font-size:var(--rv-font-md);font-weight:400}
+.rv-task-rebuild .rv-people>summary::-webkit-details-marker{display:none}
+.rv-task-rebuild .rv-people>summary>.rv-ds-mark{transition:transform var(--rv-motion-fast,.1s)}
+.rv-task-rebuild .rv-people[open]>summary>.rv-ds-mark{transform:rotate(90deg)}
+.rv-task-rebuild .rv-people>summary>strong{min-width:0}
+.rv-task-rebuild .rv-people>summary>.rv-task-section-summary{grid-column:3;color:var(--rv-text-muted);min-width:0}
+.rv-task-rebuild .rv-people-body{display:grid;gap:var(--rv-space-4);padding:var(--rv-space-2) 0 var(--rv-space-4)}
+@media(max-width:639px){.rv-task-rebuild .rv-people>summary{grid-template-columns:var(--rv-space-4) minmax(0,1fr)}.rv-task-rebuild .rv-people>summary>.rv-task-section-summary{grid-column:2}}
+.rv-task-rebuild .rv-people-body>p,.rv-task-rebuild .rv-people-body>div[role=alert] p{margin:0}
+.rv-task-rebuild .rv-people-list{margin:0;padding:0;list-style:none;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);overflow:hidden}
+.rv-task-rebuild .rv-people-list li{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) auto;align-items:center;gap:var(--rv-space-3) var(--rv-space-4);padding:var(--rv-space-3) var(--rv-space-4);border-bottom:0;min-height:56px}
+.rv-task-rebuild .rv-people-list li+li{border-top:1px solid var(--rv-border)}
+.rv-task-rebuild .rv-people-name{display:block;min-width:0;overflow-wrap:anywhere}
+.rv-task-rebuild .rv-people-who{font-weight:600}
+.rv-task-rebuild .rv-people-role{color:var(--rv-text);min-width:0}
+.rv-task-rebuild .rv-people-list .rv-field{margin:0}
+.rv-task-rebuild .rv-people-list .rv-field label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.rv-task-rebuild .rv-people-list .rv-field select{min-height:var(--rv-control-size);width:100%;max-width:14rem}
+.rv-task-rebuild .rv-people-list .rv-button{min-height:var(--rv-control-size)}
+.rv-task-rebuild .rv-people-ownership .rv-button{min-height:var(--rv-control-size)}
+.rv-task-rebuild .rv-people-add{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);align-items:end;gap:var(--rv-space-3) var(--rv-space-4);margin:0;max-width:none}
+.rv-task-rebuild .rv-people-add>*{min-width:0}
+.rv-task-rebuild .rv-people-add .rv-field{margin:0}
+.rv-task-rebuild .rv-people-add .rv-field select{min-height:var(--rv-control-size);width:100%}
+.rv-task-rebuild .rv-people-add .rv-people-add-title,.rv-task-rebuild .rv-people-add>p,.rv-task-rebuild .rv-people-add>.rv-button-with-reason,.rv-task-rebuild .rv-people-add>[role=status],.rv-task-rebuild .rv-people-add>[role=alert]{grid-column:1/-1;margin:0}
+.rv-task-rebuild .rv-people-add-title{font-size:var(--rv-font-md);font-weight:600}
+.rv-task-rebuild .rv-people-add>.rv-button-with-reason{justify-self:start}
+.rv-task-rebuild .rv-people-add .rv-button{min-height:var(--rv-control-size)}
+.rv-task-rebuild .rv-decisions.rv-card{margin:var(--rv-space-4) 0 0;padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.rv-task-rebuild .rv-decisions h3{margin:0 0 var(--rv-space-3);font-size:var(--rv-font-md)}
+@media(max-width:639px){
+ .rv-task-rebuild .rv-people-list li{grid-template-columns:minmax(0,1fr) auto;row-gap:var(--rv-space-2)}
+ .rv-task-rebuild .rv-people-list li>.rv-people-name{grid-column:1/-1}
+ .rv-task-rebuild .rv-people-list li>.rv-people-role,.rv-task-rebuild .rv-people-list li>.rv-field{grid-column:1}
+ .rv-task-rebuild .rv-people-list li>.rv-button-with-reason{grid-column:2;grid-row:2}
+ .rv-task-rebuild .rv-people-add{grid-template-columns:minmax(0,1fr)}
+ .rv-task-rebuild .rv-people-add .rv-button{min-height:44px}
+}
+/* Task dialogs (Close, Discard, Stop, Take over, Share, Make agent): a real icon close button, the body, one block of space above the actions, and the actions set off by a rule (4e confirmation dialog). */
+body:has(.rv-task-rebuild) .rv-dialog.rv-action-dialog .rv-dialog-heading{margin-bottom:var(--rv-space-3)}
+body:has(.rv-task-rebuild) .rv-dialog.rv-action-dialog .rv-dialog-heading>.rv-button-with-reason>button{width:44px;height:44px;min-width:44px;min-height:44px;padding:0;font-size:0;line-height:0;text-decoration:none;display:inline-grid;place-items:center;color:var(--rv-text);border-color:transparent}
+body:has(.rv-task-rebuild) .rv-dialog.rv-action-dialog .rv-dialog-heading>.rv-button-with-reason>button::before{content:"";width:22px;height:22px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6L6 18'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6L6 18'/%3E%3C/svg%3E") center/contain no-repeat}
+body:has(.rv-task-rebuild) .rv-dialog.rv-action-dialog>p{margin:0 0 var(--rv-space-4);color:var(--rv-text-muted)}
+body:has(.rv-task-rebuild) .rv-dialog.rv-action-dialog>ul{margin:0 0 var(--rv-space-4);padding-inline-start:var(--rv-space-5)}
+body:has(.rv-task-rebuild) .rv-dialog.rv-action-dialog>.rv-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3);margin-top:var(--rv-space-5);padding-top:var(--rv-space-4);border-top:1px solid var(--rv-border)}
+@media(max-width:639px){
+ body:has(.rv-task-rebuild) .rv-dialog.rv-action-dialog>.rv-actions{flex-direction:column;align-items:stretch}
+ body:has(.rv-task-rebuild) .rv-dialog.rv-action-dialog>.rv-actions>.rv-button-with-reason,body:has(.rv-task-rebuild) .rv-dialog.rv-action-dialog>.rv-actions .rv-button{width:100%;display:flex;min-height:44px}
+ .rv-task-rebuild .rv-design-actions [role=group]>.rv-actions{display:grid;grid-template-columns:1fr}
+}
+/* Held actions: "Not now" and its six reasons on a fix-setup decision card: a quiet underlined choice, the reasons as a compact wrapped list (two columns on a phone, 44px targets). */
+.rv-task-rebuild .rv-decision-reject{min-width:0;margin:0}
+.rv-task-rebuild .rv-decision-reject>summary{display:inline-flex;align-items:center;min-height:var(--rv-control-size);cursor:pointer;text-decoration:underline;text-underline-offset:var(--rv-space-1);font:inherit;color:var(--rv-text)}
+.rv-task-rebuild .rv-decision-reject>ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:var(--rv-space-1) var(--rv-space-4)}
+.rv-task-rebuild .rv-decision-reject>ul>li{margin:0;padding:0;min-width:0}
+.rv-task-rebuild .rv-decision-reject .rv-button{min-height:var(--rv-control-size);padding-inline:0}
+@media(max-width:639px){.rv-task-rebuild .rv-decision-reject>ul{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--rv-space-1) var(--rv-space-3)}.rv-task-rebuild .rv-decision-reject .rv-button{width:100%;justify-content:flex-start;text-align:left;white-space:normal}}
+/* CORE-STEP-RETRY layout: a notice from the Task actions group (an unconfirmed or refused Retry, "Following this session", any saved-request note) is its own full-width row under the title, never a column beside it that squeezes or covers the title. Only while such a note is drawn; Task actions keeps its place on the title row. */
+.rv-task-rebuild>.rv-session-header:has(.rv-session-controls>:is(p,[role=status],[role=alert])){position:relative;flex-wrap:wrap;row-gap:var(--rv-space-3)}
+.rv-task-rebuild>.rv-session-header:has(.rv-session-controls>:is(p,[role=status],[role=alert]))>.rv-session-people,.rv-task-rebuild>.rv-session-header:has(.rv-session-controls>:is(p,[role=status],[role=alert]))>.rv-session-people>.rv-task-controls,.rv-task-rebuild>.rv-session-header:has(.rv-session-controls>:is(p,[role=status],[role=alert]))>.rv-session-people>.rv-task-controls>.rv-session-controls{display:contents}
+.rv-task-rebuild>.rv-session-header:has(.rv-session-controls>:is(p,[role=status],[role=alert])) .rv-session-controls>:is(p,[role=status],[role=alert]){order:9;flex:0 0 100%;max-width:none;margin:0;min-width:0;overflow-wrap:anywhere;text-align:start}
+@media(min-width:640px){.rv-task-rebuild>.rv-session-header:has(.rv-session-controls>:is(p,[role=status],[role=alert])) .rv-controls-overflow{margin-top:25px}.rv-task-rebuild>.rv-session-header:has(.rv-session-controls>:is(p,[role=status],[role=alert])) .rv-avatars{margin-top:calc(25px + (var(--rv-control-size) - 28px) / 2);margin-inline-end:calc(var(--rv-space-3) - var(--rv-space-5))}}
+@media(max-width:639px){.rv-task-rebuild>.rv-session-header:has(.rv-session-controls>:is(p,[role=status],[role=alert])) .rv-controls-overflow{position:absolute;top:0;right:0;z-index:1}}
+
+/* CORE-STEP-RETRY layout: the notice's action (Check) is its own row under the text at every width, never a button jammed onto the end of a sentence or a taller second line. */
+.rv-task-rebuild>.rv-session-header:has(.rv-session-controls>:is(p,[role=status],[role=alert])) .rv-session-controls>:is(p,[role=status],[role=alert])>:is(.rv-button,.rv-button-with-reason){display:flex;width:fit-content;margin-block:var(--rv-space-2)}

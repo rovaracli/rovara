@@ -24,7 +24,7 @@ export class SessionPage {
     this.loadError = page.getByTestId("load-error");
     this.pane = page.getByRole("article", { name: /^Task: / });
     this.stepRail = page.getByRole("list", { name: "Steps of this task" });
-    this.backToWork = page.getByRole("link", { name: "Back to Work" });
+    this.backToWork = page.getByTestId("session-header").getByRole("link", { name: "Work", exact: true });
     this.steerBox = page.getByRole("form", { name: /^Steer / });
     this.more = page.getByTestId("task-page").locator("details.rv-task-more");
   }
@@ -35,6 +35,19 @@ export class SessionPage {
   /** The decision card: "Your decision" and the other kinds' headings. */
   decision(name = "Your decision"): Locator {
     return this.pane.getByRole("region", { name, exact: true });
+  }
+  /** Open the rebuilt page's disclosure before driving its existing controls. */
+  async openSection(name: string): Promise<void> {
+    const section = this.page.getByTestId("task-page").locator("details").filter({ has: this.page.locator("summary strong", { hasText: new RegExp(`^${name}$`, "u") }) }).first();
+    if (await section.getAttribute("open") === null) await section.locator(":scope > summary").click();
+  }
+  async selectStep(label: string): Promise<void> {
+    await this.openSection("Plan and changes");
+    await this.step(label).click();
+  }
+  async taskAction(name: string): Promise<void> {
+    await this.page.getByRole("button", { name: "Task actions", exact: true }).click();
+    await this.page.getByRole("menuitem", { name, exact: true }).click();
   }
   /** A task's page by its own id (any task the person can read, whether or not Cloud started it). */
   async openTask(taskId: string): Promise<void> {
@@ -74,6 +87,8 @@ export class PeoplePanel {
     this.message = this.panel.getByTestId("people-message");
   }
   async open(): Promise<void> {
+    const section = this.page.getByTestId("task-page").locator("details.rv-task-section").filter({ has: this.panel });
+    if (await section.getAttribute("open") === null) await section.locator(":scope > summary").click();
     await this.panel.locator("summary").click();
     await expect(this.rows.first()).toBeVisible();
   }

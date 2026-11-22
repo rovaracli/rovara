@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { meFixture } from "./support/fixtures.js";
 // R1b: a task Understand answered ends CLOSED with the outcome ANSWERED, and the Pipeline tab says so: "Rovara answered this. No code was changed.", the answer (plain text) and where it was
 // read. Hosted Code serves no change-anyway route (L4-TA5b), so there is NO "Make a change anyway" button and nothing is posted: a person who can use the session reads the fixed words
 // "To change this after it's answered, start a follow-up task." Viewers and sessions on a Mac read only the answer. Other tasks show nothing new.
@@ -22,6 +23,7 @@ const FOLLOW_UP = "To change this after it's answered, start a follow-up task.";
 
 function setup(initial: ReturnType<typeof answeredSession>) {
   const f = fakeHost(async (request) => {
+    if (request.path === "/v1/app/me") return { status: 200, body: meFixture() };
     const path = request.path.split("?", 1)[0]!;
     if (path.endsWith("/messages")) return { status: 200, body: { messages: [] } };
     if (path.endsWith("/events")) return { status: 200, body: { events: [] } };
@@ -41,6 +43,7 @@ const region = async () => screen.findByRole("region", { name: "Rovara's answer"
 it("shows the heading, the answer as plain text and where it was read, for an Answered task", async () => {
   const f = setup(answeredSession());
   const section = await region();
+  expect(section.closest("details")).toBeNull();
   expect(screen.getByRole("heading", { name: "Rovara answered this. No code was changed." })).toBeTruthy();
   expect(section.querySelector("img")).toBeNull();
   expect(section.textContent).toContain("It turns retries on <img src=x onerror=window.__pwned=1> for the payment worker.");
@@ -55,7 +58,7 @@ it("shows the heading, the answer as plain text and where it was read, for an An
 it("shows a hostile source line as plain text: no markup, no angle brackets, no control characters", async () => {
   const f = setup(answeredSession());
   const section = await region();
-  const items = Array.from(section.querySelectorAll(".rv-answered-sources li"));
+  const items = Array.from(section.querySelectorAll(".rv-answer-receipt-sources li"));
   expect(items).toHaveLength(3);
   const hostile = items[2]!;
   // The list items hold only text inside <code>: nothing in the source was turned into an element.

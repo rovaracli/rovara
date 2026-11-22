@@ -1,0 +1,26 @@
+.rv-session-status {
+ display: inline-flex;
+ align-items: center;
+ min-height: 24px;
+ padding: 2px var(--rv-space-3);
+ border: 1px solid var(--rv-border);
+ border-radius: 999px;
+ background: var(--rv-bg-raised);
+ color: var(--rv-text);
+ font-weight: 600;
+}
+
+.rv-session-status .rv-status {
+ color: inherit;
+}
+
+@media (max-width: 639px) {
+ .rv-session-facts {
+  column-gap: var(--rv-space-3);
+  row-gap: var(--rv-space-2);
+ }
+
+ .rv-session-context {
+  overflow-wrap: anywhere;
+ }
+}

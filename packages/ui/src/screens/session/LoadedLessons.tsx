@@ -1,7 +1,11 @@
+import { useAppHost } from "../../host.js";
+import { useTaskAction } from "../../api/task-action.js";
+import { sessionWriteHost } from "../../api/session-safety.js";
+import { TaskActionNotice } from "./TaskActionNotice.js";
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../../api/errors.js";
-import { useLessonsApi, useLoadedLessons, type LoadedLessonRow } from "../../api/lessons.js";
+import { createLessonsApi, useLoadedLessons, type LoadedLessonRow } from "../../api/lessons.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { T, failureText, stagesWords, typeWords } from "../project/lessons/lessons-text.js";
@@ -14,11 +18,11 @@ const CITATION: Readonly<Record<string, string>> = {
 const word = (table: Readonly<Record<string, string>>, key: string, fallback: string): string => Object.hasOwn(table, key) ? table[key]! : fallback;
 
 function Row({ project, taskId, row, canMark }: { project: string; taskId: string; row: LoadedLessonRow; canMark: boolean }) {
- const api = useLessonsApi(), query = useQueryClient(), [marked, setMarked] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
+ const host = useAppHost(), api = createLessonsApi(sessionWriteHost(host)), action = useTaskAction(host, "lesson-feedback:" + project + ":" + taskId + ":" + row.lessonId, canMark && row.canMark), query = useQueryClient(), [marked, setMarked] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
  async function mark() {
-  if (busy) return;
+  if (busy || action.locked) return;
   setBusy(true);setError(undefined);
-  try { await api.mark(project, taskId, row.lessonId);setMarked(true);await query.invalidateQueries({ queryKey: ["task", taskId, "lessons"] }); }
+  try { await action.run("not-helpful", { requestId: crypto.randomUUID(), project, taskId, lessonId: row.lessonId }, body => api.mark(String(body["project"]), String(body["taskId"]), String(body["lessonId"])));setMarked(true);await query.invalidateQueries({ queryKey: ["task", taskId, "lessons"] }); }
   catch (failure) { setError(failureText(failure, "Couldn't save that. Try again.")); }
   finally { setBusy(false); }
  }
@@ -26,8 +30,9 @@ function Row({ project, taskId, row, canMark }: { project: string; taskId: strin
  return <li>
   <span className={row.visible ? undefined : "rv-muted"}><VisibleText text={label} /></span>{" "}
   <span className="rv-muted">{[row.type === undefined ? "" : typeWords(row.type), "Chosen because it " + word(WHY, row.why, "matched"), word(CITATION, row.citation, "Not checked")].filter(part => part !== "").join(" · ")}{row.helpful !== undefined && row.harmful !== undefined ? ` · Helpful ${String(row.helpful)}, wrong ${String(row.harmful)}` : ""}</span>
-  {canMark && row.canMark && !marked && <> <Button variant="quiet" busy={busy} onClick={() => { void mark(); }} aria-label={"Not helpful: " + label}>Not helpful</Button></>}
+  {canMark && row.canMark && !marked && <> <Button variant="quiet" busy={busy} disabled={action.locked} onClick={() => { void mark(); }} aria-label={"Not helpful: " + label}>Not helpful</Button></>}
   {marked && <span role="status"> {T.LOADED_THANKS}</span>}
+  <TaskActionNotice key={action.pendingKey} pending={action.pending} recovery={action.recovery} taskHref={"/app/sessions/" + encodeURIComponent(taskId)} check={() => api.loaded(project, taskId)} />
   {error !== undefined && <span role="alert"> {error}</span>}
  </li>;
 }

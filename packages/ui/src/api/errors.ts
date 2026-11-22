@@ -3,6 +3,8 @@ import { isConfirmUrl, safeExternalUrl } from "../text/links.js";
 export class ApiError extends Error {
  constructor(readonly status: number, readonly code: string, message: string, readonly signInUrl?: string, readonly confirmUrl?: string, /** Lane C's process-model refusal (409 `{code, stage, fixHref}`): the stage and the page that fixes it. */ readonly refusal?: { stage: string; fixHref?: string }, /** L4-T4: a fixed machine word beside the sentence (Cloud's `error.reason`), for a page that names the step that fixes it. */ readonly reason?: string) { super(message);this.name = "ApiError"; }
 }
+// The actual dispatched write route, kept only in memory for refusal classification.
+export const actionErrorRoutes = new WeakMap<ApiError, string>();
 function safeSignInUrl(value: string | undefined, origin: string): string | undefined {
  if (value === undefined || /[\p{Cc}\p{Cf}\\]|%2e|%2f|%5c/iu.test(value.split("?", 1)[0]!)) return undefined;
  try { const url = new URL(value, origin);return safeExternalUrl(url.href) !== undefined && url.origin === new URL(origin).origin && /^\/v1\/auth\/(?:browser\/authorize|decide\/(?:start|identify))$/.test(url.pathname) && !url.hash ? url.href : undefined; } catch { return undefined; }

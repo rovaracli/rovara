@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { PlanCriterionCommentAvailabilityView } from "./PlanCriterionCommentAvailabilityView.js";
+import { ApiError } from "../../api/errors.js";
 import type { ReadComment, ReadCriterion, ReadQuestion } from "../../api/work.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText, visibleText } from "../../design/VisibleText.js";
@@ -29,7 +31,7 @@ export function CriterionRow({ criterion, question, answeredLabel, comments = []
  onComment?: ((anchor: string, text: string, replyTo?: string) => Promise<void>) | undefined;
 }) {
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>();
- const [writing, setWriting] = useState<{ replyTo?: string }>(), [draft, setDraft] = useState(""), [sending, setSending] = useState(false), [commentError, setCommentError] = useState<string>();
+ const [writing, setWriting] = useState<{ replyTo?: string }>(), [draft, setDraft] = useState(""), [sending, setSending] = useState(false), [commentError, setCommentError] = useState<unknown>();
  const open = question !== undefined && answeredLabel === undefined && onAnswer !== undefined;
  // Focus goes into the form when it opens and back to the button that opened it when it closes, so a keyboard user is never dropped on the page.
  const field = useRef<HTMLTextAreaElement>(null), opener = useRef<HTMLButtonElement>(null), wasWriting = useRef(false), isWriting = writing !== undefined;
@@ -48,7 +50,7 @@ export function CriterionRow({ criterion, question, answeredLabel, comments = []
   if (onComment === undefined || writing === undefined || sending || text === "" || text.length > COMMENT_MAX) return;
   setSending(true);setCommentError(undefined);
   try { await onComment(criterion.id, text, writing.replyTo);setDraft("");setWriting(undefined); }
-  catch (failure) { setCommentError(failure instanceof Error && failure.message !== "" ? failure.message : "Couldn't save your comment. Your draft is still here. Try again."); }
+  catch (failure) { setCommentError(failure); }
   finally { setSending(false); }
  }
  const fallback = question?.options.find(option => option.optionId === question.defaultOptionId)?.label;
@@ -69,7 +71,9 @@ export function CriterionRow({ criterion, question, answeredLabel, comments = []
     <textarea ref={field} id={"comment-" + criterion.id} className="rv-input" rows={2} maxLength={COMMENT_MAX} value={draft} onChange={event => setDraft(event.target.value)} placeholder={writing.replyTo === undefined ? "Comment on " + criterion.id : "Reply"} />
     <span className="rv-criterion-form-actions"><Button type="submit" busy={sending} disabled={draft.trim() === ""}>Send</Button><Button variant="quiet" disabled={sending} onClick={() => { setWriting(undefined);setCommentError(undefined); }}>Cancel</Button></span>
    </form>}
-   {commentError !== undefined && <span role="alert" className="rv-error rv-criterion-note" data-testid="comment-error"><VisibleText text={commentError} /></span>}
+   {commentError !== undefined && (commentError instanceof ApiError && commentError.status === 501 && commentError.code === "NOT_ON_CODE_YET"
+    ? <PlanCriterionCommentAvailabilityView error={commentError} />
+    : <span role="alert" className="rv-error rv-criterion-note" data-testid="comment-error"><VisibleText text={commentError instanceof Error && commentError.message !== "" ? commentError.message : "Couldn't save your comment. Your draft is still here. Try again."} /></span>)}
    {error !== undefined && <span role="alert" className="rv-error rv-criterion-note" data-testid="answer-error"><VisibleText text={error} /></span>}
   </div>
   {criterion.taskIds.length > 0 && <span className="rv-id-chip link" aria-label={"Built by " + criterion.taskIds.join(", ")}>{criterion.taskIds.join(" · ")}</span>}

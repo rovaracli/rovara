@@ -75,7 +75,8 @@ export default tseslint.config(
   },
   {
     // Plain Node scripts outside the TypeScript projects (Plan 2, Task 17: the Public Suffix List generator).
-    files: ["scripts/**/*.mjs"],
+    // tests/web/capture-*.mjs: the same kind of plain Node capture scripts (Cloud train 3; CI lint found them outside every TS project).
+    files: ["scripts/**/*.mjs", "tests/web/**/*.mjs"],
     ...tseslint.configs.disableTypeChecked,
     languageOptions: {
       sourceType: "module",

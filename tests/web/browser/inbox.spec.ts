@@ -71,6 +71,9 @@ test("an empty inbox says so", async ({ page }) => {
   await seedInbox(page, { off: false, clear: true });
   const inbox = new InboxPage(page);
   await inbox.open();
-  await expect(inbox.empty).toBeVisible();
+  // The rebuilt page has no separate "Nothing in your inbox" block: an empty read shows no updates, no Mark all and no unread count.
+  await expect(inbox.rows).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Updates" })).toHaveCount(0);
+  await expect(inbox.markAll).toHaveCount(0);
   await expect(inbox.navLink).toHaveAccessibleName("Inbox, 0 unread");
 });

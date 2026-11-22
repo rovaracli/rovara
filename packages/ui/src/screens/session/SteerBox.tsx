@@ -12,7 +12,7 @@ export type Steer = { kind: "send"; send: (text: string) => Promise<void> } | { 
  */
 export function SteerBox({ steer, label }: { steer: Steer; label: string }) {
  const [text, setText] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [sent, setSent] = useState(false), pending = useRef(false);
- if (steer.kind === "unavailable") return <p className="rv-muted rv-steer-note" data-testid="steer-unavailable"><VisibleText text={steer.why} /></p>;
+ if (steer.kind === "unavailable") return <><p className="rv-muted rv-steer-note" data-testid="steer-unavailable"><VisibleText text={steer.why} /></p>{error !== undefined && <p role="alert" className="rv-error rv-steer-note" data-testid="steer-error"><VisibleText text={error} /></p>}</>;
  const valid = text.trim().length > 0 && text.length <= 2000, deliver = steer.send;
  async function submit() {
   if (!valid || pending.current) return;

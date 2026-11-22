@@ -54,23 +54,42 @@ describe("Decisions and answers", () => {
     expect(card.querySelectorAll("li")).toHaveLength(DECISIONS_SHOWN);
   });
 
-  it("shows nothing for a task with no answers or decisions, and nothing when Code shows no log or does not serve it", async () => {
-    for (const reply of [{ status: 200, body: { entries: [question] } }, { status: 404, body: { error: { code: "SESSION_NOT_FOUND", message: "x" } } }, { status: 501, body: { error: { code: "NOT_ON_CORE_ENGINE", message: "x" } } }]) {
+  it("shows nothing for a true empty history and treats unknown 404/501 answers as read failures", async () => {
+    const empty = setup(() => ({ status: 200, body: { entries: [question] } }));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(empty.f.request).toHaveBeenCalled();
+    expect(screen.queryByTestId("decisions")).toBeNull();
+    empty.ui.unmount();
+    for (const reply of [{ status: 404, body: { error: { code: "SESSION_NOT_FOUND", message: "x" } } }, { status: 501, body: { error: { code: "NOT_ON_CORE_ENGINE", message: "x" } } }]) {
       const { f, ui } = setup(() => reply);
       await new Promise(resolve => setTimeout(resolve, 20));
       expect(f.request).toHaveBeenCalled();
       expect(screen.queryByTestId("decisions")).toBeNull();
-      expect(screen.queryByTestId("decisions-error")).toBeNull();
+      expect(screen.queryByTestId("decisions-error")).toBeTruthy();
       ui.unmount();
     }
+  });
+
+  it("distinguishes a documented unavailable log from an unknown 404 and an empty history", async () => {
+    const unavailable = setup(() => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "The decisions log is not connected yet." } } }));
+    expect((await screen.findByTestId("task-decisions-unavailable")).textContent).toContain("This is not confirmation that no decision is needed.");
+    unavailable.ui.unmount();
+    const unknown = setup(() => ({ status: 404, body: { error: { code: "FORBIDDEN", message: "This item isn't available." } } }));
+    expect((await screen.findByTestId("decisions-error")).textContent).toContain("The task's decisions could not be loaded. No answer or approval was sent.");
+    unknown.ui.unmount();
+    const empty = setup(() => ({ status: 200, body: { entries: [] } }));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(screen.queryByTestId("task-decisions-unavailable")).toBeNull();
+    expect(screen.queryByTestId("decisions-error")).toBeNull();
+    empty.ui.unmount();
   });
 
   it("says so calmly when the log can't be read, with Try again", async () => {
     let fail = true;
     const { f } = setup(() => (fail ? { status: 403, body: { error: { code: "FORBIDDEN", message: "down" } } } : { status: 200, body: { entries: [answer()] } }));
-    expect((await screen.findByTestId("decisions-error")).textContent).toContain("Couldn't load the decisions and answers.");
+    expect((await screen.findByTestId("decisions-error")).textContent).toContain("The task's decisions could not be loaded. No answer or approval was sent.");
     fail = false;
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reload decisions" }));
     expect((await screen.findByTestId("decisions")).textContent).toContain("20,000");
     expect(f.request.mock.calls.every(([request]) => request.method === "GET" && request.path === LOG)).toBe(true);
   });

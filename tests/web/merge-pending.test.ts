@@ -389,7 +389,7 @@ it("B5/R4: the readiness answer's arrival is never shown as a fresh GitHub obser
  await screen.findByRole("button", { name: /^Merge #42/u });
  const text = region().textContent;
  expect(text).not.toMatch(/looked just now|Head on GitHub|Rovara read GitHub at|GitHub would merge/u);
- expect(text).toContain("Read by Rovara at");
+ expect(text).toContain("Merge check read at");
  expect(text).toContain("Head in Rovara's latest read");
  expect(text).toContain("Tracked from GitHub");
 });

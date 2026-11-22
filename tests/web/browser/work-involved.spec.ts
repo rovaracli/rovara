@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { HomePage, WorkPage } from "./pages/index.js";
 import { FAKE_CODE_URL } from "./pages/lessons.js";
 
-// The tasks the person was ADDED to (web task channel K4), on the pretend Code: their own "Involved" group on Work, and a short list on Home. The pretend Code keeps its state in memory,
+// The tasks the person was ADDED to (web task channel K4), on the pretend Code: their own rows on Work (the rebuilt table has no groups), and a short list on Home. The pretend Code keeps its state in memory,
 // so every spec puts it back as it was.
 const INVOLVED_TASK = "Migrate the invoices table";
 const OWN_TASK = "Speed up the search index";
@@ -19,14 +19,12 @@ test("Work lists the tasks I was added to under Involved, apart from my own, and
   const work = new WorkPage(page);
   await work.open();
   await work.expectLoaded();
-  // My own work is where it was; the involved task is in a group of its own at the end.
-  await expect(work.group("Rovara is working").getByRole("button", { name: new RegExp(OWN_TASK, "u") })).toBeVisible();
-  const involved = work.group("Involved");
-  await expect(involved).toBeVisible();
-  await expect(involved.getByRole("button")).toHaveCount(1);
-  await expect(involved.getByRole("button", { name: new RegExp(INVOLVED_TASK, "u") })).toBeVisible();
-  await expect(work.group("Needs you").getByRole("button", { name: new RegExp(INVOLVED_TASK, "u") })).toHaveCount(0);
-  await involved.getByRole("button", { name: new RegExp(INVOLVED_TASK, "u") }).click();
+  // My own work is where it was; the involved task is one more row of the table (the table has no groups), and it is never shown as waiting on me.
+  await expect(work.status(OWN_TASK, "Running")).toBeVisible();
+  await expect(work.rowByTitle(INVOLVED_TASK)).toHaveCount(1);
+  await expect(work.rowByTitle(INVOLVED_TASK)).toBeVisible();
+  await expect(work.status(INVOLVED_TASK, "Needs you")).toHaveCount(0);
+  await work.rowByTitle(INVOLVED_TASK).click();
   await expect(work.paneTitle).toHaveText(INVOLVED_TASK);
   await expect(page).toHaveURL(new RegExp(`[?&]task=${added.taskId}`, "u"));
   await expect(work.pane.getByTestId("decision-quiet")).toContainText("You're involved in this task");
@@ -41,7 +39,6 @@ test("Work shows nothing extra and no error when Code does not serve the involve
     const work = new WorkPage(page);
     await work.open();
     await work.expectLoaded();
-    await expect(work.group("Involved")).toHaveCount(0);
     await expect(page.getByTestId("involved-unavailable")).toHaveCount(0);
     await expect(work.rowByTitle(INVOLVED_TASK)).toHaveCount(0);
   }

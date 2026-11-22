@@ -1,7 +1,9 @@
 import { postWithTimeout } from "../safe-action.js";
-import { SessionIdSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, MergeDoneReaderSchema } from "@agentx/contracts/web";
+import { SessionIdSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, MergeDoneReaderSchema, PendingConfirmationReaderSchema, PendingAdminApprovalReaderSchema } from "@agentx/contracts/web";
 import { z } from "zod";
 import type { AppHost } from "../host.js";
+import { sessionWriteHost } from "./session-safety.js";
+import { ApiError } from "./errors.js";
 import { createApiClient } from "./client.js";
 
 /** Code's answer to "may I merge this task, and would it merge now?" (DEC 254zzz94), as Cloud's server rebuilt it. */
@@ -12,8 +14,15 @@ export const MergeReadinessReader = z.object({
 }).strict();
 export type MergeReadiness = z.infer<typeof MergeReadinessReader>;
 export function createSessionActions(host: AppHost) {
- const api = createApiClient(host), path = (id: string) => "/v1/app/sessions/" + encodeURIComponent(SessionIdSchema.parse(id));
- const control = (id: string, action: "stop" | "retry") => api.send("POST", path(id) + "/" + action, { requestId: crypto.randomUUID() }, SessionResponseReaderSchema);
+ const api = createApiClient(sessionWriteHost(host)), path = (id: string) => "/v1/app/sessions/" + encodeURIComponent(SessionIdSchema.parse(id));
+ // Only a structured confirmation may pass through a 202; an outcome-shaped
+ // accepted body is still unknown, never a final ownership receipt.
+ const ownership = createApiClient({ ...host, transport: { async request(input) {
+  const response = await host.transport.request(input);
+  if (response.status === 202 && !PendingConfirmationReaderSchema.safeParse(response.body).success && !PendingAdminApprovalReaderSchema.safeParse(response.body).success) throw new ApiError(202, "PENDING", "Rovara didn't confirm this yet. Check its current status before acting again.");
+  return response;
+ } } });
+ const control = (id: string, action: "stop" | "retry", requestId: string = crypto.randomUUID()) => api.send("POST", path(id) + "/" + action, { requestId }, SessionResponseReaderSchema, { retry: "never" });
  return {
   // DEC 254zzz94: whether this person may merge the task and whether it would merge now (Code re-reads GitHub), and the press itself (one request id is one merge; the website's own client only).
   mergeReadiness: (id: string) => api.get(path(id) + "/merge", MergeReadinessReader, undefined, { retry: "never" }),
@@ -23,17 +32,18 @@ export function createSessionActions(host: AppHost) {
    return postWithTimeout(() => api.send("POST", path(id) + "/merge", { requestId, expectedHeads: shown.expectedHeads, risk: shown.risk }, MergeDoneReaderSchema, { retry: "never" }), 120_000);
   },
   // Understand's questions: `round` and `revision` are the ones the page read, so a stale form is refused by the server (INTENT_NOT_WAITING) rather than answered late.
-  answer: (id: string, body: { requestId: string; round: number; revision: number; answers: Array<{ questionId: string; optionId?: string; text?: string }> }) => api.send("POST", path(id) + "/answers", body, SessionResponseReaderSchema),
+  answer: (id: string, body: { requestId: string; round: number; revision: number; answers: Array<{ questionId: string; optionId?: string; text?: string }> }) => api.send("POST", path(id) + "/answers", body, SessionResponseReaderSchema, { retry: "never" }),
   // The task's own close. The first ask never discards unpublished work; `discardUnpublished` is the person's answer to the list the first answer gave.
-  close: (id: string, body: { requestId: string; discardUnpublished?: true }) => api.send("POST", path(id) + "/close", body, SessionCloseResponseReaderSchema),
-  follow: (id: string) => api.send("POST", path(id) + "/follow", undefined, SessionFollowResponseReaderSchema),
-  unfollow: (id: string) => api.send("DELETE", path(id) + "/follow", undefined, SessionFollowResponseReaderSchema),
+  close: (id: string, body: { requestId: string; discardUnpublished?: true }) => api.send("POST", path(id) + "/close", body, SessionCloseResponseReaderSchema, { retry: "never" }),
+  follow: (id: string) => api.send("POST", path(id) + "/follow", undefined, SessionFollowResponseReaderSchema, { retry: "never" }),
+  unfollow: (id: string) => api.send("DELETE", path(id) + "/follow", undefined, SessionFollowResponseReaderSchema, { retry: "never" }),
   // Rovara-cloud#25: a task stopped by review findings. Send it back to coding with the owner's note, or accept the findings (with a reason) so the pull request opens.
-  sendBack: (id: string, body: { requestId: string; note?: string }) => api.send("POST", path(id) + "/send-back", body, SessionResponseReaderSchema),
-  acceptFindings: (id: string, body: { requestId: string; reason: string }) => api.send("POST", path(id) + "/accept-findings", body, SessionResponseReaderSchema),
-  stop: (id: string) => control(id, "stop"), retry: (id: string) => control(id, "retry"), takeOver: (id: string, expectedPeopleRevision: number) => {
+  sendBack: (id: string, body: { requestId: string; expectedRevision: number; candidateDigest: string; note?: string }) => api.send("POST", path(id) + "/send-back", body, SessionResponseReaderSchema, { retry: "never" }),
+  acceptFindings: (id: string, body: { requestId: string; expectedRevision: number; candidateDigest: string; reason: string }) => api.send("POST", path(id) + "/accept-findings", body, SessionResponseReaderSchema, { retry: "never" }),
+  stop: (id: string, requestId?: string) => control(id, "stop", requestId), retry: (id: string, requestId: string = crypto.randomUUID(), shown?: { expectedRevision: number; candidateDigest?: string }) => api.send("POST", path(id) + "/retry", { requestId, ...shown }, SessionResponseReaderSchema, { retry: "never" }), takeOver: (id: string, expectedPeopleRevision: number, requestId: string = crypto.randomUUID()) => {
    if (!Number.isSafeInteger(expectedPeopleRevision) || expectedPeopleRevision < 1) throw new Error("Take over needs the People revision shown on the page.");
-   return api.send("POST", path(id) + "/take-over", { requestId: crypto.randomUUID(), expectedPeopleRevision }, SessionResponseReaderSchema);
+   // Take-over proposes an ownership change; keep its validated confirmation metadata.
+   return ownership.send("POST", path(id) + "/take-over", { requestId, expectedPeopleRevision }, SessionResponseReaderSchema, { retry: "never" });
   },
  };
 }

@@ -1,0 +1,51 @@
+import type { ReactNode } from "react";
+import type { ReadPlan } from "../../api/work.js";
+import { DecisionFrame } from "../../design/DecisionFrame.js";
+import { Button } from "../../design/Button.js";
+import { VisibleText } from "../../design/VisibleText.js";
+import { SpecStep } from "./SpecStep.js";
+import "../work/work.css";
+
+export type PlanDecisionState = "read-required" | "ready" | "outdated" | "failed" | "submitting";
+
+export interface PlanDecisionViewProps {
+ taskTitle: string;
+ plan: ReadPlan | undefined;
+ state: PlanDecisionState;
+ decisionSlot?: ReactNode | undefined;
+ onRetry?: (() => void) | undefined;
+ /** The route's exact Slack return destination, when its owning composition has one. */
+ slackReturnTo?: string | undefined;
+}
+
+/** Cloud's plan approval view. Decision handlers and evidence digest policy remain in the caller-owned action slot. */
+export function PlanDecisionView({ taskTitle, plan, state, decisionSlot, onRetry, slackReturnTo }: PlanDecisionViewProps) {
+ const mayShowDecision = state === "read-required" || state === "ready";
+ return <article className="rv-task-plan-view" aria-label="Plan decision">
+  <header className="rv-pane-head">
+   <p className="rv-eyebrow">{slackReturnTo !== undefined && <><a href={slackReturnTo}>Back to Slack</a> · </>}Plan decision</p>
+   <h2><VisibleText text={taskTitle} /></h2>
+   <div className="rv-section-head"><h3>{state === "failed" ? "Plan" : "Plan v" + String(plan?.version ?? "?")}</h3>{state !== "failed" && <span>Current revision</span>}</div>
+  </header>
+  <DecisionFrame title={state === "failed" ? "Plan unavailable" : "Review this plan"} actions={null} className="rv-task-primary">
+   <section className="rv-pane-main" aria-label="Current plan">
+  {state === "failed" && <div className="rv-plan-decision-state" role="alert">
+      <p>The latest plan couldn't be read. Try again before deciding.</p>
+   {onRetry !== undefined && <Button onClick={onRetry}>Read the plan again</Button>}
+  </div>}
+  {state === "outdated" && <div className="rv-plan-decision-state" role="status">
+   <h3>This plan was replaced</h3>
+   <p>A newer plan is available. Review this revision before deciding.</p>
+  </div>}
+  {state === "submitting" && <p className="rv-plan-decision-state" role="status">Submitting your decision…</p>}
+  {state === "read-required" && <p className="rv-plan-decision-state" role="status">Read the required evidence before approving this plan.</p>}
+  {state === "ready" && <p className="rv-plan-decision-state" role="status">Required evidence read for this revision. It has not been approved yet.</p>}
+  {state !== "failed" && plan !== undefined && <>
+   <h3>Current plan</h3>
+   <SpecStep plan={plan} comments={[]} />
+  </>}
+   </section>
+   {mayShowDecision && decisionSlot !== undefined && <div aria-label="Your decision">{decisionSlot}</div>}
+  </DecisionFrame>
+ </article>;
+}

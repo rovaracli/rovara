@@ -36,6 +36,8 @@ button:disabled{cursor:default;opacity:.65}
 .rv-menu-item{display:flex;justify-content:space-between;gap:var(--rv-space-3);min-height:var(--rv-control-size,36px);padding:0 var(--rv-space-3);align-items:center;border-radius:var(--rv-radius-sm);cursor:pointer;outline:none}
 .rv-menu-item[data-highlighted]{background:var(--rv-bg-sunken);outline:2px solid var(--rv-focus);outline-offset:2px}
 .rv-menu-item[data-disabled]{opacity:.6;cursor:default}
+.rv-menu-separator{height:1px;margin:var(--rv-space-1) 0;background:var(--rv-border)}
+.rv-menu-item-danger{color:var(--rv-danger)}
 .rv-tooltip{font-size:var(--rv-font-sm);padding:var(--rv-space-2) var(--rv-space-3)}
 .rv-tabs{padding:4px;display:flex;gap:var(--rv-space-4);border-bottom:1px solid var(--rv-border);overflow-x:auto}
 .rv-tab{min-height:var(--rv-control-size,36px);white-space:nowrap;padding:0 var(--rv-space-1);background:transparent;color:var(--rv-text-muted);border:0;border-bottom:2px solid transparent;font-weight:600}

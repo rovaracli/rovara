@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { AppNavReaderSchema } from "@agentx/contracts/web";
-import { createApiClient } from "../../api/client.js";
+import { createReadClient } from "../../api/read-client.js";
 import { useAppHost } from "../../host.js";
 import { paths } from "../../paths.js";
 import { VisibleText } from "../../design/VisibleText.js";
@@ -13,7 +13,7 @@ import { ToneDot, type StatusTone } from "../../design/StatusDot.js";
  * It reads the same navigation answer the sidebar reads. While Rovara Code does not serve agents the answer has none, and the row says so.
  */
 export function AgentsRow() {
- const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
+ const host = useAppHost(), api = useMemo(() => createReadClient(host), [host]);
  const nav = useQuery({ queryKey: ["nav"], queryFn: () => api.get("/v1/app/nav", AppNavReaderSchema) });
  if (nav.data === undefined) return null;
  const agents = nav.data.projects.flatMap(project => project.agents.map(agent => ({ ...agent, project: project.name })));

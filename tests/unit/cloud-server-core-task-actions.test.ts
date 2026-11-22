@@ -37,7 +37,6 @@ const OTHER_TASK = "7a9d0c1e-2b3a-4c5d-8e7f-001122334466";
 const CODE_SESSION = codeSessionIdOf(TASK);
 const CLOUD_SESSION = "ses_aaaaaaaaaaaaaaaaaaaa";
 const REQUEST_ID = "33333333-3333-4333-8333-333333333333";
-const UPPER_REQUEST_ID = "ABCDEF12-3333-4333-8333-33333333ABCD";
 
 /** A fixture with its task's ids made this test's (the generated fixture names the task and session Code made). */
 const ours = <T>(value: T, taskId = TASK): T => JSON.parse(JSON.stringify(value).replaceAll(FIXTURE.taskId, taskId).replaceAll(FIXTURE.sessionId, codeSessionIdOf(taskId))) as T;
@@ -156,75 +155,19 @@ describe("the fixture is Code's own", () => {
   });
 });
 
-describe("Retry reviews on a core task", () => {
-  it("asks the old route first, then retries through the task's Code session as the person, and answers the session from the core's task", async () => {
-    const w = setUp();
-    const res = await w.send("POST", RETRY, { requestId: REQUEST_ID }, await w.ada());
-    expect(res.status).toBe(200);
-    expect(w.route()).toEqual([`GET /v1/dev/tasks/${TASK}`, `POST /v1/dev/tasks/${TASK}/workflow/review`, `POST /v1/app/sessions/${CODE_SESSION}/retry`]);
-    expect(w.coreSessionCalls()).toEqual([{ method: "POST", path: `/v1/app/sessions/${CODE_SESSION}/retry`, token: "ada-token", body: { requestId: REQUEST_ID } }]);
-    const session = SessionResponseReaderSchema.parse(res.body).session;
-    expect(session.sessionId).toBe(CLOUD_SESSION);
-    expect((session.body as { task: { taskId: string } }).task.taskId).toBe(TASK);
-  });
-
-  it("sends Code's session control a lower-case request id (it takes no other)", async () => {
-    const w = setUp();
-    expect((await w.send("POST", RETRY, { requestId: UPPER_REQUEST_ID }, await w.ada())).status).toBe(200);
-    expect(w.coreSessionCalls()[0]!.body).toEqual({ requestId: UPPER_REQUEST_ID.toLowerCase() });
-  });
-
-  it("a task whose read names no session (started before Code kept one for every task): fixed words, and no session is asked about", async () => {
-    const w = setUp({ session: "absent" });
-    const res = await w.send("POST", RETRY, { requestId: REQUEST_ID }, await w.ada());
-    expect(res).toMatchObject({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: CORE_ACTION_WORDS.retryNoSession } } });
-    expect(JSON.stringify(res.body)).not.toContain("There is no such session");
-    expect(w.coreSessionCalls()).toEqual([]);
-    expect(w.calls).toHaveLength(2);
-  });
-
-  it("a Code whose core serves no sessions here: the same fixed words, never Code's own", async () => {
-    const w = setUp({ session: "unwired" });
-    const res = await w.send("POST", RETRY, { requestId: REQUEST_ID }, await w.ada());
-    expect(res).toMatchObject({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: CORE_ACTION_WORDS.retry } } });
-    expect(JSON.stringify(res.body)).not.toContain("core engine");
-  });
-
-  it("an old route that refuses for its own reasons never starts the core fallback", async () => {
-    const w = setUp({ engine: "refuses" });
-    expect((await w.send("POST", RETRY, { requestId: REQUEST_ID }, await w.ada())).status).toBe(409);
-    expect(w.coreSessionCalls()).toEqual([]);
-  });
-
-  it("an answer for another task, or one that does not read, is refused in fixed words", async () => {
-    for (const w of [setUp({ session: "foreign" }), setUp({ retryAnswer: { session: { body: { kind: "task" } } } })]) {
-      const res = await w.send("POST", RETRY, { requestId: REQUEST_ID }, await w.ada());
-      expect(res).toEqual(expect.objectContaining({ status: 502, body: { error: { code: "RUNTIME_UNAVAILABLE", message: CORE_ACTION_WORDS.unreadable } } }));
-    }
-  });
-
-  it("a workflow task is retried on the old route and never reaches a Code session", async () => {
-    const w = setUp({ engine: "legacy" });
-    expect((await w.send("POST", RETRY, { requestId: REQUEST_ID }, await w.ada())).status).toBe(200);
-    expect(w.coreSessionCalls()).toEqual([]);
-  });
-
-  it("auth: a member who is not the owner is refused before anything acts; Code's session-level refusal passes through; another company reads no task", async () => {
-    const sam = setUp();
-    const refused = await sam.send("POST", RETRY, { requestId: REQUEST_ID }, await sam.sam());
-    expect(refused.status).toBe(404);
-    expect(sam.coreSessionCalls()).toEqual([]);
-    expect(sam.route()).toEqual([`GET /v1/dev/tasks/${TASK}`]);
-    const level = setUp({ session: "level" });
-    expect((await level.send("POST", RETRY, { requestId: REQUEST_ID }, await level.sam())).status).toBe(403);
-    expect(level.coreSessionCalls()).toEqual([]);
-    const owner = setUp({ session: "level" });
-    const byCode = await owner.send("POST", RETRY, { requestId: REQUEST_ID }, await owner.ada());
-    expect(byCode).toMatchObject({ status: FIXTURE.sessionLevel.status, body: FIXTURE.sessionLevel.body });
-    const eve = setUp();
-    expect((await eve.send("POST", RETRY, { requestId: REQUEST_ID }, await eve.eve())).status).toBe(404);
-    expect(eve.coreSessionCalls()).toEqual([]);
-  });
+describe("DEC283 Retry reviews require displayed pins and never downgrade", () => {
+ it("refuses an unpinned legacy caller before dispatch", async () => {
+  const w = setUp();expect((await w.send("POST", RETRY, { requestId: REQUEST_ID }, await w.ada())).status).toBe(400);expect(w.coreSessionCalls()).toEqual([]);expect(w.route()).toEqual([`GET /v1/dev/tasks/${TASK}`]);
+ });
+ it.each(["absent", "unwired", "foreign", "level"] as const)("does not ask a %s core session to perform unversioned Retry", async session => {
+  const w = setUp({ session });const workflow = (FIXTURE.reviewBlockedTask as { workflow: { revision: number; candidate: { digest: string } } }).workflow;
+  const res = await w.send("POST", RETRY, { requestId: REQUEST_ID, expectedRevision: workflow.revision, candidateDigest: workflow.candidate.digest }, await w.ada());
+  expect(res.status).toBe(404);expect(w.coreSessionCalls()).toEqual([]);
+ });
+ it("retains the guarded legacy route", async () => {
+  const w = setUp({ engine: "legacy" });const workflow = (FIXTURE.reviewBlockedTask as { workflow: { revision: number; candidate: { digest: string } } }).workflow;
+  expect((await w.send("POST", RETRY, { requestId: REQUEST_ID, expectedRevision: workflow.revision, candidateDigest: workflow.candidate.digest }, await w.ada())).status).toBe(200);expect(w.coreSessionCalls()).toEqual([]);
+ });
 });
 
 describe("Close on a core task", () => {
@@ -284,7 +227,7 @@ describe("Close on a core task", () => {
 describe("Accept findings that include a security finding", () => {
   it("the core takes it only on the web page's own route: Cloud asks that route next with the same body, with no step-up (owner DEC 254zzz73)", async () => {
     const w = setUp({ security: "forbidden", page: "ok" });
-    const res = await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "A test token only." }, await w.ada());
+    const res = await w.send("POST", ACCEPT, { expectedRevision: 16, candidateDigest: String((FIXTURE.reviewBlockedTask as { workflow: { candidate: { digest: string } } }).workflow.candidate.digest), requestId: REQUEST_ID, reason: "A test token only." }, await w.ada());
     expect(res.status).toBe(200);
     expect(JSON.stringify(res.body)).not.toContain("Rovara web page");
     const sent = w.calls.find((call) => call.path.endsWith("/workflow/review-findings"))!.body as { resolutions: unknown[] };
@@ -297,19 +240,19 @@ describe("Accept findings that include a security finding", () => {
 
   it("a Code without the page route says it can't be done here, in fixed words, and nothing is accepted", async () => {
     const w = setUp({ security: "forbidden" });
-    expect(await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "A test token only." }, await w.ada())).toMatchObject({ status: 409, body: { error: { code: "SECURITY_ACCEPT_NOT_HERE", message: CORE_ACTION_WORDS.securityNotHere } } });
+    expect(await w.send("POST", ACCEPT, { expectedRevision: 16, candidateDigest: String((FIXTURE.reviewBlockedTask as { workflow: { candidate: { digest: string } } }).workflow.candidate.digest), requestId: REQUEST_ID, reason: "A test token only." }, await w.ada())).toMatchObject({ status: 409, body: { error: { code: "SECURITY_ACCEPT_NOT_HERE", message: CORE_ACTION_WORDS.securityNotHere } } });
   });
 
   it("auth: a member without access and another company are refused before any finding is sent", async () => {
     for (const who of ["sam", "eve"] as const) {
       const w = setUp({ security: "forbidden", page: "ok" });
-      expect((await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, await w[who]())).status).toBe(404);
+      expect((await w.send("POST", ACCEPT, { expectedRevision: 16, candidateDigest: String((FIXTURE.reviewBlockedTask as { workflow: { candidate: { digest: string } } }).workflow.candidate.digest), requestId: REQUEST_ID, reason: "ok" }, await w[who]())).status).toBe(404);
       expect(w.calls.some((call) => call.path.startsWith("/v1/app/tasks/"))).toBe(false);
       expect(w.calls.some((call) => call.path.endsWith("/workflow/review-findings"))).toBe(false);
     }
     // A reader of the task who is not its owner: Cloud refuses before Code is asked to act.
     const reader = setUp({ security: "forbidden", session: "level", page: "ok" });
-    expect((await reader.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, await reader.sam())).status).toBe(403);
+    expect((await reader.send("POST", ACCEPT, { expectedRevision: 16, candidateDigest: String((FIXTURE.reviewBlockedTask as { workflow: { candidate: { digest: string } } }).workflow.candidate.digest), requestId: REQUEST_ID, reason: "ok" }, await reader.sam())).status).toBe(403);
     expect(reader.calls.some((call) => call.path.endsWith("/workflow/review-findings"))).toBe(false);
     expect(reader.calls.some((call) => call.path.startsWith("/v1/app/tasks/"))).toBe(false);
   });

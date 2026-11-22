@@ -830,7 +830,7 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     expect(tile?.statusWords).toBe("Review couldn't finish");
     expect(tile?.actions).toContain("retry");
 
-    const retried = await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: { requestId: "77777777-7777-4777-8777-777777777777" } });
+    const retried = await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: { requestId: "77777777-7777-4777-8777-777777777777", expectedRevision: 16, candidateDigest: CANDIDATE } });
     expect(retried!.status).toBe(200);
     expect(SessionResponseReaderSchema.parse(JSON.parse(retried!.body)).session.status).toBe("running");
     const { requestId, instructions, ...fence } = JSON.parse(code.calls.find((entry) => entry.path === `/v1/dev/tasks/${code.taskId}/workflow/review`)!.body!) as Record<string, unknown>;
@@ -854,20 +854,20 @@ describe("Home's cards and plan approval (phase 2b)", () => {
   it("sends a task stopped by review findings back to coding with the owner's note, or the default note (Rovara-cloud#25)", async () => {
     const { call, auth, code, sessionId } = await begin();
     code.setTask({ status: "SUCCEEDED", ...REVIEW_FINDINGS() });
-    const sent = await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", note: "  Import blog.css directly and restore the meta description.  " } });
+    const sent = await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", expectedRevision: 16, candidateDigest: CANDIDATE, note: "  Import blog.css directly and restore the meta description.  " } });
     expect(sent!.status).toBe(200);
     expect(SessionResponseReaderSchema.parse(JSON.parse(sent!.body)).session.status).toBe("running");
     expect(JSON.parse(code.calls.find((entry) => entry.path === `/v1/dev/tasks/${code.taskId}/workflow/send-back`)!.body!)).toEqual({ requestId: "88888888-8888-4888-8888-888888888888", expectedRevision: 16, instructions: "Import blog.css directly and restore the meta description." });
     code.setTask({ status: "SUCCEEDED", ...REVIEW_FINDINGS() });
-    await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "99999999-9999-4999-8999-999999999999" } });
+    await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "99999999-9999-4999-8999-999999999999", expectedRevision: 16, candidateDigest: CANDIDATE } });
     expect(JSON.parse(code.calls.filter((entry) => entry.path.endsWith("/workflow/send-back")).at(-1)!.body!)).toMatchObject({ instructions: "Fix the review findings." });
   });
 
   it("accepts every blocking finding with the owner's reason, by IDs it computes from Code's task, never from the request (Rovara-cloud#25)", async () => {
     const { call, auth, code, sessionId } = await begin();
     code.setTask({ status: "SUCCEEDED", ...REVIEW_FINDINGS() });
-    expect((await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888" } }))!.status).toBe(400);
-    const accepted = await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", reason: "Cosmetic; fixed in a follow-up.", resolutions: [{ findingId: "e".repeat(64), action: "ACCEPT", note: "x" }] } });
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", expectedRevision: 16, candidateDigest: CANDIDATE } }))!.status).toBe(400);
+    const accepted = await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", expectedRevision: 16, candidateDigest: CANDIDATE, reason: "Cosmetic; fixed in a follow-up.", resolutions: [{ findingId: "e".repeat(64), action: "ACCEPT", note: "x" }] } });
     expect(accepted!.status).toBe(200);
     expect(JSON.parse(code.calls.find((entry) => entry.path === `/v1/dev/tasks/${code.taskId}/workflow/review-findings`)!.body!)).toEqual({
       requestId: "88888888-8888-4888-8888-888888888888", expectedRevision: 16, candidateDigest: CANDIDATE,
@@ -881,9 +881,9 @@ describe("Home's cards and plan approval (phase 2b)", () => {
   it("refuses send-back and accept when nothing is blocked by findings: a review that couldn't finish, or a plan waiting", async () => {
     const { call, auth, code, sessionId } = await begin();
     code.setTask({ status: "SUCCEEDED", ...REVIEW_BLOCKED() });
-    expect((await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888" } }))!.status).toBe(409);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", expectedRevision: 16, candidateDigest: CANDIDATE } }))!.status).toBe(409);
     code.setTask(PLAN_WAITING);
-    expect((await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", reason: "ok" } }))!.status).toBe(409);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", expectedRevision: 16, candidateDigest: CANDIDATE, reason: "ok" } }))!.status).toBe(409);
     expect(code.calls.some((entry) => entry.path.endsWith("/workflow/send-back") || entry.path.endsWith("/workflow/review-findings"))).toBe(false);
   });
 
@@ -892,9 +892,9 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     code.setTask({ status: "RUNNING", ...REVIEW_BLOCKED(false) });
     const [card] = (await home(call, auth.cookie)).cards;
     expect(card?.buttons.map((button) => button.label)).toEqual(["Open session"]);
-    expect((await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: { requestId: "77777777-7777-4777-8777-777777777777" } }))!.status).toBe(409);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: { requestId: "77777777-7777-4777-8777-777777777777", expectedRevision: 16, candidateDigest: CANDIDATE } }))!.status).toBe(409);
     code.setTask(PLAN_WAITING);
-    expect((await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: { requestId: "77777777-7777-4777-8777-777777777777" } }))!.status).toBe(409);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: { requestId: "77777777-7777-4777-8777-777777777777", expectedRevision: 16, candidateDigest: CANDIDATE } }))!.status).toBe(409);
     expect((await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: {} }))!.status).toBe(400);
     expect(code.calls.some((entry) => entry.path.endsWith("/workflow/review"))).toBe(false);
   });

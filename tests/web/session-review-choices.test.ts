@@ -3,15 +3,17 @@
 // (with a required reason). Only the owner sees them; a review that couldn't finish (no findings) shows neither.
 import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { SessionViewReaderSchema } from "@agentx/contracts/web";
 import { workspaceFixture, workspaceWorkflow } from "./support/workspace-fixture.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { readFrozenSessionRequest, sessionScope } from "../../packages/ui/src/api/session-safety.js";
 import { renderUi } from "./support/render.js";
+import { meFixture } from "./support/fixtures.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 import { SESSION_FIXTURE_ID } from "./support/session-fixture.js";
@@ -29,11 +31,18 @@ const FINDINGS = [
 ];
 const ME = "d".repeat(64);
 function setup(raw: unknown, respond: (request: ApiRequest) => Promise<ApiResponse> = async () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "x" } } })) {
- const session = SessionViewReaderSchema.parse(raw), f = fakeHost(respond), query = createQueryClient();
+ const session = SessionViewReaderSchema.parse(raw);let current = session;const f = fakeHost(async request => request.path === "/v1/app/me" ? { status: 200, body: meFixture() } : request.method === "GET" && request.path === "/v1/app/sessions/" + SESSION_FIXTURE_ID ? { status: 200, body: { session: current } } : respond(request)), query = createQueryClient();
  query.setQueryData(["nav"], { me: { developerId: ME, name: "Maya", orgRole: "member" } });
- const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session, onComment: () => undefined })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
+ function MountedWorkspace() {
+  const read = useQuery({ queryKey: ["session", SESSION_FIXTURE_ID], initialData: session, staleTime: Infinity, queryFn: async () => {
+   const reply = await f.host.transport.request({ method: "GET", path: "/v1/app/sessions/" + SESSION_FIXTURE_ID });
+   return SessionViewReaderSchema.parse((reply.body as { session: unknown }).session);
+  } });
+  return h(Workspace, { session: read.data, onComment: () => undefined });
+ }
+ const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(MountedWorkspace, {})) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
- return { f, close() { ui.unmount(); router.dispose(); query.clear(); } };
+ return { f, readAs(raw: unknown) { current = SessionViewReaderSchema.parse(raw); }, close() { ui.unmount(); router.dispose(); query.clear(); } };
 }
 
 it("lists only the blocking findings and sends the code back to coding with the owner's note", async () => {
@@ -95,4 +104,58 @@ it("shows nothing to someone who is not the owner, or for a review that couldn't
  await screen.findByRole("list", { name: "Task stages" });
  expect(screen.queryByRole("region", { name: "Review findings" })).toBeNull();
  b.close();
+});
+
+for (const operation of ["send", "accept"] as const) for (const code of ["CSRF_INVALID", "CSRF_STALE", "UNRECOGNISED"]) it(`R3/R6a Review ${operation}: 500/${code} leaves the confirmation locked`, async () => {
+ const fixture = workspaceFixture({ status: "needs_person" }, blockedByFindings(FINDINGS));
+ const s = setup(fixture, async () => ({ status: 500, body: { error: { code, message: "Unknown result" } } }));
+ fireEvent.change(await screen.findByLabelText("Your note"), { target: { value: "Keep the exact reviewed change" } });
+ const button = screen.getByRole<HTMLButtonElement>("button", { name: operation === "send" ? "Send back to coding" : "Accept and open the pull request" });
+ await waitFor(() => expect(button.disabled).toBe(false));fireEvent.click(button);
+ await waitFor(() => expect(s.f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1));
+ await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+ expect(button.disabled).toBe(true);
+ fireEvent.click(screen.getByRole("button", { name: "Check" }));
+ await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+ expect(s.f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);expect(button.disabled).toBe(true);
+ s.close();
+});
+
+for (const code of ["IDEMPOTENCY_CONFLICT", "CONFLICT"]) for (const operation of ["send", "accept"] as const) it(`DEC283 ${code} ${operation}: sends the displayed workflow revision and candidate after a newer GET and never resends a 409`, async () => {
+ const fixture = workspaceFixture({ status: "needs_person" }, blockedByFindings(FINDINGS));
+ const words = code === "CONFLICT" ? operation === "send" ? "There are no review findings to send back right now." : "There are no review findings to accept right now." : "The shown candidate changed.";
+ const s = setup(fixture, async () => ({ status: 409, body: { error: { code, message: words } } }));
+ try {
+  fireEvent.change(await screen.findByLabelText("Your note"), { target: { value: "Use these exact findings" } });
+  s.readAs(workspaceFixture({ status: "needs_person" }, { workflow: { ...blockedByFindings(FINDINGS).workflow, revision: workspaceWorkflow().revision + 1 } }));
+  fireEvent.click(screen.getByRole("button", { name: operation === "send" ? "Send back to coding" : "Accept and open the pull request" }));
+  await screen.findByText(words);
+  const sent = s.f.request.mock.calls.filter(([r]) => r.method === "POST");
+  expect(sent).toHaveLength(1);expect(sent[0]![0].body).toMatchObject({ expectedRevision: workspaceWorkflow().revision, candidateDigest: DIGEST });
+  await waitFor(() => expect(s.f.request.mock.calls.filter(([r]) => r.method === "GET" && r.path.endsWith(SESSION_FIXTURE_ID)).length).toBeGreaterThanOrEqual(2));
+  if (code === "IDEMPOTENCY_CONFLICT") {
+   // docs/safe-action.md:5,9: every review idempotency conflict is unknown;
+   // a newer read alone cannot discard the frozen identity and permit a resend.
+   const me = meFixture(), scope = sessionScope({ companyId: me.org.orgId, personId: me.developer.id }, "review:" + SESSION_FIXTURE_ID);
+   const frozen = readFrozenSessionRequest(s.f.host, scope);
+   expect(frozen).toMatchObject({ requestId: (sent[0]![0].body as { requestId: string }).requestId, action: operation, body: sent[0]![0].body });
+   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send back to coding" }).disabled).toBe(true);
+   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Accept and open the pull request" }).disabled).toBe(true);
+   expect(screen.getByText(/Rovara didn't confirm this yet/)).toBeTruthy();
+   const reads = s.f.request.mock.calls.filter(([r]) => r.method === "GET" && r.path.endsWith(SESSION_FIXTURE_ID)).length;
+   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Check" })); });
+   await waitFor(() => expect(s.f.request.mock.calls.filter(([r]) => r.method === "GET" && r.path.endsWith(SESSION_FIXTURE_ID)).length).toBeGreaterThan(reads));
+   expect(readFrozenSessionRequest(s.f.host, scope)).toEqual(frozen);
+   const send = screen.getByRole<HTMLButtonElement>("button", { name: "Send back to coding" }), accept = screen.getByRole<HTMLButtonElement>("button", { name: "Accept and open the pull request" });
+   expect(send.disabled).toBe(true);expect(accept.disabled).toBe(true);
+   fireEvent.click(send);fireEvent.click(accept);
+  } else {
+   // docs/safe-action.md:5: proven pre-commit owner-round refusals remain final.
+   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send back to coding" }).disabled).toBe(false));
+   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Accept and open the pull request" }).disabled).toBe(false);
+   expect(screen.queryByText(/Rovara didn't confirm this yet/)).toBeNull();
+   expect([...s.f.storage.values()].some(raw => raw.includes('"action":"' + operation + '"'))).toBe(false);
+  }
+  expect(s.f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);
+ } finally { s.close(); }
 });

@@ -20,6 +20,7 @@ import { projectFixture } from "./support/project-fixture.js";
 import { taskFixture, sessionFixture } from "./support/session-fixture.js";
 import { LAYER, howWeWorkView } from "./support/how-we-work-view.js";
 import { liveFixture } from "./support/live-fixture.js";
+import { meFixture } from "./support/fixtures.js";
 const id = "ses_bbbbbbbbbbbbbbbbbbbb", CODE = "/v1/app/projects/payments/code";
 const started = () => ({ status: 202, body: { task: taskFixture({ sessionId: id }), sessionId: id, sessionUrl: "https://cell.example/s/" + id } });
 // Match json-reply.ts, including gateway overwrite of a route's own requestId.
@@ -120,7 +121,11 @@ it("answers a full workspace limit with the person's open tasks as links with a 
  const first = "ses_cccccccccccccccccccc", second = "ses_dddddddddddddddddddd";
  let open = OPEN(first, second), refuse = true;
  const send = vi.fn(async (request: ApiRequest): Promise<ApiResponse> => request.path === CODE ? (refuse ? LIMIT : started()) : request.path.endsWith("/close") ? { status: 200, body: { closed: true, session: { ...sessionFixture({ sessionId: first }) } } } : { status: 500, body: {} });
- const f = setup(undefined, { send, get: request => request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: open } } : undefined }), navigate = vi.spyOn(f.host, "navigate");
+ const f = setup(undefined, { send, get: request => {
+  if (request.path === "/v1/app/me") return { status: 200, body: meFixture() };
+  if (request.path === "/v1/app/sessions/" + first) { const current = sessionFixture({ sessionId: first });return { status: 200, body: { session: { ...current, you: { ...current.you, actions: [...current.you.actions, "close"] } } } }; }
+  return request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: open } } : undefined;
+ } }), navigate = vi.spyOn(f.host, "navigate");
  fireEvent.change(await box(), { target: { value: "Fix the duplicate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
  expect((await screen.findByRole("alert")).textContent).toBe("You have too many open tasks to start more work. Close one of these, then start again.");
  expect(document.body.textContent).not.toContain("agentx_close_task");
@@ -133,6 +138,9 @@ it("answers a full workspace limit with the person's open tasks as links with a 
  open = OPEN(second);refuse = false;
  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close task" }));
  await waitFor(() => expect(send.mock.calls.filter(([request]) => request.path === "/v1/app/sessions/" + first + "/close")).toHaveLength(1));
+ const calls = f.request.mock.calls.map(([request]) => request), closeIndex = calls.findIndex(request => request.path.endsWith("/close"));
+ expect(calls.slice(0, closeIndex).some(request => request.method === "GET" && request.path === "/v1/app/me")).toBe(true);
+ expect(calls.slice(0, closeIndex).some(request => request.method === "GET" && request.path === "/v1/app/sessions/" + first)).toBe(true);
  expect(send.mock.calls.find(([request]) => request.path.endsWith("/close"))![0]).toMatchObject({ method: "POST", body: { requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown } });
  // The refusal is gone, so the same text can be started again.
  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
