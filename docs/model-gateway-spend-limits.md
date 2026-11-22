@@ -130,7 +130,8 @@ Cloud's Spending page reads `GET /v1/app/org/spend`. Only current company owners
 ## OpenRouter tariff exceptions
 
 `OPENROUTER_RELAXED_TARIFF_MODELS` contains exactly `openai/gpt-5-mini` and
-`openai/gpt-5-nano`. Only these IDs may default absent internal_reasoning,
+`openai/gpt-5-nano`. In the installed policy reader and legacy manual qualification,
+only these IDs may default absent internal_reasoning,
 request and input_cache_read prices to string `"0"`, or omit a well-formed
 nonnegative catalog web_search price from the tariff. Their search exception
 retains the explicit tool/plugin/suffix prohibitions. Every other ID requires
@@ -160,7 +161,9 @@ The hold remains rounded upward to micro-USD:
 Every possible prompt token gets the higher prompt/cache-read rate plus the
 explicit write fee. The direct builder refuses caching directives recursively;
 the Anthropic translator strips cache_control markers. Plugins, search options,
-server search tools and colon variants refuse. This boundary covers the company
+server search tools and routing/free suffixes refuse. The gateway still refuses
+`:thinking` and tilde IDs until the GATEWAY-FOLLOWUP lane lands; qualification
+first requires an exact catalogue entry. This boundary covers the company
 OpenRouter-key route and qualification, not custom-endpoint transport.
 
 Qualification refuses positive or unreadable reported auxiliary cost/fee/search/
@@ -168,15 +171,21 @@ cache-write evidence, including documented prompt_tokens_details.cache_write_tok
 It retains validated cache counts and fixed PASS/FAIL checks without echoing
 arbitrary upstream fields. Only upstream_inference_cost may appear in cost_details;
 usage.cost must equal that inference total and generation.total_cost exactly.
-The inference total must also equal exact decimal token billing: uncached prompt
-at prompt rate, cached prompt at cache-read rate, visible output at completion
-rate, reasoning at its explicit positive rate (otherwise completion), plus request.
-Both sources' prompt, combined completion, reasoning and cached counts must agree.
-Unreconcilable receipts refuse, even when below the rounded hold. This deliberately
-conservative qualification may refuse providers with different billing semantics.
+Under DEC 254zzz330 the inference total must be positive and no greater than the
+dearer token interpretation: uncached prompt at prompt rate, cached prompt at
+cache-read rate, completion plus reasoning at completion rate, plus request.
+Each receipt's counts must be readable; the larger token maximum across usage
+and generation is retained. Counts need not agree across the two receipts.
+In all-models qualification that token maximum must also fit the original hold:
+`reported <= token maximum <= hold`. A reported charge above the token maximum
+is `hidden_charge`: FAIL, no candidate, original hold and any higher debit retained,
+and all remaining calls/providers for that model stopped. Overall-cap excess stops
+the run; other models may continue below the overall cap. Unexpectedly accepted
+price-cap probes use the same backstop and model stop. Unreadable receipts refuse
+and retain their holds.
 
 The legacy report check no_web_search_cost means no **reported** auxiliary charge
-and exact token-only reconciliation; it is not an itemized zero-search receipt or
+and bounded token-only reconciliation; it is not an itemized zero-search receipt or
 proof about later calls. Offline tests cannot establish real route billing,
 max_price enforcement or reasoning/output limits. Sol re-review, lead 4 Opus money
 review, 9d's final stamped gate, real pinned-provider qualification and installed
@@ -206,3 +215,124 @@ now accepts only that message (case-insensitive, surrounding whitespace and one
 optional trailing period). The successful same-run control, one-component cap
 differential, accepted 400/404/422 statuses, zero debit and absent id/usage guards
 remain in force; generic no-endpoint/data-policy errors cannot qualify a tariff.
+
+### Catalogue-wide qualification (DEC 254zzz338)
+
+The owner should first run a discovery dry run with a one-micro-dollar cap:
+
+```sh
+node scripts/openrouter-qualify.mjs --all-models --report discovery-report.json --spend-cap 0.000001 --per-model-cap 0.05
+```
+
+The intent is free catalogue/endpoint lookups only: a first paid hold above
+one micro-dollar refuses before sending. Inspect the exclusions and
+`failuresByCause` before the $15 run, and confirm `reservedMicros` and
+`chargedMicros` are zero. Real endpoint data may exclude every route, for
+example through extra pricing keys that the bounded schema refuses. This cap
+is not a no-send mode: a one-micro-dollar hold can fit. A FAIL exit is expected
+when the cap refuses or all routes are excluded.
+
+After checking discovery, the owner can run the same harness across the catalogue:
+
+```sh
+node scripts/openrouter-qualify.mjs --all-models --report report.json --spend-cap 15.00 --per-model-cap 0.05
+node scripts/openrouter-qualify.mjs --all-models --report next-report.json --spend-cap 15.00 --per-model-cap 0.05 --resume report.json
+```
+
+Every all-models CLI run saves its report (default `report.json`) and the raw
+fetched JSON next to it (`discovery-report-catalogue.json` in the discovery
+example). The snapshot has `models` (the entire model-list body) and `endpoints`
+(each fetched endpoint body, indexed by exact model ID). Non-success JSON bodies
+are retained too, with their HTTP codes in `statuses`, indexed by request path.
+No request metadata or headers are saved. A credential echo, including a
+16-character key fragment, or Authorization data withholds both files. The report
+is still printed to stdout on ordinary runs; `--report` names the files explicitly
+because shell stdout redirection does not tell the harness its destination.
+
+Offline eligibility replay can supply the parsed snapshot to the module's
+`qualify({ allModels: true, catalogue, ... })` input, using the same caps as the
+discovery and an injected `fetch` that throws to prevent paid calls. Supplied
+catalogue lookups never fall back to the network when an endpoint body is missing.
+This replays discovery verdicts; it does not replace live qualification evidence.
+
+The key still comes only from the harness process's `OPENROUTER_API_KEY`.
+`--all-models` cannot be combined with manual model/provider selection. The
+catalogue and each provider endpoint must declare tools support and satisfy a
+bounded tariff. Provider endpoint prices are checked independently; aggregate
+catalogue prices never replace a missing endpoint tariff. Estimated, ambiguous,
+unpriced and unsupported routes are excluded with reasons. Eligible routes retain
+the run-8 identity, BYOK and price-cap refusal checks plus the DEC 330 backstop.
+
+All-models qualification normalizes **absent** components individually:
+
+- `request` and `input_cache_read` are zero when absent.
+- Absent `internal_reasoning` uses the completion price, never zero. Its hold
+  adds `reasoning.max_tokens * completion` outside the ordinary output reservation,
+  rounded upward, so output exposure includes at least
+  `(max_tokens + reasoning.max_tokens) * completion`.
+- Absent `input_cache_write` is zero only because no cache-write directives are
+  sent. The existing unexpected-write refusal remains mandatory.
+
+Explicit null, negative or malformed prices still refuse. Prompt/completion must
+be present and positive. Each CANDIDATE row records `assumedZero` (only the absent
+components actually normalized to zero) and, when applicable,
+`reasoningBilledAtCompletion: true`. These are qualification report annotations,
+not an installed tariff or a change to runtime absence defaults. Promotion must
+review the extra qualification reservation and request restrictions; the runtime
+policy reader's legacy absent-price rules remain above.
+
+`pricing.overrides` is parsed as flat price patches with recognized conditions:
+`min_prompt_tokens`, `context_length`, UTC `utc_start`/`utc_end` (HHMM, paired),
+and `utc_days` (weekday names). Every component uses the maximum across the base
+and **every** override, regardless of the current context, day or time. Unknown
+shapes, unknown keys or malformed conditions exclude the route with a reason.
+Known unused prices in overrides are checked too.
+
+Nonzero `web_search`, image/audio (`image`, `audio`, `input_audio`, `output_audio`,
+`input_audio_cache`) and `input_cache_write_1h` prices are allowed only because
+every outgoing qualification body contains plain text and no plugins, web/search,
+media or cache controls. Receipt checks still reject auxiliary charges, including
+native search that occurs without a requested plugin. An unknown price key always
+excludes and is named in the diagnostic. `:online` and `:free` remain excluded;
+free variants have a different data policy. Exact `:thinking` and tilde catalogue
+IDs are allowed without alias inference. Rejected public IDs are logged raw with
+the reason; credential echoes remain redacted.
+
+This extended ID support is harness-only. CANDIDATE rows containing `~` or
+`:thinking` are **not promotable** until a separate gateway lane, with its own
+Opus review, widens `packages/model-gateway/src/openrouter-policy.ts`. The runtime
+validator remains unchanged; the deferred patch is in the lane's
+`briefs/codex/providers-fast/GATEWAY-FOLLOWUP.md`. OpenRouter stays off by default
+pending the owner's launch decision (DEC 337).
+
+Offline proof uses the owner's `ALL-MODELS-DISCOVERY.json` rejection report and
+the supplied raw catalogue fixture. Of its 441 rows, the 343 named IDs can be
+matched exactly: 264 now clear catalogue eligibility, 58 lack tools and 21 still
+have specific tariff/output exclusions. The other 98 IDs were already redacted
+by the old report and cannot be recovered. Provider endpoint data and real route
+billing remain unproven offline. `ABSENT-ZERO-COUNTS.md` in the providers-fast
+brief folder records the full count table and these limits.
+
+The default overall cap is $15 and the default per-model cap is $0.05. Each paid
+call, including each refusal probe, reserves its full hold against both caps.
+Holds remain exposed even when a receipt fails; any higher observed debit is
+also retained. The model cap spans all of that model's provider routes. A model
+cap abandons that model and permits the next; an overall cap or shared
+authentication/credential stop prevents further paid calls. `notReached` lists
+models that received no paid attempt because of those stops. Actual charges,
+reserved holds and conservative exposure are separate report fields.
+
+A model passes when at least one eligible provider route passes; failed and
+excluded providers retain their own evidence. `failuresByCause` groups failed
+models by cause, counting a model once per cause. A cap-abandoned model fails.
+Only passing models' passing routes enter `proposedTariffRows`, labelled
+`CANDIDATE`. No report modifies the reviewed tariff source or installs prices.
+
+Resume skips a prior PASS only when its current eligible tariffs and pinned
+provider identities match and the harness/policy/token-validation implementation hash is
+unchanged. It carries the prior evidence and candidate rows, without refreshing
+their timestamps or counting prior-run charges against the new run's caps.
+Changed/failed models run again; unqualified extra resume rows are not carried.
+Use a new output filename when resuming so shell redirection cannot truncate the
+input report. Batch money review, tariff promotion and staging proof remain
+separate owner/controller steps.
