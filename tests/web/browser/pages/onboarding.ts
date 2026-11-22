@@ -11,8 +11,8 @@ export async function setNoCompany(page: Page, on: boolean): Promise<void> {
 }
 
 /** Makes the pretend Code's next sign-in this person (tests/support/fake-code.ts PEOPLE: priya, sam). */
-export async function setFakePerson(page: Page, person: "priya" | "sam" | "zed"): Promise<void> {
-  const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/person`, { data: { person } });
+export async function setFakePerson(page: Page, person: "priya" | "sam" | "zed", verifiedEmail?: string | null): Promise<void> {
+  const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/person`, { data: { person, ...(verifiedEmail === undefined ? {} : { verifiedEmail }) } });
   expect(answer.status()).toBe(200);
 }
 
@@ -29,6 +29,7 @@ export class CompanyOnboardingPage {
   readonly join: Locator;
   readonly joinSignIn: Locator;
   readonly joinUnusable: Locator;
+  readonly joinEmailRefused: Locator;
   constructor(page: Page) {
     this.page = page;
     this.noCompany = page.getByTestId("no-company");
@@ -41,6 +42,7 @@ export class CompanyOnboardingPage {
     this.join = page.getByTestId("join");
     this.joinSignIn = page.getByTestId("join-sign-in");
     this.joinUnusable = page.getByTestId("join-unusable");
+    this.joinEmailRefused = page.getByTestId("join-email-refused");
   }
 }
 
