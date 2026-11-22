@@ -63,7 +63,7 @@ it("replays all eligibility verdicts from the saved supplied catalogue without f
   let requests = 0;
   const replay = await qualify({ allModels: true, catalogue, spendCap: "15", perModelCap: "0.000001", env: { OPENROUTER_API_KEY: randomUUID() }, fetch: async () => { requests++; throw new Error("offline"); } });
   const original = JSON.parse(output) as Report;
-  expect(original.models.map(model => model.causes)).toEqual([["catalogue"], ["no_tools_support"], ["provider_routing"], ["unpriced_component"], ["per_model_cap"]]);
+  expect(original.models.map(model => model.causes)).toEqual([["free_variant"], ["no_tools_support"], ["provider_routing"], ["unpriced_component"], ["per_model_cap"]]);
   expect(replay).toEqual(original);
   expect(replay.errors).toEqual([]);
   expect(replay.chargedMicros).toBe(0); expect(replay.reservedMicros).toBe(0);

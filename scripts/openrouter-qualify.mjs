@@ -16,6 +16,48 @@ const recordCheck = (target, name, ok, reason) => {
  if (!ok) target.reasons[name] = reason;
 };
 const MICRO = 1_000_000_000_000n;
+// Qualification accepts finite decimals beyond the installed tariff's precision.
+// Keep numerator/denominator exact until the TOTAL token charge becomes micros.
+const rationalPrice = value => {
+ if (typeof value !== "string") throw new Error("unbounded tariff");
+ const match = /^(\d{1,40})(?:\.(\d{1,80}))?(?:e([+-]?\d{1,2}))?$/iu.exec(value);
+ if (!match) throw new Error("unbounded tariff");
+ const exponent = BigInt(match[3] ?? "0") - BigInt(match[2]?.length ?? 0);
+ const numerator = BigInt(match[1] + (match[2] ?? ""));
+ return exponent >= 0n ? { n: numerator * 10n ** exponent, d: 1n } : { n: numerator, d: 10n ** -exponent };
+};
+const addPrice = (a, b) => ({ n: a.n * b.d + b.n * a.d, d: a.d * b.d });
+const comparePrice = (a, b) => a.n * b.d - b.n * a.d;
+const maxPrice = (a, b) => comparePrice(rationalPrice(a), rationalPrice(b)) >= 0n ? a : b;
+const ceilRatio = (n, d) => (n + d - 1n) / d;
+const priceSum = components => components.reduce((sum, [tokens, price]) => {
+ if (!count(tokens)) throw new Error("invalid token count");
+ const rate = rationalPrice(price);
+ return addPrice(sum, { n: BigInt(tokens) * rate.n, d: rate.d });
+}, { n: 0n, d: 1n });
+// Harness-local arithmetic shared by reservations and the receipt backstop.
+export const qualificationCostMicros = components => {
+ const sum = priceSum(components);
+ const units = ceilRatio(sum.n * 1_000_000n, sum.d);
+ if (units > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("unbounded hold");
+ return Number(units);
+};
+const decimalUnits = (units, places) => {
+ const text = units.toString().padStart(places + 1, "0");
+ return `${text.slice(0, -places)}.${text.slice(-places)}`;
+};
+// JSON max_price is numeric. Round that WIRE CAP upward; never alter a token rate.
+const qualificationWireCap = (price, perMillion) => {
+ const exact = rationalPrice(price);
+ const amount = { n: exact.n * (perMillion ? 1_000_000n : 1n), d: exact.d };
+ let units = ceilRatio(amount.n * 1_000_000_000_000n, amount.d);
+ for (let attempt = 0; attempt < 2; attempt++, units++) {
+  const cap = Number(decimalUnits(units, 12));
+  if (Number.isFinite(cap) && comparePrice(rationalPrice(String(cap)), amount) >= 0n) return cap;
+ }
+ throw new Error("unrepresentable price cap");
+};
+const validationPrices = Object.fromEntries(OPENROUTER_PRICE_KEYS.map(key => [key, key === "prompt" || key === "completion" ? "0.000001" : "0"]));
 const UNUSED_PRICE_KEYS = ["web_search", "image", "audio", "input_audio", "output_audio", "input_audio_cache", "input_cache_write_1h"];
 const OVERRIDE_CONDITIONS = ["context_length", "min_prompt_tokens", "utc_start", "utc_end", "utc_days"];
 const validOverrideCondition = (key, value) => {
@@ -81,7 +123,7 @@ export const noAuxiliaryEvidence = (value, path = "", searchNotRequested = false
 /** OpenRouter's counters need not agree across endpoints. Bound each readable receipt
  * at the dearer output interpretation (reasoning outside completion), then retain
  * the larger bound. Aggregate costs must still agree exactly, be positive and fit
- * this unrounded bound AND the original reservation. No inference of zero fees.
+ * the rounded-UP micro bound AND the original reservation in all-models mode. No inference of zero fees.
  */
 const maximumInferenceCost = (policy, usage, generation) => {
  const receipts = [
@@ -89,6 +131,16 @@ const maximumInferenceCost = (policy, usage, generation) => {
   [generation.native_tokens_prompt, generation.native_tokens_completion, generation.native_tokens_reasoning, generation.native_tokens_cached],
  ];
  const p = policy.pricing;
+ if (policy.exactPricing) {
+  let maximum = 0n;
+  for (const [prompt, completion, reasoning, cached] of receipts) {
+   if (![prompt, completion, reasoning, cached].every(count) || cached > prompt) return undefined;
+   // Separate terms avoid overflowing JS when completion + reasoning is large.
+   const cost = BigInt(qualificationCostMicros([[prompt - cached, p.prompt], [cached, p.input_cache_read], [completion, p.completion], [reasoning, p.completion], [1, p.request]])) * MICRO;
+   if (cost > maximum) maximum = cost;
+  }
+  return maximum;
+ }
  const rate = key => openRouterDecimal(p[key]);
  let maximum = 0n;
  for (const [prompt, completion, reasoning, cached] of receipts) {
@@ -208,7 +260,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
    const allowlisted = Object.hasOwn(OPENROUTER_RELAXED_TARIFF_MODELS, model);
    // This is qualification-only normalization. Installed policies still require
    // reviewed, complete prices; no new route is activated by discovery.
-   let missingReasoning = false;
+   let missingReasoning = allModels && entry.reasoningBilledAtCompletion === true;
    let priceSets = [prices];
    if (allModels) {
     tariff.assumedZero = [];
@@ -217,7 +269,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
      // Flat price patches with known token/context/time conditions. Use EVERY
      // patch regardless of whether its condition applies now: worst-case maxima.
      if (!Array.isArray(overrides) || overrides.some(o => o === null || typeof o !== "object" || Array.isArray(o) ||
-      Object.keys(o).some(k => !OVERRIDE_CONDITIONS.includes(k) && !OPENROUTER_PRICE_KEYS.includes(k) && !UNUSED_PRICE_KEYS.includes(k)) ||
+      Object.keys(o).some(k => !OVERRIDE_CONDITIONS.includes(k) && !OPENROUTER_PRICE_KEYS.includes(k) && !UNUSED_PRICE_KEYS.includes(k) && k !== "discount") ||
       !Object.keys(o).some(k => OPENROUTER_PRICE_KEYS.includes(k) || UNUSED_PRICE_KEYS.includes(k)) ||
       Object.entries(o).some(([k, v]) => OVERRIDE_CONDITIONS.includes(k) && !validOverrideCondition(k, v)) ||
       (Object.hasOwn(o, "utc_start") !== Object.hasOwn(o, "utc_end")))) {
@@ -243,19 +295,34 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
      if (allModels && key === "internal_reasoning" && absent) missingReasoning = true;
      try {
       if (typeof value !== "string") throw new Error();
-      const amount = openRouterDecimal(value);
-      if ((required && amount <= 0n) || (key !== "request" && (amount % 1_000_000n !== 0n || amount / 1_000_000n > BigInt(Number.MAX_SAFE_INTEGER)))) throw new Error();
-      const wire = key === "request" ? value : perMillionPrice(value);
-      if (!equalMoney(Number(wire), wire)) throw new Error();
-      if (maximum === undefined || amount > openRouterDecimal(maximum)) maximum = value;
+      if (allModels) {
+       const amount = rationalPrice(value);
+       if (required && amount.n <= 0n) throw new Error();
+       qualificationWireCap(value, key !== "request");
+       if (maximum === undefined || comparePrice(amount, rationalPrice(maximum)) > 0n) maximum = value;
+      } else {
+       const amount = openRouterDecimal(value);
+       if ((required && amount <= 0n) || (key !== "request" && (amount % 1_000_000n !== 0n || amount / 1_000_000n > BigInt(Number.MAX_SAFE_INTEGER)))) throw new Error();
+       const wire = key === "request" ? value : perMillionPrice(value);
+       if (!equalMoney(Number(wire), wire)) throw new Error();
+       if (maximum === undefined || amount > openRouterDecimal(maximum)) maximum = value;
+      }
      } catch { failures.push(fieldValue(key, value)); }
     }
     pricing[key] = maximum;
     if (allModels && allAbsent && !required && key !== "internal_reasoning") tariff.assumedZero.push(key);
    }
+   if (allModels && Array.isArray(entry.assumedZero)) tariff.assumedZero = [...entry.assumedZero];
    if (missingReasoning) tariff.reasoningBilledAtCompletion = true;
    for (const variant of priceSets) for (const [key, value] of Object.entries(variant)) {
     if (OPENROUTER_PRICE_KEYS.includes(key) || (allModels && (key === "overrides" || variant !== prices && OVERRIDE_CONDITIONS.includes(key)))) continue;
+    if (allModels && key === "discount") {
+     // A negative discount is a surcharge; unreadable values never imply zero.
+     let zero = value === 0;
+     try { zero ||= typeof value === "string" && rationalPrice(value).n === 0n; } catch { /* Refuse below. */ }
+     if (!zero) failures.push(`discount_nonzero:${safeRefusalText(String(value))}`);
+     continue;
+    }
     // Search/media/cache-write inputs are never sent by all-models qualification.
     // Unused rates need no rounding to the token ceiling's integer units.
     let safe = allModels && UNUSED_PRICE_KEYS.includes(key) && typeof value === "string" && nonnegativeMoney(value);
@@ -268,7 +335,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
    if (Number.isSafeInteger(entry?.top_provider?.max_completion_tokens) && entry.top_provider.max_completion_tokens < 4096) failures.push("max_completion_tokens < 4096");
    else if (!Number.isSafeInteger(entry?.top_provider?.max_completion_tokens)) failures.push("max_completion_tokens missing or invalid");
    tariff.pricing = pricing;
-   const policy = failures.length === 0 ? qualificationPolicy(model, at, tariff) : undefined;
+   const policy = failures.length === 0 ? qualificationPolicy(model, at, tariff, allModels) : undefined;
    recordCheck(result, "bounded_tariff", policy !== undefined, failures.length > 0 ? failures.join("; ") : "tariff policy refused");
    if (policy === undefined) { result.boundedTariffErrors = failures.length > 0 ? failures : ["tariff policy refused"]; continue; }
    // Candidate rows always carry all six normalized string fields.
@@ -277,6 +344,12 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
    // The absent reasoning price uses completion, including the possible separate
    // reasoning maximum outside max_tokens. Never discount a reservation.
    const qualificationHold = (prompt, output) => {
+    if (allModels) {
+     const p = policy.pricing;
+     const components = [[prompt, maxPrice(p.prompt, p.input_cache_read)], [prompt, p.input_cache_write], [output, maxPrice(p.completion, p.internal_reasoning)], [1, p.request]];
+     if (missingReasoning) components.push([policy.reasoning.max_tokens, p.completion]);
+     return qualificationCostMicros(components);
+    }
     const held = openRouterHold(policy, prompt, output);
     const extra = missingReasoning ? Number((BigInt(policy.reasoning.max_tokens) * openRouterDecimal(policy.pricing.completion) + MICRO - 1n) / MICRO) : 0;
     if (!Number.isSafeInteger(held + extra)) throw new Error();
@@ -465,19 +538,25 @@ const validModel = model => typeof model === "string" && model.length <= 128 && 
 // that is outside its relaxed-price allowlist. Restore the exact ID before hashing,
 // reporting or sending; the placeholder never leaves this validation boundary.
 const qualificationModel = model => /[~:]/u.test(model) ? "qualification/catalogue-model" : model;
-const qualificationPolicy = (model, now, tariff) => {
+const qualificationPolicy = (model, now, tariff, exactPricing = false) => {
  if (!validModel(model) || tariff.model !== model) return undefined;
- const checked = openRouterPolicy(qualificationModel(model), now, [{ ...tariff, model: qualificationModel(model) }]);
+ const checked = openRouterPolicy(qualificationModel(model), now, [{ ...tariff, model: qualificationModel(model), ...(exactPricing ? { pricing: validationPrices } : {}) }]);
  if (!checked) return undefined;
- const value = { ...checked, model };
+ const value = { ...checked, model, ...(exactPricing ? { pricing: { ...tariff.pricing }, exactPricing: true } : {}) };
  delete value.hash;
  return { ...value, hash: createHash("sha256").update(JSON.stringify(value)).digest("hex") };
 };
 const qualificationRequest = (body, policy) => {
  if (!validModel(body.model) || body.model !== policy.model) return undefined;
  const model = qualificationModel(body.model);
- const checked = openRouterRequest({ ...body, model }, { ...policy, model });
- return checked ? { ...checked, model: body.model } : undefined;
+ const checked = openRouterRequest({ ...body, model }, { ...policy, model, ...(policy.exactPricing ? { pricing: validationPrices } : {}) });
+ if (!checked) return undefined;
+ const provider = { ...checked.provider, order: [policy.route] };
+ if (policy.exactPricing) {
+  const p = policy.pricing;
+  provider.max_price = { prompt: qualificationWireCap(p.prompt, true), completion: qualificationWireCap(maxPrice(p.completion, p.internal_reasoning), true), request: qualificationWireCap(p.request, false) };
+ }
+ return { ...checked, model: body.model, provider };
 };
 const validRoute = route => typeof route === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(route);
 const capMicros = value => {
@@ -559,7 +638,12 @@ async function qualifyAll(options, capturedCatalogue) {
    const id = entry?.id;
    const model = { model: safe(id) ? id : "[invalid model]", status: "FAIL", reason: "", causes: [], providers: [] };
    report.models.push(model); budget.modelExposure = 0;
-   if (!validModel(id) || !safe(id) || entries.filter(e => e?.id === id).length !== 1) { fail(model, "catalogue", typeof id === "string" && id.endsWith(":free") ? "free variant excluded: different data policy" : typeof id === "string" && id.endsWith(":online") ? "online variant excluded: search is never requested" : "invalid or duplicate model identifier"); continue; }
+   if (!safe(id) || entries.filter(e => e?.id === id).length !== 1) { fail(model, "invalid_id", "invalid or duplicate model identifier"); continue; }
+   if (id.startsWith("openrouter/") && validModel(id.replace(/^openrouter\//u, "router/"))) { fail(model, "router_alias", "router_alias excluded"); continue; }
+   if (!validModel(id.replace(/:(?:batch|free|online)$/u, ""))) { fail(model, "invalid_id", "invalid model identifier"); continue; }
+   const variant = id.endsWith(":batch") ? "batch_variant" : id.endsWith(":free") ? "free_variant" : id.startsWith("~") ? "router_alias" : undefined;
+   if (variant) { fail(model, variant, variant === "free_variant" ? "free variant excluded: different data policy" : `${variant} excluded`); continue; }
+   if (!validModel(id)) { fail(model, "invalid_id", id.endsWith(":online") ? "online variant excluded: search is never requested" : "invalid model identifier"); continue; }
    if (budget.stop) { fail(model, budget.stop, `not reached: ${budget.stop}`); report.notReached.push(id); continue; }
    if (!Array.isArray(entry.supported_parameters) || !entry.supported_parameters.includes("tools")) { fail(model, "no_tools_support", "catalogue does not declare tool/function calling"); continue; }
    // Validate catalogue and endpoint prices independently before any paid request.
@@ -572,26 +656,44 @@ async function qualifyAll(options, capturedCatalogue) {
    catch { fail(model, budget.stop ?? "provider_routing", "provider endpoint evidence unavailable"); if (budget.stop) report.notReached.push(id); continue; }
    if (!Array.isArray(endpoints) || endpoints.length === 0) { fail(model, "provider_routing", "no provider endpoints available"); continue; }
    const eligible = [];
-   // A route may only have one tariff; ambiguous duplicate endpoints fail closed.
+   // Exact tags are pinned in both order and only, with fallbacks disabled.
+   // Duplicate tags still route to every matching endpoint: bound ALL of them.
+   const routes = new Map();
    for (const endpoint of endpoints) {
     const route = endpoint?.tag;
-    const name = endpoint?.provider_name;
-    if (!validRoute(route) || !safe(route) || !safe(name) || name.length < 1 || name.length > 128 || /[\p{Cc}\p{Cf}]/u.test(name) || endpoints.filter(e => e?.tag === route).length !== 1) {
-     model.providers.push({ status: "FAIL", cause: "provider_routing", reasons: { provider_routing: "missing or ambiguous pinned provider route/name" } }); continue;
+    if (!validRoute(route) || !safe(route)) {
+     model.providers.push({ status: "FAIL", cause: "provider_routing", reasons: { provider_routing: "missing pinned endpoint tag" } }); continue;
     }
-    if (!Array.isArray(endpoint.supported_parameters) || !endpoint.supported_parameters.includes("tools")) {
-     model.providers.push({ route, status: "FAIL", cause: "no_tools_support", reasons: { no_tools_support: "endpoint does not declare tool/function calling" } }); continue;
+    if (!routes.has(route)) routes.set(route, []);
+    routes.get(route).push(endpoint);
+   }
+   for (const [route, group] of routes) {
+    const name = group[0].provider_name;
+    if (!safe(name) || name.length < 1 || name.length > 128 || /[\p{Cc}\p{Cf}]/u.test(name) || group.some(e => e.provider_name !== name)) {
+     model.providers.push({ route, status: "FAIL", cause: "provider_routing", reasons: { provider_routing: "missing or ambiguous pinned provider name" } }); continue;
     }
-    // Never substitute aggregate catalogue prices for an unpriced provider endpoint.
-    const routedEntry = { ...entry, pricing: endpoint.pricing, top_provider: { max_completion_tokens: endpoint.max_completion_tokens } };
-    if (endpoint.estimated === true || endpoint.is_estimated === true) {
-     model.providers.push({ route, status: "FAIL", cause: "unpriced_component", reasons: { unpriced_component: "endpoint tariff is estimated" } }); continue;
+    if (group.some(e => !Array.isArray(e.supported_parameters) || !e.supported_parameters.includes("tools"))) {
+     model.providers.push({ route, status: "FAIL", cause: "no_tools_support", reasons: { no_tools_support: "routable endpoint does not declare tool/function calling" } }); continue;
     }
+    const tariffs = []; const failures = [];
+    for (const endpoint of group) {
+     if (endpoint.estimated === true || endpoint.is_estimated === true) { failures.push("endpoint tariff is estimated"); continue; }
+     // Never substitute aggregate catalogue prices for an unpriced endpoint.
+     const prepared = await prepare({ ...entry, pricing: endpoint.pricing, top_provider: { max_completion_tokens: endpoint.max_completion_tokens } }, route, name);
+     if (!prepared?.candidateTariff) failures.push(prepared?.reasons.bounded_tariff ?? "endpoint tariff unbounded");
+     else tariffs.push(prepared.candidateTariff);
+    }
+    if (failures.length > 0) {
+     model.providers.push({ route, status: "FAIL", cause: "unpriced_component", reasons: { unpriced_component: failures.join("; ") } }); continue;
+    }
+    const pricing = Object.fromEntries(OPENROUTER_PRICE_KEYS.map(key => [key, tariffs.map(t => t.pricing[key]).reduce(maxPrice)]));
+    const reasoningBilledAtCompletion = tariffs.some(t => t.reasoningBilledAtCompletion);
+    const routedEntry = { ...entry, pricing, reasoningBilledAtCompletion, top_provider: { max_completion_tokens: Math.min(...group.map(e => e.max_completion_tokens)) } };
+    // Keep singleton absence provenance; duplicate tags retain only shared absences.
     const prepared = await prepare(routedEntry, route, name);
-    if (!prepared?.candidateTariff) {
-     model.providers.push({ route, status: "FAIL", cause: "unpriced_component", reasons: { unpriced_component: prepared?.reasons.bounded_tariff ?? "endpoint tariff unbounded" } }); continue;
-    }
-    eligible.push({ route, name, entry: routedEntry, tariff: prepared.candidateTariff });
+    const tariff = prepared.candidateTariff;
+    tariff.assumedZero = OPENROUTER_PRICE_KEYS.filter(key => tariffs.every(t => t.assumedZero.includes(key)));
+    eligible.push({ route, name, entry: { ...routedEntry, assumedZero: tariff.assumedZero }, tariff });
    }
    model.tariffSignature = signature(eligible.map(e => ({ ...e.tariff, providerName: e.name })).sort((a, b) => a.route.localeCompare(b.route)));
    const matches = prior?.harnessVersion === report.harnessVersion ? prior.models.filter(m => m?.model === id) : [];

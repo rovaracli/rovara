@@ -30,5 +30,5 @@ it("rechecks the saved discovery report against the raw local catalogue; eligibl
  expect(discovery.models).toHaveLength(441);
  expect(counts.catalogue_eligible).toBeGreaterThan(0);
  expect(Object.values(counts).reduce((a, b) => a + b, 0)).toBe(441);
- expect(counts).toEqual({ catalogue_eligible: 264, no_tools_support: 58, unpriced_component: 21, catalogue_id_redacted: 98 });
+ expect(counts).toEqual({ catalogue_eligible: 276, no_tools_support: 58, unpriced_component: 9, catalogue_id_redacted: 98 });
 });
