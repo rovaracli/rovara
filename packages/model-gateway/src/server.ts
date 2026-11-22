@@ -12,7 +12,7 @@ import type { AwsCredentials } from "./aws.js";
 import { BEDROCK_MODEL_ACCESS_WORDS } from "./bedrock-byo-sessions.js";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
 import { ANTHROPIC_KEY_AGENT_MODELS, OPENAI_KEY_AGENT_MODELS } from "./offered-models.js";
-import { invokeCall, PROVIDER_ERROR, rovaraGuard, rovaraProviderFailure } from "./rovara-ai-call.js";
+import { invokeCall, PROVIDER_ERROR, rovaraChargeSource, rovaraGuard, rovaraProviderFailure } from "./rovara-ai-call.js";
 export { BEDROCK_ANTHROPIC_VERSION, ROVARA_AI_FEATURE, ROVARA_AI_MODEL, ROVARA_AI_MODEL_NOT_ENABLED, ROVARA_AI_UNAVAILABLE } from "./rovara-ai-call.js";
 import { validCaps, type Caps, type CapsSource } from "./caps.js";
 import type { EndedTasks } from "./ended.js";
@@ -353,7 +353,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
       return { admit() {
         rovara = { ai, marker: `rovara-ai-${randomUUID()}` };
         // Rovara has no company credential: pin the offered model configuration itself.
-        chargeSource = { source: { kind: "rovara_ai", id: ai.sourceId ?? "rovara-ai", name: "Rovara AI", provider: "bedrock", connectionRevision: createHash("sha256").update(JSON.stringify([...ai.models].sort())).digest("hex") }, billing: ai.exempt.has(claims.cid) ? "exempt" : "customer" };
+        chargeSource = rovaraChargeSource(ai, claims.cid);
       } };
     }
     // anthropic_key: the company's own Anthropic key (DEC 236).
@@ -618,7 +618,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
       }
       if (charge !== undefined && reservation !== undefined && route.meter.settleV2 !== undefined && settlementPrice !== undefined) {
-        const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, retainMissingUsage: callClaims?.runPrice !== undefined, notSent: cost === 0, now: now() });
+        const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, retainMissingUsage: callClaims?.runPrice !== undefined, customerPriceAuthorized: callClaims?.runPrice !== undefined, notSent: cost === 0, now: now() });
         // Record the customer's true bill, even above the hold. The meter atomically latches overrun.
         const observed = chargeValue(receipt.amountMicros)!;
         if (receipt.billing === "external_provider" && (route.payer === "bedrock_byo" || route.provider === "openrouter") && callClaims !== undefined && observed > reservedMicros) {
@@ -706,6 +706,11 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const providerPrice = resolved;
     for (const also of route.alsoPricedAs?.(guarded.model) ?? []) resolved = dearerPrice(resolved, await wait(resolvePrice(deps.prices ?? UnknownPriceSource, also.provider, also.model, deps.cautiousCeiling, controller.signal, guarded.priceKind ?? "chat")));
     const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
+    // DEC 254zzz312: hosted Rovara purpose calls require exact signed pricing and durable per-call receipts, including exempt calls.
+    const rovaraPurpose = route.purpose !== undefined && route.payer === "rovara";
+    if (rovaraPurpose && (claims.runPrice === undefined || price.estimated || usageEstimated(price, { input: guarded.bytes.length + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0), output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || deps.chargeReceipts === undefined || route.meter.settleV2 === undefined)) {
+      await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
+    }
     const customerBedrock = route.payer === "bedrock_byo";
     // Product Bedrock retains its existing media admission; agent compatibility requires a bounded, known-price request.
     const legacyBedrock = customerBedrock && !route.product && claims.runPrice === undefined;
@@ -767,6 +772,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       const source = customerBedrock ? route.chargeSource : deps.chargeReceipts!.source(claims, guarded.model, route.chargeSource);
       if (source !== undefined) charge = initialCharge(route.product ? { ...claims, pay: { kind: "project", project: claims.pid } } : claims, { provider: route.provider, modelId: guarded.model }, source, estimate, now(), price);
     }
+    if (rovaraPurpose && charge === undefined) { await respond(503, "unavailable", "model access unavailable"); return; }
     const reserved = grant !== undefined && !customerReview && session?.bind === bind ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined || customerReview ? estimate : ceilingMicros, appliedMaxOutputTokens,
       routeClass: route.product ? "product" : "agent",
       ...(route.payer === "bedrock_byo" ? { customerSource: "bedrock_byo" as const } : route.provider === "openrouter" ? { customerSource: "openrouter" as const } : {}), ...(charge === undefined ? {} : { charge: { receipt: charge, kind: guarded.priceKind ?? "chat", requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, ...(claims.runPrice !== undefined || customerBedrock ? {} : { provisional: { requestBytes: guarded.bytes.length, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }) }), ...(line === undefined ? {} : { line }),

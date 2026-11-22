@@ -60,7 +60,7 @@ export async function answerRateQuote(options: RateQuoteOptions, request: { meth
       if (!agentSourceSwitchedOn(source, options.switchedOn)) continue;
       if (source === "rovara") {
         const mapped = options.rovara?.models.get(model);
-        if (mapped === undefined || !options.offeredProviders.has("bedrock") || (order.length > 1 && options.disabled?.has(model) === true)) continue;
+        if (mapped === undefined || !options.offeredProviders.has("bedrock") || options.disabled?.has(model) === true) continue;
         selected = { source, provider: "bedrock", modelId: mapped, region: options.region, id: options.rovara?.sourceId ?? "rovara-ai",
           revision: createHash("sha256").update(JSON.stringify([...options.rovara!.models].sort())).digest("hex") };
       } else if (source === "anthropic_key" || source === "openai_key" || source === "openrouter_key") {

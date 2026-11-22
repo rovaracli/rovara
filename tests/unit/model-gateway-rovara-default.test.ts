@@ -1,5 +1,6 @@
 // DEC 254zzz263: no saved choice defaults to company-billed Rovara AI; explicit choices win.
 import { denyNetwork } from "./model-gateway-no-network.js";
+import { createHash } from "node:crypto";
 beforeAll(denyNetwork);
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { defaultAgentSource, resolveAgentSource, type AgentAiSource, type AgentAiSourceReader, type RovaraAi } from "../../packages/model-gateway/src/agent-ai.js";
@@ -28,6 +29,11 @@ class CompanyKeys implements LearningKeySource {
   fail = false;
   async connected(_iss: string, cid: string, provider: string): Promise<boolean> { if (this.fail) throw new Error("store down"); this.asked.push(`${cid}/${provider}`); return this.connectedTo.has(cid); }
   async keyFor(_iss: string, cid: string): Promise<string | undefined> { this.reads.push(cid); return keyOf(cid); }
+  async resolveForCharge(_iss: string, cid: string) {
+    if (!this.connectedTo.has(cid)) return undefined;
+    return { source: { kind: "company_key" as const, id: "src_own_anthropic", name: "Company key", provider: "anthropic", connectionRevision: "11111111-1111-4111-8111-111111111111" },
+      key: () => this.keyFor(_iss, cid) };
+  }
 }
 class Choices implements AgentAiSourceReader {
   readonly saved = new Map<string, AgentAiSource>();
@@ -326,19 +332,27 @@ function purposeGateway(purpose: "answers" | "learning", options: { exempt?: str
   const agentMeter = new InMemoryMeter(() => now);
   const meter = new InMemoryMeter(() => now, undefined, undefined, { combineCompanyWith: agentMeter });
   const companyCaps = new FixedCapsSource({ ...baseCaps, companyMonth: options.companyMonth ?? 1_000_000_000 });
-  const rovara: RovaraAi = { models: options.models ?? new Map([[MODEL, BEDROCK_ID]]), exempt: new Set(options.exempt ?? [cidA]), transport: async (request) => { rovaraSent.push(request); return options.bedrockStatus === undefined ? { status: 200, body: answer() } : { status: options.bedrockStatus, body: (async function* () { yield Buffer.from("{}"); })() }; } };
+  const rovara: RovaraAi = { sourceId: "operator-source", models: options.models ?? new Map([[MODEL, BEDROCK_ID]]), exempt: new Set(options.exempt ?? [cidA]), transport: async (request) => { rovaraSent.push(request); return options.bedrockStatus === undefined ? { status: 200, body: answer() } : { status: options.bedrockStatus, body: (async function* () { yield Buffer.from("{}"); })() }; } };
   const rovaraDefault = options.noRovara === true ? {} : { rovaraDefault: { ai: rovara, sources: choices, byo: { connection: async (iss: string, cid: string) => options.byoFails === true ? Promise.reject(new Error("unreadable")) : bedrockConnected.has(cid) ? { row: { iss, cid, owner: "_company", sourceId: "src_bedrock", versionId: "11111111-1111-4111-8111-111111111111" }, connection: conn(cid) } : undefined } as never } };
   const transport: ProviderTransport = async (request) => { ownSent.push(request); return { status: 200, body: answer() }; };
   const common = { keys: customer, meter, companyCaps, modelLimits: { maxOutputTokens: () => 128_000 }, transport, transports: { openai: transport }, ...rovaraDefault };
   const routes = purpose === "answers"
     ? createAnswersRoutes({ ...common, limits: { limitFor: async () => options.answersLimit } })
     : createLearningRoutes({ ...common, lessons: { isOn: async () => true } });
-  const base = setup({ meter: agentMeter, caps: companyCaps, keys: { keyFor: async (c) => { agentKeyReads.push(c.cid); return "rovara-install-key"; } }, [purpose]: routes });
+  const price = { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, cacheReadMicrosPerMTok: 1_000_000, cacheWrite5mMicrosPerMTok: 1_000_000, cacheWrite1hMicrosPerMTok: 1_000_000, priceVersion: 1, estimated: false };
+  const base = setup({ meter: agentMeter, caps: companyCaps, keys: { keyFor: async (c) => { agentKeyReads.push(c.cid); return "rovara-install-key"; } }, [purpose]: routes,
+    prices: { priceFor: () => price, effectiveFor: () => price, quoteBasis: (provider: string) => ({ version: 1, hash: "a".repeat(64), model: provider === "anthropic" ? MODEL : BEDROCK_ID, fetchedAt: now }) },
+    chargeReceipts: { source: (_c, _m, resolved) => resolved } });
   return { ...base, customer, choices, bedrockConnected, ownSent, rovaraSent, agentKeyReads, meter, agentMeter };
 }
+const ownRunPrice = (cid = cidA) => ({ companyId: cid, model: MODEL, provider: "anthropic", sourceId: "src_own_anthropic",
+  connectionRevision: "11111111-1111-4111-8111-111111111111", catalogModel: MODEL, snapshotHash: "a".repeat(64), snapshotVersion: 1,
+  expiresAt: now + 60_000, inputUsdPerMillion: 1, outputUsdPerMillion: 2, cacheReadUsdPerMillion: 1, cacheWriteUsdPerMillion: 1 });
 async function ask(deps: GatewayDependencies, purpose: "answers" | "learning", changes: Record<string, unknown> = {}, bodyChange: Record<string, unknown> = {}) {
   const sink = new MemorySink();
-  await handleGateway(deps, { method: "POST", url: purpose === "answers" ? ANSWERS_PATH : LEARNING_PATH, headers: { "content-type": "application/json", "x-api-key": mint({ stp: purpose === "answers" ? ANSWERS_STEP : LEARNING_STEP, ...changes }) }, body: (async function* () { yield Buffer.from(JSON.stringify({ ...requestBody, ...bodyChange })); })() }, sink);
+  const runPrice = { companyId: changes.cid ?? cidA, model: MODEL, provider: "bedrock", sourceId: "operator-source", connectionRevision: createHash("sha256").update(JSON.stringify([[MODEL, BEDROCK_ID]])).digest("hex"), catalogModel: BEDROCK_ID,
+    snapshotHash: "a".repeat(64), snapshotVersion: 1, expiresAt: now + 60_000, inputUsdPerMillion: 1, outputUsdPerMillion: 2, cacheReadUsdPerMillion: 1, cacheWriteUsdPerMillion: 1 };
+  await handleGateway(deps, { method: "POST", url: purpose === "answers" ? ANSWERS_PATH : LEARNING_PATH, headers: { "content-type": "application/json", "x-api-key": mint({ stp: purpose === "answers" ? ANSWERS_STEP : LEARNING_STEP, runPrice, ...changes }) }, body: (async function* () { yield Buffer.from(JSON.stringify({ ...requestBody, ...bodyChange })); })() }, sink);
   return sink;
 }
 
@@ -360,23 +374,25 @@ for (const purpose of ["answers", "learning"] as const) {
 
     it("its own connected Anthropic account wins (unchanged), Rovara's AI is not called", async () => {
       const g = purposeGateway(purpose); g.customer.connectedTo.add(cidA);
-      expect((await ask(g.deps, purpose)).status).toBe(200);
+      expect((await ask(g.deps, purpose, { runPrice: ownRunPrice() })).status).toBe(200);
       expect(g.ownSent.map((r) => r.key)).toEqual([keyOf(cidA)]);
       expect(g.rovaraSent).toEqual([]);
     });
 
-    it("a NON-exempt company with no account is paused no_provider exactly as before", async () => {
+    it("a NON-exempt company with no account is served and company-billed", async () => {
       const g = purposeGateway(purpose);
       const sink = await ask(g.deps, purpose, { cid: cidB });
-      expect(sink.headers[purpose === "answers" ? ANSWERS_PAUSE_HEADER : "x-rovara-lessons-pause"]).toBe("no_provider");
-      expect(g.rovaraSent).toEqual([]); expect(g.ownSent).toEqual([]);
+      expect(sink.status).toBe(200);
+      expect(g.meter.billedCalls(claims.iss, cidB)).toMatchObject([{ line: { charge: "customer" } }]);
+      expect(g.rovaraSent).toHaveLength(1); expect(g.ownSent).toEqual([]);
     });
 
-    it("a NON-exempt company that explicitly chose Rovara's AI is still paused (its billing is not widened)", async () => {
+    it("a NON-exempt company that explicitly chose Rovara's AI is company-billed", async () => {
       const g = purposeGateway(purpose); g.choices.saved.set(cidB, "rovara");
       const sink = await ask(g.deps, purpose, { cid: cidB });
-      expect(sink.headers[purpose === "answers" ? ANSWERS_PAUSE_HEADER : "x-rovara-lessons-pause"]).toBe("no_provider");
-      expect(g.rovaraSent).toEqual([]);
+      expect(sink.status).toBe(200);
+      expect(g.meter.billedCalls(claims.iss, cidB)).toMatchObject([{ line: { charge: "customer" } }]);
+      expect(g.rovaraSent).toHaveLength(1);
     });
 
     it("only the Anthropic Messages path: the OpenAI path of an exempt company with no OpenAI account is paused, never put on Rovara's AI", async () => {
@@ -447,12 +463,12 @@ for (const purpose of ["answers", "learning"] as const) {
       for (const r of await g.meter.read({ iss: claims.iss, cid: cidA, pid: claims.pid, tid: claims.tid })) expect(r.spentMicros).toBe(0);
     });
 
-    it("two companies: A (exempt) on Rovara's AI, C (exempt) with its own account on its key, B (not exempt) paused; no one reads another's key", async () => {
+    it("two companies: A exempt, C on its own key, B company-billed; no one reads another's key", async () => {
       const g = purposeGateway(purpose, { exempt: [cidA, cidC] }); g.customer.connectedTo.add(cidC);
       expect((await ask(g.deps, purpose, { cid: cidA })).status).toBe(200);
-      expect((await ask(g.deps, purpose, { cid: cidC })).status).toBe(200);
-      expect((await ask(g.deps, purpose, { cid: cidB })).status).toBe(403);
-      expect(g.rovaraSent).toHaveLength(1);
+      expect((await ask(g.deps, purpose, { cid: cidC, runPrice: ownRunPrice(cidC) })).status).toBe(200);
+      expect((await ask(g.deps, purpose, { cid: cidB })).status).toBe(200);
+      expect(g.rovaraSent).toHaveLength(2);
       expect(g.ownSent.map((r) => r.key)).toEqual([keyOf(cidC)]);
       expect(g.customer.reads).toEqual([cidC]);
     });

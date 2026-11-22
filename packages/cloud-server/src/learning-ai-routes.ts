@@ -30,7 +30,7 @@ export const learningSourceId = (provider: LearningAiProvider) => `src_${provide
 /** The learning route's pause reasons and their words (model-gateway learning-route.ts LEARNING_PAUSE_REASONS / _MESSAGES; a test pins them equal). */
 export const LEARNING_PAUSE_WORDS = Object.freeze({
   lessons_off: "Lessons are switched off for this company, so no learning call is made.",
-  no_provider: "Learning calls need the company's own connected AI provider account, and none is usable.",
+  no_provider: "Learning is paused because the company's selected AI source cannot serve learning calls yet.",
   monthly_limit: "The company's monthly learning limit is used up, so lessons are paused until next month.",
   no_budget: "The company's monthly budget has no room for learning calls, so lessons are paused.",
   cost_too_high: "One learning call of this size cannot fit the company's monthly learning limit.",

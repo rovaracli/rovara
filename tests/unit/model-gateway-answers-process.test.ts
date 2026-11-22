@@ -4,12 +4,16 @@
 import { denyNetwork } from "./model-gateway-no-network.js";
 beforeAll(denyNetwork);
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ANSWERS_PATH, ANSWERS_PAUSE_HEADER, ANSWERS_STEP } from "../../packages/model-gateway/src/answers-route.js";
 import { GATEWAY_ANSWERS_ENV, GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_PRODUCT_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
+import { DynamoPriceSnapshotStore } from "../../packages/model-gateway/src/dynamo-prices.js";
+import type { PriceSnapshot } from "../../packages/model-gateway/src/price-snapshot.js";
+import type { ChargeReceiptV1 } from "../../packages/model-gateway/src/charge-receipt.js";
 import type { LearningKeySource } from "../../packages/model-gateway/src/learning-route.js";
 import { readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import type { ProviderRequest } from "../../packages/model-gateway/src/provider.js";
@@ -175,19 +179,24 @@ describe("gateway process: the nightly upkeep cap", () => {
   });
 });
 
-// L4-AIDEF (DEC 254zzz3(1)): the deployed process hands the exempt list, the saved-choice reader and Rovara's Bedrock to the answers route, so an exempt company with no connected
-// account is served by Rovara's AI there too, and every other company is paused as before.
-describe("gateway process: answers on Rovara's AI for an exempt company", () => {
+// DEC 254zzz312: the deployed factory bills no-source companies, except the configured exempt list, with exact signed prices and receipts.
+describe("gateway process: answers on Rovara's AI", () => {
   const cidA = claims.cid;
   const cidB = `org_${"b".repeat(20)}`;
   const BEDROCK_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
-  async function serveRovara(saved?: Record<string, string>) {
+  const sourceId = "arn:aws:iam::123456789012:role/fixture-serving@us-west-2";
+  async function serveRovara(saved?: Record<string, string>, disabled = false) {
     const wire = new WireDynamo([...Object.values(TABLES), ...Object.values(ANSWERS)], { namespaceTables: true });
     const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
+    const snapshot: PriceSnapshot = { version: 1, sources: { litellm: { fetchedAt: now - 100, count: 1, entries: [
+      { provider: "bedrock", model: BEDROCK_ID, kind: "chat", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000,
+        cacheReadMicrosPerMTok: 1_000_000, cacheWrite5mMicrosPerMTok: 1_000_000, cacheWrite1hMicrosPerMTok: 1_000_000 },
+    ] } } };
+    expect(await new DynamoPriceSnapshotStore(db, TABLES.prices).save(snapshot, 0)).toBe(true);
     for (const cid of [cidA, cidB]) await db.put(TABLES.companies, { pk: `COMPANY#${cid}`, sk: "SETTINGS", companyId: cid, version: 1, settings: { featureGates: {}, budgets: { companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } } });
     for (const [cid, source] of Object.entries(saved ?? {})) await db.put(TABLES.companies, { pk: `COMPANY#${cid}`, sk: "AGENT_AI", companyId: cid, source, version: 1 });
     const own: ProviderRequest[] = []; const bedrock: ProviderRequest[] = [];
-    const env = { ...ENV, ...PRODUCT_ENV, ...ANSWERS_ENV, [GATEWAY_ENV.agentKeys]: "company", [GATEWAY_ENV.rovaraAiModels]: `${claims.mdl[0]}=${BEDROCK_ID}`, [GATEWAY_ENV.rovaraAiExempt]: cidA };
+    const env = { ...ENV, ...PRODUCT_ENV, ...ANSWERS_ENV, [GATEWAY_ENV.agentKeys]: "company", [GATEWAY_ENV.rovaraAiModels]: `${claims.mdl[0]}=${BEDROCK_ID}`, [GATEWAY_ENV.rovaraAiExempt]: cidA, [GATEWAY_ENV.rovaraAiSourceId]: sourceId, ...(disabled ? { [GATEWAY_ENV.agentModelsDisabled]: claims.mdl[0]! } : {}) };
     const keys: LearningKeySource = { connected: async () => false, keyFor: async () => undefined };
     const meter = new DynamoMeter({ db, tables: ANSWERS, now: () => now, combinedCompany: { meter: TABLES.meter, markers: TABLES.markers } });
     const gateway = await startServe({ ...(readGatewayConfig(env) as ServeConfig), port: 0 }, {
@@ -198,16 +207,34 @@ describe("gateway process: answers on Rovara's AI for an exempt company", () => 
       answers: { keys, meter },
     });
     running.push(gateway);
-    return { gateway, own, bedrock, wire };
+    const token = (cid: string) => mint({ stp: ANSWERS_STEP, cid, pay: { kind: "project", project: claims.pid }, runPrice: {
+      companyId: cid, model: claims.mdl[0], provider: "bedrock", sourceId, connectionRevision: createHash("sha256").update(JSON.stringify([[claims.mdl[0], BEDROCK_ID]])).digest("hex"),
+      catalogModel: BEDROCK_ID, snapshotHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"), snapshotVersion: 1, expiresAt: now + 60_000,
+      // The deployed catalog also bounds this Claude model's >200k tier; short calls still settle at the base rates above.
+      inputUsdPerMillion: 2, outputUsdPerMillion: 4, cacheReadUsdPerMillion: 2, cacheWriteUsdPerMillion: 4,
+    } });
+    return { gateway, own, bedrock, wire, token };
   }
-  it("exempt A with no account is served by Rovara's AI and its ledger row carries the exempt line; not-exempt B is paused no_provider", async () => {
+  it("exempt A is free and non-exempt B is billed, each with one durable call receipt", async () => {
     const s = await serveRovara();
-    expect((await post(s.gateway.server, mint({ stp: ANSWERS_STEP, cid: cidA }))).statusCode).toBe(200);
-    const paused = await post(s.gateway.server, mint({ stp: ANSWERS_STEP, cid: cidB }));
-    expect(paused.headers[ANSWERS_PAUSE_HEADER]).toBe("no_provider");
-    expect(s.bedrock).toHaveLength(1); expect(s.own).toEqual([]);
+    expect((await post(s.gateway.server, s.token(cidA))).statusCode).toBe(200);
+    expect((await post(s.gateway.server, s.token(cidB))).statusCode).toBe(200);
+    expect(s.bedrock).toHaveLength(2); expect(s.own).toEqual([]);
     await settleAll();
-    expect(s.wire.items(ANSWERS.ledger).filter((r) => r.line !== undefined).map((r) => [r.cid, (r.line as { charge: string }).charge])).toEqual([[cidA, "exempt"]]);
+    expect(s.wire.items(ANSWERS.ledger).filter((r) => r.line !== undefined).map((r) => [r.cid, (r.line as { charge: string }).charge])).toEqual([[cidA, "exempt"], [cidB, "customer"]]);
+    const receipts = s.wire.items(ANSWERS.ledger).flatMap(r => !String(r.sk).startsWith("CALL#") || r.receipt === undefined ? [] : [r.receipt as ChargeReceiptV1]);
+    expect(receipts).toHaveLength(2);
+    expect(receipts.map(r => [r.companyId, r.billing, r.billableMicros])).toEqual([
+      [cidA, "exempt", { state: "available", value: 0 }], [cidB, "customer", { state: "available", value: 19 }],
+    ]);
+  });
+  it("the deployed model-disable setting refuses purpose calls before a hold or provider send", async () => {
+    const s = await serveRovara(undefined, true);
+    expect((await post(s.gateway.server, s.token(cidB))).statusCode).toBe(400);
+    expect(s.bedrock).toEqual([]); expect(s.own).toEqual([]);
+    expect(s.wire.items(ANSWERS.meter)).toEqual([]);
+    expect(s.wire.items(ANSWERS.ledger)).toEqual([]);
+    expect(s.wire.items(TABLES.meter)).toEqual([]);
   });
   it("exempt A that saved its own source is paused as before (the saved choice is read from the Companies table)", async () => {
     const s = await serveRovara({ [cidA]: "openai_key" });
