@@ -57,7 +57,7 @@ export function createCodeApi(host: AppHost) {
   async startCode(project: string, text: string, requestId: string = crypto.randomUUID(), path?: "quick" | "full"): Promise<SendResult<StartedCode>> {
    const name = ProjectOverviewProjectSchema.shape.name.parse(project);
    if (!text.trim() || text.length > CODE_TEXT_MAX) throw new ApiError(400, "INVALID_INPUT", "Describe the work in 4000 characters or fewer.");
-   try { return await api.send("POST", "/v1/app/projects/" + encodeURIComponent(name) + "/code", { requestId, input: { text }, ...(path === undefined ? {} : { path }) }, StartedCodeReader); }
+   try { return await api.send("POST", "/v1/app/projects/" + encodeURIComponent(name) + "/code", { requestId, input: { text }, ...(path === undefined ? {} : { path }) }, StartedCodeReader, { retry: "never" }); }
    catch (failure) {
     const message = failure instanceof ApiError ? MESSAGES[failure.code] : undefined;
     throw failure instanceof ApiError && message !== undefined ? new ApiError(failure.status, failure.code, message) : failure;

@@ -3,10 +3,10 @@ import { useNavigate, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useDecisions } from "../../api/decisions.js";
 import { ApiError, NOT_AVAILABLE_YET } from "../../api/errors.js";
-import { involvedRows, nextNeedsYou, useInvolvedTasks, useOrgSpend, useWorkTasks, workRows } from "../../api/work.js";
+import { involvedRows, useInvolvedTasks, useOrgSpend, useWorkTasks, workRows } from "../../api/work.js";
 import { useAppHost } from "../../host.js";
 import { paths } from "../../paths.js";
-import { useAnnounce } from "../../design/Announcer.js";
+import { useWorkAdvance } from "./useWorkAdvance.js";
 import { BudgetBanner } from "../../design/BudgetBanner.js";
 import { Button } from "../../design/Button.js";
 import { EmptyState } from "../../design/EmptyState.js";
@@ -25,9 +25,9 @@ import "./work.css";
  * said in the list; a route Code does not serve yet says "isn't connected to Rovara Code yet" there, never a spinner.
  */
 export function WorkScreen() {
- const host = useAppHost(), navigate = useNavigate(), [params, setParams] = useSearchParams(), tasks = useWorkTasks(), involved = useInvolvedTasks(), decisions = useDecisions(), inbox = useLessonInbox(), spend = useOrgSpend(), announce = useAnnounce(), query = useQueryClient();
+ const host = useAppHost(), navigate = useNavigate(), [params, setParams] = useSearchParams(), tasks = useWorkTasks(), involved = useInvolvedTasks(), decisions = useDecisions(), inbox = useLessonInbox(), spend = useOrgSpend(), query = useQueryClient();
  // The ages and the "waiting over a day" rule are worked out against the clock each time the list or the cards are read again.
- const own = useMemo(() => (tasks.data === undefined || decisions.isPending ? [] : workRows(tasks.data, decisions.data ?? [], new Date())), [tasks.data, decisions.data, decisions.isPending]);
+ const own = useMemo(() => (tasks.data === undefined || decisions.isPending ? [] : workRows(tasks.data, decisions.isError ? [] : decisions.data ?? [], new Date())), [tasks.data, decisions.data, decisions.isPending, decisions.isError]);
  // The tasks the person was added to (web task channel K4): their own group at the end. They never wait the page: the person's own work shows first, and a task already in the person's own list is not shown twice.
  const added = useMemo(() => { const mine = new Set((tasks.data ?? []).map(task => task.taskId));return involved.data === undefined || tasks.data === undefined ? [] : involvedRows(involved.data.filter(task => !mine.has(task.taskId)), new Date()); }, [involved.data, tasks.data]);
  const rows = useMemo(() => [...own, ...added], [own, added]);
@@ -37,19 +37,14 @@ export function WorkScreen() {
  const selected = selectedBatch !== undefined ? undefined : rows.find(row => row.id === wanted) ?? (wanted !== null && involved.isPending ? undefined : rows[0]);
  const shownBatch = selectedBatch ?? (selected === undefined && !tasks.isPending ? batches[0] : undefined);
  const inboxFailed = inbox.isError && !lessonsOff(inbox.error) && !notServed(inbox.error);
- const rowsRef = useRef(rows), heading = useRef<HTMLHeadingElement>(null);
+ const heading = useRef<HTMLHeadingElement>(null);
  // The page is a lazy chunk: its heading takes focus when it arrives, so a keyboard or screen-reader user starts at the top of the page.
  useEffect(() => { heading.current?.focus(); }, []);
- useEffect(() => { rowsRef.current = rows; }, [rows]);
  // A task started in Cloud opens by its session's address (the one people share); any other by its task id.
  // A task the person was only added to has no full page yet: the task page finds a task only in the person's own list until Cloud opens a task by its id (K2), so no link is drawn for it.
  const fullPage = (row: { id: string; group: string; task: { sessionId: string | undefined } }) => (row.group === "involved" ? undefined : paths.session(row.task.sessionId ?? row.id));
  const select = (id: string) => { const next = new URLSearchParams(params);next.set("task", id);setParams(next, { replace: true }); };
- function onDecided(taskId: string) {
-  const next = nextNeedsYou(rowsRef.current, taskId), row = rowsRef.current.find(entry => entry.id === next);
-  void query.invalidateQueries({ queryKey: ["work"] });
-  if (next !== undefined && row !== undefined) { select(next);announce("Moved to " + row.title); }
- }
+ const onDecided = useWorkAdvance(rows, select);
  const error = tasks.isError ? tasks.error : undefined, isAdmin = host.kind === "web" && host.features.admin;
  const listBody = tasks.isPending || (decisions.isPending && !tasks.isError) ? <Skeleton label="Loading your work" />
   : error !== undefined ? <div className="rv-work-error" role="alert" data-testid="load-error"><div className="rv-banner rv-banner-danger"><span><b>{error instanceof ApiError && error.status === 501 ? "Work isn't available yet." : "Couldn't load your work."}</b> <VisibleText text={error instanceof ApiError ? (error.status === 501 && error.message === NOT_AVAILABLE_YET ? "" : error.message) : "Nothing is lost. Running tasks keep going, and chat messages still arrive."} /></span><Button onClick={() => { void tasks.refetch(); }}>Try again</Button></div></div>

@@ -1,4 +1,5 @@
-import { mergeTaskMoney, parseTaskMoneyV1, type TaskMoneyV1 } from "@agentx/contracts/web";
+import { DeveloperTaskViewSchema, mergeTaskMoney, parseTaskMoneyV1, type TaskMoneyV1 } from "@agentx/contracts/web";
+import type { SessionIdentity } from "./session-safety.js";
 // The Work page's read layer (Hybrid 1, the split inbox, DEC 223): contract v0 shapes (code-contract-v0.ts) turned into what the list, the step rail,
 // the spec, the build activity and the proof table draw. Nothing here is invented: a field Code did not send is absent, and what the page says about a
 // task is worked out from the workflow's stage and state, the pending decision card and the proof index, in fixed words.
@@ -8,6 +9,7 @@ import type { ProofItem, TaskView } from "@agentx/contracts/code-contract-v0";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";
+import { sessionWriteHost } from "./session-safety.js";
 import type { ReadDecision } from "./decisions.js";
 
 export type Tone = "wait" | "run" | "ok" | "bad" | "idle";
@@ -53,6 +55,8 @@ export interface ReadTask {
  round?: ReadRound;
  /** How the workflow ended (Code #1057's `outcome` on the list row), one of OUTCOME_WORDS' keys. */
  outcome?: string;
+ /** Ordered agent-run stages from the served task view, when that view includes the run reader. */
+ run?: NonNullable<ReturnType<typeof DeveloperTaskViewSchema.parse>["run"]> | undefined;
 }
 export interface ReadRoundQuestion { id: string; text: string; options?: ReadonlyArray<{ id: string; label: string }>; recommended?: string; answered: boolean }
 export interface ReadRound { round: number; questions: readonly ReadRoundQuestion[] }
@@ -100,12 +104,14 @@ export function readTask(raw: unknown): ReadTask | undefined {
  if (taskId === undefined || title === undefined || project === undefined || updatedAt === undefined || Number.isNaN(Date.parse(updatedAt))) return undefined;
  const workflow = isRecord(raw["workflow"]) ? raw["workflow"] : undefined;
  const spent = isRecord(raw["spent"]) ? num(raw["spent"]["usd"]) : undefined, limit = isRecord(raw["runLimit"]) ? num(raw["runLimit"]["limitUsd"]) : undefined;
+ const runResult = DeveloperTaskViewSchema.shape.run.safeParse(raw["run"]), run = runResult.success ? runResult.data : undefined;
  return {
   ...(raw["detail"] === "unread" ? { detailUnread: true as const } : {}),
   ...opt("setupRecheck", ((line) => (line !== undefined && line.length > 0 && line.length <= 600 && !/[\p{Cc}\p{Cf}]/u.test(line) ? line : undefined))(str(raw["setupRecheck"]))),
   hasThread: bool(raw["shared"]) === true || (isRecord(raw["share"]) && (str(raw["share"]["threadUrl"]) !== undefined || str(raw["share"]["threadTs"]) !== undefined)),
   money: ((money) => money?.taskId === taskId ? money : undefined)(parseTaskMoneyV1(raw["money"])),
   taskId, sessionId: str(raw["sessionId"]), title, project, status: str(raw["status"]) as ReadTask["status"] | undefined,
+  ...(run === undefined ? {} : { run }),
   workflow: workflow === undefined ? undefined : { ...opt("stage", str(workflow["stage"])), ...opt("state", str(workflow["state"])), ...opt("revision", num(workflow["revision"])), ...opt("path", str(workflow["path"])), ...opt("outcome", str(workflow["outcome"])), ...opt("blockReason", str(workflow["blockReason"])), ...opt("round", num(workflow["round"])) },
   pullRequests: records(raw["pullRequests"]).map(pull => ({ ...opt("repository", str(pull["repository"])), ...opt("number", num(pull["number"])), ...opt("url", str(pull["url"])), ...opt("state", str(pull["state"])) })),
   spentUsd: spent, runLimitUsd: limit, createdAt: str(raw["createdAt"]) ?? updatedAt, updatedAt,
@@ -316,6 +322,7 @@ export function useWorkApi() {
  const host = useAppHost();
  return useMemo(() => {
   const api = createApiClient(host);
+  const finalReplyApi = createApiClient(sessionWriteHost(host));
   const taskPath = (id: string) => "/v1/app/tasks/" + encodeURIComponent(id);
   return {
    tasks: () => api.get("/v1/app/sessions", { parse: readTaskList }),
@@ -339,7 +346,7 @@ export function useWorkApi() {
     */
    comment: (taskId: string, text: string, anchor: string, replyTo: string | undefined) => api.send("POST", taskPath(taskId) + "/comments", { requestId: crypto.randomUUID(), document: "plan", text, anchor, ...(replyTo === undefined ? {} : { replyTo }) }, { parse: (body: unknown) => body }, { retry: "never" }),
    /** "Continue in my tool" (contract v0 `tasks.continue`, `continue/publish-branch`): Code puts the task's branch where the person's own tool can take it. Not served yet: Cloud answers 501. */
-   continueInTool: (taskId: string) => api.send("POST", taskPath(taskId) + "/continue/publish-branch", { requestId: crypto.randomUUID() }, { parse: (body: unknown) => body }, { retry: "never" }),
+   continueInTool: (taskId: string, requestId: string = crypto.randomUUID()) => finalReplyApi.send("POST", taskPath(taskId) + "/continue/publish-branch", { requestId }, { parse: (body: unknown) => body }, { retry: "never" }),
    /**
     * Answers the understanding questions on Cloud's session route (`POST /v1/app/sessions/{sessionId}/answers`, which Cloud sends to Code for the session's task). It needs
     * Cloud's session id (`ses_...`) and the round Code says is asked; without either, nothing is sent and the card says to answer on the task's session page.
@@ -359,9 +366,9 @@ export function acceptWorkTasks(previous: readonly ReadTask[] | undefined, next:
  const old = new Map(previous?.map(task => [task.taskId, task]));
  return next.map(task => ({ ...task, money: mergeTaskMoney(old.get(task.taskId)?.money, task.money) }));
 }
-export function useWorkTasks(enabled = true) {
- const api = useWorkApi(), query = useQueryClient();
- return useQuery({ queryKey: ["work", "tasks"], retry: false, enabled, queryFn: async () => { const next = await api.tasks(); return acceptWorkTasks(query.getQueryData<ReadTask[]>(["work", "tasks"]), next); } });
+export function useWorkTasks(enabled = true, identity?: SessionIdentity) {
+ const api = useWorkApi(), query = useQueryClient(), key = identity === undefined ? ["work", "tasks"] : ["work", "tasks", identity.companyId, identity.personId];
+ return useQuery({ queryKey: key, retry: false, enabled, queryFn: async () => { const next = await api.tasks(); return acceptWorkTasks(query.getQueryData<ReadTask[]>(key), next); } });
 }
 /** The tasks the person is involved in. Its own read, so a failure here never takes the person's own list with it. */
 export function useInvolvedTasks(enabled = true) { const api = useWorkApi();return useQuery({ queryKey: ["work", "involved"], retry: false, enabled, queryFn: api.involved }); }

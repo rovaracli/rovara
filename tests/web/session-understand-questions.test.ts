@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
+import { meFixture } from "./support/fixtures.js";
 // Understand's questions on the session page (playbook S3): the Pipeline tab shows each question (inert text) with an answer field and one "Send answers" button for people who can use the
 // session, the questions read-only with "Waiting for <owner> to answer" for everyone else, posts once with the round and the workflow revision the page read, and tells a stale answer apart.
 import { expect, it } from "vitest";
-import { screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
@@ -20,9 +21,12 @@ import { expectNoAxeViolations } from "./support/axe.js";
 function setup(initial: ReturnType<typeof sessionFixture>, reply?: (request: ApiRequest) => Promise<ApiResponse>) {
   let session = initial;
   const f = fakeHost(async (request) => {
+ if (request.path === "/v1/app/me") return { status: 200, body: meFixture() };
     const path = request.path.split("?", 1)[0]!;
     // The decision cards are not switched on in this world (the route does not exist): "no cards".
     if (path === "/v1/app/decisions") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    // This session's decision history is a separate reader from the current decision cards.
+    if (path.endsWith("/log")) return { status: 200, body: { entries: [] } };
     if (path.endsWith("/messages")) return { status: 200, body: { messages: [] } };
     if (path.endsWith("/events")) return { status: 200, body: { events: [] } };
     if (path.endsWith("/presence")) return { status: 200, body: { viewingNow: session.viewingNow } };
@@ -76,7 +80,7 @@ it("will not send until every question has an answer, and moves focus to the fir
   fireEvent.click(screen.getByRole("button", { name: "Send answers" }));
   await waitFor(() => expect(document.activeElement).toBe(screen.getAllByRole("radio")[0]));
   expect(f.posts()).toHaveLength(0);
-  expect(screen.getByRole("alert").textContent).toContain("Answer every question");
+  expect(within(await form()).getByRole("alert").textContent).toContain("Answer every question");
   fireEvent.click(screen.getByRole("radio", { name: /The refunds table/u }));
   fireEvent.click(screen.getByRole("button", { name: "Send answers" }));
   await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("textbox", { name: /Should old refunds be migrated\?/u })));
@@ -99,10 +103,9 @@ it("says the questions were already answered when the server refuses the revisio
 });
 
 it("shows the next step after a successful send without a reload", async () => {
-  const f = setup(understandSession());
+  const f = setup(understandSession(), async () => { const next = understandSession({ waiting: false, revision: 5 });f.setSession(next);return { status: 200, body: { session: next } }; });
   await form();
   answerAll();
-  f.setSession(understandSession({ waiting: false, revision: 5 }));
   fireEvent.click(screen.getByRole("button", { name: "Send answers" }));
   await screen.findByText("Answers sent. Rovara is working on your request.");
   await waitFor(() => expect(screen.queryByRole("button", { name: "Send answers" })).toBeNull());

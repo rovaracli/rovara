@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { VisibleText } from "../../design/VisibleText.js";
 import type { MergeTone } from "./merge-facts.js";
+import { useTaskPagePolicy } from "./task-page-policy.js";
 import "./merge-section.css";
 
 const TONE_ICON: Record<MergeTone, string> = { ok: "M2.5 6.5l2.5 2.5 4.5-5", wait: "M6 3v3.5M6 8.6v.1", bad: "M3.5 3.5l5 5M8.5 3.5l-5 5", idle: "M3.5 6h5", run: "M6 2.5v3.5l2 1.5" };
@@ -12,9 +13,9 @@ export function MergeChip({ tone, children }: { tone: MergeTone; children: React
 
 /** A clock time from a server instant, with the whole instant on hover. An instant that does not read says so. */
 export function Clock({ at }: { at: string }) {
- const time = Date.parse(at);
+ const taskPage = useTaskPagePolicy() !== undefined, time = Date.parse(at);
  if (!Number.isFinite(time)) return <span>time unavailable</span>;
- return <time dateTime={at} title={new Date(time).toISOString()}>{new Date(time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>;
+ return <time dateTime={at} title={new Date(time).toISOString()}>{new Date(time).toLocaleTimeString([], taskPage ? { hour: "2-digit", minute: "2-digit", hour12: false } : { hour: "2-digit", minute: "2-digit" })}</time>;
 }
 
 /** Label and value pairs, as the boards' "What would be merged" block. */

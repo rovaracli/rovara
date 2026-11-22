@@ -16,6 +16,7 @@ import { LearnedSection } from "../../packages/ui/src/screens/project/LearnedSec
 import { LessonsUsedCard } from "../../packages/ui/src/screens/session/LessonsUsedCard.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
+import { meFixture } from "./support/fixtures.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 import { navFixture } from "./support/fixtures.js";
@@ -32,7 +33,7 @@ function lesson(id: string, patch: Partial<LessonItem> = {}): LessonItem {
 const BATCH = { project: "web", fromYou: 1, lessons: [lesson("les_mine0001", { from: [{ name: "Priya", you: true }], title: "Wrap webhook calls in withRetry" }), lesson("les_soon0001", { expiresAt: NOW + 5 * 36e5, title: "Put tests next to the module" }), lesson("les_dates001", { title: "Use the shared date formatter" })] };
 
 function mount(element: ReturnType<typeof h>, answer: (request: ApiRequest) => ApiResponse | undefined, path = "/app/live") {
-  const f = fakeHost(async request => answer(request) ?? { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } });
+  const f = fakeHost(async request => request.path === "/v1/app/me" ? { status: 200, body: meFixture() } : answer(request) ?? { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } });
   const query = createQueryClient();
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [path], children: h(Announcer, { children: h(Routes, {}, h(Route, { path: path.split("?")[0]!, element })) }) }) }) }));
   return { ...f, ...ui, close() { ui.unmount();query.clear(); } };
@@ -251,6 +252,7 @@ it("lists each lesson the task was given with its why, citation and Code's marks
   expect(card.textContent).toContain("A lesson from a source you can't see");
   expect(card.textContent).not.toMatch(/used in \d+ tasks/u);
   expect(within(card).getAllByRole("button", { name: /^Not helpful/u })).toHaveLength(2);
+  await waitFor(() => expect(within(card).getByRole<HTMLButtonElement>("button", { name: "Not helpful: Keep the README current" }).disabled).toBe(false));
   await act(async () => { fireEvent.click(within(card).getByRole("button", { name: "Not helpful: Keep the README current" })); });
   expect(sent[0]).toMatchObject({ method: "POST", path: `/v1/app/projects/web/tasks/${ID.merge}/lessons/les_trial001/not-helpful`, body: {}, retry: "never" });
   expect(await within(card).findByText("Marked not helpful. It was on trial, so Rovara stops using it.")).toBeTruthy();

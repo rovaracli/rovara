@@ -825,20 +825,14 @@ export const ROUTES: Route[] = [
       if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can retry this session.` } } };
       const retry = blockedReview(found.task)?.retry;
       if (retry === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There's nothing to retry on this session right now." } } };
-      let task: CodeTask;
-      try {
-        ({ task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review`, {
-          method: "POST", headers: TASK_VIEW,
-          body: { requestId, ...retry, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
-        }));
-      } catch (error) {
-        // A core task (audit 2026-11-18 item 6): the core retries the blocked review through the task's session, after its own session-level check. The core's retry takes no
-        // revision or candidate: it retries what is blocked now (core/task-flow/retry.ts), and only re-runs the read-only reviews of the same checked code.
-        if (!isCoreNotYet(error)) throw error;
-        const done = await actOnCoreSession(context.client, context.session, found.task, "retry", requestId);
-        if ("answer" in done) return done.answer;
-        task = done.task;
-      }
+      const shown = context.body as { expectedRevision?: unknown; candidateDigest?: unknown };
+      if (!Number.isSafeInteger(shown.expectedRevision) || (shown.expectedRevision as number) < 0 || typeof shown.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(shown.candidateDigest)) return badRequest("The displayed revision and candidate digest are required.");
+      // The caller's displayed pins belong to this intent. Never replace them
+      // with retry from this authorization read, or downgrade to core Retry.
+      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review`, {
+        method: "POST", headers: TASK_VIEW,
+        body: { requestId, expectedRevision: shown.expectedRevision, candidateDigest: shown.candidateDigest, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
+      });
       return ok({ session: await viewOf(context, found.record, task, await peopleOf(context, found.record)) });
     },
   },
@@ -849,15 +843,16 @@ export const ROUTES: Route[] = [
     answer: async (context) => {
       const found = await sessionAndTask(context);
       if (found === undefined) return sessionNotFound;
-      const input = (context.body ?? {}) as { requestId?: unknown; note?: unknown };
+      const input = (context.body ?? {}) as { requestId?: unknown; note?: unknown; expectedRevision?: unknown; candidateDigest?: unknown };
       if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
       if (input.note !== undefined && (typeof input.note !== "string" || input.note.trim().length > 1000)) return badRequest("The note is at most 1,000 characters.");
       const choices = reviewChoices(found.task);
       if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to send back right now." } } };
       if (!await ownerOrCoOwner(context, found.record)) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} or a co-owner can send this back to coding.` } } };
+      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("The displayed revision and candidate digest are required.");
       const note = typeof input.note === "string" && input.note.trim() !== "" ? input.note.trim() : "Fix the review findings.";
       const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/send-back`, {
-        method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, instructions: note },
+        method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, expectedRevision: input.expectedRevision, instructions: note },
       });
       return ok({ session: await viewOf(context, found.record, task, await peopleOf(context, found.record)) });
     },
@@ -869,14 +864,15 @@ export const ROUTES: Route[] = [
     answer: async (context) => {
       const found = await sessionAndTask(context);
       if (found === undefined) return sessionNotFound;
-      const input = (context.body ?? {}) as { requestId?: unknown; reason?: unknown };
+      const input = (context.body ?? {}) as { requestId?: unknown; reason?: unknown; expectedRevision?: unknown; candidateDigest?: unknown };
       if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
       const reason = typeof input.reason === "string" ? input.reason.trim() : "";
       if (reason === "" || reason.length > 500) return badRequest("Give a reason of up to 500 characters for accepting the findings.");
       const choices = reviewChoices(found.task);
       if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to accept right now." } } };
       if (!await ownerOrCoOwner(context, found.record)) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} or a co-owner can accept these findings.` } } };
-      const accept: FindingsAccept = { requestId: input.requestId, expectedRevision: choices.expectedRevision, candidateDigest: choices.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) };
+      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("The displayed revision and candidate digest are required.");
+      const accept: FindingsAccept = { requestId: input.requestId, expectedRevision: input.expectedRevision as number, candidateDigest: input.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) };
       let task: CodeTask;
       try {
         ({ task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review-findings`, { method: "POST", headers: TASK_VIEW, body: accept }));

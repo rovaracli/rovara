@@ -7,7 +7,7 @@ import { ProjectOverviewProjectSchema, ProjectPlaybookResponseReaderSchema, Proj
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient, type SendResult } from "./client.js";
 import { ApiError } from "./errors.js";
-import type { ReadDecision, ReadDecisionCard } from "./decisions.js";
+import { runDecisionAction, type ReadDecision, type ReadDecisionCard } from "./decisions.js";
 
 const taskPath = (taskId: string): string => {
  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(taskId)) throw new ApiError(400, "CONFIG_INVALID", "This task can't be addressed.");
@@ -43,7 +43,7 @@ export function createDesignReviewApi(host: AppHost) {
   async chooseSpend(decision: ReadDecision, action: ReadDecisionCard["actions"][number], requestId: string): Promise<void> {
    const target = spendChoiceOf(decision.card, action);
    if (target === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
-   const result = await api.send("POST", target.path, { requestId, shownDigest: decision.digest }, AnyAnswer, { retry: "never" });
+   const result = await runDecisionAction(host, decision, { requestId, shownDigest: decision.digest }, body => api.send("POST", target.path, body, AnyAnswer, { retry: "never", pendingIsUnknown: true, confirmationIsPending: true }));
    if (result.kind !== "done") throw new ApiError(409, "PENDING", "This choice is waiting for confirmation. Open the decision to continue.");
   },
   /** The playbook with the design review setting the project RUNS with (held to the company lock) and the fields it cannot change. */

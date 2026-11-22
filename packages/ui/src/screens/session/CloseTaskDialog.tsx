@@ -1,94 +1,101 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { runTaskAction } from "../../api/task-action.js";
+import { useTaskPagePolicy } from "./task-page-policy.js";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
 import { createSessionActions } from "../../api/session-actions.js";
-import { CLOSE_MESSAGES } from "@agentx/contracts/web";
+import { createTaskSessionApi } from "../../api/sessions.js";
+import { useSessionIdentity, useSessionRequest, readSessionIdentity, assertSessionIdentity, type FrozenSessionRequest, clearSessionRequest, isSessionCsrf, isFinalSessionRefusal } from "../../api/session-safety.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { TaskCloseProgressStatusView, type TaskCloseProgressStatus } from "./TaskCloseProgressStatusView.js";
 type Unpublished = ReadonlyArray<{ repository: string; reasons: readonly string[] }>;
-/** How often the page asks again while the workspace is checked: every 5 s for the first minute, then every 10 s, and it gives up after 6 minutes (the broker keeps checking). */
-const POLL_FAST_MS = 5_000, POLL_SLOW_MS = 10_000, POLL_FAST_WINDOW_MS = 60_000, POLL_CEILING_MS = 360_000;
-const CHECKING_WORDS = "Checking this task for unpublished work… this usually takes 1–3 minutes";
-const RELEASING_WORDS = "No unpublished work found. Releasing the workspace… this usually takes a minute";
-const DISCARDING_WORDS = "Discarding the unpublished work and closing this task… this usually takes a minute or two";
-const SLOW_WORDS = "This is taking longer than usual. You can close this window; Rovara keeps checking. Try Close task again later.";
-const FAILED_WORDS = "Rovara couldn't finish checking this task. Try Close task again.";
-/** Requests that fail on the way (no connection, a 5xx) in a row before the wait ends; the same request id is sent again, so a repeat is safe. */
-const TRANSIENT_FAILURES_MAX = 2;
-/** One press of the button: `cancelled` ends it, and `wake` ends its wait between two asks at once. */
-type Run = { cancelled: boolean; wake?: () => void };
-/**
- * Closes a task from the web, through the same close the Slack button and the AI-tool close run. The first ask never discards anything: when the workspace holds work that was never published, the
- * answer lists it and only the person's second, explicit press asks for it to be discarded (with a request id of its own). Closing first boots a worker to check the workspace, which takes minutes: until it
- * settles the broker answers "not closed yet", and this dialog says it is checking and asks again by itself (the same request id, so the broker answers with the check already under way), until the task is closed,
- * unpublished work is found, an error comes back, the person closes the window, or six minutes pass. A check that ended without closing the task (the broker says so in `CLOSE_MESSAGES`) is started again once,
- * with a new request id, because the old id only repeats the ended check; a second such end is told to the person. Any other answer that is not "closed" keeps the dialog open with the broker's words.
- */
-export function CloseTaskDialog({ id, open, onOpenChange, trigger, onCloseAutoFocus, onClosed, onChecking }: { id: string; open: boolean; onOpenChange: (open: boolean) => void; trigger?: ReactElement; onCloseAutoFocus?: (event: Event) => void; onClosed: () => Promise<unknown> | void; /** Called once when the broker first answers "not closed yet": the task is closing now, so the page can read it again. */ onChecking?: () => void }) {
- const host = useAppHost(), api = useMemo(() => createSessionActions(host), [host]);
- const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [unpublished, setUnpublished] = useState<Unpublished>(), [wait, setWait] = useState<"checking" | "releasing" | "discarding" | "slow">();
- const sending = useRef(false), intent = useRef<{ discard: boolean; requestId: string } | undefined>(undefined), active = useRef<Run | undefined>(undefined), checking = useRef(onChecking);
- const leaveButton = useRef<HTMLButtonElement>(null), closeButton = useRef<HTMLButtonElement>(null), wasBusy = useRef(false);
- checking.current = onChecking;
- /** Ends the run that is asking or waiting now (if any) without touching the screen. */
- const stop = useCallback(() => { const run = active.current;if (run === undefined) return;run.cancelled = true;active.current = undefined;sending.current = false;run.wake?.(); }, []);
- // The window going away, by the person or by the page, ends the asking and the waiting words with it (the words are reset while rendering, as React advises for state that follows a prop).
- const [wasOpen, setWasOpen] = useState(open);
- if (open !== wasOpen) { setWasOpen(open);if (!open) { setBusy(false);setWait(undefined);setError(undefined); } }
- useEffect(() => { if (!open) stop(); }, [open, stop]);
- useEffect(() => stop, [stop]);
- // The pressed button is disabled while the check runs, so keyboard focus goes to the button that leaves, and comes back to Close task when the wait ends.
- useEffect(() => { if (busy) leaveButton.current?.focus(); else if (wasBusy.current && open) closeButton.current?.focus();wasBusy.current = busy; }, [busy, open]);
- function pause(run: Run, ms: number) { return new Promise<void>(resolve => { const timer = setTimeout(resolve, ms);run.wake = () => { clearTimeout(timer);resolve(); }; }); }
- async function close(discard: boolean) {
-  if (sending.current) return;
-  const run: Run = { cancelled: false };
-  sending.current = true;active.current = run;setBusy(true);setError(undefined);setWait(discard ? "discarding" : "checking");
-  // The same request id until the close is settled (closed, or refused for unpublished work): the broker answers a repeat of it with the check already under way, and a new id would start the check again.
-  if (intent.current?.discard !== discard) intent.current = { discard, requestId: crypto.randomUUID() };
-  const startedAt = Date.now();let announced = false, restarted = false, failures = 0;
+const unpublishedKey = (work: Unpublished) => JSON.stringify(work.map(entry => [entry.repository, [...entry.reasons].sort()]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+/** One persisted close request, then read-only checks. Leaving this dialog never retires an unresolved operation. */
+export function CloseTaskDialog({ id, open, onOpenChange, trigger, onCloseAutoFocus, onClosed, onChecking, canClose = true }: { id: string; open: boolean; onOpenChange: (open: boolean) => void; trigger?: ReactElement; onCloseAutoFocus?: (event: Event) => void; onClosed: () => Promise<unknown> | void; onChecking?: () => void; canClose?: boolean }) {
+ const page = useTaskPagePolicy();
+ const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionActions(host), [host]), sessions = useMemo(() => createTaskSessionApi(host), [host]);
+ const identity = useSessionIdentity(host), saved = useSessionRequest(host, identity.data, id);
+ const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [unpublished, setUnpublished] = useState<Unpublished>(), [progress, setProgress] = useState<TaskCloseProgressStatus>("pending");
+ const sending = useRef(false), request = saved.request, locked = request !== undefined || saved.storageError !== undefined;
+ const [previousOpen, setPreviousOpen] = useState(open);
+ if (previousOpen !== open) { setPreviousOpen(open);setUnpublished(undefined); }
+ useEffect(() => {
+  if (request?.action !== "close") return;
+  const timer = window.setTimeout(() => setProgress("slow"), Math.max(0, 360_000 - (Date.now() - request.startedAt)));
+  return () => window.clearTimeout(timer);
+ }, [request?.action, request?.startedAt]);
+ const allowed = canClose && identity.data !== undefined && saved.failure === undefined;
+ function matchesShown(work: Unpublished | undefined): boolean {
+  if (work !== undefined && unpublished !== undefined && unpublishedKey(work) === unpublishedKey(unpublished)) return true;
+  setUnpublished(work);return false;
+ }
+ async function check() {
+  if (sending.current) return;setBusy(true);setError(undefined);
   try {
-   for (;;) {
-    let result: Awaited<ReturnType<typeof api.close>>;
-    try { result = await api.close(id, { requestId: intent.current.requestId, ...(discard ? { discardUnpublished: true } : {}) });failures = 0; }
-    catch (failure) {
-     // A request lost on the way (no connection, a 5xx) is asked again with the same id after the usual wait; a refusal (4xx) ends the wait at once.
-     if (run.cancelled) return;
-     if (failure instanceof ApiError && (failure.status === 0 || failure.status >= 500) && failures < TRANSIENT_FAILURES_MAX && Date.now() - startedAt < POLL_CEILING_MS) { failures += 1;await pause(run, POLL_FAST_MS);if (run.cancelled) return;continue; }
-     throw failure;
-    }
-    if (run.cancelled) return;
-    if (result.kind !== "done") { setWait(undefined);setError("This action is waiting for confirmation. Open the session to continue.");return; }
-    if (result.value.closed) { intent.current = undefined;change(false);await onClosed();return; }
-    if (result.value.unpublished !== undefined && result.value.unpublished.length > 0 && !discard) { intent.current = undefined;setWait(undefined);setUnpublished(result.value.unpublished);return; }
-    const message = result.value.message;
-    // The check ended without closing the task: only a new request id starts it again, once; after that the person is told.
-    if (message === CLOSE_MESSAGES.checkFailed || message === CLOSE_MESSAGES.stillOpen) {
-     if (restarted) { intent.current = undefined;setWait(undefined);setError(FAILED_WORDS);return; }
-     restarted = true;intent.current = { discard, requestId: crypto.randomUUID() };setWait(discard ? "discarding" : "checking");continue;
-    }
-    // Not settled yet (the workspace is still being checked, or released): say so and ask again, instead of asking the person to guess when.
-    if (!announced) { announced = true;checking.current?.(); }
-    setWait(message === CLOSE_MESSAGES.computePending ? "releasing" : discard ? "discarding" : "checking");
-    const elapsed = Date.now() - startedAt;
-    if (elapsed >= POLL_CEILING_MS) { intent.current = undefined;setWait("slow");return; }
-    await pause(run, elapsed < POLL_FAST_WINDOW_MS ? POLL_FAST_MS : POLL_SLOW_MS);
-    if (run.cancelled) return;
+   const current = await sessions.read(id);query.setQueryData(["session", id], current);
+   if (identity.data === undefined || saved.scope === undefined || request?.action !== "close") return;
+   assertSessionIdentity(host, identity.data);
+   const task = current.body.kind === "task" ? current.body.task : undefined;
+   if (task?.status === "CLOSED") { clearSessionRequest(host, saved.scope, request.requestId);setBusy(false);onOpenChange(false);void Promise.resolve().then(onClosed).catch(() => undefined); }
+   else if (task?.unpublished !== undefined && task.unpublished.length > 0 && request.body.discardUnpublished !== true && task.closing !== true) { clearSessionRequest(host, saved.scope, request.requestId);setUnpublished(task.unpublished); }
+   else { setProgress(Date.now() - request.startedAt >= 360_000 ? "slow" : "pending"); }
+  } catch { setError("Couldn't check this task. Closure is still unconfirmed."); }
+  finally { setBusy(false); }
+ }
+ async function close(discard: boolean) {
+  if (!allowed || locked || sending.current || identity.data === undefined || saved.scope === undefined) return;
+  sending.current = true;setBusy(true);setError(undefined);
+  let frozen: FrozenSessionRequest | undefined;
+  try {
+   const person = await readSessionIdentity(host);
+   if (person.companyId !== identity.data.companyId || person.personId !== identity.data.personId) throw new ApiError(0, "IDENTITY_CHANGED", "Identity changed. Check this page again.");
+   const latest = await sessions.read(id);query.setQueryData(["session", id], latest);
+   if (!latest.you.actions.includes("close")) throw new ApiError(403, "FORBIDDEN", "Close task is no longer available. Check the current task controls.");
+   if (discard) {
+    const fresh = latest.body.kind === "task" ? latest.body.task.unpublished : undefined;
+    if (!matchesShown(fresh)) { setError("The unpublished work changed. Check the new list.");return; }
    }
-  } catch (failure) { if (!run.cancelled) { setWait(undefined);setError(failure instanceof ApiError ? failure.message : "Couldn't close this task. Try again."); } }
-  finally { if (active.current === run) { active.current = undefined;sending.current = false;setBusy(false); } }
+   assertSessionIdentity(host, person);
+   const body = { requestId: crypto.randomUUID(), ...(discard ? { discardUnpublished: true as const } : {}) };
+   const result = await runTaskAction(host, saved.scope, "close", body, async request => {
+    if (discard) {
+     const current = query.getQueryData<typeof latest>(["session", id]), state = query.getQueryState(["session", id]);
+     const fresh = state?.status === "success" && state.fetchStatus === "idle" && state.fetchFailureCount === 0 && current?.body.kind === "task" ? current.body.task.unpublished : undefined;
+     if (!matchesShown(fresh)) throw new ApiError(403, "CHANGE_STALE", "The unpublished work changed. Check the new list.");
+     if (!current?.you.actions.includes("close")) throw new ApiError(403, "FORBIDDEN", "Close task is no longer available. Check the current task controls.");
+    }
+    frozen = request;assertSessionIdentity(host, person);
+    const answer = await api.close(id, request.body as typeof body);assertSessionIdentity(host, person);
+    if (answer.kind !== "done" || !answer.value.closed && (discard || !answer.value.unpublished?.length)) throw new ApiError(202, "PENDING", "Rovara didn't confirm closure yet.");
+    return answer;
+   });
+   query.setQueryData(["session", id], result.value.session);
+   if (result.value.closed) { setBusy(false);onOpenChange(false);void Promise.resolve().then(onClosed).catch(() => undefined);return; }
+   if (!discard && result.value.unpublished !== undefined && result.value.unpublished.length > 0) { setUnpublished(result.value.unpublished);return; }
+   // A readable not-closed answer is progress, not permission to start another close.
+   setProgress("pending");onChecking?.();
+  } catch (failure) {
+   if (isSessionCsrf(failure)) {
+
+    setError("Couldn't change that. Nothing was sent. Rovara is checking your identity.");void readSessionIdentity(host).catch(() => undefined);
+   } else if (isFinalSessionRefusal(failure)) {
+
+    setError(failure instanceof ApiError ? failure.message : "Couldn't close this task.");
+   } else if (frozen !== undefined) setProgress(failure instanceof ApiError && failure.status === 202 ? "pending" : "unconfirmed");
+   else setError(failure instanceof ApiError ? failure.message : "Couldn't check the current task controls.");
+  } finally { sending.current = false;setBusy(false); }
  }
- function change(value: boolean) {
-  if (!value) { stop();setBusy(false);setWait(undefined);setUnpublished(undefined);setError(undefined);intent.current = undefined; }
-  onOpenChange(value);
- }
- const words = wait === "checking" ? CHECKING_WORDS : wait === "releasing" ? RELEASING_WORDS : wait === "discarding" ? DISCARDING_WORDS : wait === "slow" ? SLOW_WORDS : undefined;
+ const state = progress;
  return <Dialog title={unpublished === undefined ? "Close this task?" : "Discard unpublished work?"} description={unpublished === undefined ? "Rovara frees its workspace and its place in your open-task limit. Work that was published stays where it is." : "This task has work that was never published. Closing it now deletes that work."}
-  open={open} onOpenChange={change} {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})} {...(trigger ? { trigger } : {})}>
+  className="rv-action-dialog" open={open} onOpenChange={onOpenChange} {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})} {...(trigger ? { trigger } : {})}>
   {unpublished !== undefined && <ul aria-label="Unpublished work">{unpublished.map(entry => <li key={entry.repository}><VisibleText text={entry.repository} />{entry.reasons.length > 0 && <>: <VisibleText text={entry.reasons.join("; ")} /></>}</li>)}</ul>}
-  <div role="status" aria-live="polite" className="rv-close-wait">{words !== undefined && <>{wait !== "slow" && <progress aria-hidden="true" />}<p><VisibleText text={words} /></p></>}</div>
-  <div className="rv-actions"><Button ref={leaveButton} onClick={() => change(false)}>{busy ? "Close this window" : "Keep it open"}</Button><Button ref={closeButton} variant="danger" busy={busy} onClick={() => { void close(unpublished !== undefined); }}>{unpublished === undefined ? "Close task" : "Discard it and close"}</Button></div>
+  {!allowed && <p role="alert">Current identity or task controls are unavailable. Check the task before closing it.</p>}
+  {request?.action === "close" && <TaskCloseProgressStatusView taskId={id} state={state} onCheck={check} />}
+  {saved.storageError && <p role="alert">{saved.storageError}</p>}
+  <div className="rv-actions"><Button variant={page === undefined ? "secondary" : "primary"} onClick={() => onOpenChange(false)}>{busy || locked ? "Close this window" : "Keep it open"}</Button><Button variant="danger" busy={busy} disabled={!allowed || locked} onClick={() => { void close(unpublished !== undefined); }}>{unpublished === undefined ? "Close task" : "Discard it and close"}</Button></div>
   {error && <p role="alert"><VisibleText text={error} /></p>}
  </Dialog>;
 }

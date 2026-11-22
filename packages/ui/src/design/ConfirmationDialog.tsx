@@ -1,16 +1,21 @@
-import { useEffect, useId, useRef, useSyncExternalStore } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Dialog } from "./Dialog.js";
 import { Button } from "./Button.js";
 import { VisibleText } from "./VisibleText.js";
 import "./parts/table-toast-dialog.css";
 
-// A request stays sent for this page's lifetime, including dialog/action remounts.
-// Durable unknown-outcome storage and identity scoping remain the caller's responsibility.
-const sentRequests = new Set<string>();
-const requestListeners = new Set<() => void>();
-function subscribeToRequests(listener: () => void) {
- requestListeners.add(listener);
- return () => { requestListeners.delete(listener); };
+function createRequestScope() {
+ const sent = new Set<string>(), listeners = new Set<() => void>();
+ return { sent, listeners, subscribe: (listener: () => void) => {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+ } };
+}
+const RequestScope = createContext<ReturnType<typeof createRequestScope> | undefined>(undefined);
+/** @internal Page owner: retain through dialog remounts; key by task when navigating. Not a durable outcome store. */
+export function ConfirmationDialogScope({ children }: { children: ReactNode }) {
+ const [store] = useState(createRequestScope);
+ return <RequestScope.Provider value={store}>{children}</RequestScope.Provider>;
 }
 
 type ConfirmationDialogBase = {
@@ -45,12 +50,14 @@ export function ConfirmationDialog(props: ConfirmationDialogProps) {
   if (invalidAmount) console.error("ConfirmationDialog: raise_money amountCents must be a positive integer number of cents; Confirm stays disabled.");
  }, [invalidAmount]);
  const opener = useRef<HTMLElement | null>(null);
- const submitted = useSyncExternalStore(subscribeToRequests, () => sentRequests.has(props.requestKey), () => false);
+ const pageScope = useContext(RequestScope), [localScope] = useState(createRequestScope);
+ const requests = pageScope ?? localScope;
+ const submitted = useSyncExternalStore(requests.subscribe, () => requests.sent.has(props.requestKey), () => false);
  const previewId = useId();
  function dispatch(action: () => void) {
-  if (busy || invalidAmount || sentRequests.has(props.requestKey)) return;
-  sentRequests.add(props.requestKey);
-  for (const listener of requestListeners) listener();
+  if (busy || invalidAmount || requests.sent.has(props.requestKey)) return;
+  requests.sent.add(props.requestKey);
+  for (const listener of requests.listeners) listener();
   action();
  }
  useEffect(() => {

@@ -16,7 +16,7 @@ import { TaskAnswers } from "../../packages/ui/src/screens/answers/TaskAnswers.j
 import { ANSWER_FRAME, pieces, taskTextFromAnswer } from "../../packages/ui/src/screens/answers/answer-text.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { fakeHost } from "./support/fake-host.js";
-import { navFixture } from "./support/fixtures.js";
+import { meFixture, navFixture } from "./support/fixtures.js";
 import { projectFixture } from "./support/project-fixture.js";
 import { taskFixture } from "./support/session-fixture.js";
 import { renderUi } from "./support/render.js";
@@ -46,6 +46,7 @@ function mount(options: Options = {}, element: "wiki" | "project" | "task" = "wi
   const nav = navFixture({ features: { localAgents: false, usage: false, admin: false, chains: false, notices: false, describe: false, ...(options.on === false ? {} : { answers: true }) } });
   const f = fakeHost(async (request: ApiRequest) => {
     const path = request.path;
+    if (path === "/v1/app/me") return json(200, meFixture());
     if (path === "/v1/app/nav") return json(200, nav);
     if (path === "/v1/app/changes") return json(200, { notices: [], next: "settled" });
     if (path.endsWith("/start-preview")) return json(200, { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "disabled" });
@@ -417,16 +418,17 @@ describe("Not right on an answer (lead 4 J5)", () => {
     f.close();
   });
 
-  it("a refusal shows only Cloud's fixed words (never the server's text) and the person can press again", async () => {
+  it("an unaudited feedback refusal shows fixed words and keeps the previous press locked", async () => {
     let calls = 0;
-    const f = mount({ notRight: () => (++calls === 1 ? refusal(503, "RUNTIME_UNAVAILABLE", LEAK) : json(200, { answerId: "a1234567890", state: "queued", claims: 1 })) });
+    const f = mount({ notRight: () => (++calls === 1 ? refusal(403, "FORBIDDEN", LEAK) : json(200, { answerId: "a1234567890", state: "queued", claims: 1 })) });
     const answer = await askAndGet();
     fireEvent.click(within(answer).getByTestId("answer-not-right"));
     expect((await within(answer).findByTestId("not-right-error")).textContent).toContain("Couldn't save that just now. Try again.");
     expect(answer.textContent).not.toContain(LEAK);
     fireEvent.click(within(answer).getByTestId("answer-not-right"));
-    await within(answer).findByTestId("not-right-done");
-    expect(f.posts("/not-right")).toHaveLength(2);
+    expect(within(answer).queryByTestId("not-right-done")).toBeNull();
+    expect(within(answer).getByTestId<HTMLButtonElement>("answer-not-right").disabled).toBe(true);
+    expect(f.posts("/not-right")).toHaveLength(1);
     f.close();
   });
 

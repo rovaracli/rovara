@@ -11,6 +11,7 @@ import CORE_TASK_ROUTES from "../fixtures/code-core-task-routes.json" with { typ
 const sid = "ses_aaaaaaaaaaaaaaaaaaaa", taskId = CORE_TASK_ROUTES.page.taskId, person = "a".repeat(64), company = "org_aaaaaaaaaaaaaaaaaaaa";
 const subject = actionSubject({ orgId: company, developerId: person, subjectId: sid });
 const route = (action: string) => `/v1/web/sessions/${sid}/${action}`;
+const reviewPins = { expectedRevision: CORE_TASK_ROUTES.page.revision, candidateDigest: CORE_TASK_ROUTES.page.candidateDigest };
 const peopleChanged = "People changed; refresh the task and try again";
 const limit = "workspace operation read limit exceeded (10 reads, each up to 1 MB, plus a completion probe)";
 const cases: Array<[string, string, number, string, string]> = [
@@ -32,6 +33,7 @@ const cases: Array<[string, string, number, string, string]> = [
  ["retry access reload", route("retry"), 404, "TASK_NOT_FOUND", "no task here that you can see"],
  ["retry task view", route("retry"), 400, "CONFIG_INVALID", limit],
  // Core session-routes.ts:166-167, :193-195 calls access.of/view AFTER control.retry.
+ // Keep these envelopes held on the pinned workflow transport too; Cloud no longer downgrades Retry to core.
  ["core retry projection", route("retry"), 400, "CONFIG_INVALID", limit],
  ["core retry missing task", route("retry"), 404, "NOT_FOUND", "There is no such session."],
  ["core retry unreadable owner", route("retry"), 403, "TASK_ACCESS_DENIED", "Rovara can't tell who owns this task right now, so it did nothing."],
@@ -59,21 +61,21 @@ it.each(cases)("%s: Code commits once then its FIRST response is %s %s %s; the p
   if (target === "/v1/dev/access") return json(200, session.access);
   if ((init?.method ?? "GET") === "GET") return json(200, { task: { ...CORE_TASK_ROUTES.page.blockedTask, status: "RUNNING", sessionId: sid, ...(applied > 0 && message === peopleChanged ? { workflow: undefined } : {}) } });
   writes.push(target);
-  // These are the real pre-apply fallbacks, before the one simulated committed call.
-  if (scenario.startsWith("core retry") && target.endsWith("/workflow/review")) return json(404, CORE_TASK_ROUTES.page.notOnCore.body);
+  // Security findings still use the page fallback. Pinned Retry never downgrades to core.
   if (scenario.startsWith("page findings") && target.endsWith("/workflow/review-findings")) return json(CORE_TASK_ROUTES.page.tokenRoute.status, CORE_TASK_ROUTES.page.tokenRoute.body);
   // Models the source-traced Code commit -> projection failure; not a full Code runtime execution.
   applied += 1;
   return json(status, { error: { code, message } });
  } });
  const handler = createCloudHandler({ client, store, work, origin: "https://cloud.example.test", callbackPath: "/callback", secureCookies: true, org: { orgId: company, name: "Acme", plan: "test" }, log: () => undefined });
- const answer = await handler({ method: "POST", path, query: new URLSearchParams(), headers: { cookie: "rovara_cloud_session=cookie", "x-rovara-csrf": "csrf" }, body: JSON.stringify({ requestId: pending.requestId, round: 1, answers: [{ questionId: "q1", optionId: "a" }], reason: "Accept this finding", note: "Fix this finding" }) });
+ const answer = await handler({ method: "POST", path, query: new URLSearchParams(), headers: { cookie: "rovara_cloud_session=cookie", "x-rovara-csrf": "csrf" }, body: JSON.stringify({ requestId: pending.requestId, ...reviewPins, round: 1, answers: [{ questionId: "q1", optionId: "a" }], reason: "Accept this finding", note: "Fix this finding" }) });
  expect(answer).toBeDefined();
  const body = JSON.parse(answer!.body) as { error: { code: string; message: string } };
- const mapped = scenario === "page findings access reload" ? [403, "FORBIDDEN", CORE_ACTION_WORDS.acceptNotYours] : scenario === "core retry missing task" ? [403, "FORBIDDEN", CORE_ACTION_WORDS.retryRefused] : [status, code, message];
+ const mapped = scenario === "page findings access reload" ? [403, "FORBIDDEN", CORE_ACTION_WORDS.acceptNotYours] : [status, code, message];
  expect([answer!.status, body.error.code, body.error.message]).toEqual(mapped);
  expect(applied).toBe(1);
- expect(writes).toHaveLength(scenario.startsWith("core retry") || scenario.startsWith("page findings") ? 2 : 1);
+ expect(writes).toHaveLength(scenario.startsWith("page findings") ? 2 : 1);
+ if (path.endsWith("/retry")) expect(writes).toEqual([`/v1/dev/tasks/${taskId}/workflow/review`]);
  expect(handleActionFailure({ route: path, failure: new ApiError(answer!.status, body.error.code, body.error.message), entry: pending, subject, fence, records: saved, message: words, read, readIdentity: read })).toBe("unknown");
  expect(localStorage.getItem("postcommit.pending:" + subject)).toBe(before);
  expect(saved.readPendingNow(subject)).toEqual({ kind: "pending", entry: pending, stale: false });

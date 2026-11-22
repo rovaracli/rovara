@@ -11,6 +11,7 @@ import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { renderUi } from "./support/render.js";
+import { meFixture } from "./support/fixtures.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
@@ -19,7 +20,7 @@ import { loaded, loadedRow } from "./support/lessons-fixture.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 
 function setup(respond: (request: ApiRequest) => Promise<ApiResponse>) {
- const session = SessionViewReaderSchema.parse(fixture()), f = fakeHost(respond), query = createQueryClient();
+ const session = SessionViewReaderSchema.parse(fixture()), f = fakeHost(async request => request.path === "/v1/app/me" ? { status: 200, body: meFixture() } : respond(request)), query = createQueryClient();
  const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session, onComment: () => undefined })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
  return { ...ui, f, close() { ui.unmount(); router.dispose(); query.clear(); } };

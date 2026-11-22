@@ -72,3 +72,5 @@
 .rv-team-rules{display:grid;gap:var(--rv-space-2)}.rv-team-rules>h3{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui);margin:0}
 .rv-permanent-paths{border:0;margin:0;padding:0;display:grid;gap:var(--rv-space-1)}.rv-permanent-paths legend{font-size:var(--rv-font-sm);color:var(--rv-text-muted);padding:0}.rv-permanent-paths p{margin:0;font-size:var(--rv-font-xs)}
 .rv-permanent-targets .rv-choices{display:flex;flex-wrap:wrap;gap:var(--rv-space-2)}
+
+.rv-qp-action-fields { border: 0; margin: 0; padding: 0; min-width: 0; }

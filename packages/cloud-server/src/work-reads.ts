@@ -1,7 +1,8 @@
 import { parseTaskMoneyV1 } from "./task-money.js";
+import { DeveloperTaskViewSchema } from "@agentx/contracts/web";
 // The Work page's reads (the split inbox, DEC 223): the person's tasks and, for the one task they select, its plan, proof index, events and plan comments.
-// Each is one call to Rovara Code as the signed-in person (contract v0: tasks.list, tasks.plan, tasks.evidence.list, tasks.events, tasks.comments.list),
-// kept to the fields the page draws. Code decides who may read a task; its refusal, a 404 included, reaches the app as Code worded it. Nothing here
+// List detail comes from Code's list; a running row without a run uses Code's existing task reader as the signed-in person. Selected-task reads each use their matching Code reader,
+// kept to the fields the page draws. Code decides who may read a task; required-read refusals reach the app as Code worded them, while an optional run-read refusal omits progress. Nothing here
 // writes, and nothing is invented: a field Code did not send is left out.
 import { CodeError } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
@@ -116,6 +117,7 @@ export function roundOf(raw: unknown): Record<string, unknown> | undefined {
 export function workTask(raw: unknown): Record<string, unknown> | undefined {
   if (!isRecord(raw) || typeof raw["taskId"] !== "string" || typeof raw["title"] !== "string" || typeof raw["project"] !== "string") return undefined;
   const workflow = isRecord(raw["workflow"]) ? raw["workflow"] : undefined;
+  const runResult = DeveloperTaskViewSchema.shape.run.safeParse(raw["run"]);
   const spent = isRecord(raw["spent"]) ? raw["spent"] : undefined, limit = isRecord(raw["runLimit"]) ? raw["runLimit"] : undefined;
   return some({
     taskId: raw["taskId"], title: raw["title"].slice(0, 300), project: raw["project"].slice(0, 200), status: text(raw["status"], 40), shared: raw["shared"] === true ? true : undefined,
@@ -131,7 +133,22 @@ export function workTask(raw: unknown): Record<string, unknown> | undefined {
     createdAt: text(raw["createdAt"], 40), updatedAt: text(raw["updatedAt"], 40),
     round: roundOf(raw["round"]),
     outcome: typeof raw["outcome"] === "string" && OUTCOMES.has(raw["outcome"]) ? raw["outcome"] : undefined,
+    run: runResult.success ? runResult.data : undefined,
   });
+}
+
+/** A running task's existing task reader is the source for its verified run; never infer it from list status or event prose. */
+async function runningTaskRun(client: RouteContext["client"], session: RouteContext["session"], taskId: string): Promise<unknown> {
+  if (!new RegExp(`^${TASK_ID}$`, "u").test(taskId)) return undefined;
+  try {
+    const answer = await client.json<{ task?: unknown }>(session, `/v1/dev/tasks/${encodeURIComponent(taskId)}?events=0`, { headers: TASK_VIEW });
+    if (!isRecord(answer.task) || answer.task["taskId"] !== taskId || answer.task["status"] !== "RUNNING") return undefined;
+    const run = DeveloperTaskViewSchema.shape.run.safeParse(answer.task["run"]);
+    return run.success ? run.data : undefined;
+  } catch {
+    // The list remains useful when a task read is refused or unavailable; no progress is shown without this fresh, task-bound answer.
+    return undefined;
+  }
 }
 
 /** Code's claim ids ("1", "1.1", "2.3.1") and decision/option ids, as its plan contract has them (workflow-plan-document.ts); anything else is left out. */
@@ -200,19 +217,25 @@ export function workPlan(raw: unknown): Record<string, unknown> {
 const WORK_READS: Route[] = [
   {
     // GET /v1/app/sessions (contract v0 `tasks.list`): the person's tasks, newest first, for the Work page's list.
-    // One list read: Code's detailed list (`?detail=1`, Code #1045) gives each row its workflow stage, pull requests, cost and run limit, up to WORK_TASKS_MAX tasks in pages of
-    // 50. No task is read one by one. A Code that does not serve the detail answers its plain rows: then an open row is marked `detail: "unread"` (the page never calls it finished).
+    // Code's detailed list (`?detail=1`, Code #1045) gives each row its workflow stage, pull requests, cost and run limit, up to WORK_TASKS_MAX tasks in pages of 50. A running row
+    // without its optional run then uses Code's task reader. A Code without list detail answers plain rows: an open row is marked `detail: "unread"` (never called finished).
     method: "GET", path: /^\/sessions$/u,
     answer: async ({ client, session, work }) => {
       const { rows, served } = await detailedTasks(client, session, LIST_PAGES_MAX, WORK_TASKS_MAX);
       // A SUCCEEDED row that carries no detail at all (no workflow, pull request, cost or limit) may be a task between steps whose detail Code could not read: never "Finished".
       const bare = (view: Record<string, unknown>) => view["status"] === "SUCCEEDED" && ["workflow", "pullRequests", "spent", "runLimit"].every((key) => view[key] === undefined || (Array.isArray(view[key]) && (view[key] as unknown[]).length === 0));
       const views = rows.flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [NO_DETAIL.has(String(view["status"])) || (served && !bare(view)) ? view : { ...view, detail: "unread" }]; });
+      // The detailed list does not promise a run. Reuse Code's existing authenticated task reader for running rows only; it re-checks this same person's access.
+      const withRuns = await Promise.all(views.map(async (view) => {
+        if (view["status"] !== "RUNNING" || view["run"] !== undefined) return view;
+        const run = await runningTaskRun(client, session, String(view["taskId"]));
+        return run === undefined ? view : { ...view, run };
+      }));
       // The tasks the person started in Cloud carry Cloud's session id: the task page's steer, stop and comment routes are the session's. A task started elsewhere has none.
       // A session store that cannot be read costs the page those links, never the list.
       const sessions = new Map<string, string>();
       try { for (const record of (await work.startedBy(session.access.developerId)).slice(0, SESSIONS_LOOKED_AT)) if (!sessions.has(record.taskId)) sessions.set(record.taskId, record.sessionId); } catch { /* the list still answers */ }
-      return ok({ tasks: views.map((view) => ({ ...view, ...(sessions.has(view["taskId"] as string) ? { sessionId: sessions.get(view["taskId"] as string) } : {}) })) });
+      return ok({ tasks: withRuns.map((view) => ({ ...view, ...(sessions.has(view["taskId"] as string) ? { sessionId: sessions.get(view["taskId"] as string) } : {}) })) });
     },
   },
   {

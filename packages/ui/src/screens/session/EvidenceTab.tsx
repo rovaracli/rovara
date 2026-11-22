@@ -1,9 +1,20 @@
-import { EVIDENCE_FALLBACK_REASON_WORDS, TESTING_REASON_TEXT, TESTING_RESULT_LABELS, TESTING_ROW_STATUS_LABELS, evidenceDependencyLabelWords, testingSummary } from "@agentx/contracts/web";
+import { useContext } from "react";
+import { useQuery, QueryClientContext } from "@tanstack/react-query";
+import { useSetupAgentApi } from "../../api/setup-agent.js";
+import { TaskHeldStatesView } from "./TaskHeldStatesView.js";
+import { TaskSiteNoticeView } from "./TaskSiteNoticeView.js";
+import { TESTING_REASON_TEXT, TESTING_ROW_STATUS_LABELS, testingSummary } from "@agentx/contracts/web";
 import { SecondReviewAck } from "./SecondReviewAck.js";
 import { useAppHost } from "../../host.js";
 import { DataTable } from "../../design/DataTable.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { TaskCheckOutcomeView } from "./TaskCheckOutcomeView.js";
+import { TaskEvidenceRequirementGapsView } from "./TaskEvidenceRequirementGapsView.js";
+import { TaskEvidenceDependencyAccessView } from "./TaskEvidenceDependencyAccessView.js";
+import { EvidenceArtifactExpiryView } from "./EvidenceArtifactExpiryView.js";
+import { EvidenceArtifactWithheldView } from "./EvidenceArtifactWithheldView.js";
 import type { ReadTask } from "./workspace-types.js";
+import { EvidenceCaptureSelection, taskCaptureViewItems } from "./task-capture-evidence.js";
 const resultWords: Record<string, string> = { PASS: "Passed", FAILED: "Failed", UNKNOWN: "Not verified" };
 type ProofTable = NonNullable<ReadTask["proofTable"]>;
 type Testing = NonNullable<ReadTask["testing"]>;
@@ -13,7 +24,7 @@ function TestingSection({ testing }: { testing: Testing }) {
  const words = (map: Readonly<Record<string, string>>, key: string, fallback: string) => map[key] ?? fallback;
  const resultOf = (row: Testing["rows"][number]) => words(TESTING_ROW_STATUS_LABELS, row.status, "status unavailable") + (row.status === "passed" && row.passedTests !== undefined ? " (" + row.passedTests + " tests)" : "") + (row.reason === undefined ? "" : ": " + words(TESTING_REASON_TEXT, row.reason, "reason unavailable"));
  const known = testing.result !== "unknown" && testing.rows.every(row => row.status !== "unknown");
- return <section aria-label="Test result"><h2>{"Testing: " + words(TESTING_RESULT_LABELS, testing.result, "Result unavailable")}</h2>{known && <p>{testingSummary(testing as Parameters<typeof testingSummary>[0])}</p>}
+ return <section aria-label="Test result">{known && <p>{testingSummary(testing as Parameters<typeof testingSummary>[0])}</p>}
   {testing.rows.length > 0 && <DataTable caption="Checks and their results" rowKey={row => row.label + ":" + row.command} rows={testing.rows} columns={[
    { key: "check", title: "Check", render: row => <VisibleText text={row.label} /> },
    { key: "command", title: "Command", render: row => <VisibleText text={row.command} /> },
@@ -24,7 +35,7 @@ const proofResultWords: Record<string, string> = { proven: "Proven", passed: "Pa
 const proofEvidenceWords: Record<string, string> = { proven: "passed, fails on the original code", passed: "passed", failed: "failed", not_checked: "not checked" };
 const notTestedNouns: Record<string, string> = { claim: "Requirement", scenario: "Scenario", check: "Check" };
 // Playbook P3: the same rows, test-proof lines and "What wasn't tested" list as the pull request's Proof section. The list is never collapsed: it is what a reader must not miss.
-function ProofSection({ proof, earlier }: { proof: ProofTable; earlier: boolean }) {
+function ProofSection({ proof, earlier, taskId, evidenceHead }: { proof: ProofTable; earlier: boolean; taskId: string; evidenceHead: string | undefined }) {
  const evidenceText = (row: ProofTable["rows"][number]) => row.evidence.length === 0 ? "None" : row.evidence.map(item => (item.kind === "scenario" ? "Scenario: " : "") + item.label + " (" + (proofEvidenceWords[item.state] ?? "status unavailable") + ")").join("; ");
  return <><DataTable caption={earlier ? "Proof from earlier check results" : "Proof"} rowKey={row => row.claimId} rows={proof.rows} columns={[
   { key: "requirement", title: "Requirement", render: row => <VisibleText text={row.claimId + ": " + row.requirement} /> },
@@ -33,7 +44,8 @@ function ProofSection({ proof, earlier }: { proof: ProofTable; earlier: boolean 
  ]} />
  {earlier && <p className="rv-muted">This proof uses check results that have not been matched to the current code.</p>}
  {proof.testProofLines.length > 0 && <ul className="rv-proof-lines">{proof.testProofLines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul>}
- {proof.notTested.length > 0 && <><h3>What wasn't tested</h3><ul className="rv-not-tested">{proof.notTested.map((item, index) => <li key={item.kind + ":" + item.id + ":" + String(index)}><VisibleText text={(notTestedNouns[item.kind] ?? "Item") + " " + (item.kind === "claim" ? item.id + ": " : "") + item.text + " (" + item.reason + ")"} /></li>)}</ul></>}</>;
+ <TaskEvidenceRequirementGapsView taskId={taskId} evidenceHead={evidenceHead} uncoveredRequirements={proof.notTested} />
+ {proof.notTested.some(item => item.kind !== "claim") && <><h3>Other missing checks and scenarios</h3><ul className="rv-not-tested">{proof.notTested.filter(item => item.kind !== "claim").map((item, index) => <li key={item.kind + ":" + item.id + ":" + index}><VisibleText text={(item.text.toLowerCase().startsWith((notTestedNouns[item.kind] ?? "Item").toLowerCase()) ? "" : (notTestedNouns[item.kind] ?? "Item") + " ") + item.text + " (" + item.reason + ")"} /></li>)}</ul></>}</>;
 }
 type Evidence = NonNullable<ReadTask["evidence"]>;
 type Check = Evidence["checks"][number];
@@ -46,8 +58,6 @@ const proofVerdictWords: Record<string, string> = { proves_change: "fails on the
 const tierWords: Record<string, string> = { sandbox: "Sandbox", preview: "Per-task preview environment", shared: "Shared test environment" };
 const modeWords: Record<string, string> = { preprod: "pre-production", mocked: "mocked", "live-forbidden": "live access refused" };
 const diffWords: Record<string, string> = { none: "no difference from before", changed: "fields changed", no_baseline: "nothing to compare with" };
-const withheldWords: Record<string, string> = { account_not_run_scoped: "an account is not single-use", tier_not_allowed: "this test environment does not allow it", data_not_synthetic: "the data is not synthetic", company_setting_off: "the company setting is off", revocation_not_confirmed: "the test accounts could not be confirmed closed", size_over_cap: "too large", upload_failed: "the upload failed" };
-const linkStateWords: Record<string, string> = { expired: "expired", withheld: "withheld" };
 const isLink = (value: unknown): value is Link => typeof value === "object" && value !== null && "state" in value;
 
 /** An artifact's route as a link of this origin, or nothing: only a Rovara route that stays on this origin is ever followed. */
@@ -87,46 +97,55 @@ function ApiSection({ evidence }: { evidence: Evidence }) {
  if (evidence.api.length === 0) return null;
  return <><h3>API checks</h3>{evidence.api.map(entry => <section key={entry.scenarioId} aria-label={"API check " + entry.scenarioId}><h4><VisibleText text={entry.scenarioId} /></h4><p>{diffWords[entry.diff] ?? "status unavailable"}</p>
   {entry.changedPaths.length > 0 && <ul>{entry.changedPaths.map((path, index) => <li key={index}><VisibleText text={path} /></li>)}</ul>}
-  <ul>{entry.samples.filter(isLink).map((sample, index) => { const href = url(sample);return <li key={index}>{href ? <a href={href} download>{"Sample " + (index + 1) + " (" + sizeWords(sample.bytes) + ")"}</a> : "Sample " + (index + 1) + " " + (linkStateWords[sample.state] ?? "unavailable")}</li>; })}</ul></section>)}</>;
+  <ul>{entry.samples.filter(isLink).map((sample, index) => { const href = url(sample);return <li key={index}>{href ? <a href={href} download>{"Sample " + (index + 1) + " (" + sizeWords(sample.bytes) + ")"}</a> : <EvidenceArtifactExpiryView link={sample.state === "available" ? undefined : sample} prefix={"Sample " + (index + 1)} />}</li>; })}</ul></section>)}</>;
 }
-function Strip({ label, links }: { label: string; links: readonly Link[] }) {
- const url = useArtifactUrl();
- if (links.length === 0) return null;
- return <div className="rv-evidence-strip" role="group" aria-label={label}>{links.filter(isLink).map((link, index) => { const href = url(link);return href ? <a key={index} href={href} target="_blank" rel="noreferrer"><img src={href} alt={label + ", step " + (index + 1)} loading="lazy" width={160} /></a> : <span key={index}>{"Step " + (index + 1) + " " + (linkStateWords[link.state] ?? "unavailable")}</span>; })}</div>;
-}
-function BrowserSection({ evidence }: { evidence: Evidence }) {
- const url = useArtifactUrl();
+function BrowserSection({ evidence, taskId }: { evidence: Evidence; taskId: string }) {
+ const url = useArtifactUrl(), host = useAppHost();
  if (evidence.browser.length === 0) return null;
- return <><h3>Browser checks</h3>{evidence.browser.map(entry => { const video = isLink(entry.video) ? url(entry.video) : undefined, trace = isLink(entry.trace) ? url(entry.trace) : undefined;return <section key={entry.scenarioId} aria-label={"Browser check " + entry.scenarioId}><h4><VisibleText text={entry.scenarioId} /></h4>
-  <Strip label={entry.scenarioId + ", before"} links={entry.strip.before} /><Strip label={entry.scenarioId + ", after"} links={entry.strip.after} />
+
+ return <><h3>Browser checks</h3>{evidence.browser.map(entry => { const video = isLink(entry.video) ? url(entry.video) : undefined, trace = isLink(entry.trace) ? url(entry.trace) : undefined;const selectionKey = "task-capture-selection:" + JSON.stringify([taskId, evidence.candidateDigest, entry.scenarioId]);
+  let initialSelectionId: string | undefined;try { initialSelectionId = host.storage.get(selectionKey); } catch { /* Selection can still be changed in this view. */ }
+  return <section key={entry.scenarioId} aria-label={"Browser check " + entry.scenarioId}><h4><VisibleText text={entry.scenarioId} /></h4>
+  <EvidenceCaptureSelection key={taskId + ":" + evidence.candidateDigest + ":" + entry.scenarioId} captures={taskCaptureViewItems([entry], link => url(link))} initialSelectionId={initialSelectionId} evidenceHead={evidence.candidateDigest} onSelectionChange={captureId => { try { host.storage.set(selectionKey, captureId); } catch { /* Read-only selection is still usable. */ } }} />
   {video && <video controls preload="none" src={video} aria-label={"Recording of " + entry.scenarioId} width={320} />}
+  {entry.video !== undefined && !video && <EvidenceArtifactExpiryView link={isLink(entry.video) && entry.video.state !== "available" ? entry.video : undefined} prefix={"Recording of " + entry.scenarioId} />}
+  {entry.trace !== undefined && !trace && <EvidenceArtifactExpiryView link={isLink(entry.trace) && entry.trace.state !== "available" ? entry.trace : undefined} prefix={"Trace of " + entry.scenarioId} />}
   {trace && <p><a href={trace} download>Download the trace</a> (open it with Playwright's trace viewer; Rovara doesn't open it)</p>}
   {entry.consoleErrors !== undefined && entry.consoleErrors > 0 && <p>{entry.consoleErrors + " console " + (entry.consoleErrors === 1 ? "error" : "errors")}</p>}
-  {(entry.withheld ?? []).map((item, index) => <p key={index}>{(item.artifact === "video" ? "Video" : "Trace") + " not kept: " + (withheldWords[item.reason] ?? "not allowed") + "."}</p>)}</section>; })}</>;
+  {(entry.withheld ?? []).map((item, index) => <EvidenceArtifactWithheldView key={item.artifact + ":" + index} {...item} />)}</section>; })}</>;
 }
 function EnvironmentSection({ environment }: { environment: Evidence["environment"] }) {
  return <><h3>Environment</h3><p>{(tierWords[environment.tier] ?? "Test environment") + ", revision " + environment.envRevision + ". Test data: synthetic."}</p>
   {environment.services.length > 0 && <ul>{environment.services.map(service => <li key={service.name}><VisibleText text={service.name} /><span>{": " + (modeWords[service.mode] ?? "unavailable") + (service.recordedAt ? ", recorded " + service.recordedAt.slice(0, 10) : "") + (service.unrecordedAnswered ? ", " + service.unrecordedAnswered + " unrecorded requests answered" : "")}</span></li>)}</ul>}
-  {(environment.dependencies ?? []).length > 0 && <ul aria-label="Dependencies">{(environment.dependencies ?? []).map(dependency => <li key={dependency.name}><VisibleText text={dependency.name} /><span>{": " + (dependency.label === "unknown" ? "unavailable" : evidenceDependencyLabelWords(dependency.label, dependency.name, dependency.madeUpAnswers ?? 0)) + (dependency.fellBack ? " (fallback: " + (dependency.fellBack.reason === "unknown" ? "unavailable" : EVIDENCE_FALLBACK_REASON_WORDS[dependency.fellBack.reason]) + ")" : "") + (dependency.startedMs !== undefined ? ", started in " + dependency.startedMs + " ms" : "")}</span></li>)}</ul>}
+  <TaskEvidenceDependencyAccessView environment={environment} />
   {environment.accounts.length > 0 && <p>{"Test accounts: " + environment.accounts.map(account => account.profileId + (account.kind === "run_scoped" ? " (single-use)" : " (registered)")).join(", ")}</p>}</>;
 }
 const extraKinds = new Set(["mocked_service", "not_selected", "environment"]);
-function EvidenceSections({ evidence }: { evidence: Evidence }) {
+function EvidenceSections({ evidence, taskId }: { evidence: Evidence; taskId: string }) {
  const extra = evidence.notTested.filter(item => extraKinds.has(item.kind));
- return <section aria-label="Evidence from the checks"><ChecksByKind checks={evidence.checks} /><TestsSection evidence={evidence} /><CoverageSection checks={evidence.checks} /><ApiSection evidence={evidence} /><BrowserSection evidence={evidence} /><EnvironmentSection environment={evidence.environment} />
+ return <section aria-label="Evidence from the checks"><ChecksByKind checks={evidence.checks} /><TestsSection evidence={evidence} /><CoverageSection checks={evidence.checks} /><ApiSection evidence={evidence} /><BrowserSection evidence={evidence} taskId={taskId} /><EnvironmentSection environment={evidence.environment} />
   {extra.length > 0 && <><h3>Also not tested here</h3><ul className="rv-not-tested">{extra.map((item, index) => <li key={item.kind + ":" + item.id + ":" + index}><VisibleText text={item.text + " (" + item.reason + ")"} /></li>)}</ul></>}</section>;
 }
+
+/** Project setup evidence is explicitly labelled as such; it is never attributed to this task's test run. */
+function TaskSiteEvidence({ task }: { task: ReadTask }) {
+ const api = useSetupAgentApi(), read = useQuery({ queryKey: ["onboard", "setup-journal", task.project], queryFn: () => api.journal(task.project, { retry: "never" }), retry: false });
+ if (read.isPending) return <p>Loading project setup-site evidence…</p>;
+ if (read.isError) return <TaskSiteNoticeView project={task.project} state={{ kind: "read-failed" }} />;
+ const entry = read.data.entries.find(item => (item.blockedHosts?.length ?? 0) > 0);
+ return <TaskSiteNoticeView project={task.project} state={entry === undefined ? { kind: "unresolved", detail: "The current project setup journal does not name a blocked host for this task." } : { kind: "blocked", journal: read.data, entryN: entry.n }} />;
+}
+
 export function EvidenceTab({ task, sessionId }: { task: ReadTask; sessionId?: string }) {
+ const query = useContext(QueryClientContext);
  const shared = task.e2ePresentation?.shared, workflow = task.workflow, verification = workflow?.verification;
- const labels = new Map([...(workflow?.checkPolicy?.required ?? []), ...(workflow?.checkPolicy?.optional ?? []), ...(workflow?.checkPolicy?.proposed ?? [])].map(check => [check.id, check.label]));
- const current = verification !== undefined && workflow?.candidate?.digest === verification.candidateDigest;
+ const earlier = task.testing === undefined && verification !== undefined && workflow?.candidate?.digest !== verification.candidateDigest;
  // Playbook P2: the reviewer model lines are the pull request's (Trust fix A2's), carried by the view; this page chooses and counts nothing.
  // RULING Q34: use the real aggregate and canonical workflow receipts; pageHtml and invented per-case notes never enter the UI.
- return <section aria-label="Test evidence">{shared && <><h2>End-to-end evidence</h2><p><VisibleText text={shared.e2e.label} /></p><p>{resultWords[shared.e2e.status] ?? "Status unavailable"}</p><dl className="rv-evidence-counts"><div><dt>Cases executed</dt><dd>{shared.e2e.executedCases}</dd></div><div><dt>Required criteria verified</dt><dd>{shared.e2e.qualifiedCriteria} of {shared.e2e.requiredCriteria}</dd></div><div><dt>Result groups received</dt><dd>{shared.e2e.receivedGroups} of {shared.e2e.expectedGroups}</dd></div></dl>{shared.e2e.unexercisedBehaviors.length > 0 && <><h3>Not exercised</h3><ul>{shared.e2e.unexercisedBehaviors.map((text, index) => <li key={index}><VisibleText text={text} /></li>)}</ul></>}</>}
- {task.testing && <TestingSection testing={task.testing} />}
- {task.proofTable && <ProofSection proof={task.proofTable} earlier={verification !== undefined && !current} />}
- {task.evidence && <EvidenceSections evidence={task.evidence} />}
- {verification && <><h2>{current ? "Recorded checks" : "Earlier check results"}</h2>{!current && <p className="rv-muted">These checks have not been matched to the current code.</p>}<ul className="rv-check-results">{verification.results.map((result, index) => <li key={result.checkId + ":" + String(index)}><VisibleText text={labels.get(result.checkId) ?? result.checkId} /><span>{result.broken || result.neverStarted || result.programNotFound ? "Couldn't run" : resultWords[result.status] ?? "Status unavailable"}</span></li>)}</ul></>}
+ return <section aria-label="Test evidence"><TaskHeldStatesView page="proof" onCheck={() => { void query?.invalidateQueries({ queryKey: ["session"] });void query?.invalidateQueries({ queryKey: ["work", "proof", task.taskId] }); }} />{task.testingNotice !== undefined && <TaskSiteEvidence task={task} />}<TaskCheckOutcomeView task={task} showProof={false} testingDetails={task.testing && <TestingSection testing={task.testing} />} />{shared && <><h2>End-to-end evidence</h2><p><VisibleText text={shared.e2e.label} /></p><p>{resultWords[shared.e2e.status] ?? "Status unavailable"}</p><dl className="rv-evidence-counts"><div><dt>Cases executed</dt><dd>{shared.e2e.executedCases}</dd></div><div><dt>Required criteria verified</dt><dd>{shared.e2e.qualifiedCriteria} of {shared.e2e.requiredCriteria}</dd></div><div><dt>Result groups received</dt><dd>{shared.e2e.receivedGroups} of {shared.e2e.expectedGroups}</dd></div></dl>{shared.e2e.unexercisedBehaviors.length > 0 && <><h3>Not exercised</h3><ul>{shared.e2e.unexercisedBehaviors.map((text, index) => <li key={index}><VisibleText text={text} /></li>)}</ul></>}</>}
+ {task.proofTable && <ProofSection proof={task.proofTable} earlier={earlier} taskId={task.taskId} evidenceHead={task.evidence?.candidateDigest ?? verification?.candidateDigest ?? (task.testing === undefined ? undefined : workflow?.candidate?.digest)} />}
+ {task.evidence && <EvidenceSections evidence={task.evidence} taskId={task.taskId} />}
+
  {task.reviewModelLines && <><h2>Reviews</h2><ul className="rv-review-models">{task.reviewModelLines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul></>}
  {task.secondReview && <><h2>Second review</h2><ul className="rv-second-review">{task.secondReview.lines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul>{task.secondReview.needsAcknowledgement && !task.secondReview.acknowledged && (sessionId === undefined || task.workflow?.candidate?.digest === undefined ? <p className="rv-muted">The task owner is asked to acknowledge this before the pull request is merged.</p> : <SecondReviewAck taskId={task.taskId} candidateDigest={task.workflow.candidate.digest} sessionId={sessionId} canAcknowledge={task.secondReview.canAcknowledge === true} />)}</>}
  {!shared && !verification && !task.proofTable && !task.evidence && !task.testing && !task.reviewModelLines && !task.secondReview && <p>No test results are available yet.</p>}</section>;

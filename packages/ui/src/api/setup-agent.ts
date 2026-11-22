@@ -17,7 +17,7 @@ export function createSetupAgentApi(host: AppHost) {
   const view = exactAnswer(SetupAgentViewSchema);
   return {
     read: (name: string) => api.get(base(name), view),
-    journal: (name: string) => api.get(base(name) + "/journal", exactAnswer(SetupJournalReplySchema)),
+    journal: (name: string, options?: { retry: "never" }) => api.get(base(name) + "/journal", exactAnswer(SetupJournalReplySchema), undefined, options),
     start: (name: string, requestId: string) => api.sendAnswer("POST", base(name), SetupAgentRequestBodySchema.parse({ requestId }), view),
     stop: (name: string, requestId: string) => api.sendAnswer("POST", base(name) + "/stop", SetupAgentRequestBodySchema.parse({ requestId }), view),
     command: (name: string, requestId: string, command: string) => api.sendAnswer("POST", base(name) + "/command", SetupAgentCommandRequestSchema.parse({ requestId, command }), exactAnswer(SetupAgentCommandReplySchema)),

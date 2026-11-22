@@ -1,3 +1,4 @@
+import { meFixture } from "./support/fixtures.js";
 // @vitest-environment jsdom
 // Lane cr-settings: the company's settings screen for the second opinion, and the task page's "I've seen it".
 import { expect, it } from "vitest";
@@ -254,17 +255,19 @@ it("tells the admin when the model stopped qualifying, with the server's fixed w
 // ---- the task page
 
 function ack(canAcknowledge: boolean, respond?: (request: ApiRequest) => Promise<ApiResponse>) {
-  const f = fakeHost(respond ?? (async () => ({ status: 200, body: { task: {} } })));
+  const f = fakeHost(async request => request.path === "/v1/app/me" ? { status: 200, body: meFixture() } : (respond ?? (async () => ({ status: 200, body: { task: {} } })))(request));
   const query = createQueryClient();
   const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(SecondReviewAck, { taskId: "00000000-0000-4000-8000-000000000001", candidateDigest: "d".repeat(64), sessionId: "s1", canAcknowledge }) }) }));
   return { ...f, ...view };
 }
 it("the task owner sees 'I've seen it' and one press sends the candidate digest once; anyone else only reads that the owner is asked", async () => {
   const owner = ack(true);
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "I've seen it" }).disabled).toBe(false));
   fireEvent.click(screen.getByRole("button", { name: "I've seen it" }));
   fireEvent.click(screen.getByRole("button", { name: "I've seen it" }));
   await waitFor(() => expect(owner.request).toHaveBeenCalled());
-  const sent = owner.request.mock.calls.map(([request]) => request);
+  const sent = owner.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST");
+  expect(owner.request.mock.calls.filter(([request]) => request.path === "/v1/app/me").length).toBeGreaterThan(0);
   expect(sent).toHaveLength(1);
   expect(sent[0]).toMatchObject({ method: "POST", path: "/v1/app/tasks/00000000-0000-4000-8000-000000000001/second-review-acknowledge", body: { candidateDigest: "d".repeat(64) }, retry: "never" });
   await screen.findByText("Noted. The pull request can be merged.");
@@ -277,10 +280,12 @@ it("the task owner sees 'I've seen it' and one press sends the candidate digest 
 
 it("says so when the code changed meanwhile, and shows the server's words when it refuses", async () => {
   const stale = ack(true, async () => ({ status: 409, body: { error: { code: "IDEMPOTENCY_CONFLICT", message: "this is out of date" } } }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "I've seen it" }).disabled).toBe(false));
   fireEvent.click(screen.getByRole("button", { name: "I've seen it" }));
   await screen.findByText("The code changed. The page now shows the current state.");
   stale.unmount();
   const refused = ack(true, async () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "Only the task owner can decide this." } } }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "I've seen it" }).disabled).toBe(false));
   fireEvent.click(screen.getByRole("button", { name: "I've seen it" }));
   await screen.findByText("Only the task owner can decide this.");
   refused.unmount();

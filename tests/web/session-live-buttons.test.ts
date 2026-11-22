@@ -14,6 +14,7 @@ import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { renderUi } from "./support/render.js";
 import { fakeHost } from "./support/fake-host.js";
+import { meFixture } from "./support/fixtures.js";
 import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { SESSION_FIXTURE_ID } from "./support/session-fixture.js";
@@ -28,15 +29,19 @@ function sessionWith(live: { ask?: true; fix?: true } | undefined, errorRef: boo
  return SessionViewReaderSchema.parse({ ...base, ...(errorRef ? { errorRef: ERROR_REF } : {}), you: { ...base.you, ...(live === undefined ? {} : { live }) } });
 }
 function mount(element: ReturnType<typeof h>, respond: (request: ApiRequest) => Promise<ApiResponse>) {
- const f = fakeHost(respond), query = createQueryClient();
+ const f = fakeHost(async request => request.path === "/v1/app/me" ? { status: 200, body: meFixture() } : respond(request)), query = createQueryClient();
  const router = createMemoryRouter([{ path: "*", element }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
  return { ...ui, f, close() { ui.unmount(); router.dispose(); query.clear(); } };
 }
 const workspace = (session: ReturnType<typeof sessionWith>, respond: (request: ApiRequest) => Promise<ApiResponse> = async () => ({ status: 404, body: {} })) =>
- mount(h("main", {}, h(Workspace, { session, onComment: () => undefined })), respond);
+ mount(h("main", {}, h(Workspace, { session, onComment: () => undefined })), async request => request.method === "GET" && request.path === "/v1/app/sessions/" + SESSION_FIXTURE_ID ? { status: 200, body: { session } } : respond(request));
 const controls = (ask: boolean | undefined, respond: (request: ApiRequest) => Promise<ApiResponse> = async () => ({ status: 404, body: {} })) =>
- mount(h("main", {}, h(SessionControls, { id: SESSION_FIXTURE_ID, agent: "Payments expert", actions: ["watch", "comment", "steer"], following: false, onChanged: async () => undefined, ...(ask === undefined ? {} : { ask }) })), respond);
+ mount(h("main", {}, h(SessionControls, { id: SESSION_FIXTURE_ID, agent: "Payments expert", actions: ["watch", "comment", "steer"], following: false, onChanged: async () => undefined, ...(ask === undefined ? {} : { ask }) })), async request => {
+  if (request.path === "/v1/app/me") return { status: 200, body: meFixture() };
+  if (request.method === "GET" && request.path === "/v1/app/sessions/" + SESSION_FIXTURE_ID) return { status: 200, body: { session: sessionWith(undefined, false) } };
+  return respond(request);
+ });
 const calls = (f: { request: { mock: { calls: Array<[ApiRequest]> } } }) => f.request.mock.calls.map(([request]) => request.method + " " + request.path);
 const idle = () => new Promise(resolve => setTimeout(resolve, 60));
 
@@ -60,6 +65,22 @@ it("renders the session controls byte-identically unless the server offers Ask",
  await screen.findByText("Ask about this task");
  expect(offered.container.innerHTML).not.toBe(plain);
  offered.close();
+});
+
+it("keeps an unconfirmed Follow locked until Check reads the changed state", async () => {
+ let sends = 0;
+ const s = controls(undefined, async request => {
+  if (request.method === "POST" && request.path.endsWith("/follow")) { sends += 1;return { status: 202, body: { message: "pending" } }; }
+  if (request.method === "GET" && request.path === "/v1/app/sessions/" + SESSION_FIXTURE_ID) return { status: 200, body: { session: sessionWith(undefined, false) } };
+  return { status: 404, body: {} };
+ });
+ fireEvent.click(await screen.findByRole("button", { name: "Follow" }));
+ expect(await screen.findByRole("alert")).toBeTruthy();
+ expect(screen.getByRole("button", { name: "Follow" }).hasAttribute("disabled")).toBe(true);
+ fireEvent.click(screen.getByRole("button", { name: "Check" }));
+ expect(await screen.findByText("Rovara still hasn't confirmed this. Check again before trying another action.")).toBeTruthy();
+ expect(sends).toBe(1);
+ s.close();
 });
 
 it("makes no request to ask or diagnose just by opening the page", async () => {
@@ -167,12 +188,12 @@ it("stops polling a diagnosis when reading it fails or its state is not one this
  for (const answer of [refusal(404, "NOT_FOUND", "This item wasn't found, or you no longer have access."), { status: 200, body: { diagnosisId: DIAGNOSIS_ID, tier: "light", state: "paused", errorRef: ERROR_REF } } as ApiResponse]) {
   const s = workspace(sessionWith({ fix: true }, true), async request => request.method === "POST" ? { status: 202, body: { diagnosisId: DIAGNOSIS_ID, tier: "light", state: "queued", errorRef: ERROR_REF } } : answer);
   fireEvent.click(await screen.findByRole("button", { name: "Fix with agent" }));
-  await screen.findByRole("button", { name: "Try again" });
+  await screen.findByRole("button", { name: "Check this diagnosis" });
   const count = () => calls(s.f).filter(call => call === "GET " + diagnosisStatusPath).length;
   expect(count()).toBe(1);
   await new Promise(resolve => setTimeout(resolve, 3500));
   expect(count()).toBe(1);
-  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  fireEvent.click(screen.getByRole("button", { name: "Check this diagnosis" }));
   await waitFor(() => expect(count()).toBe(2));
   s.close();
  }
@@ -218,38 +239,19 @@ it("sends a new request id for each new question and after a failed Ask, and kee
  s.close();
 }, 30000);
 
-it("sends a new request id after a failed diagnosis, and keeps it after a lost reply", async () => {
- let lost = true;
- const s = workspace(sessionWith({ fix: true }, true), async request => {
-  if (request.method === "POST") return lost ? refusal(503, "RUNTIME_UNAVAILABLE", "Couldn't diagnose this now.") : { status: 202, body: { diagnosisId: DIAGNOSIS_ID, tier: "light", state: "queued", errorRef: ERROR_REF } };
-  return { status: 200, body: { diagnosisId: DIAGNOSIS_ID, tier: "light", state: "failed", errorRef: ERROR_REF, failure: "Couldn't diagnose this now." } };
- });
- const press = () => fireEvent.click(screen.getByRole("button", { name: "Fix with agent" }));
- press();await screen.findByRole("alert");
- await waitFor(() => expect(screen.getByRole("button", { name: "Fix with agent" }).hasAttribute("disabled")).toBe(false));
- press();await waitFor(() => expect(bodies(s.f, "POST", "/v1/app/diagnoses")).toHaveLength(2));
- const lostOnes = bodies(s.f, "POST", "/v1/app/diagnoses");
- expect(lostOnes[1]!.requestId).toBe(lostOnes[0]!.requestId);
- lost = false;
- await waitFor(() => expect(screen.getByRole("button", { name: "Fix with agent" }).hasAttribute("disabled")).toBe(false));
- press();
- await screen.findByText("Couldn't diagnose this now.");
- await waitFor(() => expect(screen.getByRole("button", { name: "Fix with agent" }).hasAttribute("disabled")).toBe(false));
- // After a failed diagnosis the retry gets a new id; when that retry's reply is lost, the next press keeps it (the server may already have started it).
- lost = true;
- press();
- await waitFor(() => expect(bodies(s.f, "POST", "/v1/app/diagnoses")).toHaveLength(4));
- const all = bodies(s.f, "POST", "/v1/app/diagnoses");
- expect(all[3]!.requestId).not.toBe(all[2]!.requestId);
- await waitFor(() => expect(screen.getByRole("button", { name: "Fix with agent" }).hasAttribute("disabled")).toBe(false));
- press();
- await waitFor(() => expect(bodies(s.f, "POST", "/v1/app/diagnoses")).toHaveLength(5));
- expect(bodies(s.f, "POST", "/v1/app/diagnoses")[4]!.requestId).toBe(all[3]!.requestId);
- s.close();
-}, 20000);
+it("locks a lost diagnosis request and Check does not start a second diagnosis", async () => {
+ const s = workspace(sessionWith({ fix: true }, true), async () => refusal(503, "RUNTIME_UNAVAILABLE", "Couldn't diagnose this now."));
+ const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Fix with agent" });
+ await waitFor(() => expect(button.disabled).toBe(false));fireEvent.click(button);
+ await screen.findByText(/The diagnosis was not confirmed/);
+ expect(button.disabled).toBe(true);fireEvent.click(button);
+ fireEvent.click(screen.getByRole("button", { name: "Check this diagnosis request" }));
+ expect(bodies(s.f, "POST", "/v1/app/diagnoses")).toHaveLength(1);s.close();
+});
 
 it("gives a new error a fresh Fix with agent panel, and keeps the panel when only the error's time changes", async () => {
- const respond = async (request: ApiRequest): Promise<ApiResponse> => request.method === "POST"
+ let currentView = sessionWith({ fix: true }, true);
+ const respond = async (request: ApiRequest): Promise<ApiResponse> => request.method === "GET" && request.path === "/v1/app/sessions/" + SESSION_FIXTURE_ID ? { status: 200, body: { session: currentView } } : request.method === "POST"
   ? { status: 202, body: { diagnosisId: DIAGNOSIS_ID, tier: "light", state: "queued", errorRef: ERROR_REF } }
   : { status: 200, body: { diagnosisId: DIAGNOSIS_ID, tier: "light", state: "ready", errorRef: ERROR_REF, proposals: [{ kind: "explain", text: "Old error: stale lockfile." }] } };
  const a = sessionWith({ fix: true }, true);
@@ -260,9 +262,9 @@ it("gives a new error a fresh Fix with agent panel, and keeps the panel when onl
  const s = mount(h("main", {}, h(Host, {})), respond);
  fireEvent.click(await screen.findByRole("button", { name: "Fix with agent" }));
  await screen.findByText("Old error: stale lockfile.", undefined, { timeout: 6000 });
- act(() => { swap(later); });
+ act(() => { currentView = later;swap(later); });
  expect(screen.getByText("Old error: stale lockfile.")).toBeTruthy();
- act(() => { swap(other); });
+ act(() => { currentView = other;swap(other); });
  await waitFor(() => expect(screen.queryByText("Old error: stale lockfile.")).toBeNull());
  fireEvent.click(await screen.findByRole("button", { name: "Fix with agent" }));
  await waitFor(() => expect(bodies(s.f, "POST", "/v1/app/diagnoses")).toHaveLength(2));

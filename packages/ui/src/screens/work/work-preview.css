@@ -1,0 +1,273 @@
+/* Work and Inbox rebuild (boards 2a-2f, 10b): one table, a short peek, a phone view with Back. Tokens only; every rule is scoped to the two screens. */
+.rv-qp{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--rv-space-6);align-items:start;min-width:0}
+.rv-qp-main{min-width:0}
+.rv-qp-heading:focus,.rv-qp-peek h2:focus{outline:none}
+.rv-qp .rv-page-header{flex-wrap:wrap;margin-bottom:var(--rv-space-2);align-items:flex-start}
+.rv-qp .rv-page-header>div:first-child{flex:1 1 0;min-width:0}
+.rv-qp .rv-page-header p{margin-top:var(--rv-space-2);max-width:none;font-size:var(--rv-font-lg);color:var(--rv-text-muted)}
+.rv-qp-scope{margin:0 0 var(--rv-space-5);font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-qp-search{display:flex;align-items:center;gap:var(--rv-space-2)}
+.rv-qp-search-toggle{display:none;align-items:center;justify-content:center;width:44px;height:44px;padding:0;border:0;background:none;color:var(--rv-text);cursor:pointer}
+.rv-qp-search-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.rv-qp-search-field{display:block}
+.rv-qp-search-field input{width:200px;max-width:100%;min-height:var(--rv-control-size,36px);padding:0 var(--rv-space-3);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised);color:var(--rv-text);font:inherit}
+
+/* Tabs: counts only from current reads; on a narrow screen the row scrolls and a soft edge shows there is more. */
+.rv-qp-tabs{display:flex;gap:var(--rv-space-2);overflow-x:auto;margin-bottom:var(--rv-space-4);border-bottom:1px solid var(--rv-border);scrollbar-width:none;
+ background:linear-gradient(to right,var(--rv-bg) 30%,transparent) left center/40px 100% no-repeat local,linear-gradient(to left,var(--rv-bg) 30%,transparent) right center/40px 100% no-repeat local,linear-gradient(to right,color-mix(in srgb,var(--rv-text) 22%,transparent),transparent) left center/14px 100% no-repeat scroll,linear-gradient(to left,color-mix(in srgb,var(--rv-text) 22%,transparent),transparent) right center/14px 100% no-repeat scroll}
+.rv-qp-tabs::-webkit-scrollbar{display:none}
+.rv-qp-tabs button{flex:none;min-height:44px;margin-bottom:-1px;padding:0 var(--rv-space-3);border:0;border-bottom:2px solid transparent;border-radius:0;background:none;color:var(--rv-text-muted);font:400 var(--rv-font-lg)/1.3 var(--rv-font-ui);white-space:nowrap;cursor:pointer}
+.rv-qp-tabs button[aria-pressed=true]{color:var(--rv-text);font-weight:600;border-bottom-color:var(--rv-text)}
+.rv-qp-tabs button:focus-visible{outline-offset:-2px}
+
+/* The table: the title takes the free width, the status and the time sit together on the right. */
+.rv-qp-table{min-width:0}
+.rv-qp .rv-table-v2-wrap{max-width:none;overflow:hidden;background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md)}
+.rv-qp .rv-table-v2{width:100%;border-collapse:collapse}
+.rv-qp .rv-table-v2 caption,.rv-qp .rv-table-v2 thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.rv-qp .rv-table-v2 td{padding:var(--rv-space-3) var(--rv-space-4);border-bottom:1px solid var(--rv-border);vertical-align:middle;white-space:nowrap}
+.rv-qp .rv-table-v2 td:first-child{width:100%;max-width:0;min-width:0;overflow:hidden}
+.rv-qp .rv-table-v2 td:nth-child(2){width:1%;padding-inline:var(--rv-space-3) var(--rv-space-3);text-align:right}
+.rv-qp .rv-table-v2 td:nth-child(3){width:1%;min-width:72px;padding-left:0;text-align:right;color:var(--rv-text-muted);font-size:var(--rv-font-md)}
+.rv-qp .rv-table-v2 tbody tr:last-child td{border-bottom:0}
+.rv-qp-row{display:block;width:100%;min-width:0;min-height:var(--rv-control-size,36px);padding:0;border:0;background:none;color:var(--rv-text);font:inherit;text-align:left;cursor:pointer}
+.rv-qp-row strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--rv-font-lg);font-weight:600;line-height:1.4}
+.rv-qp-row small{display:flex;min-width:0;font-size:var(--rv-font-md);font-weight:400;line-height:1.4;color:var(--rv-text-muted)}
+.rv-qp-proj{display:none}
+.rv-qp-detail{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rv-qp-row:focus-visible{outline-offset:-2px}
+.rv-qp-time-inline{display:none;flex:none;white-space:pre}
+.rv-qp-hint{margin:var(--rv-space-3) 0 0;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-qp-hint kbd{display:inline-block;min-width:1.6em;padding:0 var(--rv-space-1);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);text-align:center;color:var(--rv-text)}
+.rv-qp-note{margin:var(--rv-space-3) 0;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-qp-banner{margin-bottom:var(--rv-space-4)}
+.rv-qp-notes{display:grid;gap:var(--rv-space-3);margin-bottom:var(--rv-space-3)}
+.rv-qp .rv-agents-row{margin-bottom:var(--rv-space-3);padding:0;border:0}
+
+/* The 4e error block: a red outline, an icon, what happened, what is safe, what to do, one primary retry, the reference. */
+.rv-qp-error{display:grid;justify-items:start;gap:var(--rv-space-4);margin-bottom:var(--rv-space-4);padding:var(--rv-space-5);border:1px solid var(--rv-danger);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.rv-qp-error h2{display:flex;align-items:flex-start;gap:var(--rv-space-2);font-size:var(--rv-font-xl);line-height:1.4}
+.rv-qp-error h2 svg{width:var(--rv-space-5);height:var(--rv-space-5);margin-top:.2em;flex-shrink:0;color:var(--rv-danger)}
+.rv-qp-error dl{display:grid;gap:var(--rv-space-3);margin:0}
+.rv-qp-error dt{font-weight:600}
+.rv-qp-error dd{margin:var(--rv-space-1) 0 0;font-size:var(--rv-font-md);color:var(--rv-text-muted);overflow-wrap:anywhere}
+.rv-qp-recovery{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2) var(--rv-space-3)}
+.rv-qp-ref{display:inline-flex;align-items:center;gap:var(--rv-space-1);white-space:nowrap;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-qp-ref code{font-family:var(--rv-font-mono);font-size:inherit}
+.rv-qp-ref .rv-button{min-height:0;padding-inline:0;font-size:inherit;font-weight:400;color:inherit;text-decoration:underline}
+.rv-qp-empty{display:grid;justify-items:start;gap:var(--rv-space-3);margin-bottom:var(--rv-space-4);padding:var(--rv-space-5);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);text-align:left}
+.rv-qp-empty h2{font-size:var(--rv-font-xl)}
+.rv-qp-empty p{color:var(--rv-text-muted);font-size:var(--rv-font-md)}
+.rv-qp-empty a{display:inline-flex;align-items:center;min-height:44px}
+.rv-qp-setup{display:grid;gap:var(--rv-space-3);padding:var(--rv-space-5);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.rv-qp-setup h2{font-size:var(--rv-font-xl)}.rv-qp-setup ol{list-style:none;margin:0;padding:0}.rv-qp-setup li{padding:var(--rv-space-3) 0;border-top:1px solid var(--rv-border)}.rv-qp-setup li p{color:var(--rv-text-muted);font-size:var(--rv-font-md)}.rv-qp-setup a{display:inline-flex;align-items:center;min-height:44px}
+
+/* The peek. */
+.rv-qp-peek{display:grid;align-content:start;gap:var(--rv-space-4);min-width:0;padding:var(--rv-space-5);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.rv-qp-peek-head{display:grid;grid-template-columns:minmax(0,1fr);grid-template-areas:"project" "title";gap:var(--rv-space-3);align-items:baseline}
+.rv-qp-back{display:none}
+.rv-qp-peek-project{grid-area:project;margin:0;font-size:var(--rv-font-md);color:var(--rv-text-muted);overflow-wrap:anywhere}
+.rv-qp-peek-head h2{grid-area:title;font-size:var(--rv-font-xl);font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.rv-qp-peek-status{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3);padding-bottom:var(--rv-space-4);border-bottom:1px solid var(--rv-border);font-size:var(--rv-font-md);color:var(--rv-text-muted)}
+.rv-qp-peek-age{display:none}
+.rv-qp-peek-body{display:grid;gap:var(--rv-space-3)}
+.rv-qp-step h3{font-size:var(--rv-font-lg);font-weight:600}
+.rv-qp-step p{margin-top:var(--rv-space-2);font-size:var(--rv-font-md);color:var(--rv-text-muted);overflow-wrap:anywhere}
+.rv-qp-money,.rv-qp-peek-body>.rv-muted{font-size:var(--rv-font-md);color:var(--rv-text-muted)}
+.rv-qp-peek-actions{display:grid;justify-items:start;gap:var(--rv-space-2)}
+.rv-qp-peek-actions .rv-button{min-height:44px;padding:0 var(--rv-space-5)}
+.rv-qp-peek-foot{display:none;margin:0;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-qp-peek-plain{display:block}
+.rv-qp-peek .rv-lesson-batch h3{font-size:var(--rv-font-lg)}
+.rv-qp-peek .rv-lesson-list{list-style:none;margin:var(--rv-space-3) 0 0;padding:0;display:grid;gap:var(--rv-space-3)}
+
+/* Updates and project notices (Inbox). */
+.rv-qp-updates{margin-top:var(--rv-space-6)}
+.rv-qp-updates h2{margin-bottom:var(--rv-space-3);font-size:var(--rv-font-lg)}
+.rv-qp-update-list{list-style:none;margin:0;padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);overflow:hidden}
+.rv-qp-update+.rv-qp-update{border-top:1px solid var(--rv-border)}
+.rv-qp-update a{display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:var(--rv-space-3);min-height:var(--rv-table-row-h,48px);padding:var(--rv-space-2) var(--rv-space-4);color:var(--rv-text);text-decoration:none}
+.rv-qp-update a:hover{background:var(--rv-bg-sunken)}
+.rv-qp-update-dot{width:8px;height:8px;border-radius:50%}
+.rv-qp-update[data-read=false] .rv-qp-update-dot{background:var(--rv-text)}
+.rv-qp-update-main{min-width:0}.rv-qp-update-main b{display:block;font-weight:600;overflow-wrap:anywhere}.rv-qp-update-main small{display:block;font-size:var(--rv-font-sm);color:var(--rv-text-muted);overflow-wrap:anywhere}
+.rv-qp-update time{font-size:var(--rv-font-md);color:var(--rv-text-muted);white-space:nowrap}
+
+@media(min-width:1024px){
+ .rv-qp[data-peek=true]{grid-template-columns:minmax(0,5fr) minmax(280px,2fr);gap:var(--rv-space-6)}
+ .rv-qp-peek{position:sticky;top:var(--rv-space-6)}
+}
+@media(max-width:1023px){
+ .rv-qp[data-detail-open=true]>.rv-qp-main{display:none}
+ .rv-qp[data-detail-open=false]>.rv-qp-peek{display:none}
+ .rv-qp-hint{display:none}
+ .rv-qp[data-detail-open=false] .rv-table-v2 tbody tr[aria-current=true]{background:none}
+ .rv-qp[data-detail-open=false] .rv-table-v2 tbody tr[aria-current=true] td:first-child{box-shadow:none;font-weight:inherit}
+ .rv-qp-peek{display:flex;flex-direction:column;margin-inline:calc(-1 * var(--rv-space-5));margin-top:calc(-1 * var(--rv-space-6));gap:0;padding:0;border:0;border-radius:0;background:none;min-height:calc(100dvh - var(--rv-shell-header,52px))}
+ .rv-qp-peek-head{grid-template-columns:44px minmax(0,1fr);grid-template-areas:"back title" "back project";gap:0 var(--rv-space-2);align-items:center;padding:var(--rv-space-2) var(--rv-space-4);border-bottom:1px solid var(--rv-border);background:var(--rv-bg-raised)}
+ .rv-qp-back{grid-area:back;display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;padding:0;border:0;background:none;color:var(--rv-text);cursor:pointer}
+ .rv-qp-peek-head h2{font-size:var(--rv-font-lg);align-self:end}
+ .rv-qp-peek-project{font-size:var(--rv-font-sm);align-self:start}
+ .rv-qp-peek-updated{display:none}
+ .rv-qp-peek-status{padding:var(--rv-space-4);border-bottom:0}
+ .rv-qp-peek-age{display:inline}
+ .rv-qp-peek-body{padding:0 var(--rv-space-4) var(--rv-space-4)}
+ .rv-qp-step h3{font-size:var(--rv-font-xl);line-height:1.3}
+ .rv-qp-step p,.rv-qp-money{font-size:var(--rv-font-lg)}
+ .rv-qp-peek-actions{position:sticky;bottom:0;justify-items:stretch;margin-top:auto;padding:var(--rv-space-3) var(--rv-space-4);border-top:1px solid var(--rv-border);background:var(--rv-bg-raised);text-align:center}
+ .rv-qp-peek-foot{display:block}
+ .rv-qp-peek-plain{padding:var(--rv-space-4)}
+}
+@media(max-width:639px){
+ .rv-qp-peek{margin-inline:calc(-1 * var(--rv-space-4));margin-top:calc(-1 * var(--rv-space-7))}
+ .rv-qp .rv-page-header{flex-direction:row}
+ .rv-qp .rv-page-header>.rv-actions{display:contents}
+ .rv-qp-search{display:contents}
+ .rv-qp-search-toggle{display:inline-flex}
+ .rv-qp-search-field{flex:1 0 100%;order:3}
+ .rv-qp-search-field[data-open=false]{display:none}
+ .rv-qp-search-field input{width:100%}
+ .rv-qp-tabs{margin-inline:calc(-1 * var(--rv-space-4));padding-inline:var(--rv-space-2)}
+ .rv-qp .rv-table-v2-wrap{margin-inline:calc(-1 * var(--rv-space-4));border-inline:0;border-radius:0}
+ .rv-qp .rv-table-v2 td{padding:var(--rv-space-3) var(--rv-space-4);white-space:normal}
+ .rv-qp .rv-table-v2 td:nth-child(2){padding-inline:0 var(--rv-space-4)}
+ .rv-qp .rv-table-v2 td:nth-child(3){display:none}
+ .rv-qp-row small{font-size:var(--rv-font-sm)}
+ .rv-qp-time-inline{display:inline}
+ .rv-qp-update-list{margin-inline:calc(-1 * var(--rv-space-4));border-inline:0;border-radius:0}
+}
+/* Phone (boards 2d, 2f, 10b): the status above the title, the time opposite it, then the title and its summary at full width. */
+@media(max-width:639px){
+ .rv-qp .rv-table-v2,.rv-qp .rv-table-v2 tbody{display:block}
+ .rv-qp .rv-table-v2 tbody tr{display:grid;grid-template-columns:minmax(0,1fr) auto;height:auto;padding:var(--rv-space-3) var(--rv-space-4);border-bottom:1px solid var(--rv-border)}
+ .rv-qp .rv-table-v2 tbody tr:last-child{border-bottom:0}
+ .rv-qp .rv-table-v2 td{width:auto;max-width:none;padding:0;border:0}
+ .rv-qp .rv-table-v2 td:first-child{grid-column:1/-1;grid-row:2;width:auto;max-width:none;margin-top:var(--rv-space-2)}
+ .rv-qp .rv-table-v2 td:nth-child(2){grid-column:1;grid-row:1;width:auto;padding:0;text-align:left}
+ .rv-qp .rv-table-v2 td:nth-child(3){display:block;grid-column:2;grid-row:1;width:auto;min-width:0;align-self:center}
+ .rv-qp .rv-table-v2 tbody tr[aria-current=true] td:first-child{box-shadow:none}
+ .rv-qp .rv-table-v2 tbody tr[aria-current=true]{box-shadow:inset var(--rv-space-1) 0 var(--rv-text)}
+ .rv-qp-time-inline{display:none;flex:none;white-space:pre}
+ .rv-qp-row strong{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal}
+ .rv-qp-detail{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal}
+ .rv-qp-row small{display:block}
+ .rv-qp[data-detail-open=false] .rv-table-v2 tbody tr[aria-current=true]{box-shadow:none;background:none}
+}
+@media(prefers-reduced-motion:reduce){.rv-qp *{scroll-behavior:auto}}
+
+/* Actions layout (boards 2a, 2c, 2e, 22a): the live controls sit flat in the peek, as the boards draw them (no card in a card). Tokens only; scoped to the two screens. */
+.rv-qp-action-fields{min-width:0;margin:0;padding:0;border:0}
+.rv-qp-peek .rv-pane-decision{position:static;margin:0;background:none}
+.rv-qp-peek .rv-decision-frame.rv-decision-pane{padding:0;border:0;border-radius:0;box-shadow:none;background:none}
+.rv-qp-peek .rv-decision-pane>.rv-decision-frame-header{margin:0 0 var(--rv-space-2)}
+.rv-qp-peek .rv-decision-pane>.rv-decision-frame-header>.rv-decision-frame-title{font:600 var(--rv-font-sm)/1.3 var(--rv-font-ui);color:var(--rv-text-muted)}
+.rv-qp-peek .rv-decision-pane .rv-decision-summary{font:600 var(--rv-font-lg)/1.4 var(--rv-font-ui);color:var(--rv-text)}
+.rv-qp-peek .rv-decision-frame-body{gap:var(--rv-space-4)}
+.rv-qp-peek .rv-kv-list{margin:0}
+.rv-qp-peek .rv-kv-list .rv-kv{font-size:var(--rv-font-md);padding:var(--rv-space-2) 0}
+.rv-qp-peek .rv-decision-pane .rv-decision-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2) var(--rv-space-3);margin:0}
+/* Several answers (a question's options, spend choices) stack at one width. */
+.rv-qp-peek .rv-decision-pane .rv-decision-actions:has(>.rv-button-with-reason~.rv-button-with-reason){display:grid;grid-template-columns:minmax(0,1fr)}
+.rv-qp-peek .rv-decision-pane .rv-decision-actions:has(>.rv-button-with-reason~.rv-button-with-reason)>.rv-button-with-reason>.rv-button{width:100%}
+.rv-qp-peek .rv-decision-pane .rv-button{min-height:44px}
+.rv-qp-peek .rv-decision-pane .rv-button-locked-reason{display:block;margin-top:var(--rv-space-2);font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-qp-peek .rv-button-with-reason{max-width:100%}
+/* Not now and Request changes read as the board's quiet second choice, never as stray text; an open one takes the full row. */
+.rv-qp-peek .rv-decision-reject,.rv-qp-peek .rv-decision-changes{margin:0}
+.rv-qp-peek .rv-decision-reject>summary,.rv-qp-peek .rv-decision-changes>summary{display:inline-flex;align-items:center;min-height:44px;padding:0;font-size:var(--rv-font-md);font-weight:500;color:var(--rv-text);text-decoration:underline;text-underline-offset:3px;cursor:pointer;list-style:none}
+.rv-qp-peek .rv-decision-reject>summary::-webkit-details-marker,.rv-qp-peek .rv-decision-changes>summary::-webkit-details-marker,.rv-qp-peek .rv-decision-panel>summary::-webkit-details-marker{display:none}
+.rv-qp-peek .rv-decision-reject[open],.rv-qp-peek .rv-decision-changes[open]{flex:1 1 100%;padding:var(--rv-space-3);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm)}
+.rv-qp-peek .rv-decision-changes textarea{min-height:88px}
+.rv-qp-peek .rv-decision-reject ul{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:var(--rv-space-2)}
+/* The evidence disclosure is a row with a chevron and a rule, as the boards' "Checks and reviews" rows. */
+.rv-qp-peek .rv-decision-panel{margin:0;border-block:1px solid var(--rv-border)}
+.rv-qp-peek .rv-decision-panel>summary{display:flex;align-items:center;gap:var(--rv-space-3);min-height:48px;font-weight:600;list-style:none}
+.rv-qp-peek .rv-decision-panel>summary::before{content:"";flex:none;width:8px;height:8px;margin-inline:var(--rv-space-1);border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .12s}
+.rv-qp-peek .rv-decision-panel[open]>summary::before{transform:rotate(45deg)}
+.rv-qp-peek .rv-decision-panel section{padding-bottom:var(--rv-space-3)}
+.rv-qp-peek .rv-decision-plan fieldset{border-radius:var(--rv-radius-sm)}
+.rv-qp-peek .rv-merge-when-ready{margin:0}
+.rv-qp-peek .rv-decision-confirm{padding:var(--rv-space-3);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm)}
+.rv-qp-peek [role=alert],.rv-qp-peek .rv-lesson-failed{margin:0;color:var(--rv-status-failed);font-size:var(--rv-font-md)}
+.rv-qp-peek [role=status]{margin:0;font-size:var(--rv-font-md);color:var(--rv-text-muted)}
+/* The spec and the lessons used follow the decision as flat sections under one rule. */
+.rv-qp-peek .rv-spec,.rv-qp-peek .rv-lessons-used{margin:var(--rv-space-2) 0 0;padding:var(--rv-space-4) 0 0;border:0;border-top:1px solid var(--rv-border);border-radius:0;background:none}
+.rv-qp-peek .rv-spec .rv-section-head h3,.rv-qp-peek .rv-lessons-used h4{font:600 var(--rv-font-lg)/1.3 var(--rv-font-ui);color:var(--rv-text);margin:0 0 var(--rv-space-2)}
+.rv-qp-peek .rv-spec{margin-bottom:var(--rv-space-4)}
+.rv-qp-peek .rv-spec-estimate{margin:var(--rv-space-3) 0 0}
+.rv-qp-peek .rv-lessons-used ul{list-style:none;margin:0;padding:0;display:grid;gap:var(--rv-space-3)}
+.rv-qp-peek .rv-lessons-used li{display:grid;justify-items:start;gap:var(--rv-space-1)}
+.rv-qp-peek .rv-lessons-used li b{font-weight:600}
+.rv-qp-peek .rv-lessons-used li small{font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-qp-peek .rv-lessons-used li .rv-button{min-height:44px;padding-inline:0;text-decoration:underline;text-underline-offset:3px;color:var(--rv-text)}
+.rv-qp-peek .rv-criterion{grid-template-columns:auto minmax(0,1fr);column-gap:var(--rv-space-3)}
+.rv-qp-peek .rv-criterion>.rv-id-chip{grid-column:2;justify-self:start}
+.rv-qp-peek .rv-criterion-options .rv-button{min-height:44px}
+/* The lesson batch (board 22a): each lesson its own card with a row of Keep, Edit and Drop; Send stays at the foot of the peek. */
+.rv-qp-peek .rv-lesson-batch{margin:0;padding:0;border:0;background:none}
+.rv-qp-peek .rv-lesson-batch .rv-pane-head,.rv-qp-peek .rv-lesson-batch .rv-pane-grid{padding:0;border:0;background:none}
+.rv-qp-peek .rv-lesson-batch .rv-pane-head{margin-bottom:var(--rv-space-4)}
+.rv-qp-peek .rv-lesson-batch .rv-pane-grid{display:grid;gap:var(--rv-space-4)}
+.rv-qp-peek .rv-lesson-batch .rv-eyebrow{display:none}
+.rv-qp-peek .rv-lesson-batch .rv-pane-head h2{font:600 var(--rv-font-lg)/1.35 var(--rv-font-ui);margin:0 0 var(--rv-space-2)}
+.rv-qp-peek .rv-lesson-intro{font-size:var(--rv-font-md);color:var(--rv-text-muted)}
+.rv-qp-peek .rv-lesson-list{margin:0}
+.rv-qp-peek .rv-lesson{padding:var(--rv-space-4)}
+.rv-qp-peek .rv-lesson-choice{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--rv-space-2);margin:var(--rv-space-2) 0 0;padding:0;border:0;min-width:0}
+.rv-qp-peek .rv-lesson-choice .rv-choice{justify-content:center;min-height:44px;padding:0 var(--rv-space-2)}
+.rv-qp-peek .rv-lesson-choice>.rv-button-with-reason{grid-column:1/-1;justify-self:start}
+.rv-qp-peek .rv-lesson-choice .rv-button{min-height:44px;padding-inline:0;text-decoration:underline;text-underline-offset:3px}
+.rv-qp-peek .rv-lesson-edit{margin-top:var(--rv-space-2)}
+.rv-qp-peek .rv-lesson-send{bottom:0;margin-inline:0;padding:var(--rv-space-3) 0;background:var(--rv-bg-raised)}
+.rv-qp-peek .rv-lesson-send p{font-size:var(--rv-font-md);color:var(--rv-text-muted)}
+.rv-qp-peek .rv-lesson-send-row{display:flex;flex-wrap:wrap;gap:var(--rv-space-2)}
+/* The primary comes first (leftmost, or on top on a phone), as the 4e rule and board 22a. */
+.rv-qp-peek .rv-lesson-send-row>.rv-button-with-reason:last-child{order:-1}
+.rv-qp-peek .rv-choice span{white-space:nowrap}
+.rv-qp-peek .rv-lesson-send-row .rv-button{min-height:44px}
+.rv-qp-peek .rv-lesson-results,.rv-qp-peek .rv-lesson-all-done{padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised)}
+@media(min-width:1024px){.rv-qp[data-peek-wide=true]{grid-template-columns:minmax(0,3fr) minmax(340px,2fr)}.rv-qp-peek .rv-lesson-batch{max-height:none}}
+/* The Understand round answered in the row (Work list): the form wraps inside the row and is never cut off by the table cell. */
+.rv-qp .rv-inline-questions{white-space:normal;margin:var(--rv-space-3) 0 0;padding:var(--rv-space-3) 0 0;border:0;border-top:1px solid var(--rv-border);border-radius:0;background:none;cursor:default}
+.rv-qp .rv-inline-questions h3{font:600 var(--rv-font-md)/1.35 var(--rv-font-ui)}
+.rv-qp .rv-inline-questions .rv-muted{font-size:var(--rv-font-md);color:var(--rv-text-muted)}
+.rv-qp .rv-inline-questions .rv-option{min-height:36px;padding:var(--rv-space-1) 0}
+.rv-qp .rv-inline-questions .rv-question{margin-bottom:0}
+.rv-qp .rv-inline-questions textarea{width:100%;box-sizing:border-box;min-height:64px}
+.rv-qp .rv-inline-questions .rv-button{min-height:44px}
+.rv-qp .rv-table-v2 tbody tr:has(.rv-inline-questions) td{vertical-align:top}
+.rv-qp .rv-table-v2 tbody tr:has(.rv-inline-questions) td:nth-child(2),.rv-qp .rv-table-v2 tbody tr:has(.rv-inline-questions) td:nth-child(3){padding-top:var(--rv-space-3)}
+/* Inbox: Mark all as read keeps its place beside the title (and the failure sits under it); Show more clears the list. */
+.rv-qp-main>.rv-qp-failure{margin:var(--rv-space-3) 0;color:var(--rv-status-failed);font-size:var(--rv-font-md)}
+.rv-qp-main>.rv-button-with-reason{margin-top:var(--rv-space-4)}
+@media(max-width:359px){.rv-qp-peek .rv-choice kbd{display:none}}
+@media(max-width:639px){
+ .rv-qp .rv-page-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:0 var(--rv-space-3)}
+ .rv-qp .rv-page-header>div:first-child{display:contents}
+ .rv-qp .rv-page-header h1{grid-column:1;grid-row:1;align-self:center;min-width:0}
+ .rv-qp .rv-page-header>.rv-actions{display:contents}
+ .rv-qp .rv-page-header>.rv-actions>.rv-button-with-reason{grid-column:2;grid-row:1;align-self:center}
+ .rv-qp .rv-page-header p{grid-column:1/-1;grid-row:2;font-size:var(--rv-font-md)}
+ .rv-qp-search-toggle{grid-column:2;grid-row:1;align-self:center}
+ .rv-qp-search-field{grid-column:1/-1;grid-row:3}
+ .rv-qp-peek .rv-decision-pane .rv-decision-actions{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--rv-space-2)}
+ .rv-qp-peek .rv-decision-pane .rv-decision-actions>.rv-button-with-reason,.rv-qp-peek .rv-decision-pane .rv-decision-actions>.rv-button-with-reason>.rv-button{display:flex;width:100%;justify-content:center}
+ .rv-qp-peek .rv-decision-pane .rv-decision-actions>.rv-button-with-reason{display:block}
+ .rv-qp-peek .rv-decision-reject>summary,.rv-qp-peek .rv-decision-changes>summary{justify-content:center;width:100%}
+ .rv-qp-peek .rv-decision-reject ul{grid-template-columns:minmax(0,1fr)}
+ .rv-qp-peek .rv-lesson-send-row .rv-button-with-reason,.rv-qp-peek .rv-lesson-send-row .rv-button{display:flex;width:100%;justify-content:center}
+ .rv-qp-peek .rv-lesson-send{margin-inline:calc(-1 * var(--rv-space-4));padding-inline:var(--rv-space-4)}
+ .rv-qp .rv-inline-questions .rv-option{min-height:44px}
+ .rv-qp .rv-inline-questions .rv-actions .rv-button-with-reason,.rv-qp .rv-inline-questions .rv-actions .rv-button{display:flex;width:100%;justify-content:center}
+}
+/* Held-press notice (Opus fix): the checking notice and its exit line sit above the page with a gap, and the phone peek (which pulls itself up under the page padding) starts below them instead of covering their foot (Copy, Open the task to check). */
+.rv-outcome:has(~.rv-qp){margin-bottom:var(--rv-space-4)}
+.rv-outcome~p[role=status]{margin:0 0 var(--rv-space-4);font-size:var(--rv-font-md)}
+@media(max-width:1023px){
+ .rv-outcome~.rv-qp .rv-qp-peek,.rv-outcome~p[role=status]~.rv-qp .rv-qp-peek{margin-top:0}
+}
+/* Held 202 and access ended (vision fix): while the merge confirmation is open its Confirm is the one primary, so the Merge above it reads as the quiet outline it now is; the quiet "Confirm on the next page" lines up with the sentence above it; a failed updates read keeps the Updates section's gap below the list; the exit line keeps room above the page header. */
+.rv-qp-peek .rv-decision-pane:has(.rv-decision-confirm) .rv-decision-actions .rv-button-primary{background:var(--rv-bg-raised);border-color:var(--rv-border-strong);color:var(--rv-text)}
+.rv-qp-peek [role=status] .rv-button-quiet{padding-inline:0}
+.rv-qp-main>.rv-qp-attention~.rv-qp-error{margin-top:var(--rv-space-6)}
+.rv-outcome~p[role=status]{margin-bottom:var(--rv-space-5)}

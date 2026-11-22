@@ -1,0 +1,43 @@
+// @vitest-environment jsdom
+import { expect, it } from "vitest";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { errorRefKey } from "@agentx/contracts/web";
+import { AppHostProvider } from "../../packages/ui/src/host.js";
+import { FixWithAgentPanel } from "../../packages/ui/src/screens/session/FixWithAgentPanel.js";
+import { MoneyBanners } from "../../packages/ui/src/screens/session/MoneyBanners.js";
+import { TaskActions } from "../../packages/ui/src/screens/session/TaskActions.js";
+import { UnderstandQuestions } from "../../packages/ui/src/screens/session/UnderstandQuestions.js";
+import { readFrozenSessionRequest, sessionScope } from "../../packages/ui/src/api/session-safety.js";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { fakeHost } from "./support/fake-host.js";
+import { meFixture } from "./support/fixtures.js";
+import { workspaceFixture, workspaceWorkflow } from "./support/workspace-fixture.js";
+import { understandSession } from "./support/understand-fixture.js";
+import { renderUi } from "./support/render.js";
+import { h } from "./support/h.js";
+const errorRef = { kind: "operation_failed" as const, code: "CHECK_FAILED", subject: { taskId: "11111111-1111-4111-8111-111111111111" }, at: "2026-10-23T12:00:00.000Z" };
+for (const operation of ["diagnosis", "normal", "tool", "answers"] as const) for (const code of ["CSRF_INVALID", "CSRF_STALE", "UNRECOGNISED"]) it(`R3/R6a ${operation}: 500/${code} cannot unlock confirmation after remount`, async () => {
+ const session = operation === "answers" ? understandSession() : workspaceFixture({}, { testOffer: { capUsd: 1 }, workflow: { ...workspaceWorkflow(), state: "RUNNING", stage: "IMPLEMENT" } });
+ if (session.body.kind !== "task") throw new Error("Task required");const task = session.body.task;
+ const me = meFixture();const oldIdentity = { companyId: me.org.orgId, personId: me.developer.id };
+ const f = fakeHost(async r => r.path === "/v1/app/me" ? { status: 200, body: me } : r.method === "GET" ? { status: 200, body: r.path === "/v1/app/sessions" ? { tasks: [task] } : { session: operation === "diagnosis" ? { ...session, errorRef, you: { ...session.you, live: { fix: true } } } : session } } : { status: 500, body: { error: { code, message: "Unknown result" } } });
+ const query = createQueryClient();
+ const element = operation === "diagnosis" ? h(FixWithAgentPanel, { sessionId: session.sessionId, errorRef }) : operation === "normal" ? h(MoneyBanners, { session }) : operation === "tool" ? h(TaskActions, { taskId: task.taskId, sessionId: session.sessionId, canContinue: true, showNote: false }) : h(UnderstandQuestions, { session, task });
+ const tree = () => h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: element }) });
+ let ui = renderUi(tree());
+ if (operation === "answers") { fireEvent.click(await screen.findByRole("radio", { name: /The payments table/ }));fireEvent.change(screen.getByRole("textbox", { name: /Should old refunds be migrated/ }), { target: { value: "Keep history" } }); }
+ const label = operation === "diagnosis" ? "Fix with agent" : operation === "normal" ? "Continue as a normal task" : operation === "tool" ? "Continue in my tool" : "Send answers";
+ const button = await screen.findByRole<HTMLButtonElement>("button", { name: label });await waitFor(() => expect(button.disabled).toBe(false));fireEvent.click(button);
+ await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1));
+ const subject = operation === "diagnosis" ? "diagnosis:" + errorRefKey(errorRef) : operation === "normal" ? "normal-task:" + session.sessionId : operation === "tool" ? "continue:" + task.taskId : session.sessionId + ":answers:1";
+ const scope = sessionScope(oldIdentity, subject);
+ await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+ expect(readFrozenSessionRequest(f.host, scope)).toBeDefined();expect(button.disabled).toBe(true);
+ ui.unmount();ui = renderUi(tree());
+ const again = await screen.findByRole<HTMLButtonElement>("button", { name: label });expect(again.disabled).toBe(true);
+ fireEvent.click(screen.getByRole("button", { name: /^Check/ }));
+ await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+ expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);expect(again.disabled).toBe(true);
+ ui.unmount();query.clear();
+});

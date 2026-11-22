@@ -7,6 +7,7 @@ import CORE_TASK_ROUTES from "../fixtures/code-core-task-routes.json" with { typ
 
 const sid = "ses_aaaaaaaaaaaaaaaaaaaa", taskId = CORE_TASK_ROUTES.page.taskId, person = "a".repeat(64), company = "org_aaaaaaaaaaaaaaaaaaaa";
 const requestId = "22222222-2222-4222-8222-222222222222";
+const reviewPins = { expectedRevision: CORE_TASK_ROUTES.page.revision, candidateDigest: CORE_TASK_ROUTES.page.candidateDigest };
 const route = (action: string) => `/v1/web/sessions/${sid}/${action}`;
 type Source = "code" | "validation" | "missing" | "owner" | "nothing" | "security";
 type Case = { path: string; status: number; code: string; source: Source; message: string; body?: unknown };
@@ -84,7 +85,8 @@ it.each(cases)("$path $status $code ($source): real Cloud answer remains final",
   return json(row.status, { error: { code: row.code, message: row.message } });
  } });
  const handler = createCloudHandler({ client, store, work, origin: "https://cloud.example.test", callbackPath: "/callback", secureCookies: true, org: { orgId: company, name: "Acme", plan: "test" }, log: () => undefined });
- const body = row.body ?? { requestId, ...(row.path.endsWith("/merge") ? {} : { round: 1, answers: [{ questionId: "q1", optionId: "a" }], note: "Fix findings", reason: "Accept findings" }) };
+ // Reach the intended Code refusal through Cloud's existing displayed-pin guard.
+ const body = row.body ?? { requestId, ...(/\/(retry|send-back|accept-findings)$/u.test(row.path) ? reviewPins : {}), ...(row.path.endsWith("/merge") ? {} : { round: 1, answers: [{ questionId: "q1", optionId: "a" }], note: "Fix findings", reason: "Accept findings" }) };
  const answer = await handler({ method: "POST", path: row.path, query: new URLSearchParams(), headers: { cookie: "rovara_cloud_session=cookie", "x-rovara-csrf": "csrf" }, body: JSON.stringify(body) });
  const result = JSON.parse(answer!.body) as { error: { code: string; message: string } };
  expect([answer?.status, result.error.code, result.error.message]).toEqual([row.status, row.code, row.message]);

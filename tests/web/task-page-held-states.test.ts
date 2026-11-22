@@ -1,0 +1,78 @@
+// @vitest-environment jsdom
+import { afterEach, expect, it } from "vitest";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { createMemoryRouter, RouterProvider } from "react-router";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { AppHostProvider } from "../../packages/ui/src/host.js";
+import { SessionScreen } from "../../packages/ui/src/screens/session/SessionScreen.js";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { workspaceFixture, workspaceWorkflow } from "./support/workspace-fixture.js";
+import { meFixture } from "./support/fixtures.js";
+import { SESSION_FIXTURE_ID } from "./support/session-fixture.js";
+import { PLAN, PROOF } from "./support/work-fixture.js";
+import { fakeHost } from "./support/fake-host.js";
+import { renderUi } from "./support/render.js";
+import { h } from "./support/h.js";
+afterEach(cleanup);
+const states = { session: true, running: true, talk: true, plan: true, proof: true } as const;
+for (const page of Object.keys(states) as (keyof typeof states)[]) it(`R4: real ${page} view groups unserved observations in one Unknown chip and Check only reads`, async () => {
+ const session = workspaceFixture({}, { workflow: { ...workspaceWorkflow(), stage: page === "running" ? "IMPLEMENT" : "PLAN_REVIEW", state: page === "running" ? "RUNNING" : "WAITING" } });
+ const f = fakeHost(async r => {
+  if (r.path === "/v1/app/me") return { status: 200, body: meFixture() };
+  if (r.method === "POST" && r.path.endsWith("/presence")) return { status: 200, body: { viewingNow: [] } };
+  if (r.path.endsWith("/messages")) return { status: 200, body: { messages: [] } };
+  if (r.path.endsWith("/events")) return { status: 200, body: { events: [] } };
+  if (r.path.endsWith("/documents/plan")) return { status: 200, body: PLAN };
+  if (r.path.endsWith("/evidence")) return { status: 200, body: PROOF };
+  if (r.path === "/v1/app/decisions") return { status: 200, body: { cards: [], total: 0, digests: {} } };
+  if (r.path === "/v1/app/sessions/" + SESSION_FIXTURE_ID) return { status: 200, body: { session } };
+  return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not served" } } };
+ });
+ const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
+ const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
+ await screen.findByTestId("session-title");
+ if (page === "talk") fireEvent.click(screen.getByRole("button", { name: "Talk to this session" }));
+ if (page === "proof") fireEvent.mouseDown(await screen.findByRole("tab", { name: "Evidence" }), { button: 0, ctrlKey: false });
+ const notice = await screen.findByTestId("held-" + page);
+ const region = notice;
+ expect(within(region).getAllByRole("img", { name: "Unknown" })).toHaveLength(1);
+ expect(region.querySelectorAll("[data-held-state]")).toHaveLength(0);
+ expect(region.querySelector("ul")).toBeNull();
+ const before = f.request.mock.calls.filter(([r]) => r.method !== "GET" && !r.path.endsWith("/presence")).length;
+ const reads = f.request.mock.calls.filter(([r]) => r.method === "GET").length;
+ fireEvent.click(within(region).getByRole("button", { name: "Check recorded facts" }));
+ await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.method === "GET").length).toBeGreaterThan(reads));
+ expect(f.request.mock.calls.filter(([r]) => r.method !== "GET" && !r.path.endsWith("/presence"))).toHaveLength(before);
+ expect(screen.queryByRole("heading", { name: "Applied" })).toBeNull();
+ expect(screen.queryByRole("region", { name: "Run recovery" })).toBeNull();
+ ui.unmount();router.dispose();query.clear();
+});
+
+it("R3: a restored Session message lock also disables the joined Talk sender", async () => {
+ const session = workspaceFixture();
+ const f = fakeHost(async r => {
+  if (r.path === "/v1/app/me") return { status: 200, body: meFixture() };
+  if (r.path.endsWith("/presence")) return { status: 200, body: { viewingNow: [] } };
+  if (r.path.endsWith("/messages")) return { status: 200, body: { messages: [] } };
+  if (r.path.endsWith("/events")) return { status: 200, body: { events: [] } };
+  if (r.path === "/v1/app/sessions/" + SESSION_FIXTURE_ID) return { status: 200, body: { session } };
+  return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not served" } } };
+ });
+ const identity = meFixture();
+ const key = "session:" + encodeURIComponent(identity.org.orgId) + ":" + encodeURIComponent(identity.developer.id) + ":" + encodeURIComponent(SESSION_FIXTURE_ID + ":talk:all") + ":request";
+ const frozen = JSON.stringify({ requestId: "11111111-1111-4111-8111-111111111111", action: "message", body: { kind: "comment", text: "Earlier unconfirmed note" }, startedAt: Date.now(), fence: 1 });
+ f.storage.set(key, frozen);
+ const query = createQueryClient(), router = createMemoryRouter([{ path: "/s/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/s/" + SESSION_FIXTURE_ID] });
+ const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
+ fireEvent.click(await screen.findByRole("button", { name: "Talk to this session" }));
+ const submit = await screen.findByRole<HTMLButtonElement>("button", { name: "Send comment" });
+ await waitFor(() => expect(submit.disabled).toBe(true));
+ expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).disabled).toBe(true);
+ expect(screen.getByRole("region", { name: "Task draft" }).textContent).toContain("Earlier unconfirmed note");
+ fireEvent.click(screen.getByRole("button", { name: "Check" }));
+ await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.path.endsWith("/messages") && r.method === "GET")).toBe(true));
+ expect(f.storage.get(key)).toBe(frozen);
+ expect(f.request.mock.calls.filter(([r]) => r.method === "POST" && r.path.endsWith("/messages"))).toHaveLength(0);
+ expect(submit.disabled).toBe(true);
+ ui.unmount();router.dispose();query.clear();
+});

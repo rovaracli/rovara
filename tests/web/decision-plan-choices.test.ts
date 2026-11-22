@@ -17,6 +17,7 @@ import { DecisionCard } from "../../packages/ui/src/design/DecisionCard.js";
 import { DecisionList } from "../../packages/ui/src/screens/home/NeedsYou.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
+import { meFixture } from "./support/fixtures.js";
 import { fakeHost } from "./support/fake-host.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
@@ -26,11 +27,21 @@ const decisionsOf = (value: unknown): ReadDecision[] => readDecisions(DecisionCa
 const COMMENTS = ["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"];
 const answered = (cardId: string): ApiResponse => ({ status: 200, body: { cardId, outcome: "approved", remainingTabs: [] } });
 
-function show(decisions: ReadDecision[], reply?: (request: ApiRequest) => ApiResponse) {
+function show(decisions: ReadDecision[], reply?: (request: ApiRequest) => ApiResponse, seed?: readonly [string, string]) {
+  const currentView = {
+    cards: decisions.map(item => item.card), total: decisions.length, dropped: 0,
+    tabs: Object.fromEntries(decisions.flatMap(item => item.tabs === undefined ? [] : [[item.card.id, item.tabs]])),
+    details: Object.fromEntries(decisions.flatMap(item => item.details.length === 0 ? [] : [[item.card.id, item.details]])),
+    choices: Object.fromEntries(decisions.flatMap(item => item.choices === undefined ? [] : [[item.card.id, item.choices]])),
+    digests: Object.fromEntries(decisions.map(item => [item.card.id, item.digest])),
+  };
   const f = fakeHost(async request => {
+    if (request.method === "GET" && request.path === "/v1/app/me") return { status: 200, body: { developer: { id: "a".repeat(64), name: "Member", orgRole: "owner" }, org: { orgId: "o-aaaaaaaaaaaaaaaaaaaa", name: "Example", plan: "starter" }, identities: [] } };
+    if (request.method === "GET" && request.path === "/v1/app/decisions") return { status: 200, body: currentView };
     if (request.method === "GET") return { status: 200, body: {} };
     return reply?.(request) ?? answered(decisions[0]!.card.id);
   });
+  if (seed !== undefined) f.storage.set(seed[0], seed[1]);
   const query = createQueryClient();
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(DecisionList, { decisions, label: "Decisions" }) }) }) }) }));
   const posts = () => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST");
@@ -38,6 +49,108 @@ function show(decisions: ReadDecision[], reply?: (request: ApiRequest) => ApiRes
 }
 
 describe("a plan card with choices and a run limit", () => {
+  for (const code of ["CSRF_INVALID", "CSRF_STALE", "UNRECOGNISED"]) it(`R6a: a 500/${code} never releases the plan approval confirmation`, async () => {
+    const decision = decisionsOf(view("approve_plan_with_choices"))[0]!;
+    const f = fakeHost(async () => ({ status: 500, body: { error: { code, message: "Unknown result" } } }));
+    const identity = { orgId: "o-aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64) };
+    await expect(createDecisionsApi(f.host).approve(decision, undefined, undefined, undefined, identity)).rejects.toMatchObject({ code: "APPROVAL_UNKNOWN" });
+    expect(await createDecisionsApi(f.host).hasUnknownApproval(decision, identity)).toBe(true);
+    await expect(createDecisionsApi(f.host).approve(decision, undefined, undefined, undefined, identity)).rejects.toMatchObject({ code: "APPROVAL_UNKNOWN" });
+    expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);
+  });
+
+  it("keeps an unknown approval locked across API recreation and does not post a second request", async () => {
+    const decision = decisionsOf(view("approve_plan_with_choices"))[0]!;
+    const f = fakeHost(async () => ({ status: 503, body: { error: { code: "UNAVAILABLE", message: "Try later." } } }));
+    const scope = { orgId: "o-aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64) };
+    await expect(createDecisionsApi(f.host).approve(decision, undefined, undefined, undefined, scope)).rejects.toBeTruthy();
+    await expect(createDecisionsApi(f.host).approve(decision, undefined, undefined, undefined, scope)).rejects.toMatchObject({ code: "APPROVAL_UNKNOWN" });
+    expect(f.request.mock.calls.filter(([request]) => request.method === "POST")).toHaveLength(1);
+    expect([...f.storage.keys()].some(key => key.includes(decision.card.id) && key.includes(scope.orgId) && key.includes(scope.developerId))).toBe(true);
+  });
+  it("keeps the exact persisted request unknown when a 202 body looks like a final outcome", async () => {
+    const decision = decisionsOf(view("approve_plan_with_choices"))[0]!, scope = { orgId: "o-aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64) };
+    const f = fakeHost(async () => ({ status: 202, body: { cardId: decision.card.id, outcome: "approved", remainingTabs: [] } }));
+    const lock = `rv:decision-approval:${scope.orgId}:${scope.developerId}:${decision.card.id}`;
+    await expect(createDecisionsApi(f.host).approve(decision, undefined, undefined, undefined, scope)).rejects.toMatchObject({ code: "APPROVAL_UNKNOWN" });
+    const frozen = f.host.storage.get(lock)!;
+    const stored: unknown = JSON.parse(frozen) as unknown;
+    expect(stored).toMatchObject({ body: { shownDigest: decision.digest } });
+    expect(typeof (stored as { requestId?: unknown }).requestId).toBe("string");
+    expect(f.request.mock.calls.filter(([request]) => request.method === "POST")).toHaveLength(1);
+    expect(await createDecisionsApi(f.host).hasUnknownApproval(decision, scope)).toBe(true);
+  });
+  it("treats a stale CSRF refusal as a definite no-send and clears the pending lock", async () => {
+    const decision = decisionsOf(view("approve_plan_with_choices"))[0]!;
+    const scope = { orgId: "o-aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64) };
+    const f = fakeHost(async request => request.method === "POST"
+      ? { status: 403, body: { error: { code: "CSRF_INVALID", message: "Refresh the page and try again." } } }
+      : { status: 200, body: {} });
+    await expect(createDecisionsApi(f.host).approve(decision, undefined, undefined, undefined, scope)).rejects.toMatchObject({ code: "CSRF_INVALID", message: "Couldn't change that. Reload your identity before trying again." });
+    expect([...f.storage.values()].every(value => value === "")).toBe(true);
+    expect(f.request.mock.calls.filter(([request]) => request.method === "POST")).toHaveLength(1);
+  });
+  it("shows Check after an unknown write and checking does not resend it", async () => {
+    const f = show(decisionsOf(view("approve_plan_with_choices")), () => ({ status: 503, body: { error: { code: "UNAVAILABLE", message: "Try later." } } }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /I agree Rovara may spend up to \$5.00/u }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    const check = await screen.findByRole("button", { name: "Check" });
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    fireEvent.click(check);
+    expect((await screen.findByRole("alert")).textContent).toContain("earlier approval remains locked");
+    expect(f.posts()).toHaveLength(1);
+    f.unmount();
+  });
+  it("restores the unknown explanation and Check from storage before the task card mounts", async () => {
+    const decision = decisionsOf(view("approve_plan_with_choices"))[0]!, scope = { orgId: "o-aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64) };
+    const lock = `rv:decision-approval:${scope.orgId}:${scope.developerId}:${decision.card.id}`;
+    const f = show([decision], undefined, [lock, JSON.stringify({ requestId: "request-1", body: { requestId: "request-1", shownDigest: decision.digest }, startedAt: Date.now() })]);
+    expect(await screen.findByRole("button", { name: "Check" })).toBeTruthy();
+    expect(await screen.findByText("Rovara didn't confirm this yet. Check this decision before trying again.")).toBeTruthy();
+    expect(f.posts()).toHaveLength(0);
+    f.unmount();
+  });
+  it("keeps a changed pending digest locked after Check", async () => {
+    const decision = decisionsOf(view("approve_plan_with_choices"))[0]!, scope = { orgId: "o-aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64) };
+    const next = view("approve_plan_with_choices"), digests = next["digests"] as Record<string, string>;digests[decision.card.id] = "b".repeat(64);
+    const f = fakeHost(async request => request.method === "GET" ? { status: 200, body: next } : answered(decision.card.id));
+    const lock = `rv:decision-approval:${scope.orgId}:${scope.developerId}:${decision.card.id}`;
+    f.host.storage.set(lock, JSON.stringify({ requestId: "request-1", body: { shownDigest: decision.digest }, startedAt: Date.now() }));
+    expect(await createDecisionsApi(f.host).checkApproval(decision, scope)).toBe("changed_pending");
+    expect(f.host.storage.get(lock)).toContain("request-1");
+    expect(f.request.mock.calls.some(([request]) => request.method === "POST")).toBe(false);
+  });
+  it("does not clear a replacement lock when Check finishes", async () => {
+    const decision = decisionsOf(view("approve_plan_with_choices"))[0]!, scope = { orgId: "o-aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64) };
+    let resolveRead!: (response: ApiResponse) => void;
+    const finalView = view("approve_plan_with_choices");
+    (finalView.cards[0] as Record<string, unknown>).status = "approved";
+    const f = fakeHost(() => new Promise<ApiResponse>(resolve => { resolveRead = resolve; }));
+    const lock = `rv:decision-approval:${scope.orgId}:${scope.developerId}:${decision.card.id}`;
+    f.host.storage.set(lock, JSON.stringify({ requestId: "request-1", body: { shownDigest: decision.digest }, startedAt: Date.now() }));
+    const checking = createDecisionsApi(f.host).checkApproval(decision, scope);
+    await waitFor(() => expect(resolveRead).toBeTypeOf("function"));
+    const replacement = JSON.stringify({ requestId: "request-2", body: { shownDigest: decision.digest }, startedAt: Date.now() });
+    f.host.storage.set(lock, replacement);
+    resolveRead({ status: 200, body: finalView });
+    expect(await checking).toBe("unknown");
+    expect(f.host.storage.get(lock)).toBe(replacement);
+  });
+  it("reads current state when the original lock vanished and never claims a decision without that read", async () => {
+    const decision = decisionsOf(view("approve_plan_with_choices"))[0]!, scope = { orgId: "o-aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64) };
+    let resolveRead!: (response: ApiResponse) => void;
+    const f = fakeHost(() => new Promise<ApiResponse>(resolve => { resolveRead = resolve; }));
+    const lock = `rv:decision-approval:${scope.orgId}:${scope.developerId}:${decision.card.id}`;
+    f.host.storage.set(lock, JSON.stringify({ requestId: "request-1", body: { shownDigest: decision.digest }, startedAt: Date.now() }));
+    const checking = createDecisionsApi(f.host).checkApproval(decision, scope);
+    await waitFor(() => expect(resolveRead).toBeTypeOf("function"));
+    f.host.storage.set(lock, "");
+    const current = view("approve_plan_with_choices");
+    resolveRead({ status: 200, body: current });
+    expect(await checking).toBe("same_pending");
+    expect(f.host.storage.get(lock)).toBe("");
+    expect(f.request.mock.calls.some(([request]) => request.method === "POST")).toBe(false);
+  });
   it("draws the key facts, each question with Rovara's recommendation and who suggested what, the checks, the comments, a note and the run limit", () => {
     show(decisionsOf(view("approve_plan_with_choices")));
     const plan = screen.getByTestId("plan-choices");
@@ -240,16 +353,16 @@ describe("Request changes", () => {
     expect(decisionActionPath(decisionsOf(view("merge"))[0]!.card, "request_changes")).toBeUndefined();
   });
   it("refuses an empty reason before anything is sent, and folds line breaks and hidden characters into one plain line", async () => {
-    const f = fakeHost(async () => ({ status: 200, body: { cardId: "approve_plan:plan1", outcome: "rejected", remainingTabs: [] } }));
+    const f = fakeHost(async request => ({ status: 200, body: request.path === "/v1/app/me" ? meFixture() : { cardId: "approve_plan:plan1", outcome: "rejected", remainingTabs: [] } }));
     const api = createDecisionsApi(f.host);
     const plan = decisionsOf(view("approve_plan"))[0]!;
     await expect(api.requestChanges(plan, "   ")).rejects.toThrow(/plain text/u);
     await expect(api.requestChanges(plan, "\n\u202e\t")).rejects.toThrow(/plain text/u);
     expect(f.request).not.toHaveBeenCalled();
     await api.requestChanges(plan, "First line.\nSecond\u202e line.\r\n\r\nThird.");
-    expect((f.request.mock.calls[0]![0].body as { reason: string }).reason).toBe("First line. Second line. Third.");
+    expect((f.request.mock.calls.filter(([r]) => r.method === "POST")[0]![0].body as { reason: string }).reason).toBe("First line. Second line. Third.");
     await api.requestChanges(plan, "x".repeat(600));
-    expect((f.request.mock.calls[1]![0].body as { reason: string }).reason).toHaveLength(500);
+    expect((f.request.mock.calls.filter(([r]) => r.method === "POST")[1]![0].body as { reason: string }).reason).toHaveLength(500);
   });
   it("sends a reason typed over several lines as one line", async () => {
     const f = show(decisionsOf(view("approve_plan")), () => ({ status: 200, body: { cardId: "approve_plan:plan1", outcome: "rejected", remainingTabs: [] } }));
@@ -263,6 +376,22 @@ describe("Request changes", () => {
     renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(MemoryRouter, { children: h(DecisionCard, { decision: decisionsOf(view("approve_plan"))[0]!, actions: { onOpenEvidence: async () => undefined, onApprove: async () => ({ kind: "decided" as const, outcome: "approved" as const }), onReject: async () => ({ kind: "decided" as const, outcome: "rejected" as const }), onStale: () => undefined } }) }) }) }));
     expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
     expect(screen.queryByText("Request changes")).toBeNull();
+  });
+  it("restores Check on remount, ignores a foreign identity event, reports a changed pending digest, and follows a clear event", async () => {
+    const decision = decisionsOf(view("approve_plan_with_choices"))[0]!;
+    let lockPresent = true;
+    const lockKey = `rv:decision-approval:o-aaaaaaaaaaaaaaaaaaaa:${"a".repeat(64)}:${decision.card.id}`;
+    const f = fakeHost(async () => ({ status: 200, body: {} }));
+    renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(MemoryRouter, { children: h(DecisionCard, { decision, actions: { onOpenEvidence: async () => undefined, onApprove: async () => ({ kind: "decided" as const, outcome: "approved" as const }), onReject: async () => ({ kind: "decided" as const, outcome: "rejected" as const }), onStale: () => undefined, onHasUnknownApproval: async () => true, onApprovalStorageChange: async key => key === lockKey ? lockPresent : undefined, onCheckApproval: async () => "changed_pending" as const } }) }) }) }));
+    expect(await screen.findByRole("button", { name: "Check" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    window.dispatchEvent(new StorageEvent("storage", { key: `rv:decision-approval:other-company:${"b".repeat(64)}:${decision.card.id}`, newValue: "foreign" }));
+    expect(await screen.findByRole("button", { name: "Check" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Check" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("changed and still reads as pending");
+    lockPresent = false;
+    window.dispatchEvent(new StorageEvent("storage", { key: lockKey, newValue: null }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Check" })).toBeNull());
   });
 });
 
@@ -318,10 +447,11 @@ describe("what an approve sends (pure)", () => {
   it("carries the plan fields on the wire for a plan card, and never on a merge", async () => {
     const f = fakeHost(async () => answered(plan.card.id));
     const api = createDecisionsApi(f.host);
-    await api.approve(plan, undefined, undefined, { note: "n", answers: [{ decisionId: "q1", optionId: "b", opened: true }], acknowledgedRunLimitUsd: 5 });
+    const identity = { orgId: "o-aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64) };
+    await api.approve(plan, undefined, undefined, { note: "n", answers: [{ decisionId: "q1", optionId: "b", opened: true }], acknowledgedRunLimitUsd: 5 }, identity);
     expect(f.request.mock.calls[0]![0].body).toMatchObject({ note: "n", acknowledgedRunLimitUsd: 5 });
     const merge = decisionsOf(view("merge"))[0]!;
-    await api.approve(merge, undefined, undefined, { note: "n", acknowledgedRunLimitUsd: 5 });
+    await api.approve(merge, undefined, undefined, { note: "n", acknowledgedRunLimitUsd: 5 }, identity);
     expect(Object.keys(f.request.mock.calls[1]![0].body as object).sort()).toEqual(["requestId", "shownDigest"]);
   });
 });

@@ -26,7 +26,7 @@
     "cloud:local": "tsx scripts/cloud-server.ts",
     "fake-code": "tsx scripts/fake-code.ts",
     "contract:table": "tsx scripts/code-contract-table.ts",
-    "build:web": "npm run build --workspace @agentx/web && npx tsx scripts/web-precompress.ts"
+    "build:web": "npm run build --workspace @agentx/web && node --import tsx scripts/web-precompress.ts"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

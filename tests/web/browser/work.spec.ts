@@ -1,25 +1,27 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { expect, test, type Page } from "@playwright/test";
-import { WorkPage } from "./pages/index.js";
+import { SessionPage, WorkPage } from "./pages/index.js";
 
-// Work, the split inbox (Hybrid 1, DEC 223), on the pretend Code. The pretend Code keeps its state in memory and the specs run one after another, so the one spec
+// Work (the rebuilt page of boards 2c and 2f, mounted on the real /app/live by WIRING-3), on the pretend Code. The pretend Code keeps its state in memory and the specs run one after another, so the one spec
 // that approves a plan runs last among the ones that read it.
 const PLAN_TASK = "Add a retry to the billing webhook";
 const MERGE_TASK = "Fix the README typo";
 const RUNNING_TASK = "Speed up the search index";
 
-test("the list groups work by who owns the next move and opens a task beside it", async ({ page }) => {
+test("the list shows who owns the next move for every task and opens a task beside it", async ({ page }) => {
   const work = new WorkPage(page);
   await work.open();
   await work.expectLoaded();
-  await expect(work.group("Needs you")).toBeVisible();
-  await expect(work.group("Rovara is working").getByRole("button", { name: new RegExp(RUNNING_TASK, "u") })).toBeVisible();
+  // One table: the status chip says who owns the next move.
+  await expect(work.status(PLAN_TASK, "Needs you")).toBeVisible();
+  await expect(work.status(RUNNING_TASK, "Running")).toBeVisible();
   // Both decisions have waited over a day, so the quickest is first: the plan (about 25 minutes) goes before the ones with no estimate.
-  await expect(work.group("Needs you").getByRole("button").first()).toContainText(PLAN_TASK);
-  await expect(work.group("Needs you").getByRole("button", { name: new RegExp(MERGE_TASK, "u") })).toBeVisible();
+  await expect(work.rows.first()).toContainText(PLAN_TASK);
+  await expect(work.status(MERGE_TASK, "Needs you")).toBeVisible();
   await expect(work.paneTitle).toHaveText(PLAN_TASK);
-  await expect(work.stepRail).toBeVisible();
+  // The peek carries the task's decision; the step rail is on the task's own page (Open task).
+  await expect(work.fullPage).toBeVisible();
   await expect(work.decision()).toBeVisible();
   // List and pane are side by side on a desktop screen.
   const list = await work.list.boundingBox(), pane = await work.pane.boundingBox();
@@ -30,7 +32,8 @@ test("j and k move the selection while the list has focus, and the address follo
   const work = new WorkPage(page);
   await work.open();
   await work.expectLoaded();
-  const first = work.rows.first();
+  // The table's own row takes the keys (its button is the row's click target, not a tab stop).
+  const first = work.list.getByRole("row").nth(1);
   await first.focus();
   const before = await work.paneTitle.textContent();
   await page.keyboard.press("j");
@@ -60,15 +63,19 @@ test("the spec shows its criteria with ids, asks its question in place, and says
 });
 
 test("a click on a step shows that stage: build activity, then proof per criterion", async ({ page }) => {
+  // The peek is short (board 2c): the step rail and the stages are on the task's own page, one click away.
   const work = new WorkPage(page);
   await work.open();
   await work.select(PLAN_TASK);
-  await work.step("Build").click();
-  const build = work.pane.getByRole("region", { name: "Build" });
+  await work.fullPage.click();
+  const task = new SessionPage(page);
+  await expect(task.title).toHaveText(PLAN_TASK);
+  await task.selectStep("Build");
+  const build = task.pane.getByRole("region", { name: "Build" });
   // Code's plan names no task list of its own, so the build activity shows the latest lines together.
   await expect(build.getByRole("log")).toContainText("Now at");
-  await work.step("Proof").click();
-  const proof = work.pane.getByRole("region", { name: "Proof", exact: true });
+  await task.selectStep("Proof");
+  const proof = task.pane.getByRole("region", { name: "Proof", exact: true });
   const rows = proof.getByRole("table").getByRole("row");
   await expect(rows).toHaveCount(3); // the head row and one per acceptance criterion
   await expect(proof).toContainText("2 of 2 criteria proven");
@@ -80,8 +87,13 @@ test("the merge card shows the pull request and its decision, with the merge-by-
   await work.open();
   await work.select(MERGE_TASK);
   await expect(work.decision()).toContainText("Merge pull request");
-  await expect(work.pane.getByRole("region", { name: "Pull request" })).toContainText("example/web #42");
-  await expect(work.pane.getByRole("link", { name: /View on GitHub/u })).toHaveAttribute("href", "https://github.com/example/web/pull/42");
+  // The peek carries the decision; the pull request card is on the task's own page.
+  await work.fullPage.click();
+  const task = new SessionPage(page);
+  await expect(task.title).toHaveText(MERGE_TASK);
+  await task.selectStep("Pull request");
+  await expect(task.pane.getByRole("region", { name: "Pull request" })).toContainText("example/web #42");
+  await expect(task.pane.getByRole("link", { name: /View on GitHub/u })).toHaveAttribute("href", "https://github.com/example/web/pull/42");
 });
 
 test("an unserved task list says it is not connected yet, never a spinner", async ({ page }) => {
@@ -151,8 +163,8 @@ test("approving the plan sends the decision and the list moves to the next task 
   const work = new WorkPage(page);
   await work.open();
   await work.select(PLAN_TASK);
-  await work.decision().getByRole("button", { name: "Approve plan" }).click();
+  await work.decision().getByRole("button", { name: /^Approve plan/u }).click();
   await expect(work.paneTitle).not.toHaveText(PLAN_TASK);
-  await expect(work.group("Rovara is working").getByRole("button", { name: new RegExp(PLAN_TASK, "u") })).toBeVisible();
-  await expect(work.group("Needs you").getByRole("button", { name: new RegExp(PLAN_TASK, "u") })).toHaveCount(0);
+  await expect(work.status(PLAN_TASK, "Running")).toBeVisible();
+  await expect(work.status(PLAN_TASK, "Needs you")).toHaveCount(0);
 });

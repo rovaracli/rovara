@@ -40,7 +40,7 @@ export function HomeScreen() {
  <Suspense fallback={null}><TeammateWelcome /></Suspense>
  <Suspense fallback={null}><HomeNotices /></Suspense>
  <Suspense fallback={null}><FinishSetup /></Suspense>
- <Suspense fallback={null}><NeedsYou /></Suspense>
+ <Suspense fallback={null}><NeedsYou showRetry={!home.isError} /></Suspense>
  <Suspense fallback={null}><HomeQuestions /></Suspense>
  {home.isPending && <Skeleton label="Loading what needs you" />}
  {home.isError && <div className="rv-home-error" role="alert" data-testid="load-error"><p><VisibleText text={home.error instanceof ApiError ? home.error.message : "Couldn't load what needs you. Try again."} /></p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}

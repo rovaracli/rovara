@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { expect, test, type Page } from "@playwright/test";
-import { LessonsPage, PROJECT, setLessons } from "./pages/index.js";
+import { LessonsPage, PROJECT, SessionPage, setLessons } from "./pages/index.js";
 
 // The lessons screens (DEC 231) on the pretend Code, which serves Code's lessons API (#713) for project "web": three proposed lessons (one from Priya's own correction,
 // one that lapses within a day), two approved, one retired, and two lessons given to the pull-request task. Priya decides. Off is the pretend Code's switch.
@@ -61,13 +61,14 @@ test("every lessons screen is calm when Code says lessons are off", async ({ pag
   await setLessons(page, false);
   const lessons = new LessonsPage(page);
   await lessons.openWork();
-  await expect(page.getByRole("region", { name: "Work list" }).locator(".rv-inbox-row").first()).toBeVisible();
+  await expect(page.getByRole("region", { name: "Work list" }).locator("button.rv-qp-row").first()).toBeVisible();
   await expect(lessons.batchRow(PROJECT)).toHaveCount(0);
   await expect(page.getByTestId("lessons-unavailable")).toHaveCount(0);
   await lessons.openHowWeWork(PROJECT);
   await expect(lessons.learned.getByTestId("lessons-off")).toContainText("Lessons are off.");
   await expect(lessons.learned.getByRole("alert")).toHaveCount(0);
   await lessons.openTask(PR_TASK);
+  await new SessionPage(page).openSection("About this task"); // the rebuilt page keeps Lessons used inside this disclosure
   await expect(lessons.used.getByTestId("lessons-off")).toBeVisible();
 });
 
