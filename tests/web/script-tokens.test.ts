@@ -12,7 +12,7 @@ import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { token, secret } from "./support/script-token-fixture.js";
 
-afterEach(() => { vi.restoreAllMocks(); localStorage.clear(); sessionStorage.clear(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); localStorage.clear(); sessionStorage.clear(); });
 function mount(respond: (r: ApiRequest) => ApiResponse | Promise<ApiResponse>, form = false, role = "owner") {
  const f = fakeHost(async r => respond(r));
  const copyText = vi.fn<(text: string) => Promise<void>>(async () => undefined); f.host.copyText = copyText;
@@ -28,6 +28,29 @@ function mount(respond: (r: ApiRequest) => ApiResponse | Promise<ApiResponse>, f
  return { ...f, copyText, query, router, rerender: () => ui.rerender(h("div", { "data-theme": "light" }, tree())), close: () => { ui.unmount(); router.dispose(); query.clear(); } };
 }
 const list = { status: 200, body: { tokens: [token] } };
+it.each([
+ { zone: "America/New_York", created: "11/17/2026, 1:00:00 PM EST", expires: "12/17/2026, 1:00:00 PM EST", used: "11/18/2026, 7:30:45 PM EST" },
+ { zone: "Asia/Tokyo", created: "11/18/2026, 3:00:00 AM GMT+9", expires: "12/18/2026, 3:00:00 AM GMT+9", used: "11/19/2026, 9:30:45 AM GMT+9" },
+])("shows key times in the viewer's $zone zone, including the zone", async ({ zone, created, expires, used }) => {
+ vi.stubEnv("TZ", zone);
+ const f = mount(() => ({ status: 200, body: { tokens: [{ ...token, lastUsedAt: "2026-11-19T00:30:45.123Z" }] } }));
+ try {
+  await screen.findByText("Nightly CI");
+  expect(screen.getByRole("list", { name: "Automation keys list" }).textContent).toContain(`Created ${created} · Expires ${expires} · Last used ${used}`);
+ } finally { f.close(); }
+});
+
+it.each([undefined, "2026-11-19T00:30:45.123Z"])("preserves exact UTC ISO timestamps in tooltips (last used: %s)", async lastUsedAt => {
+ const f = mount(() => ({ status: 200, body: { tokens: [{ ...token, ...(lastUsedAt === undefined ? {} : { lastUsedAt }) }] } }));
+ try {
+  await screen.findByText("Nightly CI");
+  for (const at of [token.createdAt, token.expiresAt, ...(lastUsedAt === undefined ? [] : [lastUsedAt])]) {
+   expect(screen.getByTitle(at).getAttribute("datetime")).toBe(at);
+  }
+  if (lastUsedAt === undefined) expect(screen.getByRole("list", { name: "Automation keys list" }).textContent).toContain("Never used");
+ } finally { f.close(); }
+});
+
 async function fill() {
  fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "Nightly CI" } });
  fireEvent.change(screen.getByLabelText("Projects (one name per line)"), { target: { value: "web" } });

@@ -13,7 +13,7 @@ import { useNav } from "./use-nav.js";
 import { CreateAutomationKey } from "./CreateAutomationKey.js";
 import "../admin/admin.css";
 
-const when = (value: string) => new Date(value).toLocaleString("en-US", { timeZone: "UTC", timeZoneName: "short" });
+const when = (value: string) => <time dateTime={value} title={value}>{new Date(value).toLocaleString(undefined, { timeZoneName: "short" })}</time>;
 export function AutomationKeysScreen() {
  const host = useAppHost(), api = useMemo(() => createScriptTokenApi(host), [host]), nav = useNav();
  const keys = useQuery({ queryKey: ["account", "script-tokens"], queryFn: () => api.list(), retry: false, gcTime: 0 });
@@ -36,7 +36,7 @@ export function AutomationKeysScreen() {
     : <ul className="rv-passkeys" aria-label="Automation keys list">{keys.data.tokens.map(key => <li key={key.tokenId}><div>
      <b><VisibleText text={key.name} /></b> <code>{key.hint}</code> <span>{key.status}</span>
      <p>Projects: <VisibleText text={key.projects.join(", ")} /> · Permissions: {key.permissions.join(", ")}</p>
-     <p>Created {when(key.createdAt)} · Expires {when(key.expiresAt)} · {key.lastUsedAt === undefined ? "Never used" : `Last used ${when(key.lastUsedAt)}`}</p>
+     <p>Created {when(key.createdAt)} · Expires {when(key.expiresAt)} · {key.lastUsedAt === undefined ? "Never used" : <>Last used {when(key.lastUsedAt)}</>}</p>
      <p>{key.mine ? "Created by you" : <VisibleText text={key.createdBy ?? "Another person"} />}</p>
     </div>{key.status === "active" && <Button aria-label={`Revoke ${key.name}`} variant="danger" onClick={() => { setProblem(undefined); setRevoking(key.tokenId); }}>Revoke</Button>}</li>)}</ul>}
   </AdminSection>
