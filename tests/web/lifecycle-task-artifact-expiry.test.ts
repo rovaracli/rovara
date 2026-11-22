@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactLinkSchema } from "@agentx/contracts/web";
 import { EvidenceArtifactExpiryView } from "../../packages/ui/src/screens/session/EvidenceArtifactExpiryView.js";
 
-const fixture = JSON.parse(readFileSync(join(process.cwd(), "../rovara-research-2026-10-26/briefs/codex/lifecycle-programme/ui-task-artifact-expiry/fixtures/expired-artifact-link.json"), "utf8")) as { expired: unknown; withheld: unknown };
+const fixture = JSON.parse(readFileSync(join(process.cwd(), "tests/fixtures/ui-task-artifact-expiry/expired-artifact-link.json"), "utf8")) as { expired: unknown; withheld: unknown };
 
 afterEach(cleanup);
 

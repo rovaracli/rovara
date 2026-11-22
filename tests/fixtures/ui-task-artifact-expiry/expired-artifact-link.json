@@ -1,0 +1,16 @@
+{
+  "expired": {
+    "kind": "api_sample_json",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bytes": 128,
+    "retentionClass": "evidence-std",
+    "state": "expired"
+  },
+  "withheld": {
+    "kind": "api_sample_json",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "bytes": 128,
+    "retentionClass": "evidence-std",
+    "state": "withheld"
+  }
+}
