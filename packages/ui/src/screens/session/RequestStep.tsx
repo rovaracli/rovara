@@ -1,8 +1,6 @@
 import type { ReadPlan, WorkRow } from "../../api/work.js";
 import { VisibleText } from "../../design/VisibleText.js";
-
-const DATE = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
-const when = (iso: string): string => (Number.isNaN(Date.parse(iso)) ? iso : DATE.format(new Date(iso)) + " UTC");
+import { clockTime } from "./task-time.js";
 
 /**
  * The first step: what was asked. The request is the task's title with where and how it runs (Code sends the title, not the full text of the request), and
@@ -12,7 +10,7 @@ const when = (iso: string): string => (Number.isNaN(Date.parse(iso)) ? iso : DAT
 export function RequestStep({ row, plan }: { row: WorkRow; plan: ReadPlan | undefined }) {
  const questions = plan?.questions ?? [];
  return <section aria-label="Request" className="rv-request">
-  <div className="rv-section-head"><h3>Request</h3><span>Started {when(row.task.createdAt)}</span></div>
+  <div className="rv-section-head"><h3>Request</h3><span>Started {new Date(row.task.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}, {clockTime(row.task.createdAt) ?? row.task.createdAt}</span></div>
   <p className="rv-request-title"><VisibleText text={row.title} /></p>
   <dl className="rv-kv-list">
    <div className="rv-kv"><dt>Project</dt><dd><VisibleText text={row.project} /></dd></div>

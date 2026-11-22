@@ -13,6 +13,7 @@ import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScre
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { renderUi } from "./support/render.js";
+import { meFixture } from "./support/fixtures.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 
@@ -24,9 +25,10 @@ const shown = (details?: unknown) => {
  return readDecisions(view)[0]!;
 };
 function showCard(details?: unknown) {
- const decision = shown(details), f = fakeHost(async request => ({ status: 200, body: request.path.endsWith("evidence-opened") ? { cardId: decision.card.id, opened: true, recorded: true } : { cardId: decision.card.id, outcome: "approved", remainingTabs: [] } }));
+ const decision = shown(details), f = fakeHost(async request => ({ status: 200, body: request.path === "/v1/app/me" ? meFixture() : request.path.endsWith("evidence-opened") ? { cardId: decision.card.id, opened: true, recorded: true } : { cardId: decision.card.id, outcome: "approved", remainingTabs: [] } }));
  const api = createDecisionsApi(f.host);
- renderUi(h(AppHostProvider, { host: f.host, children: h(MemoryRouter, { children: h(DecisionCard, { decision, actions: { onOpenEvidence: async () => { await api.evidenceOpened(decision); }, onApprove: () => api.approve(decision), onReject: () => api.reject(decision, "not_now"), onStale: () => undefined } }) }) }));
+ const identity = { orgId: "o-aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64) };
+ renderUi(h(AppHostProvider, { host: f.host, children: h(MemoryRouter, { children: h(DecisionCard, { decision, actions: { onOpenEvidence: async () => { await api.evidenceOpened(decision); }, onApprove: () => api.approve(decision, undefined, undefined, undefined, identity), onReject: () => api.reject(decision, "not_now"), onStale: () => undefined } }) }) }));
  return { decision, ...f };
 }
 describe("hosted known-failing evidence", () => {
@@ -45,7 +47,7 @@ describe("hosted known-failing evidence", () => {
   expect(mayApproveHere(f.decision.card)).toBe(false);
   expect(screen.getByRole("alert").textContent).toContain("evidence");
   expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-  await expect(createDecisionsApi(f.host).approve(f.decision)).rejects.toThrow("unavailable");
+  await expect(createDecisionsApi(f.host).approve(f.decision, undefined, undefined, undefined, { orgId: "o-aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64) })).rejects.toThrow("unavailable");
   expect(f.request).not.toHaveBeenCalled();
  });
 });

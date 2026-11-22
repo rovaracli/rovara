@@ -4,7 +4,7 @@ import type { z } from "zod";
 import type { ApiMethod, ApiRequest, ApiResponse, AppHost } from "../host.js";
 import { RETRY_DELAYS_MS } from "../constants.js";
 import { isConfirmUrl } from "../text/links.js";
-import { ApiError, apiError } from "./errors.js";
+import { ApiError, apiError, actionErrorRoutes } from "./errors.js";
 import { accessEndedCode } from "./served-read.js";
 /** The shared confirmation metadata a 202 may carry (the company policy save uses it); absent on ordinary confirmations. */
 export type SoleOwnerConfirmation = z.infer<typeof SoleOwnerConfirmationSchema>;
@@ -52,9 +52,20 @@ export function createApiClient(host: AppHost) {
  }
  return {
   async get<T>(path: string, schema: Reader<T>, headers?: Record<string, string>, options?: { retry: "never" }): Promise<T> { return read((await request({ method: "GET", path, ...(headers === undefined ? {} : { headers }), ...options })).body, schema); },
-  async send<T>(method: Exclude<ApiMethod, "GET" | "HEAD">, path: string, body: unknown, schema: Reader<T>, options?: { retry: "never" }): Promise<SendResult<T>> {
-   const response = await request({ method, path, body, ...options });
+  async send<T>(method: Exclude<ApiMethod, "GET" | "HEAD">, path: string, body: unknown, schema: Reader<T>, options?: { retry: "never"; pendingIsUnknown?: boolean; /** Decision actions only: a 202 confirmation request is handed back for the confirm link / merge prompt (its frozen request stays locked); any other 202 stays unknown. */ confirmationIsPending?: boolean }): Promise<SendResult<T>> {
+   try {
+   const response = await request({ method, path, body, ...(options?.retry === undefined ? {} : { retry: options.retry }) });
    if (response.status === 202) {
+    // A decision approval has no served receipt reader. Even an outcome-shaped body cannot
+    // turn an accepted response into a final decision or release its frozen request lock.
+    // The one 202 that passes through is a confirmation request (contract: decision-card-tabs.ts "202: the existing endpoint did not decide; the person decides on its
+    // confirmation page"): the caller keeps its frozen request and shows the merge prompt or the confirm link. Any other 202 stays unknown.
+    if (options?.pendingIsUnknown === true) {
+     // Only decision sends need this reader; its module also builds the lazy cards' schemas.
+     const { DecisionOutcomeReaderSchema } = await import("./decision-outcome-reader.js");
+     const confirmsLater = (DecisionOutcomeReaderSchema.safeParse(response.body).data?.outcome === "needs_confirmation") || PendingConfirmationReaderSchema.safeParse(response.body).success || PendingAdminApprovalReaderSchema.safeParse(response.body).success;
+     if (!(options.confirmationIsPending === true && confirmsLater)) throw new ApiError(409, "APPROVAL_UNKNOWN", "Rovara didn't confirm this yet. Check this decision before trying again.");
+    }
     const confirmation = PendingConfirmationReaderSchema.safeParse(response.body);
     if (confirmation.success && (confirmation.data.status === "NEEDS_CONFIRMATION" || confirmation.data.status === "NEEDS_OWNER_APPROVAL")) return { kind: "needs_confirmation", changes: confirmation.data.changes, ...(confirmation.data.soleOwner === undefined ? {} : { soleOwner: confirmation.data.soleOwner }), ...(confirmation.data.confirmUrl !== undefined && isConfirmUrl(confirmation.data.confirmUrl, host.origin) ? { confirmUrl: confirmation.data.confirmUrl } : {}) };
     const admin = PendingAdminApprovalReaderSchema.safeParse(response.body);
@@ -62,11 +73,15 @@ export function createApiClient(host: AppHost) {
     if (typeof response.body === "object" && response.body !== null && "status" in response.body) throw new ApiError(502, "INVALID_RESPONSE", "This request is still pending. Reload to check its status.");
    }
    return { kind: "done", value: read(response.body, schema) };
+   } catch (failure) { actionErrorRoutes.set(failure as ApiError, path);throw failure; }
   },
   /**
    * A request whose answer is its own body at any 2xx, a 202 included (the setup draft's start answers 202 with the draft's status). It never reads a 202 as a confirmation,
    * so use it only for a route that cannot ask for one.
    */
-  async sendAnswer<T>(method: Exclude<ApiMethod, "GET" | "HEAD">, path: string, body: unknown, schema: Reader<T>, options?: { retry: "never" }): Promise<T> { return read((await request({ method, path, body, ...options })).body, schema); },
+  async sendAnswer<T>(method: Exclude<ApiMethod, "GET" | "HEAD">, path: string, body: unknown, schema: Reader<T>, options?: { retry: "never" }): Promise<T> {
+   try { return read((await request({ method, path, body, ...options })).body, schema); }
+   catch (failure) { actionErrorRoutes.set(failure as ApiError, path);throw failure; }
+  },
  };
 }

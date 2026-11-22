@@ -1,7 +1,12 @@
+import { sessionWriteHost } from "../../api/session-safety.js";
+import { createApiClient } from "../../api/client.js";
+import { useAppHost } from "../../host.js";
+import { useTaskAction } from "../../api/task-action.js";
+import { TaskActionNotice } from "../session/TaskActionNotice.js";
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { ANSWER_WORDS, NOT_RIGHT_WORDS, type AnswerCitation, type AnswerResponse } from "@agentx/contracts/web";
-import { useAnswersApi } from "../../api/answers.js";
+import { createAnswersApi } from "../../api/answers.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { hostLink } from "../project/wiki/wiki-model.js";
@@ -15,19 +20,20 @@ const label = (cite: AnswerCitation): string => `${cite.repo}/${cite.path}:${Str
  * never for "not set up". Code decides that only the asker's press counts; anyone else reads Code's refusal as the failed words.
  */
 function NotRight({ project, answerId }: { project: string; answerId: string }) {
-  const api = useAnswersApi();
+  const host = useAppHost(), api = createAnswersApi(sessionWriteHost(host)), action = useTaskAction(host, "answer-feedback:" + project + ":" + answerId);
   const [state, setState] = useState<"idle" | "busy" | "queued" | "noted" | "failed">("idle");
   const sending = useRef(false);
   async function press() {
-    if (sending.current) return;
+    if (action.locked || sending.current) return;
     sending.current = true;setState("busy");
-    try { const done = await api.notRight(project, answerId); setState(done.state === "queued" ? "queued" : "noted"); }
+    try { const done = await action.run("not-right", { requestId: crypto.randomUUID(), answerId }, () => api.notRight(project, answerId)); setState(done.state === "queued" ? "queued" : "noted"); }
     catch { setState("failed"); }
     finally { sending.current = false; }
   }
   if (state === "queued" || state === "noted") return <p className="rv-muted" role="status" data-testid="not-right-done">{state === "queued" ? NOT_RIGHT_WORDS.queued : NOT_RIGHT_WORDS.noted}</p>;
   return <p className="rv-answer-feedback">
-    <Button variant="quiet" busy={state === "busy"} onClick={() => { void press(); }} data-testid="answer-not-right">{NOT_RIGHT_WORDS.button}</Button>
+    <Button variant="quiet" busy={state === "busy"} disabled={action.locked} onClick={() => { void press(); }} data-testid="answer-not-right">{NOT_RIGHT_WORDS.button}</Button>
+    <TaskActionNotice key={action.pendingKey} pending={action.pending} recovery={action.recovery} taskHref={host.currentPath()} check={() => createApiClient(host).get("/v1/app/projects/" + encodeURIComponent(project) + "/overview", { parse: (value: unknown) => value }, undefined, { retry: "never" })} />
     {state === "failed" && <span role="alert" className="rv-muted" data-testid="not-right-error"> {NOT_RIGHT_WORDS.failed}</span>}
   </p>;
 }
@@ -61,7 +67,7 @@ export function AnswerView({ project, answer, repositories, onStart, starting }:
         {answer.wikiPages.length > 0 && <p>{A.WIKI}: {answer.wikiPages.map((one, index) => <span key={one.pageId}>{index > 0 && ", "}{wikiLink(one.pageId, one.title)}</span>)}</p>}
         {answer.unconfirmed.length > 0 && <div><p className="rv-muted">{A.NOT_CONFIRMED_NOTE}</p><ul>{answer.unconfirmed.map((one, index) => <li key={index}><VisibleText text={one} /></li>)}</ul></div>}
       </details>}
-      {onStart !== undefined && answer.action !== undefined && answer.outcome !== "not_set_up" && <Button variant="primary" busy={starting === true} onClick={onStart} data-testid="answer-start-task">{ANSWER_WORDS.taskButton}</Button>}
+      {onStart !== undefined && answer.action !== undefined && answer.outcome !== "not_set_up" && <Button variant="primary" busy={starting === true} disabled={starting === true} onClick={onStart} data-testid="answer-start-task">{ANSWER_WORDS.taskButton}</Button>}
       {answer.answerId !== undefined && answer.outcome !== "not_set_up" && <NotRight key={answer.answerId} project={project} answerId={answer.answerId} />}
     </div>
   );

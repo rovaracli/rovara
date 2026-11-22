@@ -1,6 +1,9 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-latin-600.woff2", "design/fonts/jetbrains-mono-latin-400.woff2", "design/fonts/Inter-OFL.txt", "design/fonts/JetBrainsMono-OFL.txt", "design/design.css", "shell/shell.css", "screens/home/home.css", "screens/inbox/inbox.css", "screens/live/live.css", "screens/work/work.css", "screens/project/project.css", "screens/session/session.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
+for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-latin-600.woff2", "design/fonts/jetbrains-mono-latin-400.woff2", "design/fonts/Inter-OFL.txt", "design/fonts/JetBrainsMono-OFL.txt", "design/design.css", "shell/shell.css", "screens/home/home.css", "screens/inbox/inbox.css", "screens/live/live.css", "screens/work/work.css", "screens/project/project.css", "screens/session/session.css", "screens/session/task-capture-view.css", "screens/session/task-page.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
+ // Rebuilt Work/Inbox styles (WIRING-3: mounted on the real /app/work and /app/inbox routes).
+ "screens/work/work-preview.css",
+ "screens/inbox/inbox-preview.css",
  // Design system v2: shared part styles, including mounted gallery consumers.
  "design/parts/chips-buttons.css",
  "design/parts/decision-timeline.css",
@@ -48,6 +51,10 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  "screens/session/answer-form.css",
  // UI-TASK-MERGE: the per-PR merge section and receipt view.
  "screens/session/merge-section.css",
+ // Task Session: the answer-only receipt on the task page.
+ "screens/session/answer-receipt.css",
+ // Task Session: the served status chip and narrow Talk layout.
+ "screens/session/talk.css",
  // L4-JA89: the project Skills tab (its own lazy chunk).
  "screens/project/skills/skills.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);

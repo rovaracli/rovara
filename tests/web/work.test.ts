@@ -8,6 +8,7 @@ import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { PROOF_FAILURES_SHOWN, ageLabel, involvedRows, nextNeedsYou, proofRows, provenCount, readEvents, readPlan, readProof, readProofIndex, readTaskList, sortRows, stepOf, workRows, type ReadProofItem } from "../../packages/ui/src/api/work.js";
+import { understandSession } from "./support/understand-fixture.js";
 import { readDecisions } from "../../packages/ui/src/api/decisions.js";
 import { DecisionCardsViewReaderSchema } from "@agentx/contracts/web";
 import { BudgetBanner } from "../../packages/ui/src/design/BudgetBanner.js";
@@ -174,8 +175,15 @@ function screenSetup(options: Setup = {}) {
     if (request.method !== "GET") return options.send ? options.send(request) : { status: 200, body: {} };
     const path = request.path.split("?")[0]!;
     if (path === "/v1/app/sessions") return tasks;
+    if (path === "/v1/app/sessions/" + QUESTION_SESSION) {
+      const session = understandSession({ revision: 2 });session.sessionId = QUESTION_SESSION;
+      if (session.body.kind !== "task" || session.body.task.workflow?.intent === undefined) throw new Error("Expected a question round");
+      session.body.task.taskId = ID.question;session.body.task.workflow.taskId = ID.question;session.body.task.workflow.intent.rounds = 2;
+      return { status: 200, body: { session } };
+    }
     if (path === "/v1/app/involved") return options.involved ?? { status: 200, body: { tasks: [] } };
     if (path === "/v1/app/decisions") return cards;
+    if (path === "/v1/app/me") return { status: 200, body: { developer: { id: "a".repeat(64), name: "Member", orgRole: "owner" }, org: { orgId: "o-aaaaaaaaaaaaaaaaaaaa", name: "Example", plan: "starter" }, identities: [] } };
     if (path === "/v1/app/nav") return { status: 200, body: options.nav ?? navFixture({ projects: [] }) };
     if (path === "/v1/app/org/spend") return options.spend ?? NOT_YET;
     if (path.endsWith("/documents/plan")) return (options.plan as ApiResponse | undefined) ?? { status: 200, body: PLAN };
@@ -216,7 +224,7 @@ it("selects by click and shows that task's step rail, decision card, spec and si
   const f = screenSetup();await screen.findByRole("heading", { name: /Needs you/u });
   fireEvent.click(rowOf(ID.plan));await waitFor(() => expect(paneTitle()).toBe("Add a retry to the billing webhook"));
   const decision = await screen.findByRole("region", { name: "Your decision" });
-  expect(decision.textContent).toContain("Approve this quick spec");expect(within(decision).getByRole("button", { name: "Approve and build" })).toBeTruthy();
+  expect(decision.textContent).toContain("Approve this quick spec");expect(within(decision).getByRole("button", { name: "Approve plan v1" })).toBeTruthy();
   const merge = within(decision).getByRole<HTMLInputElement>("checkbox", { name: /Merge by itself/u });expect(merge.disabled).toBe(true);expect(decision.textContent).toContain("not connected yet");
   const spec = await screen.findByRole("region", { name: "Spec" });expect(spec.textContent).toContain("R1.1");expect(spec.textContent).toContain("Question for you.");
   expect(screen.getByRole("list", { name: "Steps of this task" })).toBeTruthy();expect(screen.getByRole("region", { name: "Cost" }).textContent).toContain("Cost unavailable");
@@ -232,13 +240,23 @@ it("clicking a step shows that stage of the task", async () => {
 it("after approving, the list moves to the next task that needs you and says so", async () => {
   const send = vi.fn(async (request: ApiRequest): Promise<ApiResponse> => ({ status: 200, body: request.path.includes("/approve") ? { cardId: "approve_plan:" + ID.plan, outcome: "approved", remainingTabs: [] } : {} }));
   const f = screenSetup({ send, path: `/app/live?task=${ID.plan}` });
-  const approve = await screen.findByRole("button", { name: "Approve and build" });
-  f.answerCards({ status: 200, body: decisionsView(CARDS.filter(entry => entry.kind !== "approve_plan")) });
-  f.answerTasks({ status: 200, body: { tasks: TASKS.map(entry => (entry.taskId === ID.plan ? { ...entry, workflow: { ...entry.workflow, stage: "IMPLEMENT", state: "RUNNING" } } : entry)) } });
+  const approve = await screen.findByRole("button", { name: "Approve plan v1" });
+  const advancedTasks = { status: 200, body: { tasks: TASKS.map(entry => (entry.taskId === ID.plan ? { ...entry, workflow: { ...entry.workflow, stage: "IMPLEMENT", state: "RUNNING" } } : entry)) } };
+  const remainingCards = { status: 200, body: decisionsView(CARDS.filter(entry => entry.kind !== "approve_plan")) };
+  send.mockImplementation(async request => {
+    if (request.path.endsWith("/approve")) {
+      // The action's authoritative reads change only after the server accepts the approval.
+      f.answerCards(remainingCards);
+      f.answerTasks(advancedTasks);
+      return { status: 200, body: { cardId: "approve_plan:" + ID.plan, outcome: "approved", remainingTabs: [] } };
+    }
+    return { status: 200, body: {} };
+  });
   fireEvent.click(approve);
   await waitFor(() => expect(paneTitle()).toBe("Rate-limit the public API"));
   expect(send.mock.calls.some(([request]) => request.path === `/v1/app/decisions/approve_plan/${ID.plan}/approve`)).toBe(true);
   expect(rowOf(ID.plan).closest("section")?.getAttribute("data-group")).toBe("run");
+  await waitFor(() => expect(document.querySelector('[aria-live="polite"]')?.textContent).toContain("Moved to Rate-limit the public API"));
   f.close();
 });
 it("draws the failed-twice card red with its eval box and the card's own choices", async () => {
@@ -323,11 +341,14 @@ it("does not send an answer for a task with no Cloud session or round, and says 
 });
 it("keeps the plan's own error in the pane without breaking the list", async () => {
   const f = screenSetup({ path: `/app/live?task=${ID.plan}`, plan: { status: 403, body: { error: { code: "FORBIDDEN", message: "You can no longer read this task." } } } });
-  await screen.findByRole("heading", { name: /Needs you/u });expect((await screen.findByTestId("section-error")).textContent).toContain("You can no longer read this task.");expect(rowOf(ID.plan)).toBeTruthy();
+  await screen.findByRole("heading", { name: /Needs you/u });
+  const unavailable = await screen.findByRole("heading", { name: "Plan unavailable" });
+  expect(unavailable.closest('[aria-label="Plan decision"]')?.textContent).toContain("The latest plan couldn't be read. Try again before deciding.");
+  expect(rowOf(ID.plan)).toBeTruthy();
   f.close();
 });
 function homeSetup(cards: ApiResponse) {
-  const f = fakeHost(async request => request.path === "/v1/app/home" ? { status: 200, body: { cards: [], total: 0 } } : request.path === "/v1/app/decisions" ? cards : { status: 200, body: { notices: [], next: "settled" } });
+  const f = fakeHost(async request => request.path === "/v1/app/home" ? { status: 200, body: { cards: [], total: 0 } } : request.path === "/v1/app/decisions" ? cards : request.path === "/v1/app/me" ? { status: 200, body: { developer: { id: "a".repeat(64), name: "Member", orgRole: "owner" }, org: { orgId: "o-aaaaaaaaaaaaaaaaaaaa", name: "Example", plan: "starter" }, identities: [] } } : { status: 200, body: { notices: [], next: "settled" } });
   const query = createQueryClient();
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
   return { ...ui, close() { ui.unmount();query.clear(); } };

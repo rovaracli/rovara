@@ -9,6 +9,7 @@
   "include": [
     "scripts/**/*.ts",
     "tests/**/*.ts",
+    "tests/fixtures/**/*.tsx",
     "packages/**/*.ts",
     "infra/**/*.ts",
     "vitest.config.ts"

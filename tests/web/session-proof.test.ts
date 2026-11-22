@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Playbook P3: the Tests tab shows the proof table above the recorded checks: Requirement, Evidence and Result; the test-proof lines; and "What wasn't tested", always visible.
+// Playbook P3: the Tests tab shows the proof table below the current check outcome: Requirement, Evidence and Result; the test-proof lines; and "What wasn't tested", always visible.
 import { expect, it } from "vitest";
 import { screen, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -48,17 +48,16 @@ it("shows the proof table with each requirement, its evidence and its result in 
 it("lists what wasn't tested in plain view, never collapsed", () => {
  const f = setup(withProof(digest));
  const heading = screen.getByRole("heading", { name: "What wasn't tested" });
- const list = heading.nextElementSibling as HTMLElement;
- expect(list.tagName).toBe("UL");
- expect(within(list).getAllByRole("listitem").map(item => item.textContent)).toEqual(["Requirement 3: The retry count is shown. (no check or scenario names it)", "Check Smoke run (it could not run)"]);
- expect(document.querySelector("details")).toBeNull();
+ expect(screen.getByRole("region", { name: "What wasn't tested" }).textContent).toContain("1 requirement was not tested: 3: The retry count is shown.");
+ expect(screen.getByText("Check Smoke run (it could not run)")).toBeTruthy();
+ expect(heading.closest("details")).toBeNull();
  expect(heading.closest("[hidden]")).toBeNull();
  f.close();
 });
-it("puts the proof above the recorded checks", () => {
+it("puts the current check outcome above the detailed proof", () => {
  const f = setup(withProof(digest));
- const proof = screen.getByRole("table", { name: "Proof" }), checks = screen.getByRole("heading", { name: "Recorded checks" });
- expect(proof.compareDocumentPosition(checks) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+ const proof = screen.getByRole("table", { name: "Proof" }), checks = screen.getByRole("article", { name: "Check outcome" });
+ expect(checks.compareDocumentPosition(proof) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
  f.close();
 });
 it("labels the proof as earlier results when the checks were recorded for older code", () => {

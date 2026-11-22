@@ -2,7 +2,8 @@
   "extends": "./base-referenced.json",
   "include": [
     "../tests/support/**/*.ts",
-    "../tests/fixtures/**/*.ts"
+    "../tests/fixtures/**/*.ts",
+    "../tests/fixtures/**/*.tsx"
   ],
   "references": [
     {

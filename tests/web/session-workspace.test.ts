@@ -114,7 +114,7 @@ it("does not offer approval while the owner's plan is still running", async () =
 });
 it("qualifies old check receipts instead of treating them as verified current code", () => {
  const task = taskFixture({ workflow: { ...workflow(), verification: { candidateDigest: "b".repeat(64), producer: "check-runner", environmentId: "fixture-worker", recordedAt: "2026-10-23T12:00:00.000Z", results: [{ checkId: "unit", status: "PASS" }] } } });
- const f = setup(fixture({ body: { kind: "task", task } }), "#tests");expect(screen.getByRole("heading", { name: "Earlier check results" })).toBeTruthy();expect(screen.getByText("These checks have not been matched to the current code.")).toBeTruthy();expect(screen.getByText("Passed")).toBeTruthy();f.close();
+ const f = setup(fixture({ body: { kind: "task", task } }), "#tests");expect(screen.getByRole("heading", { name: "Check results unavailable" })).toBeTruthy();expect(screen.getByText("These checks have not been matched to the current code.")).toBeTruthy();expect(screen.getByText("Passed")).toBeTruthy();f.close();
 });
 it("refuses plan attachment points whose revision doesn't match the displayed artifact", async () => {
  const f = setup(fixture({ anchors: [{ target: "plan_block", targetId: "p2", revision: "v2" }] }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });expect(screen.queryByRole("button", { name: "Comment on plan paragraph 2" })).toBeNull();f.close();

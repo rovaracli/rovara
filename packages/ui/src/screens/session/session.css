@@ -11,6 +11,7 @@
 [aria-label="Pull request diff"] pre { max-width: 100%; overflow-x: auto; padding: 12px; }
 
 .rv-controls-overflow { display: none; }
+.rv-evidence-captures{display:grid;gap:var(--rv-space-3);min-width:0;margin-block:var(--rv-space-3)}.rv-evidence-captures h4{margin:0}.rv-evidence-captures [role=group]{display:flex;flex-wrap:wrap;gap:var(--rv-space-2)}.rv-evidence-captures [aria-pressed=true]{color:var(--rv-accent-text);border-color:var(--rv-accent-text)}.rv-evidence-captures figure{margin:0;min-width:0}.rv-evidence-captures img{display:block;max-width:100%;height:auto;border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm)}.rv-evidence-captures figcaption{margin-top:var(--rv-space-2);font-size:var(--rv-font-sm);color:var(--rv-text-muted);overflow-wrap:anywhere}
 @media (max-width: 600px) {
  .rv-controls-overflow { display: block; }
  .rv-controls-inline { display: none; }

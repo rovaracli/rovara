@@ -1,3 +1,5 @@
+/// <reference lib="dom" />
+// This Node handler test also imports the browser Work reader and its session-safety dependency.
 // The Cloud<->Code shape mismatches the 2026-11-18 audit found (audit-cloud-20261118 items 2, 3, 5, 7, 8b, 8c, 9, 10b, 12a, 12b, 12d): each Cloud route here reads Code's REAL
 // answer (tests/fixtures/code-answers.ts, produced by Code's own handler code) through Cloud's real handler, so a Cloud reader that drifts from what Code sends fails here.
 import { randomUUID } from "node:crypto";
@@ -154,14 +156,14 @@ describe("the Plan/Spec tab reads Code's {plan:{...}} answer (audit item 5)", ()
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 describe("the Work list and Home rows (audit item 7)", () => {
-  // Code #1045 item 5: one detailed list read (`?detail=1`) gives each row its stage, pull requests, cost and limit; no task is read one by one. The rows are Code's real ones
-  // (tests/fixtures/code-core-task-routes.json `list`).
+  // Code #1045 item 5: one detailed list read (`?detail=1`) gives each row its stage, pull requests, cost and limit. A RUNNING row missing its run uses the existing task reader;
+  // closed and starting rows need no per-task reads. The rows are Code's real ones (tests/fixtures/code-core-task-routes.json `list`).
   const L = CORE_TASK_ROUTES.list;
   const coreRow = (taskId: string) => renamed((L.detailed.body["tasks"] as Obj[])[0]!, [[L.taskId, taskId]]);
   const plainCoreRow = (taskId: string) => renamed((L.plain.body["tasks"] as Obj[])[0]!, [[L.taskId, taskId]]);
   const workflowlessRow = (taskId: string) => renamed((L.workflowDetailed.body["tasks"] as Obj[])[0]!, [[L.workflowTaskId, taskId]]);
 
-  it("one detailed list read per page (pages past the first), no task read one by one; each row carries Code's stage, pull requests, cost and limit", async () => {
+  it("one detailed list read per page, with a task read only for a running row missing its run; each row carries Code's stage, pull requests, cost and limit", async () => {
     const page1 = [coreRow(id(1)), ...Array.from({ length: 49 }, (_, n) => taskListRow(id(n + 2), { status: "CLOSED" }))];
     const page2 = [workflowlessRow(id(51))];
     const w = setUp((call) => call.path === "/v1/dev/tasks" ? json(200, devAnswer(new URLSearchParams(call.search).get("cursor") === null ? { tasks: page1, nextCursor: "c2" } : { tasks: page2 })) : undefined);
@@ -170,7 +172,9 @@ describe("the Work list and Home rows (audit item 7)", () => {
     const tasks = answer.body["tasks"] as Array<Record<string, unknown>>;
     expect(tasks).toHaveLength(51);
     expect(w.calls.filter((call) => call.path === "/v1/dev/tasks").map((call) => [new URLSearchParams(call.search).get("detail"), new URLSearchParams(call.search).get("limit")])).toEqual([["1", "50"], ["1", "50"]]);
-    expect(w.calls.filter((call) => /^\/v1\/dev\/tasks\/[0-9a-f-]{36}/u.test(call.path))).toEqual([]);
+    expect(w.calls.filter((call) => /^\/v1\/dev\/tasks\/[0-9a-f-]{36}/u.test(call.path))).toEqual([
+      { method: "GET", path: `/v1/dev/tasks/${id(1)}`, search: "?events=0", body: undefined },
+    ]);
     // Code's upper-case pull request state is the task view's lower-case word, which the app reads.
     expect(tasks[0]).toMatchObject({ workflow: { stage: "PLAN", state: "RUNNING", revision: 1, path: "QUICK" }, pullRequests: [{ repository: "demo", number: 42, url: "https://github.com/example/demo/pull/42", state: "open" }], spent: { usd: 1.25 }, runLimit: { limitUsd: 7.5 } });
     expect(tasks[0]).not.toHaveProperty("detail");

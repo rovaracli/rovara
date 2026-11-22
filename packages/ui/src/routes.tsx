@@ -17,13 +17,27 @@ function ModelSettingsRedirect({ section }: { section?: string }) {
  const target = section ?? (oldSection === "sources" ? "ai-connections" : "ai-models");
  return <Navigate to={{ pathname: "/app/admin/ai-spending", search: location.search, hash: `#${target}` }} replace />;
 }
+function TaskPreviewRedirect() {
+ const { id } = useParams(), location = useLocation();
+ return <Navigate to={{ pathname: "/s/" + encodeURIComponent(id ?? ""), search: location.search, hash: location.hash }} replace />;
+}
+function PreviewRedirect({ to }: { to: string }) {
+ const location = useLocation();
+ return <Navigate to={{ pathname: to, search: location.search, hash: location.hash }} replace />;
+}
 export function appRoutes(features: AppNav["features"]): RouteObject[] {
  const children: RouteObject[] = [
  { path: "design-system", handle: { bleed: true }, lazy: async () => ({ Component: (await import("./design/DesignSystemGallery.js")).DesignSystemGallery }) },
- { index: true, element: <HomeScreen /> }, // Work (the route stays /app/live): the split inbox. The shell lets it run edge to edge.
- { path: "live", handle: { bleed: true }, lazy: async () => ({ Component: (await import("./screens/work/WorkScreen.js")).WorkScreen }) },
- { path: "inbox", lazy: async () => ({ Component: (await import("./screens/inbox/InboxScreen.js")).InboxScreen }) },
+ { index: true, element: <HomeScreen /> }, // Home.
+ // WIRING-3 (DEC 254zzz386): the rebuilt Work and Inbox own the real routes. Work stays at /app/live; the old split-inbox screens are retired.
+ { path: "live", lazy: async () => ({ Component: (await import("./screens/work/WorkPreviewScreen.js")).WorkPreviewScreen }) },
+ { path: "inbox", lazy: async () => ({ Component: (await import("./screens/inbox/InboxPreviewScreen.js")).InboxPreviewScreen }) },
+ // The unlinked preview addresses redirect to the real pages and keep the query and the fragment (a saved ?task= or ?item= link still opens the same item).
+ { path: "previews/work", element: <PreviewRedirect to="/app/live" /> },
+ { path: "previews/inbox", element: <PreviewRedirect to="/app/inbox" /> },
  { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/project/ProjectScreen.js")).ProjectScreen }) }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },
+ // Retire the preview at the canonical task address.
+ { path: "task-preview/:id", element: <TaskPreviewRedirect /> },
  { path: "agents/:id?", lazy: async () => ({ Component: (await import("./screens/agents/DirectoryScreen.js")).DirectoryScreen }) }, { path: "agents/new", element: <ModelSettingsRedirect section="ai-models" /> },
  { path: "agents/:id/edit", element: <ModelSettingsRedirect section="ai-models" /> },
  { path: "account", lazy: async () => ({ Component: (await import("./screens/account/AccountScreen.js")).AccountScreen }) },

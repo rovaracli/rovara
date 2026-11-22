@@ -3,13 +3,23 @@ import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ShareDialog } from "../../packages/ui/src/screens/session/ShareDialog.js";
+import { createSessionApi } from "../../packages/ui/src/api/sessions.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { renderUi } from "./support/render.js";
-import { fakeHost } from "./support/fake-host.js";
+import { meFixture } from "./support/fixtures.js";
+import { fakeHost as baseFakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
-import { SESSION_FIXTURE_ID, sessionPerson } from "./support/session-fixture.js";
+import { sessionFixture, SESSION_FIXTURE_ID, sessionPerson } from "./support/session-fixture.js";
+const fakeHost: typeof baseFakeHost = handler => baseFakeHost(async request => request.path === "/v1/app/me" ? { status: 200, body: meFixture() } : request.method === "GET" && request.path === "/v1/app/sessions/" + SESSION_FIXTURE_ID ? { status: 200, body: { session: sessionFixture({ you: { ...sessionFixture().you, actions: ["share"] } }) } } : handler!(request));
 const sharedAt = "2026-10-23T12:00:00.000Z", arjun = { developerId: "b".repeat(64), name: "Arjun", role: "member", joinedAt: sharedAt, identities: ["cloud"] };
+it("never treats a 202 sharing receipt as an applied share or removal", async () => {
+ const share = { principal: { kind: "org" }, level: "use", sharedBy: sessionPerson, sharedAt };
+ const f = fakeHost(async request => ({ status: 202, body: request.method === "PUT" ? { share } : { removed: true } }));
+ const api = createSessionApi(f.host);
+ await expect(api.share(SESSION_FIXTURE_ID, { kind: "org" }, "use")).rejects.toMatchObject({ status: 202, code: "PENDING" });
+ await expect(api.unshare(SESSION_FIXTURE_ID, "ORG")).rejects.toMatchObject({ status: 202, code: "PENDING" });
+});
 it("removes only the selected canonical principal and waits for server refetch", async () => {
  let shares = [{ principal: { kind: "member", developerId: arjun.developerId }, level: "use", sharedBy: sessionPerson, sharedAt }];
  const f = fakeHost(async request => { if (request.method === "DELETE") { shares = [];return { status: 200, body: { removed: true } }; }return { status: 200, body: request.path.endsWith("/org/members") ? { members: [arjun] } : { shares } }; });const query = createQueryClient();

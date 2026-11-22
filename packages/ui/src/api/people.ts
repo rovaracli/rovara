@@ -9,8 +9,8 @@ export function createPeopleApi(host: AppHost) {
   list: (id: string) => api.get(path(id), SessionPeopleResponseReaderSchema),
   candidates: (id: string) => api.get(path(id) + "/candidates", SessionPeopleCandidatesResponseReaderSchema),
   // A change answers its own body at 200 (done) or 202 (waiting for the person to confirm it in Code), so it is read with sendAnswer, never as a confirmation.
-  role: (id: string, body: SessionPeopleRoleBody) => api.sendAnswer("POST", path(id) + "/role", body, SessionPeopleChangeResponseReaderSchema),
-  add: (id: string, body: SessionPeopleAddBody) => api.sendAnswer("POST", path(id) + "/add", body, SessionPeopleChangeResponseReaderSchema),
-  takeOwnership: (id: string, body: SessionPeopleOwnershipBody) => api.sendAnswer("POST", path(id) + "/take-ownership", body, SessionPeopleChangeResponseReaderSchema),
+  role: (id: string, body: SessionPeopleRoleBody) => api.sendAnswer("POST", path(id) + "/role", body, SessionPeopleChangeResponseReaderSchema, { retry: "never" }),
+  add: (id: string, body: SessionPeopleAddBody) => api.sendAnswer("POST", path(id) + "/add", body, SessionPeopleChangeResponseReaderSchema, { retry: "never" }),
+  takeOwnership: (id: string, body: SessionPeopleOwnershipBody) => api.sendAnswer("POST", path(id) + "/take-ownership", body, SessionPeopleChangeResponseReaderSchema, { retry: "never" }),
  };
 }

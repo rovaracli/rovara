@@ -34,7 +34,7 @@ const withTesting = (value: Record<string, unknown> | undefined) => fixture({ bo
 
 it("shows the result in fixed words with one row per check and its command", () => {
  const f = setup(withTesting(testing()));
- expect(screen.getByRole("heading", { name: "Testing: Blocked by environment" })).toBeTruthy();
+ expect(screen.getByRole("heading", { name: "Couldn't run" })).toBeTruthy();
  expect(screen.getByText("Result: 1 check could not give a result because of the test environment.")).toBeTruthy();
  const table = screen.getByRole("table", { name: "Checks and their results" });
  expect(within(table).getAllByRole("columnheader").map(cell => cell.textContent)).toEqual(["Check", "Command", "Result"]);
@@ -47,7 +47,7 @@ it("shows the result in fixed words with one row per check and its command", () 
  f.close();
 });
 
-it("shows nothing about results when the view is absent (the switch is off)", () => {
+it("uses the legacy verification result when the summary is absent", () => {
  const f = setup(withTesting(undefined));
  expect(screen.queryByRole("heading", { name: /^Testing:/u })).toBeNull();
  expect(screen.queryByRole("table", { name: "Checks and their results" })).toBeNull();

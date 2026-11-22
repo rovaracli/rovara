@@ -1,8 +1,10 @@
+import { runTaskAction, isFinalTaskActionRefusal } from "./task-action.js";
+import { isCsrfFailure } from "../safe-action.js";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
  DECISION_PLAN_CHOICE_KINDS, DecisionCardsViewReaderSchema, DecisionDetailGroupsSchema, DecisionDigestSchema, DecisionEvidenceOpenedAnswerSchema, DecisionOutcomeReaderSchema, DecisionPlanChoicesSchema,
- DecisionRequestChangesBodySchema, DecisionTabsSchema,
+ AppMeResponseReaderSchema, DecisionRequestChangesBodySchema, DecisionTabsSchema,
  type DecisionDetailGroup, type DecisionPlanChoices, type DecisionRejectReason, type DecisionTab, type DecisionTabId,
 } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
@@ -66,25 +68,160 @@ export function readDecisions(view: View): ReadDecision[] {
 
 /** What an approve or a reject came to: decided, or waiting on the confirmation page (nothing was decided). */
 export type DecisionResult = { kind: "decided"; outcome: "approved" | "rejected" } | { kind: "needs_confirmation"; confirmUrl: string | undefined; /** A merge: the pull requests and the branch each goes into, for the "Merge #N into <branch>?" question. */ merging?: ReadonlyArray<{ repositoryId: string; number: number; baseBranch: string }> | undefined };
+export interface DecisionApprovalIdentity { orgId: string; developerId: string }
+type DecisionBasis = { identity: DecisionApprovalIdentity; sequence: number };
+const approvalLockKey = (decision: ReadDecision, identity: DecisionApprovalIdentity) => `rv:decision-approval:${identity.orgId}:${identity.developerId}:${decision.card.id}`;
+
+// Preserve the existing approval record/key while the shared runner owns writes.
+const actionHosts = new WeakMap<AppHost, AppHost>();
+function actionHost(host: AppHost): AppHost {
+ let adapter = actionHosts.get(host);if (adapter) return adapter;
+ adapter = { ...host, storage: {
+  get(key) {
+   if (!key.endsWith(":request")) return host.storage.get(key);
+   const raw = host.storage.get(key.slice(0, -8));if (!raw) return undefined;
+   const p = JSON.parse(raw) as { requestId: string; body: Record<string, unknown>; startedAt: number };
+   return JSON.stringify({ requestId: p.requestId, action: "decision", body: p.body, startedAt: p.startedAt, fence: 0 });
+  },
+  set(key, raw) {
+   if (!key.endsWith(":request")) { host.storage.set(key, raw);return; }
+   const p = JSON.parse(raw) as { requestId: string; body: Record<string, unknown>; startedAt: number } | null;
+   host.storage.set(key.slice(0, -8), p === null ? "" : JSON.stringify({ requestId: p.requestId, body: p.body, startedAt: p.startedAt }));
+  },
+ } };
+ actionHosts.set(host, adapter);return adapter;
+}
+/** The task's remaining decision writes use the same subject/claim as approval. */
+export async function runDecisionAction<T>(host: AppHost, decision: ReadDecision, body: Record<string, unknown> & { requestId: string }, send: (body: Record<string, unknown> & { requestId: string }) => Promise<T>, basis?: DecisionBasis): Promise<T> {
+ const me = await createApiClient(host).get("/v1/app/me", AppMeResponseReaderSchema, undefined, { retry: "never" });
+ const identity = { orgId: me.org.orgId, developerId: me.developer.id };
+ rememberDecisionIdentity(host, identity);
+ const key = approvalLockKey(decision, identity);
+ let waiting: { value: T } | undefined;
+ try { return await runTaskAction(actionHost(host), key, "decision", body, async request => {
+  const value = await send(request.body as typeof body);
+  if (typeof value === "object" && value !== null && "kind" in value && ["needs_confirmation", "needs_admin_approval"].includes(String(value.kind))) { waiting = { value };throw new ApiError(202, "PENDING", "This decision is waiting for confirmation."); }
+  return value;
+ }, null, () => decisionAuthorityRefused(host, decision) || basis !== undefined && (fenceScope(identity) !== fenceScope(basis.identity) || !approvalReadIsCurrent(decision, basis.identity, basis.sequence)) ? "This decision is no longer available. Read it again before deciding." : undefined); }
+ catch (failure) {
+  if (waiting !== undefined) return waiting.value;
+  if (isCsrfFailure(failure) || isFinalTaskActionRefusal(failure)) throw failure;
+  if (failure instanceof ApiError && ["ACTION_CLAIM_UNAVAILABLE", "PERSISTENCE_UNAVAILABLE"].includes(failure.code)) {
+   let pending = false;
+   try { pending = Boolean(host.storage.get(key)); } catch { /* Unreadable storage cannot authorize a send. */ }
+   if (failure.code === "ACTION_CLAIM_UNAVAILABLE" || !pending) throw failure;
+  }
+  throw new ApiError(409, "APPROVAL_UNKNOWN", "Rovara didn't confirm this yet. Check this decision before trying again.");
+ }
+}
+type DecisionFence = { sequence: number; state: "ready" | "refused" | "failed"; digest?: string; status?: string };
+let decisionReadSequence = 0;
+const decisionFences = new Map<string, DecisionFence>();
+const knownDecisionIds = new Map<string, Set<string>>();
+const lastDecisionIdentity = new WeakMap<AppHost, DecisionApprovalIdentity>();
+const fenceScope = (identity: DecisionApprovalIdentity) => `${identity.orgId}:${identity.developerId}`;
+const fenceKey = (identity: DecisionApprovalIdentity, id: string) => `${fenceScope(identity)}:${id}`;
+/** Issue order is shared by the mounted query, action verification and unmounted responses. */
+export function issueDecisionRead(): number { return ++decisionReadSequence; }
+export function rememberDecisionIdentity(host: AppHost, identity: DecisionApprovalIdentity): void { lastDecisionIdentity.set(host, identity); }
+export function recordIdentityReadFailure(host: AppHost, failure: unknown, sequence = issueDecisionRead()): void {
+ const identity = lastDecisionIdentity.get(host);
+ if (identity !== undefined) {
+  const refused = failure instanceof ApiError && (failure.status === 401 || failure.status === 403);
+  recordDecisionReadFailure(identity, sequence, refused);
+  if (refused && typeof window !== "undefined") window.dispatchEvent(new Event("rovara:decision-authority-refused"));
+ }
+}
+export function decisionAuthorityRefused(host: AppHost, decision: ReadDecision): boolean {
+ const identity = lastDecisionIdentity.get(host);
+ return identity !== undefined && decisionFences.get(fenceKey(identity, decision.card.id))?.state === "refused";
+}
+export function recordDecisionRead(identity: DecisionApprovalIdentity, sequence: number, decisions: readonly ReadDecision[]): void {
+ const scope = fenceScope(identity), known = knownDecisionIds.get(scope) ?? new Set<string>();
+ const seen = new Set(decisions.map(decision => decision.card.id));
+ // A newer successful feed is authoritative for omissions too. Remember the absence in this
+ // identity's scope so an older action read cannot restore authority after the feed moved on.
+ for (const id of known) if (!seen.has(id)) {
+  const key = fenceKey(identity, id), prior = decisionFences.get(key);
+  if (prior === undefined || sequence >= prior.sequence) decisionFences.set(key, { sequence, state: "failed" });
+ }
+ for (const decision of decisions) {
+  known.add(decision.card.id);
+  const key = fenceKey(identity, decision.card.id), prior = decisionFences.get(key);
+  if (prior === undefined || sequence >= prior.sequence) decisionFences.set(key, { sequence, state: "ready", digest: decision.digest, status: decision.card.status });
+ }
+ knownDecisionIds.set(scope, known);
+}
+export function recordDecisionReadFailure(identity: DecisionApprovalIdentity, sequence: number, refused: boolean): void {
+ const state = refused ? "refused" : "failed";
+ for (const id of knownDecisionIds.get(fenceScope(identity)) ?? []) {
+  const key = fenceKey(identity, id), prior = decisionFences.get(key);
+  if (prior === undefined || sequence >= prior.sequence) decisionFences.set(key, { sequence, state });
+ }
+}
+function approvalReadIsCurrent(decision: ReadDecision, identity: DecisionApprovalIdentity, sequence: number): boolean {
+ const fence = decisionFences.get(fenceKey(identity, decision.card.id));
+ return fence?.sequence === sequence && fence.state === "ready" && fence.status === "pending" && fence.digest === decision.digest;
+}
 
 export function createDecisionsApi(host: AppHost) {
- const api = createApiClient(host), waiting = new Map<string, string>();
+ const api = createApiClient(host);
  const done = <T,>(result: { kind: string; value?: T }): T => { if (result.kind !== "done" || result.value === undefined) throw new ApiError(409, "PENDING", "This isn't finished. Open the decision to continue."); return result.value; };
- const resultOf = (value: ReturnType<typeof DecisionOutcomeReaderSchema.parse>): DecisionResult => value.outcome === "needs_confirmation"
-  ? { kind: "needs_confirmation", confirmUrl: isConfirmUrl(value.confirmUrl, host.origin) ? value.confirmUrl : undefined, merging: value.merging }
+ // A confirmation request for another card is not this decision's confirmation: it stays unknown (the caller turns the throw into APPROVAL_UNKNOWN with the lock kept).
+ const resultOf = (value: ReturnType<typeof DecisionOutcomeReaderSchema.parse>, decision: ReadDecision): DecisionResult => value.outcome === "needs_confirmation"
+  ? value.cardId !== decision.card.id ? (() => { throw new ApiError(409, "APPROVAL_UNKNOWN", "Rovara didn't confirm this yet. Check this decision before trying again."); })() : { kind: "needs_confirmation", confirmUrl: isConfirmUrl(value.confirmUrl, host.origin) ? value.confirmUrl : undefined, merging: value.merging }
   : { kind: "decided", outcome: value.outcome };
  return {
-  async evidenceOpened(decision: ReadDecision, tab?: DecisionTabId) { return done(await api.send("POST", evidencePath(decision.card, tab), { requestId: crypto.randomUUID(), shownDigest: decision.digest }, exactAnswer(DecisionEvidenceOpenedAnswerSchema))); },
-  async approve(decision: ReadDecision, tab?: DecisionTabId, reason?: string, extras?: ApproveExtras): Promise<DecisionResult> {
+  async evidenceOpened(decision: ReadDecision, tab?: DecisionTabId) { return runDecisionAction(host, decision, { requestId: crypto.randomUUID(), shownDigest: decision.digest }, async body => done(await api.send("POST", evidencePath(decision.card, tab), body, exactAnswer(DecisionEvidenceOpenedAnswerSchema), { retry: "never" }))); },
+  async approve(decision: ReadDecision, tab?: DecisionTabId, reason?: string, extras?: ApproveExtras, identity?: DecisionApprovalIdentity, expectedReadSequence?: number): Promise<DecisionResult> {
    const path = mayApproveHere(decision.card) ? decisionActionPath(decision.card, "approve") : undefined;
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
+   if (identity === undefined) throw new ApiError(409, "IDENTITY_UNREAD", "Reload your identity before approving this decision.");
+   if (expectedReadSequence !== undefined && !approvalReadIsCurrent(decision, identity, expectedReadSequence)) throw new ApiError(409, "CHANGE_STALE", "This decision's latest read no longer permits approval. Reload before deciding.");
    // A merge asks for the pull requests it names (`merging`), which only a reader that knows the field is sent. Approve, Cancel, Approve of the SAME card as shown (same digest) is one request, not a new pending change each time.
-   const sent = extrasAllowedFor(decision.card.kind, extras);
-   const key = decision.card.id + "|" + decision.digest + "|" + (tab ?? "") + "|" + (reason ?? "") + "|" + JSON.stringify(sent), requestId = waiting.get(key) ?? crypto.randomUUID();
-   waiting.delete(key);
-   const result = resultOf(done(await api.send("POST", decision.card.kind === "merge" ? path + "?merging=1" : path, { requestId, shownDigest: decision.digest, ...(tab === undefined ? {} : { tab }), ...(reason === undefined ? {} : { reason }), ...sent }, DecisionOutcomeReaderSchema, { retry: "never" })));
-   if (result.kind === "needs_confirmation") waiting.set(key, requestId);
-   return result;
+   const sent = extrasAllowedFor(decision.card.kind, extras), lockKey = approvalLockKey(decision, identity);
+   if (host.storage.get(lockKey)) throw new ApiError(409, "APPROVAL_UNKNOWN", "Rovara didn't confirm this yet. Check this decision before trying again.");
+   const body = { requestId: crypto.randomUUID(), shownDigest: decision.digest, ...(tab === undefined ? {} : { tab }), ...(reason === undefined ? {} : { reason }), ...sent };
+   let confirmation: DecisionResult | undefined;
+   try {
+    return await runTaskAction(actionHost(host), lockKey, "decision", body, async () => {
+     const result = resultOf(done(await api.send("POST", decision.card.kind === "merge" ? path + "?merging=1" : path, body, DecisionOutcomeReaderSchema, { retry: "never", pendingIsUnknown: true, confirmationIsPending: true })), decision);
+     if (result.kind !== "decided") { confirmation = result;throw new ApiError(202, "PENDING", "This decision is waiting for confirmation."); }
+     return result;
+    }, null, () => expectedReadSequence !== undefined && !approvalReadIsCurrent(decision, identity, expectedReadSequence) ? "This decision changed. Reload before deciding." : undefined);
+   } catch (failure) {
+    if (confirmation !== undefined) return confirmation;
+    if (isFinalTaskActionRefusal(failure)) throw failure;
+    if (isCsrfFailure(failure)) throw new ApiError(403, failure instanceof ApiError ? failure.code : "CSRF_INVALID", "Couldn't change that. Reload your identity before trying again.");
+    if (failure instanceof ApiError && failure.code === "PERSISTENCE_UNAVAILABLE" && !host.storage.get(lockKey)) throw new ApiError(409, "APPROVAL_NOT_PERSISTED", "This approval can't be made safely in this browser. Nothing was sent.");
+    throw new ApiError(409, "APPROVAL_UNKNOWN", "Rovara didn't confirm this yet. Check this decision before trying again.");
+   }
+  },
+  async checkApproval(decision: ReadDecision, identity: DecisionApprovalIdentity): Promise<"resolved" | "same_pending" | "changed_pending" | "unknown"> {
+   const lockKey = approvalLockKey(decision, identity), raw = host.storage.get(lockKey);
+   let sequence: number | undefined;
+   try {
+    const pending = raw ? JSON.parse(raw) as { body?: { shownDigest?: unknown }; startedAt?: unknown } : undefined;
+    if (pending !== undefined && typeof pending.startedAt !== "number") return "unknown";
+    sequence = issueDecisionRead();
+    const currentItems = readDecisions(await api.get("/v1/app/decisions", DecisionCardsViewReaderSchema));
+    recordDecisionRead(identity, sequence, currentItems);
+    const fence = decisionFences.get(fenceKey(identity, decision.card.id));
+    if (fence?.sequence !== sequence || fence.state !== "ready") return "unknown";
+    const current = currentItems.find(item => item.card.id === decision.card.id);
+    if (current === undefined) return "unknown";
+    if (current.card.status === "pending") return pending === undefined || current.digest === pending.body?.shownDigest ? "same_pending" : "changed_pending";
+    if (host.storage.get(lockKey) !== raw) return "unknown";
+    host.storage.set(lockKey, "");
+    return "resolved";
+   } catch (failure) {
+    if (sequence !== undefined) recordDecisionReadFailure(identity, sequence, failure instanceof ApiError && (failure.status === 401 || failure.status === 403));
+    return "unknown";
+   }
+  },
+  async hasUnknownApproval(decision: ReadDecision, identity: DecisionApprovalIdentity): Promise<boolean> {
+   const stored = host.storage.get(approvalLockKey(decision, identity));
+   return stored !== undefined && stored !== "";
   },
   /** Sends the document back with the person's reason (and the open comments sent along). Never approves; the card's own action at its exact route, and not on a high card. */
   async requestChanges(decision: ReadDecision, reason: string, includedCommentIds?: readonly string[]): Promise<DecisionResult> {
@@ -92,18 +229,18 @@ export function createDecisionsApi(host: AppHost) {
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
    const body = DecisionRequestChangesBodySchema.safeParse({ requestId: crypto.randomUUID(), shownDigest: decision.digest, reason: cleanChangesReason(reason) ?? "", ...(includedCommentIds === undefined ? {} : { includedCommentIds }) });
    if (!body.success) throw new ApiError(400, "INVALID", "Say what should change, in plain text.");
-   return resultOf(done(await api.send("POST", path, body.data, DecisionOutcomeReaderSchema, { retry: "never" })));
+   return runDecisionAction(host, decision, body.data, async frozen => resultOf(done(await api.send("POST", path, frozen, DecisionOutcomeReaderSchema, { retry: "never", pendingIsUnknown: true, confirmationIsPending: true })), decision));
   },
-  async reject(decision: ReadDecision, reason: DecisionRejectReason): Promise<DecisionResult> {
+  async reject(decision: ReadDecision, reason: DecisionRejectReason, basis?: DecisionBasis): Promise<DecisionResult> {
    const path = decision.card.risk === "high" ? undefined : decisionActionPath(decision.card, "reject");
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
-   return resultOf(done(await api.send("POST", path, { requestId: crypto.randomUUID(), reason }, DecisionOutcomeReaderSchema, { retry: "never" })));
+   return runDecisionAction(host, decision, { requestId: crypto.randomUUID(), reason }, async frozen => resultOf(done(await api.send("POST", path, frozen, DecisionOutcomeReaderSchema, { retry: "never", pendingIsUnknown: true, confirmationIsPending: true })), decision), basis);
   },
  };
 }
 
 /**
- * The caller's decision cards. Only a 404 is "no cards": the cards switch is off in this deployment and the route does not exist (the broker's tests pin that the browser boundary lets the route through, so a 404 here is the switch).
+ * The caller's decision cards. Only a plain NOT_FOUND 404 is an unsupported route with no cards. An explicit access-ended signal remains an error.
  * Any other failure (a refusal, a server error, no connection, an answer that cannot be read) is an error for the screen to show; it is never read as "no cards" (WEB-1: a 404 from the browser boundary was swallowed that way).
  */
 export function useDecisions() {
@@ -111,8 +248,30 @@ export function useDecisions() {
  return useQuery({
   queryKey: ["decisions"], retry: false,
   queryFn: async () => {
-   try { return readDecisions(await api.get("/v1/app/decisions", DecisionCardsViewReaderSchema)); }
-   catch (failure) { if (failure instanceof ApiError && failure.status === 404) return []; throw failure; }
+   const sequence = issueDecisionRead();
+   let view: View;
+   try {
+    view = await api.get("/v1/app/decisions", DecisionCardsViewReaderSchema);
+   } catch (failure) {
+    const identity = lastDecisionIdentity.get(host);
+    if (failure instanceof ApiError && failure.status === 404 && failure.code === "NOT_FOUND") {
+     if (identity !== undefined) recordDecisionReadFailure(identity, sequence, false);
+     return [];
+    }
+    if (identity !== undefined) recordDecisionReadFailure(identity, sequence, failure instanceof ApiError && (failure.status === 401 || failure.status === 403));
+    throw failure;
+   }
+   const decisions = readDecisions(view);
+   const identitySequence = issueDecisionRead();
+   try {
+    const me = await api.get("/v1/app/me", AppMeResponseReaderSchema), identity = { orgId: me.org.orgId, developerId: me.developer.id };
+    rememberDecisionIdentity(host, identity);
+    recordDecisionRead(identity, sequence, decisions);
+    return decisions;
+   } catch (failure) {
+    recordIdentityReadFailure(host, failure, identitySequence);
+    throw failure;
+   }
   },
  });
 }

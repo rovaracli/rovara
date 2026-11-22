@@ -1,7 +1,7 @@
 import { ANSWER_SOURCES_MAX, answerSourceLine, plainAnswerText } from "@agentx/contracts/web";
-import { VisibleText } from "../../design/VisibleText.js";
 import type { ReadSession } from "./SessionHeader.js";
 import type { ReadTask } from "./workspace-types.js";
+import { AnswerReceiptView } from "./AnswerReceiptView.js";
 
 export const ANSWERED_HEADING = "Rovara answered this. No code was changed.";
 /** Hosted Code serves no change-anyway route (L4-TA5b, 2026-11-18), so this page starts nothing from here: it says where to go instead, in fixed words. */
@@ -21,10 +21,11 @@ export function AnsweredSection({ session, task }: { session: ReadSession; task:
  const answer = answeredOf(task);
  if (answer === undefined) return null;
  const mayAsk = (session.you.level === "use" || session.you.level === "edit") && session.where.kind === "cloud";
- return <section aria-label="Rovara's answer" className="rv-answered">
-  <h3>{ANSWERED_HEADING}</h3>
-  <p className="rv-evidence-text"><VisibleText text={plainAnswerText(answer.answer)} /></p>
-  {answer.sources.length > 0 && <><h4>Where it was read</h4><ul className="rv-answered-sources">{answer.sources.slice(0, ANSWER_SOURCES_MAX).map((source, index) => <li key={String(index)}><code><VisibleText text={answerSourceLine(source)} /></code></li>)}</ul></>}
-  {mayAsk && <p className="rv-muted">{FOLLOW_UP_WORDS}</p>}
- </section>;
+ return <AnswerReceiptView facts={{
+  heading: ANSWERED_HEADING,
+  answer: plainAnswerText(answer.answer),
+  sources: answer.sources.slice(0, ANSWER_SOURCES_MAX).map(source => ({ line: answerSourceLine(source) })),
+  question: answer.restatement,
+  ...(mayAsk ? { followUp: FOLLOW_UP_WORDS } : {}),
+ }} />;
 }

@@ -1,0 +1,35 @@
+// @vitest-environment jsdom
+import { expect, it } from "vitest";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { AppHostProvider } from "../../packages/ui/src/host.js";
+import { SecondReviewAck } from "../../packages/ui/src/screens/session/SecondReviewAck.js";
+import { LoadedLessons } from "../../packages/ui/src/screens/session/LoadedLessons.js";
+import { LessonsUsedCard } from "../../packages/ui/src/screens/session/LessonsUsedCard.js";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { fakeHost } from "./support/fake-host.js";
+import { meFixture } from "./support/fixtures.js";
+import { loaded, loadedRow } from "./support/lessons-fixture.js";
+import { renderUi } from "./support/render.js";
+import { h } from "./support/h.js";
+const taskId = "11111111-1111-4111-8111-111111111111";
+for (const operation of ["acknowledge", "loaded-lesson", "used-lesson"] as const) for (const code of ["CSRF_INVALID", "CSRF_STALE", "UNRECOGNISED"]) it(`R3/R6a ${operation}: 500/${code} survives remount and Check`, async () => {
+ const f = fakeHost(async r => r.path === "/v1/app/me" ? { status: 200, body: meFixture() } : r.method === "GET" ? { status: 200, body: loaded([loadedRow()]) } : { status: 500, body: { error: { code, message: "Unknown result" } } });
+ const query = createQueryClient();
+ const element = operation === "acknowledge" ? h(SecondReviewAck, { taskId, sessionId: "ses_aaaaaaaaaaaaaaaaaaaa", candidateDigest: "d".repeat(64), canAcknowledge: true }) : operation === "loaded-lesson" ? h(LoadedLessons, { taskId, project: "payments" }) : h(LessonsUsedCard, { taskId, project: "payments" });
+ const tree = () => h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: element }) });
+ let ui = renderUi(tree());
+ const label = operation === "acknowledge" ? "I've seen it" : "Not helpful: Use the shared retry helper";
+ const button = await screen.findByRole<HTMLButtonElement>("button", { name: label });
+ await waitFor(() => expect(button.disabled).toBe(false));fireEvent.click(button);
+ await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1));
+ await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+ expect(button.disabled).toBe(true);
+ ui.unmount();ui = renderUi(tree());
+ await screen.findByText(/Rovara didn't confirm this yet/);
+ expect(screen.getByRole<HTMLButtonElement>("button", { name: label }).disabled).toBe(true);
+ fireEvent.click(screen.getByRole("button", { name: "Check" }));
+ await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+ expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);
+ ui.unmount();query.clear();
+});

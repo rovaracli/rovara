@@ -262,3 +262,11 @@ it("falls back to the readable overview error when the shell version probe stall
  const failed = expect(request).rejects.toMatchObject({ code: "INVALID_RESPONSE", message: "Rovara returned an unreadable response. Reload this page." });
  await vi.advanceTimersByTimeAsync(5000);await failed;
 });
+
+it("F6/R6h: actual CSRF_INVALID refreshes identity without replaying a never-retry write", async () => {
+ let identities = 0;
+ const b = browser(async path => path.endsWith("/me") ? json(me(++identities === 1 ? CSRF : "n".repeat(43))) : json({ error: { code: "CSRF_INVALID", message: "Stale browser token" } }, 403));
+ const host = createBrowserHost(b.win);await host.transport.request({ method: "GET", path: "/v1/app/me" });
+ await expect(createApiClient(host).send("POST", "/v1/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa/stop", { requestId: "frozen" }, HomeResponseReaderSchema, { retry: "never" })).rejects.toMatchObject({ code: "CSRF_INVALID" });
+ expect(identities).toBe(2);expect(b.fetch.mock.calls.filter(([, input]) => input?.method === "POST")).toHaveLength(1);
+});

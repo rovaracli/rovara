@@ -25,9 +25,9 @@ export class LessonsPage {
     this.used = page.getByTestId("lessons-used");
     this.off = page.getByTestId("lessons-off");
   }
-  /** The batch row of a project under "Needs you" on Work. */
+  /** The batch row of a project in Work's table (its status chip says Needs you). */
   batchRow(project: string): Locator {
-    return this.page.getByRole("region", { name: "Work list" }).locator(`.rv-inbox-lessons[data-batch="${project}"]`);
+    return this.page.getByRole("region", { name: "Work list" }).locator(`button.rv-qp-row[data-batch="${project}"]`);
   }
   lesson(title: string): Locator {
     return this.batch.getByRole("article", { name: title });

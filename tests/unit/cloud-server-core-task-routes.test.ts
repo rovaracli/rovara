@@ -102,13 +102,13 @@ describe("1. Retry and Close on a core task go through the session Code's task r
     expect(w.asked(/\/v1\/app\/sessions\//u).map((call) => [call.path, call.body])).toEqual([[`/v1/app/sessions/${S.sessionId}/close`, { requestId: REQUEST_ID }]]);
   });
 
-  it("Retry: after the old route's core 404, one ask through the named session; Code's own refusal (nothing to retry) reaches the owner as Code worded it", async () => {
+  it("DEC283 Retry: refuses the old unpinned caller without asking the core session", async () => {
     // The fixture's task is stopped at review with a checked candidate (Cloud offers Retry); its last run reads SUCCEEDED, as a task whose review step ran does.
     const task: Obj = { ...S.blockedTask, status: "SUCCEEDED" };
     const w = setUp(S.blockedTaskId, coreCode(task, { ada: S.retryNothing }));
     const res = await w.send("POST", web("/retry"), { requestId: REQUEST_ID }, await w.signIn("ada"));
-    expect(w.asked(/\/v1\/app\/sessions\//u).map((call) => [call.path, call.body])).toEqual([[`/v1/app/sessions/${String(task["sessionId"])}/retry`, { requestId: REQUEST_ID }]]);
-    expect(res).toEqual({ status: S.retryNothing.status, body: S.retryNothing.body });
+    expect(w.asked(/\/v1\/app\/sessions\//u)).toEqual([]);
+    expect(res.status).toBe(400);
   });
 
   it("a task started before Code kept a session for every task: fixed words, and no session is asked about (both actions)", async () => {
@@ -116,7 +116,7 @@ describe("1. Retry and Close on a core task go through the session Code's task r
       const old = { ...S.oldTask, status: "SUCCEEDED", workflow: (S.blockedTask as { workflow: unknown }).workflow };
       const w = setUp(S.oldTaskId, coreCode(old, { ada: S.close }));
       const res = await w.send("POST", web(action), { requestId: REQUEST_ID, discardUnpublished: true }, await w.signIn("ada"));
-      expect(res, action).toEqual({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: words } } });
+      if (action === "/retry") expect(res.status).toBe(400);else expect(res, action).toEqual({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: words } } });
       expect(w.asked(/\/v1\/app\/sessions\//u)).toEqual([]);
     }
   });
@@ -162,7 +162,7 @@ describe("2. Accepting findings that include a SECURITY finding on a core task: 
 
   it("the owner: the workflow route says 'the web page only', so Cloud asks the page route with the same body, built from Code's own task (Code's ids)", async () => {
     const w = setUp(P.taskId, coreCode(P.accepted));
-    const res = await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "Only a test token." }, await w.signIn("ada", 30));
+    const res = await w.send("POST", ACCEPT, { expectedRevision: P.revision, candidateDigest: P.candidateDigest, requestId: REQUEST_ID, reason: "Only a test token." }, await w.signIn("ada", 30));
     expect(res.status).toBe(200);
     expect((SessionResponseReaderSchema.parse(res.body).session.body as { task: { taskId: string } }).task.taskId).toBe(P.taskId);
     const [workflow] = w.asked(/workflow\/review-findings$/u), [page] = pageCalls(w);
@@ -174,7 +174,7 @@ describe("2. Accepting findings that include a SECURITY finding on a core task: 
   it("with no step-up in Cloud's token, an old one or a future one, the owner's accept still reaches the page route (owner DEC 254zzz73)", async () => {
     for (const age of [undefined, 601, -120]) {
       const w = setUp(P.taskId, coreCode(P.accepted));
-      expect((await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, await w.signIn("ada", age))).status, String(age)).toBe(200);
+      expect((await w.send("POST", ACCEPT, { expectedRevision: P.revision, candidateDigest: P.candidateDigest, requestId: REQUEST_ID, reason: "ok" }, await w.signIn("ada", age))).status, String(age)).toBe(200);
       expect(pageCalls(w).map((call) => call.who), String(age)).toEqual(["ada"]);
     }
   });
@@ -187,7 +187,7 @@ describe("2. Accepting findings that include a SECURITY finding on a core task: 
       [P.member, { status: 403, body: { error: { code: "FORBIDDEN", message: CORE_ACTION_WORDS.acceptNotYours } } }],
     ] as const) {
       const w = setUp(P.taskId, coreCode(answer));
-      const res = await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, await w.signIn("ada", 30));
+      const res = await w.send("POST", ACCEPT, { expectedRevision: P.revision, candidateDigest: P.candidateDigest, requestId: REQUEST_ID, reason: "ok" }, await w.signIn("ada", 30));
       expect(res, JSON.stringify(answer)).toEqual(expected);
       expect(JSON.stringify(res.body)).not.toContain("Rovara web page");
     }
@@ -196,13 +196,13 @@ describe("2. Accepting findings that include a SECURITY finding on a core task: 
   it("any other refusal of the workflow route reaches the owner as Code worded it, and never starts the page route", async () => {
     const stale: Answer = { status: 409, body: { error: { code: "CONFLICT", message: "the workflow changed" } } };
     const w = setUp(P.taskId, (call) => (call.method === "POST" && call.path.endsWith("/workflow/review-findings") ? stale : coreCode(P.accepted)(call)));
-    expect(await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, await w.signIn("ada", 30))).toEqual({ status: stale.status, body: stale.body });
+    expect(await w.send("POST", ACCEPT, { expectedRevision: P.revision, candidateDigest: P.candidateDigest, requestId: REQUEST_ID, reason: "ok" }, await w.signIn("ada", 30))).toEqual({ status: stale.status, body: stale.body });
     expect(pageCalls(w)).toEqual([]);
   });
 
   it("an answer for another task is refused in fixed words", async () => {
     const w = setUp(P.taskId, coreCode({ status: 200, body: renamed(P.accepted.body, [[P.taskId, "00000000-0000-4000-8000-000000000001"]]) }));
-    expect(await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, await w.signIn("ada", 30))).toEqual({ status: 502, body: { error: { code: "RUNTIME_UNAVAILABLE", message: CORE_ACTION_WORDS.unreadable } } });
+    expect(await w.send("POST", ACCEPT, { expectedRevision: P.revision, candidateDigest: P.candidateDigest, requestId: REQUEST_ID, reason: "ok" }, await w.signIn("ada", 30))).toEqual({ status: 502, body: { error: { code: "RUNTIME_UNAVAILABLE", message: CORE_ACTION_WORDS.unreadable } } });
   });
 
   it("a People co-owner (DEC 254zzz39 (6)) accepts on the page route as themself; the session view tells the page they may", async () => {
@@ -210,7 +210,7 @@ describe("2. Accepting findings that include a SECURITY finding on a core task: 
     const headers = await w.signIn("sam", 30);
     const view = SessionResponseReaderSchema.parse((await w.send("GET", web(""), undefined, headers)).body).session;
     expect(view.you).toMatchObject({ owner: false, coOwner: true });
-    expect((await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, headers)).status).toBe(200);
+    expect((await w.send("POST", ACCEPT, { expectedRevision: P.revision, candidateDigest: P.candidateDigest, requestId: REQUEST_ID, reason: "ok" }, headers)).status).toBe(200);
     expect(pageCalls(w).map((call) => call.who)).toEqual(["sam"]);
   });
 
@@ -222,12 +222,12 @@ describe("2. Accepting findings that include a SECURITY finding on a core task: 
       const w = setUp(P.taskId, coreCode(P.accepted, { people }));
       const headers = await w.signIn("sam", 30);
       expect(SessionResponseReaderSchema.parse((await w.send("GET", web(""), undefined, headers)).body).session.you).not.toHaveProperty("coOwner");
-      const res = await w.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, headers);
+      const res = await w.send("POST", ACCEPT, { expectedRevision: P.revision, candidateDigest: P.candidateDigest, requestId: REQUEST_ID, reason: "ok" }, headers);
       expect(res).toEqual({ status: 403, body: { error: { code: "FORBIDDEN", message: "Only Ada or a co-owner can accept these findings." } } });
       expect(w.asked(/review-findings$/u)).toEqual([]);
     }
     const eve = setUp(P.taskId, coreCode(P.accepted));
-    expect((await eve.send("POST", ACCEPT, { requestId: REQUEST_ID, reason: "ok" }, await eve.signIn("eve", 30))).status).toBe(404);
+    expect((await eve.send("POST", ACCEPT, { expectedRevision: P.revision, candidateDigest: P.candidateDigest, requestId: REQUEST_ID, reason: "ok" }, await eve.signIn("eve", 30))).status).toBe(404);
     expect(eve.asked(/review-findings$/u)).toEqual([]);
   });
 

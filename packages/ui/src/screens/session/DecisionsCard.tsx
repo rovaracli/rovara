@@ -6,6 +6,8 @@ import { createSessionLogApi } from "../../api/session-log.js";
 import { useAppHost } from "../../host.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { TaskDecisionsReadRecoveryView } from "./TaskDecisionsReadRecoveryView.js";
+import { TaskDecisionsUnavailableView } from "./TaskDecisionsUnavailableView.js";
 
 /** The lines shown before "Show all": the page says it once, in a short list; the rest is one click away. */
 export const DECISIONS_SHOWN = 5;
@@ -18,13 +20,20 @@ export function whenWords(at: string): string {
  return `${MONTHS[date.getUTCMonth()] ?? ""} ${String(date.getUTCDate())}, ${two(date.getUTCHours())}:${two(date.getUTCMinutes())} UTC`;
 }
 
+/** "Nov 17, 14:10": the viewer's own clock, with no zone name (the task page reads every time this way). */
+export function localWhenWords(at: string): string {
+ const date = new Date(at);
+ if (Number.isNaN(date.getTime())) return at;
+ return `${MONTHS[date.getMonth()] ?? ""} ${String(date.getDate())}, ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
 type Decision = Extract<SessionLogEntry, { kind: "answer" | "approval" }>;
 const isDecision = (entry: SessionLogEntry): entry is Decision => entry.kind === "answer" || entry.kind === "approval";
 
 /** What each decision or answer says, with its question: one line of text and one of who, where and when. */
-export function decisionRows(entries: readonly SessionLogEntry[]): Array<{ key: string; main: string; who: string }> {
+export function decisionRows(entries: readonly SessionLogEntry[], local = false): Array<{ key: string; main: string; who: string }> {
  return entries.filter(isDecision).map(entry => {
-  const who = `${entry.by}, ${SESSION_LOG_SURFACE_WORDS[entry.surface]}, ${whenWords(entry.at)}`;
+  const who = `${entry.by}, ${SESSION_LOG_SURFACE_WORDS[entry.surface]}, ${local ? localWhenWords(entry.at) : whenWords(entry.at)}`;
   if (entry.kind === "approval") return { key: entry.key, main: `Decision: ${WHAT[entry.what]}, ${OUTCOME_WORDS[entry.outcome]}.`, who };
   const question = entries.find((candidate): candidate is Extract<SessionLogEntry, { kind: "question" }> => candidate.kind === "question" && candidate.round === entry.round && candidate.questionId === entry.questionId);
   return { key: entry.key, main: question === undefined ? `A question was answered: ${entry.text}` : `${question.text} Answer: ${entry.text}`, who };
@@ -35,16 +44,16 @@ export function decisionRows(entries: readonly SessionLogEntry[]): Array<{ key: 
  * "Decisions and answers" (L4-B5): what was asked and decided on this task, wherever it was answered (this page, Slack, Linear, Jira), as the task log says it. A short list with the newest first, the rest one click away.
  * Nothing is shown for a task with no answers or decisions yet, or when Code's log can't be read here; the page does not break for it.
  */
-export function DecisionsCard({ id }: { id: string }) {
+export function DecisionsCard({ id, local = false }: { id: string; /** The task page shows times in the viewer's own clock; the older page keeps its stable UTC reading. */ local?: boolean }) {
  const host = useAppHost(), api = useMemo(() => createSessionLogApi(host), [host]), [all, setAll] = useState(false);
  const read = useQuery({ queryKey: ["session", id, "log"], queryFn: () => api.read(id), retry: false });
  if (read.isPending) return null;
  if (read.isError) {
-  // A task Code can't show a log for (not served here, or not readable by this person) shows nothing; any other failure says so, calmly, with a way to try again.
-  if (read.error instanceof ApiError && (read.error.status === 404 || read.error.status === 501)) return null;
-  return <section className="rv-card rv-decisions" aria-label="Decisions and answers" data-testid="decisions-error"><h3>Decisions and answers</h3><p className="rv-muted">Couldn't load the decisions and answers.</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></section>;
+  const unavailable = read.error instanceof ApiError && ((read.error.status === 501 && read.error.code === "NOT_ON_CODE_YET") || (read.error.status === 404 && read.error.code === "NOT_FOUND" && read.error.message === "route not found"));
+  if (unavailable) return <section className="rv-card rv-decisions" aria-label="Decisions and answers"><h3>Decisions and answers</h3><TaskDecisionsUnavailableView /></section>;
+  return <TaskDecisionsReadRecoveryView onRetry={() => { void read.refetch(); }} />;
  }
- const rows = decisionRows(read.data.entries).reverse();
+ const rows = decisionRows(read.data.entries, local).reverse();
  if (rows.length === 0) return null;
  const shown = all ? rows : rows.slice(0, DECISIONS_SHOWN);
  return <section className="rv-card rv-decisions" aria-label="Decisions and answers" data-testid="decisions">
