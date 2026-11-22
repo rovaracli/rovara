@@ -181,8 +181,10 @@ is unavailable right now". A stream that breaks after output started is charged 
 
 ### The company-billed default (DEC 254zzz263)
 
-A company with no saved agent source uses Rovara's AI automatically. An explicit saved choice and its saved fallback order win;
-merely connecting credentials does not choose a source. The shared resolver serves agent admission, offered models and price quotes.
+A company with no saved agent source keeps its connected Anthropic key, then its own Bedrock (controller R-1).
+With neither connection it uses company-billed Rovara AI automatically. An explicit saved choice and its saved fallback order win;
+a company opting out by saving its own source must connect that source. If Rovara AI is unavailable on the gateway,
+the default refuses with a request to choose/connect AI. The shared resolver serves agent admission, offered models and price quotes.
 An unreadable saved choice refuses before any hold or send. Missing operator configuration refuses rather than using an install key.
 Sources are chosen before dispatch; a provider answer never triggers another source.
 
@@ -199,6 +201,12 @@ is satisfied without a key; explicit own-provider choices keep their connection 
 The card shows “Rovara's AI, billed to your company” with Change; accepting the default requires no source write or feature switch.
 Exemption configuration controls billing only, never default eligibility.
 
+Internal-only staging configuration: `rovaraModelGatewayRovaraAiExempt=org_jckf8av6ri11rszcdjsa`
+is **Rovara Demo**, Rovara's own test company (DEC 254zzz78). This is the controller-confirmed staging list;
+no real customer company may be exempt. Match `GATEWAY_ROVARA_AI_EXEMPT` on the gateway with
+`CLOUD_ROVARA_AI_EXEMPT` on the web Lambda; the controller verifies live configuration after refreshing login.
+Production refuses exemptions (`infra/lib/cloud-web.ts`, and the gateway synth checks).
+
 Learning and answers keep their separate, exempt-only Anthropic fallback: no connected Anthropic account, no explicit other source,
 and no implicitly connected own Bedrock. This change does not enable billed learning/answers for ordinary companies.
 
@@ -210,7 +218,7 @@ list's Bedrock row and limited by its Anthropic row. Sonnet 5.5, Opus 5.5 and Fa
 enable; until then a call answers 503 `model_not_enabled` ("This model is not enabled yet on Rovara's AI ...") and is not charged.
 
 Deploy: `-c rovaraModelGatewayRovaraAi=<allow-list or on>` (and optionally `-c rovaraModelGatewayRovaraAiExempt=<org ids>`) beside
-`-c rovaraModelGatewayProductAi=on`; refused for production at synth. The serving role then gets exactly `bedrock:InvokeModel` and
+`-c rovaraModelGatewayProductAi=on`; exemptions are refused for production at synth. The serving role then gets exactly `bedrock:InvokeModel` and
 `bedrock:InvokeModelWithResponseStream` on the allow-listed inference profiles in its Region and, only through those profiles
 (`bedrock:InferenceProfileArn`), their foundation models in the profile's Regions (a `us.` profile serves from us-east-1, us-east-2
 and us-west-2). The role has no Marketplace rights: an operator enables each model once in the account (Bedrock console or one

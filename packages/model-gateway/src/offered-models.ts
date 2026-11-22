@@ -19,7 +19,7 @@
 // source row's own companyId is checked again by CompanyAgentAiSource.
 //
 // Every failure is a fixed answer: nothing from the request, a token or the store is echoed or logged.
-import { openRouterPolicy, REVIEWED_OPENROUTER_POLICIES, type OpenRouterTariff } from "./openrouter-policy.js";
+import { openRouterRates, openRouterPolicy, REVIEWED_OPENROUTER_POLICIES, type OpenRouterTariff } from "./openrouter-policy.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { agentSourceSwitchedOn, resolveAgentSource, type AgentAiSource, type AgentAiSourceReader, type ByoBedrock } from "./agent-ai.js";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
@@ -286,7 +286,7 @@ export async function answerOfferedModels(options: OfferedModelsHandlerOptions, 
     if (identity === undefined || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$/u.test(identity.sourceId) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$/u.test(identity.versionId)) throw new Error("connection unavailable");
     const policy = openRouterPolicy(entry.model, (options.now ?? Date.now)(), options.openRouterTariffs);
     if (policy === undefined) throw new Error("price unavailable");
-    return { ...entry, identity: { provider: "openrouter", sourceId: identity.sourceId, connectionRevision: identity.versionId, modelId: entry.model }, price: { inputUsdPerMillion: policy.inputMicrosPerMTok / 1_000_000, outputUsdPerMillion: policy.outputMicrosPerMTok / 1_000_000 } };
+    return { ...entry, identity: { provider: "openrouter", sourceId: identity.sourceId, connectionRevision: identity.versionId, modelId: entry.model }, price: { inputUsdPerMillion: openRouterRates(policy).inputMicrosPerMTok / 1_000_000, outputUsdPerMillion: openRouterRates(policy).outputMicrosPerMTok / 1_000_000 } };
   })).catch(() => undefined);
   if (identities === undefined) return ANSWERS.unavailable;
   return { status: 200, body: { version: 1, models: identities, ...(reviewerAccess === undefined ? {} : { reviewerAccess }) } };

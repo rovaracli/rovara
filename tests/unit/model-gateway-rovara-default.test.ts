@@ -12,7 +12,7 @@ import { createLearningRoutes, LEARNING_PATH, LEARNING_STEP, type LearningKeySou
 import { InMemoryMeter, type MeterScope } from "../../packages/model-gateway/src/meter.js";
 import { answerOfferedModels, type OfferedModelsHandlerOptions } from "../../packages/model-gateway/src/offered-models.js";
 import type { ProviderRequest, ProviderTransport } from "../../packages/model-gateway/src/provider.js";
-import { AGENT_KEY_MISSING, BYO_BEDROCK_NOT_CONNECTED, handleGateway, ROVARA_AI_MODEL, ROVARA_AI_UNAVAILABLE, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
+import { AGENT_KEY_MISSING, BYO_BEDROCK_NOT_CONNECTED, handleGateway, ROVARA_AI_MODEL, ROVARA_AI_OFF, ROVARA_AI_UNAVAILABLE, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
 import { answer, call, caps as baseCaps, claims, MemorySink, mint, now, requestBody, scope as agentScope, setup } from "./model-gateway-fixture.js";
 
 const cidA = claims.cid;
@@ -143,6 +143,37 @@ describe("agent route: no saved choice", () => {
       expect(g.installKeyReads).toEqual([]); expect(g.companyKeys.reads).toEqual([]);
       expect(sources(g)).toEqual([{ event: "agent_source", company: cidB, source: "rovara", via: "default" }]);
     }
+  });
+
+  it("only the configured internal staging company is exempt; a real customer receives a customer receipt", async () => {
+    const demo = "org_jckf8av6ri11rszcdjsa"; // Rovara Demo (internal staging only).
+    const g = gateway({ exempt: [demo] });
+    g.deps.chargeReceipts = { source: (_claims, _model, resolved) => resolved };
+    const settled = vi.spyOn(g.meter, "settleV2");
+    for (const cid of [demo, cidB]) expect((await call(g.deps, requestBody, mint({ cid }))).status).toBe(200);
+    expect(settled.mock.calls.map(([input]) => ({ company: input.receipt.companyId, billing: input.receipt.billing }))).toEqual([{ company: demo, billing: "exempt" }, { company: cidB, billing: "customer" }]);
+    expect(g.meter.billedCalls(claims.iss, demo)).toMatchObject([{ line: { charge: "exempt" } }]);
+    expect(g.meter.billedCalls(claims.iss, cidB)).toMatchObject([{ line: { charge: "customer" } }]);
+  });
+
+  it("a non-exempt default needs a connection only when Rovara AI is unavailable on this gateway", async () => {
+    const g = gateway({ exempt: [] });
+    delete g.deps.agentAi!.rovara;
+    const reserve = vi.spyOn(g.meter, "reserve");
+    const sink = await call(g.deps, requestBody, mint({ cid: cidB }));
+    expect(sink.status).toBe(ROVARA_AI_OFF.status);
+    expect(error(sink)).toEqual({ type: ROVARA_AI_OFF.code, message: ROVARA_AI_OFF.message });
+    expect(reserve).not.toHaveBeenCalled(); nothingSent(g);
+  });
+
+  it.each(["anthropic_key", "bedrock_byo"] as const)("a non-exempt company opting out via saved %s is refused until its chosen source is connected", async source => {
+    const g = gateway({ exempt: [] }); g.choices.saved.set(cidB, source);
+    const reserve = vi.spyOn(g.meter, "reserve");
+    const sink = await call(g.deps, requestBody, mint({ cid: cidB }));
+    const refusal = source === "anthropic_key" ? AGENT_KEY_MISSING : BYO_BEDROCK_NOT_CONNECTED;
+    expect(sink.status).toBe(refusal.status);
+    expect(error(sink)).toEqual({ type: refusal.code, message: refusal.message });
+    expect(reserve).not.toHaveBeenCalled(); nothingSent(g);
   });
 
   it("a NON-exempt company with an explicit own-key choice uses it; its Bedrock is not read", async () => {

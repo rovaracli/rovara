@@ -49,8 +49,15 @@ export class SnapshotPriceSource implements PriceSource {
     return { version: this.#snapshot.version, hash: this.#snapshotHash!, fetchedAt: identity.origin.fetchedAt, model: identity.model };
   }
   effectiveFor(provider: string, model: string, kind: PriceKind): ResolvedPrice {
-    if (provider === "openrouter") { const p = openRouterPolicy(model, this.#now(), this.options.openRouterTariffs); return p === undefined || kind !== "chat" ? { inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, estimated: true, operatorReview: true } : openRouterRates(p); }
     if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
+    if (provider === "openrouter") {
+      const p = openRouterPolicy(model, this.#now(), this.options.openRouterTariffs);
+      if (p !== undefined && kind === "chat") return openRouterRates(p);
+      // Preserve observed token floors for settlement; quoteBasis still requires a reviewed tariff for admission.
+      const observed = lookupPrice(this.#book, provider, model, kind);
+      if (kind === "chat" && observed.knownTokenPrice) return { ...observed, priceVersion: this.#snapshot?.version ?? 0 };
+      return { inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, estimated: true, operatorReview: true };
+    }
     return { ...lookupPrice(this.#book, provider, model, kind), priceVersion: this.#snapshot?.version ?? 0 };
   }
   priceFor(provider: string, model: string): (Price & { origin: PriceOrigin }) | undefined {

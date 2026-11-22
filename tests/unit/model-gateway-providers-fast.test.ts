@@ -1,3 +1,5 @@
+import { parseAiSourceKinds } from "../../packages/model-gateway/src/agent-ai.js";
+import { sourceKindProblem } from "../../packages/contracts/src/model-sources.js";
 import { beforeAll, expect, it, vi } from "vitest";
 import { denyNetwork } from "./model-gateway-no-network.js";
 import { claims, now, setup, call, mint, requestBody, scope, answer, caps } from "./model-gateway-fixture.js";
@@ -11,10 +13,10 @@ import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 import { initialCharge, finishCharge } from "../../packages/model-gateway/src/charge-producer.js";
-import { openRouterRates, openRouterPolicy } from "../../packages/model-gateway/src/openrouter-policy.js";
+import { openRouterRates, openRouterPolicy, openRouterHold } from "../../packages/model-gateway/src/openrouter-policy.js";
 beforeAll(denyNetwork);
 const model = "openai/gpt-5-mini";
-const tariff = { model, route: "fixture-provider", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, verifiedAt: now - 1, expiresAt: now + 60_000, evidence: "fake-account-evidence" };
+const tariff = { model, route: "fixture-provider", pricing: { prompt: "0.000001", completion: "0.000002", internal_reasoning: "0.000002", request: "0", input_cache_read: "0", input_cache_write: "0" }, max_completion_tokens: 16384, reasoning: { mode: "disabled" as const }, verifiedAt: now - 1, expiresAt: now + 60_000, evidence: "fake-account-evidence" };
 const source = { kind: "company_key" as const, id: "src_router", name: "Company OpenRouter", provider: "openrouter", connectionRevision: "r1" };
 async function world() {
  const prices = new SnapshotPriceSource({ load: async () => undefined, save: async () => false }, { now: () => now, openRouterTariffs: [tariff] }); await prices.reload();
@@ -59,4 +61,47 @@ for (const durable of [false, true]) it(`retains missing usage, records an above
  expect((await meter.read(scope)).every(row => row.spentMicros === 60)).toBe(true);
  expect(await meter.sourceStop(scope.iss, scope.cid, "openrouter", "agent")).toMatchObject({ stopped: true });
  expect((await meter.reserve({ scope, caps, estimateMicros: 1, customerSource: "openrouter", routeClass: "agent" })).ok).toBe(false);
+});
+
+it("includes the per-request fee and all cache writes in the actual gateway reservation", async () => {
+ const w = await world();
+ const priced = { ...tariff, pricing: { ...tariff.pricing, request: "0.01", input_cache_write: "0.000003" } };
+ const prices = new SnapshotPriceSource({ load: async () => undefined, save: async () => false }, { now: () => now, openRouterTariffs: [priced] }); await prices.reload();
+ const quote = await answerRateQuote({ prices, keys: w.keys, sources: w.sources, now: () => now, region: "us-west-2", switchedOn: new Set(["openrouter"]), offeredProviders: new Set(["openrouter"]), openRouterTariffs: [priced], verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${model}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
+ w.deps.prices = prices; w.deps.openRouterTariffs = [priced];
+ const reserve = vi.spyOn(w.meter, "reserve");
+ const body = { ...requestBody, model };
+ expect((await call(w.deps, body, mint({ mdl: [model], runPrice: (quote.body as { runPrice: RunPrice }).runPrice }))).status).toBe(200);
+ expect(reserve.mock.calls[0]?.[0].estimateMicros).toBeGreaterThanOrEqual(openRouterHold(openRouterPolicy(model, now, [priced])!, Buffer.byteLength(JSON.stringify(body)), 10));
+});
+it("alarms on an honest above-hold settlement and refuses before reopening the key", async () => {
+ const w = await world();
+ w.deps.agentAi!.openrouter = { transport: async () => ({ status: 200, body: answer(), reportedCostMicros: () => 100_000 }) };
+ await call(w.deps, { ...requestBody, model }, mint({ mdl: [model], runPrice: w.runPrice }));
+ expect(w.logs).toContainEqual(expect.objectContaining({ event: "openrouter_over_reservation", costMicros: 100_000 }));
+ expect((await w.meter.read(scope)).every(r => r.spentMicros === 100_000)).toBe(true);
+ expect(await w.meter.sourceStop(scope.iss, scope.cid, "openrouter", "agent")).toMatchObject({ stopped: true, costMicros: 100_000 });
+ w.open.mockClear();
+ expect((await call(w.deps, { ...requestBody, model }, mint({ mdl: [model], runPrice: w.runPrice }))).status).toBeGreaterThanOrEqual(400);
+ expect(w.open).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("a priced OpenRouter tariff never bypasses source admission, including the unchanged off default (default=%s)", async defaults => {
+ const w = await world();
+ const reserve = vi.spyOn(w.meter, "reserve");
+ const options = { sources: w.sources, keys: w.keys, now: () => now, switchedOn: defaults ? parseAiSourceKinds(undefined) : new Set<string>(), openRouterTariffs: [tariff] };
+ const quote = await answerRateQuote({ ...options, prices: w.prices, region: "us-west-2", offeredProviders: new Set(["openrouter"]), verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${model}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
+ expect(quote.body).not.toHaveProperty("runPrice");
+ const offer = await answerOfferedModels({ ...options, disabled: new Set(), chat: { openrouter: true }, verify: async () => ({ ...claims, aud: SERVICE_TOKEN_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/offered-models`, headers: { authorization: "Bearer fixture" } });
+ expect(offer.status).toBe(403);
+ if (defaults) {
+  expect(sourceKindProblem("openrouter")).toBe("openrouter sources aren't available yet");
+  delete w.deps.agentAi!.switchedOn;
+ } else w.deps.agentAi!.switchedOn = new Set();
+ const result = await call(w.deps, { ...requestBody, model }, mint({ mdl: [model], runPrice: w.runPrice }));
+ expect(result.status).toBe(403);
+ expect(result.text()).toContain("no_ai_key");
+ expect(reserve).not.toHaveBeenCalled();
+ expect(w.open).not.toHaveBeenCalled();
+ expect(w.sent).toEqual([]);
 });

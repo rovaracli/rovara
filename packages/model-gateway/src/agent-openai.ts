@@ -16,7 +16,7 @@ import https from "node:https";
 import type { ClientRequest } from "node:http";
 import { record, whole } from "./model-gateway-token.js";
 import { MAX_RESPONSE_BYTES, NotSentError, type ProviderResponse, type ProviderTransport } from "./provider.js";
-import { parseReportedCost } from "./reported-cost.js";
+import { parseReportedCost, reportedCostFloor } from "./reported-cost.js";
 
 export type OpenAiAgentProvider = "openai" | "openrouter";
 /** The Chat Completions dialects: the two fixed providers and a company's own OpenAI-compatible endpoint (A3, endpoint-source.ts). */
@@ -90,7 +90,7 @@ function messagesOf(m: Json): Json[] | undefined {
  * they carry no meaning for the answer. `thinking` is accepted only as disabled.
  */
 export function toChatCompletions(body: Json, model: string, maxTokens: number, provider: ChatDialect, policy?: OpenRouterPolicy): Json | undefined {
-  if (!OPENAI_AGENT_MODEL.test(model) || !whole(maxTokens) || maxTokens < 1) return undefined;
+  if ((provider === "openrouter" && model.includes(":")) || !OPENAI_AGENT_MODEL.test(model) || !whole(maxTokens) || maxTokens < 1) return undefined;
   const allowed = new Set(["model", "messages", "max_tokens", "stream", "system", "temperature", "top_p", "stop_sequences", "metadata", "tools", "tool_choice", "thinking"]);
   if (Object.keys(body).some((k) => !allowed.has(k))) return undefined;
   if (body.thinking !== undefined && record(body.thinking)?.type !== "disabled") return undefined;
@@ -159,15 +159,17 @@ export function anthropicStopOf(reason: unknown): string {
 export function anthropicUsageOf(value: unknown): Json {
   const u = record(value);
   if (u === undefined || !whole(u.prompt_tokens) || !whole(u.completion_tokens) || u.prompt_tokens > 1_000_000_000 || u.completion_tokens > 1_000_000_000) throw new Error("unreadable answer");
-  let cached = 0;
+  let cached = 0; let written = 0;
   const details = u.prompt_tokens_details;
   if (details !== undefined && details !== null) {
     const d = record(details);
     const c = d?.cached_tokens ?? 0;
     if (d === undefined || !whole(c) || c > u.prompt_tokens) throw new Error("unreadable answer");
-    cached = c;
+    const w = d.cache_write_tokens ?? 0;
+    if (!whole(w) || w > u.prompt_tokens - c) throw new Error("unreadable answer");
+    cached = c; written = w;
   }
-  return { input_tokens: u.prompt_tokens - cached, output_tokens: u.completion_tokens, cache_read_input_tokens: cached, cache_creation_input_tokens: 0 };
+  return { input_tokens: u.prompt_tokens - cached - written, output_tokens: u.completion_tokens, cache_read_input_tokens: cached, cache_creation_input_tokens: written };
 }
 
 const event = (type: string, data: Json): Buffer => Buffer.from(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`, "utf8");
@@ -188,12 +190,13 @@ export const MAX_UPSTREAM_STREAM_BYTES = 2 * MAX_RESPONSE_BYTES;
 export class ChatStreamToSse {
   readonly #provider: ChatDialect; readonly #model: string; readonly #id: string;
   #pending = ""; #data: string[] = []; #eventBytes = 0; #upstreamBytes = 0;
-  #started = false; #done = false; #finish: string | undefined; #usage: Json | undefined; #cost: number | undefined;
+  #started = false; #done = false; #finish: string | undefined; #usage: Json | undefined; #cost: number | undefined; #costComplete = false; #costRegressed = false;
   #open: { kind: "text" } | { kind: "tool"; index: number } | undefined; #next = 0;
   readonly #tools = new Map<number, number>();
   readonly #decoder = new TextDecoder("utf-8", { fatal: true });
   constructor(provider: ChatDialect, model: string, id: string) { this.#provider = provider; this.#model = model; this.#id = id; }
   get reportedCost(): number | undefined { return this.#cost; }
+  get reportedCostComplete(): boolean { return this.#costComplete; }
   push(bytes: Uint8Array): Buffer {
     const out: Buffer[] = [];
     this.#upstreamBytes += bytes.byteLength;
@@ -242,8 +245,21 @@ export class ChatStreamToSse {
     if (chunk === undefined || chunk.error !== undefined) throw new Error("unreadable answer");
     this.#start(out);
     if (chunk.usage !== undefined && chunk.usage !== null) {
-      this.#usage = anthropicUsageOf(chunk.usage);
-      if (this.#provider === "openrouter") this.#cost = parseReportedCost("openrouter", chunk.usage);
+      if (this.#provider === "openrouter") {
+        const complete = parseReportedCost("openrouter", chunk.usage);
+        const amount = complete ?? reportedCostFloor(chunk.usage);
+        if (this.#cost !== undefined && (amount === undefined || amount < this.#cost)) this.#costRegressed = true;
+        if (amount !== undefined) this.#cost = Math.max(this.#cost ?? 0, amount);
+        this.#costComplete = complete !== undefined && !this.#costRegressed;
+      }
+      const usage = anthropicUsageOf(chunk.usage);
+      if (this.#provider === "openrouter") {
+        // A later zero/omission cannot erase a write already reported on this call.
+        const written = Math.max(Number(this.#usage?.cache_creation_input_tokens ?? 0), Number(usage.cache_creation_input_tokens));
+        usage.input_tokens = Math.max(0, Number(usage.input_tokens) + Number(usage.cache_creation_input_tokens) - written);
+        usage.cache_creation_input_tokens = written;
+      }
+      this.#usage = usage;
     }
     const choices = chunk.choices;
     if (choices === undefined || choices === null) return;
@@ -327,7 +343,7 @@ export function fromChatCompletion(answer: unknown, provider: ChatDialect, model
     }
   }
   const usage = anthropicUsageOf(a.usage);
-  const cost = provider === "openrouter" ? parseReportedCost("openrouter", a.usage) : undefined;
+  const cost = provider === "openrouter" ? (parseReportedCost("openrouter", a.usage) ?? reportedCostFloor(a.usage)) : undefined;
   return { message: { id, type: "message", role: "assistant", model, content, stop_reason: anthropicStopOf(choice.finish_reason), stop_sequence: null, usage }, ...(cost === undefined ? {} : { reportedCost: cost }) };
 }
 
@@ -337,23 +353,26 @@ export function translatedAnswer(provider: ChatDialect, facts: { model: string; 
   if (facts.streaming) {
     const converter = new ChatStreamToSse(provider, facts.model, id);
     return {
-      status, cancel, reportedCostMicros: () => converter.reportedCost,
+      status, cancel, reportedCostMicros: () => converter.reportedCost, reportedCostComplete: () => converter.reportedCostComplete,
       body: (async function* () {
         for await (const chunk of raw) { const out = converter.push(chunk); if (out.length > 0) yield out; }
         const last = converter.finish(); if (last.length > 0) yield last;
       })(),
     };
   }
-  let cost: number | undefined;
+  let cost: number | undefined; let costComplete = false;
   return {
-    status, cancel, reportedCostMicros: () => cost,
+    status, cancel, reportedCostMicros: () => cost, reportedCostComplete: () => costComplete,
     body: (async function* () {
       const parts: Buffer[] = []; let size = 0;
       for await (const chunk of raw) { size += chunk.byteLength; if (size > MAX_WHOLE_ANSWER) throw new Error("unreadable answer"); parts.push(Buffer.from(chunk)); }
       let parsed: unknown;
       try { parsed = JSON.parse(Buffer.concat(parts).toString("utf8")) as unknown; } catch { throw new Error("unreadable answer"); }
+      if (provider === "openrouter") {
+        const complete = parseReportedCost("openrouter", record(parsed)?.usage);
+        cost = complete ?? reportedCostFloor(record(parsed)?.usage); costComplete = complete !== undefined;
+      }
       const whole = fromChatCompletion(parsed, provider, facts.model, id);
-      cost = whole.reportedCost;
       yield Buffer.from(JSON.stringify(whole.message));
     })(),
   };

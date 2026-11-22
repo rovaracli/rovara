@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { defaultBoundaryStatements, serviceRoleStatements, type PolicyStatementJson } from "../../packages/contracts/src/access-policies.js";
 import { GATEWAY_ANSWERS_ENV, GATEWAY_ENV, GATEWAY_EVAL_STAGE_INDEXES, GATEWAY_LEARNING_ENV, GATEWAY_PRODUCT_ENV, GATEWAY_PRODUCT_TTL_ATTRIBUTE, PRODUCT_KEY_PURPOSE as GATEWAY_PURPOSE, PRODUCT_KEYS_TTL_ATTRIBUTE, productKeyContext } from "../../packages/model-gateway/src/index.js";
 import { iamWildcardMatches } from "../../packages/model-gateway/src/product-policy.js";
-import { buildAgentXApp, productAiOn } from "../../infra/lib/app.js";
+import { AI_SOURCE_KINDS_CONTEXT_KEY, buildAgentXApp, productAiOn } from "../../infra/lib/app.js";
 import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_EVAL_STAGE_INDEXES, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, PRODUCT_KEY_CONTEXT_KEYS, PRODUCT_KEY_PURPOSE } from "../../infra/lib/model-gateway.js";
 
 type Resource = { Type: string; Properties: Record<string, unknown>; DeletionPolicy?: string };
@@ -23,6 +23,7 @@ const BEFORE_SHA256 = "19c9c5ae6200f2ad0f9bc8c30c8241b4918300bbc3095714d8c8165bd
 // The pin is the fixed-name template (the one deployed before generated provider secret names became the default).
 const off = synth({ [MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY]: "fixed" });
 const on = synth({ [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" });
+const openRouterOn = synth({ [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on", [AI_SOURCE_KINDS_CONTEXT_KEY]: "openrouter" });
 const ofType = (t: { Resources: Record<string, Resource> }, type: string) => Object.entries(t.Resources).filter(([, r]) => r.Type === type);
 const idStarting = (type: string, prefix: string) => ofType(on, type).find(([id]) => id.startsWith(prefix))![0];
 const arnOf = (id: string) => ({ "Fn::GetAtt": [id, "Arn"] });
@@ -43,6 +44,14 @@ describe("off unless configured", () => {
     // Rovara-cloud#247: production's gateway carries product AI too (its engine's models come through Rovara's AI, which needs it).
     const production = Template.fromStack(buildAgentXApp({ [MODEL_GATEWAY_CONTEXT_KEY]: "production", agentxRegion: "us-east-1", [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" }).node.findChild("RovaraModelGateway") as Stack).toJSON() as { Parameters: Record<string, unknown> };
     expect(production.Parameters).toHaveProperty("CloudSettingsRoleArn");
+  });
+  it("adds the OpenRouter over-reservation alarm and metric filter when OpenRouter is configured", () => {
+    const resources = openRouterOn.Resources;
+    const alarm = Object.values(resources).find((resource) => resource.Type === "AWS::CloudWatch::Alarm" && JSON.stringify(resource.Properties).includes("OpenRouterOverReservation"));
+    const filter = Object.values(resources).find((resource) => resource.Type === "AWS::Logs::MetricFilter" && JSON.stringify(resource.Properties).includes("openrouter_over_reservation"));
+
+    expect(alarm?.Type).toBe("AWS::CloudWatch::Alarm");
+    expect(filter?.Type).toBe("AWS::Logs::MetricFilter");
   });
   it("repeats the process's literals (deploy.ts, product-seal.ts)", () => {
     expect(MODEL_GATEWAY_EVAL_STAGE_INDEXES).toEqual(GATEWAY_EVAL_STAGE_INDEXES);

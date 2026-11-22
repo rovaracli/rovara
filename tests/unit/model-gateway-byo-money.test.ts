@@ -14,7 +14,6 @@ import { SnapshotPriceSource } from "../../packages/model-gateway/src/price-inde
 import { answerRateQuote, RATE_QUOTE_AUDIENCE } from "../../packages/model-gateway/src/rate-quote.js";
 import type { RunPrice } from "../../packages/model-gateway/src/model-gateway-token.js";
 import { translatedAnswer } from "../../packages/model-gateway/src/agent-openai.js";
-import { openRouterPolicy } from "../../packages/model-gateway/src/openrouter-policy.js";
 import { storedLearningKeys } from "../../packages/model-gateway/src/learning-keys.js";
 import { createAnswersRoutes, ANSWERS_PATH, ANSWERS_STEP, ANSWERS_PAUSE_HEADER } from "../../packages/model-gateway/src/answers-route.js";
 import { createLearningRoutes, LEARNING_PATH, LEARNING_STEP, LEARNING_PAUSE_HEADER } from "../../packages/model-gateway/src/learning-route.js";
@@ -155,15 +154,17 @@ for (const limit of ["none", "task", "companyMonth"] as const) it(`valid signed 
 for (const durable of [false, true]) it(`OpenRouter reports true above-hold money, alarms and refuses until operator clear (${durable})`, async () => {
   const w = world(undefined, 2, durable);
   const model = "openai/gpt-5-mini";
-  const tariff = { model, route: "fixture", ...price, verifiedAt: now - 1, expiresAt: now + 60_000, evidence: "offline-fixture" };
+  const tariff = { model, route: "fixture", pricing: { prompt: "0.000001", completion: "0.000002", internal_reasoning: "0.000002", request: "0", input_cache_read: "0.000001", input_cache_write: "0.000001" }, max_completion_tokens: 2048, reasoning: { mode: "disabled" as const }, verifiedAt: now - 1, expiresAt: now + 60_000, evidence: "offline-fixture" };
   const prices = new SnapshotPriceSource({ load: async () => undefined, save: async () => false }, { now: () => now, openRouterTariffs: [tariff] }); await prices.reload();
   const source = { kind: "company_key" as const, id: "router", name: "Company OpenRouter", provider: "openrouter", connectionRevision: "r1" };
   const sent = vi.fn(async () => translatedAnswer("openrouter", { model, streaming: false }, 200, (async function* () { yield Buffer.from(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 2, completion_tokens: 1, cost: 0.100002 } })); })(), () => undefined));
   w.deps.prices = prices; w.deps.openRouterTariffs = [tariff];
-  w.deps.agentKeys = { connected: async () => true, keyFor: async () => "fixture", resolveForCharge: async () => ({ source, key: async () => "fixture" }) };
+  w.deps.agentKeys = { connected: async () => true, keyFor: async () => "fixture", resolveForCharge: async () => ({ source, key: async () => "fixture" }), identityFor: async () => ({ sourceId: source.id, versionId: source.connectionRevision }) };
   w.deps.agentAi = { sources: { sourceFor: async () => "openrouter_key" }, switchedOn: new Set(["openrouter"]), openrouter: { transport: sent } };
   w.deps.chargeReceipts = { source: (_claims, _model, resolved) => resolved };
-  const runPrice = { companyId: claims.cid, model, provider: "openrouter", sourceId: source.id, connectionRevision: source.connectionRevision, catalogModel: model, snapshotHash: openRouterPolicy(model, now, [tariff])!.hash, snapshotVersion: 1, expiresAt: now + 60_000, inputUsdPerMillion: 1, outputUsdPerMillion: 2, cacheReadUsdPerMillion: 1, cacheWriteUsdPerMillion: 1 };
+  const quote = await answerRateQuote({ prices, keys: w.deps.agentKeys, sources: w.deps.agentAi.sources, now: () => now, region: "us-west-2", switchedOn: new Set(["openrouter"]), offeredProviders: new Set(["openrouter"]), openRouterTariffs: [tariff], verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${model}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
+  const runPrice = (quote.body as { runPrice: RunPrice }).runPrice;
+  expect(runPrice).toBeDefined();
   const request = { ...body, model };
   const token = (tid: string) => mint({ mdl: [model], runPrice, tid });
   expect((await call(w.deps, request, token(claims.tid))).status).toBe(200);

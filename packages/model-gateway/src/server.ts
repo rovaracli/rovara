@@ -2,7 +2,7 @@ import { initialCharge, finishCharge, type ChargeSource } from "./charge-produce
 import { chargeValue, type ChargeReceiptV1 } from "./charge-receipt.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { openRouterPolicy, type OpenRouterTariff } from "./openrouter-policy.js";
+import { openRouterDecimal, openRouterHold, openRouterPolicy, type OpenRouterTariff } from "./openrouter-policy.js";
 import { runPriceAllows } from "./run-price.js";
 import { AGENT_AI_SOURCES, agentSourceSwitchedOn, resolveAgentSource, type AgentAiSource, type ResolvedAgentSource, type AgentSourceVia, type AgentAiSourceReader, type ByoBedrock, type CompanyChatAi, type CompanyEndpointAi, type RovaraAi } from "./agent-ai.js";
 import { endpointTarget, ENDPOINT_ADDRESS_REFUSED, type EndpointTarget } from "./endpoint-guard.js";
@@ -46,7 +46,7 @@ const REFUSAL_CODE = /^[a-z0-9_]{1,64}$/u;
 /** A refusal code as it is logged: a fixed lower-case word, or "other" for anything else (a code never carries provider text). */
 export const logCode = (code: string): string => REFUSAL_CODE.test(code) ? code : "other";
 const PAYER = /^[a-z0-9_]{1,32}$/u;
-export type GatewayLogEvent = { event: "customer_source_over_reservation"; source: "bedrock_byo" | "openrouter"; company: string; costMicros: number; heldMicros: number; overageMicros: number } | { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "settle_failed" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
+export type GatewayLogEvent = { event: "customer_source_over_reservation"; source: "bedrock_byo" | "openrouter"; company: string; costMicros: number; heldMicros: number; overageMicros: number } | { event: "openrouter_over_reservation"; costMicros: number; holdMicros: number; sourceId: string } | { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "settle_failed" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
 export interface GatewayDependencies {
   /** Reviewed tariffs; injected only for offline qualification fixtures. */
   openRouterTariffs?: readonly OpenRouterTariff[];
@@ -287,6 +287,8 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     // A source this route does not serve is never sent on another one's key (no fallback to the company's Anthropic key).
     if (!(AGENT_AI_SOURCES as readonly string[]).includes(source)) return hard(AGENT_UNAVAILABLE);
     if (source === "openrouter_key" && checkModel && claims.mdl.some(model => !model.includes("/"))) return soft(AGENT_MODEL_NOT_SERVED);
+    // Reviewer grants never authorize a source reporting its own cost, with or without
+    // ordinary run-price authority. Preserve the reviewer refusal before key/price reads.
     if (source === "openrouter_key" && claims.reviewer !== undefined) return hard(REVIEWER_CEILING_REFUSED);
     if (source === "openrouter_key" && claims.runPrice === undefined) return hard({ ok: false, status: 409, code: "run_price_authorization_required", message: "Authorize the current AI source and price before this run." });
     if (source === "bedrock_byo") {
@@ -595,6 +597,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let settlementReported: number | undefined;
   let settlementModel: string | undefined;
   let settlementKind: PriceKind = "chat";
+  let cacheWritesForbidden = false;
+  const unexpectedRouterWrite = (value: TokenUsage | undefined): boolean => cacheWritesForbidden && (value?.cacheWrite ?? 0) > 0;
   // How the call ended, for an events route's settle: the refusal word last answered, or a complete answer.
   let refusedCode: string | undefined; let completed = false;
   let early: TokenUsage | undefined;
@@ -609,16 +613,23 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       if (charge !== undefined && settlementReported === undefined) {
         try { const reported = provider?.reportedCostMicros?.(); if (typeof reported === "number" && Number.isSafeInteger(reported) && reported > 0) settlementReported = reported; } catch { /* Missing evidence remains provisional. */ }
       }
+      // Tokens cannot release OpenRouter request/cache fees, but remain evidence of an above-hold debit.
+      let retainMissingUsage = callClaims?.runPrice !== undefined && (!validUsage(settlementUsage) || !hasUsage(settlementUsage));
+      if (route.provider === "openrouter") {
+        let complete = false;
+        try { complete = provider?.reportedCostComplete?.() !== false; } catch { /* An unreadable provenance keeps the hold. */ }
+        if (settlementReported === undefined || !complete || unexpectedRouterWrite(settlementUsage)) retainMissingUsage = true;
+      }
       let estimateRecord: EstimatedSettlement | undefined;
       if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
-        const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: reservedMicros, retainMissingUsage: callClaims?.runPrice !== undefined });
+        const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: reservedMicros, retainMissingUsage });
         cost = amount.actualMicros; estimated = amount.estimated;
         // Customer Bedrock reviews record the true bill like every customer call; other review sources retain their ceiling clamp.
         if (callClaims?.reviewer !== undefined && route.payer !== "bedrock_byo" && cost > reservedMicros) cost = reservedMicros;
         if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
       }
       if (charge !== undefined && reservation !== undefined && route.meter.settleV2 !== undefined && settlementPrice !== undefined) {
-        const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, retainMissingUsage: callClaims?.runPrice !== undefined, customerPriceAuthorized: callClaims?.runPrice !== undefined, notSent: cost === 0, now: now() });
+        const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, retainMissingUsage, customerPriceAuthorized: callClaims?.runPrice !== undefined, notSent: cost === 0, now: now() });
         // Record the customer's true bill, even above the hold. The meter atomically latches overrun.
         const observed = chargeValue(receipt.amountMicros)!;
         if (receipt.billing === "external_provider" && (route.payer === "bedrock_byo" || route.provider === "openrouter") && callClaims !== undefined && observed > reservedMicros) {
@@ -627,6 +638,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         const actualInputTokens = usage?.actualInputTokens?.();
         await route.meter.settleV2({ reservationId: reservation.id, receipt, ...(actualInputTokens === undefined ? {} : { actualInputTokens }) });
         cost = chargeValue(receipt.amountMicros)!; estimated = receipt.status !== "final";
+        if (route.provider === "openrouter" && cost > reservedMicros) log({ event: "openrouter_over_reservation", costMicros: cost, holdMicros: reservedMicros, sourceId: receipt.source.id });
         if (customerReview && sessionCall !== undefined) await deps.reviewerGrants?.giveBack(sessionCall.claims.iss, sessionCall.claims.cid, sessionCall.claims.jti, Math.max(0, sessionCall.debited - cost));
       } else if (sessionCall !== undefined) await deps.reviewerGrants?.giveBack(sessionCall.claims.iss, sessionCall.claims.cid, sessionCall.claims.jti, Math.max(0, sessionCall.debited - cost)); else await route.meter.settle(reservation!, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === undefined ? {} : { route: route.purpose }) });
       settled = { ok: true, micros: cost, estimated };
@@ -727,6 +739,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (claims.runPrice !== undefined) shortenDeadline(claims.runPrice.expiresAt);
     if (price.operatorReview) log({ event: "price_operator_review" });
     settlementPrice = price; settlementModel = guarded.model; settlementKind = guarded.priceKind ?? "chat";
+    // Capture the admitted policy: expiry during the call cannot remove enforcement.
+    cacheWritesForbidden = route.provider === "openrouter" && openRouterPolicy(guarded.model, now(), deps.openRouterTariffs)?.cacheWriteBasis === "never_requested_enforced";
     let caps = await wait(route.caps(scope, claims, controller.signal));
     if ((caps as RouteRefusal).ok === false) { const refused = caps as RouteRefusal; await respond(refused.status, refused.code, refused.message, refused.headers); return; }
     if (!validCaps(caps)) { await respond(503, "unavailable", "model access unavailable"); return; }
@@ -739,6 +753,15 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     }
     let estimate: number;
     try { estimate = estimateCall(guarded.bytes.length - (guarded.media?.dataBytes ?? 0), guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, guarded.inputBounded, guarded.media); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
+    if (route.provider === "openrouter") {
+      const policy = openRouterPolicy(guarded.model, now(), deps.openRouterTariffs);
+      if (policy === undefined) { await respond(409, "invalid_request", "request not allowed"); return; }
+      // DEC 254zzz330: admission stays at the dearer rate; actual completion
+      // includes reasoning. The money core takes max(this token floor, reported debit).
+      settlementPrice = { ...price, outputMicrosPerMTok: Number(openRouterDecimal(policy.pricing.completion) / 1_000_000n) };
+      try { estimate = Math.max(estimate, openRouterHold(policy, guarded.bytes.length + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0), guarded.maxTokens)); }
+      catch { await respond(400, "invalid_request", "request not allowed"); return; }
+    }
     if (estimate === Number.MAX_SAFE_INTEGER && !price.operatorReview) log({ event: "price_operator_review" });
     // Do not race a transaction: its outcome must be known before forwarding or settling. Adapters bound their own transactions.
     const overrunCapable = price.estimated || !guarded.inputBounded;
@@ -886,6 +909,10 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       output.push(last); const bytes = Buffer.concat(output);
       let value: unknown; try { value = JSON.parse(bytes.toString()); } catch { throw new Error("provider unavailable"); }
       usage.whole(value);
+      if (route.provider === "openrouter") {
+        settlementUsage = usage.finish();
+        if (unexpectedRouterWrite(settlementUsage)) throw new Error("provider unavailable");
+      }
       let successHeaders: Readonly<Record<string, string>> = JSON_HEADERS;
       if (route.costHeader !== undefined) {
         // The cost header (answers route): settle BEFORE the head, so the figure sent is the one the meter was written with. Never a guess:
@@ -899,7 +926,11 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       }
       head = true; sink.head(200, successHeaders); await wait(sink.write(bytes));
     }
-    const counts = early ?? usage.finish();
+    const counts = early ?? settlementUsage ?? usage.finish();
+    if (unexpectedRouterWrite(counts)) {
+      settlementUsage = counts;
+      throw new Error("provider unavailable");
+    }
     // Incomplete/malformed SSE is a failed stream, never a silent partial success.
     if (counts === undefined) throw new Error("provider unavailable");
     sink.end(); completed = true;

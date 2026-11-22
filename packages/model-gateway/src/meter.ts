@@ -182,6 +182,9 @@ export class InMemoryMeter implements Meter {
       try { const r = readSettlementReceipt(input.charge.receipt); checkReceiptScope(r, scope, r.callId, estimateMicros, month); if (r.status !== "awaiting_usage" || !/^[0-9a-f-]{36}$/u.test(r.callId) || !/^[a-f0-9]{64}$/u.test(input.charge.requestFingerprint) || this.#open.has(r.callId)) return { ok: false, reason: "busy" }; } catch { return { ok: false, reason: "busy" }; }
     }
     const items = targets(scope, caps, month, this.#partner !== undefined);
+    // Existing spend-row kind, reserved non-task key: source quarantine survives month/task changes.
+    // Review clears this row's sticky overrun explicitly; key rotation does not clear it.
+    if (input.charge?.receipt.model.provider === "openrouter") items.push({ key: JSON.stringify([scope.iss, scope.cid, "task", "", "openrouter", input.charge.receipt.source.id]), item: "task", cap: undefined });
     for (let attempt = 0; attempt < 3; attempt++) {
       if (this.conflict()) continue;
       const sourceKey = customerSource === undefined ? undefined : this.#sourceKey(scope.iss, scope.cid, customerSource);

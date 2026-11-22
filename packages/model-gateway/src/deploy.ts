@@ -123,6 +123,7 @@ export const GATEWAY_MARKERS_TTL_ATTRIBUTE = "expiresAt";
 export const GATEWAY_LOG_EVENTS = {
   refused: "refused",
   overrunBusy: "overrun_busy",
+  openRouterOverReservation: "openrouter_over_reservation",
   settleFailed: "settle_failed",
   providerError: "provider_error",
   priceFetchFailed: "price_fetch_failed",

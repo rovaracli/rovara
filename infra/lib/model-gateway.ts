@@ -22,7 +22,7 @@ import {
   aws_sns as sns,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
+import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix, parseSourceKindsSwitch } from "@agentx/contracts";
 import { applyCloudBoundary, byoCustomerAssumeConditions } from "./cloud-boundary.js";
 
 /**
@@ -232,6 +232,7 @@ export const MODEL_GATEWAY_LEDGER_INDEXES = {
 export const MODEL_GATEWAY_LOG_EVENTS = {
   refused: "refused",
   overrunBusy: "overrun_busy",
+  openRouterOverReservation: "openrouter_over_reservation",
   settleFailed: "settle_failed",
   providerError: "provider_error",
   priceFetchFailed: "price_fetch_failed",
@@ -543,6 +544,7 @@ export class ModelGatewayStack extends Stack {
     // DEC 254t: company-key mode only (product AI), never for production.
     if (props.aiSourceKinds !== undefined && product === undefined) throw new Error("company AI source kinds need the product AI additions (rovaraModelGatewayProductAi=on)");
     if (props.aiSourceKinds !== undefined && props.aiSourceKinds !== "" && env === "production") throw new Error("company AI sources are for named test environments until a Cloud release carries them");
+    const openRouterEnabled = parseSourceKindsSwitch(props.aiSourceKinds).includes("openrouter");
 
     // Network: two zones, public subnets and no NAT gateway. Tasks take only the load balancer's traffic; DynamoDB through a
     // gateway endpoint.
@@ -716,6 +718,7 @@ export class ModelGatewayStack extends Stack {
     alarm("HealthyTasks", targetGroup.metrics.healthyHostCount({ period: Duration.minutes(1), statistic: "Minimum" }), MODEL_GATEWAY_MIN_TASKS, "Fewer than two gateway tasks are healthy", 3, cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD);
     alarm("Refusals", fromLog("Refusals", serveLogs, MODEL_GATEWAY_LOG_EVENTS.refused, fiveMinutes), MODEL_GATEWAY_ALARMS.refusals, "Many calls refused (tokens, budgets, guard)");
     alarm("BusyAnswers", fromLog("BusyAnswers", serveLogs, MODEL_GATEWAY_LOG_EVENTS.overrunBusy, fiveMinutes), MODEL_GATEWAY_ALARMS.busy, "Many busy answers: calls waiting on another estimated-price call of the same company");
+    if (openRouterEnabled) alarm("OpenRouterOverReservation", fromLog("OpenRouterOverReservation", serveLogs, MODEL_GATEWAY_LOG_EVENTS.openRouterOverReservation, fiveMinutes), 1, "OpenRouter settled above its hold; review the source before allowing more calls");
     alarm("SettleFailures", fromLog("SettleFailures", serveLogs, MODEL_GATEWAY_LOG_EVENTS.settleFailed, fiveMinutes), MODEL_GATEWAY_ALARMS.settleFailed, "A call could not settle, or customer-paid provider usage exceeded its hold (admission stopped)");
     alarm("PriceFetchFailures", fromLog("PriceFetchFailures", fetchLogs, MODEL_GATEWAY_LOG_EVENTS.priceFetchFailed, Duration.hours(1)), MODEL_GATEWAY_ALARMS.priceFetchFailed, "The daily price fetch failed (the last good prices stay)");
     // Staleness: no saved fetch on any of the last three days. A new stack has no fetch log yet, and missing data counted as

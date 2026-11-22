@@ -87,7 +87,7 @@ const scopeFields = (scope: MeterScope): Item => ({ iss: scope.iss, cid: scope.c
 const targetsPlain = (targets: readonly Target[]): Plain => targets.map((t) => ({ sk: t.sk, item: t.item, ...(t.cap === undefined ? {} : { cap: t.cap }), ...(t.combined === true ? { combined: true } : {}) }));
 /** `combined`: whether this meter combines; a stored combined target on a meter that does not is unreadable (fail closed). */
 function readTargets(value: unknown, combined = false): Target[] | undefined {
-  if (!Array.isArray(value) || value.length < 3 || value.length > (combined ? 6 : 5)) return undefined;
+  if (!Array.isArray(value) || value.length < 3 || value.length > (combined ? 7 : 6)) return undefined;
   const targets: Target[] = [];
   for (const entry of value) {
     const t = record(entry);
@@ -241,6 +241,8 @@ export class DynamoMeter implements Meter {
     const pk = companyPartition(scope.iss, scope.cid);
     const month = this.#month();
     const items = targetsFor(scope, caps, month, this.#combined !== undefined);
+    // Existing ROW/task kind with a reserved key tuple, no monthly suffix or TTL.
+    if (input.charge?.receipt.model.provider === "openrouter") items.push({ sk: `ROW#${JSON.stringify(["task", "", "openrouter", input.charge.receipt.source.id])}`, item: "task" });
     const id = input.charge?.receipt.callId ?? randomUUID();
     if (input.charge !== undefined) {
       try { const r = readSettlementReceipt(input.charge.receipt); checkReceiptScope(r, scope, id, estimateMicros, month); if (r.status !== "awaiting_usage" || !/^[0-9a-f-]{36}$/u.test(id) || !/^[a-f0-9]{64}$/u.test(input.charge.requestFingerprint)) return { ok: false, reason: "busy" }; } catch { return { ok: false, reason: "busy" }; }

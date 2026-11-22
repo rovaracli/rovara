@@ -279,6 +279,7 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
     expect(fetchedQuery.MetricStat).toMatchObject({ Metric: { MetricName: "PricesFetched-staging" }, Period: 86400, Stat: "Sum" });
     expect(Object.values(resources).some((each) => each.Type === "AWS::CloudWatch::Alarm" && each.Properties.TreatMissingData === "breaching")).toBe(false);
     expect(alarms).toHaveLength(8);
+    expect(filters.some((filter) => filter.MetricTransformations[0]!.MetricName === "OpenRouterOverReservation-staging")).toBe(false);
   });
 
   it("lets CloudWatch publish to the alarm topic, from this account and this stack's alarms only, and keeps the SSL-only deny", () => {

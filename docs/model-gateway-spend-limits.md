@@ -126,3 +126,83 @@ Round 4: missing-usage history reads one reverse CALL-key window of at most 200 
 
 
 Cloud's Spending page reads `GET /v1/app/org/spend`. Only current company owners and admins can read it; Code's fresh access check supplies the company, and request selectors are refused. The existing `DynamoGatewayMeterReader` reads exactly that company's current UTC company-month row with a consistent BatchGet. The response uses `spentThisMonthUsd`, `heldUsd`, the configured `limitUsd`, and `remainingUsd` (limit less the meter's committed total). Its optional `provisionalMicros` appears as “Not yet confirmed”; provisional is part of committed (spent or held). An older row without it stays unavailable. Missing rows, invalid totals, meter failures and a month rollover fail the read. This adds no meter writes, tables or IAM grants. AI and spending is the company monthly-limit editor; Spending limits holds project/person monthly limits, and project pages hold task limits.
+
+## OpenRouter tariff exceptions
+
+`OPENROUTER_RELAXED_TARIFF_MODELS` contains exactly `openai/gpt-5-mini` and
+`openai/gpt-5-nano`. Only these IDs may default absent internal_reasoning,
+request and input_cache_read prices to string `"0"`, or omit a well-formed
+nonnegative catalog web_search price from the tariff. Their search exception
+retains the explicit tool/plugin/suffix prohibitions. Every other ID requires
+all six price fields and zero auxiliary prices, including web_search.
+Unknown/conditional fees and explicit malformed values still refuse.
+
+Mini/nano may normalize an **absent** cache-write price to `"0"` only with
+`cacheWriteBasis: "never_requested_enforced"` and
+`cacheWriteEnforcementVersion: "openrouter-no-cache-write-v1"` in the private
+pinned-route tariff row. Both fields enter its hash. Missing/stale proof,
+non-allowlisted models, and explicit malformed values refuse. Qualification
+records this proof using the same request builder as runtime; it never silently
+infers a zero fee from catalog absence. The builder recursively refuses cache
+and prompt-caching parameters; the Anthropic translator strips cache_control.
+Reported cache-write tokens survive response translation. Any positive count
+refuses the answer (destroys an active stream), retains max(hold, known debit,
+valid token cost) provisionally, and latches the existing durable source stop,
+even below the hold. This is a conditional enforcement basis, not a claim about
+future provider billing. Qualification also refuses reported writes and positive
+auxiliary charges. Reviewed live route evidence and installation are still
+required; `REVIEWED_OPENROUTER_POLICIES` remains empty.
+
+The hold remains rounded upward to micro-USD:
+
+`promptBound * (max(prompt, input_cache_read) + input_cache_write) + max_tokens * max(completion, internal_reasoning) + request`.
+
+Every possible prompt token gets the higher prompt/cache-read rate plus the
+explicit write fee. The direct builder refuses caching directives recursively;
+the Anthropic translator strips cache_control markers. Plugins, search options,
+server search tools and colon variants refuse. This boundary covers the company
+OpenRouter-key route and qualification, not custom-endpoint transport.
+
+Qualification refuses positive or unreadable reported auxiliary cost/fee/search/
+cache-write evidence, including documented prompt_tokens_details.cache_write_tokens.
+It retains validated cache counts and fixed PASS/FAIL checks without echoing
+arbitrary upstream fields. Only upstream_inference_cost may appear in cost_details;
+usage.cost must equal that inference total and generation.total_cost exactly.
+The inference total must also equal exact decimal token billing: uncached prompt
+at prompt rate, cached prompt at cache-read rate, visible output at completion
+rate, reasoning at its explicit positive rate (otherwise completion), plus request.
+Both sources' prompt, combined completion, reasoning and cached counts must agree.
+Unreconcilable receipts refuse, even when below the rounded hold. This deliberately
+conservative qualification may refuse providers with different billing semantics.
+
+The legacy report check no_web_search_cost means no **reported** auxiliary charge
+and exact token-only reconciliation; it is not an itemized zero-search receipt or
+proof about later calls. Offline tests cannot establish real route billing,
+max_price enforcement or reasoning/output limits. Sol re-review, lead 4 Opus money
+review, 9d's final stamped gate, real pinned-provider qualification and installed
+staging proof remain required before a tariff is approved and installed.
+
+
+### Run-8 candidate review queue
+
+The private tariff source is `packages/model-gateway/src/openrouter-policy.ts`.
+Its `CANDIDATE_OPENROUTER_POLICIES` records the two proposed rows from
+`briefs/codex/providers-fast/M2-LIVE-REPORT-run8.json` (owner run 8, `ef670ae9b`).
+Each row carries `status: "CANDIDATE"` and the report pointer. These are review
+inputs only: the runtime default is still the empty `REVIEWED_OPENROUTER_POLICIES`,
+and the policy reader refuses labelled rows even when explicitly supplied.
+
+Promotion uses the existing reviewed source path: reviewers approve the evidence
+and exact route/rates/restrictions, then a source edit removes the candidate label
+and places the approved row in `REVIEWED_OPENROUTER_POLICIES`. The original
+24-hour freshness rule still applies; an expired candidate needs renewed evidence,
+never a fabricated timestamp. There is no automatic import, promotion or install.
+9d's final gate, money reviews and installed staging proof remain required.
+OpenRouter stays off by default until the owner's launch decision (DEC 254zzz337).
+
+Run 8's four cap probes all returned HTTP 404 with error code `"404"` and
+`"No endpoints found that satisfy the max price for this request"`. Qualification
+now accepts only that message (case-insensitive, surrounding whitespace and one
+optional trailing period). The successful same-run control, one-component cap
+differential, accepted 400/404/422 statuses, zero debit and absent id/usage guards
+remain in force; generic no-endpoint/data-policy errors cannot qualify a tariff.

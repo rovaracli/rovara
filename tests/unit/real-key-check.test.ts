@@ -192,13 +192,15 @@ describe("the one check on an OpenAI or OpenRouter key (real transport, fake net
     expect(all(formatResult("openai", result))).not.toContain(KEY);
   });
 
-  // Controller MONEY FIX option (c): OpenRouter is not launched; the diagnostic keeps round-F refusal.
-  it("OpenRouter: without run-price authorization the diagnostic fails closed before transport", async () => {
+  it("OpenRouter: the unpriced owner check refuses before transport without M2 authority", async () => {
+    // M2 requires a reviewed tariff and signed runPrice; this legacy checker has neither.
+    // The bounded qualification harness owns live OpenRouter proof (openrouter-qualify.test.ts).
     for (const cost of [0.00042, undefined]) {
       const fake = chatHttps(200, chatToolStream(cost));
       const result = await runCheck({ kind: "openrouter", key: KEY, model: "openai/gpt-5-mini", transport: createChatCompletionsTransport("openrouter", fake.request) });
       expect(result.pass).toBe(false);
       expect(result.lines[0]).toEqual({ name: "HTTP ok", ok: false, detail: "gateway answered 409 run_price_authorization_required" });
+      expect(result.lines.every(line => !line.ok)).toBe(true);
       expect(result.lines.find(line => line.name === "settled above $0")?.ok).toBe(false);
       expect(fake.seen).toEqual([]);
       expect(all(formatResult("openrouter", result))).not.toContain(KEY);

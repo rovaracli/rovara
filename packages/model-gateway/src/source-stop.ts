@@ -1,5 +1,6 @@
 import type { ChargeReceiptV1 } from "./charge-receipt.js";
 import { chargeValue } from "./charge-receipt.js";
+import { OPENROUTER_RELAXED_TARIFF_MODELS } from "./openrouter-policy.js";
 import { customerSourceOverage } from "./charge-settlement.js";
 import { COMPANY, record, whole } from "./model-gateway-token.js";
 export type CustomerSource = "bedrock_byo" | "openrouter";
@@ -22,7 +23,11 @@ export function receiptCustomerSource(r: ChargeReceiptV1 | undefined): CustomerS
 }
 export function stoppedBy(r: ChargeReceiptV1 | undefined, now: number, routeClass?: RouteClass): SourceStop | undefined {
   const source = receiptCustomerSource(r);
-  if (source === undefined || !customerSourceOverage(r)) return undefined;
+  // The reviewed no-write models never request writes: provisional write evidence violates their bound,
+  // even when the known debit is below the hold. Reuse the durable overrun stop.
+  const u = r === undefined ? undefined : chargeValue(r.usage);
+  const unexpectedWrite = source === "openrouter" && r !== undefined && r.status !== "final" && Object.hasOwn(OPENROUTER_RELAXED_TARIFF_MODELS, r.model.modelId) && u !== undefined && u.cacheWrite5m + u.cacheWrite1h + u.cacheWriteUnknown > 0;
+  if (source === undefined || (!customerSourceOverage(r) && !unexpectedWrite)) return undefined;
   return { ...(routeClass === undefined ? {} : { routeClass }), source, stopped: true, stopId: `${r!.callId}:${r!.revision}`, stoppedAt: now, callId: r!.callId, costMicros: chargeValue(r!.amountMicros)!, heldMicros: chargeValue(r!.originalReservationMicros)! };
 }
 /** A malformed source row fails closed; no month or TTL belongs on this record. */

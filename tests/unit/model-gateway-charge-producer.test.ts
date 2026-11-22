@@ -7,7 +7,8 @@ import { call, claims, now, setup, sse, scope, caps, mint } from "./model-gatewa
 import { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import type { ChargeReceiptV1, SettleV2 } from "../../packages/model-gateway/src/charge-receipt.js";
 import { SnapshotPriceSource } from "../../packages/model-gateway/src/price-index.js";
-import { openRouterPolicy } from "../../packages/model-gateway/src/openrouter-policy.js";
+import { answerRateQuote, RATE_QUOTE_AUDIENCE } from "../../packages/model-gateway/src/rate-quote.js";
+import type { RunPrice } from "../../packages/model-gateway/src/model-gateway-token.js";
 beforeAll(denyNetwork);
 it("negotiates receipts, binds a call and fingerprint before forwarding, and retains its own reservation after truncation", async () => {
   let initial: ChargeReceiptV1 | undefined, settled: ChargeReceiptV1 | undefined, fingerprint: unknown;
@@ -100,14 +101,15 @@ it.each(["anthropic", "openai", "openrouter"] as const)("%s receipts keep the ad
     sources: { sourceFor: async () => `${provider}_key` }, switchedOn: new Set([provider]),
     ...(provider === "anthropic" ? {} : { [provider]: { transport } }),
   }, chargeReceipts: { source: (_claims, _model, resolved) => resolved } });
-  let token = mint({ mdl: [model] });
+  let runPrice: RunPrice | undefined;
   if (provider === "openrouter") {
-    const tariff = { model, route: "fixture", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, verifiedAt: now - 1, expiresAt: now + 60_000, evidence: "offline-fixture" };
+    const tariff = { model, route: "fixture", pricing: { prompt: "0.000001", completion: "0.000002", internal_reasoning: "0.000002", request: "0", input_cache_read: "0", input_cache_write: "0.000001" }, max_completion_tokens: 2048, reasoning: { mode: "disabled" as const }, verifiedAt: now - 1, expiresAt: now + 60_000, evidence: "fixture" };
     const prices = new SnapshotPriceSource({ load: async () => undefined, save: async () => false }, { now: () => now, openRouterTariffs: [tariff] }); await prices.reload();
     f.deps.prices = prices; f.deps.openRouterTariffs = [tariff];
-    token = mint({ mdl: [model], runPrice: { companyId: claims.cid, model, provider, sourceId: source.id, connectionRevision: source.connectionRevision, catalogModel: model, snapshotHash: openRouterPolicy(model, now, [tariff])!.hash, snapshotVersion: 1, expiresAt: now + 60_000, inputUsdPerMillion: 1, outputUsdPerMillion: 2, cacheReadUsdPerMillion: 1, cacheWriteUsdPerMillion: 1 } });
+    const quote = await answerRateQuote({ prices, keys: { ...f.deps.agentKeys!, identityFor: async () => ({ sourceId: source.id, versionId: source.connectionRevision }) }, sources: { sourceFor: async () => "openrouter_key" }, now: () => now, region: "us-west-2", switchedOn: new Set(["openrouter"]), offeredProviders: new Set(["openrouter"]), openRouterTariffs: [tariff], verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }) }, { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${model}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
+    runPrice = (quote.body as { runPrice: RunPrice }).runPrice;
   }
-  expect((await call(f.deps, { model, max_tokens: 10, messages: [{ role: "user", content: "hello" }], stream: true }, token)).status).toBe(200);
+  expect((await call(f.deps, { model, max_tokens: 10, messages: [{ role: "user", content: "hello" }], stream: true }, mint({ mdl: [model], ...(runPrice === undefined ? {} : { runPrice }) }))).status).toBe(200);
   expect(sent).toEqual(["pinned-key"]);
   expect(reserved?.charge?.receipt.source).toEqual(source);
 });
