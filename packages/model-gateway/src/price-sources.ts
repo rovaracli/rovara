@@ -161,7 +161,7 @@ export function fetchAWS(transport: PriceTransport, limits: SourceLimits = {}): 
         for (const term of Object.values(skuTerms)) {
           const dims = record(record(term)?.priceDimensions); if (dims === undefined) return failure();
           for (const dimension of Object.values(dims)) {
-            const d = record(dimension); if (d?.unit !== "1M tokens") continue;
+            const d = record(dimension); if (d?.unit !== "1M tokens") return failure();
             const raw = record(d.pricePerUnit)?.USD;
             const n = typeof raw === "string" && /^(?:\d+)(?:\.\d+)?$/u.test(raw) ? Number(raw) : NaN;
             if (!Number.isFinite(n) || n <= 0) invalid = true;

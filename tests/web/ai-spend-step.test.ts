@@ -3,7 +3,7 @@
 // The step follows the served default until an explicit model choice, prefills the saved monthly limit or the existing default, and its one
 // Save writes changed rows only; pinning a model always requires an explicit choice. A plain member sees it read only. Refusals are the server's fixed sentences. The project part keeps "Same as company" picked.
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
@@ -34,7 +34,7 @@ function mountRoute(path: string, respond: Respond) {
  for (const [key, value] of seeded) f.storage.set(key, value);
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [path] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
- return { ...f, close: () => { view.unmount(); router.dispose(); query.clear(); } };
+ return { ...f, query, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
 /** The component alone, as PR 9's setup shell places it. */
 function mountAlone(element: ReturnType<typeof h>, respond: Respond, path = "/app/setup") {
@@ -43,7 +43,7 @@ function mountAlone(element: ReturnType<typeof h>, respond: Respond, path = "/ap
  const query = createQueryClient();
  const router = createMemoryRouter([{ path: "/app/setup", element }], { initialEntries: [path] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
- return { ...f, close: () => { view.unmount(); router.dispose(); query.clear(); } };
+ return { ...f, query, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
 
 const OFFERED = ["zai.glm-4.7", "claude-sonnet-4-5"];
@@ -100,17 +100,134 @@ describe("the company step, AI and spending", () => {
   } finally { f.close(); }
  });
 
- it("an exempt company on the default shows Rovara's AI with the default note; with its own key connected the step shows the own key, never a guess", async () => {
-  for (const [effective, own] of [["rovara", false], ["anthropic_key", true]] as const) {
-   const c = company({ cap: null, source: null, model: null });
-   const f = mountRoute("/app/admin/ai-spending", (r) => (r.path === "/v1/app/org/agent-ai" && r.method === "GET" ? { status: 200, body: { ...(agentAi(null, 0) as object), effectiveSource: effective, sourceIsDefault: true } } : c.respond(r)));
-   try {
-    await screen.findByLabelText("Company model");
-    expect(screen.queryByTestId("ai-spend-default") !== null).toBe(!own);
-    expect((screen.getByTestId("ai-spend-rovara").querySelector("input") as HTMLInputElement).checked).toBe(!own);
-    expect((screen.getByTestId("ai-spend-own").querySelector("input") as HTMLInputElement).checked).toBe(own);
-   } finally { f.close(); }
-  }
+ it("a served default shows company billing and a working Change link on the real route", async () => {
+  const c = company({ cap: 500_000_000, source: null, model: null });
+  const f = mountRoute("/app/admin/ai-spending", r => r.path === "/v1/app/org/agent-ai" && r.method === "GET"
+   ? { status: 200, body: { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } } : c.respond(r));
+  try {
+   const note = await screen.findByTestId("ai-spend-default");
+   expect(note.textContent).toContain("Rovara's AI, billed to your company");
+   const change = within(note).getByRole("link", { name: "Change" });
+   expect(change.getAttribute("href")).toBe("/app/admin/ai-spending#ai-connections");
+   fireEvent.click(change);
+   expect(await screen.findByRole("heading", { name: "Company AI connections" })).toBeTruthy();
+   fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   await screen.findByTestId("ai-spend-saved");
+   expect(c.writes.map(w => w.path)).toEqual(["/v1/app/org/settings"]);
+   expect(c.state.source).toBeNull();
+  } finally { f.close(); }
+ });
+
+ it.each([false, true])("inline Anthropic connect refreshes the source; explicit Rovara save=%s", async (chooseRovara) => {
+  const c = company({ cap: 500_000_000, source: null, model: null });
+  let connected = false;
+  const f = mountRoute("/app/admin/ai-spending", r => {
+   if (r.path === "/v1/app/org/learning-ai/key" && r.method === "PUT") { connected = true; return { status: 200, body: { revision: 1 } }; }
+   if (r.path === "/v1/app/org/learning-ai") return { status: 200, body: { revision: connected ? 1 : 0, accounts: { anthropic: { connected }, openai: { connected: false }, gemini: { connected: false } }, removed: [], pausedNow: [], pauseReasons: [] } };
+   if (r.path === "/v1/app/org/agent-ai" && r.method === "GET" && c.state.source === null) return { status: 200, body: { ...agentAi(null, 0), anthropicKeyConnected: connected, bedrockConnected: false, effectiveSource: connected ? "anthropic_key" : "rovara", sourceIsDefault: true } };
+   return c.respond(r);
+  });
+  try {
+   expect((await screen.findByTestId("ai-spend-default")).textContent).toContain("Rovara's AI, billed to your company");
+   expect(screen.getByTestId("ai-spend-rovara").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+   fireEvent.click(screen.getByText("Connect company AI"));
+   const input = await screen.findByLabelText("Paste the Anthropic key");
+   fireEvent.change(input, { target: { value: "fixture-anthropic-key" } });
+   fireEvent.submit(input.closest("form")!);
+   await screen.findByText("Key connected.");
+   await waitFor(() => expect(screen.queryByTestId("ai-spend-default")).toBeNull());
+   expect(screen.getByTestId("ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+   expect(screen.getByRole<HTMLInputElement>("radio", { name: "Your own Anthropic key" }).checked).toBe(true);
+   expect(screen.getByText(/Task source: Your Anthropic key/u)).toBeTruthy();
+   expect(c.writes).toEqual([]);
+   if (chooseRovara) fireEvent.click(screen.getByTestId("ai-spend-rovara").querySelector<HTMLInputElement>("input")!);
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   const saved = await screen.findByTestId("ai-spend-saved");
+   expect(c.writes).toEqual(chooseRovara ? [{ method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 0, source: "rovara" } }] : []);
+   expect(saved.textContent).toContain(chooseRovara ? "Current AI source: Rovara's AI" : "Current AI source: Your Anthropic key");
+   expect(screen.getByTestId(chooseRovara ? "ai-spend-rovara" : "ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+  } finally { f.close(); }
+ });
+
+ it.each([false, true, "anthropic_key"] as const)("inline Bedrock connect refreshes the source; explicit choice=%s", async (choice) => {
+  const chooseRovara = choice === true;
+  const c = company({ cap: 500_000_000, source: null, model: null });
+  const roleArn = "arn:aws:iam::123456789012:role/RovaraBedrockInvoke-fixture";
+  let connected = false;
+  const f = mountRoute("/app/admin/ai-spending", r => {
+   if (r.path === "/v1/app/org/bedrock/setup/us-west-2") return { status: 200, body: { companyId: "org_aaaaaaaaaaaaaaaaaaaa", region: "us-west-2", externalId: "rvb-" + "a".repeat(40), brokerRoleArn: "arn:aws:iam::123456789012:role/broker", templateUrl: "https://docs.example/template.json", presets: { "claude-haiku-4-5": "us.anthropic.claude-haiku-4-5-v1:0" } } };
+   if (r.path === "/v1/app/org/bedrock") {
+    if (r.method === "PUT") connected = true;
+    return { status: 200, body: { revision: connected ? 1 : 0, canChange: true, removedUntil: null, usage: "AWS bills your account.", connection: connected ? { connected: true, connectedAt: 1, updatedAt: 1, checkedAt: 1, roleArn, region: "us-west-2", allowGlobal: false, models: [{ name: "claude-haiku-4-5", id: "us.anthropic.claude-haiku-4-5-v1:0", state: "ready" }], productModels: [] } : null } };
+   }
+   if (r.path === "/v1/app/org/agent-ai" && r.method === "GET" && c.state.source === null) return { status: 200, body: { ...agentAi(null, 0), bedrockConnected: connected, effectiveSource: connected ? "bedrock_byo" : "rovara", sourceIsDefault: true, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: true }] } };
+   return c.respond(r);
+  });
+  try {
+   expect((await screen.findByTestId("ai-spend-default")).textContent).toContain("Rovara's AI, billed to your company");
+   expect(screen.getByTestId("ai-spend-rovara").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+   fireEvent.click(screen.getByText("Connect company AI"));
+   const card = within(screen.getByRole("region", { name: "Your own Bedrock" }));
+   fireEvent.click(await card.findByRole("button", { name: "Load Bedrock models" }));
+   fireEvent.click(await card.findByLabelText("claude-haiku-4-5"));
+   fireEvent.change(card.getByLabelText("Bedrock role ARN"), { target: { value: roleArn } });
+   fireEvent.click(card.getByRole("button", { name: "Check and save Bedrock" }));
+   await card.findByText(roleArn);
+   await waitFor(() => expect(screen.queryByTestId("ai-spend-default")).toBeNull());
+   expect(screen.getByTestId("ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+   expect(screen.getByRole<HTMLInputElement>("radio", { name: "Your own Bedrock" }).checked).toBe(true);
+   expect(screen.getByText(/Task source: Your Bedrock/u)).toBeTruthy();
+   expect(c.writes).toEqual([]);
+   if (choice === "anthropic_key") {
+    fireEvent.click(screen.getByRole("radio", { name: "Your own Anthropic key (not connected yet)" }));
+    expect.soft(screen.getByTestId("ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+    expect.soft(screen.queryByRole<HTMLInputElement>("radio", { name: "Your own Anthropic key (not connected yet)" })?.checked).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByTestId("ai-spend-saved");
+    expect(c.writes).toEqual([{ method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 0, source: "anthropic_key" } }]);
+    return;
+   }
+   if (chooseRovara) fireEvent.click(screen.getByTestId("ai-spend-rovara").querySelector<HTMLInputElement>("input")!);
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   const saved = await screen.findByTestId("ai-spend-saved");
+   expect(c.writes).toEqual(chooseRovara ? [{ method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 0, source: "rovara" } }] : []);
+   expect(saved.textContent).toContain(chooseRovara ? "Current AI source: Rovara's AI" : "Current AI source: Your Bedrock");
+   expect(screen.getByTestId(chooseRovara ? "ai-spend-rovara" : "ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+  } finally { f.close(); }
+ });
+
+ it.each([
+  { effectiveSource: "anthropic_key", provider: "Your own Bedrock", source: "bedrock_byo" },
+  { effectiveSource: "bedrock_byo", provider: "Your own Anthropic key (not connected yet)", source: "anthropic_key" },
+ ])("selecting $provider after a source refresh keeps Own selected and saves $source", async ({ effectiveSource, provider, source }) => {
+  const c = company({ cap: 500_000_000, source: null, model: null });
+  let refreshed = false;
+  const f = mountRoute("/app/admin/ai-spending", r => {
+   if (r.path === "/v1/app/org/agent-ai" && r.method === "GET" && c.state.source === null) return { status: 200, body: {
+    ...agentAi(null, 0), anthropicKeyConnected: refreshed && effectiveSource === "anthropic_key", bedrockConnected: refreshed,
+    effectiveSource: refreshed ? effectiveSource : "rovara", sourceIsDefault: true,
+    choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: true }],
+   } };
+   return c.respond(r);
+  });
+  try {
+   await screen.findByTestId("ai-spend-default");
+   expect(screen.getByTestId("ai-spend-rovara").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+   refreshed = true;
+   await act(async () => { await f.query.invalidateQueries({ queryKey: ["ai-spend"] }); });
+   await waitFor(() => expect(screen.queryByTestId("ai-spend-default")).toBeNull());
+   expect(screen.getByTestId("ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+   const providerRadio = screen.getByRole<HTMLInputElement>("radio", { name: provider });
+   expect(providerRadio.checked).toBe(false);
+   expect(c.writes).toEqual([]);
+   fireEvent.click(providerRadio);
+   expect.soft(screen.getByTestId("ai-spend-own").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+   expect.soft(screen.queryByRole<HTMLInputElement>("radio", { name: provider })?.checked).toBe(true);
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   await screen.findByTestId("ai-spend-saved");
+   expect(c.writes).toEqual([{ method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 0, source } }]);
+  } finally { f.close(); }
  });
 
  it("a new company with no saved source and no default: one Save writes the limit and the shown Rovara's AI (#255)", async () => {
@@ -167,12 +284,12 @@ describe("the company step, AI and spending", () => {
 
  it("a refetched effective default never makes an untouched source choice save", async () => {
   const c = company({ cap: 800_000_000, source: null, model: null });
-  let effective: "rovara" | "anthropic_key" = "rovara";
+  let chosen = false;
   const respond: Respond = r => {
    if (r.path === "/v1/app/org/agent-ai" && r.method === "GET") {
-    return { status: 200, body: { ...(agentAi(null, 0) as object), effectiveSource: effective, sourceIsDefault: true } };
+    return { status: 200, body: chosen ? agentAi("anthropic_key", 1) : { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } };
    }
-   if (r.path === "/v1/app/org/engine-model" && r.method === "PUT") effective = "anthropic_key";
+   if (r.path === "/v1/app/org/engine-model" && r.method === "PUT") chosen = true;
    return c.respond(r);
   };
   const f = mountRoute("/app/admin/ai-spending", respond);
@@ -189,6 +306,35 @@ describe("the company step, AI and spending", () => {
    expect(c.writes.filter(w => w.path === "/v1/app/org/engine-model")).toHaveLength(1);
    expect(c.writes.some(w => w.path === "/v1/app/org/agent-ai")).toBe(false);
    expect(c.state.source).toBeNull();
+  } finally { f.close(); }
+ });
+
+ it("a source refresh preserves explicit drafts and saves against the current source version", async () => {
+  const c = company({ cap: 500_000_000, source: null, model: null });
+  let refreshed = false;
+  const f = mountRoute("/app/admin/ai-spending", async r => {
+   if (r.path === "/v1/app/org/agent-ai") {
+    if (r.method === "PUT") { await c.respond(r); return { status: 200, body: agentAi(c.state.source, 5) }; }
+    return { status: 200, body: c.state.source !== null ? agentAi(c.state.source, 5) : refreshed ? agentAi("bedrock_byo", 4) : { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } };
+   }
+   return c.respond(r);
+  });
+  try {
+   await screen.findByLabelText("Company model");
+   fireEvent.change(screen.getByLabelText("Company model"), { target: { value: "claude-sonnet-4-5" } });
+   fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+   fireEvent.click(screen.getByTestId("ai-spend-own").querySelector<HTMLInputElement>("input")!);
+   refreshed = true;
+   await act(async () => { await f.query.invalidateQueries({ queryKey: ["ai-spend"] }); });
+   expect(await screen.findByText(/Task source: Your Bedrock/u)).toBeTruthy();
+   expect(screen.getByRole<HTMLInputElement>("radio", { name: "Your own Anthropic key (not connected yet)" }).checked).toBe(true);
+   expect(screen.getByLabelText<HTMLSelectElement>("Company model").value).toBe("claude-sonnet-4-5");
+   expect(screen.getByLabelText<HTMLInputElement>(/Company monthly limit/u).value).toBe("600");
+   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+   const saved = await screen.findByTestId("ai-spend-saved");
+   expect(c.writes.map(w => w.path)).toEqual(["/v1/app/org/settings", "/v1/app/org/agent-ai", "/v1/app/org/engine-model"]);
+   expect(c.writes[1]).toEqual({ method: "PUT", path: "/v1/app/org/agent-ai", retry: "never", body: { expectedVersion: 4, source: "anthropic_key" } });
+   expect(saved.textContent).toContain("Current AI source: Your Anthropic key");
   } finally { f.close(); }
  });
 
@@ -425,4 +571,93 @@ describe("a project's AI and spend limit", () => {
    expect((await screen.findByTestId("project-spend-error")).textContent).toBe("That's above your company's per-task limit. Pick a lower amount.");
   } finally { f.close(); }
  });
+});
+
+// R1/R2/R4: fresh served facts, no stale billing or premature save claim.
+for (const failure of [403, 503]) it(`a later source read failure ${failure} drops the default claim and Save, even with cached data`, async () => {
+ const c = company({ cap: 500_000_000, source: null, model: null }); let failed = false;
+ const f = mountRoute("/app/admin/ai-spending", r => r.path === "/v1/app/org/agent-ai" && r.method === "GET"
+  ? failed ? { status: failure, body: { error: { code: "FORBIDDEN", message: "not readable" } } } : { status: 200, body: { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } } : c.respond(r));
+ try {
+  await screen.findByTestId("ai-spend-default");
+  fireEvent.click(screen.getByRole("button", { name: "Save" })); await screen.findByTestId("ai-spend-saved");
+  failed = true;
+  await act(async () => { await f.query.refetchQueries({ predicate: q => q.queryKey[0] === "ai-spend" && q.queryKey.at(-1) === "agent-ai" }); });
+  await screen.findByTestId("ai-spend-source-read-error", {}, { timeout: 5000 });
+  expect(screen.queryByTestId("ai-spend-default")).toBeNull();
+  expect(screen.queryByTestId("ai-spend-saved")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+ } finally { f.close(); }
+});
+it("does not claim Saved when the confirming source read fails", async () => {
+ const c = company({ cap: 500_000_000, source: null, model: null }); let wrote = false;
+ const f = mountRoute("/app/admin/ai-spending", r => {
+  if (r.method === "PUT") wrote = true;
+  if (r.path === "/v1/app/org/agent-ai" && r.method === "GET") return wrote ? { status: 403, body: { error: { code: "UNAVAILABLE", message: "unreadable" } } } : { status: 200, body: { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } };
+  return c.respond(r);
+ });
+ try {
+  await screen.findByTestId("ai-spend-default");
+  fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByTestId("ai-spend-source-read-error", {}, { timeout: 5000 });
+  expect(screen.queryByTestId("ai-spend-saved")).toBeNull();
+  expect(document.body.textContent).toContain("Rovara didn't confirm this yet");
+ } finally { f.close(); }
+});
+it("a served default can continue without saving, but model, cap, gateway and step checks still gate it", async () => {
+ const stages = ["understand", "plan", "plan_check", "build", "code_review", "security_review", "pull_request"];
+ for (const blocked of ["none", "model", "cap", "gateway", "steps", "source"]) {
+  const c = company({ cap: 500_000_000, source: null, model: "zai.glm-4.7" });
+  const f = mountAlone(h(AiSpendStep, { role: "owner", developerId: me, onContinue: () => undefined }), r => {
+   if (r.path === "/v1/app/org/agent-ai") return { status: 200, body: { ...agentAi(null, 0), ...(blocked === "source" ? {} : { effectiveSource: "rovara", sourceIsDefault: true }) } };
+   if (r.path === "/v1/app/org/agent-models") return { status: 200, body: { revision: 1, offered: OFFERED, canChange: true, steps: stages.map(stage => ({ stage, setting: null, refused: blocked === "steps", effective: blocked === "steps" ? null : { model: "zai.glm-4.7", companyDefault: true } })) } };
+   if (r.path === "/v1/app/org/engine-model" && blocked === "model") return { status: 200, body: engine(null, "install") };
+   if (r.path === "/v1/app/org/settings") return { status: 200, body: { ...settings(blocked === "cap" ? null : 500_000_000, 1), ...(blocked === "gateway" ? { modelGateway: { ready: false, reason: "not_ready", message: "not ready" } } : {}) } };
+   return c.respond(r);
+  });
+  try {
+   await screen.findByLabelText("Company model");
+   await waitFor(() => expect(screen.getByTestId("onboard-continue-repos")).toHaveProperty("disabled", blocked !== "none"));
+   expect(c.writes).toEqual([]);
+   if (blocked === "source") expect(screen.queryByTestId("ai-spend-default")).toBeNull();
+  } finally { f.close(); }
+ }
+});
+
+it("R2 reports the re-read company limit, and retires the status on a newer disagreeing read", async () => {
+ const c = company({ cap: 500_000_000, source: null, model: null });
+ const f = mountRoute("/app/admin/ai-spending", r => {
+  if (r.path === "/v1/app/org/settings" && r.method === "PUT") return { status: 200, body: settings(550_000_000, 2) };
+  if (r.path === "/v1/app/org/settings" && r.method === "GET") return { status: 200, body: settings(c.state.cap === 500_000_000 ? 550_000_000 : c.state.cap, 2) };
+  if (r.path === "/v1/app/org/agent-ai") return { status: 200, body: { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } };
+  return c.respond(r);
+ });
+ try {
+  await screen.findByLabelText("Company model");
+  fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  const status = await screen.findByTestId("ai-spend-saved");
+  expect(status.textContent).toContain("$550"); expect(status.textContent).not.toContain("$600");
+  c.state.cap = 700_000_000;
+  await act(async () => { await f.query.refetchQueries({ predicate: q => q.queryKey[0] === "ai-spend" && q.queryKey.at(-1) === "settings" }); });
+  await waitFor(() => expect(screen.queryByTestId("ai-spend-saved")).toBeNull());
+ } finally { f.close(); }
+});
+it("R2 offers a read-only Check after an unconfirmed default-card save", async () => {
+ const c = company({ cap: 500_000_000, source: null, model: null }); let wrote = false, unavailable = false;
+ const f = mountRoute("/app/admin/ai-spending", r => {
+  if (r.method === "PUT") { wrote = true; unavailable = true; }
+  if (r.path === "/v1/app/org/agent-ai") return wrote && unavailable ? { status: 403, body: { error: { code: "FORBIDDEN", message: "unreadable" } } } : { status: 200, body: { ...agentAi(null, 0), effectiveSource: "rovara", sourceIsDefault: true } };
+  return c.respond(r);
+ });
+ try {
+  await screen.findByLabelText("Company model");
+  fireEvent.change(screen.getByLabelText(/Company monthly limit/u), { target: { value: "600" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  const check = await screen.findByRole("button", { name: "Check" });
+  const before = c.writes.length; unavailable = false; fireEvent.click(check);
+  await waitFor(() => expect(screen.getByTestId("ai-spend-saved").textContent).toContain("$600"));
+  expect(c.writes).toHaveLength(before);
+ } finally { f.close(); }
 });

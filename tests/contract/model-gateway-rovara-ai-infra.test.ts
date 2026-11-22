@@ -64,6 +64,9 @@ describe("Rovara's AI in the gateway stack (DEC 240)", () => {
   it("on: the process gets the allow-list and the operator's exempt list as set", () => {
     const env = serveEnv(on);
     expect(env[GATEWAY_ENV.rovaraAiModels]).toBe(MODELS);
+    expect(MODEL_GATEWAY_ENV.rovaraAiSourceId).toBe(GATEWAY_ENV.rovaraAiSourceId);
+    const role = Object.keys(on.Resources).find(id => id.startsWith("ServeTaskRole") && on.Resources[id]!.Type === "AWS::IAM::Role")!;
+    expect(env[GATEWAY_ENV.rovaraAiSourceId]).toEqual(join([{ "Fn::GetAtt": [role, "Arn"] }, "@us-west-2"]));
     expect(env[GATEWAY_ENV.rovaraAiExempt]).toBe(FOUNDERS);
     expect(MODEL_GATEWAY_ENV.rovaraAiModels).toBe(GATEWAY_ENV.rovaraAiModels);
     expect(MODEL_GATEWAY_ENV.rovaraAiExempt).toBe(GATEWAY_ENV.rovaraAiExempt);

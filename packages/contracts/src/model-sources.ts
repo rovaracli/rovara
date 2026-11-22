@@ -24,7 +24,7 @@ export type CustomSourceKind = (typeof CUSTOM_SOURCE_KINDS)[number];
  */
 export const SOURCE_KINDS_AT_LAUNCH: readonly CustomSourceKind[] = CUSTOM_SOURCE_KINDS;
 /** What an install has switched on when it names nothing: no custom kind. */
-export const SOURCE_KINDS_SWITCHED_ON_DEFAULT: readonly CustomSourceKind[] = [];
+export const SOURCE_KINDS_SWITCHED_ON_DEFAULT: readonly CustomSourceKind[] = ["bedrock"]; // owner launch decision 2026-11-20 (DEC 254zzz241): Bedrock own-account on; OpenRouter stays off (M2)
 /** The most kinds an install setting may name (each supported kind at most once). */
 const SOURCE_KINDS_SWITCH_MAX = CUSTOM_SOURCE_KINDS.length;
 

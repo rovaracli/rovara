@@ -11,6 +11,7 @@ export type PriceKind = "chat" | "embedding";
 export interface PriceOrigin { source: "litellm" | "aws" | "override"; fetchedAt: number }
 export interface ResolvedPrice extends Price { estimated: boolean; priceVersion?: number; knownTokenPrice?: true }
 export interface PriceSource {
+  quoteBasis?(provider: string, model: string): { version: number; hash: string; fetchedAt: number; model: string } | undefined;
   correctionFor?(provider: string, model: string): (ResolvedPrice & { origin: PriceOrigin; priceVersion: number }) | undefined;
   effectiveFor?(provider: string, model: string, kind: PriceKind): ResolvedPrice | Promise<ResolvedPrice>;
   priceFor(provider: string, model: string, signal?: AbortSignal): Price | undefined | Promise<Price | undefined>;

@@ -10,6 +10,7 @@
 // with parseReportedCost and handed to the money core (ProviderResponse.reportedCostMicros), which applies settleAmount's rules.
 // Every converter is total over untrusted data: a malformed or incomplete answer throws (the call is then a broken stream: charged
 // at its hold, never a silent partial success).
+import { openRouterRequest, type OpenRouterPolicy } from "./openrouter-policy.js";
 import { randomUUID } from "node:crypto";
 import https from "node:https";
 import type { ClientRequest } from "node:http";
@@ -88,7 +89,7 @@ function messagesOf(m: Json): Json[] | undefined {
  * not offered with (refused before any hold). `metadata` (a user id for Anthropic's abuse checks) and cache markers are dropped:
  * they carry no meaning for the answer. `thinking` is accepted only as disabled.
  */
-export function toChatCompletions(body: Json, model: string, maxTokens: number, provider: ChatDialect): Json | undefined {
+export function toChatCompletions(body: Json, model: string, maxTokens: number, provider: ChatDialect, policy?: OpenRouterPolicy): Json | undefined {
   if (!OPENAI_AGENT_MODEL.test(model) || !whole(maxTokens) || maxTokens < 1) return undefined;
   const allowed = new Set(["model", "messages", "max_tokens", "stream", "system", "temperature", "top_p", "stop_sequences", "metadata", "tools", "tool_choice", "thinking"]);
   if (Object.keys(body).some((k) => !allowed.has(k))) return undefined;
@@ -143,7 +144,7 @@ export function toChatCompletions(body: Json, model: string, maxTokens: number, 
   if (out.tools === undefined && messages.some((m) => m.role === "tool" || m.tool_calls !== undefined)) return undefined;
   if (out.stream === true) out.stream_options = { include_usage: true };
   // OpenRouter's usage accounting: the final usage then carries the call's cost.
-  if (provider === "openrouter") out.usage = { include: true };
+  if (provider === "openrouter") { out.usage = { include: true }; if (policy !== undefined) return openRouterRequest(out, policy); }
   return out;
 }
 

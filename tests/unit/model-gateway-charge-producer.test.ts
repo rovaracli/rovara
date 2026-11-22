@@ -6,6 +6,8 @@ import { denyNetwork } from "./model-gateway-no-network.js";
 import { call, claims, now, setup, sse, scope, caps, mint } from "./model-gateway-fixture.js";
 import { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import type { ChargeReceiptV1, SettleV2 } from "../../packages/model-gateway/src/charge-receipt.js";
+import { SnapshotPriceSource } from "../../packages/model-gateway/src/price-index.js";
+import { openRouterPolicy } from "../../packages/model-gateway/src/openrouter-policy.js";
 beforeAll(denyNetwork);
 it("negotiates receipts, binds a call and fingerprint before forwarding, and retains its own reservation after truncation", async () => {
   let initial: ChargeReceiptV1 | undefined, settled: ChargeReceiptV1 | undefined, fingerprint: unknown;
@@ -68,7 +70,7 @@ it.each(["openai", "converse"] as const)("%s binds the translated wire bytes and
   const f = setup({ meter, agentKeys: { connected: async () => true, keyFor: async () => "fixture-key" }, agentAi: {
     sources: { sourceFor: async () => adapter === "openai" ? "openai_key" : "rovara" },
     switchedOn: new Set(["openai"]),
-    ...(adapter === "openai" ? { openai: { transport } } : { rovara: { transport, models: new Map([[model, model]]), exempt: new Set<string>() } }),
+    ...(adapter === "openai" ? { openai: { transport } } : { rovara: { transport, models: new Map([[model, model]]), exempt: new Set([claims.cid]) } }),
   } });
   f.deps.chargeReceipts = { source: () => ({ source: { kind: "company_key", id: "connection_1", name: "Company key", provider: "openai", connectionRevision: "7" }, billing: "external_provider" }) };
   const result = await call(f.deps, { model, max_tokens: 100, stream: true, tools: [{ name: "ping", description: "Ping", input_schema: { type: "object", properties: {} } }], messages: [{ role: "user", content: "hello" }] }, mint({ mdl: [model] }));
@@ -98,7 +100,14 @@ it.each(["anthropic", "openai", "openrouter"] as const)("%s receipts keep the ad
     sources: { sourceFor: async () => `${provider}_key` }, switchedOn: new Set([provider]),
     ...(provider === "anthropic" ? {} : { [provider]: { transport } }),
   }, chargeReceipts: { source: (_claims, _model, resolved) => resolved } });
-  expect((await call(f.deps, { model, max_tokens: 10, messages: [{ role: "user", content: "hello" }], stream: true }, mint({ mdl: [model] }))).status).toBe(200);
+  let token = mint({ mdl: [model] });
+  if (provider === "openrouter") {
+    const tariff = { model, route: "fixture", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, verifiedAt: now - 1, expiresAt: now + 60_000, evidence: "offline-fixture" };
+    const prices = new SnapshotPriceSource({ load: async () => undefined, save: async () => false }, { now: () => now, openRouterTariffs: [tariff] }); await prices.reload();
+    f.deps.prices = prices; f.deps.openRouterTariffs = [tariff];
+    token = mint({ mdl: [model], runPrice: { companyId: claims.cid, model, provider, sourceId: source.id, connectionRevision: source.connectionRevision, catalogModel: model, snapshotHash: openRouterPolicy(model, now, [tariff])!.hash, snapshotVersion: 1, expiresAt: now + 60_000, inputUsdPerMillion: 1, outputUsdPerMillion: 2, cacheReadUsdPerMillion: 1, cacheWriteUsdPerMillion: 1 } });
+  }
+  expect((await call(f.deps, { model, max_tokens: 10, messages: [{ role: "user", content: "hello" }], stream: true }, token)).status).toBe(200);
   expect(sent).toEqual(["pinned-key"]);
   expect(reserved?.charge?.receipt.source).toEqual(source);
 });
@@ -120,7 +129,7 @@ it.each(["anthropic_key", "rovara"] as const)("fallback to %s binds only the win
     },
   }, agentAi: {
     sources: { sourceFor: async () => "openai_key", orderFor: async () => ({ source: "openai_key", fallback: [winner] }) },
-    switchedOn: new Set(["openai"]), openai: { transport }, rovara: { transport, models: new Map([[model, "us.anthropic.claude-sonnet-5-5-v1:0"]]), exempt: new Set<string>() },
+    switchedOn: new Set(["openai"]), openai: { transport }, rovara: { transport, models: new Map([[model, "us.anthropic.claude-sonnet-5-5-v1:0"]]), exempt: new Set([claims.cid]) },
   }, chargeReceipts: { source: (_claims, _model, resolved) => resolved } });
   expect((await call(f.deps, { model, max_tokens: 10, messages: [{ role: "user", content: "hello" }], stream: true }, mint({ mdl: [model] }))).status).toBe(200);
   expect(reserved?.charge?.receipt.source).toMatchObject(winner === "rovara" ? { kind: "rovara_ai", id: "rovara-ai", provider: "bedrock", connectionRevision: createHash("sha256").update(JSON.stringify([[model, "us.anthropic.claude-sonnet-5-5-v1:0"]])).digest("hex") } : { id: "saved_anthropic", provider: "anthropic", connectionRevision: "revision_7" });

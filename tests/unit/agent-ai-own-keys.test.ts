@@ -35,13 +35,13 @@ describe("own OpenAI / OpenRouter keys for agents (Cloud)", () => {
     expect(saved.raw).not.toContain(key);
   });
 
-  it("switched off: the answer is exactly today's, and neither source can be saved", async () => {
+  it("the served default leaves own-source eligibility unchanged when kinds are off", async () => {
     const today = world({ company: true });
     const on = world({ company: true, aiSourceKinds: new Set(["anthropic", "bedrock"]) });
     for (const w of [today, on]) {
       const ada = await w.signIn("ada", 30);
       const read = await w.call(ada, "GET", AGENT);
-      expect(read.body).toEqual({ source: null, version: 0, canChange: true, anthropicKeyConnected: false, bedrockConnected: null, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }] });
+      expect(read.body).toEqual({ source: null, version: 0, effectiveSource: "rovara", sourceIsDefault: true, canChange: true, anthropicKeyConnected: false, bedrockConnected: null, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }] });
       await w.call(ada, "PUT", `${KEYS}/key`, write(0, { provider: "openai", key: openaiKey() }));
       for (const source of ["openai_key", "openrouter_key"]) {
         const refused = await w.call(ada, "PUT", AGENT, { expectedVersion: 0, source });
@@ -52,19 +52,23 @@ describe("own OpenAI / OpenRouter keys for agents (Cloud)", () => {
     }
   });
 
-  it("an OpenRouter key: connectable only where its kind is on, write-only, audited, read back by the gateway for the agent route only", async () => {
+  it("an OpenRouter credential connects only with its kind enabled; choosing it still requires agent eligibility, and it stays write-only and audited", async () => {
     const off = world({ company: true });
     const adaOff = await off.signIn("ada", 30);
     expect((await off.call(adaOff, "GET", KEYS)).body.accounts).not.toHaveProperty("openrouter");
     const refused = await off.call(adaOff, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key: routerKey() }));
     expect(refused.status).toBe(400);
+    expect((await off.call(adaOff, "PUT", AGENT, { expectedVersion: 0, source: "openrouter_key" })).status).toBe(400);
     expect(await off.store.view(ISS, A, "_learning")).toMatchObject({ sources: [] });
+    expect((await off.store.view(ISS, A, "_learning")).revision).toBe(0);
+    expect((await off.audit.read(A, { max: 50 })).rows).toEqual([]);
 
     const w = world({ company: true, aiSourceKinds: new Set(["openrouter"]) });
     const ada = await w.signIn("ada", 30);
     const key = routerKey();
     const put = await w.call(ada, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key }));
     expect(put.status).toBe(200);
+    expect((await w.store.view(ISS, A, "_learning")).sources).toHaveLength(1);
     expect(put.raw).not.toContain(key);
     // OpenRouter is the agents' only: it never makes lessons usable.
     expect(put.body).toMatchObject({ accounts: { openrouter: { connected: true }, anthropic: { connected: false } }, pausedNow: expect.arrayContaining(["no_provider"]) as unknown });
@@ -93,19 +97,26 @@ describe("own OpenAI / OpenRouter keys for agents (Cloud)", () => {
     const ada = await w.signIn("ada", 30);
     const key = routerKey();
     expect((await w.call(ada, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key }))).status).toBe(200);
+    const connected = await w.store.learningSource(ISS, A, "openrouter");
     kinds.delete("openrouter");
     expect((await w.call(ada, "GET", KEYS)).body).toMatchObject({ accounts: { openrouter: { connected: true } } });
-    // Connecting or replacing stays gated...
+    expect((await w.call(ada, "PUT", AGENT, { expectedVersion: 0, source: "openrouter_key" })).status).toBe(400);
+    // Connecting or replacing stays gated, and cannot mutate the stored credential or audit.
     expect((await w.call(ada, "PUT", `${KEYS}/key`, write(1, { provider: "openrouter", key: routerKey() }))).status).toBe(400);
+    expect(await w.store.learningSource(ISS, A, "openrouter")).toEqual(connected);
+    expect(await storedLearningKeys(w.store).keyFor(ISS, A, "openrouter")).toBe(key);
+    expect((await w.audit.read(A, { max: 50 })).rows.map((r) => r.action)).toEqual(["learning_ai.key.connected"]);
     // ...removing never is.
     const removed = await w.call(ada, "DELETE", `${KEYS}/key`, write(1, { provider: "openrouter" }));
     expect(removed.status).toBe(200);
     expect(removed.raw).not.toContain(key);
     expect(await storedLearningKeys(w.store).keyFor(ISS, A, "openrouter")).toBeUndefined();
     expect((await w.audit.read(A, { max: 50 })).rows.map((r) => [r.action, r.subject])).toEqual(expect.arrayContaining([["learning_ai.key.removed", "learning_ai:openrouter"]]));
-    // A Cloud that never held one shows nothing new.
-    const fresh = world({ company: true });
-    expect((await fresh.call(await fresh.signIn("ada", 30), "GET", KEYS)).body.accounts).not.toHaveProperty("openrouter");
+    // An enabled install lists the disconnected credential even before the first connection.
+    const fresh = world({ company: true, aiSourceKinds: new Set(["openrouter"]) });
+    expect((await fresh.call(await fresh.signIn("ada", 30), "GET", KEYS)).body.accounts).toHaveProperty("openrouter", { connected: false });
+    const neverConnected = world({ company: true });
+    expect((await neverConnected.call(await neverConnected.signIn("ada", 30), "GET", KEYS)).body.accounts).not.toHaveProperty("openrouter");
   });
 
   it("two companies: one company's key never makes another's source choosable", async () => {

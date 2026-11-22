@@ -1,3 +1,4 @@
+import { openRouterPolicy, openRouterRates, REVIEWED_OPENROUTER_POLICIES, type OpenRouterTariff } from "./openrouter-policy.js";
 import { createHash } from "node:crypto";
 import { copyRates } from "./price-tiers.js";
 import { STALE_ALARM_MS } from "./price-constants.js";
@@ -17,7 +18,7 @@ export class SnapshotPriceSource implements PriceSource {
   #limits = new Map<string, number>();
   #media = new Map<string, MediaRates[]>();
   #snapshotHash: string | undefined;
-  constructor(private readonly store: PriceSnapshotStore, private readonly options: { now?: () => number; overrides?: readonly unknown[] } = {}) {}
+  constructor(private readonly store: PriceSnapshotStore, private readonly options: { now?: () => number; overrides?: readonly unknown[]; openRouterTariffs?: readonly OpenRouterTariff[] } = {}) {}
   #now(): number { return (this.options.now ?? Date.now)(); }
   async reload(): Promise<void> {
     let snapshot: PriceSnapshot | undefined;
@@ -42,15 +43,18 @@ export class SnapshotPriceSource implements PriceSource {
   /** Identity of exactly the in-memory snapshot used for admission, never a second store read. */
   quoteBasis(provider: string, model: string): { version: number; hash: string; fetchedAt: number; model: string } | undefined {
     if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
+    if (provider === "openrouter") { const p = openRouterPolicy(model, this.#now(), this.options.openRouterTariffs); return p === undefined ? undefined : { version: 1, hash: p.hash, fetchedAt: p.verifiedAt, model: p.model }; }
     const identity = this.#book.index.get(identityKey(provider, model));
     if (this.#snapshot === undefined || identity === undefined) return undefined;
     return { version: this.#snapshot.version, hash: this.#snapshotHash!, fetchedAt: identity.origin.fetchedAt, model: identity.model };
   }
   effectiveFor(provider: string, model: string, kind: PriceKind): ResolvedPrice {
+    if (provider === "openrouter") { const p = openRouterPolicy(model, this.#now(), this.options.openRouterTariffs); return p === undefined || kind !== "chat" ? { inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, estimated: true, operatorReview: true } : openRouterRates(p); }
     if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
     return { ...lookupPrice(this.#book, provider, model, kind), priceVersion: this.#snapshot?.version ?? 0 };
   }
   priceFor(provider: string, model: string): (Price & { origin: PriceOrigin }) | undefined {
+    if (provider === "openrouter") { const p = openRouterPolicy(model, this.#now(), this.options.openRouterTariffs); return p === undefined ? undefined : { ...openRouterRates(p), origin: { source: "override", fetchedAt: p.verifiedAt } }; }
     if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
     const p = this.#book.index.get(identityKey(provider, model));
     if (p === undefined || p.estimated) return undefined;
@@ -58,6 +62,8 @@ export class SnapshotPriceSource implements PriceSource {
     return { ...copyRates(rates) as Price, ...(rates.longContext === undefined ? {} : { longContext: rates.longContext }), ...(rates.operatorReview ? { operatorReview: true } : {}), origin: { ...p.origin } };
   }
   correctionFor(provider: string, model: string): (ResolvedPrice & { origin: PriceOrigin; priceVersion: number }) | undefined {
+    // A router's missing-usage hold needs actual billing evidence, never an automatic token-tariff credit.
+    if (provider === "openrouter") return undefined;
     if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
     const p = this.#book.index.get(identityKey(provider, model));
     if (p === undefined) return undefined;
@@ -88,6 +94,13 @@ export class SnapshotPriceSource implements PriceSource {
     const keys = new Set([identityKey(provider, model), ...(identity === undefined ? [] : [identity.model, ...identity.aliases].map((alias) => identityKey(provider, alias)))]);
     keys.delete(identityKey(provider, model));
     return dearestMediaRates([...own, ...[...keys].flatMap((key) => this.#media.get(key) ?? [])]);
+  }
+  runPriceSnapshotVersion(): number | undefined {
+    if ((this.options.openRouterTariffs ?? REVIEWED_OPENROUTER_POLICIES).some(row => openRouterPolicy(row.model, this.#now(), this.options.openRouterTariffs) !== undefined)) return this.#snapshot?.version ?? 1;
+    if (this.#snapshot === undefined) return undefined;
+    const now = this.#now();
+    const sources = [this.#snapshot.sources.aws, this.#snapshot.sources.litellm];
+    return sources.some(s => s !== undefined && s.count > 0 && s.fetchedAt <= now && now - s.fetchedAt < STALE_ALARM_MS) ? this.#snapshot.version : undefined;
   }
   keys(): Array<{ provider: string; model: string }> { return [...this.#book.index.values()].filter((e) => !e.estimated).map(({ provider, model }) => ({ provider, model })); }
   failure(source: "litellm" | "aws", failed: boolean): void { if (failed) this.#failures[source] = "refresh failed"; else delete this.#failures[source]; }

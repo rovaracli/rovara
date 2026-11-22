@@ -1,3 +1,4 @@
+import { validRouteClass, validCustomerSource, receiptCustomerSource, sourceStopKey, stoppedBy, readSourceStop, validClear, type RouteClass, type CustomerSource, type SourceStop, type ClearSourceStop } from "./source-stop.js";
 import { validProvisionalContext, historyOutput, neverConfirmedReceipt, provisionalEstimate, USAGE_WAIT_MS, type ProvisionalContext, type ProvisionalEstimate } from "./provisional.js";
 import { chargeValue, chargeReceiptContent, type ApplyChargeResult, type ChargeReceiptV1, type SettleV2 } from "./charge-receipt.js";
 import { checkReceiptScope, estimatedReceipt, readSettlementReceipt, receiptIdentity, receiptRevision } from "./charge-settlement.js";
@@ -62,7 +63,7 @@ export const HOLD_SWEEP_MAX = 100;
 
 /** `combined`: the agent meter's company row (DynamoMeterOptions.combinedCompany), in the agent meter table. */
 interface Target { sk: string; item: MeterItem; cap?: number; combined?: true }
-interface Hold { provisional?: ProvisionalContext; cutoffAt?: number; charge?: ReserveInput["charge"]; scope: MeterScope; month: string; estimate: number; targets: Target[]; status: string; line?: BillLine; review?: string }
+interface Hold { routeClass?: RouteClass; customerSource?: CustomerSource; provisional?: ProvisionalContext; cutoffAt?: number; charge?: ReserveInput["charge"]; scope: MeterScope; month: string; estimate: number; targets: Target[]; status: string; line?: BillLine; review?: string }
 
 function validScope(value: unknown): value is MeterScope {
   const s = record(value);
@@ -105,14 +106,16 @@ function readHold(item: Item | undefined, combined: boolean): Hold | undefined {
   if (item.provisional !== undefined && !validProvisionalContext(item.provisional)) throw new Error("settlement unavailable");
   if (item.line !== undefined && !validLine(item.line)) throw new Error("settlement unavailable");
   if (item.review !== undefined && !(typeof item.review === "string" && /^[0-9a-f-]{36}$/u.test(item.review))) throw new Error("settlement unavailable");
-  return { ...(item.provisional === undefined ? {} : { provisional: item.provisional as unknown as ProvisionalContext }), ...(whole(item.cutoffAt) ? { cutoffAt: item.cutoffAt } : {}), ...(item.charge === undefined ? {} : { charge: JSON.parse(JSON.stringify(item.charge)) as NonNullable<ReserveInput["charge"]> }), scope, month: item.month, estimate: item.estimateMicros, targets, status: item.status, ...(item.review === undefined ? {} : { review: item.review }), ...(item.line === undefined ? {} : { line: { source: item.line.source, charge: item.line.charge, model: item.line.model } }) };
+  if (item.routeClass !== undefined && !validRouteClass(item.routeClass)) throw new Error("settlement unavailable");
+  if (item.customerSource !== undefined && !validCustomerSource(item.customerSource)) throw new Error("settlement unavailable");
+  return { ...(item.routeClass === undefined ? {} : { routeClass: item.routeClass }), ...(item.customerSource === undefined ? {} : { customerSource: item.customerSource }), ...(item.provisional === undefined ? {} : { provisional: item.provisional as unknown as ProvisionalContext }), ...(whole(item.cutoffAt) ? { cutoffAt: item.cutoffAt } : {}), ...(item.charge === undefined ? {} : { charge: JSON.parse(JSON.stringify(item.charge)) as NonNullable<ReserveInput["charge"]> }), scope, month: item.month, estimate: item.estimateMicros, targets, status: item.status, ...(item.review === undefined ? {} : { review: item.review }), ...(item.line === undefined ? {} : { line: { source: item.line.source, charge: item.line.charge, model: item.line.model } }) };
 }
 function rowOf(item: Item | undefined, target: Target, company: string): MeterRow {
   if (item === undefined) return { item: target.item, company, spentMicros: 0, estimatedMicros: 0, reservedMicros: 0, committed: 0, overrun: false };
   const row = { item: item.item, company: item.company, spentMicros: item.spentMicros, estimatedMicros: item.estimatedMicros, reservedMicros: item.reservedMicros, committed: item.committed, overrun: item.overrun };
   if (row.item !== target.item || typeof row.company !== "string" || ![row.spentMicros, row.estimatedMicros, row.reservedMicros, row.committed].every(whole) || typeof row.overrun !== "boolean") throw new Error("meter unavailable");
   if (item.provisionalMicros !== undefined && !whole(item.provisionalMicros)) throw new Error("meter unavailable");
-  return { ...row, ...(item.provisionalMicros === undefined ? {} : { provisionalMicros: item.provisionalMicros }) } as MeterRow;
+  return { ...row, ...(typeof item.overrunOwner === "string" ? { overrunOwner: item.overrunOwner } : {}), ...(item.provisionalMicros === undefined ? {} : { provisionalMicros: item.provisionalMicros }) } as MeterRow;
 }
 function usagePlain(usage: EstimatedSettlement["usage"] & object): Item {
   return { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, ...(usage.cacheWrite5m === undefined ? {} : { cacheWrite5m: usage.cacheWrite5m }), ...(usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: usage.cacheWrite1h }),
@@ -181,9 +184,43 @@ export class DynamoMeter implements Meter {
     return Promise.all(targets.map((target) => this.#db.get(this.#table(target), { pk, sk: target.sk })));
   }
 
+  get #sourceTable(): string { return this.#combined?.meter ?? this.#t.meter; }
+  async sourceStop(iss: string, cid: string, source: CustomerSource, routeClass?: RouteClass): Promise<SourceStop | undefined> {
+    return readSourceStop(await this.#db.get(this.#sourceTable, { pk: companyPartition(iss, cid), sk: sourceStopKey(source, routeClass) }, { consistent: true }), source, routeClass);
+  }
+  /** Called only by the interactive operator CLI, never by gateway routes or corrections. */
+
+  async clearSourceStop(input: ClearSourceStop): Promise<boolean> {
+    if (!validClear(input)) throw new Error("operator clear refused");
+    const pk = companyPartition(input.iss, input.cid), at = this.#now();
+    try {
+      await this.#db.transact([
+        { kind: "Update", table: this.#sourceTable, key: { pk, sk: sourceStopKey(input.source, input.routeClass === "legacy" ? undefined : input.routeClass) },
+          condition: e => `${e.name("stopped")} = ${e.value(true)} AND ${e.name("stopId")} = ${e.value(input.expectedStopId)} AND attribute_not_exists(${e.name("inFlight")})`,
+          update: e => `SET ${e.name("stopped")} = ${e.value(false)}, ${e.name("clearedBy")} = ${e.value(input.actor)}, ${e.name("clearedAt")} = ${e.value(at)}, ${e.name("clearReason")} = ${e.value(input.reason)}` },
+        ...(input.routeClass === "legacy" ? [] : [{ kind: "Update" as const, table: this.#sourceTable, key: { pk, sk: sourceStopKey(input.source) }, condition: (e: Expr) => `attribute_exists(${e.name("pk")}) AND attribute_not_exists(${e.name("inFlight")})`, update: (e: Expr) => `SET ${e.name("source")} = ${e.value(input.source)}` }]),
+        { kind: "Put", table: this.#t.ledger, item: { pk, sk: `SOURCESTOPCLEAR#${input.source}#${input.routeClass}#${input.expectedStopId}`, source: input.source, routeClass: input.routeClass, stopId: input.expectedStopId, actor: input.actor, at, reason: input.reason }, condition: e => `attribute_not_exists(${e.name("pk")})` },
+      ], randomUUID()); return true;
+    } catch (error) { if (error instanceof TransactionRefused) return false; throw error; }
+  }
+  #sourceSettlement(actions: TransactAction[], pk: string, receipt?: ChargeReceiptV1, source?: CustomerSource, owner?: string, routeClass?: RouteClass): void {
+    const stop = stoppedBy(receipt, this.#now(), routeClass);
+    const customerSource = source ?? stop?.source;
+    if (customerSource === undefined) return;
+    // The class-less record retains the one company/source slot and any legacy latch.
+    if (owner !== undefined || (stop !== undefined && routeClass === undefined)) actions.push({ kind: "Update", table: this.#sourceTable, key: { pk, sk: sourceStopKey(customerSource) },
+      ...(owner === undefined ? {} : { condition: (e: Expr) => `${e.name("inFlight")} = ${e.value(owner)}` }),
+      update: e => `SET ${e.name("source")} = ${e.value(customerSource)}${stop === undefined || routeClass !== undefined ? "" : Object.entries(stop).filter(([key]) => key !== "source").map(([key, value]) => `, ${e.name(key)} = ${e.value(value as Plain)}`).join("")}${owner === undefined ? "" : ` REMOVE ${e.name("inFlight")}`}` });
+    if (stop !== undefined && routeClass !== undefined) actions.push({ kind: "Update", table: this.#sourceTable, key: { pk, sk: sourceStopKey(customerSource, routeClass) },
+      update: e => `SET ${Object.entries(stop).map(([key, value]) => `${e.name(key)} = ${e.value(value as Plain)}`).join(", ")}` });
+  }
   async reserve(input: ReserveInput): Promise<ReserveResult> {
     if (record(input) === undefined || !validScope(input.scope) || !validCaps(input.caps) || !whole(input.estimateMicros)) return { ok: false, reason: "busy" };
     const { scope, caps, estimateMicros } = input;
+    if (input.routeClass !== undefined && !validRouteClass(input.routeClass)) return { ok: false, reason: "busy" };
+    if (input.customerSource !== undefined && !validCustomerSource(input.customerSource)) return { ok: false, reason: "busy" };
+    const customerSource = input.customerSource ?? receiptCustomerSource(input.charge?.receipt);
+    if (customerSource !== undefined && (!validRouteClass(input.routeClass) || !validCustomerSource(customerSource) || (input.charge !== undefined && receiptCustomerSource(input.charge.receipt) !== customerSource))) return { ok: false, reason: "busy" };
     if (input.appliedMaxOutputTokens !== undefined && (!whole(input.appliedMaxOutputTokens) || input.appliedMaxOutputTokens < 1)) return { ok: false, reason: "busy" };
     if (input.provisional !== undefined && !validProvisionalContext(input.provisional)) return { ok: false, reason: "busy" };
     if (input.line !== undefined && !validLine(input.line)) return { ok: false, reason: "busy" };
@@ -211,6 +248,11 @@ export class DynamoMeter implements Meter {
     for (let attempt = 0; attempt < 3; attempt++) {
       let stored: Array<Item | undefined>;
       try { stored = await this.#rows(pk, items); } catch { return { ok: false, reason: "busy" }; }
+      if (customerSource !== undefined) {
+        let stop, classStop; try { stop = await this.sourceStop(scope.iss, scope.cid, customerSource); classStop = await this.sourceStop(scope.iss, scope.cid, customerSource, input.routeClass); } catch { return { ok: false, reason: "busy" }; }
+        if (stop?.stopped === true || classStop?.stopped === true) return { ok: false, reason: "overrun", item: "company", held: false };
+        if (stop?.inFlight !== undefined) return { ok: false, reason: "busy", overrunInFlight: true };
+      }
       let blocked: Extract<ReserveResult, { reason: "cap" | "overrun" }> | undefined;
       for (const [i, target] of items.entries()) {
         let row: MeterRow;
@@ -244,6 +286,7 @@ export class DynamoMeter implements Meter {
       actions.push({ kind: "Put", table: this.#t.meter, condition: (e) => `attribute_not_exists(${e.name("pk")})`, item: {
         ...(input.provisional === undefined ? {} : { provisional: JSON.parse(JSON.stringify(input.provisional)) as Plain }),
         ...(input.charge === undefined ? {} : { charge: JSON.parse(JSON.stringify(input.charge)) as Plain }),
+        ...(customerSource === undefined ? {} : { customerSource }), ...(input.routeClass === undefined ? {} : { routeClass: input.routeClass }),
         pk, sk: `HOLD#${id}`, status: "open", ...scopeFields(scope), month, estimateMicros, targets: targetsPlain(items), createdAt: now,
         // In the open-holds index until settled, so the sweep can close a hold whose settle failed.
         openAll: GATEWAY_OPEN_PARTITION, openAt: openAt(openFrom, pk, id), ...(openFrom === now ? {} : { openFrom }),
@@ -255,6 +298,15 @@ export class DynamoMeter implements Meter {
         const expires = expiresSeconds;
         actions.push({ kind: "Put", table: this.#markers, item: { pk, sk: INFLIGHT, owner: id, expiresSeconds: expires, expiresAt: expires },
           condition: (e) => `attribute_not_exists(${e.name("pk")}) OR ${e.name("expiresSeconds")} <= ${e.value(clock)}` });
+      }
+      if (customerSource !== undefined) {
+        // Updates deliberately use existing write permissions (no new ConditionCheckItem grant).
+        actions.push({ kind: "Update", table: this.#sourceTable, key: { pk, sk: sourceStopKey(customerSource) },
+          update: e => `SET ${e.name("source")} = ${e.value(customerSource)}, ${e.name("stopped")} = ${e.value(false)}, ${e.name("inFlight")} = ${e.value(id)}`,
+          condition: e => `attribute_not_exists(${e.name("pk")}) OR (${e.name("stopped")} = ${e.value(false)} AND attribute_not_exists(${e.name("inFlight")}))` });
+        actions.push({ kind: "Update", table: this.#sourceTable, key: { pk, sk: sourceStopKey(customerSource, input.routeClass) },
+          update: e => `SET ${e.name("source")} = ${e.value(customerSource)}, ${e.name("routeClass")} = ${e.value(input.routeClass!)}, ${e.name("stopped")} = ${e.value(false)}`,
+          condition: e => `attribute_not_exists(${e.name("pk")}) OR ${e.name("stopped")} = ${e.value(false)}` });
       }
       try { await this.#db.transact(actions, randomUUID()); }
       catch (error) {
@@ -306,7 +358,7 @@ export class DynamoMeter implements Meter {
     if (hold.charge !== undefined && receipt === undefined) {
       if (!swept) throw new Error("charge receipt required");
       receipt = { ...readSettlementReceipt(hold.charge.receipt), recordedAt: new Date(this.#now()).toISOString() };
-      estimated = estimatedReceipt(receipt);
+      estimated = estimatedReceipt(receipt, hold.charge.kind);
     }
     const held = provisional !== undefined;
     const spend = held ? 0 : actualMicros;
@@ -317,9 +369,9 @@ export class DynamoMeter implements Meter {
     const pending = estimated;
     const ledger: Item = {
       ...(provisional === undefined ? {} : { ...provisional, estimateStatus: "estimated", provisionalHeld: true, cutoffAt: now }),
-      ...(receipt === undefined ? { chargeStatus: estimated === undefined && !swept ? "legacy_unknown" : "estimated", reason: "legacy_unknown" } : { receipt: JSON.parse(JSON.stringify(receipt)) as Plain, revision: receipt.revision, chargeStatus: receipt.status, reason: receipt.reason }),
+      ...(receipt === undefined ? { chargeStatus: estimated === undefined && !swept ? "legacy_unknown" : "estimated", reason: "legacy_unknown" } : { receipt: JSON.parse(JSON.stringify(receipt)) as Plain, kind: hold.charge?.kind ?? estimated?.kind ?? "chat", revision: receipt.revision, chargeStatus: receipt.status, reason: receipt.reason }),
       ...(hold.charge === undefined ? {} : { requestFingerprint: hold.charge.requestFingerprint }),
-      pk, sk: `CALL#${id}`, callKey, ...scopeFields(hold.scope), month: hold.month, settledMicros: actualMicros, estimated: estimated !== undefined || swept, targets: targetsPlain(hold.targets),
+      ...(hold.routeClass === undefined ? {} : { routeClass: hold.routeClass }), pk, sk: `CALL#${id}`, callKey, ...scopeFields(hold.scope), month: hold.month, settledMicros: actualMicros, estimated: estimated !== undefined || swept, targets: targetsPlain(hold.targets),
       ...(swept ? { swept: true } : {}),
       // The billable line (DEC 240b) lands with the call's settled cost, in the same transaction that closes the hold.
       ...(hold.line === undefined ? {} : { line: { source: hold.line.source, charge: hold.line.charge, model: hold.line.model } }),
@@ -338,14 +390,16 @@ export class DynamoMeter implements Meter {
       const actions: TransactAction[] = hold.targets.map((target, i): TransactAction => {
         const row = rowOf(stored[i], target, hold.scope.cid);
         if (stored[i] === undefined || row.company !== hold.scope.cid || ![row.committed - hold.estimate + actualMicros, row.spentMicros + spend, row.estimatedMicros + extraEstimated].every(whole) || row.reservedMicros < hold.estimate) throw new Error("settlement unavailable");
-        const overrun = target.cap !== undefined && row.spentMicros + spend > target.cap;
+        const capOverrun = target.cap !== undefined && row.spentMicros + spend > target.cap;
+        const overrun = row.overrun || capOverrun;
+        const overrunOwner = capOverrun ? estimated !== undefined && (!row.overrun || row.overrunOwner === callKey) ? callKey : "" : row.overrunOwner;
         const delta = actualMicros - hold.estimate;
         return { kind: "Update", table: this.#table(target), key: { pk, sk: target.sk },
-          update: (e) => `SET ${e.name("spentMicros")} = ${e.name("spentMicros")} + ${e.value(spend)}, ${e.name("estimatedMicros")} = ${e.name("estimatedMicros")} + ${e.value(extraEstimated)}, ${e.name("reservedMicros")} = ${e.name("reservedMicros")} - ${e.value(release)}, ${e.name("committed")} = ${e.name("committed")} + ${e.value(delta)}${held && target.item === "company" ? `, ${e.name("provisionalMicros")} = if_not_exists(${e.name("provisionalMicros")}, ${e.value(0)}) + ${e.value(actualMicros)}` : ""}${overrun ? `, ${e.name("overrun")} = ${e.value(true)}` : ""}`,
+          update: (e) => `SET ${e.name("spentMicros")} = ${e.name("spentMicros")} + ${e.value(spend)}, ${e.name("estimatedMicros")} = ${e.name("estimatedMicros")} + ${e.value(extraEstimated)}, ${e.name("reservedMicros")} = ${e.name("reservedMicros")} - ${e.value(release)}, ${e.name("committed")} = ${e.name("committed")} + ${e.value(delta)}${held && target.item === "company" ? `, ${e.name("provisionalMicros")} = if_not_exists(${e.name("provisionalMicros")}, ${e.value(0)}) + ${e.value(actualMicros)}` : ""}${overrun ? `, ${e.name("overrun")} = ${e.value(true)}` : ""}${overrunOwner === undefined ? "" : `, ${e.name("overrunOwner")} = ${e.value(overrunOwner)}`}`,
           // Bounds that keep every value a whole safe integer; and, when this settle does not set the overrun flag, that a
           // concurrent settle has not pushed the row past its cap meanwhile (then this one re-reads and sets it).
           condition: (e) => [
-            `${e.name("company")} = ${e.value(hold.scope.cid)}`, `${e.name("reservedMicros")} >= ${e.value(hold.estimate)}`,
+            `${e.name("company")} = ${e.value(hold.scope.cid)}`, `${e.name("overrun")} = ${e.value(row.overrun)}`, row.overrunOwner === undefined ? `attribute_not_exists(${e.name("overrunOwner")})` : `${e.name("overrunOwner")} = ${e.value(row.overrunOwner)}`, `${e.name("reservedMicros")} >= ${e.value(hold.estimate)}`,
             `${e.name("spentMicros")} <= ${e.value(MAX - actualMicros)}`, `${e.name("estimatedMicros")} <= ${e.value(MAX - extraEstimated)}`,
             `${e.name("committed")} >= ${e.value(Math.max(0, -delta))}`, `${e.name("committed")} <= ${e.value(MAX - Math.max(0, delta))}`,
             ...(overrun || target.cap === undefined ? [] : [`${e.name("spentMicros")} <= ${e.value(target.cap - actualMicros)}`]),
@@ -355,6 +409,7 @@ export class DynamoMeter implements Meter {
         update: (e) => `SET ${e.name("status")} = ${e.value(held ? "cut_off" : "settled")}, ${e.name("actualMicros")} = ${e.value(actualMicros)}, ${e.name("closedAt")} = ${e.value(now)}${held ? `, ${e.name("cutoffAt")} = ${e.value(now)}` : ""}${swept ? `, ${e.name("swept")} = ${e.value(true)}` : ""} ${held ? "" : `REMOVE ${e.name("openAll")}, ${e.name("openAt")}`}`,
         condition: (e) => `${e.name("status")} = ${e.value("open")}` });
       actions.push({ kind: "Put", table: this.#t.ledger, item: ledger, condition: (e) => `attribute_not_exists(${e.name("pk")})` });
+      this.#sourceSettlement(actions, pk, receipt, hold.customerSource, hold.customerSource === undefined ? undefined : id, hold.routeClass);
       if (receipt !== undefined) actions.push({ kind: "Put", table: this.#t.ledger, item: { pk, sk: `ADJUST#${id}#${receipt.revision}`, receipt: JSON.parse(JSON.stringify(receipt)) as Plain, deltaMicros: actualMicros }, condition: e => `attribute_not_exists(${e.name("pk")})` });
       try { await this.#db.transact(actions, randomUUID()); }
       catch (error) {
@@ -381,7 +436,7 @@ export class DynamoMeter implements Meter {
     if (hold.charge !== undefined && receiptIdentity(hold.charge.receipt) !== receiptIdentity(r)) throw new Error("charge identity changed");
     const outputs = r.status === "awaiting_usage" && hold.provisional !== undefined ? await this.#history(pk, r) : [];
     const provisional = r.status === "awaiting_usage" && hold.provisional !== undefined ? provisionalEstimate(hold.estimate, hold.provisional, outputs, input.actualInputTokens) : undefined;
-    await this.#close(pk, r.callId, hold, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r), false, r, provisional);
+    await this.#close(pk, r.callId, hold, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r, hold.charge?.kind), false, r, provisional);
     // A concurrent winner must have persisted this exact receipt.
     const after = await this.#db.get(this.#t.ledger, key);
     if (after === undefined || chargeReceiptContent(after.receipt) !== chargeReceiptContent(r)) throw new Error("conflicting charge settlement");
@@ -427,11 +482,13 @@ export class DynamoMeter implements Meter {
       const actions: TransactAction[] = targets.map((t, i) => {
         const row = rowOf(rows[i], t, r.companyId);
         if (row.company !== r.companyId || ![row.spentMicros + spendDelta, row.committed + delta, row.estimatedMicros + estimatedDelta, row.reservedMicros - release, ...(t.item === "company" ? [(row.provisionalMicros ?? 0) + provisionalDelta] : [])].every(whole)) throw new Error("charge accounting unavailable");
-        return { kind: "Update", table: this.#table(t), key: { pk, sk: t.sk }, condition: e => ["spentMicros", "estimatedMicros", "reservedMicros", "committed"].map(k => `${e.name(k)} = ${e.value(row[k as "spentMicros" | "estimatedMicros" | "reservedMicros" | "committed"])}`).join(" AND "),
-          update: e => `SET ${e.name("spentMicros")} = ${e.value(row.spentMicros + spendDelta)}, ${e.name("estimatedMicros")} = ${e.value(row.estimatedMicros + estimatedDelta)}, ${e.name("reservedMicros")} = ${e.value(row.reservedMicros - release)}, ${e.name("committed")} = ${e.value(row.committed + delta)},${t.item === "company" && stored.estimateBasis !== undefined ? ` ${e.name("provisionalMicros")} = ${e.value((row.provisionalMicros ?? 0) + provisionalDelta)},` : ""} ${e.name("overrun")} = ${e.value(t.cap === undefined ? row.overrun : row.spentMicros + spendDelta > t.cap)}` };
+        return { kind: "Update", table: this.#table(t), key: { pk, sk: t.sk }, condition: e => `${e.name("overrun")} = ${e.value(row.overrun)} AND ` + ["spentMicros", "estimatedMicros", "reservedMicros", "committed"].map(k => `${e.name(k)} = ${e.value(row[k as "spentMicros" | "estimatedMicros" | "reservedMicros" | "committed"])}`).join(" AND "),
+          update: e => `SET ${e.name("spentMicros")} = ${e.value(row.spentMicros + spendDelta)}, ${e.name("estimatedMicros")} = ${e.value(row.estimatedMicros + estimatedDelta)}, ${e.name("reservedMicros")} = ${e.value(row.reservedMicros - release)}, ${e.name("committed")} = ${e.value(row.committed + delta)},${t.item === "company" && stored.estimateBasis !== undefined ? ` ${e.name("provisionalMicros")} = ${e.value((row.provisionalMicros ?? 0) + provisionalDelta)},` : ""} ${e.name("overrun")} = ${e.value(row.overrun || (t.cap !== undefined && row.spentMicros + spendDelta > t.cap))}${t.cap !== undefined && row.spentMicros + spendDelta > t.cap ? `, ${e.name("overrunOwner")} = ${e.value("")}` : ""}` };
       });
+      if (stored.routeClass !== undefined && !validRouteClass(stored.routeClass)) throw new Error("charge class unreadable");
+      this.#sourceSettlement(actions, pk, r, undefined, undefined, stored.routeClass);
       if (held) actions.push({ kind: "Update", table: this.#t.meter, key: { pk, sk: `HOLD#${r.callId}` }, condition: e => `${e.name("status")} = ${e.value("cut_off")}`, update: e => `SET ${e.name("status")} = ${e.value("settled")}, ${e.name("actualMicros")} = ${e.value(amount)}, ${e.name("closedAt")} = ${e.value(this.#now())} REMOVE ${e.name("openAll")}, ${e.name("openAt")}` });
-      const pending = estimatedReceipt(r);
+      const pending = estimatedReceipt(r, stored.kind === "embedding" ? "embedding" : "chat");
       const pendingFields: Item = pending === undefined ? {} : { provider: pending.provider, model: pending.model, kind: pending.kind, usage: usagePlain(pending.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }), settledAt: Date.parse(r.occurredAt), pendingAll: GATEWAY_PENDING_PARTITION, pendingKeyAt: pendingKeyAt(priceKey(pending), Date.parse(r.occurredAt), JSON.stringify([r.issuer, r.companyId, r.callId])), pendingAt: pendingAt(Date.parse(r.occurredAt), JSON.stringify([r.issuer, r.companyId, r.callId])) };
       actions.push({ kind: "Update", table: this.#t.ledger, key, condition: e => `${e.name("revision")} = ${e.value(old.revision)}`, update: e => `SET ${e.name("provisionalHeld")} = ${e.value(false)}, ${e.name("neverConfirmed")} = ${e.value(r.neverConfirmed === true)}, ${e.name("receipt")} = ${e.value(JSON.parse(JSON.stringify(r)) as Plain)}, ${e.name("revision")} = ${e.value(r.revision)}, ${e.name("settledMicros")} = ${e.value(chargeValue(r.amountMicros)!)}, ${e.name("estimated")} = ${e.value(r.status !== "final")}, ${e.name("chargeStatus")} = ${e.value(r.status)}, ${e.name("reason")} = ${e.value(r.reason)}, ${e.name("status")} = ${e.value(r.status === "final" ? "corrected" : "pending")}${r.status === "final" ? ` ${this.#closePending(e)}` : Object.entries(pendingFields).map(([k, v]) => `, ${e.name(k)} = ${e.value(v)}`).join("")}` });
       actions.push({ kind: "Put", table: this.#t.ledger, item: { pk, sk: `ADJUST#${r.callId}#${r.revision}`, receipt: JSON.parse(JSON.stringify(r)) as Plain, deltaMicros: delta }, condition: e => `attribute_not_exists(${e.name("pk")})` });
@@ -609,10 +666,10 @@ export class DynamoMeter implements Meter {
           const cap = target.combined === true ? input.caps.combinedCompanyMonth : target.item === "upkeep" ? capFor.upkeep ?? target.cap : capFor[target.item];
           if (deltaMicros > 0 && cap !== undefined && row.committed + deltaMicros > cap) capExceeded = true;
           return { kind: "Update", table: this.#table(target), key: { pk: where.pk, sk: target.sk },
-            update: (e) => `SET ${e.name("spentMicros")} = ${e.name("spentMicros")} + ${e.value(deltaMicros)}, ${e.name("committed")} = ${e.name("committed")} + ${e.value(deltaMicros)}, ${e.name("estimatedMicros")} = ${e.name("estimatedMicros")} + ${e.value(estimatedDelta)}${cap === undefined ? "" : `, ${e.name("overrun")} = ${e.value(spentMicros > cap)}`}`,
+            update: (e) => `SET ${e.name("spentMicros")} = ${e.name("spentMicros")} + ${e.value(deltaMicros)}, ${e.name("committed")} = ${e.name("committed")} + ${e.value(deltaMicros)}, ${e.name("estimatedMicros")} = ${e.name("estimatedMicros")} + ${e.value(estimatedDelta)}${cap === undefined ? "" : `, ${e.name("overrun")} = ${e.value((row.overrun && row.overrunOwner !== input.callKey) || spentMicros > cap)}${spentMicros > cap && !row.overrun ? `, ${e.name("overrunOwner")} = ${e.value(input.callKey)}` : ""}`}`,
             // The spend and estimated parts as read (so the overrun flag and the estimated <= spent rule hold); committed may
             // have moved with other calls' holds, but stays a whole safe integer.
-            condition: (e) => [`${e.name("company")} = ${e.value(call.cid)}`, `${e.name("spentMicros")} = ${e.value(row.spentMicros)}`, `${e.name("estimatedMicros")} = ${e.value(row.estimatedMicros)}`,
+            condition: (e) => [`${e.name("company")} = ${e.value(call.cid)}`, `${e.name("overrun")} = ${e.value(row.overrun)}`, row.overrunOwner === undefined ? `attribute_not_exists(${e.name("overrunOwner")})` : `${e.name("overrunOwner")} = ${e.value(row.overrunOwner)}`, `${e.name("spentMicros")} = ${e.value(row.spentMicros)}`, `${e.name("estimatedMicros")} = ${e.value(row.estimatedMicros)}`,
               `${e.name("committed")} >= ${e.value(Math.max(0, -deltaMicros))}`, `${e.name("committed")} < ${e.value(MAX - Math.max(0, deltaMicros))}`].join(" AND ") };
         });
         const stillPending = input.estimated === true;

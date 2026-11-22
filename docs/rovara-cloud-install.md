@@ -250,3 +250,35 @@ needed. Some resources are kept on delete; remove them by hand once you're sure:
 - anything the Fargate app left behind (above).
 
 On Code, remove the client with `admin sign-in-client remove rovara-cloud`.
+
+## Required own-key backfill before the AI-default release
+
+Existing companies with a connected Anthropic key or company Bedrock connection and no saved agent source must keep that source. Run this migration before deploying either the gateway default change or Cloud. New companies without a connection keep the billed Rovara AI default. Existing saved choices, including fallback order and damaged rows, are never overwritten.
+
+The controller runs this with staging-aws.sh on staging first, then with the approved production operator session before rollout. Builders do not run AWS. Use the installed issuer (`CodeUrl` plus `/v1/auth`) and the exact company/product-key tables from that environment's Cloud web stack (CompanyTableName output, CodeUrl and ProductKeysTableName parameters). Do not substitute another environment's table or issuer.
+
+Build the operator code locally:
+
+```sh
+npx tsc -b packages/model-gateway
+```
+
+Required sequence, with local operator credentials provided by the controller's existing wrapper:
+
+```sh
+node scripts/agent-own-key-backfill.mjs --dry-run --region "$AWS_REGION" --issuer "$CODE_ISSUER" --company-table "$COMPANY_TABLE" --product-table "$PRODUCT_KEYS_TABLE"
+node scripts/agent-own-key-backfill.mjs --apply --region "$AWS_REGION" --issuer "$CODE_ISSUER" --company-table "$COMPANY_TABLE" --product-table "$PRODUCT_KEYS_TABLE"
+node scripts/agent-own-key-backfill.mjs --dry-run --region "$AWS_REGION" --issuer "$CODE_ISSUER" --company-table "$COMPANY_TABLE" --product-table "$PRODUCT_KEYS_TABLE"
+node scripts/agent-own-key-backfill.mjs --check --region "$AWS_REGION" --issuer "$CODE_ISSUER" --company-table "$COMPANY_TABLE" --product-table "$PRODUCT_KEYS_TABLE"
+```
+
+1. Review and retain the dry-run count and company/source list. Dry-run is also the default; it performs no writes.
+2. Apply prints a complete read-only preview before the first write. Each candidate uses a transaction: its connection document revisions must still match and its AGENT_AI row must still be absent. Anthropic precedes Bedrock when both are connected, matching former own-key precedence. Only an existing AGENT_AI record kind is written, with source, version 1, timestamp and `updatedBy: backfill:DEC254zzz279`. No fallback is invented.
+3. A concurrent choice or connection change refuses that company's transaction and exits unsuccessfully. Rerun dry-run and review the fresh list; do not force an overwrite. Uncertain writes or unreadable metadata also fail the run; a rerun safely discovers any write that already committed.
+4. The final dry-run must show count 0. A rerun makes no write attempts and preserves saved versions/timestamps. Retain the apply and zero-candidate logs with release evidence. Run the `--check` command above again against the target environment immediately before the gateway rollout; a nonzero exit stops that rollout. A key connected after the backfill with no saved choice is preserved by gateway admission (Anthropic first, then Bedrock); only a company with neither defaults to company-billed Rovara AI. An explicit saved Rovara choice still wins. Connection-read failures refuse before any hold or send.
+
+The command scans every page of both tables with consistent reads. Companies contributes company identifiers; ProductKeys contributes only partition/sort-key identifiers for `_learning` and `_company` metadata under the exact installed issuer. This includes connected companies with no Companies rows. It then reads only the two relevant parsed connection documents. Discovery errors abort the complete preview before any write. It never reads sealed key contents, decrypts a key, calls a provider or creates a feature switch. Operator apply requires the controller's existing DynamoDB transaction authority for these tables; no grant is added by this change.
+
+Cloud's existing release-check command now runs the read-only `--check --release-stack ... --lookup-role ...` preflight before starting its deploy or monitor. It derives the issuer as the installed web stack's `CodeUrl` plus `/v1/auth`, assumes the deploy account's CDK lookup role already allowed to the deploy job before reading that stack or either table. This also applies to cross-account beta: the lookup role must belong to the deploy account, not the pipeline account. A missing/malformed issuer, nonexistent/unreadable stack, inaccessible table, malformed document or nonzero pending count blocks release. There is no first-install PASS exception: without readable installed scope this check cannot certify a rollout. The pipeline never applies the backfill. Redeploy the pipeline stack with this version before releasing the default; the gateway's separate manual release must follow the same required sequence.
+
+After installation, prove on staging that a backfilled own-key company still uses that source, an explicit choice is unchanged, and an unconnected company defaults to company-billed Rovara AI under its caps. Sol and lead 4 Opus review the exact committed SHA before rollout.

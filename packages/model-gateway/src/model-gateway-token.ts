@@ -88,6 +88,7 @@ export const TASK_TOKEN_CLAIMS = [
     "type": "string[]",
     "required": true
   },
+  { name: "runPrice", type: "RunPrice", required: false },
   {
     "name": "reviewer",
     "type": "ReviewerGrant",
@@ -108,10 +109,23 @@ export type Payer = { kind: "member"; developerId: string } | { kind: "project";
 export const REVIEWER_KINDS = ["second_review", "design_review"] as const;
 export type ReviewerKind = typeof REVIEWER_KINDS[number];
 export interface ReviewerGrant { kind: ReviewerKind; slot: string; ceilingUsd: number }
+export interface RunPrice {
+  companyId: string; model: string; provider: string; sourceId: string; connectionRevision: string;
+  catalogModel: string; snapshotHash: string; snapshotVersion: number; expiresAt: number;
+  inputUsdPerMillion: number; outputUsdPerMillion: number; cacheWriteUsdPerMillion: number; cacheReadUsdPerMillion: number;
+}
+export function parseRunPrice(value: unknown): RunPrice | undefined {
+  const p = record(value);
+  if (p === undefined || Object.keys(p).length !== 13 || !matches(p.companyId, COMPANY) || !matches(p.model, /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$/u)) return undefined;
+  for (const key of ["provider", "sourceId", "connectionRevision", "catalogModel"] as const) if (typeof p[key] !== "string" || !p[key] || p[key].length > (key === "provider" ? 64 : key === "catalogModel" ? 256 : 512)) return undefined;
+  if (!matches(p.snapshotHash, /^[a-f0-9]{64}$/u) || !whole(p.snapshotVersion) || p.snapshotVersion === 0 || !whole(p.expiresAt) || p.expiresAt === 0) return undefined;
+  for (const key of ["inputUsdPerMillion", "outputUsdPerMillion", "cacheWriteUsdPerMillion", "cacheReadUsdPerMillion"] as const) if (typeof p[key] !== "number" || !Number.isFinite(p[key]) || p[key] < (key === "cacheReadUsdPerMillion" ? 0 : 0.000001) || p[key] > 1_000_000) return undefined;
+  return p as unknown as RunPrice;
+}
 export interface TaskClaims {
   iss: string; aud: typeof TASK_TOKEN_AUDIENCE; jti: string; iat: number; nbf: number; exp: number;
   cid: string; pid: string; per?: string; pay: Payer; tid: string; ws: string; op: string;
-  stp: string; src?: typeof WORK_ORIGINS[number]; mdl: string[]; reviewer?: ReviewerGrant;
+  stp: string; src?: typeof WORK_ORIGINS[number]; mdl: string[]; reviewer?: ReviewerGrant; runPrice?: RunPrice;
 }
 export const record = (v: unknown): Record<string, unknown> | undefined => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
 export const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
@@ -135,6 +149,7 @@ export function parseTaskClaims(value: unknown): TaskClaims | undefined {
   if (!matches(c.cid, COMPANY) || !matches(c.pid, PROJECT) || !matches(c.tid, TASK) || (c.per !== undefined && !matches(c.per, PERSON))) return undefined;
   if (!payer(c.pay) || !matches(c.stp, /^[a-z][a-z0-9_-]{0,63}$/u) || (c.src !== undefined && !WORK_ORIGINS.some((s) => s === c.src))) return undefined;
   if (!Array.isArray(c.mdl) || c.mdl.length < 1 || c.mdl.length > 16 || !c.mdl.every((v: unknown) => matches(v, MODEL))) return undefined;
+  if (c.runPrice !== undefined) { const p = parseRunPrice(c.runPrice); if (p === undefined || p.companyId !== c.cid || c.mdl.length !== 1 || p.model !== c.mdl[0]) return undefined; }
   if (c.reviewer !== undefined && !reviewerOk(c)) return undefined;
   return c as unknown as TaskClaims;
 }

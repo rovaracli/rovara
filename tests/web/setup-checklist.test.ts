@@ -70,8 +70,9 @@ describe("the project checklist", () => {
     await screen.findByTestId("project-checklist");
     expect(screen.getByTestId("checklist-progress").textContent).toContain("25% done (2 of 8)");
     const state = (row: string) => screen.getByTestId(`checklist-row-${row}`).getAttribute("data-state");
-    // L4-T2 (D10): the AI row is not shown while an AI can be called (its state is done here).
+    // DEC 263: the done/default AI row has no Needs you step or connect action; all other Code states stay visible.
     expect(screen.queryByTestId("checklist-row-aiAndSpend")).toBeNull();
+    expect(screen.queryByTestId("checklist-ai-connect")).toBeNull();
     expect(["repos", "setupRun", "evalConfirm", "slackChannel", "linear", "invites", "firstTask"].map(state)).toEqual(["done", "failed", "needs_you", "optional", "optional", "optional", "needs_you"]);
     const open = (row: string) => (screen.getByTestId(`checklist-row-${row}`).querySelector("details") as HTMLDetailsElement).open;
     expect(open("setupRun")).toBe(true);

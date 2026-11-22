@@ -43,12 +43,14 @@ describe("launch gates", () => {
     expect([...SOURCE_KINDS_AT_LAUNCH]).toEqual(["anthropic", "openai", "openrouter", "bedrock", "endpoint"]);
     expect([...SOURCE_KINDS_AT_LAUNCH]).toEqual([...CUSTOM_SOURCE_KINDS]);
     // No install list given: nothing is switched on.
-    expect([...SOURCE_KINDS_SWITCHED_ON_DEFAULT]).toEqual([]);
+    expect([...SOURCE_KINDS_SWITCHED_ON_DEFAULT]).toEqual(["bedrock"]);
+    expect(sourceKindProblem("bedrock")).toBeUndefined();
+    expect(sourceKindProblem("openrouter")).toBe("openrouter sources aren't available yet");
     expect([...TRANSPORTS_AT_LAUNCH]).toEqual(["anthropic-messages", "openai-responses", "openai-completions"]);
     expect(ModelSourceKindSchema.options).toEqual(["rovara", "personal-chatgpt", "anthropic", "openai", "openrouter", "bedrock", "endpoint"]);
   });
 
-  it.each(["anthropic", "openai", "openrouter", "bedrock", "endpoint"] as const)("refuses a %s source with the exact text", (kind) => {
+  it.each(["anthropic", "openai", "openrouter", "endpoint"] as const)("refuses a %s source with the exact text", (kind) => {
     expect(sourceKindProblem(kind)).toBe(`${kind} sources aren't available yet`);
   });
 

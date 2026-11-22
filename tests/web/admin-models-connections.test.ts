@@ -66,10 +66,20 @@ it("keeps successful connection sections when one read fails", async () => { con
 it("states waiting coverage and never mints confirmation tickets", async () => { const f = area("/app/admin/waiting");await screen.findByText("Approval");expect(screen.getByText(/Questions, plan reviews/)).toBeTruthy();expect(f.request.mock.calls.some(([r]) => r.path.includes("confirm-link"))).toBe(false);f.close(); });
 for (const field of ["org", "developer"] as const) it(`evicts old ${field} data and fetches the new identity scope`, async () => {
  const f = area("/app/admin/models/sources");await screen.findAllByText("Your Anthropic key");const next = structuredClone(f.me);if (field === "org") next.org.orgId = "org_bbbbbbbbbbbbbbbbbbbb";else next.developer.id = "b".repeat(64);
- let resolve!: (v: ApiResponse) => void;const pending = new Promise<ApiResponse>(r => { resolve = r; });f.request.mockImplementation(async r => r.path === "/v1/app/me" ? { status: 200, body: next } : pending);
+ let resolve!: (v: ApiResponse) => void;const pending = new Promise<ApiResponse>(r => { resolve = r; });
+ const defaultAi = { version: 0, source: null, effectiveSource: "rovara", sourceIsDefault: true, choices: [{ source: "rovara", available: true }] };
+ f.request.mockImplementation(async r => {
+  if (r.path === "/v1/app/me") return { status: 200, body: next };
+  const response = await pending;
+  return r.path === "/v1/app/org/model-sources" ? response : { status: 200, body: r.path === "/v1/app/org/agent-ai" ? defaultAi : bodies[r.path] ?? {} };
+ });
  await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await waitFor(() => expect(screen.queryAllByText("Your Anthropic key")).toEqual([]));
  expect(f.query.getQueriesData({ queryKey: ["admin", "lane-c"] }).every(([key]) => key.includes(next.org.orgId) && key.includes(next.developer.id))).toBe(true);
- await act(async () => resolve({ status: 200, body: { sources: [], order: [] } }));await screen.findByText(/No order is saved yet/);f.close();
+ await act(async () => resolve({ status: 200, body: { sources: [], order: [] } }));
+ await within(screen.getByRole("region", { name: "AI source order" })).findByText("No source order is saved yet.", { exact: true });
+ const note = await screen.findByTestId("ai-spend-default");expect(note.textContent).toContain("Rovara's AI, billed to your company");
+ expect(within(note).getByRole("link", { name: "Change" }).getAttribute("href")).toBe("/app/admin/ai-spending#ai-connections");
+ expect(f.query.getQueryData(["admin", "lane-c", "sources", next.org.orgId, next.developer.id, "owner"])).toEqual({ sources: [], order: [] });f.close();
 });
 it("removes all lane C cache after role revocation", async () => { const f = area("/app/admin/models/sources");await screen.findAllByText("Your Anthropic key");const next = structuredClone(f.me);next.developer.orgRole = "member";f.request.mockImplementation(async () => ({ status: 200, body: next }));await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await waitFor(() => expect(f.query.getQueriesData({ queryKey: ["admin", "lane-c"] })).toEqual([]));expect(screen.queryByRole("combobox")).toBeNull();f.close(); });
 

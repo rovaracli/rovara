@@ -109,13 +109,13 @@ describe("GET the checklist: the company's AI fact comes from Cloud, for the com
     return { status: got.status, body: got.body as Plain };
   };
 
-  it("no key connected and nothing chosen: the AI row needs you, the first task cannot start", async () => {
+  it("non-exempt with no key or saved choice: default leaves Code-done AI and first-task readiness intact", async () => {
     const { ctx } = context(A, { [A]: {} });
     const got = await read(ctx);
     expect(got.status).toBe(200);
-    expect(got.body["aiAndSpend"]).toMatchObject({ state: "needs_you", modelCall: "none" });
-    expect(got.body["firstTask"]).toMatchObject({ canStart: false });
-    expect(got.body["progress"]).toMatchObject({ done: 3, nextRequired: "aiAndSpend" });
+    expect(got.body["aiAndSpend"]).toEqual(code()["aiAndSpend"]);
+    expect(got.body["firstTask"]).toEqual(code()["firstTask"]);
+    expect(got.body["progress"]).toEqual(code()["progress"]);
   });
 
   it("Rovara's AI chosen, or a key that is connected: the row stays done as Code sent it", async () => {
@@ -132,7 +132,7 @@ describe("GET the checklist: the company's AI fact comes from Cloud, for the com
   });
 
   it("two companies: the fact is read for the company Code's live access names, and another company's key never counts", async () => {
-    const mine = context(A, { [A]: {}, [B]: { anthropic: true, saved: "anthropic_key" } });
+    const mine = context(A, { [A]: { saved: "anthropic_key" }, [B]: { anthropic: true, saved: "anthropic_key" } });
     const got = await read(mine.ctx);
     expect(mine.asked).toEqual([A]);
     expect(got.body["aiAndSpend"]).toMatchObject({ state: "needs_you" });
@@ -146,4 +146,14 @@ describe("GET the checklist: the company's AI fact comes from Cloud, for the com
     const bare = { ...ctx, company: undefined, productAi: undefined } as unknown as RouteContext;
     expect((await read(bare)).body["aiAndSpend"]).toMatchObject({ state: "done" });
   });
+});
+
+it("explicit disconnected own providers still downgrade AI; a Code-blocked AI row is never promoted", async () => {
+  const { agentAiConnected } = await import("../../packages/cloud-server/src/agent-ai-presence.js");
+  for (const source of ["anthropic_key", "bedrock_byo"]) {
+    const ctx = { company: { store: { agentAi: async () => ({ source }) } }, productAi: { bedrock: {}, issuer: "iss", store: { view: async () => ({ sources: [] }) } } } as unknown as RouteContext;
+    expect(withModelCallFact(rebuild(code()), await agentAiConnected(ctx, A))["aiAndSpend"]).toMatchObject({ state: "needs_you", modelCall: "none" });
+  }
+  const blocked = rebuild(code({ aiAndSpend: { ...(code()["aiAndSpend"] as Plain), state: "needs_you", modelCall: "none" } }));
+  expect(withModelCallFact(blocked, true)).toBe(blocked);
 });

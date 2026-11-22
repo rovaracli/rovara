@@ -36,7 +36,7 @@ export const AI_SPEND_STEP_WORDS = Object.freeze({
  title: "AI and spending",
  intro: "Choose who pays for the AI, the model Rovara uses, and the most the company spends on AI in a month. Setup runs use AI, so this comes first.",
  rovara: "Rovara's AI",
- defaultNote: "Rovara's AI is on for your company by default. It counts under the monthly limit. Choose your own provider below if you would rather use your own key.",
+ defaultNote: "Rovara's AI, billed to your company",
  rovaraText: "Nothing to connect. Charged per use on the company's bill, inside the monthly limit.",
  own: "Your own provider",
  ownText: "Your company's own AI account pays the provider directly. Rovara still counts it under the monthly limit.",
@@ -51,7 +51,7 @@ export const AI_SPEND_STEP_WORDS = Object.freeze({
  badLimit: "The monthly limit must be an amount in dollars above 0, like 500 or 1500.50, up to 1,000,000.",
  readOnly: "Only a company owner or admin can change this. Ask one of them.",
  saved: "Saved.",
- pending: "The new monthly limit is waiting for another admin to approve it. The rest is saved.",
+ pending: "The server reports that the monthly limit is waiting for another admin to approve it.",
 });
 const W = AI_SPEND_STEP_WORDS;
 const usdText = (usd: number) => (Number.isInteger(usd) ? String(usd) : usd.toFixed(2));
@@ -73,7 +73,8 @@ function AiSpendScope({ role, developerId, orgId, company, onSaved, onContinue }
   if (!active() || !nextModel.isSuccess || !nextSource.isSuccess || !nextSettings.isSuccess) return undefined;
   return { model: nextModel.data, source: nextSource.data, settings: nextSettings.data, ready: persistedReady(nextModel.data, nextSource.data, nextSettings.data, nextTasks.isSuccess ? nextTasks.data : undefined) };
  };
- const complete = admin && model.isSuccess && source.isSuccess && settings.isSuccess;
+ const complete = admin && model.isSuccess && source.isSuccess && settings.isSuccess && model.failureCount === 0 && source.failureCount === 0 && settings.failureCount === 0;
+ const visibleNotice = notice?.ok ? complete && notice.reads?.model === model.data && notice.reads.source === source.data && notice.reads.settings === settings.data : notice !== undefined;
  const ready = complete && !model.isFetching && !source.isFetching && !settings.isFetching && !tasks.isFetching && tasks.isSuccess && persistedReady(model.data, source.data, settings.data, tasks.data);
  useEffect(() => {
   if (!location.hash || model.isPending || (admin && (source.isPending || settings.isPending))) return;
@@ -90,14 +91,22 @@ function AiSpendScope({ role, developerId, orgId, company, onSaved, onContinue }
  }, [location.hash, admin, model.isPending, source.isPending, settings.isPending, complete]);
  return <ProjectScopeContext.Provider value={{ orgId, company, developerId, role, checking: false }}><section ref={root} className="rv-ai-spend rv-ai-spend-step" aria-label={W.title} data-testid="ai-spend-step">
   <p>{W.intro}</p>
-  {notice !== undefined && <p role={notice.ok ? "status" : "alert"} data-testid={notice.ok ? "ai-spend-saved" : "ai-spend-error"}><VisibleText text={notice.text} /></p>}
+  {visibleNotice && notice !== undefined && <p role={notice.ok ? "status" : "alert"} data-testid={notice.ok ? "ai-spend-saved" : "ai-spend-error"}><VisibleText text={notice.text} /></p>}
+  {notice?.check && <Button disabled={model.isFetching || source.isFetching || settings.isFetching} onClick={() => {
+   void reload().then(next => { if (active() && next) setNotice({ ok: true, text: observedSettings(next), reads: next }); });
+  }}>Check</Button>}
   {complete
-   ? <Form orgId={orgId} developerId={developerId} role={role} model={model.data} source={source.data} settings={settings.data} setNotice={setNotice} onSaved={async confirmed => { const persisted = await reload(); if (active() && confirmed && persisted?.ready) onSaved?.(); return persisted; }} ready={ready} onContinue={onContinue} />
+   ? <Form orgId={orgId} developerId={developerId} role={role} model={model.data} source={source.data} settings={settings.data} setNotice={setNotice} onSaved={async confirmed => {
+    const persisted = await reload();
+    if (active() && !persisted) setNotice({ ok: false, check: true, text: "Rovara didn't confirm this yet. Couldn't re-read AI and spending. Check the current settings before saving again." });
+    if (active() && confirmed && persisted?.ready) onSaved?.();
+    return persisted;
+   }} ready={ready} onContinue={onContinue} />
    : <>
     {!admin && <section id="ai-connections"><h2>AI connections</h2><p>{W.readOnly}</p></section>}
-    {admin && <CompanyAiConnections><section aria-label="Task AI source">{source.isPending ? <Skeleton label="Loading task AI source" /> : source.isError ? <ReadFailure read={source} row="source" /> : <p>Task source: {sourceLabel((source.data.source ?? source.data.effectiveSource) ?? "unknown")}.</p>}</section></CompanyAiConnections>}
-    <StepModelsCard orgId={orgId} developerId={developerId} role={role} companyModel={model.isPending ? <Skeleton label="Loading company model" /> : model.isError ? <ReadFailure read={model} row="model" /> : <ReadOnly model={model.data} blocked={admin} />} />
-    {admin && <section aria-label="Company spending">{settings.isPending ? <Skeleton label="Loading company spending" /> : settings.isError ? <ReadFailure read={settings} row="settings" /> : <p>{W.limit}: {settings.data.monthlyCapUsd ?? "Not saved"}</p>}</section>}
+    {admin && <CompanyAiConnections><section aria-label="Task AI source">{source.isPending ? <Skeleton label="Loading task AI source" /> : source.isError ? <ReadFailure read={source} row="source" retry={!notice?.check} /> : <p>Task source: {sourceLabel((source.data.source ?? source.data.effectiveSource) ?? "unknown")}.</p>}</section></CompanyAiConnections>}
+    <StepModelsCard orgId={orgId} developerId={developerId} role={role} companyModel={model.isPending ? <Skeleton label="Loading company model" /> : model.isError ? <ReadFailure read={model} row="model" retry={!notice?.check} /> : <ReadOnly model={model.data} blocked={admin} />} />
+    {admin && <section aria-label="Company spending">{settings.isPending ? <Skeleton label="Loading company spending" /> : settings.isError ? <ReadFailure read={settings} row="settings" retry={!notice?.check} /> : <p>{W.limit}: {settings.data.monthlyCapUsd ?? "Not saved"}</p>}</section>}
    </>}
   {onContinue && !complete && <Button data-testid="onboard-continue-repos" disabled>Continue to pick repos</Button>}
  </section></ProjectScopeContext.Provider>;
@@ -110,10 +119,10 @@ function persistedReady(model: EngineModelRead, source: AgentAiRead, settings: C
  const taskReady = tasks !== undefined && required.every(stage => tasks.steps.some(step => step.stage === stage && !step.refused && step.effective !== null));
  return taskReady && settings.modelGateway?.ready === true && model.model !== null && model.offered.includes(model.model) && serving !== null && source.available[serving] && typeof settings.monthlyCapUsd === "number" && settings.monthlyCapUsd > 0;
 }
-function ReadFailure({ read, row }: { read: { error: unknown; refetch: () => unknown }; row: "model" | "source" | "settings" }) {
+function ReadFailure({ read, row, retry = true }: { retry?: boolean; read: { error: unknown; refetch: () => unknown }; row: "model" | "source" | "settings" }) {
  const notYet = read.error instanceof ApiError && read.error.status === 501;
  const label = row === "model" ? "AI and spending" : row === "source" ? "Task AI source" : "Company spending";
- return <><p role="alert" data-testid={row === "model" ? "ai-spend-read-error" : `ai-spend-${row}-read-error`}>{notYet ? `${label} isn't available on this Rovara yet.` : `Couldn't load ${label === "AI and spending" ? "AI and spending" : label.toLowerCase()}. Try again.`}</p>{!notYet && <Button onClick={() => { void read.refetch(); }}>Try again</Button>}</>;
+ return <><p role="alert" data-testid={row === "model" ? "ai-spend-read-error" : `ai-spend-${row}-read-error`}>{notYet ? `${label} isn't available on this Rovara yet.` : `Couldn't load ${label === "AI and spending" ? "AI and spending" : label.toLowerCase()}. Try again.`}</p>{!notYet && retry && <Button onClick={() => { void read.refetch(); }}>Try again</Button>}</>;
 }
 
 function ReadOnly({ model, blocked }: { model: EngineModelRead; blocked: boolean }) {
@@ -121,15 +130,20 @@ function ReadOnly({ model, blocked }: { model: EngineModelRead; blocked: boolean
 }
 
 type Loaded = { model: EngineModelRead; source: AgentAiRead; settings: CompanySettingsRead };
+function observedSettings(read: Loaded): string {
+ const serving = read.source.source ?? read.source.effectiveSource;
+ const cap = read.settings.monthlyCapUsd;
+ return `Current AI source: ${serving === null ? "could not be checked" : sourceLabel(serving)}. Company monthly limit: ${typeof cap === "number" ? `$${usdText(cap)}` : "not saved"}. Company model: ${read.model.model ?? "unavailable"}.`;
+}
 type Choice = "rovara" | "own";
-type Notice = { ok: boolean; text: string } | undefined;
+type Notice = { ok: boolean; text: string; reads?: Loaded; check?: boolean } | undefined;
 function Form({ model, source, settings, setNotice, onSaved, developerId, role, orgId, ready, onContinue }: { ready: boolean; onContinue: (() => void) | undefined; orgId: string; developerId: string; role: CompanyRole; model: EngineModelRead; source: AgentAiRead; settings: CompanySettingsRead; setNotice: (notice: Notice) => void; onSaved: (confirmed: boolean) => Promise<(Loaded & { ready: boolean }) | undefined> }) {
  const { api, active } = useModelScope("ai-spend", orgId, developerId, role, "company-draft"), query = useQueryClient();
- // DEC 254zzz3(1): what the company's agents use now (a saved choice, else the default it is on), never a guess.
+ // DEC 254zzz263: what the company's agents use now (a saved choice, else the default it is on), never a guess.
  const shown = source.source ?? source.effectiveSource;
  const [loaded, setLoaded] = useState({ model, source, settings });
- const savedSource = loaded.source.source;
- const loadedChoice = loaded.source.source ?? loaded.source.effectiveSource ?? "rovara";
+ const savedSource = source.source;
+ const servedChoice = source.source ?? source.effectiveSource ?? "rovara";
  const initialPick = (value: EngineModelRead) => value.source === "company" && value.model !== null ? value.model : DEFAULT_MODEL;
  const [modelInteracted, setModelInteracted] = useState(false);
  const [choice, setChoice] = useState<Choice>(shown === null || shown === "rovara" ? "rovara" : "own");
@@ -139,14 +153,15 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
  const savedCap = typeof loaded.settings.monthlyCapUsd === "number" ? loaded.settings.monthlyCapUsd : undefined;
  const [cap, setCap] = useState(usdText(savedCap ?? COMPANY_MONTHLY_DEFAULT_USD));
  const [busy, setBusy] = useState(false);
- // Capture the loaded baseline once for this scope. Only an explicit save starts a new draft.
+ // Keep the loaded model and limit baselines for this scope. Only an explicit save starts a new draft.
  const modelChanged = modelInteracted && picked !== initialPick(loaded.model);
  const saveModel = modelChanged;
  const chosenSource: AgentAiSource = choice === "rovara" ? "rovara" : own;
- // #255: nothing saved and no default the company is on (not exempt), so the shown Rovara's AI is only a suggestion: Save must write it, or nothing serves.
- const unsavedSuggestion = savedSource === null && (loaded.source.effectiveSource ?? null) === null && loaded.source.available[chosenSource] === true;
- // Otherwise compare against the displayed starting choice, so returning to it is not a change.
- const sourceChanged = unsavedSuggestion || (sourceInteracted && savedSource !== chosenSource && !(savedSource === null && loadedChoice === chosenSource));
+ // Compatibility with an older server: without a served effective source the shown option is only a suggestion.
+ const unsavedSuggestion = savedSource === null && (source.effectiveSource ?? null) === null && source.available[chosenSource] === true;
+ // Connections can refresh the served source without resetting model, limit or explicit source drafts.
+ // Compare an explicit source choice with that current read, rather than the first render's payer.
+ const sourceChanged = unsavedSuggestion || (sourceInteracted && savedSource !== chosenSource && !(savedSource === null && servedChoice === chosenSource));
  const capUsd = dollarsOf(cap, MONTHLY_MAX_USD);
  const displayChoice = sourceInteracted ? choice : shown === null || shown === "rovara" ? "rovara" : "own";
  const displayOwn = sourceInteracted ? own : shown !== null && shown !== "rovara" ? shown : "anthropic_key";
@@ -168,16 +183,16 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
     wrote = true;
     pending = typeof answer === "object" && answer !== null && "pending" in answer && !("settings" in answer);
    }
-   if (!resetModel && sourceChanged && savedSource !== chosenSource) await api.sendAnswer("PUT", AGENT_AI_PATH, { expectedVersion: loaded.source.version, source: chosenSource }, { parse: body => body }, { retry: "never" }).then(() => { wrote = true; });
+   if (!resetModel && sourceChanged && savedSource !== chosenSource) await api.sendAnswer("PUT", AGENT_AI_PATH, { expectedVersion: source.version, source: chosenSource }, { parse: body => body }, { retry: "never" }).then(() => { wrote = true; });
    // Default and offered preselects are readouts until the person makes a choice.
    if (resetModel || saveModel) { await api.sendAnswer("PUT", ENGINE_MODEL_PATH, { model: resetModel || picked === DEFAULT_MODEL ? null : picked }, { parse: readEngineModel }, { retry: "never" }); wrote = true; }
    if (!active()) return;
-   setNotice({ ok: true, text: pending ? W.pending : W.saved });
    await query.invalidateQueries({ queryKey: ["admin", "lane-c"] });
    await query.invalidateQueries({ queryKey: ["step-models", orgId, developerId, role] });
    if (!active()) return;
    const next = await onSaved(!resetModel && !pending);
    if (active() && next) {
+    setNotice({ ok: true, text: `${pending ? `${W.pending} ` : ""}${observedSettings(next)}`, reads: next });
     setLoaded(next); setPicked(initialPick(next.model)); setModelInteracted(false);
     const nextSource = next.source.source ?? next.source.effectiveSource;
     if (!resetModel) {
@@ -196,14 +211,14 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
 
  return <>
   <CompanyAiConnections>
-  {source.sourceIsDefault && source.effectiveSource === "rovara" && <p data-testid="ai-spend-default">{W.defaultNote}</p>}
+  {source.sourceIsDefault && source.effectiveSource === "rovara" && <p data-testid="ai-spend-default">{W.defaultNote}. <Link to="/app/admin/ai-spending#ai-connections">Change</Link></p>}
   <fieldset disabled={busy} aria-label="Who pays for the AI"><legend>Who pays for the AI</legend>
    <p><label data-testid="ai-spend-rovara"><input type="radio" name="ai-spend-source" value="rovara" checked={displayChoice === "rovara"} disabled={!source.available.rovara} onChange={() => { setSourceInteracted(true); setChoice("rovara"); }} /> <b>{W.rovara}</b>: {W.rovaraText}</label></p>
    <p><label data-testid="ai-spend-own"><input type="radio" name="ai-spend-source" value="own" checked={displayChoice === "own"} onChange={() => { setSourceInteracted(true); setChoice("own"); }} /> <b>{W.own}</b>: {W.ownText}</label></p>
    {displayChoice === "own" && <div className="rv-ai-spend-own" data-testid="ai-spend-own-choices">
     {displayOwn !== "anthropic_key" && displayOwn !== "bedrock_byo" ? <p data-testid="ai-spend-source-read-only">Saved source: <b>{sourceLabel(displayOwn)}</b>. <Link className="rv-admin-b1-link" to="#ai-connections">{W.manageSource}</Link></p> : <>
-     <p><label><input type="radio" name="ai-spend-own" value="anthropic_key" checked={displayOwn === "anthropic_key"} disabled={!source.available.anthropic_key} onChange={() => { setSourceInteracted(true); setOwn("anthropic_key"); }} /> {W.anthropic}{source.anthropicKeyConnected === false && <> <span data-testid="ai-spend-no-key">(not connected yet)</span></>}</label></p>
-     <p><label><input type="radio" name="ai-spend-own" value="bedrock_byo" checked={displayOwn === "bedrock_byo"} disabled={!source.available.bedrock_byo} onChange={() => { setSourceInteracted(true); setOwn("bedrock_byo"); }} /> {W.bedrock}{!source.available.bedrock_byo && " (coming soon)"}</label></p>
+     <p><label><input type="radio" name="ai-spend-own" value="anthropic_key" checked={displayOwn === "anthropic_key"} disabled={!source.available.anthropic_key} onChange={() => { setSourceInteracted(true); setChoice("own"); setOwn("anthropic_key"); }} /> {W.anthropic}{source.anthropicKeyConnected === false && <> <span data-testid="ai-spend-no-key">(not connected yet)</span></>}</label></p>
+     <p><label><input type="radio" name="ai-spend-own" value="bedrock_byo" checked={displayOwn === "bedrock_byo"} disabled={!source.available.bedrock_byo} onChange={() => { setSourceInteracted(true); setChoice("own"); setOwn("bedrock_byo"); }} /> {W.bedrock}{!source.available.bedrock_byo && " (coming soon)"}</label></p>
      {displayOwn === "anthropic_key" && source.anthropicKeyConnected !== true && <p><Link className="rv-admin-b1-link" to="#ai-connections" data-testid="ai-spend-connect">{W.connectAnthropic}</Link>, then come back here.</p>}
     </>}
    </div>}
