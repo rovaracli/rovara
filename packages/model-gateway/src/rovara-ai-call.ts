@@ -51,7 +51,8 @@ export function rovaraGuard(checked: RouteCall, ai: Pick<RovaraAi, "models" | "m
     const maxTokens = Math.min(checked.maxTokens, typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS);
     const converse = toConverse(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>, maxTokens, REASONING_CARRYOVER_MODEL.test(id));
     if (converse === undefined) return ROVARA_AI_FEATURE;
-    return { ...checked, model: id, maxTokens, bytes: Buffer.from(JSON.stringify(converse)), headers: { "content-type": "application/json" }, path: bedrockConversePath(id, checked.streaming) };
+    // Converse emits no cachePoint: the dropped Anthropic markers cannot incur a cache-write charge.
+    return { ...checked, usesPromptCache: false, model: id, maxTokens, bytes: Buffer.from(JSON.stringify(converse)), headers: { "content-type": "application/json" }, path: bedrockConversePath(id, checked.streaming) };
   }
   return invokeCall(checked, id);
 }

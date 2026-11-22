@@ -105,6 +105,8 @@ export interface GatewayDependencies {
 /** One provider call shape after its route's guard. `path` is built by the guard from checked parts, never copied from the request. */
 export interface RouteCall {
   ok: true; hasTools: boolean; inputBounded: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>>; path?: string;
+  /** Inline cache breakpoints retain a token ceiling but require cache-write pricing. */
+  usesPromptCache?: boolean;
   /** The model's audio/video prices (product route): attached to the call's price for the estimate and the settle. */
   mediaRates?: MediaRates;
   /** Inline audio/video: estimated prompt tokens, replacing their `dataBytes` encoded bytes in the hold (DEC 228e). */
@@ -746,7 +748,17 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if ((claims.runPrice !== undefined && (!guarded.inputBounded || guarded.media !== undefined || (price.estimated && !price.knownTokenPrice) || basis === undefined || basis.hash !== claims.runPrice.snapshotHash || basis.version !== claims.runPrice.snapshotVersion)) || !runPriceAllows(claims, route.provider, guarded.model, route.chargeSource, price, now(), deps.openRouterTariffs)) {
       await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
     }
-    if (claims.runPrice !== undefined) shortenDeadline(claims.runPrice.expiresAt);
+    if (claims.runPrice !== undefined) {
+      if (guarded.usesPromptCache) {
+        const inputCeiling = guarded.bytes.length + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0);
+        // Check the base and every reachable band: derived/missing write rates are not evidence of a price.
+        const probes = [1, ...(price.longContext ?? []).filter((tier) => tier.aboveTokens < inputCeiling).map((tier) => tier.aboveTokens + 1)];
+        if (probes.some((tokens) => usageEstimated(price, { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens }))) {
+          await respond(409, "run_price_authorization_required", "This model has no known cache-write price; pause this run for fresh authorization."); return;
+        }
+      }
+      shortenDeadline(claims.runPrice.expiresAt);
+    }
     if (price.operatorReview) log({ event: "price_operator_review" });
     settlementPrice = price; settlementModel = guarded.model; settlementKind = guarded.priceKind ?? "chat";
     // Capture the admitted policy: expiry during the call cannot remove enforcement.
@@ -762,7 +774,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       caps = withCap;
     }
     let estimate: number;
-    try { estimate = estimateCall(guarded.bytes.length - (guarded.media?.dataBytes ?? 0), guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, guarded.inputBounded, guarded.media); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
+    try { estimate = estimateCall(guarded.bytes.length - (guarded.media?.dataBytes ?? 0), guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, guarded.inputBounded && !guarded.usesPromptCache, guarded.media); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
     if (route.provider === "openrouter") {
       const policy = openRouterPolicy(guarded.model, now(), deps.openRouterTariffs);
       if (policy === undefined) { await respond(409, "invalid_request", "request not allowed"); return; }
@@ -774,7 +786,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     }
     if (estimate === Number.MAX_SAFE_INTEGER && !price.operatorReview) log({ event: "price_operator_review" });
     // Do not race a transaction: its outcome must be known before forwarding or settling. Adapters bound their own transactions.
-    const overrunCapable = price.estimated || !guarded.inputBounded;
+    const overrunCapable = price.estimated || !guarded.inputBounded || (guarded.usesPromptCache === true && claims.runPrice === undefined);
     const admissionExpiresSeconds = Math.floor(now() / 1000) + TASK_TOKEN_SECONDS;
     if (overrunCapable) shortenDeadline(Math.floor(Math.min(deadline, admissionExpiresSeconds * 1000) / 1000) * 1000);
     appliedMaxOutputTokens = guarded.maxTokens;

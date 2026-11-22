@@ -17,10 +17,9 @@ const exposedPolicies = Object.entries(FEATURE_POLICY).filter(([feature]) => GAT
 const TOOL_TYPES: ReadonlySet<string> = new Set(exposedPolicies.flatMap((policy) => policy.toolTypes));
 const FIELDS = new Set(["model", "messages", "max_tokens", "stream", "system", "temperature", "thinking", "output_config", "tool_choice", "tools", "metadata", ...exposedPolicies.flatMap((policy) => policy.requestFields)]);
 const CHOICES = new Set(["auto", "any", "none", "required", "tool", "function"]);
-const ARGUMENTS = new Set(["tool_use", "server_tool_use", "mcp_tool_use"]);
 export interface GuardFailure { ok: false; status: number; code: string; message: string }
 export interface ModelLimitsSource { maxOutputTokens(provider: string, model: string): unknown }
-export interface GuardedRequest { ok: true; hasTools: boolean; inputBounded: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>> }
+export interface GuardedRequest { ok: true; hasTools: boolean; inputBounded: boolean; usesPromptCache: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>> }
 const bad = (): GuardFailure => ({ ok: false, status: 400, code: "invalid_request", message: "request not allowed" });
 export const tooLarge = (): GuardFailure => ({ ok: false, status: 413, code: "request_too_large", message: "the request is too large" });
 const tool = (v: unknown): boolean => { const t = record(v); return t !== undefined && (t.type === undefined || t.type === null || (typeof t.type === "string" && TOOL_TYPES.has(t.type))); };
@@ -46,25 +45,33 @@ export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, str
   const choice = b.tool_choice;
   if (choice !== undefined && choice !== null && !(typeof choice === "string" ? CHOICES.has(choice) : typeof record(choice)?.type === "string" && CHOICES.has(record(choice)!.type as string))) return bad();
   // Single iterative traversal, one total item limit (including nested argument data). Never skip an unparsed suffix.
-  const stack: unknown[] = [b.messages, b.system];
+  type WalkKind = "message" | "block" | "payload";
+  const stack: Array<{ value: unknown; kind: WalkKind }> = [{ value: b.messages, kind: "message" }, { value: b.system, kind: "block" }];
   let count = 0;
-  // Cached tool definitions also incur write rates above plain input pricing.
-  let inputBounded = !(Array.isArray(b.tools) && b.tools.some((value: unknown) => record(value)?.cache_control !== undefined));
+  let inputBounded = true;
+  // Inline cache breakpoints change the rate, not the byte-derived token ceiling.
+  let usesPromptCache = Array.isArray(b.tools) && b.tools.some((value: unknown) => record(value)?.cache_control !== undefined);
   while (stack.length > 0) {
     if (++count > MAX_BODY_ITEMS) return bad();
-    const v = stack.pop();
-    if (Array.isArray(v)) { for (const x of v) stack.push(x); }
+    const { value: v, kind } = stack.pop()!;
+    if (Array.isArray(v)) { for (const x of v) stack.push({ value: x, kind }); }
     else {
       const r = record(v); if (r === undefined) continue;
-      // Only inline text/function payloads have a byte-derived input ceiling. Media,
-      // remote files, caches and unknown block kinds must use the company marker.
-      if ((r.type !== undefined && (typeof r.type !== "string" || !["text", "tool_use", "tool_result"].includes(r.type))) || ["source", "fileData", "cachedContent", "cache_control"].some((k) => Object.hasOwn(r, k))) inputBounded = false;
-      if (Object.hasOwn(r, "tools") && !tools(r.tools)) return bad();
-      if (r.type === "tool_addition" && record(r.tool)?.type !== "tool_definition") return bad();
-      if (r.type === "tool_definition" && !tool(r.definition)) return bad();
+      // Classify only content blocks. Inline reasoning and function payloads are
+      // bounded by serialized bytes; media, remote data and unknown blocks are not.
+      if (kind === "block" && (typeof r.type !== "string" || !["text", "tool_use", "tool_result", "thinking", "redacted_thinking"].includes(r.type) || ["source", "fileData", "cachedContent"].some((k) => Object.hasOwn(r, k)))) inputBounded = false;
+      if (kind !== "payload") {
+        if (Object.hasOwn(r, "cache_control")) usesPromptCache = true;
+        if (Object.hasOwn(r, "tools") && !tools(r.tools)) return bad();
+        if (r.type === "tool_addition" && (record(r.tool)?.type !== "tool_definition" || !tool(record(r.tool)?.definition))) return bad();
+        if (r.type === "tool_definition" && !tool(r.definition)) return bad();
+      }
       for (const [k, x] of Object.entries(r)) {
-        if (k === "input" && typeof r.type === "string" && ARGUMENTS.has(r.type)) continue;
-        stack.push(x);
+        if (k === "cache_control") continue; // Cache policy is not an input content block.
+        // Tool arguments and result JSON/text remain opaque, but count toward the
+        // traversal limit. Only a result's content-block array can introduce media.
+        const childKind = k === "content" && (kind === "message" || (kind === "block" && r.type === "tool_result" && Array.isArray(x))) ? "block" : "payload";
+        stack.push({ value: x, kind: childKind });
       }
     }
   }
@@ -77,5 +84,5 @@ export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, str
   const forwarded = Buffer.from(JSON.stringify({ ...b, max_tokens: maxTokens }));
   const outbound: Record<string, string> = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
   if (beta !== undefined) outbound["anthropic-beta"] = beta;
-  return { ok: true, hasTools: Array.isArray(b.tools), inputBounded, model: b.model, maxTokens, streaming, bytes: forwarded, headers: outbound };
+  return { ok: true, hasTools: Array.isArray(b.tools), inputBounded, usesPromptCache, model: b.model, maxTokens, streaming, bytes: forwarded, headers: outbound };
 }
