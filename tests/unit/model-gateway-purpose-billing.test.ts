@@ -51,7 +51,8 @@ async function world(exempt = false, limit = 1_000_000_000, ownKey = false) {
   const companyCaps = new FixedCapsSource({ ...caps, companyMonth: limit });
   const common = { keys, meter, companyCaps, modelLimits: { maxOutputTokens: () => 128_000 },
     transport: async (request: ProviderRequest) => { expect(request.key).toBe("fixture-own-key"); sent++; return { status: 200, body: answer() }; }, rovaraDefault: { ai, sources, disabled, switchedOn: new Set<string>() } };
-  const { deps } = setup({ prices, meter: agentMeter, answers: createAnswersRoutes({ ...common, limits: { limitFor: async () => undefined } }),
+  const stop = { enabled: vi.fn(async () => true) };
+  const { deps } = setup({ rovaraAiSetting: stop, prices, meter: agentMeter, answers: createAnswersRoutes({ ...common, limits: { limitFor: async () => undefined } }),
     learning: createLearningRoutes({ ...common, lessons: { isOn: async () => true } }), chargeReceipts: { source: (_c, _m, resolved) => resolved } });
   const quote = () => answerRateQuote({ prices, verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }), now: () => now,
     sources, keys, rovara: ai, disabled, region: "us-west-2", switchedOn: new Set(), offeredProviders: new Set(["bedrock", "anthropic"]) },
@@ -65,7 +66,7 @@ async function world(exempt = false, limit = 1_000_000_000, ownKey = false) {
     }) }, body: (async function* () { yield Buffer.from(JSON.stringify(requestBody)); })() }, sink);
     return sink;
   };
-  return { deps, prices, ai, keys, identity, disabled, quote, meter, agentMeter, reserve, receipts, grant, send, counts: () => ({ sent, ownReads }),
+  return { stop, deps, prices, ai, keys, identity, disabled, quote, meter, agentMeter, reserve, receipts, grant, send, counts: () => ({ sent, ownReads }),
     choose: (value: AgentAiSource) => { selected = value; }, connect: () => { connected = true; } };
 }
 
@@ -208,3 +209,22 @@ for (const path of paths) {
     }
   });
 }
+
+// DEC 328: answers, learning and Slack company chat use this same gateway admission.
+it.each(paths)("%s: the install pause beats every hold/send even when Demo is exempt", async path => {
+  const g = await world(true);
+  g.stop.enabled.mockResolvedValue(false);
+  const sink = await g.send(path);
+  expect(sink.status).toBe(403);
+  expect(JSON.parse(sink.text())).toEqual({ error: { type: "not_allowed", message: "Rovara's AI is paused on this install. Your work is safe; try again later or use your own AI source." } });
+  expect(g.reserve).not.toHaveBeenCalled();
+  expect(g.counts()).toEqual({ sent: 0, ownReads: 0 });
+  expect(g.receipts).toEqual([]);
+  expect(g.meter.billedCalls(claims.iss, claims.cid)).toEqual([]);
+});
+it.each(paths)("%s: own-key purpose calls ignore the install pause", async path => {
+  const g = await world(false, 1_000_000_000, true);
+  g.stop.enabled.mockResolvedValue(false);
+  expect((await g.send(path)).status).toBe(200);
+  expect(g.stop.enabled).not.toHaveBeenCalled();
+});

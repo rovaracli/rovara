@@ -6,7 +6,7 @@ import { denyNetwork } from "./model-gateway-no-network.js";
 beforeAll(denyNetwork);
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { normalizeBedrockModel } from "../../packages/model-gateway/src/price-identity.js";
 import { CompanyAgentAiSource, parseRovaraAiExempt, parseRovaraAiModels, ROVARA_AI_US_MODELS, type AgentAiSource, type AgentAiSourceReader, type RovaraAi } from "../../packages/model-gateway/src/agent-ai.js";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
@@ -442,23 +442,25 @@ const running: RunningGateway[] = [];
 afterEach(async () => { for (const g of running.splice(0)) await g.drain(); });
 
 describe("gateway process: Rovara's AI from each company's saved choice", () => {
-  async function serve(rovaraAi: boolean) {
+  async function serve(rovaraAi: boolean, paused = false) {
     const wire = new WireDynamo(Object.values(TABLES), { namespaceTables: true });
     const db = new Dynamo({ region: "us-west-2", credentials, transport: wire.transport });
     for (const cid of [cidA, cidB]) await db.put(TABLES.companies, { pk: `COMPANY#${cid}`, sk: "SETTINGS", companyId: cid, version: 1, settings: { budgets: { companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } } });
     // A chose Rovara's AI in Cloud; B chose its own Anthropic key.
     await db.put(TABLES.companies, { pk: `COMPANY#${cidA}`, sk: "AGENT_AI", companyId: cidA, source: "rovara", version: 1 });
     await db.put(TABLES.companies, { pk: `COMPANY#${cidB}`, sk: "AGENT_AI", companyId: cidB, source: "anthropic_key", version: 1 });
+    if (paused) await db.put(TABLES.companies, { pk: "INSTALL#ROVARA_AI", sk: "SETTING", enabled: false });
     const keySent: ProviderRequest[] = []; const bedrockSent: ProviderRequest[] = [];
     const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0, agentKeys: "company", ...(rovaraAi ? { rovaraAi: { models: new Map([[MODEL, BEDROCK_ID]]), exempt: new Set([cidA]) } } : {}) };
+    const clock = { now };
     const gateway = await startServe(config, {
-      db, fetch: async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }), now: () => now, listen: false, log: () => undefined,
+      db, fetch: async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }), now: () => clock.now, listen: false, log: () => undefined,
       keys: { keyFor: async () => "rovara-install-key" }, agentKeys: new CompanyKeys(),
       transport: async (request) => { keySent.push(request); return { status: 200, body: answer() }; },
       bedrockTransport: async (request) => { bedrockSent.push(request); return { status: 200, body: answer() }; },
     });
     running.push(gateway);
-    return { gateway, keySent, bedrockSent, wire };
+    return { gateway, keySent, bedrockSent, wire, db, clock };
   }
   function post(server: RunningGateway["server"], token: string): Promise<FakeResponse> {
     const req = Object.assign(Readable.from([Buffer.from(JSON.stringify(requestBody))]), { method: "POST", url: "/v1/messages", headers: { "content-type": "application/json", "x-api-key": token } });
@@ -478,6 +480,29 @@ describe("gateway process: Rovara's AI from each company's saved choice", () => 
     expect(ledger.filter((r) => r.line !== undefined).map((r) => [r.cid, (r.line as { charge: string }).charge])).toEqual([[cidA, "exempt"]]);
   });
 
+  it("DEC 328: a running process observes pause and resume within a minute with no deploy", async () => {
+    const s = await serve(true);
+    const token = mint({ cid: cidA });
+    expect((await post(s.gateway.server, token)).statusCode).toBe(200);
+    await s.db.put(TABLES.companies, { pk: "INSTALL#ROVARA_AI", sk: "SETTING", enabled: false });
+    s.clock.now += 60_000;
+    expect((await post(s.gateway.server, token)).statusCode).toBe(403);
+    expect(s.bedrockSent).toHaveLength(1);
+    await s.db.put(TABLES.companies, { pk: "INSTALL#ROVARA_AI", sk: "SETTING", enabled: true });
+    s.clock.now += 60_000;
+    expect((await post(s.gateway.server, token)).statusCode).toBe(200);
+    expect(s.bedrockSent).toHaveLength(2);
+  });
+
+  it("DEC 328: deployed process wires the Companies-table stop, with own-key calls unaffected", async () => {
+    const s = await serve(true, true);
+    const refused = await post(s.gateway.server, mint({ cid: cidA }));
+    expect(refused.statusCode).toBe(403);
+    expect((JSON.parse(refused.text()) as { error: { message: string } }).error.message).toBe("Rovara's AI is paused on this install. Your work is safe; try again later or use your own AI source.");
+    expect(s.bedrockSent).toEqual([]);
+    expect((await post(s.gateway.server, mint({ cid: cidB }))).statusCode).toBe(200);
+  });
+
   it("without Rovara's AI configured, A is refused (no fallback to any key) and B is unaffected", async () => {
     const s = await serve(false);
     const refused = await post(s.gateway.server, mint({ cid: cidA }));
@@ -487,4 +512,17 @@ describe("gateway process: Rovara's AI from each company's saved choice", () => 
     expect(s.bedrockSent).toEqual([]);
     expect(s.keySent.map((r) => r.key)).toEqual([keyOf(cidB)]);
   });
+});
+
+it("DEC 328: actual nightly upkeep origin pauses before its budget lookup or any hold/send", async () => {
+  const limitFor = vi.fn(async () => 1_000_000);
+  const g = gateway({ overrides: { rovaraAiSetting: { enabled: async () => false }, upkeep: { limitFor } } });
+  g.choices.saved.set(cidA, "rovara");
+  const reserve = vi.spyOn(g.meter, "reserve");
+  const sink = await call(g.deps, requestBody, mint({ src: "nightly" }));
+  expect(sink.status).toBe(403);
+  expect(error(sink).message).toBe("Rovara's AI is paused on this install. Your work is safe; try again later or use your own AI source.");
+  expect(limitFor).not.toHaveBeenCalled();
+  expect(reserve).not.toHaveBeenCalled();
+  expect(g.bedrockSent).toEqual([]);
 });

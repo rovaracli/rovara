@@ -8,6 +8,7 @@ import { isDeployedEnvironment } from "./sessions.js";
 
 /** The Cloud actions that are recorded. Each is a name the audit list's `action` filter can match, exactly or by family (`hook.*`). */
 export const CLOUD_AUDIT_ACTIONS = Object.freeze([
+  "install.rovara_ai.changed",
   "company.rules.changed", "company.rules.proposed", "company.rules.withdrawn", "company.invite.created", "company.invite.revoked", "company.budget.changed", "company.signin_client.changed",
   "product_ai.key.connected", "product_ai.key.rotated", "product_ai.key.removed", "product_ai.eval_budget.changed", "product_ai.eval_approval.recorded", "product_ai.eval_approval.withdrawn",
   "product_ai.vertex.connected", "product_ai.vertex.rotated", "product_ai.vertex.removed", "product_ai.bedrock.connected", "product_ai.bedrock.rotated", "product_ai.bedrock.linked", "product_ai.bedrock.removed", "product_ai.eval_approvals.withdrawn_for_member",
@@ -20,7 +21,13 @@ export type CloudAuditAction = (typeof CLOUD_AUDIT_ACTIONS)[number];
 /** No record is older than this (Cloud and Code both start in 2026), so a read never looks further back. */
 export const AUDIT_EARLIEST_MS = Date.UTC(2026, 0, 1);
 
-export type AuditActorType = "person" | "agent" | "system";
+export type AuditActorType = "person" | "agent" | "system" | "operator";
+
+/** Reserved install audit scope; never accepted by checkedCompany or customer routes. */
+export const INSTALL_AI_AUDIT_SCOPE = "INSTALL#ROVARA_AI";
+export function checkedAuditScope(scope: string): string {
+  return scope === INSTALL_AI_AUDIT_SCOPE ? scope : checkedCompany(scope);
+}
 
 export interface CloudAuditRecord {
   id: string;
@@ -108,7 +115,9 @@ export interface CloudActionInput {
 /** The record an input makes, or AuditRecordRefused. The time is the server's own. */
 export function buildAuditRecord(input: CloudActionInput, now: Date): CloudAuditRecord {
   const refuse = (what: string): never => { throw new AuditRecordRefused(`the audit record is not valid: ${what}`); };
-  const companyId = checkedCompany(input.companyId);
+  const companyId = checkedAuditScope(input.companyId);
+  const install = companyId === INSTALL_AI_AUDIT_SCOPE;
+  if (install !== (input.action === "install.rovara_ai.changed") || (install && (input.actor.type !== "operator" || input.actor.developerId !== "operator")) || (!install && input.actor.type === "operator")) refuse("scope");
   if (!(CLOUD_AUDIT_ACTIONS as readonly string[]).includes(input.action)) refuse("action");
   const time = now.getTime();
   if (Number.isNaN(time) || time < AUDIT_EARLIEST_MS) refuse("time");
@@ -117,7 +126,7 @@ export function buildAuditRecord(input: CloudActionInput, now: Date): CloudAudit
   const name = typeof input.actor.name === "string" ? input.actor.name.trim() : "";
   if (name.length < 1 || name.length > 200 || !PLAIN.test(name)) refuse("actor name");
   const type = input.actor.type ?? "person";
-  if (type !== "person" && type !== "agent" && type !== "system") refuse("actor type");
+  if (type !== "person" && type !== "agent" && type !== "system" && type !== "operator") refuse("actor type");
   const subject = input.subject ?? "";
   if (subject !== "" && !SUBJECT.test(subject)) refuse("subject");
   if (input.project !== undefined && !PROJECT.test(input.project)) refuse("project");
@@ -186,7 +195,7 @@ export class LocalCloudAuditStore implements CloudAuditStore {
   }
 
   async append(record: CloudAuditRecord): Promise<"added" | "exists"> {
-    const companyId = checkedCompany(record.companyId);
+    const companyId = checkedAuditScope(record.companyId);
     const key = `${companyId}\u0000${record.id}`;
     if (this.rows.has(key)) return "exists";
     const stored = structuredClone(record);
@@ -198,7 +207,7 @@ export class LocalCloudAuditStore implements CloudAuditStore {
   }
 
   async read(companyId: string, range: CloudAuditRange): Promise<{ rows: CloudAuditRecord[]; more: boolean }> {
-    checkedCompany(companyId);
+    checkedAuditScope(companyId);
     const low = Math.max(range.fromMs ?? AUDIT_EARLIEST_MS, AUDIT_EARLIEST_MS);
     const found = [...this.rows.values()]
       .filter((row) => row.companyId === companyId)

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Release-test principal only. Credentials are read solely from OPENROUTER_API_KEY.
+import { createHash, randomUUID } from "node:crypto";
+import { accessSync, constants, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Buffer } from "node:buffer";
 import { setTimeout as sleepFor } from "node:timers/promises";
 const { AbortSignal } = globalThis;
@@ -13,6 +16,14 @@ const recordCheck = (target, name, ok, reason) => {
  if (!ok) target.reasons[name] = reason;
 };
 const MICRO = 1_000_000_000_000n;
+const UNUSED_PRICE_KEYS = ["web_search", "image", "audio", "input_audio", "output_audio", "input_audio_cache", "input_cache_write_1h"];
+const OVERRIDE_CONDITIONS = ["context_length", "min_prompt_tokens", "utc_start", "utc_end", "utc_days"];
+const validOverrideCondition = (key, value) => {
+ if (key === "utc_days") return Array.isArray(value) && value.length > 0 && new Set(value).size === value.length && value.every(day => ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].includes(day));
+ if (!Number.isSafeInteger(value)) return false;
+ if (key === "utc_start" || key === "utc_end") return value >= 0 && value <= 2359 && value % 100 < 60;
+ return key === "context_length" ? value > 0 : value >= 0;
+};
 const INFERENCE_BREAKDOWN_KEYS = ["upstream_inference_prompt_cost", "upstream_inference_completions_cost"];
 const INFERENCE_DETAIL_KEYS = ["upstream_inference_cost", ...INFERENCE_BREAKDOWN_KEYS];
 // Dated variants are reviewed per requested model; never infer another provider/model's aliases.
@@ -90,25 +101,42 @@ const maximumInferenceCost = (policy, usage, generation) => {
  return maximum;
 };
 /** In-memory HTTP fixtures inject fetch. The CLI always targets the fixed TLS origin. */
-export async function qualify({ models, provider, providerName = provider, spendCap = "0.50", fetch: request = globalThis.fetch, env = process.env, now = Date.now, sleep = sleepFor }) {
+async function qualifyModels({ models, provider, providerName = provider, spendCap = "0.50", fetch: request = globalThis.fetch, env = process.env, now = Date.now, sleep = sleepFor, catalogue: suppliedCatalogue, prepareOnly = false, budget, allModels = false }) {
  const report = { status: "FAIL", chargedMicros: 0, reservedMicros: 0, spendCapMicros: 0, models: [], proposedTariffRows: [], errors: [] };
  let exposure = 0; let stop = false;
+ const expose = amount => {
+  exposure += amount;
+  if (budget) { budget.exposure += amount; budget.modelExposure += amount; }
+ };
+ const overCap = () => budget ? budget.exposure > budget.cap || budget.modelExposure > budget.modelCap : exposure > report.spendCapMicros;
+ const reserve = (result, hold) => {
+  const overall = budget ? budget.exposure : exposure;
+  if (budget && budget.modelExposure + hold > budget.modelCap) {
+   recordCheck(result, "per_model_cap", false, `model exposure ${budget.modelExposure} + hold ${hold} > per-model cap ${budget.modelCap} micros`);
+   return false;
+  }
+  if (overall + hold > report.spendCapMicros) {
+   recordCheck(result, "spend_cap", false, `exposure ${overall} + hold ${hold} > spend cap ${report.spendCapMicros} micros`);
+   stop = true; if (budget) budget.stop = "overall_cap"; return false;
+  }
+  expose(hold); report.reservedMicros += hold; return true;
+ };
  // Never print exceptions, full response bodies, headers or credentials (even a provider echo).
  try {
   report.spendCapMicros = Number(openRouterDecimal(spendCap) / MICRO);
   if (!Number.isSafeInteger(report.spendCapMicros) || report.spendCapMicros < 1 || !env.OPENROUTER_API_KEY ||
-      !Array.isArray(models) || models.length < 2 || models.length > 3 || new Set(models).size !== models.length ||
-      models.some(m => typeof m !== "string" || m.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(m) || m.startsWith("openrouter/")) ||
+      !Array.isArray(models) || models.length < (suppliedCatalogue ? 1 : 2) || models.length > 3 || new Set(models).size !== models.length ||
+      models.some(m => typeof m !== "string" || !validModel(m)) ||
       !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(provider) || typeof providerName !== "string" || providerName.length > 128) throw new Error();
   const json = async (path, body, rejected) => {
    const url = `https://openrouter.ai/api/v1/${path}`;
-   if (containsCredential(url, env.OPENROUTER_API_KEY)) { stop = true; throw new Error(); }
+   if (containsCredential(url, env.OPENROUTER_API_KEY)) { stop = true; if (budget) budget.stop = "credential"; throw new Error(); }
    const res = await request(url, {
     method: body === undefined ? "GET" : "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
     headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
    });
-   if ([401, 403].includes(res.status)) stop = true;
+   if ([401, 403].includes(res.status)) { stop = true; if (budget) budget.stop = "authentication"; }
    const bytes = await res.text(); if (Buffer.byteLength(bytes) > 8 * 1024 * 1024) throw new EvidenceError("body exceeds byte limit");
    // GET errors need no billing body. A delayed 404 may have an empty/non-JSON body.
    if (!res.ok && body === undefined) throw new EvidenceError(`http ${res.status}`);
@@ -120,7 +148,7 @@ export async function qualify({ models, provider, providerName = provider, spend
   // Retry ONLY unavailable GET evidence, never the paid completion. Five sleeps total 30s.
   const generationLookup = async id => {
    if (typeof id !== "string" || !/^gen-[A-Za-z0-9_-]{1,200}$/u.test(id) || containsCredential(id, env.OPENROUTER_API_KEY)) {
-    if (containsCredential(id, env.OPENROUTER_API_KEY)) stop = true;
+    if (containsCredential(id, env.OPENROUTER_API_KEY)) { stop = true; if (budget) budget.stop = "credential"; }
     throw new EvidenceError("malformed id");
    }
    const delays = [1000, 2000, 4000, 8000, 15000];
@@ -153,7 +181,7 @@ export async function qualify({ models, provider, providerName = provider, spend
    return printable.slice(0, 300);
   };
   const tokenReason = (field, value, min, max) => !count(value) ? `${field} ${safeValue(value)} expected nonnegative safe integer` : value < min ? `${field} ${safeValue(value)} < min ${min}` : value > max ? `${field} ${safeValue(value)} > max ${max}` : undefined;
-  const catalogue = await json("models");
+  const catalogue = suppliedCatalogue ?? await json("models");
   if (!Array.isArray(catalogue.data)) throw new Error();
   for (const model of models) {
    const result = { model, status: "FAIL", reasons: {}, checks: {}, calls: [] }; report.models.push(result);
@@ -178,45 +206,83 @@ export async function qualify({ models, provider, providerName = provider, spend
    if (catalogPrices === null || typeof catalogPrices !== "object" || Array.isArray(catalogPrices)) failures.push("pricing missing or invalid");
    const prices = catalogPrices !== null && typeof catalogPrices === "object" && !Array.isArray(catalogPrices) ? catalogPrices : {};
    const allowlisted = Object.hasOwn(OPENROUTER_RELAXED_TARIFF_MODELS, model);
-   if (allowlisted && !Object.hasOwn(prices, "input_cache_write")) {
+   // This is qualification-only normalization. Installed policies still require
+   // reviewed, complete prices; no new route is activated by discovery.
+   let missingReasoning = false;
+   let priceSets = [prices];
+   if (allModels) {
+    tariff.assumedZero = [];
+    const overrides = prices.overrides;
+    if (Object.hasOwn(prices, "overrides")) {
+     // Flat price patches with known token/context/time conditions. Use EVERY
+     // patch regardless of whether its condition applies now: worst-case maxima.
+     if (!Array.isArray(overrides) || overrides.some(o => o === null || typeof o !== "object" || Array.isArray(o) ||
+      Object.keys(o).some(k => !OVERRIDE_CONDITIONS.includes(k) && !OPENROUTER_PRICE_KEYS.includes(k) && !UNUSED_PRICE_KEYS.includes(k)) ||
+      !Object.keys(o).some(k => OPENROUTER_PRICE_KEYS.includes(k) || UNUSED_PRICE_KEYS.includes(k)) ||
+      Object.entries(o).some(([k, v]) => OVERRIDE_CONDITIONS.includes(k) && !validOverrideCondition(k, v)) ||
+      (Object.hasOwn(o, "utc_start") !== Object.hasOwn(o, "utc_end")))) {
+      const fields = Array.isArray(overrides) ? overrides.flatMap(o => o !== null && typeof o === "object" ? Object.keys(o).map(safeField) : []) : [];
+      failures.push(`pricing.overrides unknown shape; fields ${fields.join(", ") || "unavailable"}`);
+     } else priceSets = [prices, ...overrides.map(o => ({ ...prices, ...o }))];
+    }
+   }
+   if (allowlisted && !Object.hasOwn(prices, "input_cache_write") && (!allModels || priceSets.every(p => !Object.hasOwn(p, "input_cache_write")))) {
     tariff.cacheWriteBasis = "never_requested_enforced";
     tariff.cacheWriteEnforcementVersion = OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION;
    }
    for (const key of OPENROUTER_PRICE_KEYS) {
     const required = key === "prompt" || key === "completion";
-    const positiveRequired = key === "prompt" || key === "completion";
-    if (!Object.hasOwn(prices, key) && (required || !allowlisted)) { failures.push(`pricing.${key} missing required field${!allowlisted && !positiveRequired ? " (not allowlisted)" : ""}`); continue; }
-    const value = Object.hasOwn(prices, key) ? prices[key] : "0";
-    pricing[key] = value;
-    try {
-     if (typeof value !== "string") throw new Error();
-     const amount = openRouterDecimal(value);
-     if ((positiveRequired && amount <= 0n) || (key !== "request" && (amount % 1_000_000n !== 0n || amount / 1_000_000n > BigInt(Number.MAX_SAFE_INTEGER)))) throw new Error();
-     const wire = key === "request" ? value : perMillionPrice(value);
-     if (!equalMoney(Number(wire), wire)) throw new Error();
-    } catch { failures.push(fieldValue(key, value)); }
+    let maximum;
+    let allAbsent = true;
+    for (const variant of priceSets) {
+     const absent = !Object.hasOwn(variant, key);
+     allAbsent &&= absent;
+     if (absent && (required || (!allModels && !allowlisted))) { failures.push(`pricing.${key} missing required field${!allowlisted && !required ? " (not allowlisted)" : ""}`); continue; }
+     // Reasoning is NEVER an assumed zero in all-models qualification.
+     const value = absent ? allModels && key === "internal_reasoning" ? variant.completion : "0" : variant[key];
+     if (allModels && key === "internal_reasoning" && absent) missingReasoning = true;
+     try {
+      if (typeof value !== "string") throw new Error();
+      const amount = openRouterDecimal(value);
+      if ((required && amount <= 0n) || (key !== "request" && (amount % 1_000_000n !== 0n || amount / 1_000_000n > BigInt(Number.MAX_SAFE_INTEGER)))) throw new Error();
+      const wire = key === "request" ? value : perMillionPrice(value);
+      if (!equalMoney(Number(wire), wire)) throw new Error();
+      if (maximum === undefined || amount > openRouterDecimal(maximum)) maximum = value;
+     } catch { failures.push(fieldValue(key, value)); }
+    }
+    pricing[key] = maximum;
+    if (allModels && allAbsent && !required && key !== "internal_reasoning") tariff.assumedZero.push(key);
    }
-   for (const [key, value] of Object.entries(prices)) {
-    if (OPENROUTER_PRICE_KEYS.includes(key)) continue;
-    // Only reviewed opt-in-search models may omit a paid search price from the hold.
-    // Native-search models can search without plugins: all other models require zero.
-    // Every other auxiliary price must be a known zero; conditional/unknown fields still refuse.
-    let safe = false;
+   if (missingReasoning) tariff.reasoningBilledAtCompletion = true;
+   for (const variant of priceSets) for (const [key, value] of Object.entries(variant)) {
+    if (OPENROUTER_PRICE_KEYS.includes(key) || (allModels && (key === "overrides" || variant !== prices && OVERRIDE_CONDITIONS.includes(key)))) continue;
+    // Search/media/cache-write inputs are never sent by all-models qualification.
+    // Unused rates need no rounding to the token ceiling's integer units.
+    let safe = allModels && UNUSED_PRICE_KEYS.includes(key) && typeof value === "string" && nonnegativeMoney(value);
     try {
-     safe = key === "web_search" ? typeof value === "string" && (allowlisted ? openRouterDecimal(value) >= 0n : openRouterDecimal(value) === 0n) :
+     if (!allModels) safe = key === "web_search" ? typeof value === "string" && (allowlisted ? openRouterDecimal(value) >= 0n : openRouterDecimal(value) === 0n) :
       ["image", "audio", "input_audio", "output_audio", "input_cache_write_1h"].includes(key) && equalMoney(value, "0");
-    } catch { /* A malformed search price also refuses. */ }
-    if (!safe) failures.push(fieldValue(key, value) + (key === "web_search" && !allowlisted ? " (not allowlisted)" : ""));
+    } catch { /* Malformed auxiliary prices refuse. */ }
+    if (!safe) failures.push(fieldValue(key, value) + (key === "web_search" && !allowlisted && !allModels ? " (not allowlisted)" : ""));
    }
    if (Number.isSafeInteger(entry?.top_provider?.max_completion_tokens) && entry.top_provider.max_completion_tokens < 4096) failures.push("max_completion_tokens < 4096");
    else if (!Number.isSafeInteger(entry?.top_provider?.max_completion_tokens)) failures.push("max_completion_tokens missing or invalid");
    tariff.pricing = pricing;
-   const policy = failures.length === 0 ? openRouterPolicy(model, at, [tariff]) : undefined;
+   const policy = failures.length === 0 ? qualificationPolicy(model, at, tariff) : undefined;
    recordCheck(result, "bounded_tariff", policy !== undefined, failures.length > 0 ? failures.join("; ") : "tariff policy refused");
    if (policy === undefined) { result.boundedTariffErrors = failures.length > 0 ? failures : ["tariff policy refused"]; continue; }
    // Candidate rows always carry all six normalized string fields.
    tariff.pricing = { ...policy.pricing };
    result.candidateTariff = tariff;
+   // The absent reasoning price uses completion, including the possible separate
+   // reasoning maximum outside max_tokens. Never discount a reservation.
+   const qualificationHold = (prompt, output) => {
+    const held = openRouterHold(policy, prompt, output);
+    const extra = missingReasoning ? Number((BigInt(policy.reasoning.max_tokens) * openRouterDecimal(policy.pricing.completion) + MICRO - 1n) / MICRO) : 0;
+    if (!Number.isSafeInteger(held + extra)) throw new Error();
+    return held + extra;
+   };
+   if (prepareOnly) continue;
    result.reasoningProbe = "probe skipped: generation failed";
    let probeBody;
    for (let n = 0; n < 4; n++) {
@@ -226,14 +292,13 @@ export async function qualify({ models, provider, providerName = provider, spend
     const messages = [{ role: "user", content: reasoningProbe
      ? "Reasoning probe: Use reasoning to solve this problem before answering briefly: How many three-digit positive integers have strictly increasing digits? Explain your reasoning."
      : `Qualification ${n + 1}: What is 2 + 2? Reply with the answer in one short sentence.` }];
-    const body = openRouterRequest({ model, messages, max_tokens: maxTokens, stream: false }, policy);
+    const body = qualificationRequest({ model, messages, max_tokens: maxTokens, stream: false }, policy);
     if (body === undefined) throw new Error();
     const searchNotRequested = !Object.keys(body).some(key => /plugins|web|search|tools/iu.test(key));
     // Byte bound includes all messages and control fields; no tools, plugins, search, media or cache directives.
     const maxPromptTokens = Buffer.byteLength(JSON.stringify(body));
-    const hold = openRouterHold(policy, maxPromptTokens, maxTokens);
-    if (exposure + hold > report.spendCapMicros) { recordCheck(result, "spend_cap", false, `exposure ${exposure} + hold ${hold} > spend cap ${report.spendCapMicros} micros`); stop = true; break; }
-    exposure += hold; report.reservedMicros += hold;
+    const hold = qualificationHold(maxPromptTokens, maxTokens);
+    if (!reserve(result, hold)) break;
     if (reasoningProbe) { result.reasoningProbe = "FAIL"; result.reasoningProbeReason = "reasoning call failed; see call checks and reasons"; }
     const call = { attempt: n + 1, holdMicros: hold, maxPromptTokens, requestControls: { max_tokens: body.max_tokens, reasoning: body.reasoning, provider: body.provider }, checks: {}, reasons: {} }; result.calls.push(call);
     let charged = 0;
@@ -241,8 +306,8 @@ export async function qualify({ models, provider, providerName = provider, spend
      const u = data?.usage;
      const debit = Math.max(nonnegativeMoney(u?.cost) ? micros(u.cost) : 0, nonnegativeMoney(u?.cost_details?.upstream_inference_cost) ? micros(u.cost_details.upstream_inference_cost) : 0);
      if (!Number.isSafeInteger(debit)) throw new Error();
-     report.chargedMicros += debit; exposure += Math.max(0, debit - hold); charged = debit;
-     if (exposure > report.spendCapMicros) stop = true;
+     report.chargedMicros += debit; expose(Math.max(0, debit - hold)); charged = debit;
+     if (overCap()) { stop = true; if (budget && budget.exposure > budget.cap) budget.stop = "overall_cap"; }
     };
     let answer;
     try { answer = await json("chat/completions", body, retainDebit); }
@@ -264,8 +329,8 @@ export async function qualify({ models, provider, providerName = provider, spend
     const g = generation ?? {};
     const observed = Math.max(charged, nonnegativeMoney(g.total_cost) ? micros(g.total_cost) : 0);
     if (!Number.isSafeInteger(observed)) throw new Error();
-    report.chargedMicros += observed - charged; exposure += Math.max(0, observed - Math.max(charged, hold)); charged = observed;
-    const safeModel = typeof g.model === "string" && g.model.length <= 128 && /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(g.model) && !containsCredential(g.model, env.OPENROUTER_API_KEY) ? g.model : "[invalid]";
+    report.chargedMicros += observed - charged; expose(Math.max(0, observed - Math.max(charged, hold))); charged = observed;
+    const safeModel = validModel(g.model) && !containsCredential(g.model, env.OPENROUTER_API_KEY) ? g.model : "[invalid]";
     call.generation = { model: safeModel, native_tokens_prompt: safeCount(g.native_tokens_prompt), native_tokens_completion: safeCount(g.native_tokens_completion), native_tokens_reasoning: safeCount(g.native_tokens_reasoning), native_tokens_cached: safeCount(g.native_tokens_cached), total_cost: safeMoney(g.total_cost), is_byok: typeof g.is_byok === "boolean" ? g.is_byok : null };
     // Retain any readable generation debit BEFORE refusing incomplete evidence.
     const missing = ["native_tokens_prompt", "native_tokens_completion", "native_tokens_reasoning", "native_tokens_cached", "total_cost", "model", "provider_name", "is_byok"].find(field => !Object.hasOwn(g, field));
@@ -290,6 +355,9 @@ export async function qualify({ models, provider, providerName = provider, spend
     check("identity_and_non_byok", matchesModel(model, answer.model) && matchesModel(model, g.model) && g.provider_name === providerName && g.is_byok === false, [!matchesModel(model, answer.model) ? "answer.model expected requested model" : "", !matchesModel(model, g.model) ? "generation.model expected requested model" : "", g.provider_name !== providerName ? "generation.provider_name expected pinned provider" : "", g.is_byok !== false ? `generation.is_byok ${safeValue(g.is_byok)} expected false` : ""].filter(Boolean).join("; "));
     const auxiliaryClear = noAuxiliaryEvidence(u, "usage", searchNotRequested) && noAuxiliaryEvidence(g, "generation", searchNotRequested);
     const computedMax = maximumInferenceCost(policy, u, g);
+    const hiddenCharge = allModels && computedMax !== undefined && [u?.cost, u?.cost_details?.upstream_inference_cost, g.total_cost].some(value => nonnegativeMoney(value) && openRouterDecimal(String(value)) > computedMax);
+    if (hiddenCharge) recordCheck(result, "hidden_charge", false, "reported charge exceeds token-computed maximum; hold retained; model stopped");
+    if (allModels) check("token_max_within_hold", computedMax !== undefined && computedMax <= BigInt(hold) * MICRO, "token-computed maximum must fit the original hold");
     const tokenEvidence = `usage/native prompt ${safeValue(u?.prompt_tokens)}/${safeValue(g.native_tokens_prompt)}, completion ${safeValue(u?.completion_tokens)}/${safeValue(g.native_tokens_completion)}; native reasoning ${safeValue(g.native_tokens_reasoning)}, usage reasoning ${safeValue(u?.completion_tokens_details?.reasoning_tokens)}, cached ${safeValue(u?.prompt_tokens_details?.cached_tokens ?? 0)}/${safeValue(g.native_tokens_cached)}`;
     const expectedCost = computedMax === undefined ? "unavailable: invalid token counts" : `${computedMax / (10n ** 18n)}.${(computedMax % (10n ** 18n)).toString().padStart(18, "0")} USD`;
     const boundedReason = `${moneyEvidence}; expected equal positive aggregate/usage/generation costs <= computed maximum ${expectedCost}; ${tokenEvidence}`;
@@ -319,12 +387,14 @@ export async function qualify({ models, provider, providerName = provider, spend
     // No REPORTED auxiliary charge, bounded inference money and the original hold.
     // This is evidence for these calls, not a promise about future route billing.
     check("no_web_search_cost", detailsBounded && auxiliaryClear && reconciled && providerBound && charged <= hold, `${detailReason}; charged ${charged} expected within computed maximum and hold ${hold} micros`);
-    check("spend_cap", exposure <= report.spendCapMicros, `exposure ${exposure} > spend cap ${report.spendCapMicros} micros`);
+    const totalExposure = budget ? budget.exposure : exposure;
+    check("spend_cap", totalExposure <= report.spendCapMicros, `exposure ${totalExposure} > spend cap ${report.spendCapMicros} micros`);
+    if (budget) check("per_model_cap", budget.modelExposure <= budget.modelCap, `model exposure ${budget.modelExposure} > per-model cap ${budget.modelCap} micros`);
     if (reasoningProbe && Object.values(call.checks).every(v => v === "PASS")) { result.reasoningProbe = "PASS"; delete result.reasoningProbeReason; }
     if (Object.values(call.checks).some(v => v !== "PASS")) {
      // A model-local failure must not hide the next model. Unknown calls retain
      // their full hold in exposure; only a shared auth/credential/cap failure stops all.
-     if (exposure > report.spendCapMicros) stop = true;
+     if (overCap()) { stop = true; if (budget && budget.exposure > budget.cap) budget.stop = "overall_cap"; }
      break;
     }
     // Retain only a fully successful same-run control, including its exact routing.
@@ -338,55 +408,326 @@ export async function qualify({ models, provider, providerName = provider, spend
     for (const [component, cap] of Object.entries(probeBody.provider.max_price)) {
      if (stop) break;
      if (!(cap > 0)) continue;
-     const hold = openRouterHold(policy, Buffer.byteLength(JSON.stringify(probeBody)), probeBody.max_tokens);
-     if (exposure + hold > report.spendCapMicros) { recordCheck(result, "spend_cap", false, `exposure ${exposure} + hold ${hold} > spend cap ${report.spendCapMicros} micros`); stop = true; break; }
-     exposure += hold; report.reservedMicros += hold;
+     const hold = qualificationHold(Buffer.byteLength(JSON.stringify(probeBody)), probeBody.max_tokens);
+     if (!reserve(result, hold)) break;
      const probe = { component, holdMicros: hold, status: "FAIL", reason: "price-cap probe evidence unavailable" }; result.priceCapProbes.push(probe);
      try {
       const body = { ...probeBody, provider: { ...probeBody.provider, max_price: { ...probeBody.provider.max_price, [component]: 0 } } };
       const response = await request("https://openrouter.ai/api/v1/chat/completions", { method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000), headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
       probe.httpStatus = response.status;
-      if ([401, 403].includes(response.status)) stop = true;
+      if ([401, 403].includes(response.status)) { stop = true; if (budget) budget.stop = "authentication"; }
       const raw = await response.text(); if (Buffer.byteLength(raw) > 1024 * 1024) throw new Error();
       const data = JSON.parse(raw);
       if (data?.error !== null && typeof data?.error === "object") probe.error = Object.fromEntries(["code", "message"].filter(key => Object.hasOwn(data.error, key)).map(key => [key, safeRefusalText(data.error[key])]));
       const debit = Math.max(nonnegativeMoney(data?.usage?.cost) ? micros(data.usage.cost) : 0, nonnegativeMoney(data?.usage?.cost_details?.upstream_inference_cost) ? micros(data.usage.cost_details.upstream_inference_cost) : 0);
       if (!Number.isSafeInteger(debit)) throw new Error();
-      report.chargedMicros += debit; exposure += Math.max(0, debit - hold);
+      report.chargedMicros += debit; expose(Math.max(0, debit - hold));
       probe.chargedMicros = debit;
       if (data.id !== undefined) {
        const generation = await generationLookup(data.id);
        if (nonnegativeMoney(generation?.total_cost)) {
         const actual = Math.max(debit, micros(generation.total_cost));
-        report.chargedMicros += actual - debit; exposure += Math.max(0, actual - Math.max(debit, hold)); probe.chargedMicros = actual;
+        report.chargedMicros += actual - debit; expose(Math.max(0, actual - Math.max(debit, hold))); probe.chargedMicros = actual;
+       }
+       if (allModels) {
+        const maximum = maximumInferenceCost(policy, data.usage, generation);
+        if (maximum !== undefined && [data.usage?.cost, data.usage?.cost_details?.upstream_inference_cost, generation.total_cost].some(value => nonnegativeMoney(value) && openRouterDecimal(String(value)) > maximum)) {
+         recordCheck(result, "hidden_charge", false, "reported probe charge exceeds token-computed maximum; hold retained; model stopped");
+        }
+        if (maximum === undefined || maximum > BigInt(hold) * MICRO) recordCheck(result, "token_max_within_hold", false, "probe token maximum must fit original hold");
        }
       }
       const priceRefusal = typeof data?.error?.message === "string" && /^\s*No endpoints found that satisfy the max price for this request\.?\s*$/iu.test(data.error.message);
       if (!response.ok && [400, 404, 422].includes(response.status) && priceRefusal && data.id === undefined && data.usage === undefined && debit === 0) { probe.status = "PASS"; probe.reason = "recognized price-cap refusal against successful same-run control; no id/usage and zero debit"; }
       else probe.reason = `http ${response.status}; expected price-cap refusal (400/404/422), recognized refusal message, no id/usage and zero debit; observed debit ${probe.chargedMicros} micros`;
      } catch (error) { probe.reason = evidenceReason(error); }
-     if (exposure > report.spendCapMicros) stop = true;
+     if (overCap()) { stop = true; if (budget && budget.exposure > budget.cap) budget.stop = "overall_cap"; }
+     if (result.checks.hidden_charge === "FAIL") break;
     }
     recordCheck(result, "provider_honoured_max_price", !stop && result.priceCapProbes.length >= 2 && result.priceCapProbes.every(p => p.status === "PASS"), "expected at least two passing price-cap refusal probes and no shared stop; see priceCapProbes reasons");
-    if (result.checks.provider_honoured_max_price === "PASS") { result.status = "PASS"; report.proposedTariffRows.push(tariff); }
+    if (result.checks.provider_honoured_max_price === "PASS" && Object.values(result.checks).every(v => v === "PASS")) { result.status = "PASS"; report.proposedTariffRows.push(tariff); }
    }
   }
   if (report.models.length === models.length && report.models.every(m => m.status === "PASS")) report.status = "PASS";
  } catch { report.errors.push("Qualification refused or HTTP evidence unavailable; no tariff may be installed."); }
+ report.exposureMicros = exposure;
  return report;
 }
+// The exact harness, policy and token validation form the resume version. Any guard change
+// invalidates old passes; no owner-supplied version can bypass requalification.
+const harnessVersion = () => createHash("sha256")
+ .update(readFileSync(new URL(import.meta.url)))
+ .update(readFileSync(new URL("../packages/model-gateway/dist/openrouter-policy.js", import.meta.url)))
+ .update(readFileSync(new URL("../packages/model-gateway/dist/model-gateway-token.js", import.meta.url))).digest("hex");
+const validModel = model => typeof model === "string" && model.length <= 128 && /^[A-Za-z0-9~][A-Za-z0-9._~-]*\/[A-Za-z0-9~][A-Za-z0-9._~-]*(?::thinking)?$/u.test(model) && !model.startsWith("openrouter/");
+// Harness-only ID validation. The exact catalogue match above remains mandatory.
+// For extended IDs, reuse the gateway's tariff/body guards with a local placeholder
+// that is outside its relaxed-price allowlist. Restore the exact ID before hashing,
+// reporting or sending; the placeholder never leaves this validation boundary.
+const qualificationModel = model => /[~:]/u.test(model) ? "qualification/catalogue-model" : model;
+const qualificationPolicy = (model, now, tariff) => {
+ if (!validModel(model) || tariff.model !== model) return undefined;
+ const checked = openRouterPolicy(qualificationModel(model), now, [{ ...tariff, model: qualificationModel(model) }]);
+ if (!checked) return undefined;
+ const value = { ...checked, model };
+ delete value.hash;
+ return { ...value, hash: createHash("sha256").update(JSON.stringify(value)).digest("hex") };
+};
+const qualificationRequest = (body, policy) => {
+ if (!validModel(body.model) || body.model !== policy.model) return undefined;
+ const model = qualificationModel(body.model);
+ const checked = openRouterRequest({ ...body, model }, { ...policy, model });
+ return checked ? { ...checked, model: body.model } : undefined;
+};
+const validRoute = route => typeof route === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(route);
+const capMicros = value => {
+ const amount = openRouterDecimal(value);
+ if (amount < MICRO || amount % MICRO !== 0n || amount / MICRO > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error();
+ return Number(amount / MICRO);
+};
+const tariffKey = tariff => {
+ return Object.fromEntries(Object.entries(tariff).filter(([key]) => !["verifiedAt", "expiresAt", "evidence", "status"].includes(key)));
+};
+const signature = rows => createHash("sha256").update(JSON.stringify(rows.map(tariffKey))).digest("hex");
+const failureCause = result => {
+ if (result.checks.hidden_charge === "FAIL") return "hidden_charge";
+ if (result.checks.spend_cap === "FAIL") return "overall_cap";
+ if (result.checks.per_model_cap === "FAIL") return "per_model_cap";
+ if (result.checks.bounded_tariff === "FAIL") return "unpriced_component";
+ if (result.calls.some(call => call.checks.identity_and_non_byok === "FAIL")) return "identity_mismatch";
+ if (result.calls.some(call => call.checks.generation === "FAIL")) return "generation_lookup";
+ if (result.checks.provider_honoured_max_price === "FAIL") return "price_cap_refusal";
+ return "qualification_checks";
+};
+/** Catalogue-wide orchestration shares the existing checks, holds and debit handling.
+ * No remote catalogue URL or credential source is accepted from the command line.
+ */
+async function qualifyAll(options, capturedCatalogue) {
+ const { fetch: request = globalThis.fetch, env = process.env } = options;
+ const report = { status: "FAIL", harnessVersion: harnessVersion(), chargedMicros: 0, reservedMicros: 0, exposureMicros: 0, spendCapMicros: 0, perModelCapMicros: 0, models: [], notReached: [], failuresByCause: {}, proposedTariffRows: [], errors: [] };
+ const budget = { exposure: 0, modelExposure: 0, cap: 0, modelCap: 0, stop: undefined };
+ let entries = [];
+ const key = env.OPENROUTER_API_KEY;
+ const safe = value => typeof value === "string" && !containsCredential(value, key);
+ const fail = (model, cause, reason) => {
+  model.causes ??= [];
+  if (!model.causes.includes(cause)) model.causes.push(cause);
+  model.reason = model.reason ? `${model.reason}; ${reason}` : reason;
+ };
+ const get = async path => {
+  // Supplied discovery snapshots replace catalogue lookups; missing evidence
+  // refuses locally rather than silently fetching a newer catalogue.
+  if (options.catalogue !== undefined) {
+   const supplied = options.catalogue;
+   const id = path.slice("models/".length, -"/endpoints".length);
+   const body = path === "models" ? supplied?.models : Object.hasOwn(supplied?.endpoints ?? {}, id) ? supplied.endpoints[id] : undefined;
+   const status = supplied?.statuses?.[path] ?? 200;
+   if ([401, 403].includes(status)) budget.stop = "authentication";
+   if (body === undefined || status < 200 || status >= 300) throw new Error();
+   return body;
+  }
+  const url = `https://openrouter.ai/api/v1/${path}`;
+  if (!safe(url)) { budget.stop = "credential"; throw new Error(); }
+  const response = await request(url, { method: "GET", redirect: "error", signal: AbortSignal.timeout(30_000), headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" } });
+  if ([401, 403].includes(response.status)) budget.stop = "authentication";
+  const bytes = await response.text();
+  if (Buffer.byteLength(bytes) > 8 * 1024 * 1024) throw new Error();
+  const body = JSON.parse(bytes);
+  if (capturedCatalogue) {
+   // Only response JSON enters the snapshot, never Request/init/headers.
+   if (path === "models") capturedCatalogue.models = body;
+   else capturedCatalogue.endpoints[path.slice("models/".length, -"/endpoints".length)] = body;
+   if (!response.ok) { capturedCatalogue.statuses ??= {}; capturedCatalogue.statuses[path] = response.status; }
+  }
+  if (!response.ok) throw new Error();
+  return body;
+ };
+ const prepare = async (entry, route, name) => {
+  const prepared = await qualifyModels({ ...options, models: [entry.id], provider: route, providerName: name, catalogue: { data: [entry] }, prepareOnly: true, spendCap: options.spendCap ?? "15.00" });
+  return prepared.models[0];
+ };
+ try {
+  if (!key || options.models?.length || options.provider !== undefined || options.providerName !== undefined) throw new Error();
+  budget.cap = report.spendCapMicros = capMicros(options.spendCap ?? "15.00");
+  budget.modelCap = report.perModelCapMicros = capMicros(options.perModelCap ?? "0.05");
+  const prior = options.resumeReport;
+  if (prior !== undefined && (prior === null || typeof prior !== "object" || !Array.isArray(prior.models) || Buffer.byteLength(JSON.stringify(prior)) > 8 * 1024 * 1024 || !safe(JSON.stringify(prior)))) throw new Error();
+  const catalogue = await get("models");
+  if (!Array.isArray(catalogue?.data)) throw new Error();
+  entries = catalogue.data;
+  for (const entry of entries) {
+   const id = entry?.id;
+   const model = { model: safe(id) ? id : "[invalid model]", status: "FAIL", reason: "", causes: [], providers: [] };
+   report.models.push(model); budget.modelExposure = 0;
+   if (!validModel(id) || !safe(id) || entries.filter(e => e?.id === id).length !== 1) { fail(model, "catalogue", typeof id === "string" && id.endsWith(":free") ? "free variant excluded: different data policy" : typeof id === "string" && id.endsWith(":online") ? "online variant excluded: search is never requested" : "invalid or duplicate model identifier"); continue; }
+   if (budget.stop) { fail(model, budget.stop, `not reached: ${budget.stop}`); report.notReached.push(id); continue; }
+   if (!Array.isArray(entry.supported_parameters) || !entry.supported_parameters.includes("tools")) { fail(model, "no_tools_support", "catalogue does not declare tool/function calling"); continue; }
+   // Validate catalogue and endpoint prices independently before any paid request.
+   // Absent component assumptions and override maxima are retained on candidates.
+   if (entry.estimated === true || entry.is_estimated === true) { fail(model, "unpriced_component", "catalogue tariff is estimated"); continue; }
+   const catalogueTariff = await prepare(entry, "catalogue", "catalogue");
+   if (!catalogueTariff?.candidateTariff) { fail(model, "unpriced_component", "catalogue tariff unbounded: " + (catalogueTariff?.reasons.bounded_tariff ?? "invalid tariff")); continue; }
+   let endpoints;
+   try { const response = await get(`models/${id}/endpoints`); endpoints = response?.data?.endpoints; }
+   catch { fail(model, budget.stop ?? "provider_routing", "provider endpoint evidence unavailable"); if (budget.stop) report.notReached.push(id); continue; }
+   if (!Array.isArray(endpoints) || endpoints.length === 0) { fail(model, "provider_routing", "no provider endpoints available"); continue; }
+   const eligible = [];
+   // A route may only have one tariff; ambiguous duplicate endpoints fail closed.
+   for (const endpoint of endpoints) {
+    const route = endpoint?.tag;
+    const name = endpoint?.provider_name;
+    if (!validRoute(route) || !safe(route) || !safe(name) || name.length < 1 || name.length > 128 || /[\p{Cc}\p{Cf}]/u.test(name) || endpoints.filter(e => e?.tag === route).length !== 1) {
+     model.providers.push({ status: "FAIL", cause: "provider_routing", reasons: { provider_routing: "missing or ambiguous pinned provider route/name" } }); continue;
+    }
+    if (!Array.isArray(endpoint.supported_parameters) || !endpoint.supported_parameters.includes("tools")) {
+     model.providers.push({ route, status: "FAIL", cause: "no_tools_support", reasons: { no_tools_support: "endpoint does not declare tool/function calling" } }); continue;
+    }
+    // Never substitute aggregate catalogue prices for an unpriced provider endpoint.
+    const routedEntry = { ...entry, pricing: endpoint.pricing, top_provider: { max_completion_tokens: endpoint.max_completion_tokens } };
+    if (endpoint.estimated === true || endpoint.is_estimated === true) {
+     model.providers.push({ route, status: "FAIL", cause: "unpriced_component", reasons: { unpriced_component: "endpoint tariff is estimated" } }); continue;
+    }
+    const prepared = await prepare(routedEntry, route, name);
+    if (!prepared?.candidateTariff) {
+     model.providers.push({ route, status: "FAIL", cause: "unpriced_component", reasons: { unpriced_component: prepared?.reasons.bounded_tariff ?? "endpoint tariff unbounded" } }); continue;
+    }
+    eligible.push({ route, name, entry: routedEntry, tariff: prepared.candidateTariff });
+   }
+   model.tariffSignature = signature(eligible.map(e => ({ ...e.tariff, providerName: e.name })).sort((a, b) => a.route.localeCompare(b.route)));
+   const matches = prior?.harnessVersion === report.harnessVersion ? prior.models.filter(m => m?.model === id) : [];
+   const old = matches.length === 1 ? matches[0] : undefined;
+   // Carry only a complete prior PASS matching ALL currently eligible route tariffs.
+   // Excluded routes remain visible separately and do not become tariff candidates.
+   if (eligible.length > 0 && old?.status === "PASS" && old.tariffSignature === model.tariffSignature && Array.isArray(old.providers)) {
+    const retained = old.providers.filter(p => eligible.some(e => p.route === e.route));
+    const passes = retained.filter(p => p.status === "PASS");
+    const candidates = prior.proposedTariffRows;
+    const evidenceValid = retained.length === eligible.length && eligible.every(e => retained.filter(p => p.route === e.route).length === 1) && passes.length > 0 && Array.isArray(candidates) && passes.every(result => {
+     const current = eligible.find(e => e.route === result.route);
+     const rows = candidates.filter(t => t?.model === id && t.route === result.route);
+     return result.candidateTariff && rows.length === 1 && rows[0].status === "CANDIDATE" &&
+      signature([rows[0]]) === signature([current.tariff]) && signature([result.candidateTariff]) === signature([current.tariff]) &&
+      result.calls?.length === 4 && result.calls.every(c => Object.values(c.checks ?? {}).length > 0 && Object.values(c.checks).every(v => v === "PASS")) &&
+      Object.values(result.checks ?? {}).every(v => v === "PASS") && result.checks?.provider_honoured_max_price === "PASS";
+    });
+    if (evidenceValid) {
+     model.providers.push(...globalThis.structuredClone(retained)); model.resumed = true; model.status = "PASS"; model.reason = "carried PASS: same harness, provider identities and tariffs";
+     report.proposedTariffRows.push(...globalThis.structuredClone(candidates.filter(t => t.model === id && passes.some(p => p.route === t.route)))); continue;
+    }
+   }
+   let modelStopped;
+   for (const item of eligible) {
+    if (budget.stop || modelStopped || budget.modelExposure >= budget.modelCap) {
+     model.providers.push({ route: item.route, status: "FAIL", cause: budget.stop ?? modelStopped ?? "per_model_cap", reasons: { not_attempted: "provider not reached after model or shared stop" } }); continue;
+    }
+    const qualified = await qualifyModels({ ...options, models: [id], provider: item.route, providerName: item.name, catalogue: { data: [item.entry] }, spendCap: options.spendCap ?? "15.00", budget });
+    report.chargedMicros += qualified.chargedMicros; report.reservedMicros += qualified.reservedMicros;
+    const result = qualified.models[0];
+    if (!result) { model.providers.push({ route: item.route, status: "FAIL", cause: "qualification_checks", reasons: { qualification_checks: "qualification evidence unavailable" } }); continue; }
+    result.route = item.route;
+    if (budget.modelExposure > budget.modelCap) {
+     recordCheck(result, "per_model_cap", false, `model exposure ${budget.modelExposure} > per-model cap ${budget.modelCap} micros`);
+     fail(model, "per_model_cap", result.reasons.per_model_cap);
+    }
+    if (result.status !== "PASS") { result.cause = failureCause(result); delete result.candidateTariff; }
+    if (result.status === "PASS") result.candidateTariff = { ...result.candidateTariff, status: "CANDIDATE" };
+    model.providers.push(result);
+    if (budget.exposure > budget.cap) budget.stop = "overall_cap";
+    if (result.checks.hidden_charge === "FAIL") fail(model, "hidden_charge", result.reasons.hidden_charge);
+    if (result.checks.hidden_charge === "FAIL" || result.checks.per_model_cap === "FAIL" || budget.modelExposure > budget.modelCap) modelStopped = result.checks.hidden_charge === "FAIL" ? "hidden_charge" : "per_model_cap";
+   }
+   // Candidate rows may be retained for passing routes even if another provider failed;
+   // a model passes if at least one route passed. Never install any of these rows.
+   const passes = model.providers.filter(p => p.status === "PASS");
+   if (passes.length > 0 && !budget.stop && !modelStopped && !model.providers.some(p => p.cause === "per_model_cap") && budget.modelExposure <= budget.modelCap) {
+    model.status = "PASS"; model.reason = "qualified provider routes; candidate tariffs require review";
+    report.proposedTariffRows.push(...passes.map(p => ({ ...p.candidateTariff, status: "CANDIDATE" })));
+   } else {
+    for (const provider of model.providers.filter(p => p.status !== "PASS")) fail(model, provider.cause ?? "qualification_checks", [...Object.values(provider.reasons), ...(provider.calls ?? []).flatMap(c => Object.values(c.reasons))].join("; ") || "provider checks failed");
+    if (budget.stop) fail(model, budget.stop, `shared stop: ${budget.stop}`);
+    if (budget.modelExposure >= budget.modelCap && model.causes.length === 0) fail(model, "per_model_cap", "per-model cap reached");
+    if (model.causes.length === 0) fail(model, "provider_routing", "no eligible provider passed");
+   }
+   if (model.status === "FAIL" && model.causes.some(c => ["overall_cap", "per_model_cap", "authentication", "credential"].includes(c)) && !model.providers.some(p => p.calls?.length > 0)) report.notReached.push(id);
+   model.exposureMicros = budget.modelExposure;
+  }
+  if (report.models.length > 0 && report.models.every(m => m.status === "PASS")) report.status = "PASS";
+ } catch {
+  report.errors.push("Catalogue qualification refused or HTTP evidence unavailable; no automatic tariff installation.");
+  const current = report.models.at(-1);
+  const remaining = entries.slice(report.models.length).map(entry => entry?.id);
+  if (current && !current.providers.some(provider => provider.calls?.length > 0)) remaining.unshift(current.model);
+  for (const id of remaining) if (validModel(id) && safe(id) && !report.notReached.includes(id)) report.notReached.push(id);
+ }
+ report.exposureMicros = budget.exposure;
+ for (const model of report.models.filter(m => m.status === "FAIL")) {
+  for (const cause of model.causes) report.failuresByCause[cause] = (report.failuresByCause[cause] ?? 0) + 1;
+ }
+ return report;
+}
+export async function qualify(options) {
+ if (options.allModels === true) return qualifyAll(options);
+ if (options.perModelCap !== undefined || options.resumeReport !== undefined || options.resume !== undefined) return { status: "FAIL", errors: ["All-models options require --all-models"] };
+ return qualifyModels(options);
+}
+
+// Probe directories without creating/truncating outputs or changing resume evidence.
+const preflightPaths = paths => {
+ for (const path of paths) {
+  try {
+   const existing = statSync(path, { throwIfNoEntry: false });
+   if (existing) {
+    if (!existing.isFile()) throw new Error();
+    accessSync(path, constants.W_OK);
+   }
+   const probe = join(dirname(path), `.openrouter-preflight-${randomUUID()}`);
+   try { writeFileSync(probe, "", { flag: "wx" }); }
+   finally { rmSync(probe, { force: true }); }
+  } catch {
+   process.stderr.write(`Qualification preflight failed for ${JSON.stringify(path)}; path must be writable before discovery or paid requests.\n`);
+   return false;
+  }
+ }
+ return true;
+};
+
 export async function main(argv = process.argv.slice(2), env = process.env) {
  const options = { models: [], env };
  try {
   for (let i = 0; i < argv.length; i++) {
    const flag = argv[i];
-   if (flag === "--models") { while (argv[i + 1] && !argv[i + 1].startsWith("--")) options.models.push(argv[++i]); }
-   else if (["--provider", "--provider-name", "--spend-cap"].includes(flag) && argv[i + 1]) options[({ "--provider": "provider", "--provider-name": "providerName", "--spend-cap": "spendCap" })[flag]] = argv[++i];
+   if (flag === "--all-models") options.allModels = true;
+   else if (flag === "--models") { while (argv[i + 1] && !argv[i + 1].startsWith("--")) options.models.push(argv[++i]); }
+   else if (["--provider", "--provider-name", "--spend-cap", "--per-model-cap", "--resume", "--report"].includes(flag) && argv[i + 1]) options[({ "--provider": "provider", "--provider-name": "providerName", "--spend-cap": "spendCap", "--per-model-cap": "perModelCap", "--resume": "resume", "--report": "reportPath" })[flag]] = argv[++i];
    else throw new Error();
   }
-  const result = await qualify(options); const text = JSON.stringify(result, null, 2);
+  if (options.reportPath !== undefined && !options.allModels) throw new Error();
+  const reportPath = options.reportPath ?? "report.json";
+  const cataloguePath = `${reportPath.replace(/\.json$/iu, "")}-catalogue.json`;
+  const paths = [...(options.allModels ? [reportPath, cataloguePath] : []), ...(options.resume ? [options.resume] : [])];
+  if (!preflightPaths(paths)) return 1;
+  if (options.resume) {
+   const bytes = readFileSync(options.resume);
+   if (bytes.length > 8 * 1024 * 1024) throw new Error();
+   options.resumeReport = JSON.parse(bytes.toString("utf8"));
+  }
+  const catalogue = { models: null, endpoints: Object.create(null) };
+  const result = options.allModels ? await qualifyAll(options, catalogue) : await qualify(options);
+  const text = JSON.stringify(result, null, 2);
+  const catalogueText = JSON.stringify(catalogue, null, 2);
+  if (options.allModels && (containsCredential(catalogueText, env.OPENROUTER_API_KEY) || /"authorization"\s*:/iu.test(catalogueText))) { process.stdout.write('{"status":"FAIL","errors":["Catalogue withheld"]}\n'); return 1; }
   if (containsCredential(text, (options.env ?? process.env).OPENROUTER_API_KEY)) { process.stdout.write('{"status":"FAIL","errors":["Report withheld"]}\n'); return 1; }
-  process.stdout.write(`${text}\n`); return result.status === "PASS" ? 0 : 1;
+  process.stdout.write(`${text}\n`);
+  if (options.allModels) {
+   for (const [path, contents] of [[reportPath, text], [cataloguePath, catalogueText]]) {
+    try { writeFileSync(path, `${contents}\n`); }
+    catch {
+     process.stderr.write(`Failed to write qualification output ${JSON.stringify(path)}; full report printed to stdout.\n`);
+     return 1;
+    }
+   }
+  }
+  return result.status === "PASS" ? 0 : 1;
  } catch { process.stdout.write('{"status":"FAIL","errors":["Invalid qualification arguments"]}\n'); return 1; }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exitCode = await main();

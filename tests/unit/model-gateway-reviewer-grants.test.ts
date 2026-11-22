@@ -787,3 +787,16 @@ describe("the deployed process wires the durable store", () => {
   });
   it("keeps the config reader unchanged (no new setting)", () => { expect(() => readGatewayConfig(ENV)).not.toThrow(GatewayConfigError); });
 });
+
+it("DEC 328: a paused reviewer grant is refused before any session open/debit or charge", async () => {
+  const store = spyStore();
+  const g = gateway({ grants: store.store, overrides: { rovaraAiSetting: { enabled: async () => false } } });
+  g.choices.saved.set(cidA, "rovara");
+  const sink = await call(g.deps, requestBody, grant());
+  expect(sink.status).toBe(403);
+  expect((JSON.parse(sink.text()) as { error: { message: string } }).error.message).toBe("Rovara's AI is paused on this install. Your work is safe; try again later or use your own AI source.");
+  expect(store.claimed).toEqual([]);
+  expect(store.opened).toEqual([]);
+  expect(g.bedrockSent).toEqual([]);
+  await nothingHeld(g.meter);
+});

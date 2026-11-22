@@ -340,3 +340,13 @@ describe("gateway process: each company's own Bedrock from its saved choice", ()
     expect((await post(s.started.server, mint({ cid: cidA }), "/v1/service/bedrock-setup")).statusCode).toBe(404);
   });
 });
+
+it("DEC 328: own Bedrock calls never read the paused install setting", async () => {
+  let reads = 0;
+  const g = gateway({ overrides: { rovaraAiSetting: { enabled: async () => { reads++; return false; } } } });
+  g.choices.saved.set(cidA, "bedrock_byo");
+  expect((await call(g.deps)).status).toBe(200);
+  expect(reads).toBe(0);
+  expect(g.sent).toHaveLength(1);
+  expect(g.meter.billedCalls(claims.iss, cidA)).toEqual([]);
+});

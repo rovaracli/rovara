@@ -147,3 +147,15 @@ describe("models held back from the offered list (GATEWAY_AGENT_MODELS_DISABLED)
     for (const bad of ["a b", "../x", "claude-opus-5-5,", "a,a"]) expect(() => synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS, [MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY]: bad })).toThrow();
   });
 });
+
+it("DEC 328: the sole install-setting grant is GetItem on the exact reserved partition and Companies ARN", () => {
+  const grant = statements(on).filter(s => s.Sid === "ReadInstallRovaraAi");
+  expect(grant).toEqual([{
+    Sid: "ReadInstallRovaraAi", Effect: "Allow", Action: "dynamodb:GetItem",
+    Resource: join(["arn:", { Ref: "AWS::Partition" }, ":dynamodb:us-west-2:", { Ref: "AWS::AccountId" }, ":table/", { Ref: "CompanyTableName" }]),
+    Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["INSTALL#ROVARA_AI"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+  }]);
+  expect(statements(without).filter(s => s.Sid === "ReadInstallRovaraAi")).toEqual(grant);
+  // No wildcard/prefix or wider install read/write sneaks into another grant.
+  expect(statements(on).filter(s => JSON.stringify(s).includes("INSTALL#"))).toEqual(grant);
+});

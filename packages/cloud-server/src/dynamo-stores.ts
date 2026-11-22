@@ -16,7 +16,7 @@
 // The `startedBy` index (STARTED#<developer id>, `<createdAt>#<ses_…>`) holds only META items: a person's sessions, newest first.
 import { ConditionalCheckFailedException, type DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { AUDIT_EARLIEST_MS, checkedCompany, readableRecord, type CloudAuditRange, type CloudAuditRecord, type CloudAuditStore } from "./audit-log.js";
+import { AUDIT_EARLIEST_MS, checkedAuditScope, readableRecord, type CloudAuditRange, type CloudAuditRecord, type CloudAuditStore } from "./audit-log.js";
 import type { PendingSignIn } from "./code-client.js";
 import { PRESENCE_TTL_MS, currentViewers, type PresenceBoard, type Viewer } from "./presence.js";
 import { SealedRecordRefused, type TokenSealer } from "./session-crypto.js";
@@ -241,6 +241,15 @@ const DAY_MS = 86_400_000;
 const AUDIT_MONTHS_MAX = 600;
 const auditKey = (record: Pick<CloudAuditRecord, "at" | "id">) => `${record.at}#${record.id}`;
 
+/** Existing append-only audit writer's two puts, also used by atomic operator setting changes. */
+export function auditAppendItems(table: string, record: CloudAuditRecord): NonNullable<TransactWriteCommandInput["TransactItems"]> {
+  const scope = checkedAuditScope(record.companyId);
+  return [
+    { Put: { TableName: table, Item: { pk: `AUDIT#${scope}#${record.at.slice(0, 7)}`, sk: auditKey(record), record }, ConditionExpression: "attribute_not_exists(pk)" } },
+    { Put: { TableName: table, Item: { pk: `AUDITID#${scope}#${record.id}`, sk: "AUDITID" }, ConditionExpression: "attribute_not_exists(pk)" } },
+  ];
+}
+
 /**
  * Audit records in the table: one item per record in the partition of its company and month, sorted by time, so a read goes newest first without an index.
  * A write is conditional on the item not existing, so no server can replace a record; the store has no update or delete. An item has no `expiresAt`.
@@ -250,14 +259,10 @@ export class DynamoCloudAuditStore implements CloudAuditStore {
   constructor(private readonly db: Pick<DynamoDBDocumentClient, "send">, private readonly table: string, private readonly now: Clock = Date.now) {}
 
   async append(record: CloudAuditRecord): Promise<"added" | "exists"> {
-    const companyId = checkedCompany(record.companyId);
     try {
       // Two items in one transaction: the record, and a marker for its id (whatever its time), so one id is one record even if it is written again later.
       await this.db.send(new TransactWriteCommand({
-        TransactItems: [
-          { Put: { TableName: this.table, Item: { pk: `AUDIT#${companyId}#${record.at.slice(0, 7)}`, sk: auditKey(record), record }, ConditionExpression: "attribute_not_exists(pk)" } },
-          { Put: { TableName: this.table, Item: { pk: `AUDITID#${companyId}#${record.id}`, sk: "AUDITID" }, ConditionExpression: "attribute_not_exists(pk)" } },
-        ],
+        TransactItems: auditAppendItems(this.table, record),
       }));
       return "added";
     } catch (error) {
@@ -268,7 +273,7 @@ export class DynamoCloudAuditStore implements CloudAuditStore {
   }
 
   async read(companyId: string, range: CloudAuditRange): Promise<{ rows: CloudAuditRecord[]; more: boolean }> {
-    checkedCompany(companyId);
+    checkedAuditScope(companyId);
     const low = Math.max(range.fromMs ?? AUDIT_EARLIEST_MS, AUDIT_EARLIEST_MS);
     // Never past the present (plus a day or two of clock skew): a later `to` only asks for months that hold nothing.
     const top = Math.min(range.toMs ?? Infinity, this.now() + 2 * DAY_MS);

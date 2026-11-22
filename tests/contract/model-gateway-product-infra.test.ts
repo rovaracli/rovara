@@ -1,5 +1,5 @@
 // B5, B6, B8, #57 and #58 in the gateway stack: made only with -c rovaraModelGatewayProductAi=on. Off, the template is byte for byte
-// the one before this change. On: the product key table with its own KMS key (only Cloud's settings role seals, only the gateway's
+// the one before this change, plus DEC 328's exact install-setting read. On: the product key table with its own KMS key (only Cloud's settings role seals, only the gateway's
 // serving role opens, bound to this install and the six context keys), an HMAC key for fingerprints, the product and learning
 // meters' tables, the shared eval stage table, the Vertex federation role, and the serving role's exact grants. The deploy role's
 // actions for the new resources are simulated against the agentx deploy role and its default permission boundary.
@@ -28,15 +28,27 @@ const ofType = (t: { Resources: Record<string, Resource> }, type: string) => Obj
 const idStarting = (type: string, prefix: string) => ofType(on, type).find(([id]) => id.startsWith(prefix))![0];
 const arnOf = (id: string) => ({ "Fn::GetAtt": [id, "Arn"] });
 const serveRole = idStarting("AWS::IAM::Role", "ServeTaskRole");
-const serveStatements = (): Statement[] => ofType(on, "AWS::IAM::Policy").filter(([, p]) => JSON.stringify(p.Properties.Roles).includes(`"${serveRole}"`)).flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
+const serveStatements = (t = on): Statement[] => ofType(t, "AWS::IAM::Policy").filter(([, p]) => JSON.stringify(p.Properties.Roles).includes(`"${serveRole}"`)).flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
 const bySid = () => Object.fromEntries(serveStatements().map((s) => [s.Sid ?? "", s]));
 const table = (prefix: string) => idStarting("AWS::DynamoDB::GlobalTable", prefix);
 const companyKeysOnly = { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["CO#*"] }, Null: { "dynamodb:LeadingKeys": "false" } };
 const issuer = { "Fn::Join": ["", [{ Ref: "CodeUrl" }, "/v1/auth"]] };
+const installRead = {
+  Sid: "ReadInstallRovaraAi", Effect: "Allow", Action: "dynamodb:GetItem",
+  Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":dynamodb:us-west-2:", { Ref: "AWS::AccountId" }, ":table/", { Ref: "CompanyTableName" }]] },
+  Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["INSTALL#ROVARA_AI"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+};
 
 describe("off unless configured", () => {
-  it("leaves the gateway template byte for byte as it was, and refuses any switch value but on", () => {
-    expect(createHash("sha256").update(JSON.stringify(withoutRoleBoundary(off))).digest("hex")).toBe(BEFORE_SHA256);
+  it("adds only the exact install read to the pinned gateway template, and refuses any switch value but on", () => {
+    const beforeInstallRead = withoutRoleBoundary(off);
+    expect(serveStatements(beforeInstallRead).filter(s => s.Sid === "ReadInstallRovaraAi")).toEqual([installRead]);
+    for (const [, policy] of ofType(beforeInstallRead, "AWS::IAM::Policy").filter(([, p]) => JSON.stringify(p.Properties.Roles).includes(`"${serveRole}"`))) {
+      const document = policy.Properties.PolicyDocument as { Statement: Statement[] };
+      document.Statement = document.Statement.filter(s => s.Sid !== "ReadInstallRovaraAi");
+    }
+    // Keep the historical hash: every other resource, statement and action must be unchanged.
+    expect(createHash("sha256").update(JSON.stringify(beforeInstallRead)).digest("hex")).toBe(BEFORE_SHA256);
     expect(productAiOn(undefined, "x")).toBe(false);
     expect(productAiOn("on", "x")).toBe(true);
     for (const bad of ["true", "1", "off", "", true]) expect(() => productAiOn(bad, "x")).toThrow(/must be "on" or absent/u);
@@ -111,6 +123,9 @@ describe("on: keys", () => {
 describe("on: the serving role's grants (exact)", () => {
   it("pins every new statement: tables, indexes, key and federation role, company keys on every item grant", () => {
     const s = bySid();
+    expect(s.ReadInstallRovaraAi).toEqual(installRead);
+    // Product AI must preserve every base grant, including its exact actions and conditions.
+    for (const statement of serveStatements(off)) expect(s[statement.Sid!]).toEqual(statement);
     expect(s.ProductKeysCompanyKeys).toEqual({ Sid: "ProductKeysCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Resource: arnOf(table("ProductKeys")), Condition: companyKeysOnly });
     expect(s.ProductAndLearningMeterCompanyKeys).toEqual({ Sid: "ProductAndLearningMeterCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"], Resource: ["ProductMeter", "ProductLedger", "LearningMeter", "LearningLedger", "AnswersMeter", "AnswersLedger"].map((n) => arnOf(table(n))), Condition: companyKeysOnly });
     expect(s.ProductAndLearningMarkersCompanyKeys).toEqual({ Sid: "ProductAndLearningMarkersCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:DeleteItem"], Resource: ["ProductMarkers", "LearningMarkers", "AnswersMarkers"].map((n) => arnOf(table(n))), Condition: companyKeysOnly });
@@ -124,7 +139,7 @@ describe("on: the serving role's grants (exact)", () => {
     expect(s.VerifyCloudCalls).toEqual({ Sid: "VerifyCloudCalls", Effect: "Allow", Action: "kms:VerifyMac", Resource: arnOf(idStarting("AWS::KMS::Key", "ProductKeysMacKey")) });
     expect(s.AssumeVertexFederation).toEqual({ Sid: "AssumeVertexFederation", Effect: "Allow", Action: "sts:AssumeRole", Resource: arnOf(idStarting("AWS::IAM::Role", "VertexFederationRole")), Condition: { StringLike: { "sts:RoleSessionName": "org_*" } } });
     // Nothing else was added, and the agent grants are unchanged.
-    expect(Object.keys(s).sort()).toEqual(["AssumeVertexFederation", "DecryptProviderKeys", "EvalStagesCompanyKeys", "MarkersCompanyKeys", "MeterAndLedgerCompanyKeys", "OpenProductKeys", "ProductAndLearningMarkersCompanyKeys", "ProductAndLearningMeterCompanyKeys", "ProductKeysCompanyKeys", "QueryOpenHolds", "QueryPendingCorrections", "QueryProductIndexes", "ReadCompanyBudgets", "ReadPrices", "ReadProviderKeys", "VerifyCloudCalls"]);
+    expect(serveStatements().map(statement => statement.Sid).sort()).toEqual(["AssumeVertexFederation", "DecryptProviderKeys", "EvalStagesCompanyKeys", "MarkersCompanyKeys", "MeterAndLedgerCompanyKeys", "OpenProductKeys", "ProductAndLearningMarkersCompanyKeys", "ProductAndLearningMeterCompanyKeys", "ProductKeysCompanyKeys", "QueryOpenHolds", "QueryPendingCorrections", "QueryProductIndexes", "ReadCompanyBudgets", "ReadInstallRovaraAi", "ReadPrices", "ReadProviderKeys", "VerifyCloudCalls"]);
     // No DeleteItem on any money table, the key table or the stage table; no GenerateDataKey or Encrypt for the gateway.
     const all = serveStatements();
     for (const st of all.filter((x) => [x.Action].flat().includes("dynamodb:DeleteItem"))) expect(JSON.stringify(st.Resource)).not.toMatch(/ProductKeys|EvalStages|Meter|Ledger/u);
