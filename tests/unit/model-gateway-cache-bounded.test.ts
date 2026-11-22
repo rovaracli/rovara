@@ -244,3 +244,126 @@ it.each([pi.model, "zai.glm-5"])("retains the hidden-charge backstop on %s when 
   expect((await f.meter.read(scope)).find((row) => row.item === "company")).toMatchObject({ spentMicros: 200_000, overrun: true, reservedMicros: 0 });
   expect((await call(f.deps, { ...pi, model }, mint({ mdl: [model], runPrice: f.grant }))).status).toBe(422);
 });
+
+// Ported from lead 4's offline probe; diagnostic-only cases now pin the observed contract.
+const guardBody = (body: unknown) => guardRequest(Buffer.from(JSON.stringify(body)), { "content-type": "application/json" }, [pi.model], { maxOutputTokens: () => 64 });
+function withBlock(block: unknown): Record<string, unknown> {
+  return { ...structuredClone(multiTurn.toolResult), messages: [{ role: "user", content: [block] }] };
+}
+const imageBlock = { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } };
+it.each([
+  ["array type", { type: ["text"], text: "x" }],
+  ["Image with source", { type: "Image", source: { type: "base64", data: "AAAA" } }],
+  ["Image without source", { type: "Image", data: "AAAA" }],
+  ["IMAGE without source", { type: "IMAGE", data: "AAAA" }],
+  ["array Image without source", { type: ["Image"], data: "AAAA" }],
+  ["text with source", { type: "text", text: "x", source: { url: "offline" } }],
+  ["thinking with source", { type: "thinking", thinking: "x", signature: "s", source: { url: "offline" } }],
+  ["redacted with fileData", { type: "redacted_thinking", data: "x", fileData: {} }],
+  ["tool_use with source", { type: "tool_use", id: "t", name: "read", input: {}, source: {} }],
+  ["missing type", { text: "x" }],
+  ["numeric type", { type: 1 }],
+  ["nested tool_result image", { type: "tool_result", tool_use_id: "t", content: [{ type: "tool_result", tool_use_id: "u", content: [{ type: "tool_result", tool_use_id: "v", content: [imageBlock] }] }] }],
+  ["nested array image", { type: "tool_result", tool_use_id: "t", content: [[[imageBlock]]] }],
+  ["tool_result text with source", { type: "tool_result", tool_use_id: "t", content: [{ type: "text", text: "x", source: {} }] }],
+])("classifies and refuses %s before a hold or provider send", async (_name, block) => {
+  const body = withBlock(block);
+  expect(guardBody(body)).toMatchObject({ ok: true, inputBounded: false });
+  const f = await world();
+  const reserve = vi.spyOn(f.meter, "reserve");
+  const result = await call(f.deps, body, mint({ runPrice: f.grant }));
+  expect(result.status).toBe(409);
+  expect(result.text()).toContain("run_price_authorization_required");
+  expect(reserve).not.toHaveBeenCalled();
+  expect(f.sent).toHaveLength(0);
+});
+
+it.each([
+  ["message content object", { messages: [{ role: "user", content: imageBlock }] }],
+  ["system image", { system: [imageBlock] }],
+  ["deep message array", { messages: [{ role: "user", content: [[imageBlock]] }] }],
+])("classifies an image in %s as unbounded", (_name, content) => {
+  expect(guardBody({ ...multiTurn.toolResult, ...content })).toMatchObject({ ok: true, inputBounded: false });
+});
+
+it("keeps a non-array tool-result object opaque and preserves its bytes", () => {
+  const result = guardBody(withBlock({ type: "tool_result", tool_use_id: "t", content: imageBlock }));
+  expect(result).toMatchObject({ ok: true, inputBounded: true });
+  expect(result.ok && JSON.parse(result.bytes.toString("utf8"))).toMatchObject({ messages: [{ content: [{ content: imageBlock }] }] });
+});
+
+it("keeps a non-object content block bounded and preserves its bytes", () => {
+  const result = guardBody(withBlock("plain string block"));
+  expect(result).toMatchObject({ ok: true, inputBounded: true });
+  expect(result.ok && result.bytes.toString("utf8")).toContain("plain string block");
+});
+
+async function holdOf(body: typeof pi, model = pi.model) {
+  const f = await world(false, model);
+  const reserve = vi.spyOn(f.meter, "reserve");
+  let forwardedBytes = 0;
+  const transport = f.deps.agentAi!.rovara!.transport;
+  f.deps.agentAi!.rovara!.transport = async (request) => { forwardedBytes = request.body.length; return transport(request); };
+  expect((await call(f.deps, { ...body, model }, mint({ mdl: [model], runPrice: f.grant }))).status).toBe(200);
+  expect(reserve).toHaveBeenCalledTimes(1);
+  expect(f.sent).toHaveLength(1);
+  return { estimateMicros: reserve.mock.calls[0]![0].estimateMicros, forwardedBytes };
+}
+
+const growPayloads: Array<[string, keyof typeof multiTurn, (body: typeof pi) => void]> = [
+  ["tool_use.input", "toolResult", (body) => { (body.messages[1]!.content[0]!.input as Record<string, unknown>).blob = "z".repeat(100_000); }],
+  ["tool_result string", "toolResult", (body) => { body.messages[2]!.content[0]!.content = "z".repeat(100_000); }],
+  ["tool_result nested text", "toolResult", (body) => { body.messages[2]!.content[0]!.content = [{ type: "text", text: "z".repeat(100_000) }]; }],
+  ["redacted_thinking.data", "thinking", (body) => { body.messages[1]!.content[1]!.data = "q".repeat(100_000); }],
+  ["thinking.signature", "thinking", (body) => { body.messages[1]!.content[0]!.signature = "q".repeat(100_000); }],
+  ["thinking.thinking", "thinking", (body) => { body.messages[1]!.content[0]!.thinking = "q".repeat(100_000); }],
+];
+it.each(growPayloads)("holds every added byte of a 100 KB %s payload at Claude's cache-write maximum", async (_name, turn, grow) => {
+  const base = await holdOf(multiTurn[turn]);
+  const body = structuredClone(multiTurn[turn]);
+  grow(body);
+  const after = await holdOf(body);
+  const addedBytes = after.forwardedBytes - base.forwardedBytes;
+  expect(addedBytes).toBeGreaterThan(99_000);
+  expect(after.estimateMicros - base.estimateMicros).toBeGreaterThanOrEqual(addedBytes * 6);
+  expect(after.estimateMicros).toBeGreaterThanOrEqual((after.forwardedBytes + 4096) * 6 + 64 * 2);
+});
+
+it("holds every added tool_use.input byte on the GLM Converse plain-input path", async () => {
+  const base = await holdOf(multiTurn.toolResult, "zai.glm-5");
+  const body = structuredClone(multiTurn.toolResult);
+  (body.messages[1]!.content[0]!.input as Record<string, unknown>).blob = "z".repeat(100_000);
+  const after = await holdOf(body, "zai.glm-5");
+  const addedBytes = after.forwardedBytes - base.forwardedBytes;
+  expect(addedBytes).toBeGreaterThanOrEqual(100_000);
+  expect(after.estimateMicros - base.estimateMicros).toBeGreaterThanOrEqual(addedBytes);
+  expect(after.estimateMicros).toBeGreaterThanOrEqual(after.forwardedBytes + 4096 + 64 * 2);
+});
+
+it("refuses thinking/redacted history on GLM before holding or sending", async () => {
+  const f = await world(false, "zai.glm-5");
+  const reserve = vi.spyOn(f.meter, "reserve");
+  const result = await call(f.deps, { ...multiTurn.thinking, model: "zai.glm-5" }, mint({ mdl: ["zai.glm-5"], runPrice: f.grant }));
+  expect(result.status).toBe(400);
+  expect(result.text()).toContain("invalid_request");
+  expect(reserve).not.toHaveBeenCalled();
+  expect(f.sent).toHaveLength(0);
+});
+
+it("settles cached and uncached split 5m/1h writes at the actual base tariff", async () => {
+  const amounts: number[] = [];
+  for (const cached of [false, true]) {
+    const f = await world(false, pi.model, true);
+    const body = structuredClone(pi);
+    if (!cached) for (const block of [...body.system, ...body.messages[0]!.content, ...body.tools]) delete block.cache_control;
+    f.deps.agentAi!.rovara!.transport = async () => ({ status: 200, body: (async function* () {
+      yield sse("message_start", { message: { usage: { input_tokens: 1000, output_tokens: 0, cache_read_input_tokens: 2000, cache_creation_input_tokens: 3000,
+        cache_creation: { ephemeral_5m_input_tokens: 1000, ephemeral_1h_input_tokens: 2000 } } } });
+      yield sse("message_delta", { usage: { output_tokens: 7 } }); yield sse("message_stop");
+    })() });
+    expect((await call(f.deps, body, mint({ runPrice: f.grant }))).status).toBe(200);
+    amounts.push((await f.meter.read(scope))[0]!.spentMicros);
+  }
+  // 1000*$3 + 2000*$0.3 + 1000*$3.75 + 2000*$6 + 7*$15 = 19455 microdollars.
+  expect(amounts).toEqual([19455, 19455]);
+});
