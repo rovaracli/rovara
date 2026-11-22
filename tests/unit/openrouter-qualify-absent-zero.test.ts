@@ -98,18 +98,18 @@ it("keeps the unexpected write refusal for newly eligible absent-write models", 
  expect(report.models[0]!.providers[0]!.calls[0]!.checks.no_reported_auxiliary_charge).toBe("FAIL");
  expect(report.exposureMicros).toBeGreaterThanOrEqual(report.reservedMicros);
 });
-it("uses exact catalogue thinking/tilde IDs and logs raw rejected free/online IDs and reasons", async () => {
+it("uses exact thinking IDs and excludes router aliases and free/online IDs with raw reasons", async () => {
  const ids = ["vendor/a:thinking", "~vendor/a~version", "vendor/a:free", "vendor/a:online", "vendor/a?bad"];
  const { report, bodies } = await run(minimal, { ids });
  expect(report.models.map(m => m.model)).toEqual(ids);
- expect(report.models.slice(0, 2).every(m => m.status === "PASS")).toBe(true);
- for (const id of ids.slice(0, 2)) {
+ expect(report.models.slice(0, 1).every(m => m.status === "PASS")).toBe(true);
+ for (const id of ids.slice(0, 1)) {
   expect(bodies.filter(body => body.model === id)).toHaveLength(12); // Four controls + two cap probes per provider.
   expect(report.proposedTariffRows.filter(row => row.model === id)).toHaveLength(2);
  }
- expect(bodies.every(body => ids.slice(0, 2).includes(String(body.model)))).toBe(true);
+ expect(bodies.every(body => ids.slice(0, 1).includes(String(body.model)))).toBe(true);
  expect(report.proposedTariffRows.every(row => row.status === "CANDIDATE")).toBe(true);
- for (const model of report.models.slice(2)) { expect(model.status).toBe("FAIL"); expect(model.reason).toBeTruthy(); expect(bodies.some(b => b.model === model.model)).toBe(false); }
+ for (const model of report.models.slice(1)) { expect(model.status).toBe("FAIL"); expect(model.reason).toBeTruthy(); expect(bodies.some(b => b.model === model.model)).toBe(false); }
  expect(report.models[2]!.reason).toContain("different data policy");
  expect(report.models[3]!.reason).toContain("search is never requested");
  const absent = await qualify({ allModels: true, fetch: async () => Response.json({ data: [] }), env: { OPENROUTER_API_KEY: "fixture" } });
@@ -117,7 +117,7 @@ it("uses exact catalogue thinking/tilde IDs and logs raw rejected free/online ID
 });
 
 it("refuses duplicate extended catalogue IDs before any qualification call", async () => {
- const ids = ["vendor/a:thinking", "~vendor/a~version"];
+ const ids = ["vendor/a:thinking", "vendor/a~version"];
  const { report, bodies } = await run(minimal, { ids: ids.flatMap(id => [id, id]) });
  expect(bodies).toEqual([]);
  expect(report.proposedTariffRows).toEqual([]);

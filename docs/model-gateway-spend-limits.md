@@ -259,7 +259,11 @@ The key still comes only from the harness process's `OPENROUTER_API_KEY`.
 `--all-models` cannot be combined with manual model/provider selection. The
 catalogue and each provider endpoint must declare tools support and satisfy a
 bounded tariff. Provider endpoint prices are checked independently; aggregate
-catalogue prices never replace a missing endpoint tariff. Estimated, ambiguous,
+catalogue prices never replace a missing endpoint tariff. Requests pin the exact
+endpoint tag in `provider.order` and `provider.only`, with `allow_fallbacks: false`.
+Every endpoint sharing that tag must be bounded and support tools; the reservation
+and receipt maximum use component maxima across all of them (and their overrides).
+Different quantization/tag routes are pinned and priced separately. Estimated, ambiguous,
 unpriced and unsupported routes are excluded with reasons. Eligible routes retain
 the run-8 identity, BYOK and price-cap refusal checks plus the DEC 330 backstop.
 
@@ -272,6 +276,15 @@ All-models qualification normalizes **absent** components individually:
   `(max_tokens + reasoning.max_tokens) * completion`.
 - Absent `input_cache_write` is zero only because no cache-write directives are
   sent. The existing unexpected-write refusal remains mandatory.
+
+Finite decimal token prices are parsed as exact BigInt numerator/denominator pairs,
+including long strings such as `"0.0000000833333333333333"`. Token products are
+summed exactly, then rounded UP once to whole micro-USD for the hold and receipt
+maximum. Wire price caps are rounded upward separately; they never replace the
+exact token rates. The hidden-charge backstop compares with the rounded-up maximum.
+`pricing.discount` may be absent or exactly zero (numeric `0` or a decimal string
+that parses to zero); every other value refuses as `discount_nonzero:<value>`,
+including negative surcharges and unreadable values. Overrides obey the same rule.
 
 Explicit null, negative or malformed prices still refuse. Prompt/completion must
 be present and positive. Each CANDIDATE row records `assumedZero` (only the absent
@@ -293,9 +306,11 @@ Nonzero `web_search`, image/audio (`image`, `audio`, `input_audio`, `output_audi
 every outgoing qualification body contains plain text and no plugins, web/search,
 media or cache controls. Receipt checks still reject auxiliary charges, including
 native search that occurs without a requested plugin. An unknown price key always
-excludes and is named in the diagnostic. `:online` and `:free` remain excluded;
-free variants have a different data policy. Exact `:thinking` and tilde catalogue
-IDs are allowed without alias inference. Rejected public IDs are logged raw with
+excludes and is named in the diagnostic. `:online` remains excluded. `:batch`,
+`:free` and `~`-prefixed router aliases are excluded with `batch_variant`,
+`free_variant` and `router_alias` respectively; truly malformed identifiers use
+`invalid_id`. Free variants have a different data policy. Exact `:thinking` and
+non-prefix tilde catalogue IDs are allowed without alias inference. Rejected public IDs are logged raw with
 the reason; credential echoes remain redacted.
 
 This extended ID support is harness-only. CANDIDATE rows containing `~` or
@@ -305,13 +320,16 @@ validator remains unchanged; the deferred patch is in the lane's
 `briefs/codex/providers-fast/GATEWAY-FOLLOWUP.md`. OpenRouter stays off by default
 pending the owner's launch decision (DEC 337).
 
-Offline proof uses the owner's `ALL-MODELS-DISCOVERY.json` rejection report and
-the supplied raw catalogue fixture. Of its 441 rows, the 343 named IDs can be
-matched exactly: 264 now clear catalogue eligibility, 58 lack tools and 21 still
-have specific tariff/output exclusions. The other 98 IDs were already redacted
-by the old report and cannot be recovered. Provider endpoint data and real route
-billing remain unproven offline. `ABSENT-ZERO-COUNTS.md` in the providers-fast
-brief folder records the full count table and these limits.
+The DISCOVERY2 offline proof uses the owner's real model AND endpoint snapshot,
+`tests/fixtures/openrouter-discovery2-catalogue.json`. Each model is replayed
+independently to the reservation guard with a one-micro cap and an injected fetch
+that must never be called. Of 441 models, 256 have an eligible endpoint; the
+remaining counts are unpriced_component 17, no_tools_support 58,
+provider_routing 12, batch_variant 61, free_variant 11, router_alias 19, invalid_id 7.
+Each excluded model receives one deterministic classification in
+`briefs/codex/providers-fast/DISCOVERY2-COUNTS.md`; the runtime report retains all
+failed-route reasons. No paid qualification or installed staging behavior is
+proved by this replay. Missing saved endpoint evidence remains refused.
 
 The default overall cap is $15 and the default per-model cap is $0.05. Each paid
 call, including each refusal probe, reserves its full hold against both caps.
