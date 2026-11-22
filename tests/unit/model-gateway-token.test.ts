@@ -20,12 +20,13 @@ describe("TC-1 task tokens", () => {
   });
   it("agrees byte for byte with the shared contract and pins its digest", () => {
     const bytes = readFileSync("contracts/shared/model-gateway-token.v1.json");
-    const contract = JSON.parse(bytes.toString()) as { constants: unknown; claims: unknown; testVector: { header: unknown; claims: unknown; expectedVerifyResult: boolean } };
+    const contract = JSON.parse(bytes.toString()) as { constants: unknown; claims: unknown; testVector: { header: unknown; claims: { runPrice?: unknown }; expectedVerifyResult: boolean } };
     expect(contract.constants).toEqual({ typ: TASK_TOKEN_TYPE, aud: TASK_TOKEN_AUDIENCE, alg: TASK_TOKEN_ALGORITHM, lifetime: TASK_TOKEN_SECONDS, keyPurpose: TASK_KEY_PURPOSE, keyPurposeMember: TASK_KEY_PURPOSE_MEMBER });
     expect(contract.claims).toEqual(TASK_TOKEN_CLAIMS);
+    expect(contract.testVector.claims.runPrice).toBeDefined();
     expect(parseTaskClaims(contract.testVector.claims)).toBeDefined();
     expect(contract.testVector.expectedVerifyResult).toBe(true);
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe("2376aa1542f645db45d081fa0818e0b6952f8fe78e485df679e04a492096f6e1");
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("3543671eb6c61e7a621b98320e43dd730e1ae5a58cceb4c3bc710e294cde3d97");
   });
 });
 it("rejects a valid RSA signature from a JWKS key that is not the pinned task key", async () => {

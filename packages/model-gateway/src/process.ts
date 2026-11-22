@@ -72,7 +72,7 @@ export interface ServeConfig { mode: "serve"; region: string; port: number; inst
 /** Bring your own Bedrock (DEC 238): Rovara's broker role and the KMS HMAC key the companies' external ids come from. */
 export interface BedrockByoConfig { brokerRoleArn: string; externalIdKeyArn: string }
 /** Rovara's AI (DEC 240): the allow-list (agent model to Bedrock id, the gateway's own region's geography) and the exempt companies. */
-export interface RovaraAiConfig { models: ReadonlyMap<string, string>; exempt: ReadonlySet<string> }
+export interface RovaraAiConfig { sourceId?: string; models: ReadonlyMap<string, string>; exempt: ReadonlySet<string> }
 export interface PriceFetchConfig { mode: "price-fetch"; region: string; tables: { prices: string } }
 export type GatewayConfig = ServeConfig | PriceFetchConfig;
 
@@ -153,7 +153,9 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
     try { models = parseRovaraAiModels(need(GATEWAY_ENV.rovaraAiModels, () => true), region); } catch { throw new GatewayConfigError(GATEWAY_ENV.rovaraAiModels); }
     let exempt: Set<string>;
     try { exempt = parseRovaraAiExempt(env[GATEWAY_ENV.rovaraAiExempt]); } catch { throw new GatewayConfigError(GATEWAY_ENV.rovaraAiExempt); }
-    rovaraAi = { models, exempt };
+    const sourceId = env[GATEWAY_ENV.rovaraAiSourceId] === undefined ? undefined : need(GATEWAY_ENV.rovaraAiSourceId,
+      (value) => /^arn:aws(?:-us-gov|-cn)?:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_/-]+@[a-z0-9-]+$/u.test(value) && value.endsWith(`@${region}`) && value.length <= 512);
+    rovaraAi = { models, exempt, ...(sourceId === undefined ? {} : { sourceId }) };
   } else if (env[GATEWAY_ENV.rovaraAiExempt] !== undefined) throw new GatewayConfigError(GATEWAY_ENV.rovaraAiModels);
   // DEC 238: both settings or neither; only in company-key mode (the company picks its agents' source there) and with the product
   // MAC key (Cloud's signed set-up and connection test calls, service-call.ts).
@@ -319,13 +321,13 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const meter = new DynamoMeter({ db, tables: config.tables, now });
   const modelLimits = deps.modelLimits ?? modelLimitsFrom(prices);
   const transport = deps.transport ?? createAnthropicTransport();
-  // DEC 254zzz3(1): the exempt companies' default on Rovara's AI, for the learning and answers routes too (only where Rovara's AI is on, in company-key mode).
+  // DEC 254zzz312: company-billed Rovara AI for learning and answers too; only configured exempt companies are free.
   const agentAiSources = deps.agentAiSources ?? new CompanyAgentAiSource(db, config.tables.companies);
   const rovaraBedrock: RovaraAi | undefined = config.rovaraAi === undefined ? undefined : {
-    models: config.rovaraAi.models, exempt: config.rovaraAi.exempt,
+    models: config.rovaraAi.models, exempt: config.rovaraAi.exempt, ...(config.rovaraAi.sourceId === undefined ? {} : { sourceId: config.rovaraAi.sourceId }),
     transport: deps.bedrockTransport ?? createBedrockTransport({ region: config.region, credentials, now }), maxOutputTokens: (id: string) => prices.maxOutputTokens("bedrock", id),
   };
-  const rovaraDefault = companyKeys === undefined || rovaraBedrock === undefined ? {} : { rovaraDefault: { ai: rovaraBedrock, sources: agentAiSources, ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }) } };
+  const rovaraDefault = companyKeys === undefined || rovaraBedrock === undefined ? {} : { rovaraDefault: { ai: rovaraBedrock, sources: agentAiSources, disabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined), switchedOn: config.aiSourceKinds ?? new Set<string>(), ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }) } };
   const learning = deps.learning === undefined ? undefined : createLearningRoutes({
     ...rovaraDefault,
     keys: deps.learning.keys, meter: deps.learning.meter, companyCaps: caps, lessons: new CompanyLessonsSwitch(db, config.tables.companies), transport,
@@ -343,6 +345,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(deps.answers.monthDefaultMicros === undefined ? {} : { monthDefaultMicros: deps.answers.monthDefaultMicros }),
   });
   const handlerDeps: GatewayDependencies = {
+    ...(companyKeys === undefined ? {} : { runPriceReady: () => prices.runPriceSnapshotVersion() }),
     // Only the route's admitted, revision-bound source can produce a receipt. Older adapters
     // without that evidence keep legacy provisional settlement; nothing is inferred from a token.
     chargeReceipts: { source: (_claims, _model, resolved) => resolved },
@@ -389,7 +392,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const offeredModels = companyKeys === undefined || handlerDeps.agentAi === undefined ? undefined : createOfferedModelsHandler({
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, SERVICE_TOKEN_KIND),
     sources: handlerDeps.agentAi.sources, disabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined),
-    ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt }, keys: companyKeys }),
+    keys: companyKeys,
+    ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt, ...(config.rovaraAi.sourceId === undefined ? {} : { sourceId: config.rovaraAi.sourceId }) } }),
     ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }), now,
     switchedOn: config.aiSourceKinds ?? new Set<string>(), chat: { openai: true, openrouter: true },
     // DEC 254zzz96 (2): list prices on the offered list, only when switched on (display only).
@@ -423,9 +427,9 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   });
   const rateQuote = companyKeys === undefined ? undefined : createRateQuoteHandler({
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, RATE_QUOTE_TOKEN_KIND),
-    sources: agentAiSources, keys: companyKeys, prices, region: config.region, now, switchedOn: config.aiSourceKinds ?? new Set<string>(),
+    sources: agentAiSources, keys: companyKeys, prices, region: config.region, now, disabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined), switchedOn: config.aiSourceKinds ?? new Set<string>(),
     offeredProviders: new Set(["anthropic", ...(companyKeys === undefined ? [] : ["openai", "openrouter"]), ...(config.rovaraAi === undefined && (config.bedrockByo === undefined || handlerDeps.agentAi?.byo === undefined) ? [] : ["bedrock"])]),
-    ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt } }),
+    ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt, ...(config.rovaraAi.sourceId === undefined ? {} : { sourceId: config.rovaraAi.sourceId }) } }),
     ...(handlerDeps.agentAi?.byo === undefined ? {} : { byo: handlerDeps.agentAi.byo }),
   });
   // L4-HW3c: the company's approved rules for Code's hosted broker (company-instructions.ts), from Cloud's Companies table (the same read-only grant as the budgets), signed with the task key.

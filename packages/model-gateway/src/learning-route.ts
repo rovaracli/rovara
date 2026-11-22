@@ -1,5 +1,6 @@
+import type { EndpointModel } from "./endpoint-source.js";
 // The learning call class (DEC 226): lessons' learning calls (the reflector, the curator's judge, the outcome judge) on the
-// company's OWN connected provider account, never Rovara's install key.
+// company's selected source: its connected provider account, or company-billed Rovara AI (DEC 254zzz312).
 //
 //   Token    the TC-1 task token with `stp` = LEARNING_STEP. That step is accepted on this route only, and this route accepts no
 //            other step (server.ts checks both directions with the fixed 401). The value is longer than Code's 24-character
@@ -22,13 +23,13 @@
 //            LEARNING_PAUSE_HEADER header (one of LEARNING_PAUSE_REASONS). Faults (an unreadable switch or budget) are 503/502,
 //            never a pause.
 import type { ChargeReceiptV1 } from "./charge-receipt.js";
-import { resolveAgentSource, type AgentAiSourceReader, type ByoBedrock, type RovaraAi } from "./agent-ai.js";
+import { agentSourceSwitchedOn, resolveAgentSource, type AgentAiSourceReader, type ByoBedrock, type RovaraAi } from "./agent-ai.js";
 import { validCaps, type Caps, type CapsScope, type CapsSource } from "./caps.js";
 import { guardRequest, type GuardFailure, type ModelLimitsSource } from "./guard.js";
 import { guardOpenAi, OpenAiUsageCollector } from "./learning-openai.js";
 import type { Meter, MeterItem } from "./meter.js";
 import type { ProviderTransport } from "./provider.js";
-import { rovaraGuard, rovaraProviderFailure } from "./rovara-ai-call.js";
+import { rovaraChargeSource, rovaraGuard, rovaraProviderFailure } from "./rovara-ai-call.js";
 import type { TaskClaims } from "./model-gateway-token.js";
 import { GeminiUsageCollector, guardGemini, parseGeminiPath } from "./product-gemini.js";
 import { guardVertex, parseVertexPath, type VertexTarget } from "./product-vertex.js";
@@ -56,7 +57,7 @@ export const LEARNING_PAUSE_REASONS = ["lessons_off", "no_provider", "monthly_li
 export type LearningPauseReason = typeof LEARNING_PAUSE_REASONS[number];
 export const LEARNING_PAUSE_MESSAGES: Readonly<Record<LearningPauseReason, string>> = Object.freeze({
   lessons_off: "Lessons are switched off for this company, so no learning call is made.",
-  no_provider: "Learning calls need the company's own connected AI provider account, and none is usable.",
+  no_provider: "Learning is paused because the company's selected AI source cannot serve learning calls yet.",
   monthly_limit: "The company's monthly learning limit is used up, so lessons are paused until next month.",
   no_budget: "The company's monthly budget has no room for learning calls, so lessons are paused.",
   cost_too_high: "One learning call of this size cannot fit the company's monthly learning limit.",
@@ -96,10 +97,13 @@ export interface LessonsSwitch { isOn(cid: string, signal?: AbortSignal): Promis
  * `connected` is read at admission (before any hold); `keyFor` just before sending; undefined there means "not sent" ($0).
  */
 export interface LearningKeySource {
+  /** C-1: connection existence only, even without a Bedrock adapter; never opens a credential. */
+  bedrockConnected?(iss: string, cid: string): Promise<boolean>;
   /** Optional receipt capability: pin saved source/version before the hold, and open exactly that credential after it. */
   resolveForCharge?(iss: string, cid: string, provider: CompanyKeyProvider, signal?: AbortSignal): Promise<{ source: ChargeReceiptV1["source"]; key(): Promise<string | undefined> } | undefined>;
   /** Read-only connection identity for signed price quotes; never opens a key. */
   identityFor?(iss: string, cid: string, provider: "anthropic" | "openai" | "openrouter"): Promise<{ sourceId: string; versionId: string } | undefined>;
+  endpointMetadata?(iss: string, cid: string): Promise<{ sourceId: string; versionId: string; models: EndpointModel[] } | undefined>;
   /** Whether the company has this provider connected. `provider` is the route's: a company with only Gemini connected is not connected for OpenAI. */
   connected(iss: string, cid: string, provider: CompanyKeyProvider, signal?: AbortSignal): Promise<boolean>;
   /** The secret to send: the API key, or for Vertex the short-lived Google bearer token the adapter minted for this company. */
@@ -110,13 +114,11 @@ export interface LearningKeySource {
   refused?(iss: string, cid: string, provider: CompanyKeyProvider): Promise<void> | void;
 }
 /**
- * DEC 254zzz3(1) (L4-AIDEF): Rovara's AI for a company the operator named exempt (`ai.exempt`), on the Anthropic Messages path only, and ONLY
- * where the call would otherwise pause `no_provider` (the company has no connected Anthropic account). The company's own account always wins,
- * and a company is put on Rovara's AI only when its effective agent source is Rovara's AI (agent-ai.ts resolveAgentSource: no saved choice and
- * no own Bedrock, or an explicit "rovara"). A company that is not exempt, or chose another source, is paused exactly as before. The line it writes
- * is `charge: "exempt"`; the purpose's month row and the combined company cap apply as for any key.
+ * DEC 254zzz312 slice 1: Messages purposes use the agent resolver. A company with no own source defaults to company-billed
+ * Rovara AI; saved choices win. Only the configured exempt list is free. Signed exact prices, receipts and both caps apply.
+ * Own-source adapter expansion follows separately; an unsupported selected source refuses without changing payer.
  */
-export interface RovaraDefaultOptions { ai: RovaraAi; sources: AgentAiSourceReader; byo?: Pick<ByoBedrock, "connection"> }
+export interface RovaraDefaultOptions { ai: RovaraAi; sources: AgentAiSourceReader; byo?: Pick<ByoBedrock, "connection">; disabled?: ReadonlySet<string>; switchedOn?: ReadonlySet<string> }
 export interface LearningRouteOptions {
   rovaraDefault?: RovaraDefaultOptions;
   keys: LearningKeySource;
@@ -209,22 +211,36 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
       let target: VertexTarget | undefined;
       // Set by admit when the company is served by Rovara's AI (DEC 254zzz3(1)); then its own key is never read.
       let rovara: { ai: RovaraAi; marker: string } | undefined;
+      let ownSource: GatewayRoute["chargeSource"];
+      let boundKey: (() => Promise<string | undefined>) | undefined;
       const route: GatewayRoute = {
+        get chargeSource() { return rovara === undefined || who === undefined ? ownSource : rovaraChargeSource(rovara.ai, who.cid); },
+        get payer() { return rovara === undefined ? undefined : "rovara"; },
         // The price rows' provider: Vertex is priced on the Gemini rows and the Vertex rows, at the dearer (alsoPricedAs). Rovara's AI is priced on the Bedrock rows.
         get provider() { return rovara !== undefined ? "bedrock" : provider === "vertex" ? "gemini" : provider; }, product: false, purpose: flavor.purpose, ...(flavor.costHeader === undefined ? {} : { costHeader: flavor.costHeader }), stopsWithTask: false, meter: options.meter, prefix: prefixOf(paused("monthly_limit").message),
         async admit(claims, signal) {
           try {
             // The switch first: while it is off nothing else is read, held or sent.
             if (options.lessons !== undefined && (await options.lessons.isOn(claims.cid, signal)) !== true) return paused("lessons_off");
+            const ai = options.rovaraDefault;
+            if (provider === "anthropic" && ai !== undefined) {
+              const resolved = await resolveAgentSource({ sources: ai.sources, keys: options.keys, ...(ai.byo === undefined ? {} : { byo: ai.byo }) }, claims.iss, claims.cid, signal);
+              if (resolved.source === "rovara") {
+                if (!agentSourceSwitchedOn("rovara", ai.switchedOn ?? new Set<string>())) return paused("no_provider");
+                rovara = { ai: ai.ai, marker: `rovara-ai-${randomUUID()}` };
+              }
+              else if (resolved.source !== "anthropic_key") return paused("no_provider");
+            }
             // Connected FOR THIS provider: one account's key is never used on another provider's path.
-            if ((await options.keys.connected(claims.iss, claims.cid, provider, signal)) !== true) {
-              // Only the Anthropic path, only an exempt company whose effective source is Rovara's AI; its own account was just found missing.
-              const ai = options.rovaraDefault;
-              if (provider !== "anthropic" || ai === undefined || !ai.ai.exempt.has(claims.cid)) return paused("no_provider");
-              const resolved = await resolveAgentSource({ sources: ai.sources, exempt: ai.ai.exempt, keys: { connected: async () => false }, ...(ai.byo === undefined ? {} : { byo: ai.byo }) }, claims.iss, claims.cid, signal);
-              if (resolved.source !== "rovara") return paused("no_provider");
-              rovara = { ai: ai.ai, marker: `rovara-ai-${randomUUID()}` };
-            } else if (provider === "vertex") {
+            if (rovara === undefined) {
+              if (options.keys.resolveForCharge !== undefined) {
+                const saved = await options.keys.resolveForCharge(claims.iss, claims.cid, provider, signal);
+                if (saved === undefined) return paused("no_provider");
+                ownSource = { source: saved.source, billing: "external_provider" };
+                boundKey = () => saved.key();
+              } else if ((await options.keys.connected(claims.iss, claims.cid, provider, signal)) !== true) return paused("no_provider");
+            }
+            if (provider === "vertex") {
               target = await options.keys.vertexTarget?.(claims.iss, claims.cid, signal);
               if (target === undefined) return paused("no_provider");
               // The path must name the CONNECTED project and location, whatever the token could reach.
@@ -243,7 +259,11 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
           // Every provider: the model is one of the token's (Code decides which model a learning call uses).
           if (checked.ok && !claims.mdl.includes(checked.model)) return notAllowed;
           // Rovara's AI: only an allow-listed model, as Bedrock takes it (the same translation as the agent route's).
-          return rovara !== undefined && checked.ok ? rovaraGuard(checked, rovara.ai) : checked;
+          if (rovara !== undefined && checked.ok) {
+            if (options.rovaraDefault?.disabled?.has(checked.model) === true) return notAllowed;
+            return rovaraGuard(checked, rovara.ai);
+          }
+          return checked;
         },
         // The company pays: no person row, whoever started the task.
         scope: (claims) => ({ iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid }),
@@ -274,14 +294,13 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
           try { if (options.lessons !== undefined && (await options.lessons.isOn(claims.cid, signal)) !== true) { notSent = paused("lessons_off"); return ""; } }
           catch { notSent = unavailable; return ""; }
           if (rovara !== undefined) return rovara.marker;
-          const key = await options.keys.keyFor(claims.iss, claims.cid, provider, signal);
+          const key = await (boundKey !== undefined ? boundKey() : options.keys.keyFor(claims.iss, claims.cid, provider, signal));
           if (key === undefined) { notSent = paused("no_provider"); return ""; }
           return key;
         },
         notSent: () => notSent,
         get transport() { return rovara !== undefined ? rovara.ai.transport : transport; },
-        // Rovara's AI: this exempt company's call is a billable line of its own kind, nothing on the company's bill.
-        line: (_claims, model) => rovara === undefined ? undefined : { source: "rovara_ai", charge: "exempt", model },
+        line: (claims, model) => rovara === undefined ? undefined : { source: "rovara_ai", charge: rovara.ai.exempt.has(claims.cid) ? "exempt" : "customer", model },
         usage: () => provider === "anthropic" ? new UsageCollector() : provider === "openai" ? new OpenAiUsageCollector() : new GeminiUsageCollector(),
         // Gemini, Vertex and OpenAI: the first bytes of a failed answer are read to tell a refused key from a refused request.
         get failureBody() { return provider !== "anthropic" || rovara !== undefined; },

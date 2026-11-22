@@ -15,7 +15,7 @@ export function initialCharge(claims: TaskClaims, model: ChargeReceiptV1["model"
     price: available({ authority: "gateway", version: String(price.priceVersion ?? 0), hash: createHash("sha256").update(JSON.stringify(price)).digest("hex"), fetchedAt: time }), model, ...context,
     payer: { kind: payer.kind, id, name: id }, requesterId: claims.per === undefined ? missing() : available(claims.per), billableMicros: context.billing === "customer" ? missing() : available(0), providerCostMicros: missing(), occurredAt: time, accountingDay: time.slice(0, 10), accountingMonth: time.slice(0, 7), recordedAt: time };
 }
-export function finishCharge(initial: ChargeReceiptV1, input: { usage?: TokenUsage; reportedCostMicros?: number; price: ResolvedPrice; notSent: boolean; now: number }): ChargeReceiptV1 {
+export function finishCharge(initial: ChargeReceiptV1, input: { usage?: TokenUsage; reportedCostMicros?: number; retainMissingUsage?: boolean; customerPriceAuthorized?: boolean; price: ResolvedPrice; notSent: boolean; now: number }): ChargeReceiptV1 {
   const reservation = initial.originalReservationMicros.state === "available" ? initial.originalReservationMicros.value : undefined;
   if (reservation === undefined) throw new Error("charge reservation unavailable");
   const amount = settleChargeAmount({ ...input, reservationMicros: reservation });
@@ -24,6 +24,6 @@ export function finishCharge(initial: ChargeReceiptV1, input: { usage?: TokenUsa
     usageComplete: amount.status !== "awaiting_usage" && u !== undefined && hasUsage(u),
     usage: u === undefined ? missing() : available({ input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite5m: u.cacheWrite5m ?? 0, cacheWrite1h: u.cacheWrite1h ?? 0, cacheWriteUnknown: u.cacheWrite5m === undefined && u.cacheWrite1h === undefined ? u.cacheWrite : 0 }),
     providerCostMicros: input.reportedCostMicros === undefined ? missing() : available(input.reportedCostMicros),
-    // A separately billable Rovara amount needs its published customer rate and approved ceiling; provider money alone cannot supply it.
-    billableMicros: input.notSent || initial.billing !== "customer" ? available(0) : missing(), recordedAt: new Date(input.now).toISOString() };
+    // Only measured usage at the authorized customer tariff is billable. Missing usage and provider-only money stay unavailable.
+    billableMicros: input.notSent || initial.billing !== "customer" ? available(0) : input.customerPriceAuthorized === true && amount.reason === "rated_usage" ? available(amount.actualMicros) : missing(), recordedAt: new Date(input.now).toISOString() };
 }

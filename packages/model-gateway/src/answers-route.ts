@@ -34,7 +34,7 @@ export const ANSWERS_COST_HEADER = "x-rovara-cost-usd";
 export const ANSWERS_PAUSE_REASONS = ["no_provider", "monthly_limit", "no_budget", "cost_too_high"] as const;
 export type AnswersPauseReason = typeof ANSWERS_PAUSE_REASONS[number];
 export const ANSWERS_PAUSE_MESSAGES: Readonly<Record<AnswersPauseReason, string>> = Object.freeze({
-  no_provider: "Answers need the company's own connected AI provider account, and none is usable.",
+  no_provider: "Answers are paused because the company's selected AI source cannot serve answers yet.",
   monthly_limit: "The company's monthly answers limit is used up, so answers are paused until next month.",
   no_budget: "The company's monthly budget has no room for answers, so answers are paused.",
   cost_too_high: "One answer of this size cannot fit the company's monthly answers limit.",

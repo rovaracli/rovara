@@ -1,13 +1,20 @@
 // Rovara's AI as one call shape (DEC 240, DEC 243): the checked Anthropic request as Bedrock takes it, and what a failed Bedrock answer means.
-// Shared by every route that can run on Rovara's own Bedrock account: the agent route (server.ts) and, for a company the operator named
-// exempt, the answers and learning routes (learning-route.ts; DEC 254zzz3(1)). This module holds no secret and reads nothing: the caller
+// Shared by every route that can run on Rovara's own Bedrock account: agents, answers and learning. Only the operator's configured
+// exempt list is free (DEC 254zzz312). This module holds no secret and reads nothing: the caller
 // gives it the allow-list (`RovaraAi.models`) and the checked call.
 import type { RovaraAi } from "./agent-ai.js";
+import { createHash } from "node:crypto";
+import type { ChargeSource } from "./charge-producer.js";
 import { BEDROCK_MODEL_ACCESS_WORDS } from "./bedrock-byo-sessions.js";
 import { CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS, REASONING_CARRYOVER_MODEL, toConverse } from "./bedrock-converse.js";
 import { BEDROCK_CLAUDE_ID, bedrockConversePath, bedrockInvokePath } from "./bedrock-transport.js";
 import type { GuardFailure } from "./guard.js";
 import type { RefusedLogReason, RouteCall, RouteRefusal } from "./server.js";
+
+/** Pin the serving configuration; exemption is an operator billing decision, never source eligibility. */
+export function rovaraChargeSource(ai: RovaraAi, cid: string): ChargeSource {
+  return { source: { kind: "rovara_ai", id: ai.sourceId ?? "rovara-ai", name: "Rovara AI", provider: "bedrock", connectionRevision: createHash("sha256").update(JSON.stringify([...ai.models].sort())).digest("hex") }, billing: ai.exempt.has(cid) ? "exempt" : "customer" };
+}
 
 /** DEC 240: a model that is not on Rovara's AI allow-list. Before any hold. */
 export const ROVARA_AI_MODEL: GuardFailure = Object.freeze({ ok: false as const, status: 400, code: "invalid_request", message: "This model is not offered on Rovara's AI." });

@@ -7,6 +7,17 @@ combined company cap). Code: `packages/model-gateway/src/learning-route.ts`; `st
 
 ## What it is
 
+DEC 254zzz312 slice 1: the Messages paths for learning, answers and Slack's answers alias now use the agent source resolver.
+Saved choices win; with no saved choice or own source they use company-billed Rovara AI. Only the configured operator exempt
+list is free. Every Rovara AI purpose call requires the existing signed `runPrice`, a bounded request with an exact price,
+and a receipt-capable combined meter before any hold or provider send. Source identity, revision, model, snapshot and rate
+ceilings must match. The purpose cap and combined company cap still count exempt spend.
+
+One call creates one receipt and one company debit. Measured usage at the authorized rate supplies customer `billableMicros`;
+missing usage retains the reservation and leaves that amount unavailable. A confirmed provider rejection settles zero.
+Existing own-key provider paths retain their transport and accounting. Own Bedrock and the remaining selected-source
+adapters are follow-up work; an unsupported saved source refuses without switching payer. Laptop calls remain direct in Code.
+
 A third route on the same gateway for lessons' learning calls: the reflector, the curator's judge and the outcome judge
 (Code: `packages/broker/src/lessons`, the `learning` model-access port of `core-host/lessons.ts`, #684).
 

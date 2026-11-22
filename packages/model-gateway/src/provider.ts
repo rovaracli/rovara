@@ -15,6 +15,8 @@ export interface ProviderResponse {
   status: number; body: AsyncIterable<Uint8Array>; cancel?: () => void;
   /** The provider's own reported cost of a completed call in micro-dollars (OpenRouter's usage.cost, agent-openai.ts), read after the body ends. settleAmount decides whether it is used. Absent: none. */
   reportedCostMicros?: () => number | undefined;
+  /** Internal transport provenance: false means money is only a known floor; retain max(hold, floor) provisionally. */
+  reportedCostComplete?: () => boolean;
 }
 /** An injected transport must stop on signal or cancel. A generic throw means possibly sent and is charged in full. */
 export type ProviderTransport = (request: ProviderRequest) => Promise<ProviderResponse>;

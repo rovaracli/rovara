@@ -255,7 +255,13 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       const pending = state.startsWith("join.") || state.startsWith("github.") || state.startsWith("connect.") || state.startsWith("link.") ? undefined : await options.store.takePending(state);
       if (pending === undefined || pending.joinTicket === true || pending.github !== undefined || pending.connect !== undefined || pending.link !== undefined || now().getTime() - pending.at > SIGN_IN_TTL_MS) return text(400, "This sign-in expired. Go back to the app and sign in again.");
       const refused = request.query.get("error");
-      // A join Code refused (the email isn't the invited one, the invite was used or withdrawn): the one sentence, never Code's words.
+      // The discriminator is accepted only for Code's fixed access_denied response and a live pending invite.
+      // It selects explanatory copy only; authorization still requires a fresh lookup and a successful Code join.
+      const inviteError = request.query.getAll("invite_error");
+      if (refused === "access_denied" && pending.invite !== undefined && inviteError.length === 1 && (inviteError[0] === "mismatch" || inviteError[0] === "unverified")) {
+        return text(302, "", { location: `/app/join?email=${inviteError[0]}` });
+      }
+      // Other errors (including duplicate, forged or unknown discriminators) remain generic and never reach page copy.
       if (refused !== null && pending.invite !== undefined) return text(302, "", { location: JOIN_UNUSABLE_PAGE });
       if (refused === "access_denied") return text(400, '<!doctype html><html lang="en"><meta charset="utf-8"><title>Sign in to Rovara</title><main><p>You\'re no longer a member of this company. Ask an admin to invite you again.</p><a href="/app">Sign in again</a></main></html>', { "content-type": "text/html; charset=utf-8" });
       if (refused !== null) return text(400, `Rovara Code refused the sign-in: ${refused}`);

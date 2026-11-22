@@ -39,7 +39,7 @@ test("an invite link carries Code's secret, opens the join page with the company
   // An admin's invite, made through the app's own route (Code pre-approves the email; Cloud keeps the invite).
   const inviteUrl = await page.evaluate(async () => {
     const me = await (await fetch("/v1/web/me")).json() as { csrf: string };
-    const answer = await fetch("/v1/web/org/invites", { method: "POST", headers: { "content-type": "application/json", "x-rovara-csrf": me.csrf }, body: JSON.stringify({ requestId: crypto.randomUUID(), role: "member", email: `new-${String(Date.now())}@example.test` }) });
+    const answer = await fetch("/v1/web/org/invites", { method: "POST", headers: { "content-type": "application/json", "x-rovara-csrf": me.csrf }, body: JSON.stringify({ requestId: crypto.randomUUID(), role: "member", email: "sam@example.test" }) });
     return (await answer.json() as { inviteUrl: string }).inviteUrl;
   });
   const link = new URL(inviteUrl);
@@ -47,9 +47,9 @@ test("an invite link carries Code's secret, opens the join page with the company
   // DEC 254h: the link carries Code's single-use invite secret (the pretend Code's prefix), in the fragment only.
   expect(link.hash).toMatch(/^#invite=rvi_[A-Za-z0-9_-]{32}$/u);
   const secret = link.hash.slice("#invite=".length);
-  // The invited person is someone else, in no company yet: Sam signs in to join.
+  // Try a different verified account, then one with no verified email. Both refusals keep the invite live.
   await page.context().clearCookies();
-  await setFakePerson(page, "sam");
+  await setFakePerson(page, "priya");
   await setNoCompany(page, true);
   const screens = new CompanyOnboardingPage(page);
   const seen: string[] = [];
@@ -60,11 +60,25 @@ test("an invite link carries Code's secret, opens the join page with the company
   expect(page.url()).not.toContain(secret);
   await page.screenshot({ path: testInfo.outputPath("join.png"), fullPage: true });
   await screens.joinSignIn.click();
+  await page.waitForURL((url) => url.pathname === ROUTES.join && url.searchParams.get("email") === "mismatch");
+  await expect(page.getByRole("heading", { name: "This invite is for another email" })).toBeVisible();
+  await expect(screens.joinEmailRefused).toContainText("Reopen the original invite link and sign in with the invited email.");
+  expect(await page.content()).not.toContain("sam@example.test");
+  await setFakePerson(page, "sam", null);
+  await page.goto(link.pathname + link.hash);
+  await screens.joinSignIn.click();
+  await page.waitForURL((url) => url.pathname === ROUTES.join && url.searchParams.get("email") === "unverified");
+  await expect(page.getByRole("heading", { name: "This sign-in has no verified email" })).toBeVisible();
+  expect(await page.content()).not.toContain("sam@example.test");
+  // The intended account can retry from the original invite fragment after either refusal.
+  await setFakePerson(page, "sam");
+  await page.goto(link.pathname + link.hash);
+  await screens.joinSignIn.click();
   await page.waitForURL((url) => url.pathname === ROUTES.home && url.searchParams.get("joined") === "1");
   // After the link, only Code's authorize URL carried the secret: no Cloud address did.
   const carrying = seen.filter((url) => url.includes(secret));
-  expect(carrying.length).toBe(1);
-  expect(new URL(carrying[0]!).pathname).toBe("/v1/auth/authorize");
+  expect(carrying.length).toBe(3);
+  expect(carrying.every((url) => new URL(url).pathname === "/v1/auth/authorize")).toBe(true);
   expect(page.url()).not.toContain(secret);
   expect(await page.content()).not.toContain(secret);
   await page.screenshot({ path: testInfo.outputPath("joined.png"), fullPage: true });

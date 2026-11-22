@@ -5,6 +5,7 @@ import type { ApiMethod, ApiRequest, ApiResponse, AppHost } from "../host.js";
 import { RETRY_DELAYS_MS } from "../constants.js";
 import { isConfirmUrl } from "../text/links.js";
 import { ApiError, apiError } from "./errors.js";
+import { accessEndedCode } from "./served-read.js";
 /** The shared confirmation metadata a 202 may carry (the company policy save uses it); absent on ordinary confirmations. */
 export type SoleOwnerConfirmation = z.infer<typeof SoleOwnerConfirmationSchema>;
 export interface Reader<T> { parse(value: unknown): T }
@@ -24,6 +25,13 @@ export function createApiClient(host: AppHost) {
     if (error instanceof ApiError) { if (error.code === "AUTH_REQUIRED" && !redirectedHosts.has(host)) { redirectedHosts.add(host);host.signIn(host.currentPath(), { automatic: true }); }throw error; }
     if (retry && attempt < RETRY_DELAYS_MS.length) { await sleep(retryDelay(attempt));continue; }
     throw new ApiError(0, "NETWORK_ERROR", "Couldn't reach Rovara. Check your connection and try again.");
+   }
+   // Access ends even at 2xx/5xx and even with a malformed error envelope. Preserve that signal before retries or schema parsing.
+   const accessCode = readRequest ? accessEndedCode(response.body) : undefined;
+   if (accessCode !== undefined) {
+    if ((accessCode === "AUTH_REQUIRED" || accessCode === "SESSION_EXPIRED") && !redirectedHosts.has(host)) { redirectedHosts.add(host);host.signIn(host.currentPath(), { automatic: true }); }
+    const error = apiError(response.status, response.body, host.origin);
+    throw error.code === accessCode ? error : new ApiError(response.status, accessCode, "This information is no longer available to you.");
    }
    if (response.status === 429 && retry && attempt < RETRY_DELAYS_MS.length) { await sleep(retryDelay(attempt));continue; }
    // A 501 (NOT_ON_CODE_YET) is Cloud saying the route is not on Rovara Code yet: that does not change in a few seconds, so it is not retried and the screen says so at once.

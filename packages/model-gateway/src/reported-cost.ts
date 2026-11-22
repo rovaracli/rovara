@@ -1,16 +1,38 @@
 import { usageEstimated } from "./price-tiers.js";
 import { record, whole } from "./model-gateway-token.js";
-import { MICROS_PER_USD } from "./price-constants.js";
+import { openRouterDecimal } from "./openrouter-policy.js";
 import { mediaEstimated, mediaPriced, usageCost } from "./estimate.js";
 import type { ResolvedPrice } from "./price.js";
 import { MEDIA_USAGE_KEYS, type TokenUsage } from "./usage.js";
 /** Assumed OpenRouter final usage.cost USD shape; verify on staging before routing OpenRouter. */
 export function parseReportedCost(provider: string, value: unknown): number | undefined {
   if (provider !== "openrouter") return undefined;
-  const cost = record(value)?.cost;
-  if (typeof cost !== "number" || !Number.isFinite(cost) || cost <= 0) return undefined;
-  const micros = Math.ceil(cost * MICROS_PER_USD);
-  return whole(micros) && micros > 0 ? micros : undefined;
+  const u = record(value); const cost = u?.cost;
+  if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) return undefined;
+  const details = u?.cost_details === undefined ? undefined : record(u.cost_details);
+  if (u?.cost_details !== undefined && details === undefined) return undefined;
+  const upstream = details?.upstream_inference_cost;
+  if (upstream !== undefined && (typeof upstream !== "number" || !Number.isFinite(upstream) || upstream < 0)) return undefined;
+  try {
+    const total = openRouterDecimal(String(cost));
+    const providerCost = typeof upstream === "number" ? openRouterDecimal(String(upstream)) : 0n;
+    const amount = total > providerCost ? total : providerCost;
+    const micros = Number((amount + 999_999_999_999n) / 1_000_000_000_000n);
+    return whole(micros) && micros > 0 ? micros : undefined;
+  } catch { return undefined; }
+}
+/** Known debit floor survives malformed ancillary evidence; it is never discarded or capped. */
+export function reportedCostFloor(value: unknown): number | undefined {
+ const u = record(value); const details = record(u?.cost_details);
+ let floor = 0;
+ for (const value of [u?.cost, details?.upstream_inference_cost]) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) continue;
+  try {
+   const n = Number((openRouterDecimal(String(value)) + 999_999_999_999n) / 1_000_000_000_000n);
+   if (whole(n)) floor = Math.max(floor, n);
+  } catch { /* An unreadable component never removes readable money. */ }
+ }
+ return floor > 0 ? floor : undefined;
 }
 export function validUsage(value: unknown): value is TokenUsage {
   const u = record(value);
@@ -22,7 +44,16 @@ export function validUsage(value: unknown): value is TokenUsage {
   return whole(u.cacheWrite5m) && whole(u.cacheWrite1h) && u.cacheWrite5m + u.cacheWrite1h === u.cacheWrite;
 }
 export function hasUsage(usage: TokenUsage): boolean { return usage.input + usage.output + usage.cacheRead + usage.cacheWrite > 0; }
-export function settleChargeAmount(input: { reportedCostMicros?: number; usage?: TokenUsage; price: ResolvedPrice; reservationMicros: number }): { actualMicros: number; estimated: boolean; status: "final" | "estimated" | "awaiting_usage"; reason: "rated_usage" | "reported_cost" | "derived_rate" | "missing_usage"; usage?: TokenUsage } {
+export function settleChargeAmount(input: { reportedCostMicros?: number; retainMissingUsage?: boolean; usage?: TokenUsage; price: ResolvedPrice; reservationMicros: number }): { actualMicros: number; estimated: boolean; status: "final" | "estimated" | "awaiting_usage"; reason: "rated_usage" | "reported_cost" | "derived_rate" | "missing_usage"; usage?: TokenUsage } {
+  if (input.retainMissingUsage) {
+    // Incomplete billing evidence keeps the fee-inclusive hold AND every known debit.
+    // Valid tokens remain a lower bound even when the provider omits its total cost.
+    const usage = validUsage(input.usage) && hasUsage(input.usage) ? input.usage : undefined;
+    const tokenCost = usage === undefined ? 0 : usageCost(usage, input.price, mediaPriced(usage, input.price) ? undefined : "cautious");
+    const floor = Math.max(input.reservationMicros, whole(input.reportedCostMicros) ? input.reportedCostMicros : 0, tokenCost);
+    // Receipt v1 requires awaiting_usage.amount === reservation. Above the hold remains estimated.
+    return floor > input.reservationMicros ? { actualMicros: floor, estimated: true, status: "estimated", reason: "derived_rate", ...(usage === undefined ? {} : { usage: { ...usage } }) } : { actualMicros: floor, estimated: true, status: "awaiting_usage", reason: "missing_usage" };
+  }
   if (!validUsage(input.usage) || !hasUsage(input.usage)) {
     if (whole(input.reportedCostMicros) && input.reportedCostMicros > 0) return { actualMicros: input.reportedCostMicros, estimated: false, status: "final", reason: "reported_cost" };
     return { actualMicros: input.reservationMicros, estimated: true, status: "awaiting_usage", reason: "missing_usage" };

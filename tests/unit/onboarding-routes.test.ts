@@ -263,6 +263,27 @@ describe("joining from an invite link", () => {
     expect(await w.store.invite(A, made.record.inviteId)).toMatchObject({ state: "pending" });
   });
 
+  it("routes only exact email-proof refusals to fixed guidance; a forged discriminator never changes a successful callback", async () => {
+    for (const [query, location] of [
+      ["error=access_denied&invite_error=mismatch", "/app/join?email=mismatch"],
+      ["error=access_denied&invite_error=unverified", "/app/join?email=unverified"],
+      ["error=access_denied&invite_error=mismatch&invite_error=unverified", "/app/join?unusable=1"],
+      ["error=access_denied&invite_error=unknown", "/app/join?unusable=1"],
+    ] as const) {
+      const w = world();
+      const { state } = await joinTo(w, A);
+      const back = await w.raw("GET", `/callback?${query}&state=${state}&error_description=attacker%40example.test`);
+      expect(back.headers.location).toBe(location);
+      expect(back.body).not.toContain("attacker");
+    }
+    const w = world();
+    const { state, made } = await joinTo(w, A);
+    w.setCompany({ companyId: A, companyRole: "member", joinedByInvite: true });
+    const success = await w.raw("GET", `/callback?code=c1&invite_error=mismatch&state=${state}`);
+    expect(success.headers.location).toBe("/app?joined=1");
+    expect(await w.store.invite(A, made.record.inviteId)).toMatchObject({ state: "accepted" });
+  });
+
   it("never takes a join ticket as a sign-in's state", async () => {
     const w = world();
     const { token } = await w.invite(A);

@@ -225,6 +225,8 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
       const route: GatewayRoute = {
         // Vertex calls are logged and corrected on the Gemini rows, priced at the dearer of those and the Vertex rows (alsoPricedAs).
         provider: bedrockPath !== undefined ? "bedrock" : "gemini", product: true, meter: options.meter, prefix: PRODUCT_PREFIX,
+        get payer() { return bedrockPath === undefined ? undefined : "bedrock_byo"; },
+        get chargeSource() { return bedrock === undefined ? undefined : { source: { kind: "company_key" as const, id: bedrock.row.sourceId, name: "Product Bedrock", provider: "bedrock", connectionRevision: bedrock.row.versionId }, billing: "external_provider" as const }; },
         async admit(claims, signal) {
           admitted = claims;
           // Provisioned throughput, application inference profiles and prompts are named by ARN: refused before anything is read.

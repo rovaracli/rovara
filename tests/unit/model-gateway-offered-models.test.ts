@@ -22,7 +22,7 @@ import { claims, jwk, keys, kid, mint, now, requestBody } from "./model-gateway-
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 
 // ---- Code's contract, copied from PrepLabsAI/Rovara PR #771 (packages/contracts/src/agent-model-choice.ts at 6a2a8d3d3) -----------------
-const AGENT_MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const AGENT_MODEL_NAME = /^(?:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}|[a-z0-9][a-z0-9._-]{0,62}\/[a-z0-9][a-z0-9._-]{0,62})$/u;
 const CodeOfferedAgentModelsSchema = z.object({
   version: z.literal(1),
   models: z.array(z.object({ model: z.string().regex(AGENT_MODEL_NAME) }).strict()).min(1).max(64),
@@ -78,11 +78,11 @@ describe("the list one company is offered", () => {
     const { opts } = options({ disabled: parseDisabledAgentModels("") });
     expect(names((await get(opts, cidA, mintService())).body)).toEqual(["claude-haiku-4-5", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2", ...BEDROCK_17]);
   });
-  it("a company's own Anthropic key, or nothing saved: Anthropic's models (never Bedrock's); the Bedrock-only disable does not apply", async () => {
+  it("an explicit own key offers Anthropic models; deleting the choice returns to the Rovara default", async () => {
     const { opts, choices } = options();
     expect(names((await get(opts, cidB, mintService({ cid: cidB }))).body)).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
     choices.saved.delete(cidB);
-    expect(names((await get(opts, cidB, mintService({ cid: cidB }))).body)).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
+    expect(names((await get(opts, cidB, mintService({ cid: cidB }))).body)).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
   });
   it("the Anthropic list is the Claude names of the Rovara allow-list, one per model", () => {
     const seen = new Set<string>(); const claude: string[] = [];
@@ -364,17 +364,26 @@ describe("gateway process: two companies, one server", () => {
       else expect(names(JSON.parse(answer.text()))).toEqual([...OPENAI_KEY_AGENT_MODELS]);
     }
   });
-  it("L4-AIDEF: the deployed handler offers an exempt company with no saved choice the same list the agent route serves it (Rovara's AI unless its own key is connected); anyone else the Anthropic list", async () => {
+  it("R-1: deployed no-choice companies keep connected own keys; unconnected companies get Rovara models", async () => {
     const cidC = `org_${"c".repeat(20)}`;
     const exemptEnv = { [GATEWAY_ENV.rovaraAiExempt]: `${cidA},${cidC}` };
     // C: exempt, nothing saved, no key connected: Rovara's AI.
     const none = await serve(exemptEnv, true, false);
     expect(names(JSON.parse((await ask(none.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
-    // C with its own key connected: the Anthropic list. A non-exempt company with no key and nothing saved: also today's Anthropic list.
+    // A connection made after backfill must immediately advertise the own-key models.
     const keyed = await serve(exemptEnv, true, true);
     expect(names(JSON.parse((await ask(keyed.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
     const notExempt = await serve({}, true, false);
-    expect(names(JSON.parse((await ask(notExempt.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
+    expect(names(JSON.parse((await ask(notExempt.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
+  });
+  it("F-2: without Rovara AI, an unsaved own-key company still gets its models; an unconnected company is refused", async () => {
+    const cidC = `org_${"c".repeat(20)}`;
+    const keyed = await serve({}, false, true);
+    const got = await ask(keyed.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })));
+    expect(got.statusCode).toBe(200);
+    expect(names(JSON.parse(got.text()))).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
+    const none = await serve({}, false, false);
+    expect((await ask(none.gateway.server, pathOf(cidC), bearer(mintService({ cid: cidC })))).statusCode).toBe(403);
   });
   it("task tokens and service tokens are not interchangeable between the two routes", async () => {
     const s = await serve();

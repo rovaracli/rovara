@@ -21,7 +21,7 @@ import { wikiMapOf, wikiSetupBuildView, type FakeWikiSetup } from "./wiki-setup-
 import { WIKI_SETUP_CODE_WORDS } from "../../packages/contracts/src/app-wiki-setup.js";
 import { CreateScriptTokenBodySchema } from "../../packages/contracts/src/script-tokens.js";
 
-export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
+export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Test-only current provider proof override: omitted uses email, null means no verified email. */ verifiedEmail?: string | null; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
 
 const id64 = (name: string) => createHash("sha256").update(`fake-code:${name}`).digest("hex");
 /** The pretend Code's one company (DEC 253z: Code names it in the access check). */
@@ -1006,14 +1006,20 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       const redirectUri = query.get("redirect_uri") ?? "";
       if (query.get("client_id") !== clientId || redirectUri === "" || query.get("code_challenge_method") !== "S256") return failure(400, "invalid_request", "bad authorize request");
       const back = new URL(redirectUri);
-      // DEC 254h: a join with Code's invite secret. The secret must be live, unspent, bound to `company`, and its pre-approval still live; a
-      // person Code names another company for is refused. Spent with the membership. Any failure: the one "not invited" refusal.
+      // DEC 254zzz218: mimic Code's verified-email binding. Test-only verifiedEmail can model missing proof; provider claims are never copied here.
       const secret = query.get("invite");
       let joined = false;
       if (secret !== null) {
         const held = inviteSecrets.get(createHash("sha256").update(secret).digest("hex"));
         if (held === undefined || held.used || held.expiresAt <= now().getTime() || held.companyId !== query.get("company") || !preapprovals.has(held.emailHash)) {
           back.searchParams.set("error", "access_denied");
+          back.searchParams.set("state", query.get("state") ?? "");
+          return { status: 302, headers: { location: back.toString() } };
+        }
+        const verifiedEmail = current.verifiedEmail === undefined ? current.email : current.verifiedEmail;
+        if (verifiedEmail === null || createHash("sha256").update(verifiedEmail.trim().toLowerCase()).digest("hex") !== held.emailHash) {
+          back.searchParams.set("error", "access_denied");
+          back.searchParams.set("invite_error", verifiedEmail === null ? "unverified" : "mismatch");
           back.searchParams.set("state", query.get("state") ?? "");
           return { status: 302, headers: { location: back.toString() } };
         }
@@ -1887,10 +1893,11 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       };
       try {
         if (method === "POST" && url.pathname === "/__fake/person") {
-          const wanted = (JSON.parse(await readBody(request)) as { person?: string }).person;
+          const payload = JSON.parse(await readBody(request)) as { person?: string; verifiedEmail?: string | null };
+          const wanted = payload.person;
           const who = [...PEOPLE, ZED].find((one) => one.key === wanted);
           if (who === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "person is priya, sam or zed" } });
-          current = who;
+          current = { ...who, ...(payload.verifiedEmail === null || typeof payload.verifiedEmail === "string" ? { verifiedEmail: payload.verifiedEmail } : {}) };
           return send(200, { person: who.key });
         }
         // The person confirms a waiting People change on Code's own page (a test stands in for that page).

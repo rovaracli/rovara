@@ -37,7 +37,11 @@ export function CreateCompanyScreen() {
 }
 
 export function JoinScreen() {
-  const host = useAppHost(), [params] = useSearchParams(), [state, setState] = useState<{ kind: "loading" } | { kind: "ready"; company: string } | { kind: "unusable" }>(() => (params.get("unusable") === "1" || host.lookUpInvite === undefined ? { kind: "unusable" } : { kind: "loading" }));
+  const host = useAppHost(), [params] = useSearchParams(), [state, setState] = useState<{ kind: "loading" } | { kind: "ready"; company: string } | { kind: "unusable" } | { kind: "email-refused"; reason: "mismatch" | "unverified" }>(() => {
+    const emailErrors = params.getAll("email");
+    const emailError = emailErrors.length === 1 && (emailErrors[0] === "mismatch" || emailErrors[0] === "unverified") ? emailErrors[0] : undefined;
+    return emailError === undefined ? (params.get("unusable") === "1" || host.lookUpInvite === undefined ? { kind: "unusable" } : { kind: "loading" }) : { kind: "email-refused", reason: emailError };
+  });
   useEffect(() => {
     if (state.kind !== "loading" || host.lookUpInvite === undefined) return;
     let live = true;
@@ -46,5 +50,6 @@ export function JoinScreen() {
   }, [host, state.kind]);
   if (state.kind === "loading") return <main className="rv-entry rv-onboarding-entry"><Skeleton label="Opening your invite" /></main>;
   if (state.kind === "unusable") return <main className="rv-entry rv-onboarding-entry" data-testid="join"><p className="rv-eyebrow">Rovara</p><PageHeader title="This invite can't be used" focusOnMount /><p data-testid="join-unusable">{JOIN_UNUSABLE}</p></main>;
+  if (state.kind === "email-refused") return <main className="rv-entry rv-onboarding-entry" data-testid="join"><p className="rv-eyebrow">Rovara</p><PageHeader title={state.reason === "mismatch" ? "This invite is for another email" : "This sign-in has no verified email"} focusOnMount /><p data-testid="join-email-refused">Reopen the original invite link and sign in with the invited email.</p><p>Slack and GitHub may need you to choose the account that carries that email.</p></main>;
   return <main className="rv-entry rv-onboarding-entry" data-testid="join"><p className="rv-eyebrow">Rovara</p><PageHeader title={`Join ${state.company} on Rovara`} focusOnMount /><Button variant="primary" data-testid="join-sign-in" onClick={() => host.signIn("/app", { join: true })}>Sign in to join</Button></main>;
 }

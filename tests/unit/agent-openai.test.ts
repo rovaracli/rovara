@@ -15,9 +15,10 @@ import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 import {
   ChatStreamToSse, createChatCompletionsTransport, fromChatCompletion, MAX_UPSTREAM_STREAM_BYTES, OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS, OPENAI_AGENT_UPSTREAM, toChatCompletions,
 } from "../../packages/model-gateway/src/agent-openai.js";
-import type { AgentAiSource, CompanyChatAi } from "../../packages/model-gateway/src/agent-ai.js";
+import { CompanyAgentAiSource, type AgentAiSource, type CompanyChatAi } from "../../packages/model-gateway/src/agent-ai.js";
 import type { CompanyKeyProvider, LearningKeySource } from "../../packages/model-gateway/src/learning-route.js";
-import { answerOfferedModels, OFFERED_CHAT_OFF, OFFERED_OPENROUTER_PENDING, OFFERED_SWITCHED_OFF, OPENAI_KEY_AGENT_MODELS } from "../../packages/model-gateway/src/offered-models.js";
+import { applyAgentOwnKeyBackfill, planAgentOwnKeyBackfill } from "../../packages/model-gateway/src/agent-own-key-backfill.js";
+import { answerOfferedModels, ANTHROPIC_KEY_AGENT_MODELS, OFFERED_CHAT_OFF, OFFERED_EMPTY, OFFERED_SWITCHED_OFF, OPENAI_KEY_AGENT_MODELS } from "../../packages/model-gateway/src/offered-models.js";
 import { NotSentError, type ProviderRequest, type ProviderResponse, type ProviderTransport } from "../../packages/model-gateway/src/provider.js";
 import { AGENT_CHAT_FEATURE, AGENT_CHAT_NOT_OFFERED, AGENT_KEY_MISSING, AGENT_KEY_REFUSED, AGENT_SOURCE_SWITCHED_OFF, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
 import { UsageCollector } from "../../packages/model-gateway/src/usage.js";
@@ -343,35 +344,25 @@ describe("the agent route on the company's own OpenAI or OpenRouter key", () => 
   it("holds a call to the model's own output limit (and the default when there is none)", async () => {
     const big = { ...anthropicBody, max_tokens: 60_000 };
     const r = route({ saved: { [cidA]: "openrouter_key" }, openrouterLimit: 1_000 });
-    await call(r.deps, big, token());
-    expect((JSON.parse(Buffer.from(r.sent[0]!.body).toString("utf8")) as Json).max_tokens).toBe(1_000);
+    expect((await call(r.deps, big, token())).status).toBe(409);
+    expect(r.sent).toEqual([]); // No legacy unpriced OpenRouter call, even with a token cap.
     const d = route();
     await call(d.deps, big, token());
     expect((JSON.parse(Buffer.from(d.sent[0]!.body).toString("utf8")) as Json).max_completion_tokens).toBe(OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS);
   });
 
-  it("OpenRouter: with no price row, the reported cost is what is settled (settleAmount's rule), not an estimate", async () => {
+  it("OpenRouter without a reviewed tariff and signed ceiling never holds, opens a key or sends", async () => {
     const r = route({ saved: { [cidA]: "openrouter_key" } });
-    const settled: Array<[number, unknown]> = [];
-    const settle = r.meter.settle.bind(r.meter);
-    r.meter.settle = async (reservation, micros, estimated) => { settled.push([micros, estimated]); return settle(reservation, micros, estimated); };
-    expect((await call(r.deps, anthropicBody, token())).status).toBe(200);
-    expect(r.sent[0]).toMatchObject({ provider: "openrouter", key: keyOf(cidA, "openrouter"), path: OPENAI_AGENT_UPSTREAM.openrouter.path });
-    expect(JSON.parse(Buffer.from(r.sent[0]!.body).toString("utf8"))).toMatchObject({ usage: { include: true } });
-    expect(settled).toEqual([[500, undefined]]);
+    expect((await call(r.deps, anthropicBody, token())).status).toBe(409);
+    expect(r.sent).toEqual([]); expect(r.keys.reads).toEqual([]);
+    expect(await committedOf(r.meter)).toBe(0);
   });
 
-  it("OpenRouter with a known price: the token cost when the reported cost is lower, the reported cost when it is higher", async () => {
+  it("a known token price does not authorize unbounded reported OpenRouter cost", async () => {
     const known = { priceFor: () => ({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 }) };
-    for (const [cost, expected] of [[0.000001, 180], [0.01, 10_000]] as const) {
-      const r = route({ saved: { [cidA]: "openrouter_key" }, prices: known, transport: () => async () => ({ status: 200, body: (async function* () { yield* toolStream({ cost }); })() }) });
-      const settled: number[] = [];
-      const settle = r.meter.settle.bind(r.meter);
-      r.meter.settle = async (reservation, micros, estimated) => { settled.push(micros); return settle(reservation, micros, estimated); };
-      await call(r.deps, anthropicBody, token());
-      // 100 input + 20 cached (no cache-read rate: the input rate) at 1 micro-dollar a token, 30 output at 2: 180 of token cost.
-      expect(settled[0]).toBe(expected);
-    }
+    const r = route({ saved: { [cidA]: "openrouter_key" }, prices: known });
+    expect((await call(r.deps, anthropicBody, token())).status).toBe(409);
+    expect(r.sent).toEqual([]); expect(r.keys.reads).toEqual([]);
   });
 
   it("the switch: a kind that is off is refused before anything is read, held or sent", async () => {
@@ -389,10 +380,11 @@ describe("the agent route on the company's own OpenAI or OpenRouter key", () => 
   });
 
   it("no key of THAT provider connected: refused before any hold (an Anthropic key is never a stand-in)", async () => {
-    const r = route({ saved: { [cidB]: "openrouter_key" } });
+    const r = route({ saved: { [cidB]: "openai_key" } });
+    r.keys.connectedTo.get(cidB)!.delete("openai");
     const sink = await call(r.deps, anthropicBody, token(cidB));
     expect(errorOf(sink)).toEqual({ type: AGENT_KEY_MISSING.code, message: AGENT_KEY_MISSING.message });
-    expect(r.keys.asked).toEqual([`${cidB}:openrouter`]); expect(r.keys.reads).toEqual([]); expect(r.sent).toEqual([]);
+    expect(r.keys.asked).toEqual([`${cidB}:openai`]); expect(r.keys.reads).toEqual([]); expect(r.sent).toEqual([]);
   });
 
   it("two companies: each call carries only its own company's key", async () => {
@@ -454,16 +446,35 @@ describe("the models a company on its own key may use (offered-models)", () => {
   }, { method: "GET", url: `/v1/service/companies/${cidA}/offered-models`, headers: { authorization: "Bearer t" } });
   const refusal = (o: { status: number; code: string; message: string }) => ({ status: o.status, body: { error: { type: o.code, message: o.message } } });
 
-  it("own OpenAI key: the OpenAI list; own OpenRouter key: not offerable until Code accepts vendor/model names", async () => {
+  it("own OpenAI key: the OpenAI list; OpenRouter waits for an enforceable reviewed tariff", async () => {
     expect(await ask("openai_key")).toEqual({ status: 200, body: { version: 1, models: OPENAI_KEY_AGENT_MODELS.map((model) => ({ model })) } });
-    expect(await ask("openrouter_key")).toEqual(refusal(OFFERED_OPENROUTER_PENDING as { status: number; code: string; message: string }));
+    expect(await ask("openrouter_key")).toEqual(refusal(OFFERED_EMPTY as { status: number; code: string; message: string }));
   });
 
-  it("switched off or not built: refused like the agent route; today's sources unchanged", async () => {
+  it("switched off or not built: refused like the agent route; saved own sources unchanged", async () => {
     expect(await ask("openai_key", { switchedOn: [] })).toEqual(refusal(OFFERED_SWITCHED_OFF as { status: number; code: string; message: string }));
     expect(await ask("openai_key", { chat: {} })).toEqual(refusal(OFFERED_CHAT_OFF as { status: number; code: string; message: string }));
     expect((await ask("anthropic_key", { switchedOn: [] })).status).toBe(200);
-    expect((await ask(undefined, { switchedOn: [] })).status).toBe(200);
+
+  });
+
+  it("C-1: an own-key company has a real saved choice after backfill; a new unconnected company gets Rovara AI", async () => {
+    const wire = new WireDynamo(["companies", "product-keys"], { namespaceTables: true });
+    const db = new Dynamo({ region: "us-east-1", credentials: async () => ({ accessKeyId: "TEST", secretAccessKey: "not-real" }), transport: wire.transport });
+    await db.put("product-keys", { pk: `CO#${JSON.stringify([claims.iss, cidA])}`, sk: "doc#_learning", v: 1, f_removed: [], f_sources: [{ sourceId: "src_anthropic", provider: "anthropic", connectedBy: "d".repeat(64), connectedAt: 1, updatedAt: 1, currentVersion: "00000000-0000-4000-8000-000000000001" }] });
+    const input = { db, companyTable: "companies", productTable: "product-keys", issuer: claims.iss, companies: [cidA, cidB] };
+    const plan = await planAgentOwnKeyBackfill(input);
+    expect(await applyAgentOwnKeyBackfill(input, plan)).toEqual({ written: 1, conflicted: 0 });
+    const sources = new CompanyAgentAiSource(db, "companies");
+    expect(await sources.sourceFor(cidA)).toBe("anthropic_key");
+    expect(await sources.sourceFor(cidB)).toBeUndefined();
+    const read = (cid: string) => answerOfferedModels({
+      verify: async () => ({ iss: claims.iss, aud: "rovara-model-gateway-offered-models", jti: "00000000-0000-4000-8000-000000000000", iat: 0, nbf: 0, exp: 60, cid }),
+      sources, disabled: new Set(), switchedOn: new Set(),
+      rovara: { models: new Map([["claude-sonnet-5-5", "us.anthropic.claude-sonnet-5-5"]]), exempt: new Set() },
+    }, { method: "GET", url: `/v1/service/companies/${cid}/offered-models`, headers: { authorization: "Bearer t" } });
+    expect(await read(cidA)).toEqual({ status: 200, body: { version: 1, models: ANTHROPIC_KEY_AGENT_MODELS.map((model) => ({ model })) } });
+    expect(await read(cidB)).toEqual({ status: 200, body: { version: 1, models: [{ model: "claude-sonnet-5-5" }] } });
   });
 });
 

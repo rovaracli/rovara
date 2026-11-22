@@ -63,8 +63,9 @@ describe("the entry script is owner-run only", () => {
   });
 
   it("refuses without the consent switch, for a refused endpoint address, and for anything but one kind (never echoing it), before any key is read", () => {
+    // Run the same entry with the Node loader: tsx CLI IPC is unavailable in the lane sandbox.
     const run = (args: string[], env: Record<string, string>) => {
-      try { execFileSync(join(ROOT, "node_modules/.bin/tsx"), [join(ROOT, "scripts/real-key-check.ts"), ...args], { cwd: ROOT, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env }, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 60_000 }); return { status: 0, out: "" }; }
+      try { execFileSync(process.execPath, ["--import", join(ROOT, "node_modules/tsx/dist/loader.mjs"), join(ROOT, "scripts/real-key-check.ts"), ...args], { cwd: ROOT, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env }, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 60_000 }); return { status: 0, out: "" }; }
       catch (error) { const e = error as { status: number; stdout: string; stderr: string }; return { status: e.status, out: `${e.stdout}${e.stderr}` }; }
     };
     expect(run(["anthropic"], {})).toEqual({ status: 2, out: `${WORDS.consent}\n` });
@@ -129,7 +130,8 @@ describe("the one check, through the gateway's own agent route (fake transport)"
     expect(all(formatResult("anthropic", result))).not.toContain("provider says");
   });
 
-  it("Bedrock: the company's own Bedrock path (invoke, the owner's credentials as the session, the connection's Region)", async () => {
+  // Controller MONEY FIX option (c): retain round-F refusal until price/authorization inputs (a) land.
+  it("Bedrock: unpriced own-account diagnostic fails closed before credentials or transport", async () => {
     const credentials: AwsCredentials = { accessKeyId: "AKIDCHECKEXAMPLE000", secretAccessKey: ["check", "secret", "x".repeat(20)].join("-") };
     const seen: Array<{ region: string; credentials: AwsCredentials; path?: string; body: string }> = [];
     const target: CheckTarget = {
@@ -137,12 +139,10 @@ describe("the one check, through the gateway's own agent route (fake transport)"
       transport: (region, source) => async (request) => { seen.push({ region, credentials: await source(), ...(request.path === undefined ? {} : { path: request.path }), body: Buffer.from(request.body).toString("utf8") }); return { status: 200, body: anthropicAnswer() }; },
     };
     const result = await runCheck(target);
-    expect(result.pass).toBe(true);
-    expect(seen).toHaveLength(1);
-    expect(seen[0]!.region).toBe("us-west-2");
-    expect(seen[0]!.credentials).toEqual(credentials);
-    expect(seen[0]!.path).toContain(encodeURIComponent(DEFAULT_BEDROCK_MODEL_US));
-    expect(JSON.parse(seen[0]!.body)).toMatchObject({ anthropic_version: "bedrock-2023-05-31", max_tokens: CHECK_MAX_TOKENS });
+    expect(result.pass).toBe(false);
+    expect(result.lines[0]).toEqual({ name: "HTTP ok", ok: false, detail: "gateway answered 409 run_price_authorization_required" });
+    expect(result.lines.find(line => line.name === "settled above $0")?.ok).toBe(false);
+    expect(seen).toEqual([]);
     expect(all(formatResult("bedrock", result))).not.toContain(credentials.secretAccessKey);
   });
 
@@ -192,18 +192,19 @@ describe("the one check on an OpenAI or OpenRouter key (real transport, fake net
     expect(all(formatResult("openai", result))).not.toContain(KEY);
   });
 
-  it("OpenRouter: PASS only when the reported cost arrives and is what is settled", async () => {
-    const fake = chatHttps(200, chatToolStream(0.00042));
-    const result = await runCheck({ kind: "openrouter", key: KEY, model: "openai/gpt-5-mini", transport: createChatCompletionsTransport("openrouter", fake.request) });
-    expect(result.lines.map((line) => [line.name, line.ok])).toEqual([
-      ["HTTP ok", true], ["answer streamed to completion", true], ["a tool call came back in the agent's (Anthropic) shape", true], ["usage read", true],
-      ["settled above $0", true], ["OpenRouter reported cost read", true], ["unknown price settled at the reported cost (settleAmount's rule), never $0", true],
-    ]);
-    expect(fake.seen[0]!.options).toMatchObject({ hostname: "openrouter.ai", path: "/api/v1/chat/completions" });
-    expect(JSON.parse(fake.seen[0]!.body)).toMatchObject({ usage: { include: true } });
-    const missing = await runCheck({ kind: "openrouter", key: KEY, model: "openai/gpt-5-mini", transport: createChatCompletionsTransport("openrouter", chatHttps(200, chatToolStream()).request) });
-    expect(missing.pass).toBe(false);
-    expect(missing.lines.find((line) => line.name === "OpenRouter reported cost read")?.ok).toBe(false);
+  it("OpenRouter: the unpriced owner check refuses before transport without M2 authority", async () => {
+    // M2 requires a reviewed tariff and signed runPrice; this legacy checker has neither.
+    // The bounded qualification harness owns live OpenRouter proof (openrouter-qualify.test.ts).
+    for (const cost of [0.00042, undefined]) {
+      const fake = chatHttps(200, chatToolStream(cost));
+      const result = await runCheck({ kind: "openrouter", key: KEY, model: "openai/gpt-5-mini", transport: createChatCompletionsTransport("openrouter", fake.request) });
+      expect(result.pass).toBe(false);
+      expect(result.lines[0]).toEqual({ name: "HTTP ok", ok: false, detail: "gateway answered 409 run_price_authorization_required" });
+      expect(result.lines.every(line => !line.ok)).toBe(true);
+      expect(result.lines.find(line => line.name === "settled above $0")?.ok).toBe(false);
+      expect(fake.seen).toEqual([]);
+      expect(all(formatResult("openrouter", result))).not.toContain(KEY);
+    }
   });
 
   it("OpenRouter: a settle that ignored the reported cost is a FAIL even when every other line passes", async () => {

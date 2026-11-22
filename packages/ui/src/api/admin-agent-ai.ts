@@ -10,7 +10,7 @@ export type AgentAiSource = typeof AGENT_AI_SOURCES[number];
 export interface AgentAiRead {
  /** The saved choice; null when none is saved yet. */
  source: AgentAiSource | null;
- /** DEC 254zzz3(1): what the company's agents use now when nothing is saved and the company is on the default (Rovara's AI unless its own key or Bedrock is connected); null otherwise. */
+ /** DEC 254zzz263: served source when no choice is saved (Rovara's AI by default); null when the server has not confirmed one. */
  effectiveSource: AgentAiSource | null;
  /** True when `effectiveSource` is the company's default and not a saved choice. */
  sourceIsDefault: boolean;

@@ -64,6 +64,7 @@ export const GATEWAY_ENV = {
    * Rovara's AI (DEC 240), only with `agentKeys` "company": the allow-list `<agent model>=<bedrock id>,...` (agent-ai.ts
    * parseRovaraAiModels). Absent: Rovara's AI is off, and a company that chose it is refused.
    */
+  rovaraAiSourceId: "GATEWAY_ROVARA_AI_SOURCE_ID",
   rovaraAiModels: "GATEWAY_ROVARA_AI_MODELS",
   /** The companies the operator named exempt from Rovara's AI charges (DEC 240b, the founders' test company), comma-separated. */
   rovaraAiExempt: "GATEWAY_ROVARA_AI_EXEMPT",
@@ -122,6 +123,7 @@ export const GATEWAY_MARKERS_TTL_ATTRIBUTE = "expiresAt";
 export const GATEWAY_LOG_EVENTS = {
   refused: "refused",
   overrunBusy: "overrun_busy",
+  openRouterOverReservation: "openrouter_over_reservation",
   settleFailed: "settle_failed",
   providerError: "provider_error",
   priceFetchFailed: "price_fetch_failed",

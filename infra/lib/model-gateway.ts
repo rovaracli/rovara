@@ -22,7 +22,7 @@ import {
   aws_sns as sns,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
+import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix, parseSourceKindsSwitch } from "@agentx/contracts";
 import { applyCloudBoundary, byoCustomerAssumeConditions } from "./cloud-boundary.js";
 
 /**
@@ -205,6 +205,7 @@ export const MODEL_GATEWAY_ENV = {
   answersLedgerTable: "GATEWAY_ANSWERS_LEDGER_TABLE",
   answersMarkersTable: "GATEWAY_ANSWERS_MARKERS_TABLE",
   agentKeys: "GATEWAY_AGENT_KEYS",
+  rovaraAiSourceId: "GATEWAY_ROVARA_AI_SOURCE_ID",
   rovaraAiModels: "GATEWAY_ROVARA_AI_MODELS",
   rovaraAiExempt: "GATEWAY_ROVARA_AI_EXEMPT",
   agentModelsDisabled: "GATEWAY_AGENT_MODELS_DISABLED",
@@ -231,6 +232,7 @@ export const MODEL_GATEWAY_LEDGER_INDEXES = {
 export const MODEL_GATEWAY_LOG_EVENTS = {
   refused: "refused",
   overrunBusy: "overrun_busy",
+  openRouterOverReservation: "openrouter_over_reservation",
   settleFailed: "settle_failed",
   providerError: "provider_error",
   priceFetchFailed: "price_fetch_failed",
@@ -542,6 +544,7 @@ export class ModelGatewayStack extends Stack {
     // DEC 254t: company-key mode only (product AI), never for production.
     if (props.aiSourceKinds !== undefined && product === undefined) throw new Error("company AI source kinds need the product AI additions (rovaraModelGatewayProductAi=on)");
     if (props.aiSourceKinds !== undefined && props.aiSourceKinds !== "" && env === "production") throw new Error("company AI sources are for named test environments until a Cloud release carries them");
+    const openRouterEnabled = parseSourceKindsSwitch(props.aiSourceKinds).includes("openrouter");
 
     // Network: two zones, public subnets and no NAT gateway. Tasks take only the load balancer's traffic; DynamoDB through a
     // gateway endpoint.
@@ -702,7 +705,9 @@ export class ModelGatewayStack extends Stack {
     };
     const fromLog = (id: string, group: logs.ILogGroup, event: string, period: Duration) => new logs.MetricFilter(this, `${id}Filter`, {
       logGroup: group,
-      filterPattern: logs.FilterPattern.stringValue("$.event", "=", event),
+      filterPattern: id === "SettleFailures"
+        ? logs.FilterPattern.any(logs.FilterPattern.stringValue("$.event", "=", event), logs.FilterPattern.stringValue("$.event", "=", "customer_source_over_reservation"))
+        : logs.FilterPattern.stringValue("$.event", "=", event),
       metricNamespace: MODEL_GATEWAY_METRICS_NAMESPACE,
       metricName: `${id}-${env}`,
       metricValue: "1",
@@ -713,7 +718,8 @@ export class ModelGatewayStack extends Stack {
     alarm("HealthyTasks", targetGroup.metrics.healthyHostCount({ period: Duration.minutes(1), statistic: "Minimum" }), MODEL_GATEWAY_MIN_TASKS, "Fewer than two gateway tasks are healthy", 3, cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD);
     alarm("Refusals", fromLog("Refusals", serveLogs, MODEL_GATEWAY_LOG_EVENTS.refused, fiveMinutes), MODEL_GATEWAY_ALARMS.refusals, "Many calls refused (tokens, budgets, guard)");
     alarm("BusyAnswers", fromLog("BusyAnswers", serveLogs, MODEL_GATEWAY_LOG_EVENTS.overrunBusy, fiveMinutes), MODEL_GATEWAY_ALARMS.busy, "Many busy answers: calls waiting on another estimated-price call of the same company");
-    alarm("SettleFailures", fromLog("SettleFailures", serveLogs, MODEL_GATEWAY_LOG_EVENTS.settleFailed, fiveMinutes), MODEL_GATEWAY_ALARMS.settleFailed, "A call's cost could not be settled (its hold is kept)");
+    if (openRouterEnabled) alarm("OpenRouterOverReservation", fromLog("OpenRouterOverReservation", serveLogs, MODEL_GATEWAY_LOG_EVENTS.openRouterOverReservation, fiveMinutes), 1, "OpenRouter settled above its hold; review the source before allowing more calls");
+    alarm("SettleFailures", fromLog("SettleFailures", serveLogs, MODEL_GATEWAY_LOG_EVENTS.settleFailed, fiveMinutes), MODEL_GATEWAY_ALARMS.settleFailed, "A call could not settle, or customer-paid provider usage exceeded its hold (admission stopped)");
     alarm("PriceFetchFailures", fromLog("PriceFetchFailures", fetchLogs, MODEL_GATEWAY_LOG_EVENTS.priceFetchFailed, Duration.hours(1)), MODEL_GATEWAY_ALARMS.priceFetchFailed, "The daily price fetch failed (the last good prices stay)");
     // Staleness: no saved fetch on any of the last three days. A new stack has no fetch log yet, and missing data counted as
     // breaching made this alarm fire about 30 minutes after every create. So missing data does not breach; the alarm counts a
@@ -842,7 +848,7 @@ export class ModelGatewayStack extends Stack {
     if (inRegion.length > 0) serveRole.addToPolicy(new iam.PolicyStatement({ sid: "RovaraAiModels", actions, resources: [...new Set(inRegion.map((m) => modelArn(region, m.model)))] }));
     const disabled = settings.disabled;
     if (disabled !== undefined && disabled !== "" && (disabled.split(",").length > 64 || new Set(disabled.split(",").map((name) => name.trim())).size !== disabled.split(",").length || disabled.split(",").some((name) => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(name.trim())))) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY}: give model names, comma-separated`);
-    return { environment: { [MODEL_GATEWAY_ENV.rovaraAiModels]: models, ...(exempt === "" ? {} : { [MODEL_GATEWAY_ENV.rovaraAiExempt]: exempt }), ...(disabled === undefined ? {} : { [MODEL_GATEWAY_ENV.agentModelsDisabled]: disabled }) } };
+    return { environment: { [MODEL_GATEWAY_ENV.rovaraAiSourceId]: `${serveRole.roleArn}@${this.region}`, [MODEL_GATEWAY_ENV.rovaraAiModels]: models, ...(exempt === "" ? {} : { [MODEL_GATEWAY_ENV.rovaraAiExempt]: exempt }), ...(disabled === undefined ? {} : { [MODEL_GATEWAY_ENV.agentModelsDisabled]: disabled }) } };
   }
 
   /**
