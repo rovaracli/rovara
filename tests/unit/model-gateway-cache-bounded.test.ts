@@ -17,13 +17,17 @@ const pi = JSON.parse(readFileSync(new URL("../fixtures/model-gateway/pi-ai-1.5.
   model: string; system: Array<Record<string, unknown>>; messages: Array<{ role: string; content: Array<Record<string, unknown>> }>;
   tools: Array<Record<string, unknown>>; stream: boolean; max_tokens: number;
 };
+// Captured offline using the installed Pi 1.5.2 serializer (no client send):
+// anthropic-messages.js:1236-1241 (tool result), :1331-1384 (thinking/tool use), :1408-1428 (cache).
+// The three snapshots include the tool-result turn, its final assistant reply, and thinking carryover.
+const multiTurn = JSON.parse(readFileSync(new URL("../fixtures/model-gateway/pi-ai-1.5.2-multiturn.json", import.meta.url), "utf8")) as Record<"toolResult" | "final" | "thinking", typeof pi>;
 const id = "us.anthropic.claude-sonnet-4-5-v1:0";
-async function world(missingWrite: false | "all" | "5m" | "1h" | "tier" = false, model = pi.model) {
+async function world(missingWrite: false | "all" | "5m" | "1h" | "tier" = false, model = pi.model, tiered = false) {
   const catalogModel = model === pi.model ? id : model;
-  const rates = { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, cacheReadMicrosPerMTok: 250_000,
+  const rates = tiered ? { inputMicrosPerMTok: 3_000_000, outputMicrosPerMTok: 15_000_000, cacheReadMicrosPerMTok: 300_000, cacheWrite5mMicrosPerMTok: 3_750_000, cacheWrite1hMicrosPerMTok: 6_000_000 } : { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, cacheReadMicrosPerMTok: 250_000,
     ...(missingWrite === "all" || missingWrite === "5m" ? {} : { cacheWrite5mMicrosPerMTok: 4_000_000 }),
     ...(missingWrite === "all" || missingWrite === "1h" ? {} : { cacheWrite1hMicrosPerMTok: 6_000_000 }) };
-  const band = missingWrite === "tier" ? { aboveTokens: 32_000, inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, cacheReadMicrosPerMTok: 250_000 } : { aboveTokens: 200_000, ...rates };
+  const band = tiered ? { aboveTokens: 200_000, inputMicrosPerMTok: 6_000_000, outputMicrosPerMTok: 22_500_000, cacheReadMicrosPerMTok: 600_000, cacheWrite5mMicrosPerMTok: 7_500_000, cacheWrite1hMicrosPerMTok: 12_000_000 } : missingWrite === "tier" ? { aboveTokens: 32_000, inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, cacheReadMicrosPerMTok: 250_000 } : { aboveTokens: 200_000, ...rates };
   const prices = new SnapshotPriceSource({ load: async () => ({ version: 9, sources: { litellm: { fetchedAt: now - 100, count: 1,
     entries: [{ provider: "bedrock", model: catalogModel, kind: "chat", ...rates, longContext: [band] }] } } }), save: async () => false }, { now: () => now, overrides: [] });
   await prices.reload();
@@ -35,24 +39,26 @@ async function world(missingWrite: false | "all" | "5m" | "1h" | "tier" = false,
   const grant = (quoted.body as { runPrice: RunPrice }).runPrice;
   expect(grant).toBeDefined();
   const f = setup({ prices, agentKeys: keys, chargeReceipts: { source: (_claims, _model, resolved) => resolved } });
-  f.deps.agentAi = { sources, rovara: { ...rovara, transport: f.deps.transport } };
-  return { ...f, grant };
+  const sent: Buffer[] = [];
+  f.deps.agentAi = { sources, rovara: { ...rovara, transport: async (request) => { sent.push(Buffer.from(request.body)); return f.deps.transport(request); } } };
+  return { ...f, grant, sent };
 }
 
-it("admits Pi's exact cached system/message/tool request and settles split usage at signed cache rates", async () => {
+it("admits Pi's exact cached system/message/tool request and settles split usage at actual cache rates", async () => {
   const f = await world();
   const grant = { ...f.grant, cacheWriteUsdPerMillion: 9, cacheReadUsdPerMillion: 0.5 };
   const reserve = vi.spyOn(f.meter, "reserve");
   const settle = vi.spyOn(f.meter, "settleV2");
   expect((await call(f.deps, pi, mint({ runPrice: grant }))).status).toBe(200);
-  // 2 input * $1 + 3 reads * $0.5 + 4 writes * $9 + 5 output * $2 = 49.5 microdollars, rounded up.
-  expect(settle.mock.calls[0]![0].receipt).toMatchObject({ status: "final", reason: "rated_usage", amountMicros: { value: 50 }, billableMicros: { value: 50 },
+  // Signed rates authorize a ceiling; unknown write duration uses the actual dearer ($6) write rate.
+  // 2 input * $1 + 3 reads * $0.25 + 4 writes * $6 + 5 output * $2 = 36.75 microdollars, rounded up.
+  expect(settle.mock.calls[0]![0].receipt).toMatchObject({ status: "final", reason: "rated_usage", amountMicros: { value: 37 }, billableMicros: { value: 37 },
     usage: { value: { input: 2, output: 5, cacheRead: 3, cacheWriteUnknown: 4 } } });
   expect(reserve.mock.calls[0]![0].overrun).toBeUndefined();
-  expect((await f.meter.read(scope))[0]).toMatchObject({ spentMicros: 50, reservedMicros: 0 });
+  expect((await f.meter.read(scope))[0]).toMatchObject({ spentMicros: 37, reservedMicros: 0 });
 });
 
-it("holds every byte-derived prompt token at the signed cache-write maximum plus maximum output", async () => {
+it("holds every byte-derived prompt token at the actual cache-write maximum plus maximum output", async () => {
   const f = await world();
   const grant = { ...f.grant, cacheWriteUsdPerMillion: 9 };
   const reserve = vi.spyOn(f.meter, "reserve");
@@ -62,7 +68,37 @@ it("holds every byte-derived prompt token at the signed cache-write maximum plus
   expect((await call(f.deps, pi, mint({ runPrice: grant }))).status).toBe(200);
   expect(forwardedBytes).toBeGreaterThan(0);
   // One token per serialized byte plus the existing 4096-token tool allowance; no estimator helper supplies this expectation.
-  expect(reserve.mock.calls[0]![0].estimateMicros).toBeGreaterThanOrEqual((forwardedBytes + 4096) * 9 + 64 * 2);
+  expect(reserve.mock.calls[0]![0].estimateMicros).toBeGreaterThanOrEqual((forwardedBytes + 4096) * 6 + 64 * 2);
+});
+
+it("settles cached and uncached Claude usage at the same actual tiered tariff while holding the cache ceiling", async () => {
+  const amounts: number[] = [];
+  for (const cached of [false, true]) {
+    const f = await world(false, pi.model, true);
+    expect(f.grant).toMatchObject({ inputUsdPerMillion: 6, outputUsdPerMillion: 22.5, cacheReadUsdPerMillion: 0.6, cacheWriteUsdPerMillion: 12 });
+    const body = structuredClone(pi);
+    // The byte bound can reach the long-context band, while the provider's actual usage stays in the base band.
+    body.system[0]!.text = "prefix ".repeat(30_000);
+    if (!cached) for (const block of [...body.system, ...body.messages[0]!.content, ...body.tools]) delete block.cache_control;
+    let forwardedBytes = 0;
+    f.deps.agentAi!.rovara!.transport = async (request) => {
+      forwardedBytes = request.body.length;
+      return { status: 200, body: (async function* () {
+        yield sse("message_start", { message: { usage: { input_tokens: 2, output_tokens: 0, cache_read_input_tokens: 3, cache_creation_input_tokens: 4,
+          cache_creation: { ephemeral_5m_input_tokens: 4, ephemeral_1h_input_tokens: 0 } } } });
+        yield sse("message_delta", { usage: { output_tokens: 5 } }); yield sse("message_stop");
+      })() };
+    };
+    const reserve = vi.spyOn(f.meter, "reserve");
+    const settle = vi.spyOn(f.meter, "settleV2");
+    expect((await call(f.deps, body, mint({ runPrice: f.grant }))).status).toBe(200);
+    expect(forwardedBytes).toBeGreaterThan(200_000);
+    if (cached) expect(reserve.mock.calls[0]![0].estimateMicros).toBeGreaterThanOrEqual((forwardedBytes + 4096) * 12 + 64 * 22.5);
+    // Actual base-band usage: 2*$3 + 3*$0.30 + 4*$3.75 (5m writes) + 5*$15 = 96.9 -> 97 microdollars.
+    expect(settle.mock.calls[0]![0].receipt).toMatchObject({ status: "final", reason: "rated_usage", amountMicros: { value: 97 }, billableMicros: { value: 97 } });
+    amounts.push((await f.meter.read(scope))[0]!.spentMicros);
+  }
+  expect(amounts).toEqual([97, 97]);
 });
 
 it("admits Pi's exact cached shape on zai.glm-5 without snapshot cache-write prices and sends no cache fields", async () => {
@@ -91,6 +127,55 @@ it("admits Pi's exact cached shape on zai.glm-5 without snapshot cache-write pri
   expect(settle.mock.calls[0]![0].receipt).toMatchObject({ status: "final", amountMicros: { value: 12 }, usage: { value: { input: 2, output: 5, cacheRead: 0 } } });
 });
 
+for (const model of [pi.model, "zai.glm-5"]) it.each(["toolResult", "final"] as const)(`admits Pi's real multi-turn tool-args history on ${model}: %s`, async (turn) => {
+  const f = await world(false, model);
+  const body = { ...structuredClone(multiTurn[turn]), model };
+  expect((await call(f.deps, body, mint({ mdl: [model], runPrice: f.grant }))).status).toBe(200);
+  expect(f.calls).toHaveLength(1);
+  const sent = JSON.parse(f.sent[0]!.toString("utf8")) as Record<string, unknown>;
+  if (model === "zai.glm-5") {
+    expect(sent).toMatchObject({ messages: [
+      { role: "user" },
+      { role: "assistant", content: [{ toolUse: { input: { type: "file", source: "workspace", tools: [{ type: "web_search" }] } } }] },
+      { role: "user", content: [{ toolResult: { content: [{ text: '{"type":"file","source":"workspace","fileData":{},"cachedContent":"literal result","tools":[{"type":"web_search"}]}' }] } }] },
+      ...(turn === "final" ? [{ role: "assistant", content: [{ text: "The README describes the project." }] }] : []),
+    ] });
+    expect(JSON.stringify(sent)).not.toMatch(/"(?:cachePoint|cache_control)"\s*:/u);
+  } else expect(sent).toMatchObject({ messages: body.messages, system: body.system, tools: body.tools });
+});
+
+it("admits Pi's three-turn Claude history with thinking and redacted_thinking sent back", async () => {
+  const f = await world();
+  expect((await call(f.deps, multiTurn.thinking, mint({ runPrice: f.grant }))).status).toBe(200);
+  expect(f.calls).toHaveLength(1);
+  expect(JSON.parse(f.sent[0]!.toString("utf8"))).toMatchObject({ messages: multiTurn.thinking.messages });
+});
+
+it.each([
+  { type: "file", source: "workspace", fileData: {}, cachedContent: "literal", tools: [{ type: "web_search" }] },
+  [{ type: "text", text: '{"type":"image","source":{"type":"local"}}' }],
+])("counts tool-result JSON/text as opaque bytes, not content-block selectors: %j", async (content) => {
+  const f = await world();
+  const body = structuredClone(multiTurn.toolResult);
+  body.messages[2]!.content[0]!.content = content;
+  expect(guardRequest(Buffer.from(JSON.stringify(body)), { "content-type": "application/json" }, [pi.model], { maxOutputTokens: () => 64 })).toMatchObject({ ok: true, inputBounded: true });
+  expect((await call(f.deps, body, mint({ runPrice: f.grant }))).status).toBe(200);
+  expect(JSON.parse(f.sent[0]!.toString("utf8"))).toMatchObject({ messages: body.messages });
+});
+
+it.each(["system", "message", "toolResult"])("refuses remote and unknown content blocks in %s", async (where) => {
+  for (const block of [{ type: "text", text: "remote", fileData: {} }, { type: "text", text: "remote", cachedContent: "remote" }, { type: "unknown_block" }]) {
+    const f = await world();
+    const body = structuredClone(multiTurn.toolResult);
+    if (where === "system") body.system = [block];
+    else if (where === "message") body.messages[0]!.content = [block];
+    else body.messages[2]!.content[0]!.content = [block];
+    expect((await call(f.deps, body, mint({ runPrice: f.grant }))).status).toBe(409);
+    expect(f.calls).toHaveLength(0);
+    expect((await f.meter.read(scope)).every((row) => row.reservedMicros === 0 && row.spentMicros === 0)).toBe(true);
+  }
+});
+
 it("refuses a Claude runPrice without its signed cache rates before holding or sending", async () => {
   const f = await world();
   const reserve = vi.spyOn(f.meter, "reserve");
@@ -113,6 +198,12 @@ for (const model of [pi.model, "zai.glm-5"]) it.each([
   { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
   { type: "text", text: "remote", source: { url: "https://offline.invalid/file" } },
   { type: "unknown_block", text: "unknown" },
+  { type: "document", source: { type: "base64", media_type: "application/pdf", data: "AAAA" } },
+  { type: "tool_result", tool_use_id: "toolu_read_1", content: [{ type: "text", text: "image follows" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }] },
+  { type: "tool_result", tool_use_id: "toolu_read_1", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: "AAAA" } }] },
+  { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "example" } },
+  { type: "tool_addition", tool: { type: "tool_definition", definition: { name: "read", input_schema: { type: "object" } } } },
+  { type: "tool_definition", definition: { name: "read", input_schema: { type: "object" } } },
 ])(`refuses media/remote/unknown blocks on ${model} before a hold or provider send: $type`, async (block) => {
   const f = await world(false, model);
   const reserve = vi.spyOn(f.meter, "reserve");

@@ -719,7 +719,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     let resolved = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, route.provider, guarded.model, deps.cautiousCeiling, controller.signal, guarded.priceKind ?? "chat"));
     const providerPrice = resolved;
     for (const also of route.alsoPricedAs?.(guarded.model) ?? []) resolved = dearerPrice(resolved, await wait(resolvePrice(deps.prices ?? UnknownPriceSource, also.provider, also.model, deps.cautiousCeiling, controller.signal, guarded.priceKind ?? "chat")));
-    let price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
+    const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
     // DEC 254zzz312: hosted Rovara purpose calls require exact signed pricing and durable per-call receipts, including exempt calls.
     const rovaraPurpose = route.purpose !== undefined && route.payer === "rovara";
     if (rovaraPurpose && (claims.runPrice === undefined || price.estimated || usageEstimated(price, { input: guarded.bytes.length + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0), output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || deps.chargeReceipts === undefined || route.meter.settleV2 === undefined)) {
@@ -746,13 +746,6 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         if (probes.some((tokens) => usageEstimated(price, { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens }))) {
           await respond(409, "run_price_authorization_required", "This model has no known cache-write price; pause this run for fresh authorization."); return;
         }
-        // The signed component ceilings are the tariff for this cached call, including either write duration.
-        // Round down sub-micro rates; compare the round-trip to avoid binary multiplication rounding a signed ceiling up.
-        const micros = (usd: number): number => { const near = Math.round(usd * 1_000_000); return near / 1_000_000 > usd ? near - 1 : near; };
-        const signed = claims.runPrice;
-        price = { inputMicrosPerMTok: micros(signed.inputUsdPerMillion), outputMicrosPerMTok: micros(signed.outputUsdPerMillion),
-          cacheReadMicrosPerMTok: micros(signed.cacheReadUsdPerMillion), cacheWrite5mMicrosPerMTok: micros(signed.cacheWriteUsdPerMillion), cacheWrite1hMicrosPerMTok: micros(signed.cacheWriteUsdPerMillion),
-          estimated: false, knownTokenPrice: true, priceVersion: signed.snapshotVersion };
       }
       shortenDeadline(claims.runPrice.expiresAt);
     }
