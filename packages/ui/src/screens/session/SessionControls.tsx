@@ -1,7 +1,8 @@
 import { useTaskPagePolicy } from "./task-page-policy.js";
 import { useTaskContinueEntry, useTaskStopSlot } from "./task-slots.js";
 import { useLegacyRetryRequest, useLegacyTakeOverRequest } from "../../api/session-retry-compat.js";
-import { runTaskAction } from "../../api/task-action.js";
+import { isFinalTaskActionRefusal, runTaskAction, useTaskAction } from "../../api/task-action.js";
+import { TaskActionNotice } from "./TaskActionNotice.js";
 import { createPortal } from "react-dom";
 import { Suspense, lazy, useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -32,12 +33,16 @@ export function SessionControls({ id, agent, actions: offeredActions, following,
  const confirmation = takeOverSaved.request?.confirmation;
  const pendingConfirmation = takeOverSaved.scope !== undefined && takeOverSaved.request !== undefined && confirmation != null && ["needs_confirmation", "needs_admin_approval"].includes(confirmation.kind) ? { scope: takeOverSaved.scope, requestId: takeOverSaved.request.requestId, result: confirmation } : undefined;
  const retrySaved = useSessionRequest(host, identity.data, "retry:" + id);
+ const retryRecovery = useTaskAction(host, "retry:" + id);
  const legacyTakeOver = useLegacyTakeOverRequest(host, identity.data, id, saved.request);
  const legacyRetry = useLegacyRetryRequest(host, identity.data, id, saved.request);
  // Keep the fetched object for the body-bound fence; a cache-only update cannot confirm ownership.
  const current = useQuery<ReadSession>({ queryKey: key, queryFn: () => sessions.read(id), enabled: pendingConfirmation !== undefined, ...(pendingConfirmation === undefined ? {} : { structuralSharing: false }) });
  const retryWorkflow = current.data?.body.kind === "task" ? current.data.body.task.workflow : undefined;
- const held = page === undefined ? [] : offeredActions.filter(action => action === "retry" && (retryWorkflow?.revision === undefined || retryWorkflow.candidate?.digest === undefined));
+ const stepRetry = retryWorkflow?.state === "BLOCKED" && retryWorkflow.stage !== "REVIEW";
+ const retryPins = retryWorkflow?.revision === undefined || (!stepRetry && retryWorkflow.candidate?.digest === undefined) ? undefined : { expectedRevision: retryWorkflow.revision, ...(stepRetry ? {} : { candidateDigest: retryWorkflow.candidate!.digest }) };
+ const retryLabel = stepRetry ? "Retry the step" : "Retry";
+ const held = page === undefined ? [] : offeredActions.filter(action => action === "retry" && retryPins === undefined);
  const actions = offeredActions.filter(action => !held.includes(action));
  const [busy, setBusy] = useState(false), [stopOpen, setStopOpen] = useState(false), [takeOverOpen, setTakeOverOpen] = useState(false), [error, setError] = useState<string>();
  const [message, setMessage] = useState<{ text: string; revision: number; following?: boolean }>(), sending = useRef(false), takingOver = useRef(false);
@@ -67,8 +72,6 @@ export function SessionControls({ id, agent, actions: offeredActions, following,
   if (!allowed || !actions.includes(action) || inFlight.current || saved.request !== undefined || target.request !== undefined || target.storageError !== undefined || identity.data === undefined || target.scope === undefined) return;
   // Capture the DISPLAYED task before the authority re-read below can update
   // the cache. A re-read may deny sending; it never supplies consent's pins.
-  const shown = current.data?.body.kind === "task" ? current.data.body.task.workflow : undefined;
-  const retryPins = shown?.revision === undefined || shown.candidate?.digest === undefined ? undefined : { expectedRevision: shown.revision, candidateDigest: shown.candidate.digest };
   if (page !== undefined && action === "retry" && retryPins === undefined) { setError("Cannot tell yet");return; }
   if (action === "take_over" && shownPeople === undefined) return;
   const expectedPeopleRevision = shownPeople?.revision;
@@ -80,6 +83,8 @@ export function SessionControls({ id, agent, actions: offeredActions, following,
    const latest = await sessions.read(id);
    query.setQueryData(key, latest);
    if (!latest.you.actions.includes(action)) { setError("This session action is no longer available. Check the current controls.");return; }
+   const latestWorkflow = latest.body.kind === "task" ? latest.body.task.workflow : undefined;
+   if (action === "retry" && stepRetry && (latestWorkflow?.revision !== retryPins?.expectedRevision || latestWorkflow?.stage !== retryWorkflow.stage || latestWorkflow?.state !== "BLOCKED")) { setError("This step changed since you read it. Read the task again.");return; }
    assertSessionIdentity(host, person);
    const body = { requestId: crypto.randomUUID(), ...(action === "take_over" ? { expectedPeopleRevision } : {}), ...(action === "watch" ? { following: !latest.you.following } : {}), ...(action === "retry" ? { priorRevision: current.data?.revision ?? latest.revision, priorStatus: current.data?.status ?? latest.status, ...retryPins } : {}) };
    const result = await runTaskAction(host, target.scope, action, body, async request => {
@@ -116,7 +121,7 @@ export function SessionControls({ id, agent, actions: offeredActions, following,
 
     setError("Couldn't change that. Nothing was sent. Rovara is checking your identity.");
     void readSessionIdentity(host).catch(() => undefined);void query.invalidateQueries({ queryKey: key }).catch(() => undefined);
-   } else if (isFinalSessionRefusal(failure)) {
+   } else if (isFinalSessionRefusal(failure) || isFinalTaskActionRefusal(failure)) {
 
     setError(failure instanceof ApiError ? failure.message : "Couldn't change this session.");
     void sessions.read(id).then(view => { query.setQueryData(key, view); }).catch(() => undefined);
@@ -131,6 +136,15 @@ export function SessionControls({ id, agent, actions: offeredActions, following,
  async function checkOutcome() {
   setError(undefined);
   let resolved = false;
+  // Read-only, issue-ordered recovery uses the workflow's own revision. Cloud's
+  // session-record revision need not change when Code advances a step.
+  if (retrySaved.request !== undefined && typeof retrySaved.request.body.expectedRevision === "number") {
+   try {
+    const settled = await retryRecovery.check(async () => { const view = await sessions.read(id);query.setQueryData(key, view);return view; }, (view, pending) => view.body.kind === "task" && typeof pending.body.expectedRevision === "number" && (view.body.task.workflow?.revision ?? 0) > pending.body.expectedRevision && view.body.task.workflow?.state !== "BLOCKED" && !view.you.actions.includes("retry"));
+    if (!settled) setError("Rovara still hasn't confirmed this. Check again before trying another action.");
+   } catch { setError("Couldn't check this session. The previous request is still unconfirmed."); }
+   return;
+  }
   const requestScope = saved.request === request ? saved.scope : retrySaved.request === request ? retrySaved.scope : takeOverSaved.request === request ? takeOverSaved.scope : legacyTakeOver.request === request ? legacyTakeOver.scope : legacyRetry.scope;
   try {
    await legacyRetry.migrate();await legacyTakeOver.migrate();
@@ -169,7 +183,7 @@ export function SessionControls({ id, agent, actions: offeredActions, following,
   ...heldItems,
   ...(actions.includes("watch") ? [{ label: following ? "Following" : "Follow", disabled, onSelect: () => handleMenuSelect("watch") }] : []),
   ...(actions.includes("take_over") ? [{ label: "Take over", disabled: takeOverDisabled, onSelect: () => handleMenuSelect("take_over") }] : []),
-  ...(actions.includes("retry") ? [{ label: "Retry", disabled: retryDisabled, onSelect: () => handleMenuSelect("retry") }] : []),
+  ...(actions.includes("retry") ? [{ label: retryLabel, disabled: retryDisabled, onSelect: () => handleMenuSelect("retry") }] : []),
   ...(actions.includes("share") && share !== undefined ? [{ label: "Share", disabled, onSelect: () => handleMenuSelect("share") }] : []),
   ...(continueEntry !== undefined ? [{ label: continueEntry.reason === undefined ? "Continue in my tool" : "Continue in my tool (" + continueEntry.reason + ")", disabled: continueEntry.disabled, onSelect: continueEntry.onSelect }] : []),
   ...(actions.includes("make_agent") && makeAgent ? [{ label: "Make this an agent", disabled, onSelect: () => handleMenuSelect("make_agent") }] : []),
@@ -178,7 +192,7 @@ export function SessionControls({ id, agent, actions: offeredActions, following,
  ];
  const stopDialog = (actions.includes("stop") || stopOpen) ? <Dialog className="rv-action-dialog" title="Stop this session?" description={page === undefined ? agent + " stops after its current step. If the task is blocked instead of running, Stop ends it and frees its workspace only while no code has been written; after that, use Close task." : "Stops the task's current work"} onCloseAutoFocus={restoreFocus} open={stopOpen} onOpenChange={value => { if (!busy) setStopOpen(value); }} trigger={<Button className="rv-task-stop" disabled={disabled} onClick={event => { returnFocus.current = event.currentTarget; }}>{stopSlot === null ? "Stop" : "Stop work"}</Button>}>{page !== undefined && <p className="rv-muted">Files are kept. Rovara stops after its current step.</p>}<div className="rv-actions"><Button variant={page === undefined ? "secondary" : "primary"} disabled={busy} onClick={() => setStopOpen(false)}>Keep running</Button><Button variant="danger" busy={busy} disabled={disabled || !actions.includes("stop")} onClick={() => { void run("stop"); }}>Stop session</Button></div>{!allowed && <p role="alert">Current identity or task controls are unavailable. Check the session before acting.</p>}{outcome && <TaskSessionControlOutcomeView kind={outcome} check={<Button onClick={() => { void checkOutcome(); }}>Check</Button>} />}{error && <p role="alert"><VisibleText text={error} /></p>}</Dialog> : null;
  const stopControl = stopDialog === null || stopSlot === null ? stopDialog : createPortal(stopDialog, stopSlot);
- return <div className="rv-session-controls">{held.flatMap(action => action === "close" ? ["Close task", "Discard", "Discard it and close"] : [action === "share" ? "Share" : action === "retry" ? "Retry" : "Take over"]).map(label => <span key={label}><Button disabled>{label}</Button> <span>Cannot tell yet</span></span>)}{responsive && hasMenuActions && <div className="rv-controls-overflow"><Menu trigger={<Button ref={menuTrigger}>Task actions</Button>} items={items} align="end" className="rv-menu-task" onCloseAutoFocus={event => { if (openingModal.current) event.preventDefault(); }} /></div>}<div className={responsive ? "rv-actions rv-controls-inline" : "rv-actions"}>{actions.includes("watch") && <Button disabled={disabled} onClick={() => { void run("watch"); }}>{following ? "Following" : "Follow"}</Button>}{actions.includes("take_over") && <Button disabled={takeOverDisabled} onClick={event => { returnFocus.current = event.currentTarget;setError(undefined);setTakeOverOpen(true); }}>Take over</Button>}{actions.includes("retry") && <Button disabled={retryDisabled} onClick={() => { void run("retry"); }}>Retry</Button>}{stopControl}{(actions.includes("close") || closeOpen) && <CloseTaskDialog canClose={allowed && actions.includes("close")} id={id} open={closeOpen} onOpenChange={setCloseOpen} onCloseAutoFocus={restoreFocus} onChecking={() => { void query.invalidateQueries({ queryKey: key }); }} onClosed={() => { setMessage({ text: "Rovara now reads this task as closed.", revision: current.data?.revision ?? 0 });void query.invalidateQueries({ queryKey: key }).catch(() => undefined);void onChanged().catch(() => undefined); }} trigger={<Button disabled={busy || !allowed || (saved.request !== undefined && saved.request.action !== "close")} onClick={event => { returnFocus.current = event.currentTarget; }}>Close task</Button>} />}{share && actions.includes("share") && <ShareDialog id={id} orgName={share.orgName} open={shareOpen} onOpenChange={setShareOpen} onCloseAutoFocus={restoreFocus} trigger={<Button disabled={disabled} onClick={event => { returnFocus.current = event.currentTarget;if (onPeopleShare !== undefined) { event.preventDefault();void requestShare(); } }}>Share</Button>} />}{makeAgent && actions.includes("make_agent") && <MakeAgentDialog id={id} open={makeOpen} onOpenChange={setMakeOpen} onCloseAutoFocus={restoreFocus} trigger={<Button disabled={disabled} onClick={event => { returnFocus.current = event.currentTarget; }}>Make this an agent</Button>} />}</div><Dialog className="rv-action-dialog" title="Take over this task?" description="Review who is on this task before making yourself its owner." open={takeOverOpen} onOpenChange={value => { if (!takeOverBusy) setTakeOverOpen(value); }} onCloseAutoFocus={restoreFocus}>
+ return <div className="rv-session-controls">{held.flatMap(action => action === "close" ? ["Close task", "Discard", "Discard it and close"] : [action === "share" ? "Share" : action === "retry" ? "Retry" : "Take over"]).map(label => <span key={label}><Button disabled>{label}</Button> <span>Cannot tell yet</span></span>)}{responsive && hasMenuActions && <div className="rv-controls-overflow"><Menu trigger={<Button ref={menuTrigger}>Task actions</Button>} items={items} align="end" className="rv-menu-task" onCloseAutoFocus={event => { if (openingModal.current) event.preventDefault(); }} /></div>}<div className={responsive ? "rv-actions rv-controls-inline" : "rv-actions"}>{actions.includes("watch") && <Button disabled={disabled} onClick={() => { void run("watch"); }}>{following ? "Following" : "Follow"}</Button>}{actions.includes("take_over") && <Button disabled={takeOverDisabled} onClick={event => { returnFocus.current = event.currentTarget;setError(undefined);setTakeOverOpen(true); }}>Take over</Button>}{actions.includes("retry") && <Button disabled={retryDisabled} onClick={() => { void run("retry"); }}>{retryLabel}</Button>}{stopControl}{(actions.includes("close") || closeOpen) && <CloseTaskDialog canClose={allowed && actions.includes("close")} id={id} open={closeOpen} onOpenChange={setCloseOpen} onCloseAutoFocus={restoreFocus} onChecking={() => { void query.invalidateQueries({ queryKey: key }); }} onClosed={() => { setMessage({ text: "Rovara now reads this task as closed.", revision: current.data?.revision ?? 0 });void query.invalidateQueries({ queryKey: key }).catch(() => undefined);void onChanged().catch(() => undefined); }} trigger={<Button disabled={busy || !allowed || (saved.request !== undefined && saved.request.action !== "close")} onClick={event => { returnFocus.current = event.currentTarget; }}>Close task</Button>} />}{share && actions.includes("share") && <ShareDialog id={id} orgName={share.orgName} open={shareOpen} onOpenChange={setShareOpen} onCloseAutoFocus={restoreFocus} trigger={<Button disabled={disabled} onClick={event => { returnFocus.current = event.currentTarget;if (onPeopleShare !== undefined) { event.preventDefault();void requestShare(); } }}>Share</Button>} />}{makeAgent && actions.includes("make_agent") && <MakeAgentDialog id={id} open={makeOpen} onOpenChange={setMakeOpen} onCloseAutoFocus={restoreFocus} trigger={<Button disabled={disabled} onClick={event => { returnFocus.current = event.currentTarget; }}>Make this an agent</Button>} />}</div><Dialog className="rv-action-dialog" title="Take over this task?" description="Review who is on this task before making yourself its owner." open={takeOverOpen} onOpenChange={value => { if (!takeOverBusy) setTakeOverOpen(value); }} onCloseAutoFocus={restoreFocus}>
  {takeOverRead.isFetching && <p role="status">Reading who is on this task…</p>}
  {takeOverRead.isError && <p role="alert"><VisibleText text={takeOverRead.error instanceof ApiError ? takeOverRead.error.message : "Couldn't read who is on this task. Close and try again."} /></p>}
  {shownPeople && <ul>{shownPeople.people.map(person => <li key={person.personId}><VisibleText text={person.name + " · " + ({ owner: "Owner", commenter: "Can comment", viewer: "Can view", denied: "Removed", unknown: "Role unavailable" }[person.role])} /></li>)}</ul>}
@@ -188,5 +202,5 @@ export function SessionControls({ id, agent, actions: offeredActions, following,
   if (takeOverSaved.scope === undefined || takeOverSaved.request?.requestId !== pendingConfirmation.requestId || identity.data === undefined) return;
   assertSessionIdentity(host, identity.data);clearSessionRequest(host, takeOverSaved.scope, pendingConfirmation.requestId);
   setMessage({ text: "You now own this session.", revision: query.getQueryData<ReadSession>(key)?.revision ?? 0 });
- }} />}{takeOverExit && <p role="status">We couldn't confirm this. <a href={"/s/" + encodeURIComponent(SessionIdSchema.parse(id))}>Open the task to check</a></p>}{outcome && !stopOpen && !takeOverOpen && <TaskSessionControlOutcomeView kind={outcome} check={<Button variant="quiet" onClick={() => { setError(undefined);void checkOutcome(); }}>Check</Button>} />}{error && !stopOpen && !takeOverOpen && <p role="alert"><VisibleText text={error} /></p>}{legacyTakeOver.migrationError && <p role="alert">{legacyTakeOver.migrationError}</p>}{legacyRetry.migrationError && <p role="alert">{legacyRetry.migrationError}</p>}{saved.storageError && <p role="alert">{saved.storageError}</p>}{message && allowed && (message.following === undefined || current.data?.you.following === message.following) && (current.data === undefined || current.data.revision <= message.revision) && <p role="status"><VisibleText text={message.text} /></p>}{ask && <Suspense fallback={null}><AskPanel id={id} /></Suspense>}</div>;
+ }} />}{takeOverExit && <p role="status">We couldn't confirm this. <a href={"/s/" + encodeURIComponent(SessionIdSchema.parse(id))}>Open the task to check</a></p>}{retryRecovery.pending && <TaskActionNotice pending check={checkOutcome} recovery={retryRecovery.recovery} taskHref={"/s/" + encodeURIComponent(SessionIdSchema.parse(id))} />}{outcome && request !== retrySaved.request && !stopOpen && !takeOverOpen && <TaskSessionControlOutcomeView kind={outcome} check={<Button variant="quiet" onClick={() => { setError(undefined);void checkOutcome(); }}>Check</Button>} />}{error && !stopOpen && !takeOverOpen && <p role="alert"><VisibleText text={error} /></p>}{legacyTakeOver.migrationError && <p role="alert">{legacyTakeOver.migrationError}</p>}{legacyRetry.migrationError && <p role="alert">{legacyRetry.migrationError}</p>}{saved.storageError && <p role="alert">{saved.storageError}</p>}{message && allowed && (message.following === undefined || current.data?.you.following === message.following) && (current.data === undefined || current.data.revision <= message.revision) && <p role="status"><VisibleText text={message.text} /></p>}{ask && <Suspense fallback={null}><AskPanel id={id} /></Suspense>}</div>;
 }

@@ -1,4 +1,5 @@
 import { parseTaskMoneyV1 } from "./task-money.js";
+import { WORKFLOW_BLOCK_REASONS, isRunLimitBlockReason } from "@agentx/contracts";
 // A Cloud session as the app reads it (SessionViewSchema, `GET /v1/app/sessions/{id}`), built from Cloud's own session
 // record and the Rovara Code task it points at. The task goes in as Code answered it: Cloud's task view is a subset of
 // Code's, and the app reads it tolerantly. A plan waiting for the owner's review is the owner's approval. Someone the
@@ -14,7 +15,7 @@ export interface CodeTask {
   status: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED" | "CLOSED";
   workflow?: {
     designReview?: unknown;
-    stage?: string; state?: string; revision?: number; artifacts?: Array<{ type?: string; version?: number; sha256?: string }>;
+    stage?: string; state?: string; revision?: number; blockReason?: string; artifacts?: Array<{ type?: string; version?: number; sha256?: string }>;
     /** The code the reviews look at, and the checks that ran on it (Code's workflow snapshot). */
     candidate?: { digest?: string };
     verification?: { candidateDigest?: string; reviewOnly?: boolean; results?: Array<{ status?: string }> };
@@ -87,7 +88,7 @@ export function freshPerson<P extends { developerId: string; name: string }>(per
 
 /**
  * What Cloud learnt from Code beside the task: `planOnCard` when Code holds a pending coding-plan card for it (a core task), decided on that card, not on Cloud's approval page;
- * `coOwner` when the viewer is not the session's owner but is an owner on the task's People list (they may answer review findings, DEC 254zzz39 (6)).
+ * `coOwner` when the viewer is not the session's owner but is an owner on the task's People list (they may answer review findings and retry blocked steps, DEC 254zzz39 (6)).
  */
 export interface SessionExtras { planOnCard?: boolean; coOwner?: boolean }
 
@@ -115,7 +116,7 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
   // What the viewer may do from the page; Code checks each again when it is pressed. Someone it is shared with only watches:
   // Code lets a task's readers read it and nothing else (take-over works only for tasks shared in Slack).
   // Anyone who can read the session can comment on it (Cloud keeps the comments, Rovara-cloud#24).
-  const actions = ["watch", "comment", ...(owner && blockedReview(task)?.retry !== undefined ? ["retry"] : []), ...(owner && !ended ? ["stop"] : []), ...(owner && status !== "stopped" ? ["close"] : [])];
+  const actions = ["watch", "comment", ...(((owner || extras.coOwner === true) && blockedStepRetry(task) !== undefined) || (owner && blockedReview(task)?.retry !== undefined) ? ["retry"] : []), ...(owner && !ended ? ["stop"] : []), ...(owner && status !== "stopped" ? ["close"] : [])];
   const follow = people ?? { ...followState(session, viewer.developerId), viewingNow: [] };
   return {
     contractVersion: 1,
@@ -199,6 +200,18 @@ const REVIEW_FAILURES: Record<string, string> = {
   BASE_UNAVAILABLE: "the task's starting point wasn't recorded", DIFF_UNAVAILABLE: "the change couldn't be compared with the task's starting point",
 };
 const REVIEW_REASON_MAX = 200;
+
+/** A served non-review retry; Code checks authority, spend and this revision again in its transaction. */
+export function blockedStepRetry(task: CodeTask): { expectedRevision: number } | undefined {
+  const workflow = task.workflow;
+  if (task.status === "CLOSED" || task.status === "CANCELLED" || task["closedAt"] !== undefined) return undefined;
+  if (workflow?.state !== "BLOCKED" || !["UNDERSTAND", "PLAN", "PLAN_CRITIQUE", "IMPLEMENT", "VERIFY", "PULL_REQUEST", "WAIT_FOR_MERGE"].includes(workflow.stage ?? "")) return undefined;
+  // Code refuses waitingForSpend before retryStep; merge-wait only retries a failed PR update.
+  if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.budgetPaused || isRunLimitBlockReason(workflow.blockReason)) return undefined;
+  if (workflow.stage === "WAIT_FOR_MERGE" && workflow.blockReason !== WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed) return undefined;
+  if (!Number.isSafeInteger(workflow.revision) || workflow.revision! < 1) return undefined;
+  return { expectedRevision: workflow.revision! };
+}
 
 /**
  * A task stopped at review (Code's REVIEW/BLOCKED): why, said as Code says it in Slack, and the fence for retrying the reviews on the same checked

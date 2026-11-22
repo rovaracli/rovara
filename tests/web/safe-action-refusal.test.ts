@@ -29,6 +29,7 @@ const finals: Array<[string, number, string, string?]> = [
  [route("retry"), 409, "IDEMPOTENCY_CONFLICT"], [route("retry"), 409, "CONFLICT"],
  [route("retry"), 403, "SESSION_LEVEL_REQUIRED"],
  [route("retry"), 409, "CONFIG_INVALID"],
+ ...["BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "MACHINE_TIME_EXCEEDED"].flatMap(code => ["app", "web"].map(alias => [`/v1/${alias}/sessions/${sid}/retry`, 402, code] as [string, number, string])),
  [route("send-back"), 409, "CONFLICT"], [route("accept-findings"), 409, "CONFLICT"],
  [route("accept-findings"), 409, "SECURITY_ACCEPT_NOT_HERE"],
  [route("answers"), 409, "INTENT_NOT_WAITING"], [`/v1/app/tasks/${task}/answers`, 409, "INTENT_NOT_WAITING"],
@@ -40,6 +41,12 @@ const finals: Array<[string, number, string, string?]> = [
  [route("merge"), 409, "IDEMPOTENCY_CONFLICT"], [route("merge"), 403, "FORBIDDEN"],
  [route("merge"), 404, "TASK_NOT_FOUND"], [route("merge"), 404, "SESSION_NOT_FOUND"], [route("merge"), 400, "CONFIG_INVALID"],
 ];
+it.each(["answers", "merge", "close", "unreviewed"].flatMap(action => ["BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "MACHINE_TIME_EXCEEDED"].map(code => [action, code])))("402 %s/%s is unknown outside paid retry/owner routes", (action, code) => {
+ expect(isFinalActionRefusal(new ApiError(402, code, "Unreviewed refusal"), { route: route(action) })).toBe(false);
+});
+it.each([[500, "BUDGET_EXCEEDED"], [409, "BUDGET_EXCEEDED"], [402, "FUTURE_BUDGET_CODE"]] as const)("retry %s/%s is unknown without an audited budget tuple", (status, code) => {
+ expect(isFinalActionRefusal(new ApiError(status, code, "Unreviewed refusal"), { route: route("retry") })).toBe(false);
+});
 it.each(finals)("%s %s %s clears only this press, keeps server words, and permits use only after a fresh read", async (path, status, code, serverWords) => {
  const f = fixture(), words: string[] = [];
  let finish!: (value: string) => void;

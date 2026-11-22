@@ -63,7 +63,7 @@ export function SectionError({ error, retry, label }: { error: unknown; retry: (
 const proofNotServed = (error: unknown): boolean => error instanceof ApiError && (error.status === 501 || (error.status === 404 && error.code === "NOT_FOUND" && error.message === "route not found"));
 
 /** The quiet card: a task that asks nothing of the person says why, in fixed words. */
-export function QuietCard({ row, decisionsError, wide = false }: { row: WorkRow; decisionsError: unknown; /** On the task's own page "the full page" is where the person already is. */ wide?: boolean }) {
+export function QuietCard({ row, decisionsError, wide = false, retryOffered = false }: { row: WorkRow; decisionsError: unknown; retryOffered?: boolean; /** On the task's own page "the full page" is where the person already is. */ wide?: boolean }) {
  const page = useTaskPagePolicy() !== undefined;
  let title: string, body: ReactNode;
  if (row.group === "you") {
@@ -77,6 +77,10 @@ export function QuietCard({ row, decisionsError, wide = false }: { row: WorkRow;
  else if (row.group === "stopped") { title = row.line; body = <>Rovara stopped before it finished and nobody has picked it up since. {wide ? (row.task.sessionId === undefined ? "Continue it in your tool from the button above." : "Close it or continue it in your tool, from the actions above.") : "Open the full page to close it, or continue it in your tool."}</>; }
  else if (row.line === "In the queue") { title = "In the queue"; body = <>It starts as soon as there is room.</>; }
  else { title = "Nothing needed from you"; body = <>Last recorded status: working. Rovara hasn't confirmed current activity. You get a card here when a decision is needed.</>; }
+ if (retryOffered && row.task.workflow?.state === "BLOCKED" && row.task.workflow.stage !== "REVIEW") {
+  const stages: Record<string, string> = { UNDERSTAND: "understanding the request", PLAN: "planning", PLAN_CRITIQUE: "checking the plan", IMPLEMENT: "coding", VERIFY: "checking the code", PULL_REQUEST: "opening the pull request", WAIT_FOR_MERGE: "updating the pull request" };
+  body = <>Rovara stopped while {stages[row.task.workflow.stage ?? ""] ?? "working on this step"}. <VisibleText text={taskWords(row.task.workflow.blockReason ?? "The reason is not available yet.", row.task.hasThread)} />{row.group === "stopped" && <> You can retry this step from Task actions above, close it, or continue it in your tool.</>}</>;
+ }
  return <section className="rv-decision rv-decision-pane none" aria-label="Decision" data-testid="decision-quiet"><h3>{title}</h3><p className="rv-muted">{body}</p></section>;
 }
 
@@ -96,6 +100,8 @@ export interface TaskPaneProps {
  /** Existing session controls and conversation retain their own safety state. */
  pageLocked?: boolean;
  sessionEntry?: ReactNode;
+ /** The served session offers the shared Retry control; this only selects its explanatory copy. */
+ retryOffered?: boolean;
  primary?: ReactNode;
  /** Where "Open the full page" goes, drawn only in the side pane. */
  fullPage?: string | undefined;
@@ -111,7 +117,7 @@ export interface TaskPaneProps {
  /** A pending plan beside a delivered instruction: the decision is drawn as the plan-change frame, with its own rail. */
  planChange?: PlanChangeFrameFacts | undefined;
 }
-export function TaskPane({ compact = false, readOnly = false, row, decisionsError, onDecided, wide = false, fullPage, steer, onComment, design, pageProjection, sessionEntry, primary, pageLocked = false, aboutSummary, aboutExtra, planChange }: TaskPaneProps) {
+export function TaskPane({ compact = false, readOnly = false, row, decisionsError, onDecided, wide = false, fullPage, steer, onComment, design, pageProjection, sessionEntry, primary, pageLocked = false, aboutSummary, aboutExtra, planChange, retryOffered = false }: TaskPaneProps) {
  const registerStop = useRegisterTaskStopSlot(), approvalReceipt = useTaskChip() === "checking";
  const [shown, setShown] = useState<Stage>(), stage = shown ?? stageOf(row.step), query = useQueryClient(), host = useAppHost();
  const answerAction = useTaskAction(host, "plan-answers:" + row.id);
@@ -199,7 +205,7 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
   if (stage === "proof") return proofPart;
   return <>{proofPart}<div className="rv-pane-gap">{pulls.length === 0 ? <p className="rv-muted" data-testid="no-pull-request">No pull request yet. Rovara opens it once the proof passes.</p> : pulls.map((pull, index) => <PullRequestCard key={index} pullRequest={pull} />)}</div></>;
  };
- const decisionPart = <div className="rv-pane-decision">{decision !== undefined && actions !== undefined && !(plan.isError && decisionNeedsPlan) ? <DecisionCard key={decision.card.id} decision={paneDecision!} actions={actions} pane={pane} /> : decision !== undefined && plan.isError && decisionNeedsPlan ? null : <QuietCard row={row} decisionsError={decisionsError} wide={wide} />}</div>;
+ const decisionPart = <div className="rv-pane-decision">{decision !== undefined && actions !== undefined && !(plan.isError && decisionNeedsPlan) ? <DecisionCard key={decision.card.id} decision={paneDecision!} actions={actions} pane={pane} /> : decision !== undefined && plan.isError && decisionNeedsPlan ? null : <QuietCard row={row} decisionsError={decisionsError} wide={wide} retryOffered={retryOffered} />}</div>;
  const side = <aside className="rv-pane-side" aria-label="Cost, history and lessons"><TaskSideCards task={row.task} plan={currentPlan} events={events.data ?? []} /><LessonsUsedCard project={row.project} taskId={row.id} /></aside>;
  const sections = <StepRail step={row.step} tone={row.tone} selected={stage} onSelect={step => setShown(stageOf(step))} />;
  const runningHeld = row.task.status === "RUNNING" || run !== undefined ? <TaskHeldStatesView page="running" label="Latest activity" onCheck={() => { void query.invalidateQueries({ queryKey: ["work"] });void query.invalidateQueries({ queryKey: ["session"] }); }} /> : null;
@@ -236,12 +242,12 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
    </>)}
    <div className="rv-task-stop-row"><span className="rv-task-stop-slot" ref={registerStop} /><span className="rv-muted rv-task-stop-note">Files are kept. Rovara stops after its current step.</span></div>
   </DecisionFrame>;
-  const quiet = <QuietCard row={row} decisionsError={decisionsError} wide />;
+  const quiet = <QuietCard row={row} decisionsError={decisionsError} wide retryOffered={retryOffered} />;
   return <article className="rv-task-pane rv-task-composition wide" aria-label={"Task: " + row.title} data-task-id={row.id}>
    <h2 className="rv-visually-hidden">This task</h2>
    <TaskActionNotice key={answerAction.pendingKey} pending={answerAction.pending} recovery={answerAction.recovery} taskHref={"/app/sessions/" + encodeURIComponent(row.task.sessionId ?? row.id)} check={() => plan.refetch()} />
    <div className="rv-task-columns"><div className="rv-task-reading">
-    {primary !== undefined ? <>{primary}<div className="rv-task-session-slot">{sessionEntry}</div></> : !hasDecision && plan.isError && (stage === "spec" || stage === "request") ? <>{guard(stageBody())}<div className="rv-task-session-slot">{sessionEntry}</div></> : hasDecision ? <>{guard(decisionPart)}<div className="rv-task-session-slot">{sessionEntry}</div></> : currentCard ? <>{card}{quiet}</> : <><DecisionFrame as="section" title={row.need ?? run?.currentStep?.name ?? row.line} actions={null} className="rv-task-primary">{guard(stageBody())}</DecisionFrame><div className="rv-task-session-slot">{sessionEntry}</div>{quiet}</>}
+    {primary !== undefined ? <>{primary}<div className="rv-task-session-slot">{sessionEntry}</div></> : !hasDecision && plan.isError && (stage === "spec" || stage === "request") ? <>{guard(stageBody())}<div className="rv-task-session-slot">{sessionEntry}</div>{quiet}</> : hasDecision ? <>{guard(decisionPart)}<div className="rv-task-session-slot">{sessionEntry}</div></> : currentCard ? <>{card}{quiet}</> : <><DecisionFrame as="section" title={row.need ?? run?.currentStep?.name ?? row.line} actions={null} className="rv-task-primary">{guard(stageBody())}</DecisionFrame><div className="rv-task-session-slot">{sessionEntry}</div>{quiet}</>}
     {guard(<>
     {shown !== undefined && stage !== "spec" && stage !== "request" && !currentCard && (hasDecision || primary !== undefined) && <div className="rv-task-selected-section">{stageBody()}</div>}
     {section("Plan and changes", plan.isError ? "Plan unavailable" : currentPlan === undefined ? "Loading plan" : (planVersion === undefined ? "Plan" : "Plan v" + String(planVersion)) + (tasks.length === 0 ? "" : " · " + String(tasks.length) + (tasks.length === 1 ? " item" : " items")), <>{(hasDecision || primary !== undefined && shown !== undefined) && (stage === "spec" || stage === "request") && stageBody()}{(stage !== "spec" && stage !== "request" || currentCard) && (planNote ?? (currentPlan === undefined ? null : <SpecStep plan={currentPlan} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} />))}{sections}<TaskHeldStatesView page="plan" onCheck={retryPlan} /></>, hasDecision && !approvalReceipt && (stage === "spec" || stage === "request"))}
