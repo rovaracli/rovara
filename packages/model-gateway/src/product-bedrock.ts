@@ -315,7 +315,7 @@ function guardAnthropicInvoke(body: Record<string, unknown>, path: BedrockProduc
   const forwarded = JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>;
   delete forwarded.model;
   const out = { anthropic_version: "bedrock-2023-05-31", ...forwarded, ...Object.fromEntries(Object.entries(body).filter(([name]) => extra.includes(name) && name !== "anthropic_version")) };
-  return done({ hasTools: checked.hasTools, inputBounded: checked.inputBounded, model: path.modelId, maxTokens: checked.maxTokens, bytes: Buffer.from(JSON.stringify(out)), path });
+  return done({ hasTools: checked.hasTools, inputBounded: checked.inputBounded, usesPromptCache: checked.usesPromptCache, model: path.modelId, maxTokens: checked.maxTokens, bytes: Buffer.from(JSON.stringify(out)), path });
 }
 
 /** Titan text embeddings: one text in, one vector out (V2 may name dimensions, normalize and the vector types). The answer carries the token count. */

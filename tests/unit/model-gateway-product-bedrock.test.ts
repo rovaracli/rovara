@@ -105,6 +105,11 @@ describe("the path", () => {
 });
 
 describe("the guard: the model and the operation", () => {
+  it("preserves cache-write exposure when importing the Anthropic guard", () => {
+    const checked = guard(CLAUDE, "invoke", { anthropic_version: "bedrock-2023-05-31", max_tokens: 64,
+      messages: [{ role: "user", content: [{ type: "text", text: "hello", cache_control: { type: "ephemeral" } }] }] });
+    expect(checked).toMatchObject({ ok: true, inputBounded: true, usesPromptCache: true });
+  });
   it("only a model the company picked, and only the operations its family is offered with", () => {
     expect(refusal(guard("us.anthropic.claude-opus-5-5", "converse", converseBody)).message).toBe(PRODUCT_BEDROCK_MODEL);
     expect(refusal(guard("meta.llama3-70b-instruct-v1:0", "converse", converseBody)).message).toBe(PRODUCT_BEDROCK_MODEL);
@@ -218,9 +223,10 @@ describe("the guard: Claude's Anthropic body through InvokeModel", () => {
     ]) expect(bad(body), JSON.stringify(body).slice(0, 90)).toBe("invalid_request");
     expect(refusal(guard(CLAUDE, "invoke", { ...anthropicBody, service_tier: "priority" })).message).toBe(PRODUCT_BEDROCK_FEATURE);
   });
-  it("keeps the agent guard's input-bounded rules (cache control and media make the input not byte-bounded)", () => {
-    expect(guard(CLAUDE, "invoke", { ...anthropicBody, messages: [{ role: "user", content: [{ type: "text", text: "x", cache_control: { type: "ephemeral" } }] }] })).toMatchObject({ ok: true, inputBounded: false });
+  it("keeps cache markers bounded and media unbounded like the agent guard", () => {
+    expect(guard(CLAUDE, "invoke", { ...anthropicBody, messages: [{ role: "user", content: [{ type: "text", text: "x", cache_control: { type: "ephemeral" } }] }] })).toMatchObject({ ok: true, inputBounded: true, usesPromptCache: true });
     expect(guard(CLAUDE, "invoke", anthropicBody)).toMatchObject({ inputBounded: true });
+    expect(guard(CLAUDE, "invoke", { ...anthropicBody, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }] }] })).toMatchObject({ inputBounded: false });
   });
 });
 

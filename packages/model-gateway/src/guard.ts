@@ -20,7 +20,7 @@ const CHOICES = new Set(["auto", "any", "none", "required", "tool", "function"])
 const ARGUMENTS = new Set(["tool_use", "server_tool_use", "mcp_tool_use"]);
 export interface GuardFailure { ok: false; status: number; code: string; message: string }
 export interface ModelLimitsSource { maxOutputTokens(provider: string, model: string): unknown }
-export interface GuardedRequest { ok: true; hasTools: boolean; inputBounded: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>> }
+export interface GuardedRequest { ok: true; hasTools: boolean; inputBounded: boolean; usesPromptCache: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>> }
 const bad = (): GuardFailure => ({ ok: false, status: 400, code: "invalid_request", message: "request not allowed" });
 export const tooLarge = (): GuardFailure => ({ ok: false, status: 413, code: "request_too_large", message: "the request is too large" });
 const tool = (v: unknown): boolean => { const t = record(v); return t !== undefined && (t.type === undefined || t.type === null || (typeof t.type === "string" && TOOL_TYPES.has(t.type))); };
@@ -48,8 +48,9 @@ export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, str
   // Single iterative traversal, one total item limit (including nested argument data). Never skip an unparsed suffix.
   const stack: unknown[] = [b.messages, b.system];
   let count = 0;
-  // Cached tool definitions also incur write rates above plain input pricing.
-  let inputBounded = !(Array.isArray(b.tools) && b.tools.some((value: unknown) => record(value)?.cache_control !== undefined));
+  let inputBounded = true;
+  // Inline cache breakpoints change the rate, not the byte-derived token ceiling.
+  let usesPromptCache = Array.isArray(b.tools) && b.tools.some((value: unknown) => record(value)?.cache_control !== undefined);
   while (stack.length > 0) {
     if (++count > MAX_BODY_ITEMS) return bad();
     const v = stack.pop();
@@ -57,12 +58,14 @@ export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, str
     else {
       const r = record(v); if (r === undefined) continue;
       // Only inline text/function payloads have a byte-derived input ceiling. Media,
-      // remote files, caches and unknown block kinds must use the company marker.
-      if ((r.type !== undefined && (typeof r.type !== "string" || !["text", "tool_use", "tool_result"].includes(r.type))) || ["source", "fileData", "cachedContent", "cache_control"].some((k) => Object.hasOwn(r, k))) inputBounded = false;
+      // remote files, remote caches and unknown block kinds must use the company marker.
+      if ((r.type !== undefined && (typeof r.type !== "string" || !["text", "tool_use", "tool_result"].includes(r.type))) || ["source", "fileData", "cachedContent"].some((k) => Object.hasOwn(r, k))) inputBounded = false;
+      if (Object.hasOwn(r, "cache_control")) usesPromptCache = true;
       if (Object.hasOwn(r, "tools") && !tools(r.tools)) return bad();
       if (r.type === "tool_addition" && record(r.tool)?.type !== "tool_definition") return bad();
       if (r.type === "tool_definition" && !tool(r.definition)) return bad();
       for (const [k, x] of Object.entries(r)) {
+        if (k === "cache_control") continue; // Cache policy is not an input content block.
         if (k === "input" && typeof r.type === "string" && ARGUMENTS.has(r.type)) continue;
         stack.push(x);
       }
@@ -77,5 +80,5 @@ export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, str
   const forwarded = Buffer.from(JSON.stringify({ ...b, max_tokens: maxTokens }));
   const outbound: Record<string, string> = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
   if (beta !== undefined) outbound["anthropic-beta"] = beta;
-  return { ok: true, hasTools: Array.isArray(b.tools), inputBounded, model: b.model, maxTokens, streaming, bytes: forwarded, headers: outbound };
+  return { ok: true, hasTools: Array.isArray(b.tools), inputBounded, usesPromptCache, model: b.model, maxTokens, streaming, bytes: forwarded, headers: outbound };
 }
