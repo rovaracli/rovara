@@ -21,7 +21,41 @@ it("shows the exact testing allowance refusal and preserves the task",async()=>{
 for(const theme of ["light","dark"] as const)it("has accessible publication review in "+theme,async()=>{const f=await renderPublish(publish(),{theme});fireEvent.click(screen.getByRole("button",{name:"Publish"}));await screen.findByRole("button",{name:"Publish this draft"});await waitFor(()=>expect(screen.getByText("Review now uses claude-sonnet-4-6 instead of gpt-5.4")).toBeTruthy());await expectNoAxeViolations(document.body);f.close();});
 
 it("tests a new draft off the roster and opens only the returned session",async()=>{const sessionId="ses_bbbbbbbbbbbbbbbbbbbb",f=await renderPublish(h(TestRunDialog,{agent:profile.agent,disabled:false}),{agentOnProject:false,reply:async()=>({status:202,body:{task:{...taskFixture(),sessionId}}})});fireEvent.click(screen.getByRole("button",{name:"Test draft"}));await screen.findByRole("option",{name:"payments"});fireEvent.change(screen.getByLabelText("Project"),{target:{value:"payments"}});fireEvent.change(screen.getByLabelText("Task for this test"),{target:{value:"Test the new payment method"}});await waitFor(()=>expect(screen.getByRole("button",{name:"Run test"})).toHaveProperty("disabled",false));fireEvent.click(screen.getByRole("button",{name:"Run test"}));await waitFor(()=>expect(f.navigation).toHaveBeenCalledWith("/s/"+sessionId));expect(f.request.mock.calls.find(([request])=>request.method==="POST")?.[0].body).toMatchObject({project:"payments",version:"draft",input:{text:"Test the new payment method"}});f.close();});
-it("offers a real status check after confirmation without resubmitting publication",async()=>{const f=await renderPublish(publish(),{reply:async()=>({status:202,body:confirm})});fireEvent.click(screen.getByRole("button",{name:"Publish"}));await waitFor(()=>expect(screen.getByRole("button",{name:"Publish this draft"})).toHaveProperty("disabled",false));fireEvent.click(screen.getByRole("button",{name:"Publish this draft"}));await screen.findByText("Waiting for you to confirm in your browser");f.setProfile({...profile,agent:{...profile.agent,currentVersion:4},current:{...profile.current!,version:4}});fireEvent.click(screen.getByRole("button",{name:"Check status"}));await screen.findByText("Published version 4");expect(f.request.mock.calls.filter(([request])=>request.method==="POST")).toHaveLength(1);f.close();});
+it("offers a real status check after confirmation without resubmitting publication",async()=>{const f=await renderPublish(publish(),{reply:async()=>({status:202,body:confirm})});fireEvent.click(screen.getByRole("button",{name:"Publish"}));await waitFor(()=>expect(screen.getByRole("button",{name:"Publish this draft"})).toHaveProperty("disabled",false));fireEvent.click(screen.getByRole("button",{name:"Publish this draft"}));await screen.findByText("Waiting for you to confirm in your browser");f.setProfile({...profile,agent:{...profile.agent,currentVersion:4},current:{...profile.current!,version:4}});await checkPublicationStatus(f);expect(f.request.mock.calls.filter(([request])=>request.method==="POST")).toHaveLength(1);f.close();});
+
+// The status read can take longer than Testing Library's DOM polling deadline.
+// Await the read and its React commit before inspecting the receipt.
+async function checkPublicationStatus(f:Awaited<ReturnType<typeof renderPublish>>){
+ await act(async()=>{
+  fireEvent.click(screen.getByRole("button",{name:"Check status"}));
+  await f.query.getQueryCache().find({queryKey:key,exact:true})!.promise;
+ });
+ expect(screen.getByText("Published version 4")).toBeTruthy();
+}
+it("waits for a delayed status read before checking the publication receipt",async()=>{
+ const readProfile=vi.fn(async(value:typeof profile)=>value);
+ const f=await renderPublish(publish(),{readProfile,reply:async()=>({status:202,body:confirm})});
+ try{
+  fireEvent.click(screen.getByRole("button",{name:"Publish"}));
+  await waitFor(()=>expect(screen.getByRole("button",{name:"Publish this draft"})).toHaveProperty("disabled",false));
+  fireEvent.click(screen.getByRole("button",{name:"Publish this draft"}));
+  await screen.findByText("Waiting for you to confirm in your browser");
+  f.setProfile({...profile,agent:{...profile.agent,currentVersion:4},current:{...profile.current!,version:4}});
+  vi.useFakeTimers({toFake:["setTimeout","clearTimeout"]});
+  readProfile.mockImplementationOnce(value=>new Promise(resolve=>{setTimeout(()=>resolve(value),1001);}));
+  const checked=checkPublicationStatus(f);
+  // Attach a handler before advancing past the old DOM wait's deadline.
+  let settled=false;
+  const outcome=checked.then(()=>{settled=true;},(error:unknown)=>{settled=true;return error;});
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(settled).toBe(false);
+  expect(screen.queryByText("Published version 4")).toBeNull();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(await outcome).toBeUndefined();
+  expect(screen.getByText("Published version 4")).toBeTruthy();
+  expect(f.request.mock.calls.filter(([request])=>request.method==="POST")).toHaveLength(1);
+ }finally{vi.useRealTimers();f.close();}
+});
 
 it("allows the next saved draft to be published after a previous success",async()=>{function Editor(){const[revision,setRevision]=useState(7);return h("div",{children:[h("button",{key:"edit",onClick:()=>setRevision(8),children:"Edit again"}),h(PublishDialog,{key:"publish",agent:profile.agent,revision,disabled:false,onPublished:vi.fn(),onInvalid:vi.fn()})]});}const f=await renderPublish(h(Editor,{}));fireEvent.click(screen.getByRole("button",{name:"Publish"}));await waitFor(()=>expect(screen.getByRole("button",{name:"Publish this draft"})).toHaveProperty("disabled",false));fireEvent.click(screen.getByRole("button",{name:"Publish this draft"}));await screen.findByText("Published version 4");fireEvent.click(screen.getByRole("button",{name:"Close dialog"}));fireEvent.click(screen.getByRole("button",{name:"Edit again"}));fireEvent.click(screen.getByRole("button",{name:"Publish"}));await waitFor(()=>expect(screen.getByRole("button",{name:"Publish this draft"})).toHaveProperty("disabled",false));fireEvent.click(screen.getByRole("button",{name:"Publish this draft"}));await waitFor(()=>expect(f.request.mock.calls.filter(([request])=>request.method==="POST")).toHaveLength(2));expect(f.request.mock.calls.filter(([request])=>request.method==="POST")[1]?.[0].body).toMatchObject({expectedRevision:8});f.close();});
 it("starts a new budget intent after success",async()=>{const f=await renderPublish(h(BudgetPanel,{profile}));fireEvent.change(screen.getByLabelText("Monthly budget ($)"),{target:{value:"100"}});fireEvent.click(screen.getByRole("button",{name:"Save budget"}));await screen.findByText("Budget updated");fireEvent.click(screen.getByRole("button",{name:"Save budget"}));await waitFor(()=>expect(f.request.mock.calls.filter(([request])=>request.method==="PUT")).toHaveLength(2));const writes=f.request.mock.calls.filter(([request])=>request.method==="PUT").map(([request])=>request.body as {requestId:string});expect(writes[0]?.requestId).not.toBe(writes[1]?.requestId);f.close();});
