@@ -10,25 +10,72 @@ export interface InlineImageBound { tokens: number; dataBytes: number }
 export const MAX_INLINE_IMAGES = 100;
 const MAX_BASE64_BYTES = 5 * 1024 * 1024;
 const MAX_JPEG_HEADER_BYTES = 64 * 1024;
+// The whole GIF (at most MAX_BASE64_BYTES) is walked; this caps the frames walked before the image is refused.
+export const MAX_GIF_FRAMES = 2048;
 const SOF = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
 const signature = (b: Buffer, at: number, hex: string): boolean => b.subarray(at, at + hex.length / 2).equals(Buffer.from(hex, "hex"));
 
+// A JPEG decoder may keep any of several start-of-frame markers (Pillow keeps the LAST before SOS), so bound by
+// the larger of every SOF width and every SOF height, and refuse a header that never reaches SOS within the cap.
 function jpegDimensions(b: Buffer): [number, number] | undefined {
   if (!signature(b, 0, "ffd8")) return undefined;
   const end = Math.min(b.length, MAX_JPEG_HEADER_BYTES);
   let at = 2;
+  let width = 0, height = 0, framed = false;
   while (at + 4 <= end) {
     if (b[at++] !== 0xff) return undefined;
     while (b[at] === 0xff) at++;
     const marker = b[at++]!;
+    // Standalone markers carry no length; a decoder may skip them where this scan would misread them as segments.
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) return undefined;
     const size = b.readUInt16BE(at);
     if (size < 2 || at + size > end) return undefined;
     if (SOF.has(marker)) {
       // A complete SOF includes precision, dimensions and all component descriptors.
       if (size < 8 || size !== 8 + 3 * b[at + 7]!) return undefined;
-      return [b.readUInt16BE(at + 5), b.readUInt16BE(at + 3)];
-    }
+      width = Math.max(width, b.readUInt16BE(at + 5)); height = Math.max(height, b.readUInt16BE(at + 3)); framed = true;
+    } else if (marker === 0xda) return framed ? [width, height] : undefined;
     at += size;
+  }
+  return undefined;
+}
+
+/** Skips a run of data sub-blocks; returns the offset after its zero terminator, or undefined if it runs off the end. */
+function gifSubBlocks(b: Buffer, from: number): number | undefined {
+  let at = from;
+  for (;;) {
+    if (at >= b.length) return undefined;
+    const size = b[at++]!;
+    if (size === 0) return at;
+    at += size;
+  }
+}
+
+// Decoders size a GIF from its frames as well as its logical screen (Pillow grows the canvas to every frame), so
+// walk the blocks and bound by max(screen, every frame's left+width / top+height). Anything the walk cannot finish
+// (no frame, no trailer, an unknown block, more frames than the cap) is unbounded and refused: never under-estimate.
+function gifDimensions(b: Buffer): [number, number] | undefined {
+  if (b.length < 13 || !/^GIF8[79]a$/u.test(b.toString("latin1", 0, 6))) return undefined;
+  let width = b.readUInt16LE(6), height = b.readUInt16LE(8);
+  let at = 13 + (b[10]! & 0x80 ? 3 << ((b[10]! & 7) + 1) : 0);
+  let frames = 0;
+  while (at < b.length) {
+    const block = b[at++]!;
+    if (block === 0x3b) return frames === 0 ? undefined : [width, height];
+    if (block === 0x21) { // extension: label byte, then data sub-blocks
+      const next = gifSubBlocks(b, at + 1);
+      if (next === undefined) return undefined;
+      at = next;
+    } else if (block === 0x2c) { // image descriptor: left, top, width, height, packed
+      if (++frames > MAX_GIF_FRAMES || at + 9 > b.length) return undefined;
+      width = Math.max(width, b.readUInt16LE(at) + b.readUInt16LE(at + 4));
+      height = Math.max(height, b.readUInt16LE(at + 2) + b.readUInt16LE(at + 6));
+      const packed = b[at + 8]!;
+      at += 9 + (packed & 0x80 ? 3 << ((packed & 7) + 1) : 0) + 1; // local colour table, LZW code size byte
+      const next = gifSubBlocks(b, at);
+      if (next === undefined) return undefined;
+      at = next;
+    } else return undefined;
   }
   return undefined;
 }
@@ -60,8 +107,7 @@ function dimensions(b: Buffer, mime: unknown): [number, number] | undefined {
       if (b.length < 33 || !signature(b, 0, "89504e470d0a1a0a0000000d49484452")) return undefined;
       return [b.readUInt32BE(16), b.readUInt32BE(20)];
     case "image/gif":
-      if (b.length < 13 || !/^GIF8[79]a$/u.test(b.toString("latin1", 0, 6))) return undefined;
-      return [b.readUInt16LE(6), b.readUInt16LE(8)];
+      return gifDimensions(b);
     case "image/jpeg": return jpegDimensions(b);
     case "image/webp": return webpDimensions(b);
     default: return undefined;
