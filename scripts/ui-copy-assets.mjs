@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-latin-600.woff2", "design/fonts/jetbrains-mono-latin-400.woff2", "design/fonts/Inter-OFL.txt", "design/fonts/JetBrainsMono-OFL.txt", "design/design.css", "shell/shell.css", "screens/home/home.css", "screens/inbox/inbox.css", "screens/live/live.css", "screens/work/work.css", "screens/project/project.css", "screens/session/session.css", "screens/session/task-capture-view.css", "screens/session/task-page.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
  // Rebuilt Work/Inbox styles (WIRING-3: mounted on the real /app/work and /app/inbox routes).
  "screens/work/work-preview.css",
+ "screens/session/pr-feedback-card.css",
  "screens/inbox/inbox-preview.css",
  // Design system v2: shared part styles, including mounted gallery consumers.
  "design/parts/chips-buttons.css",

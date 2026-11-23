@@ -6,17 +6,20 @@ import { createContext, createElement, useContext, useEffect, useRef, useState, 
 type TaskChip = "ready_to_merge" | "checking" | undefined;
 /** "Continue in my tool" is a task-level action drawn inside "Task actions" (mock 4d). TaskActions owns its guarded handler; this only carries the menu entry to the menu. */
 export type TaskContinueEntry = { disabled: boolean; onSelect: () => void; /** A short visible reason the entry is blocked (DEC 254zzz374: a plan waiting at plan review says "approve the plan first"). */ reason?: string };
-type Slots = { continueEntry: TaskContinueEntry | undefined; setContinueEntry: (entry: TaskContinueEntry | undefined) => void; planNote: HTMLElement | null; setPlanNote: (element: HTMLElement | null) => void; stop: HTMLElement | null; setStop: (element: HTMLElement | null) => void; chip: TaskChip; setChip: (chip: TaskChip) => void };
+type Slots = { continueEntry: TaskContinueEntry | undefined; setContinueEntry: (entry: TaskContinueEntry | undefined) => void; planNote: HTMLElement | null; setPlanNote: (element: HTMLElement | null) => void; stop: HTMLElement | null; setStop: (element: HTMLElement | null) => void; chip: TaskChip; setChip: (chip: TaskChip) => void; feedbackRefused: boolean; setFeedbackRefused: (refused: boolean) => void };
 const TaskSlots = createContext<Slots | undefined>(undefined);
 export function TaskSlotsProvider({ children }: { children: ReactNode }) {
- const [continueEntry, setContinueEntry] = useState<TaskContinueEntry>(), [planNote, setPlanNote] = useState<HTMLElement | null>(null), [stop, setStop] = useState<HTMLElement | null>(null), [chip, setChip] = useState<TaskChip>(undefined);
- return createElement(TaskSlots.Provider, { value: { continueEntry, setContinueEntry, planNote, setPlanNote, stop, setStop, chip, setChip } }, children);
+ const [continueEntry, setContinueEntry] = useState<TaskContinueEntry>(), [planNote, setPlanNote] = useState<HTMLElement | null>(null), [stop, setStop] = useState<HTMLElement | null>(null), [chip, setChip] = useState<TaskChip>(undefined), [feedbackRefused, setFeedbackRefused] = useState(false);
+ return createElement(TaskSlots.Provider, { value: { continueEntry, setContinueEntry, planNote, setPlanNote, stop, setStop, chip, setChip, feedbackRefused, setFeedbackRefused } }, children);
 }
 export const useTaskStopSlot = (): HTMLElement | null => useContext(TaskSlots)?.stop ?? null;
 export const useRegisterTaskStopSlot = (): ((element: HTMLElement | null) => void) | undefined => useContext(TaskSlots)?.setStop;
 
 /** The status chip the merge section says the page should show (Ready to merge), when its own read is the source of that state. */
 export const useTaskChip = (): TaskChip => useContext(TaskSlots)?.chip;
+/** The PR feedback card's fix was refused before it started (its own answer, shown in the card): the page chip and rail say so from the same answer. */
+export const useTaskFeedbackRefused = (): boolean => useContext(TaskSlots)?.feedbackRefused ?? false;
+export const useRegisterTaskFeedbackRefused = (): ((refused: boolean) => void) | undefined => useContext(TaskSlots)?.setFeedbackRefused;
 export const useRegisterTaskChip = (): ((chip: TaskChip) => void) | undefined => useContext(TaskSlots)?.setChip;
 
 /** Where the plan decision card draws the one line that says how it was reached (the handoff note), so it sits inside the card under its title (mocks 1c, 1j). */

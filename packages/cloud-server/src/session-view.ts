@@ -113,7 +113,9 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
   const taskOwner = task["owner"] as { developerId?: unknown } | undefined;
   const maySeeMoney = viewer.developerId === (taskOwner?.developerId ?? session.owner.developerId)
     || viewer.companyRole === "owner" || viewer.companyRole === "admin";
-  const money = maySeeMoney && parsedMoney?.taskId === task.taskId ? parsedMoney : undefined;
+  // Controller ruling 2026-11-23: a live People co-owner (the route checked Code's People list) sees the money strip as the owner does, from the versioned `money` Code served.
+  // Code serves a co-owner's task read its money only where it allows it, so a read without `money` still shows none; the legacy figures stay owner/company-role only.
+  const money = (maySeeMoney || extras.coOwner === true) && parsedMoney?.taskId === task.taskId ? parsedMoney : undefined;
   const safeTask = { ...task };
   delete safeTask["money"];
   if (!maySeeMoney && safeTask.workflow !== undefined) {
@@ -286,6 +288,15 @@ export function openFindings(task: CodeTask): OpenFinding[] {
  * What the owner of a task stopped by review findings can do besides retrying (Rovara-cloud#25): send it back to coding with a note, or accept the
  * findings and let the pull request open. Present only for a task stopped at review with 1 to RESOLVE_FINDINGS_MAX blocking findings.
  */
+/**
+ * PR feedback (CLOUD-HALF): a feedback review waiting for its owner's choice, or a feedback fix that stopped. A co-owner on Code's People list may decide or retry it
+ * (Code checks again in the move). Read from Code's own workflow fields only.
+ */
+export function feedbackChoice(task: CodeTask): boolean {
+  const workflow = task.workflow as { feedbackReview?: { status?: unknown }; fixSource?: unknown; state?: unknown } | undefined;
+  return workflow?.feedbackReview?.status === "PENDING" || (workflow?.fixSource === "feedback" && workflow.state === "BLOCKED");
+}
+
 export function reviewChoices(task: CodeTask): { findings: OpenFinding[]; expectedRevision: number; candidateDigest: string } | undefined {
   if (blockedReview(task) === undefined || typeof task.workflow?.revision !== "number" || task.workflow.candidate?.digest === undefined) return undefined;
   const findings = openFindings(task);

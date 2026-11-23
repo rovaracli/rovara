@@ -116,8 +116,10 @@ export interface TaskPaneProps {
  aboutExtra?: ReactNode;
  /** A pending plan beside a delivered instruction: the decision is drawn as the plan-change frame, with its own rail. */
  planChange?: PlanChangeFrameFacts | undefined;
+ /** The primary card's own word for the current step in "Where this task is" (the PR feedback card), from the same read as the card. */
+ railOverride?: { state: "running" | "needs_you"; detail: string } | undefined;
 }
-export function TaskPane({ compact = false, readOnly = false, row, decisionsError, onDecided, wide = false, fullPage, steer, onComment, design, pageProjection, sessionEntry, primary, pageLocked = false, aboutSummary, aboutExtra, planChange, retryOffered = false }: TaskPaneProps) {
+export function TaskPane({ compact = false, readOnly = false, row, decisionsError, onDecided, wide = false, fullPage, steer, onComment, design, pageProjection, sessionEntry, primary, pageLocked = false, aboutSummary, aboutExtra, planChange, retryOffered = false, railOverride }: TaskPaneProps) {
  const registerStop = useRegisterTaskStopSlot(), approvalReceipt = useTaskChip() === "checking";
  const [shown, setShown] = useState<Stage>(), stage = shown ?? stageOf(row.step), query = useQueryClient(), host = useAppHost();
  const answerAction = useTaskAction(host, "plan-answers:" + row.id);
@@ -221,8 +223,10 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
   const railItems: TaskTimelineItem[] = [
    // The finished sections are the served stage's proof (the fixed order), never a guess from the list group; none are claimed for a task that has not started or whose stage is not known.
    ...(finished.length === 0 ? [] : [{ id: "finished", title: finished.length === 1 ? "1 step finished" : String(finished.length) + " steps finished", state: "done" as const, detail: finished.map(item => TIMELINE_LABEL[item.step] ?? item.label).join(", ") }]),
-   ...STEPS.filter(item => sectionState(row.task, item.step, failed) !== "done").map((item): TaskTimelineItem => {
+   ...STEPS.filter(item => sectionState(row.task, item.step, failed) !== "done").map((item, index): TaskTimelineItem => {
     const state = sectionState(row.task, item.step, failed);
+    // The primary card's own word (the PR feedback card) names the current step: the first step not yet finished, from the same read as the card.
+    if (index === 0 && railOverride !== undefined) return { id: item.step, title: TIMELINE_LABEL[item.step] ?? item.label, state: railOverride.state, detail: railOverride.detail };
     return { id: item.step, title: TIMELINE_LABEL[item.step] ?? item.label,
      state: state === "current" ? "running" : state === "attention" ? "attention" : state === "blocked" || state === "waiting" ? "needs_you" : "next",
      detail: state === "attention" ? "Needs attention" : state === "current" ? "Current step" : state === "blocked" ? "Blocked" : state === "waiting" ? waitWords : item.step === "request" ? "Submitted" : "Progress not confirmed",

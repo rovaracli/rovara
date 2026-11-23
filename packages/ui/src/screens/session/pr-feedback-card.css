@@ -1,0 +1,60 @@
+/* The PR feedback card on the task page (approved mock pr-feedback-screen round 2). Design tokens only. */
+.rv-prf-card{overflow-wrap:anywhere}
+.rv-prf-card p{margin:0 0 var(--rv-space-3)}
+.rv-prf-card .rv-decision-frame-footer>p+p{margin-top:var(--rv-space-2)}
+.rv-prf-lead{font-weight:600}
+.rv-prf-findings{list-style:none;margin:0 0 var(--rv-space-4);padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg);background:var(--rv-bg-raised)}
+.rv-prf-finding{padding:var(--rv-space-4);border-top:1px solid var(--rv-border);min-width:0}
+.rv-prf-finding:first-child{border-top:0}
+.rv-prf-finding-head{display:grid;gap:var(--rv-space-1)}
+.rv-prf-finding-head .rv-check-row{min-width:0}
+.rv-prf-finding-head .rv-check-row label{font-weight:600}
+.rv-prf-card .rv-prf-finding-title{display:flex;align-items:center;gap:var(--rv-space-3);min-width:0;margin:0;font-weight:600;color:var(--rv-text-muted)}
+.rv-prf-finding-title .rv-ds-mark{width:20px;height:20px;flex:none;margin-inline:8px}
+.rv-prf-tags{display:flex;flex-wrap:wrap;gap:var(--rv-space-2);margin:0 !important;padding-inline-start:calc(var(--rv-control-size) + var(--rv-space-3));font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-prf-tags>span+span::before{content:"·";margin-inline-end:var(--rv-space-2)}
+.rv-prf-finding[data-priority=MUST_FIX] .rv-prf-priority{color:var(--rv-status-needs-you);font-weight:600}
+.rv-prf-finding-body{margin-top:var(--rv-space-3);padding-inline-start:calc(var(--rv-control-size) + var(--rv-space-3));font-size:var(--rv-font-sm)}
+.rv-prf-comment{margin:0 0 var(--rv-space-3);padding-inline-start:var(--rv-space-3);border-inline-start:3px solid var(--rv-border-strong)}
+.rv-prf-comment p{margin:0 0 var(--rv-space-1)}
+.rv-prf-comment footer{color:var(--rv-text-muted)}
+.rv-prf-plan>summary{display:flex;align-items:center;gap:var(--rv-space-2);cursor:pointer;list-style:none;font-weight:600;min-height:var(--rv-control-size)}
+.rv-prf-plan>summary::-webkit-details-marker{display:none}
+.rv-prf-plan>summary .rv-ds-mark{width:14px;height:14px}
+.rv-prf-plan[open]>summary .rv-ds-mark{transform:rotate(90deg)}
+.rv-prf-plan ul{margin:0;padding-inline-start:var(--rv-space-5);display:grid;gap:var(--rv-space-1)}
+.rv-prf-money{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,120px),1fr));gap:var(--rv-space-3) var(--rv-space-5);margin:var(--rv-space-4) 0 0;padding:var(--rv-space-3) var(--rv-space-4);border-radius:var(--rv-radius-sm);background:var(--rv-bg-sunken)}
+.rv-prf-money dt{font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-prf-money dd{margin:var(--rv-space-1) 0 0;font-weight:600}
+.rv-prf-money .rv-prf-unknown{font-weight:400;color:var(--rv-text-muted)}
+.rv-prf-money-none{margin:var(--rv-space-4) 0 0;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-prf-decide .rv-prf-money-none{margin:0}
+.rv-decision-frame.rv-prf-card>.rv-decision-frame-header{grid-template-columns:auto minmax(0,1fr)}
+.rv-decision-frame.rv-prf-card>.rv-decision-frame-header>.rv-decision-frame-meta{grid-column:1 / -1}
+.rv-prf-card .rv-prf-noadvice{margin:0;padding-inline-start:calc(var(--rv-control-size) + var(--rv-space-3));font-size:var(--rv-font-sm);color:var(--rv-status-needs-you)}
+.rv-prf-card .rv-prf-step{margin:0}
+/* The decision strip: money and buttons together, kept in view while the findings scroll. */
+.rv-decision-frame.rv-prf-card>.rv-decision-frame-actions:has(.rv-prf-decide){position:sticky;bottom:0;z-index:2;display:block;margin:var(--rv-space-4) calc(var(--rv-space-5) * -1) 0;padding:var(--rv-space-3) var(--rv-space-5);background:var(--rv-bg);border-top:1px solid var(--rv-border);box-shadow:0 -6px 12px -10px rgba(0,0,0,.35)}
+.rv-prf-decide{display:grid;gap:var(--rv-space-2)}
+.rv-prf-card .rv-prf-paid{margin:0;font-size:var(--rv-font-sm);font-weight:600}
+.rv-prf-buttons{display:flex;flex-wrap:wrap;gap:var(--rv-space-2)}
+.rv-prf-money.compact{display:flex;flex-wrap:wrap;gap:var(--rv-space-1) var(--rv-space-5);margin:0;padding:0;background:none;font-size:var(--rv-font-sm)}
+.rv-prf-money.compact>div{display:flex;gap:var(--rv-space-1);align-items:baseline}
+.rv-prf-money.compact dt::after{content:":"}
+.rv-prf-money.compact dt{font-size:inherit}
+.rv-prf-money.compact dd{margin:0}
+.rv-prf-card .rv-prf-message{margin:0;color:var(--rv-status-needs-you);font-weight:600}
+.rv-prf-left{font-weight:400;color:var(--rv-text-muted)}
+@media(max-width:639px){
+ .rv-decision-frame.rv-prf-card>.rv-decision-frame-actions:has(.rv-prf-decide){margin-inline:calc(var(--rv-space-4) * -1);padding:var(--rv-space-3) var(--rv-space-4)}
+ .rv-prf-money.compact{gap:0 var(--rv-space-3);font-size:var(--rv-font-xs, 12px)}
+ .rv-prf-buttons{flex-direction:column}
+ .rv-prf-buttons .rv-button-with-reason,.rv-prf-buttons .rv-button{width:100%}
+ .rv-prf-card .rv-prf-noadvice{padding-inline-start:0}
+ .rv-prf-finding{padding:var(--rv-space-3)}
+ .rv-prf-finding-body{padding-inline-start:0}
+ .rv-prf-tags{padding-inline-start:0}
+ .rv-prf-card .rv-decision-frame-actions{flex-direction:column;align-items:stretch}
+ .rv-prf-card .rv-decision-frame-actions .rv-button-with-reason,.rv-prf-card .rv-decision-frame-actions .rv-button{width:100%}
+}
+.rv-prf-card .rv-prf-limit-note{font-size:var(--rv-font-sm);color:var(--rv-text-muted)}

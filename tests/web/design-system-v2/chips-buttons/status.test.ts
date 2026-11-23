@@ -25,6 +25,8 @@ const cases = [
  ["could_not_run", "Could not run", "idle", "dash", "A check or step never ran. Not a pass and not a fail."],
  ["not_run", "Not run", "idle", "dash", "A required review that hasn't happened. Says who can run it."],
  ["unknown", "Unknown", "idle", "question", "Rovara can't confirm the state yet. It is checking."],
+ ["didnt_finish", "Didn't finish", "idle", "dash", "A step started but stopped before it finished. It may have cost money. Not a pass and not a fail."],
+ ["not_confirmed", "Not confirmed", "idle", "question", "Rovara didn't hear back about a request. Check asks what was recorded; nothing is sent again."],
 ] as const;
 for (const [state, label, hue, icon, description] of cases) it(`${label}: names the state, icon and meaning without relying on colour`, async () => {
  const { StatusChip } = await import("../../../../packages/ui/src/design/StatusChip.js");
@@ -80,7 +82,7 @@ it("keeps chip labels on one line even inside narrow cells that allow word break
  try {
   renderUi(h("div", { style: { width: "40px", overflowWrap: "anywhere" } },
    h(StatusChip, { state: "running" }), h(StatusChip, { state: "waiting_for", waitingFor: "Ana" }),
-   h(StatusChip, { state: "ready_to_merge" }), h(StatusChip, { state: "could_not_run" })));
+   h(StatusChip, { state: "ready_to_merge" }), h(StatusChip, { state: "could_not_run" }), h(StatusChip, { state: "didnt_finish" }), h(StatusChip, { state: "not_confirmed" })));
   for (const chip of screen.getAllByRole("img")) {
    const css = getComputedStyle(chip);
    expect(css.whiteSpace).toBe("nowrap");
@@ -104,7 +106,7 @@ it("keeps legacy free-text metadata and aggregate tones separate from canonical 
  expect(screen.queryByText("Ready to merge")).toBeNull();
  expect(screen.queryByText("Merged")).toBeNull();
 });
-for (const theme of ["light", "dark"] as const) it(`${theme}: all fifteen statuses pass axe`, async () => {
+for (const theme of ["light", "dark"] as const) it(`${theme}: all seventeen statuses pass axe`, async () => {
  const { StatusChip } = await import("../../../../packages/ui/src/design/StatusChip.js");
  renderUi(h("section", { "aria-label": "Task statuses" }, ...cases.map(([state]) => h(StatusChip, { key: state, ...(state === "waiting_for" ? { state, waitingFor: "Ana" } : { state }) }))), { theme });
  await expectNoAxeViolations(document.body);

@@ -63,7 +63,7 @@ export function createTaskSessionApi(host: AppHost) {
  };
 }
 
-type SessionRead = Pick<UseQueryResult<ReadSession, Error>, "refetch"> & { data: ReadSession | undefined; isPending: boolean; isError: boolean; error: Error | null };
+type SessionRead = Pick<UseQueryResult<ReadSession, Error>, "refetch" | "failureCount"> & { data: ReadSession | undefined; isPending: boolean; isError: boolean; error: Error | null };
 export function useSession(id: string, enabled = true, scope?: string): SessionRead {
  const host = useAppHost(), api = useMemo(() => createTaskSessionApi(host), [host]), identity = useSessionIdentity(host), query = useQueryClient();
  const read = useQuery({ queryKey: ["session", id], enabled: enabled && identity.data !== undefined, retry: false, queryFn: () => talkRead(host, scope, "session", async () => acceptSessionRead(isCurrentSessionRead(host, identity.data, id) ? query.getQueryData<ReadSession>(["session", id]) : undefined, await api.read(id))) });

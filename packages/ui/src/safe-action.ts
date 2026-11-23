@@ -407,6 +407,9 @@ export interface ActionRefusalContext { route: string; /** Required for Merge CO
 const SESSION_ACTION = /^\/sessions\/ses_[0-9a-z]{20}\/(retry|send-back|accept-findings|answers)$/u;
 const PAID_OWNER_ROUND = /^\/sessions\/ses_[0-9a-z]{20}\/(send-back|accept-findings)$/u;
 const OWNER_ROUND = /^\/sessions\/ses_[0-9a-z]{20}\/(retry|send-back|accept-findings)$/u;
+// PR feedback (CLOUD-HALF): Code refuses these before it writes anything (core/pr-feedback/decide.ts: a refusal writes nothing); Cloud's own body check and
+// unknown session are its fixed answers. A failure after Code committed (its read-back) is any other status, and stays unknown.
+const FEEDBACK_ACTION = /^\/sessions\/ses_[0-9a-z]{20}\/feedback-(decision|retry)$/u;
 const ANSWERS_ACTION = /^(?:\/sessions\/ses_[0-9a-z]{20}|\/tasks\/[0-9a-f-]{36})\/answers$/iu;
 // Only the document gate is audited here. Other card handlers may have provider effects.
 const DOCUMENT_ACTION = /^\/decisions\/(approve_requirements|approve_plan|approve_design)\/[A-Za-z0-9_-]{1,150}\/(approve|request-changes|reject)$/u;
@@ -439,6 +442,7 @@ type FinalRefusal = readonly [(path: string) => boolean, number, string, ((conte
  * Close TASK_NOT_FOUND and People/add CHANGE_STALE can follow effects in Code itself and are deliberately absent.
  */
 const FINAL_ACTION_REFUSALS: readonly FinalRefusal[] = [
+ ...([[400, "CONFIG_INVALID"], [403, "FORBIDDEN"], [404, "NOT_FOUND"], [404, "SESSION_NOT_FOUND"], [409, "IDEMPOTENCY_CONFLICT"], [402, "BUDGET_EXCEEDED"], [402, "ORG_BUDGET_EXCEEDED"], [402, "PROJECT_BUDGET_EXCEEDED"], [402, "AGENT_BUDGET_EXCEEDED"], [402, "MACHINE_TIME_EXCEEDED"], [403, "TRIAL_LOCKED"]] as const).map(([status, code]): FinalRefusal => [path => FEEDBACK_ACTION.test(path), status, code]),
  // Only Cloud's own exact validation sentence: Code may raise other errors after effects.
  [path => /^\/sessions\/ses_[0-9a-z]{20}\/(stop|close|take-over)$/u.test(path), 400, "CONFIG_INVALID", (_context, failure) => failure.message === "requestId must be a UUID."],
  [path => /^\/sessions\/ses_[0-9a-z]{20}\/(stop|close|take-over)$/u.test(path), 404, "SESSION_NOT_FOUND"],

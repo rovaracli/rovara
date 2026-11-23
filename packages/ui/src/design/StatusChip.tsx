@@ -2,7 +2,7 @@ import { useId, type ReactNode } from "react";
 import { VisibleText, visibleText } from "./VisibleText.js";
 import "./parts/chips-buttons.css";
 
-export type StatusChipState = "queued" | "setting_up" | "needs_you" | "waiting_for" | "running" | "checking" | "ready_to_merge" | "done" | "merged" | "stopped" | "failed" | "blocked" | "could_not_run" | "not_run" | "unknown";
+export type StatusChipState = "queued" | "setting_up" | "needs_you" | "waiting_for" | "running" | "checking" | "ready_to_merge" | "done" | "merged" | "stopped" | "failed" | "blocked" | "could_not_run" | "not_run" | "didnt_finish" | "not_confirmed" | "unknown";
 export type StatusChipProps = { state: Exclude<StatusChipState, "waiting_for"> } | { state: "waiting_for"; waitingFor: string };
 const COPY = {
  queued: { label: "Queued", hue: "idle", icon: "clock", description: "Accepted. Starts when a runner is free." },
@@ -19,6 +19,8 @@ const COPY = {
  blocked: { label: "Blocked", hue: "bad", icon: "prohibited", description: "Can't continue until something changes, such as a limit." },
  could_not_run: { label: "Could not run", hue: "idle", icon: "dash", description: "A check or step never ran. Not a pass and not a fail." },
  not_run: { label: "Not run", hue: "idle", icon: "dash", description: "A required review that hasn't happened. Says who can run it." },
+ didnt_finish: { label: "Didn't finish", hue: "idle", icon: "dash", description: "A step started but stopped before it finished. It may have cost money. Not a pass and not a fail." },
+ not_confirmed: { label: "Not confirmed", hue: "idle", icon: "question", description: "Rovara didn't hear back about a request. Check asks what was recorded; nothing is sent again." },
  unknown: { label: "Unknown", hue: "idle", icon: "question", description: "Rovara can't confirm the state yet. It is checking." },
 } as const;
 const ICONS: Record<(typeof COPY)[StatusChipState]["icon"], ReactNode> = {
