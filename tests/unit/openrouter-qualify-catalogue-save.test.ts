@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 
 const script = new URL("../../scripts/openrouter-qualify.mjs", import.meta.url).href;
-type Report = { models: { model: string; status: string; causes: string[]; reason: string }[]; errors: string[]; chargedMicros: number; reservedMicros: number };
+type Report = { models: { model: string; status: string; causes: string[]; reason: string }[]; errors: string[]; chargedMicros: number; preCallHoldsMicros: number };
 type Catalogue = { models: unknown; endpoints: Record<string, unknown>; statuses?: Record<string, number> };
 const { main, qualify } = await import(script) as {
  main: (argv: string[], env: Record<string, string>) => Promise<number>;
@@ -66,7 +66,7 @@ it("replays all eligibility verdicts from the saved supplied catalogue without f
   expect(original.models.map(model => model.causes)).toEqual([["free_variant"], ["no_tools_support"], ["provider_routing"], ["unpriced_component"], ["per_model_cap"]]);
   expect(replay).toEqual(original);
   expect(replay.errors).toEqual([]);
-  expect(replay.chargedMicros).toBe(0); expect(replay.reservedMicros).toBe(0);
+  expect(replay.chargedMicros).toBe(0); expect(replay.preCallHoldsMicros).toBe(0);
   expect(requests).toBe(0);
  });
 });

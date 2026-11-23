@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 const script = new URL("../../scripts/openrouter-qualify.mjs", import.meta.url).href;
-type Report = { models: { reason: string; causes: string[] }[]; errors: string[]; chargedMicros: number; reservedMicros: number };
+type Report = { models: { reason: string; causes: string[] }[]; errors: string[]; chargedMicros: number; preCallHoldsMicros: number };
 const { qualify } = await import(script) as { qualify: (o: Record<string, unknown>) => Promise<Report> };
 const discovery = JSON.parse(readFileSync(new URL("../fixtures/model-gateway-prices/openrouter-discovery-absent-zero-20261121.json", import.meta.url), "utf8")) as { models: { model: string; reason: string; causes: string[] }[] };
 const catalogue = JSON.parse(readFileSync(new URL("../fixtures/openrouter-catalogue-20261122.json", import.meta.url), "utf8")) as { data: { id: string }[] };
@@ -19,7 +19,7 @@ it("rechecks the saved discovery report against the raw local catalogue; eligibl
    return Response.json({ data: entries });
   } });
   expect(report.errors, row.model).toEqual([]);
-  expect(report.chargedMicros).toBe(0); expect(report.reservedMicros).toBe(0);
+  expect(report.chargedMicros).toBe(0); expect(report.preCallHoldsMicros).toBe(0);
   const result = report.models[0]!;
   expect(result.reason, row.model).toBeTruthy(); expect(result.causes.length, row.model).toBeGreaterThan(0);
   // Reaching endpoint discovery proves catalogue eligibility. No provider snapshot
@@ -30,5 +30,5 @@ it("rechecks the saved discovery report against the raw local catalogue; eligibl
  expect(discovery.models).toHaveLength(441);
  expect(counts.catalogue_eligible).toBeGreaterThan(0);
  expect(Object.values(counts).reduce((a, b) => a + b, 0)).toBe(441);
- expect(counts).toEqual({ catalogue_eligible: 276, no_tools_support: 58, unpriced_component: 9, catalogue_id_redacted: 98 });
+ expect(counts).toEqual({ catalogue_eligible: 280, no_tools_support: 58, unpriced_component: 5, catalogue_id_redacted: 98 });
 });

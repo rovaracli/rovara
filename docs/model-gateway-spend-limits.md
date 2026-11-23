@@ -221,12 +221,12 @@ remain in force; generic no-endpoint/data-policy errors cannot qualify a tariff.
 The owner should first run a discovery dry run with a one-micro-dollar cap:
 
 ```sh
-node scripts/openrouter-qualify.mjs --all-models --report discovery-report.json --spend-cap 0.000001 --per-model-cap 0.05
+node scripts/openrouter-qualify.mjs --all-models --report discovery-report.json --spend-cap 0.000001 --per-model-cap 0.50
 ```
 
 The intent is free catalogue/endpoint lookups only: a first paid hold above
 one micro-dollar refuses before sending. Inspect the exclusions and
-`failuresByCause` before the $15 run, and confirm `reservedMicros` and
+`failuresByCause` before the $15 run, and confirm `preCallHoldsMicros` and
 `chargedMicros` are zero. Real endpoint data may exclude every route, for
 example through extra pricing keys that the bounded schema refuses. This cap
 is not a no-send mode: a one-micro-dollar hold can fit. A FAIL exit is expected
@@ -235,9 +235,28 @@ when the cap refuses or all routes are excluded.
 After checking discovery, the owner can run the same harness across the catalogue:
 
 ```sh
-node scripts/openrouter-qualify.mjs --all-models --report report.json --spend-cap 15.00 --per-model-cap 0.05
-node scripts/openrouter-qualify.mjs --all-models --report next-report.json --spend-cap 15.00 --per-model-cap 0.05 --resume report.json
+node scripts/openrouter-qualify.mjs --all-models --report report.json --spend-cap 15.00 --per-model-cap 0.50
+node scripts/openrouter-qualify.mjs --all-models --report next-report.json --spend-cap 15.00 --per-model-cap 0.50 --resume report.json
 ```
+
+The default and maximum per-model cap is **$0.50**. A smaller
+`--per-model-cap` is honored; larger values are clamped to $0.50. The overall
+cap remains separately configurable (default $15). For an owner rerun bounded
+below $1, use `--spend-cap 0.99`; a full catalogue run can require more.
+
+All four qualification controls start at `max_tokens: 1024`. Before sending,
+choose 512 if the endpoint ceiling or remaining overall/model budget cannot
+cover 1024. Endpoints below 512 refuse. There is no retry of an ambiguous paid
+call. Reasoning is requested at 256 tokens (128 for the 512 rung); the hold covers
+that output ceiling and, when reasoning pricing is absent, an additional 256
+completion-priced reasoning tokens. Refusal probes reuse a successful control
+and its full original hold. These small bounds are harness-local; they do not
+relax the gateway's installed tariff policy.
+
+`preCallHoldsMicros` is the **sum of pre-call holds**, including failed calls and
+recognized zero-debit refusals. It is a local conservative accounting counter,
+not a reservation with the provider or billed spend. The renamed field preserves
+the old counter's value; `chargedMicros` records readable billed debits separately.
 
 Every all-models CLI run saves its report (default `report.json`) and the raw
 fetched JSON next to it (`discovery-report-catalogue.json` in the discovery
@@ -263,6 +282,14 @@ catalogue prices never replace a missing endpoint tariff. Requests pin the exact
 endpoint tag in `provider.order` and `provider.only`, with `allow_fallbacks: false`.
 Every endpoint sharing that tag must be bounded and support tools; the reservation
 and receipt maximum use component maxima across all of them (and their overrides).
+Identity accepts exactly the requested ID, `<id>-YYYY-MM-DD` (the form OpenRouter
+actually returns, for example `openai/gpt-5-mini-2025-08-07`), `<id>-20YYMMDD`, or
+`<id>-MMDD`. Dates must exist in the calendar (year 20YY); MMDD uses the run's UTC
+year, or the year before when that date would still be in the future (a `-1231` id
+seen on 1 January is last December). No other alias or suffix is accepted. Calls retain raw `responseModel` and
+generation model IDs; tariff rows retain the normalized IDs actually observed
+in `observedModelIds` alongside the requested `model` routing ID.
+
 Different quantization/tag routes are pinned and priced separately. Estimated, ambiguous,
 unpriced and unsupported routes are excluded with reasons. Eligible routes retain
 the run-8 identity, BYOK and price-cap refusal checks plus the DEC 330 backstop.
@@ -274,8 +301,9 @@ All-models qualification normalizes **absent** components individually:
   adds `reasoning.max_tokens * completion` outside the ordinary output reservation,
   rounded upward, so output exposure includes at least
   `(max_tokens + reasoning.max_tokens) * completion`.
-- Absent `input_cache_write` is zero only because no cache-write directives are
-  sent. The existing unexpected-write refusal remains mandatory.
+- Absent `input_cache_write` is a candidate zero assumption; no cache-write directives
+  are sent. The existing unexpected-write refusal remains mandatory. Not requesting
+  writes does not prove their zero price.
 
 Finite decimal token prices are parsed as exact BigInt numerator/denominator pairs,
 including long strings such as `"0.0000000833333333333333"`. Token products are
@@ -286,13 +314,30 @@ exact token rates. The hidden-charge backstop compares with the rounded-up maxim
 that parses to zero); every other value refuses as `discount_nonzero:<value>`,
 including negative surcharges and unreadable values. Overrides obey the same rule.
 
+A model whose every advertised rate is zero is refused before anything is sent
+(check `priced_model`, cause `zero_priced`): its hold would be 0 and no positive price
+cap exists to probe, so no bound could be proven. A model with only some zero rates
+(for example a zero prompt rate) keeps a positive hold from its other rates. The
+prompt/completion zero-proof path therefore applies only to such mixed tariffs, and a
+zero prompt or completion rate relies on OpenRouter honouring `max_price` 0 (price-cap
+probes skip a zero cap), so such a row has fewer probes and stays unproven in practice.
 Explicit null, negative or malformed prices still refuse. Prompt/completion must
-be present and positive. Each CANDIDATE row records `assumedZero` (only the absent
+be present and nonnegative in all-models qualification; explicit zeroes require
+billed proof before promotion. Each row records `assumedZero` (only the absent
 components actually normalized to zero) and, when applicable,
-`reasoningBilledAtCompletion: true`. These are qualification report annotations,
-not an installed tariff or a change to runtime absence defaults. Promotion must
-review the extra qualification reservation and request restrictions; the runtime
-policy reader's legacy absent-price rules remain above.
+`reasoningBilledAtCompletion: true`. Every zero-priced component (explicit or
+assumed) needs a real successful bill
+before its proof can be recorded in `zeroPriceProof`. A zero prompt/read price
+requires a zero billed prompt breakdown with exclusively uncached/cached input,
+respectively; zero completion/reasoning requires an isolated zero billed output
+breakdown with the corresponding exercised token counters. Missing or unreadable
+breakdowns, unused components and failed calls supply no proof. The current
+receipts cannot isolate request fees or cache-write pricing, so those zero rates
+remain unproven. A row stays `CANDIDATE` until every zero has proof; `PROVEN`
+labels billing evidence only. Neither label is installed automatically. Resume
+recomputes the proof from retained call evidence and rejects edited labels or
+proof. Runtime absence defaults and the reviewed source installation process
+remain unchanged; the runtime policy reader's legacy rules remain above.
 
 `pricing.overrides` is parsed as flat price patches with recognized conditions:
 `min_prompt_tokens`, `context_length`, UTC `utc_start`/`utc_end` (HHMM, paired),
@@ -324,27 +369,30 @@ The DISCOVERY2 offline proof uses the owner's real model AND endpoint snapshot,
 `tests/fixtures/openrouter-discovery2-catalogue.json`. Each model is replayed
 independently to the reservation guard with a one-micro cap and an injected fetch
 that must never be called. Of 441 models, 256 have an eligible endpoint; the
-remaining counts are unpriced_component 17, no_tools_support 58,
-provider_routing 12, batch_variant 61, free_variant 11, router_alias 19, invalid_id 7.
-Each excluded model receives one deterministic classification in
-`briefs/codex/providers-fast/DISCOVERY2-COUNTS.md`; the runtime report retains all
+v3 remaining counts are unpriced_component 13, no_tools_support 58,
+provider_routing 16, batch_variant 61, free_variant 11, router_alias 26.
+Each excluded model receives one deterministic classification (the historical
+pre-v3 counts are in `briefs/codex/providers-fast/DISCOVERY2-COUNTS.md`); the runtime report retains all
 failed-route reasons. No paid qualification or installed staging behavior is
 proved by this replay. Missing saved endpoint evidence remains refused.
 
-The default overall cap is $15 and the default per-model cap is $0.05. Each paid
+The default overall cap is $15 and the default/maximum per-model cap is $0.50. Each paid
 call, including each refusal probe, reserves its full hold against both caps.
 Holds remain exposed even when a receipt fails; any higher observed debit is
 also retained. The model cap spans all of that model's provider routes. A model
 cap abandons that model and permits the next; an overall cap or shared
 authentication/credential stop prevents further paid calls. `notReached` lists
 models that received no paid attempt because of those stops. Actual charges,
-reserved holds and conservative exposure are separate report fields.
+the sum of pre-call holds and conservative exposure are separate report fields.
 
 A model passes when at least one eligible provider route passes; failed and
 excluded providers retain their own evidence. `failuresByCause` groups failed
 models by cause, counting a model once per cause. A cap-abandoned model fails.
 Only passing models' passing routes enter `proposedTariffRows`, labelled
-`CANDIDATE`. No report modifies the reviewed tariff source or installs prices.
+`CANDIDATE` until all zero-component proofs exist, then `PROVEN` for billing
+evidence. The 1024/512 probe bounds and small reasoning budgets are also
+harness-only; any later installed tariff must separately satisfy the runtime
+policy's existing bounds and receive live/review evidence for those bounds. No report modifies the reviewed tariff source or installs prices.
 
 Resume skips a prior PASS only when its current eligible tariffs and pinned
 provider identities match and the harness/policy/token-validation implementation hash is

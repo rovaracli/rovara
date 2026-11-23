@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 const script = new URL("../../scripts/openrouter-qualify.mjs", import.meta.url).href;
 type Row = { model: string; route: string; status: string; pricing: Record<string, string> };
 type Result = { model: string; status: string; reason: string; resumed?: boolean; providers: { status: string; reasons: Record<string, string> }[] };
-type Report = { status: string; harnessVersion: string; models: Result[]; chargedMicros: number; reservedMicros: number; exposureMicros: number; notReached: string[]; failuresByCause: Record<string, number>; proposedTariffRows: Row[]; errors: string[] };
+type Report = { status: string; harnessVersion: string; models: Result[]; chargedMicros: number; preCallHoldsMicros: number; exposureMicros: number; notReached: string[]; failuresByCause: Record<string, number>; proposedTariffRows: Row[]; errors: string[] };
 const { qualify, main } = await import(script) as { qualify: (options: Record<string, unknown>) => Promise<Report>; main: (argv: string[], env?: Record<string, string>) => Promise<number> };
 const key = "all-models-fixture-key-never-print";
 const pricing = { prompt: "0.000000001", completion: "0.000000002", internal_reasoning: "0.000000003", request: "0.000001", input_cache_read: "0", input_cache_write: "0" };
@@ -26,9 +26,9 @@ function server(entries = [entry("vendor/a"), entry("vendor/b")], endpoints = [e
    if (Object.values(caps).some(v => v === 0)) return Response.json({ error: { code: "404", message: mode === "refusal" ? "No endpoints found" : "No endpoints found that satisfy the max price for this request." } }, { status: 404 });
    if (mode === "auth") return Response.json({ error: {} }, { status: 401 });
    if (mode === "unknown") return new Response("invalid");
-   const cost = mode === "overage" ? "1" : "0.00000306";
-   generation = { model: mode === "identity" ? "vendor/wrong" : body.model, provider_name: body.provider.only[0], native_tokens_prompt: 10, native_tokens_completion: 1025, native_tokens_reasoning: 341, native_tokens_cached: 0, total_cost: cost, is_byok: false };
-   return Response.json({ id: `gen-${paid.length}`, model: body.model, choices: [{ message: { content: "Four" } }], usage: { prompt_tokens: 10, completion_tokens: 1025, completion_tokens_details: { reasoning_tokens: 341 }, cost, cost_details: { upstream_inference_cost: cost } } });
+   const cost = mode === "overage" ? "1" : "0.000002036";
+   generation = { model: mode === "identity" ? "vendor/wrong" : body.model, provider_name: body.provider.only[0], native_tokens_prompt: 10, native_tokens_completion: 513, native_tokens_reasoning: 171, native_tokens_cached: 0, total_cost: cost, is_byok: false };
+   return Response.json({ id: `gen-${paid.length}`, model: body.model, choices: [{ message: { content: "Four" } }], usage: { prompt_tokens: 10, completion_tokens: 513, completion_tokens_details: { reasoning_tokens: 171 }, cost, cost_details: { upstream_inference_cost: cost } } });
   }
   if (mode === "generation") return new Response("", { status: 503 });
   return Response.json({ data: generation });
@@ -46,7 +46,7 @@ it("qualifies every model provider-by-provider and emits only labelled PASS cand
  expect(r.report.proposedTariffRows).toHaveLength(4);
  expect(r.report.models.every(m => m.status === "PASS" && m.providers.length === 2 && m.reason)).toBe(true);
  expect(r.report.proposedTariffRows.every(row => row.status === "CANDIDATE")).toBe(true);
- expect(r.report.exposureMicros).toBe(r.report.reservedMicros);
+ expect(r.report.exposureMicros).toBe(r.report.preCallHoldsMicros);
 });
 it("filters missing tools, missing or estimated prices and unsafe auxiliary components before paid calls", async () => {
  const r = await run({}, server([
@@ -69,20 +69,20 @@ it.each([
  expect(r.paid).toHaveLength(0); expect(r.report.models[0]?.status).toBe("FAIL"); expect(r.report.failuresByCause[cause]).toBe(1);
 });
 it("reserves the overall cap before every call and lists unreached models", async () => {
- const r = await run({ spendCap: "0.00002", perModelCap: "1" }, server([entry("vendor/a"), entry("vendor/b"), entry("vendor/c")]));
- expect(r.paid).toHaveLength(1); expect(r.report.exposureMicros).toBeLessThanOrEqual(20);
+ const r = await run({ spendCap: "0.000006", perModelCap: "1" }, server([entry("vendor/a"), entry("vendor/b"), entry("vendor/c")]));
+ expect(r.paid).toHaveLength(1); expect(r.report.exposureMicros).toBeLessThanOrEqual(6);
  expect(r.report.notReached).toEqual(["vendor/b", "vendor/c"]);
  expect(r.report.failuresByCause.overall_cap).toBe(3); expect(r.report.proposedTariffRows).toEqual([]);
 });
 it("enforces the per-model cap across providers and continues with the next model", async () => {
- const r = await run({ perModelCap: "0.00006" }, server(undefined, [endpoint(), endpoint("second-provider")]));
+ const r = await run({ perModelCap: "0.000026" }, server(undefined, [endpoint(), endpoint("second-provider")]));
  expect(r.paid.filter(p => p.model === "vendor/a")).toHaveLength(5);
  expect(r.paid.filter(p => p.model === "vendor/b")).toHaveLength(5);
  expect(r.report.failuresByCause.per_model_cap).toBe(2); expect(r.report.proposedTariffRows).toEqual([]);
 });
 it.each(["unknown", "auth", "overage"])("retains holds and safe debits on %s and stops safely", async mode => {
  const r = await run({ spendCap: "0.1", perModelCap: "0.05" }, server(undefined, undefined, mode));
- expect(r.report.status).toBe("FAIL"); expect(r.report.reservedMicros).toBeGreaterThan(0);
+ expect(r.report.status).toBe("FAIL"); expect(r.report.preCallHoldsMicros).toBeGreaterThan(0);
  if (mode !== "unknown") { expect(r.paid).toHaveLength(1); expect(r.report.notReached).toEqual(["vendor/b"]); }
  if (mode === "overage") expect(r.report.chargedMicros).toBe(1000000);
 });
@@ -93,7 +93,7 @@ it.each([["identity", "identity_mismatch"], ["refusal", "price_cap_refusal"], ["
 it("resumes matching PASS models and carries evidence without spending again", async () => {
  const first = await run(); const r = await run({ resumeReport: first.report });
  expect(r.paid).toHaveLength(0); expect(r.report.status).toBe("PASS"); expect(r.report.models.every(m => m.resumed)).toBe(true);
- expect(r.report.proposedTariffRows).toEqual(first.report.proposedTariffRows); expect(r.report.reservedMicros).toBe(0);
+ expect(r.report.proposedTariffRows).toEqual(first.report.proposedTariffRows); expect(r.report.preCallHoldsMicros).toBe(0);
 });
 it("requalifies when harness, tariff, provider set or PASS status changes", async () => {
  const first = await run();
@@ -147,9 +147,9 @@ it.each(["report", "catalogue"])("prints the full paid report before an unwritab
   expect(report.status).toBe("PASS");
   expect(report.models).toHaveLength(1);
   expect(report.proposedTariffRows).toHaveLength(1);
-  expect(report.chargedMicros).toBe(16);
-  expect(report.reservedMicros).toBeGreaterThan(0);
-  expect(report.exposureMicros).toBe(report.reservedMicros);
+  expect(report.chargedMicros).toBe(12);
+  expect(report.preCallHoldsMicros).toBeGreaterThan(0);
+  expect(report.exposureMicros).toBe(report.preCallHoldsMicros);
   expect(exitCode).toBe(1);
   expect(outputAtFailure).toBe(output.join(""));
   expect(errors.join("")).toContain(failedPath);
