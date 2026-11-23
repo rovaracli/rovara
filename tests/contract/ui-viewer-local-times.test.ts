@@ -28,6 +28,7 @@ const isoCallExceptions = new Map([
  ["api/task-action.ts:pendingNow:startedAt:newDate(p.startedAt).toISOString()", "Pending-action recovery record"],
  ["api/task-action.ts:runTaskAction:startedAt:newDate(request.startedAt).toISOString()", "Pending-action recovery record"],
  ["api/task-action.ts:useTaskAction:startedAt:newDate(saved.request.startedAt).toISOString()", "Pending-action recovery record"],
+ ["screens/company-money-ai-read/action-host.ts:entry:startedAt:newDate().toISOString()", "Pending-action lock record (stored in localStorage, never displayed)"],
  ["screens/admin/MembersScreen.tsx:action:checkedAt:newDate().toISOString()", "Role receipt instant, formatted by its consumer"],
  ["screens/agents/AgentProfileScreen.tsx:[month]:newDate().toISOString().slice", "UTC spending API month, sliced by the separately guarded expression"],
  ["screens/inbox/InboxPreviewScreen.tsx:updated:updatedWords(newDate(tasks.dataUpdatedAt).toISOString(),now)", "Input to updatedWords relative-time formatter"],
