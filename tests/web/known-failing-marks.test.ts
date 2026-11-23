@@ -55,8 +55,8 @@ it("lists each mark with its test, check, who and when, and an Undo for each", a
  expect(await section.findByText("tests/a.py::one")).toBeTruthy();
  expect(section.getByText("tests/b.py::two")).toBeTruthy();
  expect(section.getByText("2 of 500 marked")).toBeTruthy();
- expect(section.getByText("Check unit · Marked by Maya on 2026-11-01")).toBeTruthy();
- expect(section.getByText("Check lint · Marked by you on 2026-11-01")).toBeTruthy();
+ expect(section.getByText("Check unit · Marked by Maya on Nov 1, 2026")).toBeTruthy();
+ expect(section.getByText("Check lint · Marked by you on Nov 1, 2026")).toBeTruthy();
  expect(section.getAllByRole("button", { name: /^Undo / })).toHaveLength(2);
  expect(section.getByText("Once nightly runs are on, a mark also goes away by itself after a nightly run shows the test passing.")).toBeTruthy();
 });

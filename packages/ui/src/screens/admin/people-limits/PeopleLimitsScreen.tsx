@@ -68,7 +68,7 @@ function Loaded({ data, project, setProject, stale }: { data: PeopleLimitsRead; 
  return <>
   {stale && <p role="alert" className="rv-muted">These numbers are stale: the last refresh failed.</p>}
   {data.projects.length > 0 && <div className="rv-people-limits-filter"><Select label="Show people on" value={project ?? ALL} onValueChange={value => { setProject(value === ALL ? undefined : value); }} placeholder="All people" options={[{ value: ALL, label: "All people" }, ...data.projects.map(name => ({ value: name, label: name }))]} /></div>}
-  <AdminSection title={`Spending in ${month}`} note="Whole company, by name">
+  <AdminSection title={`Spending in ${month}`} note="Whole company, by name (UTC billing month)">
    {data.people.length === 0
     ? <p className="rv-muted" data-testid="people-limits-empty">{data.project === undefined ? "No one is in the company yet." : "No one is on this project."}</p>
     : <DataTable caption="People and limits" columns={columns} rows={data.people} rowKey={row => row.developerId} />}

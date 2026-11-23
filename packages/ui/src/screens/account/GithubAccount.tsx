@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 // "Your GitHub account" (L4-GH): link the GitHub account that is yours, so Rovara knows which commits and pull requests are yours. It is not a way to sign in (that is "Connected
 // sign-ins" above). Connecting sends you to GitHub and back here; Cloud's server keeps the state, the browser only gets GitHub's address.
 // The page shows the linked login and an Unlink. Words come from this app, never from GitHub or Code.
@@ -15,7 +16,7 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { AdminSection, NotConnected } from "../admin/parts.js";
 
-const when = (value: string) => new Date(value).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+const when = (value: string) => viewerTime(new Date(value), { year: "numeric", month: "short", day: "numeric" });
 
 export function GithubAccount() {
  const host = useAppHost(), api = createApiClient(host), query = useQueryClient(), [params, setParams] = useSearchParams();

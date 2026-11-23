@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 // Guided onboarding PR 12b (design section 4 "Connections page", section 3 shared rules; DEC 254l item 2): Company settings, Connections. Each integration with
 // its account name, who connected it and when, its health, Reconnect and Disconnect. Connect: a company owner or admin. Disconnect: a company OWNER only
 // (Cloud checks it before Code is asked; Code checks again). Everything shown is read from Code through Cloud; refusals show Cloud's fixed words.
@@ -33,7 +34,7 @@ function disconnectWords(error: unknown, what: string): string {
   default: return fallback;
  }
 }
-const when = (at: string) => { const date = new Date(at);return Number.isNaN(date.getTime()) ? "at an unknown time" : `on ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(date)}`; };
+const when = (at: string) => { const date = new Date(at);return Number.isNaN(date.getTime()) ? "at an unknown time" : `on ${viewerTime(date, { dateStyle: "medium" })}`; };
 const byWords = (by: { kind: string; name?: string | undefined } | undefined) => by === undefined ? "" : by.kind === "operator" ? "by a Rovara operator" : by.name === undefined ? "by a teammate" : `by ${by.name}`;
 
 /** One "Disconnect" with its confirm, the owner-only rule, and the result. */

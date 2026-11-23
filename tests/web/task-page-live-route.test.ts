@@ -165,7 +165,7 @@ it.each(["/app/sessions/", "/s/"])("shows the Request start in the viewer's loca
  const readings: string[] = [];
  try {
   // The task fixture starts at 2026-11-15T02:00:00.000Z in both zones.
-  for (const [zone, expected] of [["America/Los_Angeles", "Started Nov 14, 18:00"], ["Pacific/Auckland", "Started Nov 15, 15:00"]] as const) {
+  for (const [zone, expected] of [["America/Los_Angeles", "Started Nov 14, 2026, 6:00 PM"], ["Pacific/Auckland", "Started Nov 15, 2026, 3:00 PM"]] as const) {
    process.env.TZ = zone;
    const ui = mount(prefix + ID.plan);
    try {

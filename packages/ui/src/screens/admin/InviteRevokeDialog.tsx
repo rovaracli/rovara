@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useAppHost } from "../../host.js";
 import { ApiError } from "../../api/errors.js";
@@ -59,13 +60,13 @@ export function InviteRevokeDialog({ orgId, company, target, checking, changed, 
  return <Dialog title="Revoke invite" description="Review the invite and its effect before confirming." open={open} onOpenChange={value => { if (!value && !sending.current) setOpen(false); }} onCloseAutoFocus={event => { event.preventDefault();onClose();restoreFocus(); }}>
   <div className="rv-admin-role-review" aria-busy={busy}>
    <p>Company: <VisibleText text={company} /></p><p>Destination: <VisibleText text={target.label} /></p><p>Company role: {target.role === "admin" ? "Admin" : "Member"}</p>
-   <p>Created <time dateTime={target.createdAt}>{new Date(target.createdAt).toLocaleString("en-US", { timeZone: "UTC" })}</time> UTC.</p>
-   <p>Expires <time dateTime={target.expiresAt}>{new Date(target.expiresAt).toLocaleString("en-US", { timeZone: "UTC" })}</time> UTC.</p>
+   <p>Created <time dateTime={target.createdAt}>{viewerTime(new Date(target.createdAt))}</time>.</p>
+   <p>Expires <time dateTime={target.expiresAt}>{viewerTime(new Date(target.expiresAt))}</time>.</p>
    <p>Stops this invite link from being used. People who already joined keep their access. Running work is not cancelled.</p>
    <details><summary>Invite reference</summary><VisibleText text={target.inviteId} /></details>
    <p id={reasonId} role={changed && !sent && !settled ? "alert" : "status"}>{checking ? "Checking company access..." : changed && !sent && !settled ? "Invite details changed. Close and review the directory again." : staleData ? "Invite list is stale. Refresh it before confirming." : busy ? "Checking the current invite..." : "This action only affects this invite in this company."}</p>
    {message && <p ref={receipt} tabIndex={verified ? -1 : undefined} role={settled ? "status" : "alert"}>{message}</p>}
-   {settled && current !== undefined && <p className="rv-muted">{verified ? "Verified at" : "Checked at"} <time dateTime={current.checkedAt}>{new Date(current.checkedAt).toLocaleString("en-US", { timeZone: "UTC" })}</time> UTC.</p>}
+   {settled && current !== undefined && <p className="rv-muted">{verified ? "Verified at" : "Checked at"} <time dateTime={current.checkedAt}>{viewerTime(new Date(current.checkedAt))}</time>.</p>}
    {!sent && !settled && <Button variant="danger" busy={busy} disabled={!ready} aria-disabled={checking || changed || staleData || !ready} aria-describedby={reasonId} onClick={() => { void commit(); }}>Confirm revoke</Button>}
    {!busy && !settled && <Button ref={recovery} aria-disabled={checking} onClick={() => { if (sending.current || checking) return;sending.current = true;setBusy(true);void check().finally(() => { sending.current = false;if (alive.current) setBusy(false); }); }}>Check current invite</Button>}
   </div>

@@ -5,6 +5,7 @@ import { useAppHost, type AppHost } from "../../../host.js";
 import type { Reader } from "../../../api/client.js";
 import { ApiError, apiError } from "../../../api/errors.js";
 import { bedrockView, bedrockSetup, bedrockCommand, type BedrockView } from "../../../api/bedrock.js";
+import { viewerTime } from "../../../design/viewer-time.js";
 import { Button } from "../../../design/Button.js";
 import { useAdminContext } from "../AdminLayout.js";
 
@@ -117,7 +118,7 @@ function BedrockForm() {
   {state.error && <p role="alert">{state.error}</p>}
   {state.lock && <p role="alert">{unknown}</p>}{notice && <p role="status">{notice}</p>}
   <Button disabled={state.busy} onClick={() => { void read(); }}>Check Bedrock connection</Button>
-  {state.read && !state.error && <><p>{state.read.usage}</p>{connection ? <><p>{connection.roleArn}</p><p>Region: {connection.region}. Connected: {connection.connected ? "Yes" : "No"}. Checked: {new Date(connection.checkedAt).toISOString()}</p><ul>{connection.models.map(m => <li key={m.name}>{m.name}: {m.state}</li>)}</ul>{connection.notEnabledSteps && <p>{connection.notEnabledSteps}</p>}</> : <p>No Bedrock role is connected.</p>}</>}
+  {state.read && !state.error && <><p>{state.read.usage}</p>{connection ? <><p>{connection.roleArn}</p><p>Region: {connection.region}. Connected: {connection.connected ? "Yes" : "No"}. Checked: {viewerTime(connection.checkedAt)}</p><ul>{connection.models.map(m => <li key={m.name}>{m.name}: {m.state}</li>)}</ul>{connection.notEnabledSteps && <p>{connection.notEnabledSteps}</p>}</> : <p>No Bedrock role is connected.</p>}</>}
   {allowed && <><label>Bedrock region<input value={region} onChange={e => { setRegion(e.target.value); setModels({}); setPresets({}); setCommand(undefined); }} /></label>
    <Button onClick={() => { void loadModels(); }}>Load Bedrock models</Button>
    {Object.entries(presets).map(([name, id]) => <label key={name}><input type="checkbox" checked={models[name] === id} onChange={e => { const next = { ...models }; if (e.target.checked) next[name] = id; else delete next[name]; setModels(next); setCommand(undefined); }} />{name}</label>)}
@@ -126,7 +127,7 @@ function BedrockForm() {
    <label>Bedrock role ARN<input value={roleArn} onChange={e => setRoleArn(e.target.value)} /></label>
    <Button disabled={!roleArn || Object.keys(models).length === 0} onClick={() => { void change("PUT"); }}>Check and save Bedrock</Button>
    {connection && <Button onClick={() => { void change("DELETE"); }}>Remove Bedrock connection</Button>}
-   {state.read?.removedUntil && <><p>Recovery available until {new Date(state.read.removedUntil).toISOString()}.</p><Button onClick={() => { void change("POST"); }}>Recover Bedrock connection</Button></>}
+   {state.read?.removedUntil && <><p>Recovery available until {viewerTime(state.read.removedUntil)}.</p><Button onClick={() => { void change("POST"); }}>Recover Bedrock connection</Button></>}
   </>}
  </section>;
 }

@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 // The fixed words of the setup limits and locks screens. A number, a name or a message that comes from the server is shown as text through VisibleText; nothing here is built from one.
 import type { LimitSetting, SetupLimitName } from "../../api/setup-limits.js";
 
@@ -41,7 +42,7 @@ export const SETUP_LOCKS = {
 
 export const expiresText = (proposedAt: string): string => {
  const at = Date.parse(proposedAt);
- return Number.isFinite(at) ? `It expires at ${new Date(at + 24 * 3_600_000).toISOString().slice(0, 16).replace("T", " ")} UTC.` : "It expires 24 hours after it was proposed.";
+ return Number.isFinite(at) ? `It expires at ${viewerTime(at + 24 * 3_600_000)}.` : "It expires 24 hours after it was proposed.";
 };
 
 /** A limit as a person reads it: the model spend in dollars, the rest as counts. */

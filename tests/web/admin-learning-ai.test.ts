@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 // PRODUCT-LEARNING-CONNECT-ROUTE: the Learning AI key page in the Hybrid 1 admin area (company admins). The key is write-only (sent once, never
 // shown, never in the page after), every change is sent at once (no step-up since owner DEC 254zzz73), writes carry the provider, a request id and the revision read;
 // the learning cap and the lessons-paused reasons are shown; "not connected yet" when Cloud has no product AI settings.
@@ -79,5 +80,12 @@ describe("learning AI key page", () => {
  it("says not connected yet when Cloud has no learning AI settings", async () => {
   const f = mount("/app/admin/learning-ai", () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } }));
   try { expect(await screen.findByTestId("not-connected")).toBeTruthy(); } finally { f.close(); }
+ });
+});
+
+it("renders the learning key's update time in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount("/app/admin/learning-ai", () => ({ status: 200, body: { ...view(true), accounts: { ...view(true).accounts, anthropic: { connected: true, updatedAt: Date.parse(VIEWER_INSTANT) } } } }));
+  try { expect(await screen.findByText(`last changed ${expected.short}`, { exact: false })).toBeTruthy(); } finally { f.close(); }
  });
 });

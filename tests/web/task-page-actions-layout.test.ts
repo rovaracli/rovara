@@ -15,6 +15,7 @@ import { meFixture, navFixture } from "./support/fixtures.js";
 import { workspaceFixture, workspaceWorkflow } from "./support/workspace-fixture.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 
 const operationId: unknown = expect.any(String);
 const TASK = "11111111-1111-4111-8111-111111111111", SESSION = "ses_aaaaaaaaaaaaaaaaaaaa", SESSION_PATH = "/v1/app/sessions/" + SESSION;
@@ -242,15 +243,16 @@ for (const live of [false, true]) it(`the skip-design-review confirmation (${liv
  } finally { ui.unmount();router.dispose();query.clear(); }
 });
 
-it("the task page reads times in the viewer's own clock with no zone name; the older page keeps its stable UTC reading", () => {
- const entries = [{ key: "approval:a", kind: "approval", what: "plan", outcome: "approved", by: "Ana", surface: "slack", at: "2026-11-20T10:03:00.000Z" }] as never;
- const local = new Date("2026-11-20T10:03:00.000Z");
- const expected = ["Nov"].concat([String(local.getDate()) + ",", String(local.getHours()).padStart(2, "0") + ":" + String(local.getMinutes()).padStart(2, "0")]).join(" ").replace("Nov", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][local.getMonth()]!);
- expect(localWhenWords("2026-11-20T10:03:00.000Z")).toBe(expected);
- expect(localWhenWords("2026-11-20T10:03:00.000Z")).not.toMatch(/UTC/u);
- expect(decisionRows(entries, true)[0]!.who).toBe("Ana, in Slack, " + expected);
- expect(decisionRows(entries)[0]!.who).toBe("Ana, in Slack, " + whenWords("2026-11-20T10:03:00.000Z"));
- expect(decisionRows(entries)[0]!.who).toMatch(/UTC$/u);
+it("the task page and older decision rows read times in the viewer's own clock with no zone name", async () => {
+ const entries = [{ key: "approval:a", kind: "approval", what: "plan", outcome: "approved", by: "Ana", surface: "slack", at: VIEWER_INSTANT }] as never;
+ await inViewerZones(async expected => {
+  expect(localWhenWords(VIEWER_INSTANT)).toBe(expected.clock);
+  expect(whenWords(VIEWER_INSTANT)).toBe(expected.clock);
+  expect(decisionRows(entries, true)[0]!.who).toBe("Ana, in Slack, " + expected.clock);
+  expect(decisionRows(entries)[0]!.who).toBe("Ana, in Slack, " + expected.clock);
+  expect(decisionRows(entries, true)[0]!.who).not.toMatch(/UTC/u);
+  expect(decisionRows(entries)[0]!.who).not.toMatch(/UTC/u);
+ });
  expect(localWhenWords("not a time")).toBe("not a time");
 });
 

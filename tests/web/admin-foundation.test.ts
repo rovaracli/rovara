@@ -1,5 +1,6 @@
 // TRIAGE-UAT-0530 item 10c: unpopulated sign-in methods are removed; directory behavior remains.
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -227,7 +228,7 @@ it("still hides a cached list on a background permission refusal", async () => {
  const f = mount();await screen.findByText("Maya");f.request.mockImplementation(async r => r.path.endsWith("/members") ? { status: 403, body: { error: { code: "FORBIDDEN", message: "fixture denied" } } } : { status: 200, body: f.me });await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "members"] }); });expect(await screen.findByText("You don't have permission to view company members.")).toBeTruthy();expect(screen.queryByRole("table", { name: "Company members" })).toBeNull();f.close();
 });
 it("names the verified person and check time on the page receipt", async () => {
- let role = "member";const f = mount({ respond: async r => { if (r.method === "PUT") { role = "admin";return { status: 200, body: { developerId: member.developerId, role } }; }return { status: 200, body: r.path.endsWith("/members") ? { members: [{ ...member, role }] } : f.me }; } });await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Make Maya an admin" }));fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));await screen.findByText("Company role verified: Admin.");fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));const receipt = (await screen.findByText(/Maya.*Admin/)).closest("[role=status]");expect(receipt?.textContent).toContain("UTC");expect(Number.isFinite(Date.parse(receipt?.querySelector("time")?.dateTime ?? ""))).toBe(true);f.close();
+ let role = "member";const f = mount({ respond: async r => { if (r.method === "PUT") { role = "admin";return { status: 200, body: { developerId: member.developerId, role } }; }return { status: 200, body: r.path.endsWith("/members") ? { members: [{ ...member, role }] } : f.me }; } });await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Make Maya an admin" }));fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));await screen.findByText("Company role verified: Admin.");fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));const receipt = (await screen.findByText(/Maya.*Admin/)).closest("[role=status]");expect(receipt?.textContent).not.toContain("UTC");expect(Number.isFinite(Date.parse(receipt?.querySelector("time")?.dateTime ?? ""))).toBe(true);f.close();
 });
 it("consumes the own member receipt history state without redisplaying it on Back", async () => {
  const state = { roleChange: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64), role: "member" } };const f = mount({ path: "/app/admin", role: "member", state });await screen.findByText("Your company role is now Member. Administration access has ended.");await waitFor(() => expect(f.router.state.location.state).toBeNull());expect(screen.getByText("Your company role is now Member. Administration access has ended.")).toBeTruthy();
@@ -249,4 +250,11 @@ for (const role of ["owner", "admin"] as const) it(`offers How we work but no He
 it("admin navigation links disappear with company access", async () => {
  const f = mount({ role: "member" });
  try { await screen.findByRole("heading", { name: "Administration unavailable" });expect(screen.queryByRole("link", { name: "Health" })).toBeNull();expect(screen.queryByRole("link", { name: "How we work" })).toBeNull(); } finally { f.close(); }
+});
+
+it("renders a member's joined date in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount({ respond: async r => ({ status: 200, body: r.path === "/v1/app/me" ? AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] }) : { members: [{ ...member, joinedAt: VIEWER_INSTANT }] } }) });
+  try { await screen.findByText("Maya");expect(f.container.textContent).toContain(expected.date);expect(screen.queryByRole("columnheader", { name: "Joined (UTC)" })).toBeNull(); } finally { f.close(); }
+ });
 });

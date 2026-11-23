@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 // The Hybrid 1 admin pages (DEC 223): grouped navigation, Spending with real amounts and its over-budget states, company settings and the account
 // page, each with its "not connected yet" state (no step-up in front of any action since owner DEC 254zzz73).
 import { beforeEach, describe, expect, it } from "vitest";
@@ -341,4 +342,11 @@ it("Overview distinguishes an empty month from a fault without showing invented 
 it("only accepts the explicit empty answer without contradictory amounts", () => {
  expect(readOrgSpend({ month: "2026-11", empty: true })).toEqual({ month: "2026-11", empty: true });
  for (const extra of [{ spentThisMonthUsd: 0 }, { provisionalMicros: 1 }, { month: "bad" }]) expect(() => readOrgSpend({ month: "2026-11", empty: true, ...extra })).toThrow();
+});
+
+it("renders the pending company-rule expiry in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount("/app/admin/settings", r => r.path === "/v1/app/org/settings" ? ok(settingsBody({ pending: { changeId: "chg_" + "a".repeat(20), proposedBy: "c", proposedAt: VIEWER_INSTANT, expiresAt: VIEWER_INSTANT, settings: { instructions: [{ text: "x", priority: "preferred" }] } } })) : ok({}));
+  try { expect(await screen.findByText(`until ${expected.day}`, { exact: false })).toBeTruthy(); } finally { f.close(); }
+ });
 });

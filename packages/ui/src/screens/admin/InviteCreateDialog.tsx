@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ReviewedInviteCreateBodySchema } from "@agentx/contracts/web";
 import type { z } from "zod";
@@ -12,7 +13,6 @@ import { VisibleText } from "../../design/VisibleText.js";
 import type { InviteRevokeTarget } from "./InviteRevokeDialog.js";
 type Intent = z.infer<typeof ReviewedInviteCreateBodySchema>;
 interface Props { open: boolean; orgId: string; company: string; role: "owner" | "admin"; accessAllowed: boolean; checking: boolean; staleData: boolean; onClose: () => void; restoreFocus: () => void; onApplied: () => void; onDenied: () => void; onProgress: (resume: boolean, inviteId?: string) => void; onRevoke: (target: InviteRevokeTarget) => void; onRestart: () => void }
-const utc = (value: string) => new Date(value).toLocaleString("en-US", { timeZone: "UTC" });
 const unknown = "The creation outcome is unknown. Check this request before creating another invite.";
 const lostLink = "This invite was created, but its link cannot be recovered. Revoke this invite before creating a replacement.";
 async function bounded<T>(work: Promise<T>): Promise<T> { let timer: ReturnType<typeof setTimeout> | undefined;try { return await Promise.race([work, new Promise<T>((_, reject) => { timer = setTimeout(() => { reject(new Error("Invite operation timed out.")); }, 30_000); })]); } finally { clearTimeout(timer); } }
@@ -104,8 +104,8 @@ export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, 
    </>}
    {checking && <p role="status">Checking company access...</p>}{staleData && <p role="alert">Invite list is stale. Refresh it before continuing.</p>}
    {(feedback || scopeChanged) && <p ref={notice} tabIndex={-1} role={!scopeChanged && (canCopy || terminal || copied) ? "status" : "alert"}>{scopeChanged ? "Your company access changed. The creation outcome is unknown. Check this request before continuing." : feedback}</p>}
-   {receipt && <><p>Expires <time dateTime={receipt.expiresAt}>{utc(receipt.expiresAt)}</time> UTC.</p><details><summary>Invite reference</summary><VisibleText text={receipt.inviteId} /></details></>}
-   {current && <p>Checked at <time dateTime={current.checkedAt}>{utc(current.checkedAt)}</time> UTC.</p>}
+   {receipt && <><p>Expires <time dateTime={receipt.expiresAt}>{viewerTime(receipt.expiresAt)}</time>.</p><details><summary>Invite reference</summary><VisibleText text={receipt.inviteId} /></details></>}
+   {current && <p>Checked at <time dateTime={current.checkedAt}>{viewerTime(current.checkedAt)}</time>.</p>}
    {copyReady && <><p>Copy this private link before closing. Closing discards it; revoke it if you do not need it.</p><Button variant="primary" busy={busy} aria-disabled={locked || roleBlocked} onClick={() => { void copy(); }}>Copy invite link</Button></>}
    {sent && !terminal && !copyReady && !restartReview && <Button busy={busy} aria-disabled={locked} onClick={() => { void recover(); }}>Check creation request</Button>}
    {sent && !terminal && missingReceipt && receipt === undefined && !restartReview && <Button aria-disabled={locked || busy} onClick={() => { if (!locked && !busy && !sending.current) setRestartReview(true); }}>Start again</Button>}

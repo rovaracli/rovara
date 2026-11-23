@@ -1,3 +1,4 @@
+import { viewerTime } from "../../../design/viewer-time.js";
 // Sign-in clients (Hybrid 1, DEC 223): the apps and company logins that can sign people in to this company. Read only here: a client is made and changed in Rovara Code.
 // Cloud passes the list through once Code serves it; until then the page says "not connected yet" (proposed route in api/admin-company.ts).
 import { Link } from "react-router";
@@ -14,7 +15,7 @@ import { AdminSection, NotConnected } from "../parts.js";
 
 const reader = { parse: readSignInClients };
 const KINDS: Record<string, string> = { web: "Web app", cli: "Command line", slack: "Slack", oidc: "Company login", other: "Other" };
-const when = (value: string | undefined) => { const at = value === undefined ? Number.NaN : Date.parse(value); return Number.isNaN(at) ? "Never" : new Date(at).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }); };
+const when = (value: string | undefined) => { const at = value === undefined ? Number.NaN : Date.parse(value); return Number.isNaN(at) ? "Never" : viewerTime(new Date(at), { year: "numeric", month: "short", day: "numeric" }); };
 const columns: readonly Column<SignInClient>[] = [
  { key: "name", title: "Client", render: client => <b><VisibleText text={client.name} /></b> },
  { key: "kind", title: "Kind", render: client => KINDS[client.kind] ?? "Other" },

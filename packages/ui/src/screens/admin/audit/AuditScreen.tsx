@@ -59,7 +59,7 @@ function AuditView() {
  {data.engine.state !== "connected" && <p role="note"><VisibleText text={data.engine.message ?? "Engine records are not in this list."} /></p>}
  <p role="status" aria-label="Audit records shown on this page" aria-live="polite" aria-atomic="true">Page {page + 1}: {data.records.length} {data.records.length === 1 ? "record" : "records"}, up to {AUDIT_PAGE_SIZE} per page.</p>
  {data.records.length === 0 ? <p>No audit records for this page and time range.</p> : <DataTable caption="Audit records" rows={data.records} rowKey={row => row.id} columns={[
- { key: "at", title: "When (UTC)", render: row => checkedTime(row.at) },
+ { key: "at", title: "When", render: row => checkedTime(row.at) },
  { key: "who", title: "Who", render: row => <VisibleText text={row.actor.name} /> },
  { key: "action", title: "Action", render: row => <VisibleText text={row.action} /> },
  { key: "subject", title: "About", render: row => <VisibleText text={row.project === undefined ? row.subject : row.subject === "" ? row.project : `${row.subject} (${row.project})`} /> },

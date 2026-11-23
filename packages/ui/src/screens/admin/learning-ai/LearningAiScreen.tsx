@@ -1,3 +1,4 @@
+import { viewerTime } from "../../../design/viewer-time.js";
 // Learning AI key (PRODUCT-LEARNING-CONNECT-ROUTE, DEC 226): the company's own AI provider account that lessons' learning calls run on, the
 // company's monthly learning cap, and why lessons are or may be paused. Company admins only. The key is write-only: typed once, sent, never shown
 // back. Company admins only, which the server checks too. It is never a project's key and is never used for a project's tests.
@@ -17,7 +18,7 @@ import { AdminSection, NotConnected } from "../parts.js";
 import { useAdminContext } from "../AdminLayout.js";
 
 const reader = { parse: readLearningAi };
-const when = (ms: number) => new Date(ms).toLocaleString("en-US", { timeZone: "UTC", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) + " UTC";
+const when = (ms: number) => viewerTime(new Date(ms), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
 export function CompanyKeyConnections() {
  const read = useAdminRead("learning-ai", LEARNING_AI_PATH, reader, { stable: true });

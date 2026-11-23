@@ -1,3 +1,4 @@
+import { viewerTime } from "../../../design/viewer-time.js";
 // Product AI keys (B7, Hybrid 1 admin area): a project's own AI provider for the calls its tests make (an AI Studio key, or a Vertex AI federation
 // setup the model gateway tests before it is saved: PRODUCT-VERTEX-CLOUD-CONNECT), its eval budget per stage run, and the approved eval spend the
 // model gateway holds a stage against (it counts for 15 minutes, and stops when the approver's membership changes: approve again). The key is
@@ -24,7 +25,7 @@ import { ReadSection, useAdminRead } from "../models/read.js";
 import { AdminSection, NotConnected } from "../parts.js";
 
 const reader = { parse: readProductAi };
-const when = (ms: number) => new Date(ms).toLocaleString("en-US", { timeZone: "UTC", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) + " UTC";
+const when = (ms: number) => viewerTime(new Date(ms), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
 export function ProductAiScreen() {
  // L4-T3 (G3): the eval card opens this page with the project filled in (`?project=`); only a name the page would accept itself is used, anything else is ignored.

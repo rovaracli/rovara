@@ -2,7 +2,7 @@ import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryObserver } from "@tanstack/react-query";
 import { z } from "zod";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { createApiClient } from "../../packages/ui/src/api/client.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
@@ -44,6 +44,8 @@ function markup(read: ReturnType<ReturnType<typeof setup>["observer"]["getCurren
  return [renderToStaticMarkup(h(ReadState<z.infer<typeof reader>>, { read, label: "details", children })), renderToStaticMarkup(h(ReadSection<z.infer<typeof reader>>, { read, label: "details", children }))];
 }
 describe("shared served-read refresh policy", () => {
+ beforeEach(() => { vi.stubEnv("TZ", "America/Los_Angeles"); });
+ afterEach(() => { vi.unstubAllEnvs(); });
  it.each(failures)("$name keeps or wipes the payload and both read surfaces", async ({ failure, wipe }) => {
   const { client, key, observer } = setup(failure, true);
   try {
@@ -53,7 +55,7 @@ describe("shared served-read refresh policy", () => {
    expect(client.getQueryData(key)).toEqual(wipe ? undefined : privateData);
    for (const html of markup(read)) {
     if (wipe) { expect(html).not.toContain(privateData.details);expect(html).toContain('role="alert"');expect(html).not.toContain("Reconnecting"); }
-    else { expect(html).toContain(privateData.details);expect(html.match(/Updated .*? · Reconnecting/gu)).toHaveLength(1);expect(html).toContain("Updated 11/21/2026, 12:34:56 PM UTC · Reconnecting");expect(html).not.toContain('role="alert"'); }
+    else { expect(html).toContain(privateData.details);expect(html.match(/Updated .*? · Reconnecting/gu)).toHaveLength(1);expect(html).toContain("Updated 11/21/2026, 4:34:56 AM · Reconnecting");expect(html).not.toContain('role="alert"'); }
    }
    expect(client.getQueryState(key)?.dataUpdatedAt).toBe(lastRead);
   } finally { observer.destroy();client.clear(); }

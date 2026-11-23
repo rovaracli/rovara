@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 // Lazy owner flow: freshness first, then review, ready and explicit enable.
 import { useEffect, useMemo, useState } from "react";
 import { formatUsdMicrodollars, type TaskStopReview } from "@agentx/contracts/web";
@@ -43,7 +44,7 @@ export function TaskStopEnforcement({ orgId, checking }: { orgId: string; checki
   {busy && <p role="status">Checking enforcement...</p>}{message && <p role="status">{message}</p>}
   {error !== undefined && <p role="alert"><VisibleText text={error.text} /></p>}
   {context !== undefined && <p>Current enforcement: {context.state}. Revision {context.revision}.</p>}
-  {review !== undefined && <><h4>Review enforcement impacts</h4><p>As of {new Date(review.capturedAt).toLocaleString("en-US", { timeZone: "UTC" })} UTC. Work can start or finish after this preview.</p>
+  {review !== undefined && <><h4>Review enforcement impacts</h4><p>As of {viewerTime(new Date(review.capturedAt))}. Work can start or finish after this preview.</p>
    <p>Running tasks keep their existing window and customer limits until their next admission. Enabling adds company stops to future admissions. This preview does not stop any task.</p>
    <p>{review.counts.refuse_next_admission} refused; {review.counts.new_window_at_stop} new windows; {review.counts.retain_current_window} running windows retained; {review.counts.exempt} exempt.</p>{review.truncated && <p>Showing the first 25 impacts, refusals first. Counts include all reviewed tasks.</p>}
    {review.tasks.length === 0 ? <p>No active tasks were visible at review time.</p> : <table><caption>Tasks in this review</caption><thead><tr><th>Task</th><th>Project</th><th>Phase</th><th>Effective stop</th><th>Impact</th></tr></thead><tbody>{review.tasks.map(task => <tr key={task.taskId}><td>{task.taskId}</td><td><VisibleText text={task.project} /></td><td>{task.phase}</td><td>{formatUsdMicrodollars(task.effectiveStopMicrousd)}</td><td>{outcomes[task.outcome]}</td></tr>)}</tbody></table>}
