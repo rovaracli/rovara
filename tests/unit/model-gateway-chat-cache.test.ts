@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { beforeAll, expect, it, vi } from "vitest";
 import { denyNetwork } from "./model-gateway-no-network.js";
 import { call, claims, mint, now, scope, setup } from "./model-gateway-fixture.js";
@@ -90,4 +91,37 @@ it("openrouter: stripped markers do not demand a write component from the PriceS
   expect(result.status, result.text()).toBe(200);
   expect(f.sent).toHaveLength(1);
   expect(f.sent[0]!.body.toString()).not.toContain("cache_control");
+});
+
+// Real Pi 1.5.2 requests (tests/fixtures/model-gateway, captured from its anthropic-messages serializer): every tool carries `eager_input_streaming`.
+const fixture = <T>(name: string): T => JSON.parse(readFileSync(new URL(`../fixtures/model-gateway/${name}`, import.meta.url), "utf8")) as T;
+type PiBody = { model: string; stream: boolean; max_tokens: number; system: unknown; messages: unknown[]; tools: Array<Record<string, unknown>> };
+const piSingle = fixture<PiBody>("pi-ai-1.5.2-anthropic-messages.json");
+const piMulti = fixture<Record<"toolResult" | "final" | "thinking", PiBody>>("pi-ai-1.5.2-multiturn.json");
+const piCases: Array<[string, PiBody]> = [["first turn", piSingle], ["tool result turn", piMulti.toolResult], ["final turn", piMulti.final]];
+
+for (const route of ["openai", "openrouter", "endpoint"] as const) for (const [turn, pi] of piCases) it(`${route}: real Pi 1.5.2 ${turn} (eager_input_streaming on tools) is answered 200 without the key upstream`, async () => {
+  const f = await world(route, pi.stream);
+  expect(pi.tools.every((t) => t.eager_input_streaming === true)).toBe(true);
+  const reserve = vi.spyOn(f.meter, "reserve");
+  const result = await call(f.deps, { ...structuredClone(pi), model: f.model }, mint({ mdl: [f.model], runPrice: f.grant }));
+  expect(result.status, result.text()).toBe(200);
+  expect(f.sent).toHaveLength(1);
+  const upstream = f.sent[0]!.body.toString();
+  expect(upstream).not.toContain("eager_input_streaming");
+  expect((JSON.parse(upstream) as { tools: unknown }).tools).toEqual([{ type: "function", function: { name: "read", description: "Read a file.", parameters: pi.tools[0]!.input_schema } }]);
+  // The hold is taken on exactly the translated body: dropping a streaming hint changes no price, only a few bytes of the estimate.
+  expect(reserve.mock.calls[0]![0].estimateMicros).toBe((f.sent[0]!.body.length + 4096) * (route === "openrouter" ? 12 : 1) + 64 * 2);
+});
+
+for (const route of ["openai", "openrouter", "endpoint"] as const) it(`${route}: an unknown OTHER tool key is still refused 400 beside eager_input_streaming, before any hold or send`, async () => {
+  const f = await world(route, true); const reserve = vi.spyOn(f.meter, "reserve");
+  for (const extra of [{ defer_loading: true }, { allowed_callers: ["direct"] }, { eager_input_streaming_x: true }]) {
+    const body = { ...structuredClone(piSingle), model: f.model, tools: [{ ...piSingle.tools[0], ...extra }] };
+    expect((await call(f.deps, body, mint({ mdl: [f.model], runPrice: f.grant }))).status).toBe(400);
+  }
+  // The hint itself must still be a boolean.
+  expect((await call(f.deps, { ...structuredClone(piSingle), model: f.model, tools: [{ ...piSingle.tools[0], eager_input_streaming: "yes" }] }, mint({ mdl: [f.model], runPrice: f.grant }))).status).toBe(400);
+  expect(f.sent).toHaveLength(0);
+  expect(reserve).not.toHaveBeenCalled();
 });

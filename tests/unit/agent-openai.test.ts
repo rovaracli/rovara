@@ -109,6 +109,8 @@ describe("Anthropic Messages to Chat Completions", () => {
     ["thinking switched on", { ...body, thinking: { type: "enabled", budget_tokens: 1024 } }],
     ["a server tool", { ...body, tools: [{ type: "web_search_20250305", name: "web_search" }] }],
     ["a strict tool", { ...body, tools: [{ name: "read", input_schema: { type: "object" }, strict: true }] }],
+    ["an unknown tool key beside eager_input_streaming", { ...body, tools: [{ name: "read", input_schema: { type: "object" }, eager_input_streaming: true, defer_loading: true }] }],
+    ["a non-boolean eager_input_streaming", { ...body, tools: [{ name: "read", input_schema: { type: "object" }, eager_input_streaming: "yes" }] }],
     ["structured output", { ...body, output_config: { format: { type: "json_schema" } } }],
     ["top_k", { ...body, top_k: 5 }],
     ["five stop sequences", { ...body, stop_sequences: ["a", "b", "c", "d", "e"] }],
@@ -126,6 +128,15 @@ describe("Anthropic Messages to Chat Completions", () => {
   ];
   it.each(refused)("refuses %s as a whole", (_name, input) => {
     expect(toChatCompletions(JSON.parse(JSON.stringify(input)) as Json, MODEL, 10, "openai")).toBeUndefined();
+  });
+
+  it("drops Anthropic's eager_input_streaming tool hint (Pi 1.5.2 sends it on every tool) and nothing else", () => {
+    const tools = [{ name: "read", description: "Read a file.", eager_input_streaming: true, input_schema: { type: "object" }, cache_control: { type: "ephemeral" } }, { name: "ls", eager_input_streaming: false, input_schema: { type: "object" } }];
+    for (const provider of ["openai", "endpoint"] as const) {
+      const out = toChatCompletions({ ...body, tools }, MODEL, 10, provider)!;
+      expect(out.tools).toEqual([{ type: "function", function: { name: "read", description: "Read a file.", parameters: { type: "object" } } }, { type: "function", function: { name: "ls", parameters: { type: "object" } } }]);
+      expect(JSON.stringify(out)).not.toContain("eager_input_streaming");
+    }
   });
 
   it("refuses a model name the sources do not accept", () => {
