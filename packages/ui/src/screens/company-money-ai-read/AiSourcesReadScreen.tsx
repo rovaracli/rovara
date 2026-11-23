@@ -1,14 +1,14 @@
 import { useEffect } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { servedReadState } from '../../api/served-read.js';
 import { useLocation } from 'react-router';
 import { PageHeader } from '../../design/PageHeader.js';
 import { DataTable } from '../../design/DataTable.js';
-import { STEP_GROUPS, priceText } from '../../api/agent-models.js';
+import { STEP_GROUPS, priceText, type AgentModelsRead } from '../../api/agent-models.js';
 import { useAdminContext } from '../admin/admin-context.js';
 import { ReadState, ReadSurface } from './ReadState.js';
-import { HeldLine, Row, RowList, Section, TitleCell, Unknown, modelName, readTime } from './Parts.js';
-import { SourceOrderRows } from './SourceOrderRows.js';
+import { FactChip, HeldLine, Row, RowList, Section, TitleCell, Unknown, modelName, readTime } from './Parts.js';
+import { EmptyOrderLine, SourceOrderRows, sourceStatus } from './SourceOrderRows.js';
 import { accessLost, freshFacts, sourcesReader, stepModelsReader, STEP_MODELS_PATH, useMoneyAiRead } from './read-model.js';
 import { AiSpendStep } from '../setup/AiSpendStep.js';
 import { ModelNames } from '../setup/model-scope.js';
@@ -16,13 +16,25 @@ import { SourceOrderEditor } from '../admin/models/SourceOrderEditor.js';
 import { Button } from '../../design/Button.js';
 import { Dialog } from '../../design/Dialog.js';
 import { ApiError } from '../../api/errors.js';
-import { ConnectAi, SpendingSection } from './SpendingParts.js';
+import { ConnectAi, SpendingSection, agentAiReader } from './SpendingParts.js';
+import { AGENT_AI_PATH } from '../../api/admin-agent-ai.js';
 const stepLabel = (stage: string) => STEP_GROUPS.find(group => group.stage === stage)?.label ?? (stage === 'understand' ? 'Understand' : 'Security review');
 /** The board's "Change a model": one dialog with the company model, each step's model and the learning model. Same handlers and refusals as the live page; the choices read as model names. */
 function ChangeModel({ orgId, developerId, role, company }: { orgId: string; developerId: string; role: 'owner' | 'admin' | 'member'; company: string }) {
  return <Dialog title="Change a model" description="Choose a model for the company, for one step or for learning, then save it. A running task keeps its model until its next AI call." trigger={<Button>Change a model</Button>}>
   <ModelNames.Provider value={modelName}><AiSpendStep compact {...{ orgId, developerId, role, company }} /></ModelNames.Provider>
  </Dialog>;
+}
+/**
+ * The models on offer to the company (GET /org/agent-models offered[], the list for the source in use). The title names Rovara's AI only when the served effective source (the same read as "Who pays",
+ * same key) is Rovara's AI; otherwise, and while that read is pending or failed, it makes no per-source claim. Mounted only with the page's facts, so a refused composition leaves no agent-ai read behind.
+ */
+function ModelsOffered({ models }: { models: UseQueryResult<AgentModelsRead> }) {
+ const agentAi = useMoneyAiRead('agent-ai', AGENT_AI_PATH, agentAiReader), served = freshFacts(agentAi);
+ const title = served !== undefined && (served.source ?? served.effectiveSource) === 'rovara' ? "Models offered through Rovara's AI" : 'Models you can use';
+ return <Section title={title} label="Models">
+  <ReadState read={models} label="Models" scope="section">{data => <RowList><Row title={data.offered.map(modelName).join(', ')} /></RowList>}</ReadState>
+ </Section>;
 }
 /** The board's "AI": the sources in the order Rovara tries them, the models on offer, and the model each step uses now. */
 export function AiSourcesReadScreen() {
@@ -62,18 +74,16 @@ export function AiSourcesReadScreen() {
    return result;
   },
  }} label="AI">{() => null}</ReadState></>;
- const loaded = freshFacts(sources);
+ const loaded = freshFacts(sources), status = loaded === undefined ? undefined : sourceStatus(loaded);
  return <>
-  {loaded === undefined ? plain : <PageHeader title="AI and spending" breadcrumbs={crumbs} meta={<span className="g2-inline"><span>Status</span><Unknown /><span>{`${String(loaded.order.length)} ${loaded.order.length === 1 ? 'source' : 'sources'}${servedReadState(sources).staleSince === undefined && servedReadState(models).staleSince === undefined ? ` · Read from Rovara ${readTime(sources.dataUpdatedAt)}` : ''}`}</span></span>} focusOnMount />}
+  {loaded === undefined || status === undefined ? plain : <PageHeader title="AI and spending" breadcrumbs={crumbs} meta={<span className="g2-inline"><span>Status</span>{status.chip === null ? <Unknown /> : <FactChip icon="tick">{status.chip}</FactChip>}<span>{`${status.summary}${servedReadState(sources).staleSince === undefined && servedReadState(models).staleSince === undefined ? ` · Read from Rovara ${readTime(sources.dataUpdatedAt)}` : ''}`}</span></span>} focusOnMount />}
   <ReadSurface reads={[sources, models]}>
   <p className="g2-lede">Who pays for the AI and the company&apos;s monthly limit, the providers you connect, the order Rovara tries them in, and the model each step uses are all managed here.</p>
   <SpendingSection {...{ orgId, developerId, role, company }} />
   <Section id="ai-connections" title="Sources, in the order Rovara tries them" label="Source inventory" actions={<><ConnectAi />{loaded === undefined || sources.isError ? undefined : <SourceOrderEditor label="Change order" available={!sources.isFetching && loaded.revision !== undefined && loaded.revision < Number.MAX_SAFE_INTEGER && loaded.sources.some(item => item.available)} />}</>}>
-   <ReadState read={sources} label="AI sources" scope="section">{data => data.order.length === 0 ? <div className="g2-held-row"><Unknown /><HeldLine role="status">No source order was served.</HeldLine></div> : <SourceOrderRows order={data.order} sources={data.sources} />}</ReadState>
+   <ReadState read={sources} label="AI sources" scope="section">{data => data.order.length === 0 ? <EmptyOrderLine status={sourceStatus(data)} unservedText="No source order was served." /> : <SourceOrderRows order={data.order} sources={data.sources} />}</ReadState>
   </Section>
-  <Section title="Models each source offers" label="Models">
-   <ReadState read={models} label="Models" scope="section">{data => <RowList><Row title={data.offered.map(modelName).join(', ')} meta={<span className="g2-inline">Which source offers each model <Unknown /></span>} /></RowList>}</ReadState>
-  </Section>
+  <ModelsOffered models={models} />
   {(freshFacts(models) !== undefined || !models.isError || modelsNotServed) && <Section id="ai-models" title="The model each step uses now" label="Effective step models" actions={!sources.isError && (modelsNotServed || (!models.isError && stepModelsAllow)) ? <ChangeModel {...{ orgId, developerId, role, company }} /> : undefined}>
    <ReadState read={models} label="Step models" scope="section">{data => <>
     {data.steps.length > 0 && <DataTable caption="Effective step models" rows={data.steps} rowKey={step => step.stage} columns={[
