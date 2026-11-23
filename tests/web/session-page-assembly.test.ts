@@ -24,7 +24,7 @@ function setup(action: "stop" | "watch", status: number) {
 it("F2: Stop after 503 stays locked through remount and Check does not write", async () => {
  const f = setup("stop", 503);
  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Stop" }).disabled).toBe(false));
- fireEvent.click(screen.getByRole("button", { name: "Stop" }));fireEvent.click(screen.getByRole("button", { name: "Stop session" }));
+ fireEvent.click(screen.getByRole("button", { name: "Stop" }));fireEvent.click(screen.getByRole("button", { name: "Stop and end the machine" }));
  await screen.findByText(/This session action was not confirmed/);
  f.unmount();const next = renderUi(f.tree());
  await screen.findByText(/This session action was not confirmed/);

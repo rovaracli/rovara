@@ -19,7 +19,7 @@ const cases = [
  ["ready_to_merge", "Ready to merge", "ok", "tick", "Every required check and review is in for this version."],
  ["done", "Done", "ok", "circle-tick", "Finished without a merge: an answer, or no change needed."],
  ["merged", "Merged", "ok", "merge", "The change is in the base branch. Deploying is separate."],
- ["stopped", "Stopped", "idle", "stop", "Stopped by a person. Files are kept."],
+ ["stopped", "Stopped", "idle", "stop", "Stopped by a person."],
  ["failed", "Failed", "bad", "cross", "The task's own work failed, for example a test."],
  ["blocked", "Blocked", "bad", "prohibited", "Can't continue until something changes, such as a limit."],
  ["could_not_run", "Could not run", "idle", "dash", "A check or step never ran. Not a pass and not a fail."],

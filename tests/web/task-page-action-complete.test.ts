@@ -185,6 +185,8 @@ it("LIVE-ROUTE PARITY enumerates all offered controls from the live components",
    // the rebuilt 4e trigger uses the approved name.
    expect(await screen.findByRole("button", { name: "Talk to this session" })).toBeTruthy();
    expect(screen.getByRole("button", { name: "Stop work" })).toBeTruthy();
+   // STOP-WARNING-HOTFIX: the page that offers Stop on a running step never claims the files are kept.
+   expect(screen.getByText("Stopping a running step ends this task's machine. Changes that aren't pushed to GitHub or in a pull request are lost.")).toBeTruthy();expect(document.body.textContent).not.toContain("Files are kept");
   } finally { s.close(); }
  }
  expect(inventories[0]).toEqual(expect.arrayContaining(["Follow", "Take over", "Retry", "Share", "Stop", "Close task", "Make this an agent", "Continue in my tool", "Design first", "Skip design review", "Remove Dan", "Take ownership"]));

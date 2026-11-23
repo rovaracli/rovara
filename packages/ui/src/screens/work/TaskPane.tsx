@@ -258,7 +258,7 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
     {row.group === "run" && steer !== undefined && <details className="rv-task-steer" open={steer.kind === "unavailable" || undefined}><summary><TaskMark kind="chevron" /><span>Steer this task</span></summary><SteerBox steer={steer} label="task" /></details>}
     {events.isError && !plan.isError && <SectionError error={events.error} label="the build activity" retry={() => { void events.refetch(); }} />}
    </>)}
-   <div className="rv-task-stop-row"><span className="rv-task-stop-slot" ref={registerStop} /><span className="rv-muted rv-task-stop-note">Files are kept. Rovara stops after its current step.</span></div>
+   <div className="rv-task-stop-row"><span className="rv-task-stop-slot" ref={registerStop} /><span className="rv-muted rv-task-stop-note">Stopping a running step ends this task's machine. Changes that aren't pushed to GitHub or in a pull request are lost.</span></div>
   </DecisionFrame>;
   const quiet = <QuietCard row={row} decisionsError={decisionsError} wide retryOffered={retryOffered} />;
   return <article className="rv-task-pane rv-task-composition wide" aria-label={"Task: " + row.title} data-task-id={row.id}>

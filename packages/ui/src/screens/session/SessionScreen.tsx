@@ -202,7 +202,7 @@ function TaskPageContents() {
  };
  const controls = <div className="rv-task-controls"><TaskActionNotice key={planComment.pendingKey} pending={planComment.pending} recovery={planComment.recovery} taskHref={"/app/sessions/" + encodeURIComponent(sessionId ?? id)} check={() => sessionId === undefined ? query.invalidateQueries({ queryKey: ["work"] }) : api.read(sessionId)} />
   {row !== undefined && <TaskActions taskId={row.id} sessionId={sessionId} canContinue={row.step !== "merged" && row.step !== "closed"} task={row.task} showNote={sessionId === undefined && row.group !== "done"} />}
-  {session !== undefined && sessionId !== undefined && <SessionControls key={sessionId} id={sessionId} agent={agent} actions={session.you.actions} following={session.you.following} makeAgent responsive ask={ASK_ON_HOSTED && session.you.live?.ask === true} share={{ orgName }} onPeopleShare={() => { setShareRequest(count => count + 1); }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />}
+  {session !== undefined && sessionId !== undefined && <SessionControls key={sessionId} id={sessionId} agent={agent} actions={session.you.actions} following={session.you.following} where={session.where} status={session.status} makeAgent responsive ask={ASK_ON_HOSTED && session.you.live?.ask === true} share={{ orgName }} onPeopleShare={() => { setShareRequest(count => count + 1); }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />}
   {row !== undefined && session === undefined && <TaskAnswers taskId={row.id} project={row.project} title={row.title} />}
  </div>;
  const statusWords = row === undefined ? undefined : row.need ?? row.line;
