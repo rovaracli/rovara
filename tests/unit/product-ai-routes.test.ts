@@ -4,7 +4,7 @@
 // meet), and the records the gateway's eval hold reads (eval-approvals.ts).
 import { randomBytes, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { CodeClient, LocalCloudAuditStore, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type ProductAiStore } from "../../packages/cloud-server/src/index.js";
+import { CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type ProductAiStore } from "../../packages/cloud-server/src/index.js";
 import { storedEvalApprovals, storedEvalBudget } from "../../packages/model-gateway/src/eval-approvals.js";
 import { InMemoryProductKeyTable, ProductKeyStore } from "../../packages/model-gateway/src/product-keys.js";
 import { hmacFingerprinter, localProductKeyService, ProductKeySealer } from "../../packages/model-gateway/src/product-seal.js";
@@ -55,7 +55,7 @@ function world(codeRoute?: (person: Person, path: string, method: string) => { s
   const logs: string[] = [];
   const handler = createCloudHandler({
     client, store: sessions, org: { orgId: "rovara", name: "Rovara", plan: "cloud" }, callbackPath: "/callback", secureCookies: false, work: new LocalWorkSessionStore(), origin: ORIGIN,
-    now: () => new Date(clock), log: (event) => { logs.push(JSON.stringify(event)); }, audit, productAi: { store: typed, issuer: ISS },
+    now: () => new Date(clock), log: (event) => { logs.push(JSON.stringify(event)); }, audit, productAi: { store: typed, issuer: ISS }, company: { store: new LocalCompanyStore() },
   });
   const signIn = async (who: string, stepUpAge?: number) => {
     const person = people[who]!; tokens += 1;
