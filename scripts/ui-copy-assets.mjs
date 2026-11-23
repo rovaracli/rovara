@@ -54,6 +54,8 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  "screens/session/answer-form.css",
  // UI-TASK-MERGE: the per-PR merge section and receipt view.
  "screens/session/merge-section.css",
+ // Close dialog: the Close preview (what stays, is freed and is discarded).
+ "screens/session/close-preview.css",
  // Task Session: the answer-only receipt on the task page.
  "screens/session/answer-receipt.css",
  // Task Session: the served status chip and narrow Talk layout.

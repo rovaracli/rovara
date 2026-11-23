@@ -39,7 +39,7 @@ it.each(["repository", "reason", "missing", "empty"])("Opus P1/R6c: changed %s b
 it("Opus P1: reopening forgets discard consent and sends only a fresh first ask", async () => {
  const f = setup();await firstAsk();fireEvent.click(screen.getByRole("button", { name: "Keep it open" }));
  fireEvent.click(await screen.findByRole("button", { name: "Open close" }));
- const first = await screen.findByRole("button", { name: "Close and delete the machine" });
+ const first = await screen.findByRole<HTMLButtonElement>("button", { name: "Close and delete the machine" });await waitFor(() => expect(first.disabled).toBe(false));
  expect(screen.queryByRole("list", { name: "Unpublished work" })).toBeNull();
  fireEvent.click(first);await waitFor(() => expect(f.writes()).toHaveLength(2));
  expect(f.writes()[1]![0].body).not.toHaveProperty("discardUnpublished");f.ui.unmount();f.query.clear();

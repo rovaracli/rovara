@@ -1,4 +1,4 @@
-import { ProjectOverviewReaderSchema } from "@agentx/contracts/web";
+import { ProjectOverviewReaderSchema, TaskCloseActionSchema, TaskClosePreviewResponseSchema, SessionBoundCloseBodySchema } from "@agentx/contracts/web";
 import { WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowFeedbackReviewRetryRequestSchema } from "@agentx/contracts";
 import { parseTaskMoneyV1 } from "./task-money.js";
 // The web app's API routes (/v1/app/*, which the browser calls as /v1/web/*) that Cloud answers from Rovara Code, as
@@ -10,7 +10,7 @@ import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } f
 import { renameInSessions } from "./rename.js";
 import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
 import { approvalUrl, blockedReview, blockedStepRetry, feedbackChoice, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask, type SessionExtras } from "./session-view.js";
-import { CORE_ACTION_WORDS, acceptOnPage, actOnCoreSession, codeSessionOf, isCoreNotYet, noSession, pendingPlanCards, securityAcceptRefusal, type FindingsAccept } from "./core-task-actions.js";
+import { CLOSE_PREVIEW_NOT_SERVED, CORE_ACTION_WORDS, acceptOnPage, actOnCoreSession, codeSessionOf, isCodeRouteMissing, isCoreNotYet, noSession, pendingPlanCards, securityAcceptRefusal, type FindingsAccept } from "./core-task-actions.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError, SignInEnded, slackWorkspaceHint } from "./code-client.js";
 import type { CloudAuditStore } from "./audit-log.js";
@@ -1034,6 +1034,23 @@ export const ROUTES: Route[] = [
     },
   },
   {
+    // DEC 254zzz367: the exact D-CORE preview, as this caller; Code also checks its preview authority.
+    method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})\/close$/u,
+    answer: async (context) => {
+      const record = await readableSession(context);
+      if (record === undefined) return sessionNotFound;
+      const action = TaskCloseActionSchema.safeParse(context.query.get("action"));
+      if (context.query.size !== 1 || !action.success) return badRequest("Choose close or discard to preview this task.");
+      let raw: unknown;
+      try { raw = await context.client.json<unknown>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/close?action=${action.data}`); }
+      // An older Code has no preview route: said once, as 501 NOT_ON_CODE_YET, so the app's legacy close is used only on this served answer.
+      catch (error) { if (isCodeRouteMissing(error)) return { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: CLOSE_PREVIEW_NOT_SERVED } } }; throw error; }
+      const preview = TaskClosePreviewResponseSchema.safeParse(raw);
+      if (!preview.success) return { status: 502, body: { error: { code: "INVALID_RESPONSE", message: "Rovara Code's Close preview couldn't be read. Refresh to review it again." } } };
+      return ok(preview.data);
+    },
+  },
+  {
     // POST /v1/app/sessions/{id}/close: Code closes the task; the first ask never discards unpublished work.
     method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/close$/u,
     answer: async (context) => {
@@ -1042,7 +1059,13 @@ export const ROUTES: Route[] = [
       const input = (context.body ?? {}) as { requestId?: unknown; discardUnpublished?: unknown };
       if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
       let closed: { task: CodeTask; closed: boolean; discardedUnpublished?: boolean; unpublished?: unknown; message?: string };
-      try {
+      // A supplied binding (even malformed) must never become a legacy close or use its fallback.
+      if (Object.hasOwn(input, "expectedPreviewDigest") || Object.hasOwn(input, "discard_unpublished")) {
+        const bound = SessionBoundCloseBodySchema.safeParse(input);
+        if (!bound.success) return badRequest("Close needs the preview digest, a requestId UUID and an optional discard_unpublished boolean.");
+        const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/close`, { method: "POST", headers: TASK_VIEW, body: bound.data });
+        closed = { task, closed: task.status === "CLOSED" };
+      } else try {
         closed = await context.client.json<{ task: CodeTask; closed: boolean; discardedUnpublished?: boolean; unpublished?: unknown; message?: string }>(
           context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/close`,
           { method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, ...(input.discardUnpublished === true ? { discard_unpublished: true } : {}) } },

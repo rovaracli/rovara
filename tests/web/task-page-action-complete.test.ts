@@ -6,7 +6,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { AppHostProvider, type ApiResponse } from "../../packages/ui/src/host.js";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { fakeHost } from "./support/fake-host.js";
+import { fakeHost, CLOSE_PREVIEW_NOT_SERVED } from "./support/fake-host.js";
 import { meFixture, navFixture } from "./support/fixtures.js";
 import { workspaceFixture, workspaceWorkflow } from "./support/workspace-fixture.js";
 import { renderUi } from "./support/render.js";
@@ -33,6 +33,8 @@ function mount(live = false, peopleServed = true) {
   if (path === "/v1/app/me") return { status: 200, body: meFixture() };
   if (path === "/v1/app/nav") return { status: 200, body: navFixture() };
   if (path.endsWith("/presence")) return { status: 200, body: { viewingNow: [] } };
+  // Legacy Close and Discard are proved here, so Code serves no Close preview route (the dialog uses the legacy close only on this answer).
+  if (r.method === "GET" && path.endsWith("/close")) return CLOSE_PREVIEW_NOT_SERVED;
   if (r.method !== "GET") {
    if (path.endsWith("/close")) {
     closeCount++;

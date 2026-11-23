@@ -10,12 +10,13 @@ import { AppHostProvider, type ApiResponse } from "../../packages/ui/src/host.js
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { decisionRows, localWhenWords, whenWords } from "../../packages/ui/src/screens/session/DecisionsCard.js";
-import { fakeHost } from "./support/fake-host.js";
+import { fakeHost, CLOSE_PREVIEW_NOT_SERVED } from "./support/fake-host.js";
 import { meFixture, navFixture } from "./support/fixtures.js";
 import { workspaceFixture, workspaceWorkflow } from "./support/workspace-fixture.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
+import { pressWhenEnabled } from "./support/close-dialog.js";
 
 const operationId: unknown = expect.any(String);
 const TASK = "11111111-1111-4111-8111-111111111111", SESSION = "ses_aaaaaaaaaaaaaaaaaaaa", SESSION_PATH = "/v1/app/sessions/" + SESSION;
@@ -32,6 +33,8 @@ function mount(actions: readonly SessionAction[] = ["watch", "stop", "close", "s
   if (path === "/v1/app/me") return { status: 200, body: meFixture() };
   if (path === "/v1/app/nav") return { status: 200, body: navFixture() };
   if (path.endsWith("/presence")) return { status: 200, body: { viewingNow: [] } };
+  // The legacy Close and Discard layouts are proved here, so Code serves no Close preview route.
+  if (r.method === "GET" && path === SESSION_PATH + "/close") return CLOSE_PREVIEW_NOT_SERVED;
   if (retainedWork && r.method === "POST" && path === SESSION_PATH + "/close") {
    return { status: 200, body: { session, closed: false, unpublished: [{ repository: "acme/payments", reasons: ["worktree_changes"] }] } };
   }
@@ -149,6 +152,7 @@ it("the task dialogs carry the one close icon class and the safe choice is the p
   fireEvent.click(within(menu).getByRole("menuitem", { name: "Close task" }));
   const dialog = await screen.findByRole("dialog", { name: "Close this task?" });
   expect(dialog.className).toContain("rv-action-dialog");
+  await within(dialog).findByRole("button", { name: "Close and delete the machine" });
   expectSafeFirst(dialog, "Cancel", "Close and delete the machine");
   expect(within(dialog).getByRole("button", { name: "Cancel" }).className).toContain("rv-button-primary");
   expect(within(dialog).getByRole("button", { name: "Close and delete the machine" }).className).toContain("rv-button-danger");
@@ -160,7 +164,7 @@ it("Opus P2-1 Discard keeps the safe filled button first and the risky red-outli
  const s = mount(undefined, "IMPLEMENT", false, true);try {
   fireEvent.click(within(await openMenu()).getByRole("menuitem", { name: "Close task" }));
   const close = await screen.findByRole("dialog", { name: "Close this task?" });
-  fireEvent.click(within(close).getByRole("button", { name: "Close and delete the machine" }));
+  await pressWhenEnabled(async () => within(close).getByRole("button", { name: "Close and delete the machine" }));
   const discard = await screen.findByRole("dialog", { name: "Discard unpublished work?" });
   expectSafeFirst(discard, "Keep it open", "Discard it and close");
   expect(s.writes()).toHaveLength(1);
@@ -184,8 +188,9 @@ it("Opus P3 live /s/:id narrow Task actions menu uses the rebuilt destructive Cl
 
 it("the real share route keeps the rebuilt Close dialog safe-first", async () => {
  const s = mount(undefined, "IMPLEMENT", true);try {
-  fireEvent.click(await screen.findByRole("button", { name: "Close task" }));
+  await pressWhenEnabled(async () => await screen.findByRole("button", { name: "Close task" }));
   const dialog = await screen.findByRole("dialog", { name: "Close this task?" });
+  await within(dialog).findByRole("button", { name: "Close and delete the machine" });
   expectSafeFirst(dialog, "Cancel", "Close and delete the machine");
   expect(s.writes()).toHaveLength(0);
  } finally { s.close(); }
