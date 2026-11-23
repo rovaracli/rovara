@@ -1,5 +1,5 @@
 import { postWithTimeout } from "../safe-action.js";
-import { SessionIdSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, MergeDoneReaderSchema, PendingConfirmationReaderSchema, PendingAdminApprovalReaderSchema } from "@agentx/contracts/web";
+import { TaskCloseActionSchema, TaskClosePreviewResponseSchema, SessionBoundCloseBodySchema, type TaskCloseAction, type SessionBoundCloseBody, SessionIdSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, MergeDoneReaderSchema, PendingConfirmationReaderSchema, PendingAdminApprovalReaderSchema } from "@agentx/contracts/web";
 import { z } from "zod";
 import type { AppHost } from "../host.js";
 import { sessionWriteHost } from "./session-safety.js";
@@ -33,6 +33,9 @@ export function createSessionActions(host: AppHost) {
   },
   // Understand's questions: `round` and `revision` are the ones the page read, so a stale form is refused by the server (INTENT_NOT_WAITING) rather than answered late.
   answer: (id: string, body: { requestId: string; round: number; revision: number; answers: Array<{ questionId: string; optionId?: string; text?: string }> }) => api.send("POST", path(id) + "/answers", body, SessionResponseReaderSchema, { retry: "never" }),
+  // The preview/bound path is available for the later dialog cutover; legacy Close below stays unchanged.
+  previewClose: (id: string, action: TaskCloseAction) => api.get(path(id) + "/close?action=" + TaskCloseActionSchema.parse(action), TaskClosePreviewResponseSchema, undefined, { retry: "never" }),
+  closeBound: (id: string, body: SessionBoundCloseBody) => api.send("POST", path(id) + "/close", SessionBoundCloseBodySchema.parse(body), SessionCloseResponseReaderSchema, { retry: "never" }),
   // The task's own close. The first ask never discards unpublished work; `discardUnpublished` is the person's answer to the list the first answer gave.
   close: (id: string, body: { requestId: string; discardUnpublished?: true }) => api.send("POST", path(id) + "/close", body, SessionCloseResponseReaderSchema, { retry: "never" }),
   follow: (id: string) => api.send("POST", path(id) + "/follow", undefined, SessionFollowResponseReaderSchema, { retry: "never" }),

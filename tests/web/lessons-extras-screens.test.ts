@@ -77,7 +77,7 @@ it("says someone already answered on a 409 and says nothing was changed on anoth
   const failed = mount({ weekly: ok({ project: "web", weekly: { needLook: [KEEP], picks: [] } }), send: () => refuse(500, "RUNTIME_UNAVAILABLE", "x") });
   const card = await failed.findByTestId("keep-card");
   fireEvent.click(within(card).getByRole("button", { name: "Keep" }));
-  expect(await within(card).findByText("That didn't go through. Nothing was changed.")).toBeTruthy();
+  expect(await within(card).findByText("That didn't go through. Reload to check where it stands.")).toBeTruthy();
   expect(failed.calls("POST", "/les_keep0001/keep")).toHaveLength(1);
   failed.close();
 });
@@ -163,7 +163,7 @@ it("words the weekly summary by source, is read-only for a person who cannot cha
   const box = within(offRow).getByRole<HTMLInputElement>("checkbox");
   expect(box.checked).toBe(false);
   fireEvent.click(box);
-  expect(await within(offRow).findByText("Couldn't save that. Nothing was changed.")).toBeTruthy();
+  expect(await within(offRow).findByText("Couldn't save that. Reload to check where it stands.")).toBeTruthy();
   expect(off.calls("PUT", "/lessons/weekly-summary")[0]!.body).toEqual({ on: true });
   await waitFor(() => expect((within(offRow).getByRole<HTMLInputElement>("checkbox")).checked).toBe(false));
   off.close();

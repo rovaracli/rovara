@@ -38,9 +38,9 @@ function mount(role: "owner" | "admin") {
 
 for (const role of ["owner", "admin"] as const) it(`shows a company ${role} only the known-failing card: no hidden policy card, no button for one, no request for one`, async () => {
  const f = mount(role);
- await screen.findByRole("heading", { name: "How we work (company)" });
+ await screen.findByRole("heading", { name: "Rules" });
  await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
- expect(screen.getByRole("heading", { name: "Marking tests as already failing" })).toBeTruthy();
+ expect(await screen.findByRole("heading", { name: "Known failing tests" })).toBeTruthy();
  for (const name of ["Design review", "Setup locks", "Setup recipes", "Company model defaults"]) expect(screen.queryByRole("region", { name })).toBeNull();
  expect(screen.queryByText(/Rule suggestions/)).toBeNull();
  expect(screen.queryByText(/Learning from PR review comments/)).toBeNull();

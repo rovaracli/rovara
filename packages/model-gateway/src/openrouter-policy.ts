@@ -168,6 +168,30 @@ export function openRouterHold(policy: OpenRouterPolicy, maxPromptTokens: number
  if (micros > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("request not allowed");
  return Number(micros);
 }
+/** DEC 254zzz419: when more than the offered-list cap of models could be installed or offered, the best-known families come first, in this order
+ * (by OpenRouter id prefix); every other model ranks after them.
+ */
+export const OPENROUTER_FAMILY_PREFIXES = Object.freeze(["openai/", "anthropic/", "google/", "mistralai/", "meta-llama/", "deepseek/", "qwen/"] as const);
+/** The reference prompt size of the install tie-break and the cross-model cap order (the harness exports the same number and a test pins it). */
+export const OPENROUTER_REFERENCE_PROMPT_TOKENS = 100_000;
+export function openRouterFamilyRank(model: string): number {
+ const index = OPENROUTER_FAMILY_PREFIXES.findIndex(prefix => model.startsWith(prefix));
+ return index === -1 ? OPENROUTER_FAMILY_PREFIXES.length : index;
+}
+/** The one cap order, shared by the harness' install selection and the offered list (so the report, the tariff and the list stay identical). Pure and deterministic.
+ * Ascending by: (1) family rank, (2) the gateway hold at OPENROUTER_REFERENCE_PROMPT_TOKENS and ONE common output size (the smallest ceiling among the given
+ * policies; price, not ceiling), (3) the dearer of completion / internal_reasoning price, (4) prompt price, (5) lower max_completion_tokens, (6) route and
+ * (7) model by code-point order. `max` is the cap; the rest are `dropped`, also in order. At or under `max` the order is NOT changed (nothing is dropped).
+ */
+export function openRouterCapOrder<T extends OpenRouterPolicy>(policies: readonly T[], max: number): { kept: T[]; dropped: T[] } {
+ if (policies.length <= max) return { kept: [...policies], dropped: [] };
+ const size = Math.min(...policies.map(p => p.max_completion_tokens));
+ const dearer = (p: OpenRouterPolicy) => { const a = openRouterDecimal(p.pricing.completion); const b = openRouterDecimal(p.pricing.internal_reasoning); return a > b ? a : b; };
+ const keyed = policies.map(policy => ({ policy, key: [openRouterFamilyRank(policy.model), BigInt(openRouterHold(policy, OPENROUTER_REFERENCE_PROMPT_TOKENS, size)), dearer(policy), openRouterDecimal(policy.pricing.prompt), BigInt(policy.max_completion_tokens), policy.route, policy.model] as const }));
+ keyed.sort((a, b) => { for (let i = 0; i < a.key.length; i++) if (a.key[i]! !== b.key[i]!) return a.key[i]! < b.key[i]! ? -1 : 1; return 0; });
+ const ordered = keyed.map(k => k.policy);
+ return { kept: ordered.slice(0, max), dropped: ordered.slice(max) };
+}
 export function openRouterRates(policy: OpenRouterPolicy) {
  const rate = (s: string) => Number(openRouterDecimal(s) / 1_000_000n);
  return { inputMicrosPerMTok: rate(policy.pricing.prompt), outputMicrosPerMTok: Math.max(rate(policy.pricing.completion), rate(policy.pricing.internal_reasoning)),

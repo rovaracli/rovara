@@ -11,6 +11,7 @@ import { meFixture } from "./support/fixtures.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
+import { pressWhenEnabled } from "./support/close-dialog.js";
 
 const base = workspaceFixture(), me = meFixture(), identity = { companyId: me.org.orgId, personId: me.developer.id };
 const settle = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); }); };
@@ -47,7 +48,7 @@ for (const action of ["stop", "close"] as const) it(`R4-2: a retained legacy Ret
  try {
   await screen.findByRole("button", { name: "Check" });await settle();expect(controls()).toEqual({ stop: false, close: false });
   fireEvent.click(screen.getByRole("button", { name: action === "stop" ? "Stop" : "Close task" }));
-  const dialog = await screen.findByRole("dialog");fireEvent.click(within(dialog).getByRole("button", { name: action === "stop" ? "Stop this task" : "Close and delete the machine" }));
+  const dialog = await screen.findByRole("dialog");await pressWhenEnabled(async () => within(dialog).getByRole("button", { name: action === "stop" ? "Stop this task" : "Close and delete the machine" }));
   await waitFor(() => expect(f.writes()).toHaveLength(1));expect(f.writes()[0]![0].path).toMatch(new RegExp("/" + action + "$"));expectRetained(f);
  } finally { ui.unmount();f.query.clear(); }
 });

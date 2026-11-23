@@ -38,7 +38,7 @@ export function BothPlaces({ project, lesson }: { project: string; lesson: Lesso
     try {
       const text = bothPlacesWords(await api.bothPlaces(project, lesson.id, { version: lesson.version, cardPaths, otherPaths }));
       setState({ kind: "done", text });announce(`${lesson.title}: ${text}`);refreshLessons(query, project);
-    } catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project, announce); }
+    } catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Reload to check where it stands.") });refreshIfStale(failure, query, project, announce); }
   }
   if (state.kind === "done") return <p role="status" className="rv-learned-note" data-testid="both-places-result"><VisibleText text={state.text} /></p>;
   return <div className="rv-both-places">

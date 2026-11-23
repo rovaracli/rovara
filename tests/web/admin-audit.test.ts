@@ -89,7 +89,8 @@ for (const role of ["owner", "admin"] as const) it(`${role}: reads Cloud's compa
  expect(screen.getByText("Engine records are not connected yet. This list shows Cloud's own records only.")).toBeTruthy();
  expect(auditReads(f).every(path => path.startsWith("/v1/app/company/audit?"))).toBe(true);
  expect(auditReads(f)).toHaveLength(1);
- expect(screen.getAllByText("Rovara Cloud").length).toBeGreaterThan(0);
+ // G1 SHIP copy: the rebuilt page names the source "Rovara web" (was "Rovara Cloud").
+ expect(screen.getAllByText("Rovara web").length).toBeGreaterThan(0);
  // No sealing claim: this list is not a sealed ledger.
  expect(f.container.textContent).not.toMatch(/sealed|ledger|independent timestamp/i);
  expect(screen.queryByText(/Couldn't load|Not available/)).toBeNull();
@@ -128,7 +129,8 @@ it("an ordinary member's page makes no audit read", async () => {
 it("shows the engine's records when Code serves them, marked as Rovara Code's", async () => {
  const f = await audit("owner", { engine: [{ eventId: "ev_0001", at: iso(BASE + 60_000), actor: { developerId: OWNER, name: "Grace", type: "person" }, action: "task.approved", subject: "task:t1", outcome: "ok", via: "slack" }] });
  await screen.findByText("task.approved");
- expect(screen.getAllByText("Rovara Code").length).toBe(1);
+ // G1 SHIP copy: "Rovara’s task engine" (was "Rovara Code"); it now names the source in the rail AND in the row (2 places, was 1).
+ expect(screen.getAllByText("Rovara’s task engine").length).toBe(2);
  expect(screen.queryByText(/Engine records are not connected yet/)).toBeNull();
  f.close();
 });
@@ -189,7 +191,8 @@ it("a next cursor that names the page just read is refused (no page loop)", asyn
  } });
  await screen.findByText("company.rules.changed");
  fireEvent.click(screen.getByRole("button", { name: "Next page" }));
- await screen.findByText("This information is unavailable. Reload or try again.");
+ // G1 SHIP copy: the shared 4e error block (was "This information is unavailable. Reload or try again.").
+ await screen.findByText("Rovara couldn't read this page");
  f.close();
 });
 
@@ -201,7 +204,8 @@ it("an answer that does not read (unknown source) is refused before it is shown 
   const real = await cloudAs("owner-token", r.path) as { status: number; body: { records: Array<Record<string, unknown>> } };
   return { status: 200, body: { ...real.body, records: [{ ...real.body.records[0], source: "elsewhere", action: "forged.action" }] } };
  } });
- await screen.findByText("This information is unavailable. Reload or try again.");
+ // G1 SHIP copy: the shared 4e error block (was "This information is unavailable. Reload or try again.").
+ await screen.findByText("Rovara couldn't read this page");
  expect(screen.queryByText("forged.action")).toBeNull();
  expect(JSON.stringify(f.query.getQueriesData({ queryKey: ["admin", "lane-c", "audit"] }))).not.toContain("forged.action");
  f.close();

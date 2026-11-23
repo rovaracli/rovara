@@ -16,8 +16,8 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  "screens/admin/projects/project-slack.css",
  // Lane C: owned waiting-queue filter styles.
  "screens/admin/waiting/waiting.css",
- // Lane C2: owned audit filter styles.
- "screens/admin/audit/audit.css",
+ // G1: the rebuilt company administration pages (Overview, Settings, Audit) and the project page working-branches panel.
+ "screens/company-admin-read/company-admin-read.css",
  // Lane C12: owned Connections guidance styles.
  "screens/admin/connections/connections.css",
  // Playbook v1.1: the company How we work page.
@@ -54,6 +54,8 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  "screens/session/answer-form.css",
  // UI-TASK-MERGE: the per-PR merge section and receipt view.
  "screens/session/merge-section.css",
+ // Close dialog: the Close preview (what stays, is freed and is discarded).
+ "screens/session/close-preview.css",
  // Task Session: the answer-only receipt on the task page.
  "screens/session/answer-receipt.css",
  // Task Session: the served status chip and narrow Talk layout.
@@ -61,7 +63,9 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  // The rebuilt Wiki and Skills pages (G3; their own lazy chunk).
  "screens/wiki-skills-read/wiki-skills-read.css",
  // L4-JA89: the project Skills tab (its own lazy chunk).
- "screens/project/skills/skills.css"]) {
+ "screens/project/skills/skills.css",
+ // G4 (Rules, Lessons and How we work): the rebuilt project views, company Rules, Setup recipes and the lesson batch.
+ "screens/rules-lessons-read/rules-lessons-read.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

@@ -17,6 +17,8 @@ export function howWeWorkHost(options: { view?: unknown; canEdit?: boolean; over
   if (url.pathname === "/v1/app/changes") return { status: 200, body: { notices: [], next: "settled" } };
   if (url.pathname === "/v1/app/projects/payments/overview") return { status: 200, body: projectFixture({ you: { role: options.canEdit === false ? "viewer" : "maintainer", canStartWork: options.canEdit !== false, canEditSettings: options.canEdit !== false, canViewSpend: false } }) };
   if (url.pathname === "/v1/app/projects/payments/how-we-work") return { status: 200, body: state.view };
+  // The rebuilt Rules view (G4) also reads the project's playbook for its Design review row.
+  if (url.pathname === "/v1/app/projects/payments/playbook") return { status: 200, body: { playbook: { revision: 1, defaultProcess: { kind: "builtin" } }, designReviewAllowed: false } };
   // The Suggested rules section reads this on the same tab: a project with nothing to decide.
   if (url.pathname === "/v1/app/projects/payments/learning") return { status: 200, body: LearningViewAnswerSchema.parse({ settings: { prComments: "off", locked: false }, suggestions: [], dismissed: [], rules: [], skippedUnlinked: 0, canDecide: options.canEdit !== false }) };
   if (url.pathname === "/v1/app/projects/payments/playbook/process") return { status: 200, body: { agentId: LAYER, draftRevision: state.revision, currentVersion: 2 } };

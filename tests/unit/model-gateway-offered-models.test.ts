@@ -16,6 +16,7 @@ import {
   AGENT_MODELS_DISABLED_DEFAULT, ANTHROPIC_KEY_AGENT_MODELS, answerOfferedModels, createOfferedModelsHandler, offeredModelPrice, OFFERED_MODELS_MAX, OFFERED_MODELS_PER_MINUTE,
   OFFERED_SWITCHED_OFF, OPENAI_KEY_AGENT_MODELS, parseDisabledAgentModels, SERVICE_TOKEN_AUDIENCE, SERVICE_TOKEN_KIND, SERVICE_TOKEN_SECONDS, SERVICE_TOKEN_TYPE, type OfferedModelsHandlerOptions,
 } from "../../packages/model-gateway/src/offered-models.js";
+import type { OpenRouterTariff } from "../../packages/model-gateway/src/openrouter-policy.js";
 import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import { createSignedTokenVerifier } from "../../packages/model-gateway/src/token.js";
 import { claims, jwk, keys, kid, mint, now, requestBody } from "./model-gateway-fixture.js";
@@ -500,5 +501,37 @@ describe("list prices on the offered list", () => {
     expect((readGatewayConfig({ ...base, [GATEWAY_ENV.offeredPrices]: "on" }) as ServeConfig).offeredPrices).toBe(true);
     expect((readGatewayConfig(base) as ServeConfig).offeredPrices).toBeUndefined();
     for (const value of ["true", "ON", "", "off"]) expect(() => readGatewayConfig({ ...base, [GATEWAY_ENV.offeredPrices]: value })).toThrow(GatewayConfigError);
+  });
+});
+
+describe("DEC 254zzz419: the OpenRouter list never exceeds the cap", () => {
+  const tariff = (model: string, cents: number): OpenRouterTariff => {
+    const price = ((2 + cents) / 1_000_000).toFixed(6);
+    return { model, route: "r", pricing: { prompt: "0.000001", completion: price, internal_reasoning: price, request: "0.000001", input_cache_read: "0.0000005", input_cache_write: "0.000001" }, max_completion_tokens: 2048, reasoning: { mode: "bounded", max_tokens: 1024 }, verifiedAt: now - 1000, expiresAt: now + 3_600_000, evidence: "fixture" };
+  };
+  const ask = async (tariffs: readonly OpenRouterTariff[]) => {
+    const { opts, choices } = options({ openRouterTariffs: tariffs, switchedOn: new Set(["openrouter"]), chat: { openrouter: true }, keys: { connected: async () => true, bedrockConnected: async () => true, identityFor: async () => ({ sourceId: "src-1", versionId: "v-1" }) } });
+    choices.saved.set(cidA, "openrouter_key");
+    return get(opts, cidA, mintService());
+  };
+  it("190 priced rows -> exactly 64 models: the best-known families first, then the cheapest (the schema Code enforces still accepts the list)", async () => {
+    const families = ["openai", "anthropic", "google", "mistralai", "meta-llama", "deepseek", "qwen"];
+    const rest = Array.from({ length: 183 }, (_, i) => ({ model: `vendor/o${String(i).padStart(3, "0")}`, cents: (i * 7) % 61 }));
+    const tariffs = [...rest.map((r) => tariff(r.model, r.cents)), ...families.map((f) => tariff(`${f}/m`, 20)), tariff("qwen/last", 40), tariff("openai/first", 5)]; // 192 valid rows
+    const answer = await ask(tariffs);
+    expect(answer.status).toBe(200);
+    const list = names(answer.body);
+    expect(list).toHaveLength(OFFERED_MODELS_MAX);
+    expect(CodeOfferedAgentModelsSchema.safeParse({ version: 1, models: (answer.body as { models: Array<{ model: string }> }).models.map((m) => ({ model: m.model })) }).success).toBe(true);
+    expect(list.slice(0, 9)).toEqual(["openai/first", "openai/m", "anthropic/m", "google/m", "mistralai/m", "meta-llama/m", "deepseek/m", "qwen/m", "qwen/last"]);
+    expect(list.slice(9)).toEqual([...rest].sort((a, b) => a.cents - b.cents || (a.model < b.model ? -1 : 1)).slice(0, 55).map((r) => r.model));
+  });
+  it("63, 64 and 65 rows: under or at the cap the tariff's own order and every model; one over the cap drops exactly one", async () => {
+    for (const [count, expected] of [[63, 63], [64, 64], [65, 64]] as const) {
+      const tariffs = Array.from({ length: count }, (_, i) => tariff(`vendor/m${String(i).padStart(3, "0")}`, i));
+      const list = names((await ask(tariffs)).body);
+      expect(list).toHaveLength(expected);
+      expect(list).toEqual(tariffs.slice(0, expected).map((t) => t.model));
+    }
   });
 });

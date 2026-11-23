@@ -18,7 +18,7 @@ export function TidyCardView({ project, tidy }: { project: string; tidy: TidyCar
   async function run(write: () => Promise<string>) {
     setState({ kind: "busy" });
     try { const text = await write();setState({ kind: "done", text });announce(`${tidyTitle(tidy.lessons.length)} ${text}`);refreshLessons(query, project); }
-    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });setConfirming(false);refreshIfStale(failure, query, project, announce); }
+    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Reload to check where it stands.") });setConfirming(false);refreshIfStale(failure, query, project, announce); }
   }
   return <article className="rv-permanent rv-tidy" aria-labelledby="tidy-title" data-testid="tidy-card">
     <h3 id="tidy-title">{tidyTitle(tidy.lessons.length)}</h3>

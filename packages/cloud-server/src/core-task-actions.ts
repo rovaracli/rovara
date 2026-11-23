@@ -66,6 +66,16 @@ function refusalOf(error: unknown): { status: number; code: unknown; message: un
   return { status: error.status, code: said["code"], message: said["message"] };
 }
 
+/** Code's own answer for a route it does not have (broker.ts / task-flow/routes.ts: agentXError("NOT_FOUND", "route not found")). */
+const CODE_ROUTE_MISSING = "route not found";
+/** What Cloud says when this Code has no Close preview route (an older Code): the dialog falls back to the legacy close only on this answer. */
+export const CLOSE_PREVIEW_NOT_SERVED = "This Rovara Code can't show a Close preview yet.";
+/** Whether Code answered exactly that the route is missing (not a task or permission refusal, which carry their own codes and sentences). */
+export function isCodeRouteMissing(error: unknown): boolean {
+  const refusal = refusalOf(error);
+  return refusal !== undefined && refusal.status === 404 && refusal.code === "NOT_FOUND" && refusal.message === CODE_ROUTE_MISSING;
+}
+
 /** Whether Code answered that the task is the core's and this old route is not on the core (the person may read the task). */
 export function isCoreNotYet(error: unknown): boolean {
   const refusal = refusalOf(error);

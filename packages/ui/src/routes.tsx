@@ -5,6 +5,7 @@ import { SignInChoices } from "./screens/signed-out/SignInChoices.js";
 import { AppShell } from "./shell/AppShell.js";
 import { NotFound } from "./shell/NotFound.js";
 import { RouteError } from "./shell/ErrorBoundary.js";
+import { companyAdminReadRoute, type CompanyAdminReadPath } from "./routes/company-admin-read-routes.js";
 import { companyMoneyAiReadRoute, type CompanyMoneyAiReadPath } from "./routes/company-money-ai-read-routes.js";
 function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>{title}</h1></section>; }
 function SignedOut() {
@@ -26,6 +27,8 @@ function PreviewRedirect({ to }: { to: string }) {
  const location = useLocation();
  return <Navigate to={{ pathname: to, search: location.search, hash: location.hash }} replace />;
 }
+// G1 (company administration): the rebuilt Overview, Settings and Audit pages, lazy, on their existing addresses.
+const g1 = (path: CompanyAdminReadPath): RouteObject => companyAdminReadRoute(path);
 // WIRING-1B: the rebuilt company money / AI pages (G2) own the real report, feature, AI and Product AI addresses; each is lazy (its own chunk, outside the initial bundle).
 const g2 = (path: CompanyMoneyAiReadPath, at: string): RouteObject => ({ ...companyMoneyAiReadRoute(path), path: at });
 export function appRoutes(features: AppNav["features"]): RouteObject[] {
@@ -59,15 +62,15 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  ] });
  // Part B owns these screen implementations. Disabled routes are absent, including direct URLs.
  if (features.usage) children.push({ path: "usage", element: <Page title="Usage" /> });
- if (features.admin) children.push({ path: "admin/*", handle: { webOnly: true, bleed: true }, lazy: async () => { const { AdminLayout } = await import("./screens/admin/AdminLayout.js");return { Component: AdminLayout }; }, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/admin/AdminOverview.js")).AdminOverview }) }, { path: "money/budgets", lazy: async () => ({ Component: (await import("./screens/admin/BudgetsScreen.js")).BudgetsScreen }) }, { path: "money/limits", lazy: async () => ({ Component: (await import("./screens/admin/spend-limits/SpendLimitsScreen.js")).SpendLimitsScreen }) }, { path: "money/people", lazy: async () => ({ Component: (await import("./screens/admin/people-limits/PeopleLimitsScreen.js")).PeopleLimitsScreen }) }, g2("money/report", "money/report"), g2("money/report/features/:id", "money/report/features/:id"), g2("ai-spending/order", "ai-spending/order"), { path: "settings", lazy: async () => ({ Component: (await import("./screens/admin/settings/SettingsScreen.js")).SettingsScreen }) }, g2("product-ai", "product-ai"),
+ if (features.admin) children.push({ path: "admin/*", handle: { webOnly: true, bleed: true }, lazy: async () => { const { AdminLayout } = await import("./screens/admin/AdminLayout.js");return { Component: AdminLayout }; }, children: [g1("index"), { path: "money/budgets", lazy: async () => ({ Component: (await import("./screens/admin/BudgetsScreen.js")).BudgetsScreen }) }, { path: "money/limits", lazy: async () => ({ Component: (await import("./screens/admin/spend-limits/SpendLimitsScreen.js")).SpendLimitsScreen }) }, { path: "money/people", lazy: async () => ({ Component: (await import("./screens/admin/people-limits/PeopleLimitsScreen.js")).PeopleLimitsScreen }) }, g2("money/report", "money/report"), g2("money/report/features/:id", "money/report/features/:id"), g2("ai-spending/order", "ai-spending/order"), g1("settings"), g2("product-ai", "product-ai"),
  { path: "invites", lazy: async () => ({ Component: (await import("./screens/admin/InvitesScreen.js")).InvitesScreen }) }, { path: "people", lazy: async () => ({ Component: (await import("./screens/admin/MembersScreen.js")).MembersScreen }) }, { path: "people/roles", lazy: async () => ({ Component: (await import("./screens/admin/RolesScreen.js")).RolesScreen }) }, // Lane B: projects and working branches (Agents screens stay held: no route, deep link falls to NotFound).
   { path: "projects", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectsScreen.js")).ProjectsScreen }) },
   { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectDetailScreen.js")).ProjectDetailScreen }) },
   // Lane C: read-only company models, connections and permitted waiting items.
- { path: "how-we-work", lazy: async () => ({ Component: (await import("./screens/admin/how-we-work/HowWeWorkCompanyScreen.js")).HowWeWorkCompanyScreen }) },
- { path: "how-we-work/recipes", lazy: async () => ({ Component: (await import("./screens/admin/how-we-work/SetupRecipesScreen.js")).SetupRecipesScreen }) }, { path: "connections", lazy: async () => ({ Component: (await import("./screens/admin/connections/ConnectionsScreen.js")).ConnectionsScreen }) },
+ { path: "how-we-work", lazy: async () => ({ Component: (await import("./screens/rules-lessons-read/LazyPages.js")).CompanyRulesPage }) },
+ { path: "how-we-work/recipes", lazy: async () => ({ Component: (await import("./screens/rules-lessons-read/LazyPages.js")).SetupRecipesPage }) }, { path: "connections", lazy: async () => ({ Component: (await import("./screens/admin/connections/ConnectionsScreen.js")).ConnectionsScreen }) },
  // Lane C2: read-only company audit.
- { path: "audit", lazy: async () => ({ Component: (await import("./screens/admin/audit/AuditScreen.js")).AuditScreen }) }, { path: "*", element: <NotFound /> }] });
+ g1("audit"), { path: "*", element: <NotFound /> }] });
  if (features.chains) children.push({ path: "chains/*", element: <Page title="Chains" /> });
  if (features.describe) children.push({ path: "describe", element: <Page title="Describe an agent" /> });
  children.push({ path: "*", element: <NotFound /> });

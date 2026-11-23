@@ -2,7 +2,7 @@
 import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 // The Hybrid 1 admin pages (DEC 223): grouped navigation, Spending with real amounts and its over-budget states, company settings and the account
 // page, each with its "not connected yet" state (no step-up in front of any action since owner DEC 254zzz73).
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, fireEvent, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -171,7 +171,7 @@ describe("model gateway readiness", () => {
   try { expect(await screen.findByText("Set a monthly limit to use the model gateway.")).toBeTruthy(); } finally { f.close(); }
   for (const answer of [withReadiness({ ready: true }), withReadiness(undefined), (r: ApiRequest) => (r.path === "/v1/app/org/settings" ? NOT_ON_CODE : ok({ members: [maya] }))]) {
    const g = mount("/app/admin", answer);
-   try { await screen.findByRole("group", { name: "At a glance" }); await within(await screen.findByRole("group", { name: "At a glance" })).findByText("1"); expect(screen.queryByText("Set a monthly limit to use the model gateway.")).toBeNull(); } finally { g.close(); }
+   try { await screen.findByTestId("overview-people"); expect(screen.queryByText("Set a monthly limit to use the model gateway.")).toBeNull(); } finally { g.close(); }
   }
  });
  it("shows an unknown reason with Cloud's own words, as plain text", async () => {
@@ -203,8 +203,9 @@ describe("Overview", () => {
  it("shows this month's money and the people count, then the groups", async () => {
   const f = mount("/app/admin", r => (r.path === "/v1/app/org/spend" ? ok(spendBody) : ok({ members: [maya] })));
   try {
-   const glance = await screen.findByRole("group", { name: "At a glance" });
-   await within(glance).findByText("$412.60"); expect(within(glance).getByText("$549.20")).toBeTruthy(); expect(await within(glance).findByText("1")).toBeTruthy();
+   // G1 SHIP selector edit: the "At a glance" stat group became the Money and People rows of the company pages list.
+   const glance = await screen.findByTestId("overview-spend");
+   await within(glance).findByText("$412.60"); expect(within(glance).getByText("$549.20")).toBeTruthy(); expect((await screen.findByTestId("overview-people")).textContent).toBe("1 person");
    expect(screen.getByRole("link", { name: "Open Spending" }).getAttribute("href")).toBe("/app/admin/money/budgets");
    expect(screen.queryByRole("link", { name: "Open Health" })).toBeNull();
   } finally { f.close(); }
@@ -226,7 +227,8 @@ describe("Company settings", () => {
    expect(await screen.findByText("Never touch the billing tables.")).toBeTruthy();
    expect(screen.queryByRole("region", { name: "Approval window" })).toBeNull();
    expect(screen.queryByText(/confirm it's them|Confirm it's you/u)).toBeNull();
-   expect(screen.getByText("Anyone with project access may start one")).toBeTruthy();
+   // G1 SHIP copy: "Anyone with project access may start one" became the rebuilt policy sentence.
+   expect(screen.getByText(/Starting tasks is on for the company/)).toBeTruthy();
    expect(screen.getByText("$5.00")).toBeTruthy();
   } finally { f.close(); }
  });
@@ -344,9 +346,14 @@ it("only accepts the explicit empty answer without contradictory amounts", () =>
  for (const extra of [{ spentThisMonthUsd: 0 }, { provisionalMicros: 1 }, { month: "bad" }]) expect(() => readOrgSpend({ month: "2026-11", empty: true, ...extra })).toThrow();
 });
 
+// G1: the company settings page (CompanySettingsReadScreen) shows "Proposed <time> · open until <time>" in the viewer's own day and 24-hour clock ("21 Nov 17:30"), literal here. Only Date is faked (a fixed "now" on another day), so "Today" never replaces the day.
 it("renders the pending company-rule expiry in both viewer zones", async () => {
- await inViewerZones(async expected => {
-  const f = mount("/app/admin/settings", r => r.path === "/v1/app/org/settings" ? ok(settingsBody({ pending: { changeId: "chg_" + "a".repeat(20), proposedBy: "c", proposedAt: VIEWER_INSTANT, expiresAt: VIEWER_INSTANT, settings: { instructions: [{ text: "x", priority: "preferred" }] } } })) : ok({}));
-  try { expect(await screen.findByText(`until ${expected.day}`, { exact: false })).toBeTruthy(); } finally { f.close(); }
- });
+ const stamps: Record<string, string> = { "America/Los_Angeles": "21 Nov 17:30", "Pacific/Auckland": "22 Nov 14:30" };
+ vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-12-25T12:00:00.000Z") });
+ try {
+  await inViewerZones(async expected => {
+   const f = mount("/app/admin/settings", r => r.path === "/v1/app/org/settings" ? ok(settingsBody({ pending: { changeId: "chg_" + "a".repeat(20), proposedBy: "c", proposedAt: VIEWER_INSTANT, expiresAt: VIEWER_INSTANT, settings: { instructions: [{ text: "x", priority: "preferred" }] } } })) : ok({}));
+   try { expect(await screen.findAllByText(stamps[expected.zone]!)).toHaveLength(2); } finally { f.close(); }
+  });
+ } finally { vi.useRealTimers(); }
 });

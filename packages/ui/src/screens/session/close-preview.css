@@ -1,0 +1,23 @@
+/* Close preview inside the Close dialog (DEC 254zzz367). Tokens only; a single column from 320 up, facts side by side from 480. */
+.rv-close-preview{display:grid;gap:var(--rv-space-3);min-width:0;margin:var(--rv-space-3) 0}
+.rv-close-preview h3,.rv-close-preview p,.rv-close-preview ul,.rv-close-preview dl{margin:0}
+.rv-close-note{margin:var(--rv-space-3) 0 0}
+.rv-close-note+.rv-actions,.rv-close-preview+.rv-actions,.rv-action-dialog .rv-banner+.rv-actions{margin-top:var(--rv-space-4)}
+.rv-action-dialog .rv-banner[data-task-id]{display:grid;justify-items:start;gap:var(--rv-space-2);margin:var(--rv-space-3) 0 0}
+.rv-close-reread .rv-button,.rv-action-dialog .rv-banner[data-task-id] .rv-button{padding-inline:0}
+.rv-close-group li strong{font-weight:600}
+.rv-close-reread{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2) var(--rv-space-3)}
+.rv-close-facts{display:grid;gap:var(--rv-space-1)}
+.rv-close-facts>div{display:grid;grid-template-columns:minmax(80px,112px) minmax(0,1fr);gap:var(--rv-space-3)}
+.rv-close-facts dt{color:var(--rv-text-muted)}
+.rv-close-facts dd{margin:0;overflow-wrap:anywhere}
+.rv-close-group{display:grid;gap:var(--rv-space-1);padding:var(--rv-space-3);border:1px solid var(--rv-border);border-left-width:4px;border-radius:var(--rv-radius-md);background:var(--rv-bg-sunken);min-width:0}
+.rv-close-group h3{font-size:var(--rv-font-md);font-weight:600}
+.rv-close-group p{color:var(--rv-text-muted);overflow-wrap:anywhere}
+.rv-close-group[data-tone=keep]{border-left-color:var(--rv-status-done)}
+.rv-close-group[data-tone=free]{border-left-color:var(--rv-border-strong)}
+.rv-close-group[data-tone=discard]{border-left-color:var(--rv-status-failed)}
+.rv-close-group ul{padding:0;list-style:none;display:grid;gap:var(--rv-space-1)}
+.rv-close-group li{overflow-wrap:anywhere}
+.rv-close-link{display:inline;min-height:0;padding:0;border:0;background:none;color:var(--rv-accent-text);font:inherit;text-decoration:underline;cursor:pointer}
+@media (forced-colors:active){.rv-close-group{border:1px solid CanvasText;border-left-width:4px}}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { LessonDecisionResult, LessonInboxBatch } from "@agentx/contracts/code-contract-v0";
 import { ApiError } from "../../api/errors.js";
@@ -9,6 +9,7 @@ import { Select } from "../../design/Select.js";
 import { TextArea } from "../../design/TextArea.js";
 import { TextField } from "../../design/TextField.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { RECONNECTING_TEXT } from "../project/write-freeze.js";
 import "./lessons.css";
 
 type Choice = { kind: "keep" } | { kind: "edit"; title: string; description: string; body: string } | { kind: "drop"; reason: string };
@@ -27,7 +28,7 @@ function decisionOf(lesson: LessonItem, choice: Choice | undefined): LessonDecis
 }
 
 /** One proposed lesson in the batch: what it says, where it came from, when it lapses, and Keep, Edit or Drop (keys K, E and D while it has focus). */
-function LessonDecisionRow({ lesson, choice, onChoose, now, failed, disabled, titleOf }: { lesson: LessonItem; choice: Choice | undefined; onChoose: (choice: Choice | undefined) => void; now: number; failed: string | undefined; disabled: boolean; titleOf: (id: string) => string | undefined }) {
+function LessonDecisionRow({ lesson, index, total, choice, onChoose, now, failed, disabled, titleOf }: { lesson: LessonItem; index: number; total: number; choice: Choice | undefined; onChoose: (choice: Choice | undefined) => void; now: number; failed: string | undefined; disabled: boolean; titleOf: (id: string) => string | undefined }) {
  const relations = relationWords(lesson, titleOf);
  const expiry = expiryWords(lesson.expiresAt, now), from = fromWords(lesson), name = "lesson-" + lesson.id;
  const keep = () => onChoose({ kind: "keep" }), edit = () => onChoose({ kind: "edit", title: lesson.title, description: lesson.description, body: lesson.body }), drop = () => onChoose({ kind: "drop", reason: "" });
@@ -43,9 +44,10 @@ function LessonDecisionRow({ lesson, choice, onChoose, now, failed, disabled, ti
   else if (key === "d" && lesson.canReject) { event.preventDefault();drop(); }
  }
  return <li><article className="rv-lesson" aria-labelledby={name + "-title"} data-lesson-id={lesson.id} onKeyDown={onKeyDown} data-choice={choice?.kind}>
-  <header className="rv-lesson-head"><h3 id={name + "-title"}><VisibleText text={lesson.title} /></h3>{from !== undefined && <span className={"rv-lesson-from" + (lesson.from.some(person => person.you === true) ? " you" : "")}>{from}</span>}</header>
-  {lesson.description !== "" && <p className="rv-lesson-description"><VisibleText text={lesson.description} /></p>}
-  {lesson.body !== "" && lesson.body !== lesson.description && <p className="rv-lesson-body"><VisibleText text={lesson.body} /></p>}
+  <div className="rv-lesson-top"><p className="rv-lesson-eyebrow">Lesson {index + 1} of {total}</p>{lesson.canApprove && <span className="rv-lesson-waiting"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6" /><path d="M8 4.8v3.8M8 11v.2" /></svg>Waiting for you</span>}</div>
+  <header className="rv-lesson-head"><h3 id={name + "-title"}><VisibleText text={lesson.title} /></h3></header>
+  {(lesson.description !== "" || from !== undefined) && <div className="rv-lesson-row"><span className="rv-lesson-label">Came from</span><p className="rv-lesson-description">{lesson.description !== "" && <VisibleText text={lesson.description} />}{from !== undefined && <span className={"rv-lesson-from" + (lesson.from.some(person => person.you === true) ? " you" : "")}>{from}</span>}</p></div>}
+  {lesson.body !== "" && lesson.body !== lesson.description && <div className="rv-lesson-row"><span className="rv-lesson-label">The lesson</span><p className="rv-lesson-body"><VisibleText text={lesson.body} /></p></div>}
   <ul className="rv-lesson-facts">
    {lesson.supportTasks > 0 && <li>Learned from {lesson.supportTasks === 1 ? "1 task" : `${String(lesson.supportTasks)} tasks`}</li>}
    {lesson.needs?.required === 2 && <li>Needs two people to keep it</li>}
@@ -75,7 +77,9 @@ function LessonDecisionRow({ lesson, choice, onChoose, now, failed, disabled, ti
  * from the person's own corrections come first (Cloud orders them; Code says whose they are). After sending, what happened stays on the card until the person
  * moves on; a lesson that was not accepted stays in the list with Code's words.
  */
-export function LessonBatchCard({ batch, onDone }: { batch: LessonInboxBatch; onDone: () => void }) {
+export function LessonBatchCard({ batch, onDone, frozen = false }: { batch: LessonInboxBatch; onDone: () => void; frozen?: boolean }) {
+ // Rule 14: this card depends on the inbox read only (Code says in it who may decide; this page has no identity read). While that read shows kept facts, nothing is sent.
+ const frozenRef = useRef(frozen);useLayoutEffect(() => { frozenRef.current = frozen; });
  const api = useLearnedApi(), query = useQueryClient(), announce = useAnnounce();
  const [choices, setChoices] = useState<Record<string, Choice>>({}), [sent, setSent] = useState<Record<string, Sent>>({}), [sending, setSending] = useState(false), [error, setError] = useState<string>();
  const [now] = useState(() => Date.now()), heading = useRef<HTMLHeadingElement>(null), sentAny = useRef(false);
@@ -87,6 +91,7 @@ export function LessonBatchCard({ batch, onDone }: { batch: LessonInboxBatch; on
  const undecided = open.filter(lesson => choices[lesson.id] === undefined && lesson.canApprove);
  async function send() {
   if (ready.length === 0 || sending) return;
+  if (frozenRef.current) { setError(RECONNECTING_TEXT);return; }
   setSending(true);setError(undefined);
   try {
    const results = await api.decide(batch.project, ready);
@@ -106,7 +111,7 @@ export function LessonBatchCard({ batch, onDone }: { batch: LessonInboxBatch; on
    if (refused > 0) void query.invalidateQueries({ queryKey: INBOX_KEY });
    heading.current?.focus();
   } catch (failure) {
-   setError(failure instanceof ApiError ? failure.message : "Couldn't send your decisions. Nothing was changed. Try again.");
+   setError(failure instanceof ApiError ? failure.message : "Couldn't send your decisions. Reload to check where they stand.");
   } finally { setSending(false); }
  }
  const done = Object.values(sent);
@@ -119,13 +124,13 @@ export function LessonBatchCard({ batch, onDone }: { batch: LessonInboxBatch; on
   <div className="rv-pane-grid">
    {done.length > 0 && <section className="rv-lesson-results" aria-label="What happened" data-testid="lesson-results"><h3>What happened</h3><ul>{done.map(entry => <li key={entry.result.lessonId} className={entry.result.ok ? "ok" : "bad"}><b><VisibleText text={entry.title} /></b> <VisibleText text={resultWords(entry.result, entry.decision)} /></li>)}</ul></section>}
    {open.length === 0 ? <section className="rv-lesson-all-done" data-testid="lesson-batch-done"><h3>All decided</h3><p className="rv-muted">Nothing else waits in this batch.</p><Button variant="primary" onClick={onDone}>Done</Button></section> : <>
-    <ol className="rv-lesson-list" aria-label="Lessons to decide">{open.map(lesson => <LessonDecisionRow key={lesson.id} lesson={lesson} now={now} titleOf={id => batch.lessons.find(entry => entry.id === id)?.title} disabled={sending} choice={choices[lesson.id]} failed={sent[lesson.id]?.result.ok === false ? resultWords(sent[lesson.id]!.result, sent[lesson.id]!.decision) : undefined} onChoose={choice => setChoices(old => { const next = { ...old };if (choice === undefined) delete next[lesson.id];else next[lesson.id] = choice;return next; })} />)}</ol>
+    <ol className="rv-lesson-list" aria-label="Lessons to decide">{open.map((lesson, index) => <LessonDecisionRow key={lesson.id} lesson={lesson} index={index} total={open.length} now={now} titleOf={id => batch.lessons.find(entry => entry.id === id)?.title} disabled={sending || frozen} choice={choices[lesson.id]} failed={sent[lesson.id]?.result.ok === false ? resultWords(sent[lesson.id]!.result, sent[lesson.id]!.decision) : undefined} onChoose={choice => setChoices(old => { const next = { ...old };if (choice === undefined) delete next[lesson.id];else next[lesson.id] = choice;return next; })} />)}</ol>
     <div className="rv-lesson-send">
      {error !== undefined && <p role="alert" className="rv-lesson-failed"><VisibleText text={error} /></p>}
      <p className="rv-muted" aria-live="polite">{ready.length === 0 ? "Choose Keep, Edit or Drop for each lesson you want to decide now." : `${String(ready.length)} of ${String(open.length)} decided${incomplete > 0 ? `; ${String(incomplete)} still need${incomplete === 1 ? "s" : ""} a reason or text` : ""}.`}</p>
      <div className="rv-lesson-send-row">
-      {undecided.length > 0 && <Button disabled={sending} onClick={() => setChoices(old => ({ ...old, ...Object.fromEntries(undecided.map(lesson => [lesson.id, { kind: "keep" }])) }))}>Keep the rest</Button>}
-      <Button variant="primary" busy={sending} disabled={ready.length === 0} onClick={() => { void send(); }}>{ready.length <= 1 ? "Send decision" : `Send ${String(ready.length)} decisions`}</Button>
+      {undecided.length > 0 && <Button disabled={sending || frozen} onClick={() => setChoices(old => ({ ...old, ...Object.fromEntries(undecided.map(lesson => [lesson.id, { kind: "keep" }])) }))}>Keep the rest</Button>}
+      <Button variant="primary" busy={sending} disabled={ready.length === 0 || frozen} onClick={() => { void send(); }}>{ready.length <= 1 ? "Send decision" : `Send ${String(ready.length)} decisions`}</Button>
      </div>
     </div>
    </>}

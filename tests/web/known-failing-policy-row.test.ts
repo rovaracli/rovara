@@ -8,7 +8,7 @@ import { h } from "./support/h.js";
 describe("known-failing company explanation", () => {
  it("explains that one maintainer may mark and exposes no retired policy controls", async () => {
   const f = renderUi(h(KnownFailingPolicyRow, {}));
-  expect(await screen.findByRole("heading", { name: "Marking tests as already failing" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "Known failing tests" })).toBeTruthy();
   expect(screen.getByText("One currently authorized project maintainer may mark eligible tests as already failing. Each mark is tied to the exact test and check.")).toBeTruthy();
   expect(screen.queryByRole("button")).toBeNull();
   expect(screen.queryByText(/two people|different admin|signed in within/i)).toBeNull();

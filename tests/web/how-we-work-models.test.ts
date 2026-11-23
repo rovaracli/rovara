@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
+import { LegacyHowWeWorkTab } from "./support/legacy-how-we-work-tab.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -23,7 +23,7 @@ const stageModels = (body: (draft: string | null) => unknown): Handler => (_requ
 };
 function setup(options: { canEdit?: boolean; stages?: Record<string, Json>; read?: (draft: string | null) => unknown; handle?: Handler; overlay?: Record<string, unknown>; theme?: "light" | "dark"; view?: unknown } = {}) {
  const cell = howWeWorkHost({ ...(options.view === undefined ? {} : { view: options.view }), ...(options.canEdit === undefined ? {} : { canEdit: options.canEdit }), ...(options.overlay === undefined ? {} : { overlay: options.overlay }), handle: (request, url) => options.handle?.(request, url) ?? stageModels(options.read ?? (() => stageModelsBody(options.stages)))(request, url) }), query = createQueryClient();
- const ui = renderUi(h(AppHostProvider, { host: cell.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments?tab=how-we-work"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
+ const ui = renderUi(h(AppHostProvider, { host: cell.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments?tab=how-we-work"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(LegacyHowWeWorkTab, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
  return { ...cell, ...ui, query };
 }
 const card = (name: string) => screen.getByRole("region", { name });

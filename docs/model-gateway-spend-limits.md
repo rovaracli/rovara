@@ -434,6 +434,16 @@ in: (1) the gateway hold at 100,000 prompt tokens and ONE common output size (th
 smallest ceiling among the model's surviving routes), (2) the dearer of the
 completion and reasoning prices, (3) the prompt price, (4) the lower ceiling (stricter),
 (5) the route tag in code-point order. The others are listed as `route_not_chosen`.
+After that, when MORE than 64 models (`OFFERED_MODELS_MAX`) remain installable, the list is
+cut to 64 (DEC 254zzz419) by `openRouterCapOrder`: the best-known families first, in this
+order of OpenRouter id prefix (`openai/`, `anthropic/`, `google/`, `mistralai/`,
+`meta-llama/`, `deepseek/`, `qwen/`), then every other model; inside that, the cheapest
+gateway hold (at 100,000 prompt tokens and ONE common output size, the smallest ceiling
+among the candidates), then the dearer of completion and reasoning price, the prompt
+price, the lower ceiling, the route tag and the model id. The first 64 stay (in that
+order); each other row is listed as `over_cap`. With 64 rows or fewer nothing changes. The
+OpenRouter offered list (`offeredOpenRouterModels`) uses the same function and cap, so the
+report, the tariff and the list stay identical.
 The gateway pins the chosen route in `provider.order` and `provider.only` with no
 fallback, so a call never lands on another endpoint.
 

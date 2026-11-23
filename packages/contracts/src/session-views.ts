@@ -1,3 +1,4 @@
+import { TaskCloseDigestSchema } from "./task-close-preview.js";
 import { TaskMoneyV1Schema } from "./task-money-schema.js";
 import { z } from "zod";
 import { OrgIdSchema } from "./browser-ids.js";
@@ -132,6 +133,13 @@ export const SessionCloseResponseSchema = z.object({
 }).strict();
 
 export const SessionCloseResponseReaderSchema = forwardReader(SessionCloseResponseSchema);
+
+/** D-CORE's CloseIntentSchema: consent is bound to the preview shown, with the exact wire field names. */
+export const SessionBoundCloseBodySchema = z.object({
+  requestId: z.string().uuid(), expectedPreviewDigest: TaskCloseDigestSchema, discard_unpublished: z.boolean().optional(),
+}).strict();
+export type SessionBoundCloseBody = z.infer<typeof SessionBoundCloseBodySchema>;
+
 
 /** `GET /v1/app/sessions/{id}/sections/{seq}/task`: a chain step's task, as the task view shows it. */
 export const SessionStepTaskResponseSchema = z.object({ task: DeveloperTaskViewSchema }).strict();

@@ -22,11 +22,11 @@ it("shows only known-failing policy and leaves model defaults in the consolidate
  const query = createQueryClient();query.setQueryData(["nav"], nav);
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/how-we-work"] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }), { theme: "light" });
- await screen.findByRole("heading", { name: "How we work (company)" });
+ await screen.findByRole("heading", { name: "Rules" });
  expect(screen.queryByRole("region", { name: "Build" })).toBeNull();
  expect(screen.queryByRole("region", { name: "Plan check" })).toBeNull();
  // The known-failing explanation is fixed text now (one maintainer, no configurable approval count; owner DEC 254zzz133).
- const kf = screen.getByRole("region", { name: "Marking tests as already failing" });
+ const kf = await screen.findByRole("region", { name: "Known failing tests" });
  expect(kf.textContent).toContain("One currently authorized project maintainer");
  expect(kf.textContent).not.toMatch(/two people|signed in within/iu);
  expect(kf.querySelector("button")).toBeNull();
