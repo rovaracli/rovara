@@ -1,12 +1,13 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type MutableRefObject } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { learningKey, useLearningApi, type SettingsView } from "../../api/learning.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { RECONNECTING_TEXT } from "./write-freeze.js";
 import { SETTINGS_TEXT as T, expiresText, settingsFailure, skippedUnlinkedText } from "./learning-text.js";
 
 /** "Learn from PR review comments": off by default, turning it on needs a second person. Who may change it, whether the company locked it and who proposed what are the server's to say; this only sends, shows the answer and reads again. */
-export function LearningSettings({ project, settings, canDecide, skippedUnlinked }: { project: string; settings: SettingsView; canDecide: boolean; skippedUnlinked: number }) {
+export function LearningSettings({ project, settings, canDecide, skippedUnlinked, frozenRef }: { project: string; settings: SettingsView; canDecide: boolean; skippedUnlinked: number; frozenRef?: MutableRefObject<boolean> | undefined }) {
  const api = useLearningApi(), query = useQueryClient(), sending = useRef(false);
  const [busy, setBusy] = useState(false), [waiting, setWaiting] = useState(false), [failure, setFailure] = useState<string>(), [sole, setSole] = useState(false);
  const on = settings.prComments === "on" && !settings.locked, pending = settings.pendingProposal, revision = settings.revision, canWrite = canDecide && !settings.locked;
@@ -14,6 +15,8 @@ export function LearningSettings({ project, settings, canDecide, skippedUnlinked
  /** One write at a time: the ref stops a second click before the screen has disabled the buttons. */
  async function run(write: () => Promise<void>) {
   if (sending.current) return;
+  // Rule 14: this setting needs the suggestions read and the identity read fresh; a handler that outlived the render that enabled it is refused here.
+  if (frozenRef?.current === true) { setFailure(RECONNECTING_TEXT);return; }
   sending.current = true;setBusy(true);setFailure(undefined);setWaiting(false);
   try { await write();await reread(); }
   catch (error) { const result = settingsFailure(error);setFailure(result.text);if (result.stale) await reread(); }

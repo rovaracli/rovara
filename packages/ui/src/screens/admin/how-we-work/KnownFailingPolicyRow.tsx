@@ -1,10 +1,7 @@
 import { KF_POLICY as T } from "./company-text.js";
-import "./how-we-work.css";
+import { Fact, Row } from "../../rules-lessons-read/parts.js";
 
-/** The fixed company explanation for known-failing marks. There is no configurable approval count. */
+/** The fixed company explanation for known-failing marks, as a row of the company Rules page. There is no configurable approval count and nothing to press. */
 export function KnownFailingPolicyRow() {
- return <section aria-label={T.HEADING} className="rv-hww-company-card">
-  <h2>{T.HEADING}</h2>
-  <p>{T.EXPLANATION}</p>
- </section>;
+ return <Row label="Known failing tests"><Fact>{T.EXPLANATION}</Fact></Row>;
 }

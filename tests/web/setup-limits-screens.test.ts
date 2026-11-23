@@ -195,7 +195,7 @@ describe("the company's Setup locks (hidden: the hosted Code does not serve them
  it("shows no Setup locks card on the company How we work page, for an owner or an admin, and never asks for the locks", async () => {
   for (const role of ["owner", "admin"] as const) {
    const f = mountCompany({ role });
-   await screen.findByRole("heading", { name: "How we work (company)" });
+   await screen.findByRole("heading", { name: "Rules" });
    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
    expect(screen.queryByRole("region", { name: "Setup locks" })).toBeNull();
    expect(f.request.mock.calls.some(([request]) => request.path.startsWith(LOCKS_PATH))).toBe(false);

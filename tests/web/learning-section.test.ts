@@ -27,11 +27,11 @@ const cards = () => screen.getAllByRole("region", { name: /^Suggested rule for/u
 const accept = () => fireEvent.click(screen.getByRole("button", { name: /^(Accept as new version|Request approval)$/u }));
 
 describe("the Suggested rules section", () => {
- it("sits above the stage cards on the How we work tab and counts the open suggestions", async () => {
+ it("sits under the rules on the How we work tab and counts the open suggestions", async () => {
   const f = await open({ view: learningView({ suggestions: [suggestion(), suggestion({ id: "sug_2", stage: "*", proposedText: "Keep answers short." })] }) });
   expect(screen.getByRole("heading", { name: "Suggested rules (2)" })).toBeTruthy();
-  const section = screen.getByRole("region", { name: "Suggested rules" }), stages = screen.getByRole("list", { name: "Stages" });
-  expect(section.compareDocumentPosition(stages) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const section = screen.getByRole("region", { name: "Suggested rules" }), rules = screen.getByRole("region", { name: "Rules for every task in this project" });
+  expect(rules.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(f.calls()).toContain("GET " + LEARNING_PATH);
   expect(cards()).toHaveLength(2);
  });

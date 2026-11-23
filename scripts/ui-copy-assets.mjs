@@ -61,7 +61,9 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  // The rebuilt Wiki and Skills pages (G3; their own lazy chunk).
  "screens/wiki-skills-read/wiki-skills-read.css",
  // L4-JA89: the project Skills tab (its own lazy chunk).
- "screens/project/skills/skills.css"]) {
+ "screens/project/skills/skills.css",
+ // G4 (Rules, Lessons and How we work): the rebuilt project views, company Rules, Setup recipes and the lesson batch.
+ "screens/rules-lessons-read/rules-lessons-read.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

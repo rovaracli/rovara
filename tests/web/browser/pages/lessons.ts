@@ -35,8 +35,9 @@ export class LessonsPage {
   async openWork(): Promise<void> {
     await this.page.goto(ROUTES.work);
   }
+  /** Learned is its own view of the How we work tab (G4: Rules, Learned, Models by stage, History). */
   async openHowWeWork(project: string): Promise<void> {
-    await this.page.goto(`${ROUTES.project(project)}?tab=how-we-work`);
+    await this.page.goto(`${ROUTES.project(project)}?tab=how-we-work&view=learned`);
   }
   async openTask(taskId: string): Promise<void> {
     await this.page.goto(ROUTES.session(taskId));

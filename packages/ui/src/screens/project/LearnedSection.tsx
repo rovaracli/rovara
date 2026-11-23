@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import type { LessonRetireReason } from "@agentx/contracts/code-contract-v0";
 import { ApiError } from "../../api/errors.js";
+import { servedReadState } from "../../api/served-read.js";
 import {
  INBOX_KEY, MODES, OFF_TEXT, REJECT_REASONS, RETIRED_STATUS, RETIRE_REASONS, citationWords, expiryWords, fromWords, learnedKey, lessonsOff, modeLabel, notServed, reasonWords, usageWords,
  relationWords, useLearnedApi, useLessonMode, useLessonPages, useRetireRequests, type LessonItem, type LessonList, type LessonMode,
@@ -23,16 +24,20 @@ import { areasAbsent, useLessonAreas, type AreaPick, type LessonAreaNode, type L
 import { LearningSources } from "./lessons/LearningSources.js";
 import { TrialOfferCard } from "./lessons/TrialOfferCard.js";
 import { WeeklySummaryRow } from "./lessons/WeeklySummaryRow.js";
+import { WriteRegion, useIdentityFrozen } from "./write-freeze.js";
 import { LessonChecks } from "./lessons/LessonChecks.js";
 import { RepeatsLine } from "./lessons/RepeatsLine.js";
 import "../work/lessons.css";
 import "./lessons/areas.css";
 
+/** Lessons this week's summary named as new picks: their rows carry a "New" chip (the G4 Learned view supplies them from its own weekly read). */
+const NO_FRESH: ReadonlySet<string> = new Set();
+const FreshLessons = createContext<ReadonlySet<string>>(new Set());
 const failureWords = (error: unknown, fallback: string) => (error instanceof ApiError ? error.message : fallback);
 
 /** The learning mode: off, suggest or auto, set by those Code says may; "Company locked" when the company's setting is the one in force. */
 function ModeRow({ project }: { project: string }) {
- const read = useLessonMode(project), api = useLearnedApi(), query = useQueryClient(), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
+ const read = useLessonMode(project), api = useLearnedApi(), query = useQueryClient(), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), frozen = useIdentityFrozen();
  if (read.isPending) return <Skeleton label="Loading the learning mode" />;
  if (read.isError) return lessonsOff(read.error) || notServed(read.error) ? null : <p role="alert" className="rv-lesson-failed"><VisibleText text={failureWords(read.error, "Couldn't load the learning mode.")} /></p>;
  const mode = read.data;
@@ -40,12 +45,12 @@ function ModeRow({ project }: { project: string }) {
   if (busy || next === mode.mode) return;
   setBusy(true);setError(undefined);
   try { query.setQueryData([...learnedKey(project), "mode"], await api.setMode(project, next)); }
-  catch (failure) { setError(failureWords(failure, "Couldn't change the mode. Nothing was changed.")); }
+  catch (failure) { setError(failureWords(failure, "Couldn't change the mode. Reload to check where it stands.")); }
   finally { setBusy(false); }
  }
  const locked = mode.lockedByCompany && <p data-testid="company-locked"><span className="rv-locked">Company locked</span> The company's setting keeps this project at {modeLabel(mode.effective)}.</p>;
  if (!mode.canChange) return <div className="rv-learned-mode" data-testid="learning-mode"><p><b>Learning: {modeLabel(mode.effective)}.</b> {MODES.find(entry => entry.value === mode.effective)?.hint}</p>{locked}<p className="rv-muted">Only an admin of this project, or an owner or admin of the company, can change it.</p></div>;
- return <fieldset className="rv-learned-mode" data-testid="learning-mode" disabled={busy}>
+ return <fieldset className="rv-learned-mode" data-testid="learning-mode" disabled={busy || frozen}>
   <legend>Learning</legend>
   <div className="rv-choices">{MODES.map(entry => <label key={entry.value} className="rv-choice"><input type="radio" name={"learning-mode-" + project} value={entry.value} checked={mode.mode === entry.value} onChange={() => { void change(entry.value); }} /><span>{entry.label}</span></label>)}</div>
   <p className="rv-muted" aria-live="polite">{MODES.find(entry => entry.value === mode.mode)?.hint}</p>
@@ -59,13 +64,13 @@ type Action = { kind: "idle" } | { kind: "retiring"; reason: string } | { kind: 
 /** One lesson in a list: its text, where it came from, Code's counts, and what this person may do with it. */
 function LearnedLesson({ project, lesson, list }: { project: string; lesson: LessonItem; list: LessonList }) {
  const api = useLearnedApi(), query = useQueryClient(), announce = useAnnounce(), [action, setAction] = useState<Action>({ kind: "idle" }), [now] = useState(() => Date.now());
- const from = fromWords(lesson), expiry = list === "proposed" ? expiryWords(lesson.expiresAt, now) : undefined;
+ const fresh = useContext(FreshLessons).has(lesson.id), from = fromWords(lesson), expiry = list === "proposed" ? expiryWords(lesson.expiresAt, now) : undefined;
  /** Sends one write once; what it came to is said in words (`write` answers them). */
  async function run(write: () => Promise<string>) {
   setAction({ kind: "busy" });
   // The lesson leaves its list when the lists are read again, so what happened is also announced.
   try { const text = await write();setAction({ kind: "done", text });announce(`${lesson.title}: ${text}`);void query.invalidateQueries({ queryKey: learnedKey(project) });void query.invalidateQueries({ queryKey: INBOX_KEY }); }
-  catch (failure) { setAction({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") }); }
+  catch (failure) { setAction({ kind: "error", text: failureWords(failure, "That didn't go through. Reload to check where it stands.") }); }
  }
  const busy = action.kind === "busy";
  const actions = action.kind === "done" ? <p role="status" className="rv-learned-note">{action.text}</p>
@@ -84,7 +89,7 @@ function LearnedLesson({ project, lesson, list }: { project: string; lesson: Les
    {list === "approved" && !lesson.canRetire && <Button variant="quiet" busy={busy} aria-label={`Ask to retire: ${lesson.title}`} onClick={() => { void run(async () => { await api.askRetire(project, lesson.id);return "Asked. The people who decide lessons will see your request."; }); }}>Ask to retire</Button>}
   </div>;
  return <li><article className="rv-lesson" aria-labelledby={"learned-" + lesson.id} data-lesson-id={lesson.id}>
-  <header className="rv-lesson-head"><h3 id={"learned-" + lesson.id}><VisibleText text={lesson.title} /></h3>{from !== undefined && <span className={"rv-lesson-from" + (lesson.from.some(person => person.you === true) ? " you" : "")}>{from}</span>}</header>
+  <header className="rv-lesson-head"><h3 id={"learned-" + lesson.id}><VisibleText text={lesson.title} /></h3>{fresh && <span className="rv-lesson-new"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" /></svg>New</span>}{from !== undefined && <span className={"rv-lesson-from" + (lesson.from.some(person => person.you === true) ? " you" : "")}>{from}</span>}</header>
   {lesson.description !== "" && <p className="rv-lesson-description"><VisibleText text={lesson.description} /></p>}
   {lesson.body !== "" && lesson.body !== lesson.description && <details><summary>The full lesson</summary><p className="rv-lesson-body"><VisibleText text={lesson.body} /></p></details>}
   <ul className="rv-lesson-facts">
@@ -97,8 +102,8 @@ function LearnedLesson({ project, lesson, list }: { project: string; lesson: Les
   </ul>
   {list === "proposed" && relationWords(lesson, () => undefined).map(words => <p key={words} className="rv-lesson-relation"><VisibleText text={words} /></p>)}
   {expiry !== undefined && <p className={"rv-lesson-expiry" + (expiry.soon ? " soon" : "")}>{expiry.soon && <span className="rv-tone-dot" data-tone="wait" aria-hidden="true" />}{expiry.text}</p>}
-  {actions}
-  {list === "proposed" && lesson.canApprove && lesson.contradicts !== undefined && action.kind === "idle" && <BothPlaces project={project} lesson={lesson} />}
+  <WriteRegion>{actions}</WriteRegion>
+  {list === "proposed" && lesson.canApprove && lesson.contradicts !== undefined && action.kind === "idle" && <WriteRegion><BothPlaces project={project} lesson={lesson} /></WriteRegion>}
   {action.kind === "error" && <p role="alert" className="rv-lesson-failed"><VisibleText text={action.text} /></p>}
  </article></li>;
 }
@@ -211,22 +216,25 @@ function ApprovedView({ project, onOff, view, setView, focus }: { project: strin
 
 /** The open retire requests, for the people who decide: each with who asked and a Retire with a reason. */
 function RetireRequests({ project }: { project: string }) {
- const approved = useLessonPages(project, "approved"), canDecide = approved.data?.pages[0]?.canDecide === true;
- const read = useRetireRequests(project, canDecide), api = useLearnedApi(), query = useQueryClient(), announce = useAnnounce();
+ const approved = useLessonPages(project, "approved"), served = servedReadState(approved), canDecide = served.data?.pages[0]?.canDecide === true;
+ const identityFrozen = useIdentityFrozen(), read = useRetireRequests(project, canDecide), requests = servedReadState(read), api = useLearnedApi(), query = useQueryClient(), announce = useAnnounce();
  const [reasons, setReasons] = useState<Record<string, string>>({}), [busy, setBusy] = useState<string>(), [error, setError] = useState<string>();
- if (!canDecide || read.data === undefined || read.data.requests.length === 0) return null;
+ // Kept facts never grant a write (DEC 324): while either read is showing its last answer after a failed re-read, the list stays but Retire is hidden and refused.
+ const stale = served.staleSince !== undefined || requests.staleSince !== undefined || identityFrozen;
+ if (!canDecide || requests.data === undefined || requests.data.requests.length === 0) return null;
  async function retire(lessonId: string) {
   const reason = RETIRE_REASONS.find(entry => entry.value === reasons[lessonId])?.value;
-  if (reason === undefined) return;
+  if (reason === undefined || stale) return;
   setBusy(lessonId);setError(undefined);
-  try { await api.retire(project, lessonId, reason);announce(`${read.data?.requests.find(entry => entry.lessonId === lessonId)?.title ?? "The lesson"}: retired. Rovara no longer gives it to tasks.`);void query.invalidateQueries({ queryKey: learnedKey(project) }); }
-  catch (failure) { setError(failureWords(failure, "Couldn't retire it. Nothing was changed.")); }
+  try { await api.retire(project, lessonId, reason);announce(`${requests.data?.requests.find(entry => entry.lessonId === lessonId)?.title ?? "The lesson"}: retired. Rovara no longer gives it to tasks.`);void query.invalidateQueries({ queryKey: learnedKey(project) }); }
+  catch (failure) { setError(failureWords(failure, "Couldn't retire it. Reload to check where it stands.")); }
   finally { setBusy(undefined); }
  }
  return <section className="rv-learned-requests" aria-label="Asked to retire" data-testid="retire-requests"><h3>Asked to retire</h3>
-  <ul className="rv-learned-list">{read.data.requests.map(request => <li key={request.lessonId}><p className="rv-learned-note"><b><VisibleText text={request.title} /></b> <span className="rv-muted">asked by <VisibleText text={request.by} />, <RelativeTime at={new Date(request.at).toISOString()} /></span></p>
-   <div className="rv-retire-form"><Select label={`Why retire "${request.title}"`} value={reasons[request.lessonId] ?? ""} placeholder="Choose a reason" options={RETIRE_REASONS} onValueChange={reason => setReasons(old => ({ ...old, [request.lessonId]: reason }))} /><Button variant="danger" busy={busy === request.lessonId} disabled={reasons[request.lessonId] === undefined} onClick={() => { void retire(request.lessonId); }}>Retire lesson</Button></div></li>)}</ul>
-  {read.data.more && <p className="rv-muted rv-learned-note">More requests wait than are shown here.</p>}
+  {stale && <p className="rv-muted rv-learned-note" role="status">Reconnecting. You can retire these when the list is up to date.</p>}
+  <ul className="rv-learned-list">{requests.data.requests.map(request => <li key={request.lessonId}><p className="rv-learned-note"><b><VisibleText text={request.title} /></b> <span className="rv-muted">asked by <VisibleText text={request.by} />, <RelativeTime at={new Date(request.at).toISOString()} /></span></p>
+   {!stale && <div className="rv-retire-form"><Select label={`Why retire "${request.title}"`} value={reasons[request.lessonId] ?? ""} placeholder="Choose a reason" options={RETIRE_REASONS} onValueChange={reason => setReasons(old => ({ ...old, [request.lessonId]: reason }))} /><Button variant="danger" busy={busy === request.lessonId} disabled={reasons[request.lessonId] === undefined} onClick={() => { void retire(request.lessonId); }}>Retire lesson</Button></div>}</li>)}</ul>
+  {requests.data.more && <p className="rv-muted rv-learned-note">More requests wait than are shown here.</p>}
   {error !== undefined && <p role="alert" className="rv-lesson-failed"><VisibleText text={error} /></p>}
  </section>;
 }
@@ -235,13 +243,13 @@ function RetireRequests({ project }: { project: string }) {
  * "Learned" (DEC 231c): the project's lessons inside How we work. The learning mode, the approved, proposed and retired lists (Code's pages), retiring with a reason or
  * asking to retire, and the open retire requests for the people who decide. When Code's lessons are off, the section says so calmly and shows nothing else.
  */
-export function LearnedSection({ project }: { project: string }) {
+export function LearnedSection({ project, embedded = false, fresh }: { project: string; embedded?: boolean; fresh?: ReadonlySet<string> | undefined }) {
  const [tab, setTab] = useState<LessonList>("approved"), [off, setOff] = useState(false), markOff = useCallback(() => setOff(true), [setOff]);
  const [view, setView] = useState<"area" | "all">("area"), [focus, setFocus] = useState<string>();
  const showExample = useCallback((lessonId: string) => { setTab("approved");setView("all");setFocus(lessonId); }, [setTab, setView, setFocus]);
  const mode = useLessonMode(project), isOff = off || (mode.isError && lessonsOff(mode.error));
- return <section className="rv-learned" aria-labelledby="learned-title" data-testid="learned">
-  <header><h2 id="learned-title">Learned</h2><p className="rv-muted">Lessons Rovara learned from this project's corrections. Approved lessons are given to future tasks where they fit.</p><RepeatsLine project={project} /></header>
+ return <FreshLessons.Provider value={fresh ?? NO_FRESH}><section className={embedded ? "rv-learned rv-learned-embedded" : "rv-learned"} aria-labelledby="learned-title" data-testid="learned">
+  {embedded ? <h2 id="learned-title" className="rv-visually-hidden">Learned</h2> : <header><h2 id="learned-title">Learned</h2><p className="rv-muted">Lessons Rovara learned from this project's corrections. Approved lessons are given to future tasks where they fit.</p><RepeatsLine project={project} /></header>}
   {isOff ? <p className="rv-learned-off" data-testid="lessons-off">{OFF_TEXT}</p> : <>
    <ThisWeek project={project} />
    <TeamRules project={project} />
@@ -257,5 +265,5 @@ export function LearnedSection({ project }: { project: string }) {
    <LearningSources project={project} onExample={showExample} />
    <LessonChecks project={project} />
   </>}
- </section>;
+ </section></FreshLessons.Provider>;
 }

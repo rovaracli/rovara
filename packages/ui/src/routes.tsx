@@ -67,8 +67,8 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
   { path: "projects", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectsScreen.js")).ProjectsScreen }) },
   { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectDetailScreen.js")).ProjectDetailScreen }) },
   // Lane C: read-only company models, connections and permitted waiting items.
- { path: "how-we-work", lazy: async () => ({ Component: (await import("./screens/admin/how-we-work/HowWeWorkCompanyScreen.js")).HowWeWorkCompanyScreen }) },
- { path: "how-we-work/recipes", lazy: async () => ({ Component: (await import("./screens/admin/how-we-work/SetupRecipesScreen.js")).SetupRecipesScreen }) }, { path: "connections", lazy: async () => ({ Component: (await import("./screens/admin/connections/ConnectionsScreen.js")).ConnectionsScreen }) },
+ { path: "how-we-work", lazy: async () => ({ Component: (await import("./screens/rules-lessons-read/LazyPages.js")).CompanyRulesPage }) },
+ { path: "how-we-work/recipes", lazy: async () => ({ Component: (await import("./screens/rules-lessons-read/LazyPages.js")).SetupRecipesPage }) }, { path: "connections", lazy: async () => ({ Component: (await import("./screens/admin/connections/ConnectionsScreen.js")).ConnectionsScreen }) },
  // Lane C2: read-only company audit.
  g1("audit"), { path: "*", element: <NotFound /> }] });
  if (features.chains) children.push({ path: "chains/*", element: <Page title="Chains" /> });

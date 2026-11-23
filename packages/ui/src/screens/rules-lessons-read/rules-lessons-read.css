@@ -1,0 +1,310 @@
+/* G4 read screens: rules, lessons, model choices, recipes. Layouts only, on the shared v2 tokens and parts. */
+.g4-rules-lessons-read{color:var(--rv-text);font:var(--rv-font-md)/1.55 var(--rv-font-ui);min-width:0;overflow-wrap:anywhere}
+.g4-rules-lessons-read *{box-sizing:border-box}
+.g4-page{max-width:1112px;min-width:0}
+.g4-page>:not(.g4-split){max-width:var(--rv-reading-width)}
+.g4-page .rv-page-header{margin-bottom:var(--rv-space-5)}
+.g4-page .rv-page-header p.rv-muted{margin-top:var(--rv-space-3)}
+.g4-page .rv-page-breadcrumbs li:last-child{color:var(--rv-text-muted)}
+:where(.g4-rules-lessons-read p){margin:0}
+.g4-quiet,.g4-block-meta{color:var(--rv-text-muted)}
+.g4-quiet{font-size:var(--rv-font-sm)}
+.g4-held{color:var(--rv-text-muted)}
+.g4-mono{font:var(--rv-font-sm)/1.5 var(--rv-font-mono);color:var(--rv-text-muted);white-space:nowrap}
+/* In-page section pills */
+.g4-pills,.g4-segments{display:flex;flex-wrap:wrap;gap:var(--rv-space-2);margin:0 0 var(--rv-space-6)}
+.g4-segments{margin:var(--rv-space-4) 0}
+.g4-segments button[aria-pressed=true]{background:var(--rv-bg-sunken);border-color:var(--rv-text)}
+/* Page columns: reading column, with the version history beside it from 1100px */
+.g4-split{display:grid;grid-template-columns:minmax(0,1fr);column-gap:var(--rv-space-7)}
+.g4-split>*{min-width:0}
+@media(min-width:1100px){.g4-split{grid-template-columns:minmax(0,var(--rv-reading-width)) minmax(0,312px)}.g4-split>*{grid-column:1}.g4-split>.g4-rail{grid-column:2;grid-row:1/span 4;align-self:start;margin-top:var(--rv-space-1)}}
+/* Blocks and rows */
+.g4-block{margin:0 0 var(--rv-space-7)}
+.g4-block>h2{margin:0 0 var(--rv-space-2);font:600 var(--rv-font-xl)/1.3 var(--rv-font-ui);letter-spacing:-.01em}
+.g4-block-meta{margin:0 0 var(--rv-space-4)}
+.g4-block>.g4-rows{margin-top:var(--rv-space-4)}
+.g4-rows{border-top:1px solid var(--rv-border)}
+.g4-row{display:grid;grid-template-columns:minmax(0,200px) minmax(0,1fr);gap:var(--rv-space-3) var(--rv-space-5);padding:var(--rv-space-5) 0;border-bottom:1px solid var(--rv-border)}
+.g4-row-label{display:grid;justify-items:start;align-content:start;gap:var(--rv-space-2)}
+.g4-row-label h3{margin:0;font:600 var(--rv-font-lg)/1.4 var(--rv-font-ui)}
+.g4-row-body{display:grid;gap:var(--rv-space-3);min-width:0;font-size:var(--rv-font-lg)}
+.g4-fact small{display:block;margin-top:2px;color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.g4-settings .g4-rows{margin-top:var(--rv-space-3)}
+.g4-settings>.g4-quiet{margin-top:var(--rv-space-3)}
+.g4-rules-block>.g4-rows{margin-top:var(--rv-space-4)}
+/* Lists, lessons, weekly items */
+.g4-list{list-style:none;margin:0 0 var(--rv-space-3);padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);overflow:hidden}
+.g4-list>li:first-child{border-top:0}
+.g4-title{font-weight:600}
+.g4-prose{margin-top:var(--rv-space-2);white-space:pre-wrap;color:var(--rv-text-muted)}
+.g4-meta{display:flex;flex-wrap:wrap;margin-top:var(--rv-space-2);color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.g4-meta span+span::before{content:"·";margin:0 var(--rv-space-2)}
+.g4-notice{margin:0 0 var(--rv-space-4);padding:var(--rv-space-3) var(--rv-space-4);border-radius:var(--rv-radius-md);background:var(--rv-bg-sunken)}
+.g4-cards{display:grid;gap:var(--rv-space-4)}
+.g4-lesson-card[aria-current=true]{border-color:var(--rv-text)}
+/* Version history rail */
+.g4-rail>h2{font-size:var(--rv-font-lg)}
+.g4-timeline{list-style:none;margin:var(--rv-space-4) 0 0;padding:0}
+.g4-timeline li{position:relative;padding:0 0 var(--rv-space-5) calc(var(--rv-space-6) + var(--rv-space-3))}
+.g4-timeline li:not(:last-child)::before{content:"";position:absolute;left:11px;top:28px;bottom:var(--rv-space-1);width:2px;background:var(--rv-border)}
+.g4-node{position:absolute;left:0;top:0;display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--rv-status-done-bg);color:var(--rv-status-done)}
+.g4-tick{width:14px;height:14px}
+.g4-timeline h3{margin:0;font:600 var(--rv-font-md)/1.5 var(--rv-font-ui)}
+.g4-live{font-weight:400}
+.g4-timeline p{margin-top:2px;color:var(--rv-text-muted)}
+.g4-timeline p.g4-quiet{margin-top:2px}
+/* Stage models table */
+.g4-models .rv-table-wrap{max-width:none}
+.g4-models caption{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.g4-models td{white-space:normal}
+.g4-stage{display:inline-block}
+.g4-model{display:grid}
+.g4-model small{color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.g4-models .rv-table-v2 tbody tr{height:auto}
+.g4-models .rv-table-v2 td{padding-block:var(--rv-space-3)}
+/* Setup recipes */
+/* Read states: loading, and the 4e error block */
+.g4-loading .g4-state{color:var(--rv-text-muted)}
+.g4-skeleton-rows{display:grid;gap:var(--rv-space-3);margin-top:var(--rv-space-3)}
+.g4-skeleton-rows .rv-skeleton{height:var(--rv-space-7);background:var(--rv-bg-raised);border:1px solid var(--rv-border)}
+@media(max-width:639px){
+ .g4-meta{display:grid}
+ .g4-meta span+span::before{content:none}
+ .g4-row{grid-template-columns:minmax(0,1fr);gap:var(--rv-space-2);padding:var(--rv-space-4) 0}
+ .g4-lesson-card .g4-row,.g4-detail .g4-row{grid-template-columns:minmax(0,1fr);gap:0}
+ .g4-versions>li{grid-template-columns:minmax(0,1fr) auto}
+ .g4-version-no{grid-column:1/-1}
+ .g4-recipes>li{flex-direction:column}
+ .g4-detail{padding:var(--rv-space-4)}
+ .g4-list>li{padding:var(--rv-space-4)}
+ .g4-models .rv-table-v2 thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+ .g4-models .rv-table-v2,.g4-models .rv-table-v2 tbody{display:block}
+ .g4-models .rv-table-v2 tr{display:grid;gap:2px;padding:var(--rv-space-3) var(--rv-space-4);border-bottom:1px solid var(--rv-border)}
+ .g4-models .rv-table-v2 tbody tr:last-child{border-bottom:0}
+ .g4-models .rv-table-v2 td{padding:0;border:0}
+ .g4-models .rv-table-v2 td:last-child{color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+}
+.g4-stale{margin:0 0 var(--rv-space-4);color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.g4-table-note{margin-top:var(--rv-space-3)}
+/* A read this install does not offer is a held line (4f), not a failure: quiet border, plain weight. */
+.g4-error[data-kind=unknown]{border-color:var(--rv-border)}
+.g4-error[data-kind=unknown] p{font-weight:400;color:var(--rv-text-muted)}
+
+/* Board pass: pills as the view switch, rows and folds, 4e error block, versions, weekly, lessons, recipes */
+.g4-pills a,.g4-segments button{display:inline-flex;align-items:center;min-height:max(28px,var(--rv-touch-min));padding:0 var(--rv-space-3);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-lg);background:transparent;color:var(--rv-text);font:600 var(--rv-font-sm)/1 var(--rv-font-ui);text-decoration:none;cursor:pointer}
+.g4-pills a:hover,.g4-segments button:hover{background:var(--rv-bg-sunken)}
+.g4-pills a[aria-current=page]{background:var(--rv-bg-sunken);border-color:transparent}
+.g4-pills{margin-bottom:var(--rv-space-6)}
+.g4-block-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--rv-space-4);margin:0 0 var(--rv-space-2)}
+.g4-block-head>h2{margin:0}
+.g4-block>.g4-block-head+.g4-block-meta,.g4-block-head+.g4-block-meta{margin-top:0}
+.g4-block>h2{margin:0}
+.g4-aside{color:var(--rv-text-muted);font-size:var(--rv-font-sm);white-space:nowrap}
+.g4-block-meta{margin:0 0 var(--rv-space-4)}
+.g4-foot{margin-top:var(--rv-space-4);max-width:62ch}
+.g4-intro{margin:0 0 var(--rv-space-5);color:var(--rv-text-muted);font-size:var(--rv-font-lg);max-width:var(--rv-reading-width)}
+.g4-row-label h3{font:600 var(--rv-font-lg)/1.4 var(--rv-font-ui)}
+.g4-row-body{gap:var(--rv-space-3)}
+.g4-chip{display:inline-block;padding:2px var(--rv-space-2);border-radius:var(--rv-radius-lg);background:var(--rv-status-stopped-bg);color:var(--rv-status-stopped);font:600 var(--rv-font-sm)/1.5 var(--rv-font-ui);white-space:nowrap}
+.g4-chip[data-tone=attention]{background:var(--rv-status-needs-you-bg);color:var(--rv-status-needs-you)}
+.g4-chip[data-tone=ok]{background:var(--rv-status-done-bg);color:var(--rv-status-done)}
+/* Lists */
+.g4-list{list-style:none;margin:0 0 var(--rv-space-3);padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);overflow:hidden}
+.g4-list>li{padding:var(--rv-space-4) var(--rv-space-5);border-top:1px solid var(--rv-border)}
+.g4-list>li:first-child{border-top:0}
+.g4-quote{margin:0 0 var(--rv-space-1);font:500 var(--rv-font-lg)/1.45 var(--rv-font-ui)}
+.g4-quote::before{content:"\201C"}.g4-quote::after{content:"\201D"}
+.g4-list .g4-from{font-size:var(--rv-font-sm)}
+.g4-learned{display:grid;gap:var(--rv-space-6)}
+.g4-learned .g4-block{margin:0}
+.g4-weekly{list-style:none;margin:0;padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);overflow:hidden}
+.g4-weekly>li{display:grid;grid-template-columns:var(--rv-space-5) minmax(0,1fr);gap:var(--rv-space-3);padding:var(--rv-space-4) var(--rv-space-5);border-top:1px solid var(--rv-border)}
+.g4-weekly>li:first-child{border-top:0}
+.g4-icon{width:16px;height:16px;margin-top:3px}
+.g4-icon-ok{color:var(--rv-status-done)}.g4-icon-attention{color:var(--rv-status-needs-you)}
+/* Rule versions */
+.g4-timeline-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--rv-space-3)}
+.g4-all{display:flex;justify-content:center;width:100%;margin-top:var(--rv-space-2);text-decoration:none}
+.g4-versions{list-style:none;margin:0;padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);overflow:hidden}
+.g4-versions>li{display:grid;grid-template-columns:var(--rv-space-7) minmax(0,1fr) auto;align-items:center;gap:var(--rv-space-3);padding:var(--rv-space-4) var(--rv-space-5);border-top:1px solid var(--rv-border)}
+.g4-versions>li:first-child{border-top:0}
+.g4-versions h3{margin:0;font:600 var(--rv-font-lg)/1.4 var(--rv-font-ui)}
+.g4-version-no{color:var(--rv-text-muted);font:var(--rv-font-md)/1.4 var(--rv-font-mono)}
+/* Lesson cards (review a batch) */
+.g4-lesson-card{padding:var(--rv-space-5) var(--rv-space-6);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.g4-lesson-card[aria-current=true]{border-color:var(--rv-text)}
+.g4-card-top{display:flex;align-items:center;justify-content:space-between;gap:var(--rv-space-3);margin-bottom:var(--rv-space-3)}
+.g4-lesson-card .g4-quote{font-size:var(--rv-font-xl);margin-bottom:var(--rv-space-3)}
+.g4-lesson-card .g4-rows{border-top:0}
+.g4-lesson-card .g4-row{grid-template-columns:minmax(0,140px) minmax(0,1fr);padding:var(--rv-space-2) 0;border-bottom:0}
+.g4-lesson-card .g4-row-label h3{font:400 var(--rv-font-lg)/1.5 var(--rv-font-ui);color:var(--rv-text-muted)}
+.g4-eyebrow{margin:0;color:var(--rv-text-muted);font:600 var(--rv-font-sm)/1.4 var(--rv-font-ui);letter-spacing:.06em;text-transform:uppercase}
+.g4-lesson-card .g4-prose{margin:0}
+/* Setup recipes */
+.g4-recipes>li{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--rv-space-4)}
+.g4-recipes>li[aria-current=true]{box-shadow:inset 3px 0 0 var(--rv-text)}
+.g4-recipe-main{min-width:0}
+.g4-recipe-main h2{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2);margin:0 0 var(--rv-space-1);font:600 var(--rv-font-xl)/1.3 var(--rv-font-ui)}
+.g4-detail{margin-top:var(--rv-space-6);padding:var(--rv-space-6);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.g4-detail>h2{margin:0 0 var(--rv-space-1);font:600 var(--rv-font-xl)/1.3 var(--rv-font-ui)}
+.g4-specs{list-style:none;margin:var(--rv-space-4) 0;padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md)}
+.g4-spec{display:grid;grid-template-columns:var(--rv-space-5) minmax(0,1fr);gap:var(--rv-space-3);padding:var(--rv-space-3) var(--rv-space-4);border-top:1px solid var(--rv-border)}
+.g4-spec:first-child{border-top:0}
+.g4-spec h4{margin:0;font:600 var(--rv-font-md)/1.5 var(--rv-font-ui)}
+.g4-spec p{color:var(--rv-text-muted)}
+.g4-spec code{font:var(--rv-font-sm)/1.6 var(--rv-font-mono);color:var(--rv-text);white-space:pre-wrap}
+.g4-detail .g4-rows{border-top:0}
+.g4-detail .g4-row{grid-template-columns:minmax(0,160px) minmax(0,1fr);padding:var(--rv-space-3) 0;border-bottom:0}
+.g4-detail .g4-row-label h3{font:400 var(--rv-font-md)/1.5 var(--rv-font-ui);color:var(--rv-text-muted)}
+.g4-detail .g4-row-body{font-size:var(--rv-font-md)}
+/* The 4e error block: red outline, icon, three parts, one retry, its own reference */
+.g4-error{max-width:620px;margin:0 0 var(--rv-space-5);padding:var(--rv-space-5);border:1px solid var(--rv-status-failed);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.g4-error>h2{display:flex;align-items:center;gap:var(--rv-space-3);margin:0;font:600 var(--rv-font-xl)/1.3 var(--rv-font-ui)}
+.g4-error>h2 svg{flex:none;width:18px;height:18px;color:var(--rv-status-failed)}
+.g4-error-steps{display:grid;gap:var(--rv-space-4);margin:var(--rv-space-4) 0}
+.g4-error-steps dt{font:600 var(--rv-font-md)/1.5 var(--rv-font-ui)}
+.g4-error-steps dd{margin:var(--rv-space-1) 0 0;color:var(--rv-text-muted)}
+.g4-error-ref{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2);margin-top:var(--rv-space-4);color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.g4-error-ref code{font:var(--rv-font-sm)/1.5 var(--rv-font-mono)}
+.g4-error-ref .rv-button{min-height:0;padding:0 var(--rv-space-1);text-decoration:underline}
+.g4-error[data-kind=unknown]{display:grid;justify-items:start;gap:var(--rv-space-3);padding:var(--rv-space-4)}
+.g4-error[data-kind=unknown] p{font-weight:400;color:var(--rv-text-muted)}
+/* Phone: each row folds to its label and one summary line */
+.g4-fold{display:block;padding:0;border-bottom:1px solid var(--rv-border)}
+.g4-fold>summary{display:grid;grid-template-columns:var(--rv-space-5) minmax(0,1fr);gap:var(--rv-space-3);padding:var(--rv-space-4) 0;cursor:pointer;list-style:none}
+.g4-fold>summary::-webkit-details-marker{display:none}
+.g4-chevron{width:16px;height:16px;margin-top:5px;color:var(--rv-text-muted);transition:transform .15s}
+.g4-fold[open]>summary .g4-chevron{transform:rotate(90deg)}
+.g4-fold-label{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2)}
+.g4-fold-label h3{margin:0;font:600 var(--rv-font-lg)/1.4 var(--rv-font-ui)}
+.g4-fold-summary{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--rv-text-muted)}
+.g4-fold[open]>summary .g4-fold-summary{display:none}
+.g4-fold>.g4-row-body{padding:0 0 var(--rv-space-4) calc(var(--rv-space-5) + var(--rv-space-3))}
+
+.g4-stage::first-letter{text-transform:uppercase}
+
+/* Review round 1 */
+.g4-pills a,.g4-segments button{min-height:28px}
+.g4-pills,.g4-segments{gap:var(--rv-space-2)}
+.g4-row-label h3,.g4-fold-label h3{font-size:var(--rv-font-xl)}
+.g4-lesson-card .g4-row-label h3,.g4-detail .g4-row-label h3{font-size:var(--rv-font-lg)}
+.g4-chip svg{width:12px;height:12px;margin:-2px 4px -2px -2px;vertical-align:middle}
+.g4-version-no{font:var(--rv-font-md)/1.4 var(--rv-font-ui)}
+.g4-foot{max-width:none}
+.g4-body{margin-top:var(--rv-space-2)}
+.g4-body>summary{cursor:pointer;color:var(--rv-text-muted);font-size:var(--rv-font-sm);width:fit-content}
+.g4-body .g4-prose{margin-top:var(--rv-space-2);color:var(--rv-text)}
+.g4-models .rv-table-v2 th{text-transform:none;letter-spacing:0;font-size:var(--rv-font-md);color:var(--rv-text)}
+.g4-error>h2{align-items:flex-start}
+.g4-error>h2 svg{margin-top:4px}
+.g4-error-ref code,.g4-error-ref .rv-button{font-size:var(--rv-font-sm)}
+.g4-error-ref .rv-button{font-weight:400;color:var(--rv-text-muted)}
+.g4-recipes .rv-button{min-height:32px;padding-inline:var(--rv-space-3);flex:none}
+@media(max-width:639px){
+ .g4-versions>li{grid-template-columns:minmax(0,1fr) auto;row-gap:var(--rv-space-1)}
+ .g4-version-no{grid-column:1/-1}
+ .g4-lesson-card,.g4-detail{padding:var(--rv-space-4)}
+ .g4-lesson-card .g4-row,.g4-detail .g4-row{grid-template-columns:minmax(0,1fr);gap:0;padding:var(--rv-space-2) 0}
+ .g4-recipes>li{flex-direction:row;padding:var(--rv-space-4)}
+ .g4-models .rv-table-v2 tr{gap:0}
+ .g4-models .rv-table-v2 td:nth-child(2) small{display:inline;margin-left:var(--rv-space-2)}
+}
+.g4-recipes .rv-button-with-reason{flex:none;width:auto;min-width:0}
+
+/* Review round 2 */
+.g4-row-label h3,.g4-fold-label h3{font-size:17px}
+.g4-row{grid-template-columns:minmax(0,224px) minmax(0,1fr)}
+.g4-foot{font-size:13px}
+.g4-error-ref,.g4-error-ref .rv-button,.g4-error-ref code{font-family:var(--rv-font-mono);font-size:12px}
+.g4-versions>li{grid-template-columns:var(--rv-space-6) minmax(0,1fr) auto}
+.g4-segments button[aria-pressed=true]{background:var(--rv-bg-sunken);border-color:transparent}
+.g4-body>summary{list-style:none}
+.g4-body>summary::-webkit-details-marker{display:none}
+.g4-body>summary::before{content:"\203A";display:inline-block;width:1em;transition:transform .15s}
+.g4-body[open]>summary::before{transform:rotate(90deg)}
+.g4-meta span+span::before{margin:0 var(--rv-space-2)}
+.g4-models td,.g4-models td strong{font-size:var(--rv-font-md)}
+.g4-models .g4-block-meta{font-size:var(--rv-font-lg)}
+.g4-na{color:var(--rv-text-muted)}
+.g4-recipe-main h2{font-size:17px}
+.g4-detail .g4-row-label h3,.g4-detail .g4-row-body,.g4-spec h4,.g4-spec p{font-size:var(--rv-font-md)}
+.g4-after-list{margin:var(--rv-space-3) 0 0}
+.g4-lesson-card .g4-quote{font-size:18px;font-weight:400}
+@media(max-width:639px){
+ .g4-versions>li{grid-template-columns:var(--rv-space-6) minmax(0,1fr);row-gap:var(--rv-space-2)}
+ .g4-version-no{grid-column:1}
+ .g4-versions>li>.g4-chip{grid-column:2;justify-self:start}
+ .g4-recipe-main h2{font-size:16px}
+}
+/* Review round 3 */
+.g4-notice{display:flex;align-items:flex-start;gap:var(--rv-space-3);background:var(--rv-status-needs-you-bg);color:var(--rv-text)}
+.g4-notice svg{flex:none;width:16px;height:16px;margin-top:4px;color:var(--rv-status-needs-you)}
+.g4-page .g4-error{max-width:620px}
+.g4-foot{font-size:14px}
+.g4-intro{font-size:15px}
+.g4-chip[data-tone=new]{background:var(--rv-status-running-bg);color:var(--rv-status-running)}
+.g4-aside .g4-segments{display:inline-flex;gap:var(--rv-space-3);margin:0}
+.g4-aside .g4-segments button{min-height:0;padding:0 0 2px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--rv-text-muted);font-weight:400}
+.g4-aside .g4-segments button:hover{background:transparent;color:var(--rv-text)}
+.g4-aside .g4-segments button[aria-pressed=true]{background:transparent;color:var(--rv-text);font-weight:600;border-bottom-color:var(--rv-text)}
+.g4-aside:has(.g4-segments){white-space:normal}
+.g4-meta span+span::before{margin:0 6px}
+.g4-recipes>li[aria-current=true]{box-shadow:none;background:var(--rv-bg-sunken)}
+.g4-never{margin:var(--rv-space-5) 0 var(--rv-space-1);font:600 var(--rv-font-md)/1.4 var(--rv-font-ui)}
+.g4-never-text{margin-bottom:var(--rv-space-4)}
+@media(max-width:639px){
+ .g4-row{grid-template-columns:minmax(0,1fr);gap:var(--rv-space-2)}
+ .g4-recipes>li{flex-direction:column;align-items:flex-start}
+ .g4-versions>li{grid-template-columns:var(--rv-space-6) minmax(0,1fr) auto;align-items:start}
+ .g4-versions>li>.g4-chip{grid-column:3;justify-self:end}
+}
+.g4-quote-row{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2);margin-bottom:var(--rv-space-1)}.g4-quote-row .g4-quote{margin:0}
+/* Review round 4 */
+.g4-recipes>li[aria-current=true]{background:transparent}
+.g4-recipes .rv-button[aria-pressed=true]{background:var(--rv-bg-sunken);border-color:var(--rv-text)}
+.g4-detail>.g4-quiet,.g4-never-text{font-size:15px}
+.g4-never{font-size:15px}
+.g4-rules-lessons-read .g4-held{color:var(--rv-text-muted)}
+.g4-meta span+span::before{margin:0 .28em}
+.g4-versions>li{align-items:center}
+.g4-live{font-weight:600}
+.g4-models td{font-size:16px;padding-inline:20px}
+.g4-models td strong,.g4-models .g4-stage{font-size:15px}
+.g4-models .g4-table-note{font-size:13px}
+.g4-page .rv-page-meta{display:flex;flex-direction:column;align-items:flex-start;gap:var(--rv-space-2)}
+@media(max-width:639px){
+ .g4-block-head{flex-wrap:wrap;row-gap:var(--rv-space-2)}
+ .g4-block-head .g4-aside{flex-basis:100%;white-space:normal}
+ .g4-recipes>li{align-items:stretch}
+ .g4-recipes .rv-button-with-reason{align-self:flex-end}
+ .g4-models .rv-table-v2 tr{display:flex;flex-wrap:wrap;align-items:baseline}
+ .g4-models .rv-table-v2 td:first-child{flex:0 0 100%}
+ .g4-models .rv-table-v2 td:nth-child(2),.g4-models .rv-table-v2 td:nth-child(3){font-size:var(--rv-font-md);color:var(--rv-text-muted)}
+ .g4-models .rv-table-v2 td:nth-child(3)::before{content:"\00b7";margin:0 .4em}
+}
+
+/* The live lesson tools inside the Learned view read as one block of the board (lists, retiring, mode, sources, checks). */
+.g4-learned .rv-learned{display:grid;gap:var(--rv-space-5);margin:0 0 var(--rv-space-7)}
+.g4-learned .rv-learned>section,.g4-learned .rv-learned>fieldset{margin:0}
+.g4-learned .rv-learned h3{font:600 var(--rv-font-md)/1.35 var(--rv-font-ui);margin:0 0 var(--rv-space-2)}
+.g4-learned .rv-learned-list{list-style:none;margin:0;padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg);background:var(--rv-bg-raised);overflow:hidden}
+.g4-learned .rv-learned-list>li+li{border-top:1px solid var(--rv-border)}
+.g4-learned .rv-learned-list .rv-lesson{border:0;border-radius:0;background:transparent;padding:var(--rv-space-4) var(--rv-space-5);box-shadow:none}
+.g4-learned .rv-lesson-head h3{font:400 var(--rv-font-md)/1.4 var(--rv-font-ui);margin:0}
+.rv-lesson-new{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;background:var(--rv-status-running-bg);color:var(--rv-status-running);font:600 var(--rv-font-xs)/1.2 var(--rv-font-ui)}
+.rv-lesson-new svg{width:12px;height:12px}
+.g4-newer{margin-bottom:var(--rv-space-3)}.g4-newer section{margin:0;padding:var(--rv-space-2) var(--rv-space-3);border-left:3px solid var(--rv-border);font-size:var(--rv-font-sm)}.g4-newer p{margin:0}
+/* G4 ship vision round 1: the active view pill stays visible on a dark page; the Live chip drops under the version text on a phone */
+.g4-pills a[aria-current=page]{background:var(--rv-bg-raised);border-color:var(--rv-text)}
+@media(max-width:400px){.g4-versions>li{grid-template-columns:var(--rv-space-6) minmax(0,1fr)}.g4-versions>li>.g4-chip{grid-column:2;justify-self:start}}
+/* G4 ship: the New chip sits beside the "From" chip, not mid-row; recipe buttons have a gap; the Share form is set apart from the recipe card */
+.g4-learned .rv-lesson-head{flex-wrap:nowrap;align-items:flex-start}
+.g4-learned .rv-lesson-head h3{flex:1 1 auto;min-width:0}
+.g4-learned .rv-lesson-head .rv-lesson-new,.g4-learned .rv-lesson-head .rv-lesson-from{flex:none}
+@media(max-width:639px){.g4-learned .rv-lesson-head{flex-wrap:wrap;justify-content:flex-start}.g4-learned .rv-lesson-head h3{flex-basis:100%}}
+.g4-detail .g4-actions,.g4-unreadable .g4-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3);align-items:center}
+.g4-detail+form{margin-top:var(--rv-space-7)}
+/* G4 ship vision round 2 */
+.g4-suggested{margin-block:var(--rv-space-6)}
+.g4-learned .rv-lesson-actions .rv-button{min-height:32px;margin-inline-start:calc(-1 * var(--rv-space-3))}

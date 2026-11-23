@@ -30,7 +30,7 @@ function LessonRow({ project, row }: { project: string; row: Row }) {
   {row.scopeLabel !== "" && <p className="rv-muted rv-team-lesson-scope"><VisibleText text={row.scopeLabel} /></p>}
   {state === "done" ? <p role="status" className="rv-learned-note">Asked. The people who decide lessons will see your request.</p>
    : <Button variant="quiet" busy={state === "busy"} aria-label={`Ask to retire: ${row.statement}`} onClick={() => { void ask(); }}>Ask to retire</Button>}
-  {state === "error" && <p role="alert" className="rv-lesson-failed">That didn't go through. Nothing was changed.</p>}
+  {state === "error" && <p role="alert" className="rv-lesson-failed">That didn't go through. Reload to check where it stands.</p>}
  </li>;
 }
 
