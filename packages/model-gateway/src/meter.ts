@@ -246,7 +246,7 @@ export class InMemoryMeter implements Meter {
     }
     if (estimated !== undefined) {
       const callKey = JSON.stringify([open.scope.iss, open.scope.cid, reservation.id]);
-      const call: EstimatedCall = { ...(provisional === undefined ? {} : { estimateBasis: provisional.estimateBasis, outputEstimateBasis: provisional.outputEstimateBasis, estimateStatus: "estimated" }), ...open.scope, callKey, month: open.month, provider: estimated.provider, model: estimated.model, kind: estimated.kind, usage: { ...(estimated.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }) }, chargeStatus: estimated.usage === undefined || !hasUsage(estimated.usage) ? "awaiting_usage" : "estimated", settledAt: estimated.settledAt, settledMicros: actualMicros, ...(estimated.priceVersion === undefined ? {} : { priceVersion: estimated.priceVersion }), status: "pending" };
+      const call: EstimatedCall = { ...(provisional === undefined ? {} : { estimateBasis: provisional.estimateBasis, outputEstimateBasis: provisional.outputEstimateBasis, estimateStatus: "estimated" }), ...(receipt?.neverConfirmed === true ? { neverConfirmed: true as const } : {}), ...open.scope, callKey, month: open.month, provider: estimated.provider, model: estimated.model, kind: estimated.kind, usage: { ...(estimated.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }) }, chargeStatus: estimated.usage === undefined || !hasUsage(estimated.usage) ? "awaiting_usage" : "estimated", settledAt: estimated.settledAt, settledMicros: actualMicros, ...(estimated.priceVersion === undefined ? {} : { priceVersion: estimated.priceVersion }), status: "pending" };
       this.#ledger.set(callKey, { call, targets: open.targets.map((t) => ({ ...t })) });
       this.#insertPending(call);
     }

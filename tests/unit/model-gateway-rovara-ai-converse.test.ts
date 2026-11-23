@@ -107,7 +107,7 @@ describe("agent loop on Rovara's AI through Converse (fakes)", () => {
     expect(g.meter.billedCalls(claims.iss, cidB)).toHaveLength(1);
   });
 
-  it("money: a whole (non-streaming) answer settles from its usage; an exception before output is free; after output, or no usage, charges the hold", async () => {
+  it("money: a whole (non-streaming) answer settles from its usage; an exception before output is free; after output, or no usage, charges what was used", async () => {
     const whole = Buffer.from(JSON.stringify({ output: { message: { role: "assistant", content: [{ text: "hi" }] } }, stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 10 } }));
     const g1 = gateway("deepseek.v3.2", "deepseek.v3.2", [whole]);
     const body = { model: "deepseek.v3.2", max_tokens: 100, messages: [{ role: "user", content: "hi" }] };
@@ -126,21 +126,20 @@ describe("agent loop on Rovara's AI through Converse (fakes)", () => {
     expect((JSON.parse(early.text()) as { error: { type: string } }).error.type).toBe("rate_limit_error");
     expect(g2.meter.billedCalls(claims.iss, cidA).map((l) => l.settledMicros)).toEqual([0]);
 
-    // The hold for 100 output tokens at $4 a million, plus the input estimate: whatever it is, it is charged in full.
+    // A stream that broke after output started, or ended with no usage: what was used (the input estimate plus the output seen), never the hold
+    // (failed-call.ts; the full rules are in model-gateway-failed-call-settle.test.ts). Never free, never above the hold.
     const afterStart = Buffer.concat([converseEvent("messageStart", { role: "assistant" }), converseEvent("contentBlockDelta", { contentBlockIndex: 0, delta: { text: "partial" } }), exception]);
     const noUsage = Buffer.concat([converseEvent("messageStart", { role: "assistant" }), converseEvent("contentBlockDelta", { contentBlockIndex: 0, delta: { text: "x" } }), converseEvent("contentBlockStop", { contentBlockIndex: 0 }), converseEvent("messageStop", { stopReason: "end_turn" })]);
     for (const answer of [afterStart, noUsage]) {
       const g = gateway("deepseek.v3.2", "deepseek.v3.2", [answer]);
-      await call(g.deps, { ...body, stream: true }, token);
+      const sink = await call(g.deps, { ...body, stream: true }, token);
       const [line] = g.meter.billedCalls(claims.iss, cidA);
-      expect(line!.settledMicros).toBeGreaterThan(140);
+      expect(line!.settledMicros).toBeGreaterThan(0);
+      expect(line!.settledMicros).toBeLessThan(Buffer.byteLength(JSON.stringify(g.bedrock.sent[0]!.body)) + 100 * 4);
+      expect(line!.estimated).toBe(true);
+      // A throttle exception AFTER output started is not the quota answer: the stream broke mid-answer.
+      expect(sink.text()).not.toContain("rate_limit_error");
     }
-    // A throttle exception AFTER output started is not the quota answer: the stream broke mid-answer, so the hold is charged (whatever the status).
-    const late = gateway("deepseek.v3.2", "deepseek.v3.2", [afterStart]);
-    const lateSink = await call(late.deps, { ...body, stream: true }, token);
-    expect(lateSink.text()).not.toContain("rate_limit_error");
-    const [lateLine] = late.meter.billedCalls(claims.iss, cidA);
-    expect(lateLine!.settledMicros).toBeGreaterThan(140);
   });
 
   it("the transport calls Claude only through InvokeModel and every other model only through Converse; nothing else is sent", async () => {

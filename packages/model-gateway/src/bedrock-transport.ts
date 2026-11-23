@@ -4,7 +4,7 @@ import { signRequest, type CredentialSource } from "./aws.js";
 import { randomUUID } from "node:crypto";
 import { BEDROCK_CONVERSE_ID, ConverseStreamToSse, fromConverse, LEADING_THINKING_TEXT_MODEL, REASONING_CARRYOVER_MODEL } from "./bedrock-converse.js";
 import { BedrockStreamToSse, EventStreamDecoder, EventStreamError, exceptionStatus, type EventStreamMessage } from "./bedrock-event-stream.js";
-import { NotSentError, type ProviderResponse, type ProviderTransport } from "./provider.js";
+import { AnswerBrokeError, NotSentError, type ProviderResponse, type ProviderTransport } from "./provider.js";
 
 /**
  * Rovara's AI (DEC 240): Bedrock's InvokeModel / InvokeModelWithResponseStream in Rovara's OWN AWS account, signed with the
@@ -76,8 +76,9 @@ export function createBedrockTransport(options: BedrockTransportOptions): Provid
           // accounts it like the same error before the stream (free). Anything after it streams as Anthropic SSE.
           firstMessage(raw, converse ? converseStream(modelId) : anthropicStream()).then((first) => {
             if (first.message?.headers[":message-type"] === "exception") { cancel(); resolve({ status: exceptionStatus(first.message), body: empty(), cancel }); return; }
-            resolve({ status, body: toSse(first.sse, first.message, first.rest, first.iterator), cancel });
-          }, () => { cancel(); reject(new Error("provider unavailable")); });
+            resolve({ status, body: toSse(first.sse, first.message, first.rest, first.iterator), cancel, progress: () => first.sse.progress() });
+          // The 2xx head arrived and the answer broke before its first event: Bedrock accepted the request (failed-call.ts: not free).
+          }, () => { cancel(); reject(new AnswerBrokeError()); });
         });
       } catch { reject(new NotSentError()); return; }
       const abort = () => { call.destroy(); fail(); };
@@ -92,11 +93,11 @@ export function createBedrockTransport(options: BedrockTransportOptions): Provid
 }
 
 /** Event-stream messages to Anthropic SSE: the Anthropic body's own stream, or ConverseStream's (translated). */
-interface StreamConverter { decode(bytes: Uint8Array): EventStreamMessage[]; convert(messages: readonly EventStreamMessage[]): Buffer; finish(): void }
-const anthropicStream = (): StreamConverter => { const sse = new BedrockStreamToSse(); return { decode: (b) => sse.decode(b), convert: (m) => sse.convert(m), finish: () => { sse.finish(); } }; };
+interface StreamConverter { decode(bytes: Uint8Array): EventStreamMessage[]; convert(messages: readonly EventStreamMessage[]): Buffer; finish(): void; progress(): { events: number; outputBytes: number } }
+const anthropicStream = (): StreamConverter => { const sse = new BedrockStreamToSse(); return { decode: (b) => sse.decode(b), convert: (m) => sse.convert(m), finish: () => { sse.finish(); }, progress: () => sse.progress() }; };
 const converseStream = (model: string): StreamConverter => {
   const decoder = new EventStreamDecoder(); const sse = new ConverseStreamToSse(model, `msg_bdrk_${randomUUID().replaceAll("-", "")}`, LEADING_THINKING_TEXT_MODEL.test(model), REASONING_CARRYOVER_MODEL.test(model));
-  return { decode: (b) => decoder.push(b), convert: (m) => sse.convert(m), finish: () => { decoder.finish(); } };
+  return { decode: (b) => decoder.push(b), convert: (m) => sse.convert(m), finish: () => { decoder.finish(); }, progress: () => sse.progress() };
 };
 /** A whole Converse answer as the Anthropic message JSON the route settles from. A malformed answer throws (a broken answer). */
 async function* converseAnswer(raw: AsyncIterable<Uint8Array>, model: string): AsyncIterable<Uint8Array> {
@@ -119,8 +120,12 @@ async function firstMessage(raw: AsyncIterable<Uint8Array>, sse: StreamConverter
   }
 }
 async function* empty(): AsyncIterable<Uint8Array> { /* An error answer: no bytes. */ }
+/** One message at a time, so the events before a broken one still go out (the route then sees how far the stream got). The converter's state is per instance: the same result as one batch. */
+function* convertEach(sse: StreamConverter, messages: readonly EventStreamMessage[]): Generator<Buffer> {
+  for (const message of messages) { const out = sse.convert([message]); if (out.length > 0) yield out; }
+}
 async function* toSse(sse: StreamConverter, first: EventStreamMessage | undefined, rest: EventStreamMessage[], iterator?: AsyncIterator<Uint8Array>): AsyncIterable<Uint8Array> {
-  const head = sse.convert(first === undefined ? rest : [first, ...rest]); if (head.length > 0) yield head;
-  if (iterator !== undefined) for (;;) { const next = await iterator.next(); if (next.done) break; const out = sse.convert(sse.decode(next.value)); if (out.length > 0) yield out; }
+  yield* convertEach(sse, first === undefined ? rest : [first, ...rest]);
+  if (iterator !== undefined) for (;;) { const next = await iterator.next(); if (next.done) break; yield* convertEach(sse, sse.decode(next.value)); }
   sse.finish();
 }

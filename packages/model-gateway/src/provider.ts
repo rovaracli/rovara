@@ -9,6 +9,8 @@ export function callDurationMs(maxOutputTokens: number): number {
 }
 export const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 export class NotSentError extends Error { constructor() { super("provider unavailable"); this.name = "NotSentError"; } }
+/** The provider's 2xx head arrived and the answer then broke before its first event: it accepted the request, so it may have billed the input (failed-call.ts). */
+export class AnswerBrokeError extends Error { constructor() { super("provider unavailable"); this.name = "AnswerBrokeError"; } }
 export interface ProviderKeys { keyFor(claims: TaskClaims, provider: "anthropic", signal?: AbortSignal): Promise<string> }
 export interface ProviderRequest { body: Uint8Array; headers: Readonly<Record<string, string>>; key: string; signal: AbortSignal; /** Set by routes whose upstream path depends on the checked request (the product route). */ path?: string }
 export interface ProviderResponse {
@@ -17,6 +19,8 @@ export interface ProviderResponse {
   reportedCostMicros?: () => number | undefined;
   /** Internal transport provenance: false means money is only a known floor; retain max(hold, floor) provisionally. */
   reportedCostComplete?: () => boolean;
+  /** How far the answer got, counted where it is read (before anything is dropped or held back): whole stream events, and bytes of answer content including reasoning (failed-call.ts). */
+  progress?: () => { events: number; outputBytes: number };
 }
 /** An injected transport must stop on signal or cancel. A generic throw means possibly sent and is charged in full. */
 export type ProviderTransport = (request: ProviderRequest) => Promise<ProviderResponse>;

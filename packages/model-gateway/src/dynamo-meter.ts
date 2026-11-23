@@ -375,6 +375,8 @@ export class DynamoMeter implements Meter {
       ...(hold.charge === undefined ? {} : { requestFingerprint: hold.charge.requestFingerprint }),
       ...(hold.routeClass === undefined ? {} : { routeClass: hold.routeClass }), pk, sk: `CALL#${id}`, callKey, ...scopeFields(hold.scope), month: hold.month, settledMicros: actualMicros, estimated: estimated !== undefined || swept, targets: targetsPlain(hold.targets),
       ...(swept ? { swept: true } : {}),
+      // An estimate settled without usage (failed-call.ts) is never re-priced by a correction: it stays what it was settled at.
+      ...(receipt?.neverConfirmed === true ? { neverConfirmed: true } : {}),
       // The billable line (DEC 240b) lands with the call's settled cost, in the same transaction that closes the hold.
       ...(hold.line === undefined ? {} : { line: { source: hold.line.source, charge: hold.line.charge, model: hold.line.model } }),
       settledAt: pending === undefined ? now : pending.settledAt,

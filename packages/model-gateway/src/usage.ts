@@ -20,6 +20,7 @@ export class UsageCollector {
   #stopped = false;
   #usage: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   #actualInput: number | undefined;
+  #events = 0; #outputBytes = 0;
   #decoder = new TextDecoder("utf-8", { fatal: true });
   push(bytes: Uint8Array): void {
     if (this.#failed) return;
@@ -61,6 +62,13 @@ export class UsageCollector {
       delete this.#usage.cacheWrite5m; delete this.#usage.cacheWrite1h;
     }
   }
+  /** How far the stream got (failed-call.ts): complete events read, and bytes of answer content (text, reasoning, tool name and input). */
+  progress(): { events: number; outputBytes: number } { return { events: this.#events, outputBytes: this.#outputBytes }; }
+  #content(event: Record<string, unknown>): void {
+    const bytes = (v: unknown): number => typeof v === "string" ? Buffer.byteLength(v, "utf8") : 0;
+    if (event.type === "content_block_start") { const b = record(event.content_block); this.#outputBytes += Math.max(1, bytes(b?.name) + bytes(b?.text) + bytes(b?.thinking)); }
+    else { const d = record(event.delta); this.#outputBytes += Math.max(1, bytes(d?.text) + bytes(d?.partial_json) + bytes(d?.thinking)); }
+  }
   /** Start zero can be adapter-synthetic. Only positive provider input evidence survives a cut-off. */
   actualInputTokens(): number | undefined { return this.#failed ? undefined : this.#actualInput; }
   #frame(): void {
@@ -68,10 +76,12 @@ export class UsageCollector {
     try {
       const event = record(JSON.parse(this.#data.join("\n")) as unknown);
       if (event === undefined || typeof event.type !== "string" || this.#stopped) this.#failed = true;
-      else if (event.type === "message_start") { if (this.#started) this.#failed = true; this.#started = true; this.#merge(record(event.message)?.usage, true); }
-      else if (event.type === "message_delta") { if (!this.#started) this.#failed = true; this.#output = true; this.#merge(event.usage, false); }
+      else if (event.type === "content_block_start" || event.type === "content_block_delta") { this.#events++; this.#content(event); }
+      else if (event.type === "message_start") { if (this.#started) this.#failed = true; this.#started = true; this.#events++; this.#merge(record(event.message)?.usage, true); }
+      else if (event.type === "message_delta") { if (!this.#started) this.#failed = true; this.#output = true; this.#events++; this.#merge(event.usage, false); }
       else if (event.type === "message_stop") this.#stopped = true;
-      else if (!["content_block_start", "content_block_delta", "content_block_stop", "ping"].includes(event.type)) this.#failed = true;
+      else if (!["content_block_stop", "ping"].includes(event.type)) this.#failed = true;
+      else this.#events++;
     } catch { this.#failed = true; }
     this.#data = [];
   }

@@ -66,7 +66,7 @@ export function rovaraGuard(checked: RouteCall, ai: Pick<RovaraAi, "models" | "m
 /**
  * A Bedrock error answer on Rovara's own account carries no output and no token counts: nothing the company used, so it is never charged
  * (DEC 240b charges from Bedrock's token counts). This includes 5xx and model timeouts, and an exception that arrives as the stream's first
- * frame (bedrock-transport.ts answers that as its error status). A stream that breaks AFTER output started keeps the core's rule (charged).
+ * frame (bedrock-transport.ts answers that as its error status). A call that fails AFTER it was sent (a stream that breaks, a connection that drops) is settled at what was used, not the hold (failed-call.ts).
  * Its refusal of Rovara's own role is Rovara's to fix.
  */
 export function rovaraProviderFailure(status: number, body?: Uint8Array): { charged: boolean; refusal: RouteRefusal; reason: RefusedLogReason } {

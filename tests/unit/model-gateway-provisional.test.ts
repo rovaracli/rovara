@@ -127,3 +127,22 @@ it("history is one reverse-key query of at most 200 CALL rows; other models cann
   expect(reads[0]!.input).toMatchObject({ Limit: 200, ScanIndexForward: false });
   expect((await meter.read(scope)).find(r => r.item === "company")).toMatchObject({ reservedMicros: 100 });
 });
+// A call that failed after it was sent, with no usage, is settled at once at an estimate below the hold (failed-call.ts): a never-confirmed receipt at revision 1.
+for (const adapter of ["memory", "dynamo"]) it(`${adapter}: a failed-call estimate spends at once, is flagged never-confirmed, and leaves nothing for the 24h sweep or a price correction`, async () => {
+  let now = Date.parse("2026-01-10T12:00:00.000Z");
+  const wire = new WireDynamo(Object.values(tables));
+  const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "TEST", secretAccessKey: "not-real" }), transport: wire.transport });
+  const meter = adapter === "memory" ? new InMemoryMeter(() => now) : new DynamoMeter({ db, tables, now: () => now });
+  const first = chargeReceipt({ originalReservationMicros: { state: "available", value: 100 }, amountMicros: { state: "available", value: 100 } });
+  const held = await meter.reserve({ scope, caps, estimateMicros: 100, charge: { receipt: first, requestFingerprint: "a".repeat(64) }, provisional: context }); if (!held.ok) throw new Error("reserve");
+  await meter.settleV2({ reservationId: held.reservation.id, receipt: { ...first, status: "estimated", reason: "missing_usage", neverConfirmed: true, usageComplete: false, amountMicros: { state: "available", value: 30 } } });
+  expect((await meter.read(scope)).every(r => r.committed === 30 && r.reservedMicros === 0 && r.spentMicros === 30 && r.estimatedMicros === 30)).toBe(true);
+  expect((await meter.read(scope)).find(r => r.item === "company")?.provisionalMicros ?? 0).toBe(0);
+  const callKey = JSON.stringify([first.issuer, first.companyId, first.callId]);
+  const row = adapter === "dynamo" ? wire.items(tables.ledger).find(r => r.sk === `CALL#${first.callId}`) : (meter as InMemoryMeter).ledger(callKey);
+  expect(row).toMatchObject({ settledMicros: 30, neverConfirmed: true });
+  now += 2 * 86_400_000;
+  expect(await meter.sweepOpenHolds(now, 100)).toMatchObject({ swept: 0, failed: 0 });
+  expect(await meter.correct({ callKey, realMicros: 1, caps: { task: 10_000, projectMonth: 10_000, companyMonth: 10_000, personMonth: 10_000 }, priceSource: { source: "aws", fetchedAt: now }, priceVersion: 9, estimated: false, now, runId: "run-1" })).toMatchObject({ status: "already" });
+  expect((await meter.read(scope)).every(r => r.spentMicros === 30)).toBe(true);
+});
