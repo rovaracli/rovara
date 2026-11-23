@@ -55,6 +55,22 @@ for (const kind of ["image", "document", "audio", "unknown"] as const) it(`M1 re
   const result = await call(w.deps, { ...body, messages: [{ role: "user", content: [{ type: kind, source: { type: "url", url: "https://image.example/large.png" } }, { type: "text", text: "Describe" }] }] }, mint({ mdl: [alias] }));
   expect(result.status).toBe(409); expect(w.holds).toEqual([]); expect(w.assumed).not.toHaveBeenCalled(); expect(w.sent).not.toHaveBeenCalled();
 });
+it("a refused no-runPrice Bedrock-account call logs which check refused, and the answer is unchanged", async () => {
+  const CHANGED = JSON.stringify({ error: { type: "run_price_authorization_required", message: "AI source or price changed; pause this run for fresh authorization." } });
+  const cases: Array<[string, PriceSource, unknown, (w: ReturnType<typeof world>) => void]> = [
+    ["price_estimated", UnknownPriceSource, body, () => undefined],
+    ["input_unbounded", { priceFor: () => price }, { ...body, messages: [{ role: "user", content: [{ type: 1 }] }] }, () => undefined],
+    ["price_usage_estimated", { priceFor: () => ({ ...price, operatorReview: true }) }, body, () => undefined],
+    ["settlement_unavailable", { priceFor: () => price }, body, (w) => { Reflect.set(w.meter, "settleV2", undefined); }],
+  ];
+  for (const [reason, prices, request, arrange] of cases) {
+    const w = world(prices); const logs: unknown[] = []; w.deps.log = (event) => logs.push(event); arrange(w);
+    const result = await call(w.deps, request, mint({ mdl: [alias] }));
+    expect(result.status).toBe(409); expect(result.text()).toBe(CHANGED);
+    expect(logs.filter((line) => (line as { event?: unknown }).event === "refused")).toEqual([{ event: "refused", code: "run_price_authorization_required", status: 409, route: "agent", payer: "bedrock_byo", reason }]);
+    expect(w.holds).toEqual([]); expect(w.sent).not.toHaveBeenCalled();
+  }
+});
 it("M1 refuses bounded no-runPrice input at an estimated price", async () => {
   const w = world(UnknownPriceSource);
   expect((await call(w.deps, body, mint({ mdl: [alias] }))).status).toBe(409);
