@@ -18,16 +18,67 @@ beforeAll(denyNetwork);
 const model = "claude-sonnet-5-5";
 const id = "us.anthropic.claude-sonnet-5-5";
 type Format = "png" | "jpeg" | "gif" | "webp";
+/** LZW (min code size 2) of `count` pixels, all palette index 0; standard GIF variable-width codes. */
+function lzw(count: number): Buffer {
+  const clear = 4, eoi = 5; const bytes: number[] = []; let acc = 0, bits = 0, size = 3, next = 6;
+  const emit = (code: number): void => { acc |= code << bits; bits += size; while (bits >= 8) { bytes.push(acc & 255); acc >>>= 8; bits -= 8; } };
+  const dict = new Map<number, number>();
+  emit(clear);
+  if (count > 0) {
+    let prefix = 0;
+    for (let i = 1; i < count; i++) {
+      const hit = dict.get(prefix);
+      if (hit !== undefined) { prefix = hit; continue; }
+      emit(prefix);
+      if (next === 4096) { emit(clear); dict.clear(); next = 6; size = 3; } else { if (next >= 1 << size) size++; dict.set(prefix, next++); }
+      prefix = 0;
+    }
+    emit(prefix);
+  }
+  emit(eoi);
+  if (bits > 0) bytes.push(acc & 255);
+  return Buffer.from(bytes);
+}
+const subBlocks = (data: Buffer): Buffer => {
+  const parts: Buffer[] = [];
+  for (let at = 0; at < data.length; at += 255) { const part = data.subarray(at, at + 255); parts.push(Buffer.from([part.length]), part); }
+  return Buffer.concat([...parts, Buffer.from([0])]);
+};
+interface GifFrame { left?: number; top?: number; width: number; height: number; localTable?: boolean }
+interface GifOptions { version?: "GIF87a" | "GIF89a"; trailer?: boolean; animated?: boolean }
+/** A real GIF: header, screen, global table, optional loop/comment/graphic-control extensions, LZW-coded frames, trailer. */
+function gif(screen: [number, number], frames: GifFrame[], options: GifOptions = {}): Buffer {
+  const u16 = (n: number): Buffer => { const b = Buffer.alloc(2); b.writeUInt16LE(n); return b; };
+  const parts: Buffer[] = [Buffer.from(options.version ?? "GIF89a", "latin1"), u16(screen[0]), u16(screen[1]), Buffer.from([0x80, 0, 0]), Buffer.from([0, 0, 0, 255, 255, 255])];
+  if (options.animated) parts.push(Buffer.from([0x21, 0xff, 0x0b]), Buffer.from("NETSCAPE2.0", "latin1"), Buffer.from([3, 1, 0, 0, 0]));
+  // A comment whose bytes look like an image descriptor and a trailer: they must be skipped by length.
+  parts.push(Buffer.from([0x21, 0xfe]), subBlocks(Buffer.from([0x2c, 0x3b, 0x21, 0x2c])));
+  for (const f of frames) {
+    if (options.animated) parts.push(Buffer.from([0x21, 0xf9, 4, 0, 10, 0, 0, 0]));
+    parts.push(Buffer.from([0x2c]), u16(f.left ?? 0), u16(f.top ?? 0), u16(f.width), u16(f.height), Buffer.from([f.localTable === true ? 0x80 : 0]));
+    if (f.localTable === true) parts.push(Buffer.from([0, 0, 0, 255, 255, 255]));
+    parts.push(Buffer.from([2]), subBlocks(lzw(f.width * f.height)));
+  }
+  if (options.trailer !== false) parts.push(Buffer.from([0x3b]));
+  return Buffer.concat(parts);
+}
+// A real 16x16 baseline JPEG (JFIF, Exif, DHT, DQT, SOF0 then SOS), encoded by macOS ImageIO.
+const REAL_JPEG = Buffer.from("/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAEKADAAQAAAABAAAAEAAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAEAAQAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMADw8PDw8PGg8PGiQaGhokMSQkJCQxPjExMTExPks+Pj4+Pj5LS0tLS0tLS1paWlpaWmlpaWlpdnZ2dnZ2dnZ2dv/bAEMBEhMTHhweNBwcNHtURVR7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e//dAAQAAf/aAAwDAQACEQMRAD8A52G09q1IbT2rUhtPatSG09qqrigwGN2P/9k=", "base64");
+// SOF0 + SOS for a header-only JPEG of the table below; the SOS segment ends at this offset.
+const JPEG_HEADER_SOS_END = 41;
 function header(format: Format, width: number, height: number): Buffer {
   if (format === "png") {
     const b = Buffer.alloc(33); Buffer.from("89504e470d0a1a0a0000000d49484452", "hex").copy(b);
     b.writeUInt32BE(width, 16); b.writeUInt32BE(height, 20); return b;
   }
   if (format === "gif") {
-    const b = Buffer.alloc(13); b.write("GIF89a"); b.writeUInt16LE(width, 6); b.writeUInt16LE(height, 8); return b;
+    // A real one-frame GIF: only the logical screen has the requested size (the frame is 1x1), so the
+    // table below stays small. Zero sizes get a zero-size frame too (a frame also sizes the image).
+    const zero = width === 0 || height === 0;
+    return gif([width, height], [{ width: zero ? width : 1, height: zero ? height : 1 }]);
   }
   if (format === "jpeg") {
-    const b = Buffer.from("ffd8ffe000040000ffc00011080001000103011100021100031100", "hex");
+    const b = Buffer.from("ffd8ffe000040000ffc00011080001000103011100021100031100ffda000c03010002110311003f0000ffd9", "hex");
     b.writeUInt16BE(height, 13); b.writeUInt16BE(width, 15); return b;
   }
   const b = Buffer.alloc(30); b.write("RIFF"); b.writeUInt32LE(22, 4); b.write("WEBPVP8X", 8); b.writeUInt32LE(10, 16);
@@ -48,7 +99,7 @@ it("clamps huge PNG dimensions without allocating pixels", () => {
 });
 for (const format of ["png", "jpeg", "gif", "webp"] as const) it(`${format}: every truncated dimension header remains unbounded`, () => {
   const b = header(format, 200, 200);
-  for (let i = 0; i < b.length; i++) expect(guard([image(b.subarray(0, i), format)]), `prefix ${i}`).toMatchObject({ ok: true, inputBounded: false });
+  for (let i = 0; i < (format === "jpeg" ? JPEG_HEADER_SOS_END : b.length); i++) expect(guard([image(b.subarray(0, i), format)]), `prefix ${i}`).toMatchObject({ ok: true, inputBounded: false });
 });
 it.each(["png", "jpeg", "gif"] as const)("%s: zero dimensions refuse", format => {
   expect(guard([image(header(format, 0, 200), format)])).toMatchObject({ inputBounded: false });
@@ -290,4 +341,97 @@ it("hosted answers with images require a signed price before any hold or send", 
 });
 it("fails closed when a truncated JPEG fill-marker run cannot supply a dimension segment", () => {
   expect(guard([image(Buffer.from("ffd8ffffffff", "hex"), "jpeg")])).toMatchObject({ inputBounded: false });
+});
+
+// IMAGE-GIF-FRAME-BOUND (N1): decoders size a GIF from its frames, not only from the logical screen.
+const tokensOf = (w: number, h: number): number => Math.ceil(w / 28) * Math.ceil(h / 28) + 256;
+const gifTokens = (b: Buffer) => inlineImageBound(image(b, "gif"))?.tokens;
+it("real GIF bytes: the encoder output is a well-formed GIF (header, screen, frames, trailer)", () => {
+  const b = gif([40, 30], [{ width: 40, height: 30 }, { width: 5, height: 5 }], { animated: true });
+  expect(b.toString("latin1", 0, 6)).toBe("GIF89a");
+  expect([b.readUInt16LE(6), b.readUInt16LE(8)]).toEqual([40, 30]);
+  expect(b.at(-1)).toBe(0x3b);
+  expect(b.subarray(0, 13 + 6 + 19).includes(Buffer.from("NETSCAPE2.0"))).toBe(true);
+});
+it("gif: a frame larger than the logical screen bounds the hold by the frame (the checker's 1000x800 frame behind a 10x10 screen)", () => {
+  const b = gif([10, 10], [{ width: 1000, height: 800 }]);
+  expect(b.length).toBeGreaterThan(500); // real LZW data, not a bare header
+  expect(gifTokens(b)).toBe(tokensOf(1000, 800));
+  expect(gifTokens(b)).toBeGreaterThanOrEqual(1044);
+  expect(guard([image(b, "gif")])).toMatchObject({ inputBounded: true, images: { tokens: tokensOf(1000, 800), dataBytes: image(b, "gif").source.data.length } });
+});
+it("gif: a frame's left+width and top+height count, not just its size", () => {
+  expect(gifTokens(gif([10, 10], [{ left: 90, top: 190, width: 10, height: 10 }]))).toBe(tokensOf(100, 200));
+});
+it("gif: an animated GIF is bounded by its largest frame, wherever it sits", () => {
+  const small = { width: 40, height: 30 };
+  const large = { left: 100, top: 50, width: 300, height: 200, localTable: true };
+  const opts = { animated: true };
+  expect(gifTokens(gif([40, 30], [small, { width: 20, height: 20 }, large], opts))).toBe(tokensOf(400, 250)); // later frame is the largest
+  expect(gifTokens(gif([40, 30], [large, small, { width: 20, height: 20 }], opts))).toBe(tokensOf(400, 250)); // first frame is the largest
+  expect(gifTokens(gif([40, 30], [small, large, small], opts))).toBe(tokensOf(400, 250)); // middle frame
+  // width and height are maximised independently across frames
+  expect(gifTokens(gif([10, 10], [{ width: 300, height: 10 }, { width: 10, height: 200 }], opts))).toBe(tokensOf(300, 200));
+});
+it("gif: frames inside the screen leave the screen bound unchanged (several frames, GIF87a and GIF89a)", () => {
+  const frames = [1, 2, 3, 4].map(i => ({ left: i, top: i, width: 100, height: 100 }));
+  expect(gifTokens(gif([200, 200], frames, { animated: true }))).toBe(tokensOf(200, 200));
+  expect(gifTokens(gif([200, 200], frames.slice(0, 1), { version: "GIF87a" }))).toBe(tokensOf(200, 200));
+});
+it("gif: a zero-size screen is still bounded by a real frame, and an all-zero GIF is refused", () => {
+  expect(gifTokens(gif([0, 0], [{ width: 50, height: 60 }]))).toBe(tokensOf(50, 60));
+  expect(gif([0, 0], [{ width: 0, height: 0 }]).length).toBeGreaterThan(13);
+  expect(guard([image(gif([0, 0], [{ width: 0, height: 0 }]), "gif")])).toMatchObject({ inputBounded: false });
+});
+it("gif: refuses (unbounded) a GIF with no image descriptor, however large its screen header says", () => {
+  expect(guard([image(gif([200, 200], []), "gif")])).toMatchObject({ ok: true, inputBounded: false }); // trailer but no frame
+  expect(guard([image(gif([200, 200], [], { trailer: false }), "gif")])).toMatchObject({ inputBounded: false }); // neither
+  const bare = Buffer.alloc(13); bare.write("GIF89a"); bare.writeUInt16LE(200, 6); bare.writeUInt16LE(200, 8);
+  expect(guard([image(bare, "gif")])).toMatchObject({ inputBounded: false }); // the old 13-byte header-only GIF
+});
+it("gif: refuses a GIF that never reaches its trailer or has a malformed block", () => {
+  const whole = gif([10, 10], [{ width: 300, height: 300 }, { width: 8, height: 8 }], { animated: true });
+  expect(gifTokens(whole)).toBe(tokensOf(300, 300));
+  expect(gifTokens(whole.subarray(0, whole.length - 1))).toBeUndefined(); // trailer missing
+  for (const cut of [20, 40, 100, whole.length - 40]) expect(gifTokens(whole.subarray(0, cut)), `cut ${cut}`).toBeUndefined();
+  const unknown = Buffer.from(whole); unknown[whole.length - 1] = 0x99; // unknown block type where the trailer was
+  expect(gifTokens(unknown)).toBeUndefined();
+  const stray = Buffer.concat([whole.subarray(0, whole.length - 1), Buffer.from([0x99, 0x3b])]); // unknown block, then a trailer
+  expect(gifTokens(stray)).toBeUndefined();
+  const trailing = Buffer.concat([whole.subarray(0, whole.length - 1), Buffer.from([0x2c, 1, 2])]); // descriptor cut short
+  expect(gifTokens(trailing)).toBeUndefined();
+});
+const MAX_GIF_FRAMES_FOR_TEST = 2048;
+it("gif: scans up to the frame cap (largest frame last) and refuses past it as unbounded", () => {
+  const tiny = { width: 1, height: 1 };
+  const atCap = gif([10, 10], [...Array.from({ length: MAX_GIF_FRAMES_FOR_TEST - 1 }, () => tiny), { width: 700, height: 500 }], { animated: true });
+  expect(gifTokens(atCap)).toBe(tokensOf(700, 500));
+  const pastCap = gif([10, 10], [...Array.from({ length: MAX_GIF_FRAMES_FOR_TEST }, () => tiny), { width: 700, height: 500 }], { animated: true });
+  expect(pastCap.length).toBeLessThan(5 * 1024 * 1024 / 4 * 3); // a valid, in-size GIF that the cap alone refuses
+  expect(gifTokens(pastCap)).toBeUndefined();
+  expect(guard([image(pastCap, "gif")])).toMatchObject({ ok: true, inputBounded: false });
+});
+
+// IMAGE-GIF-FRAME-BOUND (N2): a decoder may keep the LAST start-of-frame marker; bound by every one.
+const SOF_AT = 156, SOS_AT = 751;
+const sof = (w: number, h: number): Buffer => { const b = Buffer.from(REAL_JPEG.subarray(SOF_AT, SOF_AT + 19)); b.writeUInt16BE(h, 5); b.writeUInt16BE(w, 7); return b; };
+const withSof = (before: Buffer[], after: Buffer[]): Buffer => Buffer.concat([REAL_JPEG.subarray(0, SOF_AT), ...before, REAL_JPEG.subarray(SOF_AT, SOS_AT), ...after, REAL_JPEG.subarray(SOS_AT)]);
+const jpegTokens = (b: Buffer) => inlineImageBound(image(b, "jpeg"))?.tokens;
+it("jpeg: a real encoder-produced JPEG is bounded by its SOF as before", () => {
+  expect([REAL_JPEG.subarray(SOF_AT, SOF_AT + 2).toString("hex"), REAL_JPEG.subarray(SOS_AT, SOS_AT + 2).toString("hex")]).toEqual(["ffc0", "ffda"]);
+  expect(jpegTokens(REAL_JPEG)).toBe(tokensOf(16, 16));
+  expect(guard([image(REAL_JPEG, "jpeg")])).toMatchObject({ inputBounded: true, images: { tokens: 257 } });
+});
+it("jpeg: a later or earlier larger SOF bounds the hold (first-SOF-only and last-SOF-only would under-count)", () => {
+  expect(jpegTokens(withSof([], [sof(1000, 800)]))).toBe(tokensOf(1000, 800)); // decoder keeps the last
+  expect(jpegTokens(withSof([sof(1000, 800)], []))).toBe(tokensOf(1000, 800)); // decoder keeps the first
+  expect(jpegTokens(withSof([sof(1000, 10)], [sof(10, 800)]))).toBe(tokensOf(1000, 800)); // each side maximised
+  expect(jpegTokens(withSof([sof(8, 8)], [sof(9, 9), sof(300, 200)]))).toBe(tokensOf(300, 200)); // several
+});
+it("jpeg: refuses a JPEG with no SOS, a malformed extra SOF, or a stray standalone marker in the header", () => {
+  expect(jpegTokens(REAL_JPEG.subarray(0, SOS_AT))).toBeUndefined(); // SOF but the scan never reaches SOS
+  expect(jpegTokens(REAL_JPEG.subarray(0, SOS_AT + 5))).toBeUndefined(); // SOS segment cut short
+  const badSof = sof(1000, 800).subarray(0, 18); // extra SOF whose segment is shorter than its length claims
+  expect(jpegTokens(withSof([], [badSof]))).toBeUndefined();
+  for (const marker of [0xd8, 0xd9, 0xd0, 0x01]) expect(jpegTokens(withSof([], [Buffer.from([0xff, marker, 0, 2])])), `marker ${marker}`).toBeUndefined();
 });
