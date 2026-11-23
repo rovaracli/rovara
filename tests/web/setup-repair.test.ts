@@ -101,7 +101,7 @@ describe("the card's words and its one action", () => {
     const f = mount(h(SetupRepairCard, { project: "web" }), { read: () => view({ repair: card({ fixReady: true, actions: [{ id: "approve_new_setup", label: "Approve new setup" }] }) }) });
     const box = await screen.findByTestId("setup-repair-card");
     const link = await within(box).findByRole("link", { name: "Approve new setup" });
-    expect(link.getAttribute("href")).toBe("/app/onboard?project=web&step=setup");
+    expect(link.getAttribute("href")).toBe("/app/projects/web#setup-checklist");
     expect(box.getAttribute("data-fix-ready")).toBe("true");
     expect(within(box).queryByRole("button", { name: /Fix setup/u })).toBeNull();
     f.close();

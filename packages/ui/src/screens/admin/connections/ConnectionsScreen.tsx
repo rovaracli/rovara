@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { useState } from "react";
+import { ApiError } from "../../../api/errors.js";
 import { Button } from "../../../design/Button.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { DataTable } from "../../../design/DataTable.js";
@@ -13,6 +14,8 @@ import { checkedTime, isNotOnThisRovara, ReadSection, useAdminRead } from "../mo
 const connectionsSchema = z.object({ connections: z.array(z.object({ connectionId: z.string().max(100), type: z.string().max(64), label: z.string().max(200), hasCredential: z.boolean(), identity: z.enum(["service", "personal"]).optional(), updatedAt: z.string().max(40), lastCheck: z.object({ ok: z.boolean(), at: z.string().max(40) }).optional() })).max(1000) });
 const githubSchema = z.object({ installations: z.array(z.object({ installationId: z.number().int().positive(), accountLogin: z.string().max(100), status: z.enum(["active", "suspended", "removed"]) })).max(1000) });
 const requestsSchema = z.object({ requests: z.array(z.object({ accountLogin: z.string().max(100).optional(), status: z.string().max(64), requestedAt: z.string().max(40) })).max(1000) });
+/** Cloud's fixed 501 NOT_ON_CODE_YET, or Code's own route-not-found 404: this Rovara does not serve the read, so its block is left out (no alert, no control) and the rest of the page stays. */
+const notServed = (error: unknown): boolean => isNotOnThisRovara(error) || (error instanceof ApiError && error.status === 404);
 type ConnectionInfo = z.infer<typeof connectionsSchema>["connections"][number];
 type GitHubInfo = z.infer<typeof githubSchema>["installations"][number];
 function ConnectionGuidance({ connection: c }: { connection: ConnectionInfo }) {
@@ -75,7 +78,7 @@ function ConnectionsView({ role }: { role: "owner" | "admin" | "member" }) {
  return <section><PageHeader focusOnMount title="Connections" description="Company configuration and stored checks. No live checks run when you open this page." />
  <CompanyConnections role={role} />
  <h2>GitHub installations (operator records)</h2><ReadSection read={github} label="GitHub installations">{data => data.installations.length === 0 ? <p>Not configured. Ask a company admin to arrange the GitHub App connection using a linked GitHub identity.</p> : <><DataTable caption="Company GitHub installations" rows={data.installations} rowKey={i => String(i.installationId)} columns={[{ key: "account", title: "Account", render: i => <VisibleText text={i.accountLogin} /> }, { key: "status", title: "Status", render: i => i.status === "active" ? "Installed · current health unknown" : "Needs action" }]} /><p>Fix connection: a company admin must review the GitHub App installation, suspension and repository permissions with the GitHub organization owner. Stored installation status does not verify delivery.</p><h3>Installation guidance</h3>{data.installations.map(i => <GitHubGuidance key={i.installationId} installation={i} />)}</>}</ReadSection>
- {!isNotOnThisRovara(requests.error) && <><h3>GitHub installation requests</h3><ReadSection read={requests} label="GitHub installation requests">{data => data.requests.length === 0 ? <p>No installation requests returned.</p> : <ul>{data.requests.map((r, i) => <li key={i}><VisibleText text={r.accountLogin ?? "GitHub organization not yet returned"} />: {r.status === "waiting" ? "Waiting for GitHub admin" : r.status === "connected" ? "Connected request · see installation status" : r.status === "expired" ? "Expired" : r.status === "cancelled" ? "Cancelled" : "Needs action"}. Requested {checkedTime(r.requestedAt)}.</li>)}</ul>}</ReadSection></>}
+ {!notServed(requests.error) && <><h3>GitHub installation requests</h3><ReadSection read={requests} label="GitHub installation requests">{data => data.requests.length === 0 ? <p>No installation requests returned.</p> : <ul>{data.requests.map((r, i) => <li key={i}><VisibleText text={r.accountLogin ?? "GitHub organization not yet returned"} />: {r.status === "waiting" ? "Waiting for GitHub admin" : r.status === "connected" ? "Connected request · see installation status" : r.status === "expired" ? "Expired" : r.status === "cancelled" ? "Cancelled" : "Needs action"}. Requested {checkedTime(r.requestedAt)}.</li>)}</ul>}</ReadSection></>}
  <h2>Slack (operator records)</h2><SlackWorkspaceEvidence /><SlackGuidance />
- {!isNotOnThisRovara(registry.error) && <><h2>Registered connections</h2><ReadSection read={registry} label="Registered connections" localControls>{data => <><RegisteredConnections connections={data.connections} /></>}</ReadSection><p>Coverage: affected projects, missing permissions and last event delivery are unavailable in this view. A stored successful check is not live validity.</p></>}</section>;
+ {!notServed(registry.error) && <><h2>Registered connections</h2><ReadSection read={registry} label="Registered connections" localControls>{data => <><RegisteredConnections connections={data.connections} /></>}</ReadSection><p>Coverage: affected projects, missing permissions and last event delivery are unavailable in this view. A stored successful check is not live validity.</p></>}</section>;
 }

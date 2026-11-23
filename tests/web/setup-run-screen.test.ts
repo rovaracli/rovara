@@ -87,7 +87,7 @@ it("while it runs: shows the journal as quoted text, the websites it asked for, 
   const section = await region();
   expect(await within(section).findByText("npm ci")).toBeTruthy();
   expect(within(section).getByText("Exit 1")).toBeTruthy();
-  expect(within(section).getByText(/Waiting for an administrator to decide/u)).toBeTruthy();
+  expect(within(section).getByText(/Waiting for a company owner or admin to decide/u)).toBeTruthy();
   expect(within(section).getAllByText("registry.example-build.io").length).toBeGreaterThan(0);
   fireEvent.change(within(section).getByLabelText("Run a command in the sandbox"), { target: { value: "ls -la" } });
   fireEvent.click(within(section).getByRole("button", { name: "Run" }));

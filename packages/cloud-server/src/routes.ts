@@ -24,7 +24,7 @@ import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { LEARNING_MODEL_ROUTES } from "./learning-model-routes.js";
 import { AGENT_MODELS_ROUTES } from "./agent-models-routes.js";
 import { EGRESS_ADDRESSES_ROUTES } from "./egress-addresses-routes.js";
-import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
+import { SETUP_CHECKLIST_ROUTES, projectSetupStatusOf } from "./setup-checklist-routes.js";
 import { codeOwnerOf, openTaskByCodeId } from "./open-task.js";
 import { WIKI_ROUTES } from "./wiki-routes.js";
 import { KNOWN_FAILING_ROUTES, knownFailingOverview } from "./known-failing-routes.js";
@@ -130,9 +130,9 @@ function mine(access: CodeAccess, name: string): { name: string; access: string 
 
 /** A project as the app's lists show it (AppProjectSummarySchema). */
 async function summary(context: RouteContext, name: string, access: string) {
-  const code = await codeProject(context, name);
+  const [code, setup] = await Promise.all([codeProject(context, name), projectSetupStatusOf(context, name)]);
   return {
-    name, status: "active", latestRevision: code?.latestRevision ?? 1, myRole: roleOf(access), setup: { status: "unchecked" },
+    name, status: "active", latestRevision: code?.latestRevision ?? 1, myRole: roleOf(access), setup,
     repositories: (code?.repositories ?? []).map((repository) => ({ name: repository.name, fullName: repository.fullName ?? repository.name, defaultBranch: repository.defaultBranch })),
   };
 }
@@ -634,7 +634,7 @@ export const ROUTES: Route[] = [
       const access = await context.client.access(context.session);
       const project = mine(access, name);
       if (project === undefined) return projectNotFound;
-      const code = await codeProject(context, name);
+      const [code, setup] = await Promise.all([codeProject(context, name), projectSetupStatusOf(context, name)]);
       const role = roleOf(project.access);
       const membership = companyOf(access);
       const canEditSettings = role === "maintainer" || isCompanyAdmin(membership?.companyRole);
@@ -643,7 +643,7 @@ export const ROUTES: Route[] = [
         project: {
           name, status: "active", ...(code === undefined ? {} : { latestRevision: code.latestRevision }),
           repositories: (code?.repositories ?? []).slice(0, 20).map((repository) => ({ fullName: repository.fullName ?? repository.name, defaultBranch: repository.defaultBranch })),
-          setup: { status: "unchecked" }, channels: [],
+          setup, channels: [],
         },
         you: { role, canStartWork: true, canEditSettings, canViewSpend: false },
         ...(knownFailing === undefined ? {} : { knownFailing }),

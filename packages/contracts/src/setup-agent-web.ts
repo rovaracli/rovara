@@ -46,6 +46,21 @@ export const SetupDecideReplySchema = z.object({
   replayed: z.boolean(),
 }).passthrough();
 export type SetupDecideReply = z.infer<typeof SetupDecideReplySchema>;
+/** `POST .../setup-agent/host-decide`: allow or refuse a website a setup run asked for, bound to the ask the person saw (Code's host-decide body). */
+export const SetupHostDecideRequestSchema = z.object({
+  requestId: z.string().regex(/^host-[A-Za-z0-9_-]{2,122}$/u),
+  host: SetupHostSchema,
+  outcome: z.enum(["approve", "reject"]),
+  seen: z.object({ revision: z.number().int().min(1), artifactDigest: z.string().regex(/^[0-9a-f]{64}$/u) }).strict(),
+  reason: z.string().max(500).optional(),
+}).strict();
+export const SetupHostDecideReplySchema = z.object({
+  project: z.string().min(1).max(100),
+  host: SetupHostSchema,
+  decision: z.enum(["approved", "refused"]),
+  replayed: z.boolean(),
+}).passthrough();
+export type SetupHostDecideReply = z.infer<typeof SetupHostDecideReplySchema>;
 export const SetupDiscardRequestSchema = z.object({ requestId: z.string().uuid() }).strict();
 export const SetupDiscardReplySchema = z.object({ discarded: z.boolean() }).passthrough();
 
@@ -80,11 +95,22 @@ export const SetupAgentRequestBodySchema = z.object({ requestId: z.string().uuid
 export const SetupAgentCommandRequestSchema = z.object({ requestId: z.string().uuid(), command: z.string().min(1).max(2_000) }).strict();
 export const SetupAgentCommandReplySchema = z.object({ seq: z.number().int().min(1), state: z.enum(["queued", "taken", "done"]) }).passthrough();
 
+/** What a person decides one open website ask on (Code's `approval` on an open ask of the journal): the id and digest of the ask as it stands. Never shown. */
+export const SetupHostApprovalSchema = z.object({
+  requestId: z.string().regex(/^host-[A-Za-z0-9_-]{2,122}$/u),
+  revision: z.number().int().min(1),
+  artifactDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+  kind: z.literal("setup_host"),
+  risk: z.literal("high"),
+}).strict();
 export const SetupHostAskViewSchema = z.object({
   host: SetupHostSchema,
   status: z.enum(["open", "approved", "refused"]),
   journalN: z.number().int().min(1).max(400).optional(),
   from: z.object({ path: z.string().min(1).max(500), line: z.number().int().min(1).max(10_000_000) }).strict().optional(),
+  /** Whether THIS person may decide the ask, as Code read their standing for this answer (a live company owner or admin). Only on an open ask. */
+  canDecide: z.boolean().optional(),
+  approval: SetupHostApprovalSchema.optional(),
 }).passthrough();
 export type SetupHostAskView = z.infer<typeof SetupHostAskViewSchema>;
 

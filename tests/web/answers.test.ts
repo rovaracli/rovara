@@ -4,7 +4,7 @@
 // `features.answers`); with it off nothing is drawn and no answers request is made, and the start box starts Quick exactly as before. An answer shows its text with source marks, up to four sources, one wiki
 // page link, an honesty line and at most one fixed button; "not set up" says so in fixed words with nothing to press; no cost, no score. Refusals are Cloud's fixed words.
 import { describe, expect, it } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ANSWER_WORDS, ANSWERS_WORDS, START_SMALL_TALK_WORDS } from "@agentx/contracts/web";
@@ -459,5 +459,75 @@ describe("Not right on an answer (lead 4 J5)", () => {
     const none = await askAndGet();
     expect(within(none).queryByTestId("answer-not-right")).toBeNull();
     g.close();
+  });
+});
+
+describe("Quick or Full, chosen next to Start (SETUP-WIKI-CLOUD-FIXES d; the request path is Cloud's existing `path`)", () => {
+  const radio = (name: RegExp) => screen.getByRole<HTMLInputElement>("radio", { name });
+  const press = () => fireEvent.click(screen.getByTestId("start-work-submit"));
+  const typeWork = async (value: string) => { fireEvent.change(await screen.findByTestId("start-work-text"), { target: { value } }); };
+
+  it("shows a plain Quick / Full choice with what each does, Quick selected by default", async () => {
+    const f = mount({}, "project");
+    const group = await screen.findByTestId("start-path");
+    expect(within(group).getByText("How should Rovara run it?")).toBeTruthy();
+    expect(radio(/^Quick/u).checked).toBe(true);
+    expect(radio(/^Full/u).checked).toBe(false);
+    expect(group.textContent).toContain("Rovara works straight from your request. Best for small, clear changes.");
+    expect(group.textContent).toContain("Rovara writes a spec and a plan, and waits for your go-ahead before it builds. Best for larger or riskier work.");
+    f.close();
+  });
+
+  it("a Full the person picked is what is SENT (path \"full\"), even with the classifier on: no suggestion is asked", async () => {
+    const f = mount({ suggest: () => json(200, { kind: "question", classifier: "ok", pick: "answer" }) }, "project");
+    await typeWork("Rebuild the billing module");
+    fireEvent.click(radio(/^Full/u));
+    press();
+    await waitFor(() => expect(f.posts("/code")).toHaveLength(1));
+    expect((f.posts("/code")[0]!.body as any).path).toBe("full");
+    expect(f.posts("/code/suggest")).toEqual([]);
+    expect(f.posts("/answers")).toEqual([]);
+    f.close();
+  });
+
+  it("a Quick the person picked is SENT as \"quick\", whatever the classifier would have said", async () => {
+    const f = mount({ suggest: () => json(200, { kind: "large_change", classifier: "ok", pick: "full" }) }, "project");
+    await typeWork("Rebuild the billing module");
+    fireEvent.click(radio(/^Full/u));
+    fireEvent.click(radio(/^Quick/u));
+    press();
+    await waitFor(() => expect(f.posts("/code")).toHaveLength(1));
+    expect((f.posts("/code")[0]!.body as any).path).toBe("quick");
+    expect(f.posts("/code/suggest")).toEqual([]);
+    f.close();
+  });
+
+  it("with the classifier off the choice still works: Full is sent as \"full\"; untouched stays the legacy body (no path)", async () => {
+    const full = mount({ on: false }, "project");
+    await typeWork("Rebuild the billing module");
+    fireEvent.click(radio(/^Full/u));
+    press();
+    await waitFor(() => expect(full.posts("/code")).toHaveLength(1));
+    expect((full.posts("/code")[0]!.body as any).path).toBe("full");
+    full.close(); cleanup();
+    const plain = mount({ on: false }, "project");
+    await typeWork("Fix the typo");
+    press();
+    await waitFor(() => expect(plain.posts("/code")).toHaveLength(1));
+    expect(Object.keys(plain.posts("/code")[0]!.body as object).sort()).toEqual(["input", "requestId"]);
+    plain.close();
+  });
+
+  it("untouched, the classifier's pick becomes the default shown here: Full pre-selected beside its card; Quick selected as it starts", async () => {
+    const large = await startBox(mount({ suggest: () => json(200, { kind: "large_change", classifier: "ok", pick: "full" }) }, "project"), "Rebuild the billing module");
+    await screen.findByTestId("start-choice-card");
+    expect(radio(/^Full/u).checked).toBe(true);
+    expect(screen.getByTestId("start-path-suggested").textContent).toContain("Rovara suggests Full for this request.");
+    expect(large.posts("/code")).toEqual([]);
+    large.close(); cleanup();
+    const small = await startBox(mount({ suggest: () => json(200, { kind: "small_change", classifier: "ok", pick: "quick" }) }, "project"), "Fix the typo in the README");
+    await waitFor(() => expect(small.posts("/code")).toHaveLength(1));
+    expect(radio(/^Quick/u).checked).toBe(true);
+    small.close();
   });
 });

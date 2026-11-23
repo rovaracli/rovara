@@ -22,6 +22,9 @@ import { EvalCard } from "./EvalCard.js";
 import { EvalCheckRow } from "./EvalCheckRow.js";
 import "./checklist.css";
 
+/** The checklist's own address on the project page (`/app/projects/<p>#setup-checklist`): what every "go to the setup" link points at. */
+export const CHECKLIST_ID = "setup-checklist";
+export const checklistPath = (project: string): string => `/app/projects/${encodeURIComponent(project)}#${CHECKLIST_ID}`;
 /** The words and tone each row state shows (design: Done, Needs you, Running, Optional, Failed; plus "Skipped (optional)"). */
 export const ROW_STATE_WORDS: Readonly<Record<SetupRowState, { label: string; tone: "ok" | "wait" | "run" | "idle" | "bad" }>> = Object.freeze({
  done: { label: "Done", tone: "ok" }, needs_you: { label: "Needs you", tone: "wait" }, running: { label: "Running", tone: "run" },
@@ -91,7 +94,7 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
  const open = (row: SetupStatusRow) => row === next || (OPTIONAL.has(row) && data[row].state === "optional" && canChange);
  const skipButton = (row: SetupSkippableRow) => canChange && data[row].state === "optional" ? <Button busy={busy === row} data-testid={`checklist-skip-${row}`} onClick={() => { void skip(row, true); }}>Set up later</Button> : null;
  const runRow = data.setupRun;
- return <section className="rv-checklist" aria-labelledby="rv-checklist-heading" data-testid="project-checklist">
+ return <section className="rv-checklist" id={CHECKLIST_ID} aria-labelledby="rv-checklist-heading" data-testid="project-checklist">
   <header className="rv-checklist-head">
    <h2 id="rv-checklist-heading">{data.progress.percent >= 100 ? "Setup finished" : "Finish setting up"}</h2>
    <p className="rv-checklist-progress" data-testid="checklist-progress"><progress max={100} value={data.progress.percent} aria-label="Setup progress" /> {data.progress.percent}% done ({data.progress.done} of {data.progress.total})</p>

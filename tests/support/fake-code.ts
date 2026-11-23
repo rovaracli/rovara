@@ -258,6 +258,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   // L4-D2 (Code #899): the candidate waiting for a decision on a project (set by the specs through /__fake/setup-apply), and what decide does with it.
   type FakeApply = { check: "checking" | "ready" | "failed"; risk: "low" | "medium" | "high"; changes: Array<{ area: string; risk: string }>; canApprove: boolean; canReject: boolean; moved: boolean; failedStep?: string; revision: number };
   const setupApplies = new Map<string, FakeApply>();
+  /** SETUP-WIKI-CLOUD-FIXES: the website asks of a project's setup run (set by the specs through /__fake/setup-host-asks), decided by host-decide. */
+  const setupHostAsks = new Map<string, Array<{ host: string; status: "open" | "approved" | "refused" }>>();
+  const HOST_ASK_DIGEST = "ab".repeat(32);
+  const hostAskRequestId = (host: string) => `host-${host.replace(/[^a-z0-9]/gu, "").padEnd(12, "0").slice(0, 40)}`;
   const APPLY_DIGEST = "ab12".repeat(16);
   const applyView = (entry: FakeApply) => ({
     candidateRevision: entry.revision, baseRevision: entry.revision - 1, setup: ["npm ci"], readiness: ["npm test", "npm run lint"],
@@ -609,7 +613,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   };
   /** The hosted setup run's answer (Code #844 serves the laptop's /v1/app path), or undefined when the path is not one of its four. */
   const setupRunAnswer = (method: string, path: string, query: URLSearchParams, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
-    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide|eval|eval-approve|eval-decide|eval-health|eval-wrapper))?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide|host-decide|eval|eval-approve|eval-decide|eval-health|eval-wrapper))?$/u.exec(path);
     if (match === null) return undefined;
     const tail = match[2];
     if (!((method === "GET" && (tail === undefined || tail === "journal" || tail === "eval")) || (method === "POST" && tail !== "journal" && tail !== "eval"))) return undefined;
@@ -624,7 +628,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
         { n: 1, source: "agent", command: "npm ci", exitCode: 0, durationMs: 42_000, timedOut: false, flagged: false, blockedHosts: [], tail: "added 812 packages in 41s", startedAt: run.startedAt ?? CREATED },
         ...(run.status === "running" ? [] : [{ n: 2, source: "agent", command: "npm test", exitCode: run.status === "failed" ? 1 : 0, durationMs: 61_000, timedOut: false, flagged: false, blockedHosts: [], tail: run.status === "failed" ? FAILED_COMMAND.lastLines.join("\n") : "Tests: 42 passed", startedAt: run.startedAt ?? CREATED }]),
       ];
-      return { status: 200, body: { status: run.status, entries: all.filter((one) => one.n > after), hostAsks: [] } };
+      // An open ask carries what a company owner or admin decides it on; anyone else sees where it stands (Code's `canDecide`).
+      const mayDecide = !companyless.has(person.developerId) && person.administrator;
+      const hostAsks = (setupHostAsks.get(name) ?? []).map((ask) => ({ host: ask.host, status: ask.status, journalN: 1, ...(ask.status === "open" ? { canDecide: mayDecide, approval: { requestId: hostAskRequestId(ask.host), revision: 1, artifactDigest: HOST_ASK_DIGEST, kind: "setup_host", risk: "high" } } : {}) }));
+      return { status: 200, body: { status: run.status, entries: all.filter((one) => one.n > after), hostAsks } };
     }
     if (!manage) return failure(403, "FORBIDDEN", "Only company owners and admins, or this project's admins, can run the project's setup.");
     if (tail === "discard") { const had = setupApplies.delete(name); return { status: 200, body: { discarded: had } }; }
@@ -637,6 +644,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       // L4-T2: an approved setup (its check was ready) makes the checklist's Setup run row Done.
       if (asked.outcome === "approve") setupRuns.set(name, { ...runOf(name), approved: true });
       return { status: 200, body: { project: name, decision: asked.outcome === "approve" ? "approved" : "rejected", risk: waiting.risk, revision: waiting.revision, replayed: false } };
+    }
+    if (tail === "host-decide") {
+      const asked = body as { requestId?: string; host?: string; outcome?: string; seen?: { revision?: number; artifactDigest?: string } };
+      if (!(!companyless.has(person.developerId) && person.administrator)) return failure(403, "FORBIDDEN", "A website for a setup run changes what the project's code can reach, so only a company owner or admin can allow or refuse it.");
+      const open = (setupHostAsks.get(name) ?? []).find((ask) => ask.host === asked.host && ask.status === "open");
+      if (open === undefined || asked.requestId !== hostAskRequestId(open.host) || asked.seen?.artifactDigest !== HOST_ASK_DIGEST || asked.seen?.revision !== 1) return failure(409, "CHANGE_STALE", "That website is not waiting for a decision any more. Open the project's setup again.");
+      open.status = asked.outcome === "approve" ? "approved" : "refused";
+      return { status: 200, body: { project: name, host: open.host, decision: asked.outcome === "approve" ? "approved" : "refused", replayed: false } };
     }
     if (tail === "confirm") return failure(409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Decide it, or discard it, first.");
     const given = body as { requestId?: unknown };
@@ -2169,6 +2184,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           // "default": forget the set card, so the project's card follows its setup run again (a spec's afterEach puts it back this way).
           if (given.state === "default") { evalCards.delete(given.project);return send(200, { ok: true }); }
           evalCards.set(given.project, { state: given.state as FakeEval["state"], health: ["requested", "finished"].includes(given.health as string) ? given.health as FakeEval["health"] : "none", ...(typeof wrapper === "string" && ["needs_file", "pull_request_open", "file_found", "dismissed", "not_offered", "custom"].includes(wrapper) ? { wrapper: wrapper as FakeWrapperStep } : {}) });
+          return send(200, { ok: true });
+        }
+        if (method === "POST" && url.pathname === "/__fake/setup-host-asks") {
+          const given = JSON.parse(raw) as { project?: unknown; asks?: unknown };
+          if (typeof given.project !== "string" || project(given.project) === undefined || !Array.isArray(given.asks)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and asks are required" } });
+          setupHostAsks.set(given.project, (given.asks as Array<{ host: string; status?: string }>).map((ask) => ({ host: ask.host, status: ask.status === "approved" || ask.status === "refused" ? ask.status : "open" })));
           return send(200, { ok: true });
         }
         if (method === "POST" && url.pathname === "/__fake/setup-apply") {

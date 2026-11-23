@@ -118,7 +118,9 @@ export function NightlyUpkeep({ project, companyAdmin }: { project: string; comp
   }
   // L4-W6b (DEC 254zzt option A, two locks): `systemRunsOn` is what really runs (the operator's ceiling AND the company's consent). Absent: a Code with the project switch only, shown as before.
   const gated = upkeep.systemRunsOn !== undefined, consent = upkeep.systemRunsOn === true;
-  const offer = gated && !consent && upkeep.canEnableSystemRuns === true;
+  // Rule #14 and the same gate as Build: a control is drawn only for a person Code says may manage the project, and only from a read that is current.
+  const fresh = !read.isError && read.failureCount === 0;
+  const offer = gated && !consent && upkeep.canEnableSystemRuns === true && upkeep.canManage && fresh;
   const needsAdmin = gated && !consent && !offer && upkeep.canManage;
   const settled = !gated || consent;
   // The project's own switch counts only while system runs are on: with the company's consent off nothing runs, whatever the project switch says.
@@ -128,7 +130,7 @@ export function NightlyUpkeep({ project, companyAdmin }: { project: string; comp
       <h3>{T.UPKEEP}</h3><p className="rv-muted">{T.UPKEEP_TEXT}</p>
       <p className="rv-muted" data-testid="wiki-setup-upkeep-state">{running ? T.UPKEEP_ON : T.UPKEEP_OFF}</p>
       {upkeep.canManage && upkeep.spend !== undefined && <SpendLine spend={upkeep.spend} cap={upkeep.cap} />}</div>
-      {upkeep.canManage && settled && <Switch label={T.UPKEEP} checked={upkeep.enabled} disabled={busy} onCheckedChange={(on) => { void send(on); }} />}
+      {upkeep.canManage && fresh && settled && <Switch label={T.UPKEEP} checked={upkeep.enabled} disabled={busy} onCheckedChange={(on) => { void send(on); }} />}
     </div>
     {/* L4-U5: the admins' notice, on the page: why nightly upkeep is paused now (Code tells managers only), in the same fixed sentence the chat and the email carry. Silent when it is not paused. */}
     {upkeep.paused !== undefined && <div role="status" className="rv-wikis-paused" data-testid="wiki-setup-upkeep-paused"><p>{UPKEEP_PAUSE_SENTENCES[upkeep.paused.reason]}</p>{upkeep.cap?.canRaise === true && <p><Link to="/app/admin/money/limits">{T.CAP_LINK_RAISE}</Link></p>}</div>}

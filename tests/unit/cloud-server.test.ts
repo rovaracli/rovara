@@ -282,7 +282,7 @@ describe("the app's API, answered from Code as the person", () => {
     // The company's own id and name from Code's access check, never the deployment's ("acme", "Acme").
     expect(JSON.parse((await call("GET", "/v1/web/me", { cookie }))!.body)).toMatchObject({ developer: { id: ADA, name: "Ada", orgRole: "owner" }, org: { orgId: ACME, name: "Acme Ltd", plan: "test" } });
     expect(JSON.parse((await call("GET", "/v1/web/nav", { cookie }))!.body)).toMatchObject({ me: { orgRole: "owner" }, org: { name: "Acme Ltd" }, projects: [{ name: "payments" }], features: { admin: true } });
-    expect(JSON.parse((await call("GET", "/v1/web/projects", { cookie }))!.body)).toEqual({ projects: [{ name: "payments", status: "active", latestRevision: 3, myRole: "maintainer", setup: { status: "unchecked" }, repositories: [{ name: "api", fullName: "acme/payments-api", defaultBranch: "main" }] }] });
+    expect(JSON.parse((await call("GET", "/v1/web/projects", { cookie }))!.body)).toEqual({ projects: [{ name: "payments", status: "active", latestRevision: 3, myRole: "maintainer", setup: { status: "unknown" }, repositories: [{ name: "api", fullName: "acme/payments-api", defaultBranch: "main" }] }] });
     expect(JSON.parse((await call("GET", "/v1/web/projects/payments/overview", { cookie }))!.body)).toMatchObject({ project: { name: "payments", latestRevision: 3, repositories: [{ fullName: "acme/payments-api" }] }, you: { role: "maintainer", canEditSettings: true } });
     expect((await call("GET", "/v1/web/projects/ledger", { cookie }))!.status).toBe(404);
   });

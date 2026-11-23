@@ -2,7 +2,7 @@
 // command needs a fresh browser sign-in) and decides everything, so this client only asks. The gateway puts its own `requestId` in every answer and the contracts are strict, so it is set aside first.
 import { useMemo } from "react";
 import {
-  ProjectOverviewProjectSchema, SetupAgentCommandReplySchema, SetupAgentCommandRequestSchema, SetupAgentRequestBodySchema, SetupAgentViewSchema, SetupConfirmReplySchema, SetupConfirmRequestSchema, SetupDecideReplySchema, SetupDecideRequestSchema, SetupDiscardReplySchema, SetupDiscardRequestSchema, SetupJournalReplySchema,
+  ProjectOverviewProjectSchema, SetupAgentCommandReplySchema, SetupAgentCommandRequestSchema, SetupAgentRequestBodySchema, SetupAgentViewSchema, SetupConfirmReplySchema, SetupConfirmRequestSchema, SetupDecideReplySchema, SetupDecideRequestSchema, SetupDiscardReplySchema, SetupDiscardRequestSchema, SetupHostDecideReplySchema, SetupHostDecideRequestSchema, SetupJournalReplySchema,
 } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
@@ -25,6 +25,8 @@ export function createSetupAgentApi(host: AppHost) {
     /** L4-D2: drop the waiting candidate. */
     discard: (name: string, requestId: string) => api.sendAnswer("POST", base(name) + "/discard", SetupDiscardRequestSchema.parse({ requestId }), exactAnswer(SetupDiscardReplySchema)),
     /** L4-D2: approve or reject the waiting candidate, bound to the id, revision and digest the read offered. Never sent twice by the client. */
+    /** Allow or refuse one website a run asked for, bound to the id and digest the journal offered for that ask. Never sent twice by the client: an unknown outcome is checked through reads. */
+    hostDecide: (name: string, body: ReturnType<typeof SetupHostDecideRequestSchema.parse>) => api.sendAnswer("POST", base(name) + "/host-decide", SetupHostDecideRequestSchema.parse(body), exactAnswer(SetupHostDecideReplySchema), { retry: "never" }),
     decide: (name: string, body: ReturnType<typeof SetupDecideRequestSchema.parse>) => api.sendAnswer("POST", base(name) + "/decide", SetupDecideRequestSchema.parse(body), exactAnswer(SetupDecideReplySchema), { retry: "never" }),
   };
 }

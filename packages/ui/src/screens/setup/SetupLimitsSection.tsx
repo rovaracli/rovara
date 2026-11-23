@@ -8,6 +8,8 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { LimitFields } from "./LimitFields.js";
 import { LIMIT_LABELS, PROJECT_LIMITS as T, limitField, limitShown, settingOfFields } from "./limits-text.js";
 
+/** What the read keeps when Code does not serve the limits at all. */
+const NOT_SERVED = "not_served" as const;
 const fieldsOf = (setting: LimitSetting): Record<SetupLimitName, string> => Object.fromEntries(SETUP_LIMIT_NAMES.map(name => [name, limitField(name, setting[name])])) as Record<SetupLimitName, string>;
 
 /**
@@ -17,13 +19,20 @@ const fieldsOf = (setting: LimitSetting): Record<SetupLimitName, string> => Obje
  */
 export function SetupLimitsSection({ project }: { project: string }) {
  const api = useSetupLimitsApi(), client = useQueryClient(), key = setupLimitsKey(project);
- const read = useQuery({ queryKey: key, queryFn: () => api.project(project), retry: false, refetchOnWindowFocus: false });
+ // A Code that does not serve the limits (Cloud's fixed 501 NOT_ON_CODE_YET, or Code's own route-not-found 404) does not start serving them in minutes: that answer is kept as an answer for ten minutes, so a page that
+ // remounts or polls does not ask again every few seconds (prod asked 354 times in three hours). The card is then hidden: no form, no button.
+ const read = useQuery({ queryKey: key, queryFn: async () => {
+  try { return await api.project(project); }
+  catch (error) { if (error instanceof ApiError && (error.status === 404 || (error.status === 501 && error.code === "NOT_ON_CODE_YET"))) return NOT_SERVED; throw error; }
+ }, retry: false, refetchOnWindowFocus: false, staleTime: 10 * 60_000 });
+ const view = read.data === NOT_SERVED ? undefined : read.data;
+ if (read.data === NOT_SERVED) return null;
  if (read.error instanceof ApiError && (read.error.status === 404 || read.error.status === 403 || (read.error.status === 501 && read.error.code === "NOT_ON_CODE_YET"))) return null;
  // One section for every state, so a screen reader's place in it survives the load, a save and a re-read.
  const body = read.isPending ? <Skeleton label={T.LOADING} />
-  : read.data === undefined ? <><p role="alert">{T.LOAD_FAILED}</p><Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button></>
+  : view === undefined ? <><p role="alert">{T.LOAD_FAILED}</p><Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button></>
   // A new revision is a new form: the boxes start from what the server holds.
-  : <Editor key={read.data.revision} project={project} view={read.data} api={api} onView={next => { client.setQueryData(key, next); }} onStale={() => client.invalidateQueries({ queryKey: key })} />;
+  : <Editor key={view.revision} project={project} view={view} api={api} onView={next => { client.setQueryData(key, next); }} onStale={() => client.invalidateQueries({ queryKey: key })} />;
  return <section className="rv-project-section" aria-label={T.HEADING}><h2>{T.HEADING}</h2>{body}</section>;
 }
 

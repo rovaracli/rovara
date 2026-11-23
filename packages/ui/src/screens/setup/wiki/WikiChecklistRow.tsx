@@ -8,6 +8,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { WIKI_SETUP_CODE_WORDS } from "@agentx/contracts/web";
 import { fixedWikiSetupWords, useWikiSetupApi, wikiSetupAbsent, wikiSetupKey, type WikiSetupBuild, type WikiSetupMap, type WikiSetupMapView } from "../../../api/wiki-setup.js";
 import { ApiError } from "../../../api/errors.js";
+import { servedReadState } from "../../../api/served-read.js";
 import { Button } from "../../../design/Button.js";
 import { Checkbox } from "../../../design/Checkbox.js";
 import { Skeleton } from "../../../design/Skeleton.js";
@@ -29,7 +30,7 @@ function Facts({ items }: { items: Array<[string, string | number]> }) {
   return <dl className="rv-wikis-facts">{items.map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl>;
 }
 
-function Forecast({ map, canManage, chipsOn, onChip, notes, onNotes, disabled }: { map: WikiSetupMap; canManage: boolean; chipsOn: (id: string, fallback: boolean) => boolean; onChip: (id: string, on: boolean) => void; notes: string; onNotes: (value: string) => void; disabled: boolean }) {
+function Forecast({ map, canManage, mayBuild, keyMissing, chipsOn, onChip, notes, onNotes, disabled }: { map: WikiSetupMap; keyMissing: boolean; mayBuild: boolean; canManage: boolean; chipsOn: (id: string, fallback: boolean) => boolean; onChip: (id: string, on: boolean) => void; notes: string; onNotes: (value: string) => void; disabled: boolean }) {
   const first = map.chips.filter((chip) => chip.kind === "write_first"), skip = map.chips.filter((chip) => chip.kind !== "write_first");
   const chipGroup = (title: string, chips: typeof map.chips) => chips.length === 0 ? null : (
     <fieldset className="rv-wikis-chips" disabled={!canManage || disabled}><legend>{title}</legend>
@@ -37,12 +38,12 @@ function Forecast({ map, canManage, chipsOn, onChip, notes, onNotes, disabled }:
     </fieldset>
   );
   return <>
-    <p>{T.FORECAST_LEDE}</p>
+    <p>{mayBuild ? T.FORECAST_LEDE : T.FORECAST_LEDE_VIEWER}</p>
     <div className="rv-wikis-table"><table>
       <thead><tr><th scope="col">Repo</th><th scope="col" className="r">Files</th><th scope="col" className="r">Pages expected</th></tr></thead>
       <tbody>{map.repositories.map((repo) => <tr key={repo.name}>
         <th scope="row"><VisibleText text={repo.name} />{repo.status !== "ok" && <span className="rv-muted"> (<VisibleText text={repo.partial ?? repo.unavailable ?? ""} />)</span>}</th>
-        <td className="r">{repo.files.toLocaleString("en-US")}</td><td className="r">{repo.status === "unavailable" ? "0" : String(repo.pages.modules + 1)}{repo.pages.modulesCapped ? "+" : ""}</td>
+        <td className="r">{repo.files.toLocaleString("en-US")}</td><td className="r">{repo.status === "unavailable" || map.forecast.pages === 0 ? "0" : String(repo.pages.modules + 1)}{repo.pages.modulesCapped ? "+" : ""}</td>
       </tr>)}</tbody>
       <tfoot><tr><th scope="row">{T.TOTAL}</th><td className="r">{map.forecast.files.toLocaleString("en-US")}</td><td className="r" data-testid="wiki-forecast-pages">{map.forecast.pages}{map.forecast.pagesCapped ? "+" : ""}</td></tr></tfoot>
     </table></div>
@@ -53,12 +54,12 @@ function Forecast({ map, canManage, chipsOn, onChip, notes, onNotes, disabled }:
         <TextArea label={T.NOTES_LABEL} placeholder={T.NOTES_PLACEHOLDER} value={notes} maxLength={2000} disabled={!canManage || disabled} onChange={(event) => { onNotes(event.target.value); }} />
       </div>
     </details>
-    <p className="rv-muted">{T.SPENDS}</p>
+    <p className="rv-muted">{keyMissing ? T.SPENDS_NO_KEY : T.SPENDS}</p>
     <p className="rv-muted">{T.FREE_MAP}</p>
   </>;
 }
 
-export function WikiChecklistRow({ project, companyAdmin, alone = false }: { project: string; companyAdmin: boolean; /** On its own (a finished checklist leaves the project page): the row brings its own list. */ alone?: boolean }) {
+export function WikiChecklistRow({ project, companyAdmin, alone = false, startOpen = false }: { project: string; companyAdmin: boolean; /** On its own (a finished checklist leaves the project page): the row brings its own list. */ alone?: boolean; /** Open before any build (the Wiki tab's empty state shows the row to build from). */ startOpen?: boolean }) {
   const api = useWikiSetupApi(), query = useQueryClient();
   const build = useQuery({ queryKey: wikiSetupKey(project, "build"), queryFn: () => api.build(project), retry: false, refetchInterval: (current) => (current.state.data?.status === "running" ? 4_000 : false) });
   const map = useQuery({ queryKey: wikiSetupKey(project, "map"), queryFn: () => api.map(project), retry: false, staleTime: 60_000 });
@@ -76,11 +77,17 @@ export function WikiChecklistRow({ project, companyAdmin, alone = false }: { pro
     return alone ? <ol className="rv-checklist-rows" data-testid="project-wiki-only">{row}</ol> : row;
   };
   if (build.isPending) return wrap("optional", <Skeleton label={T.LOADING} />);
-  if (build.data === undefined) return wrap("optional", <><p role="alert" data-testid="wiki-setup-error"><VisibleText text={fixedWikiSetupWords(build.error, T.UNAVAILABLE)} /></p><Button onClick={() => { void build.refetch(); }}>{T.RETRY}</Button></>, true);
-  const view: WikiSetupBuild = build.data, canManage = view.canManage;
+  // Rule #14: what the row shows of a failed re-read is the last facts and one line, and nothing can be started from them; an access signal wipes them.
+  const shownBuild = servedReadState(build).data;
+  if (shownBuild === undefined) return wrap("optional", <><p role="alert" data-testid="wiki-setup-error"><VisibleText text={fixedWikiSetupWords(build.error, T.UNAVAILABLE)} /></p><Button onClick={() => { void build.refetch(); }}>{T.RETRY}</Button></>, true);
+  const readFresh = !build.isError && build.failureCount === 0;
+  const view: WikiSetupBuild = shownBuild, canManage = view.canManage && readFresh;
   const mapView: WikiSetupMapView | undefined = map.data, ready = mapView?.status === "ready" ? mapView.map : undefined;
 
   async function act<T>(name: ActionName, run: (requestId: string) => Promise<T>, then: (answer: T) => void) {
+    // Refused again at send time: the build read must still be a success (never the last facts of a failed one).
+    const latest = query.getQueryState(wikiSetupKey(project, "build"));
+    if (latest === undefined || latest.status !== "success" || latest.fetchFailureCount > 0) { setError(T.SEND_REFUSED); return; }
     setBusy(name); setError(undefined);
     const requestId = ids.current.get(name) ?? crypto.randomUUID();
     ids.current.set(name, requestId);
@@ -113,9 +120,10 @@ export function WikiChecklistRow({ project, companyAdmin, alone = false }: { pro
   if (running && confirmDelete) setConfirmDelete(false);
   const head = <>
     <p className="rv-muted">{T.SUBTITLE}</p>
-    {!canManage && <p data-testid="wiki-setup-read-only">{T.READ_ONLY}</p>}
+    {!view.canManage && <p data-testid="wiki-setup-read-only">{T.READ_ONLY}</p>}
+    {view.canManage && !readFresh && <p role="status" data-testid="wiki-setup-reconnecting">{T.RECONNECTING}</p>}
     {deleted && <p role="status" data-testid="wiki-setup-deleted">{T.DELETED}</p>}
-    {error !== undefined && <p role="alert" data-testid="wiki-setup-action-error"><VisibleText text={error} /></p>}
+    {error !== undefined && readFresh && <p role="alert" data-testid="wiki-setup-action-error"><VisibleText text={error} /></p>}
   </>;
 
   let main: ReactNode;
@@ -132,13 +140,13 @@ export function WikiChecklistRow({ project, companyAdmin, alone = false }: { pro
         : map.isError ? <p role="status" data-testid="wiki-setup-map-error"><VisibleText text={wikiSetupAbsent(map.error) ? T.MAP_UNAVAILABLE : fixedWikiSetupWords(map.error, T.UNAVAILABLE)} /></p>
         : ready === undefined ? <><p>{canManage ? T.NO_MAP : T.NO_MAP_VIEWER}</p>{canManage && <Button variant="primary" busy={busy === "map"} data-testid="wiki-setup-map" onClick={mapFiles}>{T.MAP_FILES}</Button>}</>
         : <>
-          <Forecast map={ready} canManage={canManage} chipsOn={chipsOn} onChip={(id, on) => { setTouched((now) => ({ ...now, [id]: on })); }} notes={notes} onNotes={(value) => { setNotes(value.replace(/(?!\n)[\p{Cc}\p{Cf}]/gu, "")); }} disabled={busy !== undefined} />
+          <Forecast map={ready} canManage={canManage} mayBuild={view.canManage} keyMissing={keyMissing} chipsOn={chipsOn} onChip={(id, on) => { setTouched((now) => ({ ...now, [id]: on })); }} notes={notes} onNotes={(value) => { setNotes(value.replace(/(?!\n)[\p{Cc}\p{Cf}]/gu, "")); }} disabled={busy !== undefined} />
           {canManage && <div className="rv-wikis-actions">
             <Button variant="primary" busy={busy === "build"} disabled={keyMissing || ready.forecast.pages === 0} data-testid="wiki-setup-build" onClick={start}>{T.BUILD}</Button>
             <Button busy={busy === "map"} data-testid="wiki-setup-map" onClick={mapFiles}>{T.MAP_AGAIN}</Button>
           </div>}
+          {canManage && !keyMissing && ready.forecast.pages === 0 && <p role="status" data-testid="wiki-setup-no-pages">{T.NO_PAGES}</p>}
           {canManage && keyMissing && <p data-testid="wiki-setup-connect-key"><VisibleText text={view.connectKey ?? T.CONNECT_KEY_LINK} /> {companyAdmin ? <Link to="/app/admin/ai-spending">{T.CONNECT_KEY_LINK}</Link> : T.CONNECT_KEY_ASK}</p>}
-          {canManage && <p className="rv-muted">{T.BUILD_NOTE}</p>}
         </>}
     </section>;
   } else {
@@ -185,5 +193,5 @@ export function WikiChecklistRow({ project, companyAdmin, alone = false }: { pro
     {main}
     {controls}
     <NightlyUpkeep project={project} companyAdmin={companyAdmin} />
-  </>, view.status !== "none");
+  </>, view.status !== "none" || startOpen);
 }

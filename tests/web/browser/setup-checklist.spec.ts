@@ -14,7 +14,8 @@ test("the owner works through the project checklist: a failed run, Run again, St
   await expect(screen.row("setupRun")).toHaveAttribute("data-state", "failed");
   await expect(screen.runRow).toContainText("A test command failed.");
   await expect(screen.runRow).toContainText("npm test");
-  await expect(screen.runRow.getByRole("link", { name: "Edit commands" })).toBeVisible();
+  // The old Setup step (its commands, check and draft routes are not on Code) is no longer linked from the row.
+  await expect(screen.runRow.getByRole("link", { name: "Edit commands" })).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("checklist-failed-run.png"), fullPage: true });
   await screen.runAgain.click();
   await expect(screen.row("setupRun")).toHaveAttribute("data-state", "running");

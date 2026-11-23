@@ -61,9 +61,9 @@ test("above 8 repos 'separate' is preselected with the reason; the table shows w
   // `api` already exists as a project, so Code refuses that one in its fixed words; the rest wait for setup.
   await expect(rows.filter({ hasText: "example/api" })).toContainText("A project with this name already exists.");
   await expect(rows.filter({ hasText: "example/auth" })).toContainText("Waiting for setup");
-  await expect(rows.filter({ hasText: "example/auth" }).getByRole("link", { name: "Open auth" })).toHaveAttribute("href", "/app/onboard?project=auth&step=setup");
+  await expect(rows.filter({ hasText: "example/auth" }).getByRole("link", { name: "Open auth" })).toHaveAttribute("href", "/app/projects/auth#setup-checklist");
   await page.screenshot({ path: testInfo.outputPath("bulk-table.png"), fullPage: true });
   // No setup run starts: the pretend Code saw no request for one.
   await picker.table.getByRole("link", { name: "Open auth" }).click();
-  await page.waitForURL((url) => url.searchParams.get("project") === "auth");
+  await page.waitForURL((url) => url.pathname === "/app/projects/auth");
 });

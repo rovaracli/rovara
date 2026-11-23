@@ -91,6 +91,31 @@ it("unknown Retry survives reload; three Checks reveal DEC285 and a changed work
   s.settle();fireEvent.click(screen.getByRole("button", { name: "Check" }));await waitFor(() => expect(s.f.storage.get(scope + ":request")).toBe("null"));expect(s.posts()).toHaveLength(1);
  } finally { s.close(); }
 });
+for (const reason of ["the plan couldn't be read", "The plan couldn't be read."]) it(`a plan that could not be read says the plan WAS written (never 'stopped while planning'), matched by Code's reason: ${reason}`, () => {
+ const session = workspaceFixture({}, { workflow: { ...workspaceWorkflow(), stage: "PLAN", state: "BLOCKED", blockReason: reason } });
+ if (session.body.kind !== "task") throw new Error("task fixture");
+ const row = { ...workRow(readTask(session.body.task)!, undefined, new Date(session.updatedAt)), group: "stopped" as const, line: "Stopped 1h ago" };
+ const ui = renderUi(h(QuietCard, { row, decisionsError: undefined, retryOffered: true, wide: true }));try {
+  expect(screen.getByTestId("decision-quiet").querySelector("p")?.textContent).toBe("The plan was written, but Rovara couldn't use it: a plan must say what changes and which files change. You can retry this step from Task actions above, close it, or continue it in your tool.");
+  expect(screen.getByTestId("decision-quiet").textContent).not.toContain("stopped while planning");
+ } finally { ui.unmount(); }
+});
+it("a reason that only looks similar, or the same words at another stage, is not mapped", () => {
+ // Another stage, or free text that only looks similar, is not mapped.
+ const other = workspaceFixture({}, { workflow: { ...workspaceWorkflow(), stage: "PLAN", state: "BLOCKED", blockReason: "The plan couldn't be read at all." } });
+ if (other.body.kind !== "task") throw new Error("task fixture");
+ const again = renderUi(h(QuietCard, { row: workRow(readTask(other.body.task)!, undefined, new Date(other.updatedAt)), decisionsError: undefined, retryOffered: true }));try {
+  expect(screen.getByTestId("decision-quiet").querySelector("p")?.textContent).toBe("Rovara stopped while planning. The plan couldn't be read at all.");
+ } finally { again.unmount(); }
+});
+it("a served reason is a proper sentence: capital letter and full stop", () => {
+ const session = workspaceFixture({}, { workflow: { ...workspaceWorkflow(), stage: "IMPLEMENT", state: "BLOCKED", blockReason: "the build hit its limit" } });
+ if (session.body.kind !== "task") throw new Error("task fixture");
+ const row = workRow(readTask(session.body.task)!, undefined, new Date(session.updatedAt));
+ const ui = renderUi(h(QuietCard, { row, decisionsError: undefined, retryOffered: true }));try {
+  expect(screen.getByTestId("decision-quiet").querySelector("p")?.textContent).toBe("Rovara stopped while coding. The build hit its limit.");
+ } finally { ui.unmount(); }
+});
 it("blocked copy names the step and served reason instead of promising a decision card", () => {
  const session = workspaceFixture({}, { workflow: { ...workspaceWorkflow(), stage: "PLAN", state: "BLOCKED", blockReason: "The planner could not finish." } });
  if (session.body.kind !== "task") throw new Error("task fixture");

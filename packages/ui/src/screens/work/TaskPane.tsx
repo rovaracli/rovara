@@ -69,6 +69,18 @@ const proofNotServed = (error: unknown): boolean => error instanceof ApiError &&
  */
 export const planNotWritten = (error: unknown): boolean => error instanceof ApiError && error.status === 404 && error.code === "NOT_FOUND" && error.message === "this task has no plan document yet";
 
+/** Code's fixed reason for a plan that could not be read (WORKFLOW_BLOCK_REASONS.planUnreadable): its answer was written, but it did not say what changes and which files. */
+export const PLAN_UNREADABLE = "the plan couldn't be read";
+/** Both forms of the stored reason: the older "the plan couldn't be read" (tasks already blocked) and the newer "The plan couldn't be read." (capital letter and full stop). Matched whole, never as free text. */
+export const isPlanUnreadable = (reason: string | undefined): boolean => reason !== undefined && reason.trim().replace(/\.$/u, "").toLowerCase() === PLAN_UNREADABLE;
+export const PLAN_UNREADABLE_WORDS = "The plan was written, but Rovara couldn't use it: a plan must say what changes and which files change.";
+/** A served reason as a proper sentence: capital first letter and a full stop (Code's fixed reasons are lower case phrases). */
+export function reasonSentence(reason: string): string {
+ const text = reason.trim();
+ if (text === "") return text;
+ const capital = text.charAt(0).toUpperCase() + text.slice(1);
+ return /[.!?]$/u.test(capital) ? capital : capital + ".";
+}
 /** The quiet card: a task that asks nothing of the person says why, in fixed words. */
 export function QuietCard({ row, decisionsError, wide = false, retryOffered = false }: { row: WorkRow; decisionsError: unknown; retryOffered?: boolean; /** On the task's own page "the full page" is where the person already is. */ wide?: boolean }) {
  const page = useTaskPagePolicy() !== undefined;
@@ -86,7 +98,9 @@ export function QuietCard({ row, decisionsError, wide = false, retryOffered = fa
  else { title = "Nothing needed from you"; body = <>Last recorded status: working. Rovara hasn't confirmed current activity. You get a card here when a decision is needed.</>; }
  if (retryOffered && row.task.workflow?.state === "BLOCKED" && row.task.workflow.stage !== "REVIEW") {
   const stages: Record<string, string> = { UNDERSTAND: "understanding the request", PLAN: "planning", PLAN_CRITIQUE: "checking the plan", IMPLEMENT: "coding", VERIFY: "checking the code", PULL_REQUEST: "opening the pull request", WAIT_FOR_MERGE: "updating the pull request" };
-  body = <>Rovara stopped while {stages[row.task.workflow.stage ?? ""] ?? "working on this step"}. <VisibleText text={taskWords(row.task.workflow.blockReason ?? "The reason is not available yet.", row.task.hasThread)} />{row.group === "stopped" && <> You can retry this step from Task actions above, close it, or continue it in your tool.</>}</>;
+  const workflow = row.task.workflow, planWritten = workflow.stage === "PLAN" && isPlanUnreadable(workflow.blockReason);
+  // Planning FINISHED when its plan could not be read (Code's fixed reason, matched exactly): say that, never "stopped while planning". Any other reason is shown as a proper sentence.
+  body = <>{planWritten ? PLAN_UNREADABLE_WORDS : <>Rovara stopped while {stages[workflow.stage ?? ""] ?? "working on this step"}. <VisibleText text={reasonSentence(taskWords(workflow.blockReason ?? "The reason is not available yet.", row.task.hasThread))} /></>}{row.group === "stopped" && <> You can retry this step from Task actions above, close it, or continue it in your tool.</>}</>;
  }
  return <section className="rv-decision rv-decision-pane none" aria-label="Decision" data-testid="decision-quiet"><h3>{title}</h3><p className="rv-muted">{body}</p></section>;
 }
