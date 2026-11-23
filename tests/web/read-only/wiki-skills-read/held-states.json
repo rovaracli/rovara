@@ -1,0 +1,274 @@
+[
+  {
+    "section": "07",
+    "board": "wiki-setup",
+    "state": "unknown",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "08",
+    "board": "wiki-index",
+    "state": "partial",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "08",
+    "board": "wiki-index",
+    "state": "unknown",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "09",
+    "board": "wiki-page",
+    "state": "mark-review",
+    "missing": "Write scenes are excluded; no submitted/confirmed write result is available.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": true
+  },
+  {
+    "section": "09",
+    "board": "wiki-page",
+    "state": "mark-saved",
+    "missing": "Write scenes are excluded; no submitted/confirmed write result is available.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": true
+  },
+  {
+    "section": "09",
+    "board": "wiki-page",
+    "state": "empty",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "09",
+    "board": "wiki-page",
+    "state": "partial",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "09",
+    "board": "wiki-page",
+    "state": "unknown",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "10",
+    "board": "wiki-corrections",
+    "state": "unknown",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "11",
+    "board": "skills-list",
+    "state": "approval-review",
+    "missing": "Write scenes are excluded; no submitted/confirmed write result is available.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": true
+  },
+  {
+    "section": "11",
+    "board": "skills-list",
+    "state": "editing",
+    "missing": "Write scenes are excluded; no submitted/confirmed write result is available.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": true
+  },
+  {
+    "section": "11",
+    "board": "skills-list",
+    "state": "retire-review",
+    "missing": "Write scenes are excluded; no submitted/confirmed write result is available.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": true
+  },
+  {
+    "section": "11",
+    "board": "skills-list",
+    "state": "partial",
+    "missing": "The shared Skills reader drops unreadable or duplicate rows; the group adapter preserves a partial read. Complete membership remains unknown.",
+    "fallback": "Can't tell yet. This skills read is partial; some records could not be read.",
+    "excludedWrites": false
+  },
+  {
+    "section": "11",
+    "board": "skills-list",
+    "state": "unknown",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "12",
+    "board": "skill-detail",
+    "state": "approval-review",
+    "missing": "Write scenes are excluded; no submitted/confirmed write result is available.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": true
+  },
+  {
+    "section": "12",
+    "board": "skill-detail",
+    "state": "editing",
+    "missing": "Write scenes are excluded; no submitted/confirmed write result is available.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": true
+  },
+  {
+    "section": "12",
+    "board": "skill-detail",
+    "state": "retire-review",
+    "missing": "Write scenes are excluded; no submitted/confirmed write result is available.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": true
+  },
+  {
+    "section": "12",
+    "board": "skill-detail",
+    "state": "changed-version",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "12",
+    "board": "skill-detail",
+    "state": "saved",
+    "missing": "Write scenes are excluded; no submitted/confirmed write result is available.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": true
+  },
+  {
+    "section": "12",
+    "board": "skill-detail",
+    "state": "not-confirmed",
+    "missing": "Write scenes are excluded; no submitted/confirmed write result is available.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": true
+  },
+  {
+    "section": "12",
+    "board": "skill-detail",
+    "state": "empty",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "12",
+    "board": "skill-detail",
+    "state": "partial",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "12",
+    "board": "skill-detail",
+    "state": "unknown",
+    "missing": "No independent completeness/history signal for this board scene.",
+    "fallback": "Can't tell yet",
+    "excludedWrites": false
+  },
+  {
+    "section": "17",
+    "board": "ask",
+    "state": "main",
+    "missing": "No existing-answer GET/parent record.",
+    "fallback": "Existing answer: Can't tell yet.",
+    "excludedWrites": false
+  },
+  {
+    "section": "17",
+    "board": "ask",
+    "state": "no-sources",
+    "missing": "No existing-answer GET/parent record.",
+    "fallback": "Existing answer: Can't tell yet.",
+    "excludedWrites": false
+  },
+  {
+    "section": "17",
+    "board": "ask",
+    "state": "loading",
+    "missing": "No existing-answer GET/parent record.",
+    "fallback": "Existing answer: Can't tell yet.",
+    "excludedWrites": false
+  },
+  {
+    "section": "17",
+    "board": "ask",
+    "state": "loading-slow",
+    "missing": "No existing-answer GET/parent record.",
+    "fallback": "Existing answer: Can't tell yet.",
+    "excludedWrites": false
+  },
+  {
+    "section": "17",
+    "board": "ask",
+    "state": "empty",
+    "missing": "No existing-answer GET/parent record.",
+    "fallback": "Existing answer: Can't tell yet.",
+    "excludedWrites": false
+  },
+  {
+    "section": "17",
+    "board": "ask",
+    "state": "read-failed",
+    "missing": "No existing-answer GET/parent record.",
+    "fallback": "Existing answer: Can't tell yet.",
+    "excludedWrites": false
+  },
+  {
+    "section": "17",
+    "board": "ask",
+    "state": "stale",
+    "missing": "No existing-answer GET/parent record.",
+    "fallback": "Existing answer: Can't tell yet.",
+    "excludedWrites": false
+  },
+  {
+    "section": "17",
+    "board": "ask",
+    "state": "partial",
+    "missing": "No existing-answer GET/parent record.",
+    "fallback": "Existing answer: Can't tell yet.",
+    "excludedWrites": false
+  },
+  {
+    "section": "17",
+    "board": "ask",
+    "state": "offline",
+    "missing": "No existing-answer GET/parent record.",
+    "fallback": "Existing answer: Can't tell yet.",
+    "excludedWrites": false
+  },
+  {
+    "section": "17",
+    "board": "ask",
+    "state": "access-lost",
+    "missing": "No existing-answer GET/parent record.",
+    "fallback": "Existing answer: Can't tell yet.",
+    "excludedWrites": false
+  },
+  {
+    "section": "17",
+    "board": "ask",
+    "state": "unknown",
+    "missing": "No existing-answer GET/parent record.",
+    "fallback": "Existing answer: Can't tell yet.",
+    "excludedWrites": false
+  }
+]

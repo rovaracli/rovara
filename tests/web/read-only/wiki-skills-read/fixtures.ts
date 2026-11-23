@@ -1,0 +1,37 @@
+import { AppMeResponseReaderSchema, WikiIndexResponseSchema, WikiPageResponseSchema, WikiSourcesResponseSchema, WikiCorrectionsResponseSchema, WikiDisputedResponseSchema, AnswerGapsResponseSchema, WikiSetupMapViewSchema, WikiSetupBuildSchema, WIKI_TRUST_LINE } from "@agentx/contracts/web";
+import { SkillReader, SkillsReader } from "../../../../packages/ui/src/api/skills.js";
+import { meFixture } from "../../support/fixtures.js";
+import type { ApiRequest, ApiResponse, AppHost } from "../../../../packages/ui/src/host.js";
+const time = "2026-11-21T12:00:00.000Z", commit = "a".repeat(40);
+export const identity = AppMeResponseReaderSchema.parse(meFixture());
+export const index = WikiIndexResponseSchema.parse({ project: "web", state: "ready", agentsEnabled: true, pages: [{ pageId: "overview", kind: "overview", title: "Product overview", summary: "How Beacon works", order: 0, repos: [{ repo: "beacon-api", commit }], writtenAt: time, claims: { found: 1, changed: 1 }, flagged: true }] });
+export const page = WikiPageResponseSchema.parse({ project: "web", page: { pageId: "overview", kind: "overview", title: "Product overview", summary: "How Beacon works", repos: [{ repo: "beacon-api", commit }], writtenAt: time, blocks: [{ kind: "heading", blockId: "head-001", level: 2, text: "The system at a glance" }, { kind: "paragraph", blockId: "body-001", text: "Private page text: requests enter the API.", claimIds: ["claim-001"] }], claims: [{ claimId: "claim-001", text: "Requests enter the API", source: "changed", flagged: true, citations: [{ repo: "beacon-api", path: "src/server.ts", commit, line: 22 }] }] }, notes: [{ noteId: "note-001", text: "Check the retry policy.", author: "Priya", createdAt: time, approval: "pending" }], openFlags: 1, trustLine: WIKI_TRUST_LINE });
+export const sources = WikiSourcesResponseSchema.parse({ project: "web", pageId: "overview", files: [{ repo: "beacon-api", path: "src/server.ts", commit, ranges: [{ line: 22 }], claimIds: ["claim-001"] }] });
+export const corrections = WikiCorrectionsResponseSchema.parse({ project: "web", pageId: "overview", you: { role: "maintainer", addNote: true, markWrong: true, approveNotes: true, resolveMarks: true, seeDisputed: true }, notes: [{ noteId: "note-001", mine: true, canDelete: true, canApprove: true, canSuggestLesson: true, mayBeOutOfDate: true }] });
+/** A reader who may open the lists but decide nothing: the default fixture (the read-only guards run against it). */
+export const readerCorrections = WikiCorrectionsResponseSchema.parse({ project: "web", pageId: "overview", you: { role: "viewer", addNote: false, markWrong: false, approveNotes: false, resolveMarks: false, seeDisputed: true }, notes: [{ noteId: "note-001", mine: false, canDelete: false, canApprove: false, canSuggestLesson: false, mayBeOutOfDate: true }] });
+export const disputed = WikiDisputedResponseSchema.parse({ project: "web", items: [{ flagId: "flag-001", pageId: "overview", pageTitle: "Product overview", markedBy: "Priya", markedAt: time, reason: "Check the retry policy" }], more: true });
+export const gaps = AnswerGapsResponseSchema.parse({ project: "web", items: [{ topic: "How are retries handled?", kind: "partly", people: 2, questions: 3, lastAskedAt: "2026-11-21" }], more: true });
+export const map = WikiSetupMapViewSchema.parse({ status: "none", canManage: true });
+export const build = WikiSetupBuildSchema.parse({ status: "running", limits: { pages: 50 }, canManage: true, aiKey: "connected", agents: { on: true }, wiki: { pages: 3, refreshPages: 0 }, summary: { pagesPlanned: 8, pagesWritten: 3, pagesKeptFromEarlier: 0, claimsKept: 5, claimsDropped: 1 } });
+const skill = { name: "safe-retries", description: "Bound retries before sending", currentVersion: 2, activeVersion: 1, approvals: 1, approvedByYou: true, retired: false, bytes: 100 };
+export const skills = SkillsReader.parse({ project: "web", canDecide: true, skills: [skill, { ...skill, name: "old-retries", retired: true }] });
+export const detail = SkillReader.parse({ project: "web", canDecide: true, skill: { ...skill, content: "Private skill text: cap retries at three." } });
+export const readerSkills = SkillsReader.parse({ project: "web", canDecide: false, skills: [skill, { ...skill, name: "old-retries", retired: true }] });
+export const readerDetail = SkillReader.parse({ project: "web", canDecide: false, skill: { ...skill, content: "Private skill text: cap retries at three." } });
+/** The fixture answers as a reader (decides nothing) unless a test asks for the maintainer's say-so. */
+export function replyAs(who: "reader" | "maintainer") { return (request: ApiRequest): ApiResponse => answer(request, who); }
+export function reply(request: ApiRequest): ApiResponse { return answer(request, "reader"); }
+function answer(request: ApiRequest, authority: "reader" | "maintainer"): ApiResponse {
+ if (request.method !== "GET") throw new Error("G3 mutation attempted");
+ if (new URL(request.path, "https://fixture.example").pathname === "/v1/app/projects/web/wiki/search") return { status: 200, body: { project: "web", query: new URL(request.path, "https://fixture.example").searchParams.get("q"), results: "overview".includes((new URL(request.path, "https://fixture.example").searchParams.get("q") ?? "").toLowerCase()) ? [{ pageId: "overview", title: "Product overview", summary: "How Beacon works", snippet: "…requests enter the API…" }] : [], trustLine: WIKI_TRUST_LINE } };
+ const path = new URL(request.path, "https://fixture.example").pathname;
+ const values: Record<string, unknown> = { "/v1/app/me": identity, "/v1/app/projects/web/wiki": index, "/v1/app/projects/web/wiki/pages/overview": page, "/v1/app/projects/web/wiki/pages/overview/sources": sources, "/v1/app/projects/web/wiki/pages/overview/corrections": authority === "maintainer" ? corrections : readerCorrections, "/v1/app/projects/web/wiki/disputed": disputed, "/v1/app/projects/web/wiki/gaps": gaps, "/v1/app/projects/web/wiki-map": map, "/v1/app/projects/web/wiki-build": build, "/v1/app/projects/web/skills": authority === "maintainer" ? skills : readerSkills, "/v1/app/projects/web/skills/safe-retries": authority === "maintainer" ? detail : readerDetail };
+ return path in values ? { status: 200, body: values[path] } : { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found" } } };
+}
+export function fixtureHost(respond: (request: ApiRequest) => ApiResponse | Promise<ApiResponse> = reply) {
+ const calls: ApiRequest[] = [];
+ const host: AppHost = { kind: "web", origin: "https://fixture.example", transport: { async request(input) { calls.push(input); return respond(input); } }, currentPath: () => "/app/projects/web?tab=wiki", realtimeToken: async () => { throw new Error("No realtime in G3"); }, openSocket: () => { throw new Error("No sockets in G3"); }, openExternal() {}, navigate() {}, signIn() {}, signOut: async () => {}, saveFile() {}, storage: { get: () => undefined, set() {} }, features: { admin: true } };
+ return { host, calls };
+}
+export const readyMap = WikiSetupMapViewSchema.parse({ status: "ready", canManage: true, map: { computedAt: time, complete: false, repositoriesOmitted: 1, repositories: [{ name: "beacon-api", status: "partial", partial: "Some files could not be read", files: 32, skipped: { generated: 2, vendored: 0, lockfiles: 1, assets: 3, secret: 0 }, skippedFolders: ["dist"], pages: { modules: 3, modulesCapped: false } }], chips: [], forecast: { repositories: 1, files: 32, pages: 8, pagesCapped: false, complete: false } } });

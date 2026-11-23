@@ -1,20 +1,20 @@
 // How people correct a machine-written wiki page (lead 4 C1; designs-2026-11-17/project-wiki-ux.md section 5, the demo's Mark wrong, Add a note, lesson offer and disputed list).
 // Every control is drawn from what Code says THIS person may do (api `corrections`): a person who cannot do something is never shown the button, so there is no dead button. Code
 // decides again on every call. A refusal is shown in a fixed sentence (never the server's other text). Wiki text and people's words are drawn as plain text.
-import { useId, useState, type ReactNode } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { wikiNoteLooksLikeRule } from "@agentx/contracts/web";
-import { fixedCorrectionWords, useWikiApi, useWikiDisputed, useWikiGaps, useWikiRefresh, type WikiCorrectionsResponse, type WikiNoteState, type WikiPageResponse, type WikiShownNote } from "../../../api/wiki.js";
+import { fixedCorrectionWords, useWikiApi, useWikiRefresh, type WikiCorrectionsResponse, type WikiNoteState, type WikiPageResponse, type WikiShownNote } from "../../../api/wiki.js";
 import { Button } from "../../../design/Button.js";
+import { Checkbox } from "../../../design/Checkbox.js";
 import { RelativeTime } from "../../../design/RelativeTime.js";
 import { Select } from "../../../design/Select.js";
-import { Skeleton } from "../../../design/Skeleton.js";
 import { TextArea } from "../../../design/TextArea.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { T } from "./wiki-text.js";
 
 /** One write at a time per control: busy while it runs, the fixed words when it is refused. */
-function useAct(refresh: () => Promise<void>) {
+export function useAct(refresh: () => Promise<void>) {
   const [busy, setBusy] = useState(false), [error, setError] = useState<unknown>(undefined);
   const run = async (work: () => Promise<void>): Promise<boolean> => {
     setBusy(true);
@@ -23,7 +23,7 @@ function useAct(refresh: () => Promise<void>) {
   };
   return { busy, error, run, clear: () => { setError(undefined); } };
 }
-function Failed({ error }: { error: unknown }) {
+export function Failed({ error }: { error: unknown }) {
   return error === undefined ? null : <p role="alert" className="rv-wiki-pnote rv-wiki-pnote-flag"><VisibleText text={fixedCorrectionWords(error, T.ACTION_FAILED)} /></p>;
 }
 
@@ -59,7 +59,7 @@ function NoteForm({ project, id, files, onDone }: { project: string; id: string;
   );
 }
 
-function NoteCard({ project, id, note, state }: { project: string; id: string; note: WikiShownNote; state: WikiNoteState | undefined }) {
+export function NoteCard({ project, id, note, state }: { project: string; id: string; note: WikiShownNote; state: WikiNoteState | undefined }) {
   const api = useWikiApi(), refresh = useWikiRefresh(project);
   // One action at a time per card, with one alert: a new action clears the old error.
   const act = useAct(async () => { await refresh(); });
@@ -100,19 +100,31 @@ export function PageNotes({ project, res, view }: { project: string; res: WikiPa
   );
 }
 
-/** The reason box for a Mark wrong: one mark for each claim the text rests on that is not already marked, or one for the whole page. */
-export function MarkForm({ project, id, claimIds, onDone }: { project: string; id: string; claimIds: readonly string[] | "page"; onDone: () => void }) {
+/**
+ * The reason box for a Mark wrong: one mark for each claim in `claimIds` (the whole page for "page"). With `choices` the person picks which of those statements are wrong first
+ * (none picked by default; nothing is sent until at least one is ticked); each ticked statement is one mark, the same request the old paragraph mark sent.
+ */
+export function MarkForm({ project, id, claimIds, choices, onDone }: { project: string; id: string; claimIds: readonly string[] | "page"; choices?: readonly { claimId: string; text: string }[]; onDone: () => void }) {
   const api = useWikiApi(), refresh = useWikiRefresh(project), act = useAct(async () => { await refresh(); });
-  const [reason, setReason] = useState(""), field = useId();
+  const sending = useRef(false), [reason, setReason] = useState(""), [picked, setPicked] = useState<ReadonlySet<string>>(new Set()), [needPick, setNeedPick] = useState(false), field = useId();
   const submit = async () => {
     const words = reason.trim();
-    const saved = await act.run(async () => {
-      for (const claimId of claimIds === "page" ? [undefined] : claimIds) await api.markWrong(project, id, { ...(claimId === undefined ? {} : { claimId }), ...(words === "" ? {} : { reason: words }) });
-    });
-    if (saved) onDone();
+    const ids = choices === undefined ? claimIds : choices.map(choice => choice.claimId).filter(claimId => picked.has(claimId));
+    if (ids !== "page" && ids.length === 0) { setNeedPick(true); return; }
+    // One send at a time: a second submit while the first is on its way (a double click, Enter twice) sends nothing more.
+    if (sending.current) return;
+    sending.current = true;
+    try {
+      const saved = await act.run(async () => {
+        for (const claimId of ids === "page" ? [undefined] : ids) await api.markWrong(project, id, { ...(claimId === undefined ? {} : { claimId }), ...(words === "" ? {} : { reason: words }) });
+      });
+      if (saved) onDone();
+    } finally { sending.current = false; }
   };
   return (
     <form className="rv-wiki-form" data-testid="wiki-mark-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      {choices !== undefined && <fieldset className="rv-wiki-claimpick" data-testid="wiki-mark-claims"><legend>{T.MARK_PICK}</legend>{choices.map(choice => <Checkbox key={choice.claimId} label={choice.text} checked={picked.has(choice.claimId)} onCheckedChange={on => { setNeedPick(false); setPicked(on === true ? new Set([...picked, choice.claimId]) : new Set([...picked].filter(claimId => claimId !== choice.claimId))); }} />)}{needPick && <p role="alert" className="rv-wiki-pnote rv-wiki-pnote-flag">{T.MARK_PICK_NONE}</p>}</fieldset>}
+      {claimIds === "page" && <p className="rv-wiki-markpage">{T.MARK_PAGE_LINE}</p>}
       <TextField autoFocus id={field} label={T.MARK_LABEL} value={reason} maxLength={500} placeholder={T.MARK_PLACEHOLDER} onChange={(event) => { setReason(event.target.value); }} />
       <Failed error={act.error} />
       <div className="rv-wiki-row"><Button variant="primary" type="submit" busy={act.busy}>{T.MARK_WRONG}</Button><Button onClick={onDone}>{T.CANCEL}</Button></div>
@@ -129,65 +141,5 @@ export function PageMark({ project, res, view, marked }: { project: string; res:
       {!open && <Button variant="quiet" data-testid="wiki-mark-page" onClick={() => { setOpen(true); }}>{T.MARK_PAGE_WRONG}</Button>}
       {open && <MarkForm project={project} id={res.page.pageId} claimIds="page" onDone={() => { setOpen(false); }} />}
     </div>
-  );
-}
-
-/** The marks still open after a page was written again (maintainers): who marked what and why, with a way to close them once the code was checked. */
-export function DisputedList({ project, open, back }: { project: string; open: (id: string) => void; back: () => void }) {
-  const read = useWikiDisputed(project, true), api = useWikiApi(), refresh = useWikiRefresh(project), act = useAct(async () => { await refresh(); });
-  const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
-  if (read.isPending) return <Skeleton label={T.DISPUTED_LOADING} />;
-  if (read.isError || read.data === undefined) return <div><p role="alert" data-testid="wiki-disputed-error"><VisibleText text={fixedCorrectionWords(read.error, T.ACTION_FAILED)} /></p><Button onClick={back}>{T.DISPUTED_BACK}</Button></div>;
-  const pages = new Map<string, { title: string; items: typeof read.data.items }>();
-  for (const item of read.data.items) { const group = pages.get(item.pageId) ?? { title: item.pageTitle, items: [] }; group.items = [...group.items, item]; pages.set(item.pageId, group); }
-  return (
-    <section className="rv-wiki-art" aria-label={T.DISPUTED_TITLE} data-testid="wiki-disputed">
-      <p className="rv-wiki-crumb">{T.DISPUTED}</p>
-      <h2 className="rv-wiki-h1">{T.DISPUTED_TITLE}</h2>
-      <p className="rv-wiki-lede">{T.DISPUTED_HINT}</p>
-      <Failed error={act.error} />
-      {read.data.more && <p className="rv-wiki-who" data-testid="wiki-disputed-more">{T.DISPUTED_MORE}</p>}
-      {closed.size > 0 && <p role="status" className="rv-wiki-who" data-testid="wiki-disputed-closed">{T.DISPUTED_RESOLVED}</p>}
-      {pages.size === 0 && <p className="rv-wiki-lede" data-testid="wiki-disputed-empty">{T.DISPUTED_NONE}</p>}
-      {[...pages.entries()].map(([pageId, group]) => (
-        <div key={pageId} className="rv-wiki-tnote" role="group" aria-label={group.title} data-page={pageId}>
-          <b><VisibleText text={group.title} /></b>
-          <ul>{group.items.map((item) => (
-            <li key={item.flagId}>
-              {item.claimText !== undefined ? <VisibleText text={item.claimText} /> : <>The whole page</>}
-              <span className="rv-wiki-who"> Marked by <VisibleText text={item.markedBy} />, <RelativeTime at={item.markedAt} />.{item.reason !== undefined && <> Reason: <VisibleText text={item.reason} /></>}</span>
-            </li>
-          ))}</ul>
-          <div className="rv-wiki-row">
-            <Button onClick={() => { open(pageId); }}>{T.DISPUTED_OPEN}</Button>
-            <Button variant="primary" busy={act.busy} onClick={() => { void act.run(async () => { await api.resolveMarks(project, pageId); setClosed(new Set([...closed, pageId])); }); }}>{T.DISPUTED_RESOLVE}</Button>
-          </div>
-        </div>
-      ))}
-      <div className="rv-wiki-row"><Button onClick={back}>{T.DISPUTED_BACK}</Button></div>
-    </section>
-  );
-}
-
-/** The questions the wiki could not answer (maintainers): topics with how many different people asked and the day it was last asked. Nobody is named; the words are drawn as plain text. */
-export function GapsList({ project, back }: { project: string; back: () => void }) {
-  const read = useWikiGaps(project, true);
-  if (read.isPending) return <Skeleton label={T.GAPS_LOADING} />;
-  if (read.isError || read.data === undefined) return <div><p role="alert" data-testid="wiki-gaps-error"><VisibleText text={fixedCorrectionWords(read.error, T.ACTION_FAILED)} /></p><Button onClick={back}>{T.GAPS_BACK}</Button></div>;
-  return (
-    <section className="rv-wiki-art" aria-label={T.GAPS_TITLE} data-testid="wiki-gaps">
-      <p className="rv-wiki-crumb">{T.GAPS}</p>
-      <h2 className="rv-wiki-h1">{T.GAPS_TITLE}</h2>
-      <p className="rv-wiki-lede">{T.GAPS_HINT}</p>
-      {read.data.more && <p className="rv-wiki-who" data-testid="wiki-gaps-more">{T.GAPS_MORE}</p>}
-      {read.data.items.length === 0 && <p className="rv-wiki-lede" data-testid="wiki-gaps-empty">{T.GAPS_NONE}</p>}
-      <ul>{read.data.items.map((item, index) => (
-        <li key={`${String(index)}:${item.topic}`} data-kind={item.kind}>
-          <b><VisibleText text={item.topic} /></b>
-          <span className="rv-wiki-who"> {Object.hasOwn(T.GAPS_KIND, item.kind) ? T.GAPS_KIND[item.kind] : item.kind}. Asked by {String(item.people)} {item.people === 1 ? "person" : "people"}, {String(item.questions)} {item.questions === 1 ? "time" : "times"}; last on <VisibleText text={item.lastAskedAt} />.</span>
-        </li>
-      ))}</ul>
-      <div className="rv-wiki-row"><Button onClick={back}>{T.GAPS_BACK}</Button></div>
-    </section>
   );
 }

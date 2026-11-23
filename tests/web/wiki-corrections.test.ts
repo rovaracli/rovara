@@ -7,7 +7,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { WikiTab } from "../../packages/ui/src/screens/project/wiki/WikiTab.js";
+import { WikiTab } from "./support/legacy-wiki-skills/WikiTab.js";
 import { WIKI_CORRECTION_WORDS, type WikiCorrectionsResponse } from "@agentx/contracts/web";
 import { fakeHost } from "./support/fake-host.js";
 import { expectNoAxeViolations } from "./support/axe.js";

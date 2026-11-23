@@ -2,14 +2,14 @@
 // Retire. A version is used only after two DIFFERENT people approve it; the same person cannot approve twice. Everything is read from Code through Cloud (api/skills.ts) and Code decides every write. Words are fixed in api/skills.ts.
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ApiError } from "../../../api/errors.js";
-import { SKILLS_EMPTY, SKILLS_EMPTY_TITLE, SKILLS_INTRO, SKILLS_LOAD_FAILED, SKILLS_READ_ONLY, SKILLS_TITLE, approvalWords, skillStatus, skillsKey, useSkills, waitingForApproval, type SkillRow } from "../../../api/skills.js";
-import { Button } from "../../../design/Button.js";
-import { EmptyState } from "../../../design/EmptyState.js";
-import { Skeleton } from "../../../design/Skeleton.js";
-import { VisibleText } from "../../../design/VisibleText.js";
+import { ApiError } from "../../../../packages/ui/src/api/errors.js";
+import { SKILLS_EMPTY, SKILLS_EMPTY_TITLE, SKILLS_INTRO, SKILLS_LOAD_FAILED, SKILLS_READ_ONLY, SKILLS_TITLE, approvalWords, skillStatus, skillsKey, useSkills, waitingForApproval, type SkillRow } from "../../../../packages/ui/src/api/skills.js";
+import { Button } from "../../../../packages/ui/src/design/Button.js";
+import { EmptyState } from "../../../../packages/ui/src/design/EmptyState.js";
+import { Skeleton } from "../../../../packages/ui/src/design/Skeleton.js";
+import { VisibleText } from "../../../../packages/ui/src/design/VisibleText.js";
 import { SkillDetailView } from "./SkillDetailView.js";
-import "./skills.css";
+import "../../../../packages/ui/src/screens/project/skills/skills.css";
 
 function SkillItem({ project, skill, canDecide, open, toggle }: { project: string; skill: SkillRow; canDecide: boolean; open: boolean; toggle: () => void }) {
   const waiting = waitingForApproval(skill);

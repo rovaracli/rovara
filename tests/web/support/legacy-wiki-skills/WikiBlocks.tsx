@@ -3,10 +3,10 @@
 // nothing else on the page warns.
 import { Fragment, type ReactNode } from "react";
 import { Popover } from "radix-ui";
-import type { WikiBlock } from "../../../api/wiki.js";
-import { VisibleText } from "../../../design/VisibleText.js";
-import type { Cite, PageModel } from "./wiki-model.js";
-import { SOURCE_WORDS, T, linesWords, shortSha } from "./wiki-text.js";
+import type { WikiBlock } from "../../../../packages/ui/src/api/wiki.js";
+import { VisibleText } from "../../../../packages/ui/src/design/VisibleText.js";
+import type { Cite, PageModel } from "../../../../packages/ui/src/screens/project/wiki/wiki-model.js";
+import { SOURCE_WORDS, T, linesWords, shortSha } from "../../../../packages/ui/src/screens/project/wiki/wiki-text.js";
 
 /** Mark wrong on a paragraph (C1): present only for a person Code says may mark. `markable` is false for a paragraph with nothing left to mark; `open` is the paragraph whose reason box is open. */
 export interface BlockMarking { markable(block: WikiBlock): boolean; open: string | undefined; start(blockId: string): void; form(block: WikiBlock): ReactNode }

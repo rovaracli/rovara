@@ -58,6 +58,8 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  "screens/session/answer-receipt.css",
  // Task Session: the served status chip and narrow Talk layout.
  "screens/session/talk.css",
+ // The rebuilt Wiki and Skills pages (G3; their own lazy chunk).
+ "screens/wiki-skills-read/wiki-skills-read.css",
  // L4-JA89: the project Skills tab (its own lazy chunk).
  "screens/project/skills/skills.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);

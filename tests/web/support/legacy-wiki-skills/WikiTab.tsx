@@ -3,19 +3,19 @@
 // Search looks through page titles, summaries and page text through Code's W5x route. The Ask box at the bottom (lead 4 J3) is drawn only when this deployment's answers setting is on (the nav's `features.answers`) and stays separate from this page search.
 import { useEffect, useId, useState } from "react";
 import { useSearchParams } from "react-router";
-import { ApiError } from "../../../api/errors.js";
-import { fixedWikiWords, useWikiCorrections, useWikiIndex, useWikiSearch, type WikiIndexEntry, type WikiIndexResponse, type WikiSearchResponse } from "../../../api/wiki.js";
-import { Button } from "../../../design/Button.js";
-import { EmptyState } from "../../../design/EmptyState.js";
-import { Skeleton } from "../../../design/Skeleton.js";
-import { VisibleText } from "../../../design/VisibleText.js";
+import { ApiError } from "../../../../packages/ui/src/api/errors.js";
+import { fixedWikiWords, useWikiCorrections, useWikiIndex, useWikiSearch, type WikiIndexEntry, type WikiIndexResponse, type WikiSearchResponse } from "../../../../packages/ui/src/api/wiki.js";
+import { Button } from "../../../../packages/ui/src/design/Button.js";
+import { EmptyState } from "../../../../packages/ui/src/design/EmptyState.js";
+import { Skeleton } from "../../../../packages/ui/src/design/Skeleton.js";
+import { VisibleText } from "../../../../packages/ui/src/design/VisibleText.js";
 import { WikiPageView } from "./WikiPageView.js";
-import { DisputedList, GapsList } from "./WikiCorrections.js";
-import { useProject } from "../../../api/projects.js";
-import { useAnswersEnabled } from "../../../api/answers.js";
-import { AnswerBox } from "../../answers/AnswerBox.js";
-import { BUILD_STOP_WORDS, T, buildNotice, crumbOf, dotOf, treeOf } from "./wiki-text.js";
-import "./wiki.css";
+import { DisputedList, GapsList } from "./WikiLists.js";
+import { useProject } from "../../../../packages/ui/src/api/projects.js";
+import { useAnswersEnabled } from "../../../../packages/ui/src/api/answers.js";
+import { AnswerBox } from "../../../../packages/ui/src/screens/answers/AnswerBox.js";
+import { BUILD_STOP_WORDS, T, buildNotice, crumbOf, dotOf, treeOf } from "../../../../packages/ui/src/screens/project/wiki/wiki-text.js";
+import "../../../../packages/ui/src/screens/project/wiki/wiki.css";
 
 function Tree({ index, current, searching, open }: { index: WikiIndexResponse; current: string | undefined; searching: boolean; open: (id: string) => void }) {
   const groups = treeOf(index.pages);

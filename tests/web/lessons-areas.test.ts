@@ -14,7 +14,7 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { AreasReader, areasQuery } from "../../packages/ui/src/api/learned-areas.js";
 import { LearnedSection } from "../../packages/ui/src/screens/project/LearnedSection.js";
 import { countWords, PAUSE_HELP } from "../../packages/ui/src/screens/project/lessons/LearningSources.js";
-import { WikiTab } from "../../packages/ui/src/screens/project/wiki/WikiTab.js";
+import { WikiTab } from "./support/legacy-wiki-skills/WikiTab.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { fakeHost } from "./support/fake-host.js";

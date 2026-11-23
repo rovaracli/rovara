@@ -1,6 +1,6 @@
 // The project Wiki tab's reads (lead 4 W5; Code's wiki read routes, W2, through Cloud). Code decides who may read; this client only asks. A refusal is shown in
 // Cloud's fixed words (fixedWikiWords), never other text. Wiki text is untrusted data: every answer is read with a strict, bounded schema and drawn as plain text.
-import { useMemo } from "react";
+import { createContext, useContext, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
  AnswerGapsResponseSchema, ProjectOverviewProjectSchema, WIKI_CORRECTION_SENTENCES, WIKI_ID_PATTERN, WIKI_PAGE_ID_PATTERN, WIKI_SENTENCES, WikiAddNoteBodySchema, WikiCorrectionsResponseSchema, WikiDisputedResponseSchema, WikiIndexResponseSchema,
@@ -88,7 +88,9 @@ export function useWikiGaps(project: string, enabled: boolean) {
  return useQuery({ queryKey: [...wikiKey(project), "gaps"], enabled, queryFn: () => api.gaps(project), staleTime: 15_000, retry: false });
 }
 /** After a correction: the page, its list, its corrections and the disputed list are read again. */
+/** A screen that keeps its own copy of the wiki reads (the Wiki pages) says here how to read them again after a write; the shared refresh then runs both. */
+export const WikiRefreshAlso = createContext<(() => Promise<void>) | undefined>(undefined);
 export function useWikiRefresh(project: string) {
- const query = useQueryClient();
- return () => query.invalidateQueries({ queryKey: wikiKey(project) });
+ const query = useQueryClient(), also = useContext(WikiRefreshAlso);
+ return async () => { await Promise.all([query.invalidateQueries({ queryKey: wikiKey(project) }), also?.()]); };
 }
