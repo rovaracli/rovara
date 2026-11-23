@@ -454,6 +454,8 @@ describe("the models a company on its own key may use (offered-models)", () => {
     verify: async () => ({ iss: claims.iss, aud: "rovara-model-gateway-offered-models", jti: "00000000-0000-4000-8000-000000000000", iat: 0, nbf: 0, exp: 60, cid: cidA }),
     sources: { sourceFor: async () => source as AgentAiSource | undefined }, disabled: new Set(),
     switchedOn: new Set(options.switchedOn ?? ["openai", "openrouter"]), chat: options.chat ?? { openai: true, openrouter: true },
+    // No reviewed OpenRouter tariff (the release rows are time-limited): the list must wait for one.
+    openRouterTariffs: [],
   }, { method: "GET", url: `/v1/service/companies/${cidA}/offered-models`, headers: { authorization: "Bearer t" } });
   const refusal = (o: { status: number; code: string; message: string }) => ({ status: o.status, body: { error: { type: o.code, message: o.message } } });
 

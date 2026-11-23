@@ -12,7 +12,111 @@ export interface OpenRouterTariff {
  cacheWriteBasis?: "never_requested_enforced"; cacheWriteEnforcementVersion?: string;
 }
 export interface OpenRouterPolicy extends OpenRouterTariff { hash: string }
-export const REVIEWED_OPENROUTER_POLICIES: readonly OpenRouterTariff[] = Object.freeze([]);
+/** Reviewed release tariff: the 5 installable rows of the OpenRouter v3 owner run, installed as-is (one row per model).
+ * Each row expires within 24 h of verifiedAt (the first, gemini-4-hydrogen, at 2026-11-24 19:52Z); an expired row is refused and the model is switched off.
+ */
+export const REVIEWED_OPENROUTER_POLICIES: readonly OpenRouterTariff[] = Object.freeze([
+ {
+  "model": "anthropic/claude-haiku-5.5",
+  "route": "amazon-bedrock",
+  "pricing": {
+   "prompt": "0.0000005",
+   "completion": "0.0000025",
+   "internal_reasoning": "0.0000025",
+   "request": "0",
+   "input_cache_read": "0.00000005",
+   "input_cache_write": "0.000000625"
+  },
+  "max_completion_tokens": 2048,
+  "reasoning": {
+   "mode": "bounded",
+   "max_tokens": 1024
+  },
+  "verifiedAt": 1795467514052,
+  "expiresAt": 1795553914052,
+  "evidence": "Opus tariff review TARIFFS PASS 5 (OpenRouter v3 owner paid run 2026-11-23, Cloud 0d16939b8); briefs/codex/openrouter-harness-v3/REVIEW-OPUS-TARIFFS.md and OPENROUTER-V3-REPORT.json; installed as-is, one row per model"
+ },
+ {
+  "model": "google/gemini-4-hydrogen",
+  "route": "google-ai-studio/priority",
+  "pricing": {
+   "prompt": "0.0000027",
+   "completion": "0.0000135",
+   "internal_reasoning": "0.0000135",
+   "request": "0",
+   "input_cache_read": "0.000000135",
+   "input_cache_write": "0.00000015"
+  },
+  "max_completion_tokens": 2048,
+  "reasoning": {
+   "mode": "bounded",
+   "max_tokens": 1024
+  },
+  "verifiedAt": 1795463564233,
+  "expiresAt": 1795549964233,
+  "evidence": "Opus tariff review TARIFFS PASS 5 (OpenRouter v3 owner paid run 2026-11-23, Cloud 0d16939b8); briefs/codex/openrouter-harness-v3/REVIEW-OPUS-TARIFFS.md and OPENROUTER-V3-REPORT.json; installed as-is, one row per model"
+ },
+ {
+  "model": "openai/gpt-6-luna",
+  "route": "amazon-bedrock/global",
+  "pricing": {
+   "prompt": "0.0000002",
+   "completion": "0.00000075",
+   "internal_reasoning": "0.00000075",
+   "request": "0",
+   "input_cache_read": "0.00000002",
+   "input_cache_write": "0.00000025"
+  },
+  "max_completion_tokens": 2048,
+  "reasoning": {
+   "mode": "bounded",
+   "max_tokens": 1024
+  },
+  "verifiedAt": 1795468647589,
+  "expiresAt": 1795555047589,
+  "evidence": "Opus tariff review TARIFFS PASS 5 (OpenRouter v3 owner paid run 2026-11-23, Cloud 0d16939b8); briefs/codex/openrouter-harness-v3/REVIEW-OPUS-TARIFFS.md and OPENROUTER-V3-REPORT.json; installed as-is, one row per model"
+ },
+ {
+  "model": "qwen/qwen3.7-flash",
+  "route": "alibaba",
+  "pricing": {
+   "prompt": "0.0000002",
+   "completion": "0.0000008",
+   "internal_reasoning": "0.0000008",
+   "request": "0",
+   "input_cache_read": "0.00000004",
+   "input_cache_write": "0.00000025"
+  },
+  "max_completion_tokens": 2048,
+  "reasoning": {
+   "mode": "bounded",
+   "max_tokens": 1024
+  },
+  "verifiedAt": 1795476282958,
+  "expiresAt": 1795562682958,
+  "evidence": "Opus tariff review TARIFFS PASS 5 (OpenRouter v3 owner paid run 2026-11-23, Cloud 0d16939b8); briefs/codex/openrouter-harness-v3/REVIEW-OPUS-TARIFFS.md and OPENROUTER-V3-REPORT.json; installed as-is, one row per model"
+ },
+ {
+  "model": "qwen/qwen3.8-2.4t-a95b",
+  "route": "alibaba",
+  "pricing": {
+   "prompt": "0.000002",
+   "completion": "0.000006",
+   "internal_reasoning": "0.000006",
+   "request": "0",
+   "input_cache_read": "0.00000025",
+   "input_cache_write": "0.0000025"
+  },
+  "max_completion_tokens": 2048,
+  "reasoning": {
+   "mode": "bounded",
+   "max_tokens": 1024
+  },
+  "verifiedAt": 1795474750269,
+  "expiresAt": 1795561150269,
+  "evidence": "Opus tariff review TARIFFS PASS 5 (OpenRouter v3 owner paid run 2026-11-23, Cloud 0d16939b8); briefs/codex/openrouter-harness-v3/REVIEW-OPUS-TARIFFS.md and OPENROUTER-V3-REPORT.json; installed as-is, one row per model"
+ }
+]);
 /** Review queue in the private tariff source, never an installed/default price list.
  * Promotion is a reviewed source edit: remove the candidate label and place the approved,
  * still-fresh row in REVIEWED_OPENROUTER_POLICIES. Never import qualification output automatically.
