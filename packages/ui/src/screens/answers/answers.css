@@ -10,3 +10,14 @@
 .rv-start-card{display:grid;gap:var(--rv-space-3);padding:var(--rv-space-4);border:1px solid var(--rv-border-medium);border-radius:var(--rv-radius-md);max-width:46rem}
 .rv-start-card-choices{display:flex;gap:var(--rv-space-2);flex-wrap:wrap}
 .rv-answer-feedback{margin:0}
+/* "Ask about this task": the asker's own past questions, oldest first, newest next to the box. */
+.rv-ask-history{display:grid;gap:0;min-width:0}
+.rv-ask-history-title{margin:0 0 var(--rv-space-2);font-size:var(--rv-font-sm);font-weight:600;color:var(--rv-text-muted);text-transform:uppercase;letter-spacing:.04em}
+.rv-ask-turn{display:flex;flex-direction:column;gap:var(--rv-space-2);padding:var(--rv-space-4) 0;border-top:1px solid var(--rv-border);min-width:0}
+.rv-ask-turn-question{order:1;margin:0;font-weight:600;line-height:1.4;overflow-wrap:anywhere;white-space:pre-wrap}
+.rv-ask-turn-time{order:0;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-ask-turn-time::before{content:"You asked, "}
+.rv-ask-turn>.rv-answer{order:2}
+code.rv-source-code{font-family:var(--rv-font-mono)}
+code.rv-source-task{font-family:var(--rv-font-ui)}
+.rv-answer-chip-row{margin:0}

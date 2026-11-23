@@ -902,3 +902,24 @@ body:has(.rv-task-rebuild) .rv-dialog.rv-action-dialog>.rv-actions{display:flex;
 
 /* CORE-STEP-RETRY layout: the notice's action (Check) is its own row under the text at every width, never a button jammed onto the end of a sentence or a taller second line. */
 .rv-task-rebuild>.rv-session-header:has(.rv-session-controls>:is(p,[role=status],[role=alert])) .rv-session-controls>:is(p,[role=status],[role=alert])>:is(.rv-button,.rv-button-with-reason){display:flex;width:fit-content;margin-block:var(--rv-space-2)}
+
+/* ASK-VISION-1: "Ask about this task" inside the Talk panel. */
+.rv-task-rebuild-conversation .rv-ask-box{margin:0;gap:var(--rv-space-3);max-width:none}
+.rv-task-rebuild-conversation .rv-ask-turn>.rv-answer{padding:var(--rv-space-3);gap:var(--rv-space-2)}
+.rv-task-rebuild-conversation .rv-ask-turn .rv-answer-text{font-size:var(--rv-font-md);line-height:1.5}
+.rv-task-rebuild-conversation .rv-ask-box .rv-answer-sources{display:grid;gap:var(--rv-space-1)}
+.rv-task-rebuild-conversation .rv-ask-box .rv-answer-sources>.rv-muted{font-size:var(--rv-font-sm)}
+.rv-task-rebuild-conversation .rv-ask-box .rv-answer-sources>.rv-source{display:flex;gap:var(--rv-space-2);min-width:0;overflow-wrap:anywhere}
+.rv-task-rebuild-conversation .rv-ask-box .rv-answer-sources>.rv-source>:is(a,code){flex:1 1 0;min-width:0}
+.rv-task-rebuild-conversation .rv-ask-box .rv-answer-sources>.rv-source code{display:block}
+.rv-task-rebuild-conversation .rv-ask-box code{font-size:var(--rv-font-sm);white-space:normal;overflow-wrap:break-word}
+.rv-task-rebuild-conversation .rv-ask-box .rv-answer-sources>.rv-source-task{padding-inline-start:var(--rv-space-2);border-inline-start:2px solid var(--rv-border-strong)}
+.rv-task-rebuild-conversation .rv-ask-box .rv-answer-feedback .rv-button{min-height:0;padding:0}
+/* The Ask mode button already opened the question: do not offer a second "Ask about this task" row to press. */
+@supports selector(::details-content){
+ .rv-task-rebuild-conversation fieldset[aria-label="Task question"] .rv-ask:not([open])>summary{display:none}
+ .rv-task-rebuild-conversation fieldset[aria-label="Task question"] .rv-ask::details-content{content-visibility:visible;display:block}
+}
+.rv-task-rebuild-conversation .rv-ask-box code.rv-source-task{font-family:var(--rv-font-ui)}
+.rv-task-rebuild-conversation .rv-ask-box textarea{resize:none}
+.rv-task-rebuild-conversation #task-talk>p.rv-muted{margin:var(--rv-space-3) 0 var(--rv-space-4)}

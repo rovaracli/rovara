@@ -8,17 +8,27 @@ type AskRead = "current" | "unavailable" | "authority-lost";
 type AskStatusRead = ReturnType<typeof AskStatusReaderSchema.parse>;
 
 /** Recovery detail for the embedded question in Task Talk. The parent owns the read and supplies a question only while it is still readable. */
-export function TalkQuestionRecoveryView({ status, read, question, onCheck, asker }: {
+export function TalkQuestionRecoveryView({ status, read, question, onCheck, asker, waiting = false }: {
   /** The task page shows the question as its own message card; who asked and when (from the saved request). */
   asker?: { name: string; at: string };
   status?: AskStatusRead;
   read: AskRead;
   question?: string;
   onCheck?: () => void;
+  /** The question is on its way right now: a neutral waiting card, not the failure card (that one stays for an answer that could not be checked). */
+  waiting?: boolean;
 }) {
   const page = useTaskPagePolicy() !== undefined;
   if (read === "authority-lost") {
     return <div className="rv-ask-recovery" role="alert"><p className="rv-message-kind">This question is no longer available in this session.</p></div>;
+  }
+
+  if (waiting && page && asker !== undefined) {
+    return <div className="rv-ask-recovery" role="status"><TalkCard name={asker.name} at={asker.at} kind="question">
+      {question !== undefined && <p className="rv-message-text"><VisibleText text={question} /></p>}
+      <TalkLadder steps={[{ state: "ok", label: "Saved here", detail: "your question is kept" }, { state: "running", label: "Answered", detail: "waiting for Rovara" }]} />
+      <p className="rv-talk-lead"><strong>Waiting for Rovara&apos;s answer.</strong></p>
+    </TalkCard></div>;
   }
 
   if ((read === "unavailable" || status === undefined) && page && asker !== undefined) {

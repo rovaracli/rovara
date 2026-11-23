@@ -247,6 +247,7 @@ describe("Ask about this task", () => {
     const fold = await screen.findByTestId("task-answers");
     expect(within(fold).getByText("Ask about this task", { selector: "summary" })).toBeTruthy();
     fireEvent.click(within(fold).getByText("Ask about this task", { selector: "summary" }));
+    await screen.findByRole("textbox", { name: "Ask about this task" });
     type("Ask about this task", "Why did this fail?");
     fireEvent.click(screen.getByTestId("ask-box-submit"));
     await screen.findByTestId("answer");

@@ -2,6 +2,7 @@
 // fixed words Cloud answers for it. Browser-safe: it imports only zod.
 //
 // MIRROR of Code's `packages/contracts/src/answers.ts` (AnswerRequestSchema, AnswerResponseSchema, ANSWER_WORDS, ANSWER_LIMITS at b40976f3e on Code's local branch `pr/l4-answer-service`) and of
+// The taskId, task_state and task-history additions mirror Code 1ce9b4d4f (ASK-TASK-CONTEXT).
 // `packages/contracts/src/start-suggest.ts` (lane `pr/l4-answer-web`), schema for schema and word for word:
 //   POST /v1/app/projects/{project}/answers          -> AnswerResponseSchema        (Code POST /v1/app/projects/{project}/answers)
 //   POST /v1/app/projects/{project}/code/suggest     -> StartSuggestResponseSchema  (Code POST /v1/app/projects/{project}/code/suggest)
@@ -29,6 +30,7 @@ export const ANSWER_THREAD_PATTERN = /^[A-Za-z0-9_.:-]{1,100}$/u;
 export const ANSWER_REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/u;
 const NAME = /^[a-z][a-z0-9-]{0,62}$/u;
 const COMMIT = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
+const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const PAGE_ID = /^[a-z0-9][a-z0-9-]{0,119}$/u;
 
 /** What the browser sends (Cloud adds `channel: "web"`; the browser never names a company, a person or a channel). `context` is information for the answer, never an instruction. */
@@ -37,6 +39,7 @@ export const AnswerAskBodySchema = z.object({
   question: z.string().trim().min(1).max(ANSWER_QUESTION_MAX).regex(NO_CONTROL_BUT_NEWLINES),
   threadId: z.string().regex(ANSWER_THREAD_PATTERN).optional(),
   context: z.string().max(300).regex(NO_CONTROL).optional(),
+  taskId: z.string().regex(TASK_ID).optional(),
 }).strict();
 export type AnswerAskBody = z.infer<typeof AnswerAskBodySchema>;
 
@@ -60,7 +63,7 @@ export const ANSWER_WORDS = {
   badRequest: "An answer needs a request ID and a question of 1 to 1,000 characters.",
 } as const;
 
-export const AnswerCitationSchema = z.object({
+export const AnswerCodeCitationSchema = z.object({
   n: z.number().int().min(1).max(ANSWER_SOURCES_MAX),
   repo: z.string().regex(NAME),
   path: z.string().min(1).max(256).regex(NO_CONTROL),
@@ -68,7 +71,28 @@ export const AnswerCitationSchema = z.object({
   lineEnd: z.number().int().min(1).optional(),
   commit: z.string().regex(COMMIT),
 }).strict();
+export const AnswerTaskCitationSchema = z.object({
+  n: z.number().int().min(1).max(ANSWER_SOURCES_MAX),
+  kind: z.literal("task_state"),
+  taskId: z.string().regex(TASK_ID),
+  quote: z.string().min(20).max(600).regex(NO_CONTROL_BUT_NEWLINES),
+}).strict();
+export const AnswerCitationSchema = z.union([AnswerCodeCitationSchema, AnswerTaskCitationSchema]);
 export type AnswerCitation = z.infer<typeof AnswerCitationSchema>;
+
+/** Code 1ce9b4d4f: GET .../projects/{project}/tasks/{taskId}/answers, this asker's retained history only. */
+export const AnswerHistoryResponseSchema = z.object({
+  entries: z.array(z.object({
+    answerId: z.string().regex(ANSWER_ID_PATTERN),
+    threadId: z.string().regex(ANSWER_THREAD_PATTERN).optional(),
+    question: z.string().max(2_000).regex(NO_CONTROL_BUT_NEWLINES),
+    answer: z.string().max(ANSWER_TEXT_MAX).regex(NO_CONTROL_BUT_NEWLINES),
+    createdAt: z.string().datetime(),
+    sources: z.array(AnswerCitationSchema).max(ANSWER_SOURCES_MAX),
+  }).strict()).max(1_000),
+  more: z.boolean(),
+}).strict();
+export type AnswerHistoryResponse = z.infer<typeof AnswerHistoryResponseSchema>;
 
 export const AnswerActionSchema = z.object({
   kind: z.literal("quick_task"),

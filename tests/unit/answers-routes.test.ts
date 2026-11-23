@@ -8,7 +8,7 @@ import {
   ANSWERS_ANSWERS, ANSWERS_WORDS, CodeClient, LocalSessionStore, LocalWorkSessionStore, answerObject, createCloudHandler, suggestObject, type CloudRequest, type CodeSession,
 } from "../../packages/cloud-server/src/index.js";
 import {
-  ANSWERS_WORDS as APP_WORDS, ANSWER_WORDS, ANSWER_SOURCES_MAX, AnswerResponseSchema, START_SUGGEST_WORDS, START_SMALL_TALK_WORDS, StartSuggestResponseSchema,
+  ANSWERS_WORDS as APP_WORDS, ANSWER_WORDS, ANSWER_SOURCES_MAX, AnswerResponseSchema, AnswerAskBodySchema, AnswerHistoryResponseSchema, START_SUGGEST_WORDS, START_SMALL_TALK_WORDS, StartSuggestResponseSchema,
 } from "../../packages/contracts/src/app-answers.js";
 
 const CODE = "https://code.example.test";
@@ -447,4 +447,90 @@ describe("Not right (lead 4 J5)", () => {
       expect(res.text).not.toContain(LEAK);
     }
   });
+});
+
+// Task history is also the served capability: never infer support from a release label.
+const TASK = "11111111-1111-4111-8111-111111111111";
+const OTHER_TASK = "22222222-2222-4222-8222-222222222222";
+const HISTORY = `/v1/web/projects/payments/tasks/${TASK}/answers`;
+const taskSource = (extra: Record<string, unknown> = {}) => ({ n: 1, kind: "task_state", taskId: TASK, quote: "The current plan is waiting for approval.", ...extra });
+const history = (extra: Record<string, unknown> = {}) => ({ entries: [{ answerId: "answer-0001", threadId: "thread-1", question: "What is waiting?", answer: "The plan is waiting. [1]", createdAt: "2026-11-22T12:00:00.000Z", sources: [taskSource()] }], more: false, ...extra });
+const served = (call: CodeCall) => call.method === "GET" && call.path.endsWith(`/tasks/${TASK}/answers`) ? json(200, history()) : undefined;
+
+describe("task-aware Ask deployment and history", () => {
+ it("forwards taskId only after a valid served history read, using this person's token on both calls", async () => {
+  const w = setUp({ override: served });
+  expect((await w.send("POST", ASK, await w.as("pam-token"), ask({ taskId: TASK }))).status).toBe(200);
+  expect(w.codeCalls().map(c => [c.method, c.path, c.authorization])).toEqual([["GET", `/v1/app/projects/payments/tasks/${TASK}/answers`, "Bearer pam-token"], ["POST", "/v1/app/projects/payments/answers", "Bearer pam-token"]]);
+  expect(w.codeCalls()[1]!.body).toEqual({ ...ask(), channel: "web", taskId: TASK });
+ });
+ it("old Code receives the documented legacy request without taskId; history is unavailable", async () => {
+  const w = setUp();
+  expect((await w.send("POST", ASK, await w.as("pam-token"), ask({ taskId: TASK, context: "Task: Refunds" }))).status).toBe(200);
+  expect(w.codeCalls().at(-1)!.body).toEqual({ ...ask(), context: "Task: Refunds", channel: "web" });
+  expect(asFixed(await w.send("GET", HISTORY, await w.as("pam-token")))).toEqual(fixed("notYet"));
+ });
+ it("serves only the current asker's history and refuses query/body identity overrides", async () => {
+  const w = setUp({ override: (call) => call.method === "GET" && call.path.endsWith(`/tasks/${TASK}/answers`) ? json(200, call.authorization === "Bearer pam-token" ? history() : { entries: [], more: false }) : undefined });
+  expect((await w.send("GET", HISTORY, await w.as("pam-token"))).body).toEqual(history());
+  expect((await w.send("GET", HISTORY, await w.as("ada-token"))).body).toEqual({ entries: [], more: false });
+  for (const target of [HISTORY + "?person=pam", HISTORY.replace(TASK, "bad")]) expect((await w.send("GET", target, await w.as("pam-token"))).status).toBe(400);
+  expect((await w.send("GET", HISTORY, await w.as("pam-token"), { person: "pam" })).status).toBe(400);
+ });
+ it("history checks sign-in/company and the existing Answers availability before Code", async () => {
+  const off = setUp({ enabled: false, override: served });
+  expect((await off.send("GET", HISTORY, await off.as("pam-token"))).status).toBe(501);expect(off.codeCalls()).toEqual([]);
+  const w = setUp({ override: served });
+  expect((await w.send("GET", HISTORY, await w.as("nob-token"))).status).toBeGreaterThanOrEqual(400);expect(w.codeCalls()).toEqual([]);
+ });
+ it.each([403, 404, 500])("a real %s history refusal cannot silently become a task-aware or title-only send", async status => {
+  const w = setUp({ override: c => c.method === "GET" && c.path.includes("/tasks/") ? json(status, { error: { code: "NOT_FOUND", message: "task inaccessible" } }) : undefined });
+  const response = await w.send("POST", ASK, await w.as("pam-token"), ask({ taskId: TASK }));
+  expect(asFixed(response)).toEqual(fixed(status === 403 ? "forbidden" : status === 404 ? "notFound" : "unavailable"));
+  expect(w.codeCalls().filter(c => c.method === "POST")).toEqual([]);
+ });
+ it.each(["bad", "", OTHER_TASK + "x", null, 1])("invalid taskId %s is refused without any task read or send", async taskId => {
+  const w = setUp({ override: served });expect((await w.send("POST", ASK, await w.as("pam-token"), ask({ taskId }))).status).toBe(400);expect(w.codeCalls()).toEqual([]);
+ });
+ const badHistory = [null, [], {}, history({ entries: [null] }), history({ entries: "invalid" }), history({ more: "false" }), history({ extra: "leak" }), history({ entries: Array(1001).fill(history().entries[0]) }),
+  ...[{ answerId: "!" }, { answerId: undefined }, { threadId: "!" }, { question: "x".repeat(2001) }, { answer: "x".repeat(6001) }, { createdAt: "yesterday" }, { createdAt: "2026-13-35T00:00:00Z" }, { extra: "leak" }, { sources: [taskSource({ taskId: OTHER_TASK })] }].map(extra => history({ entries: [{ ...history().entries[0], ...extra }] }))];
+ it.each(badHistory.map((body, i) => [i, body] as const))("unreadable history %s refuses the whole read and cannot prove support", async (_i, body) => {
+  const w = setUp({ override: c => c.method === "GET" && c.path.includes("/tasks/") ? json(200, body) : undefined });
+  expect((await w.send("GET", HISTORY, await w.as("pam-token"))).status).toBe(503);
+  expect((await w.send("POST", ASK, await w.as("pam-token"), ask({ taskId: TASK }))).status).toBe(503);
+  expect(w.codeCalls().filter(c => c.method === "POST")).toEqual([]);
+ });
+ it("reads task-state citations only for the task whose capability was served; legacy code citations still work", async () => {
+  const w = setUp({ override: c => served(c) ?? (c.path.endsWith("/answers") ? json(200, goodAnswer({ sources: [taskSource()] })) : undefined) });
+  const response = await w.send("POST", ASK, await w.as("pam-token"), ask({ taskId: TASK }));
+  expect(response.status).toBe(200);expect(AnswerResponseSchema.parse(response.body).sources).toEqual([taskSource()]);
+  expect((await w.send("POST", ASK, await w.as("pam-token"), ask())).status).toBe(503);
+  expect(AnswerAskBodySchema.parse(ask())).toEqual(ask());expect(AnswerAskBodySchema.parse(ask({ taskId: TASK })).taskId).toBe(TASK);
+  expect(AnswerResponseSchema.parse(goodAnswer()).sources).toHaveLength(1);expect(AnswerHistoryResponseSchema.parse(history())).toEqual(history());
+ });
+ it.each([{ kind: "other" }, { taskId: OTHER_TASK }, { n: 2 }, { quote: "short" }, { quote: "x".repeat(601) }, { quote: "hidden\u0000control characters here" }, { extra: "leak" }])("refuses malformed task citation %j", async extra => {
+  const w = setUp({ override: c => served(c) ?? (c.path === "/v1/app/projects/payments/answers" ? json(200, goodAnswer({ sources: [taskSource(extra)] })) : undefined) });
+  expect((await w.send("POST", ASK, await w.as("pam-token"), ask({ taskId: TASK }))).status).toBe(503);
+ });
+});
+
+it("accepts Code's documented lowercase task-id shape without imposing UUID version bits", async () => {
+ const taskId = "00000000-0000-0000-0000-000000000000";
+ expect(AnswerAskBodySchema.parse(ask({ taskId })).taskId).toBe(taskId);
+ const w = setUp({ override: c => c.method === "GET" && c.path.includes("/tasks/") ? json(200, { entries: [], more: false }) : undefined });
+ expect((await w.send("POST", ASK, await w.as("pam-token"), ask({ taskId }))).status).toBe(200);
+ expect(w.codeCalls().at(-1)!.body).toMatchObject({ taskId });
+});
+
+it("an ended Code sign-in during the history capability read signs the person out", async () => {
+ const w = setUp({ override: c => c.method === "GET" && c.path.includes("/tasks/") ? json(401, {}) : undefined });
+ const response = await w.send("GET", HISTORY, await w.as("pam-token"));
+ expect(response.status).toBe(401);expect(w.codeCalls().filter(c => c.method === "POST" && c.path.endsWith("/answers"))).toEqual([]);
+});
+
+it("an impossible calendar date cannot prove task-context support", async () => {
+ const w = setUp({ override: c => c.method === "GET" && c.path.includes("/tasks/") ? json(200, history({ entries: [{ ...history().entries[0], createdAt: "2026-02-30T00:00:00Z" }] })) : undefined });
+ expect((await w.send("GET", HISTORY, await w.as("pam-token"))).status).toBe(503);
+ expect((await w.send("POST", ASK, await w.as("pam-token"), ask({ taskId: TASK }))).status).toBe(503);
+ expect(w.codeCalls().filter(c => c.method === "POST")).toEqual([]);
 });

@@ -21,7 +21,9 @@ function setup(question = false, merge = false) {
  const f = fakeHost(async (r: ApiRequest) => {
   if (r.path === "/v1/app/decisions") return { status: 200, body: { cards: [], total: 0, digests: {} } };
   if (r.path.endsWith("/overview")) return { status: 200, body: projectFixture() };
-  if (r.path.endsWith("/answers")) return { status: answerStatus, body: { error: { code: answerStatus === 403 ? "FORBIDDEN" : "UNAVAILABLE", message: "Cannot confirm" } } };
+  // DEC 254zzz379: task Ask reads its own served history before sending.
+  if (r.method === "GET" && r.path.endsWith("/answers")) return { status: 200, body: { entries: [], more: false } };
+  if (r.method === "POST" && r.path.endsWith("/answers")) return { status: answerStatus, body: { error: { code: answerStatus === 403 ? "FORBIDDEN" : "UNAVAILABLE", message: "Cannot confirm" } } };
   if (r.path === "/v1/app/me") return { status: 200, body: meFixture() };
   if (r.path.includes("/messages")) {
    if (r.method === "POST") { if (postStatus === 200) { const returned = messageFixture({ kind: "steer", text: "Server's returned text", delivery: { state: "queued", at: "2026-10-23T12:00:00.000Z" } });messages.splice(0, messages.length, returned);return { status: 200, body: returned }; }return { status: postStatus, body: { error: { code: postStatus === 403 ? "CSRF_INVALID" : "UNAVAILABLE", message: "Cannot confirm" } } }; }
@@ -86,7 +88,7 @@ it("F2 locks the hosted question mode after an unknown answer, including after r
  const f = setup(true);const close = f.mount();await open();fireEvent.click(await screen.findByRole("button", { name: "Ask about this task" }));fireEvent.click(await screen.findByText("Ask about this task", { selector: "summary" }));const field = await screen.findByTestId("ask-box-text");fireEvent.change(field, { target: { value: "Keep my exact question" } });fireEvent.click(screen.getByTestId("ask-box-submit"));await screen.findByText("Couldn't check whether Rovara answered this.");
  // The composer is one "Ask another question" line while the question is unsettled; focusing it opens the locked question box.
  fireEvent.focus(await screen.findByPlaceholderText("Ask another question"));
- expect(screen.getByRole<HTMLButtonElement>("button", { name: "Ask" }).matches(":disabled")).toBe(true);expect([...f.storage.values()].join(" ")).toContain("Keep my exact question");fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));fireEvent.click(await screen.findByRole("button", { name: "Talk to this session" }));fireEvent.focus(await screen.findByPlaceholderText("Ask another question"));expect(screen.getByRole<HTMLButtonElement>("button", { name: "Ask about this task" }).disabled).toBe(true);expect(f.request.mock.calls.filter(([r]) => r.method === "POST" && r.path.endsWith("/answers"))).toHaveLength(1);close();
+ expect((await screen.findByRole<HTMLButtonElement>("button", { name: "Ask" })).matches(":disabled")).toBe(true);expect([...f.storage.values()].join(" ")).toContain("Keep my exact question");fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));fireEvent.click(await screen.findByRole("button", { name: "Talk to this session" }));fireEvent.focus(await screen.findByPlaceholderText("Ask another question"));expect(screen.getByRole<HTMLButtonElement>("button", { name: "Ask about this task" }).disabled).toBe(true);expect(f.request.mock.calls.filter(([r]) => r.method === "POST" && r.path.endsWith("/answers"))).toHaveLength(1);close();
 });
 
 it("F4 fences the hosted Ask composer after refusal across remount until a newer owning overview read succeeds", async () => {
