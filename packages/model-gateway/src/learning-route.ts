@@ -304,6 +304,8 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
         usage: () => provider === "anthropic" ? new UsageCollector() : provider === "openai" ? new OpenAiUsageCollector() : new GeminiUsageCollector(),
         // Gemini, Vertex and OpenAI: the first bytes of a failed answer are read to tell a refused key from a refused request.
         get failureBody() { return provider !== "anthropic" || rovara !== undefined; },
+        // Bedrock on Rovara's own account: a call that fails after it was sent settles at what was used (failed-call.ts).
+        get settlesFailedCalls() { return rovara !== undefined ? true as const : undefined; },
         providerFailure(status, body) {
           // A Bedrock error answer on Rovara's own account: free; its refusal of Rovara's own role is Rovara's to fix (not the company's key).
           if (rovara !== undefined) return rovaraProviderFailure(status, body);

@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, buildAnswer, createCloudHandler, newSessionId, withoutTraceId, type CloudRequest,
 } from "../../packages/cloud-server/src/index.js";
-import { workPlan } from "../../packages/cloud-server/src/work-reads.js";
+import { workPlan, workTask } from "../../packages/cloud-server/src/work-reads.js";
 import { CORE_TASK_ROUTES, renamed } from "../fixtures/code-core-task-routes.js";
 import { ProjectSetupChecklistSchema, SetupAgentViewSchema, SetupConfirmReplySchema, TestEnvironmentStateSchema } from "../../packages/contracts/src/web.js";
 import { readPlan, readTaskList, workRow } from "../../packages/ui/src/api/work.js";
@@ -151,6 +151,17 @@ describe("the Plan/Spec tab reads Code's {plan:{...}} answer (audit item 5)", ()
   it("an answer that is not Code's plan shape (the old flat one) shows nothing, never a half-read plan", async () => {
     const w = setUp((call) => call.path === `/v1/dev/tasks/${TASK}/plan` ? json(200, devAnswer({ headline: "flat", requirements: [{ id: "R1" }] })) : undefined);
     expect((await w.send("GET", `/v1/web/tasks/${TASK}/documents/plan`)).body).toEqual({});
+  });
+});
+
+describe("a task row says whether a plan document exists (PLAN-CARD-ABSENT)", () => {
+  const row = (workflow: Record<string, unknown>) => ({ taskId: TASK, title: "T", project: "p", status: "RUNNING", workflow });
+  const planArtifact = { id: "plan-1", type: "plan", version: 1, sha256: "a".repeat(64) };
+  it("planWritten comes from the workflow's artifact list when it is served, and is left out when it is not", () => {
+    expect((workTask(row({ stage: "PLAN", state: "RUNNING", artifacts: [] }))!["workflow"] as Record<string, unknown>)["planWritten"]).toBe(false);
+    expect((workTask(row({ stage: "PLAN", state: "RUNNING", artifacts: [{ ...planArtifact, type: "requirements" }] }))!["workflow"] as Record<string, unknown>)["planWritten"]).toBe(false);
+    expect((workTask(row({ stage: "PLAN", state: "RUNNING", artifacts: [planArtifact] }))!["workflow"] as Record<string, unknown>)["planWritten"]).toBe(true);
+    expect("planWritten" in (workTask(row({ stage: "PLAN", state: "RUNNING" }))!["workflow"] as Record<string, unknown>)).toBe(false);
   });
 });
 

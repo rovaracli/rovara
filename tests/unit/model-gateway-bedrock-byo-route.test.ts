@@ -22,7 +22,7 @@ import type { LearningKeySource } from "../../packages/model-gateway/src/learnin
 import type { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import type { ProductKeyRow } from "../../packages/model-gateway/src/product-seal.js";
 import type { ProviderRequest, ProviderTransport } from "../../packages/model-gateway/src/provider.js";
-import { AGENT_SOURCE_NOT_OFFERED, BEDROCK_ANTHROPIC_VERSION, BYO_BEDROCK_MODEL, BYO_BEDROCK_MODEL_NOT_ENABLED, BYO_BEDROCK_NOT_CONNECTED, BYO_BEDROCK_REFUSED, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
+import { AGENT_SOURCE_NOT_OFFERED, BEDROCK_ANTHROPIC_VERSION, BYO_BEDROCK_MODEL, BYO_BEDROCK_MODEL_NOT_ENABLED, BYO_BEDROCK_NOT_CONNECTED, BYO_BEDROCK_REFUSED, byoBedrockQuota, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
 import { answer, call, caps, claims, jwk, kid, mint, now, requestBody, scope, setup } from "./model-gateway-fixture.js";
 
 const cidA = claims.cid;
@@ -210,12 +210,39 @@ describe("agent route: the company's own Bedrock (DEC 238)", () => {
       expect(h.sessions.forgotten.map((r) => r.cid)).toEqual([cidA]);
       expect(await committed(h.meter)).toBe(0);
     }
-    for (const status of [400, 429, 500, 503]) {
+    for (const status of [400, 500, 503]) {
       const h = gateway({ bedrock: () => failing(status) });
       h.choices.saved.set(cidA, "bedrock_byo");
       expect((await call(h.deps)).status).toBe(502);
       expect(await committed(h.meter)).toBe(0);
     }
+  });
+
+  it("a Bedrock throttle in the company's own account (a model whose quota is 0 there) names the quota and the Region, free", async () => {
+    const canary = '{"message":"Too many tokens. arn:aws:bedrock:eu-west-1:111111111111:inference-profile/secret"}';
+    const g = gateway({ bedrock: () => failing(429, canary) });
+    g.choices.saved.set(cidA, "bedrock_byo");
+    const sink = await call(g.deps);
+    const quota = byoBedrockQuota("eu-west-1");
+    expect(sink.status).toBe(429);
+    expect(error(sink)).toEqual({ type: quota.code, message: quota.message });
+    expect(quota.message).toContain("eu-west-1");
+    expect(quota.message).toMatch(/quota/u);
+    expect(sink.text()).not.toContain("arn:aws");
+    expect(await committed(g.meter)).toBe(0);
+    expect(g.sessions.forgotten).toEqual([]);
+    expect(byoBedrockQuota("us-west-2").message).toContain("us-west-2");
+  });
+
+  it("review: the own-Bedrock throttle is logged as the fixed reason bedrock_429 (payer bedrock_byo), never with AWS text", async () => {
+    const logs: unknown[] = [];
+    const g = gateway({ bedrock: () => failing(429, '{"message":"BYO-CANARY Too many tokens"}'), overrides: { log: (line) => { logs.push(line); } } });
+    g.choices.saved.set(cidA, "bedrock_byo");
+    expect((await call(g.deps)).status).toBe(429);
+    expect(logs.filter((line) => (line as { event?: unknown }).event === "refused")).toEqual([
+      { event: "refused", code: "rate_limit_error", status: 429, route: "agent", payer: "bedrock_byo", reason: "bedrock_429" },
+    ]);
+    expect(JSON.stringify(logs)).not.toContain("BYO-CANARY");
   });
 
   it("the one combined company cap applies", async () => {

@@ -60,7 +60,7 @@ export class AccountPage {
   async open(query = ""): Promise<void> {
     await this.page.goto(ROUTES.account + query);
     // A dialog opened by the address hides the page from the accessibility tree, so the heading is found by its class.
-    await expect(this.page.locator(".rv-account h1")).toHaveText("Your account");
+    await expect(this.page.locator(".g5-account-setup-read h1")).toHaveText("Account");
   }
 }
 

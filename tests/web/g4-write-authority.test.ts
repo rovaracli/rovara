@@ -108,7 +108,8 @@ describe("Suggested rules (own list AND identity)", () => {
   const { meDown, me } = withMe();
   const f = mount({ me, learn: request => request.method === "POST" ? ok({}) : undefined });
   fireEvent.click(await findR("button", { name: "Dismiss…" }));
-  fireEvent.click((await screen.findAllByRole("radio", { name: /./u }, { timeout: 8000 }))[0]!);
+  // The dismissal reasons are the form's radios, not the start box's Quick / Full choice on the same page.
+  fireEvent.click((await screen.findAllByRole("radio", { name: /./u }, { timeout: 8000 })).filter(radio => radio.closest("[data-testid=\"start-path\"]") === null)[0]!);
   await waitFor(() => expect(screen.getByRole("button", { name: "Dismiss suggestion" })).toHaveProperty("disabled", false));
   await identityFreezes(f, meDown, () => findR("button", { name: "Dismiss suggestion" }));
  });

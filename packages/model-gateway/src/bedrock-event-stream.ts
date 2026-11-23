@@ -68,8 +68,19 @@ export function exceptionStatus(message: EventStreamMessage): number {
   return type === "throttlingException" ? 429 : type === "validationException" ? 400 : type === "modelTimeoutException" ? 408 : type === "serviceUnavailableException" ? 503 : type === "modelStreamErrorException" ? 424 : 500;
 }
 
+/** Bytes of answer content one Anthropic stream event carries (every string a block start or delta holds), zero for any other event. */
+export function anthropicContentBytes(event: Record<string, unknown>): number {
+  const bytes = (v: unknown): number => typeof v === "string" ? Buffer.byteLength(v, "utf8") : 0;
+  const sum = (o: unknown): number => { const r = record(o); return r === undefined ? 0 : Object.entries(r).reduce<number>((n, [k, v]) => n + (k === "type" ? 0 : bytes(v)), 0); };
+  if (event.type === "content_block_start") return sum(event.content_block);
+  if (event.type === "content_block_delta") return sum(event.delta);
+  return 0;
+}
 export class BedrockStreamToSse {
   readonly #decoder = new EventStreamDecoder();
+  #events = 0; #outputBytes = 0;
+  /** Whole events read, and bytes of answer content (text, tool name and input, thinking, signatures, redacted data). */
+  progress(): { events: number; outputBytes: number } { return { events: this.#events, outputBytes: this.#outputBytes }; }
   /** The decoded messages of `bytes` (for the transport's look at the first one); `convert` turns them into SSE. */
   decode(bytes: Uint8Array): EventStreamMessage[] { return this.#decoder.push(bytes); }
   push(bytes: Uint8Array): Buffer { return this.convert(this.#decoder.push(bytes)); }
@@ -84,6 +95,7 @@ export class BedrockStreamToSse {
         event = record(JSON.parse(Buffer.from(wrapper.bytes, "base64").toString("utf8")) as unknown);
       } catch { throw new EventStreamError(); }
       if (event === undefined || typeof event.type !== "string" || !ANTHROPIC_EVENTS.has(event.type)) throw new EventStreamError();
+      this.#events++; this.#outputBytes += anthropicContentBytes(event);
       const anthropic = Object.fromEntries(Object.entries(event).filter(([name]) => name !== "amazon-bedrock-invocationMetrics"));
       out.push(Buffer.from(`event: ${event.type}\ndata: ${JSON.stringify(anthropic)}\n\n`, "utf8"));
     }

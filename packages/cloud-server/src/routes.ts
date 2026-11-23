@@ -24,7 +24,7 @@ import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { LEARNING_MODEL_ROUTES } from "./learning-model-routes.js";
 import { AGENT_MODELS_ROUTES } from "./agent-models-routes.js";
 import { EGRESS_ADDRESSES_ROUTES } from "./egress-addresses-routes.js";
-import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
+import { SETUP_CHECKLIST_ROUTES, projectSetupStatusOf } from "./setup-checklist-routes.js";
 import { codeOwnerOf, openTaskByCodeId } from "./open-task.js";
 import { WIKI_ROUTES } from "./wiki-routes.js";
 import { KNOWN_FAILING_ROUTES, knownFailingOverview } from "./known-failing-routes.js";
@@ -32,6 +32,7 @@ import { SAVED_ENV_ROUTES } from "./saved-env-routes.js";
 import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
 import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
 import { EVAL_CHECK_ROUTES } from "./eval-check-routes.js";
+import { BROWSER_TESTING_ROUTES } from "./browser-testing-routes.js";
 import { ANSWERS_ROUTES } from "./answers-routes.js";
 import { AGENT_DIRECTORY_ROUTES } from "./agent-directory-routes.js";
 import { SYSTEM_RUNS_ROUTES } from "./system-runs-routes.js";
@@ -39,6 +40,7 @@ import { TASK_START_REQUEST_ROUTES } from "./task-start-request-routes.js";
 import { GITHUB_DISCONNECT_PREVIEW_ROUTES } from "./github-disconnect-preview-routes.js";
 import { MERGE_ROUTES } from "./merge-routes.js";
 import { SETUP_REPAIR_ROUTES } from "./setup-repair-routes.js";
+import { SETUP_LIMITS_ROUTES } from "./setup-limits-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { KNOWLEDGE_SWITCH_ROUTES } from "./knowledge-switch-routes.js";
 import { GRADUATION_ROUTES } from "./lessons-graduation-routes.js";
@@ -130,9 +132,9 @@ function mine(access: CodeAccess, name: string): { name: string; access: string 
 
 /** A project as the app's lists show it (AppProjectSummarySchema). */
 async function summary(context: RouteContext, name: string, access: string) {
-  const code = await codeProject(context, name);
+  const [code, setup] = await Promise.all([codeProject(context, name), projectSetupStatusOf(context, name)]);
   return {
-    name, status: "active", latestRevision: code?.latestRevision ?? 1, myRole: roleOf(access), setup: { status: "unchecked" },
+    name, status: "active", latestRevision: code?.latestRevision ?? 1, myRole: roleOf(access), setup,
     repositories: (code?.repositories ?? []).map((repository) => ({ name: repository.name, fullName: repository.fullName ?? repository.name, defaultBranch: repository.defaultBranch })),
   };
 }
@@ -634,7 +636,7 @@ export const ROUTES: Route[] = [
       const access = await context.client.access(context.session);
       const project = mine(access, name);
       if (project === undefined) return projectNotFound;
-      const code = await codeProject(context, name);
+      const [code, setup] = await Promise.all([codeProject(context, name), projectSetupStatusOf(context, name)]);
       const role = roleOf(project.access);
       const membership = companyOf(access);
       const canEditSettings = role === "maintainer" || isCompanyAdmin(membership?.companyRole);
@@ -643,7 +645,7 @@ export const ROUTES: Route[] = [
         project: {
           name, status: "active", ...(code === undefined ? {} : { latestRevision: code.latestRevision }),
           repositories: (code?.repositories ?? []).slice(0, 20).map((repository) => ({ fullName: repository.fullName ?? repository.name, defaultBranch: repository.defaultBranch })),
-          setup: { status: "unchecked" }, channels: [],
+          setup, channels: [],
         },
         you: { role, canStartWork: true, canEditSettings, canViewSpend: false },
         ...(knownFailing === undefined ? {} : { knownFailing }),
@@ -1266,6 +1268,7 @@ export const ROUTES: Route[] = [
   ...WIKI_SETUP_ROUTES,
   // L4-EVCI2: the setup checklist's "Eval check from your CI" (Code decides who may; Cloud rebuilds every body and answer).
   ...EVAL_CHECK_ROUTES,
+  ...BROWSER_TESTING_ROUTES,
   // L4-P3: the company's one control over nightly upkeep (read, allow, withdraw): company owners and admins only; Code decides again.
   ...SYSTEM_RUNS_ROUTES,
   ...MERGE_ROUTES,
@@ -1273,6 +1276,8 @@ export const ROUTES: Route[] = [
   ...GITHUB_DISCONNECT_PREVIEW_ROUTES,
   // L4-U5: the "Setup needs repair" card on a project's setup page and its "Re-check setup" button, passed to Code as the person; Code decides who may.
   ...SETUP_REPAIR_ROUTES,
+  // SETUP-LIMITS: a project's setup-run limits (read, change), passed to Code as the person; Code decides who may and what a number may be.
+  ...SETUP_LIMITS_ROUTES,
   // The admin portal's Cost and time report (Feature A, slice A3): Code's one-row-per-task read, grouped here for a company owner or admin.
   ...REPORT_ROUTES,
   // The plan card's available feature choices (lead 4 PCF); filing and creation use the Cost and time report actions below.

@@ -15,9 +15,14 @@ export function initialCharge(claims: TaskClaims, model: ChargeReceiptV1["model"
     price: available({ authority: "gateway", version: String(price.priceVersion ?? 0), hash: createHash("sha256").update(JSON.stringify(price)).digest("hex"), fetchedAt: time }), model, ...context,
     payer: { kind: payer.kind, id, name: id }, requesterId: claims.per === undefined ? missing() : available(claims.per), billableMicros: context.billing === "customer" ? missing() : available(0), providerCostMicros: missing(), occurredAt: time, accountingDay: time.slice(0, 10), accountingMonth: time.slice(0, 7), recordedAt: time };
 }
-export function finishCharge(initial: ChargeReceiptV1, input: { usage?: TokenUsage; reportedCostMicros?: number; retainMissingUsage?: boolean; customerPriceAuthorized?: boolean; price: ResolvedPrice; notSent: boolean; now: number }): ChargeReceiptV1 {
+export function finishCharge(initial: ChargeReceiptV1, input: { usage?: TokenUsage; reportedCostMicros?: number; retainMissingUsage?: boolean; customerPriceAuthorized?: boolean; price: ResolvedPrice; notSent: boolean; now: number; failedMicros?: number }): ChargeReceiptV1 {
   const reservation = initial.originalReservationMicros.state === "available" ? initial.originalReservationMicros.value : undefined;
   if (reservation === undefined) throw new Error("charge reservation unavailable");
+  // A call that failed after it was sent, with no usage (failed-call.ts): an estimate below the hold, never final. Real evidence can still revise it.
+  if (input.failedMicros !== undefined && input.failedMicros > 0 && !input.notSent) {
+    return { ...initial, status: "estimated", reason: "missing_usage", neverConfirmed: true, amountMicros: available(Math.min(reservation, input.failedMicros)), usageComplete: false, usage: missing(), providerCostMicros: missing(),
+      billableMicros: initial.billing === "customer" ? missing() : available(0), recordedAt: new Date(input.now).toISOString() };
+  }
   const amount = settleChargeAmount({ ...input, reservationMicros: reservation });
   const u = input.usage;
   return { ...initial, status: input.notSent ? "final" : amount.status, reason: input.notSent ? "confirmed_not_sent" : amount.reason, amountMicros: available(input.notSent ? 0 : amount.actualMicros),

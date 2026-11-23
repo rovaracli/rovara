@@ -50,7 +50,7 @@ export { LEARNING_MODEL_ANSWERS, LEARNING_MODEL_CODE_PATH, LEARNING_MODEL_ROUTES
 export { AGENT_MODELS_ANSWERS, AGENT_MODELS_CODE_PATH, AGENT_MODELS_ROUTES, AGENT_MODELS_WORDS, AGENT_MODEL_STAGES, agentModelsChange, agentModelsRefusal, agentModelsView, modelIdentityOf, modelNameOf } from "./agent-models-routes.js";
 export { EGRESS_ADDRESSES_CODE_PATH, EGRESS_ADDRESSES_ROUTES, EGRESS_ANSWERS, EGRESS_WORDS, egressAddressesView } from "./egress-addresses-routes.js";
 export { SPEND_LIMIT_ROUTES, SPEND_LIMIT_WORDS, dollarsToMicros } from "./spend-limits-routes.js";
-export { BEDROCK_BYO_ROUTES, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";
+export { BEDROCK_BYO_ROUTES, BEDROCK_NO_QUOTA_STEPS, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";
 export { COMPANY_KEY_PROVIDERS, LEARNING_AI_OWNER, LEARNING_AI_PROVIDERS, LEARNING_AI_ROUTES, LEARNING_PAUSE_WORDS, learningSourceId } from "./learning-ai-routes.js";
 export {
   GITHUB_CALLBACK_PATH, GITHUB_CONNECT_COOKIE, GITHUB_CONNECT_TTL_MS, GITHUB_OUTCOMES, GITHUB_WORDS, githubInUseWords, githubResultKey, githubStateKey,
@@ -62,7 +62,7 @@ export { SLACK_CALLBACK_PATH, SLACK_OUTCOMES, SLACK_WORDS } from "./slack-connec
 export { LESSONS_SLACK_WORDS } from "./lessons-slack-switch.js";
 export { LINK_FAILURES, LINK_LANDING, LINK_METHODS, LINK_TTL_MS, SIGN_IN_LINK_WORDS, linkPendingKey, type LinkPending } from "./sign-in-links.js";
 export { LINEAR_CALLBACK_PATH, LINEAR_OUTCOMES, LINEAR_WORDS } from "./linear-connect.js";
-export { SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_ANSWERS, SETUP_CHECKLIST_ROUTES, SETUP_CHECKLIST_WORDS, applyAnswer, approvalRefusal, checklistAnswer, confirmBody, decideBody, evalNoneBody, runBody, setupRefusal, skipBody, withModelCallFact } from "./setup-checklist-routes.js";
+export { SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_ANSWERS, SETUP_CHECKLIST_ROUTES, SETUP_CHECKLIST_WORDS, SETUP_HOST_CODE_WORDS, SETUP_HOST_WORDS, applyAnswer, approvalRefusal, checklistAnswer, confirmBody, decideBody, evalNoneBody, hostDecideBody, hostRefusal, projectSetupStatusOf, runBody, setupRefusal, skipBody, withModelCallFact } from "./setup-checklist-routes.js";
 export { LIFECYCLE_ANSWERS, LIFECYCLE_WORDS, PROJECT_LIFECYCLE_ROUTES, lifecycleBody, lifecycleRefusal } from "./project-lifecycle-routes.js";
 export { WIKI_CORRECTION_ANSWERS, WIKI_CORRECTION_ROUTES, WIKI_CORRECTION_WORDS, acknowledgedAnswer, correctionsAnswer, disputedAnswer, gapsAnswer, markedAnswer, noteAddedAnswer, suggestedAnswer, wikiCorrectionRefusal } from "./wiki-corrections-routes.js";
 export { SETUP_REPAIR_ANSWERS, SETUP_REPAIR_ROUTES, SETUP_REPAIR_WORDS, recheckBody, setupRepairRefusal, setupRepairView } from "./setup-repair-routes.js";

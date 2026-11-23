@@ -115,14 +115,15 @@ describe("the project checklist", () => {
     older.close();
   });
 
-  it("a failed setup run shows the failing command, its last lines, Edit commands and Run again (Code says canManage)", async () => {
+  it("a failed setup run shows the failing command, its last lines and Run again (no link to the old Setup step) (Code says canManage)", async () => {
     const f = mount(h(ProjectChecklist, { project: "web" }));
     const row = await screen.findByTestId("setup-run-row");
     expect(within(row).getByTestId("setup-run-failure").textContent).toBe("A test command failed.");
     expect(within(row).getByTestId("setup-run-failed-command").textContent).toContain("npm test");
     expect(within(row).getByTestId("setup-run-failed-command").textContent).toContain("FAIL src/app.test.ts");
     expect(within(row).getByTestId("setup-run-facts").textContent).toBe("Commands found: 1 to set up, 1 to test. Tests failed. Took 5 minutes, cost $0.31.");
-    expect(within(row).getByTestId("setup-run-edit").getAttribute("href")).toBe("/app/onboard?project=web&step=setup");
+    expect(within(row).queryByTestId("setup-run-edit")).toBeNull();
+    expect(row.innerHTML).not.toContain("step=setup");
     fireEvent.click(await within(row).findByRole("button", { name: "Run again" }));
     await waitFor(() => expect(calls(f, "POST", "/v1/app/projects/web/setup-agent")).toHaveLength(1));
     expect(Object.keys(calls(f, "POST", "/v1/app/projects/web/setup-agent")[0]!.body as object)).toEqual(["requestId"]);

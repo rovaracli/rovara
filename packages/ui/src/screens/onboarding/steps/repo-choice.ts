@@ -8,7 +8,7 @@ export type Together = "one" | "separate";
 export const preselected = (count: number): Together => (count > SEPARATE_ABOVE ? "separate" : "one");
 export const answeredTogether = (answer: Together | undefined, count: number): Together => answer ?? preselected(count);
 /** Where a project's checklist is: the onboarding flow's Setup step today. The project checklist (guided onboarding PR 9) changes this one function. */
-export const checklistHref = (project: string): string => `/app/onboard?${new URLSearchParams({ project, step: "setup" }).toString()}`;
+export const checklistHref = (project: string): string => `/app/projects/${encodeURIComponent(project)}#setup-checklist`;
 /** The fixed words for why one repository of a separate-projects create made no project (Code's four reasons). */
 export const REFUSAL_WORDS: Readonly<Record<string, string>> = Object.freeze({
   not_available: "This repository isn't available through your company's GitHub connection.",

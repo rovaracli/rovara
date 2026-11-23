@@ -144,7 +144,7 @@ test("Your account has no confirmation email or passkeys, and never asks for sig
   page.on("request", request => { if (request.url().includes("/sign-in-factors")) asked.push(request.url()); });
   const account = new AccountPage(page);
   await account.open();
-  await expect(page.getByRole("heading", { name: "Your account" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Account", level: 1 })).toBeVisible();
   await expect(page.getByRole("progressbar")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Confirmation email" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Passkeys" })).toHaveCount(0);
@@ -182,7 +182,7 @@ for (const scheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: scheme });
     const account = new AccountPage(page);
     await account.open();
-    await expect(page.getByRole("heading", { name: "Your account" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Account", level: 1 })).toBeVisible();
     expect(await violations(page)).toEqual([]);
   });
 }

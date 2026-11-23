@@ -555,7 +555,7 @@ export class ProductKeyStore {
     const checks: Record<string, BedrockModelCheck> = {};
     for (const id of bedrockConnectionIds(connection)) {
       const state = answer.models?.[id];
-      checks[id] = state === "ready" || state === "not_enabled" || state === "refused" || state === "not_found" ? state : "unavailable";
+      checks[id] = state === "ready" || state === "not_enabled" || state === "refused" || state === "not_found" || state === "no_quota" ? state : "unavailable";
     }
     return checks;
   }

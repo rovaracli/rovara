@@ -11,6 +11,7 @@
 //   POST /v1/app/projects/{p}/setup-agent/confirm {requestId, expectedRevision, itemIds?} -> Code POST .../setup-agent/confirm  ("Use this setup": a candidate and its check; L4-D, Code #899)
 //   POST /v1/app/projects/{p}/setup-agent/discard {requestId}                              -> Code POST .../setup-agent/discard  (drop the waiting candidate)
 //   POST /v1/app/projects/{p}/setup-agent/decide {requestId, outcome, seen, reason?}       -> Code POST .../setup-agent/decide   (approve or reject: Code's risk-based approver rule)
+//   POST /v1/app/projects/{p}/setup-agent/host-decide {requestId, host, outcome, seen, reason?} -> Code POST .../setup-agent/host-decide (allow or refuse a website a setup run asked for: Code's rule is a live company owner or admin; Cloud adds none)
 //   The setup-run read also carries Code's `apply` (the waiting candidate: risk, changes, who approves, the check, the approval binding), rebuilt field by field (L4-D2).
 //
 // Rules:
@@ -23,7 +24,7 @@
 //   - Code's refusals reach the app as Cloud's fixed sentences (SETUP_CHECKLIST_WORDS, the same as @agentx/contracts), never Code's or the browser's text. Until Code
 //     serves a route, its fixed unknown-route 404 reads "isn't available on this Rovara yet" (501 NOT_ON_CODE_YET).
 // cloud-server takes no package dependency, so the shapes are checked here by hand against Code's contract (project-setup-status.ts on #841, setup-run-routes.ts on #844).
-import { isCodeOutcomeUnknown, CodeError } from "./code-client.js";
+import { isCodeOutcomeUnknown, CodeError, SignInEnded } from "./code-client.js";
 import { agentAiConnected } from "./agent-ai-presence.js";
 import { companyCaller, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
@@ -228,7 +229,16 @@ const runPath = (project: string, tail = "") => `/v1/app/projects/${encodeURICom
 
 /** Code's setup-run answer: a plain object whose status is a known word and whose `canManage`, when sent, is a boolean. */
 const runAnswerOk = (value: unknown): boolean => plain(value) && oneOf(value["status"], RUN_STATUSES) && (value["canManage"] === undefined || typeof value["canManage"] === "boolean");
-const journalOk = (value: unknown): boolean => plain(value) && oneOf(value["status"], RUN_STATUSES) && Array.isArray(value["entries"]) && value["entries"].length <= 400 && Array.isArray(value["hostAsks"]) && value["hostAsks"].length <= 50;
+/** One website ask of the journal as Code sends it: a host, a known state, and (open asks only) whether this person may decide it and the id and digest it is decided on. Anything else is unreadable. */
+const hostAskOk = (ask: unknown): boolean => {
+  if (!plain(ask) || typeof ask["host"] !== "string" || !HOST_NAME.test(ask["host"]) || !oneOf(ask["status"], ["open", "approved", "refused"] as const)) return false;
+  if (ask["canDecide"] !== undefined && typeof ask["canDecide"] !== "boolean") return false;
+  const approval = ask["approval"];
+  if (approval === undefined) return true;
+  return ask["status"] === "open" && plain(approval) && typeof approval["requestId"] === "string" && HOST_REQUEST_ID.test(approval["requestId"]) && whole(approval["revision"], 1)
+    && typeof approval["artifactDigest"] === "string" && HEX64.test(approval["artifactDigest"]) && approval["kind"] === "setup_host" && approval["risk"] === "high";
+};
+const journalOk = (value: unknown): boolean => plain(value) && oneOf(value["status"], RUN_STATUSES) && Array.isArray(value["entries"]) && value["entries"].length <= 400 && Array.isArray(value["hostAsks"]) && value["hostAsks"].length <= 50 && value["hostAsks"].every(hostAskOk);
 
 // ---- L4-D2: the setup approval (confirm, discard, decide) and the `apply` card the run's read carries -------------------------------------------------------------------------------------------------
 
@@ -354,6 +364,76 @@ export function approvalRefusal(kind: ApprovalKind, error: CodeError): RouteAnsw
   if (error.status === 503 && code === "AUDIT_UNAVAILABLE") return answer(503, "AUDIT_UNAVAILABLE", AW.audit);
   return A.unavailable;
 }
+// ---- the website a setup run asked for: allow or refuse (Code's host-decide) ----------------------------------------------------------------------------------------------------------------------
+
+/** Code's host name pattern (contracts setup-run.ts HOST_PATTERN): lower case, at least one dot. */
+const HOST_NAME = /^(?=.{3,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+const HOST_REQUEST_ID = /^host-[A-Za-z0-9_-]{2,122}$/u;
+/** The sentences Code says for a website decision's fixed refusals (setup-run-routes.ts, setup-approval.ts). A Code message is passed on only when it is exactly one of these. */
+export const SETUP_HOST_CODE_WORDS: readonly string[] = Object.freeze([
+  "A website for a setup run changes what the project's code can reach, so only a company owner or admin can allow or refuse it.",
+  "That website is not waiting for a decision any more. Open the project's setup again.",
+  "Your approval could not be proved just now, so nothing was decided. Try again.",
+]);
+export const SETUP_HOST_WORDS = Object.freeze({
+  cannotDecide: "A website for a setup run changes what the project's code can reach, so only a company owner or admin can allow or refuse it.",
+  notWaiting: "That website is not waiting for a decision any more. Open the project's setup again.",
+  notYet: "Allowing a website isn't available on this Rovara yet.",
+});
+export interface HostDecideBody { requestId: string; host: string; outcome: "approve" | "reject"; seen: { revision: number; artifactDigest: string }; reason?: string }
+/** The browser's website decision, strictly: the id Code offered, the host, the answer, the revision and digest the person saw, and an optional reason. Nothing else. */
+export function hostDecideBody(value: unknown): HostDecideBody | undefined {
+  if (!plain(value) || Object.keys(value).some((key) => key !== "requestId" && key !== "host" && key !== "outcome" && key !== "seen" && key !== "reason")) return undefined;
+  const seen = value["seen"], reason = value["reason"];
+  if (typeof value["requestId"] !== "string" || !HOST_REQUEST_ID.test(value["requestId"]) || typeof value["host"] !== "string" || !HOST_NAME.test(value["host"]) || !oneOf(value["outcome"], ["approve", "reject"] as const)) return undefined;
+  if (!plain(seen) || Object.keys(seen).length !== 2 || !whole(seen["revision"], 1) || typeof seen["artifactDigest"] !== "string" || !HEX64.test(seen["artifactDigest"])) return undefined;
+  if (reason !== undefined && !(typeof reason === "string" && reason.length <= 500 && !CONTROL.test(reason))) return undefined;
+  return { requestId: value["requestId"], host: value["host"], outcome: value["outcome"], seen: { revision: seen["revision"], artifactDigest: seen["artifactDigest"] }, ...(reason === undefined ? {} : { reason }) };
+}
+/** Code's refusal of a website decision in Cloud's fixed words: a Code sentence only when it is exactly a fixed one (then as this file's copy), else by code and status. Never the browser's or Code's other text. */
+export function hostRefusal(error: CodeError): RouteAnswer {
+  if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
+  const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
+  const code = body?.["code"], said = typeof body?.["message"] === "string" ? SETUP_HOST_CODE_WORDS.find((words) => words === body["message"]) : undefined;
+  if (error.status === 404) {
+    if (code === "NOT_FOUND" && (body?.["message"] === "route not found" || body?.["message"] === "Approving a project's setup isn't available on this install yet.")) return answer(501, "NOT_ON_CODE_YET", SETUP_HOST_WORDS.notYet);
+    return A.notFound;
+  }
+  if (error.status === 403) return answer(403, "FORBIDDEN", said ?? SETUP_HOST_WORDS.cannotDecide);
+  if (error.status === 400) return A.invalid;
+  if (error.status === 409) {
+    if (code === "IDEMPOTENCY_CONFLICT") return answer(409, "IDEMPOTENCY_CONFLICT", AW.conflict);
+    return answer(409, "CHANGE_STALE", said ?? SETUP_HOST_WORDS.notWaiting);
+  }
+  if (error.status === 503 && code === "AUDIT_UNAVAILABLE") return answer(503, "AUDIT_UNAVAILABLE", AW.audit);
+  return A.unavailable;
+}
+
+/** What the project overview and the lists say about the project's setup: Code's REAL checklist, never a fixed word. Ready only for an approved setup whose check on a fresh machine is ready; a check going (the approved
+ *  setup's, or a candidate's) is checking; an approved setup whose check failed or went stale says so; everything else (no setup yet, a proposal nobody used, a run that failed) is unchecked, which is "needs attention". */
+export function setupStatusOf(checklist: Plain): { status: "unchecked" | "checking" | "ready" | "failed" | "outdated"; failedStep?: string } {
+  const run = checklist["setupRun"] as Plain, check = run["check"] as Plain | undefined;
+  if (run["approval"] === "approved" && check !== undefined) {
+    if (check["status"] === "ready" && run["state"] === "done") return { status: "ready" };
+    if (check["status"] === "checking") return { status: "checking" };
+    if (check["status"] === "failed") return { status: "failed", ...(typeof check["failedStep"] === "string" ? { failedStep: check["failedStep"] } : {}) };
+    if (check["status"] === "outdated") return { status: "outdated" };
+    return { status: "unchecked" };
+  }
+  return run["approval"] === "checking" ? { status: "checking" } : { status: "unchecked" };
+}
+/** The project's setup as the overview, the project's detail and the lists show it, from Code's checklist read as the signed-in person. A read that fails or does not read is "unknown" (nothing is known: never "ready", and not "needs attention" either). An ended sign-in still reaches the handler. */
+export async function projectSetupStatusOf(context: RouteContext, project: string): Promise<{ status: "unchecked" | "checking" | "ready" | "failed" | "outdated" | "unknown"; failedStep?: string }> {
+  if (!PROJECT_NAME.test(project)) return { status: "unknown" };
+  try {
+    return setupStatusOf(checklistAnswer(await context.client.json<unknown>(context.session, statusPath(project)), project));
+  } catch (error) {
+    // Only an ended sign-in goes on (the handler signs the person out); any other failure of this extra read (Code's refusal, an answer that does not read, a connection that failed) is "unchecked", never a failed page.
+    if (error instanceof SignInEnded) throw error;
+    return { status: "unknown" };
+  }
+}
+
 const statusRoute: Route = {
   method: "GET", path: /^\/projects\/([^/]+)\/setup-status$/u,
   answer: async (context) => {
@@ -423,7 +503,7 @@ const runReadRoute: Route = {
 };
 
 /** One approval act (confirm, discard or decide): the checked body goes to Code as the person; Code's answer is rebuilt and its refusals are Cloud's fixed words. */
-function approvalRoute<B>(tail: ApprovalKind, check: (body: unknown) => B | undefined, rebuild: (value: unknown, project: string, sent: B) => Plain, event: string, describe: (sent: B) => Record<string, string>): Route {
+function approvalRoute<B>(tail: ApprovalKind | "host-decide", check: (body: unknown) => B | undefined, rebuild: (value: unknown, project: string, sent: B) => Plain, event: string, describe: (sent: B) => Record<string, string>, refuse: (error: CodeError) => RouteAnswer = (error) => approvalRefusal(tail as ApprovalKind, error)): Route {
   return {
     method: "POST", path: new RegExp(`^/projects/([^/]+)/setup-agent/${tail}$`, "u"),
     answer: async (context) => {
@@ -436,7 +516,7 @@ function approvalRoute<B>(tail: ApprovalKind, check: (body: unknown) => B | unde
         value = await context.client.json<unknown>(context.session, runPath(at.project, `/${tail}`), { method: "POST", body: given });
       } catch (error) {
         // An ended sign-in is not a CodeError: it reaches the handler, which signs the person out.
-        if (error instanceof CodeError) return approvalRefusal(tail, error);
+        if (error instanceof CodeError) return refuse(error);
         throw error;
       }
       let rebuilt: Plain;
@@ -455,6 +535,12 @@ const decideRoute = approvalRoute("decide", decideBody, (value, project, sent) =
   const v = value as Plain;
   return { project, decision: v["decision"], risk: v["risk"], revision: v["revision"], replayed: v["replayed"] };
 }, "cloud.setup_decide", (sent) => ({ outcome: sent.outcome }));
+
+const hostDecideRoute = approvalRoute("host-decide", hostDecideBody, (value, project, sent) => {
+  need(plain(value) && value["project"] === project && value["host"] === sent.host && oneOf(value["decision"], ["approved", "refused"] as const) && value["decision"] === (sent.outcome === "approve" ? "approved" : "refused") && typeof value["replayed"] === "boolean", undefined);
+  const v = value as Plain;
+  return { project, host: sent.host, decision: v["decision"], replayed: v["replayed"] };
+}, "cloud.setup_host_decide", (sent) => ({ outcome: sent.outcome }), hostRefusal);
 
 function runChangeRoute(tail: "" | "/stop"): Route {
   return {
@@ -488,4 +574,4 @@ const journalRoute: Route = {
   },
 };
 
-export const SETUP_CHECKLIST_ROUTES: Route[] = [statusRoute, skipRoute, evalNoneRoute, runReadRoute, runChangeRoute(""), runChangeRoute("/stop"), journalRoute, confirmRoute, discardRoute, decideRoute];
+export const SETUP_CHECKLIST_ROUTES: Route[] = [statusRoute, skipRoute, evalNoneRoute, runReadRoute, runChangeRoute(""), runChangeRoute("/stop"), journalRoute, confirmRoute, discardRoute, decideRoute, hostDecideRoute];

@@ -3,7 +3,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { AutomationKeysScreen } from "../../packages/ui/src/screens/account/AutomationKeysScreen.js";
+import { AutomationKeysReadScreen } from "../../packages/ui/src/screens/account-setup-read/AutomationKeysReadScreen.js";
+import { ReadEntry } from "../../packages/ui/src/screens/account-setup-read/ReadEntry.js";
+import { identity } from "./read-only/account-setup-read/fixtures.js";
 import { CreateAutomationKey } from "../../packages/ui/src/screens/account/CreateAutomationKey.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -14,13 +16,13 @@ import { token, secret } from "./support/script-token-fixture.js";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); localStorage.clear(); sessionStorage.clear(); });
 function mount(respond: (r: ApiRequest) => ApiResponse | Promise<ApiResponse>, form = false, role = "owner") {
- const f = fakeHost(async r => respond(r));
+ const f = fakeHost(async r => r.path === "/v1/app/me" ? { status: 200, body: identity } : respond(r));
  const copyText = vi.fn<(text: string) => Promise<void>>(async () => undefined); f.host.copyText = copyText;
  f.host.currentPath = () => "/app/account/automation-keys";
  const query = createQueryClient();
  query.setQueryData(["nav"], { me: { developerId: "person", name: "Priya", orgRole: role }, org: { name: "Acme" } });
  const router = createMemoryRouter([
-  { path: "/app/account/automation-keys", element: form ? h(CreateAutomationKey, { onCreated: () => undefined }) : h(AutomationKeysScreen) },
+  { path: "/app/account/automation-keys", element: form ? h(CreateAutomationKey, { onCreated: () => undefined }) : h(ReadEntry, { title: "Automation keys", children: h(AutomationKeysReadScreen) }) },
   { path: "/elsewhere", element: h("p", {}, "Elsewhere") },
  ], { initialEntries: ["/app/account/automation-keys"] });
  const tree = () => h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) });
@@ -36,7 +38,9 @@ it.each([
  const f = mount(() => ({ status: 200, body: { tokens: [{ ...token, lastUsedAt: "2026-11-19T00:30:45.123Z" }] } }));
  try {
   await screen.findByText("Nightly CI");
-  expect(screen.getByRole("list", { name: "Automation keys list" }).textContent).toContain(`Created ${created} · Expires ${expires} · Last used ${used}`);
+  const text = screen.getByRole("table", { name: "Automation keys" }).textContent ?? "";
+  expect(text).toContain(`Created ${created} · Expires ${expires}`);
+  expect(text).toContain(`Last used ${used}`);
  } finally { f.close(); }
 });
 
@@ -47,7 +51,7 @@ it.each([undefined, "2026-11-19T00:30:45.123Z"])("preserves exact UTC ISO timest
   for (const at of [token.createdAt, token.expiresAt, ...(lastUsedAt === undefined ? [] : [lastUsedAt])]) {
    expect(screen.getByTitle(at).getAttribute("datetime")).toBe(at);
   }
-  if (lastUsedAt === undefined) expect(screen.getByRole("list", { name: "Automation keys list" }).textContent).toContain("Never used");
+  if (lastUsedAt === undefined) expect(screen.getByRole("table", { name: "Automation keys" }).textContent).toContain("Never used");
  } finally { f.close(); }
 });
 
@@ -86,7 +90,7 @@ it("confirms revoke, sends it once and refreshes the list", async () => {
  expect(screen.queryByRole("dialog")).toBeNull();
  fireEvent.click(screen.getByRole("button", { name: "Revoke Nightly CI" }));
  fireEvent.click(screen.getByRole("button", { name: "Revoke key" }));
- await screen.findByText("revoked");
+ await screen.findByText("Revoked");
  expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toEqual([[expect.objectContaining({ path: "/v1/app/script-tokens/stk_aaaaaaaaaaaaaaaaaaaa/revoke", retry: "never" })]]);
  expect(screen.queryByRole("button", { name: "Revoke Nightly CI" })).toBeNull();
  f.close();

@@ -14,7 +14,8 @@
 //     external id. If either gets a session the role trusts more than this company: "too_open", and nothing is saved;
 //   - then each chosen model gets one $0 check: an InvokeModel IAM authorises but Bedrock rejects as invalid (max_tokens 0). A
 //     ValidationException means "ready"; AccessDeniedException with Bedrock's model-access words "not_enabled"; any other
-//     AccessDenied "refused" (the role's policy does not allow that model); an unknown model "not_found".
+//     AccessDenied "refused" (the role's policy does not allow that model); an unknown model "not_found"; a throttle "no_quota"
+//     (a model whose quota in the account is 0 throttles even this check).
 // Results are fixed words; no AWS text and no credential leaves this module.
 import { randomBytes } from "node:crypto";
 import { signRequest, type AwsCredentials, type CredentialSource } from "./aws.js";
@@ -35,6 +36,8 @@ const BROKER_ROLE = /^arn:aws:iam::[0-9]{12}:role\/RovaraBedrockBroker-[a-z0-9-]
 const AWS_REGION = /^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u;
 /** Bedrock's words for "this account has no access to the model yet" (a Marketplace agreement or model access). Read only to classify. */
 export const BEDROCK_MODEL_ACCESS_WORDS = /aws-marketplace|Model access is denied|don't have access to the model|do not have access to the model|is not available for this account|model access/iu;
+/** The error types the transport puts first on a failed answer (createBedrockProductTransport) that mean "no room": a throttle, or a quota used up. */
+const QUOTA_ERROR_TYPES = /^(?:ThrottlingException|ServiceQuotaExceededException)\b/u;
 /** Bedrock's words for a model id or profile it does not serve here. */
 const UNKNOWN_MODEL_WORDS = /model identifier is invalid|on-demand throughput|inference profile|could not be found|not found/iu;
 
@@ -189,6 +192,8 @@ export class BedrockSessions implements BedrockSessionSource {
       try { for await (const part of answer.body) { read.push(Buffer.from(part)); size += part.byteLength; if (size >= MODEL_CHECK_BODY_BYTES) break; } } catch { /* Classified from the status alone. */ }
       answer.cancel?.();
       const words = Buffer.concat(read).subarray(0, MODEL_CHECK_BODY_BYTES).toString("utf8");
+      // A throttle (or Bedrock's quota error, which the transport names first) on a $0 check: the model has no room in this account right now. Checked before 400's "ready".
+      if (answer.status === 429 || QUOTA_ERROR_TYPES.test(words)) return "no_quota";
       if (answer.status === 400) return UNKNOWN_MODEL_WORDS.test(words) ? "not_found" : "ready";
       if (answer.status === 404) return "not_found";
       if (answer.status === 403) return BEDROCK_MODEL_ACCESS_WORDS.test(words) ? "not_enabled" : "refused";

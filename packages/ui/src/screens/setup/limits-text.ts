@@ -18,6 +18,10 @@ export const PROJECT_LIMITS = {
  NOW: "A run started now would use", CAP: "Company cap", NO_CAP: "No company cap", DEFAULT: "Default", MOST: "Most",
  SAVE: "Save limits", SAVED: "Saved. New runs use these limits.", STALE: "The limits changed since you looked. They were read again.",
  FAILED: "Couldn't save the limits. Try again.",
+ UNKNOWN: "The outcome is unknown, so the limits were read again. Check them before saving once more: saving the same change again is safe.",
+ UNKNOWN_UNREAD: "The outcome is unknown, and the limits couldn't be read again. Read them again before saving once more: saving the same change again is safe.",
+ STALE_UNREAD: "The limits changed since you looked, and they couldn't be read again. Read them again before saving.",
+ READ_AGAIN: "Read them again",
  NOT_A_NUMBER: "Use a whole number", TOO_BIG: "No more than", TOO_SMALL: "At least",
 } as const;
 

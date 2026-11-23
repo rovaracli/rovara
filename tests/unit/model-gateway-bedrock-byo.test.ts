@@ -216,6 +216,13 @@ describe("the key store: the company's own Bedrock", () => {
     expect(v.sources[0]!.bedrock?.checks).toEqual({ [SONNET]: "unavailable" });
   });
 
+  it("a model the test found with no quota room is kept as no_quota (never clamped to unavailable), and the connection is still saved", async () => {
+    const s = storeWith(async (_cid, c) => ({ result: "ok", models: { [Object.values(c.models)[0]!]: "no_quota" } }));
+    const v = await s.store.connect({ ...change(A, 0), sourceId: BEDROCK_SOURCE_ID, provider: "bedrock", key: conn() });
+    expect(v.sources[0]!.bedrock?.checks).toEqual({ [SONNET]: "no_quota" });
+    expect(await s.store.companyBedrock(ISS, A)).toMatchObject({ sourceId: BEDROCK_SOURCE_ID });
+  });
+
   it("saves nothing when the role is too open, refused or the test is unavailable; without a test it refuses before anything", async () => {
     for (const [result, expected] of [["too_open", "aws_too_open"], ["refused", "aws_refused"], ["unavailable", "unavailable"]] as const) {
       const s = storeWith(async () => ({ result }));

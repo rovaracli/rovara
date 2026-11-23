@@ -9,7 +9,7 @@
 .rv-wikis-table table { border-collapse: collapse; width: 100%; }
 .rv-wikis-table th, .rv-wikis-table td { padding: 0.3rem 0.5rem; text-align: left; border-bottom: 1px solid var(--rv-border, #d0d7de); font-weight: normal; }
 .rv-wikis-table thead th, .rv-wikis-table tfoot th { font-weight: 600; }
-.rv-wikis-table .r { text-align: right; font-variant-numeric: tabular-nums; }
+.rv-wikis-table .r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .rv-wikis-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0.5rem 1rem; margin: 0; }
 .rv-wikis-facts dt { color: var(--rv-text-muted, #57606a); font-size: 0.85rem; }
 .rv-wikis-facts dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }

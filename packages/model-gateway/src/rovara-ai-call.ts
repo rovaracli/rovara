@@ -26,6 +26,12 @@ export const ROVARA_AI_MODEL_NOT_ENABLED: RouteRefusal = Object.freeze({ ok: fal
 const MODEL_ACCESS_WORDS = BEDROCK_MODEL_ACCESS_WORDS;
 /** DEC 240: Bedrock refused Rovara's own role. Free: the customer is never charged for it. */
 export const ROVARA_AI_UNAVAILABLE: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "unavailable", message: "Rovara's AI is unavailable right now. Try again later." });
+/**
+ * Bedrock throttled the call (HTTP 429). A model whose tokens-per-minute quota in Rovara's account is 0 answers EVERY call this way, which is not an outage:
+ * say what is wrong, and that another model is the way out. A real burst limit is the same answer, so the words say "used up or set to 0" and never claim which.
+ * Free (an error answer has no output). Anthropic's own `rate_limit_error` type, so a client reads it as a limit, not as a provider outage.
+ */
+export const ROVARA_AI_QUOTA: RouteRefusal = Object.freeze({ ok: false as const, status: 429, code: "rate_limit_error", message: "Rovara's AI has no room for this model right now: its AWS quota is used up or set to 0. Choose another model, or try again later." });
 export const PROVIDER_ERROR: RouteRefusal = Object.freeze({ ok: false as const, status: 502, code: "provider_error", message: "provider unavailable" });
 /** Bedrock's InvokeModel body version for Anthropic models. */
 export const BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31";
@@ -60,12 +66,13 @@ export function rovaraGuard(checked: RouteCall, ai: Pick<RovaraAi, "models" | "m
 /**
  * A Bedrock error answer on Rovara's own account carries no output and no token counts: nothing the company used, so it is never charged
  * (DEC 240b charges from Bedrock's token counts). This includes 5xx and model timeouts, and an exception that arrives as the stream's first
- * frame (bedrock-transport.ts answers that as its error status). A stream that breaks AFTER output started keeps the core's rule (charged).
+ * frame (bedrock-transport.ts answers that as its error status). A call that fails AFTER it was sent (a stream that breaks, a connection that drops) is settled at what was used, not the hold (failed-call.ts).
  * Its refusal of Rovara's own role is Rovara's to fix.
  */
 export function rovaraProviderFailure(status: number, body?: Uint8Array): { charged: boolean; refusal: RouteRefusal; reason: RefusedLogReason } {
   if (status === 403 && body !== undefined && MODEL_ACCESS_WORDS.test(Buffer.from(body).toString("utf8"))) return { charged: false, refusal: ROVARA_AI_MODEL_NOT_ENABLED, reason: "bedrock_403" };
   if (status === 401) return { charged: false, refusal: ROVARA_AI_UNAVAILABLE, reason: "bedrock_401" };
   if (status === 403) return { charged: false, refusal: ROVARA_AI_UNAVAILABLE, reason: "bedrock_403" };
+  if (status === 429) return { charged: false, refusal: ROVARA_AI_QUOTA, reason: "bedrock_429" };
   return { charged: false, refusal: PROVIDER_ERROR, reason: "bedrock_other" };
 }

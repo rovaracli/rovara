@@ -70,13 +70,15 @@ async function world(exempt = false, limit = 1_000_000_000, ownKey = false) {
     choose: (value: AgentAiSource) => { selected = value; }, connect: () => { connected = true; } };
 }
 
-it("a truncated paid call retains its reservation with unknown billable usage", async () => {
+it("a truncated paid call settles at the input estimate, never final and with unknown billable usage (failed-call.ts)", async () => {
   const g = await world();
   g.ai.transport = async () => ({ status: 200, body: (async function* () { yield Buffer.from("event: ping\ndata: {}\n\n"); })() });
   expect((await g.send(paths[0])).status).toBe(200);
   expect(g.receipts).toHaveLength(1);
-  expect(g.receipts[0]).toMatchObject({ billing: "customer", status: "awaiting_usage", billableMicros: { state: "unavailable" } });
-  expect(g.receipts[0]!.amountMicros).toEqual(g.receipts[0]!.originalReservationMicros);
+  expect(g.receipts[0]).toMatchObject({ billing: "customer", status: "estimated", reason: "missing_usage", neverConfirmed: true, usageComplete: false, billableMicros: { state: "unavailable" } });
+  const amount = (g.receipts[0]!.amountMicros as { value: number }).value, held = (g.receipts[0]!.originalReservationMicros as { value: number }).value;
+  expect(amount).toBeGreaterThan(0);
+  expect(amount).toBeLessThan(held);
 });
 
 it("a refused paid provider call settles a zero-bill receipt", async () => {

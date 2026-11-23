@@ -10,11 +10,12 @@ import { endpointTarget, ENDPOINT_ADDRESS_REFUSED, type EndpointTarget } from ".
 import { parseEndpointConnect, type EndpointConnection, type EndpointModel } from "./endpoint-source.js";
 import { OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS, OPENAI_AGENT_MODEL, OPENAI_AGENT_UPSTREAM, toChatCompletions, type OpenAiAgentProvider } from "./agent-openai.js";
 import type { AwsCredentials } from "./aws.js";
+import { BEDROCK_BYO_REGION } from "./bedrock-byo.js";
 import { BEDROCK_MODEL_ACCESS_WORDS } from "./bedrock-byo-sessions.js";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
 import { ANTHROPIC_KEY_AGENT_MODELS, OPENAI_KEY_AGENT_MODELS } from "./offered-models.js";
 import { invokeCall, PROVIDER_ERROR, rovaraChargeSource, rovaraGuard, rovaraProviderFailure } from "./rovara-ai-call.js";
-export { BEDROCK_ANTHROPIC_VERSION, ROVARA_AI_FEATURE, ROVARA_AI_MODEL, ROVARA_AI_MODEL_NOT_ENABLED, ROVARA_AI_UNAVAILABLE } from "./rovara-ai-call.js";
+export { BEDROCK_ANTHROPIC_VERSION, ROVARA_AI_FEATURE, ROVARA_AI_MODEL, ROVARA_AI_MODEL_NOT_ENABLED, ROVARA_AI_QUOTA, ROVARA_AI_UNAVAILABLE } from "./rovara-ai-call.js";
 import { validCaps, type Caps, type CapsSource } from "./caps.js";
 import type { EndedTasks } from "./ended.js";
 import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS, type MediaEstimate } from "./estimate.js";
@@ -27,10 +28,11 @@ import { ANSWERS_PATH_PREFIX, ANSWERS_STEP } from "./answers-route.js";
 import { isUpkeepCall, upkeepRefusal, withUpkeepCap, type UpkeepLimits } from "./upkeep-cap.js";
 import { usageEstimated } from "./price-tiers.js";
 import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceKind, type PriceSource } from "./price.js";
-import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
+import { AnswerBrokeError, CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, consumeReviewerGrant, type TaskClaims, type TaskTokenVerifier } from "./token.js";
 import { closeReviewSession, REVIEW_SESSION_CLOSE_GRACE_MS, REVIEW_SESSION_SECONDS, type ReviewerGrantStore } from "./reviewer-grants.js";
 import { hasUsage, settleAmount, validUsage } from "./reported-cost.js";
+import { failedCallMicros, failedCallPhase, providerErrorReason, type FailedCallCause, type FailedCallPhase, type ProviderErrorReason, type StreamProgress } from "./failed-call.js";
 import type { ResolvedPrice } from "./price.js";
 import type { EstimatedSettlement } from "./meter.js";
 import type { TokenUsage } from "./usage.js";
@@ -42,7 +44,7 @@ export interface GatewaySink { head(status: number, headers: Readonly<Record<str
  * (task, person, project, upkeep, company), `route` the route that answered and `payer` who pays for the call's AI (the source word, set once the company's choice
  * is read). Fixed words and numbers only: never a token, key, prompt, provider text, company or task id.
  */
-export type RefusedLogReason = "bedrock_401" | "bedrock_403" | "bedrock_other" | "meter_busy" | RunPriceRefusedReason;
+export type RefusedLogReason = "bedrock_401" | "bedrock_403" | "bedrock_429" | "bedrock_other" | "meter_busy" | RunPriceRefusedReason;
 /**
  * Which run-price check refused a `run_price_authorization_required` call. Log only: the client's body, status and code never change. One fixed word per check
  * (a stable list: add, never rename): `signed_price_missing` the token carries no run price for a source that needs one; the `rovara_*`, `receipts_unavailable`
@@ -57,7 +59,7 @@ const REFUSAL_CODE = /^[a-z0-9_]{1,64}$/u;
 /** A refusal code as it is logged: a fixed lower-case word, or "other" for anything else (a code never carries provider text). */
 export const logCode = (code: string): string => REFUSAL_CODE.test(code) ? code : "other";
 const PAYER = /^[a-z0-9_]{1,32}$/u;
-export type GatewayLogEvent = { event: "customer_source_over_reservation"; source: "bedrock_byo" | "openrouter"; company: string; costMicros: number; heldMicros: number; overageMicros: number } | { event: "openrouter_over_reservation"; costMicros: number; holdMicros: number; sourceId: string } | { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "settle_failed" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
+export type GatewayLogEvent = { event: "customer_source_over_reservation"; source: "bedrock_byo" | "openrouter"; company: string; costMicros: number; heldMicros: number; overageMicros: number } | { event: "openrouter_over_reservation"; costMicros: number; holdMicros: number; sourceId: string } | { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "provider_error"; reason?: ProviderErrorReason } | { event: "settle_failed" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
 export interface GatewayDependencies {
   /** DEC 328: production always supplies the live install setting. Own sources never read it. */
   rovaraAiSetting?: { enabled(): Promise<boolean> };
@@ -128,7 +130,7 @@ export interface RouteCall {
   /** The price kind of the call's model (a Titan embedding is priced as "embedding"). Absent: "chat". */
   priceKind?: PriceKind;
 }
-export interface UsageReader { actualInputTokens?(): number | undefined; push(bytes: Uint8Array): void; whole(value: unknown): void; finish(): TokenUsage | undefined }
+export interface UsageReader { actualInputTokens?(): number | undefined; /** How far a stream got (failed-call.ts). */ progress?(): StreamProgress; push(bytes: Uint8Array): void; whole(value: unknown): void; finish(): TokenUsage | undefined }
 /** A fixed refusal a route answers before any money moves. */
 export interface RouteRefusal { ok: false; status: number; code: string; message: string; headers?: Readonly<Record<string, string>>; /** Logged with the refusal only; never sent. */ reason?: RefusedLogReason }
 /** Everything that differs between the agent route and the product route. The money core (hold, settle, deadline, scan) is shared. */
@@ -179,6 +181,11 @@ export interface GatewayRoute {
   readonly costHeader?: string;
   /** false: the task-ended record does not stop this route's calls (learning runs after its task ended). Absent: it does. */
   readonly stopsWithTask?: false;
+  /**
+   * true: the provider is Bedrock on Rovara's own account. A call that fails after it was sent, with no usage reported, settles at what was used
+   * (nothing before any stream event; the input estimate, plus the output seen) instead of the full hold (failed-call.ts). Absent: the hold.
+   */
+  readonly settlesFailedCalls?: true | undefined;
   /** A permanent cap refusal from the meter, in the route's own words. Absent: 422 budget_exceeded with `prefix`. */
   capRefusal?(refused: { reason: "cap" | "overrun"; item: MeterItem }, scope: MeterScope, caps: Caps, estimateMicros: number, signal: AbortSignal): Promise<RouteRefusal>;
   /** Why a call was not sent after its hold (the key port answered nothing): the route's own refusal. Absent or undefined: 502 provider_error. */
@@ -241,6 +248,11 @@ export const BYO_BEDROCK_MODEL: GuardFailure = Object.freeze({ ok: false as cons
 export const BYO_BEDROCK_REFUSED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Check your Bedrock connection: AWS refused Rovara's use of your company's role. Test the connection again in settings." });
 /** DEC 238: the model is picked but not enabled yet in the company's AWS account (its one-time access or Marketplace step). Free. */
 export const BYO_BEDROCK_MODEL_NOT_ENABLED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "model_not_enabled", message: "This model is not enabled yet in your company's AWS account. An AWS admin opens it once in the Bedrock console, then try again." });
+/**
+ * Bedrock throttled a call in the company's OWN account (HTTP 429): a model whose tokens-per-minute quota there is 0 answers every call this way. The Region
+ * comes from the company's own saved connection (a validated Region name), never from the request or the answer. Free; Anthropic's `rate_limit_error` type.
+ */
+export const byoBedrockQuota = (region: string): RouteRefusal => Object.freeze({ ok: false as const, status: 429, code: "rate_limit_error", message: `Your AWS account has no Bedrock room for this model in ${region}: its quota is used up or set to 0. Choose another model, or ask AWS to raise the quota (Service Quotas).` });
 /** DEC 240: the company chose Rovara's AI, and this gateway does not offer it. Nothing held or sent; no fallback to its key. */
 export const ROVARA_AI_OFF: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: Rovara's AI is not available on this install." });
 /** The agent route: Anthropic Messages, the R3a behaviour exactly; on the company's own key when `agentKeys` is set (DEC 236). */
@@ -396,6 +408,8 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     get transport() { return endpoint !== undefined ? endpoint.transport : chat !== undefined ? chat.ai.transport : byo !== undefined ? byo.transport : rovara === undefined ? base.transport : rovara.ai.transport; },
     // Bedrock's refusal: its first bytes, only to tell "model not enabled yet" apart (never echoed or logged).
     get failureBody() { return rovara !== undefined || byo !== undefined; },
+    // Bedrock on Rovara's own account: a call that fails after it was sent settles at what was used (failed-call.ts).
+    get settlesFailedCalls() { return rovara !== undefined ? true as const : undefined; },
     async admit(claims, signal) {
       claimsOf = claims;
       const choice = deps.agentAi;
@@ -539,6 +553,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         // A refusal of the role means the session is no longer good: the next call assumes it again.
         if (status === 403 && body !== undefined && BEDROCK_MODEL_ACCESS_WORDS.test(Buffer.from(body).toString("utf8"))) return { charged: false, refusal: BYO_BEDROCK_MODEL_NOT_ENABLED };
         if (status === 401 || status === 403) { byo.deps.sessions.forget(byo.row); void byo.deps.refused?.(byo.row.iss, byo.row.cid, byo.row).catch(() => undefined); return { charged: false, refusal: BYO_BEDROCK_REFUSED }; }
+        if (status === 429 && BEDROCK_BYO_REGION.test(byo.connection.region)) return { charged: false, refusal: byoBedrockQuota(byo.connection.region), reason: "bedrock_429" };
         return { charged: false, refusal: PROVIDER_ERROR };
       }
       if (rovara !== undefined) return rovaraProviderFailure(status, body);
@@ -628,8 +643,20 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let refusedCode: string | undefined; let completed = false;
   let early: TokenUsage | undefined;
   let usage: UsageReader | undefined;
+  // How a call that failed after it was sent ended (failed-call.ts): who stopped it, how far it got, and what the hold counted as input.
+  let failure: { cause: FailedCallCause; phase: FailedCallPhase } | undefined;
+  let providerFault = false; let stoppedByUs = false; let received = 0; let streamed = false;
+  let failureInput: { bytes: number; fixedTokens: number; media: MediaEstimate | undefined; plainInput: boolean } | undefined;
+  let answerBroke = false;
   // The settle, run once: early for a route that sends its cost in the head, else in the finally. Its result says what was written.
   let settled: { ok: boolean; micros: number; estimated: boolean } | undefined; let settling = false;
+  // How far the answer got: the larger of what the usage reader saw in the stream passed on and what the transport saw as it read it (reasoning and held text included).
+  const streamProgress = (): StreamProgress => {
+    let a: StreamProgress | undefined; let b: StreamProgress | undefined;
+    try { a = usage?.progress?.(); } catch { a = undefined; }
+    try { b = provider?.progress?.(); } catch { b = undefined; }
+    return { events: Math.max(a?.events ?? 0, b?.events ?? 0), outputBytes: Math.max(a?.outputBytes ?? 0, b?.outputBytes ?? 0) };
+  };
   const settleOnce = async (): Promise<{ ok: boolean; micros: number; estimated: boolean } | undefined> => {
     if (settling || (reservation === undefined && sessionCall === undefined) || route === undefined) return settled;
     settling = true;
@@ -646,7 +673,16 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         if (settlementReported === undefined || !complete || unexpectedRouterWrite(settlementUsage)) retainMissingUsage = true;
       }
       let estimateRecord: EstimatedSettlement | undefined;
-      if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
+      // A call that failed after it was sent and reported no usage: what was used, not the hold (a free call is the not-sent receipt below).
+      let failedMicros: number | undefined;
+      if (route.settlesFailedCalls === true && failure !== undefined && cost > 0 && !completed && settlementUsage === undefined && settlementPrice !== undefined && failureInput !== undefined) {
+        const measured = usage?.actualInputTokens?.();
+        failedMicros = failedCallMicros({ ...failure, inputBytes: failureInput.bytes, fixedInputTokens: failureInput.fixedTokens, media: failureInput.media, ...(measured === undefined ? {} : { inputTokens: measured }), outputBytes: failure.phase === "after_output" ? Math.max(streamProgress().outputBytes, streamed ? 0 : received) : 0, wholeAnswer: !streamed && provider !== undefined, price: settlementPrice, plainInput: failureInput.plainInput, reservationMicros: reservedMicros });
+      }
+      if (failedMicros !== undefined) {
+        cost = failedMicros; estimated = failedMicros > 0;
+        if (failedMicros > 0 && settlementPrice !== undefined && settlementModel !== undefined) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0 };
+      } else if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
         const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: reservedMicros, retainMissingUsage });
         cost = amount.actualMicros; estimated = amount.estimated;
         // Customer Bedrock reviews record the true bill like every customer call; other review sources retain their ceiling clamp.
@@ -654,7 +690,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
       }
       if (charge !== undefined && reservation !== undefined && route.meter.settleV2 !== undefined && settlementPrice !== undefined) {
-        const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, retainMissingUsage, customerPriceAuthorized: callClaims?.runPrice !== undefined, notSent: cost === 0, now: now() });
+        const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, retainMissingUsage, customerPriceAuthorized: callClaims?.runPrice !== undefined, notSent: cost === 0, now: now(), ...(failedMicros === undefined ? {} : { failedMicros }) });
         // Record the customer's true bill, even above the hold. The meter atomically latches overrun.
         const observed = chargeValue(receipt.amountMicros)!;
         if (receipt.billing === "external_provider" && (route.payer === "bedrock_byo" || route.provider === "openrouter") && callClaims !== undefined && observed > reservedMicros) {
@@ -864,6 +900,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (grant === undefined || customerReview) reservation = reserved.reservation;
     if (grant !== undefined && (!customerReview || session === undefined)) held = reserved.reservation;
     reservedMicros = estimate;
+    streamed = guarded.streaming;
+    failureInput = { bytes: guarded.bytes.length - (guarded.images?.dataBytes ?? 0) - (guarded.media?.dataBytes ?? 0), fixedTokens: guarded.images?.tokens ?? 0, media: guarded.media, plainInput: guarded.inputBounded && !guarded.usesPromptCache };
     // One non-overlapping, deadline-bounded poll also stops streams stalled between chunks.
     const pollEnded = async (): Promise<void> => {
       try { if (await taskEnded()) abort(); } catch { abort(); }
@@ -923,7 +961,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (controller.signal.aborted) throw new NotSentError();
     cost = estimate; estimated = true;
     try { provider = await wait(route.transport({ body: guarded.bytes, headers: guarded.headers, key, signal: controller.signal, ...(guarded.path === undefined ? {} : { path: guarded.path }) })); }
-    catch (error) { if (error instanceof NotSentError) { cost = 0; estimated = false; } throw error; }
+    catch (error) { if (error instanceof NotSentError) { cost = 0; estimated = false; } else if (!controller.signal.aborted) { providerFault = true; answerBroke = error instanceof AnswerBrokeError; } throw error; }
     if (provider.status < 200 || provider.status >= 300) {
       let failureBytes: Uint8Array | undefined;
       if (route.failureBody === true) {
@@ -943,8 +981,11 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const stream = provider.body[Symbol.asyncIterator]();
     if (guarded.streaming) { head = true; sink.head(200, { ...JSON_HEADERS, "content-type": guarded.streamContentType ?? "text/event-stream; charset=utf-8" }); }
     for (;;) {
-      const next = await wait(stream.next()); if (next.done) break;
-      if (await taskEnded()) throw new Error("provider unavailable");
+      let next: IteratorResult<Uint8Array>;
+      try { next = await wait(stream.next()); } catch (error) { if (!controller.signal.aborted) providerFault = true; throw error; }
+      if (next.done) break;
+      if (await taskEnded()) { stoppedByUs = true; throw new Error("provider unavailable"); }
+      received += next.value.byteLength;
       total += next.value.byteLength; if (total > MAX_RESPONSE_BYTES) throw new Error("provider unavailable");
       const safe = scanner.push(next.value); if (safe.hit) throw new Error("provider unavailable");
       if (guarded.streaming) { usage.push(next.value); if (safe.bytes.length) await wait(sink.write(safe.bytes)); }
@@ -979,13 +1020,17 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       throw new Error("provider unavailable");
     }
     // Incomplete/malformed SSE is a failed stream, never a silent partial success.
-    if (counts === undefined) throw new Error("provider unavailable");
+    if (counts === undefined) { providerFault = true; throw new Error("provider unavailable"); }
     sink.end(); completed = true;
     settlementUsage = counts;
     // A provider-reported cost (OpenRouter) counts only for a call that completed with readable usage; settleAmount applies its rules.
     try { const reported = provider.reportedCostMicros?.(); if (reported !== undefined) settlementReported = reported; } catch { /* no reported cost */ }
   } catch (error) {
-    log({ event: "provider_error" });
+    // Who stopped the call and how far it got: the log's reason, and (a Bedrock route) what the call is settled at instead of the hold.
+    const cause: FailedCallCause | "not_sent" = error instanceof NotSentError ? "not_sent" : controller.signal.aborted || stoppedByUs ? "aborted" : providerFault ? "provider" : "gateway";
+    const phase = failedCallPhase({ streaming: streamed, answered: provider !== undefined || answerBroke, received, progress: streamProgress() });
+    if (cause !== "not_sent") failure = { cause, phase };
+    log({ event: "provider_error", reason: providerErrorReason(cause, phase) });
     const notSent = !head && error instanceof NotSentError ? route?.notSent?.() : undefined;
     try { if (head) sink.destroy(); else if (notSent !== undefined) await respond(notSent.status, notSent.code, notSent.message, notSent.headers); else await respond(502, "provider_error", "provider unavailable"); } catch { sink.destroy(); }
   } finally {

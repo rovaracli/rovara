@@ -45,7 +45,7 @@ test("a checked fix waiting turns the action into Approve new setup, a link to t
   await setWikiSetup(page, PROJECT, { repair: { step: STEP, fixReady: true } });
   await page.goto(ROUTES.project(PROJECT));
   const card = page.getByTestId("setup-repair-card");
-  await expect(card.getByRole("link", { name: "Approve new setup" })).toHaveAttribute("href", new RegExp(`/app/onboard\\?project=${PROJECT}&step=setup`, "u"));
+  await expect(card.getByRole("link", { name: "Approve new setup" })).toHaveAttribute("href", new RegExp(`/app/projects/${PROJECT}#setup-checklist$`, "u"));
   await expect(card.getByRole("button", { name: /Fix setup/u })).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("setup-repair-approve.png"), fullPage: true });
 });

@@ -125,6 +125,8 @@ export function workTask(raw: unknown): Record<string, unknown> | undefined {
       stage: text(workflow["stage"], 40), state: text(workflow["state"], 40), revision: num(workflow["revision"]), path: text(workflow["path"], 40), outcome: text(workflow["outcome"], 40), blockReason: text(workflow["blockReason"], 500),
       // K0b: the round of Understand's questions (Code's workflow.intent.rounds), so an answer names the round it answers.
       round: isRecord(workflow["intent"]) ? num(workflow["intent"]["rounds"]) : undefined,
+      // PLAN-CARD-ABSENT: whether a plan document exists, when the answer lists the workflow's artifacts (a list summary does not): "no plan yet" is then known, not guessed from the stage.
+      planWritten: Array.isArray(workflow["artifacts"]) ? list(workflow["artifacts"], 200).filter(isRecord).some((artifact) => artifact["type"] === "plan") : undefined,
       // A summary omits the definition and program, so it cannot prove the built-in order either. Reuse the no-completion marker for any unconfirmed order.
       programmed: workflow["program"] !== undefined || workflow["definitionId"] !== "agentx-task-to-pr" ? true : undefined,
     }),

@@ -15,3 +15,5 @@
 
 /* Design review (DR11): the stage card's settings editor. */
 .rv-design-setting{display:grid;gap:var(--rv-space-4);margin-top:var(--rv-space-5);padding-top:var(--rv-space-4);border-top:1px solid var(--rv-border)}.rv-design-setting h4{margin:0}.rv-design-field{display:grid;gap:var(--rv-space-2);min-width:0}.rv-design-people{border:0;margin:0;padding:0;display:grid;gap:var(--rv-space-2);min-width:0}.rv-design-people legend{padding:0;margin-bottom:var(--rv-space-2);font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+
+.rv-project-start-path{border:0;margin:var(--rv-space-3) 0;padding:0;display:grid;gap:var(--rv-space-2)}.rv-project-start-path legend{font-weight:600;margin-bottom:var(--rv-space-1);padding:0}.rv-project-start-path-option{display:flex;gap:var(--rv-space-2);align-items:flex-start;cursor:pointer}.rv-project-start-path-option input{margin-top:.25rem}

@@ -6,6 +6,7 @@ import { AppShell } from "./shell/AppShell.js";
 import { NotFound } from "./shell/NotFound.js";
 import { RouteError } from "./shell/ErrorBoundary.js";
 import { companyAdminReadRoute, type CompanyAdminReadPath } from "./routes/company-admin-read-routes.js";
+import { accountSetupReadRoutes } from "./routes/account-setup-read-routes.js";
 import { companyMoneyAiReadRoute, type CompanyMoneyAiReadPath } from "./routes/company-money-ai-read-routes.js";
 function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>{title}</h1></section>; }
 function SignedOut() {
@@ -22,6 +23,11 @@ function ModelSettingsRedirect({ section }: { section?: string }) {
 function TaskPreviewRedirect() {
  const { id } = useParams(), location = useLocation();
  return <Navigate to={{ pathname: "/s/" + encodeURIComponent(id ?? ""), search: location.search, hash: location.hash }} replace />;
+}
+/** `/app/projects/<p>/setup` (the address Code's website-ask card opens) lands on the project's checklist (on the project page, where every member can read it), never on the old Setup step. */
+function ProjectSetupRedirect() {
+ const { name } = useParams();
+ return name === undefined || !/^[a-z][a-z0-9-]{0,62}$/u.test(name) ? <NotFound /> : <Navigate to={{ pathname: "/app/projects/" + encodeURIComponent(name), hash: "#setup-checklist" }} replace />;
 }
 function PreviewRedirect({ to }: { to: string }) {
  const location = useLocation();
@@ -41,14 +47,17 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  // The unlinked preview addresses redirect to the real pages and keep the query and the fragment (a saved ?task= or ?item= link still opens the same item).
  { path: "previews/work", element: <PreviewRedirect to="/app/live" /> },
  { path: "previews/inbox", element: <PreviewRedirect to="/app/inbox" /> },
- { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/project/ProjectScreen.js")).ProjectScreen }) }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },
+ { path: "projects/:name/browser-testing", lazy: async () => ({ Component: (await import("./screens/setup/browser-testing/BrowserTestingScreen.js")).BrowserTestingScreen }) },
+ { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/project/ProjectScreen.js")).ProjectScreen }) },
+ // A website ask's card ("Open the setup", from Code) opens `/app/projects/<p>/setup`: the project's checklist is where the setup run, its journal and its website asks are decided.
+ { path: "projects/:name/setup", element: <ProjectSetupRedirect /> }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },
  // Retire the preview at the canonical task address.
  { path: "task-preview/:id", element: <TaskPreviewRedirect /> },
  { path: "agents/:id?", lazy: async () => ({ Component: (await import("./screens/agents/DirectoryScreen.js")).DirectoryScreen }) }, { path: "agents/new", element: <ModelSettingsRedirect section="ai-models" /> },
  { path: "agents/:id/edit", element: <ModelSettingsRedirect section="ai-models" /> },
- { path: "account", lazy: async () => ({ Component: (await import("./screens/account/AccountScreen.js")).AccountScreen }) },
- { path: "account/automation-keys", lazy: async () => ({ Component: (await import("./screens/account/AutomationKeysScreen.js")).AutomationKeysScreen }) },
- { path: "onboard", lazy: async () => ({ Component: (await import("./screens/onboarding/OnboardScreen.js")).OnboardScreen }) },
+ // G5 ship: Account, Your GitHub account and Automation keys (the rebuilt pages, with the old page's live actions), lazy.
+ ...accountSetupReadRoutes(),
+ { path: "onboard", lazy: async () => ({ Component: (await import("./screens/account-setup-read/OnboardPage.js")).OnboardPage }) },
  ];
  // Lane C: waiting is caller-scoped, independent of the company-admin navigation flag.
  children.push({ path: "admin/waiting", handle: { webOnly: true, bleed: true }, lazy: async () => ({ Component: (await import("./screens/admin/AdminLayout.js")).AdminLayout }), children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/admin/waiting/WaitingScreen.js")).WaitingScreen }) }] });

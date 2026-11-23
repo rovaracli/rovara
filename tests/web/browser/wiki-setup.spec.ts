@@ -220,7 +220,7 @@ test("a person who may not manage (Sam) sees where the wiki stands and no contro
   await panel.open(PROJECT);
   await expect(panel.byId("wiki-setup-read-only")).toContainText("Only project admins can build the wiki or change these settings.");
   await expect(panel.byId("wiki-setup-message")).toContainText("Wiki built.");
-  await expect(panel.row.getByRole("button", { name: /^(Build wiki|Stop|Continue|Refresh now|Delete wiki|Map the files)/u })).toHaveCount(0);
+  await expect(panel.row.getByRole("button", { name: /^(Build the wiki|Stop|Continue|Refresh now|Delete wiki|Map the files)/u })).toHaveCount(0);
   await expect(panel.row.getByRole("switch")).toHaveCount(0);
   await expect(panel.byId("wiki-setup-agents-state")).toContainText("Agents use the wiki.");
   await page.screenshot({ path: testInfo.outputPath("wiki-setup-viewer.png"), fullPage: true });

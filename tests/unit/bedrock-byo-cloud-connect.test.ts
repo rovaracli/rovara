@@ -6,7 +6,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { bedrockView, bedrockSetup, bedrockCommand } from "../../packages/ui/src/api/bedrock.js";
 import { describe, expect, it } from "vitest";
 import type { BedrockBackend } from "../../packages/cloud-server/src/index.js";
-import { BEDROCK_NOT_ENABLED_STEPS } from "../../packages/cloud-server/src/index.js";
+import { BEDROCK_NOT_ENABLED_STEPS, BEDROCK_NO_QUOTA_STEPS } from "../../packages/cloud-server/src/index.js";
 import { bedrockModelPresets, bedrockSetupCommand, type BedrockConnection } from "../../packages/model-gateway/src/bedrock-byo.js";
 import type { BedrockProbe } from "../../packages/model-gateway/src/bedrock-byo-sessions.js";
 import { ROVARA_AI_US_MODELS } from "../../packages/model-gateway/src/agent-ai.js";
@@ -106,6 +106,19 @@ describe("the gateway's Bedrock service calls", () => {
 
 describe("Cloud: your own Bedrock settings", () => {
   const bedrockWorld = (probe?: Parameters<typeof kit>[0]) => { const k = kit(probe); return { k, w: world({ company: true, bedrock: k.backend, bedrockCheck: k.check }) }; };
+
+  it("a model with no quota room in the company's AWS account is shown as such, with what to do (and the not-enabled steps stay for the other state)", async () => {
+    const { w } = bedrockWorld((_cid, c) => ({ result: "ok", models: { [Object.values(c.models)[0]!]: "no_quota" } }));
+    const ada = await w.signIn("ada", 30);
+    const saved = await w.call(ada, "PUT", "/org/bedrock", write(0, FORM(A)));
+    expect(saved.status).toBe(200);
+    expect(bedrockView.safeParse(saved.body).success).toBe(true);
+    expect(saved.body.connection).toMatchObject({ models: [{ name: "claude-sonnet-5-5", id: SONNET, state: "no_quota" }], quotaSteps: BEDROCK_NO_QUOTA_STEPS });
+    expect((saved.body.connection as Record<string, unknown>).notEnabledSteps).toBeUndefined();
+    expect(BEDROCK_NO_QUOTA_STEPS).toMatch(/quota/u);
+    const read = await w.call(ada, "GET", "/org/bedrock");
+    expect(read.body.connection).toMatchObject({ quotaSteps: BEDROCK_NO_QUOTA_STEPS });
+  });
 
   it("an admin gets the set-up (external id, broker, template, presets) and the one command, then connects; audited; agents can choose it", async () => {
     const { k, w } = bedrockWorld((_cid, c) => ({ result: "ok", models: { [Object.values(c.models)[0]!]: "not_enabled" } }));

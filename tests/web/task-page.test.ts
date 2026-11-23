@@ -1,9 +1,10 @@
-import { TaskPane, planNotWritten } from "../../packages/ui/src/screens/work/TaskPane.js";
+import { TaskPane, planAbsentLine, planNotExpectedYet, planNotWritten } from "../../packages/ui/src/screens/work/TaskPane.js";
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { useLayoutEffect } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { DecisionCardsViewReaderSchema, SessionResponseReaderSchema } from "@agentx/contracts/web";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
@@ -144,7 +145,7 @@ function pageSetup(options: Setup) {
     return { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } };
   });
   const query = createQueryClient(), where: { current: string } = { current: "" };
-  const Where = () => { where.current = useLocation().pathname + useLocation().search;return null; };
+  const Where = () => { const at = useLocation(); useLayoutEffect(() => { where.current = at.pathname + at.search; }); return null; };
   const mount = () => renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [options.path], children: h(Announcer, { children: h("div", {}, h(Where, {}), h(Routes, {}, h(Route, { path: "/app/sessions/:id", element: h(SessionScreen, {}) }), h(Route, { path: "/app/live", element: h(WorkScreen, {}) }))) }) }) }) }));
   let ui = mount();
   return { ...f, ...ui, query, where, failDecisions(response: ApiResponse) { decisionsFailure = response; }, failPlan(response: ApiResponse | undefined) { planFailure = response; }, remount() { ui.unmount();query.clear();ui = mount(); }, close() { ui.unmount();query.clear(); } };
@@ -257,6 +258,207 @@ it("shows the plan once it is written, without a reload, when the task updates",
     expect(screen.queryByTestId("plan-not-yet")).toBeNull();
     expect(screen.queryByText("Plan unavailable")).toBeNull();
   } finally { apply.stop();f.close(); }
+});
+
+// ---- PLAN-CARD-ABSENT: absent is not unreadable. Before a plan can exist, no read answer may say "couldn't be read" ----
+const STARTING = (patch: Record<string, unknown> = {}) => task(ID.plan, "Add a retry to the billing webhook", { status: "STARTING", startupReason: "own-machine-starting", workflow: undefined, ...patch }, "PLAN", "RUNNING", 1);
+const UNREADABLE_SENTENCE = /couldn't be read/u;
+/** Every text the page showed at any moment: a flicker (even for one frame) lands here. */
+function recordPageText() {
+  const seen = new Set<string>(), grab = () => { seen.add(document.body.textContent ?? ""); };
+  const observer = new MutationObserver(grab);
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  grab();
+  return { stop() { observer.disconnect(); }, everShowed: (text: string | RegExp) => [...seen].some(value => typeof text === "string" ? value.includes(text) : text.test(value)) };
+}
+const pollPlan = async (f: ReturnType<typeof pageSetup>, times: number) => { for (let i = 0; i < times; i++) { await f.query.invalidateQueries({ queryKey: ["work", "plan", ID.plan], exact: true });await new Promise(resolve => setTimeout(resolve, 5)); } };
+it("planNotExpectedYet: true only before a plan can exist, never with a spec decision or a pull request", () => {
+  const read = (patch: Record<string, unknown>) => readTaskList({ tasks: [task(ID.plan, "T", patch, "PLAN", "RUNNING")] })[0]!;
+  const specCard = readDecisions(DecisionCardsViewReaderSchema.parse(decisionsView([CARDS.find(card => card.kind === "approve_plan")!]))).find(d => d.card.kind === "approve_plan")!;
+  expect(planNotExpectedYet(read({ status: "STARTING", workflow: undefined }), undefined)).toBe(true);
+  expect(planNotExpectedYet(read({ workflow: { stage: "UNDERSTAND", state: "RUNNING" } }), undefined)).toBe(true);
+  // PLAN is never certain-absent: changes requested, a plan-check send-back and the full path's re-entry all come back to PLAN with a plan written.
+  expect(planNotExpectedYet(read({ workflow: { stage: "PLAN", state: "RUNNING" } }), undefined)).toBe(false);
+  expect(planNotExpectedYet(read({ status: "STARTING", workflow: { stage: "PLAN", state: "RUNNING" } }), undefined)).toBe(false);
+  expect(planNotExpectedYet(read({ workflow: { stage: "UNDERSTAND", state: "RUNNING", outcome: "CHANGES_REQUESTED" } }), undefined)).toBe(false);
+  expect(planNotExpectedYet(read({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } }), undefined)).toBe(false);
+  expect(planNotExpectedYet(read({ workflow: { stage: "IMPLEMENT", state: "RUNNING" } }), undefined)).toBe(false);
+  expect(planNotExpectedYet(read({ status: "STARTING", workflow: undefined }), specCard)).toBe(false);
+  expect(planNotExpectedYet(read({ workflow: { stage: "PLAN", state: "RUNNING" }, pullRequests: [{ repository: "example/web", number: 3, state: "open" }] }), undefined)).toBe(false);
+});
+it.each([
+  ["a machine that is not up yet (503)", { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "The plan could not be verified." } } }],
+  ["an unreadable answer (200, not a plan)", { status: 200, body: "not a plan" }],
+  ["a 404 in other words", { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } }],
+  ["a route Code does not serve yet (501)", { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "The plan is not connected yet." } } }],
+] as const)("a task still starting a machine shows the quiet not-written line for %s, steady across polls, never the unreadable sentence", async (_name, response) => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [STARTING()], cards: decisionsView([]) });
+  const text = recordPageText();
+  f.failPlan(response);f.remount();
+  const lines = await screen.findAllByTestId("plan-not-yet");
+  expect(lines.length).toBe(1);
+  for (const line of lines) expect(line.textContent).toBe("Rovara will show the plan here when it's ready.");
+  await pollPlan(f, 4);
+  await screen.findAllByTestId("plan-not-yet");
+  text.stop();
+  expect(text.everShowed(UNREADABLE_SENTENCE)).toBe(false);
+  expect(text.everShowed("Plan unavailable")).toBe(false);
+  expect(text.everShowed("Loading plan")).toBe(false);
+  expect(screen.queryByRole("button", { name: "Read the plan again" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByTestId("section-error")).toBeNull();
+  f.close();
+});
+it("a task reading the request (UNDERSTAND) never says the plan could not be read", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [task(ID.plan, "Add a retry to the billing webhook", { workflow: { stage: "UNDERSTAND", state: "RUNNING", revision: 1, path: "STANDARD" } }, "UNDERSTAND", "RUNNING", 1)], cards: decisionsView([]) });
+  f.failPlan({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "The plan could not be verified." } } });f.remount();
+  expect((await screen.findAllByTestId("plan-not-yet")).length).toBe(1);
+  expect(screen.queryByText(UNREADABLE_SENTENCE)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Read the plan again" })).toBeNull();
+  f.close();
+});
+it("a task at stage PLAN: the exact served 'no plan yet' 404 is the quiet line; any other failed read is 'couldn't be read'; a pending read never says 'not written yet'", async () => {
+  const planTask = [task(ID.plan, "Add a retry to the billing webhook", { workflow: { stage: "PLAN", state: "RUNNING", revision: 2, path: "STANDARD" } }, "PLAN", "RUNNING", 1)];
+  const quiet = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: planTask, cards: decisionsView([]) });
+  quiet.failPlan(NOT_YET);quiet.remount();
+  await screen.findAllByTestId("plan-not-yet");
+  expect(screen.queryByText(UNREADABLE_SENTENCE)).toBeNull();
+  quiet.close();
+  const failed = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: planTask, cards: decisionsView([]) });
+  const text = recordPageText();
+  failed.failPlan({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "The plan could not be verified." } } });failed.remount();
+  expect((await screen.findAllByRole("alert")).length).toBeGreaterThan(0);
+  text.stop();
+  expect(text.everShowed("Plan not written yet")).toBe(false);
+  expect(screen.queryByTestId("plan-not-yet")).toBeNull();
+  expect(screen.queryAllByRole("button", { name: "Read the plan again" }).length + screen.queryAllByRole("button", { name: "Try again" }).length).toBeGreaterThan(0);
+  failed.close();
+});
+it("a machine that restarts at a later stage (STARTING at IMPLEMENT, plan approved) never says the plan is not written", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [STARTING({ workflow: { stage: "IMPLEMENT", state: "READY", revision: 6, path: "STANDARD" } })], cards: decisionsView([]) });
+  const text = recordPageText();
+  f.failPlan({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "The plan could not be verified." } } });f.remount();
+  await waitFor(() => expect(screen.queryAllByText(UNREADABLE_SENTENCE).length + screen.queryAllByText("The plan could not be verified.").length).toBeGreaterThan(0));
+  text.stop();
+  expect(text.everShowed("Plan not written yet")).toBe(false);
+  expect(screen.queryByTestId("plan-not-yet")).toBeNull();
+  f.close();
+});
+it("a plan that was loaded and whose refetch then fails is never 'not written yet' (kept data is not an absent plan), even for a starting task", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [STARTING()], cards: decisionsView([]) });
+  const spec = await screen.findByRole("region", { name: "Spec" }, { timeout: 4000 });
+  expect(spec.textContent).toContain("One small change, one new test");
+  f.failPlan({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "The plan could not be verified." } } });
+  await f.query.invalidateQueries({ queryKey: ["work", "plan", ID.plan], exact: true });
+  await waitFor(() => expect(screen.queryAllByText("The plan could not be verified.").length + screen.queryAllByText(UNREADABLE_SENTENCE).length).toBeGreaterThan(0));
+  expect(screen.queryByTestId("plan-not-yet")).toBeNull();
+  f.close();
+});
+// ---- EXACT: Code's served workflow artifacts say whether a plan exists; the stage is only a fallback for an answer that carries none ----
+const ART = { id: "plan-1", type: "plan", version: 1, sha256: "a".repeat(64), producer: "agentx-worker-untrusted", objectKey: "tasks/x/plan-1.md", createdAt: "2026-11-23T10:00:00.000Z" };
+const withArtifacts = (artifacts: unknown[] | undefined, workflow: Record<string, unknown>, status = "RUNNING") => [task(ID.plan, "Add a retry to the billing webhook", { status, workflow: { revision: 3, path: "STANDARD", ...workflow, ...(artifacts === undefined ? {} : { artifacts }) } }, String(workflow["stage"]), String(workflow["state"]), 1)];
+const SERVED_503 = { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "The plan could not be verified." } } } as const;
+it("readTask reads whether a plan exists from the served workflow artifacts (or Cloud's planWritten), and nothing when neither is served", () => {
+  const read = (workflow: Record<string, unknown>) => readTaskList({ tasks: [task(ID.plan, "T", { workflow })] })[0]!.workflow?.planWritten;
+  expect(read({ stage: "PLAN", state: "RUNNING", artifacts: [] })).toBe(false);
+  expect(read({ stage: "PLAN", state: "RUNNING", artifacts: [{ ...ART, type: "requirements" }] })).toBe(false);
+  expect(read({ stage: "PLAN", state: "RUNNING", artifacts: [ART] })).toBe(true);
+  expect(read({ stage: "PLAN", state: "RUNNING", planWritten: true })).toBe(true);
+  expect(read({ stage: "PLAN", state: "RUNNING" })).toBeUndefined();
+});
+it("planNotExpectedYet by artifacts: no plan artifact is absent at any stage, a plan artifact never is; the stage guess is used only without an artifact list", () => {
+  const read = (artifacts: unknown[] | undefined, workflow: Record<string, unknown>, status = "RUNNING") => readTaskList({ tasks: withArtifacts(artifacts, workflow, status) })[0]!;
+  expect(planNotExpectedYet(read([], { stage: "PLAN", state: "RUNNING" }), undefined)).toBe(true);
+  expect(planNotExpectedYet(read([], { stage: "PLAN", state: "RUNNING", outcome: "CHANGES_REQUESTED" }), undefined)).toBe(true);
+  expect(planNotExpectedYet(read([ART], { stage: "PLAN", state: "RUNNING", outcome: "CHANGES_REQUESTED" }), undefined)).toBe(false);
+  expect(planNotExpectedYet(read([ART], { stage: "IMPLEMENT", state: "READY" }, "STARTING"), undefined)).toBe(false);
+  expect(planNotExpectedYet(read([], { stage: "PLAN", state: "RUNNING" }), readDecisions(DecisionCardsViewReaderSchema.parse(decisionsView([CARDS.find(card => card.kind === "approve_plan")!])))[0])).toBe(false);
+  expect(planNotExpectedYet(read(undefined, { stage: "PLAN", state: "RUNNING" }), undefined)).toBe(false);
+  expect(planNotExpectedYet(read(undefined, { stage: "UNDERSTAND", state: "RUNNING" }), undefined)).toBe(true);
+});
+it("planAbsentLine says 'Rovara is writing the plan' only at a running planning step on a machine that is up; otherwise the quiet line", () => {
+  const read = (artifacts: unknown[] | undefined, workflow: Record<string, unknown>, status = "RUNNING") => readTaskList({ tasks: withArtifacts(artifacts, workflow, status) })[0]!;
+  expect(planAbsentLine(read([], { stage: "PLAN", state: "RUNNING" }))).toBe("Rovara is writing the plan.");
+  expect(planAbsentLine(read([], { stage: "PLAN", state: "RUNNING" }, "STARTING"))).toBe("Rovara will show the plan here when it's ready.");
+  expect(planAbsentLine(read([], { stage: "UNDERSTAND", state: "RUNNING" }))).toBe("Rovara will show the plan here when it's ready.");
+  expect(planAbsentLine(read([], { stage: "PLAN", state: "WAITING" }))).toBe("Rovara will show the plan here when it's ready.");
+});
+it("a task that skipped Understand and fails a plan read at PLAN before any plan (no plan artifact) says the plan is being written, never 'couldn't be read', steady across polls", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: withArtifacts([], { stage: "PLAN", state: "RUNNING" }), cards: decisionsView([]) });
+  const text = recordPageText();
+  f.failPlan(SERVED_503);f.remount();
+  const lines = await screen.findAllByTestId("plan-not-yet");
+  expect(lines.length).toBe(1);
+  expect(lines[0]!.textContent).toBe("Rovara is writing the plan.");
+  await pollPlan(f, 4);
+  await screen.findAllByTestId("plan-not-yet");
+  text.stop();
+  expect(text.everShowed(UNREADABLE_SENTENCE)).toBe(false);
+  expect(text.everShowed("Plan unavailable")).toBe(false);
+  expect(text.everShowed("Loading plan")).toBe(false);
+  expect(screen.queryByRole("button", { name: "Read the plan again" })).toBeNull();
+  f.close();
+});
+it("a task sent back to PLAN whose artifacts hold the plan: a failed read is 'couldn't be read' with a retry, not 'not written yet'", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: withArtifacts([ART], { stage: "PLAN", state: "RUNNING", outcome: "CHANGES_REQUESTED", revision: 4 }), cards: decisionsView([]) });
+  const text = recordPageText();
+  f.failPlan(SERVED_503);f.remount();
+  await waitFor(() => expect(screen.queryAllByText("The plan could not be verified.").length + screen.queryAllByText(UNREADABLE_SENTENCE).length).toBeGreaterThan(0));
+  text.stop();
+  expect(screen.queryByTestId("plan-not-yet")).toBeNull();
+  expect(text.everShowed("Plan not written yet")).toBe(false);
+  expect(text.everShowed("Rovara is writing the plan")).toBe(false);
+  f.close();
+});
+it("a machine that restarts after the plan was written (artifacts hold it, STARTING at IMPLEMENT) with a failed read: not 'not written yet'", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: withArtifacts([ART], { stage: "IMPLEMENT", state: "READY" }, "STARTING"), cards: decisionsView([]) });
+  f.failPlan(SERVED_503);f.remount();
+  await waitFor(() => expect(screen.queryAllByText("The plan could not be verified.").length + screen.queryAllByText(UNREADABLE_SENTENCE).length).toBeGreaterThan(0));
+  expect(screen.queryByTestId("plan-not-yet")).toBeNull();
+  f.close();
+});
+it("a machine still starting (no plan artifact, stage PLAN) says the quiet line, not 'writing': nothing is writing yet", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: withArtifacts([], { stage: "PLAN", state: "RUNNING" }, "STARTING"), cards: decisionsView([]) });
+  f.failPlan(SERVED_503);f.remount();
+  const lines = await screen.findAllByTestId("plan-not-yet");
+  expect(lines.map(line => line.textContent)).toEqual(["Rovara will show the plan here when it's ready."]);
+  f.close();
+});
+it("an older Code that serves no artifact list falls back to the stage guess: a failed read at PLAN stays 'couldn't be read', a starting task with no stage stays quiet", async () => {
+  const older = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: withArtifacts(undefined, { stage: "PLAN", state: "RUNNING" }), cards: decisionsView([]) });
+  older.failPlan(SERVED_503);older.remount();
+  await waitFor(() => expect(screen.queryAllByText("The plan could not be verified.").length + screen.queryAllByText(UNREADABLE_SENTENCE).length).toBeGreaterThan(0));
+  expect(screen.queryByTestId("plan-not-yet")).toBeNull();
+  older.close();
+  const starting = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [STARTING()], cards: decisionsView([]) });
+  starting.failPlan(SERVED_503);starting.remount();
+  expect((await screen.findAllByTestId("plan-not-yet")).length).toBe(1);
+  starting.close();
+});
+it("a refused read (403) is still a failed read even before a plan can exist: it is not an absent plan", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [STARTING()], cards: decisionsView([]) });
+  f.failPlan({ status: 403, body: { error: { code: "FORBIDDEN", message: "You can no longer read this task." } } });f.remount();
+  await waitFor(() => expect(screen.queryByTestId("plan-not-yet")).toBeNull());
+  expect((await screen.findAllByText("You can no longer read this task.")).length).toBeGreaterThan(0);
+  f.close();
+});
+it("a plan that exists (a plan decision is waiting) with a failed read still says it could not be read, with Read the plan again", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}` });
+  await screen.findByRole("button", { name: "Approve plan v1" });
+  f.failPlan({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "The plan could not be verified." } } });f.remount();
+  expect((await screen.findByRole("alert")).textContent).toMatch(UNREADABLE_SENTENCE);
+  expect(screen.getByRole("heading", { name: "Plan unavailable" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Read the plan again" })).toBeTruthy();
+  expect(screen.queryByTestId("plan-not-yet")).toBeNull();
+  f.close();
+});
+it("a plan that exists is shown, even for a task whose row still says it is starting", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [STARTING()], cards: decisionsView([]) });
+  const spec = await screen.findByRole("region", { name: "Spec" }, { timeout: 4000 });
+  expect(spec.textContent).toContain("One small change, one new test");
+  expect(screen.queryByTestId("plan-not-yet")).toBeNull();
+  expect(screen.queryByText(UNREADABLE_SENTENCE)).toBeNull();
+  f.close();
 });
 
 it("drops cached Work decisions after the latest decision read is refused", async () => {
@@ -732,4 +934,25 @@ it("Spec removes inline answer senders when the caller withdraws its answer acti
  expect(screen.queryByRole("button", { name: "No, replace it" })).toBeNull();
  expect(screen.getByRole("region", { name: "Spec" })).toBeTruthy();
  expect(send).not.toHaveBeenCalled();ui.unmount();
+});
+
+// ---- REVIEW (Opus, uncommitted): a plan that already exists while the stage is back at PLAN must never read "not written yet" ----
+it("REVIEW: a task sent back to PLAN after changes were requested (plan v1 exists) with a failed plan read says it could not be read, not 'not written yet'", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [task(ID.plan, "Add a retry to the billing webhook", { workflow: { stage: "PLAN", state: "RUNNING", revision: 4, path: "STANDARD", outcome: "CHANGES_REQUESTED" } }, "PLAN", "RUNNING", 1)], cards: decisionsView([]) });
+  f.failPlan({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "The plan could not be verified." } } });f.remount();
+  await waitFor(() => expect(screen.queryAllByText(UNREADABLE_SENTENCE).length + screen.queryAllByTestId("plan-not-yet").length).toBeGreaterThan(0));
+  expect(screen.queryByTestId("plan-not-yet")).toBeNull();
+  f.close();
+});
+it("REVIEW: planNotExpectedYet is false for a task whose plan already exists (changes requested, or a later stage while its machine restarts)", () => {
+  const read = (patch: Record<string, unknown>) => readTaskList({ tasks: [task(ID.plan, "T", patch, "PLAN", "RUNNING")] })[0]!;
+  expect(planNotExpectedYet(read({ workflow: { stage: "PLAN", state: "RUNNING", outcome: "CHANGES_REQUESTED" } }), undefined)).toBe(false);
+  expect(planNotExpectedYet(read({ status: "STARTING", workflow: { stage: "IMPLEMENT", state: "READY" } }), undefined)).toBe(false);
+});
+
+// ---- REVIEW (Opus, uncommitted): the plan artifact type is matched exactly; "test_plan" (and other types) are not a plan ----
+it("REVIEW: a test_plan, answer or review_report artifact is not a plan document (exact type match, not a substring)", () => {
+  const read = (workflow: Record<string, unknown>) => readTaskList({ tasks: [task(ID.plan, "T", { workflow })] })[0]!.workflow?.planWritten;
+  for (const type of ["test_plan", "answer", "review_report", "Plan", "plan "]) expect(read({ stage: "PLAN", state: "RUNNING", artifacts: [{ ...ART, type }] })).toBe(false);
+  expect(read({ stage: "PLAN", state: "RUNNING", artifacts: [{ ...ART, type: "test_plan" }, ART] })).toBe(true);
 });

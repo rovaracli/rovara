@@ -55,6 +55,14 @@ Slice 1 is agents; slice 2 (the product route, below) is the customer's tests. L
   (Settings shows the steps: open the model once in the Bedrock console as an AWS admin with Marketplace rights; for Anthropic
   models before Claude Opus 4.7, submit the use-case form); any other AccessDenied means the role may not call that model; an
   unknown id is not found. A model the test did not answer is shown as unavailable, never as ready.
+- A **throttle** (HTTP 429, or Bedrock's `ThrottlingException` / `ServiceQuotaExceededException` named first by the transport) on that check is **no_quota**:
+  a model whose tokens-per-minute quota in the account is 0 throttles every call, even this one. Settings shows "not usable right now (AWS quota is 0 or used
+  up)" and what to do (choose another model, or ask AWS to raise the quota in Service Quotas, then test again). It never stops a connection, and a busy account
+  can be throttled too, so the words never claim the quota IS 0. (No new IAM: this is the same `InvokeModel` check. Whether Bedrock throttles `max_tokens: 0`
+  before it validates is not proven; if it validates first the state stays "ready" and the call-time answer below is the safety net.)
+- **At call time** a Bedrock 429 on the agent route (this source, and Rovara's AI) is answered 429 `rate_limit_error` in fixed words naming the quota (and, for
+  the company's own account, the Region): "no room for this model ... its AWS quota is used up or set to 0. Choose another model ...". Free. It used to be a
+  generic 502 `provider_error` ("provider unavailable"), which a client reads as an outage.
 
 ## Isolation
 

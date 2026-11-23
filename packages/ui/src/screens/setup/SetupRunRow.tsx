@@ -4,7 +4,6 @@ import { viewerTime } from "../../design/viewer-time.js";
 // whether this person may start or stop comes from Code's own answer (`canManage`: a company owner or admin, or the project's admin). A re-run only proposes:
 // the project's working setup stays until someone confirms a new one.
 import { useState } from "react";
-import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ProjectSetupChecklist } from "@agentx/contracts/web";
 import { useSetupAgentApi } from "../../api/setup-agent.js";
@@ -90,8 +89,7 @@ export function SetupRunRow({ project, row, onChanged, review }: { project: stri
   {row.status === "ready" && <p className="rv-muted">Running it again only proposes: the working setup stays until someone confirms a new one.</p>}
   <div className="rv-connect-actions">
    <SetupRunControls project={project} status={row.status} onChanged={() => { review?.reset(); onChanged(); }} />
-   {row.status === "failed" && <Link className="rv-button" data-testid="setup-run-edit" to={`/app/onboard?project=${encodeURIComponent(project)}&step=setup`}>Edit commands</Link>}
   </div>
-  {row.status !== "none" && <details><summary>What Rovara ran</summary><RunJournal project={project} running={row.status === "running"} /></details>}
+  {row.status !== "none" && <details><summary>What Rovara ran</summary><RunJournal project={project} running={row.status === "running"} heading={false} /></details>}
  </div>;
 }

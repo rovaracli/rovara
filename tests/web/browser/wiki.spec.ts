@@ -91,7 +91,7 @@ test("empty and edge states: no wiki yet, a build running, a stopped build, and 
   const wiki = new WikiPage(page);
   await setWiki(page, PROJECT, { state: "none" });
   await wiki.open(PROJECT);
-  await expect(wiki.root).toContainText("No wiki pages have been read.");
+  await expect(wiki.root).toContainText("No wiki pages yet.");
   await page.screenshot({ path: testInfo.outputPath("wiki-empty.png"), fullPage: true });
   expect(await violations(page)).toEqual([]);
   await setWiki(page, PROJECT, { state: "building" });

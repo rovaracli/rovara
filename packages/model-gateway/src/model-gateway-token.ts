@@ -109,17 +109,33 @@ export type Payer = { kind: "member"; developerId: string } | { kind: "project";
 export const REVIEWER_KINDS = ["second_review", "design_review"] as const;
 export type ReviewerKind = typeof REVIEWER_KINDS[number];
 export interface ReviewerGrant { kind: ReviewerKind; slot: string; ceilingUsd: number }
+/**
+ * PRICE-BANDS: the model's BASE band, beside the pooled maximum the run price states. A call whose whole input (plain + cache read + cache write) is at most `upToInputTokens` is settled at these rates;
+ * a larger one at the long-context band (never above the pooled figures). Optional and signed with the token: a run price without it is the pooled ceiling alone, exactly as before.
+ */
+export interface RunPriceBaseBand { upToInputTokens: number; inputUsdPerMillion: number; outputUsdPerMillion: number; cacheWriteUsdPerMillion: number; cacheReadUsdPerMillion: number }
 export interface RunPrice {
   companyId: string; model: string; provider: string; sourceId: string; connectionRevision: string;
   catalogModel: string; snapshotHash: string; snapshotVersion: number; expiresAt: number;
   inputUsdPerMillion: number; outputUsdPerMillion: number; cacheWriteUsdPerMillion: number; cacheReadUsdPerMillion: number;
+  baseBand?: RunPriceBaseBand;
+}
+const RATE_FIELDS = ["inputUsdPerMillion", "outputUsdPerMillion", "cacheWriteUsdPerMillion", "cacheReadUsdPerMillion"] as const;
+const rateOk = (key: typeof RATE_FIELDS[number], value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= (key === "cacheReadUsdPerMillion" ? 0 : 0.000001) && value <= 1_000_000;
+/** A base band is exactly its five fields, each rate valid and NOT above the pooled rate beside it (a band can only lower what the pooled run price already bounds). */
+function parseBaseBand(value: unknown, pooled: Record<string, unknown>): RunPriceBaseBand | undefined {
+  const b = record(value);
+  if (b === undefined || Object.keys(b).length !== 5 || !whole(b.upToInputTokens) || b.upToInputTokens === 0) return undefined;
+  for (const key of RATE_FIELDS) if (!rateOk(key, b[key]) || b[key] > (pooled[key] as number)) return undefined;
+  return b as unknown as RunPriceBaseBand;
 }
 export function parseRunPrice(value: unknown): RunPrice | undefined {
   const p = record(value);
-  if (p === undefined || Object.keys(p).length !== 13 || !matches(p.companyId, COMPANY) || !matches(p.model, /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$/u)) return undefined;
+  if (p === undefined || Object.keys(p).length !== (Object.hasOwn(p, "baseBand") ? 14 : 13) || !matches(p.companyId, COMPANY) || !matches(p.model, /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$/u)) return undefined;
   for (const key of ["provider", "sourceId", "connectionRevision", "catalogModel"] as const) if (typeof p[key] !== "string" || !p[key] || p[key].length > (key === "provider" ? 64 : key === "catalogModel" ? 256 : 512)) return undefined;
   if (!matches(p.snapshotHash, /^[a-f0-9]{64}$/u) || !whole(p.snapshotVersion) || p.snapshotVersion === 0 || !whole(p.expiresAt) || p.expiresAt === 0) return undefined;
-  for (const key of ["inputUsdPerMillion", "outputUsdPerMillion", "cacheWriteUsdPerMillion", "cacheReadUsdPerMillion"] as const) if (typeof p[key] !== "number" || !Number.isFinite(p[key]) || p[key] < (key === "cacheReadUsdPerMillion" ? 0 : 0.000001) || p[key] > 1_000_000) return undefined;
+  for (const key of RATE_FIELDS) if (!rateOk(key, p[key])) return undefined;
+  if (Object.hasOwn(p, "baseBand") && parseBaseBand(p.baseBand, p) === undefined) return undefined;
   return p as unknown as RunPrice;
 }
 export interface TaskClaims {

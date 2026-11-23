@@ -44,6 +44,8 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  "screens/setup/setup-repair.css",
  // W6: the wiki row on the setup checklist.
  "screens/setup/wiki/wiki-setup.css",
+ // DEC 417/420/421: Browser testing in a project's setup (its page and its checklist row).
+ "screens/setup/browser-testing/browser-testing.css",
  // Feature A3: the Cost and time pages.
  "screens/admin/report/report.css",
  // WIRING-1B: the rebuilt company money / AI pages (the report, features, AI and sources, Product AI).
@@ -65,7 +67,9 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  // L4-JA89: the project Skills tab (its own lazy chunk).
  "screens/project/skills/skills.css",
  // G4 (Rules, Lessons and How we work): the rebuilt project views, company Rules, Setup recipes and the lesson batch.
- "screens/rules-lessons-read/rules-lessons-read.css"]) {
+ "screens/rules-lessons-read/rules-lessons-read.css",
+ // G5 (account setup): the rebuilt account-setup read screens.
+ "screens/account-setup-read/account-setup-read.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

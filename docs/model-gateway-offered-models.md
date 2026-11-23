@@ -67,3 +67,11 @@ A company can save an ORDER of AI sources for its agents (Cloud's Settings, AI m
 - **Offered models**: with a saved fallback, the list is the models of every usable source of the order, in order, each once (at most 64); a failed read anywhere
   is the fixed 503. Without one, the answer is the first choice's, byte for byte. `reviewerAccess` lists each model under the source that offers it.
 - Learning and answers keep using the first choice only.
+
+## Quota-aware offers (not built: needs new IAM)
+
+The `rovara` list is the allow-list minus `GATEWAY_AGENT_MODELS_DISABLED`; nothing in it knows an account's Bedrock quota. A model whose tokens-per-minute quota in
+Rovara's account is 0 (2026-11-23: Claude Haiku 5.5 on prod) is offered and every call to it fails. What works today with no code or IAM: add the model's name to
+`GATEWAY_AGENT_MODELS_DISABLED` (the CDK `agentModelsDisabled` setting) until AWS raises the quota; a call that does reach Bedrock now answers an honest 429 (see
+`docs/model-gateway-bedrock-byo.md`). Reading the real quota needs `servicequotas:ListServiceQuotas` / `GetServiceQuota` on the gateway's serving role (Rovara's AI)
+and on the customer's role (own Bedrock: a template change every customer re-runs); with it the list could drop a model whose quota is 0, with no false positives.

@@ -206,6 +206,20 @@ function toolUse(b: Json): Json[] {
 export class ConverseStreamToSse {
   readonly #model: string; readonly #id: string;
   #started = false; #stopReason: string | undefined; #ended = false;
+  // How far the answer got, counted as it is read: before reasoning is dropped or leading text is held back (failed-call.ts).
+  #events = 0; #outputBytes = 0;
+  /** Whole events read, and bytes of answer content: text, tool name and input, and reasoning (text, signature, redacted data), whether or not it is passed on. */
+  progress(): { events: number; outputBytes: number } { return { events: this.#events, outputBytes: this.#outputBytes }; }
+  #count(type: unknown, p: Json): void {
+    this.#events++;
+    const bytes = (v: unknown): number => text(v) ? Buffer.byteLength(v, "utf8") : 0;
+    if (type === "contentBlockStart") this.#outputBytes += bytes(record(record(p.start)?.toolUse)?.name);
+    else if (type === "contentBlockDelta") {
+      const d = record(p.delta);
+      const reasoning = record(d?.reasoningContent);
+      this.#outputBytes += bytes(d?.text) + bytes(record(d?.toolUse)?.input) + (reasoning === undefined ? 0 : Object.values(reasoning).reduce<number>((n, v) => n + bytes(v), 0));
+    }
+  }
   readonly #open = new Map<number, number>(); readonly #dropped = new Set<number>(); #next = 0;
   // Carried reasoning: the Converse indexes of the open thinking blocks, and those that have had their signature (nothing follows it).
   readonly #carry: boolean; readonly #thinking = new Set<number>(); readonly #signed = new Set<number>();
@@ -244,6 +258,7 @@ export class ConverseStreamToSse {
       let p: Json | undefined;
       try { p = record(JSON.parse(message.payload.toString("utf8")) as unknown); } catch { throw new EventStreamError(); }
       if (p === undefined) throw new EventStreamError();
+      this.#count(message.headers[":event-type"], p);
       const index = p.contentBlockIndex;
       const validIndex = typeof index === "number" && Number.isSafeInteger(index) && index >= 0 && index < 1_000;
       switch (message.headers[":event-type"]) {

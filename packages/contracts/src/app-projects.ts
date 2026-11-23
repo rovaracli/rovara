@@ -37,7 +37,8 @@ export function projectAllows(role: ProjectRole, action: ProjectPermission): boo
 export const ProjectStatusSchema = z.enum(["active", "archived"]);
 export type ProjectStatus = z.infer<typeof ProjectStatusSchema>;
 
-export const ProjectSetupStatusSchema = z.enum(["unchecked", "checking", "ready", "failed", "outdated"]);
+export const ProjectSetupStatusSchema = z.enum(["unchecked", "checking", "ready", "failed", "outdated", "unknown"]);
+/** `unknown`: Cloud could not read the project's checklist just now (a failed or unreadable read). It is never "ready" and never says the setup needs attention: nothing is known. */
 export type ProjectSetupStatus = z.infer<typeof ProjectSetupStatusSchema>;
 
 export const AppProjectSummarySchema = z.object({

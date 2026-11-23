@@ -54,7 +54,7 @@ export function SetupRepairCard({ project }: { project: string }) {
   <p data-testid="setup-repair-body"><VisibleText text={SETUP_REPAIR_SENTENCES.body(card.step)} /></p>
   <div className="rv-setup-repair-actions">
    {action?.id === "fix_setup" && <SetupRunControls project={project} againLabel={SETUP_REPAIR_SENTENCES.fixLabel} startLabel={SETUP_REPAIR_SENTENCES.fixLabel} onChanged={onChanged} />}
-   {action?.id === "approve_new_setup" && <Link className="rv-button rv-button-primary" data-testid="setup-repair-approve" to={`/app/onboard?project=${encodeURIComponent(project)}&step=setup`}>{SETUP_REPAIR_SENTENCES.approveNewSetup}</Link>}
+   {action?.id === "approve_new_setup" && <Link className="rv-button rv-button-primary" data-testid="setup-repair-approve" to={`/app/projects/${encodeURIComponent(project)}#setup-checklist`}>{SETUP_REPAIR_SENTENCES.approveNewSetup}</Link>}
    <RecheckSetupButton project={project} view={view} />
   </div>
   {action === undefined && <p className="rv-muted" data-testid="setup-repair-reader">{SETUP_REPAIR_SENTENCES.readerNote}</p>}

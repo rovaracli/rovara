@@ -89,7 +89,7 @@ it.each([false, true])("retains the served empty/building explanation in the lis
  const f = mount(undefined, r => r.path.endsWith("/wiki") ? { status: 200, body: { ...index, state: "empty", pages: [], ...(running ? { lastBuild: { buildId: "build-001", kind: "first", state: "running", startedAt: "2026-11-21T12:00:00.000Z" } } : {}) } } : reply(r));
  try {
   const list = await screen.findByRole("region", { name: "All pages" });
-  expect(within(list).getByText(running ? "The first wiki build is running." : "No wiki pages have been read.")).toBeTruthy();
+  expect(within(list).getByText(running ? "The first wiki build is running." : "No wiki pages yet.")).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Wiki reading pane" })).toBeNull();
  } finally { f.close(); }
 });

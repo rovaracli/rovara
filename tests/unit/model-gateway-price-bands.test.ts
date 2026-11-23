@@ -1,152 +1,126 @@
-// PRICE-BANDS (2026-11-17), follow-up to PR #88. Two offered Bedrock models were still charged the cautious estimate:
-// 1. Claude Haiku 5.5: LiteLLM prices it from 100k prompt tokens up (the price tiers held only 128k and 200k), and fetchAWS put AWS's
-//    `_long_ctx` rates at 200k. AWS's offer never states where that band starts, so pooling now reads it from the model's LiteLLM rows
-//    (only ever earlier). Every band LiteLLM uses is now allowed: 32k, 100k, 128k, 200k, 256k, 272k, 512k.
-// 2. Claude Haiku 4.5: its EU row is past its deprecation date (2026-10-15). A deprecated row with every field known now prices its
-//    identity, but only when no non-deprecated row names it; then one log line per refresh says how many identities used one.
+// PRICE-BANDS (money). A setup run's spend must not be counted at the pooled maximum over every long-context band when no call reached that band. The signed run price stays pooled (the gateway's ceiling,
+// unchanged for old workers); the quote ADDS the base band beside it, the signed task token carries it inside `runPrice.baseBand`, and the gateway refuses a call whose real rates no longer fit it.
 import { beforeAll, describe, expect, it } from "vitest";
 import { denyNetwork } from "./model-gateway-no-network.js";
-import { fetchAWS, fetchLiteLLM } from "../../packages/model-gateway/src/price-sources.js";
-import { InMemoryPriceSnapshotStore } from "../../packages/model-gateway/src/price-snapshot.js";
 import { SnapshotPriceSource } from "../../packages/model-gateway/src/price-index.js";
-import { PriceRefresher } from "../../packages/model-gateway/src/price-refresh.js";
+import { answerRateQuote, RATE_QUOTE_AUDIENCE, type RateQuoteOptions } from "../../packages/model-gateway/src/rate-quote.js";
+import { parseRunPrice, parseTaskClaims, type RunPrice } from "../../packages/model-gateway/src/model-gateway-token.js";
+import { runPriceDenial } from "../../packages/model-gateway/src/run-price.js";
 import { resolvePrice } from "../../packages/model-gateway/src/price.js";
-import { ratesForUsage } from "../../packages/model-gateway/src/price-tiers.js";
-import { ratesOf } from "../../packages/model-gateway/src/price-classify.js";
+import type { PriceEntry } from "../../packages/model-gateway/src/price-snapshot.js";
+import { claims, mint, verifier, now } from "./model-gateway-fixture.js";
 beforeAll(denyNetwork);
+const model = "claude-haiku-4-5";
+const bedrock = "zai.glm-5";
+/** glm-5 on Bedrock: $1.00 in / $3.20 out / cache read $0.20 / write $1.25, and a 2x band above 200K input tokens per call. */
+const GLM = { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 3_200_000, cacheReadMicrosPerMTok: 200_000, cacheWrite5mMicrosPerMTok: 1_250_000, cacheWrite1hMicrosPerMTok: 1_250_000 };
+const LONG = { aboveTokens: 200_000, inputMicrosPerMTok: 2_000_000, outputMicrosPerMTok: 6_400_000, cacheReadMicrosPerMTok: 400_000, cacheWrite5mMicrosPerMTok: 2_500_000, cacheWrite1hMicrosPerMTok: 2_500_000 };
+async function world(entry: Record<string, unknown> = { ...GLM, longContext: [LONG] }) {
+  const prices = new SnapshotPriceSource({ load: async () => ({ version: 9, sources: { litellm: { fetchedAt: now - 100, count: 1, entries: [{ provider: "bedrock", model: bedrock, kind: "chat", ...entry } as PriceEntry] } } }), save: async () => false }, { now: () => now, overrides: [] });
+  await prices.reload();
+  const options: RateQuoteOptions = { prices, verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }), now: () => now,
+    sources: { sourceFor: async () => "rovara" }, keys: { connected: async () => true, identityFor: async () => ({ sourceId: "company", versionId: "r1" }) },
+    rovara: { sourceId: "operator-source", models: new Map([[model, bedrock]]), exempt: new Set() }, region: "us-west-2", switchedOn: new Set(), offeredProviders: new Set(["bedrock"]) };
+  return options;
+}
+const quote = (options: RateQuoteOptions, query = "&runPrice=1") => answerRateQuote(options, { method: "GET", url: `/v1/service/companies/${claims.cid}/rate-quote?model=${model}${query}`, headers: { authorization: "Bearer fixture" } });
+type Body = { runPrice: RunPrice; runPriceBaseBand?: Record<string, number> };
 
-const now = Date.UTC(2026, 10, 17);
-const transport = (body: unknown) => ({ get: async () => ({ status: 200, body: Buffer.from(JSON.stringify(body)) }) });
-/** The real us-west-2 AWS rows for Claude Haiku 5.5 (public AmazonBedrockFoundationModels offer, 2026-11-17), dollars per 1M tokens. */
-const HAIKU_5_5_AWS: ReadonlyArray<readonly [string, string]> = [
-  ["input_tokens", "0.11"], ["output_tokens", "0.55"], ["cache_read_tokens", "0.011"], ["cache_write_tokens", "0.1375"], ["cache_write_tokens_1h", "0.22"],
-  ["input_tokens_long_ctx", "0.55"], ["output_tokens_long_ctx", "2.75"], ["cache_read_tokens_long_ctx", "0.055"], ["cache_write_tokens_long_ctx", "0.6875"], ["cache_write_tokens_1h_long_ctx", "1.1"],
-];
-function offer(models: Record<string, ReadonlyArray<readonly [string, string]>>) {
-  const products: Record<string, unknown> = {}; const terms: Record<string, unknown> = {};
-  for (const [name, rows] of Object.entries(models)) rows.forEach(([usage, usd]) => {
-    const sku = `${name}-${usage}`;
-    products[sku] = { attributes: { model: name, usagetype: `USW2-MP:USW2_${usage}_standard-Units` } };
-    terms[sku] = { T: { priceDimensions: { D: { unit: "1M tokens", pricePerUnit: { USD: usd } } } } };
+describe("the quote carries the base band beside the pooled price", () => {
+  it("glm-5: the pooled fields stay at 2x and the base band holds the real base rates and its threshold", async () => {
+    const body = (await quote(await world())).body as Body;
+    expect(body.runPrice).toMatchObject({ inputUsdPerMillion: 2, outputUsdPerMillion: 6.4, cacheWriteUsdPerMillion: 2.5, cacheReadUsdPerMillion: 0.4 });
+    expect(body.runPriceBaseBand).toEqual({ upToInputTokens: 200_000, inputUsdPerMillion: 1, outputUsdPerMillion: 3.2, cacheWriteUsdPerMillion: 1.25, cacheReadUsdPerMillion: 0.2 });
+    // The pooled object keeps EXACTLY its old shape (an old Code worker parses it strictly).
+    expect(Object.keys(body.runPrice)).toHaveLength(13);
+    expect(body.runPrice).not.toHaveProperty("baseBand");
   });
-  return { products, terms: { OnDemand: terms } };
-}
-/** LiteLLM's real us row for Haiku 5.5 (raw.githubusercontent.com/BerriAI/litellm main, 2026-11-17). */
-const HAIKU_5_5_LITELLM = { litellm_provider: "bedrock_converse", mode: "chat", input_cost_per_token: 1.1e-7, output_cost_per_token: 5.5e-7, cache_read_input_token_cost: 1.1e-8, cache_creation_input_token_cost: 1.375e-7, cache_creation_input_token_cost_above_1hr: 2.2e-7, input_cost_per_token_above_100k_tokens: 5.5e-7, output_cost_per_token_above_100k_tokens: 2.75e-6, cache_read_input_token_cost_above_100k_tokens: 5.5e-8, cache_creation_input_token_cost_above_100k_tokens: 6.875e-7, cache_creation_input_token_cost_above_1hr_above_100k_tokens: 1.1e-6 };
-const unrelated = { "gpt-x": { litellm_provider: "openai", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 } };
-async function refreshed(litellm: Record<string, unknown>, aws: Record<string, ReadonlyArray<readonly [string, string]>>, logs: unknown[] = []) {
-  const store = new InMemoryPriceSnapshotStore(); const prices = new SnapshotPriceSource(store, { now: () => now, overrides: [] });
-  const r = await new PriceRefresher({ store, prices, log: (line) => logs.push(line),
-    litellm: (previous) => fetchLiteLLM(transport({ ...unrelated, ...litellm }), { previous, now, minModels: 1 }),
-    aws: (previous) => fetchAWS(transport(offer({ "Unrelated Model": [["input_tokens", "1"], ["output_tokens", "2"]], ...aws })), { previous, now, minModels: 1, regions: ["us-west-2"] }),
-  }).run(now);
-  expect(r.ok).toBe(true);
-  return prices;
-}
-const BASE = { inputMicrosPerMTok: 110_000, outputMicrosPerMTok: 550_000 };
-const LONG = { inputMicrosPerMTok: 550_000, outputMicrosPerMTok: 2_750_000 };
-const pick = (r: { inputMicrosPerMTok: number; outputMicrosPerMTok: number }) => ({ inputMicrosPerMTok: r.inputMicrosPerMTok, outputMicrosPerMTok: r.outputMicrosPerMTok });
-
-describe("every long-context band LiteLLM uses", () => {
-  it("is kept as its own band; a band LiteLLM does not use leaves the row unknown", () => {
-    const base = { mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 };
-    for (const k of [32, 100, 128, 200, 256, 272, 512]) {
-      expect([k, ratesOf({ ...base, [`input_cost_per_token_above_${k}k_tokens`]: 3e-6 }, now)]).toEqual([k, { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, longContext: [{ aboveTokens: k * 1000, inputMicrosPerMTok: 3_000_000 }] }]);
-    }
-    // Two bands in one row (LiteLLM's Qwen rows: 32k and 256k) stay two bands, in order.
-    expect(ratesOf({ ...base, input_cost_per_token_above_256k_tokens: 5e-6, input_cost_per_token_above_32k_tokens: 3e-6 }, now)).toEqual({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, longContext: [{ aboveTokens: 32_000, inputMicrosPerMTok: 3_000_000 }, { aboveTokens: 256_000, inputMicrosPerMTok: 5_000_000 }] });
-    // A cheaper flex/batch token rate never stands in for a band's standard rate (Opus review M1): alone in a band it leaves the
-    // row unknown; beside the standard rate the dearer one is kept.
-    for (const k of [100, 200, 272]) for (const variant of ["flex", "batches"]) {
-      for (const dir of ["input", "output"]) expect([k, variant, dir, ratesOf({ ...base, [`${dir}_cost_per_token_${variant}_above_${k}k_tokens`]: 5e-7 }, now)]).toEqual([k, variant, dir, "unsupported price field"]);
-      expect(ratesOf({ ...base, [`input_cost_per_token_above_${k}k_tokens`]: 3e-6, [`input_cost_per_token_${variant}_above_${k}k_tokens`]: 5e-7 }, now)).toEqual({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, longContext: [{ aboveTokens: k * 1000, inputMicrosPerMTok: 3_000_000 }] });
-      // A standard rate in another band does not count.
-      expect(ratesOf({ ...base, input_cost_per_token_above_32k_tokens: 3e-6, [`input_cost_per_token_${variant}_above_${k}k_tokens`]: 5e-7 }, now)).toBe("unsupported price field");
-    }
-    for (const k of [64, 300, 1000, 1100]) expect([k, ratesOf({ ...base, [`input_cost_per_token_above_${k}k_tokens`]: 3e-6 }, now)]).toEqual([k, "unsupported price field"]);
+  it("the base band applies up to the LOWEST threshold when a model has several bands", async () => {
+    const w = await world({ ...GLM, longContext: [{ aboveTokens: 32_000, inputMicrosPerMTok: 1_500_000, outputMicrosPerMTok: 4_000_000 }, LONG] });
+    const body = (await quote(w)).body as Body;
+    expect(body.runPriceBaseBand).toMatchObject({ upToInputTokens: 32_000, inputUsdPerMillion: 1, outputUsdPerMillion: 3.2 });
+    expect(body.runPrice.inputUsdPerMillion).toBe(2);
+  });
+  it("a model whose source states no long band is still pooled at the cautious unknown-long band (2x above 200K): the base band separates that too, so the same 2x over-count is gone", async () => {
+    const body = (await quote(await world({ ...GLM }))).body as Body;
+    expect(body.runPrice.inputUsdPerMillion).toBe(2);
+    expect(body.runPriceBaseBand).toEqual({ upToInputTokens: 200_000, inputUsdPerMillion: 1, outputUsdPerMillion: 3.2, cacheWriteUsdPerMillion: 1.25, cacheReadUsdPerMillion: 0.2 });
+  });
+  it("the band's cache write is the dearer of the base 5 minute and 1 hour writes, as the pooled field is", async () => {
+    const w = await world({ ...GLM, cacheWrite1hMicrosPerMTok: 2_000_000, longContext: [{ ...LONG, cacheWrite1hMicrosPerMTok: 4_000_000 }] });
+    const body = (await quote(w)).body as Body;
+    expect(body.runPriceBaseBand).toMatchObject({ cacheWriteUsdPerMillion: 2 });
+    expect(body.runPrice.cacheWriteUsdPerMillion).toBe(4);
+  });
+  it("no base band without the runPrice request or when the price is unavailable", async () => {
+    expect(await quote(await world(), "")).toMatchObject({ body: { state: "available" } });
+    expect((await quote(await world(), "")).body).not.toHaveProperty("runPriceBaseBand");
   });
 });
 
-describe("Claude Haiku 5.5: AWS's long-context rates start at the band LiteLLM states (100k), never at a hardcoded 200k", () => {
-  it("is priced from its rows, not the cautious estimate, with the long rates from 100,001 prompt tokens", async () => {
-    const prices = await refreshed({ "us.anthropic.claude-haiku-5-5": HAIKU_5_5_LITELLM }, { "Claude Haiku 5.5": HAIKU_5_5_AWS });
-    const p = await resolvePrice(prices, "bedrock", "us.anthropic.claude-haiku-5-5");
-    expect([p.estimated, pick(p)]).toEqual([false, BASE]);
-    // The band boundary: strictly above 100,000 prompt tokens; 100,000-200,000 tokens is NOT charged the base rate.
-    for (const [tokens, rates] of [[99_999, BASE], [100_000, BASE], [100_001, LONG], [150_000, LONG], [200_000, LONG], [200_001, LONG]] as const) expect([tokens, pick(ratesForUsage(p, tokens))]).toEqual([tokens, rates]);
+const POOLED: RunPrice = { companyId: claims.cid, model, provider: "bedrock", sourceId: "operator-source", connectionRevision: "r1", catalogModel: bedrock, snapshotHash: "a".repeat(64), snapshotVersion: 9, expiresAt: now + 60_000,
+  inputUsdPerMillion: 2, outputUsdPerMillion: 6.4, cacheWriteUsdPerMillion: 2.5, cacheReadUsdPerMillion: 0.4 };
+const BAND = { upToInputTokens: 200_000, inputUsdPerMillion: 1, outputUsdPerMillion: 3.2, cacheWriteUsdPerMillion: 1.25, cacheReadUsdPerMillion: 0.2 };
+
+describe("the signed task token carries the base band", () => {
+  it("an old 13-field run price and a new 14-field one both parse (compatible both ways)", () => {
+    expect(parseRunPrice(POOLED)).toBeDefined();
+    expect(parseRunPrice({ ...POOLED, baseBand: BAND })).toEqual({ ...POOLED, baseBand: BAND });
+    expect(parseTaskClaims({ ...claims, mdl: [model], runPrice: { ...POOLED, baseBand: BAND } })).toBeDefined();
   });
-  it("the AWS row alone moves to the LiteLLM band: a LiteLLM row with only a 100k base band still brings AWS's dearer long rates to 100k", async () => {
-    // LiteLLM states the band (and a cheap long rate); AWS's own long rates are dearer. The AWS rates must apply from 100k, not 200k.
-    const cheapLong = { ...HAIKU_5_5_LITELLM, input_cost_per_token_above_100k_tokens: 1.2e-7, output_cost_per_token_above_100k_tokens: 6e-7 };
-    const prices = await refreshed({ "us.anthropic.claude-haiku-5-5": cheapLong }, { "Claude Haiku 5.5": HAIKU_5_5_AWS });
-    const p = await resolvePrice(prices, "bedrock", "us.anthropic.claude-haiku-5-5");
-    expect(p.longContext?.map((t) => t.aboveTokens)).toEqual([100_000]);
-    for (const tokens of [100_001, 150_000, 200_000]) expect([tokens, pick(ratesForUsage(p, tokens))]).toEqual([tokens, LONG]);
+  it("refuses a base band that is not strictly inside the pooled ceiling, malformed, or with extra keys", () => {
+    const bad: Array<Record<string, unknown>> = [
+      { ...BAND, inputUsdPerMillion: 2.01 }, { ...BAND, outputUsdPerMillion: 6.41 }, { ...BAND, cacheWriteUsdPerMillion: 2.51 }, { ...BAND, cacheReadUsdPerMillion: 0.41 },
+      { ...BAND, upToInputTokens: 0 }, { ...BAND, upToInputTokens: 1.5 }, { ...BAND, upToInputTokens: "200000" }, { ...BAND, inputUsdPerMillion: 0 }, { ...BAND, inputUsdPerMillion: Number.NaN },
+      { ...BAND, extra: 1 }, { ...BAND, cacheReadUsdPerMillion: -1 },
+    ];
+    for (const band of bad) expect(parseRunPrice({ ...POOLED, baseBand: band }), JSON.stringify(band)).toBeUndefined();
+    const { upToInputTokens: _drop, ...missing } = BAND; void _drop;
+    expect(parseRunPrice({ ...POOLED, baseBand: missing })).toBeUndefined();
+    expect(parseRunPrice({ ...POOLED, baseBand: null })).toBeUndefined();
+    expect(parseRunPrice({ ...POOLED, extraRate: 1 })).toBeUndefined();
   });
-  it("without a LiteLLM band the AWS long rates keep the 200k fallback (today's behaviour), and a later LiteLLM band never moves them later", async () => {
-    const alone = await refreshed({}, { "Claude Haiku 5.5": HAIKU_5_5_AWS });
-    expect((await resolvePrice(alone, "bedrock", "us.anthropic.claude-haiku-5-5")).longContext?.map((t) => t.aboveTokens)).toEqual([200_000]);
-    // LiteLLM says 272k (its OpenAI rows); AWS's long rates still apply above 200k.
-    const late = { ...HAIKU_5_5_LITELLM }; for (const f of Object.keys(late)) if (f.includes("_above_100k_tokens")) { const v = late[f as keyof typeof late]; delete late[f as keyof typeof late]; Object.assign(late, { [f.replace("100k", "272k")]: v }); }
-    const prices = await refreshed({ "us.anthropic.claude-haiku-5-5": late }, { "Claude Haiku 5.5": HAIKU_5_5_AWS });
-    const p = await resolvePrice(prices, "bedrock", "us.anthropic.claude-haiku-5-5");
-    expect(p.longContext?.map((t) => t.aboveTokens)).toEqual([200_000, 272_000]);
-    for (const [tokens, rates] of [[200_000, BASE], [200_001, LONG], [272_001, LONG]] as const) expect([tokens, pick(ratesForUsage(p, tokens))]).toEqual([tokens, rates]);
-  });
-  it("of several LiteLLM bands for one identity, the lowest wins", async () => {
-    const eu = { ...HAIKU_5_5_LITELLM, input_cost_per_token_above_32k_tokens: 1.1e-7 };
-    const prices = await refreshed({ "us.anthropic.claude-haiku-5-5": HAIKU_5_5_LITELLM, "eu.anthropic.claude-haiku-5-5": eu }, { "Claude Haiku 5.5": HAIKU_5_5_AWS });
-    const p = await resolvePrice(prices, "bedrock", "us.anthropic.claude-haiku-5-5");
-    expect([p.estimated, p.longContext?.[0]?.aboveTokens]).toEqual([false, 32_000]);
-    expect(pick(ratesForUsage(p, 32_001))).toEqual(LONG);
+  it("the signature covers the base band: a tampered base rate (signed token, payload edited afterwards) is rejected", async () => {
+    const token = mint({ mdl: [model], runPrice: { ...POOLED, baseBand: BAND } });
+    expect(await verifier()(token)).toMatchObject({ runPrice: { baseBand: BAND } });
+    const [header, payload, signature] = token.split(".") as [string, string, string];
+    const edited = JSON.parse(Buffer.from(payload, "base64url").toString()) as { runPrice: { baseBand: { inputUsdPerMillion: number } } };
+    edited.runPrice.baseBand.inputUsdPerMillion = 0.5;
+    const tampered = `${header}.${Buffer.from(JSON.stringify(edited)).toString("base64url")}.${signature}`;
+    expect(await verifier()(tampered)).toBeUndefined();
+    // And a band that is not inside the ceiling is refused even with a valid signature.
+    expect(await verifier()(mint({ mdl: [model], runPrice: { ...POOLED, baseBand: { ...BAND, inputUsdPerMillion: 5 } } }))).toBeUndefined();
   });
 });
 
-/** LiteLLM's real Haiku 4.5 rows (2026-11-17): the US row is live; the EU row is past its deprecation date. */
-const HAIKU_4_5_US = { litellm_provider: "bedrock_converse", mode: "chat", input_cost_per_token: 1.1e-6, output_cost_per_token: 5.5e-6, cache_read_input_token_cost: 1.1e-7, cache_creation_input_token_cost: 1.375e-6, cache_creation_input_token_cost_above_1hr: 2.2e-6 };
-const HAIKU_4_5_EU = { ...HAIKU_4_5_US, deprecation_date: "2026-10-15", input_cost_per_token_batches: 5.5e-7, output_cost_per_token_batches: 2.75e-6 };
-const HAIKU_45 = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
-const used = (logs: unknown[]) => logs.filter((l) => (l as { event?: string }).event === "price_deprecated_used");
-describe("a deprecated row with every field known", () => {
-  it("is only an alias when a live row names the identity (the live row's price holds, no log)", async () => {
-    const logs: unknown[] = [];
-    // The deprecated row is dearer here: it still does not price an identity that has a live row.
-    const prices = await refreshed({ [HAIKU_45]: HAIKU_4_5_US, "eu.anthropic.claude-haiku-4-5-20251001-v1:0": { ...HAIKU_4_5_EU, input_cost_per_token: 9e-6 } }, {}, logs);
-    for (const id of [HAIKU_45, "eu.anthropic.claude-haiku-4-5-20251001-v1:0"]) {
-      const p = await resolvePrice(prices, "bedrock", id);
-      expect([id, p.estimated, pick(p)]).toEqual([id, false, { inputMicrosPerMTok: 1_100_000, outputMicrosPerMTok: 5_500_000 }]);
-    }
-    expect(used(logs)).toEqual([]);
+describe("the gateway refuses a call whose real rates no longer fit the signed base band", () => {
+  const claimsWith = (baseBand: unknown) => ({ ...claims, mdl: [model], runPrice: { ...POOLED, baseBand } } as unknown as Parameters<typeof runPriceDenial>[0]);
+  const source = { source: { provider: "bedrock", id: "operator-source", connectionRevision: "r1" } } as unknown as Parameters<typeof runPriceDenial>[3];
+  async function denial(entry: Record<string, unknown>, baseBand: unknown) {
+    const w = await world(entry);
+    const price = await resolvePrice(w.prices, "bedrock", bedrock);
+    return runPriceDenial(claimsWith(baseBand), "bedrock", bedrock, source, { ...price, priceVersion: 9 }, now);
+  }
+  it("fits: the real base equals the band, the real threshold equals its limit", async () => {
+    expect(await denial({ ...GLM, longContext: [LONG] }, BAND)).toBeUndefined();
   });
-  it("an AWS row is a live row too", async () => {
-    const logs: unknown[] = [];
-    const prices = await refreshed({ "eu.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU_4_5_EU }, { "Claude Haiku 4.5": [["input_tokens", "2"], ["output_tokens", "8"]] }, logs);
-    const p = await resolvePrice(prices, "bedrock", HAIKU_45);
-    expect([p.estimated, pick(p)]).toEqual([false, { inputMicrosPerMTok: 2_000_000, outputMicrosPerMTok: 8_000_000 }]);
-    expect(used(logs)).toEqual([]);
+  it("a real base rate above the signed one is refused (the worker would under-count)", async () => {
+    expect(await denial({ ...GLM, inputMicrosPerMTok: 1_100_000, longContext: [LONG] }, BAND)).toBe("rate_above_ceiling");
+    expect(await denial({ ...GLM, outputMicrosPerMTok: 3_300_000, longContext: [LONG] }, BAND)).toBe("rate_above_ceiling");
   });
-  it("prices its identity at its exact rates when no live row exists, logged once per refresh with a count and no names", async () => {
-    const logs: unknown[] = [];
-    const other = { ...HAIKU_4_5_EU, input_cost_per_token: 3e-6, output_cost_per_token: 1.5e-5 };
-    const prices = await refreshed({ "eu.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU_4_5_EU, "apac.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU_4_5_EU, "eu.anthropic.claude-sonnet-4-20250514-v1:0": other }, {}, logs);
-    const p = await resolvePrice(prices, "bedrock", HAIKU_45);
-    expect([p.estimated, pick(p), p.cacheReadMicrosPerMTok, p.cacheWrite5mMicrosPerMTok, p.cacheWrite1hMicrosPerMTok]).toEqual([false, { inputMicrosPerMTok: 1_100_000, outputMicrosPerMTok: 5_500_000 }, 110_000, 1_375_000, 2_200_000]);
-    expect(pick(await resolvePrice(prices, "bedrock", "us.anthropic.claude-sonnet-4-20250514-v1:0"))).toEqual({ inputMicrosPerMTok: 3_000_000, outputMicrosPerMTok: 15_000_000 });
-    expect(used(logs)).toEqual([{ event: "price_deprecated_used", identities: 2 }]);
-    expect(JSON.stringify(logs)).not.toMatch(/haiku|sonnet|anthropic/u);
+  it("a real cache read or cache write rate above the signed one is refused too", async () => {
+    expect(await denial({ ...GLM, cacheReadMicrosPerMTok: 250_000, longContext: [LONG] }, BAND)).toBe("rate_above_ceiling");
+    expect(await denial({ ...GLM, cacheWrite1hMicrosPerMTok: 1_300_000, longContext: [LONG] }, BAND)).toBe("rate_above_ceiling");
   });
-  it("a deprecated row with an unknown field, or an unreadable date, still gets the cautious estimate", async () => {
-    for (const row of [{ ...HAIKU_4_5_EU, secret_price_field: 1e-6 }, { ...HAIKU_4_5_EU, deprecation_date: "someday" }]) {
-      const logs: unknown[] = [];
-      const prices = await refreshed({ "eu.anthropic.claude-haiku-4-5-20251001-v1:0": row }, {}, logs);
-      expect((await resolvePrice(prices, "bedrock", HAIKU_45)).estimated).toBe(true);
-      expect(used(logs)).toEqual([]);
-    }
+  it("a long band that now starts BELOW the signed limit is refused (calls between would be charged long but counted base)", async () => {
+    expect(await denial({ ...GLM, longContext: [{ ...LONG, aboveTokens: 128_000 }] }, BAND)).toBe("rate_above_ceiling");
   });
-  it("a row before its deprecation date is an ordinary price (unchanged)", async () => {
-    const logs: unknown[] = [];
-    const prices = await refreshed({ "eu.anthropic.claude-haiku-4-5-20251001-v1:0": { ...HAIKU_4_5_EU, deprecation_date: "2027-01-01" } }, {}, logs);
-    expect((await resolvePrice(prices, "bedrock", HAIKU_45)).estimated).toBe(false);
-    expect(used(logs)).toEqual([]);
+  it("REVIEW (Opus): the boundary: a signed limit one token past the real long band's start is refused; at the start it fits", async () => {
+    // A call of exactly 200,001 input tokens is settled at the long band (tokens > aboveTokens); a worker trusting a limit of 200,001 would count it at the base band.
+    expect(await denial({ ...GLM, longContext: [LONG] }, { ...BAND, upToInputTokens: 200_001 })).toBe("rate_above_ceiling");
+    expect(await denial({ ...GLM, longContext: [LONG] }, { ...BAND, upToInputTokens: 200_000 })).toBeUndefined();
+  });
+  it("a token without a base band is judged exactly as before", async () => {
+    expect(await denial({ ...GLM, longContext: [LONG] }, undefined)).toBeUndefined();
   });
 });

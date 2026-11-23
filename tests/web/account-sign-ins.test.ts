@@ -60,7 +60,7 @@ describe("Connected sign-ins readers", () => {
 describe("Connected sign-ins section", () => {
  it("says not connected yet while Code serves no such route", async () => {
   const f = mount("/app/account", r => (r.path === "/v1/app/me/sign-ins" ? NOT_ON_CODE : ok({})));
-  try { await screen.findByRole("heading", { name: "Your account" }); await waitFor(() => expect(screen.getAllByTestId("not-connected").length).toBeGreaterThan(0)); expect(screen.queryByRole("button", { name: /^Connect / })).toBeNull(); } finally { f.close(); }
+  try { await screen.findByRole("heading", { name: "Account" }); await waitFor(() => expect(screen.getAllByTestId("not-connected").length).toBeGreaterThan(0)); expect(screen.queryByRole("button", { name: /^Connect / })).toBeNull(); } finally { f.close(); }
  });
  it("lists the methods, marks the first, gives it no Unlink, and offers Connect only for the linkable methods not yet connected", async () => {
   const f = mount("/app/account", r => (r.path === "/v1/app/me/sign-ins" ? ok(github) : ok({})));
@@ -104,6 +104,8 @@ describe("Connected sign-ins section", () => {
   const navigate = vi.spyOn(f.host, "navigate");
   try {
    const dialog = await screen.findByRole("dialog", { name: "Connect Slack?" });
+   // The deep-linked dialog is open before the list is read; a send is allowed only once that read has answered (G5 write rule).
+   await screen.findByText("GitHub", { selector: "h3" });
    fireEvent.click(within(dialog).getByRole("button", { name: "Continue to Slack" }));
    await waitFor(() => expect(navigate).toHaveBeenCalledWith("https://slack.com/openid/connect/authorize?state=lnk_x"));
    expect(writes(f)).toEqual([expect.objectContaining({ method: "POST", path: "/v1/app/me/sign-ins/link", body: { method: "slack" } })]);
@@ -114,6 +116,8 @@ describe("Connected sign-ins section", () => {
   const navigate = vi.spyOn(f.host, "navigate");
   try {
    const dialog = await screen.findByRole("dialog", { name: "Connect Slack?" });
+   // The deep-linked dialog is open before the list is read; a send is allowed only once that read has answered (G5 write rule).
+   await screen.findByText("GitHub", { selector: "h3" });
    fireEvent.click(within(dialog).getByRole("button", { name: "Continue to Slack" }));
    await within(dialog).findByRole("alert");
    expect(navigate).not.toHaveBeenCalled();
@@ -123,6 +127,8 @@ describe("Connected sign-ins section", () => {
   const f = mount("/app/account?connect=slack", r => (r.method === "POST" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "That sign-in can't be connected to your account." } } } : r.path === "/v1/app/me/sign-ins" ? ok(github) : ok({})));
   try {
    const dialog = await screen.findByRole("dialog", { name: "Connect Slack?" });
+   // The deep-linked dialog is open before the list is read; a send is allowed only once that read has answered (G5 write rule).
+   await screen.findByText("GitHub", { selector: "h3" });
    fireEvent.click(within(dialog).getByRole("button", { name: "Continue to Slack" }));
    expect((await within(dialog).findByRole("alert")).textContent).toContain("That sign-in can't be connected to your account.");
    expect(within(dialog).queryByTestId("fresh-sign-in")).toBeNull();
@@ -143,6 +149,8 @@ describe("Connected sign-ins section", () => {
   const f = mount("/app/account?unlink=slack", r => (r.method === "DELETE" ? ok({ removed: true }) : r.path === "/v1/app/me/sign-ins" ? ok(both) : ok({})));
   try {
    const dialog = await screen.findByRole("dialog", { name: "Unlink Slack?" });
+   // The deep-linked dialog is open before the list is read; a send is allowed only once that read has answered (G5 write rule).
+   await screen.findByText("GitHub", { selector: "h3" });
    fireEvent.click(within(dialog).getByRole("button", { name: "Unlink Slack" }));
    const notice = await screen.findByTestId("unlinked-notice");
    expect(notice.textContent).toContain("every sign-in of yours has ended");
@@ -160,6 +168,8 @@ describe("Connected sign-ins section", () => {
   const f = mount("/app/account?unlink=slack", r => (r.method === "DELETE" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "This is the first way this person signs in, so it can't be removed." } } } : r.path === "/v1/app/me/sign-ins" ? ok(both) : ok({})));
   try {
    const dialog = await screen.findByRole("dialog", { name: "Unlink Slack?" });
+   // The deep-linked dialog is open before the list is read; a send is allowed only once that read has answered (G5 write rule).
+   await screen.findByText("GitHub", { selector: "h3" });
    fireEvent.click(within(dialog).getByRole("button", { name: "Unlink Slack" }));
    expect((await within(dialog).findByRole("alert")).textContent).toContain("first way this person signs in");
    expect(screen.queryByTestId("unlinked-notice")).toBeNull();
@@ -182,6 +192,6 @@ describe("Connected sign-ins section", () => {
 it("renders the linked sign-in date in both viewer zones", async () => {
  await inViewerZones(async expected => {
   const f = mount("/app/account", r => r.path === "/v1/app/me/sign-ins" ? ok({ ...both, signIns: both.signIns.map(s => ({ ...s, linkedAt: VIEWER_INSTANT })) }) : ok({}));
-  try { await screen.findByRole("heading", { name: "Connected sign-ins" });await waitFor(() => expect(f.container.textContent).toContain(expected.date)); } finally { f.close(); }
+  try { await screen.findByRole("heading", { name: "Account" });await waitFor(() => expect(f.container.textContent).toContain(`Connected ${expected.day}`)); } finally { f.close(); }
  });
 });

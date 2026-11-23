@@ -11,6 +11,7 @@ import { WikiPageReadScreen } from "./WikiPageReadScreen.js";
 import { WikiCorrectionsReadScreen } from "./WikiCorrectionsReadScreen.js";
 import { ProjectAnswerReadPanel } from "./ProjectAnswerReadPanel.js";
 import { WikiSetupReadPanel } from "./WikiSetupReadPanel.js";
+import { WikiBuildHere } from "./WikiBuildHere.js";
 import { Chip, Header, HeadRow, HeldLine, Notice, Row, Rows, Section, day, readClock } from "./parts.js";
 
 const LAST_BUILD: Record<string, string> = { running: "running", done: "done", stopped: "stopped", failed: "failed" };
@@ -52,7 +53,7 @@ export function WikiIndexReadScreen() {
  : view === "ask" ? <ProjectAnswerReadPanel readAt={readClock(read.dataUpdatedAt)} />
  : page !== null ? <WikiPageReadScreen key={page} pageId={page} marked={index.pages.find(row => row.pageId === page)?.flagged === true} />
  : <div className="rv-wsr-page">
- <HeadRow title={"What Rovara knows about " + project} text="Short pages Rovara wrote from the repo, finished tasks and kept lessons. Tasks read them before planning, and every page lists the files it was built from." actions={<><Link className="rv-button rv-button-secondary" to={href({ tab: "wiki", view: "setup" })}>Scope and build</Link><Link className="rv-button rv-button-secondary" to={href({ tab: "wiki", view: "ask" })}>{answersOn ? "Ask a question" : "Existing answers"}</Link></>} />
+ <HeadRow title={"What Rovara knows about " + project} text="Short pages Rovara wrote from the repo, finished tasks and kept lessons. Tasks read them before planning, and every page lists the files it was built from." actions={<>{index.state !== "empty" && <Link className="rv-button rv-button-secondary" to={href({ tab: "wiki", view: "setup" })}>Scope and build</Link>}<Link className="rv-button rv-button-secondary" to={href({ tab: "wiki", view: "ask" })}>{answersOn ? "Ask a question" : "Existing answers"}</Link></>} />
  {!index.agentsEnabled && <Notice>Tasks are not reading the wiki.</Notice>}
  {index.lastBuild !== undefined && <Notice>Last build: {LAST_BUILD[index.lastBuild.state] ?? index.lastBuild.state}{index.lastBuild.stopReason === undefined ? "" : " · " + index.lastBuild.stopReason}</Notice>}
  <label className="rv-wsr-search"><span>Search the wiki</span><input type="search" className="rv-input" placeholder="Search page titles, summaries and text" maxLength={80} value={search} onChange={event => { setSearch(event.target.value); }} /></label>
@@ -61,7 +62,8 @@ export function WikiIndexReadScreen() {
    : matches.length > 0 ? <Rows label="Search results">{matches.map(row => <PageRow key={row.pageId} row={row} to={href({ tab: "wiki", page: row.pageId })} />)}</Rows> : <Notice>No pages match this search.</Notice>}</div>; })()}
  <Section title="All pages" label="All pages" aside={canSee ? <nav className="rv-wsr-links" aria-label="Wiki reviews"><Link to={href({ tab: "wiki", view: "disputed" })}>Disputed sections</Link><Link to={href({ tab: "wiki", view: "gaps" })}>Questions without an answer</Link></nav> : undefined}>
  {index.pages.length > 0 && <Rows label="All pages">{index.pages.map(row => <PageRow key={row.pageId} row={row} to={href({ tab: "wiki", page: row.pageId })} />)}</Rows>}
- {index.state === "empty" && <Notice>{index.lastBuild?.state === "running" ? "The first wiki build is running." : "No wiki pages have been read."}</Notice>}
+ {index.state === "empty" && <Notice>{index.lastBuild?.state === "running" ? "The first wiki build is running." : "No wiki pages yet."}</Notice>}
+ {index.state === "empty" && index.pages.length === 0 && <WikiBuildHere />}
  <p className="rv-wsr-note">{WIKI_TRUST_LINE}</p>
  </Section>
  </div>)}</ReadState>;
