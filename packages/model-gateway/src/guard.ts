@@ -1,3 +1,4 @@
+import { inlineImageBound, MAX_INLINE_IMAGES, type InlineImageBound } from "./inline-image.js";
 import { record, whole } from "./model-gateway-token.js";
 export const MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const MAX_BODY_ITEMS = 1_000_000;
@@ -19,7 +20,7 @@ const FIELDS = new Set(["model", "messages", "max_tokens", "stream", "system", "
 const CHOICES = new Set(["auto", "any", "none", "required", "tool", "function"]);
 export interface GuardFailure { ok: false; status: number; code: string; message: string }
 export interface ModelLimitsSource { maxOutputTokens(provider: string, model: string): unknown }
-export interface GuardedRequest { ok: true; hasTools: boolean; inputBounded: boolean; usesPromptCache: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>> }
+export interface GuardedRequest { ok: true; hasTools: boolean; inputBounded: boolean; usesPromptCache: boolean; images?: InlineImageBound; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>> }
 const bad = (): GuardFailure => ({ ok: false, status: 400, code: "invalid_request", message: "request not allowed" });
 export const tooLarge = (): GuardFailure => ({ ok: false, status: 413, code: "request_too_large", message: "the request is too large" });
 const tool = (v: unknown): boolean => { const t = record(v); return t !== undefined && (t.type === undefined || t.type === null || (typeof t.type === "string" && TOOL_TYPES.has(t.type))); };
@@ -49,6 +50,8 @@ export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, str
   const stack: Array<{ value: unknown; kind: WalkKind }> = [{ value: b.messages, kind: "message" }, { value: b.system, kind: "block" }];
   let count = 0;
   let inputBounded = true;
+  const images = { tokens: 0, dataBytes: 0 };
+  let imageCount = 0;
   // Inline cache breakpoints change the rate, not the byte-derived token ceiling.
   let usesPromptCache = Array.isArray(b.tools) && b.tools.some((value: unknown) => record(value)?.cache_control !== undefined);
   while (stack.length > 0) {
@@ -58,8 +61,17 @@ export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, str
     else {
       const r = record(v); if (r === undefined) continue;
       // Classify only content blocks. Inline reasoning and function payloads are
-      // bounded by serialized bytes; media, remote data and unknown blocks are not.
-      if (kind === "block" && (typeof r.type !== "string" || !["text", "tool_use", "tool_result", "thinking", "redacted_thinking"].includes(r.type) || ["source", "fileData", "cachedContent"].some((k) => Object.hasOwn(r, k)))) inputBounded = false;
+      // bounded by serialized bytes; inline images use their header-derived bound.
+      // Remote data and unknown blocks remain unbounded.
+      if (kind === "block") {
+        if (r.type === "image") {
+          imageCount++;
+          const bound = inlineImageBound(r);
+          if (bound === undefined || imageCount > MAX_INLINE_IMAGES) inputBounded = false;
+          else { images.tokens += bound.tokens; images.dataBytes += bound.dataBytes; }
+        } else if (typeof r.type !== "string" || !["text", "tool_use", "tool_result", "thinking", "redacted_thinking"].includes(r.type) || Object.hasOwn(r, "source")) inputBounded = false;
+        if (["fileData", "cachedContent"].some((k) => Object.hasOwn(r, k))) inputBounded = false;
+      }
       if (kind !== "payload") {
         if (Object.hasOwn(r, "cache_control")) usesPromptCache = true;
         if (Object.hasOwn(r, "tools") && !tools(r.tools)) return bad();
@@ -84,5 +96,5 @@ export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, str
   const forwarded = Buffer.from(JSON.stringify({ ...b, max_tokens: maxTokens }));
   const outbound: Record<string, string> = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
   if (beta !== undefined) outbound["anthropic-beta"] = beta;
-  return { ok: true, hasTools: Array.isArray(b.tools), inputBounded, usesPromptCache, model: b.model, maxTokens, streaming, bytes: forwarded, headers: outbound };
+  return { ok: true, hasTools: Array.isArray(b.tools), inputBounded, usesPromptCache, ...(imageCount === 0 ? {} : { images }), model: b.model, maxTokens, streaming, bytes: forwarded, headers: outbound };
 }
