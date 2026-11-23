@@ -804,15 +804,23 @@ describe("Home's cards and plan approval (phase 2b)", () => {
   it("lists the person's running sessions on the project page as Live tiles, until they end", async () => {
     const { call, auth, code, sessionId } = await begin();
     const overview = async (project: string) => ProjectOverviewSchema.parse(JSON.parse((await call("GET", `/v1/web/projects/${project}/overview`, { cookie: auth.cookie }))!.body));
+    code.setTask({ workflow: { ...PLAN_WAITING.workflow, stage: "IMPLEMENT", state: "RUNNING" } });
+    expect((await overview("payments")).running).toEqual([expect.objectContaining({
+      sessionId, kind: "task", title: "Fix the README typo", project: "payments", status: "running", statusWords: "Running", step: "Coding",
+      needsYou: false, following: true, actions: ["watch", "comment", "stop", "close"],
+    })]);
     code.setTask(PLAN_WAITING);
     const confirmUrl = `https://cloud.example.test/v1/app/approve/plan-${sessionId}`;
     expect((await overview("payments")).running).toEqual([expect.objectContaining({
       sessionId, kind: "task", title: "Fix the README typo", project: "payments", status: "needs_person", statusWords: "Waiting for you", step: "Plan review",
-      needsYou: true, following: true, approvalUrl: confirmUrl, actions: ["watch", "comment", "stop", "close"],
+      needsYou: true, following: true, approvalUrl: confirmUrl, actions: ["watch", "comment", "close"],
     })]);
     // Code's task status is its worker's last run: between steps it reads SUCCEEDED while the workflow still waits on the person.
     code.setTask({ status: "SUCCEEDED" });
-    expect((await overview("payments")).running).toEqual([expect.objectContaining({ sessionId, status: "needs_person", needsYou: true })]);
+    expect((await overview("payments")).running).toEqual([expect.objectContaining({
+      sessionId, status: "needs_person", statusWords: "Waiting for you", step: "Plan review", needsYou: true,
+      approvalUrl: confirmUrl, actions: ["watch", "comment", "close"],
+    })]);
     code.setTask({ status: "CLOSED" });
     expect((await overview("payments")).running).toEqual([]);
   });

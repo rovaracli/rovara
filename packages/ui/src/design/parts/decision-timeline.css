@@ -77,6 +77,7 @@
 .rv-decision-scene-blockers h3{font-size:var(--rv-font-lg);margin:0}
 .rv-decision-scene-blockers p{margin:var(--rv-space-2) 0 0}
 .rv-task-timeline>li[data-state=needs_you]>.rv-task-timeline-marker{color:var(--rv-status-needs-you);background:var(--rv-status-needs-you-bg)}
+.rv-task-timeline>li[data-state=attention]>.rv-task-timeline-marker{color:var(--rv-status-failed);background:var(--rv-status-failed-bg)}
 .rv-task-timeline>li[data-state=needs_you] .rv-task-timeline-elapsed{color:var(--rv-status-needs-you)}
 .rv-task-timeline-content>.rv-task-timeline-detail{margin:var(--rv-space-1) 0 0}
 .rv-task-timeline-note{color:var(--rv-text-muted);font:400 var(--rv-font-md)/1.55 var(--rv-font-ui)}

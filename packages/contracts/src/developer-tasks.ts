@@ -109,6 +109,8 @@ export const DeveloperTaskViewSchema = z.object({
   title: z.string(),
   project: z.string(),
   status: DeveloperTaskStatusSchema,
+  /** DEC 254zzz382: mirror Code's served startup reason; no admission queue exists. */
+  startupReason: z.enum(["own-machine-starting", "unknown"]).optional(),
   workflow: WorkflowSnapshotViewSchema.extend({
     planContent: z.string().max(WORKFLOW_PLAN_MAX_BYTES).optional(),
     workBreakdownDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),

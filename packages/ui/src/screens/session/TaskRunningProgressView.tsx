@@ -5,7 +5,7 @@ import { HeldState } from "../../design/HeldState.js";
 export interface ProgressStage {
  id: string;
  label: string;
- state: "done" | "current" | "upcoming";
+ state: "done" | "current" | "blocked" | "upcoming";
  durationMs?: number | undefined;
 }
 
@@ -35,7 +35,7 @@ export function TaskRunningProgressView({ stages, currentStepId, lastKnownStepId
   {activity === "unknown" && <div className="rv-task-activity-unknown">{onCheck === undefined ? <HeldState /> : <TaskHeldStatesView page="running" onCheck={onCheck} />}<span className="rv-visually-hidden">Rovara hasn't confirmed the build's latest activity.</span></div>}
   <TaskTimeline items={stages.map(stage => ({
    id: stage.id, title: stage.label,
-   state: stage.state === "done" ? "done" : observedStepId === stage.id || stage.state === "current" ? "running" : "next",
+   state: stage.state === "done" ? "done" : stage.state === "current" && observedStepId === stage.id ? "running" : stage.state === "blocked" ? "needs_you" : "next",
    ...(observedStepId === stage.id ? { detail: activity === "observed" ? "Current step" : "Last known step" } : stage.state === "done" ? { detail: "Finished" } : {}),
    ...(stage.durationMs === undefined ? {} : { elapsed: durationWords(stage.durationMs) }),
   }))} />

@@ -10,7 +10,8 @@ type CurrentTaskStartPhase = TaskStartPhase["kind"];
 type ConfirmedStart = {
  kind: "confirmed";
  request: { id: string; text: string; textKind?: "task-title" };
- taskLink: { href: string; label: string };
+ /** A link to the task, for a receipt shown somewhere else; the task page itself passes none (the person is already there). */
+ taskLink?: { href: string; label: string };
  currentPhase: CurrentTaskStartPhase;
  phases: readonly TaskStartPhase[];
  alreadyAccepted?: boolean;
@@ -73,13 +74,13 @@ export function TaskStartReceiptView({ outcome }: TaskStartReceiptViewProps) {
 
  const current = currentLabels[outcome.currentPhase];
  return <section aria-label="Task start receipt" data-testid="task-start-receipt" style={surfaceStyle}>
-  <header style={{ display: "grid", gap: "var(--rv-space-3)", minWidth: 0 }}>
-   <span className="rv-status-pill" data-tone={outcome.currentPhase === "first-command" ? "run" : outcome.currentPhase === "ready" ? "ok" : "wait"}>{current.chip}</span>
-   <div style={{ display: "grid", gap: "var(--rv-space-2)" }}>
-    <h2>{current.heading}</h2>
-    <p className="rv-muted">{outcome.alreadyAccepted ? "This request already started a task." : phaseDescriptions[outcome.currentPhase]}</p>
+  <header style={{ display: "grid", gap: "var(--rv-space-2)", minWidth: 0 }}>
+   <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "var(--rv-space-3)", minWidth: 0 }}>
+    <span className="rv-status-pill" data-tone={outcome.currentPhase === "first-command" ? "run" : outcome.currentPhase === "ready" ? "ok" : "wait"}>{current.chip}</span>
+    <h2 style={{ margin: 0 }}>{current.heading}</h2>
    </div>
-   <p><a href={outcome.taskLink.href}>{outcome.taskLink.label}</a></p>
+   <p className="rv-muted">{outcome.alreadyAccepted ? "This request already started a task." : phaseDescriptions[outcome.currentPhase]}</p>
+   {outcome.taskLink !== undefined && <p><a href={outcome.taskLink.href}>{outcome.taskLink.label}</a></p>}
   </header>
 
   <ol aria-label="Observed task phases" style={{ display: "grid", gap: "var(--rv-space-3)", margin: 0, padding: 0, listStyle: "none" }}>

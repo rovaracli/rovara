@@ -11,7 +11,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { ReadDecision } from "../../api/decisions.js";
 import { ApiError } from "../../api/errors.js";
 import { servedReadState } from "../../api/served-read.js";
-import { proofRows, stageOf, useTaskComments, useTaskEvents, useTaskPlan, useTaskProof, type Stage, type WorkRow } from "../../api/work.js";
+import { failedSections, finishedSections, proofRows, sectionState, stageOf, useTaskComments, useTaskEvents, useTaskPlan, useTaskProof, type Stage, type WorkRow } from "../../api/work.js";
 import { Button } from "../../design/Button.js";
 import { DecisionCard, type DecisionCardActions, type DecisionPane } from "../../design/DecisionCard.js";
 import { DecisionFrame } from "../../design/DecisionFrame.js";
@@ -75,7 +75,7 @@ export function QuietCard({ row, decisionsError, wide = false, retryOffered = fa
  else if (row.group === "others") { title = "Waiting on someone else"; body = <>{row.line}. It moves on when they act.</>; }
  else if (row.group === "done") { title = row.line; body = <>Nothing more to do here.</>; }
  else if (row.group === "stopped") { title = row.line; body = <>Rovara stopped before it finished and nobody has picked it up since. {wide ? (row.task.sessionId === undefined ? "Continue it in your tool from the button above." : "Close it or continue it in your tool, from the actions above.") : "Open the full page to close it, or continue it in your tool."}</>; }
- else if (row.line === "In the queue") { title = "In the queue"; body = <>It starts as soon as there is room.</>; }
+ else if (row.task.status === "STARTING") { title = row.line; body = <>Nothing needed from you.</>; }
  else { title = "Nothing needed from you"; body = <>Last recorded status: working. Rovara hasn't confirmed current activity. You get a card here when a decision is needed.</>; }
  if (retryOffered && row.task.workflow?.state === "BLOCKED" && row.task.workflow.stage !== "REVIEW") {
   const stages: Record<string, string> = { UNDERSTAND: "understanding the request", PLAN: "planning", PLAN_CRITIQUE: "checking the plan", IMPLEMENT: "coding", VERIFY: "checking the code", PULL_REQUEST: "opening the pull request", WAIT_FOR_MERGE: "updating the pull request" };
@@ -176,7 +176,7 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
  const openAnswers = answerAction.locked || readOnly || plan.isError || plan.failureCount > 0 ? undefined : (questionId: string, optionId: string) => answer(questionId, optionId);
  const run = row.task.run?.state === "RUNNING" ? row.task.run : undefined;
  const progress = run === undefined || run.steps.length === 0 ? null : <TaskRunningProgressView
-  stages={run.steps.map(step => ({ id: step.id, label: step.name, state: step.status === "done" ? "done" : "upcoming" }))}
+  stages={run.steps.map(step => ({ id: step.id, label: step.name, state: step.status === "done" ? "done" : step.status === "running" ? "current" : step.status === "failed" ? "blocked" : "upcoming" }))}
   lastKnownStepId={run.currentStep?.id}
   activity="unknown"
   pageProjection={pageProjection}
@@ -203,28 +203,34 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
    <div className="rv-pane-gap">{proofBody ?? <ProofStep heading="Proof so far" rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />}</div></>;
   const proofPart = <>{plan.isError && planNote}{proofBody ?? <ProofStep rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />}</>;
   if (stage === "proof") return proofPart;
-  return <>{proofPart}<div className="rv-pane-gap">{pulls.length === 0 ? <p className="rv-muted" data-testid="no-pull-request">No pull request yet. Rovara opens it once the proof passes.</p> : pulls.map((pull, index) => <PullRequestCard key={index} pullRequest={pull} />)}</div></>;
+  return <>{proofPart}{/* The merge section on top (primary) already lists each pull request with its state: the card would show the same pull request a second time. */}
+   {primary === undefined && <div className="rv-pane-gap">{pulls.length === 0 ? <p className="rv-muted" data-testid="no-pull-request">No pull request yet. Rovara opens it once the proof passes.</p> : pulls.map((pull, index) => <PullRequestCard key={index} pullRequest={pull} />)}</div>}</>;
  };
  const decisionPart = <div className="rv-pane-decision">{decision !== undefined && actions !== undefined && !(plan.isError && decisionNeedsPlan) ? <DecisionCard key={decision.card.id} decision={paneDecision!} actions={actions} pane={pane} /> : decision !== undefined && plan.isError && decisionNeedsPlan ? null : <QuietCard row={row} decisionsError={decisionsError} wide={wide} retryOffered={retryOffered} />}</div>;
  const side = <aside className="rv-pane-side" aria-label="Cost, history and lessons"><TaskSideCards task={row.task} plan={currentPlan} events={events.data ?? []} /><LessonsUsedCard project={row.project} taskId={row.id} /></aside>;
- const sections = <StepRail step={row.step} tone={row.tone} selected={stage} onSelect={step => setShown(stageOf(step))} />;
+ const sections = <StepRail task={row.task} failed={failedSections(row.task, proof.data?.items)} step={row.step} tone={row.tone} selected={stage} onSelect={step => setShown(stageOf(step))} />;
  const runningHeld = row.task.status === "RUNNING" || run !== undefined ? <TaskHeldStatesView page="running" label="Latest activity" onCheck={() => { void query.invalidateQueries({ queryKey: ["work"] });void query.invalidateQueries({ queryKey: ["session"] }); }} /> : null;
  const rail = progress === null ? <>{sections}{runningHeld}</> : <>{progress}<details><summary>Browse task sections</summary>{sections}</details></>;
  if (compact) return <><TaskActionNotice key={answerAction.pendingKey} pending={answerAction.pending} recovery={answerAction.recovery} taskHref={"/app/sessions/" + encodeURIComponent(row.task.sessionId ?? row.id)} check={() => plan.refetch()} />{decision !== undefined && decisionPart}{stage === "spec" && stageBody()}<LessonsUsedCard project={row.project} taskId={row.id} /></>;
  if (wide) {
   // A list group is not a workflow observation. Never infer progress from it.
-  const workflow = row.task.workflow;
   const hasDecision = decision !== undefined && actions !== undefined && !(plan.isError && decisionNeedsPlan);
-  const timelineState = workflow?.state === "WAITING" && (decision !== undefined || primary !== undefined) ? "needs_you" : workflow?.state === "RUNNING" && row.task.status === "RUNNING" ? "running" : undefined;
   const planVersion = currentPlan?.version, guard = (body: ReactNode) => <fieldset className="rv-task-content-guard" disabled={pageLocked}>{body}</fieldset>;
-  const merged = row.step === "merged", at = merged ? STEPS.length : STEPS.findIndex(item => item.step === row.step);
   const waitWords = row.step === "pull_request" ? "Waiting for your merge decision" : decision?.card.kind === "approve_plan" && planVersion !== undefined ? "Waiting for your decision on v" + String(planVersion) : "Waiting for your decision";
-  const railItems: TaskTimelineItem[] | undefined = workflow === undefined || at < 0 || (timelineState === undefined && !merged) ? undefined : [
-   ...(at > 0 ? [{ id: "finished", title: at === 1 ? "1 step finished" : String(at) + " steps finished", state: "done" as const, detail: STEPS.slice(0, at).map(item => TIMELINE_LABEL[item.step]).join(", ") }] : []),
-   ...STEPS.slice(at).map((item, index): TaskTimelineItem => ({ id: item.step, title: TIMELINE_LABEL[item.step] ?? item.label, state: index === 0 && timelineState !== undefined ? timelineState : "next", ...(index === 0 && timelineState === "needs_you" ? { detail: waitWords } : index === 0 && timelineState === "running" ? { detail: "Current step" } : {}) })),
+  const failed = failedSections(row.task, proof.data?.items), finished = finishedSections(row.task, failed);
+  const railItems: TaskTimelineItem[] = [
+   // The finished sections are the served stage's proof (the fixed order), never a guess from the list group; none are claimed for a task that has not started or whose stage is not known.
+   ...(finished.length === 0 ? [] : [{ id: "finished", title: finished.length === 1 ? "1 step finished" : String(finished.length) + " steps finished", state: "done" as const, detail: finished.map(item => TIMELINE_LABEL[item.step] ?? item.label).join(", ") }]),
+   ...STEPS.filter(item => sectionState(row.task, item.step, failed) !== "done").map((item): TaskTimelineItem => {
+    const state = sectionState(row.task, item.step, failed);
+    return { id: item.step, title: TIMELINE_LABEL[item.step] ?? item.label,
+     state: state === "current" ? "running" : state === "attention" ? "attention" : state === "blocked" || state === "waiting" ? "needs_you" : "next",
+     detail: state === "attention" ? "Needs attention" : state === "current" ? "Current step" : state === "blocked" ? "Blocked" : state === "waiting" ? waitWords : item.step === "request" ? "Submitted" : "Progress not confirmed",
+    };
+   }),
   ];
   const headline = currentPlan?.headline;
-  const context = progress ?? (hasDecision && decision?.card.kind === "approve_plan" && planChange !== undefined ? <PlanChangeRail facts={planChange} /> : <aside className="rv-task-context" aria-label="Where this task is">{primary !== undefined && headline !== undefined && <section className="rv-task-change-summary" aria-label="What this change does"><h2>What this change does</h2><p><VisibleText text={headline} /></p></section>}<h2>Where this task is</h2>{railItems !== undefined ? <TaskTimeline items={railItems} /> : <p className="rv-muted rv-task-progress-held">Current progress is not confirmed here. <HeldState /></p>}</aside>);
+  const context = progress ?? (hasDecision && decision?.card.kind === "approve_plan" && planChange !== undefined ? <PlanChangeRail facts={planChange} /> : <aside className="rv-task-context" aria-label="Where this task is">{primary !== undefined && headline !== undefined && <section className="rv-task-change-summary" aria-label="What this change does"><h2>What this change does</h2><p><VisibleText text={headline} /></p></section>}<h2>Where this task is</h2><TaskTimeline items={railItems} /></aside>);
   const section = (label: string, summary: ReactNode, body: ReactNode, open = false) => <details className="rv-task-section" open={open || undefined}><summary><TaskMark kind="chevron" /><strong>{label}</strong><span className="rv-task-section-summary">{summary}</span></summary><div className="rv-task-section-body">{body}</div></details>;
   const tasks = currentPlan?.tasks ?? [], runningAt = tasks.findIndex(task => task.status === "running");
   const currentCard = primary === undefined && !hasDecision && stage === "build";
@@ -250,7 +256,7 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
     {primary !== undefined ? <>{primary}<div className="rv-task-session-slot">{sessionEntry}</div></> : !hasDecision && plan.isError && (stage === "spec" || stage === "request") ? <>{guard(stageBody())}<div className="rv-task-session-slot">{sessionEntry}</div>{quiet}</> : hasDecision ? <>{guard(decisionPart)}<div className="rv-task-session-slot">{sessionEntry}</div></> : currentCard ? <>{card}{quiet}</> : <><DecisionFrame as="section" title={row.need ?? run?.currentStep?.name ?? row.line} actions={null} className="rv-task-primary">{guard(stageBody())}</DecisionFrame><div className="rv-task-session-slot">{sessionEntry}</div>{quiet}</>}
     {guard(<>
     {shown !== undefined && stage !== "spec" && stage !== "request" && !currentCard && (hasDecision || primary !== undefined) && <div className="rv-task-selected-section">{stageBody()}</div>}
-    {section("Plan and changes", plan.isError ? "Plan unavailable" : currentPlan === undefined ? "Loading plan" : (planVersion === undefined ? "Plan" : "Plan v" + String(planVersion)) + (tasks.length === 0 ? "" : " · " + String(tasks.length) + (tasks.length === 1 ? " item" : " items")), <>{(hasDecision || primary !== undefined && shown !== undefined) && (stage === "spec" || stage === "request") && stageBody()}{(stage !== "spec" && stage !== "request" || currentCard) && (planNote ?? (currentPlan === undefined ? null : <SpecStep plan={currentPlan} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} />))}{sections}<TaskHeldStatesView page="plan" onCheck={retryPlan} /></>, hasDecision && !approvalReceipt && (stage === "spec" || stage === "request"))}
+    {section("Plan and changes", plan.isError ? "Plan unavailable" : currentPlan === undefined ? "Loading plan" : (planVersion === undefined ? "Plan" : "Plan v" + String(planVersion)) + (tasks.length === 0 ? "" : " · " + String(tasks.length) + (tasks.length === 1 ? " item" : " items")), <>{row.task.advisoryPlanFailure !== undefined && <p className="rv-muted rv-task-step-note"><VisibleText text={"The plan review didn't run: " + row.task.advisoryPlanFailure} /></p>}{(hasDecision || primary !== undefined && shown !== undefined) && (stage === "spec" || stage === "request") && stageBody()}{(stage !== "spec" && stage !== "request" || currentCard) && (planNote ?? (currentPlan === undefined ? null : <SpecStep plan={currentPlan} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} />))}{sections}<TaskHeldStatesView page="plan" onCheck={retryPlan} /></>, hasDecision && !approvalReceipt && (stage === "spec" || stage === "request"))}
     {section("Checks and reviews", proof.isError ? "Proof unavailable" : proof.data === undefined ? "Loading proof" : proof.data.items.length === 0 ? "Recorded results appear here" : String(proof.data.items.length) + " recorded results", (primary === undefined || shown !== undefined) && (stage === "proof" || stage === "pull_request") ? <p className="rv-muted">Recorded proof is shown above.</p> : proofBody ?? <ProofStep rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />)}
     {section("Activity", events.isError ? "Activity unavailable" : events.data === undefined ? "Loading activity" : events.data.length === 0 ? "Recorded events appear here" : String(events.data.length) + " recorded events", <>{events.isError && !currentCard && <SectionError error={events.error} label="the activity" retry={() => { void events.refetch(); }} />}<TaskSideCards task={row.task} plan={currentPlan} events={events.data ?? []} /></>)}
     {section("About this task", aboutSummary ?? row.project, <>{aboutExtra}<LessonsUsedCard project={row.project} taskId={row.id} /></>)}
