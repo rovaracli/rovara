@@ -9,6 +9,6 @@ describe("the test runner's configuration", () => {
   });
 
   it("removes the CDK assemblies each test file leaves when it ends, so a shard never fills the disk", () => {
-    expect(config.test?.setupFiles).toEqual(["tests/support/test-file-temp-dir.ts"]);
+    expect(config.test?.setupFiles).toEqual(["tests/support/test-file-temp-dir.ts", "tests/support/testing-library-timeout.ts"]);
   });
 });
