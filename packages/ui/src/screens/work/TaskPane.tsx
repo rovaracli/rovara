@@ -43,6 +43,7 @@ import { PlanRevisionView } from "../session/PlanRevisionView.js";
 import { PlanStartReceiptView } from "../session/PlanStartReceiptView.js";
 import { PlanDecisionView, PLAN_NOT_YET_LINE } from "../session/PlanDecisionView.js";
 import { useDecisionActions } from "../home/NeedsYou.js";
+import { STOP_KEEPS_FILES_NOTE } from "../session/stop-note.js";
 import "./work.css";
 import "../session/task-page.css";
 
@@ -124,8 +125,10 @@ export interface TaskPaneProps {
  planChange?: PlanChangeFrameFacts | undefined;
  /** The primary card's own word for the current step in "Where this task is" (the PR feedback card), from the same read as the card. */
  railOverride?: { state: "running" | "needs_you"; detail: string } | undefined;
+ /** The task runs on a person's laptop: the hosted Stop sentence is not drawn (the Mac Stop dialog says its own true words). */
+ onMac?: boolean | undefined;
 }
-export function TaskPane({ compact = false, readOnly = false, row, decisionsError, onDecided, wide = false, fullPage, steer, onComment, design, pageProjection, sessionEntry, primary, pageLocked = false, aboutSummary, aboutExtra, planChange, retryOffered = false, railOverride }: TaskPaneProps) {
+export function TaskPane({ compact = false, readOnly = false, row, decisionsError, onDecided, wide = false, fullPage, steer, onComment, design, pageProjection, sessionEntry, primary, pageLocked = false, aboutSummary, aboutExtra, planChange, retryOffered = false, railOverride, onMac = false }: TaskPaneProps) {
  const registerStop = useRegisterTaskStopSlot(), approvalReceipt = useTaskChip() === "checking";
  const [shown, setShown] = useState<Stage>(), stage = shown ?? stageOf(row.step), query = useQueryClient(), host = useAppHost();
  const answerAction = useTaskAction(host, "plan-answers:" + row.id);
@@ -258,7 +261,7 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
     {row.group === "run" && steer !== undefined && <details className="rv-task-steer" open={steer.kind === "unavailable" || undefined}><summary><TaskMark kind="chevron" /><span>Steer this task</span></summary><SteerBox steer={steer} label="task" /></details>}
     {events.isError && !plan.isError && <SectionError error={events.error} label="the build activity" retry={() => { void events.refetch(); }} />}
    </>)}
-   <div className="rv-task-stop-row"><span className="rv-task-stop-slot" ref={registerStop} /><span className="rv-muted rv-task-stop-note">Stopping a running step ends this task's machine. Changes that aren't pushed to GitHub or in a pull request are lost.</span></div>
+   <div className="rv-task-stop-row"><span className="rv-task-stop-slot" ref={registerStop} />{!onMac && <span className="rv-muted rv-task-stop-note">{STOP_KEEPS_FILES_NOTE}</span>}</div>
   </DecisionFrame>;
   const quiet = <QuietCard row={row} decisionsError={decisionsError} wide retryOffered={retryOffered} />;
   return <article className="rv-task-pane rv-task-composition wide" aria-label={"Task: " + row.title} data-task-id={row.id}>
