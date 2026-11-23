@@ -91,7 +91,8 @@ describe('G2 R1/R4/R5 read evidence', () => {
    return { status: 200, body: { project: projects[index], revision: 3, key: status === null ? {} : { connected: status }, vertex: status === null || status === true ? {} : { connected: false } } };
   });
   await waitFor(() => expect(screen.queryByText('Reading…')).toBeNull());
-  const header = screen.getByRole('heading', { level: 1 }).closest('header');
+  // Wait for the lazily loaded page itself: "Reading…" may not have appeared yet, so its absence alone proves nothing (CI run 45092521763).
+  const header = (await screen.findByRole('heading', { level: 1 })).closest('header');
   await waitFor(() => expect(header?.textContent).toContain(summary));
   const unknown = statuses.includes(null);
   expect(header?.textContent?.match(/Unknown/gu) ?? []).toHaveLength(unknown ? 1 : 0);
