@@ -439,6 +439,10 @@ const cloudValidation = (path: string, words: string): boolean => {
   "An answer's text is 1 to 2,000 characters.",
  ].includes(words);
 };
+const CLOSE_ACTION = /^\/sessions\/ses_[0-9a-z]{20}\/close$/u;
+const CLOSE_PREVIEW_CHANGED: readonly string[] = ["the close preview has changed; review it again", "the close preview has changed"];
+/** Code's sentence for an unbound close of a retained workspace (DEC 254zzz347); the task id in its /v1/dev link is a lower-case UUID. */
+export const RETAINED_CLOSE_WORDS = /^This workspace is retained\. Review the Close preview at \/v1\/dev\/tasks\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/close before closing it\.$/u;
 const actionPath = (route: string): string => route.replace(/^\/v1\/(?:app|web)(?=\/)/u, "").split("?", 1)[0]!;
 type FinalRefusal = readonly [(path: string) => boolean, number, string, ((context: ActionRefusalContext, failure: ApiError) => boolean)?];
 /**
@@ -456,6 +460,13 @@ const FINAL_ACTION_REFUSALS: readonly FinalRefusal[] = [
  // Only Cloud's own exact validation sentence: Code may raise other errors after effects.
  [path => /^\/sessions\/ses_[0-9a-z]{20}\/(stop|close|take-over)$/u.test(path), 400, "CONFIG_INVALID", (_context, failure) => failure.message === "requestId must be a UUID."],
  [path => /^\/sessions\/ses_[0-9a-z]{20}\/(stop|close|take-over)$/u.test(path), 404, "SESSION_NOT_FOUND"],
+ // Close, bound to a preview digest: Code refuses a digest that no longer matches BEFORE any write (core/task-flow/close-acceptance.ts:19 `stale()`, thrown in prepareTaskCloseAcceptance /
+ // requireCloseSnapshot ahead of the one acceptance transaction; core/sessions/close-acceptance.ts:12 is the same refusal inside the session plan). Only these two exact sentences.
+ [path => CLOSE_ACTION.test(path), 409, "CHANGE_STALE", (_context, failure) => CLOSE_PREVIEW_CHANGED.includes(failure.message)],
+ // DEC 254zzz347: an UNBOUND close on a retained workspace is refused before any CLOSED / accounting / release write (Code, CLOSE-RETENTION lane, core/task-flow/legacy-close-claim.ts:15,
+ // thrown at :17/:23/:32 ahead of every close write; read-only at Rovara-pr-close-retention-protocol-20261121, not yet on origin/code/next). Only the exact status + code + sentence: every other
+ // WORKSPACE_BUSY ("could not close the task just now; try again", close.ts:108/117) can follow effects and stays unknown.
+ [path => CLOSE_ACTION.test(path), 409, "WORKSPACE_BUSY", (_context, failure) => RETAINED_CLOSE_WORDS.test(failure.message)],
  [ownerOrAnswer, 400, "CONFIG_INVALID", (context, failure) => cloudValidation(actionPath(context.route), failure.message)],
  [path => DOCUMENT_ACTION.test(path), 400, "CONFIG_INVALID"],
  [documented, 403, "FORBIDDEN", (context, failure) => {

@@ -21,6 +21,7 @@ import { taskFixture, sessionFixture } from "./support/session-fixture.js";
 import { LAYER, howWeWorkView } from "./support/how-we-work-view.js";
 import { liveFixture } from "./support/live-fixture.js";
 import { meFixture } from "./support/fixtures.js";
+import { pressWhenEnabled } from "./support/close-dialog.js";
 const id = "ses_bbbbbbbbbbbbbbbbbbbb", CODE = "/v1/app/projects/payments/code";
 const started = () => ({ status: 202, body: { task: taskFixture({ sessionId: id }), sessionId: id, sessionUrl: "https://cell.example/s/" + id } });
 // Match json-reply.ts, including gateway overwrite of a route's own requestId.
@@ -136,7 +137,7 @@ it("answers a full workspace limit with the person's open tasks as links with a 
  expect(await screen.findByRole("dialog", { name: "Close this task?" })).toBeTruthy();
  expect(send.mock.calls.some(([request]) => request.path.endsWith("/close"))).toBe(false);
  open = OPEN(second);refuse = false;
- fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close and delete the machine" }));
+ await pressWhenEnabled(async () => within(screen.getByRole("dialog")).getByRole("button", { name: "Close and delete the machine" }));
  await waitFor(() => expect(send.mock.calls.filter(([request]) => request.path === "/v1/app/sessions/" + first + "/close")).toHaveLength(1));
  const calls = f.request.mock.calls.map(([request]) => request), closeIndex = calls.findIndex(request => request.path.endsWith("/close"));
  expect(calls.slice(0, closeIndex).some(request => request.method === "GET" && request.path === "/v1/app/me")).toBe(true);

@@ -10,6 +10,7 @@ import { meFixture } from "./support/fixtures.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
+import { pressWhenEnabled } from "./support/close-dialog.js";
 
 for (const operation of ["stop", "close", "watch", "unwatch", "retry", "take_over"] as const) {
  const action = operation === "unwatch" ? "watch" : operation;
@@ -24,7 +25,7 @@ for (const operation of ["stop", "close", "watch", "unwatch", "retry", "take_ove
    const trigger = await screen.findByRole<HTMLButtonElement>("button", { name: label });
    await waitFor(() => expect(trigger.disabled).toBe(false));fireEvent.click(trigger);
    if (action === "take_over") { const dialog = await screen.findByRole("dialog", { name: "Take over this task?" });await within(dialog).findByText("Ada · Owner");fireEvent.click(within(dialog).getByRole("button", { name: "Take over" })); }
-   if (action === "stop" || action === "close") fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: action === "stop" ? "Stop this task" : "Close and delete the machine" }));
+   if (action === "stop" || action === "close") await pressWhenEnabled(async () => within(await screen.findByRole("dialog")).getByRole("button", { name: action === "stop" ? "Stop this task" : "Close and delete the machine" }));
    await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.method !== "GET")).toHaveLength(1));
    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
    await waitFor(() => {

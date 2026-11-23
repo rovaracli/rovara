@@ -21,6 +21,7 @@ import { meFixture, navFixture } from "./support/fixtures.js";
 import { sessionFixture, messageFixture, taskFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 import { CARDS, decisionsView } from "./support/work-fixture.js";
 import { readDecisions } from "../../packages/ui/src/api/decisions.js";
+import { pressWhenEnabled } from "./support/close-dialog.js";
 const requestId: unknown = expect.any(String);
 const mergeReadySession = () => {
  const candidate = createCandidateManifest([{ repositoryId: "payments", commitSha: "c".repeat(40), treeSha: "d".repeat(40), baseCommitSha: "e".repeat(40) }]);
@@ -209,7 +210,7 @@ it("DEC367 offers legacy Close then explicit Discard only after the live retaine
   const trigger = await screen.findByRole<HTMLButtonElement>("button", { name: "Close task" });await waitFor(() => expect(trigger.disabled).toBe(false));fireEvent.click(trigger);
   const dialog = await screen.findByRole("dialog", { name: "Close this task?" });expect(asks).toBe(0);
   expect(within(dialog).queryByRole("button", { name: "Discard it and close" })).toBeNull();
-  fireEvent.click(within(dialog).getByRole("button", { name: "Close and delete the machine" }));
+  await pressWhenEnabled(async () => within(dialog).getByRole("button", { name: "Close and delete the machine" }));
   const discard = await within(dialog).findByRole<HTMLButtonElement>("button", { name: "Discard it and close" });
   expect(within(dialog).getByRole("list", { name: "Unpublished work" }).textContent).toContain("demo");
   fireEvent.click(discard);fireEvent.click(discard);
@@ -293,7 +294,7 @@ it("closes the task only after a confirmation, asks again before discarding unpu
  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close task" }).disabled).toBe(false));fireEvent.click(screen.getByRole("button", { name: "Close task" }));
  expect(await screen.findByRole("dialog", { name: "Close this task?" })).toBeTruthy();
  expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/close"))).toBe(false);
- fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close and delete the machine" }));
+ await pressWhenEnabled(async () => within(screen.getByRole("dialog")).getByRole("button", { name: "Close and delete the machine" }));
  // Unpublished work: the list is shown and nothing was discarded.
  expect(await screen.findByRole("dialog", { name: "Discard unpublished work?" })).toBeTruthy();
  expect(screen.getByText("demo: worktree_changes")).toBeTruthy();
@@ -312,7 +313,7 @@ it("says the task is closing while its workspace is checked, and does not ask th
  await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(screen.queryByText("Closing…")).toBeNull();
  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close task" }).disabled).toBe(false));fireEvent.click(screen.getByRole("button", { name: "Close task" }));
  f.setSession(cloud(true));
- fireEvent.click(within(await screen.findByRole("dialog", { name: "Close this task?" })).getByRole("button", { name: "Close and delete the machine" }));
+ await pressWhenEnabled(async () => within(await screen.findByRole("dialog", { name: "Close this task?" })).getByRole("button", { name: "Close and delete the machine" }));
  await screen.findByText("Closing…");
  expect(within(screen.getByRole("dialog")).getByRole("status").textContent).toContain("Closing is waiting for confirmation. Its result is not yet known.");
  expect(screen.queryByText(/Press the button again/)).toBeNull();expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/close") && request.method === "POST")).toHaveLength(1);
