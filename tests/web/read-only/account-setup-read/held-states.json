@@ -1,0 +1,655 @@
+{
+  "rule": "Read-only G5: served facts require a successful current reader. Board scenes are appearance references, never evidence of server behavior.",
+  "pages": [
+    {
+      "section": "19",
+      "stem": "name-prompt",
+      "served": [
+        "observed name",
+        "missing-name explanation"
+      ],
+      "held": [
+        "name validation",
+        "save",
+        "dismissal receipt"
+      ],
+      "fallback": "Display observed name or missing-name explanation; no form."
+    },
+    {
+      "section": "20",
+      "stem": "setup-agents",
+      "served": [
+        "offered active company workflows for a company owner/admin only"
+      ],
+      "held": [
+        "project workflow roster",
+        "saved setup selection",
+        "default workflow",
+        "save selection"
+      ],
+      "fallback": "Project workflow roster: Can't tell yet. Cloud explicitly rejects project queries (agent-directory-routes.ts:115\u2013137); nav projects carry empty placeholder agent arrays (routes.ts:538), so neither establishes a roster. Members do not request the admin-only catalog."
+    },
+    {
+      "section": "32",
+      "stem": "account",
+      "served": [
+        "identity",
+        "current company",
+        "role",
+        "connected sign-ins",
+        "observed Slack learning preference",
+        "local appearance"
+      ],
+      "held": [
+        "other available companies",
+        "notification preferences",
+        "company switch",
+        "profile save",
+        "sign-in changes",
+        "sign out"
+      ],
+      "fallback": "Other available companies: Can't tell yet. No switch or account mutation."
+    },
+    {
+      "section": "33",
+      "stem": "personal-github",
+      "served": [
+        "linked login and time",
+        "explicit unlinked response"
+      ],
+      "held": [
+        "connect",
+        "unlink",
+        "OAuth return receipt"
+      ],
+      "fallback": "Show only current GET result; ignore callback query claims."
+    },
+    {
+      "section": "34",
+      "stem": "automation-keys",
+      "served": [
+        "key metadata",
+        "active expired revoked status",
+        "empty metadata list"
+      ],
+      "held": [
+        "create",
+        "revoke",
+        "rotate",
+        "token value",
+        "replacement-key safety inference"
+      ],
+      "fallback": "No write controls or secret fields even when canCreate is true."
+    },
+    {
+      "section": "area-6-company",
+      "stem": "company-progress",
+      "served": [
+        "company GitHub connections",
+        "company Slack connection"
+      ],
+      "held": [
+        "overall company percent",
+        "wizard completion",
+        "creation",
+        "invites",
+        "OAuth"
+      ],
+      "fallback": "Overall setup progress: Can't tell yet."
+    },
+    {
+      "section": "area-6-project",
+      "stem": "project-checklist",
+      "served": [
+        "server checklist rows",
+        "optional and skipped rows",
+        "server percent"
+      ],
+      "held": [
+        "skip",
+        "undo",
+        "approve",
+        "run setup",
+        "start task",
+        "local wizard completion"
+      ],
+      "fallback": "Read server percent unchanged; never infer from query step."
+    },
+    {
+      "section": "area-6-run",
+      "stem": "setup-progress",
+      "served": [
+        "run status",
+        "started time",
+        "verification if supplied",
+        "candidate check if supplied"
+      ],
+      "held": [
+        "allocation stage",
+        "preparation stage",
+        "run decisions",
+        "retry",
+        "save setup",
+        "environment editor"
+      ],
+      "fallback": "Allocation and preparation: Can't tell yet. Ready does not establish approval."
+    },
+    {
+      "section": "area-6-journal",
+      "stem": "setup-journal",
+      "served": [
+        "command entries",
+        "exit or timeout",
+        "blocked hosts",
+        "host request status"
+      ],
+      "held": [
+        "run command",
+        "allow host",
+        "steer",
+        "empty means complete"
+      ],
+      "fallback": "Show supplied entries only; null exit means unknown, never success."
+    }
+  ],
+  "boardFallbacks": [
+    {
+      "state": "Loading is taking longer",
+      "missingSignal": "No server slow-state fact",
+      "classification": "HELD",
+      "actual": "Checking; Can't tell yet"
+    },
+    {
+      "state": "Empty",
+      "missingSignal": "No universal empty-state signal",
+      "classification": "HELD unless a valid list explicitly returns []",
+      "actual": "Unknown for absent/unreadable data; metadata empty list is served"
+    },
+    {
+      "state": "First read failed",
+      "missingSignal": "No domain state from failed GET",
+      "classification": "HELD domain scene; observed transport failure",
+      "actual": "Can't tell yet; GET retry"
+    },
+    {
+      "state": "Refresh failed with prior data",
+      "missingSignal": "Cached data does not establish a current read",
+      "classification": "HELD stale domain scene",
+      "actual": "Drop prior facts; Can't tell yet"
+    },
+    {
+      "state": "Partly read",
+      "missingSignal": "No aggregate completeness contract",
+      "classification": "HELD aggregate scene",
+      "actual": "Successful independent reads remain; failed slice says Can't tell yet"
+    },
+    {
+      "state": "Offline",
+      "missingSignal": "No domain state from network failure",
+      "classification": "HELD domain scene; observed transport failure",
+      "actual": "Can't tell yet; no cached personal facts"
+    },
+    {
+      "state": "Access ended",
+      "missingSignal": "A refusal cannot establish detailed access-removal cause",
+      "classification": "HELD cause; observed refusal",
+      "actual": "Access could not be confirmed; drop facts; no sign-in launch"
+    },
+    {
+      "state": "Cannot tell yet",
+      "missingSignal": "Unsupported or unreadable current reader",
+      "classification": "HELD",
+      "actual": "Can't tell yet; never invent record or success"
+    }
+  ],
+  "boardScenes": [
+    {
+      "stem": "name-prompt",
+      "boardState": "main",
+      "label": "Main example",
+      "classification": "SERVED",
+      "fallbackScene": "name-prompt",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "name-prompt",
+      "boardState": "invalid",
+      "label": "Name needs a change",
+      "classification": "HELD",
+      "fallbackScene": "name-missing",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "name-prompt",
+      "boardState": "loading",
+      "label": "Loading",
+      "classification": "HELD",
+      "fallbackScene": "name-prompt-slow",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "name-prompt",
+      "boardState": "loading-slow",
+      "label": "Loading is taking longer",
+      "classification": "HELD",
+      "fallbackScene": "name-prompt-slow",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "name-prompt",
+      "boardState": "empty",
+      "label": "Empty",
+      "classification": "HELD",
+      "fallbackScene": "name-prompt-empty",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "name-prompt",
+      "boardState": "read-failed",
+      "label": "First read failed",
+      "classification": "HELD",
+      "fallbackScene": "name-prompt-first-failed",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "name-prompt",
+      "boardState": "stale",
+      "label": "Refresh failed with prior data",
+      "classification": "HELD",
+      "fallbackScene": "name-prompt-refresh-failed",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "name-prompt",
+      "boardState": "partial",
+      "label": "Partly read",
+      "classification": "HELD",
+      "fallbackScene": "name-prompt-partial",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "name-prompt",
+      "boardState": "offline",
+      "label": "Offline",
+      "classification": "HELD",
+      "fallbackScene": "name-prompt-offline",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "name-prompt",
+      "boardState": "access-lost",
+      "label": "Access ended",
+      "classification": "HELD",
+      "fallbackScene": "name-prompt-access-ended",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "name-prompt",
+      "boardState": "unknown",
+      "label": "Cannot tell yet",
+      "classification": "HELD",
+      "fallbackScene": "name-prompt-unknown",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "setup-agents",
+      "boardState": "main",
+      "label": "Main example",
+      "classification": "SERVED",
+      "fallbackScene": "setup-agents",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "setup-agents",
+      "boardState": "choice",
+      "label": "Selected workflows",
+      "classification": "HELD",
+      "fallbackScene": "setup-agents",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "setup-agents",
+      "boardState": "loading",
+      "label": "Loading",
+      "classification": "HELD",
+      "fallbackScene": "setup-agents-slow",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "setup-agents",
+      "boardState": "loading-slow",
+      "label": "Loading is taking longer",
+      "classification": "HELD",
+      "fallbackScene": "setup-agents-slow",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "setup-agents",
+      "boardState": "empty",
+      "label": "Empty",
+      "classification": "HELD",
+      "fallbackScene": "setup-agents-empty",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "setup-agents",
+      "boardState": "read-failed",
+      "label": "First read failed",
+      "classification": "HELD",
+      "fallbackScene": "setup-agents-first-failed",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "setup-agents",
+      "boardState": "stale",
+      "label": "Refresh failed with prior data",
+      "classification": "HELD",
+      "fallbackScene": "setup-agents-refresh-failed",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "setup-agents",
+      "boardState": "partial",
+      "label": "Partly read",
+      "classification": "HELD",
+      "fallbackScene": "setup-agents-partial",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "setup-agents",
+      "boardState": "offline",
+      "label": "Offline",
+      "classification": "HELD",
+      "fallbackScene": "setup-agents-offline",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "setup-agents",
+      "boardState": "access-lost",
+      "label": "Access ended",
+      "classification": "HELD",
+      "fallbackScene": "setup-agents-access-ended",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "setup-agents",
+      "boardState": "unknown",
+      "label": "Cannot tell yet",
+      "classification": "HELD",
+      "fallbackScene": "setup-agents-unknown",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "account",
+      "boardState": "main",
+      "label": "Main example",
+      "classification": "SERVED",
+      "fallbackScene": "account",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "account",
+      "boardState": "switch-company",
+      "label": "Company selection",
+      "classification": "HELD",
+      "fallbackScene": "account",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "account",
+      "boardState": "loading",
+      "label": "Loading",
+      "classification": "HELD",
+      "fallbackScene": "account-slow",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "account",
+      "boardState": "loading-slow",
+      "label": "Loading is taking longer",
+      "classification": "HELD",
+      "fallbackScene": "account-slow",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "account",
+      "boardState": "empty",
+      "label": "Empty",
+      "classification": "HELD",
+      "fallbackScene": "account-empty",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "account",
+      "boardState": "read-failed",
+      "label": "First read failed",
+      "classification": "HELD",
+      "fallbackScene": "account-first-failed",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "account",
+      "boardState": "stale",
+      "label": "Refresh failed with prior data",
+      "classification": "HELD",
+      "fallbackScene": "account-refresh-failed",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "account",
+      "boardState": "partial",
+      "label": "Partly read",
+      "classification": "HELD",
+      "fallbackScene": "account-partial",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "account",
+      "boardState": "offline",
+      "label": "Offline",
+      "classification": "HELD",
+      "fallbackScene": "account-offline",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "account",
+      "boardState": "access-lost",
+      "label": "Access ended",
+      "classification": "HELD",
+      "fallbackScene": "account-access-ended",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "account",
+      "boardState": "unknown",
+      "label": "Cannot tell yet",
+      "classification": "HELD",
+      "fallbackScene": "account-unknown",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "personal-github",
+      "boardState": "main",
+      "label": "Main example",
+      "classification": "SERVED",
+      "fallbackScene": "personal-github",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "personal-github",
+      "boardState": "linked",
+      "label": "GitHub link recorded",
+      "classification": "HELD",
+      "fallbackScene": "personal-github",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "personal-github",
+      "boardState": "loading",
+      "label": "Loading",
+      "classification": "HELD",
+      "fallbackScene": "personal-github-slow",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "personal-github",
+      "boardState": "loading-slow",
+      "label": "Loading is taking longer",
+      "classification": "HELD",
+      "fallbackScene": "personal-github-slow",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "personal-github",
+      "boardState": "empty",
+      "label": "Empty",
+      "classification": "HELD",
+      "fallbackScene": "personal-github-empty",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "personal-github",
+      "boardState": "read-failed",
+      "label": "First read failed",
+      "classification": "HELD",
+      "fallbackScene": "personal-github-first-failed",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "personal-github",
+      "boardState": "stale",
+      "label": "Refresh failed with prior data",
+      "classification": "HELD",
+      "fallbackScene": "personal-github-refresh-failed",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "personal-github",
+      "boardState": "partial",
+      "label": "Partly read",
+      "classification": "HELD",
+      "fallbackScene": "personal-github-partial",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "personal-github",
+      "boardState": "offline",
+      "label": "Offline",
+      "classification": "HELD",
+      "fallbackScene": "personal-github-offline",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "personal-github",
+      "boardState": "access-lost",
+      "label": "Access ended",
+      "classification": "HELD",
+      "fallbackScene": "personal-github-access-ended",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "personal-github",
+      "boardState": "unknown",
+      "label": "Cannot tell yet",
+      "classification": "HELD",
+      "fallbackScene": "personal-github-unknown",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "main",
+      "label": "Main example",
+      "classification": "SERVED",
+      "fallbackScene": "automation-keys",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "revoke-review",
+      "label": "Revoke an existing key",
+      "classification": "HELD",
+      "fallbackScene": "automation-keys",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "no-keys",
+      "label": "No existing keys",
+      "classification": "SERVED",
+      "fallbackScene": "keys-empty",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "loading",
+      "label": "Loading",
+      "classification": "HELD",
+      "fallbackScene": "automation-keys-slow",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "loading-slow",
+      "label": "Loading is taking longer",
+      "classification": "HELD",
+      "fallbackScene": "automation-keys-slow",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "empty",
+      "label": "Empty",
+      "classification": "HELD",
+      "fallbackScene": "automation-keys-empty",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "read-failed",
+      "label": "First read failed",
+      "classification": "HELD",
+      "fallbackScene": "automation-keys-first-failed",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "stale",
+      "label": "Refresh failed with prior data",
+      "classification": "HELD",
+      "fallbackScene": "automation-keys-refresh-failed",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "partial",
+      "label": "Partly read",
+      "classification": "HELD",
+      "fallbackScene": "automation-keys-partial",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "offline",
+      "label": "Offline",
+      "classification": "HELD",
+      "fallbackScene": "automation-keys-offline",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "access-lost",
+      "label": "Access ended",
+      "classification": "HELD",
+      "fallbackScene": "automation-keys-access-ended",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    },
+    {
+      "stem": "automation-keys",
+      "boardState": "unknown",
+      "label": "Cannot tell yet",
+      "classification": "HELD",
+      "fallbackScene": "automation-keys-unknown",
+      "reason": "Existing current-reader facts only; no write scene or unsupported state is claimed."
+    }
+  ]
+}

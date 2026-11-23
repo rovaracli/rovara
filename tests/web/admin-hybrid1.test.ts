@@ -323,7 +323,7 @@ describe("Your account", () => {
  it("never asks for the sign-in factors and shows no confirmation email or passkeys (owner DEC 254zzz73)", async () => {
   const f = mount("/app/account", () => ok({}));
   try {
-   await screen.findByRole("heading", { name: "Your account" });
+   await screen.findByRole("heading", { name: "Account" });
    expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/me/sign-in-factors")).toBe(false);
    expect(screen.queryByRole("heading", { name: "Confirmation email" })).toBeNull();expect(screen.queryByRole("heading", { name: "Passkeys" })).toBeNull();
    expect(screen.queryByTestId("factor-email")).toBeNull();expect(screen.queryByTestId("fresh-sign-in")).toBeNull();
@@ -331,7 +331,7 @@ describe("Your account", () => {
  });
  it("has no accessibility violations", async () => {
   const f = mount("/app/account", () => ok({}));
-  try { await screen.findByRole("heading", { name: "Your account" }); await expectNoAxeViolations(f.container); } finally { f.close(); }
+  try { await screen.findByRole("heading", { name: "Account" }); await expectNoAxeViolations(f.container); } finally { f.close(); }
  });
 });
 

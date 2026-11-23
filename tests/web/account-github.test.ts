@@ -60,19 +60,19 @@ describe("Your GitHub account readers", () => {
 
 describe("Your GitHub account section", () => {
  it("says not connected yet while Code serves no such route", async () => {
-  const f = mount("/app/account", r => (r.path === "/v1/app/me/github" ? NOT_ON_CODE : ok({})));
+  const f = mount("/app/account/github", r => (r.path === "/v1/app/me/github" ? NOT_ON_CODE : ok({})));
   try { const s = await section(); await waitFor(() => expect(s.getByTestId("not-connected")).toBeTruthy()); expect(s.queryByRole("button", { name: /Connect|Unlink/ })).toBeNull(); } finally { f.close(); }
  });
  it("with no account linked offers Connect and says it is not a sign-in", async () => {
-  const f = mount("/app/account", r => (r.path === "/v1/app/me/github" ? ok(NONE) : ok({})));
+  const f = mount("/app/account/github", r => (r.path === "/v1/app/me/github" ? ok(NONE) : ok({})));
   try { const s = await section(); expect(await s.findByRole("button", { name: "Connect your GitHub" })).toBeTruthy(); expect(s.getByText(/does not sign you in with GitHub/)).toBeTruthy(); expect(s.queryByRole("button", { name: /Disconnect/ })).toBeNull(); } finally { f.close(); }
  });
  it("shows the linked login as plain text with an Unlink", async () => {
-  const f = mount("/app/account", r => (r.path === "/v1/app/me/github" ? ok({ ...LINKED, login: "priya-dev" }) : ok({})));
+  const f = mount("/app/account/github", r => (r.path === "/v1/app/me/github" ? ok({ ...LINKED, login: "priya-dev" }) : ok({})));
   try { const s = await section(); expect((await s.findByTestId("github-login")).textContent).toBe("priya-dev"); expect(s.getByRole("button", { name: "Disconnect your GitHub account" })).toBeTruthy(); expect(s.queryByRole("button", { name: "Connect your GitHub" })).toBeNull(); } finally { f.close(); }
  });
  it("offers Continue straight away (no step-up), and writes nothing until it is pressed", async () => {
-  const f = mount("/app/account", r => (r.path === "/v1/app/me/github" ? ok(NONE) : ok({})));
+  const f = mount("/app/account/github", r => (r.path === "/v1/app/me/github" ? ok(NONE) : ok({})));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Connect your GitHub" }));
    const dialog = await screen.findByRole("dialog", { name: "Connect your GitHub?" });
@@ -82,29 +82,35 @@ describe("Your GitHub account section", () => {
   } finally { f.close(); }
  });
  it("starts the connect with an empty body and sends the browser to GitHub's address", async () => {
-  const f = mount("/app/account?github=connect", r => (r.method === "POST" && r.path === "/v1/app/me/github/link" ? ok({ authorizeUrl: GITHUB }) : r.path === "/v1/app/me/github" ? ok(NONE) : ok({})));
+  const f = mount("/app/account/github?github=connect", r => (r.method === "POST" && r.path === "/v1/app/me/github/link" ? ok({ authorizeUrl: GITHUB }) : r.path === "/v1/app/me/github" ? ok(NONE) : ok({})));
   const navigate = vi.spyOn(f.host, "navigate");
   try {
    const dialog = await screen.findByRole("dialog", { name: "Connect your GitHub?" });
+   // The deep-linked dialog is open before the list is read; a send is allowed only once that read has answered (G5 write rule).
+   await screen.findByText(/No GitHub account connected/);
    fireEvent.click(within(dialog).getByRole("button", { name: "Continue to GitHub" }));
    await waitFor(() => expect(navigate).toHaveBeenCalledWith(GITHUB));
    expect(writes(f)).toEqual([expect.objectContaining({ method: "POST", path: "/v1/app/me/github/link", body: {} })]);
   } finally { f.close(); }
  });
  it("does not go anywhere when the answer is not GitHub's login page", async () => {
-  const f = mount("/app/account?github=connect", r => (r.method === "POST" ? ok({ authorizeUrl: "https://evil.example/x" }) : r.path === "/v1/app/me/github" ? ok(NONE) : ok({})));
+  const f = mount("/app/account/github?github=connect", r => (r.method === "POST" ? ok({ authorizeUrl: "https://evil.example/x" }) : r.path === "/v1/app/me/github" ? ok(NONE) : ok({})));
   const navigate = vi.spyOn(f.host, "navigate");
   try {
    const dialog = await screen.findByRole("dialog", { name: "Connect your GitHub?" });
+   // The deep-linked dialog is open before the list is read; a send is allowed only once that read has answered (G5 write rule).
+   await screen.findByText(/No GitHub account connected/);
    fireEvent.click(within(dialog).getByRole("button", { name: "Continue to GitHub" }));
    await within(dialog).findByRole("alert");
    expect(navigate).not.toHaveBeenCalled();
   } finally { f.close(); }
  });
  it("shows Cloud's refusal in its own words, with no step-up to go back to", async () => {
-  const f = mount("/app/account?github=connect", r => (r.method === "POST" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "Start again from Rovara." } } } : r.path === "/v1/app/me/github" ? ok(NONE) : ok({})));
+  const f = mount("/app/account/github?github=connect", r => (r.method === "POST" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "Start again from Rovara." } } } : r.path === "/v1/app/me/github" ? ok(NONE) : ok({})));
   try {
    const dialog = await screen.findByRole("dialog", { name: "Connect your GitHub?" });
+   // The deep-linked dialog is open before the list is read; a send is allowed only once that read has answered (G5 write rule).
+   await screen.findByText(/No GitHub account connected/);
    fireEvent.click(within(dialog).getByRole("button", { name: "Continue to GitHub" }));
    expect((await within(dialog).findByRole("alert")).textContent).toContain("Start again from Rovara.");
    expect(within(dialog).queryByTestId("fresh-sign-in")).toBeNull();
@@ -112,7 +118,7 @@ describe("Your GitHub account section", () => {
  });
  it("unlinks after a confirmation dialog, then shows none linked", async () => {
   let linked = true;
-  const f = mount("/app/account", r => (r.method === "DELETE" && r.path === "/v1/app/me/github" ? (linked = false, ok({ unlinked: true })) : r.path === "/v1/app/me/github" ? ok(linked ? LINKED : NONE) : ok({})));
+  const f = mount("/app/account/github", r => (r.method === "DELETE" && r.path === "/v1/app/me/github" ? (linked = false, ok({ unlinked: true })) : r.path === "/v1/app/me/github" ? ok(linked ? LINKED : NONE) : ok({})));
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Disconnect your GitHub account" }));
    const dialog = await screen.findByRole("dialog", { name: "Unlink your GitHub account?" });
@@ -133,14 +139,14 @@ describe("Your GitHub account section", () => {
   try { await screen.findByRole("button", { name: "Connect your GitHub" }); expect(screen.queryByTestId("github-link-notice")).toBeNull(); } finally { f.close(); }
  });
  it("has no accessibility violations", async () => {
-  const f = mount("/app/account", r => (r.path === "/v1/app/me/github" ? ok(LINKED) : ok({})));
+  const f = mount("/app/account/github", r => (r.path === "/v1/app/me/github" ? ok(LINKED) : ok({})));
   try { await screen.findByTestId("github-login"); await expectNoAxeViolations(f.container); } finally { f.close(); }
  });
 });
 
 it("renders the GitHub connection date in both viewer zones", async () => {
  await inViewerZones(async expected => {
-  const f = mount("/app/account", r => r.path === "/v1/app/me/github" ? ok({ ...LINKED, linkedAt: VIEWER_INSTANT }) : ok({}));
-  try { await screen.findByText("priya-dev");expect(f.container.textContent).toContain(expected.date); } finally { f.close(); }
+  const f = mount("/app/account/github", r => r.path === "/v1/app/me/github" ? ok({ ...LINKED, linkedAt: VIEWER_INSTANT }) : ok({}));
+  try { await screen.findByTestId("github-login"); await waitFor(() => expect(f.container.textContent).toContain(`Linked ${expected.day}`)); } finally { f.close(); }
  });
 });

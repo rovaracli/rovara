@@ -17,7 +17,8 @@ import { h } from "./support/h.js";
 const features = { localAgents: true, usage: false, admin: false, chains: false, notices: false, describe: false };
 const ID = "a".repeat(64);
 const navWith = (me: { name: string; nameChosen?: boolean }): AppNav => AppNavSchema.parse({ me: { developerId: ID, orgRole: "member", ...me }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
-const QUESTION = "What should teammates call you?";
+// The card's field is labelled "Your name" (mock 25a); the card itself is also the "Your name" region, so the field is found by its textbox role.
+const QUESTION = "Your name";
 function shell(initial: AppNav, options: { failSave?: { status: number; body: unknown }; storage?: Map<string, string> } = {}) {
  let current = initial;
  const f = fakeHost(async request => {
@@ -40,43 +41,43 @@ const saves = (f: ReturnType<typeof shell>) => f.request.mock.calls.map(([reques
 it("asks once what teammates should call a person whose name is not chosen, and shows the safe name in the header", async () => {
  const f = shell(navWith({ name: "Member 3fa9", nameChosen: false }));
  await screen.findByRole("heading", { name: "Home", level: 1 });
- expect(screen.getByRole("complementary", { name: "Your name" })).toBeTruthy();expect(screen.getByLabelText(QUESTION)).toBeTruthy();
+ expect(screen.getByRole("complementary", { name: "Your name" })).toBeTruthy();expect(screen.getByRole("textbox", { name: QUESTION })).toBeTruthy();
  expect(screen.getByRole("button", { name: "Open account menu" }).textContent).toBe("Member 3fa9");
  expect(document.querySelector(".rv-app-shell")?.textContent).not.toContain("@");f.close();
 });
 it("fills in the provider's real name, and leaves the field empty for a placeholder", async () => {
- const named = shell(navWith({ name: "Priya Raman", nameChosen: false }));await screen.findByLabelText(QUESTION);expect(screen.getByLabelText<HTMLInputElement>(QUESTION).value).toBe("Priya Raman");named.close();
- const unnamed = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByLabelText(QUESTION);expect(screen.getByLabelText<HTMLInputElement>(QUESTION).value).toBe("");unnamed.close();
+ const named = shell(navWith({ name: "Priya Raman", nameChosen: false }));await screen.findByRole("textbox", { name: QUESTION });expect(screen.getByRole<HTMLInputElement>("textbox", { name: QUESTION }).value).toBe("Priya Raman");named.close();
+ const unnamed = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByRole("textbox", { name: QUESTION });expect(screen.getByRole<HTMLInputElement>("textbox", { name: QUESTION }).value).toBe("");unnamed.close();
 });
 it("does not ask a person who chose their name, or when the server does not say", async () => {
- for (const me of [{ name: "Priya", nameChosen: true }, { name: "Priya" }]) { const f = shell(navWith(me));await screen.findByRole("heading", { name: "Home", level: 1 });expect(screen.queryByLabelText(QUESTION)).toBeNull();f.close(); }
+ for (const me of [{ name: "Priya", nameChosen: true }, { name: "Priya" }]) { const f = shell(navWith(me));await screen.findByRole("heading", { name: "Home", level: 1 });expect(screen.queryByRole("textbox", { name: QUESTION })).toBeNull();f.close(); }
 });
 it("saves the name, hides the question and updates the header", async () => {
- const f = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByLabelText(QUESTION);
- fireEvent.change(screen.getByLabelText(QUESTION), { target: { value: "  Priya R  " } });fireEvent.click(screen.getByRole("button", { name: "Save name" }));
- await waitFor(() => expect(screen.queryByLabelText(QUESTION)).toBeNull());
+ const f = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByRole("textbox", { name: QUESTION });
+ fireEvent.change(screen.getByRole("textbox", { name: QUESTION }), { target: { value: "  Priya R  " } });fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+ await waitFor(() => expect(screen.queryByRole("textbox", { name: QUESTION })).toBeNull());
  expect(saves(f)).toEqual([expect.objectContaining({ path: "/v1/app/me/name", body: { name: "Priya R" } })]);
  await waitFor(() => expect(screen.getByRole("button", { name: "Open account menu" }).textContent).toBe("Priya R"));f.close();
 });
 it("refuses an email address or an empty name without sending anything, and says why", async () => {
- const f = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByLabelText(QUESTION);
+ const f = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByRole("textbox", { name: QUESTION });
  for (const value of ["priya@example.com", "   "]) {
-  fireEvent.change(screen.getByLabelText(QUESTION), { target: { value } });fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+  fireEvent.change(screen.getByRole("textbox", { name: QUESTION }), { target: { value } });fireEvent.click(screen.getByRole("button", { name: "Save name" }));
   expect((await within(screen.getByRole("complementary", { name: "Your name" })).findByRole("alert")).textContent).toBe("Use 1 to 80 characters. A name can't be an email address.");
  }
  expect(saves(f)).toEqual([]);f.close();
 });
 it("shows the server's refusal and keeps the question", async () => {
- const f = shell(navWith({ name: "Member 3fa9", nameChosen: false }), { failSave: { status: 400, body: { error: { code: "CONFIG_INVALID", message: "name: must have 1 to 80 characters" } } } });await screen.findByLabelText(QUESTION);
- fireEvent.change(screen.getByLabelText(QUESTION), { target: { value: "Priya" } });fireEvent.click(screen.getByRole("button", { name: "Save name" }));
- expect((await within(screen.getByRole("complementary", { name: "Your name" })).findByRole("alert")).textContent).toBe("name: must have 1 to 80 characters");expect(screen.getByLabelText(QUESTION)).toBeTruthy();f.close();
+ const f = shell(navWith({ name: "Member 3fa9", nameChosen: false }), { failSave: { status: 400, body: { error: { code: "CONFIG_INVALID", message: "name: must have 1 to 80 characters" } } } });await screen.findByRole("textbox", { name: QUESTION });
+ fireEvent.change(screen.getByRole("textbox", { name: QUESTION }), { target: { value: "Priya" } });fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+ expect((await within(screen.getByRole("complementary", { name: "Your name" })).findByRole("alert")).textContent).toBe("name: must have 1 to 80 characters");expect(screen.getByRole("textbox", { name: QUESTION })).toBeTruthy();f.close();
 });
 it("can be dismissed, and stays dismissed on this device for this person only", async () => {
- const first = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByLabelText(QUESTION);
- fireEvent.click(screen.getByRole("button", { name: "Not now" }));await waitFor(() => expect(screen.queryByLabelText(QUESTION)).toBeNull());
+ const first = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByRole("textbox", { name: QUESTION });
+ fireEvent.click(screen.getByRole("button", { name: "Not now" }));await waitFor(() => expect(screen.queryByRole("textbox", { name: QUESTION })).toBeNull());
  expect(first.storage.get(NAME_PROMPT_KEY)).toBe(ID);expect(saves(first)).toEqual([]);first.close();
- const again = shell(navWith({ name: "Member 3fa9", nameChosen: false }), { storage: new Map([[NAME_PROMPT_KEY, ID]]) });await screen.findByRole("heading", { name: "Home", level: 1 });expect(screen.queryByLabelText(QUESTION)).toBeNull();again.close();
- const other = shell(navWith({ name: "Member 3fa9", nameChosen: false }), { storage: new Map([[NAME_PROMPT_KEY, "b".repeat(64)]]) });await screen.findByLabelText(QUESTION);other.close();
+ const again = shell(navWith({ name: "Member 3fa9", nameChosen: false }), { storage: new Map([[NAME_PROMPT_KEY, ID]]) });await screen.findByRole("heading", { name: "Home", level: 1 });expect(screen.queryByRole("textbox", { name: QUESTION })).toBeNull();again.close();
+ const other = shell(navWith({ name: "Member 3fa9", nameChosen: false }), { storage: new Map([[NAME_PROMPT_KEY, "b".repeat(64)]]) });await screen.findByRole("textbox", { name: QUESTION });other.close();
 });
 it("lets a person change their name later from the account menu", async () => {
  const f = shell(navWith({ name: "Priya", nameChosen: true }));await screen.findByRole("heading", { name: "Home", level: 1 });
@@ -92,5 +93,5 @@ it("starts the account menu's field empty while the name is not chosen, so a pla
  const dialog = await screen.findByRole("dialog", { name: "Your account" });expect(within(dialog).getByLabelText<HTMLInputElement>("Your name").value).toBe("");f.close();
 });
 for (const theme of ["light", "dark"] as const) it("has no automated accessibility violations with the question showing in " + theme, async () => {
- const f = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByLabelText(QUESTION);document.documentElement.setAttribute("data-theme", theme);await expectNoAxeViolations(f.container);f.close();
+ const f = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByRole("textbox", { name: QUESTION });document.documentElement.setAttribute("data-theme", theme);await expectNoAxeViolations(f.container);f.close();
 });

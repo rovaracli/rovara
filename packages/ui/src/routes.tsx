@@ -6,6 +6,7 @@ import { AppShell } from "./shell/AppShell.js";
 import { NotFound } from "./shell/NotFound.js";
 import { RouteError } from "./shell/ErrorBoundary.js";
 import { companyAdminReadRoute, type CompanyAdminReadPath } from "./routes/company-admin-read-routes.js";
+import { accountSetupReadRoutes } from "./routes/account-setup-read-routes.js";
 import { companyMoneyAiReadRoute, type CompanyMoneyAiReadPath } from "./routes/company-money-ai-read-routes.js";
 function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>{title}</h1></section>; }
 function SignedOut() {
@@ -46,9 +47,9 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  { path: "task-preview/:id", element: <TaskPreviewRedirect /> },
  { path: "agents/:id?", lazy: async () => ({ Component: (await import("./screens/agents/DirectoryScreen.js")).DirectoryScreen }) }, { path: "agents/new", element: <ModelSettingsRedirect section="ai-models" /> },
  { path: "agents/:id/edit", element: <ModelSettingsRedirect section="ai-models" /> },
- { path: "account", lazy: async () => ({ Component: (await import("./screens/account/AccountScreen.js")).AccountScreen }) },
- { path: "account/automation-keys", lazy: async () => ({ Component: (await import("./screens/account/AutomationKeysScreen.js")).AutomationKeysScreen }) },
- { path: "onboard", lazy: async () => ({ Component: (await import("./screens/onboarding/OnboardScreen.js")).OnboardScreen }) },
+ // G5 ship: Account, Your GitHub account and Automation keys (the rebuilt pages, with the old page's live actions), lazy.
+ ...accountSetupReadRoutes(),
+ { path: "onboard", lazy: async () => ({ Component: (await import("./screens/account-setup-read/OnboardPage.js")).OnboardPage }) },
  ];
  // Lane C: waiting is caller-scoped, independent of the company-admin navigation flag.
  children.push({ path: "admin/waiting", handle: { webOnly: true, bleed: true }, lazy: async () => ({ Component: (await import("./screens/admin/AdminLayout.js")).AdminLayout }), children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/admin/waiting/WaitingScreen.js")).WaitingScreen }) }] });
