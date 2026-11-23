@@ -39,6 +39,7 @@ import { TASK_START_REQUEST_ROUTES } from "./task-start-request-routes.js";
 import { GITHUB_DISCONNECT_PREVIEW_ROUTES } from "./github-disconnect-preview-routes.js";
 import { MERGE_ROUTES } from "./merge-routes.js";
 import { SETUP_REPAIR_ROUTES } from "./setup-repair-routes.js";
+import { SETUP_LIMITS_ROUTES } from "./setup-limits-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { KNOWLEDGE_SWITCH_ROUTES } from "./knowledge-switch-routes.js";
 import { GRADUATION_ROUTES } from "./lessons-graduation-routes.js";
@@ -1273,6 +1274,8 @@ export const ROUTES: Route[] = [
   ...GITHUB_DISCONNECT_PREVIEW_ROUTES,
   // L4-U5: the "Setup needs repair" card on a project's setup page and its "Re-check setup" button, passed to Code as the person; Code decides who may.
   ...SETUP_REPAIR_ROUTES,
+  // SETUP-LIMITS: a project's setup-run limits (read, change), passed to Code as the person; Code decides who may and what a number may be.
+  ...SETUP_LIMITS_ROUTES,
   // The admin portal's Cost and time report (Feature A, slice A3): Code's one-row-per-task read, grouped here for a company owner or admin.
   ...REPORT_ROUTES,
   // The plan card's available feature choices (lead 4 PCF); filing and creation use the Cost and time report actions below.

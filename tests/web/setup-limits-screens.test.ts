@@ -31,7 +31,7 @@ type Handler = (request: ApiRequest) => ApiResponse | undefined | Promise<ApiRes
 interface ProjectView { revision: number; limits: Record<string, number>; companyLock: Record<string, number>; effective: Record<string, number> }
 const projectView = (over: Partial<ProjectView> = {}) => ({ revision: 0, limits: {}, companyLock: {}, effective: DEFAULTS, defaults: DEFAULTS, maxima: MAXIMA, ...over });
 
-function mountProject(options: { view?: ReturnType<typeof projectView>; missing?: boolean; unavailable?: boolean; put?: Handler; canEdit?: boolean; page?: boolean } = {}) {
+function mountProject(options: { view?: ReturnType<typeof projectView>; missing?: boolean; unavailable?: boolean; put?: Handler; get?: Handler; canEdit?: boolean; page?: boolean } = {}) {
  let view = options.view ?? projectView();
  const f = fakeHost(async request => {
   const path = request.path.split("?")[0];
@@ -40,7 +40,7 @@ function mountProject(options: { view?: ReturnType<typeof projectView>; missing?
   if (path === "/v1/app/projects/payments/overview") return { status: 200, body: projectFixture(options.canEdit === false ? { you: { role: "contributor", canStartWork: true, canEditSettings: false, canViewSpend: false } } : {}) };
   if (path === LIMITS_PATH && options.unavailable === true) return refuse(501, "NOT_ON_CODE_YET", "Not served.");
   if (path === LIMITS_PATH && options.missing === true) return refuse(404, "NOT_FOUND", "Not found.");
-  if (path === LIMITS_PATH && request.method === "GET") return { status: 200, body: view };
+  if (path === LIMITS_PATH && request.method === "GET") return (await options.get?.(request)) ?? { status: 200, body: view };
   if (path === LIMITS_PATH && request.method === "PUT") {
    const custom = await options.put?.(request);
    if (custom !== undefined) return custom;
@@ -140,6 +140,61 @@ describe("the project's Setup limits", () => {
   fireEvent.click(section.getByRole<HTMLButtonElement>("button", { name: "Save limits" }));
   expect((await screen.findByRole("alert")).textContent).toContain("The limits changed since you looked. They were read again.");
   await waitFor(() => expect((screen.getByLabelText<HTMLInputElement>("Commands a run may run")).value).toBe("10"));
+ });
+
+ it("shows Code's refusal of a person who may not change the limits, and keeps what they typed", async () => {
+  mountProject({ put: () => refuse(403, "FORBIDDEN", "Only company owners and admins, or this project's admins, can change the project's setup limits.") });
+  const section = await limitsRegion();
+  await section.findByLabelText("Commands a run may run");
+  type("Commands a run may run", "25");
+  fireEvent.click(section.getByRole<HTMLButtonElement>("button", { name: "Save limits" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Only company owners and admins, or this project's admins, can change the project's setup limits.");
+  expect((screen.getByLabelText<HTMLInputElement>("Commands a run may run")).value).toBe("25");
+ });
+
+ it("a save whose outcome is unknown reads the limits again, says so, and sends the same request id when the person saves again", async () => {
+  let first = true;
+  const f = mountProject({ view: projectView({ revision: 1 }), put: () => {
+   if (!first) return undefined;
+   first = false;
+   return refuse(503, "RUNTIME_UNAVAILABLE", "The request's outcome is unknown. Check its status before trying again.");
+  } });
+  const section = await limitsRegion();
+  await section.findByLabelText("Commands a run may run");
+  type("Commands a run may run", "25");
+  fireEvent.click(section.getByRole<HTMLButtonElement>("button", { name: "Save limits" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("The outcome is unknown, so the limits were read again.");
+  await waitFor(() => expect(f.request.mock.calls.filter(([request]) => request.method === "GET" && request.path === LIMITS_PATH).length).toBeGreaterThanOrEqual(2));
+  expect((screen.getByLabelText<HTMLInputElement>("Commands a run may run")).value).toBe("25");
+  fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Save limits" }));
+  await screen.findByText("Saved. New runs use these limits.");
+  const ids = f.puts().map(request => (request.body as { requestId: string }).requestId);
+  expect(ids).toHaveLength(2);
+  expect(ids[0]).toBe(ids[1]);
+ });
+
+ // Lead 4 Opus review (27906baaf), rule #14: a re-read that failed is never reported as done, and Save waits for a fresh read.
+ it("a save whose outcome is unknown and whose re-read fails says the limits could not be read again, and holds Save until they read", async () => {
+  let reads = "ok", sent = false;
+  const f = mountProject({ view: projectView({ revision: 1 }),
+   get: () => reads === "ok" ? undefined : refuse(503, "RUNTIME_UNAVAILABLE", "The project's setup limits aren't available just now. Try again."),
+   put: () => { if (!sent) { sent = true; reads = "down"; return refuse(503, "RUNTIME_UNAVAILABLE", "The request's outcome is unknown. Check its status before trying again."); } return undefined; } });
+  const section = await limitsRegion();
+  await section.findByLabelText("Commands a run may run");
+  type("Commands a run may run", "25");
+  fireEvent.click(section.getByRole<HTMLButtonElement>("button", { name: "Save limits" }));
+  const alert = await screen.findByRole("alert");
+  await waitFor(() => expect(alert.textContent).toContain("couldn't be read again"));
+  expect(alert.textContent).not.toContain("were read again");
+  expect((screen.getByRole<HTMLButtonElement>("button", { name: "Save limits" })).disabled).toBe(true);
+  reads = "ok";
+  fireEvent.click(await screen.findByRole("button", { name: "Read them again" }));
+  await waitFor(() => expect((screen.getByRole<HTMLButtonElement>("button", { name: "Save limits" })).disabled).toBe(false));
+  fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Save limits" }));
+  await screen.findByText("Saved. New runs use these limits.");
+  const ids = f.puts().map(request => (request.body as { requestId: string }).requestId);
+  expect(ids).toHaveLength(2);
+  expect(ids[0]).toBe(ids[1]);
  });
 
  it("shows a refusal through VisibleText: a hidden control character is shown, never obeyed", async () => {
