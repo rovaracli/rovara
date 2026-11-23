@@ -75,10 +75,10 @@ async function prepare(action: Action) {
  if (action === "Close task" || action === "Discard it and close") {
   fireEvent.click(await enabled("Close task"));
   if (action === "Discard it and close") {
-   fireEvent.click(await enabled("Close task", within(await screen.findByRole("dialog"))));
+   fireEvent.click(await enabled("Close and delete the machine", within(await screen.findByRole("dialog"))));
    return enabled(action, within(await screen.findByRole("dialog")));
   }
-  return enabled("Close task", within(await screen.findByRole("dialog")));
+  return enabled("Close and delete the machine", within(await screen.findByRole("dialog")));
  }
  if (action === "Take over") {
   fireEvent.click(await enabled(action));return enabled(action, within(await screen.findByRole("dialog")));

@@ -28,13 +28,13 @@ function setup(closeReply: ApiResponse) {
 
 it("keeps a 503 close locked through remount and Check never sends another close", async () => {
  const f = setup({ status: 503, body: { error: { code: "UPSTREAM_FAILED", message: "try later" } } });
- fireEvent.click(await screen.findByRole("button", { name: "Close task" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Close and delete the machine" }));
  await screen.findByText(/Closing this task was not confirmed/);
  expect(f.closeRequests()).toHaveLength(1);
  f.unmount();
  const next = renderUi(f.tree());
  await screen.findByText(/Closing is waiting for confirmation/);
- expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close task" }).disabled).toBe(true);
+ expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close and delete the machine" }).disabled).toBe(true);
  fireEvent.click(screen.getByRole("button", { name: "Check" }));
  await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.method === "GET" && request.path === "/v1/app/sessions/" + SESSION_FIXTURE_ID)).toBe(true));
  expect(f.closeRequests()).toHaveLength(1);
@@ -44,7 +44,7 @@ it("keeps a 503 close locked through remount and Check never sends another close
 it("does not dispatch a close when its identity-scoped request cannot be persisted", async () => {
  const f = setup({ status: 200, body: { session: sessionFixture(), closed: true } });
  f.host.storage.set = () => undefined;
- fireEvent.click(await screen.findByRole("button", { name: "Close task" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Close and delete the machine" }));
  expect(await screen.findByText(/can't be made safely in this browser/)).toBeTruthy();
  expect(f.closeRequests()).toHaveLength(0);
  f.unmount();f.query.clear();
@@ -53,7 +53,7 @@ it("does not dispatch a close when its identity-scoped request cannot be persist
 it("clears the frozen close only after a definitive closed response", async () => {
  const closed = sessionFixture({ status: "succeeded", revision: 2 });
  const f = setup({ status: 200, body: { session: closed, closed: true } });
- fireEvent.click(await screen.findByRole("button", { name: "Close task" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Close and delete the machine" }));
  await waitFor(() => expect(f.onClosed).toHaveBeenCalledTimes(1));
  expect(f.closeRequests()).toHaveLength(1);
  f.unmount();f.query.clear();
@@ -61,10 +61,10 @@ it("clears the frozen close only after a definitive closed response", async () =
 
 it("keeps a 202 close frozen across remount, with only read-only Check", async () => {
  const f = setup({ status: 202, body: { status: "NEEDS_CONFIRMATION", changes: [] } });
- await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close task" }).disabled).toBe(false));
- fireEvent.click(screen.getByRole("button", { name: "Close task" }));await screen.findByRole("button", { name: "Check" });
+ await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close and delete the machine" }).disabled).toBe(false));
+ fireEvent.click(screen.getByRole("button", { name: "Close and delete the machine" }));await screen.findByRole("button", { name: "Check" });
  const body = f.closeRequests()[0]!.body;f.unmount();const next = renderUi(f.tree());
- await screen.findByRole("button", { name: "Check" });expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close task" }).disabled).toBe(true);
+ await screen.findByRole("button", { name: "Check" });expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close and delete the machine" }).disabled).toBe(true);
  fireEvent.click(screen.getByRole("button", { name: "Check" }));
  await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.method === "GET").length).toBeGreaterThan(2));
  expect(f.closeRequests()).toHaveLength(1);expect(f.closeRequests()[0]!.body).toEqual(body);next.unmount();f.query.clear();
@@ -75,11 +75,11 @@ it.each(["CSRF_INVALID", "CSRF_STALE", "UNRECOGNISED"])("R3/R6a: discard confirm
  let posts = 0;
  const f = fakeHost(async request => request.path === "/v1/app/me" ? { status: 200, body: meFixture() } : request.method === "GET" ? { status: 200, body: { session } } : ++posts === 1 ? { status: 200, body: { session, closed: false, unpublished: [{ repository: "demo", reasons: ["worktree_changes"] }] } } : { status: 500, body: { error: { code, message: "Unknown result" } } });
  const query = createQueryClient(), tree = () => h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(CloseTaskDialog, { id: SESSION_FIXTURE_ID, open: true, onOpenChange: () => undefined, onClosed: () => undefined }) }) });
- let ui = renderUi(tree());const first = await screen.findByRole<HTMLButtonElement>("button", { name: "Close task" });await waitFor(() => expect(first.disabled).toBe(false));fireEvent.click(first);
+ let ui = renderUi(tree());const first = await screen.findByRole<HTMLButtonElement>("button", { name: "Close and delete the machine" });await waitFor(() => expect(first.disabled).toBe(false));fireEvent.click(first);
  const discard = await screen.findByRole<HTMLButtonElement>("button", { name: "Discard it and close" });fireEvent.click(discard);
  await waitFor(() => expect(posts).toBe(2));await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
  expect(discard.disabled).toBe(true);
  expect(f.request.mock.calls.filter(([r]) => r.method === "POST")[1]![0].body).toMatchObject({ discardUnpublished: true });
- ui.unmount();ui = renderUi(tree());await screen.findByRole("button", { name: "Check" });expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close task" }).disabled).toBe(true);
+ ui.unmount();ui = renderUi(tree());await screen.findByRole("button", { name: "Check" });expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close and delete the machine" }).disabled).toBe(true);
  fireEvent.click(screen.getByRole("button", { name: "Check" }));await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });expect(posts).toBe(2);ui.unmount();query.clear();
 });

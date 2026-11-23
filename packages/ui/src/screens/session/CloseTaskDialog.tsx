@@ -11,6 +11,8 @@ import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { TaskCloseProgressStatusView, type TaskCloseProgressStatus } from "./TaskCloseProgressStatusView.js";
+/** Interim data-loss warning: a live Close deletes the task's machine and workspace with no unpublished-work check. Always shown before Close can be pressed. */
+const CLOSE_DATA_LOSS_WARNING = "Closing deletes this task's machine. Changes that aren't pushed to GitHub or in a pull request are lost and can't be recovered.";
 type Unpublished = ReadonlyArray<{ repository: string; reasons: readonly string[] }>;
 const unpublishedKey = (work: Unpublished) => JSON.stringify(work.map(entry => [entry.repository, [...entry.reasons].sort()]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
 /** One persisted close request, then read-only checks. Leaving this dialog never retires an unresolved operation. */
@@ -89,13 +91,13 @@ export function CloseTaskDialog({ id, open, onOpenChange, trigger, onCloseAutoFo
   } finally { sending.current = false;setBusy(false); }
  }
  const state = progress;
- return <Dialog title={unpublished === undefined ? "Close this task?" : "Discard unpublished work?"} description={unpublished === undefined ? "Rovara frees its workspace and its place in your open-task limit. Work that was published stays where it is." : "This task has work that was never published. Closing it now deletes that work."}
+ return <Dialog title={unpublished === undefined ? "Close this task?" : "Discard unpublished work?"} description={unpublished === undefined ? CLOSE_DATA_LOSS_WARNING : "This task has work that was never published. Closing it now deletes that work."}
   className="rv-action-dialog" open={open} onOpenChange={onOpenChange} {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})} {...(trigger ? { trigger } : {})}>
   {unpublished !== undefined && <ul aria-label="Unpublished work">{unpublished.map(entry => <li key={entry.repository}><VisibleText text={entry.repository} />{entry.reasons.length > 0 && <>: <VisibleText text={entry.reasons.join("; ")} /></>}</li>)}</ul>}
   {!allowed && <p role="alert">Current identity or task controls are unavailable. Check the task before closing it.</p>}
   {request?.action === "close" && <TaskCloseProgressStatusView taskId={id} state={state} onCheck={check} />}
   {saved.storageError && <p role="alert">{saved.storageError}</p>}
-  <div className="rv-actions"><Button variant={page === undefined ? "secondary" : "primary"} onClick={() => onOpenChange(false)}>{busy || locked ? "Close this window" : "Keep it open"}</Button><Button variant="danger" busy={busy} disabled={!allowed || locked} onClick={() => { void close(unpublished !== undefined); }}>{unpublished === undefined ? "Close task" : "Discard it and close"}</Button></div>
+  <div className="rv-actions"><Button variant={page === undefined ? "secondary" : "primary"} {...(unpublished === undefined && !busy && !locked ? { autoFocus: true } : {})} onClick={() => onOpenChange(false)}>{busy || locked ? "Close this window" : unpublished === undefined ? "Cancel" : "Keep it open"}</Button><Button variant="danger" busy={busy} disabled={!allowed || locked} onClick={() => { void close(unpublished !== undefined); }}>{unpublished === undefined ? "Close and delete the machine" : "Discard it and close"}</Button></div>
   {error && <p role="alert"><VisibleText text={error} /></p>}
  </Dialog>;
 }

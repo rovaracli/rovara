@@ -47,7 +47,7 @@ for (const action of ["stop", "close"] as const) it(`R4-2: a retained legacy Ret
  try {
   await screen.findByRole("button", { name: "Check" });await settle();expect(controls()).toEqual({ stop: false, close: false });
   fireEvent.click(screen.getByRole("button", { name: action === "stop" ? "Stop" : "Close task" }));
-  const dialog = await screen.findByRole("dialog");fireEvent.click(within(dialog).getByRole("button", { name: action === "stop" ? "Stop session" : "Close task" }));
+  const dialog = await screen.findByRole("dialog");fireEvent.click(within(dialog).getByRole("button", { name: action === "stop" ? "Stop session" : "Close and delete the machine" }));
   await waitFor(() => expect(f.writes()).toHaveLength(1));expect(f.writes()[0]![0].path).toMatch(new RegExp("/" + action + "$"));expectRetained(f);
  } finally { ui.unmount();f.query.clear(); }
 });

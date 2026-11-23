@@ -23,7 +23,7 @@ function setup() {
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Host) }) }));
  return { ui, query, fresh: (value: typeof shown | undefined) => { fresh = value; }, writes: () => f.request.mock.calls.filter(([r]) => r.method === "POST") };
 }
-async function firstAsk() { const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Close task" });await waitFor(() => expect(button.disabled).toBe(false));fireEvent.click(button);return screen.findByRole<HTMLButtonElement>("button", { name: "Discard it and close" }); }
+async function firstAsk() { const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Close and delete the machine" });await waitFor(() => expect(button.disabled).toBe(false));fireEvent.click(button);return screen.findByRole<HTMLButtonElement>("button", { name: "Discard it and close" }); }
 
 // Removing the fresh-body consent comparison permits an unseen repository/reason to be deleted.
 it.each(["repository", "reason", "missing", "empty"])("Opus P1/R6c: changed %s blocks discard and presents the current facts", async change => {
@@ -39,7 +39,7 @@ it.each(["repository", "reason", "missing", "empty"])("Opus P1/R6c: changed %s b
 it("Opus P1: reopening forgets discard consent and sends only a fresh first ask", async () => {
  const f = setup();await firstAsk();fireEvent.click(screen.getByRole("button", { name: "Keep it open" }));
  fireEvent.click(await screen.findByRole("button", { name: "Open close" }));
- const first = await screen.findByRole("button", { name: "Close task" });
+ const first = await screen.findByRole("button", { name: "Close and delete the machine" });
  expect(screen.queryByRole("list", { name: "Unpublished work" })).toBeNull();
  fireEvent.click(first);await waitFor(() => expect(f.writes()).toHaveLength(2));
  expect(f.writes()[1]![0].body).not.toHaveProperty("discardUnpublished");f.ui.unmount();f.query.clear();
