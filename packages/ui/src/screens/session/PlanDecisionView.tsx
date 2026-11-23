@@ -12,7 +12,12 @@ export type PlanDecisionState = "read-required" | "ready" | "outdated" | "failed
 /** The quiet line for a task whose plan Rovara has not written yet. */
 export const PLAN_NOT_YET_LINE = "Rovara will show the plan here when it's ready.";
 
+/** The line while Rovara is actually writing the plan (the planning step is running and no plan exists yet). */
+export const PLAN_WRITING_LINE = "Rovara is writing the plan.";
+
 export interface PlanDecisionViewProps {
+ /** The words for state "not-written"; the quiet default unless the task is at the planning step. */
+ notWrittenLine?: string | undefined;
  taskTitle: string;
  plan: ReadPlan | undefined;
  state: PlanDecisionState;
@@ -23,7 +28,7 @@ export interface PlanDecisionViewProps {
 }
 
 /** Cloud's plan approval view. Decision handlers and evidence digest policy remain in the caller-owned action slot. */
-export function PlanDecisionView({ taskTitle, plan, state, decisionSlot, onRetry, slackReturnTo }: PlanDecisionViewProps) {
+export function PlanDecisionView({ taskTitle, plan, state, decisionSlot, onRetry, slackReturnTo, notWrittenLine = PLAN_NOT_YET_LINE }: PlanDecisionViewProps) {
  const mayShowDecision = state === "read-required" || state === "ready";
  return <article className="rv-task-plan-view" aria-label="Plan decision">
   <header className="rv-pane-head">
@@ -37,7 +42,7 @@ export function PlanDecisionView({ taskTitle, plan, state, decisionSlot, onRetry
       <p>The latest plan couldn't be read. Try again before deciding.</p>
    {onRetry !== undefined && <Button onClick={onRetry}>Read the plan again</Button>}
   </div>}
-  {state === "not-written" && <p className="rv-muted rv-plan-decision-state" role="status" data-testid="plan-not-yet">{PLAN_NOT_YET_LINE}</p>}
+  {state === "not-written" && <p className="rv-muted rv-plan-decision-state" role="status" data-testid="plan-not-yet">{notWrittenLine}</p>}
   {state === "outdated" && <div className="rv-plan-decision-state" role="status">
    <h3>This plan was replaced</h3>
    <p>A newer plan is available. Review this revision before deciding.</p>

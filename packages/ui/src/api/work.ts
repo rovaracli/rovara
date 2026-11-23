@@ -48,7 +48,7 @@ export interface ReadTask {
  /** Served pull request tracking says a required check is failing on an open pull request (Code's `mergeTracking`: `ci: "failing"` or named failing checks). Absent when nothing is served. */
  failedChecks?: true | undefined;
  taskId: string; title: string; project: string; status: TaskView["status"] | undefined;
- workflow: { stage?: string; state?: string; revision?: number; path?: string; outcome?: string; blockReason?: string; round?: number; /** A custom program or summary without definition/program evidence cannot confirm the built-in stage order. */ programmed?: true } | undefined;
+ workflow: { stage?: string; state?: string; revision?: number; path?: string; outcome?: string; blockReason?: string; round?: number; /** Whether Code's workflow holds a plan document: from `workflow.artifacts` (the task view) or Cloud's `planWritten`. Absent when the answer says nothing (a list row, an older Code). */ planWritten?: boolean; /** A custom program or summary without definition/program evidence cannot confirm the built-in stage order. */ programmed?: true } | undefined;
  pullRequests: Array<{ repository?: string; number?: number; url?: string; state?: string }>;
  spentUsd: number | undefined; runLimitUsd: number | undefined; createdAt: string; updatedAt: string;
  /** Whether the task lives in a Slack thread (Code's `shared` on a list row, or a share with a thread on the task view): Code's sentences about "the thread" are said only for such a task (text/task-words.ts). */
@@ -117,6 +117,12 @@ function advisoryPlanFailure(raw: Record<string, unknown>, state: unknown): stri
 export function trackedCheckFailing(tracked: Record<string, unknown>): boolean {
  return tracked["state"] === "open" && (tracked["ci"] === "failing" || (Array.isArray(tracked["failingChecks"]) && tracked["failingChecks"].length > 0));
 }
+/** Whether the workflow holds a plan document: Cloud's `planWritten`, else the served `artifacts` list (a plan artifact exists or not). Undefined when neither is served. */
+function planWrittenOf(workflow: Record<string, unknown>): boolean | undefined {
+ const served = bool(workflow["planWritten"]);
+ if (served !== undefined) return served;
+ return Array.isArray(workflow["artifacts"]) ? records(workflow["artifacts"]).some(artifact => artifact["type"] === "plan") : undefined;
+}
 export function readTask(raw: unknown): ReadTask | undefined {
  if (!isRecord(raw)) return undefined;
  const taskId = str(raw["taskId"]), title = str(raw["title"]), project = str(raw["project"]), updatedAt = str(raw["updatedAt"]);
@@ -134,7 +140,7 @@ export function readTask(raw: unknown): ReadTask | undefined {
   startupReason: DeveloperTaskViewSchema.shape.startupReason.safeParse(raw["startupReason"]).data,
   ...(raw["failedChecks"] === true || records(raw["mergeTracking"]).some(trackedCheckFailing) ? { failedChecks: true as const } : {}),
   ...(run === undefined ? {} : { run }),
-  workflow: workflow === undefined ? undefined : { ...opt("stage", str(workflow["stage"])), ...opt("state", str(workflow["state"])), ...opt("revision", num(workflow["revision"])), ...opt("path", str(workflow["path"])), ...opt("outcome", str(workflow["outcome"])), ...opt("blockReason", str(workflow["blockReason"])), ...opt("round", num(workflow["round"])), ...(workflow["program"] !== undefined || workflow["programmed"] === true ? { programmed: true as const } : {}) },
+  workflow: workflow === undefined ? undefined : { ...opt("stage", str(workflow["stage"])), ...opt("state", str(workflow["state"])), ...opt("revision", num(workflow["revision"])), ...opt("path", str(workflow["path"])), ...opt("outcome", str(workflow["outcome"])), ...opt("blockReason", str(workflow["blockReason"])), ...opt("round", num(workflow["round"])), ...opt("planWritten", planWrittenOf(workflow)), ...(workflow["program"] !== undefined || workflow["programmed"] === true ? { programmed: true as const } : {}) },
   pullRequests: records(raw["pullRequests"]).map(pull => ({ ...opt("repository", str(pull["repository"])), ...opt("number", num(pull["number"])), ...opt("url", str(pull["url"])), ...opt("state", str(pull["state"])) })),
   spentUsd: spent, runLimitUsd: limit, createdAt: str(raw["createdAt"]) ?? updatedAt, updatedAt,
   ...opt("round", readRound(raw["round"])),

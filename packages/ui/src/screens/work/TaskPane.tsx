@@ -11,7 +11,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { ReadDecision } from "../../api/decisions.js";
 import { ApiError } from "../../api/errors.js";
 import { servedReadState } from "../../api/served-read.js";
-import { failedSections, finishedSections, proofRows, sectionState, stageOf, useTaskComments, useTaskEvents, useTaskPlan, useTaskProof, type Stage, type WorkRow } from "../../api/work.js";
+import { failedSections, finishedSections, proofRows, sectionState, stageOf, useTaskComments, useTaskEvents, useTaskPlan, useTaskProof, type ReadTask, type Stage, type WorkRow } from "../../api/work.js";
 import { Button } from "../../design/Button.js";
 import { DecisionCard, type DecisionCardActions, type DecisionPane } from "../../design/DecisionCard.js";
 import { DecisionFrame } from "../../design/DecisionFrame.js";
@@ -41,7 +41,7 @@ import { TaskHeldStatesView } from "../session/TaskHeldStatesView.js";
 import { TaskRunningProgressView } from "../session/TaskRunningProgressView.js";
 import { PlanRevisionView } from "../session/PlanRevisionView.js";
 import { PlanStartReceiptView } from "../session/PlanStartReceiptView.js";
-import { PlanDecisionView, PLAN_NOT_YET_LINE } from "../session/PlanDecisionView.js";
+import { PlanDecisionView, PLAN_NOT_YET_LINE, PLAN_WRITING_LINE } from "../session/PlanDecisionView.js";
 import { useDecisionActions } from "../home/NeedsYou.js";
 import { STOP_KEEPS_FILES_NOTE } from "../session/stop-note.js";
 import "./work.css";
@@ -81,6 +81,28 @@ export function reasonSentence(reason: string): string {
  const capital = text.charAt(0).toUpperCase() + text.slice(1);
  return /[.!?]$/u.test(capital) ? capital : capital + ".";
 }
+/**
+ * PLAN-CARD-ABSENT: absent is not unreadable. While no plan document exists, a plan read that is pending or failed (a refused read excepted) says nothing about a plan: there is none to be unreadable.
+ * EXACT: Code's task view lists the workflow's `artifacts`, and `readTask` turns that into `workflow.planWritten` (or Cloud's own `planWritten`). No plan artifact means not written yet, whatever the stage
+ * (a task that skipped Understand, or one sent back to PLAN, tells by its artifacts); a plan artifact means a failed read is "couldn't be read" with Read again. A pending spec decision always means a plan exists.
+ * FALLBACK, only when the answer carries no artifact list (a list row, an older Code): a stage guess, kept as narrow as it can be. Understand and a STARTING task with no stage are certain no plan exists; stage PLAN
+ * is not (the engine sends a task back to PLAN with a plan written), so there only the exact served "no plan yet" 404 (`planNotWritten`) counts.
+ */
+export function planNotExpectedYet(task: ReadTask, decision: ReadDecision | undefined): boolean {
+ if (decision !== undefined && ["approve_plan", "approve_requirements", "approve_design"].includes(decision.card.kind)) return false;
+ const written = task.workflow?.planWritten;
+ if (written !== undefined) return !written;
+ if (task.pullRequests.length > 0 || task.workflow?.outcome !== undefined) return false;
+ const stage = task.workflow?.stage;
+ return stage === "UNDERSTAND" || (stage === undefined && task.status === "STARTING");
+}
+/**
+ * The words for "no plan yet" (rule #14): "Rovara is writing the plan" only when Rovara is actually at it (the planning step is running on a machine that is up and no plan is written);
+ * otherwise (a machine still starting, Understand, waiting) nothing is writing yet, so the quiet "will show the plan here when it's ready".
+ */
+export const planAbsentLine = (task: ReadTask): string => task.status !== "STARTING" && task.workflow?.planWritten !== true && task.workflow?.stage === "PLAN" && task.workflow.state === "RUNNING" ? PLAN_WRITING_LINE : PLAN_NOT_YET_LINE;
+const PLAN_NOT_WRITTEN_ERROR = new ApiError(404, "NOT_FOUND", "this task has no plan document yet");
+
 /** The quiet card: a task that asks nothing of the person says why, in fixed words. */
 export function QuietCard({ row, decisionsError, wide = false, retryOffered = false }: { row: WorkRow; decisionsError: unknown; retryOffered?: boolean; /** On the task's own page "the full page" is where the person already is. */ wide?: boolean }) {
  const page = useTaskPagePolicy() !== undefined;
@@ -146,7 +168,11 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
  const registerStop = useRegisterTaskStopSlot(), approvalReceipt = useTaskChip() === "checking";
  const [shown, setShown] = useState<Stage>(), stage = shown ?? stageOf(row.step), query = useQueryClient(), host = useAppHost();
  const answerAction = useTaskAction(host, "plan-answers:" + row.id);
- const plan = useTaskPlan(row.id), proof = useTaskProof(row.id), events = useTaskEvents(row.id), comments = useTaskComments(row.id), actionsFor = useDecisionActions();
+ const planRead = useTaskPlan(row.id);
+ // Absent is not unreadable: before a plan can exist, a pending or failed read (except a refused one) is the same quiet "not written yet", steady across polls.
+ const planAbsent = planRead.data === undefined && planNotExpectedYet(row.task, row.decision) && (planRead.isPending || planRead.isError && !(planRead.error instanceof ApiError && (planRead.error.status === 401 || planRead.error.status === 403)));
+ const plan = (planAbsent ? { ...planRead, status: "error", isError: true, isPending: false, isSuccess: false, isLoading: false, error: PLAN_NOT_WRITTEN_ERROR, failureCount: 0, failureReason: null } : planRead) as typeof planRead;
+ const proof = useTaskProof(row.id), events = useTaskEvents(row.id), comments = useTaskComments(row.id), actionsFor = useDecisionActions();
  const currentPlan = plan.isError ? undefined : plan.data, keptPlan = compact ? servedReadState(plan).data : undefined;
  const decision: ReadDecision | undefined = readOnly ? undefined : row.decision;
  const decisionNeedsPlan = decision !== undefined && ["approve_plan", "approve_requirements", "approve_design"].includes(decision.card.kind);
@@ -209,8 +235,8 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
  />;
  const retryPlan = () => { void plan.refetch(); };
  const planPending = plan.isError && planNotWritten(plan.error);
- const planNote = plan.isError ? (planPending ? <p className="rv-muted" role="status" data-testid="plan-not-yet">{PLAN_NOT_YET_LINE}</p> : <SectionError error={plan.error} label="this task's plan" retry={retryPlan} />) : null;
- const planFailedView = <PlanDecisionView taskTitle={row.title} plan={undefined} state={planPending ? "not-written" : "failed"} onRetry={planPending ? undefined : retryPlan} />;
+ const planNote = plan.isError ? (planPending ? <p className="rv-muted" role="status" data-testid="plan-not-yet">{planAbsentLine(row.task)}</p> : <SectionError error={plan.error} label="this task's plan" retry={retryPlan} />) : null;
+ const planFailedView = <PlanDecisionView taskTitle={row.title} plan={undefined} state={planPending ? "not-written" : "failed"} notWrittenLine={planAbsentLine(row.task)} onRetry={planPending ? undefined : retryPlan} />;
  const proofBody = proof.isError ? (proofNotServed(proof.error) ? <p className="rv-muted" role="status" data-testid="proof-not-yet">Proof will appear here.</p> : <SectionError error={proof.error} label="the proof" retry={() => { void proof.refetch(); }} />) : null;
  const stageBody = (): ReactNode => {
   const pulls = row.task.pullRequests;
@@ -270,7 +296,7 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
    <p className="rv-task-subline">{"Build" + (runningAt >= 0 ? ", plan item " + String(runningAt + 1) + " of " + String(tasks.length) : "")}{runningHeld}</p>
    <div className="rv-task-session-slot">{sessionEntry}</div>
    {guard(<>
-    {plan.isError ? planNote : tasks.length > 0 ? <ol className="rv-task-checklist" aria-label="Plan items">{tasks.map((task, index) => <li key={task.id} data-task={task.id} data-state={task.status} aria-current={task.status === "running" ? "step" : undefined}><TaskMark kind={task.status === "done" ? "done" : task.status === "running" ? "running" : task.status === "blocked" ? "attention" : "next"} /><span>{index + 1} · <VisibleText text={task.title} /></span><span className="rv-visually-hidden">, {TASK_WORDS[task.status]}</span></li>)}</ol> : <p className="rv-muted">No plan items recorded yet.</p>}
+    {plan.isError ? (planPending ? null : planNote) : tasks.length > 0 ? <ol className="rv-task-checklist" aria-label="Plan items">{tasks.map((task, index) => <li key={task.id} data-task={task.id} data-state={task.status} aria-current={task.status === "running" ? "step" : undefined}><TaskMark kind={task.status === "done" ? "done" : task.status === "running" ? "running" : task.status === "blocked" ? "attention" : "next"} /><span>{index + 1} · <VisibleText text={task.title} /></span><span className="rv-visually-hidden">, {TASK_WORDS[task.status]}</span></li>)}</ol> : <p className="rv-muted">No plan items recorded yet.</p>}
     <details className="rv-task-log"><summary><TaskMark kind="chevron" /><span className="rv-task-log-label">Live log</span>{lastText !== undefined && <code><VisibleText text={lastText} /></code>}</summary>{log.length === 0 ? <p className="rv-muted">No activity recorded yet.</p> : <div className="rv-live" role="log" aria-label="What Rovara is doing">{log.slice(-LIVE_LINES).map(line => <div key={line.seq}><b>{stamp(line.at)}</b> <VisibleText text={stripTerminalEscapes(line.text ?? line.kind)} /></div>)}</div>}</details>
     {row.group === "run" && steer !== undefined && <details className="rv-task-steer" open={steer.kind === "unavailable" || undefined}><summary><TaskMark kind="chevron" /><span>Steer this task</span></summary><SteerBox steer={steer} label="task" /></details>}
     {events.isError && !plan.isError && <SectionError error={events.error} label="the build activity" retry={() => { void events.refetch(); }} />}
