@@ -6,7 +6,11 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { SpecStep } from "./SpecStep.js";
 import "../work/work.css";
 
-export type PlanDecisionState = "read-required" | "ready" | "outdated" | "failed" | "submitting";
+/** "not-written": Code said the task has no plan yet (a quiet status, never an error, and never a decision: it is not in `mayShowDecision`). */
+export type PlanDecisionState = "read-required" | "ready" | "outdated" | "failed" | "not-written" | "submitting";
+
+/** The quiet line for a task whose plan Rovara has not written yet. */
+export const PLAN_NOT_YET_LINE = "Rovara will show the plan here when it's ready.";
 
 export interface PlanDecisionViewProps {
  taskTitle: string;
@@ -25,14 +29,15 @@ export function PlanDecisionView({ taskTitle, plan, state, decisionSlot, onRetry
   <header className="rv-pane-head">
    <p className="rv-eyebrow">{slackReturnTo !== undefined && <><a href={slackReturnTo}>Back to Slack</a> · </>}Plan decision</p>
    <h2><VisibleText text={taskTitle} /></h2>
-   <div className="rv-section-head"><h3>{state === "failed" ? "Plan" : "Plan v" + String(plan?.version ?? "?")}</h3>{state !== "failed" && <span>Current revision</span>}</div>
+   <div className="rv-section-head"><h3>{state === "failed" || state === "not-written" ? "Plan" : "Plan v" + String(plan?.version ?? "?")}</h3>{state !== "failed" && state !== "not-written" && <span>Current revision</span>}</div>
   </header>
-  <DecisionFrame title={state === "failed" ? "Plan unavailable" : "Review this plan"} actions={null} className="rv-task-primary">
+  <DecisionFrame title={state === "failed" ? "Plan unavailable" : state === "not-written" ? "Plan not written yet" : "Review this plan"} actions={null} className="rv-task-primary">
    <section className="rv-pane-main" aria-label="Current plan">
   {state === "failed" && <div className="rv-plan-decision-state" role="alert">
       <p>The latest plan couldn't be read. Try again before deciding.</p>
    {onRetry !== undefined && <Button onClick={onRetry}>Read the plan again</Button>}
   </div>}
+  {state === "not-written" && <p className="rv-muted rv-plan-decision-state" role="status" data-testid="plan-not-yet">{PLAN_NOT_YET_LINE}</p>}
   {state === "outdated" && <div className="rv-plan-decision-state" role="status">
    <h3>This plan was replaced</h3>
    <p>A newer plan is available. Review this revision before deciding.</p>
@@ -40,7 +45,7 @@ export function PlanDecisionView({ taskTitle, plan, state, decisionSlot, onRetry
   {state === "submitting" && <p className="rv-plan-decision-state" role="status">Submitting your decision…</p>}
   {state === "read-required" && <p className="rv-plan-decision-state" role="status">Read the required evidence before approving this plan.</p>}
   {state === "ready" && <p className="rv-plan-decision-state" role="status">Required evidence read for this revision. It has not been approved yet.</p>}
-  {state !== "failed" && plan !== undefined && <>
+  {state !== "failed" && state !== "not-written" && plan !== undefined && <>
    <h3>Current plan</h3>
    <SpecStep plan={plan} comments={[]} />
   </>}

@@ -69,3 +69,10 @@ it("keeps an unconfirmed send honest and renders only the owner's Check control"
  expect(within(receipt).getByRole("button", { name: "Check whether the task was created" })).toBeTruthy();
  expect(within(receipt).queryByText(/Running|spent|slot|verified/i)).toBeNull();
 });
+
+it("says plainly that only the task title is shown, never that the full request is missing", () => {
+ render(createElement(TaskStartReceiptView, { outcome: { ...accepted, request: { id: "req-91f3", text: "Add a refunds endpoint", textKind: "task-title" as const } } }));
+ const receipt = screen.getByRole("region", { name: "Task start receipt" });
+ expect(within(receipt).getByText("Showing the task title.")).toBeTruthy();
+ expect(within(receipt).queryByText(/not available/iu)).toBeNull();
+});
