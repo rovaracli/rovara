@@ -1,0 +1,434 @@
+[
+  {
+    "id": "company-home-main",
+    "section": 21,
+    "boardState": "Main example",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "3 people"
+  },
+  {
+    "id": "company-home-restricted",
+    "section": 21,
+    "boardState": "Company access ended",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "This read is no longer available to you"
+  },
+  {
+    "id": "company-home-loading",
+    "section": 21,
+    "boardState": "Loading",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Loading company overview"
+  },
+  {
+    "id": "company-home-loading-slow",
+    "section": 21,
+    "boardState": "Loading is taking longer",
+    "classification": "HELD",
+    "missingServerSignal": "No elapsed-time promise is served; retain loading.",
+    "fallback": "Loading company overview"
+  },
+  {
+    "id": "company-home-empty",
+    "section": 21,
+    "boardState": "Empty",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "0 people"
+  },
+  {
+    "id": "company-home-read-failed",
+    "section": 21,
+    "boardState": "First read failed",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "company-home-stale",
+    "section": 21,
+    "boardState": "Refresh failed with prior data",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "company-home-partial",
+    "section": 21,
+    "boardState": "Partly read",
+    "classification": "HELD",
+    "missingServerSignal": "No complete-record or partial-summary signal; show only returned fields.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "company-home-offline",
+    "section": 21,
+    "boardState": "Offline",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "company-home-access-lost",
+    "section": 21,
+    "boardState": "Access ended",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "This read is no longer available to you"
+  },
+  {
+    "id": "company-home-unknown",
+    "section": 21,
+    "boardState": "Cannot tell yet",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "company-settings-main",
+    "section": 24,
+    "boardState": "Main example",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "company-settings-pending",
+    "section": 24,
+    "boardState": "Save result not confirmed",
+    "classification": "HELD",
+    "missingServerSignal": "No write is reachable; no save-outcome signal is read.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "company-settings-loading",
+    "section": 24,
+    "boardState": "Loading",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Loading settings"
+  },
+  {
+    "id": "company-settings-loading-slow",
+    "section": 24,
+    "boardState": "Loading is taking longer",
+    "classification": "HELD",
+    "missingServerSignal": "No elapsed-time promise is served; retain loading.",
+    "fallback": "Loading company settings"
+  },
+  {
+    "id": "company-settings-empty",
+    "section": 24,
+    "boardState": "Empty",
+    "classification": "HELD",
+    "missingServerSignal": "No complete-record or partial-summary signal; show only returned fields.",
+    "fallback": "No company rules yet"
+  },
+  {
+    "id": "company-settings-read-failed",
+    "section": 24,
+    "boardState": "First read failed",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "company-settings-stale",
+    "section": 24,
+    "boardState": "Refresh failed with prior data",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "company-settings-partial",
+    "section": 24,
+    "boardState": "Partly read",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "can't tell yet which company rules"
+  },
+  {
+    "id": "company-settings-offline",
+    "section": 24,
+    "boardState": "Offline",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "company-settings-access-lost",
+    "section": 24,
+    "boardState": "Access ended",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "This read is no longer available to you"
+  },
+  {
+    "id": "company-settings-unknown",
+    "section": 24,
+    "boardState": "Cannot tell yet",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "can't tell yet which company rules"
+  },
+  {
+    "id": "company-audit-main",
+    "section": 26,
+    "boardState": "Main example",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Updated company rules"
+  },
+  {
+    "id": "company-audit-coverage",
+    "section": 26,
+    "boardState": "Audit coverage",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "can't tell yet whether this is the complete history"
+  },
+  {
+    "id": "company-audit-loading",
+    "section": 26,
+    "boardState": "Loading",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Loading audit"
+  },
+  {
+    "id": "company-audit-loading-slow",
+    "section": 26,
+    "boardState": "Loading is taking longer",
+    "classification": "HELD",
+    "missingServerSignal": "No elapsed-time promise is served; retain loading.",
+    "fallback": "Loading audit"
+  },
+  {
+    "id": "company-audit-empty",
+    "section": 26,
+    "boardState": "Empty",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "No audit records were returned"
+  },
+  {
+    "id": "company-audit-read-failed",
+    "section": 26,
+    "boardState": "First read failed",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "company-audit-stale",
+    "section": 26,
+    "boardState": "Refresh failed with prior data",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "company-audit-partial",
+    "section": 26,
+    "boardState": "Partly read",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "can't tell yet whether this is the complete history"
+  },
+  {
+    "id": "company-audit-offline",
+    "section": 26,
+    "boardState": "Offline",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "company-audit-access-lost",
+    "section": 26,
+    "boardState": "Access ended",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "This read is no longer available to you"
+  },
+  {
+    "id": "company-audit-unknown",
+    "section": 26,
+    "boardState": "Cannot tell yet",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "can't tell yet whether this is the complete history"
+  },
+  {
+    "id": "company-upkeep-main",
+    "section": 28,
+    "boardState": "Main example",
+    "classification": "HELD",
+    "missingServerSignal": "No upkeep read surface while automations are off.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "company-upkeep-loading",
+    "section": 28,
+    "boardState": "Loading",
+    "classification": "HELD",
+    "missingServerSignal": "No upkeep read surface while automations are off.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "company-upkeep-loading-slow",
+    "section": 28,
+    "boardState": "Loading is taking longer",
+    "classification": "HELD",
+    "missingServerSignal": "No upkeep read surface while automations are off.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "company-upkeep-empty",
+    "section": 28,
+    "boardState": "Empty",
+    "classification": "HELD",
+    "missingServerSignal": "No upkeep read surface while automations are off.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "company-upkeep-read-failed",
+    "section": 28,
+    "boardState": "First read failed",
+    "classification": "HELD",
+    "missingServerSignal": "No upkeep read surface while automations are off.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "company-upkeep-stale",
+    "section": 28,
+    "boardState": "Refresh failed with prior data",
+    "classification": "HELD",
+    "missingServerSignal": "No upkeep read surface while automations are off.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "company-upkeep-partial",
+    "section": 28,
+    "boardState": "Partly read",
+    "classification": "HELD",
+    "missingServerSignal": "No upkeep read surface while automations are off.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "company-upkeep-offline",
+    "section": 28,
+    "boardState": "Offline",
+    "classification": "HELD",
+    "missingServerSignal": "No upkeep read surface while automations are off.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "company-upkeep-access-lost",
+    "section": 28,
+    "boardState": "Access ended",
+    "classification": "HELD",
+    "missingServerSignal": "No upkeep read surface while automations are off.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "company-upkeep-unknown",
+    "section": 28,
+    "boardState": "Cannot tell yet",
+    "classification": "HELD",
+    "missingServerSignal": "No upkeep read surface while automations are off.",
+    "fallback": "Review changes before merging"
+  },
+  {
+    "id": "working-branches-main",
+    "section": 18,
+    "boardState": "Main example",
+    "classification": "HELD",
+    "missingServerSignal": "Cloud routes.ts summary/detail adapter omits savedWorkingBranches; only repository/default-branch facts are served.",
+    "fallback": "can't tell yet which working branch"
+  },
+  {
+    "id": "working-branches-missing-branch",
+    "section": 18,
+    "boardState": "Branch unavailable",
+    "classification": "HELD",
+    "missingServerSignal": "Cloud routes.ts summary/detail adapter omits savedWorkingBranches; only repository/default-branch facts are served.",
+    "fallback": "can't tell yet which working branch"
+  },
+  {
+    "id": "working-branches-loading",
+    "section": 18,
+    "boardState": "Loading",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Loading branches"
+  },
+  {
+    "id": "working-branches-loading-slow",
+    "section": 18,
+    "boardState": "Loading is taking longer",
+    "classification": "HELD",
+    "missingServerSignal": "No elapsed-time promise is served; retain loading.",
+    "fallback": "Loading project details"
+  },
+  {
+    "id": "working-branches-empty",
+    "section": 18,
+    "boardState": "Empty",
+    "classification": "HELD",
+    "missingServerSignal": "Cloud routes.ts summary/detail adapter omits savedWorkingBranches; only repository/default-branch facts are served.",
+    "fallback": "can't tell yet which working branch"
+  },
+  {
+    "id": "working-branches-read-failed",
+    "section": 18,
+    "boardState": "First read failed",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "working-branches-stale",
+    "section": 18,
+    "boardState": "Refresh failed with prior data",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "working-branches-partial",
+    "section": 18,
+    "boardState": "Partly read",
+    "classification": "HELD",
+    "missingServerSignal": "Cloud routes.ts summary/detail adapter omits savedWorkingBranches; only repository/default-branch facts are served.",
+    "fallback": "can't tell yet which working branch"
+  },
+  {
+    "id": "working-branches-offline",
+    "section": 18,
+    "boardState": "Offline",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "Rovara can't tell yet. The latest read failed"
+  },
+  {
+    "id": "working-branches-access-lost",
+    "section": 18,
+    "boardState": "Access ended",
+    "classification": "SERVED",
+    "missingServerSignal": "Current GET reader or observed transport/query state.",
+    "fallback": "This read is no longer available to you"
+  },
+  {
+    "id": "working-branches-unknown",
+    "section": 18,
+    "boardState": "Cannot tell yet",
+    "classification": "HELD",
+    "missingServerSignal": "Cloud routes.ts summary/detail adapter omits savedWorkingBranches; only repository/default-branch facts are served.",
+    "fallback": "can't tell yet which working branch"
+  }
+]

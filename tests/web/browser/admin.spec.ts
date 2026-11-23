@@ -71,7 +71,8 @@ test("Overview shows this month's money and the people at a glance", async ({ pa
   await serve(page, "/org/spend", SPEND);
   const admin = new AdminPage(page);
   await admin.open();
-  await expect(admin.stats("At a glance")).toContainText("$412.60");
+  // G1 SHIP selector edit: the "At a glance" stat group became the Money row of the company pages list.
+  await expect(page.getByTestId("overview-spend")).toContainText("$412.60");
   await expect(page.getByRole("link", { name: "Open Spending", exact: true })).toBeVisible();
 });
 
@@ -191,7 +192,8 @@ test("an absent company meter month is calm on Spending and Overview", async ({ 
  const admin = new AdminPage(page);
  for (const path of [ROUTES.admin.spending, ROUTES.admin.home]) {
   await admin.open(path);
-  await expect(page.getByText("No AI spending recorded yet this month", { exact: true })).toBeVisible();
+  // G1 SHIP: on the Overview the line is the Money row of the company pages list ("... · limits, who pays, the report"), so it is matched as a substring (was an exact match of a stand-alone line).
+  await expect(page.getByText("No AI spending recorded yet this month").first()).toBeVisible();
   await expect(page.getByTestId("spend-error")).toHaveCount(0);
   await expect(page.getByText("$0.00", { exact: true })).toHaveCount(0);
  }
