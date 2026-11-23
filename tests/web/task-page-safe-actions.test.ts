@@ -24,11 +24,11 @@ for (const operation of ["stop", "close", "watch", "unwatch", "retry", "take_ove
    const trigger = await screen.findByRole<HTMLButtonElement>("button", { name: label });
    await waitFor(() => expect(trigger.disabled).toBe(false));fireEvent.click(trigger);
    if (action === "take_over") { const dialog = await screen.findByRole("dialog", { name: "Take over this task?" });await within(dialog).findByText("Ada · Owner");fireEvent.click(within(dialog).getByRole("button", { name: "Take over" })); }
-   if (action === "stop" || action === "close") fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: action === "stop" ? "Stop session" : "Close task" }));
+   if (action === "stop" || action === "close") fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: action === "stop" ? "Stop session" : "Close and delete the machine" }));
    await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.method !== "GET")).toHaveLength(1));
    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
    await waitFor(() => {
-    const button = action === "stop" || action === "close" ? within(screen.getByRole("dialog")).getByRole<HTMLButtonElement>("button", { name: action === "stop" ? "Stop session" : "Close task" }) : screen.getByRole<HTMLButtonElement>("button", { name: label });
+    const button = action === "stop" || action === "close" ? within(screen.getByRole("dialog")).getByRole<HTMLButtonElement>("button", { name: action === "stop" ? "Stop session" : "Close and delete the machine" }) : screen.getByRole<HTMLButtonElement>("button", { name: label });
     expect(button.disabled).toBe(true);
     expect(screen.queryByText(/Nothing was sent\./)).toBeNull();
    });
@@ -36,7 +36,7 @@ for (const operation of ["stop", "close", "watch", "unwatch", "retry", "take_ove
    // A fresh unchanged read and remount cannot manufacture an answer.
    await waitFor(() => expect(screen.getByRole("button", { name: label })).toBeTruthy());
    const again = screen.getByRole<HTMLButtonElement>("button", { name: label });
-   if (action === "close") { fireEvent.click(again);expect(within(await screen.findByRole("dialog")).getByRole<HTMLButtonElement>("button", { name: "Close task" }).disabled).toBe(true); }
+   if (action === "close") { fireEvent.click(again);expect(within(await screen.findByRole("dialog")).getByRole<HTMLButtonElement>("button", { name: "Close and delete the machine" }).disabled).toBe(true); }
    else expect(again.disabled).toBe(true);
    fireEvent.click(screen.getByRole("button", { name: "Check" }));
    await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.method !== "GET")).toHaveLength(1));

@@ -136,7 +136,7 @@ it("answers a full workspace limit with the person's open tasks as links with a 
  expect(await screen.findByRole("dialog", { name: "Close this task?" })).toBeTruthy();
  expect(send.mock.calls.some(([request]) => request.path.endsWith("/close"))).toBe(false);
  open = OPEN(second);refuse = false;
- fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close task" }));
+ fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close and delete the machine" }));
  await waitFor(() => expect(send.mock.calls.filter(([request]) => request.path === "/v1/app/sessions/" + first + "/close")).toHaveLength(1));
  const calls = f.request.mock.calls.map(([request]) => request), closeIndex = calls.findIndex(request => request.path.endsWith("/close"));
  expect(calls.slice(0, closeIndex).some(request => request.method === "GET" && request.path === "/v1/app/me")).toBe(true);

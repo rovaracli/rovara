@@ -149,9 +149,9 @@ it("the task dialogs carry the one close icon class and the safe choice is the p
   fireEvent.click(within(menu).getByRole("menuitem", { name: "Close task" }));
   const dialog = await screen.findByRole("dialog", { name: "Close this task?" });
   expect(dialog.className).toContain("rv-action-dialog");
-  expectSafeFirst(dialog, "Keep it open", "Close task");
-  expect(within(dialog).getByRole("button", { name: "Keep it open" }).className).toContain("rv-button-primary");
-  expect(within(dialog).getByRole("button", { name: "Close task" }).className).toContain("rv-button-danger");
+  expectSafeFirst(dialog, "Cancel", "Close and delete the machine");
+  expect(within(dialog).getByRole("button", { name: "Cancel" }).className).toContain("rv-button-primary");
+  expect(within(dialog).getByRole("button", { name: "Close and delete the machine" }).className).toContain("rv-button-danger");
   expect(s.writes()).toHaveLength(0);
  } finally { s.close(); }
 });
@@ -160,7 +160,7 @@ it("Opus P2-1 Discard keeps the safe filled button first and the risky red-outli
  const s = mount(undefined, "IMPLEMENT", false, true);try {
   fireEvent.click(within(await openMenu()).getByRole("menuitem", { name: "Close task" }));
   const close = await screen.findByRole("dialog", { name: "Close this task?" });
-  fireEvent.click(within(close).getByRole("button", { name: "Close task" }));
+  fireEvent.click(within(close).getByRole("button", { name: "Close and delete the machine" }));
   const discard = await screen.findByRole("dialog", { name: "Discard unpublished work?" });
   expectSafeFirst(discard, "Keep it open", "Discard it and close");
   expect(s.writes()).toHaveLength(1);
@@ -186,7 +186,7 @@ it("the real share route keeps the rebuilt Close dialog safe-first", async () =>
  const s = mount(undefined, "IMPLEMENT", true);try {
   fireEvent.click(await screen.findByRole("button", { name: "Close task" }));
   const dialog = await screen.findByRole("dialog", { name: "Close this task?" });
-  expectSafeFirst(dialog, "Keep it open", "Close task");
+  expectSafeFirst(dialog, "Cancel", "Close and delete the machine");
   expect(s.writes()).toHaveLength(0);
  } finally { s.close(); }
 });

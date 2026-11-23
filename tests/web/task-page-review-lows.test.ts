@@ -53,7 +53,7 @@ it("Low-1: a confirmed close clears busy before a stalled onClosed refresh", asy
  const f = fakeHost(async r => r.path === "/v1/app/me" ? { status: 200, body: me } : r.method === "GET" ? { status: 200, body: { session } } : { status: 200, body: { session, closed: true } }), query = createQueryClient();
  let refreshing = false;
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(CloseTaskDialog, { id: session.sessionId, open: true, onOpenChange: () => undefined, onClosed: () => { refreshing = true;return new Promise(() => undefined); } }) }) }));
- const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Close task" });await waitFor(() => expect(button.disabled).toBe(false));fireEvent.click(button);await waitFor(() => expect(refreshing).toBe(true));await settle();expect(button.getAttribute("aria-busy")).toBeNull();ui.unmount();query.clear();
+ const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Close and delete the machine" });await waitFor(() => expect(button.disabled).toBe(false));fireEvent.click(button);await waitFor(() => expect(refreshing).toBe(true));await settle();expect(button.getAttribute("aria-busy")).toBeNull();ui.unmount();query.clear();
 });
 it.each(["cancel", "expired"])("Low-4: People %s explains the unresolved lock rather than inviting another send", async kind => {
  const people = { revision: 3, orphaned: false, canManage: true, canTakeOwnership: false, people: [{ personId: "11111111-1111-4111-8111-111111111111", name: "Cal", role: "commenter", effectiveRole: "commenter", you: false }] };
