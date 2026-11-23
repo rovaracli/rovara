@@ -26,7 +26,17 @@ export function runPriceDenial(claims: TaskClaims, provider: string, model: stri
     r.inputMicrosPerMTok / 1_000_000 <= grant.inputUsdPerMillion && r.outputMicrosPerMTok / 1_000_000 <= grant.outputUsdPerMillion &&
     r.cacheReadMicrosPerMTok! / 1_000_000 <= grant.cacheReadUsdPerMillion &&
     Math.max(r.cacheWrite5mMicrosPerMTok!, r.cacheWrite1hMicrosPerMTok!) / 1_000_000 <= grant.cacheWriteUsdPerMillion);
-  return fits ? undefined : "rate_above_ceiling";
+  if (!fits) return "rate_above_ceiling";
+  // PRICE-BANDS: a signed base band is what the run counts its spend at below its threshold, so the real base rates must not be above it, and no long-context band may start below its limit (a call between would be charged the long rates and counted at the base).
+  const band = grant.baseBand;
+  if (band !== undefined) {
+    const lowest = Math.min(Infinity, ...(completed.longContext ?? []).map((tier) => tier.aboveTokens));
+    if (completed.inputMicrosPerMTok / 1_000_000 > band.inputUsdPerMillion || completed.outputMicrosPerMTok / 1_000_000 > band.outputUsdPerMillion
+      || completed.cacheReadMicrosPerMTok! / 1_000_000 > band.cacheReadUsdPerMillion
+      || Math.max(completed.cacheWrite5mMicrosPerMTok!, completed.cacheWrite1hMicrosPerMTok!) / 1_000_000 > band.cacheWriteUsdPerMillion
+      || lowest < band.upToInputTokens) return "rate_above_ceiling";
+  }
+  return undefined;
 }
 
 /** The admitted account and effective tariff must fit the signed authorization. */
