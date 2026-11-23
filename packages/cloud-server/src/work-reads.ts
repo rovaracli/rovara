@@ -233,10 +233,18 @@ const WORK_READS: Route[] = [
       const bare = (view: Record<string, unknown>) => view["status"] === "SUCCEEDED" && ["workflow", "pullRequests", "spent", "runLimit"].every((key) => view[key] === undefined || (Array.isArray(view[key]) && (view[key] as unknown[]).length === 0));
       const views = rows.flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [NO_DETAIL.has(String(view["status"])) || (served && !bare(view)) ? view : { ...view, detail: "unread" }]; });
       // The detailed list does not promise a run. Reuse Code's existing authenticated task reader for running rows only; it re-checks this same person's access.
-      const withRuns = await Promise.all(views.map(async (view) => {
-        if (view["status"] !== "RUNNING" || view["run"] !== undefined) return view;
-        const run = await runningTaskRun(client, session, String(view["taskId"]));
-        return run === undefined ? view : { ...view, run };
+      // Six workers share this load's queue; indexed slots retain the list's order.
+      const withRuns: Record<string, unknown>[] = new Array<Record<string, unknown>>(views.length);
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(6, views.length) }, async () => {
+       while (next < views.length) {
+        const index = next++, view = views[index]!;
+        withRuns[index] = await (async () => {
+          if (view["status"] !== "RUNNING" || view["run"] !== undefined) return view;
+          const run = await runningTaskRun(client, session, String(view["taskId"]));
+          return run === undefined ? view : { ...view, run };
+        })();
+       }
       }));
       // The tasks the person started in Cloud carry Cloud's session id: the task page's steer, stop and comment routes are the session's. A task started elsewhere has none.
       // A session store that cannot be read costs the page those links, never the list.

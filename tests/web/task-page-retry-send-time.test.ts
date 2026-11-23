@@ -30,9 +30,9 @@ it("R4-2/R6c: a legacy Retry arriving while a new Retry claim waits cannot be re
  } finally { Object.defineProperty(navigator, "locks", descriptor);ui.unmount();query.clear(); }
 });
 
-for (const code of ["IDEMPOTENCY_CONFLICT", "CONFLICT"]) it(`R6 Retry ${code}: shows the refusal, re-reads and releases the request across remount`, async () => {
+for (const code of ["CONFLICT"]) it(`R6 Retry ${code}: shows the refusal, re-reads and releases the request across remount`, async () => {
  const base = workspaceFixture(), me = meFixture();let reads = 0;
- const words = code === "CONFLICT" ? "There's nothing to retry on this session right now." : "The reviewed task changed. Read it again.";
+ const words = "There's nothing to retry on this session right now.";
  const f = fakeHost(async r => r.path === "/v1/app/me" ? { status: 200, body: me } : r.method === "GET" ? (reads++, { status: 200, body: { session: { ...base, revision: reads + 1, you: { ...base.you, actions: ["retry", "stop"] } } } }) : { status: 409, body: { error: { code, message: words } } });
  const query = createQueryClient();query.setQueryData(["session", base.sessionId], base);
  const tree = () => h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(SessionControls, { id: base.sessionId, agent: "Agent", actions: ["retry", "stop"], following: false, onChanged: async () => undefined }) }) });
@@ -45,6 +45,24 @@ for (const code of ["IDEMPOTENCY_CONFLICT", "CONFLICT"]) it(`R6 Retry ${code}: s
   expect(f.storage.get(scope + ":request")).toBe("null");
   expect(screen.queryByText(/Rovara didn't confirm this yet/)).toBeNull();
   ui.unmount();ui = renderUi(tree());await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Retry" }).disabled).toBe(false));
+  expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);
+ } finally { ui.unmount();query.clear(); }
+});
+
+// R4: "this retry is out of date; ..." is thrown pre-write but ALSO after a paid round is admitted (parity-task-actions.ts:78, 95), so it is never final: the press stays held (unknown), no refusal text, no resend.
+it("R4 Retry 409 IDEMPOTENCY_CONFLICT 'this retry is out of date' stays unknown: held, not released, not resent", async () => {
+ const base = workspaceFixture(), me = meFixture();
+ const words = "this retry is out of date; refresh the task and try again";
+ const f = fakeHost(async r => r.path === "/v1/app/me" ? { status: 200, body: me } : r.method === "GET" ? { status: 200, body: { session: { ...base, revision: 2, you: { ...base.you, actions: ["retry", "stop"] } } } } : { status: 409, body: { error: { code: "IDEMPOTENCY_CONFLICT", message: words } } });
+ const query = createQueryClient();query.setQueryData(["session", base.sessionId], base);
+ const tree = () => h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(SessionControls, { id: base.sessionId, agent: "Agent", actions: ["retry", "stop"], following: false, onChanged: async () => undefined }) }) });
+ let ui = renderUi(tree());
+ try {
+  const retry = await screen.findByRole<HTMLButtonElement>("button", { name: "Retry" });await waitFor(() => expect(retry.disabled).toBe(false));fireEvent.click(retry);
+  await screen.findByText(/Rovara didn't confirm this yet/);
+  const scope = sessionScope({ companyId: me.org.orgId, personId: me.developer.id }, "retry:" + base.sessionId);
+  expect(f.storage.get(scope + ":request")).not.toBe("null");
+  ui.unmount();ui = renderUi(tree());await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Retry" }).disabled).toBe(true));
   expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);
  } finally { ui.unmount();query.clear(); }
 });

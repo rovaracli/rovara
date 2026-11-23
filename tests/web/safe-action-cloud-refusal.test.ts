@@ -29,7 +29,7 @@ for (const action of ["retry", "send-back", "accept-findings"]) {
  add(path, 403, "FORBIDDEN", "owner", message);
  add(path, 409, "CONFLICT", "nothing", action === "retry" ? "There's nothing to retry on this session right now." : `There are no review findings to ${action === "send-back" ? "send back" : "accept"} right now.`);
 }
-add(route("retry"), 409, "IDEMPOTENCY_CONFLICT");
+// R4: Retry 409 IDEMPOTENCY_CONFLICT is final with NO words (the out-of-date sentence also follows a paid admit, parity-task-actions.ts:78, 95); locked in safe-action-refusal.test.ts.
 add(route("retry"), 403, "SESSION_LEVEL_REQUIRED");
 add(route("retry"), 409, "CONFIG_INVALID");
 for (const action of ["send-back", "accept-findings"]) {

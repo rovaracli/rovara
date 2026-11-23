@@ -875,15 +875,24 @@ export const ROUTES: Route[] = [
       const shown = context.body as { expectedRevision?: unknown; candidateDigest?: unknown };
       if (stepRetry !== undefined) {
         if (shown.expectedRevision !== stepRetry.expectedRevision) return { status: 409, body: { error: { code: "CONFLICT", message: "This step changed since you read it. Read the task again." } } };
-        // Code's exact 402 admission refusals precede any run (owner-round/admitRound).
-        // Other failures may follow paid work and must keep the request unknown.
+        // Proven pre-dispatch refusals only. Code next 271a60202 developer-tasks.ts:
+        // 1984-1993, 2168-2173, 2464-2472; errors.ts maps CONFIG_INVALID to 400.
+        // Generic 403/404 can come from the post-apply authorization read (2206).
         const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/retry`, {
           method: "POST", headers: TASK_VIEW,
           body: { requestId, expectedRevision: shown.expectedRevision, instructions: "Retry the blocked workflow step." },
         }).catch((failure: unknown) => {
-          if (failure instanceof CodeError && failure.status === 402) {
-            const code = (failure.body as { error?: { code?: string } } | undefined)?.error?.code;
-            if (["BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "MACHINE_TIME_EXCEEDED"].includes(code ?? "")) throw failure;
+          const final: ReadonlyArray<readonly [number, string, string?]> = [
+            ...["BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "MACHINE_TIME_EXCEEDED"].map(code => [402, code] as const),
+            [400, "CONFIG_INVALID", "refresh the task and include its current revision before retrying verification"],
+            [400, "CONFIG_INVALID", "choose checks that are approved for this project"],
+            [400, "CONFIG_INVALID", "this action can retry blocked planning or coding, or run selected checks for blocked verification or a change ready to publish"],
+            [400, "CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to retry it"],
+            // NOT final (no 409 IDEMPOTENCY_CONFLICT sentence at all): "this retry is out of date; refresh the task and try again" is thrown pre-write (parity-task-actions.ts:76, 84) but ALSO via started(...) AFTER admitRound + startImplementation/startPublication (:78, :95), i.e. after a PAID round is admitted; "the verification retry is stale; ..." is also thrown AFTER commit (:88). Both stay unknown (DEC 254zzz285 lock + Check).
+          ];
+          if (failure instanceof CodeError) {
+            const error = (failure.body as { error?: { code?: unknown; message?: unknown } } | null | undefined)?.error;
+            if (final.some(([status, code, words]) => failure.status === status && error?.code === code && typeof error.message === "string" && error.message.trim() !== "" && (words === undefined || error.message === words))) throw failure;
           }
           throw new CodeError(502, { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara didn't confirm this retry. Check the task before retrying again." } });
         });
@@ -912,7 +921,7 @@ export const ROUTES: Route[] = [
       const choices = reviewChoices(found.task);
       if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to send back right now." } } };
       if (!await ownerOrCoOwner(context, found.record)) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} or a co-owner can send this back to coding.` } } };
-      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("The displayed revision and candidate digest are required.");
+      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("This page is out of date. Reload to continue.");
       const note = typeof input.note === "string" && input.note.trim() !== "" ? input.note.trim() : "Fix the review findings.";
       const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/send-back`, {
         method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, expectedRevision: input.expectedRevision, instructions: note },
@@ -934,7 +943,7 @@ export const ROUTES: Route[] = [
       const choices = reviewChoices(found.task);
       if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to accept right now." } } };
       if (!await ownerOrCoOwner(context, found.record)) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} or a co-owner can accept these findings.` } } };
-      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("The displayed revision and candidate digest are required.");
+      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("This page is out of date. Reload to continue.");
       const accept: FindingsAccept = { requestId: input.requestId, expectedRevision: input.expectedRevision as number, candidateDigest: input.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) };
       let task: CodeTask;
       try {

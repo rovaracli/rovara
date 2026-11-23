@@ -48,6 +48,7 @@ export function ReviewChoices({ session, task }: { session: ReadSession; task: R
 
 function ReviewChoicesPanel({ sessionId, findings, expectedRevision, candidateDigest }: { sessionId: string; findings: Finding[]; expectedRevision: number; candidateDigest: string }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionActions(host), [host]);
+ const [outOfDate, setOutOfDate] = useState(false);
  const [note, setNote] = useState(""), [busy, setBusy] = useState<"send" | "accept">(), [error, setError] = useState<string>(), [done, setDone] = useState<string>();
  const action = useTaskAction(host, "review:" + sessionId);
  const security = findings.some((finding) => finding.role === "SECURITY");
@@ -68,7 +69,10 @@ function ReviewChoicesPanel({ sessionId, findings, expectedRevision, candidateDi
    setDone(kind === "send" ? "Sent back to coding." : "Accepted. Rovara is opening the pull request.");
    await query.invalidateQueries();
   } catch (failure) {
-   setError(failure instanceof ApiError ? failure.message : "That didn't go through. Try again.");
+   // Detect only the existing Cloud pre-send validation; a stale candidate or
+   // a post-commit Code conflict is not evidence of an old bundle.
+   if (failure instanceof ApiError && failure.status === 400 && failure.code === "CONFIG_INVALID" && ["The displayed revision and candidate digest are required.", "This page is out of date. Reload to continue."].includes(failure.message)) setOutOfDate(true);
+   else setError(failure instanceof ApiError ? failure.message : "That didn't go through. Try again.");
    if (isFinalSessionRefusal(failure)) void query.invalidateQueries({ queryKey: ["session", sessionId] }).catch(() => undefined);
   }
   finally { setBusy(undefined); }
@@ -77,10 +81,10 @@ function ReviewChoicesPanel({ sessionId, findings, expectedRevision, candidateDi
   <h3>The reviews found {findings.length === 1 ? "1 problem" : String(findings.length) + " problems"} Rovara couldn't fix by itself</h3>
   <ul>{findings.map((finding, index) => <li key={index}><span className="rv-muted">{finding.role === "SECURITY" ? "Security review" : "Code review"}{finding.file === undefined ? "" : " · " + finding.file + (finding.line === undefined ? "" : ":" + String(finding.line))}</span> <VisibleText text={finding.text} /></li>)}</ul>
   <TextArea label="Your note" hint="For Send back: what the coding agent should do (optional). For Accept: why these are fine to ship (required)." value={note} maxLength={1000} onChange={event => setNote(event.currentTarget.value)} />
-  <div className="rv-actions">
+  {outOfDate ? <p role="alert">This page is out of date. Reload to continue. <a href={"/s/" + encodeURIComponent(sessionId)}>Reload</a></p> : <div className="rv-actions">
    <Button busy={busy === "send"} disabled={action.locked || busy !== undefined} onClick={() => { void run("send"); }}>Send back to coding</Button>
    <Button busy={busy === "accept"} disabled={action.locked || busy !== undefined || note.trim() === "" || note.trim().length > 500} onClick={() => { void run("accept"); }}>{security ? "Accept, including the security finding, and open the pull request" : "Accept and open the pull request"}</Button>
-  </div>
+  </div>}
   <TaskActionNotice key={action.pendingKey} pending={action.pending} recovery={action.recovery} taskHref={"/app/sessions/" + encodeURIComponent(sessionId)} check={() => query.invalidateQueries({ queryKey: ["session", sessionId] })} />
   {error && <p role="alert"><VisibleText text={error} /></p>}{done && <p role="status"><VisibleText text={done} /></p>}
  </section>;
