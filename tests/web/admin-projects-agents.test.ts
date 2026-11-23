@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
-import { screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appRoutes } from "../../packages/ui/src/routes.js";
@@ -33,7 +33,7 @@ function mount(path = "/app/admin/projects", options: {role?:string; respond?:(r
 for(const role of ["owner","admin"]) it(`shows read-only projects for ${role} and preserves list filters through detail`,async()=>{
  const f=mount("/app/admin/projects",{role});await screen.findByRole("table",{name:"Projects"});expect(screen.queryByRole("link",{name:"old"})).toBeNull();
  fireEvent.change(screen.getByRole("searchbox",{name:"Find in this project list"}),{target:{value:"payment"}});fireEvent.click(screen.getAllByRole("link",{name:"payments"}).find(a=>a.getAttribute("href")?.startsWith("/app/admin/projects/"))!);
- await screen.findByRole("heading",{name:"payments"});await screen.findByText("Maya");expect(screen.getByText("Using GitHub default branch")).toBeTruthy();expect(screen.getByText("Project grant")).toBeTruthy();
+ await screen.findByRole("heading",{name:"payments"});await screen.findByText("Maya");/* G1 SHIP (rebuild rule R4): this fixture has no saved-branch list, so the panel says one Unknown instead of "Using GitHub default branch". */expect(screen.getByText(/can't tell yet which working branch/i)).toBeTruthy();expect(screen.getByText("Project grant")).toBeTruthy();
  expect(f.container.textContent).not.toContain("sensitive command");expect(JSON.stringify(f.query.getQueriesData({queryKey:["admin","project-members"]}))).not.toContain("synthetic@example.test");
  fireEvent.click(screen.getByRole("link",{name:"Back to projects"}));await screen.findByRole("searchbox");expect(screen.getByRole("searchbox")).toHaveProperty("value","payment");expect(f.request.mock.calls.every(([r])=>r.method==="GET")).toBe(true);f.close();
 });
@@ -136,7 +136,8 @@ for (const status of ["active", "archived"] as const) it(`B34 opens recorded Sla
 });
 it("B35 the overview offers no Health link and asks for no service status (page hidden, DEC 254zzz113/115/116)", async () => {
  const f = mount("/app/admin", { shipped: true, respond: async () => ({ status: 200, body: {} }) });
- await screen.findByRole("heading", { name: "Administration", level: 1 });
+ // G1 SHIP: the Overview page is titled with the company name (was a level-1 "Administration"): selector edit only.
+ await within(await screen.findByRole("region", { name: "Company administration" })).findByRole("heading", { level: 1 });
  expect(screen.queryByRole("link", { name: "Open Health" })).toBeNull();expect(screen.queryByRole("link", { name: "Health" })).toBeNull();
  expect(f.request.mock.calls.some(([input]) => input.path.includes("service-status"))).toBe(false);f.close();
 });

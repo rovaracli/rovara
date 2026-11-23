@@ -1,0 +1,181 @@
+/* G1 company administration pages, on the shared design system (tokens and components only).
+   Imported by screens/company-admin-read/LazyPages.tsx and WorkingBranchesReadPanel.tsx; registered in scripts/ui-copy-assets.mjs. */
+.rv-company-admin-read{color:var(--rv-text);font:400 var(--rv-font-md)/1.5 var(--rv-font-ui);min-width:0;overflow-wrap:anywhere}
+.rv-car-state{display:flex;flex-direction:column;align-items:stretch;gap:var(--rv-space-5);min-width:0;max-width:var(--rv-reading-width)}
+.rv-car-state.rv-car-wide{max-width:var(--rv-table-width)}
+.rv-car-state>.rv-page-header{margin-bottom:0}
+.rv-car-state .rv-page-header h1{font-size:var(--rv-font-xxl);line-height:1.25;letter-spacing:-.01em}
+.rv-car-state .rv-page-header p{margin:var(--rv-space-2) 0 0}
+.rv-car-state .rv-page-meta{margin-top:var(--rv-space-3);font-size:var(--rv-font-md)}
+
+/* Sections and headings */
+.rv-car-section{display:flex;flex-direction:column;gap:var(--rv-space-3);min-width:0}
+.rv-car-section>h2,.rv-car-panel-title{margin:0;font-size:calc(var(--rv-font-lg) + 2px);font-weight:600;line-height:1.4}
+.rv-car-card>h2,.rv-car-audit-rail>h2{margin:0;font-size:var(--rv-font-lg);font-weight:600;line-height:1.4}
+.rv-car-panel{display:flex;flex-direction:column;gap:var(--rv-space-4)}
+.rv-car-panel .rv-car-state{gap:var(--rv-space-5)}
+.rv-car-panel .rv-car-section{margin-top:var(--rv-space-3)}
+.rv-car-panel-title{outline-offset:var(--rv-space-1)}
+.rv-car-lede,.rv-car-note,.rv-car-notice{margin:0;color:var(--rv-text-muted)}
+.rv-car-note{font-size:var(--rv-font-sm);line-height:1.5;text-wrap:pretty}
+.rv-car-reconnecting{margin:0;color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.rv-car-card>.rv-car-lede{font-size:var(--rv-font-sm)}
+
+/* 4e list rows */
+.rv-car-rows{list-style:none;margin:0;padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);overflow:hidden}
+.rv-car-rows>li{display:flex;align-items:center;justify-content:space-between;gap:var(--rv-space-4);min-height:var(--rv-table-row-h);padding:var(--rv-space-3) var(--rv-space-4);border-top:1px solid var(--rv-border);min-width:0}
+.rv-car-rows>li:first-child{border-top:0}
+.rv-car-rows>li>div,.rv-car-rows>li>a>div{min-width:0}
+.rv-car-rows h3{margin:0;font-size:calc(var(--rv-font-md) + 1px);line-height:1.5;font-weight:600}
+.rv-car-rows p{margin:0;color:var(--rv-text-muted)}
+.rv-car-rows>li>a{display:flex;align-items:center;justify-content:space-between;gap:var(--rv-space-4);flex:1;min-width:0;margin:calc(var(--rv-space-3) * -1) calc(var(--rv-space-4) * -1);padding:var(--rv-space-3) var(--rv-space-4);min-height:var(--rv-table-row-h);color:inherit;text-decoration:none;border-radius:var(--rv-radius-md)}
+.rv-car-rows>li>a:hover{background:var(--rv-bg-sunken)}
+.rv-car-chevron-inert{opacity:.45}
+.rv-car-chevron{flex-shrink:0;width:var(--rv-space-4);height:var(--rv-space-4);color:var(--rv-text-muted)}
+.rv-car-counts{display:flex;flex-wrap:wrap;gap:0 var(--rv-space-3)}
+.rv-car-counts p{font-size:var(--rv-font-md)}
+.rv-car-rows>li[aria-disabled="true"]>div:only-child h3{color:var(--rv-text)}
+/* "Edited elsewhere": the sentence leads, its one home sits at the end */
+.rv-car-section .rv-car-rows>li[aria-disabled="true"]>p:first-child:not(:only-child){color:var(--rv-text)}
+.rv-car-section .rv-car-rows>li>p+h3{font-size:var(--rv-font-md);font-weight:400;color:var(--rv-text-muted);text-align:right;flex-shrink:0}
+.rv-car-row-main{display:flex;flex-direction:column;gap:var(--rv-space-1)}
+.rv-car-row-main code,.rv-car-hosts code,.rv-car-facts code{font-family:var(--rv-font-mono);font-size:var(--rv-font-md)}
+.rv-car-row-side{display:flex;align-items:center;gap:var(--rv-space-3);flex-shrink:0}
+.rv-car-row-label{color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+
+/* Cards */
+.rv-car-card{border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);padding:var(--rv-space-5);min-width:0;display:flex;flex-direction:column;gap:var(--rv-space-3)}
+.rv-car-card h3{margin:var(--rv-space-3) 0 0;font-size:var(--rv-font-md);line-height:1.5;font-weight:600}
+.rv-car-card p{margin:0}
+.rv-car-quiet-card{margin:0;padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);color:var(--rv-text-muted)}
+.rv-car-pending{border-color:var(--rv-border-strong)}
+/* A change this viewer can approve: the "needs you" colour, like the mock */
+.rv-car-pending.rv-car-pending-you{border-color:var(--rv-status-needs-you)}
+.rv-car-nowrap{white-space:nowrap}
+.rv-car-pending>header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--rv-space-2) var(--rv-space-3)}
+.rv-car-pending-head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3)}
+.rv-car-pending>header h2{margin:0;font-size:calc(var(--rv-font-lg) + 2px);font-weight:600;line-height:1.5}
+.rv-car-pending>p{margin-bottom:var(--rv-space-2)}
+.rv-car-pending-when{color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.rv-car-held-row{display:flex;align-items:center;gap:var(--rv-space-4);margin:0}
+.rv-car-held-row>span{color:var(--rv-text-muted);min-width:var(--rv-fact-label,160px)}
+.rv-car-dash{display:inline-block;width:var(--rv-space-5);color:var(--rv-text-muted)}
+.rv-car-lede+.rv-car-facts{margin-top:var(--rv-space-1)}
+.rv-car-compare{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--rv-space-4) var(--rv-space-5)}
+.rv-car-compare>div{min-width:0;display:flex;flex-direction:column;gap:var(--rv-space-2)}
+.rv-car-compare h3{margin:0;color:var(--rv-text-muted);font-size:var(--rv-font-sm);font-weight:400}
+.rv-car-rules,.rv-car-hosts{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--rv-space-2)}
+.rv-car-rules li{display:flex;flex-direction:column;gap:var(--rv-space-1)}
+.rv-car-rules span{color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.rv-car-rules li[data-change]{padding-inline-start:var(--rv-space-3);border-inline-start:3px solid var(--rv-border-strong,var(--rv-text-muted))}
+.rv-car-rules li[data-change="added"]{border-inline-start-color:var(--rv-status-done,var(--rv-text-muted))}
+.rv-car-rules li[data-change="removed"]{border-inline-start-color:var(--rv-danger,var(--rv-text-muted))}
+.rv-car-rules span.rv-car-rule-change{color:var(--rv-text);font-weight:600}
+
+/* Live actions: the rules editor, approve / reject / withdraw, the audit range */
+.rv-car-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3);align-items:center}
+.rv-car-editor{display:flex;flex-direction:column;gap:var(--rv-space-3);min-width:0}
+.rv-car-editor .rv-rule-edit{margin-bottom:var(--rv-space-3)}
+.rv-car-editor .rv-rule-edit textarea{min-height:calc(var(--rv-table-row-h) * 1.4);resize:vertical;width:100%}
+.rv-car-notice.rv-car-notice-bad{border-color:var(--rv-danger)}
+.rv-car-notice-bad>p{margin:0}
+.rv-car-notice-bad{display:flex;flex-direction:column;gap:var(--rv-space-2)}
+.rv-car-filters .rv-car-range,.rv-car-range{display:flex;flex-wrap:wrap;gap:var(--rv-space-4);align-items:flex-end}
+.rv-car-range input{min-height:44px;max-width:100%;padding:var(--rv-space-2);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised);color:var(--rv-text)}
+.rv-car-field-error{margin:0;color:var(--rv-danger)}
+/* The live cards kept as they are (knowledge switch, outbound addresses) look like the rebuilt cards around them */
+.rv-company-admin-read .rv-admin-card{margin:0;padding:var(--rv-space-5);border-radius:var(--rv-radius-md);display:flex;flex-direction:column;gap:var(--rv-space-3)}
+.rv-company-admin-read .rv-admin-card>.rv-section-head{margin-bottom:0}
+.rv-company-admin-read .rv-admin-card p{margin:0}
+
+/* Key and value facts */
+.rv-car-facts{display:flex;flex-direction:column;gap:var(--rv-space-2);margin:0}
+.rv-car-facts>div{display:grid;grid-template-columns:minmax(0,var(--rv-fact-label,160px)) minmax(0,1fr);gap:var(--rv-space-4);align-items:baseline}
+.rv-car-facts dt{color:var(--rv-text-muted)}
+.rv-car-facts dd{margin:0;min-width:0}
+
+/* Audit: the coverage rail sits beside the table only when the page is wide enough (inside the admin area the page column is narrower than the viewport) */
+.rv-car-state.rv-car-wide{container-type:inline-size}
+.rv-car-audit{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--rv-space-5);align-items:start;min-width:0}
+@container (min-width:1100px){.rv-car-audit{grid-template-columns:minmax(0,1fr) 300px}}
+.rv-car-audit-main{display:flex;flex-direction:column;gap:var(--rv-space-4);min-width:0}
+.rv-car-audit-rail{display:flex;flex-direction:column;gap:var(--rv-space-3);min-width:0}
+.rv-car-audit-rail>h2{font-size:var(--rv-font-md);font-weight:600}
+.rv-car-sources{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--rv-space-4)}
+.rv-car-sources>li{display:flex;gap:var(--rv-space-3);align-items:flex-start}
+.rv-car-source-mark{flex-shrink:0;width:var(--rv-space-4);height:var(--rv-space-4);margin-top:var(--rv-space-1);color:var(--rv-status-done)}
+.rv-car-source-mark-quiet{color:var(--rv-text-muted)}
+.rv-car-sources strong{font-weight:600}
+.rv-car-sources p{color:var(--rv-text-muted)}
+.rv-car-table .rv-table-v2-wrap{max-width:none;overflow-x:auto}
+.rv-car-table .rv-table-v2 tbody tr{height:auto}
+.rv-car-table .rv-table-v2 td{padding-block:var(--rv-space-3);vertical-align:middle}
+.rv-car-table .rv-table-v2 td,.rv-car-table .rv-table-v2 th{white-space:normal}
+.rv-car-table .rv-table-v2 caption{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.rv-car-table .rv-table-v2 th{text-transform:none;font-size:var(--rv-font-md);color:var(--rv-text)}
+.rv-car-table .rv-table-v2 td:first-child{font-family:var(--rv-font-mono);font-size:var(--rv-font-md);font-variant-numeric:tabular-nums}
+.rv-car-what{font-weight:400}
+@media(min-width:640px){.rv-car-table .rv-table-v2 td:nth-child(3){min-width:15rem}}
+.rv-car-sub{overflow-wrap:anywhere}
+.rv-car-what .rv-car-sub{display:inline;margin-inline-start:var(--rv-space-1)}
+.rv-car-table .rv-table-v2 td:not(:nth-child(3)),.rv-car-table .rv-table-v2 th:not(:nth-child(3)){white-space:nowrap}
+.rv-car-sub{display:block;color:var(--rv-text-muted);font-size:var(--rv-font-md)}
+.rv-car-table td strong{font-size:var(--rv-font-md);font-weight:600}
+.rv-car-result{white-space:nowrap}
+.rv-car-repos .rv-car-row-main{gap:var(--rv-space-1)}
+.rv-car-repos p{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2)}
+
+.rv-car-more{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3)}
+.rv-car-more p{margin:0;color:var(--rv-text-muted)}
+
+/* Read state: refresh, notices, loading, the 4e error block */
+.rv-car-refresh{display:flex}
+.rv-car-refresh .rv-button{padding-inline:0}
+.rv-car-notice{padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);color:var(--rv-text)}
+.rv-car-loading{display:flex;flex-direction:column;gap:var(--rv-space-4)}
+.rv-car-loading-line{margin:0;display:flex;align-items:center;gap:var(--rv-space-2);color:var(--rv-text-muted)}
+.rv-car-loading-line svg{width:var(--rv-space-4);height:var(--rv-space-4)}
+.rv-car-skeleton-rows{display:grid;gap:var(--rv-space-2)}
+.rv-car-skeleton-rows .rv-skeleton{height:var(--rv-table-row-h);border:1px solid var(--rv-border)}
+.rv-car-error{border:1px solid var(--rv-danger);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);padding:var(--rv-space-5);display:flex;flex-direction:column;gap:var(--rv-space-4);max-width:calc(var(--rv-reading-width) - var(--rv-space-7) * 3)}
+.rv-car-error h2{margin:0;display:flex;align-items:center;gap:var(--rv-space-2);font-size:calc(var(--rv-font-lg) + 2px);font-weight:600;line-height:1.4}
+.rv-car-error h2 svg{width:var(--rv-space-5);height:var(--rv-space-5);color:var(--rv-danger);flex-shrink:0}
+.rv-car-error dl{display:flex;flex-direction:column;gap:var(--rv-space-3);margin:0}
+.rv-car-error dt{font-weight:600}
+.rv-car-error dd{margin:var(--rv-space-1) 0 0;color:var(--rv-text-muted)}
+.rv-car-recovery{display:flex;flex-direction:column;align-items:flex-start;gap:var(--rv-space-3)}
+.rv-car-reference{display:inline-flex;align-items:center;gap:var(--rv-space-1);font-size:var(--rv-font-sm);color:var(--rv-text-muted);flex-wrap:wrap}
+.rv-car-reference code{font-family:var(--rv-font-mono)}
+.rv-car-reference .rv-button{min-height:0;padding-inline:0;font-size:inherit;color:inherit;text-decoration:underline;font-weight:400}
+
+.rv-company-admin-read :focus-visible{outline:2px solid var(--rv-focus);outline-offset:var(--rv-focus-offset)}
+
+@media(max-width:639px){
+ .rv-company-admin-read .rv-banner{flex-direction:column;align-items:flex-start}
+ .rv-company-admin-read .rv-banner .rv-button{white-space:nowrap}
+ .rv-car-actions>.rv-button{flex:1 1 auto}
+ .rv-car-state{gap:var(--rv-space-4)}
+ .rv-car-card,.rv-company-admin-read .rv-admin-card{padding:var(--rv-space-4)}
+ .rv-car-pending-when{flex-basis:100%}
+ .rv-car-compare{grid-template-columns:minmax(0,1fr)}
+ .rv-car-rows>li:has(>.rv-status-chip-wrap){flex-direction:column;align-items:flex-start;gap:var(--rv-space-2)}
+ .rv-car-facts>div{grid-template-columns:minmax(0,1fr);gap:0}
+ .rv-car-rows>li,.rv-car-rows>li>a{min-height:calc(var(--rv-table-row-h) + var(--rv-space-2))}
+ .rv-car-row-side{flex-direction:row;flex-wrap:nowrap;align-items:center;gap:var(--rv-space-2);white-space:nowrap}
+ .rv-car-rows>li>a>p{min-width:0;overflow-wrap:anywhere}
+ .rv-car-error{padding:var(--rv-space-4)}
+ /* Audit rows: one row per event, the sentence first, then time, person, result and source on one meta line. */
+ .rv-car-table .rv-table-v2-wrap{overflow-x:visible;background:var(--rv-bg-raised)}
+ .rv-car-table .rv-table-v2,.rv-car-table .rv-table-v2 tbody{display:block}
+ .rv-car-table .rv-table-v2 thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+ .rv-car-table .rv-table-v2 tbody tr{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-1) var(--rv-space-2);padding:var(--rv-space-3) var(--rv-space-4);border-bottom:1px solid var(--rv-border);min-height:var(--rv-table-row-h)}
+ .rv-car-table .rv-table-v2 tbody tr:last-child{border-bottom:0}
+ .rv-car-table .rv-table-v2 td{display:block;padding:0;border:0;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+ .rv-car-table .rv-table-v2 td:nth-child(3){order:-1;flex-basis:100%;font-size:var(--rv-font-md);color:var(--rv-text)}
+ .rv-car-table .rv-table-v2 td:first-child{font-size:var(--rv-font-sm)}
+ /* No separator dots on a phone: a dot that lands at the start of a wrapped line reads as a stray mark. Each item is its own unit, the gap separates them. */
+ .rv-car-table .rv-table-v2 tbody tr{column-gap:var(--rv-space-3)}
+ .rv-car-table .rv-table-v2 td{min-width:0;max-width:100%;overflow-wrap:anywhere}
+ .rv-car-table .rv-table-v2 td:nth-child(4){order:2;flex-basis:100%}
+ .rv-car-table .rv-table-v2 td:first-child{font-size:var(--rv-font-sm)}
+}

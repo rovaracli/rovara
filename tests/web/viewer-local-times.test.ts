@@ -30,7 +30,8 @@ import { ReadSection, checkedTime } from "../../packages/ui/src/screens/admin/mo
 import { ReadState } from "../../packages/ui/src/screens/admin/projects/read.js";
 import { localWhenWords, whenWords } from "../../packages/ui/src/screens/session/DecisionsCard.js";
 import { expiresText } from "../../packages/ui/src/screens/setup/limits-text.js";
-import { AuditScreen } from "../../packages/ui/src/screens/admin/audit/AuditScreen.js";
+import { mount as mountCompanyAdmin } from "./read-only/company-admin-read/mount.js";
+import { reply as companyAdminReply } from "./read-only/company-admin-read/fixtures.js";
 import { fakeHost } from "./support/fake-host.js";
 import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 import type { ReactElement } from "react";
@@ -81,11 +82,17 @@ it("renders the model snapshot's successful read time in both viewer zones", asy
   try { expect(await screen.findByText(`Read at ${expected.timestamp}. This is a stored snapshot.`)).toBeTruthy(); } finally { f.close(); }
  });
 });
+// G1 replaced the retired AuditScreen with CompanyAuditReadScreen (real router mount). Its row time is the viewer's own day and 24-hour clock ("21 Nov 17:30"), literal here, never the production formatter.
+// Only Date is faked (a fixed "now" on another day), so "Today" never replaces the day; timers stay real.
 it("renders audit record instants locally while retaining explicitly UTC range inputs", async () => {
- await inViewerZones(async expected => {
-  const f = mountScreen(h(AuditScreen), () => ({ status: 200, body: { records: [{ id: "one", source: "cloud", at: VIEWER_INSTANT, actor: { developerId: scope.developerId, name: "Priya" }, action: "company.rules.changed", subject: "Rules", outcome: "ok" }], engine: { state: "connected" } } }));
-  try { expect(await screen.findByText(expected.timestamp)).toBeTruthy();expect(screen.getByLabelText("From (UTC)")).toBeTruthy();expect(screen.getByLabelText("Through (UTC)")).toBeTruthy(); } finally { f.close(); }
- });
+ const stamps: Record<string, string> = { "America/Los_Angeles": "21 Nov 17:30", "Pacific/Auckland": "22 Nov 14:30" };
+ vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-12-25T12:00:00.000Z") });
+ try {
+  await inViewerZones(async expected => {
+   const f = await mountCompanyAdmin("/app/admin/audit", request => request.path.split("?")[0] === "/v1/app/company/audit" ? { status: 200, body: { records: [{ id: "one", source: "cloud", at: VIEWER_INSTANT, actor: { developerId: scope.developerId, name: "Priya" }, action: "company.rules.changed", subject: "Rules", outcome: "recorded" }], engine: { state: "connected" } } } : companyAdminReply(request));
+   try { expect(await screen.findByText(stamps[expected.zone]!)).toBeTruthy();expect(screen.getByLabelText("From (UTC)")).toBeTruthy();expect(screen.getByLabelText("Through (UTC)")).toBeTruthy(); } finally { f.close(); }
+  });
+ } finally { vi.useRealTimers(); }
 });
 
 import { CompanyDomainsScreen } from "../../packages/ui/src/screens/admin/domains/CompanyDomainsScreen.js";

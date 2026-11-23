@@ -15,7 +15,7 @@ const exceptions = new Set([
 const isoExceptions = new Map([
  ["screens/setup/wiki/NightlyUpkeep.tsx:SpendLine", "newDate().toISOString().slice(0,7)"], // Compare the server's UTC accounting month.
  ["screens/agents/AgentProfileScreen.tsx:[month]", "newDate().toISOString().slice(0,7)"], // UTC month sent to the spending API.
- ["screens/admin/audit/AuditScreen.tsx:utc", "date.toISOString().slice(0,value.length)"], // Validate the explicitly UTC range input, not a display.
+ ["screens/company-admin-read/CompanyAuditReadScreen.tsx:utc", "date.toISOString().slice(0,value.length)"], // Validate the explicitly UTC range input, not a display.
 ]);
 // Exact owner + consuming expression, with a reason for every non-display conversion.
 // Relative-time consumers accept ISO input, then format it locally themselves.
@@ -44,8 +44,8 @@ const isoCallExceptions = new Map([
  ["screens/session/talk-lifecycle.ts:lock:startedAt:newDate().toISOString()", "Pending talk request recovery record"],
  ["screens/work/WorkPreviewScreen.tsx:updated:updatedWords(newDate(tasks.dataUpdatedAt).toISOString(),now)", "Input to updatedWords relative-time formatter"],
  ["screens/work/queue-action-host.ts:entry:startedAt:newDate().toISOString()", "Serialized queue action recovery record"],
- ["screens/admin/audit/AuditScreen.tsx:utc:date.toISOString().slice", "Explicit UTC input validation and API query serialization"],
- ["screens/admin/audit/AuditScreen.tsx:utc:returndate.toISOString();", "Explicit UTC input validation and API query serialization"],
+ ["screens/company-admin-read/CompanyAuditReadScreen.tsx:utc:date.toISOString().slice", "Explicit UTC input validation and API query serialization"],
+ ["screens/company-admin-read/CompanyAuditReadScreen.tsx:utc:returndate.toISOString();", "Explicit UTC input validation and API query serialization"],
  ["screens/admin/projects/SlackBindEditor.tsx:reviewedAt:reviewedAt=newDate().toISOString()", "Reviewed bind request timestamp"],
  ["screens/admin/projects/SlackDecisionEditor.tsx:request:reviewedAt:newDate().toISOString()", "Reviewed decision request timestamp"],
  ["screens/admin/projects/SlackLinksEditor.tsx:request:reviewedAt:newDate().toISOString()", "Reviewed unbind request timestamp"],
@@ -71,7 +71,7 @@ function violations(root: string): string[] {
    const calendarBucket = owner !== undefined && ts.isVariableDeclaration(owner) && exceptions.has(`${name}:${owner.name.getText(source)}`) && ts.isPropertyAssignment(node) && ts.isStringLiteral(node.initializer) && node.initializer.text === "UTC";
    const suffix = (ts.isStringLiteralLike(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node) || ts.isJsxText(node)) && / UTC\b/.test(node.text);
    // Audit range inputs deliberately take UTC, while record and read times are local.
-   const auditInput = name === "screens/admin/audit/AuditScreen.tsx" && ts.isStringLiteral(node) && node.text === "Enter valid UTC dates and times.";
+   const auditInput = name === "screens/company-admin-read/CompanyAuditReadScreen.tsx" && ts.isStringLiteral(node) && node.text === "Enter valid UTC dates and times.";
    let isoOwner: ts.Node | undefined = node.parent;
    while (isoOwner !== undefined && !ts.isVariableDeclaration(isoOwner) && !ts.isFunctionDeclaration(isoOwner)) isoOwner = isoOwner.parent;
    const isoOwnerName = isoOwner !== undefined && (ts.isVariableDeclaration(isoOwner) || ts.isFunctionDeclaration(isoOwner)) ? isoOwner.name?.getText(source) : undefined;
@@ -127,7 +127,7 @@ it("allows only the named accounting and audit-parser expressions, keeping other
   const cases = [
    ["screens/setup/wiki/NightlyUpkeep.tsx", 'function SpendLine() { if (spend.month !== new Date().toISOString().slice(0, 7)) return null; }', 'const display = new Date().toISOString().slice(0, 7);'],
    ["screens/agents/AgentProfileScreen.tsx", 'function Spend() { const [month] = useState(() => new Date().toISOString().slice(0, 7)); }', 'const display = new Date().toISOString().slice(0, 7);'],
-   ["screens/admin/audit/AuditScreen.tsx", 'function utc(value: string) { return date.toISOString().slice(0, value.length) !== value; }', 'const display = date.toISOString().slice(0, value.length);'],
+   ["screens/company-admin-read/CompanyAuditReadScreen.tsx", 'function utc(value: string) { return date.toISOString().slice(0, value.length) !== value; }', 'const display = date.toISOString().slice(0, value.length);'],
   ] as const;
   for (const [file, allowed, display] of cases) {
    const path = join(root, file);

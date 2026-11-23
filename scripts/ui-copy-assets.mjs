@@ -16,8 +16,8 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  "screens/admin/projects/project-slack.css",
  // Lane C: owned waiting-queue filter styles.
  "screens/admin/waiting/waiting.css",
- // Lane C2: owned audit filter styles.
- "screens/admin/audit/audit.css",
+ // G1: the rebuilt company administration pages (Overview, Settings, Audit) and the project page working-branches panel.
+ "screens/company-admin-read/company-admin-read.css",
  // Lane C12: owned Connections guidance styles.
  "screens/admin/connections/connections.css",
  // Playbook v1.1: the company How we work page.
