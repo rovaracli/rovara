@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 import { InviteCreateDialog } from "./InviteCreateDialog.js";
 import { InviteRevokeDialog, type InviteRevokeTarget } from "./InviteRevokeDialog.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -12,7 +13,6 @@ import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { useAdminContext } from "./AdminLayout.js";
-function utc(value: string) { return new Date(value).toLocaleString("en-US", { timeZone: "UTC" }); }
 export function InvitesScreen() {
  const { orgId, developerId, role } = useAdminContext();
  if (role !== "owner" && role !== "admin") return <section><PageHeader focusOnMount title="Invites" /><p role="alert">Only current company owners and admins can view company invites.</p></section>;
@@ -58,13 +58,13 @@ function InviteDirectory({ orgId, developerId, role }: { orgId: string; develope
    {read.isError && <div><p role="alert">{stale && "Invite list is stale. "}{errorCopy}</p><Button disabled={read.isFetching || checking} onClick={() => { void read.refetch(); }}>Retry invites</Button></div>}
    {!hidden && read.data !== undefined && <>
     {read.data.unavailableCount > 0 && <p role="alert">{read.data.unavailableCount} invite {read.data.unavailableCount === 1 ? "entry" : "entries"} could not be checked. Ask an installation administrator to review the directory. These results are incomplete.</p>}
-    <p ref={summary} tabIndex={-1} role="status">Page {cursors.length + 1}: {read.data.invites.length}{read.data.unavailableCount > 0 ? " confirmed pending invites shown." : " pending invites on this page."} Checked at <time dateTime={read.data.checkedAt}>{utc(read.data.checkedAt)}</time> UTC.</p>
+    <p ref={summary} tabIndex={-1} role="status">Page {cursors.length + 1}: {read.data.invites.length}{read.data.unavailableCount > 0 ? " confirmed pending invites shown." : " pending invites on this page."} Checked at <time dateTime={read.data.checkedAt}>{viewerTime(read.data.checkedAt)}</time>.</p>
     {read.data.invites.length === 0 ? <p>{read.data.unavailableCount > 0 ? "No usable invites on this page." : "No pending invites on this page."}</p> : <DataTable caption="Pending invites on this page" rows={read.data.invites} rowKey={invite => invite.inviteId} columns={[
      { key: "destination", title: "Destination", render: invite => invite.destination.kind === "link" ? "Invite link" : invite.destination.kind === "email" ? <VisibleText text={invite.destination.label} /> : "Destination unavailable" },
      { key: "role", title: "Company role", render: invite => invite.role === "admin" ? "Admin" : invite.role === "member" ? "Member" : "Role unavailable" },
-     { key: "created", title: "Created (UTC)", render: invite => <time dateTime={invite.createdAt}>{utc(invite.createdAt)}</time> },
-     { key: "expires", title: "Expires (UTC)", render: invite => <time dateTime={invite.expiresAt}>{utc(invite.expiresAt)}</time> },
-     { key: "actions", title: "Actions", render: invite => invite.revision !== undefined && (invite.role === "admin" || invite.role === "member") ? <Button aria-label={`Revoke invite for ${invite.destination.kind === "email" ? invite.destination.label : invite.destination.kind === "link" ? "Invite link" : "Destination unavailable"}, created ${utc(invite.createdAt)} UTC`} aria-disabled={locked} onClick={event => { if (locked || invite.revision === undefined || (invite.role !== "admin" && invite.role !== "member")) return;preferSummary.current = false;trigger.current = event.currentTarget;activeRevokeId.current = invite.inviteId;setSelected({ inviteId: invite.inviteId, revision: invite.revision, role: invite.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt, label: invite.destination.kind === "email" ? invite.destination.label : "Invite link" }); }}>Revoke</Button> : <span>Revoke unavailable</span> },
+     { key: "created", title: "Created", render: invite => <time dateTime={invite.createdAt}>{viewerTime(invite.createdAt)}</time> },
+     { key: "expires", title: "Expires", render: invite => <time dateTime={invite.expiresAt}>{viewerTime(invite.expiresAt)}</time> },
+     { key: "actions", title: "Actions", render: invite => invite.revision !== undefined && (invite.role === "admin" || invite.role === "member") ? <Button aria-label={`Revoke invite for ${invite.destination.kind === "email" ? invite.destination.label : invite.destination.kind === "link" ? "Invite link" : "Destination unavailable"}, created ${viewerTime(invite.createdAt)}`} aria-disabled={locked} onClick={event => { if (locked || invite.revision === undefined || (invite.role !== "admin" && invite.role !== "member")) return;preferSummary.current = false;trigger.current = event.currentTarget;activeRevokeId.current = invite.inviteId;setSelected({ inviteId: invite.inviteId, revision: invite.revision, role: invite.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt, label: invite.destination.kind === "email" ? invite.destination.label : "Invite link" }); }}>Revoke</Button> : <span>Revoke unavailable</span> },
     ]} />}
     <div className="rv-admin-role-actions"><Button disabled={cursors.length === 0} aria-disabled={locked || cursors.length === 0} onClick={() => { if (locked) return;setCursors(old => old.slice(0, -1));pageFocus.current = true; }}>Previous page</Button><Button disabled={nextCursor === undefined} aria-disabled={locked || nextCursor === undefined} onClick={() => { if (!locked && nextCursor !== undefined) { setCursors(old => [...old, nextCursor]);pageFocus.current = true; } }}>Next page</Button></div>
    </>}

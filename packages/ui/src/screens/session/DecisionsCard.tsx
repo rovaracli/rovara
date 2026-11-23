@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SESSION_LOG_SURFACE_WORDS, type SessionLogEntry } from "@agentx/contracts/web";
@@ -13,18 +14,16 @@ import { TaskDecisionsUnavailableView } from "./TaskDecisionsUnavailableView.js"
 export const DECISIONS_SHOWN = 5;
 const WHAT = { plan: "the plan", requirements: "the requirements", design: "the design", pull_request: "the pull request" } as const;
 const OUTCOME_WORDS = { approved: "approved", changes_requested: "changes requested", rejected: "rejected" } as const;
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
-/** "Nov 17, 14:10 UTC": a stable reading, whatever the viewer's time zone. */
+/** A recorded decision in the viewer's local date and time. */
 export function whenWords(at: string): string {
- const date = new Date(at), two = (n: number) => String(n).padStart(2, "0");
- return `${MONTHS[date.getUTCMonth()] ?? ""} ${String(date.getUTCDate())}, ${two(date.getUTCHours())}:${two(date.getUTCMinutes())} UTC`;
+ return viewerTime(at, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 /** "Nov 17, 14:10": the viewer's own clock, with no zone name (the task page reads every time this way). */
 export function localWhenWords(at: string): string {
  const date = new Date(at);
  if (Number.isNaN(date.getTime())) return at;
- return `${MONTHS[date.getMonth()] ?? ""} ${String(date.getDate())}, ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+ return whenWords(at);
 }
 
 type Decision = Extract<SessionLogEntry, { kind: "answer" | "approval" }>;
@@ -44,7 +43,7 @@ export function decisionRows(entries: readonly SessionLogEntry[], local = false)
  * "Decisions and answers" (L4-B5): what was asked and decided on this task, wherever it was answered (this page, Slack, Linear, Jira), as the task log says it. A short list with the newest first, the rest one click away.
  * Nothing is shown for a task with no answers or decisions yet, or when Code's log can't be read here; the page does not break for it.
  */
-export function DecisionsCard({ id, local = false }: { id: string; /** The task page shows times in the viewer's own clock; the older page keeps its stable UTC reading. */ local?: boolean }) {
+export function DecisionsCard({ id, local = false }: { id: string; /** Retained for task-page callers; both paths use the viewer's local clock. */ local?: boolean }) {
  const host = useAppHost(), api = useMemo(() => createSessionLogApi(host), [host]), [all, setAll] = useState(false);
  const read = useQuery({ queryKey: ["session", id, "log"], queryFn: () => api.read(id), retry: false });
  if (read.isPending) return null;

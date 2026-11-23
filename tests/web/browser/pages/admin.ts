@@ -34,6 +34,14 @@ export class AdminPage {
   table(name: string): Locator {
     return this.page.getByRole("table", { name });
   }
+  /** WIRING-1B: on the rebuilt Cost and time pages the page title is "Money" / "Manage features"; the selected feature is a level-2 heading in its card. */
+  featureHeading(name: string): Locator {
+    return this.page.getByRole("heading", { name, level: 2 });
+  }
+  /** The rebuilt report keeps its filters in one closed "Filter" disclosure. */
+  async openFilter(): Promise<void> {
+    await this.page.getByText(/^Filter/u).first().click();
+  }
   /** The page said "not connected yet" and stopped loading. */
   async expectNotConnected(what: string | RegExp): Promise<void> {
     await expect(this.notConnected.first()).toBeVisible();
@@ -124,5 +132,10 @@ export class AiSpendPage {
     const nav = this.page.getByRole("navigation", { name: "Administration" });
     await this.page.goto(path);
     await expect(nav).toBeVisible();
+  }
+  /** The company AI and spending step in setup: the payer, model choice and monthly limit together. (On the admin AI page the same form is split over the Change spending and Change a model dialogs.) */
+  async openStep(path: string = ROUTES.setupAiStep): Promise<void> {
+    await this.page.goto(path);
+    await expect(this.step).toBeVisible();
   }
 }

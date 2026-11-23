@@ -1,3 +1,4 @@
+import { viewerTime } from "../../../design/viewer-time.js";
 // Company settings (Hybrid 1, DEC 223): the company's rules, who may start work and the website ceiling, in one page with clear groups.
 // Cloud's company backend serves `GET` and `PUT /v1/app/org/settings` (feat/cloud-company-backend); until a Cloud has it, the page says "not connected yet".
 // Company owners and admins only (the server checks it); a looser change waits for a second admin.
@@ -84,7 +85,7 @@ function Settings({ settings, reload }: { settings: CompanySettingsRead; reload:
   {notice?.kind === "withdrawn" && <p role="status">Withdrawn. Nothing changed.</p>}
   {notice?.kind === "failed" && <p role="alert" data-testid="settings-error"><VisibleText text={notice.text} /></p>}
   {pending !== undefined && <AdminSection title="Waiting for approval" note={mine ? "You proposed this" : "Proposed by another admin"}>
-   <p>A change to the company's rules is waiting for a second admin{pending.expiresAt !== "" ? `, until ${new Date(pending.expiresAt).toLocaleDateString("en-US", { day: "numeric", month: "short", timeZone: "UTC" })}` : ""}.</p>
+   <p>A change to the company's rules is waiting for a second admin{pending.expiresAt !== "" ? `, until ${viewerTime(new Date(pending.expiresAt), { day: "numeric", month: "short" })}` : ""}.</p>
    <RuleList rules={pending.instructions} />
    {!mine && <Button variant="primary" busy={busy} onClick={() => { void decide(pending.changeId, "approve"); }}>Approve this change</Button>}
    <p><Button busy={busy} onClick={() => { void decide(pending.changeId, "withdraw"); }}>{mine ? "Withdraw my change" : "Reject this change"}</Button></p>

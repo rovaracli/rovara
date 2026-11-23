@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../../api/errors.js";
@@ -9,7 +10,7 @@ import { KF as T, SHOWN_AT_FIRST, countText, markedText } from "./known-failing-
 import "./learning.css";
 
 const keyOf = (mark: MarkRef) => [mark.checkId, mark.name, mark.markedBy, mark.markedAt, String(mark.epoch)].join("\u0000");
-const dayOf = (iso: string) => iso.slice(0, 10);
+const dayOf = (iso: string) => viewerTime(iso, { year: "numeric", month: "short", day: "numeric" });
 
 /**
  * The project's marked tests, with Undo (KF-1). Only a maintainer reaches it, and only while the four test results are on; the server decides both and the page asks for the list only then. Undo makes results stricter, so it asks no

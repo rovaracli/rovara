@@ -50,7 +50,7 @@ it("groups tasks by who owns the next move, in fixed words", () => {
 it("puts a task with no card but a stopped workflow under Needs you, and a queued one in the queue", () => {
   const rows = rowsOf([task(ID.checks, "Stopped one", { status: "FAILED" }, "IMPLEMENT", "BLOCKED"), task(ID.running, "Queued one", { status: "STARTING", workflow: undefined })], []);
   expect(rows[0]).toMatchObject({ group: "you", need: "Stopped", tone: "bad" });
-  expect(rows[1]).toMatchObject({ group: "run", line: "In the queue", tone: "idle" });
+  expect(rows[1]).toMatchObject({ group: "run", line: "Starting", tone: "idle" });
   expect(stepOf(readTaskList({ tasks: [task(ID.running, "x", { workflow: undefined, status: "SUCCEEDED" })] })[0]!)).toBe("proof");
 });
 it("puts a finished task with no pull request under Finished, not under Rovara is working", () => {
@@ -99,14 +99,14 @@ it("proves a criterion only when every check that speaks to it passed on current
 // ---- Components ----
 const wrap = (element: ReturnType<typeof h>, host = fakeHost()) => renderUi(h(AppHostProvider, { host: host.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(MemoryRouter, { children: h(Announcer, { children: element }) }) }) }));
 
-it("draws the step rail with done, current and not-started steps, in words as well as colour", () => {
-  const f = wrap(h(StepRail, { step: "build", tone: "run" }));
+it("draws a finished mark only where the served stage is past the section in the fixed order, and the served current section as running", () => {
+  const f = wrap(h(StepRail, { step: "build", tone: "run", task: readTaskList({ tasks: [TASKS[1]] })[0] }));
   const items = within(screen.getByRole("list", { name: "Steps of this task" })).getAllByRole("listitem");
   expect(items.map(item => item.getAttribute("data-state"))).toEqual(["done", "done", "current", "todo", "todo"]);
-  expect(items[2]!.textContent).toContain("running");expect(items[0]!.textContent).toContain("done");expect(items[3]!.textContent).toContain("not started");
+  expect(items[2]!.textContent).toContain("running");expect(items[0]!.textContent).toContain("✓");expect(items[0]!.textContent).toContain("finished");expect(items[1]!.textContent).toContain("✓");expect(items[3]!.textContent).toContain("progress not confirmed");expect(items[3]!.textContent).not.toContain("✓");expect(items[4]!.textContent).not.toContain("✓");
   expect(f.container.querySelector("[aria-current=step]")?.textContent).toContain("Build");
   f.unmount();
-  wrap(h(StepRail, { step: "merged", tone: "ok" }));expect(screen.getAllByRole("listitem").every(item => item.getAttribute("data-state") === "done")).toBe(true);
+  wrap(h(StepRail, { step: "merged", tone: "ok" }));expect(screen.getAllByRole("listitem").every(item => item.getAttribute("data-state") === "todo")).toBe(true);
 });
 it("makes each step a button when it can be selected, and tells the mini bars apart for a screen reader", () => {
   const onSelect = vi.fn();wrap(h("div", {}, h(StepRail, { step: "spec", tone: "wait", onSelect, selected: "spec" }), h(StepMini, { step: "proof", tone: "ok" })));

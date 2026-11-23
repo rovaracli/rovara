@@ -53,7 +53,7 @@ it("shows health, the age of the saved copy and why the last rebuild started, in
  setup();
  const section = await region();
  expect(await section.findByText("Healthy. New tasks start from the saved copy.")).toBeTruthy();
- expect(section.getByText("Saved copy built 3 days ago (2026-10-30).")).toBeTruthy();
+ expect(section.getByText("Saved copy built 3 days ago (Oct 30, 2026).")).toBeTruthy();
  expect(section.getByText("The last rebuild was started because the setup files changed.")).toBeTruthy();
  expect(section.getByRole("button", { name: "Reset" })).toBeTruthy();
 });
@@ -62,9 +62,9 @@ it("says what a waiting or running rebuild is for, a stale copy, and the last fa
  setup({ panel: panel({ health: "needs_repair", image: { builtAt: "2026-10-20T10:00:00.000Z", ageDays: 13, status: "stale" }, rebuild: { state: "running", reason: "stale" }, lastFailure: { at: "2026-11-01T09:00:00.000Z", reason: "secrets_found" } }) });
  const section = await region();
  expect(await section.findByText("Needs repair. New tasks set up fresh until the next build works.")).toBeTruthy();
- expect(section.getByText("Saved copy built 13 days ago (2026-10-20). A task could not use it, so a new one is due.")).toBeTruthy();
+ expect(section.getByText("Saved copy built 13 days ago (Oct 20, 2026). A task could not use it, so a new one is due.")).toBeTruthy();
  expect(section.getByText("Building a new saved copy now because a task could not use the saved copy.")).toBeTruthy();
- expect(section.getByText("The last build failed on 2026-11-01 (secrets found).")).toBeTruthy();
+ expect(section.getByText("The last build failed on Nov 1, 2026 (secrets found).")).toBeTruthy();
 });
 
 it("says so when there is no saved copy yet", async () => {

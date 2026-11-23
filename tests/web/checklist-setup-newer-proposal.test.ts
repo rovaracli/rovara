@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 // L4-T2c (pairs with Code #1063): the Setup run row of a project whose setup was approved earlier. A re-run's proposal that waits, is being checked or was rejected never takes the approval away: the row stays Done
 // (the approved setup's own check), says so in Cloud's fixed words, and a waiting proposal gets the same approve card a first proposal gets. A Code that sends no `newerProposal` reads as before.
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -164,4 +165,11 @@ describe("a newer setup proposal beside the approved setup (L4-T2c)", () => {
     expect(within(item).getByTestId("setup-run-newer-proposal").textContent).toBe(NEWER_PROPOSAL_WORDS.rejected);
     f.close();
   });
+});
+
+it("renders the approved setup date in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount(checklist({ approvedAt: VIEWER_INSTANT }));
+  try { expect((await screen.findByTestId("setup-run-approved")).textContent).toContain(`on ${expected.day}`); } finally { f.close(); }
+ });
 });

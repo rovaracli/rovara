@@ -1,3 +1,4 @@
+import { viewerTime } from "../../../design/viewer-time.js";
 import { useEffect, useMemo, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../../host.js";
@@ -21,7 +22,7 @@ export function ReadState<T>({ read, label, children }: { read: ReturnType<typeo
  return <div aria-busy={read.isFetching}>
   {read.isFetched && <button type="button" className="rv-button rv-button-secondary" aria-disabled={read.isFetching || undefined} aria-busy={read.isFetching} onClick={() => { if (!read.isFetching) void read.refetch(); }}>{fatal || read.data === undefined ? "Try again" : `Refresh ${label}`}</button>}
   {read.isPending ? <Skeleton label={`Loading ${label}`} /> : fatal ? <p role="alert">{read.error instanceof ApiError && read.error.status === 403 ? `You don't have permission to view ${label}.` : read.error instanceof ApiError && read.error.status === 404 ? `${label} unavailable. It may not exist or be visible to you.` : `Couldn't load ${label}. Try again.`}</p> : <>
-   {stale && <p role="status">Updated {new Date(staleSince).toLocaleString("en-US", { timeZone: "UTC" })} UTC · Reconnecting</p>}
+   {stale && <p role="status">Updated {viewerTime(new Date(staleSince))} · Reconnecting</p>}
    {data !== undefined && children(data)}
   </>}
  </div>;

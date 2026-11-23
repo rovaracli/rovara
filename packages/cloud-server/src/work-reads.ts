@@ -125,7 +125,14 @@ export function workTask(raw: unknown): Record<string, unknown> | undefined {
       stage: text(workflow["stage"], 40), state: text(workflow["state"], 40), revision: num(workflow["revision"]), path: text(workflow["path"], 40), outcome: text(workflow["outcome"], 40), blockReason: text(workflow["blockReason"], 500),
       // K0b: the round of Understand's questions (Code's workflow.intent.rounds), so an answer names the round it answers.
       round: isRecord(workflow["intent"]) ? num(workflow["intent"]["rounds"]) : undefined,
+      // A summary omits the definition and program, so it cannot prove the built-in order either. Reuse the no-completion marker for any unconfirmed order.
+      programmed: workflow["program"] !== undefined || workflow["definitionId"] !== "agentx-task-to-pr" ? true : undefined,
     }),
+    startupReason: DeveloperTaskViewSchema.shape.startupReason.safeParse(raw["startupReason"]).data,
+    // Served pull request tracking that says a check is failing on an open pull request: the page does not count Checks and review as finished.
+    failedChecks: list(raw["mergeTracking"], 32).filter(isRecord).some((tracked) => tracked["state"] === "open" && (tracked["ci"] === "failing" || (Array.isArray(tracked["failingChecks"]) && tracked["failingChecks"].length > 0))) ? true : undefined,
+    operations: raw["operations"],
+    failure: raw["failure"],
     pullRequests: list(raw["pullRequests"], 10).filter(isRecord).map((pull) => some({ repository: text(pull["repository"], 200), number: num(pull["number"]), url: text(pull["url"], 500), state: text(pull["state"], 40) })),
     money: ((money) => money?.taskId === raw["taskId"] ? money : undefined)(parseTaskMoneyV1(raw["money"])),
     spent: spent === undefined ? undefined : some({ usd: num(spent["usd"]) }),

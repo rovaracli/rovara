@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { createContext, useCallback, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { createApiClient } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";
@@ -6,6 +6,8 @@ import type { ApiRequest } from "../../host.js";
 import { useAppHost } from "../../host.js";
 
 export const DEFAULT_MODEL = "@default";
+/** How a model id is shown in a choice list. The default shows the id; G2's "Change a model" provides the model's display name. A choice's value is always the id. */
+export const ModelNames = createContext<(id: string) => string>(id => id);
 export const BACK_TO_DEFAULT = "Go back to Rovara's default";
 export const modelScopeId = (company: string, person: string, role: string) => JSON.stringify([company, person, role]);
 export const defaultModelText = (model: string | null) => model === null ? "Rovara's default (current model can't be shown yet)" : `Rovara's default (currently ${model})`;

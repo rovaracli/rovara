@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 import { expect,it,vi } from "vitest";
 import { screen,fireEvent,waitFor,act } from "@testing-library/react";
 import { createMemoryRouter,RouterProvider } from "react-router";
@@ -54,3 +55,10 @@ for(const status of [429,503])it(`never offers Start again after a ${status} rec
 it("never offers Start again for a known pending receipt even if its next lookup returns missing",async()=>{const f=mount();try{await f.review();f.request.mockImplementation(async r=>{if(r.path.endsWith("/reviewed")){const answer=await f.respond(r);return{status:200,body:{receipt:(answer.body as {receipt:unknown}).receipt}};}if(r.path.includes("/requests/"))return{status:404,body:{error:{code:"NOT_FOUND"}}};return f.respond(r);});await f.send();await screen.findByText(/link cannot be recovered/);await clickReady("Check creation request");await screen.findByText(/No creation receipt was found/);expect(screen.queryByRole("button",{name:"Start again"})).toBeNull();expect(screen.getByRole("button",{name:"Revoke this invite"})).toBeTruthy();expect(f.writes().length).toBe(1);}finally{f.close();}});
 
 it("does not call an existing creation receipt missing when the canonical status lookup returns 404",async()=>{const f=mount();try{await f.review();f.request.mockImplementation(async r=>{if(r.path.endsWith("/reviewed")){await f.respond(r);throw new Error("lost acknowledgement");}if(r.path.endsWith("/"+id))return{status:404,body:{error:{code:"NOT_FOUND"}}};return f.respond(r);});await f.send();await screen.findByText(/creation outcome is unknown/);await clickReady("Check creation request");await waitFor(()=>expect(screen.getByRole("button",{name:"Check creation request"}).hasAttribute("disabled")).toBe(false));expect(screen.queryByText(/No creation receipt was found/)).toBeNull();expect(screen.getByText(/creation outcome is unknown/)).toBeTruthy();expect(screen.queryByRole("button",{name:"Start again"})).toBeNull();expect(f.writes().length).toBe(1);}finally{f.close();}});
+
+it("renders the created invite's expiry and check in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount();f.state.expiresAt = VIEWER_INSTANT;f.state.checkedAt = "2026-11-22T01:29:59.000Z";
+  try { await f.review();await f.send();await screen.findByText("Invite created and checked.");const times = [...screen.getByRole("dialog").querySelectorAll("time")];expect(times).toHaveLength(2);expect(times[0]?.dateTime).toBe(VIEWER_INSTANT);expect(times[0]?.textContent).toBe(expected.timestamp);expect(times[1]?.dateTime).toBe("2026-11-22T01:29:59.000Z");expect(times[1]?.textContent).toBe(expected.zone === "America/Los_Angeles" ? "11/21/2026, 5:29:59 PM" : "11/22/2026, 2:29:59 PM"); } finally { f.close(); }
+ });
+});

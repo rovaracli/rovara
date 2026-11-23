@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 import { expect, it } from "vitest";
 import type { ComponentType } from "react";
 import * as inspection from "../../packages/ui/src/screens/admin/projects/WorkingBranches.js";
@@ -80,3 +81,10 @@ it("B32 review matches saved settings by registration, not shared fullName",asyn
 // 2026-11-04 (0.5.5 integration): the admin menu now has its own "How we work" link (company page, admin-v11-finish), so this test looks at the project detail's link by where it goes.
 const projectHowWeWorkLinks=()=>screen.queryAllByRole("link",{name:"How we work"}).filter(link=>link.getAttribute("href")!=="/app/admin/how-we-work");
 it("B32 review exposes How we work only for fresh active matching project detail",async()=>{const f=mount();await waitFor(()=>expect(projectHowWeWorkLinks()).toHaveLength(1));expect(projectHowWeWorkLinks()[0]!.getAttribute("href")).toBe("/app/projects/payments?tab=how-we-work");f.setDetail({...project,status:"archived"});await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","project-detail"]});});await waitFor(()=>expect(projectHowWeWorkLinks()).toHaveLength(0));f.close();});
+
+it("renders working-branch context, page and preview checks in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount(async r => ({ status: 200, body: { ...(r.path.includes("/working-branches?") ? context : r.path.includes("/branches/preview?") ? preview : page), checkedAt: VIEWER_INSTANT } }));
+  try { await load();fireEvent.click(screen.getByRole("button", { name: "Inspect release/current" }));await screen.findByText("c".repeat(40));const times = [...f.container.querySelectorAll("time")];expect(times.length).toBeGreaterThanOrEqual(3);for (const time of times) { expect(time.dateTime).toBe(VIEWER_INSTANT);expect(time.textContent).toBe(expected.timestamp); } } finally { f.close(); }
+ });
+});

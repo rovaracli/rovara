@@ -201,8 +201,11 @@ test("the sole monthly limit editor refuses zero on AI and spending without requ
  await serve(page, "/org/engine-model", { model: "zai.glm-4.7", source: "company", offered: ["zai.glm-4.7"], preselect: "zai.glm-4.7", canChange: true });
  await serve(page, "/org/agent-ai", { source: "rovara", version: 1, canChange: true, anthropicKeyConnected: false, bedrockConnected: null, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }] });
  await serve(page, "/org/settings", { companyId: "org_aaaaaaaaaaaaaaaaaaaa", version: 1, modelGateway: { ready: true }, settings: { instructions: [], budgets: { companyMonthlyUsdMicros: 100_000_000 } } });
+ // The editor sits in the rebuilt AI page's "Change spending" dialog (WIRING-1 restore): the same component as the setup step's.
  const admin = new AdminPage(page);
  await admin.open("/app/admin/ai-spending");
+ await page.getByRole("button", { name: "Change spending" }).click();
+ await expect(page.getByTestId("ai-spend-step")).toBeVisible();
  const limit = page.getByLabel("Company monthly limit (USD)");
  await expect(limit).toHaveValue("100");
  await limit.fill("0");

@@ -79,10 +79,10 @@ describe("1. the Work list passes Code's Understand round and outcome on", () =>
     expect(row["workflow"]).toMatchObject({ stage: "UNDERSTAND", state: "WAITING", revision: F.revision });
     expect(row["outcome"]).toBeUndefined();
     expect(w.asked(/^GET \/v1\/dev\/tasks$/u)[0]!.search).toContain("detail=1");
-    // For these rows Cloud's answer is Code's row, less `shared: false` (said only when true) and with an empty pull request list: the web tests draw Code's rows as they are (tests/web/work-inline-understand.test.ts).
+    // Keep Code's whole row, less `shared: false`, with an empty pull request list and the no-completion marker: list summaries cannot prove the built-in workflow order.
     const { shared, ...rest } = codeRow(F.waitingList, F.taskId);
     expect(shared).toBe(false);
-    expect(row).toEqual({ ...rest, pullRequests: [] });
+    expect(row).toEqual({ ...rest, workflow: { ...(rest["workflow"] as Obj), programmed: true }, pullRequests: [] });
   });
 
   it("a finished task's outcome is on its row; Code's rows for someone it shows no round, and another company's empty list, have none", async () => {
@@ -90,12 +90,26 @@ describe("1. the Work list passes Code's Understand round and outcome on", () =>
     const closed = (await w.send("GET", LIST, undefined, await w.signIn("ada"))).body.tasks!;
     expect(closed.find((task) => task["taskId"] === F.closedTaskId)).toMatchObject({ outcome: "CLOSED", workflow: { stage: "CLOSED", state: "COMPLETE" } });
     expect(closed[0]!["round"]).toBeUndefined();
-    expect(closed[0]).toEqual({ ...Object.fromEntries(Object.entries(codeRow(F.closedList, F.closedTaskId)).filter(([key]) => key !== "shared")), pullRequests: [] });
+    const { shared, ...rest } = codeRow(F.closedList, F.closedTaskId);
+    expect(shared).toBe(false);
+    expect(closed[0]).toEqual({ ...rest, workflow: { ...(rest["workflow"] as Obj), programmed: true }, pullRequests: [] });
     const sam = (await w.send("GET", LIST, undefined, await w.signIn("sam"))).body.tasks!;
     expect(sam).toHaveLength(1);
     expect(JSON.stringify(sam)).not.toMatch(/"round"|health check/u);
     const eve = await w.send("GET", LIST, undefined, await w.signIn("eve"));
     expect(eve.body).toEqual({ tasks: [] });
+  });
+
+  it.each([
+    ["known built-in order with passing checks", { definitionId: "agentx-task-to-pr" }, { state: "open", ci: "passing", failingChecks: [] }, {}, {}],
+    ["custom order with failing open checks", { definitionId: "agentx-task-to-pr", program: { steps: [{ id: "private-step", command: "private-command" }] } }, { state: "open", ci: "failing", failingChecks: ["private-check"] }, { programmed: true }, { failedChecks: true }],
+    ["unconfirmed order with historical failing checks", {}, { state: "merged", ci: "failing", failingChecks: ["private-check"] }, { programmed: true }, {}],
+  ] as const)("%s: the list adds only completion booleans, without program or tracking details", async (_name, workflow, tracking, workflowMarker, rowMarker) => {
+    const { shared, ...rest } = codeRow(F.waitingList, F.taskId);
+    const input = { ...rest, shared, workflow: { ...(rest["workflow"] as Obj), ...workflow }, mergeTracking: [{ ...tracking, repository: "private-repository", diagnostic: "private-diagnostic" }] };
+    const w = setUp((call) => call.path === "/v1/dev/tasks" && call.who === "ada" ? { status: 200, body: { tasks: [input] } } : undefined);
+    const answer = await w.send("GET", LIST, undefined, await w.signIn("ada"));
+    expect(answer).toEqual({ status: 200, body: { tasks: [{ ...rest, workflow: { ...(rest["workflow"] as Obj), ...workflowMarker }, pullRequests: [], ...rowMarker }] } });
   });
 
   it("a round or outcome in any other shape is left out whole (never part of a round)", () => {

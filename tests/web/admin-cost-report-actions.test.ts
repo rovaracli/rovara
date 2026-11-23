@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment -- the tests read and break Cloud's JSON answers at a path */
 // The Cost and time actions (lane L4-CR4): New feature, Rename, Merge into, Mark done or reopen, and Move to feature. Each asks for a confirm, sends one change that Cloud passes to Rovara Code, shows
 // a refusal in Cloud's fixed words and reads again. A button is drawn only where Cloud said the person may change features and there is something it can do.
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -18,6 +18,7 @@ import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
+beforeEach(() => localStorage.clear());
 const me = "a".repeat(64);
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const DAY = 86_400_000;

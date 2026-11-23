@@ -4,8 +4,9 @@ import type { SessionIdentity } from "./session-safety.js";
 // the spec, the build activity and the proof table draw. Nothing here is invented: a field Code did not send is absent, and what the page says about a
 // task is worked out from the workflow's stage and state, the pending decision card and the proof index, in fixed words.
 import { useMemo } from "react";
+import { z } from "zod";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ProofItem, TaskView } from "@agentx/contracts/code-contract-v0";
+import type { ProofItem, TaskView, WorkflowStage } from "@agentx/contracts/code-contract-v0";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";
@@ -38,11 +39,16 @@ const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filt
 const records = (value: unknown): Array<Record<string, unknown>> => (Array.isArray(value) ? value.filter(isRecord) : []);
 
 export interface ReadTask {
+ /** A failed advisory plan check, kept beside the plan rather than used as the task headline. */
+ advisoryPlanFailure?: string | undefined;
  /** L4-U5: the one evidence line when Rovara re-checked the project's setup for this task (Code's fixed words); absent when there was no drift. */
  setupRecheck?: string | undefined;
  money?: TaskMoneyV1 | undefined;
+ startupReason?: "own-machine-starting" | "unknown" | undefined;
+ /** Served pull request tracking says a required check is failing on an open pull request (Code's `mergeTracking`: `ci: "failing"` or named failing checks). Absent when nothing is served. */
+ failedChecks?: true | undefined;
  taskId: string; title: string; project: string; status: TaskView["status"] | undefined;
- workflow: { stage?: string; state?: string; revision?: number; path?: string; outcome?: string; blockReason?: string; round?: number } | undefined;
+ workflow: { stage?: string; state?: string; revision?: number; path?: string; outcome?: string; blockReason?: string; round?: number; /** A custom program or summary without definition/program evidence cannot confirm the built-in stage order. */ programmed?: true } | undefined;
  pullRequests: Array<{ repository?: string; number?: number; url?: string; state?: string }>;
  spentUsd: number | undefined; runLimitUsd: number | undefined; createdAt: string; updatedAt: string;
  /** Whether the task lives in a Slack thread (Code's `shared` on a list row, or a share with a thread on the task view): Code's sentences about "the thread" are said only for such a task (text/task-words.ts). */
@@ -98,6 +104,19 @@ export function openRoundOf(task: Pick<ReadTask, "round" | "workflow" | "status"
 }
 /** Understand waits on the person but the row carries no round to answer (an older Code, or one that would not show it): the task's own page asks them. */
 export const asksOnItsPage = (task: Pick<ReadTask, "round" | "workflow" | "status">): boolean => task.round === undefined && task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "WAITING" && !(task.status !== undefined && ENDED.has(task.status));
+// Read existing Code operation fields without adding a task contract or trusting unknown shapes.
+const operationsReader = z.array(z.object({ kind: z.string(), status: z.string(), workflowMode: z.string().optional() }));
+function advisoryPlanFailure(raw: Record<string, unknown>, state: unknown): string | undefined {
+ const operations = operationsReader.safeParse(raw["operations"]);
+ const failures = operations.success ? operations.data.filter(operation => operation.status === "FAILED" || operation.status === "INTERRUPTED") : [];
+ if (!["FAILED", "RUNNING", "SUCCEEDED"].includes(str(raw["status"]) ?? "") || !["READY", "RUNNING", "WAITING", "BLOCKED"].includes(str(state) ?? "") || failures.length === 0 || !failures.every(operation => operation.kind === "task" && operation.workflowMode === "PLAN_CRITIQUE")) return undefined;
+ const failure = isRecord(raw["failure"]) ? raw["failure"] : undefined;
+ return str(failure?.["message"]) ?? "No reason was provided.";
+}
+/** One tracked pull request whose served checks are failing: still open, and CI reads "failing" or names failing checks. */
+export function trackedCheckFailing(tracked: Record<string, unknown>): boolean {
+ return tracked["state"] === "open" && (tracked["ci"] === "failing" || (Array.isArray(tracked["failingChecks"]) && tracked["failingChecks"].length > 0));
+}
 export function readTask(raw: unknown): ReadTask | undefined {
  if (!isRecord(raw)) return undefined;
  const taskId = str(raw["taskId"]), title = str(raw["title"]), project = str(raw["project"]), updatedAt = str(raw["updatedAt"]);
@@ -111,8 +130,11 @@ export function readTask(raw: unknown): ReadTask | undefined {
   hasThread: bool(raw["shared"]) === true || (isRecord(raw["share"]) && (str(raw["share"]["threadUrl"]) !== undefined || str(raw["share"]["threadTs"]) !== undefined)),
   money: ((money) => money?.taskId === taskId ? money : undefined)(parseTaskMoneyV1(raw["money"])),
   taskId, sessionId: str(raw["sessionId"]), title, project, status: str(raw["status"]) as ReadTask["status"] | undefined,
+  ...opt("advisoryPlanFailure", advisoryPlanFailure(raw, workflow?.["state"])),
+  startupReason: DeveloperTaskViewSchema.shape.startupReason.safeParse(raw["startupReason"]).data,
+  ...(raw["failedChecks"] === true || records(raw["mergeTracking"]).some(trackedCheckFailing) ? { failedChecks: true as const } : {}),
   ...(run === undefined ? {} : { run }),
-  workflow: workflow === undefined ? undefined : { ...opt("stage", str(workflow["stage"])), ...opt("state", str(workflow["state"])), ...opt("revision", num(workflow["revision"])), ...opt("path", str(workflow["path"])), ...opt("outcome", str(workflow["outcome"])), ...opt("blockReason", str(workflow["blockReason"])), ...opt("round", num(workflow["round"])) },
+  workflow: workflow === undefined ? undefined : { ...opt("stage", str(workflow["stage"])), ...opt("state", str(workflow["state"])), ...opt("revision", num(workflow["revision"])), ...opt("path", str(workflow["path"])), ...opt("outcome", str(workflow["outcome"])), ...opt("blockReason", str(workflow["blockReason"])), ...opt("round", num(workflow["round"])), ...(workflow["program"] !== undefined || workflow["programmed"] === true ? { programmed: true as const } : {}) },
   pullRequests: records(raw["pullRequests"]).map(pull => ({ ...opt("repository", str(pull["repository"])), ...opt("number", num(pull["number"])), ...opt("url", str(pull["url"])), ...opt("state", str(pull["state"])) })),
   spentUsd: spent, runLimitUsd: limit, createdAt: str(raw["createdAt"]) ?? updatedAt, updatedAt,
   ...opt("round", readRound(raw["round"])),
@@ -205,6 +227,44 @@ export function readComments(body: unknown): ReadComment[] {
 const STAGE_STEP: Record<string, Step> = {
  UNDERSTAND: "request", PLAN: "spec", PLAN_CRITIQUE: "spec", PLAN_REVIEW: "spec", IMPLEMENT: "build", VERIFY: "proof", REVIEW: "proof", PULL_REQUEST: "pull_request", WAIT_FOR_MERGE: "pull_request", MERGED: "merged",
 };
+/**
+ * The fixed order of the built-in workflow ("agentx-task-to-pr"): Code's WorkflowStageSchema (packages/contracts/src/task-workflow.ts:480-492), the order its engine moves a task through. CLOSED is not in it:
+ * a closed task keeps no record of how far it got. A workflow that carries its own program (a custom recipe) does not follow this order.
+ */
+export const STAGE_ORDER = ["UNDERSTAND", "PLAN", "PLAN_CRITIQUE", "PLAN_REVIEW", "IMPLEMENT", "VERIFY", "REVIEW", "PULL_REQUEST", "WAIT_FOR_MERGE", "MERGED"] as const satisfies readonly WorkflowStage[];
+/**
+ * Whether the served stage and the fixed order prove a section finished: the task has started, its workflow is the built-in one, its served stage is one the order knows, and every stage of the section lies strictly before
+ * that stage. Anything else (never started, unknown or closed stage, a custom program that may skip or reorder stages) proves nothing, so the section reads "Progress not confirmed".
+ */
+function sectionFinished(task: ReadTask, step: Step): boolean {
+ const stage = STAGE_ORDER.findIndex(name => name === task.workflow?.stage);
+ if (stage < 0 || task.status === "STARTING" || task.workflow?.programmed === true) return false;
+ const own = Object.entries(STAGE_STEP).filter(([, owner]) => owner === step).map(([name]) => STAGE_ORDER.findIndex(candidate => candidate === name));
+ return own.length > 0 && own.every(index => index >= 0 && index < stage);
+}
+export type SectionState = "done" | "attention" | "current" | "blocked" | "waiting" | "todo";
+/**
+ * The sections whose served results include a failure: a failing check on an open pull request (the served tracking) or a failed, current proof item. Only served data counts; nothing is guessed.
+ * A section in this set is not finished even when the stage is past it: it needs attention.
+ */
+export function failedSections(task: ReadTask | undefined, proof?: ReadonlyArray<{ verdict: string; stale?: boolean | undefined }>): ReadonlySet<Step> {
+ return new Set<Step>(task?.failedChecks === true || (proof ?? []).some(item => item.verdict === "fail" && item.stale !== true) ? ["proof"] : []);
+}
+/**
+ * Only the served current workflow marks the current section. A section is finished when the served stage is past it in the fixed order and no served result in it failed; with a served failure it
+ * "needs attention" instead. Section position alone proves nothing.
+ */
+export function sectionState(task: ReadTask | undefined, step: Step, failed?: ReadonlySet<Step>): SectionState {
+ if (task === undefined) return "todo";
+ if (STAGE_STEP[task.workflow?.stage ?? ""] !== step) return !sectionFinished(task, step) ? "todo" : failed?.has(step) === true ? "attention" : "done";
+ const state = task.workflow?.state;
+ if (state === "BLOCKED") return "blocked";
+ // A task whose last run was only an advisory plan-check failure follows its open workflow (the header already says Running), so it has a current step like any running task.
+ if (task.status !== "RUNNING" && task.status !== "SUCCEEDED" && !(task.status === "FAILED" && task.advisoryPlanFailure !== undefined)) return "todo";
+ return state === "RUNNING" ? "current" : state === "WAITING" ? "waiting" : "todo";
+}
+/** The sections the served stage proves finished and clean (in the order of STEPS). */
+export function finishedSections(task: ReadTask | undefined, failed?: ReadonlySet<Step>): ReadonlyArray<(typeof STEPS)[number]> { return STEPS.filter(entry => sectionState(task, entry.step, failed) === "done"); }
 const STAGE_WORDS: Record<string, string> = {
  UNDERSTAND: "Reading the request", PLAN: "Writing the spec", PLAN_CRITIQUE: "Checking the spec", PLAN_REVIEW: "Spec ready for review", IMPLEMENT: "Building", VERIFY: "Checking the change", REVIEW: "Reviewing the change", PULL_REQUEST: "Opening the pull request", WAIT_FOR_MERGE: "Pull request open",
 };
@@ -248,7 +308,7 @@ export function workRow(task: ReadTask, decision: ReadDecision | undefined, now:
  if (openRoundOf(task) !== undefined) return { ...base, group: "you", tone: "wait", need: "Answer questions", line: STAGE_WORDS["UNDERSTAND"]!, waitingSince, stale: now.getTime() - Date.parse(waitingSince) >= DAY_MS };
  if (step === "merged" || stage === "MERGED" || task.workflow?.outcome === "MERGED" || task.outcome === "MERGED") return { ...base, ...none, group: "done", tone: "ok", line: "Merged" };
  if (task.status === "CLOSED" || task.status === "CANCELLED") return { ...base, ...none, group: "done", tone: "idle", line: task.status === "CLOSED" ? "Closed" : "Stopped" };
- if (task.status === "FAILED" || task.status === "INTERRUPTED" || state === "BLOCKED") {
+ if ((task.status === "FAILED" && task.advisoryPlanFailure === undefined) || task.status === "INTERRUPTED" || state === "BLOCKED") {
   const waited = now.getTime() - Date.parse(waitingSince);
   // Stopped for a week with nobody acting on it: it no longer asks for the person's attention. "Stopped earlier" says how long, and Close or Continue are on its page.
   if (waited >= STOPPED_TO_EARLIER_DAYS * DAY_MS) return { ...base, ...none, group: "stopped", tone: "bad", line: "Stopped " + ageLabel(waitingSince, now) + " ago" };
@@ -259,8 +319,8 @@ export function workRow(task: ReadTask, decision: ReadDecision | undefined, now:
  // A task whose own view the list could not read may be waiting between steps: it is not called finished.
  if (task.workflow === undefined && task.status === "SUCCEEDED" && task.detailUnread === true) return { ...base, ...none, group: "run", tone: "idle", line: "Open it to see its step" };
  if (state === "COMPLETE" || (task.workflow === undefined && task.status === "SUCCEEDED")) return { ...base, ...none, group: "done", tone: "ok", line: "Finished" };
- if (task.status === "STARTING") return { ...base, ...none, group: "run", tone: "idle", line: "In the queue" };
- return { ...base, ...none, group: "run", tone: isOpen(task) || task.status === "RUNNING" ? "run" : "idle", line: stage === undefined ? "Working" : STAGE_WORDS[stage] ?? "Working" };
+ if (task.status === "STARTING") return { ...base, ...none, group: "run", tone: "idle", line: task.startupReason === "own-machine-starting" ? "Starting a machine for this task (about 3 minutes)" : "Starting" };
+ return { ...base, ...none, group: "run", tone: isOpen(task) || task.status === "RUNNING" || task.advisoryPlanFailure !== undefined ? "run" : "idle", line: stage === undefined ? "Working" : STAGE_WORDS[stage] ?? "Working" };
 }
 /** Rows in the order the list shows them: "Needs you" puts anything waiting a day or more first, then the quickest decision (its estimate in minutes; none last), then the newest. */
 export function sortRows(rows: readonly WorkRow[]): WorkRow[] {

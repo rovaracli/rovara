@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 // Member removal (v1.1), task 5: the People screen's "Remove from company" action. A preview first (who takes over, what moves, what ends, what is left to reassign), one confirm
 // that sends the removal with a request id, and a retry that reuses that id so a repeat can never remove or hand over twice.
 import { afterEach, expect, it, vi } from "vitest";
@@ -159,4 +160,11 @@ it("DEC 254zzz101: lists a removed person's stuck hand-over and finishes it to t
   expect((finishes[1]?.body as { requestId: string }).requestId).toBe((finishes[0]?.body as { requestId: string }).requestId);
   await waitFor(() => expect(screen.queryByRole("heading", { name: "Hand-overs to finish" })).toBeNull());
  } finally { f.close(); }
+});
+
+it("renders a pending hand-over removal date in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount();f.state.pending = [{ developerId: "e".repeat(64), name: "Rae", removalId: "00000000-0000-4000-8000-0000000000aa", startedAt: VIEWER_INSTANT }];
+  try { await screen.findByRole("heading", { name: "Hand-overs to finish" });expect(screen.getByText(`(removed ${expected.numeric})`)).toBeTruthy(); } finally { f.close(); }
+ });
 });

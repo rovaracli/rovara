@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 // B7: the Product AI keys page in the Hybrid 1 admin area. The key is write-only (sent once, never shown, never in the page after), every change is sent at
 // once (no step-up since owner DEC 254zzz73), writes carry a request id and the revision read, and "not connected yet" when Cloud has no product AI settings.
 import { beforeEach, describe, expect, it } from "vitest";
@@ -6,7 +7,8 @@ import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
-import { appRoutes } from "../../packages/ui/src/routes.js";
+// LEGACY HARNESS (WIRING-1B): this pinned test drives the screen that used to be mounted at /app/admin/{money/report,ai-spending,product-ai}; see support/legacy-admin-routes.ts.
+import { appRoutes } from "./support/legacy-admin-routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
@@ -121,5 +123,12 @@ describe("product AI keys page", () => {
  it("says not connected yet when Cloud has no product AI settings", async () => {
   const f = mount("/app/admin/product-ai", () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } }));
   try { await open(); expect(await screen.findByTestId("not-connected")).toBeTruthy(); } finally { f.close(); }
+ });
+});
+
+it("renders the product key's update time in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount("/app/admin/product-ai?project=web", () => ({ status: 200, body: { ...view(true), key: { connected: true, updatedAt: Date.parse(VIEWER_INSTANT) } } }));
+  try { expect(await screen.findByText(`last changed ${expected.short}`, { exact: false })).toBeTruthy(); } finally { f.close(); }
  });
 });

@@ -1,3 +1,4 @@
+import { viewerTime } from "../../../design/viewer-time.js";
 import { useEffect, useMemo, type ReactNode } from "react";
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useAppHost } from "../../../host.js";
@@ -32,14 +33,14 @@ export function ReadSection<T>({ read, label, children, localControls = false }:
  {read.isPending ? <Skeleton label={"Loading " + label.toLowerCase()} /> : <>
  {notHere && <p role="status">{NOT_ON_THIS_ROVARA}</p>}
  {read.isError && !stale && !notHere && <><p role="alert">{read.error instanceof ApiError && read.error.status === 403 ? "You don't have permission to view this information." : isAccessEnded(read.error) || (read.error instanceof ApiError && read.error.code === "INVALID_RESPONSE") ? "This information is unavailable. Reload or try again." : "Couldn't load this information. Try again."}</p><Button disabled={read.isFetching} onClick={() => { void read.refetch(); }}>Retry {label.toLowerCase()}</Button></>}
- {stale && <><p className="rv-muted" role="status">Updated {new Date(staleSince).toLocaleString("en-US", { timeZone: "UTC" })} UTC · Reconnecting</p><Button disabled={read.isFetching} onClick={() => { void read.refetch(); }}>Retry {label.toLowerCase()}</Button></>}
+ {stale && <><p className="rv-muted" role="status">Updated {viewerTime(new Date(staleSince))} · Reconnecting</p><Button disabled={read.isFetching} onClick={() => { void read.refetch(); }}>Retry {label.toLowerCase()}</Button></>}
  {visible && <fieldset disabled={stale && !localControls} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}
   onClickCapture={event => { if (stale && !localControls) { event.preventDefault();event.stopPropagation(); } }}
   onSubmitCapture={event => { if (stale && !localControls) { event.preventDefault();event.stopPropagation(); } }}>
   {children(data!)}
  </fieldset>}
- {visible && !stale && <p className="rv-muted">Read at {new Date(read.dataUpdatedAt).toLocaleString("en-US", { timeZone: "UTC" })} UTC. This is a stored snapshot.</p>}
+ {visible && !stale && <p className="rv-muted">Read at {viewerTime(new Date(read.dataUpdatedAt))}. This is a stored snapshot.</p>}
  </>}
  </section>;
 }
-export function checkedTime(value: string | undefined) { if (value === undefined) return "Unavailable";const time = new Date(value);return Number.isFinite(time.getTime()) ? time.toLocaleString("en-US", { timeZone: "UTC" }) + " UTC" : "Unavailable"; }
+export function checkedTime(value: string | undefined) { if (value === undefined) return "Unavailable";const time = new Date(value);return Number.isFinite(time.getTime()) ? viewerTime(time) : "Unavailable"; }

@@ -86,7 +86,7 @@ describe("code contract v0 tables", () => {
     // Plus "Knowledge stays in Rovara" and a project's local coding tools setting (L4-JA7): read and set each, as the person: 4 rows (the laptop-only GET row for the project becomes the served one).
     // Plus the wiki's "questions the wiki could not answer" and acknowledging a note whose file changed (journey audit B17), passed to Code's own routes as the person: 2 rows.
     // Plus Rovara skills (L4-JA): the list, one skill with its text, edit, approve and retire, each passed to Code's own route as the person: 5 rows.
-    expect(counts.appCloudServerToday).toBe(198);
+    expect(counts.appCloudServerToday).toBe(199);
   });
 
   it("says no route is served from the laptop core: the seven whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
@@ -171,4 +171,9 @@ describe("code contract v0 tables", () => {
     expect(Object.keys(TICKET_UPDATE_LEVEL_WORDS)).toEqual(TICKET_UPDATE_LEVELS);
     expect(TicketStatusNameSchema.safeParse("project-1").success).toBe(true);
   });
+});
+
+it("records the task Ask history proxy alongside project Answers", () => {
+ const row = APP_ROUTES.find(route => route.method === "GET" && route.path === "/v1/app/projects/{p}/tasks/{t}/answers");
+ expect(row).toMatchObject({ cloudServerToday: true, source: "answers" });
 });

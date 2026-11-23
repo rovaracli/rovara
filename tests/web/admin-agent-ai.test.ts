@@ -13,6 +13,7 @@ import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { readAgentAi } from "../../packages/ui/src/api/admin-agent-ai.js";
 import { Endpoint, parseEndpointModels } from "../../packages/ui/src/screens/admin/agent-ai/AgentAiScreen.js";
 import { visibleAdminGroups } from "../../packages/ui/src/screens/admin/admin-nav.js";
+import { ProjectScopeContext } from "../../packages/ui/src/screens/admin/admin-context.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
@@ -30,7 +31,7 @@ function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<A
  const f = fakeHost(async r => (r.path === "/v1/app/nav" ? { status: 200, body: nav } : r.path === "/v1/app/me" ? { status: 200, body: identity } : respond(r)));
  const query = createQueryClient(); query.setQueryData(["nav"], nav); f.storage.set("rovara.theme", "light");
  for (const [key, value] of seeded) f.storage.set(key, value);
- const router = createMemoryRouter([{ path, element: h(Endpoint, { settings: readAgentAi(endpointSettings), reload: () => undefined }) }], { initialEntries: [path] });
+ const router = createMemoryRouter([{ path, element: h(ProjectScopeContext.Provider, { value: { orgId: identity.org.orgId, developerId: me, company: "Acme", role: "owner", checking: false } }, h(Endpoint, { settings: readAgentAi(endpointSettings), reload: () => undefined })) }], { initialEntries: [path] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  return { ...f, ...view, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
@@ -61,7 +62,7 @@ describe("AI for your agents page", () => {
   const sent: ApiRequest[] = [];
   const listed = { ...view(null, 0), choices: [...view(null, 0).choices, { source: "custom_endpoint", available: false }], endpointConnected: false, keysRevision: 7 };
   endpointSettings = listed;
-  const f = mount("/app/admin/agent-ai", (r) => { if (r.method === "PUT") sent.push(r); return { status: 200, body: listed }; });
+  const f = mount("/app/admin/agent-ai", (r) => { if (r.method === "PUT") sent.push(r); return { status: 200, body: { ...listed, keysRevision: sent.length > 0 ? 8 : 7 } }; });
   try {
    fireEvent.change(screen.getByLabelText("Address (https, port 443)"), { target: { value: "https://llm.example.com/v1" } });
    fireEvent.change(screen.getByLabelText("Key"), { target: { value: FAKE_ENDPOINT_KEY } });

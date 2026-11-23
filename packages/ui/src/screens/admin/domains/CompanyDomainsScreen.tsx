@@ -1,3 +1,4 @@
+import { viewerTime } from "../../../design/viewer-time.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../../host.js";
@@ -19,7 +20,7 @@ const RESULT_WORDS: Readonly<Record<string, string>> = {
  held: "Your record was found, but another company currently holds this domain. It moves to you only after their record has been gone for 3 days and yours has stayed the only one in DNS for at least an hour between two checks.",
  unavailable: "The record could not be looked up just now. This does not count against a verified domain. Check again later.",
 };
-const day = (value: string) => new Date(value).toLocaleDateString("en-US", { timeZone: "UTC", year: "numeric", month: "short", day: "numeric" }) + " UTC";
+const day = (value: string) => viewerTime(new Date(value), { year: "numeric", month: "short", day: "numeric" });
 const problem = (error: unknown): { message: string } => error instanceof ApiError ? { message: error.message } : { message: "Rovara couldn't complete this. Try again shortly." };
 
 export function CompanyDomainsScreen() {

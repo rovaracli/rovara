@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 import { it, expect, vi } from "vitest";
 import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -58,4 +59,11 @@ it("spends invite read quota only on deliberate refresh or page changes rather t
 });
 for (const healthy of [false, true]) it(`shows explicit incomplete results with ${healthy ? "healthy rows" : "no usable rows"}`, async () => {
  const f = mount({ respond: async () => ({ status: 200, body: { ...page, coverage: "indexed_only_partial", invites: healthy ? [entry] : [], unavailableCount: 1 } }) });await screen.findByText(/1 invite entry could not be checked/);expect(screen.queryByRole("table") !== null).toBe(healthy);if (!healthy) { expect(screen.getByText("No usable invites on this page.")).toBeTruthy();expect(screen.queryByText("No pending invites on this page.")).toBeNull(); }expect(screen.queryByRole("button", { name: /create|revoke/ })).toBeNull();f.close();
+});
+
+it("renders invite creation, expiry and check times in both viewer zones, keeping ISO attributes", async () => {
+ await inViewerZones(async expected => {
+  const f = mount({ respond: async () => ({ status: 200, body: { ...page, checkedAt: VIEWER_INSTANT, invites: [{ ...entry, createdAt: VIEWER_INSTANT, expiresAt: VIEWER_INSTANT }] } }) });
+  try { await screen.findByText("***@example.test");const times = [...f.container.querySelectorAll("time")];expect(times).toHaveLength(3);for (const time of times) { expect(time.dateTime).toBe(VIEWER_INSTANT);expect(time.textContent).toBe(expected.timestamp); } } finally { f.close(); }
+ });
 });

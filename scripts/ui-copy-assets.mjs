@@ -45,6 +45,8 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  "screens/setup/wiki/wiki-setup.css",
  // Feature A3: the Cost and time pages.
  "screens/admin/report/report.css",
+ // WIRING-1B: the rebuilt company money / AI pages (the report, features, AI and sources, Product AI).
+ "screens/company-money-ai-read/company-money-ai-read.css",
  // Lead 4 J3: the Ask box and its answer.
  "screens/answers/answers.css",
  // Understand's questions and their answer form: the session page, the Work list and Home.

@@ -1271,6 +1271,7 @@ GET /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 PUT /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 GET /v1/app/projects/{p}/ci-eval-check | k | later | | eval-check | T
 PUT /v1/app/projects/{p}/ci-eval-check | k | later | | eval-check | T
+GET /v1/app/projects/{p}/tasks/{t}/answers | k | later | | answers | T
 POST /v1/app/projects/{p}/answers | k | later | | answers | T
 POST /v1/app/projects/{p}/answers/{a}/not-right | k | later | | answers | T
 GET /v1/app/company/system-runs | k | later | | wiki-setup | T

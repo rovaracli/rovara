@@ -1,0 +1,203 @@
+/* Company money and AI read pages. Structure copied from the approved boards (cards, row lists, tables, context tabs), built on the design system
+   (PageHeader, DataTable, StatusChip, OutcomeNotConfirmed). Tokens only; no shared design-system code is changed. */
+.rv-company-money-ai-read { min-width: 0; width: 100%; max-width: var(--rv-reading-width); }
+.rv-company-money-ai-read > div { display: grid; gap: var(--rv-space-5); min-width: 0; }
+.rv-company-money-ai-read h1 { font-size: var(--rv-font-xxl); line-height: 1.2; font-weight: 600; letter-spacing: normal; }
+.rv-company-money-ai-read .rv-page-header { margin: 0; }
+.rv-company-money-ai-read .rv-page-header .rv-page-meta { margin-top: var(--rv-space-3); font-size: var(--rv-font-md); }
+.rv-company-money-ai-read .rv-page-header p { margin-top: var(--rv-space-3); color: var(--rv-text-muted); font-size: var(--rv-font-md); }
+.rv-company-money-ai-read .rv-page-breadcrumbs li:last-child { color: var(--rv-text-muted); }
+.rv-company-money-ai-read .rv-page-breadcrumbs a { color: var(--rv-text-muted); text-decoration: underline; text-underline-offset: 2px; }
+.rv-company-money-ai-read h2 { margin: 0; font-size: var(--rv-font-xl); line-height: 1.35; font-weight: 600; }
+.rv-company-money-ai-read p { margin: 0; }
+.rv-company-money-ai-read a { color: var(--rv-text); text-underline-offset: 3px; }
+/* Money context tabs: the page's siblings, one row under the title. */
+.rv-company-money-ai-read .g2-context-tabs { display: flex; gap: var(--rv-space-5); border-bottom: 1px solid var(--rv-border); padding-bottom: var(--rv-space-3); color: var(--rv-text-muted); overflow-x: auto; }
+.rv-company-money-ai-read .g2-ctab { appearance: none; background: none; border: 0; padding: 0; font: inherit; font-size: var(--rv-font-md); color: var(--rv-text-muted); text-decoration: none; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; line-height: 1.4; min-height: var(--rv-control-size); }
+.rv-company-money-ai-read .g2-ctab[aria-pressed=true] { color: var(--rv-text); font-weight: 600; text-decoration: underline; text-underline-offset: 15px; }
+/* Sections and cards. */
+.rv-company-money-ai-read .g2-sec { display: grid; gap: var(--rv-space-3); min-width: 0; }
+.rv-company-money-ai-read .g2-sec-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--rv-space-2) var(--rv-space-4); }
+.rv-company-money-ai-read .g2-sec-right { order: 1; margin-inline-start: auto; font-size: var(--rv-font-sm); color: var(--rv-text-muted); }
+/* A section's own actions (New feature, Change order, Change a model) sit at the right end of its header; an open Filter drops to its own row. */
+.rv-company-money-ai-read .g2-sec-actions { order: 2; display: flex; flex-wrap: wrap; gap: var(--rv-space-2); }
+.rv-company-money-ai-read .g2-sec-head > h2 + .g2-sec-actions { margin-inline-start: auto; }
+.rv-company-money-ai-read .g2-sec-right:has(details[open]) { order: 3; flex-basis: 100%; margin-inline-start: 0; }
+.rv-company-money-ai-read .g2-sub { font-size: var(--rv-font-sm); color: var(--rv-text-muted); }
+.rv-company-money-ai-read .g2-card { display: grid; gap: var(--rv-space-3); min-width: 0; padding: var(--rv-space-5) var(--rv-space-5); border: 1px solid var(--rv-border); border-radius: var(--rv-radius-md); background: var(--rv-bg-raised); }
+.rv-company-money-ai-read .g2-card h2 { font-size: var(--rv-font-lg); }
+.rv-company-money-ai-read .g2-eyebrow { color: var(--rv-text-muted); font-size: var(--rv-font-sm); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.rv-company-money-ai-read .g2-grey { display: grid; gap: var(--rv-space-2); padding: var(--rv-space-4) var(--rv-space-5); border-radius: var(--rv-radius-md); background: var(--rv-bg-sunken); }
+.rv-company-money-ai-read .g2-grey h2 { font-size: var(--rv-font-md); }
+.rv-company-money-ai-read .g2-grey p { color: var(--rv-text-muted); line-height: 1.6; }
+.rv-company-money-ai-read .g2-lede { color: var(--rv-text-muted); font-size: var(--rv-font-lg); line-height: 1.6; max-width: 720px; }
+.rv-company-money-ai-read .g2-note, .rv-company-money-ai-read .g2-notes p { font-size: var(--rv-font-sm); color: var(--rv-text-muted); line-height: 1.55; }
+.rv-company-money-ai-read .g2-notes { display: grid; gap: var(--rv-space-1); }
+.rv-company-money-ai-read .g2-held { padding-block: var(--rv-space-2); }
+.rv-company-money-ai-read .g2-held-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--rv-space-2) var(--rv-space-3); }
+.rv-company-money-ai-read .g2-inline { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--rv-space-2); }
+.rv-company-money-ai-read .g2-kv { display: grid; gap: var(--rv-space-2); margin: 0; }
+.rv-company-money-ai-read .g2-kv > div { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: var(--rv-space-4); align-items: baseline; }
+.rv-company-money-ai-read .g2-kv dt { color: var(--rv-text-muted); }
+.rv-company-money-ai-read .g2-kv dd { margin: 0; overflow-wrap: anywhere; }
+/* The error block is the 4e outcome block; on a read page it takes the error outline and icon colour. */
+.rv-company-money-ai-read .g2-read-state .rv-outcome { border-color: var(--rv-status-failed); }
+.rv-company-money-ai-read .g2-read-state .rv-outcome .rv-outcome-header { background: var(--rv-bg-raised); }
+.rv-company-money-ai-read .g2-read-state .rv-outcome-icon { color: var(--rv-status-failed); }
+/* Filter: one quiet disclosure. The boards show no filter bar. */
+.rv-company-money-ai-read .g2-filter summary { cursor: pointer; font-size: var(--rv-font-sm); color: var(--rv-text-muted); font-weight: 600; list-style: none; }
+.rv-company-money-ai-read .g2-filter summary::-webkit-details-marker { display: none; }
+.rv-company-money-ai-read .g2-filter summary span { font-weight: 400; }
+.rv-company-money-ai-read .g2-filter[open] summary { margin-bottom: var(--rv-space-3); }
+.rv-company-money-ai-read .g2-filters { display: flex; flex-wrap: wrap; gap: var(--rv-space-3) var(--rv-space-4); }
+.rv-company-money-ai-read .g2-filters label { display: grid; gap: var(--rv-space-1); color: var(--rv-text-muted); font-size: var(--rv-font-sm); font-weight: 600; min-width: 0; }
+.rv-company-money-ai-read .g2-filters .rv-input { width: auto; min-width: 128px; font-weight: 400; color: var(--rv-text); }
+/* Group switch: quiet pills. */
+.rv-company-money-ai-read .g2-pills { display: flex; flex-wrap: wrap; gap: var(--rv-space-2); }
+.rv-company-money-ai-read .g2-pills button { appearance: none; font: inherit; font-size: var(--rv-font-sm); font-weight: 600; padding: var(--rv-space-1) var(--rv-space-3); border: 1px solid var(--rv-border-strong); border-radius: var(--rv-radius-lg); background: var(--rv-bg-raised); color: var(--rv-text-muted); cursor: pointer; }
+.rv-company-money-ai-read .g2-pills button[aria-selected=true] { background: var(--rv-bg-sunken); color: var(--rv-text); border-color: var(--rv-text); }
+/* Row lists: one bordered list, a row each. */
+.rv-company-money-ai-read .g2-rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--rv-border); border-radius: var(--rv-radius-md); overflow: hidden; background: var(--rv-bg-raised); }
+.rv-company-money-ai-read .g2-row { display: flex; align-items: center; gap: var(--rv-space-4); min-height: 56px; padding: var(--rv-space-3) var(--rv-space-4); }
+.rv-company-money-ai-read .g2-row + .g2-row { border-top: 1px solid var(--rv-border); }
+.rv-company-money-ai-read .g2-row[aria-current] { background: var(--rv-bg-sunken); box-shadow: inset var(--rv-space-1) 0 var(--rv-text); }
+.rv-company-money-ai-read .g2-copy { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: var(--rv-space-1); }
+.rv-company-money-ai-read .g2-ttl { display: flex; flex-wrap: wrap; align-items: center; gap: var(--rv-space-2) var(--rv-space-3); }
+.rv-company-money-ai-read .g2-ttl strong { font-size: calc(var(--rv-font-md) + 1px); font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.rv-company-money-ai-read .g2-rows[data-big] .g2-ttl strong { font-size: var(--rv-font-lg); }
+.rv-company-money-ai-read .g2-feature h2 { font-size: var(--rv-space-5); line-height: 1.25; }
+.rv-company-money-ai-read .g2-ttl a { text-decoration: none; }
+.rv-company-money-ai-read .g2-ttl a:hover { text-decoration: underline; }
+.rv-company-money-ai-read .g2-meta { display: flex; flex-direction: column; gap: var(--rv-space-1); font-size: var(--rv-font-md); color: var(--rv-text-muted); line-height: 1.5; overflow-wrap: anywhere; }
+.rv-company-money-ai-read .g2-meta .g2-val { color: var(--rv-text); }
+.rv-company-money-ai-read .g2-end { flex: none; margin-inline-start: var(--rv-space-3); font-size: var(--rv-font-md); color: var(--rv-text-muted); white-space: nowrap; }
+.rv-company-money-ai-read .g2-num { display: inline-grid; place-items: center; flex: none; width: 24px; height: 24px; border: 1px solid var(--rv-border-strong); border-radius: var(--rv-radius-lg); font-size: var(--rv-font-sm); font-weight: 600; color: var(--rv-text); background: var(--rv-bg-sunken); }
+/* Tables: the board look on the shared DataTable. */
+.rv-company-money-ai-read .rv-table-v2-wrap { max-width: none; }
+.rv-company-money-ai-read .rv-table-v2 caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.rv-company-money-ai-read .rv-table-v2 th { text-transform: none; color: var(--rv-text); font-size: var(--rv-font-md); font-weight: 600; background: var(--rv-bg-sunken); border-bottom: 1px solid var(--rv-border); }
+.rv-company-money-ai-read .rv-table-v2 td { font-variant-numeric: tabular-nums; white-space: normal; overflow-wrap: normal; border-bottom: 1px solid var(--rv-border); }
+.rv-company-money-ai-read .rv-table-v2 tbody tr:last-child td { border-bottom: 0; }
+.rv-company-money-ai-read .rv-table-v2 td:first-child a { text-decoration: none; }
+.rv-company-money-ai-read .rv-table-v2 td:first-child a:hover { text-decoration: underline; }
+.rv-company-money-ai-read .rv-table-v2 td:first-child strong { font-size: var(--rv-font-md); }
+.rv-company-money-ai-read .rv-table-v2 td small { display: block; color: var(--rv-text-muted); font-size: var(--rv-font-sm); font-weight: 400; }
+.rv-company-money-ai-read .rv-table-v2 td:first-child a strong { font-weight: 600; }
+.rv-company-money-ai-read .rv-table-v2 tbody tr:has(.g2-total) { background: var(--rv-bg-sunken); font-weight: 600; }
+.rv-company-money-ai-read .rv-table-v2 .rv-status-chip { white-space: nowrap; }
+.rv-company-money-ai-read .g2-summary, .rv-company-money-ai-read .g2-go { display: none; }
+/* A table inside a card has no second frame. */
+.rv-company-money-ai-read .g2-card .rv-table-v2-wrap { border-radius: var(--rv-radius-md); }
+/* Phone: a table row becomes one summary line with a chevron; rows keep their order. */
+@media (max-width: 639px) {
+ .rv-admin-surface:has(.rv-company-money-ai-read) { padding: var(--rv-space-4); }
+ .rv-company-money-ai-read h2 { font-size: var(--rv-font-lg); }
+ .rv-company-money-ai-read .g2-card { padding: var(--rv-space-4); }
+ .rv-company-money-ai-read .g2-context-tabs { gap: var(--rv-space-4); flex-wrap: nowrap; }
+ .rv-company-money-ai-read .g2-ctab { font-size: var(--rv-font-sm); }
+ .rv-company-money-ai-read .g2-ctab[aria-pressed=true] { text-underline-offset: 8px; }
+ .rv-company-money-ai-read .g2-kv > div { grid-template-columns: 96px minmax(0, 1fr); gap: var(--rv-space-3); }
+ .rv-company-money-ai-read .g2-row { padding: var(--rv-space-3) var(--rv-space-3); gap: var(--rv-space-3); }
+ .rv-company-money-ai-read .g2-row:has(.g2-end) { flex-direction: column; align-items: flex-start; gap: var(--rv-space-1); }
+ .rv-company-money-ai-read .g2-end { margin-inline-start: 0; }
+ .rv-company-money-ai-read .rv-outcome-reference { flex-wrap: nowrap; }
+ .rv-company-money-ai-read .rv-outcome-reference code { min-width: 0; font-size: 10px; white-space: nowrap; overflow-wrap: normal; }
+ .rv-company-money-ai-read .rv-outcome-reference button { flex: none; }
+ .rv-company-money-ai-read .rv-table-v2 thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+ .rv-company-money-ai-read .rv-table-v2, .rv-company-money-ai-read .rv-table-v2 tbody { display: block; }
+ .rv-company-money-ai-read .rv-table-v2 tbody tr { display: block; position: relative; height: auto; padding: var(--rv-space-3) calc(var(--rv-space-5) + var(--rv-space-3)) var(--rv-space-3) var(--rv-space-3); border-bottom: 1px solid var(--rv-border); }
+ .rv-company-money-ai-read .rv-table-v2 tbody tr:last-child { border-bottom: 0; }
+ .rv-company-money-ai-read .rv-table-v2 td { display: none; padding: 0; border: 0; }
+ .rv-company-money-ai-read .rv-table-v2 td:first-child { display: block; font-size: var(--rv-font-md); line-height: 1.4; box-shadow: none; }
+ .rv-company-money-ai-read .rv-table-v2 tbody tr[aria-current="true"] { box-shadow: inset var(--rv-space-1) 0 var(--rv-text); }
+ .rv-company-money-ai-read .rv-table-v2 tbody tr[aria-current="true"] td:first-child { box-shadow: none; }
+ /* Move keeps a visible label on a phone: its cell is the row's last line. */
+ .rv-company-money-ai-read .rv-table-v2 td:has(.g2-move:not(:empty)) { display: block; margin-top: var(--rv-space-2); }
+ .rv-company-money-ai-read .g2-sec-head { align-items: flex-start; }
+ .rv-company-money-ai-read .g2-sec-actions { margin-inline-start: 0; width: 100%; }
+ .rv-company-money-ai-read .g2-card-actions .rv-button, .rv-company-money-ai-read .g2-sec-actions .rv-button { min-width: 0; }
+ .rv-company-money-ai-read .g2-summary { display: block; margin-top: var(--rv-space-1); font-size: var(--rv-font-sm); font-weight: 400; color: var(--rv-text-muted); line-height: 1.7; }
+ .rv-company-money-ai-read .g2-summary .rv-status-chip { margin-inline-end: var(--rv-space-1); }
+ .rv-company-money-ai-read .g2-go { display: block; position: absolute; right: var(--rv-space-3); top: var(--rv-space-3); color: var(--rv-text-muted); font-size: var(--rv-font-xl); line-height: 1; }
+ .rv-company-money-ai-read .rv-table-v2 tbody tr:has(.g2-total) .g2-go { display: none; }
+ .rv-company-money-ai-read .g2-filters label { flex: 1 1 140px; }
+ .rv-company-money-ai-read .g2-filters .rv-input { width: 100%; }
+}
+.rv-company-money-ai-read .g2-info { display: flex; gap: var(--rv-space-3); align-items: flex-start; padding: var(--rv-space-4); border-radius: var(--rv-radius-md); background: var(--rv-bg-sunken); line-height: 1.55; }
+.rv-company-money-ai-read .g2-info .rv-status-chip-wrap { margin-top: 1px; }
+@media (max-width: 639px) { .rv-company-money-ai-read .g2-info { flex-direction: column; } }
+.rv-company-money-ai-read .g2-info p { min-width: 0; }
+
+/* G2's 4e failure marker sits beside the title; keep the shared component's Ref/Copy and retry. */
+.rv-company-money-ai-read .g2-read-error .rv-outcome-icon { display: none; }
+.rv-company-money-ai-read .g2-read-error .rv-outcome-header::before { content: "!"; color: var(--rv-status-failed); font-weight: 600; }
+.rv-company-money-ai-read .g2-read-error .rv-outcome-body .rv-button-primary { margin-top: var(--rv-space-2); }
+.rv-company-money-ai-read .g2-reconnecting { color: var(--rv-text-muted); font-size: var(--rv-font-sm); }
+
+/* A card header: the title block on the left, the card's own actions (Rename / Merge into / Mark done) on the right. */
+.rv-company-money-ai-read .g2-card-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--rv-space-3) var(--rv-space-4); }
+.rv-company-money-ai-read .g2-card-title { display: grid; gap: var(--rv-space-3); flex: 1 1 240px; min-width: 0; }
+.rv-company-money-ai-read .g2-card-actions { display: flex; flex-wrap: wrap; gap: var(--rv-space-2); }
+/* A row's own actions (Replace / Remove / Add a key). */
+.rv-company-money-ai-read .g2-end:has(.rv-button) { display: inline-flex; flex-wrap: wrap; gap: var(--rv-space-2); align-items: center; justify-content: flex-end; white-space: normal; }
+.rv-company-money-ai-read .g2-row-notice { color: var(--rv-text); }
+.rv-company-money-ai-read .g2-row-notice[role=alert] { color: var(--rv-status-failed); }
+
+/* The product key editor: provider and key in one row, the eval budget in its own section of the same card. */
+.rv-company-money-ai-read .g2-editor { gap: var(--rv-space-4); }
+.rv-company-money-ai-read .g2-editor h3 { margin: 0; font-size: var(--rv-font-md); font-weight: 600; }
+.rv-company-money-ai-read .g2-editor-fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--rv-space-3) var(--rv-space-4); }
+.rv-company-money-ai-read .g2-editor-fields > .rv-field { flex: 0 1 330px; min-width: 0; margin: 0; }
+.rv-company-money-ai-read .g2-editor-fields > form { flex: 1 1 340px; display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--rv-space-3); min-width: 0; margin: 0; }
+.rv-company-money-ai-read .g2-editor-fields > form > .rv-field { flex: 1 1 200px; min-width: 0; margin: 0; }
+.rv-company-money-ai-read .g2-editor-fields .rv-field input { min-width: 0; }
+.rv-company-money-ai-read .g2-editor-budget { display: grid; gap: var(--rv-space-3); border-top: 1px solid var(--rv-border); padding-top: var(--rv-space-4); }
+.rv-company-money-ai-read .g2-editor-budget .g2-editor-fields > .rv-field { flex: 1 1 160px; }
+.rv-company-money-ai-read .g2-editor .rv-admin-card { border: 0; padding: 0; background: none; box-shadow: none; display: grid; gap: var(--rv-space-3); }
+.rv-company-money-ai-read .g2-editor .rv-section-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--rv-space-3); }
+.rv-company-money-ai-read .g2-editor .rv-section-head h2 { font-size: var(--rv-font-md); }
+.rv-company-money-ai-read .g2-editor form { display: grid; gap: var(--rv-space-3); }
+.rv-company-money-ai-read .g2-editor .g2-editor-fields > form { display: flex; }
+.rv-company-money-ai-read .g2-move .rv-button { padding-inline: 0; min-height: 0; min-width: 0; justify-content: flex-start; }
+.rv-company-money-ai-read .g2-sec-actions p[id] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.rv-company-money-ai-read .g2-editor, .rv-company-money-ai-read .g2-editor > *, .rv-company-money-ai-read .g2-editor .rv-admin-card > *, .rv-company-money-ai-read .g2-editor .rv-vertex-guide, .rv-company-money-ai-read .g2-editor .rv-vertex-guide > * { min-width: 0; max-width: 100%; }
+.rv-company-money-ai-read .g2-editor .rv-vertex-guide pre { max-width: 100%; }
+.rv-company-money-ai-read .g2-editor .rv-vertex-guide { display: grid; gap: var(--rv-space-3); }
+.rv-company-money-ai-read .g2-editor .rv-vertex-guide ol { margin: 0; padding-inline-start: var(--rv-space-5); display: grid; gap: var(--rv-space-4); }
+.rv-company-money-ai-read .g2-editor .rv-vertex-guide h4 { margin: 0; font-size: var(--rv-font-md); }
+.rv-company-money-ai-read .g2-editor .rv-vertex-guide li, .rv-company-money-ai-read .g2-editor .rv-vertex-guide li > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.rv-company-money-ai-read .g2-editor .rv-vertex-guide pre { overflow-wrap: normal; }
+.rv-company-money-ai-read .g2-editor form, .rv-company-money-ai-read .g2-editor form > *, .rv-company-money-ai-read .g2-editor .rv-field { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.rv-company-money-ai-read .g2-editor .rv-field input, .rv-company-money-ai-read .g2-editor .rv-field select { max-width: 100%; box-sizing: border-box; }
+/* Approved eval spend (the live page's section, drawn in the key editor card): its five fields in a two-column grid. */
+.rv-company-money-ai-read .g2-editor .rv-eval-approval-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--rv-space-3) var(--rv-space-4); }
+.rv-company-money-ai-read .g2-editor .rv-eval-approval-fields > :nth-child(1), .rv-company-money-ai-read .g2-editor .rv-eval-approval-fields > :nth-child(2) { grid-column: 1 / -1; }
+.rv-company-money-ai-read .g2-editor .rv-eval-approval-fields > * { min-width: 0; margin: 0; }
+.rv-company-money-ai-read .g2-editor > .rv-admin-card { border-top: 1px solid var(--rv-border); padding-top: var(--rv-space-4); }
+@media (max-width: 639px) { .rv-company-money-ai-read .g2-editor .rv-eval-approval-fields { grid-template-columns: minmax(0, 1fr); } }
+/* The approval buttons: wrap with one 8px gap between and across rows, and the same room above as Close has. */
+.rv-company-money-ai-read .g2-editor .rv-admin-card > p:has(> .rv-button-with-reason) { display: flex; flex-wrap: wrap; gap: var(--rv-space-2); margin-top: var(--rv-space-2); }
+.rv-company-money-ai-read .g2-editor .rv-eval-approval-fields input[name], .rv-company-money-ai-read .g2-editor .rv-admin-card > p { font-size: var(--rv-font-md); }
+/* WIRING-1 restore: report paging, the Back link, the Project field and the connect dialog. Tokens only. */
+.rv-company-money-ai-read .g2-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--rv-space-2) var(--rv-space-4); margin-block-start: var(--rv-space-3); color: var(--rv-text-muted); font-size: var(--rv-font-sm); }
+.rv-company-money-ai-read .g2-pager-buttons { display: flex; flex-wrap: wrap; gap: var(--rv-space-2); }
+.rv-company-money-ai-read .g2-open-project { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--rv-space-3); max-width: 560px; }
+.rv-company-money-ai-read .g2-open-project .rv-field { flex: 1 1 240px; min-width: 0; margin: 0; }
+.g2-connect { display: grid; gap: var(--rv-space-4); min-width: 0; }
+.g2-connect details, .g2-connect section { min-width: 0; }
+@media (max-width: 639px) { .rv-company-money-ai-read .g2-pager { flex-direction: column; align-items: flex-start; } }
+.g2-connect { margin-block-start: var(--rv-space-4); }
+.g2-connect section > * + * { margin-block-start: var(--rv-space-3); }
+.g2-connect p { margin-block: 0; }
+.g2-connect .rv-button { margin: 0; }
+.rv-company-money-ai-read .g2-move .rv-button.rv-button-quiet { padding-inline: 0; min-height: 0; min-width: 0; justify-content: flex-start; }
+@media (max-width: 639px) {
+ .rv-company-money-ai-read .g2-move .rv-button.rv-button-quiet { padding-block: var(--rv-space-1); }
+ .rv-company-money-ai-read .rv-table-v2 td:has(.g2-move:not(:empty)) { margin-top: 0; }
+ .rv-company-money-ai-read .rv-ai-spend-step > section { padding: var(--rv-space-4) var(--rv-space-3); }
+}
+.rv-company-money-ai-read .rv-ai-spend-step > p:first-child { display: none; } /* the member page's header + lede carry the step's intro */
+.rv-company-money-ai-read .g2-pr { white-space: nowrap; text-decoration: underline; text-underline-offset: var(--rv-space-1); font-weight: 400; }
+.rv-company-money-ai-read .rv-ai-spend-step { margin-block-start: var(--rv-space-5); }
+.rv-company-money-ai-read .g2-lede + .rv-ai-spend-step { margin-block-start: var(--rv-space-4); }
+.rv-company-money-ai-read .rv-page-header + .g2-lede { margin-block-start: var(--rv-space-4); }

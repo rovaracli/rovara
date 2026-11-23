@@ -6,6 +6,8 @@ export const A = {
   ASK_BUTTON: "Ask",
   ASK_HINT: "Rovara answers from the project's wiki and code. It can be wrong. The code is the truth.",
   ASK_TASK: "Ask about this task",
+  ASK_HINT_TASK: "Rovara answers from this task, the project's wiki and code. It can be wrong. The code is the truth.",
+  NO_ANSWER: "No answer",
   WORKING: "Working on an answer",
   SOURCES: "Sources",
   MORE: "All sources and pages read",
@@ -66,3 +68,9 @@ export function headline(answer: AnswerResponse): string | undefined {
   if (answer.outcome === "not_found") return ANSWER_WORDS.notFound;
   return undefined;
 }
+
+/** A retained answer that is Code's fixed "I don't know" sentence (the history carries no outcome field). */
+export const isDontKnow = (text: string): boolean => text.includes(ANSWER_WORDS.notFound);
+
+/** A source's place split after each separator, so a long path wraps at a / . - _ or : and never inside a word. */
+export function breakAfterSeparators(text: string): string[] { return text.split(/(?<=[/.\-_:])/u); }

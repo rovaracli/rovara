@@ -36,6 +36,7 @@ export function useOrgSpendRead() {
  });
 }
 
+// The server reports a UTC billing month and a calendar-date forecast, not viewer-local instants.
 const monthName = (month: string | undefined) => { const at = month === undefined ? Number.NaN : Date.parse(month + "-01T00:00:00Z"); return Number.isNaN(at) ? "this month" : new Date(at).toLocaleString("en-US", { month: "long", timeZone: "UTC" }); };
 const dayName = (iso: string) => new Date(iso).toLocaleDateString("en-US", { day: "numeric", month: "short", timeZone: "UTC" });
 
@@ -75,12 +76,13 @@ export function SpendingSummary({ read }: { read: UseQueryResult<OrgSpendRead> }
  if (s.state === "unknown") return <><GatewayReadinessBanner readiness={readiness} /><AdminSection title="This month"><NotConnected what="This month's spending numbers" /></AdminSection></>;
  return <>
   <GatewayReadinessBanner readiness={readiness} />
+  <p className="rv-muted">UTC billing month</p>
   {s.state === "over" && <Banner tone="danger" title="This month's budget is used up" action={<Link className="rv-button rv-button-secondary" to="/app/admin/ai-spending">Raise the limit</Link>}><p>{s.overUsd > 0 ? <><Money usd={s.overUsd} /> over. </> : null}New tasks wait in the queue. Running tasks finish their current step.</p></Banner>}
-  {s.state === "near" && <Banner tone="warning" title="Close to this month's limit"><p><Money usd={s.remainingUsd ?? 0} /> left of <Money usd={s.limitUsd ?? 0} />.{data.runsOutOn !== undefined ? ` At this pace it runs out on ${dayName(data.runsOutOn)}.` : ""}</p></Banner>}
+  {s.state === "near" && <Banner tone="warning" title="Close to this month's limit"><p><Money usd={s.remainingUsd ?? 0} /> left of <Money usd={s.limitUsd ?? 0} />.{data.runsOutOn !== undefined ? ` At this pace it runs out on ${dayName(data.runsOutOn)} (UTC date).` : ""}</p></Banner>}
   <div className="rv-stats" aria-label={`Spending in ${month}`} role="group">
    <Stat label={`Spent in ${month}`} {...(s.limitUsd === undefined ? {} : { note: <>of <Money usd={s.limitUsd} /></> })}>{s.spentUsd === undefined ? "Unavailable" : <Money usd={s.spentUsd} />}</Stat>
    {s.heldUsd !== undefined && <Stat label="Held for running work" note="Set aside until the work ends">{<Money usd={s.heldUsd} />}</Stat>}
-   <Stat label="Left this month" {...(s.state === "over" ? { tone: "bad" as const } : s.state === "near" ? { tone: "warn" as const } : {})} note={s.limitUsd === undefined ? "No company limit is set" : s.state === "over" ? "Used up" : data.runsOutOn !== undefined ? `Runs out around ${dayName(data.runsOutOn)}` : undefined}>{s.remainingUsd === undefined ? "Unavailable" : s.remainingUsd < 0 ? <>−<Money usd={-s.remainingUsd} /></> : <Money usd={s.remainingUsd} />}</Stat>
+   <Stat label="Left this month" {...(s.state === "over" ? { tone: "bad" as const } : s.state === "near" ? { tone: "warn" as const } : {})} note={s.limitUsd === undefined ? "No company limit is set" : s.state === "over" ? "Used up" : data.runsOutOn !== undefined ? `Runs out around ${dayName(data.runsOutOn)} (UTC date)` : undefined}>{s.remainingUsd === undefined ? "Unavailable" : s.remainingUsd < 0 ? <>−<Money usd={-s.remainingUsd} /></> : <Money usd={s.remainingUsd} />}</Stat>
    {data.costPerMergedChangeUsd !== undefined && <Stat label="Cost per merged change" {...(data.mergedCount === undefined ? {} : { note: `${data.mergedCount} merged` })}><Money usd={data.costPerMergedChangeUsd} /></Stat>}
   </div>
   <p>Not yet confirmed: {data.provisionalMicros === undefined ? "Unavailable" : <Money usd={data.provisionalMicros / 1_000_000} />}</p>

@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 // Connected sign-ins (DEC 254w): the ways to sign in to this account. The first one is how the person first signed in and stays. A second one (Slack or GitHub)
 // is connected by going to that provider and coming back (Cloud's server keeps the verifier and state; the browser only gets the provider's address), and removed
 // with Unlink. Removing one ends every sign-in of the person, so the page says so and offers to sign in again.
@@ -15,7 +16,7 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { AdminSection, NotConnected } from "../admin/parts.js";
 
-const when = (value: string) => new Date(value).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+const when = (value: string) => viewerTime(new Date(value), { year: "numeric", month: "short", day: "numeric" });
 
 export function ConnectedSignIns() {
  const host = useAppHost(), api = createApiClient(host), query = useQueryClient(), [params, setParams] = useSearchParams();

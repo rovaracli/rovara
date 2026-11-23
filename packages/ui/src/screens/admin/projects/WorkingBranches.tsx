@@ -1,3 +1,4 @@
+import { viewerTime } from "../../../design/viewer-time.js";
 import { SaveWorkingBranch } from "./SaveWorkingBranch.js";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
@@ -67,7 +68,7 @@ function BranchPreview({ api, root, context, repo, branch, onInvalid }: {api: Ap
   return <section aria-label="Selected branch inspection"><h4>Selected branch: <VisibleText text={branch} /></h4>{action("Recheck selected branch", preview.isFetching, () => { void preview.refetch(); })}
     {preview.isPending ? <Skeleton label="Checking selected branch" /> : <>
       {preview.isError && <p role="alert">{missing ? "That branch is no longer available. Inspect another branch; no default branch was substituted." : preview.data ? `This branch check is stale. ${problem(preview.error)}` : problem(preview.error)}</p>}
-      {preview.data && !missing && <><p>Commit: <code><VisibleText text={preview.data.commit} /></code></p><p>Checked at <time dateTime={preview.data.checkedAt}>{preview.data.checkedAt}</time> UTC.</p>{preview.isFetching && <p role="status">Rechecking the selected branch; the previous check is shown.</p>}{!preview.isFetching && !preview.isError && <SaveWorkingBranch key={`${preview.data.checkedAt}:${preview.data.commit}`} preview={preview.data} />}</>}
+      {preview.data && !missing && <><p>Commit: <code><VisibleText text={preview.data.commit} /></code></p><p>Checked at <time dateTime={preview.data.checkedAt}>{viewerTime(preview.data.checkedAt)}</time>.</p>{preview.isFetching && <p role="status">Rechecking the selected branch; the previous check is shown.</p>}{!preview.isFetching && !preview.isError && <SaveWorkingBranch key={`${preview.data.checkedAt}:${preview.data.commit}`} preview={preview.data} />}</>}
     </>}</section>;
 }
 function BranchPage({ api, root, context, repo, onInvalid }: {api: Api; root: QueryKey; context: ProjectWorkingBranchContext; repo: Repo; onInvalid: (error: unknown) => void}) {
@@ -86,7 +87,7 @@ function BranchPage({ api, root, context, repo, onInvalid }: {api: Api; root: Qu
     <p>Pages are checked separately and are not a complete branch inventory. Nothing is loaded automatically beyond the page you request.</p>
     {loaded && <>{page.isPending ? <Skeleton label="Loading branch page" /> : fatal(page.error) ? <p role="alert">{problem(page.error)}</p> : <>
       {page.isError && <p role="alert">{page.data ? `This branch page is stale. ${problem(page.error)}` : problem(page.error)}</p>}
-      {page.data && <><p>Page {page.data.page} · {page.data.branches.length} branches on this page. Checked at <time dateTime={page.data.checkedAt}>{page.data.checkedAt}</time> UTC.</p>
+      {page.data && <><p>Page {page.data.page} · {page.data.branches.length} branches on this page. Checked at <time dateTime={page.data.checkedAt}>{viewerTime(page.data.checkedAt)}</time>.</p>
         {page.data.omittedUnsupported && <p>Some branch names are not supported by this chooser.</p>}
         {page.data.branches.length === 0 ? <p>{page.data.mayHaveMore ? "No supported branches on this page. More may be available." : "No branches were returned on this page."}</p> : <DataTable caption="Working branches on this page" rows={page.data.branches} rowKey={branch => branch} columns={[{key:"branch",title:"Branch",render:branch=><code><VisibleText text={branch} /></code>},{key:"inspect",title:"Inspection",render:branch=>action(<WorkingBranchInspectLabel branch={branch} />, false, () => setSelected(branch), blocked)}]} />}
         {page.data.limitReached && <p role="status">Page limit reached. This is not a complete branch inventory.</p>}
@@ -114,7 +115,7 @@ function Inspection({ name, projectRevision }: {name: string; projectRevision: n
   return <div className="rv-admin-branch-inspection" aria-busy={context.isFetching}>
     <p>Inspect a branch, then explicitly review and save its setting. Saving does not change task behavior; task consumers remain unavailable.</p>
     {action("Refresh branch context", context.isFetching, () => { void refresh(); })}
-    {context.isPending ? <Skeleton label="Loading branch context" /> : context.isError || blocked !== undefined ? <p role="alert">{problem(blocked ?? context.error)}</p> : context.data && <><p>Project context checked at <time dateTime={context.data.checkedAt}>{context.data.checkedAt}</time> UTC · Project revision {context.data.expectedProjectRevision}.</p>{!context.isFetching && <Repositories api={api} root={root} context={context.data} onInvalid={onInvalid} />}</>}
+    {context.isPending ? <Skeleton label="Loading branch context" /> : context.isError || blocked !== undefined ? <p role="alert">{problem(blocked ?? context.error)}</p> : context.data && <><p>Project context checked at <time dateTime={context.data.checkedAt}>{viewerTime(context.data.checkedAt)}</time> · Project revision {context.data.expectedProjectRevision}.</p>{!context.isFetching && <Repositories api={api} root={root} context={context.data} onInvalid={onInvalid} />}</>}
   </div>;
 }
 export function WorkingBranches({ name, projectRevision, available }: {name: string; projectRevision: number; available: boolean}) {

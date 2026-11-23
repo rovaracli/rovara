@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 // "Your GitHub account" on Your account (L4-GH): the linked login (or none), Connect (no step-up since owner DEC 254zzz73), GitHub's own address only, Unlink, "not connected yet" while
 // Code serves no such route, and fixed words for what a link return says.
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -134,5 +135,12 @@ describe("Your GitHub account section", () => {
  it("has no accessibility violations", async () => {
   const f = mount("/app/account", r => (r.path === "/v1/app/me/github" ? ok(LINKED) : ok({})));
   try { await screen.findByTestId("github-login"); await expectNoAxeViolations(f.container); } finally { f.close(); }
+ });
+});
+
+it("renders the GitHub connection date in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount("/app/account", r => r.path === "/v1/app/me/github" ? ok({ ...LINKED, linkedAt: VIEWER_INSTANT }) : ok({}));
+  try { await screen.findByText("priya-dev");expect(f.container.textContent).toContain(expected.date); } finally { f.close(); }
  });
 });

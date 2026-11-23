@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -26,16 +27,16 @@ function mount(options: { role?: "owner" | "admin"; revision?: number | false; t
   return { status: 200, body: { invites: state.status === "pending" && me.org.orgId === orgId && me.developer.id === developerId ? [row] : [], coverage: "indexed_only", checkedAt: "2026-10-27T12:00:00Z" } };
  }
  const f = fakeHost(respond);f.host.kind = "web";f.storage.set("rovara.theme", options.theme ?? "light");const query = createQueryClient();query.setQueryData(["nav"], nav);const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/invites"] });const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
- return { ...f, ...view, query, router, me, state, respond, async open() { fireEvent.click(await screen.findByRole("button", { name: "Revoke invite for ***@example.test, created 10/26/2026, 12:00:00 PM UTC" }));await screen.findByRole("dialog", { name: "Revoke invite" });await waitFor(() => expect(screen.getByRole("button", { name: "Confirm revoke" }).hasAttribute("disabled")).toBe(false)); }, close() { view.unmount();router.dispose();query.clear(); } };
+ return { ...f, ...view, query, router, me, state, respond, async open() { fireEvent.click(await screen.findByRole("button", { name: /^Revoke invite for \*\*\*@example\.test, created / }));await screen.findByRole("dialog", { name: "Revoke invite" });await waitFor(() => expect(screen.getByRole("button", { name: "Confirm revoke" }).hasAttribute("disabled")).toBe(false)); }, close() { view.unmount();router.dispose();query.clear(); } };
 }
 for (const role of ["owner", "admin"] as const) it(`lets ${role} review and explicitly revoke, then verifies canonical state`, async () => {
  const f = mount({ role });try { await f.open();expect(screen.getByText("Company: Acme")).toBeTruthy();expect(screen.getByText(/People who already joined keep their access/)).toBeTruthy();expect(f.request.mock.calls.filter(([r]) => r.method === "POST").length).toBe(0);fireEvent.click(screen.getByRole("button", { name: "Confirm revoke" }));await screen.findByText("Invite revoked.");const writes = f.request.mock.calls.filter(([r]) => r.method === "POST");expect(writes.length).toBe(1);expect(writes[0]?.[0].body).toMatchObject({ expectedRevision: 0 });expect(typeof (writes[0]?.[0].body as { requestId?: unknown }).requestId).toBe("string");expect(f.request.mock.calls.filter(([r]) => r.method === "GET" && r.path.endsWith("/" + id)).length).toBe(2);expect(screen.getByRole("dialog")).toBeTruthy();expect(f.container.textContent?.includes(developerId)).toBe(false); }finally { f.close(); }
 });
 it("does not expose a revoke action without an authoritative server revision", async () => {
- const f = mount({ revision: false });try { await screen.findByText("***@example.test");expect(screen.queryByRole("button", { name: "Revoke invite for ***@example.test, created 10/26/2026, 12:00:00 PM UTC" })).toBeNull();expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true); }finally { f.close(); }
+ const f = mount({ revision: false });try { await screen.findByText("***@example.test");expect(screen.queryByRole("button", { name: /^Revoke invite for \*\*\*@example\.test, created / })).toBeNull();expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true); }finally { f.close(); }
 });
 it("checks fresh state before confirmation and refuses a changed revision", async () => {
- const f = mount();try { f.state.revision = 1;fireEvent.click(await screen.findByRole("button", { name: "Revoke invite for ***@example.test, created 10/26/2026, 12:00:00 PM UTC" }));await screen.findByText(/Invite details changed/);expect(screen.getByRole("button", { name: "Confirm revoke" }).hasAttribute("disabled")).toBe(true);expect(f.request.mock.calls.filter(([r]) => r.method === "POST").length).toBe(0); }finally { f.close(); }
+ const f = mount();try { f.state.revision = 1;fireEvent.click(await screen.findByRole("button", { name: /^Revoke invite for \*\*\*@example\.test, created / }));await screen.findByText(/Invite details changed/);expect(screen.getByRole("button", { name: "Confirm revoke" }).hasAttribute("disabled")).toBe(true);expect(f.request.mock.calls.filter(([r]) => r.method === "POST").length).toBe(0); }finally { f.close(); }
 });
 it("keeps a dialog and focused control during identity checks and blocks the write", async () => {
  const f = mount();try { await f.open();const button = screen.getByRole("button", { name: "Confirm revoke" });button.focus();let resolve!: (r: ApiResponse) => void;const pending = new Promise<ApiResponse>(done => { resolve = done; });f.request.mockImplementation(async r => r.path.endsWith("/me") ? pending : f.respond(r));let refresh!: Promise<void>;act(() => { refresh = f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await screen.findAllByText("Checking company access...");expect(document.activeElement).toBe(button);fireEvent.click(button);expect(f.request.mock.calls.filter(([r]) => r.method === "POST").length).toBe(0);await act(async () => { resolve({ status: 200, body: f.me });await refresh; }); }finally { f.close(); }
@@ -96,12 +97,20 @@ it("reports expiry as a terminal refusal without claiming a revocation", async (
 });
 
 it("explains status-read quota without enabling confirmation or automatic retries", async () => {
- const f = mount();try { f.request.mockImplementation(async r => r.method === "GET" && r.path.endsWith("/" + id) ? { status: 429, body: { error: { code: "TOO_MANY_REQUESTS", message: "private fixture" } } } : f.respond(r));fireEvent.click(await screen.findByRole("button", { name: "Revoke invite for ***@example.test, created 10/26/2026, 12:00:00 PM UTC" }));await screen.findByText("Too many invite checks. Wait a minute before checking again.");expect(screen.getByRole("button", { name: "Confirm revoke" }).hasAttribute("disabled")).toBe(true);expect(f.request.mock.calls.filter(([r]) => r.method === "POST").length).toBe(0);expect(f.request.mock.calls.filter(([r]) => r.method === "GET" && r.path.endsWith("/" + id)).length).toBe(1); }finally { f.close(); }
+ const f = mount();try { f.request.mockImplementation(async r => r.method === "GET" && r.path.endsWith("/" + id) ? { status: 429, body: { error: { code: "TOO_MANY_REQUESTS", message: "private fixture" } } } : f.respond(r));fireEvent.click(await screen.findByRole("button", { name: /^Revoke invite for \*\*\*@example\.test, created / }));await screen.findByText("Too many invite checks. Wait a minute before checking again.");expect(screen.getByRole("button", { name: "Confirm revoke" }).hasAttribute("disabled")).toBe(true);expect(f.request.mock.calls.filter(([r]) => r.method === "POST").length).toBe(0);expect(f.request.mock.calls.filter(([r]) => r.method === "GET" && r.path.endsWith("/" + id)).length).toBe(1); }finally { f.close(); }
 });
 
 it("distinguishes a pre-dispatch stale CSRF refusal from revoked company authority", async () => {
  const f = mount();try { await f.open();const identityReads = f.request.mock.calls.filter(([r]) => r.path.endsWith("/me")).length;f.request.mockImplementation(async r => r.method === "POST" ? { status: 403, body: { error: { code: "CSRF_STALE", message: "private fixture" } } } : f.respond(r));fireEvent.click(screen.getByRole("button", { name: "Confirm revoke" }));await screen.findByText("Your sign-in changed in another tab. No change was made. Close, reload and review again.");expect(screen.queryByText(/Your permission to revoke invites has ended/)).toBeNull();expect(f.request.mock.calls.filter(([r]) => r.path.endsWith("/me")).length).toBe(identityReads);expect(f.request.mock.calls.filter(([r]) => r.method === "POST").length).toBe(1); }finally { f.close(); }
 });
 it("names the revoke action by masked destination and visible creation time", async () => {
- const f = mount();try { const button = await screen.findByRole("button", { name: "Revoke invite for ***@example.test, created 10/26/2026, 12:00:00 PM UTC" });expect(button.getAttribute("aria-label")?.includes(id)).toBe(false);fireEvent.click(button);await screen.findByRole("dialog");expect(screen.getByText(id)).toBeTruthy(); }finally { f.close(); }
+ const f = mount();try { const button = await screen.findByRole("button", { name: /^Revoke invite for \*\*\*@example\.test, created / });expect(button.getAttribute("aria-label")?.includes(id)).toBe(false);fireEvent.click(button);await screen.findByRole("dialog");expect(screen.getByText(id)).toBeTruthy(); }finally { f.close(); }
+});
+
+it("renders the revoke review and its check in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount();f.state.expiresAt = VIEWER_INSTANT;f.state.checkedAt = VIEWER_INSTANT;
+  f.request.mockImplementation(async r => r.path.includes("?limit=") ? { status: 200, body: { invites: [{ ...entry, createdAt: VIEWER_INSTANT, expiresAt: VIEWER_INSTANT }], coverage: "indexed_only", checkedAt: VIEWER_INSTANT } } : f.respond(r));
+  try { await f.open();fireEvent.click(screen.getByRole("button", { name: "Confirm revoke" }));await screen.findByText("Invite revoked.");const times = [...screen.getByRole("dialog").querySelectorAll("time")];expect(times).toHaveLength(3);for (const time of times) { expect(time.dateTime).toBe(VIEWER_INSTANT);expect(time.textContent).toBe(expected.timestamp); } } finally { f.close(); }
+ });
 });

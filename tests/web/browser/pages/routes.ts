@@ -10,6 +10,8 @@ export const ROUTES = {
   noCompany: "/app/no-company", createCompany: "/app/create-company", join: "/app/join", firstDay: "/app/onboard",
   /** Your account: name, appearance, connected sign-ins and the GitHub account. */
   account: "/app/account",
+  /** Setup's company "AI and spending" step (the full payer / model / monthly-limit form). */
+  setupAiStep: "/app/onboard?step=ai",
   /** The admin area (Hybrid 1, DEC 223): five groups in a sidebar. */
   admin: {
     home: "/app/admin", people: "/app/admin/people", invites: "/app/admin/invites",

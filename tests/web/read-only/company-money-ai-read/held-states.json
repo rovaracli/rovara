@@ -1,0 +1,8 @@
+[
+ {"section":22,"missing":"Feature state is optional and may be missing or unreadable; project rows establish no feature state.","fallback":"Cannot tell yet for missing feature state; omit project state. No feature set requires the served none flag on feature detail."},
+ {"section":22,"missing":"Working-time split, send-backs, separate refresh timestamps and reconciliation with Spending are not served by the report reader.","fallback":"Cannot tell yet; render only served USD cost floors, coverage and calendar end-to-end time."},
+ {"section":23,"missing":"Read-only group excludes create, rename, merge, close, reopen and task moves, regardless of canChange.","fallback":"Read existing feature and task associations only; all management dialogs excluded."},
+ {"section":29,"missing":"Key suffix, actor, last-test/call, project-use count and verified model access are absent from the inventory read.","fallback":"Cannot tell yet; connected/available and effective step models retain separate meanings."},
+ {"section":30,"missing":"Arbitrary key labels, key suffix, secret, test outcome, usage and monthly product spend are not served.","fallback":"Show project and provider labels with connected/refused metadata only; no key configuration or paid test."},
+ {"section":31,"missing":"Persisted-order change receipts and concurrency/action scenes are outside this read-only group.","fallback":"Show observed order only; empty order is unknown, never a default order; reorder/save excluded."}
+]

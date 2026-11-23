@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 // The fixed words of the project's Environment panel (SH26). Every sentence is from this file; the server sends words, counts and times, never text to show.
 // A newer server may send a word this page does not know (the reader maps it to "unknown"): it gets a plain, true sentence.
 
@@ -32,9 +33,9 @@ export const reasonText = (reason: string): string => REASON[reason] ?? "of a re
 
 export const imageText = (image: { builtAt: string; ageDays: number; status: string }): string => {
  const age = image.ageDays === 0 ? "today" : image.ageDays === 1 ? "1 day ago" : `${String(image.ageDays)} days ago`;
- return `Saved copy built ${age} (${image.builtAt.slice(0, 10)})${image.status === "stale" ? ". A task could not use it, so a new one is due." : "."}`;
+ return `Saved copy built ${age} (${viewerTime(image.builtAt, { year: "numeric", month: "short", day: "numeric" })})${image.status === "stale" ? ". A task could not use it, so a new one is due." : "."}`;
 };
 export const rebuildText = (rebuild: { state: string; reason: string }): string =>
  `${rebuild.state === "running" ? "Building a new saved copy now" : "A new saved copy is waiting to be built"} because ${reasonText(rebuild.reason)}.`;
 export const lastReasonText = (reason: string): string => `The last rebuild was started because ${reasonText(reason)}.`;
-export const failureText = (failure: { at: string; reason: string }): string => `The last build failed on ${failure.at.slice(0, 10)} (${failure.reason.replace(/_/gu, " ")}).`;
+export const failureText = (failure: { at: string; reason: string }): string => `The last build failed on ${viewerTime(failure.at, { year: "numeric", month: "short", day: "numeric" })} (${failure.reason.replace(/_/gu, " ")}).`;

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 // Guided onboarding PR 12b: Company settings, Connections. Each integration shows its account, who connected it and when, and its health; owners and admins see
 // Connect/Reconnect; only an owner sees Disconnect, which confirms first (no step-up since owner DEC 254zzz73), names the projects that block it or lose
 // their channel/team, and links only to GitHub's own settings. Refusals show Cloud's fixed words only.
@@ -130,4 +131,11 @@ describe("Connections", () => {
     expect(screen.getByTestId("linear-connect").textContent).toBe("Reconnect Linear");
     f.close();
   });
+});
+
+it("renders company connection dates in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount({ github: { installations: [{ ...github().installations[0], connectedAt: VIEWER_INSTANT }] } });
+  try { const card = await screen.findByTestId("connections-github-account");expect(card.textContent).toContain(`on ${expected.date}`); } finally { f.close(); }
+ });
 });

@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 import type { ReactNode } from "react";
 import { VisibleText } from "../../design/VisibleText.js";
 import type { MergeTone } from "./merge-facts.js";
@@ -15,7 +16,7 @@ export function MergeChip({ tone, children }: { tone: MergeTone; children: React
 export function Clock({ at }: { at: string }) {
  const taskPage = useTaskPagePolicy() !== undefined, time = Date.parse(at);
  if (!Number.isFinite(time)) return <span>time unavailable</span>;
- return <time dateTime={at} title={new Date(time).toISOString()}>{new Date(time).toLocaleTimeString([], taskPage ? { hour: "2-digit", minute: "2-digit", hour12: false } : { hour: "2-digit", minute: "2-digit" })}</time>;
+ return <time dateTime={at} title={viewerTime(time)}>{new Date(time).toLocaleTimeString([], taskPage ? { hour: "2-digit", minute: "2-digit", hour12: false } : { hour: "2-digit", minute: "2-digit" })}</time>;
 }
 
 /** Label and value pairs, as the boards' "What would be merged" block. */

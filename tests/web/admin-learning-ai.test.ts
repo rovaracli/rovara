@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 // PRODUCT-LEARNING-CONNECT-ROUTE: the Learning AI key page in the Hybrid 1 admin area (company admins). The key is write-only (sent once, never
 // shown, never in the page after), every change is sent at once (no step-up since owner DEC 254zzz73), writes carry the provider, a request id and the revision read;
 // the learning cap and the lessons-paused reasons are shown; "not connected yet" when Cloud has no product AI settings.
@@ -7,7 +8,8 @@ import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
-import { appRoutes } from "../../packages/ui/src/routes.js";
+// LEGACY HARNESS (WIRING-1B): this pinned test drives the screen that used to be mounted at /app/admin/{money/report,ai-spending,product-ai}; see support/legacy-admin-routes.ts.
+import { appRoutes } from "./support/legacy-admin-routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
@@ -32,7 +34,7 @@ function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<A
  return { ...f, ...view, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
 const reasons = [{ reason: "lessons_off", message: "Lessons are switched off for this company, so no learning call is made." }, { reason: "no_provider", message: "Learning calls need the company's own connected AI provider account, and none is usable." }];
-const view = (connected: boolean) => ({ revision: 2, canChange: true, accounts: { anthropic: connected ? { connected: true, updatedAt: Date.UTC(2026, 10, 15) } : { connected: false }, openai: { connected: false }, gemini: { connected: false } }, removed: [], learningCap: { monthlyUsdMicros: 20_000_000, companyMonthlyUsdMicros: 500_000_000 }, lessonsOn: true, pausedNow: connected ? [] : ["no_provider"], pauseReasons: reasons });
+const view = (connected: boolean) => ({ revision: connected ? 3 : 2, canChange: true, accounts: { anthropic: connected ? { connected: true, updatedAt: Date.UTC(2026, 10, 15) } : { connected: false }, openai: { connected: false }, gemini: { connected: false } }, removed: [], learningCap: { monthlyUsdMicros: 20_000_000, companyMonthlyUsdMicros: 500_000_000 }, lessonsOn: true, pausedNow: connected ? [] : ["no_provider"], pauseReasons: reasons });
 
 describe("learning AI key page", () => {
  it("uses the single AI and spending navigation home", () => {
@@ -79,5 +81,12 @@ describe("learning AI key page", () => {
  it("says not connected yet when Cloud has no learning AI settings", async () => {
   const f = mount("/app/admin/learning-ai", () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } }));
   try { expect(await screen.findByTestId("not-connected")).toBeTruthy(); } finally { f.close(); }
+ });
+});
+
+it("renders the learning key's update time in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount("/app/admin/learning-ai", () => ({ status: 200, body: { ...view(true), accounts: { ...view(true).accounts, anthropic: { connected: true, updatedAt: Date.parse(VIEWER_INSTANT) } } } }));
+  try { expect(await screen.findByText(`last changed ${expected.short}`, { exact: false })).toBeTruthy(); } finally { f.close(); }
  });
 });

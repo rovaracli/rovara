@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 // "Connected sign-ins" on Your account (DEC 254w): the person's sign-in methods (the first one marked and never removable), Connect for each linkable method not yet
 // connected, Unlink for a connected one (no step-up in front of either since owner DEC 254zzz73), "not connected yet" while Code serves no such route, and fixed words for what a link
 // return says. Removing one ends every sign-in, and the page says so.
@@ -175,5 +176,12 @@ describe("Connected sign-ins section", () => {
  it("has no accessibility violations", async () => {
   const f = mount("/app/account", r => (r.path === "/v1/app/me/sign-ins" ? ok(both) : ok({})));
   try { await screen.findByRole("list", { name: "Your sign-in methods" }); await expectNoAxeViolations(f.container); } finally { f.close(); }
+ });
+});
+
+it("renders the linked sign-in date in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const f = mount("/app/account", r => r.path === "/v1/app/me/sign-ins" ? ok({ ...both, signIns: both.signIns.map(s => ({ ...s, linkedAt: VIEWER_INSTANT })) }) : ok({}));
+  try { await screen.findByRole("heading", { name: "Connected sign-ins" });await waitFor(() => expect(f.container.textContent).toContain(expected.date)); } finally { f.close(); }
  });
 });

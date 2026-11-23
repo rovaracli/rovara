@@ -1,3 +1,4 @@
+import { viewerTime } from "../../../design/viewer-time.js";
 // The fixed words of the Lessons tab, the Sources tab and the task page's lessons list. Text from a lesson or a source is never put into these sentences as markup: the screens show it as text.
 import type { LESSON_TIER_REASONS } from "@agentx/contracts/web";
 import { ApiError } from "../../../api/errors.js";
@@ -87,7 +88,7 @@ export function agoWords(at: number, now: number): string {
  const minutes = Math.max(0, Math.floor((now - at) / 60_000));
  return minutes < 1 ? "just now" : minutes < 60 ? `${String(minutes)}m ago` : minutes < 1440 ? `${String(Math.floor(minutes / 60))}h ago` : `${String(Math.floor(minutes / 1440))}d ago`;
 }
-export const dateWords = (at: number): string => new Date(at).toISOString().slice(0, 10);
+export const dateWords = (at: number): string => viewerTime(at, { year: "numeric", month: "short", day: "numeric" });
 export function expiryWords(at: number, now: number): string {
  const days = Math.ceil((at - now) / 86_400_000);
  return days <= 0 ? "Expired" : days === 1 ? "Expires in 1 day" : `Expires in ${String(days)} days`;

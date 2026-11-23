@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 import { useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { MemberRemovalStartedReaderSchema, PendingHandOversReaderSchema } from "@agentx/contracts/web";
@@ -37,7 +38,7 @@ function FinishOne({ pending, self, people, onFinished }: { pending: Pending; se
   } finally { setBusy(false); }
  }
  return <li>
-  <VisibleText text={pending.name} /> <span className="rv-muted">(removed {new Date(pending.startedAt).toLocaleDateString("en-US", { timeZone: "UTC" })})</span>
+  <VisibleText text={pending.name} /> <span className="rv-muted">(removed {viewerTime(new Date(pending.startedAt), { year: "numeric", month: "numeric", day: "numeric" })})</span>
   <Select label={`Who takes over from ${pending.name}?`} value={successor} disabled={busy} onValueChange={value => { setSuccessor(value); }} options={[{ value: self.developerId, label: `You (${self.name})` }, ...people.filter(person => person.developerId !== self.developerId && person.developerId !== pending.developerId).map(person => ({ value: person.developerId, label: person.name }))]} />
   <Button variant="primary" busy={busy} onClick={() => { void finish(); }}>Finish hand-over</Button>
   {message && <p role="alert">{message}</p>}

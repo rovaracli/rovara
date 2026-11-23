@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import { inViewerZones, VIEWER_INSTANT } from "./support/viewer-zones.js";
 // L4-B5: the "Decisions and answers" card on the session screen, against a fake host that answers as Cloud's /log route does.
-import { describe, expect, it } from "vitest";
+import { beforeEach, afterEach, vi, describe, expect, it } from "vitest";
 import { screen, fireEvent } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { DECISIONS_SHOWN, DecisionsCard, decisionRows, whenWords } from "../../packages/ui/src/screens/session/DecisionsCard.js";
@@ -31,15 +32,15 @@ describe("Decisions and answers", () => {
     const items = card.querySelectorAll("li");
     expect(items).toHaveLength(2);
     expect(items[0]!.textContent).toContain("Decision: the plan, approved.");
-    expect(items[0]!.textContent).toContain("Nick P., in Slack, Nov 17, 10:03 UTC");
+    expect(items[0]!.textContent).toContain("Nick P., in Slack, Nov 17, 10:03");
     expect(items[1]!.textContent).toContain("Cap value? Answer: 20,000");
-    expect(items[1]!.textContent).toContain("Ana Ruiz, in Linear, Nov 17, 10:02 UTC");
+    expect(items[1]!.textContent).toContain("Ana Ruiz, in Linear, Nov 17, 10:02");
   });
 
   it("says each outcome in words, and an answer whose question is not in the list still reads", () => {
     const rows = decisionRows([approval({ outcome: "changes_requested" }), approval({ key: "approval:b", outcome: "rejected", what: "design" }), approval({ key: "approval:c", what: "requirements" }), answer({ text: "yes" })] as never);
     expect(rows.map(row => row.main)).toEqual(["Decision: the plan, changes requested.", "Decision: the design, rejected.", "Decision: the requirements, approved.", "A question was answered: yes"]);
-    expect(whenWords("2026-01-05T04:07:00.000Z")).toBe("Jan 5, 04:07 UTC");
+    expect(whenWords("2026-01-05T04:07:00.000Z")).toBe("Jan 5, 04:07");
   });
 
   it("shows a short list and the rest one click away", async () => {
@@ -117,4 +118,15 @@ describe("the page's reader of the log", () => {
     expect(read.entries).toHaveLength(1);
     expect(Object.keys(read.entries[0]!).sort()).toEqual(["at", "by", "key", "kind", "questionId", "round", "surface", "text"]);
   });
+});
+
+// Keep the older fixture assertions deterministic; viewer-zone regression cases live alongside them.
+beforeEach(() => { vi.stubEnv("TZ", "Etc/UTC"); });
+afterEach(() => { vi.unstubAllEnvs(); });
+
+it("renders the decisions card's recorded instant in both viewer zones", async () => {
+ await inViewerZones(async expected => {
+  const { ui } = setup(() => ({ status: 200, body: { entries: [approval({ at: VIEWER_INSTANT })] } }));
+  try { const card = await screen.findByTestId("decisions");expect(card.textContent).toContain(expected.clock);expect(card.textContent).not.toContain("UTC"); } finally { ui.unmount(); }
+ });
 });

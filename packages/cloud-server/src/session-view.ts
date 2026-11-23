@@ -5,6 +5,7 @@ import { WORKFLOW_BLOCK_REASONS, isRunLimitBlockReason } from "@agentx/contracts
 // Code's, and the app reads it tolerantly. A plan waiting for the owner's review is the owner's approval. Someone the
 // task is shared with (a reader in Code, spec 067) reads it at `view` and may only watch. Cost starts empty.
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import type { WorkSession } from "./work-sessions.js";
 
 /** The parts of Code's task view (DeveloperTaskView) the session reads; the whole task is passed through as the body. */
@@ -43,8 +44,21 @@ type SessionStatus = "starting" | "running" | "needs_person" | "stopped" | "succ
 const workflowOpen = (task: CodeTask): boolean =>
   task.workflow !== undefined && task.workflow.state !== "COMPLETE" && (task.status === "RUNNING" || task.status === "SUCCEEDED");
 
+// Code already serves these operation facts; older servers may omit workflowMode.
+const operationsReader = z.array(z.object({ kind: z.string(), status: z.string(), workflowMode: z.string().optional() }));
+function advisoryFailureOnly(task: CodeTask): boolean {
+  const operations = operationsReader.safeParse(task["operations"]);
+  const failures = operations.success ? operations.data.filter(operation => operation.status === "FAILED" || operation.status === "INTERRUPTED") : [];
+  return failures.length > 0 && failures.every(operation => operation.kind === "task" && operation.workflowMode === "PLAN_CRITIQUE");
+}
+
 /** Code's task status in Cloud's words: a workflow waiting on a person, or blocked, needs a person; one between its own steps is still running. */
 export function sessionStatus(task: CodeTask): SessionStatus {
+  // An advisory plan check is not the task failing. Require served evidence and an open,
+  // known workflow state; preserve failures from older servers and terminal tasks.
+  if (task.status === "FAILED" && ["READY", "RUNNING", "WAITING", "BLOCKED"].includes(task.workflow?.state ?? "") && advisoryFailureOnly(task)) {
+    return task.workflow!.state === "WAITING" || task.workflow!.state === "BLOCKED" ? "needs_person" : "running";
+  }
   if (workflowOpen(task)) return task.workflow!.state === "WAITING" || task.workflow!.state === "BLOCKED" ? "needs_person" : "running";
   const statuses: Record<CodeTask["status"], SessionStatus> = {
     STARTING: "starting", RUNNING: "running", SUCCEEDED: "succeeded", FAILED: "failed", INTERRUPTED: "failed", CANCELLED: "cancelled", CLOSED: "stopped",
@@ -116,7 +130,8 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
   // What the viewer may do from the page; Code checks each again when it is pressed. Someone it is shared with only watches:
   // Code lets a task's readers read it and nothing else (take-over works only for tasks shared in Slack).
   // Anyone who can read the session can comment on it (Cloud keeps the comments, Rovara-cloud#24).
-  const actions = ["watch", "comment", ...(((owner || extras.coOwner === true) && blockedStepRetry(task) !== undefined) || (owner && blockedReview(task)?.retry !== undefined) ? ["retry"] : []), ...(owner && !ended ? ["stop"] : []), ...(owner && status !== "stopped" ? ["close"] : [])];
+  // A session can remain open between steps; Stop only cancels work that is running now.
+  const actions = ["watch", "comment", ...(((owner || extras.coOwner === true) && blockedStepRetry(task) !== undefined) || (owner && blockedReview(task)?.retry !== undefined) ? ["retry"] : []), ...(owner && status === "running" && (task.workflow === undefined || task.workflow.state === "RUNNING") ? ["stop"] : []), ...(owner && status !== "stopped" ? ["close"] : [])];
   const follow = people ?? { ...followState(session, viewer.developerId), viewingNow: [] };
   return {
     contractVersion: 1,

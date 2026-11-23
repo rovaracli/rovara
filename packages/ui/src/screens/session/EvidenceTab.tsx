@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 import { useContext } from "react";
 import { useQuery, QueryClientContext } from "@tanstack/react-query";
 import { useSetupAgentApi } from "../../api/setup-agent.js";
@@ -116,7 +117,7 @@ function BrowserSection({ evidence, taskId }: { evidence: Evidence; taskId: stri
 }
 function EnvironmentSection({ environment }: { environment: Evidence["environment"] }) {
  return <><h3>Environment</h3><p>{(tierWords[environment.tier] ?? "Test environment") + ", revision " + environment.envRevision + ". Test data: synthetic."}</p>
-  {environment.services.length > 0 && <ul>{environment.services.map(service => <li key={service.name}><VisibleText text={service.name} /><span>{": " + (modeWords[service.mode] ?? "unavailable") + (service.recordedAt ? ", recorded " + service.recordedAt.slice(0, 10) : "") + (service.unrecordedAnswered ? ", " + service.unrecordedAnswered + " unrecorded requests answered" : "")}</span></li>)}</ul>}
+  {environment.services.length > 0 && <ul>{environment.services.map(service => <li key={service.name}><VisibleText text={service.name} /><span>{": " + (modeWords[service.mode] ?? "unavailable") + (service.recordedAt ? ", recorded " + viewerTime(service.recordedAt, { year: "numeric", month: "short", day: "numeric" }) : "") + (service.unrecordedAnswered ? ", " + service.unrecordedAnswered + " unrecorded requests answered" : "")}</span></li>)}</ul>}
   <TaskEvidenceDependencyAccessView environment={environment} />
   {environment.accounts.length > 0 && <p>{"Test accounts: " + environment.accounts.map(account => account.profileId + (account.kind === "run_scoped" ? " (single-use)" : " (registered)")).join(", ")}</p>}</>;
 }

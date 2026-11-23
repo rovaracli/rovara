@@ -1,7 +1,8 @@
 // Lead 4 slice J3 (DEC 254z-amend, 254z-amend2, DEC 173; designs-2026-11-17/wiki-and-just-answer-plan.md sections 1.3 and 3): the web door of the smart Just answer, answered from Rovara Code's answer service
 // (slice J1) and its start-box suggestion (lane pr/l4-answer-web) as the signed-in person, with their own token.
 //
-//   POST /v1/app/projects/{p}/answers         -> Code POST /v1/app/projects/{p}/answers         { requestId, question, threadId?, channel: "web", context? }   (AnswerResponse)
+//   POST /v1/app/projects/{p}/answers         -> Code POST /v1/app/projects/{p}/answers         { requestId, question, threadId?, channel: "web", context?, taskId? }   (AnswerResponse)
+//   GET  /v1/app/projects/{p}/tasks/{taskId}/answers -> Code GET of the same path (the asker only); also proves taskId is served
 //   POST /v1/app/projects/{p}/code/suggest    -> Code POST /v1/app/projects/{p}/code/suggest    { requestId, text }                                             (StartSuggestResponse)
 //
 // Rules:
@@ -59,6 +60,7 @@ export const ANSWERS_ANSWERS = Object.freeze({
 const A = ANSWERS_ANSWERS;
 
 const PROJECT_NAME = /^[a-z][a-z0-9-]{0,62}$/u;
+const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/u;
 const THREAD_ID = /^[A-Za-z0-9_.:-]{1,100}$/u;
 const ANSWER_ID = /^[A-Za-z0-9_-]{4,64}$/u;
@@ -89,7 +91,7 @@ const rec = (value: unknown): Plain => need(plain(value), value as Plain);
 const keysOnly = (value: Plain, allowed: readonly string[]): void => { for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new Unreadable(); };
 
 /** Code's answer object, rebuilt from its known fields only; throws Unreadable on anything off. */
-export function answerObject(value: unknown): Plain {
+export function answerObject(value: unknown, taskId?: string): Plain {
   const v = rec(value);
   keysOnly(v, ["answerId", "threadId", "outcome", "text", "honesty", "unconfirmed", "sources", "wikiPages", "action"]);
   const outcome = need(oneOf(v["outcome"], OUTCOMES), v["outcome"]);
@@ -101,6 +103,11 @@ export function answerObject(value: unknown): Plain {
   const rawSources = need(Array.isArray(v["sources"]) && v["sources"].length <= LIMITS.sources, v["sources"] as unknown[]);
   const sources = rawSources.map((one, index) => {
     const s = rec(one);
+    if (s["kind"] === "task_state") {
+      keysOnly(s, ["n", "kind", "taskId", "quote"]);
+      need(taskId !== undefined && s["taskId"] === taskId, undefined);
+      return { n: need(s["n"] === index + 1, s["n"]), kind: "task_state", taskId, quote: need(prose(s["quote"], 600, 20), s["quote"]) };
+    }
     keysOnly(s, ["n", "repo", "path", "line", "lineEnd", "commit"]);
     const first = need(whole(s["line"], 1, 10_000_000), s["line"]) as number;
     return {
@@ -197,11 +204,48 @@ async function viaCode(context: RouteContext, kind: Kind, path: string, body: Pl
   try { return { status: 200, body: build(got) }; } catch (error) { if (error instanceof Unreadable) { (context.log ?? ((event) => { console.log(JSON.stringify(event)); }))({ event: "cloud.answers_unreadable" });return kind === "suggest" ? A.suggestUnavailable : kind === "notRight" ? A.notRightFailed : A.unreadable; } throw error; }
 }
 
+/** Strict rebuild of Code's published retained history; task sources cannot name another task. */
+function historyObject(value: unknown, taskId: string): Plain {
+  const v = rec(value);
+  keysOnly(v, ["entries", "more"]);
+  const entries = need(Array.isArray(v["entries"]) && v["entries"].length <= 1_000, v["entries"] as unknown[]).map(one => {
+    const e = rec(one);
+    keysOnly(e, ["answerId", "threadId", "question", "answer", "createdAt", "sources"]);
+    const rebuilt = answerObject({ answerId: e["answerId"], threadId: e["threadId"] ?? "history", outcome: "answered", text: e["answer"], sources: e["sources"], wikiPages: [], unconfirmed: [] }, taskId);
+    need(e["answerId"] !== undefined, undefined);
+    const createdAt = need(typeof e["createdAt"] === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(e["createdAt"]) && Number.isFinite(Date.parse(e["createdAt"])) && new Date(e["createdAt"]).toISOString().slice(0, 19) === e["createdAt"].slice(0, 19), e["createdAt"]);
+    return { answerId: rebuilt["answerId"], ...(e["threadId"] === undefined ? {} : { threadId: rebuilt["threadId"] }), question: need(prose(e["question"], 2_000, 0), e["question"]), answer: rebuilt["text"], createdAt, sources: rebuilt["sources"] };
+  });
+  return { entries, more: need(typeof v["more"] === "boolean", v["more"]) };
+}
+/** A successful feature-specific read proves the optional POST field is served. Never cache across callers or installs. */
+async function taskHistory(context: RouteContext, project: string, taskId: string): Promise<RouteAnswer> {
+  try {
+    const got = await context.client.json<unknown>(context.session, projectPath(project, `/tasks/${encodeURIComponent(taskId)}/answers`));
+    return { status: 200, body: historyObject(got, taskId) };
+  } catch (error) {
+    if (error instanceof CodeError) return answersRefusal("answer", error);
+    if (error instanceof Unreadable) return A.unreadable;
+    throw error;
+  }
+}
+
 const projectPath = (project: string, tail: string) => `/v1/app/projects/${encodeURIComponent(project)}${tail}`;
 const bodyOf = (context: RouteContext): Plain | undefined => (plain(context.body) ? context.body : undefined);
 const hasQuery = (context: RouteContext): boolean => [...context.query.keys()].length > 0;
 
 export const ANSWERS_ROUTES: Route[] = [
+  {
+    method: "GET", path: /^\/projects\/([^/]+)\/tasks\/([^/]+)\/answers$/u,
+    answer: async context => {
+      if (context.answersEnabled !== true) return A.notYet;
+      const at = await scope(context, "answer");
+      if ("refusal" in at) return at.refusal;
+      const taskId = context.params[1];
+      if (hasQuery(context) || context.body !== undefined || typeof taskId !== "string" || !TASK_ID.test(taskId)) return A.invalid;
+      return taskHistory(context, at.project, taskId);
+    },
+  },
   {
     // J5: the asker's "Not right" on an answer. Code decides who (only the asker, with a role now); Cloud passes the person's token with an EMPTY body and rebuilds the reply.
     method: "POST", path: /^\/projects\/([^/]+)\/answers\/([^/]+)\/not-right$/u,
@@ -222,14 +266,21 @@ export const ANSWERS_ROUTES: Route[] = [
       const at = await scope(context, "answer");
       if ("refusal" in at) return at.refusal;
       const given = bodyOf(context);
-      if (given === undefined || hasQuery(context) || Object.keys(given).some((key) => !["requestId", "question", "threadId", "context"].includes(key))) return A.invalid;
+      if (given === undefined || hasQuery(context) || Object.keys(given).some((key) => !["requestId", "question", "threadId", "context", "taskId"].includes(key))) return A.invalid;
       const question = typeof given["question"] === "string" ? given["question"].trim() : "";
       const ok = typeof given["requestId"] === "string" && REQUEST_ID.test(given["requestId"]) && question.length >= 1 && prose(question, LIMITS.question)
         && (given["threadId"] === undefined || (typeof given["threadId"] === "string" && THREAD_ID.test(given["threadId"])))
-        && (given["context"] === undefined || line(given["context"], LIMITS.context, 0));
+        && (given["context"] === undefined || line(given["context"], LIMITS.context, 0))
+        && (given["taskId"] === undefined || typeof given["taskId"] === "string" && TASK_ID.test(given["taskId"]));
       if (!ok) return A.invalid;
       const forwarded: Plain = { requestId: given["requestId"], question, channel: "web", ...(given["threadId"] === undefined ? {} : { threadId: given["threadId"] }), ...(typeof given["context"] === "string" && given["context"] !== "" ? { context: given["context"] } : {}) };
-      return viaCode(context, "answer", projectPath(at.project, "/answers"), forwarded, answerObject);
+      let taskId: string | undefined;
+      if (typeof given["taskId"] === "string") {
+        const support = await taskHistory(context, at.project, given["taskId"]);
+        if (support.status === 200) { taskId = given["taskId"];forwarded["taskId"] = taskId; }
+        else if (support !== A.notYet) return support;
+      }
+      return viaCode(context, "answer", projectPath(at.project, "/answers"), forwarded, value => answerObject(value, taskId));
     },
   },
   {

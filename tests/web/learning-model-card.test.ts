@@ -15,6 +15,8 @@ import { LEARNING_MODEL_PATH, learningModelLabel, readLearningModel } from "../.
 import { LEARNING_MODEL_CARD_WORDS as W, LearningModelCard } from "../../packages/ui/src/screens/admin/ai-spending/LearningModelCard.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
+// LAYOUT-COUPLED (WIRING-1B): the rebuilt company page also reads the sources and the step models before it draws "Change a model".
+import { sources as g2Sources, models as g2Models } from "./read-only/company-money-ai-read/fixtures.js";
 import { h } from "./support/h.js";
 
 const me = "a".repeat(64);
@@ -55,7 +57,7 @@ const FAILED_READ = [{}, { timeout: 8000 }] as const;
 function mountPage(respond: Respond) {
  const nav = AppNavSchema.parse({ me: { developerId: me, name: "Priya", orgRole: "owner" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
  const identity = AppMeResponseSchema.parse({ developer: { id: me, name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
- const f = fakeHost(async r => (r.path === "/v1/app/nav" ? { status: 200, body: nav } : r.path === "/v1/app/me" ? { status: 200, body: identity } : respond(r)));
+ const f = fakeHost(async r => (r.path === "/v1/app/nav" ? { status: 200, body: nav } : r.path === "/v1/app/me" ? { status: 200, body: identity } : r.path === "/v1/app/org/model-sources" ? { status: 200, body: g2Sources } : r.path === "/v1/app/org/agent-models" ? { status: 200, body: g2Models } : respond(r)));
  const query = createQueryClient(); query.setQueryData(["nav"], nav); f.storage.set("rovara.theme", "light");
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/ai-spending"] });
  const rendered = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
@@ -77,7 +79,12 @@ describe("Company settings, AI", () => {
   const c = cloud({ model: null });
   const f = mountPage(c.respond);
   try {
-   expect((await screen.findByTestId("learning-model-card")).textContent).toContain(W.title);
+   // LAYOUT-COUPLED (WIRING-1B): on the rebuilt company page the model card is the "Change a model" dialog opened from the step-models section.
+   fireEvent.click(await screen.findByRole("button", { name: "Change a model" }));
+   await screen.findByTestId("learning-model-card");
+   // LAYOUT-COUPLED: the dialog's compact card drops its visible title (G2); the card keeps its name and shows the learning model line.
+   expect(screen.getByTestId("learning-model-card").getAttribute("aria-label")).toBe(W.title);
+   await waitFor(() => expect(screen.getByTestId("learning-model-card").textContent).toContain("Rovara's default"));
    expect(screen.getByTestId("step-models").contains(screen.getByTestId("learning-model-card"))).toBe(true);
    expect(c.reads.length).toBeGreaterThan(0);
   } finally { f.close(); }

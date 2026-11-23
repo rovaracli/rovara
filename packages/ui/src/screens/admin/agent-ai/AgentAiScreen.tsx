@@ -1,12 +1,10 @@
-import { useMemo, useState } from "react";
-import { AGENT_AI_ENDPOINT_PATH, type AgentAiRead } from "../../../api/admin-agent-ai.js";
+import { useState } from "react";
+import { AGENT_AI_ENDPOINT_PATH, AGENT_AI_PATH, readAgentAi, type AgentAiRead } from "../../../api/admin-agent-ai.js";
 import { TextField } from "../../../design/TextField.js";
-import { createApiClient } from "../../../api/client.js";
-import { ApiError } from "../../../api/errors.js";
-import { useAppHost } from "../../../host.js";
 import { Button } from "../../../design/Button.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { AdminSection } from "../parts.js";
+import { CONNECTION_UNKNOWN, useConnectionChange } from "../ai-spending/connection-change.js";
 
 /** One model per line: `<name the endpoint serves>=<catalog provider>/<catalog model>` (the catalog model sets prices and limits). */
 export function parseEndpointModels(text: string): Array<{ name: string; catalog: { provider: string; modelId: string } }> | undefined {
@@ -23,23 +21,23 @@ export function parseEndpointModels(text: string): Array<{ name: string; catalog
 
 /** DEC 254t (A3): connect, replace or remove the company's own endpoint. The key is write-only: it is sent once and never shown. */
 export function Endpoint({ settings, reload }: { settings: AgentAiRead; reload: () => void }) {
- const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
- const [baseUrl, setBaseUrl] = useState(""), [key, setKey] = useState(""), [models, setModels] = useState(""), [busy, setBusy] = useState(false), [notice, setNotice] = useState<{ ok: boolean; text: string }>();
+ const [baseUrl, setBaseUrl] = useState(""), [key, setKey] = useState(""), [models, setModels] = useState(""), [validation, setValidation] = useState<string>();
+ const change = useConnectionChange({ path: AGENT_AI_ENDPOINT_PATH, readPath: AGENT_AI_PATH, reader: { parse: readAgentAi }, revision: settings.keysRevision!, revisionOf: value => value.keysRevision ?? -1, reload });
+ const { busy, notice } = change;
  async function send(method: "PUT" | "DELETE", body: Record<string, unknown>, done: string) {
-  setBusy(true); setNotice(undefined);
-  try {
-   await api.sendAnswer(method, AGENT_AI_ENDPOINT_PATH, { requestId: crypto.randomUUID(), expectedRevision: settings.keysRevision, ...body }, { parse: answer => answer }, { retry: "never" });
-   setNotice({ ok: true, text: done }); setKey(""); reload();
-  } catch (error) { setNotice({ ok: false, text: error instanceof ApiError ? error.message : "Couldn't save that. Try again." }); }
-  finally { setBusy(false); }
+  setValidation(undefined);
+  try { await change.send(method, body, done); } finally { setKey(""); }
  }
  function connect() {
   const parsed = parseEndpointModels(models);
-  if (parsed === undefined) { setNotice({ ok: false, text: "List 1 to 20 models, one per line, as name=provider/model." }); return; }
+  if (parsed === undefined) { setValidation("List 1 to 20 models, one per line, as name=provider/model."); return; }
   void send("PUT", { baseUrl: baseUrl.trim(), key: key.trim(), models: parsed }, settings.endpointConnected === true ? "Endpoint replaced." : "Endpoint connected.");
  }
  return <AdminSection title="Your own endpoint" note={settings.endpointConnected === true ? "Connected" : "Not connected"}>
   {notice !== undefined && <p role={notice.ok ? "status" : "alert"}><VisibleText text={notice.text} /></p>}
+  {validation && <p role="alert">{validation}</p>}
+  {change.held && <><p role="alert">{CONNECTION_UNKNOWN}</p><Button disabled={busy} onClick={() => { void change.check(); }}>Check own endpoint</Button></>}
+  <fieldset disabled={busy || change.held} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
   <form data-testid="agent-ai-endpoint-form" onSubmit={event => { event.preventDefault(); connect(); }}>
    <TextField label="Address (https, port 443)" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} spellCheck={false} autoComplete="off" />
    <TextField label="Key" type="password" value={key} onChange={event => setKey(event.target.value)} spellCheck={false} autoComplete="new-password" />
@@ -47,5 +45,6 @@ export function Endpoint({ settings, reload }: { settings: AgentAiRead; reload: 
    <Button type="submit" busy={busy} disabled={baseUrl.trim() === "" || key.trim() === "" || models.trim() === ""}>{settings.endpointConnected === true ? "Replace endpoint" : "Connect endpoint"}</Button>
   </form>
   {settings.endpointConnected === true && <p><Button busy={busy} onClick={() => { void send("DELETE", {}, "Endpoint removed."); }}>Remove endpoint</Button></p>}
+  </fieldset>
  </AdminSection>;
 }

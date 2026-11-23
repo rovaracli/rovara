@@ -56,3 +56,20 @@
 /* Save stays in reach on a long page */
 .rv-ai-spend-actions{position:sticky;bottom:0;z-index:1;display:flex;flex-wrap:wrap;gap:var(--rv-space-3);align-items:center;padding-block:var(--rv-space-3);background:var(--rv-bg);border-top:1px solid var(--rv-border)}
 .rv-ai-spend-actions .rv-button{margin:0}
+
+/* G2's "Change a model" dialog (AiSpendStep compact): the choices only, laid out flat inside the dialog. No card frame, no sticky footer. */
+.rv-ai-spend-compact{display:grid;gap:var(--rv-space-4);min-width:0;margin-top:var(--rv-space-4)}
+.rv-ai-spend-compact>section{background:none;border:0;border-radius:0;padding:0}
+.rv-ai-spend-compact>section>*+*{margin-top:var(--rv-space-3)}
+.rv-ai-spend-compact>section>section,.rv-ai-spend-compact .rv-step-models-list>li{border-top:0;padding-top:0;margin-top:0}
+.rv-ai-spend-compact section:empty{display:none}
+.rv-ai-spend-compact .rv-step-models>section{margin-top:var(--rv-space-4)}
+.rv-ai-spend-compact .rv-step-models>#company-model{margin-top:0}
+.rv-ai-spend-compact .rv-step-models-list{margin:var(--rv-space-5) 0 0;display:grid;gap:var(--rv-space-4)}
+.rv-ai-spend-compact .rv-step-models-list>li>*+*{margin-top:var(--rv-space-2)}
+.rv-ai-spend-compact .rv-learning-model{border-top:1px solid var(--rv-border);padding-top:var(--rv-space-5)}
+.rv-ai-spend-compact .rv-ai-spend-actions{position:static;padding-block:0;background:none;border-top:0}
+.rv-ai-spend-compact .rv-muted{font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-ai-spend-compact .rv-learning-model .rv-button{margin:0 var(--rv-space-3) var(--rv-space-3) 0}
+.rv-ai-spend-compact .rv-learning-model>h3,.rv-ai-spend-compact .rv-step-models h3{font-size:var(--rv-font-lg);font-weight:600;margin:0}
+.rv-ai-spend-compact #company-model .rv-field>label,.rv-ai-spend-compact .rv-learning-model .rv-field>label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}

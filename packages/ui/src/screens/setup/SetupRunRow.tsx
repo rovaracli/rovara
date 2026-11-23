@@ -1,3 +1,4 @@
+import { viewerTime } from "../../design/viewer-time.js";
 // Guided onboarding PR 9: the checklist's "Setup run" row and Project settings' "Re-run setup" (DEC 254n item 3, 254o c), on the hosted setup run (Code #844
 // through Cloud). What the row says comes from the checklist read (Code #841: state, start, time, cost, commands found, the failing command and its last lines);
 // whether this person may start or stop comes from Code's own answer (`canManage`: a company owner or admin, or the project's admin). A re-run only proposes:
@@ -44,7 +45,7 @@ export function SetupRunControls({ project, status: given, onChanged, againLabel
  </div>;
 }
 
-const approvedOn = (at: string | undefined): string => { const date = at === undefined ? undefined : new Date(at); return date === undefined || Number.isNaN(date.getTime()) ? "" : ` on ${date.toLocaleDateString("en-US", { day: "numeric", month: "short", timeZone: "UTC" })}`; };
+const approvedOn = (at: string | undefined): string => { const date = at === undefined ? undefined : new Date(at); return date === undefined || Number.isNaN(date.getTime()) ? "" : ` on ${viewerTime(date, { day: "numeric", month: "short" })}`; };
 
 /** L4-T2c: the fixed words for a newer proposal that sits beside the approved setup (Code's `newerProposal`; never a word of Code's own). */
 export const NEWER_PROPOSAL_WORDS: Readonly<Record<NonNullable<RunRow["newerProposal"]>, string>> = Object.freeze({
