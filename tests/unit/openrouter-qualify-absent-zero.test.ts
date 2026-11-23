@@ -37,8 +37,8 @@ it("holds absent reasoning at completion for max completion PLUS reasoning and r
  const { report } = await run();
  expect(report.status).toBe("PASS");
  const call = report.models[0]!.providers[0]!.calls[0]!;
- // Integer micro-USD rates: prompt bytes + (1024 + 256) * 2.
- expect(call.holdMicros).toBe(call.maxPromptTokens + 2560);
+ // Integer micro-USD rates: prompt bytes + (2048 + 1024) * 2 (the row ceiling plus the 1024-token reasoning budget at the completion rate).
+ expect(call.holdMicros).toBe(call.maxPromptTokens + 6144);
  expect(report.proposedTariffRows).toHaveLength(2);
  for (const row of report.proposedTariffRows) {
   expect(row.assumedZero).toEqual(["request", "input_cache_read", "input_cache_write"]);
@@ -69,7 +69,7 @@ it("takes component maxima over base and every conditional override, including a
  const { report, bodies } = await run({ ...minimal, overrides: [{ min_prompt_tokens: 1000, prompt: "0.000003", completion: "0.000004" }, { min_prompt_tokens: 2000, prompt: "0.000002", completion: "0.000006", request: "0.000007" }] });
  expect(report.status).toBe("PASS");
  const call = report.models[0]!.providers[0]!.calls[0]!;
- expect(call.holdMicros).toBe(call.maxPromptTokens * 3 + 7680 + 7);
+ expect(call.holdMicros).toBe(call.maxPromptTokens * 3 + 18432 + 7);
  expect(bodies[0]!.provider).toMatchObject({ max_price: { prompt: 3, completion: 6, request: 0.000007 } });
  expect(report.proposedTariffRows[0]!.pricing).toMatchObject({ prompt: "0.000003", completion: "0.000006", internal_reasoning: "0.000006", request: "0.000007" });
  expect(report.proposedTariffRows[0]!.assumedZero).not.toContain("request");

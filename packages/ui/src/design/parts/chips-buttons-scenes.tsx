@@ -13,7 +13,7 @@ const examples: readonly (readonly [StatusChipProps, string])[] = [
  [{ state: "ready_to_merge" }, "Every required check and review is in for this version."],
  [{ state: "done" }, "Finished without a merge: an answer, or no change needed."],
  [{ state: "merged" }, "The change is in the base branch. Deploying is separate."],
- [{ state: "stopped" }, "Stopped by a person. Files are kept."],
+ [{ state: "stopped" }, "Stopped by a person."],
  [{ state: "failed" }, "The task's own work failed, for example a test."],
  [{ state: "blocked" }, "Can't continue until something changes, such as a limit."],
  [{ state: "could_not_run" }, "A check or step never ran. Not a pass and not a fail."],

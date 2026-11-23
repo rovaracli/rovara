@@ -195,8 +195,9 @@ it("the real share route keeps the rebuilt Stop dialog words and safe-first orde
  const s = mount(undefined, "IMPLEMENT", true);try {
   fireEvent.click(within(await openMenu()).getByRole("menuitem", { name: "Stop" }));
   const dialog = await screen.findByRole("dialog", { name: "Stop this session?" });
-  expectSafeFirst(dialog, "Keep running", "Stop session");
-  expect(dialog.textContent).toContain("Files are kept. Rovara stops after its current step.");
+  expectSafeFirst(dialog, "Cancel", "Stop and end the machine");
+  expect(dialog.textContent).toContain("Stopping now ends this task's machine. Changes that aren't pushed to GitHub or in a pull request are lost and can't be recovered.");
+  expect(dialog.textContent).not.toContain("Files are kept");
  } finally { s.close(); }
 });
 
@@ -206,10 +207,11 @@ it("the Stop dialog says what happens and makes the safe choice the primary butt
   fireEvent.click(within(menu).getByRole("menuitem", { name: /^Stop$/u }));
   const dialog = await screen.findByRole("dialog", { name: "Stop this session?" });
   expect(dialog.className).toContain("rv-action-dialog");
-  expect(dialog.textContent).toContain("Files are kept. Rovara stops after its current step.");
-  expectSafeFirst(dialog, "Keep running", "Stop session");
-  expect(within(dialog).getByRole("button", { name: "Keep running" }).className).toContain("rv-button-primary");
-  expect(within(dialog).getByRole("button", { name: "Stop session" }).className).toContain("rv-button-danger");
+  expect(dialog.textContent).toContain("Stopping now ends this task's machine. Changes that aren't pushed to GitHub or in a pull request are lost and can't be recovered.");
+  expect(dialog.textContent).not.toContain("Files are kept");expect(document.body.textContent).not.toContain("Files are kept");
+  expectSafeFirst(dialog, "Cancel", "Stop and end the machine");
+  expect(within(dialog).getByRole("button", { name: "Cancel" }).className).toContain("rv-button-primary");
+  expect(within(dialog).getByRole("button", { name: "Stop and end the machine" }).className).toContain("rv-button-danger");
   expect(s.writes()).toHaveLength(0);
  } finally { s.close(); }
 });

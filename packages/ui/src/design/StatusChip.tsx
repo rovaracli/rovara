@@ -14,7 +14,7 @@ const COPY = {
  ready_to_merge: { label: "Ready to merge", hue: "ok", icon: "tick", description: "Every required check and review is in for this version." },
  done: { label: "Done", hue: "ok", icon: "circle-tick", description: "Finished without a merge: an answer, or no change needed." },
  merged: { label: "Merged", hue: "ok", icon: "merge", description: "The change is in the base branch. Deploying is separate." },
- stopped: { label: "Stopped", hue: "idle", icon: "stop", description: "Stopped by a person. Files are kept." },
+ stopped: { label: "Stopped", hue: "idle", icon: "stop", description: "Stopped by a person." },
  failed: { label: "Failed", hue: "bad", icon: "cross", description: "The task's own work failed, for example a test." },
  blocked: { label: "Blocked", hue: "bad", icon: "prohibited", description: "Can't continue until something changes, such as a limit." },
  could_not_run: { label: "Could not run", hue: "idle", icon: "dash", description: "A check or step never ran. Not a pass and not a fail." },

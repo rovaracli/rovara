@@ -150,7 +150,7 @@ export function openRouterRequest(body: Record<string, unknown>, policy: OpenRou
      !Array.isArray(body.messages) || body.messages.some(v => { const m = record(v); return m === undefined || !(typeof m.content === "string" || (m.role === "assistant" && m.content === null)); })) return undefined;
  const output = openRouterDecimal(policy.pricing.completion) >= openRouterDecimal(policy.pricing.internal_reasoning) ? policy.pricing.completion : policy.pricing.internal_reasoning;
  return { ...body, usage: { include: true }, reasoning: policy.reasoning.mode === "disabled" ? { enabled: false } : { enabled: true, max_tokens: policy.reasoning.max_tokens },
-  provider: { only: [policy.route], allow_fallbacks: false, require_parameters: true,
+  provider: { order: [policy.route], only: [policy.route], allow_fallbacks: false, require_parameters: true,
    max_price: { prompt: wireNumber(perMillionPrice(policy.pricing.prompt)), completion: wireNumber(perMillionPrice(output)), request: wireNumber(policy.pricing.request) } } };
 }
 /** Every prompt token may be a priced cache write; cache reads never make the hold smaller.

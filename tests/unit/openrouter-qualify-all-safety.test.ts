@@ -69,7 +69,7 @@ it("excludes explicitly estimated endpoint tariffs without paid calls", async ()
  expect(r.paid).toHaveLength(0); expect(r.report.failuresByCause.unpriced_component).toBe(1);
 });
 it("retains an unknown call hold across providers before hitting the model cap", async () => {
- const r = await run({ perModelCap: "0.000006" }, server(undefined, [endpoint(), endpoint("second-provider")], "unknown"));
+ const r = await run({ perModelCap: "0.000012" }, server(undefined, [endpoint(), endpoint("second-provider")], "unknown"));
  expect(r.paid).toHaveLength(2); expect(r.report.preCallHoldsMicros).toBeGreaterThan(6);
  expect(r.report.failuresByCause.per_model_cap).toBe(2);
 });
@@ -91,7 +91,7 @@ it("lists the current model as unreached when provider discovery hits shared aut
 });
 
 it("retains a generation-lookup failure hold before another provider can spend", async () => {
- const r = await run({ perModelCap: "0.000006" }, server([entry("vendor/a")], [endpoint(), endpoint("second-provider")], "generation"));
+ const r = await run({ perModelCap: "0.000012" }, server([entry("vendor/a")], [endpoint(), endpoint("second-provider")], "generation"));
  expect(r.paid).toHaveLength(1);
  expect(r.paid[0]?.provider.only).toEqual(["fixture-provider"]);
  const first = r.report.models[0]!.providers[0]!;
@@ -153,7 +153,7 @@ it.each(["three calls", "empty checks", "failed check"])("requalifies a PASS res
 it("binds the resume version to the harness, policy and token validation module", async () => {
  const r = await run();
  const hash = createHash("sha256");
- for (const path of ["../../scripts/openrouter-qualify.mjs", "../../packages/model-gateway/dist/openrouter-policy.js", "../../packages/model-gateway/dist/model-gateway-token.js"]) hash.update(readFileSync(new URL(path, import.meta.url)));
+ for (const path of ["../../scripts/openrouter-qualify.mjs", "../../packages/model-gateway/dist/openrouter-policy.js", "../../packages/model-gateway/dist/offered-models.js", "../../packages/model-gateway/dist/model-gateway-token.js"]) hash.update(readFileSync(new URL(path, import.meta.url)));
  expect(r.report.harnessVersion).toBe(hash.digest("hex"));
 });
 it.each([0, 1])("lists all unreached models when broken resume provider evidence stops at index %s", async index => {

@@ -244,14 +244,22 @@ The default and maximum per-model cap is **$0.50**. A smaller
 cap remains separately configurable (default $15). For an owner rerun bounded
 below $1, use `--spend-cap 0.99`; a full catalogue run can require more.
 
-All four qualification controls start at `max_tokens: 1024`. Before sending,
-choose 512 if the endpoint ceiling or remaining overall/model budget cannot
-cover 1024. Endpoints below 512 refuse. There is no retry of an ambiguous paid
-call. Reasoning is requested at 256 tokens (128 for the 512 rung); the hold covers
-that output ceiling and, when reasoning pricing is absent, an additional 256
-completion-priced reasoning tokens. Refusal probes reuse a successful control
-and its full original hold. These small bounds are harness-local; they do not
-relax the gateway's installed tariff policy.
+Every qualification control is sent at the row's OWN ceiling: `max_tokens =
+max_completion_tokens = min(endpoint ceiling, 2048)`, with reasoning requested at
+1024 tokens. These are the gateway validator's own bounds (`openRouterPolicy`: bounded
+reasoning needs `reasoning.max_tokens >= 1024` and strictly below the ceiling; a
+request must ask for more than the reasoning budget), so a PASS row is accepted as-is
+by the validator. There is one rung, no smaller fallback: if the hold does not fit
+the caps nothing is sent. An endpoint ceiling of 1024 or less fails before any send
+(cause `ceiling_below_runtime_floor`). Before the first send the real row must pass
+the gateway's own validator (check `runtime_policy`, cause `runtime_policy_refused`:
+price granularity, zero prompt/completion, id shape, reasoning/ceiling), and a plain id's
+request body is exactly the one the gateway sends (`openRouterRequest`, including the
+pinned `provider.order` and `only`, real `max_price`, no fallback). Only an extended id
+(`:` or `~`) keeps the harness-only placeholders (ruling: such ids stay refused for
+install). Holds include the 1024-token reasoning budget at the completion rate when
+the catalogue has no reasoning price. Refusal probes reuse a successful control
+and its full original hold. The validator itself is not loosened.
 
 `preCallHoldsMicros` is the **sum of pre-call holds**, including failed calls and
 recognized zero-debit refusals. It is a local conservative accounting counter,
@@ -316,24 +324,36 @@ including negative surcharges and unreadable values. Overrides obey the same rul
 
 A model whose every advertised rate is zero is refused before anything is sent
 (check `priced_model`, cause `zero_priced`): its hold would be 0 and no positive price
-cap exists to probe, so no bound could be proven. A model with only some zero rates
-(for example a zero prompt rate) keeps a positive hold from its other rates. The
-prompt/completion zero-proof path therefore applies only to such mixed tariffs, and a
-zero prompt or completion rate relies on OpenRouter honouring `max_price` 0 (price-cap
-probes skip a zero cap), so such a row has fewer probes and stays unproven in practice.
-Explicit null, negative or malformed prices still refuse. Prompt/completion must
+cap exists to probe, so no bound could be proven. A model with a zero PROMPT or
+COMPLETION rate is refused before any send by the gateway-validator check
+(`runtime_policy`, cause `runtime_policy_refused`), because the installed policy
+refuses such a row; so there is no zero prompt/completion proof. Explicit null, negative or malformed prices still refuse. Prompt/completion must
 be present and nonnegative in all-models qualification; explicit zeroes require
 billed proof before promotion. Each row records `assumedZero` (only the absent
 components actually normalized to zero) and, when applicable,
 `reasoningBilledAtCompletion: true`. Every zero-priced component (explicit or
 assumed) needs a real successful bill
-before its proof can be recorded in `zeroPriceProof`. A zero prompt/read price
-requires a zero billed prompt breakdown with exclusively uncached/cached input,
-respectively; zero completion/reasoning requires an isolated zero billed output
-breakdown with the corresponding exercised token counters. Missing or unreadable
-breakdowns, unused components and failed calls supply no proof. The current
-receipts cannot isolate request fees or cache-write pricing, so those zero rates
-remain unproven. A row stays `CANDIDATE` until every zero has proof; `PROVEN`
+before its proof can be recorded in `zeroPriceProof`. A zero read price
+requires a zero billed prompt breakdown with exclusively cached input; zero
+reasoning requires an isolated zero billed output breakdown with the exercised
+reasoning counters. Missing or unreadable
+breakdowns, unused components and failed calls supply no proof. A component the catalogue left ABSENT (`assumedZero`) is
+never an explicit price and is never proven, except `request` (below). `request`: an explicit zero is PROVEN only
+when EVERY call's bill reconstructs exactly (usage.cost == upstream cost ==
+generation.total_cost == prompt part + completions part, zero tolerance) AND every
+recorded call carries the wire pin the gateway sends (`provider.order` and `only` equal,
+no fallback, `max_price.request` 0). An ABSENT request price counts as zero by the same
+proof (the one widening; `ZERO_PROOF_RULES.assumedMayBeProven`) because every gateway
+OpenRouter call caps the request fee at 0 on the wire, so an endpoint with a request fee
+is refused by OpenRouter instead of charging; a PRESENT nonzero request price is priced
+(held, capped on the wire at that price) and never counts as zero. `input_cache_write`: the harness never
+exercises cache writes, so a zero or absent write price stays unproven, except for the
+gateway's relaxed-list models (`OPENROUTER_RELAXED_TARIFF_MODELS`) whose catalogue
+write price is ABSENT, whose row carries the current `never_requested_enforced`
+basis, and whose every call reported zero cache-write tokens: runtime enforcement (no
+cache hint ever reaches OpenRouter; a reported write stops the source) is then the
+proof, recorded as `runtime_enforced:<version>`. That rule is one predicate
+(`ZERO_PROOF_RULES` in `scripts/openrouter-qualify.mjs`). A row stays `CANDIDATE` until every zero has proof; `PROVEN`
 labels billing evidence only. Neither label is installed automatically. Resume
 recomputes the proof from retained call evidence and rejects edited labels or
 proof. Runtime absence defaults and the reviewed source installation process
@@ -390,9 +410,9 @@ excluded providers retain their own evidence. `failuresByCause` groups failed
 models by cause, counting a model once per cause. A cap-abandoned model fails.
 Only passing models' passing routes enter `proposedTariffRows`, labelled
 `CANDIDATE` until all zero-component proofs exist, then `PROVEN` for billing
-evidence. The 1024/512 probe bounds and small reasoning budgets are also
-harness-only; any later installed tariff must separately satisfy the runtime
-policy's existing bounds and receive live/review evidence for those bounds. No report modifies the reviewed tariff source or installs prices.
+evidence. The probe bounds are the runtime validator's own (see above), so a PASS row needs
+no bound change to be installable; it still needs live/review evidence and the
+reviewed source edit. No report modifies the reviewed tariff source or installs prices.
 
 Resume skips a prior PASS only when its current eligible tariffs and pinned
 provider identities match and the harness/policy/token-validation implementation hash is
@@ -402,3 +422,25 @@ Changed/failed models run again; unqualified extra resume rows are not carried.
 Use a new output filename when resuming so shell redirection cannot truncate the
 input report. Batch money review, tariff promotion and staging proof remain
 separate owner/controller steps.
+
+### Install selection (`report.installSelection`, `selectInstallRows`)
+
+Data only; nothing is installed. Per row the first failing reason wins: `extended_id`
+(`:` or `~`), `offer_name` (the id cannot be offered: `OFFERED_MODEL_NAME`),
+`unproven_zero:<components>` (only PROVEN rows), `runtime_policy_refused` (the
+gateway's own validator refuses the bare row). A model with two or more surviving
+routes is never refused; the route is chosen deterministically by the first difference
+in: (1) the gateway hold at 100,000 prompt tokens and ONE common output size (the
+smallest ceiling among the model's surviving routes), (2) the dearer of the
+completion and reasoning prices, (3) the prompt price, (4) the lower ceiling (stricter),
+(5) the route tag in code-point order. The others are listed as `route_not_chosen`.
+The gateway pins the chosen route in `provider.order` and `provider.only` with no
+fallback, so a call never lands on another endpoint.
+
+### Max tokens at the gateway
+
+For an OpenRouter call the gateway clamps `max_tokens` DOWN to the installed row's
+`max_completion_tokens` (never refuses a larger request, never raises a smaller one);
+the hold, the applied output limit and the forwarded body use the clamped value. A
+request whose `max_tokens` is not above the row's reasoning budget (1024 for a harness
+row) is refused.

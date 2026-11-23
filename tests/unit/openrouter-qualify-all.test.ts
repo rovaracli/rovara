@@ -69,13 +69,13 @@ it.each([
  expect(r.paid).toHaveLength(0); expect(r.report.models[0]?.status).toBe("FAIL"); expect(r.report.failuresByCause[cause]).toBe(1);
 });
 it("reserves the overall cap before every call and lists unreached models", async () => {
- const r = await run({ spendCap: "0.000006", perModelCap: "1" }, server([entry("vendor/a"), entry("vendor/b"), entry("vendor/c")]));
- expect(r.paid).toHaveLength(1); expect(r.report.exposureMicros).toBeLessThanOrEqual(6);
+ const r = await run({ spendCap: "0.000012", perModelCap: "1" }, server([entry("vendor/a"), entry("vendor/b"), entry("vendor/c")]));
+ expect(r.paid).toHaveLength(1); expect(r.report.exposureMicros).toBeLessThanOrEqual(12);
  expect(r.report.notReached).toEqual(["vendor/b", "vendor/c"]);
  expect(r.report.failuresByCause.overall_cap).toBe(3); expect(r.report.proposedTariffRows).toEqual([]);
 });
 it("enforces the per-model cap across providers and continues with the next model", async () => {
- const r = await run({ perModelCap: "0.000026" }, server(undefined, [endpoint(), endpoint("second-provider")]));
+ const r = await run({ perModelCap: "0.000044" }, server(undefined, [endpoint(), endpoint("second-provider")]));
  expect(r.paid.filter(p => p.model === "vendor/a")).toHaveLength(5);
  expect(r.paid.filter(p => p.model === "vendor/b")).toHaveLength(5);
  expect(r.report.failuresByCause.per_model_cap).toBe(2); expect(r.report.proposedTariffRows).toEqual([]);

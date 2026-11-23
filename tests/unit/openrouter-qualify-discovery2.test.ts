@@ -70,9 +70,11 @@ it("ceilings exact finite decimal products for random token counts including the
 });
 it("ceilings the combined hold once without rounding token rates or components first", async () => {
  const rate = "0.0000003333333333333333";
- const { report } = await run({ prompt: rate, completion: rate }, { cost: "0.0002" });
+ // Finer than the gateway's micro-USD/MTok granularity: only an extended id (harness-only handling, ruling (d)) can still reach the exact-rational arithmetic;
+ // a plain id is refused by the runtime_policy check (see openrouter-qualify-runtime-align.test.ts).
+ const { report } = await run({ prompt: rate, completion: rate }, { cost: "0.0002", ids: ["vendor/model:thinking"] });
  const call = report.models[0]!.providers[0]!.calls![0]!;
- const exact = BigInt(call.maxPromptTokens + 1024 + 256) * 3333333333333333n * 1_000_000n;
+ const exact = BigInt(call.maxPromptTokens + 2048 + 1024) * 3333333333333333n * 1_000_000n;
  const denominator = 10n ** 22n;
  expect(BigInt(call.holdMicros) * denominator).toBeGreaterThanOrEqual(exact);
  expect(BigInt(call.holdMicros) * denominator).toBeLessThan(exact + denominator);
@@ -80,11 +82,11 @@ it("ceilings the combined hold once without rounding token rates or components f
 });
 it("uses rounded-up fractional maximum, rejects one micro above it, and retains the hold", async () => {
  const p = { prompt: "0.0000010000000000000001", completion: "0.0000020000000000000001" };
- const accepted = await run(p, { cost: "0.001379" }); // exact max 1378.0000000000000694 micros -> 1379.
+ const accepted = await run(p, { cost: "0.001379", ids: ["vendor/model:thinking"] }); // exact max 1378.0000000000000694 micros -> 1379.
  expect(accepted.report.models[0]!.providers[0]!.calls![0]!.checks.bounded_inference_cost).toBe("PASS");
  expect(accepted.report.proposedTariffRows).toHaveLength(1);
  for (const probe of [false, true]) {
-  const rejected = await run(p, probe ? { cost: "0.001379", probeCost: "0.001380" } : { cost: "0.001380" });
+  const rejected = await run(p, { ...(probe ? { cost: "0.001379", probeCost: "0.001380" } : { cost: "0.001380" }), ids: ["vendor/model:thinking"] });
   expect(rejected.report.models[0]!.providers[0]!.checks!.hidden_charge).toBe("FAIL");
   expect(rejected.report.proposedTariffRows).toEqual([]); expect(rejected.report.preCallHoldsMicros).toBeGreaterThan(0);
  }
@@ -94,7 +96,7 @@ it("pins exact tags with fallbacks disabled and holds maximum prices across dupl
  expect(report.proposedTariffRows).toHaveLength(1);
  for (const body of bodies) expect(body.provider).toMatchObject({ order: ["provider/fp4"], only: ["provider/fp4"], allow_fallbacks: false });
  const call = report.models[0]!.providers[0]!.calls![0]!;
- expect(call.holdMicros).toBe(call.maxPromptTokens * 3 + (1024 + 256) * 6);
+ expect(call.holdMicros).toBe(call.maxPromptTokens * 3 + (2048 + 1024) * 6);
  expect(report.proposedTariffRows[0]!.pricing).toMatchObject({ prompt: "0.000003", completion: "0.000006", internal_reasoning: "0.000006" });
 });
 it.each(["unpriced", "no-tools", "identity"])("refuses an entire tag if a routable duplicate is %s", async problem => {

@@ -44,7 +44,7 @@ it("keeps Stop enabled during the take-over send and after pending confirmation,
  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Stop" }).disabled).toBe(false));
  fireEvent.click(screen.getByRole("button", { name: "Check" }));await screen.findByText("Rovara still hasn't confirmed this. Check again before trying another action.");
  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Stop" }).disabled).toBe(false);
- fireEvent.click(screen.getByRole("button", { name: "Stop" }));fireEvent.click(await screen.findByRole("button", { name: "Stop session" }));
+ fireEvent.click(screen.getByRole("button", { name: "Stop" }));fireEvent.click(await screen.findByRole("button", { name: "Stop and end the machine" }));
  await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.path.endsWith("/stop"))).toHaveLength(1));
  expect(f.request.mock.calls.filter(([r]) => r.path.endsWith("/take-over"))).toHaveLength(1);
  expect(JSON.parse(f.host.storage.get(f.scope + ":request")!)).toMatchObject({ action: "take_over" });f.close();
