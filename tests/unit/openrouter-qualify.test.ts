@@ -55,7 +55,7 @@ async function fake(mode = "pass", cap = "0.50", entries?: { id: string; pricing
 }
 it("qualifies three plain HTTP calls plus a separate reasoning probe per model using exact caps, pinned route and bounded reasoning and room for visible text", async () => {
  const r = await fake(); expect(r.report?.status).toBe("PASS"); expect(r.requests).toHaveLength(8); expect(r.generations).toBe(8);
- expect(r.requests[0]).toMatchObject({ max_tokens: 1024, reasoning: { enabled: true, max_tokens: 256 }, provider: { only: ["fixture-provider"], allow_fallbacks: false, max_price: { prompt: 0.001, completion: 0.003 } } });
+ expect(r.requests[0]).toMatchObject({ max_tokens: 2048, reasoning: { enabled: true, max_tokens: 1024 }, provider: { order: ["fixture-provider"], only: ["fixture-provider"], allow_fallbacks: false, max_price: { prompt: 0.001, completion: 0.003 } } });
  expect(r.requests[0]).not.toHaveProperty("plugins");
 });
 it.each(["reasoning", "route", "mismatch", "overage", "fees", "details"])("fails each model independently on %s", async mode => {
@@ -79,14 +79,16 @@ it("enforces the hard $0.50 single-model ceiling even when the spend cap is far 
  }
  expect(r.report.preCallHoldsMicros).toBeLessThanOrEqual(1_000_000);
 });
-it("drops to the 512 rung to stay inside the hard $0.50 single-model ceiling (kills a loosened ladder ceiling)", async () => {
- const dear = models.map(id => ({ id, pricing: { ...pricing, completion: "0.00029", internal_reasoning: "0.00029" }, top_provider: { max_completion_tokens: 4096 } }));
+it("refuses the next hold above the hard $0.50 single-model ceiling before sending (one rung: no smaller size, kills a loosened ceiling)", async () => {
+ const dear = models.map(id => ({ id, pricing: { ...pricing, completion: "0.00014", internal_reasoning: "0.00014" }, top_provider: { max_completion_tokens: 4096 } }));
  const r = await fake("pass", "5.00", dear);
- // Hold at 1024 is ~$0.297: the first call takes it, the second must drop to 512 (~$0.148) because two 1024 holds would pass $0.50.
- expect(r.requests.map(b => b.max_tokens)).toEqual([1024, 512, 1024, 512]);
+ // Hold at 2048 is ~$0.287: the first call takes it; a second would pass $0.50, and there is no smaller rung to drop to.
+ expect(r.requests.map(b => b.max_tokens)).toEqual([2048, 2048]);
  for (const model of r.report.models) {
-  expect(model.calls.map(call => call.holdMicros)).toEqual([296_962, 148_482]);
-  expect(model.calls.reduce((sum, call) => sum + call.holdMicros, 0)).toBeLessThanOrEqual(500_000);
+  expect(model.calls).toHaveLength(1);
+  expect(model.calls[0]!.holdMicros).toBeGreaterThanOrEqual(2048 * 140);
+  expect(model.calls[0]!.holdMicros).toBeLessThanOrEqual(500_000);
+  expect(model.checks.per_model_cap ?? model.checks.spend_cap).toBe("FAIL");
  }
 });
 it("proves each positive price cap rejects an otherwise identical request at zero", async () => {
@@ -160,7 +162,7 @@ it("names all invalid price fields, missing required prices and a short output b
  const r = await fake("pass", "0.50", [catalogueEntry(models[0]!, { completion: "0.000002", request: null, image: "0.02", audio: "0.03" }), catalogueEntry(models[1]!, publicPrices, 511)]);
  expect(r.requests).toEqual([]);
  expect(r.report.models[0]?.boundedTariffErrors).toEqual(expect.arrayContaining(["pricing.prompt missing required field", "pricing.request=null", 'pricing.image="0.02"', 'pricing.audio="0.03"']));
- expect(r.report.models[1]?.boundedTariffErrors).toContain("max_completion_tokens < 512");
+ expect(r.report.models[1]?.boundedTariffErrors).toContain("max_completion_tokens <= 1024: below the runtime bounded-reasoning floor");
 });
 it("never reports arbitrary catalog text or echoed credentials in bounded diagnostics", async () => {
  const r = await fake("pass", "0.50", models.map(id => catalogueEntry(id, { ...publicPrices, prompt: "canary-key-never-print", provider_message: "Authorization: arbitrary upstream text" })));
@@ -278,7 +280,7 @@ it("uses a short prompt and holds the entire combined output bound", async () =>
  const r = await fake("pass", "0.50", savedCatalogue.data, relaxedModels);
  expect(r.report.status).toBe("PASS");
  for (const body of r.requests.filter(b => !JSON.stringify(b.messages).includes("Reasoning probe:"))) {
-  expect(Number(body.max_tokens)).toBe(1024);
+  expect(Number(body.max_tokens)).toBe(2048);
   expect(JSON.stringify(body.messages)).not.toMatch(/Think hard|keep reasoning until/u);
  }
  // Mini completion/reasoning: $2/M * 4096 = 8192 micros, before prompt cost.
@@ -320,7 +322,7 @@ it("qualifies zero-reasoning plain answers with a separate explicitly requested 
  for (const model of models) {
   const calls = r.requests.filter(b => b.model === model);
   expect(calls.slice(0, 3).every(b => JSON.stringify(b.messages).includes("What is 2 + 2?"))).toBe(true);
-  expect(calls[3]).toMatchObject({ max_tokens: 1024, reasoning: { enabled: true, max_tokens: 256 } });
+  expect(calls[3]).toMatchObject({ max_tokens: 2048, reasoning: { enabled: true, max_tokens: 1024 } });
   expect(JSON.stringify(calls[3]?.messages)).toMatch(/Reasoning probe:.*reason/iu);
  }
  for (const model of r.report.models) expect(model.calls[3]?.checks.high_reasoning_exercised).toBe("PASS");
@@ -347,7 +349,7 @@ it("pins the reasoning probe hold to its full combined bound at the dearer reaso
   expect(body).toBeDefined();
   // Hand-derived fixture tariff: prompt .001 micro/token + output .003 + request 1.
   const bytes = Buffer.byteLength(JSON.stringify(body));
-  expect(model.calls[3]?.holdMicros).toBe(Math.ceil(bytes * 0.001 + 1024 * 0.003 + 1));
+  expect(model.calls[3]?.holdMicros).toBe(Math.ceil(bytes * 0.001 + 2048 * 0.003 + 1));
  }
 });
 it("pins every zero-price probe hold to its original request bound, killing mutant F", async () => {
@@ -355,7 +357,7 @@ it("pins every zero-price probe hold to its original request bound, killing muta
  for (const model of r.report.models) {
   const body = r.requests.find(b => b.model === model.model);
   const bytes = Buffer.byteLength(JSON.stringify(body));
-  const hold = Math.ceil(bytes * 0.001 + 1024 * 0.003 + 1);
+  const hold = Math.ceil(bytes * 0.001 + 2048 * 0.003 + 1);
   expect(model.priceCapProbes).toHaveLength(3);
   for (const probe of model.priceCapProbes ?? []) expect(probe.holdMicros).toBe(hold);
  }
@@ -491,7 +493,7 @@ it("records which bounded field and value failed without echoing provider text",
  });
  const reasons = r.report.models[0]?.calls[0]?.reasons;
  expect(reasons?.visible_generation).toContain("native_tokens_completion 0");
- expect(r.report.models[0]?.calls[0]?.reasoningOverCap).toEqual({ requestedMaxTokens: 256, usageTokens: 1100, generationTokens: 1100 });
+ expect(r.report.models[0]?.calls[0]?.reasoningOverCap).toEqual({ requestedMaxTokens: 1024, usageTokens: 1100, generationTokens: 1100 });
  expect(reasons?.identity_and_non_byok).toContain("generation.provider_name");
 });
 it.each([0, "0"])("deliberately accepts an exactly-zero breakdown part %s", async zero => {
@@ -517,7 +519,7 @@ it("bounds each price-cap probe's unavailable generation and continues the other
 });
 it("names usage's output cap violation with its observed value", async () => {
  const r = await fake("pass", "0.50", undefined, models, usage => { usage.completion_tokens = 5000; });
- expect(r.report.models[0]?.calls[0]?.reasons.completion_plus_reasoning_within_limit).toContain("usage.completion_tokens 5000 > max 1024");
+ expect(r.report.models[0]?.calls[0]?.reasons.completion_plus_reasoning_within_limit).toContain("usage.completion_tokens 5000 > max 2048");
 });
 
 // LIVE5 numeric observation, $27 * .25/M + 165 * 2/M = $0.00033675.
@@ -666,8 +668,8 @@ it("LIVE6 records and logs reasoning above the requested cap while charging real
    usage.completion_tokens_details = { reasoning_tokens: 1200 }; generation.native_tokens_reasoning = 1201;
   });
   expect(r.report.status).toBe("PASS"); expect(r.report.chargedMicros).toBe(4940);
-  for (const model of r.report.models) for (const call of model.calls) expect(call.reasoningOverCap).toEqual({ requestedMaxTokens: 256, usageTokens: 1200, generationTokens: 1201 });
-  expect(log.mock.calls.map(args => args[0]).join("")).toContain("reasoning above requested cap 256: usage 1200, generation 1201");
+  for (const model of r.report.models) for (const call of model.calls) expect(call.reasoningOverCap).toEqual({ requestedMaxTokens: 1024, usageTokens: 1200, generationTokens: 1201 });
+  expect(log.mock.calls.map(args => args[0]).join("")).toContain("reasoning above requested cap 1024: usage 1200, generation 1201");
  } finally { log.mockRestore(); }
 });
 it.each([null, "google", 0, {}, false])("LIVE6 accepts only a null engine on a search-free request %#", async engine => {

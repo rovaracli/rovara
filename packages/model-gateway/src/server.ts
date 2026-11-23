@@ -460,11 +460,15 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         // Held to the model's own output limit (the price snapshot's row for this provider), else the default.
         let limit: unknown;
         try { limit = chat.ai.maxOutputTokens?.(checked.model); } catch { limit = undefined; }
-        const maxTokens = Math.min(checked.maxTokens, typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS);
+        // OpenRouter: read the installed row ONCE. No row (or an expired one) refuses here, before anything is translated.
+        const policy = chat.provider === "openrouter" ? openRouterPolicy(checked.model, (deps.now ?? Date.now)(), deps.openRouterTariffs) : undefined;
+        if (chat.provider === "openrouter" && policy === undefined) return AGENT_CHAT_FEATURE;
+        // Ruling (b): a larger request is CLAMPED to the row's ceiling (the dearest output the hold, the wire cap and the proof cover), never refused.
+        // The clamped value is what the hold, appliedMaxOutputTokens and the forwarded body all use.
+        const maxTokens = Math.min(checked.maxTokens, typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS, policy?.max_completion_tokens ?? Number.POSITIVE_INFINITY);
         let translated: Record<string, unknown> | undefined;
-        try { translated = toChatCompletions(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>, checked.model, maxTokens, chat.provider, chat.provider === "openrouter" ? openRouterPolicy(checked.model, (deps.now ?? Date.now)(), deps.openRouterTariffs) : undefined); } catch { translated = undefined; }
+        try { translated = toChatCompletions(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>, checked.model, maxTokens, chat.provider, policy); } catch { translated = undefined; }
         if (translated === undefined) return AGENT_CHAT_FEATURE;
-        if (chat.provider === "openrouter" && openRouterPolicy(checked.model, (deps.now ?? Date.now)(), deps.openRouterTariffs) === undefined) return AGENT_CHAT_FEATURE;
         let forwarded: Buffer;
         try { forwarded = Buffer.from(JSON.stringify(translated)); } catch { return AGENT_CHAT_FEATURE; }
         // Keep admission tied to the translated body, which carries no prompt-cache write controls.

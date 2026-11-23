@@ -8,6 +8,17 @@ import { setTimeout as sleepFor } from "node:timers/promises";
 const { AbortSignal } = globalThis;
 import { pathToFileURL } from "node:url";
 import { openRouterDecimal, openRouterHold, openRouterPolicy, openRouterRequest, perMillionPrice, OPENROUTER_PRICE_KEYS, OPENROUTER_RELAXED_TARIFF_MODELS, OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION } from "../packages/model-gateway/dist/openrouter-policy.js";
+import { OFFERED_MODEL_NAME } from "../packages/model-gateway/dist/offered-models.js";
+// Ruling (a): the harness proves exactly what the gateway's validator (openRouterPolicy) installs. The row bounds are the runtime's:
+// bounded reasoning needs reasoning.max_tokens >= 1024 and strictly below max_completion_tokens (openrouter-policy.ts:111), and a request
+// must ask for more than the reasoning budget (:149). One rung: every control and probe is sent at the row's OWN ceiling.
+const HARNESS_MAX_COMPLETION_TOKENS = 2048;
+const HARNESS_REASONING_TOKENS = 1024;
+/** The gateway's versioned no-cache-write enforcement basis (openrouter-policy.ts:112-113), recorded on a relaxed-list row whose catalogue write price is ABSENT. */
+const applyNoWriteBasis = tariff => { tariff.cacheWriteBasis = "never_requested_enforced"; tariff.cacheWriteEnforcementVersion = OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION; };
+const CEILING_FLOOR_REASON = `max_completion_tokens <= ${HARNESS_REASONING_TOKENS}: below the runtime bounded-reasoning floor`;
+/** Reference prompt size of the install tie-break (ruling (c)); a change is a visible diff and a pinned test. */
+export const REFERENCE_PROMPT_TOKENS = 100_000;
 // Exceptions use only locally constructed diagnostics; refusal bodies are separately sanitized.
 class EvidenceError extends Error {}
 const evidenceReason = error => error instanceof EvidenceError ? error.message : "HTTP evidence unavailable";
@@ -261,8 +272,10 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
    const matches = catalogue.data.filter(m => m.id === model);
    const entry = matches.length === 1 ? matches[0] : undefined;
    const at = now();
-   const tariff = { model, route: provider, pricing: entry?.pricing, max_completion_tokens: Number.isSafeInteger(entry?.top_provider?.max_completion_tokens) ? Math.min(entry.top_provider.max_completion_tokens, 1024) : undefined,
-    reasoning: { mode: "bounded", max_tokens: 256 }, verifiedAt: at, expiresAt: at + 86_400_000, evidence: "CANDIDATE ONLY: attach reviewed release-test report; never auto-install" };
+   const tariff = { model, route: provider, pricing: entry?.pricing, max_completion_tokens: Number.isSafeInteger(entry?.top_provider?.max_completion_tokens) ? Math.min(entry.top_provider.max_completion_tokens, HARNESS_MAX_COMPLETION_TOKENS) : undefined,
+    reasoning: { mode: "bounded", max_tokens: HARNESS_REASONING_TOKENS }, verifiedAt: at, expiresAt: at + 86_400_000, evidence: "CANDIDATE ONLY: attach reviewed release-test report; never auto-install" };
+   // Components the catalogue left ABSENT and the harness normalized to zero (never an explicit price; see tariffEvidence).
+   tariff.assumedZero = [];
    // Catalog diagnostics contain only field names and numeric public prices, never arbitrary text.
    const failures = [];
    const safeField = key => /^[a-z][a-z0-9_]{0,63}$/u.test(key) && !containsCredential(key, env.OPENROUTER_API_KEY) ? key : "[invalid field]";
@@ -283,7 +296,6 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
    let missingReasoning = allModels && entry.reasoningBilledAtCompletion === true;
    let priceSets = [prices];
    if (allModels) {
-    tariff.assumedZero = [];
     const overrides = prices.overrides;
     if (Object.hasOwn(prices, "overrides")) {
      // Flat price patches with known token/context/time conditions. Use EVERY
@@ -298,10 +310,10 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
      } else priceSets = [prices, ...overrides.map(o => ({ ...prices, ...o }))];
     }
    }
-   if (allowlisted && !Object.hasOwn(prices, "input_cache_write") && (!allModels || priceSets.every(p => !Object.hasOwn(p, "input_cache_write")))) {
-    tariff.cacheWriteBasis = "never_requested_enforced";
-    tariff.cacheWriteEnforcementVersion = OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION;
-   }
+   // The no-write basis exists only for the relaxed list and only when the catalogue stated NO write price. In all-models mode the per-route entry
+   // carries the already-normalized six prices, so the absence is read from its recorded assumedZero (the routes' intersection), not from the prices.
+   const writeAbsent = allModels && Array.isArray(entry?.assumedZero) ? entry.assumedZero.includes("input_cache_write") : !Object.hasOwn(prices, "input_cache_write") && (!allModels || priceSets.every(p => !Object.hasOwn(p, "input_cache_write")));
+   if (allowlisted && writeAbsent) applyNoWriteBasis(tariff);
    for (const key of OPENROUTER_PRICE_KEYS) {
     const required = key === "prompt" || key === "completion";
     let maximum;
@@ -330,7 +342,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
      } catch { failures.push(fieldValue(key, value)); }
     }
     pricing[key] = maximum;
-    if (allModels && allAbsent && !required && key !== "internal_reasoning") tariff.assumedZero.push(key);
+    if (allAbsent && !required && (!allModels || key !== "internal_reasoning")) tariff.assumedZero.push(key);
    }
    if (allModels && Array.isArray(entry.assumedZero)) tariff.assumedZero = [...entry.assumedZero];
    if (missingReasoning) tariff.reasoningBilledAtCompletion = true;
@@ -352,7 +364,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
     } catch { /* Malformed auxiliary prices refuse. */ }
     if (!safe) failures.push(fieldValue(key, value) + (key === "web_search" && !allowlisted && !allModels ? " (not allowlisted)" : ""));
    }
-   if (Number.isSafeInteger(entry?.top_provider?.max_completion_tokens) && entry.top_provider.max_completion_tokens < 512) failures.push("max_completion_tokens < 512");
+   if (Number.isSafeInteger(entry?.top_provider?.max_completion_tokens) && entry.top_provider.max_completion_tokens <= HARNESS_REASONING_TOKENS) failures.push(CEILING_FLOOR_REASON);
    else if (!Number.isSafeInteger(entry?.top_provider?.max_completion_tokens)) failures.push("max_completion_tokens missing or invalid");
    tariff.pricing = pricing;
    const policy = failures.length === 0 ? qualificationPolicy(model, at, tariff, allModels) : undefined;
@@ -382,6 +394,13 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
     recordCheck(result, "priced_model", false, "every advertised rate is zero: no hold or price cap can bound or exercise it; not qualified; nothing sent");
     continue;
    }
+   // Ruling (a): the REAL row (real bounds, real prices) must pass the gateway's own validator before anything is sent, so a PASS row is
+   // installable as-is: price granularity, zero prompt/completion, id shape, reasoning/ceiling. $0. Extended ids (":" or "~") keep today's
+   // harness-only handling (ruling (d)); the install selection refuses them.
+   if (!extendedId(model) && runtimePolicyOf(tariffRow(tariff, at)) === undefined) {
+    recordCheck(result, "runtime_policy", false, "the gateway's own tariff validator (openRouterPolicy) refuses this row as installed: price granularity, zero prompt/completion, id shape or reasoning/ceiling bounds; nothing sent");
+    continue;
+   }
    result.reasoningProbe = "probe skipped: generation failed";
    let probeBody;
    for (let n = 0; n < 4; n++) {
@@ -391,19 +410,13 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
     const messages = [{ role: "user", content: reasoningProbe
      ? "Reasoning probe: Use reasoning to solve this problem before answering briefly: How many three-digit positive integers have strictly increasing digits? Explain your reasoning."
      : `Qualification ${n + 1}: What is 2 + 2? Reply with the answer in one short sentence.` }];
-    // Choose the smaller rung BEFORE sending if the tariff or remaining caps
-    // cannot cover 1024. No paid-call retry, and every send still reserves below.
-    for (const rung of [1024, 512]) {
-     if (rung > policy.max_completion_tokens) continue;
-     maxTokens = rung;
-     body = qualificationRequest({ model, messages, max_tokens: rung, stream: false }, policy);
-     if (body === undefined) throw new Error();
-     maxPromptTokens = Buffer.byteLength(JSON.stringify(body));
-     hold = qualificationHold(maxPromptTokens, rung);
-     if ((budget ? budget.exposure : exposure) + hold <= report.spendCapMicros &&
-         (budget ? budget.modelExposure : modelExposure) + hold <= (budget ? budget.modelCap : 500000)) break;
-    }
+    // ONE rung: the row's own ceiling, so every proof is at the size the gateway will hold. If the hold does not fit the caps,
+    // reserve() below refuses and nothing is sent. No paid-call retry.
+    maxTokens = policy.max_completion_tokens;
+    body = qualificationRequest({ model, messages, max_tokens: maxTokens, stream: false }, policy);
     if (body === undefined) throw new Error();
+    maxPromptTokens = Buffer.byteLength(JSON.stringify(body));
+    hold = qualificationHold(maxPromptTokens, maxTokens);
     const searchNotRequested = !Object.keys(body).some(key => /plugins|web|search|tools/iu.test(key));
     // Byte bound includes all messages and control fields; no tools, plugins, search, media or cache directives.
     if (!reserve(result, hold)) break;
@@ -567,6 +580,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
 const harnessVersion = () => createHash("sha256")
  .update(readFileSync(new URL(import.meta.url)))
  .update(readFileSync(new URL("../packages/model-gateway/dist/openrouter-policy.js", import.meta.url)))
+ .update(readFileSync(new URL("../packages/model-gateway/dist/offered-models.js", import.meta.url)))
  .update(readFileSync(new URL("../packages/model-gateway/dist/model-gateway-token.js", import.meta.url))).digest("hex");
 const validModel = model => typeof model === "string" && model.length <= 128 && /^[A-Za-z0-9~][A-Za-z0-9._~-]*\/[A-Za-z0-9~][A-Za-z0-9._~-]*(?::thinking)?$/u.test(model) && !model.startsWith("openrouter/");
 // Harness-only ID validation. The exact catalogue match above remains mandatory.
@@ -574,9 +588,18 @@ const validModel = model => typeof model === "string" && model.length <= 128 && 
 // that is outside its relaxed-price allowlist. Restore the exact ID before hashing,
 // reporting or sending; the placeholder never leaves this validation boundary.
 const qualificationModel = model => /[~:]/u.test(model) ? "qualification/catalogue-model" : model;
+const extendedId = model => /[~:]/u.test(model);
+const STRIPPED_ROW_FIELDS = ["model", "route", "pricing", "max_completion_tokens", "reasoning", "verifiedAt", "expiresAt", "evidence", "cacheWriteBasis", "cacheWriteEnforcementVersion"];
+/** The row exactly as the gateway's tariff source would hold it (no harness-only evidence fields). */
+const strippedRow = row => Object.fromEntries(STRIPPED_ROW_FIELDS.filter(key => Object.hasOwn(row, key) && row[key] !== undefined).map(key => [key, key === "pricing" || key === "reasoning" ? { ...row[key] } : row[key]]));
+/** The gateway's OWN validator over the real row at the instant just after it was verified. */
+const runtimePolicyOf = row => { try { return openRouterPolicy(row.model, row.verifiedAt + 1, [strippedRow(row)]); } catch { return undefined; } };
+const tariffRow = (tariff, at) => ({ ...tariff, verifiedAt: at, expiresAt: at + 86_400_000 });
 const qualificationPolicy = (model, now, tariff, exactPricing = false) => {
  if (!validModel(model) || tariff.model !== model) return undefined;
- const checked = openRouterPolicy(qualificationModel(model), now, [{ ...tariff, max_completion_tokens: Math.max(2048, tariff.max_completion_tokens), reasoning: { mode: "bounded", max_tokens: 1024 }, model: qualificationModel(model), ...(exactPricing ? { pricing: validationPrices } : {}) }]);
+ // Real bounds always (no placeholder bounds). Placeholders remain only for finer-than-micro rationals (exactPricing, harness-only qualification
+ // arithmetic) and for extended ids; a non-extended row is separately proven installable by the runtime_policy check.
+ const checked = openRouterPolicy(qualificationModel(model), now, [{ ...tariff, model: qualificationModel(model), ...(exactPricing ? { pricing: validationPrices } : {}) }]);
  if (!checked) return undefined;
  const value = { ...checked, model, max_completion_tokens: tariff.max_completion_tokens, reasoning: tariff.reasoning, ...(exactPricing ? { pricing: { ...tariff.pricing }, exactPricing: true } : {}) };
  delete value.hash;
@@ -584,15 +607,17 @@ const qualificationPolicy = (model, now, tariff, exactPricing = false) => {
 };
 const qualificationRequest = (body, policy) => {
  if (!validModel(body.model) || body.model !== policy.model) return undefined;
+ // A non-extended id is sent EXACTLY as the gateway sends it: the runtime's own request builder, real prices and real max_price.
+ if (!extendedId(body.model)) return openRouterRequest(body, policy);
  const model = qualificationModel(body.model);
- const checked = openRouterRequest({ ...body, model }, { ...policy, model, reasoning: { mode: "disabled" }, ...(policy.exactPricing ? { pricing: validationPrices } : {}) });
+ const checked = openRouterRequest({ ...body, model }, { ...policy, model, ...(policy.exactPricing ? { pricing: validationPrices } : {}) });
  if (!checked) return undefined;
- const provider = { ...checked.provider, order: [policy.route] };
+ const provider = { ...checked.provider };
  if (policy.exactPricing) {
   const p = policy.pricing;
   provider.max_price = { prompt: qualificationWireCap(p.prompt, true), completion: qualificationWireCap(maxPrice(p.completion, p.internal_reasoning), true), request: qualificationWireCap(p.request, false) };
  }
- return { ...checked, model: body.model, reasoning: { enabled: true, max_tokens: Math.min(policy.reasoning.max_tokens, body.max_tokens / 4) }, provider };
+ return { ...checked, model: body.model, provider };
 };
 const validRoute = route => typeof route === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(route);
 const capMicros = value => {
@@ -600,12 +625,43 @@ const capMicros = value => {
  if (amount < MICRO || amount % MICRO !== 0n || amount / MICRO > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error();
  return Number(amount / MICRO);
 };
-// Proof uses an isolated, exercised component in a real successful bill. A zero
-// catalogue rate or an unused component alone is never proof. Cache writes are
-// never exercised by this harness and therefore cannot be promoted from zero.
+// Proof uses an isolated, exercised component in a real successful bill. A zero catalogue rate or an unused
+// component alone is never proof, and a component the catalogue left ABSENT (assumedZero) is never an explicit
+// price, so it is never proven here (ruling (e)). Prompt/completion zero is unreachable: the gateway's validator
+// refuses a zero prompt or completion rate, so such a row never passes the runtime_policy check.
+/** THE ONE PLACE the zero-proof exceptions live (widen the rule here, nowhere else). */
+export const ZERO_PROOF_RULES = {
+ // Absent-from-the-catalogue components that the billed-bill proof below may still prove. ONLY `request` (controller ruling Q-B): an absent
+ // request price counts as zero because EVERY gateway call sends max_price.request = 0 together with the pinned order + only and allow_fallbacks
+ // false (openRouterRequest), so an endpoint with a request fee cannot be used; the proof below also requires that pin on every recorded call.
+ // Never widen this to a component the gateway does not cap on the wire.
+ assumedMayBeProven: ["request"],
+ // Runtime no-cache-write enforcement counts as the input_cache_write proof ONLY for the gateway's relaxed-list models, with the current
+ // enforcement version, an ABSENT catalogue write price (the only case the harness sets the basis) and ZERO reported writes on every call.
+ // The gateway never sends cache hints (hasCachingHint) and stops the source on any reported write (cacheWritesForbidden, source-stop.ts).
+ cacheWriteRuntimeEnforced: (tariff, calls) => Object.hasOwn(OPENROUTER_RELAXED_TARIFF_MODELS, tariff.model) &&
+  tariff.cacheWriteBasis === "never_requested_enforced" && tariff.cacheWriteEnforcementVersion === OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION &&
+  (tariff.assumedZero ?? []).includes("input_cache_write") && calls.length > 0 && calls.every(call => call.usage?.cache_write_tokens === 0),
+};
+/** The request the harness sent (the gateway's own) pinned the proven endpoint with no fallback and capped the request fee at zero on the wire. */
+const requestWirePinned = call => {
+ const provider = call.requestControls?.provider;
+ return provider?.max_price?.request === 0 && Array.isArray(provider.order) && provider.order.length === 1 && Array.isArray(provider.only) && provider.only.length === 1 &&
+  provider.order[0] === provider.only[0] && provider.allow_fallbacks === false;
+};
+const exactDecimal = value => { try { return openRouterDecimal(String(value)); } catch { return undefined; } };
+/** The bill reconstructs EXACTLY (zero tolerance): total == upstream == generation == prompt part + completions part, so no request fee (or any
+ * other component) was billed. The +-1 micro tolerance of consistentInferenceBreakdown is deliberately NOT used here. */
+const zeroResidualBill = call => {
+ const u = call.usage, g = call.generation, d = u?.cost_details;
+ if (!d || d.unrecognized_component_count !== 0) return false;
+ const [cost, upstream, prompt, completions, total] = [u.cost, d.upstream_inference_cost, d.upstream_inference_prompt_cost, d.upstream_inference_completions_cost, g?.total_cost].map(value => value === null || value === undefined ? undefined : exactDecimal(value));
+ return [cost, upstream, prompt, completions, total].every(value => value !== undefined) && cost === upstream && cost === total && cost === prompt + completions;
+};
 const tariffEvidence = (tariff, result) => {
  const zeroPriceProof = {};
  const observedModelIds = new Set();
+ const assumed = (tariff.assumedZero ?? []).filter(key => !ZERO_PROOF_RULES.assumedMayBeProven.includes(key));
  // Both callers publish evidence only after every call/check passes.
  for (const call of result.calls) {
   for (const actual of [call.responseModel, call.generation?.model]) {
@@ -616,15 +672,22 @@ const tariffEvidence = (tariff, result) => {
   const details = u?.cost_details;
   if (!details || details.unrecognized_component_count !== 0 || !consistentInferenceBreakdown(details)) continue;
   const proof = (component, source, exercised, billed) => {
-   if (rationalPrice(tariff.pricing[component]).n !== 0n || !exercised || !nonnegativeMoney(billed) || !equalMoney(billed, "0")) return;
+   if (assumed.includes(component) || rationalPrice(tariff.pricing[component]).n !== 0n || !exercised || !nonnegativeMoney(billed) || !equalMoney(billed, "0")) return;
    zeroPriceProof[component] ??= { attempt: call.attempt, source, billed, model: g.model, totalCost: g.total_cost };
   };
   const prompt = u.prompt_tokens, cached = u.cached_tokens;
   const output = u.completion_tokens, reasoning = u.reasoning_tokens;
-  proof("prompt", "usage.cost_details.upstream_inference_prompt_cost", prompt > 0 && cached === 0 && g.native_tokens_cached === 0 && g.native_tokens_prompt === prompt, details.upstream_inference_prompt_cost);
   proof("input_cache_read", "usage.cost_details.upstream_inference_prompt_cost", cached > 0 && cached === prompt && g.native_tokens_cached === cached && g.native_tokens_prompt === prompt, details.upstream_inference_prompt_cost);
-  proof("completion", "usage.cost_details.upstream_inference_completions_cost", output > 0 && reasoning === 0 && g.native_tokens_reasoning === 0 && g.native_tokens_completion === output, details.upstream_inference_completions_cost);
   proof("internal_reasoning", "usage.cost_details.upstream_inference_completions_cost", reasoning > 0 && reasoning === output && g.native_tokens_completion === output && g.native_tokens_reasoning === reasoning, details.upstream_inference_completions_cost);
+ }
+ const first = result.calls[0];
+ // request: explicit zero, proven only when EVERY call's bill reconstructs with zero residual.
+ if (rationalPrice(tariff.pricing.request).n === 0n && !assumed.includes("request") && result.calls.length > 0 && result.calls.every(call => zeroResidualBill(call) && requestWirePinned(call))) {
+  zeroPriceProof.request = { attempt: first.attempt, source: "usage.cost == upstream_inference_cost == generation.total_cost == prompt part + completions part on every call (zero residual)", billed: "0", model: first.generation.model, totalCost: first.generation.total_cost };
+ }
+ // input_cache_write: never exercised by this harness; only the ONE runtime-enforcement rule above can stand in for it.
+ if (rationalPrice(tariff.pricing.input_cache_write).n === 0n && ZERO_PROOF_RULES.cacheWriteRuntimeEnforced(tariff, result.calls)) {
+  zeroPriceProof.input_cache_write = { attempt: first.attempt, source: `runtime_enforced:${OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION}`, billed: "0", model: first.generation.model, totalCost: first.generation.total_cost };
  }
  const zeroes = OPENROUTER_PRICE_KEYS.filter(key => rationalPrice(tariff.pricing[key]).n === 0n);
  // PROVEN describes billing evidence only. Installation still requires review.
@@ -632,26 +695,67 @@ const tariffEvidence = (tariff, result) => {
  return { ...tariff, status, observedModelIds: [...observedModelIds].sort(), zeroPriceProof };
 };
 const tariffKey = tariff => {
- return Object.fromEntries(Object.entries(tariff).filter(([key]) => !["verifiedAt", "expiresAt", "evidence", "status", "observedModelIds", "zeroPriceProof"].includes(key)));
+ return Object.fromEntries(Object.entries(tariff).filter(([key]) => !["verifiedAt", "expiresAt", "evidence", "status", "observedModelIds", "zeroPriceProof"].includes(key)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
 };
 const signature = rows => createHash("sha256").update(JSON.stringify(rows.map(tariffKey))).digest("hex");
+// A ceiling at or below the bounded-reasoning floor is its own cause; any other tariff problem stays unpriced_component.
+const tariffCause = text => typeof text === "string" && text.length > 0 && text.split("; ").every(part => part === CEILING_FLOOR_REASON) ? "ceiling_below_runtime_floor" : "unpriced_component";
 const failureCause = result => {
  if (result.checks.hidden_charge === "FAIL") return "hidden_charge";
  if (result.checks.spend_cap === "FAIL") return "overall_cap";
  if (result.checks.per_model_cap === "FAIL") return "per_model_cap";
- if (result.checks.bounded_tariff === "FAIL") return "unpriced_component";
+ if (result.checks.bounded_tariff === "FAIL") return tariffCause(result.reasons.bounded_tariff);
  if (result.checks.priced_model === "FAIL") return "zero_priced";
+ if (result.checks.runtime_policy === "FAIL") return "runtime_policy_refused";
  if (result.calls.some(call => call.checks.identity_and_non_byok === "FAIL")) return "identity_mismatch";
  if (result.calls.some(call => call.checks.generation === "FAIL")) return "generation_lookup";
  if (result.checks.provider_honoured_max_price === "FAIL") return "price_cap_refusal";
  return "qualification_checks";
+};
+/** Install selection (rulings (c), (d), (e); pure, no network or env; data only, nothing is installed). The first failing reason wins per row:
+ * extended_id (":" or "~": refused, unchanged), offer_name (the id cannot be offered: OFFERED_MODEL_NAME), unproven_zero:<keys> (a zero component
+ * without proof: only PROVEN rows), runtime_policy_refused (the gateway's own validator refuses the stripped row). A model with two or more
+ * surviving routes is NEVER refused: the route is chosen DETERMINISTICALLY by the first difference in this ascending key
+ *   (1) openRouterHold at REFERENCE_PROMPT_TOKENS and ONE common output size = the smallest ceiling among the surviving routes (price, not ceiling),
+ *   (2) the dearer of completion / internal_reasoning price, (3) prompt price, (4) lower max_completion_tokens (stricter), (5) route tag by code-point order.
+ */
+const installRefusal = row => {
+ if (row === null || typeof row !== "object" || typeof row.model !== "string" || typeof row.route !== "string") return "runtime_policy_refused";
+ if (extendedId(row.model)) return "extended_id";
+ if (!OFFERED_MODEL_NAME.test(row.model)) return "offer_name";
+ const unproven = OPENROUTER_PRICE_KEYS.filter(key => { try { return rationalPrice(row.pricing?.[key]).n === 0n && !Object.hasOwn(row.zeroPriceProof ?? {}, key); } catch { return true; } });
+ if (row.status !== "PROVEN" || unproven.length > 0) return `unproven_zero:${unproven.join(",")}`;
+ if (runtimePolicyOf(row) === undefined) return "runtime_policy_refused";
+ return undefined;
+};
+export const selectInstallRows = rows => {
+ const installable = []; const refused = []; const surviving = new Map();
+ for (const row of Array.isArray(rows) ? rows : []) {
+  const reason = installRefusal(row);
+  if (reason !== undefined) { refused.push({ model: row?.model, route: row?.route, reason }); continue; }
+  if (!surviving.has(row.model)) surviving.set(row.model, []);
+  surviving.get(row.model).push(row);
+ }
+ for (const [model, group] of surviving) {
+  const size = Math.min(...group.map(row => row.max_completion_tokens));
+  const keyOf = row => {
+   const policy = runtimePolicyOf(row);
+   return [BigInt(openRouterHold(policy, REFERENCE_PROMPT_TOKENS, size)), openRouterDecimal(maxPrice(policy.pricing.completion, policy.pricing.internal_reasoning)), openRouterDecimal(policy.pricing.prompt), BigInt(row.max_completion_tokens), row.route];
+  };
+  const keyed = group.map(row => ({ row, key: keyOf(row) }));
+  keyed.sort((a, b) => { for (let i = 0; i < a.key.length; i++) if (a.key[i] !== b.key[i]) return a.key[i] < b.key[i] ? -1 : 1; return 0; });
+  installable.push(strippedRow(keyed[0].row));
+  for (const { row } of keyed.slice(1)) refused.push({ model, route: row.route, reason: "route_not_chosen" });
+ }
+ installable.sort((a, b) => (a.model < b.model ? -1 : a.model > b.model ? 1 : 0));
+ return { installable, refused };
 };
 /** Catalogue-wide orchestration shares the existing checks, holds and debit handling.
  * No remote catalogue URL or credential source is accepted from the command line.
  */
 async function qualifyAll(options, capturedCatalogue) {
  const { fetch: request = globalThis.fetch, env = process.env } = options;
- const report = { status: "FAIL", harnessVersion: harnessVersion(), chargedMicros: 0, preCallHoldsMicros: 0, exposureMicros: 0, spendCapMicros: 0, perModelCapMicros: 0, models: [], notReached: [], failuresByCause: {}, proposedTariffRows: [], errors: [] };
+ const report = { status: "FAIL", harnessVersion: harnessVersion(), chargedMicros: 0, preCallHoldsMicros: 0, exposureMicros: 0, spendCapMicros: 0, perModelCapMicros: 0, models: [], notReached: [], failuresByCause: {}, proposedTariffRows: [], installSelection: { installable: [], refused: [] }, errors: [] };
  const budget = { exposure: 0, modelExposure: 0, cap: 0, modelCap: 0, stop: undefined };
  let entries = [];
  const key = env.OPENROUTER_API_KEY;
@@ -718,7 +822,7 @@ async function qualifyAll(options, capturedCatalogue) {
    // Absent component assumptions and override maxima are retained on candidates.
    if (entry.estimated === true || entry.is_estimated === true) { fail(model, "unpriced_component", "catalogue tariff is estimated"); continue; }
    const catalogueTariff = await prepare(entry, "catalogue", "catalogue");
-   if (!catalogueTariff?.candidateTariff) { fail(model, "unpriced_component", "catalogue tariff unbounded: " + (catalogueTariff?.reasons.bounded_tariff ?? "invalid tariff")); continue; }
+   if (!catalogueTariff?.candidateTariff) { fail(model, tariffCause(catalogueTariff?.reasons.bounded_tariff), "catalogue tariff unbounded: " + (catalogueTariff?.reasons.bounded_tariff ?? "invalid tariff")); continue; }
    let endpoints;
    try { const response = await get(`models/${id}/endpoints`); endpoints = response?.data?.endpoints; }
    catch { fail(model, budget.stop ?? "provider_routing", "provider endpoint evidence unavailable"); if (budget.stop) report.notReached.push(id); continue; }
@@ -752,7 +856,7 @@ async function qualifyAll(options, capturedCatalogue) {
      else tariffs.push(prepared.candidateTariff);
     }
     if (failures.length > 0) {
-     model.providers.push({ route, status: "FAIL", cause: "unpriced_component", reasons: { unpriced_component: failures.join("; ") } }); continue;
+     model.providers.push({ route, status: "FAIL", cause: tariffCause(failures.join("; ")), reasons: { unpriced_component: failures.join("; ") } }); continue;
     }
     const pricing = Object.fromEntries(OPENROUTER_PRICE_KEYS.map(key => [key, tariffs.map(t => t.pricing[key]).reduce(maxPrice)]));
     const reasoningBilledAtCompletion = tariffs.some(t => t.reasoningBilledAtCompletion);
@@ -761,6 +865,7 @@ async function qualifyAll(options, capturedCatalogue) {
     const prepared = await prepare(routedEntry, route, name);
     const tariff = prepared.candidateTariff;
     tariff.assumedZero = OPENROUTER_PRICE_KEYS.filter(key => tariffs.every(t => t.assumedZero.includes(key)));
+    if (Object.hasOwn(OPENROUTER_RELAXED_TARIFF_MODELS, id) && tariff.assumedZero.includes("input_cache_write")) applyNoWriteBasis(tariff);
     eligible.push({ route, name, entry: { ...routedEntry, assumedZero: tariff.assumedZero }, tariff });
    }
    model.tariffSignature = signature(eligible.map(e => ({ ...e.tariff, providerName: e.name })).sort((a, b) => a.route.localeCompare(b.route)));
@@ -832,6 +937,7 @@ async function qualifyAll(options, capturedCatalogue) {
   for (const id of remaining) if (validModel(id) && safe(id) && !report.notReached.includes(id)) report.notReached.push(id);
  }
  report.exposureMicros = budget.exposure;
+ report.installSelection = selectInstallRows(report.proposedTariffRows);
  for (const model of report.models.filter(m => m.status === "FAIL")) {
   for (const cause of model.causes) report.failuresByCause[cause] = (report.failuresByCause[cause] ?? 0) + 1;
  }

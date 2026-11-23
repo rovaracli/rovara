@@ -164,3 +164,21 @@ it("keeps both run-8 candidates out of default and explicitly supplied pricing u
   expect(openRouterPolicy(candidate.model, candidate.expiresAt, [promoted])).toBeUndefined();
  }
 });
+
+it("A7: the validator's bounded-reasoning floor is unchanged (reasoning >= 1024 and strictly below the ceiling; request above the reasoning)", () => {
+ const bounded = (max_tokens: number, ceiling: number) => ({ ...row, max_completion_tokens: ceiling, reasoning: { mode: "bounded" as const, max_tokens } });
+ expect(openRouterPolicy(row.model, now, [bounded(1023, 2048)])).toBeUndefined();
+ expect(openRouterPolicy(row.model, now, [bounded(256, 2048)])).toBeUndefined();
+ expect(openRouterPolicy(row.model, now, [bounded(1024, 1024)])).toBeUndefined();
+ expect(openRouterPolicy(row.model, now, [bounded(1024, 1025)])).toBeDefined();
+ const policy = openRouterPolicy(row.model, now, [bounded(1024, 1025)])!;
+ const body = { model: row.model, messages: [{ role: "user", content: "x" }] };
+ expect(openRouterRequest({ ...body, max_tokens: 1025 }, policy)).toBeDefined();
+ expect(openRouterRequest({ ...body, max_tokens: 1024 }, policy)).toBeUndefined();
+ expect(openRouterRequest({ ...body, max_tokens: 1026 }, policy)).toBeUndefined();
+});
+it("Q4: the outgoing provider object pins the proven endpoint in order AND only with no fallback (exact shape)", () => {
+ const policy = openRouterPolicy(row.model, now, [row])!;
+ const sent = openRouterRequest({ model: row.model, messages: [{ role: "user", content: "x" }], max_tokens: 2048 }, policy)!;
+ expect(sent.provider).toEqual({ order: [row.route], only: [row.route], allow_fallbacks: false, require_parameters: true, max_price: { prompt: 1, completion: 3, request: 0.000004 } });
+});

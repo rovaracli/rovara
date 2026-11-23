@@ -8,7 +8,7 @@ type Report = { status: string; models: { model: string; resumed?: boolean; prov
 const { qualify } = await import(script) as { qualify: (options: Record<string, unknown>) => Promise<Report> };
 const recorded = JSON.parse(readFileSync(new URL("../fixtures/openrouter-harness-v3.json", import.meta.url), "utf8")) as { model: string; actual: string; pricing: Record<string, string> };
 const now = Date.UTC(2026, 10, 22);
-async function run(options: { actual?: unknown; answer?: unknown; pricing?: Record<string, string>; ceiling?: number; spendCap?: string; perModelCap?: string; unknown?: boolean; badCheck?: boolean; breakdown?: boolean; cached?: number; reasoning?: number; zeroOutputBill?: boolean; resumeReport?: Report; ids?: string[]; at?: number } = {}) {
+async function run(options: { actual?: unknown; answer?: unknown; pricing?: Record<string, string>; ceiling?: number; spendCap?: string; perModelCap?: string; unknown?: boolean; badCheck?: boolean; costExtra?: number; costExtraFromCall?: number; breakdown?: boolean; cached?: number; reasoning?: number; zeroOutputBill?: boolean; resumeReport?: Report; ids?: string[]; at?: number } = {}) {
  const pricing = options.pricing ?? recorded.pricing;
  const ids = options.ids ?? [recorded.model];
  const entries = ids.map(id => ({ id, pricing, supported_parameters: ["tools"], top_provider: { max_completion_tokens: options.ceiling ?? 4096 } }));
@@ -18,14 +18,14 @@ async function run(options: { actual?: unknown; answer?: unknown; pricing?: Reco
   const request = new Request(url, init);
   if (request.method !== "POST") return Response.json({ data: generation });
   const body = await request.json() as typeof bodies[number]; bodies.push(body);
-  const normalCaps = { prompt: Number(pricing.prompt) * 1e6, completion: Math.max(Number(pricing.completion), Number(pricing.internal_reasoning)) * 1e6, request: Number(pricing.request) };
+  const normalCaps = { prompt: Number(pricing.prompt) * 1e6, completion: Math.max(Number(pricing.completion), Number(pricing.internal_reasoning ?? 0)) * 1e6, request: Number(pricing.request ?? 0) };
   if (Object.entries(normalCaps).some(([key, value]) => value > 0 && body.provider.max_price[key] === 0)) return Response.json({ error: { message: "No endpoints found that satisfy the max price for this request" } }, { status: 404 });
   if (options.unknown) return new Response("unreadable");
   const cached = options.cached ?? 0;
   const reasoning = options.reasoning === 0 && bodies.length === 4 ? 8 : options.reasoning ?? 8;
-  const promptCost = (10 - cached) * Number(pricing.prompt) + cached * Number(pricing.input_cache_read);
+  const promptCost = (10 - cached) * Number(pricing.prompt) + cached * Number(pricing.input_cache_read ?? 0);
   const outputCost = options.zeroOutputBill ? 0 : 20 * Number(pricing.completion);
-  const cost = (promptCost + outputCost + Number(pricing.request)).toFixed(12);
+  const cost = (promptCost + outputCost + Number(pricing.request ?? 0) + (bodies.length >= (options.costExtraFromCall ?? 1) ? options.costExtra ?? 0 : 0)).toFixed(12);
   const actual = Object.hasOwn(options, "actual") ? options.actual : body.model;
   generation = { model: actual, provider_name: "Fixture", native_tokens_prompt: 10, native_tokens_completion: 20, native_tokens_reasoning: reasoning, native_tokens_cached: cached, total_cost: cost, is_byok: false };
   return Response.json({ id: `gen-v3-${bodies.length}`, model: Object.hasOwn(options, "answer") ? options.answer : body.model, choices: [{ message: { content: options.badCheck ? "" : "four" } }], usage: { prompt_tokens: 10, completion_tokens: 20, prompt_tokens_details: { cached_tokens: cached, cache_write_tokens: 0 }, completion_tokens_details: { reasoning_tokens: reasoning }, cost, cost_details: { upstream_inference_cost: cost, ...(options.breakdown ? { upstream_inference_prompt_cost: promptCost.toFixed(12), upstream_inference_completions_cost: outputCost.toFixed(12) } : {}) } } });
@@ -55,21 +55,32 @@ it("checks response identity independently and retains its raw dated ID", async 
  expect(good.report.models[0]!.providers[0]!.calls[0]!.responseModel).toBe(recorded.actual);
  expect((await run({ answer: "other/model" })).report.proposedTariffRows).toEqual([]);
 });
-it.each([4096, 1024, 512])("uses the 1024 then 512 ladder under endpoint ceiling %s", async ceiling => {
+it.each([[4096, 2048], [2048, 2048], [1500, 1500], [1025, 1025]])("sends every control at the row's own ceiling min(ceiling, 2048): endpoint ceiling %s -> %s", async (ceiling, expected) => {
  const r = await run({ ceiling });
  expect(r.report.status).toBe("PASS");
- expect(r.bodies.every(body => body.max_tokens === Math.min(1024, ceiling))).toBe(true);
- expect(r.bodies.every(body => body.reasoning.enabled && body.reasoning.max_tokens === body.max_tokens / 4)).toBe(true);
- expect(r.report.proposedTariffRows[0]!.max_completion_tokens).toBe(Math.min(1024, ceiling));
+ expect(r.bodies.every(body => body.max_tokens === expected)).toBe(true);
+ expect(r.bodies.every(body => body.reasoning.enabled && body.reasoning.max_tokens === 1024)).toBe(true);
+ const row = r.report.proposedTariffRows[0]!;
+ expect(row.max_completion_tokens).toBe(expected);
+ expect(row).toMatchObject({ reasoning: { mode: "bounded", max_tokens: 1024 } });
  expect(r.report.models[0]!.providers[0]!.calls).toHaveLength(4);
 });
-it("refuses ceilings below the ladder and never sends above a held budget", async () => {
- expect((await run({ ceiling: 511 })).bodies).toEqual([]);
+it.each([1024, 512, 100])("refuses an endpoint ceiling %s (not above the runtime reasoning floor) before any send", async ceiling => {
+ const r = await run({ ceiling });
+ expect(r.bodies).toEqual([]);
+ expect(r.report.status).toBe("FAIL");
+ expect(r.report.failuresByCause.ceiling_below_runtime_floor).toBe(1);
+ expect(r.report.preCallHoldsMicros).toBe(0);
+ expect(r.report.proposedTariffRows).toEqual([]);
+ expect(JSON.stringify(r.report)).toContain("below the runtime bounded-reasoning floor");
+});
+it("has one rung only: when the ceiling hold does not fit the caps nothing is sent (no smaller rung)", async () => {
  const first = await run();
  const hold = first.report.models[0]!.providers[0]!.calls[0]!.holdMicros;
  const r = await run({ spendCap: ((hold - 1) / 1e6).toFixed(6) });
- expect(r.bodies).toHaveLength(1); expect(r.bodies[0]!.max_tokens).toBe(512);
- expect(r.report.exposureMicros).toBeLessThan(hold);
+ expect(r.bodies).toEqual([]);
+ expect(r.report.failuresByCause.overall_cap).toBe(1);
+ expect(r.report.preCallHoldsMicros).toBe(0);
 });
 it("enforces a hard $0.50 per-model maximum before send, including an owner cap above it", async () => {
  const pricing = { ...recorded.pricing, request: "0.26" };
@@ -97,14 +108,77 @@ it("keeps explicitly priced zero cache components CANDIDATE without exercised bi
  expect(report.proposedTariffRows[0]!.zeroPriceProof).not.toHaveProperty("input_cache_write");
  expect(report.proposedTariffRows[0]!.zeroPriceProof).not.toHaveProperty("input_cache_read");
 });
-it("promotes billing evidence only after each zero component is isolated in billed usage", async () => {
- const pricing = { ...recorded.pricing, prompt: "0", request: "0.000001", input_cache_read: "0.000001", input_cache_write: "0.000001" };
- const unproven = await run({ pricing });
+// A non-relaxed model: an explicit zero request needs the strict bill reconstruction; its cache write is explicitly priced (never zero).
+const REQUEST_ZERO = { ...recorded.pricing, request: "0", input_cache_read: "0.000001", input_cache_write: "0.000001" };
+it("proves an explicit zero request only from a bill that reconstructs with ZERO residual on every call", async () => {
+ const unproven = await run({ pricing: REQUEST_ZERO });
  expect(unproven.report.proposedTariffRows[0]!.status).toBe("CANDIDATE");
- const proven = await run({ pricing, breakdown: true });
- expect(proven.report.proposedTariffRows[0]!.status).toBe("PROVEN");
- expect(proven.report.proposedTariffRows[0]!.zeroPriceProof.prompt).toMatchObject({ attempt: 1, source: "usage.cost_details.upstream_inference_prompt_cost" });
- expect((await run({ pricing, breakdown: true, badCheck: true })).report.proposedTariffRows).toEqual([]);
+ const proven = await run({ pricing: REQUEST_ZERO, breakdown: true });
+ const row = proven.report.proposedTariffRows[0]!;
+ expect(row.status).toBe("PROVEN");
+ expect(row.zeroPriceProof.request).toMatchObject({ attempt: 1, source: expect.stringContaining("zero residual") as string });
+ expect(Object.keys(row.zeroPriceProof)).toEqual(["request"]);
+ // One unreconciled micro-USD-scale residual (here 1e-12 USD, far below the breakdown's +-1 micro tolerance) refuses the proof.
+ const residual = await run({ pricing: REQUEST_ZERO, breakdown: true, costExtra: 1e-12 });
+ expect(residual.report.proposedTariffRows[0]!.status).toBe("CANDIDATE");
+ expect(residual.report.proposedTariffRows[0]!.zeroPriceProof).not.toHaveProperty("request");
+ expect((await run({ pricing: REQUEST_ZERO, breakdown: true, badCheck: true })).report.proposedTariffRows).toEqual([]);
+});
+it("proves a zero request only if EVERY call reconstructs: a residual on the last call (the reasoning probe) refuses it", async () => {
+ for (const from of [1, 2, 3, 4]) {
+  const r = await run({ pricing: REQUEST_ZERO, breakdown: true, costExtra: 1e-12, costExtraFromCall: from });
+  expect(r.report.proposedTariffRows[0]!.zeroPriceProof, `from call ${from}`).not.toHaveProperty("request");
+  expect(r.report.proposedTariffRows[0]!.status).toBe("CANDIDATE");
+ }
+});
+it("an ABSENT request price is proven only from the exact bill AND the gateway's zero wire cap; any other absent component never is", async () => {
+ const absent = { ...REQUEST_ZERO } as Record<string, string>; delete absent.request;
+ const r = await run({ pricing: absent, breakdown: true });
+ const row = r.report.proposedTariffRows[0]!;
+ expect(row.status).toBe("PROVEN");
+ expect(row.zeroPriceProof.request).toBeDefined();
+ expect((row as unknown as { assumedZero: string[] }).assumedZero).toContain("request");
+ // The proof recorded the wire cap it rests on: request capped at 0, pinned order and only, no fallback, on every call.
+ for (const body of r.bodies) expect(body.provider).toMatchObject({ order: ["fixture"], only: ["fixture"], allow_fallbacks: false, max_price: { request: 0 } });
+ // Without a zero-residual bill (no breakdown, or a residual) the absent request stays CANDIDATE.
+ expect((await run({ pricing: absent })).report.proposedTariffRows[0]!.status).toBe("CANDIDATE");
+ const residual = await run({ pricing: absent, breakdown: true, costExtra: 1e-12 });
+ expect(residual.report.proposedTariffRows[0]!.status).toBe("CANDIDATE");
+ // An absent READ price with fully cached input: still assumed, still never proven.
+ const noRead = { ...REQUEST_ZERO, request: "0.000001" } as Record<string, string>; delete noRead.input_cache_read;
+ const cached = await run({ pricing: noRead, cached: 10, breakdown: true });
+ expect(cached.report.proposedTariffRows[0]!.zeroPriceProof).not.toHaveProperty("input_cache_read");
+ expect(cached.report.proposedTariffRows[0]!.status).toBe("CANDIDATE");
+});
+it("a PRESENT nonzero request price is not a zero: no request proof, and the wire cap is that price", async () => {
+ const r = await run({ pricing: { ...REQUEST_ZERO, request: "0.000001" }, breakdown: true });
+ const row = r.report.proposedTariffRows[0]!;
+ expect(row.zeroPriceProof).not.toHaveProperty("request");
+ expect(r.bodies[0]!.provider.max_price.request).toBe(0.000001);
+});
+it("the zero request proof also needs the wire pin recorded on EVERY call: an edited recorded call forces requalification on resume", async () => {
+ const first = await run({ pricing: REQUEST_ZERO, breakdown: true });
+ expect(first.report.proposedTariffRows[0]!.status).toBe("PROVEN");
+ for (const edit of ["max_price", "fallbacks", "order", "order length", "only"] as const) {
+  const prior = structuredClone(first.report);
+  const provider = (prior.models[0]!.providers[0]!.calls[3] as unknown as { requestControls: { provider: Record<string, unknown> } }).requestControls.provider;
+  if (edit === "max_price") (provider.max_price as Record<string, number>).request = 0.5;
+  if (edit === "fallbacks") provider.allow_fallbacks = true;
+  if (edit === "order") provider.order = ["other"];
+  if (edit === "order length") provider.order = ["fixture", "fixture"];
+  if (edit === "only") provider.only = ["fixture", "fixture"];
+  const next = await run({ pricing: REQUEST_ZERO, breakdown: true, resumeReport: prior });
+  expect(next.bodies.length, edit).toBeGreaterThan(0);
+  expect(next.report.models[0]!.resumed, edit).not.toBe(true);
+ }
+});
+it.each([["explicit zero", "0"], ["absent", undefined]])("never proves a non-relaxed model's cache-write zero (%s): CANDIDATE", async (_name, write) => {
+ const pricing = { ...REQUEST_ZERO } as Record<string, string>; if (write === undefined) delete pricing.input_cache_write; else pricing.input_cache_write = write;
+ const r = await run({ pricing, breakdown: true });
+ const row = r.report.proposedTariffRows[0]!;
+ expect(row.status).toBe("CANDIDATE");
+ expect(row.zeroPriceProof).not.toHaveProperty("input_cache_write");
+ expect(row.zeroPriceProof).toHaveProperty("request");
 });
 it("recomputes proof on resume and rejects a forged promotion", async () => {
  const first = await run();
@@ -124,11 +198,14 @@ it.each(["spendCap", "perModelCap"])("accepts an exact %s boundary and refuses t
  expect(less.report.preCallHoldsMicros).toBeLessThan(total);
 });
 it("requires proof independently for every zero component", async () => {
- const pricing = { ...recorded.pricing, prompt: "0", request: "0.000001", input_cache_write: "0.000001" };
+ const pricing = { ...recorded.pricing, request: "0", input_cache_read: "0", input_cache_write: "0.000001" };
  const r = await run({ pricing, breakdown: true });
- expect(r.report.proposedTariffRows[0]!.zeroPriceProof).toHaveProperty("prompt");
+ expect(r.report.proposedTariffRows[0]!.zeroPriceProof).toHaveProperty("request");
  expect(r.report.proposedTariffRows[0]!.zeroPriceProof).not.toHaveProperty("input_cache_read");
  expect(r.report.proposedTariffRows[0]!.status).toBe("CANDIDATE");
+ const both = await run({ pricing, breakdown: true, cached: 10 });
+ expect(Object.keys(both.report.proposedTariffRows[0]!.zeroPriceProof).sort()).toEqual(["input_cache_read", "request"]);
+ expect(both.report.proposedTariffRows[0]!.status).toBe("PROVEN");
 });
 it("proves a zero cache-read rate only with fully cached, isolated billed input", async () => {
  const pricing = { ...recorded.pricing, request: "0.000001", input_cache_write: "0.000001" };
@@ -139,22 +216,21 @@ it("proves a zero cache-read rate only with fully cached, isolated billed input"
  expect(unused.report.proposedTariffRows[0]!.zeroPriceProof).not.toHaveProperty("input_cache_read");
  expect(unused.report.proposedTariffRows[0]!.status).toBe("CANDIDATE");
 });
-it.each(["completion", "internal_reasoning"])("isolates zero %s in the output bill", async component => {
+it("isolates zero internal_reasoning in the output bill", async () => {
+ const component = "internal_reasoning";
  const pricing = { ...recorded.pricing, request: "0.000001", input_cache_read: "0.000001", input_cache_write: "0.000001", [component]: "0" };
- const r = await run({ pricing, breakdown: true, reasoning: component === "completion" ? 0 : 20, zeroOutputBill: true });
+ const r = await run({ pricing, breakdown: true, reasoning: 20, zeroOutputBill: true });
  expect(r.report.proposedTariffRows[0]!.zeroPriceProof).toHaveProperty(component);
  expect(r.report.proposedTariffRows[0]!.status).toBe("PROVEN");
  const unproven = await run({ pricing, breakdown: true, reasoning: 8 });
  expect(unproven.report.proposedTariffRows[0]!.zeroPriceProof).not.toHaveProperty(component);
  expect(unproven.report.proposedTariffRows[0]!.status).toBe("CANDIDATE");
 });
-it.each([5, 10])("refuses zero prompt proof when cached input cannot isolate it: %s", async cached => {
- const pricing = { ...recorded.pricing, prompt: "0", request: "0.000001", input_cache_write: "0.000001" };
- const r = await run({ pricing, breakdown: true, cached });
- const row = r.report.proposedTariffRows[0]!;
- expect(row.zeroPriceProof).not.toHaveProperty("prompt");
- if (cached === 5) expect(row.zeroPriceProof).not.toHaveProperty("input_cache_read");
- expect(row.status).toBe("CANDIDATE");
+it("refuses a zero cache-read proof when only part of the input is cached", async () => {
+ const pricing = { ...recorded.pricing, request: "0.000001", input_cache_read: "0", input_cache_write: "0.000001" };
+ const r = await run({ pricing, breakdown: true, cached: 5 });
+ expect(r.report.proposedTariffRows[0]!.zeroPriceProof).not.toHaveProperty("input_cache_read");
+ expect(r.report.proposedTariffRows[0]!.status).toBe("CANDIDATE");
 });
 it("refuses reasoning proof from a mixed output bill even when the whole output bill is zero", async () => {
  const pricing = { ...recorded.pricing, internal_reasoning: "0", request: "0.000001", input_cache_read: "0.000001", input_cache_write: "0.000001" };
@@ -163,7 +239,7 @@ it("refuses reasoning proof from a mixed output bill even when the whole output 
  expect(r.report.proposedTariffRows[0]!.status).toBe("CANDIDATE");
 });
 it.each(["row proof", "provider proof", "row IDs", "provider IDs", "unrecognized details", "broken breakdown"])("refuses changed resume evidence: %s", async field => {
- const pricing = { ...recorded.pricing, prompt: "0", request: "0.000001", input_cache_read: "0.000001", input_cache_write: "0.000001" };
+ const pricing = REQUEST_ZERO;
  const first = await run({ pricing, breakdown: true });
  const provider = first.report.models[0]!.providers[0]!;
  const row = first.report.proposedTariffRows[0]!;
@@ -217,16 +293,18 @@ it("refuses a model whose every advertised rate is zero before sending anything 
  expect(r.report.proposedTariffRows).toEqual([]);
  expect(JSON.stringify(r.report)).toContain("every advertised rate is zero");
 });
-it("still holds a positive amount when only the prompt rate is zero", async () => {
+it("refuses a zero prompt rate before sending anything: the gateway validator would refuse the installed row (runtime_policy)", async () => {
  const r = await run({ pricing: { ...recorded.pricing, prompt: "0" } });
- expect(r.bodies.length).toBeGreaterThan(0);
- expect(r.report.models[0]!.providers[0]!.calls.every(call => call.holdMicros >= 1)).toBe(true);
+ expect(r.bodies).toEqual([]);
+ expect(r.report.failuresByCause.runtime_policy_refused).toBe(1);
+ expect(r.report.preCallHoldsMicros).toBe(0);
+ expect(r.report.proposedTariffRows).toEqual([]);
  expect(r.report.failuresByCause.zero_priced).toBeUndefined();
 });
-it("treats a flat per-request fee alone as a priced model with a positive hold", async () => {
+it("refuses a flat per-request fee alone (zero prompt and completion): runtime_policy, nothing sent", async () => {
  const flat = { prompt: "0", completion: "0", internal_reasoning: "0", request: "0.0001", input_cache_read: "0", input_cache_write: "0" };
  const r = await run({ pricing: flat });
- expect(r.bodies.length).toBeGreaterThan(0);
+ expect(r.bodies).toEqual([]);
+ expect(r.report.failuresByCause.runtime_policy_refused).toBe(1);
  expect(r.report.failuresByCause.zero_priced).toBeUndefined();
- expect(r.report.models[0]!.providers[0]!.calls.every(call => call.holdMicros >= 100)).toBe(true);
 });
