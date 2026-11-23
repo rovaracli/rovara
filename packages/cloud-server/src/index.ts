@@ -50,7 +50,7 @@ export { LEARNING_MODEL_ANSWERS, LEARNING_MODEL_CODE_PATH, LEARNING_MODEL_ROUTES
 export { AGENT_MODELS_ANSWERS, AGENT_MODELS_CODE_PATH, AGENT_MODELS_ROUTES, AGENT_MODELS_WORDS, AGENT_MODEL_STAGES, agentModelsChange, agentModelsRefusal, agentModelsView, modelIdentityOf, modelNameOf } from "./agent-models-routes.js";
 export { EGRESS_ADDRESSES_CODE_PATH, EGRESS_ADDRESSES_ROUTES, EGRESS_ANSWERS, EGRESS_WORDS, egressAddressesView } from "./egress-addresses-routes.js";
 export { SPEND_LIMIT_ROUTES, SPEND_LIMIT_WORDS, dollarsToMicros } from "./spend-limits-routes.js";
-export { BEDROCK_BYO_ROUTES, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";
+export { BEDROCK_BYO_ROUTES, BEDROCK_NO_QUOTA_STEPS, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";
 export { COMPANY_KEY_PROVIDERS, LEARNING_AI_OWNER, LEARNING_AI_PROVIDERS, LEARNING_AI_ROUTES, LEARNING_PAUSE_WORDS, learningSourceId } from "./learning-ai-routes.js";
 export {
   GITHUB_CALLBACK_PATH, GITHUB_CONNECT_COOKIE, GITHUB_CONNECT_TTL_MS, GITHUB_OUTCOMES, GITHUB_WORDS, githubInUseWords, githubResultKey, githubStateKey,

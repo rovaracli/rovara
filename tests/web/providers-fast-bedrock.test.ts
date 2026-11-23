@@ -51,6 +51,17 @@ it("mounts the Bedrock connection at the real AI settings route and shows served
  const f = mount({ overrides: { "/v1/app/org/bedrock": { status: 200, body: connectedBedrock } } });
  try { const card = await form(); await within(card).findByText(/claude-haiku-4-5: ready/u); expect(within(card).getByText(connectedBedrock.connection.roleArn)).toBeTruthy(); expect(f.router.state.location.pathname).toBe("/app/admin/ai-spending"); } finally { f.close(); }
 });
+it("shows a model with no AWS quota room as not usable, with what to do, and keeps the other models' states", async () => {
+ const quotaSteps = "AWS has no room for this model in your account right now: its Bedrock tokens-per-minute quota is probably 0 or used up. Choose another model, or ask AWS to raise the quota in Service Quotas, then test the connection again.";
+ const body = { ...connectedBedrock, connection: { ...connectedBedrock.connection, models: [{ name: "claude-haiku-5-5", id: "us.anthropic.claude-haiku-5-5", state: "no_quota" }, { name: "claude-haiku-4-5", id: "us.anthropic.claude-haiku-4-5-v1:0", state: "ready" }], quotaSteps } };
+ const f = mount({ overrides: { "/v1/app/org/bedrock": { status: 200, body } } });
+ try {
+  const card = await form();
+  await within(card).findByText("claude-haiku-5-5: not usable right now (AWS quota is 0 or used up)");
+  expect(within(card).getByText("claude-haiku-4-5: ready")).toBeTruthy();
+  expect(within(card).getByText(quotaSteps).getAttribute("role")).toBe("status");
+ } finally { f.close(); }
+});
 it("drops cached write authority on a failed latest read", async () => {
  let failed = false;
  const f = mount({ respond: r => r.path === "/v1/app/org/bedrock" ? failed ? { status: 403, body: { error: { code: "FORBIDDEN", message: "refused" } } } : { status: 200, body: connectedBedrock } : undefined });

@@ -47,6 +47,8 @@ const MODELS_MAX = 8;
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
 /** Shown when a model is picked but not enabled yet in the company's AWS account. */
+/** Shown when a model was throttled at the connection test: what it means and what to do, in fixed words (it never says the quota IS 0: a busy account is throttled too). */
+export const BEDROCK_NO_QUOTA_STEPS = "AWS has no room for this model in your account right now: its Bedrock tokens-per-minute quota is probably 0 or used up. Tasks on this model will fail until that is fixed. Choose another model, or ask AWS to raise the quota in Service Quotas, then test the connection again.";
 export const BEDROCK_NOT_ENABLED_STEPS = "Model not enabled yet in your AWS account. An AWS admin with AWS Marketplace rights opens the model once in the Amazon Bedrock console (Model catalog, then Open in playground). For Anthropic models before Claude Opus 4.7, also submit Anthropic's use-case form once. Then test the connection again.";
 export const BEDROCK_WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "Your own Bedrock isn't set up on this Cloud."),
@@ -115,6 +117,7 @@ function view(v: ProductAiView) {
   const source = v.sources.find((s) => s.provider === "bedrock");
   const b = source?.bedrock;
   const anyNotEnabled = b !== undefined && Object.values(b.checks).some((state) => state === "not_enabled");
+  const anyNoQuota = b !== undefined && Object.values(b.checks).some((state) => state === "no_quota");
   return {
     revision: v.revision, canChange: true,
     connection: b === undefined ? null : {
@@ -123,6 +126,7 @@ function view(v: ProductAiView) {
       models: Object.entries(b.models).map(([name, id]) => ({ name, id, state: b.checks[id] ?? "unavailable" })),
       productModels: (b.productModels ?? []).map((id) => ({ id, state: b.checks[id] ?? "unavailable" })),
       ...(anyNotEnabled ? { notEnabledSteps: BEDROCK_NOT_ENABLED_STEPS } : {}),
+      ...(anyNoQuota ? { quotaSteps: BEDROCK_NO_QUOTA_STEPS } : {}),
     },
     removedUntil: v.removed.find((r) => r.provider === "bedrock")?.recoverUntil ?? null,
     usage: "Your AWS account pays for these calls. Rovara counts them at AWS list price under your company's monthly limit; your AWS bill is the record.",

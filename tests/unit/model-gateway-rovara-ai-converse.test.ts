@@ -120,7 +120,10 @@ describe("agent loop on Rovara's AI through Converse (fakes)", () => {
 
     const exception = frame({ ":exception-type": "throttlingException", ":content-type": "application/json", ":message-type": "exception" }, Buffer.from('{"message":"slow"}'));
     const g2 = gateway("deepseek.v3.2", "deepseek.v3.2", [exception]);
-    expect((await call(g2.deps, { ...body, stream: true }, token)).status).toBe(502);
+    // A throttle before any output is the honest quota answer (429), and still free.
+    const early = await call(g2.deps, { ...body, stream: true }, token);
+    expect(early.status).toBe(429);
+    expect((JSON.parse(early.text()) as { error: { type: string } }).error.type).toBe("rate_limit_error");
     expect(g2.meter.billedCalls(claims.iss, cidA).map((l) => l.settledMicros)).toEqual([0]);
 
     // The hold for 100 output tokens at $4 a million, plus the input estimate: whatever it is, it is charged in full.
@@ -132,6 +135,12 @@ describe("agent loop on Rovara's AI through Converse (fakes)", () => {
       const [line] = g.meter.billedCalls(claims.iss, cidA);
       expect(line!.settledMicros).toBeGreaterThan(140);
     }
+    // A throttle exception AFTER output started is not the quota answer: the stream broke mid-answer, so the hold is charged (whatever the status).
+    const late = gateway("deepseek.v3.2", "deepseek.v3.2", [afterStart]);
+    const lateSink = await call(late.deps, { ...body, stream: true }, token);
+    expect(lateSink.text()).not.toContain("rate_limit_error");
+    const [lateLine] = late.meter.billedCalls(claims.iss, cidA);
+    expect(lateLine!.settledMicros).toBeGreaterThan(140);
   });
 
   it("the transport calls Claude only through InvokeModel and every other model only through Converse; nothing else is sent", async () => {

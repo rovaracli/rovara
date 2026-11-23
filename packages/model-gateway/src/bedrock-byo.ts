@@ -65,7 +65,11 @@ export interface BedrockConnection {
   productModels?: readonly string[];
 }
 /** The connection test's answer per model (bedrock-byo-sessions.ts). */
-export const BEDROCK_MODEL_CHECKS = ["ready", "not_enabled", "refused", "not_found", "unavailable"] as const;
+/**
+ * `no_quota`: Bedrock throttled the $0 check itself, which an account whose tokens-per-minute quota for the model is 0 does for every call. A busy account can be
+ * throttled too, so it is shown as "no room right now", never as a fact about the account's quota. It never stops a connection (a later test can clear it).
+ */
+export const BEDROCK_MODEL_CHECKS = ["ready", "not_enabled", "refused", "not_found", "no_quota", "unavailable"] as const;
 export type BedrockModelCheck = typeof BEDROCK_MODEL_CHECKS[number];
 /** What Settings may show (nothing here is secret; the sealed connection is the same plus the scheme). */
 export interface BedrockSummary {

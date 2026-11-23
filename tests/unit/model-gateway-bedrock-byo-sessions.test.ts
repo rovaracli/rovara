@@ -215,7 +215,14 @@ describe("the connection test", () => {
       [answer(403, '{"message":"User: arn:aws:sts::1:assumed-role/x is not authorized to perform: bedrock:InvokeModel"}'), "refused"],
       [answer(400, '{"message":"The provided model identifier is invalid."}'), "not_found"],
       [answer(404, "{}"), "not_found"],
-      [answer(429, "{}"), "unavailable"],
+      [answer(429, '{"message":"Too many tokens, please wait before trying again."}'), "no_quota"],
+      [answer(400, 'ServiceQuotaExceededException\n{"message":"quota"}'), "no_quota"],
+      [answer(400, 'ThrottlingException\nToo many tokens'), "no_quota"],
+      [answer(503, "{}"), "unavailable"],
+      // review: narrow. Only the error type the transport names FIRST (or a 429) is no_quota; AWS words that merely mention a throttle or a quota are not.
+      [answer(400, 'ValidationException\n{"message":"max_tokens must be at least 1 (see ThrottlingException and quota docs)"}'), "ready"],
+      [answer(403, 'AccessDeniedException\n{"message":"User: x is not authorized to perform: bedrock:InvokeModel (ServiceQuotaExceededException)"}'), "refused"],
+      [answer(503, 'ServiceUnavailableException\n{"message":"throttled upstream"}'), "unavailable"],
       [answer(200, '{"content":[]}'), "unavailable"],
       [async () => { throw new Error("socket"); }, "unavailable"],
     ];

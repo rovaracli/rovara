@@ -10,11 +10,12 @@ import { endpointTarget, ENDPOINT_ADDRESS_REFUSED, type EndpointTarget } from ".
 import { parseEndpointConnect, type EndpointConnection, type EndpointModel } from "./endpoint-source.js";
 import { OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS, OPENAI_AGENT_MODEL, OPENAI_AGENT_UPSTREAM, toChatCompletions, type OpenAiAgentProvider } from "./agent-openai.js";
 import type { AwsCredentials } from "./aws.js";
+import { BEDROCK_BYO_REGION } from "./bedrock-byo.js";
 import { BEDROCK_MODEL_ACCESS_WORDS } from "./bedrock-byo-sessions.js";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
 import { ANTHROPIC_KEY_AGENT_MODELS, OPENAI_KEY_AGENT_MODELS } from "./offered-models.js";
 import { invokeCall, PROVIDER_ERROR, rovaraChargeSource, rovaraGuard, rovaraProviderFailure } from "./rovara-ai-call.js";
-export { BEDROCK_ANTHROPIC_VERSION, ROVARA_AI_FEATURE, ROVARA_AI_MODEL, ROVARA_AI_MODEL_NOT_ENABLED, ROVARA_AI_UNAVAILABLE } from "./rovara-ai-call.js";
+export { BEDROCK_ANTHROPIC_VERSION, ROVARA_AI_FEATURE, ROVARA_AI_MODEL, ROVARA_AI_MODEL_NOT_ENABLED, ROVARA_AI_QUOTA, ROVARA_AI_UNAVAILABLE } from "./rovara-ai-call.js";
 import { validCaps, type Caps, type CapsSource } from "./caps.js";
 import type { EndedTasks } from "./ended.js";
 import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS, type MediaEstimate } from "./estimate.js";
@@ -42,7 +43,7 @@ export interface GatewaySink { head(status: number, headers: Readonly<Record<str
  * (task, person, project, upkeep, company), `route` the route that answered and `payer` who pays for the call's AI (the source word, set once the company's choice
  * is read). Fixed words and numbers only: never a token, key, prompt, provider text, company or task id.
  */
-export type RefusedLogReason = "bedrock_401" | "bedrock_403" | "bedrock_other" | "meter_busy" | RunPriceRefusedReason;
+export type RefusedLogReason = "bedrock_401" | "bedrock_403" | "bedrock_429" | "bedrock_other" | "meter_busy" | RunPriceRefusedReason;
 /**
  * Which run-price check refused a `run_price_authorization_required` call. Log only: the client's body, status and code never change. One fixed word per check
  * (a stable list: add, never rename): `signed_price_missing` the token carries no run price for a source that needs one; the `rovara_*`, `receipts_unavailable`
@@ -241,6 +242,11 @@ export const BYO_BEDROCK_MODEL: GuardFailure = Object.freeze({ ok: false as cons
 export const BYO_BEDROCK_REFUSED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Check your Bedrock connection: AWS refused Rovara's use of your company's role. Test the connection again in settings." });
 /** DEC 238: the model is picked but not enabled yet in the company's AWS account (its one-time access or Marketplace step). Free. */
 export const BYO_BEDROCK_MODEL_NOT_ENABLED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "model_not_enabled", message: "This model is not enabled yet in your company's AWS account. An AWS admin opens it once in the Bedrock console, then try again." });
+/**
+ * Bedrock throttled a call in the company's OWN account (HTTP 429): a model whose tokens-per-minute quota there is 0 answers every call this way. The Region
+ * comes from the company's own saved connection (a validated Region name), never from the request or the answer. Free; Anthropic's `rate_limit_error` type.
+ */
+export const byoBedrockQuota = (region: string): RouteRefusal => Object.freeze({ ok: false as const, status: 429, code: "rate_limit_error", message: `Your AWS account has no Bedrock room for this model in ${region}: its quota is used up or set to 0. Choose another model, or ask AWS to raise the quota (Service Quotas).` });
 /** DEC 240: the company chose Rovara's AI, and this gateway does not offer it. Nothing held or sent; no fallback to its key. */
 export const ROVARA_AI_OFF: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: Rovara's AI is not available on this install." });
 /** The agent route: Anthropic Messages, the R3a behaviour exactly; on the company's own key when `agentKeys` is set (DEC 236). */
@@ -539,6 +545,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         // A refusal of the role means the session is no longer good: the next call assumes it again.
         if (status === 403 && body !== undefined && BEDROCK_MODEL_ACCESS_WORDS.test(Buffer.from(body).toString("utf8"))) return { charged: false, refusal: BYO_BEDROCK_MODEL_NOT_ENABLED };
         if (status === 401 || status === 403) { byo.deps.sessions.forget(byo.row); void byo.deps.refused?.(byo.row.iss, byo.row.cid, byo.row).catch(() => undefined); return { charged: false, refusal: BYO_BEDROCK_REFUSED }; }
+        if (status === 429 && BEDROCK_BYO_REGION.test(byo.connection.region)) return { charged: false, refusal: byoBedrockQuota(byo.connection.region), reason: "bedrock_429" };
         return { charged: false, refusal: PROVIDER_ERROR };
       }
       if (rovara !== undefined) return rovaraProviderFailure(status, body);

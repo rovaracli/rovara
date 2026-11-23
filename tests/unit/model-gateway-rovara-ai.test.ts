@@ -17,7 +17,7 @@ import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway,
 import type { LearningKeySource } from "../../packages/model-gateway/src/learning-route.js";
 import type { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import type { ProviderRequest, ProviderTransport } from "../../packages/model-gateway/src/provider.js";
-import { AGENT_KEY_MISSING, AGENT_SOURCE_NOT_OFFERED, BEDROCK_ANTHROPIC_VERSION, ROVARA_AI_MODEL, ROVARA_AI_MODEL_NOT_ENABLED, ROVARA_AI_OFF, ROVARA_AI_UNAVAILABLE, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
+import { AGENT_KEY_MISSING, AGENT_SOURCE_NOT_OFFERED, BEDROCK_ANTHROPIC_VERSION, ROVARA_AI_MODEL, ROVARA_AI_MODEL_NOT_ENABLED, ROVARA_AI_OFF, ROVARA_AI_QUOTA, ROVARA_AI_UNAVAILABLE, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
 import { answer, call, caps, claims, jwk, kid, mint, now, requestBody, scope, setup } from "./model-gateway-fixture.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 
@@ -228,12 +228,36 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
       expect(await committed(g.meter)).toBe(0);
       expect(g.keySent).toEqual([]);
     }
-    for (const status of [400, 404, 408, 424, 429, 500, 503]) {
+    for (const status of [400, 404, 408, 424, 500, 503]) {
       const g = gateway({ bedrock: failing(status) }); g.choices.saved.set(cidA, "rovara");
       expect((await call(g.deps)).status).toBe(502);
       expect(await committed(g.meter)).toBe(0);
       expect(g.meter.billedCalls(claims.iss, cidA)).toMatchObject([{ settledMicros: 0 }]);
     }
+  });
+
+  it("a Bedrock throttle on Rovara's AI (a model whose quota is 0) answers an honest quota reason, free; other statuses and models are unaffected", async () => {
+    const throttled: ProviderTransport = async () => ({ status: 429, body: (async function* () { yield Buffer.from(JSON.stringify({ message: "Too many tokens, please wait before trying again. BEDROCK-CANARY arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-haiku-5-5" })); })() });
+    const g = gateway({ bedrock: throttled });
+    g.choices.saved.set(cidA, "rovara");
+    const sink = await call(g.deps);
+    expect(sink.status).toBe(429);
+    expect(error(sink)).toEqual({ type: ROVARA_AI_QUOTA.code, message: ROVARA_AI_QUOTA.message });
+    expect(ROVARA_AI_QUOTA.message).toMatch(/quota/u);
+    expect(sink.text()).not.toMatch(/BEDROCK-CANARY|arn:aws/u);
+    expect(await committed(g.meter)).toBe(0);
+    expect(g.meter.billedCalls(claims.iss, cidA)).toMatchObject([{ settledMicros: 0 }]);
+    expect(g.logs.filter((line) => (line as { event?: unknown }).event === "refused")).toEqual([
+      { event: "refused", code: "rate_limit_error", status: 429, route: "agent", payer: "rovara", reason: "bedrock_429" },
+    ]);
+    expect(JSON.stringify(g.logs)).not.toContain("BEDROCK-CANARY");
+    // The same throttle as a first stream frame (an exception before any output) is the same answer.
+    const h = gateway({ bedrock: async () => ({ status: 429, body: (async function* () { /* empty: the transport's first-frame exception */ })() }) });
+    h.choices.saved.set(cidA, "rovara");
+    expect(error(await call(h.deps))).toEqual({ type: ROVARA_AI_QUOTA.code, message: ROVARA_AI_QUOTA.message });
+    // A 500 stays the generic provider error.
+    const k = gateway({ bedrock: failing(500) }); k.choices.saved.set(cidA, "rovara");
+    expect(error(await call(k.deps))).toEqual({ type: "provider_error", message: "provider unavailable" });
   });
 
   it("logs Bedrock failure status as a fixed reason without logging the provider body", async () => {
