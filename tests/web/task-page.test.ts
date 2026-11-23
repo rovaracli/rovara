@@ -28,6 +28,7 @@ import { meFixture, navFixture } from "./support/fixtures.js";
 import { createNoticeInvalidator } from "../../packages/ui/src/realtime/invalidate.js";
 import { understandSession } from "./support/understand-fixture.js";
 import { workspaceFixture, workspaceWorkflow } from "./support/workspace-fixture.js";
+import { completeReview, feedbackSession, ownerMoney } from "./support/pr-feedback-fixture.js";
 import { CARDS, EVENTS, ID, NOW, PLAN, PROOF, QUESTION_SESSION, TASKS, decisionsView, task } from "./support/work-fixture.js";
 
 afterEach(() => { vi.useRealTimers(); });
@@ -119,7 +120,7 @@ it("uses the F318 catalogue notice only for an explicit not-served comment answe
 });
 
 // ---- The page ----
-interface Setup { path: string; tasks?: unknown[]; session?: unknown; sessionStatus?: number; cards?: unknown; send?: (request: ApiRequest) => Promise<ApiResponse>; tasksResponse?: ApiResponse; decisionsRead?: (request: ApiRequest) => Promise<ApiResponse>; identityRead?: (read: number) => ApiResponse; wikiUse?: { given: string[]; read: string[] }; planRead?: () => unknown }
+interface Setup { feedback?: () => ApiResponse; path: string; tasks?: unknown[]; session?: unknown; sessionStatus?: number; cards?: unknown; send?: (request: ApiRequest) => Promise<ApiResponse>; tasksResponse?: ApiResponse; decisionsRead?: (request: ApiRequest) => Promise<ApiResponse>; identityRead?: (read: number) => ApiResponse; wikiUse?: { given: string[]; read: string[] }; planRead?: () => unknown }
 function pageSetup(options: Setup) {
   let decisionsFailure: ApiResponse | undefined, planFailure: ApiResponse | undefined, identityReads = 0;
   const f = fakeHost(async request => {
@@ -134,6 +135,7 @@ function pageSetup(options: Setup) {
     if (path === "/v1/app/nav") return { status: 200, body: navFixture({ projects: [] }) };
     if (path === `/v1/app/projects/web/tasks/${ID.plan}/lessons`) return { status: 200, body: { lessons: [], ...(options.wikiUse === undefined ? {} : { wikiUse: options.wikiUse }) } };
     if (path === "/v1/app/projects/web/wiki") return { status: 200, body: { project: "web", state: "ready", agentsEnabled: true, pages: [{ pageId: "wiki-overview", kind: "overview", title: "<img src=x onerror=alert(1)>\u0001", summary: "", order: 0, repos: [], writtenAt: "2026-01-01T00:00:00.000Z", claims: { found: 0, changed: 0 }, flagged: false }] } };
+    if (path.endsWith("/feedback") && options.feedback !== undefined) return options.feedback();
     if (path.startsWith("/v1/app/sessions/ses_")) return path.endsWith("/events") || path.endsWith("/messages") ? { status: 200, body: path.endsWith("/events") ? { events: [] } : { messages: [] } } : options.sessionStatus !== undefined && options.sessionStatus !== 200 ? { status: options.sessionStatus, body: { error: { code: "NOT_FOUND", message: "That session isn't here." } } } : { status: 200, body: { session: options.session } };
     if (path.endsWith("/documents/plan")) return planFailure ?? { status: 200, body: options.planRead?.() ?? PLAN };
     if (path.endsWith("/evidence")) return { status: 200, body: PROOF };
@@ -391,6 +393,50 @@ it("opens a task that has a Cloud session by its id, and reads the session for t
   await screen.findByTestId("session-title");
   await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.path === `/v1/app/sessions/${SESSION}`)).toBe(true));
   expect(await screen.findByRole("button", { name: "Talk to this session" })).toBeTruthy();expect(screen.queryByTestId("stop-unavailable")).toBeNull();
+  f.close();
+});
+it("mounts the PR feedback card on the real task page: the owner's choice with its money, and the page chip and rail from the same read", async () => {
+  const session = feedbackSession("pending", { money: ownerMoney() });
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [{ ...TASKS[0]!, sessionId: SESSION }, ...TASKS.slice(1)], session, feedback: () => ({ status: 200, body: completeReview() }) });
+  const card = await screen.findByTestId("prf-pending", {}, { timeout: 4000 });
+  expect(within(card).getByRole("heading", { name: "Choose which pull request comments to fix" })).toBeTruthy();
+  expect(within(card).getByRole("button", { name: "Fix selected findings" })).toBeTruthy();
+  expect(card.textContent).toContain("charged to Priya (you)");
+  expect(screen.getByRole("list", { name: "Where this task is" }).textContent).toContain("Choose which comments to fix");
+  expect(f.request.mock.calls.some(([request]) => request.path === `/v1/app/sessions/${SESSION}/feedback`)).toBe(true);
+  f.close();
+});
+it("shows Waiting for merge on the page once the owner kept the pull request, and no feedback read is asked", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [{ ...TASKS[0]!, sessionId: SESSION }, ...TASKS.slice(1)], session: feedbackSession("kept") });
+  expect(await screen.findByTestId("prf-kept", {}, { timeout: 4000 })).toBeTruthy();
+  await waitFor(() => expect(screen.getByTestId("session-status").textContent).toContain("Waiting for merge"));
+  expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/feedback"))).toBe(false);
+  f.close();
+});
+it("a PR feedback press with no answer locks the card and says so in Where this task is; nothing is sent again", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [{ ...TASKS[0]!, sessionId: SESSION }, ...TASKS.slice(1)], session: feedbackSession("pending", { money: ownerMoney() }), feedback: () => ({ status: 200, body: completeReview() }), send: async () => ({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "down" } } }) });
+  fireEvent.click(await screen.findByRole("button", { name: "Fix selected findings" }, { timeout: 4000 }));
+  expect(await screen.findByTestId("prf-no-reply")).toBeTruthy();
+  await waitFor(() => expect(screen.getByRole("list", { name: "Where this task is" }).textContent).toContain("Your choice is not confirmed"));
+  expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/feedback-decision"))).toHaveLength(1);
+  f.close();
+});
+it("someone who can't choose sees Waiting for the owner on the page and in Where this task is, and no feedback read is asked", async () => {
+  const pending = feedbackSession("pending");
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [{ ...TASKS[0]!, sessionId: SESSION }, ...TASKS.slice(1)], session: { ...pending, you: { ...pending.you, owner: false, level: "view" } } });
+  expect(await screen.findByTestId("prf-viewer", {}, { timeout: 4000 })).toBeTruthy();
+  await waitFor(() => expect(screen.getByTestId("session-status").textContent).toContain("Waiting for Priya"));
+  expect(screen.getByRole("list", { name: "Where this task is" }).textContent).toContain("Waiting for Priya to choose");
+  expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/feedback"))).toBe(false);
+  f.close();
+});
+it("a task with no PR feedback shows no feedback card", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: [{ ...TASKS[0]!, sessionId: SESSION }, ...TASKS.slice(1)], session: workspaceFixture({}, { title: "Add a retry to the billing webhook" }) });
+  await screen.findByTestId("session-title");
+  // TOP-REVIEW-FAILURES #13: the card is a lazy chunk, so an absence is only proof once the same pane has rendered. Wait for a positive signal from it first.
+  await screen.findByRole("list", { name: "Where this task is" });
+  await waitFor(() => expect(screen.queryByTestId(/^prf-/u)).toBeNull());
+  expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/feedback"))).toBe(false);
   f.close();
 });
 it("says a task is not found for an address nobody has, an unlisted task id, or a session Cloud does not know", async () => {

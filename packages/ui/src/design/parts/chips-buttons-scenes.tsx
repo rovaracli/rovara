@@ -18,6 +18,8 @@ const examples: readonly (readonly [StatusChipProps, string])[] = [
  [{ state: "blocked" }, "Can't continue until something changes, such as a limit."],
  [{ state: "could_not_run" }, "A check or step never ran. Not a pass and not a fail."],
  [{ state: "not_run" }, "A required review that hasn't happened. Says who can run it."],
+ [{ state: "didnt_finish" }, "A step started but stopped before it finished. It may have cost money. Not a pass and not a fail."],
+ [{ state: "not_confirmed" }, "Rovara didn't hear back about a request. Check asks what was recorded; nothing is sent again."],
  [{ state: "unknown" }, "Rovara can't confirm the state yet. It is checking."],
 ];
 const darkRoles = Object.fromEntries(Object.entries(LOOK_COLORS.dark).map(([key, value]) => [`--rv-${key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`, value])) as CSSProperties;
@@ -26,7 +28,7 @@ const darkRoles = Object.fromEntries(Object.entries(LOOK_COLORS.dark).map(([key,
 export const chipsButtonsGalleryScenes = [
  { id: "statuses", title: "Status chips: the only vocabulary", render: () => <>
   <div className="rv-ds-chip-heading"><h2>Status chips: the only vocabulary</h2>
-  <p className="rv-ds-chip-intro">Fifteen states. One hue, one icon and one sentence each. Screens do not invent their own words.</p></div>
+  <p className="rv-ds-chip-intro">Seventeen states. One hue, one icon and one sentence each. Screens do not invent their own words.</p></div>
   <div className="rv-ds-panel"><dl className="rv-ds-chip-list">{examples.map(([props, description]) => <div className="rv-ds-chip-row" key={props.state}><dt><StatusChip {...props} /></dt><dd>{description}</dd></div>)}</dl></div>
   <div className="rv-ds-panel rv-ds-chip-dark" style={{ ...darkRoles, colorScheme: "dark" }}><div className="rv-ds-chip-dark-heading"><h3>The same parts in dark</h3><p className="rv-ds-meta">Only the role values change. Names, sizes and layout stay.</p></div><div className="rv-ds-chip-strip">{examples.map(([props]) => <StatusChip key={props.state} {...props} />)}</div></div>
  </> },

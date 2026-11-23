@@ -27,6 +27,7 @@ function mount(mode = "unknown", workflowStage = "PLAN") {
   if (r.path === "/v1/app/me") return { status: 200, body: meFixture() };
   if (r.method === "GET") return refusal ? { status: 403, body: { error: { code: "FORBIDDEN", message: "Task access ended" } } } : { status: 200, body: { session: view() } };
   if (mode === "done") return { status: 200, body: { session: view() } };
+  if (mode === "config") return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "choose checks that are approved for this project" } } };
   if (mode === "budget") return { status: 402, body: { error: { code: "BUDGET_EXCEEDED", message: "This task has used its run limit, so Rovara will not start more work on it. Start a new task." } } };
   return { status: 503, body: { error: { code: "UPSTREAM", message: "Result unknown" } } };
  });
@@ -175,5 +176,15 @@ for (const path of ["/s/" + id, "/app/sessions/" + id]) for (const retryOffered 
 it("a BLOCKED review without a served candidate stays held on the one review Retry", async () => {
  const s = mount("unknown", "REVIEW");try {
   const retry = await screen.findByRole<HTMLButtonElement>("button", { name: "Retry" });expect(retry.disabled).toBe(true);fireEvent.click(retry);expect(s.posts()).toHaveLength(0);expect(screen.queryByRole("button", { name: "Retry the step" })).toBeNull();
+ } finally { s.close(); }
+});
+
+it("N3 the served final configuration refusal shows Code's words and releases only that Retry", async () => {
+ const s = mount("config");try {
+  const retry = await screen.findByRole<HTMLButtonElement>("button", { name: "Retry the step" });await waitFor(() => expect(retry.disabled).toBe(false));fireEvent.click(retry);
+  await screen.findByText("choose checks that are approved for this project");
+  expect(screen.queryByText(/didn't confirm/)).toBeNull();expect(s.posts()).toHaveLength(1);
+  const me = meFixture(), scope = sessionScope({ companyId: me.org.orgId, personId: me.developer.id }, "retry:" + id);
+  expect(s.f.storage.get(scope + ":request")).toBe("null");
  } finally { s.close(); }
 });

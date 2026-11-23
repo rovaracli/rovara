@@ -1,4 +1,5 @@
 import { ProjectOverviewReaderSchema } from "@agentx/contracts/web";
+import { WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowFeedbackReviewRetryRequestSchema } from "@agentx/contracts";
 import { parseTaskMoneyV1 } from "./task-money.js";
 // The web app's API routes (/v1/app/*, which the browser calls as /v1/web/*) that Cloud answers from Rovara Code, as
 // the signed-in person. Each entry shapes Code's answer into the reader schema the app expects. The migration tracker
@@ -8,7 +9,7 @@ import type { CodeSession } from "./sessions.js";
 import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } from "./work-sessions.js";
 import { renameInSessions } from "./rename.js";
 import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
-import { approvalUrl, blockedReview, blockedStepRetry, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask, type SessionExtras } from "./session-view.js";
+import { approvalUrl, blockedReview, blockedStepRetry, feedbackChoice, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask, type SessionExtras } from "./session-view.js";
 import { CORE_ACTION_WORDS, acceptOnPage, actOnCoreSession, codeSessionOf, isCoreNotYet, noSession, pendingPlanCards, securityAcceptRefusal, type FindingsAccept } from "./core-task-actions.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError, SignInEnded, slackWorkspaceHint } from "./code-client.js";
@@ -143,6 +144,8 @@ interface CodeRepositories {
 /** Code's task view, version 2, as the app's session page reads it. */
 const TASK_VIEW = { "x-agentx-task-view": "2" };
 
+/** A feedback answer from Code that does not read as the contract (a different task, a missing field): nothing is assumed from it. */
+const feedbackUnreadable: RouteAnswer = { status: 502, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara answered in an unexpected way. Check this task again." } } };
 const sessionNotFound: RouteAnswer = { status: 404, body: { error: { code: "SESSION_NOT_FOUND", message: "That session doesn't exist, or you can't see it." } } };
 const badRequest = (message: string): RouteAnswer => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message } } });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -272,7 +275,7 @@ const planCardsRead = new WeakMap<RouteContext, Promise<ReadonlySet<string>>>();
 async function extrasOf(context: RouteContext, record: WorkSession, task: CodeTask): Promise<SessionExtras> {
   if (record.owner.developerId !== context.session.access.developerId) {
     // A live People co-owner may answer review findings or retry a blocked step (Code checks again in the move).
-    return (reviewChoices(task) !== undefined || blockedStepRetry(task) !== undefined) && await coOwnerOf(context, record) ? { coOwner: true } : {};
+    return (reviewChoices(task) !== undefined || blockedStepRetry(task) !== undefined || feedbackChoice(task)) && await coOwnerOf(context, record) ? { coOwner: true } : {};
   }
   if (waitingPlan(task) === undefined) return {};
   let cards = planCardsRead.get(context);
@@ -813,6 +816,49 @@ export const ROUTES: Route[] = [
       return ok({ session: await viewOf(context, found.record, await readTask(context, found.record.taskId), await peopleOf(context, found.record)) });
     },
   },
+  // PR feedback (CLOUD-HALF "Private app implementation"). Cloud passes the person's token and Code decides everything: who may read or decide (the live
+  // owner or an explicitly authorized co-owner), the revision and digests the press is bound to, the selection, admission and the task's money. Cloud only
+  // checks the body against Code's own request schemas (a malformed one never reaches Code) and answers with the session Code's returned task makes
+  // (the authoritative read-back). Code's refusals reach the app as Code's own status and body.
+  {
+    // Code GET .../workflow/feedback -> { review }. Collecting (no report yet) is Code's 404; the page reads that state from the task itself.
+    method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})\/feedback$/u,
+    answer: async (context) => {
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const read = await context.client.json<{ review?: unknown }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/workflow/feedback`, { headers: TASK_VIEW });
+      const review = (read as { review?: unknown } | null)?.review;
+      if (review === null || typeof review !== "object" || Array.isArray(review) || (review as { taskId?: unknown }).taskId !== record.taskId) return feedbackUnreadable;
+      return ok({ review });
+    },
+  },
+  {
+    // Code POST .../workflow/feedback-decision, the body exactly WorkflowFeedbackFindingsDecisionRequestSchema -> { task }.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/feedback-decision$/u,
+    answer: async (context) => {
+      // The company's own sessions first (another company's session is absent before anything else), then the body against Code's own schema.
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const input = WorkflowFeedbackFindingsDecisionRequestSchema.safeParse(context.body);
+      if (!input.success) return badRequest("Send the choice exactly as the feedback card made it.");
+      const answer = await context.client.json<{ task?: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/workflow/feedback-decision`, { method: "POST", headers: TASK_VIEW, body: input.data });
+      if (answer?.task?.taskId !== record.taskId) return feedbackUnreadable;
+      return ok({ session: await viewOf(context, record, answer.task, await peopleOf(context, record)) });
+    },
+  },
+  {
+    // Code POST .../workflow/feedback-retry, exactly { reviewDigest } -> { task, started }.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/feedback-retry$/u,
+    answer: async (context) => {
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const input = WorkflowFeedbackReviewRetryRequestSchema.safeParse(context.body);
+      if (!input.success) return badRequest("Send only the review to retry.");
+      const answer = await context.client.json<{ task?: CodeTask; started?: unknown }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/workflow/feedback-retry`, { method: "POST", headers: TASK_VIEW, body: input.data });
+      if (answer?.task?.taskId !== record.taskId || typeof answer.started !== "boolean") return feedbackUnreadable;
+      return ok({ session: await viewOf(context, record, answer.task, await peopleOf(context, record)), started: answer.started });
+    },
+  },
   {
     // One Retry: blocked non-review steps use Code's served workflow/retry, as owner/co-owner.
     // Review Retry retains its candidate-bound workflow/review implementation. No session fallback.
@@ -829,15 +875,24 @@ export const ROUTES: Route[] = [
       const shown = context.body as { expectedRevision?: unknown; candidateDigest?: unknown };
       if (stepRetry !== undefined) {
         if (shown.expectedRevision !== stepRetry.expectedRevision) return { status: 409, body: { error: { code: "CONFLICT", message: "This step changed since you read it. Read the task again." } } };
-        // Code's exact 402 admission refusals precede any run (owner-round/admitRound).
-        // Other failures may follow paid work and must keep the request unknown.
+        // Proven pre-dispatch refusals only. Code next 271a60202 developer-tasks.ts:
+        // 1984-1993, 2168-2173, 2464-2472; errors.ts maps CONFIG_INVALID to 400.
+        // Generic 403/404 can come from the post-apply authorization read (2206).
         const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/retry`, {
           method: "POST", headers: TASK_VIEW,
           body: { requestId, expectedRevision: shown.expectedRevision, instructions: "Retry the blocked workflow step." },
         }).catch((failure: unknown) => {
-          if (failure instanceof CodeError && failure.status === 402) {
-            const code = (failure.body as { error?: { code?: string } } | undefined)?.error?.code;
-            if (["BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "MACHINE_TIME_EXCEEDED"].includes(code ?? "")) throw failure;
+          const final: ReadonlyArray<readonly [number, string, string?]> = [
+            ...["BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "MACHINE_TIME_EXCEEDED"].map(code => [402, code] as const),
+            [400, "CONFIG_INVALID", "refresh the task and include its current revision before retrying verification"],
+            [400, "CONFIG_INVALID", "choose checks that are approved for this project"],
+            [400, "CONFIG_INVALID", "this action can retry blocked planning or coding, or run selected checks for blocked verification or a change ready to publish"],
+            [400, "CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to retry it"],
+            // NOT final (no 409 IDEMPOTENCY_CONFLICT sentence at all): "this retry is out of date; refresh the task and try again" is thrown pre-write (parity-task-actions.ts:76, 84) but ALSO via started(...) AFTER admitRound + startImplementation/startPublication (:78, :95), i.e. after a PAID round is admitted; "the verification retry is stale; ..." is also thrown AFTER commit (:88). Both stay unknown (DEC 254zzz285 lock + Check).
+          ];
+          if (failure instanceof CodeError) {
+            const error = (failure.body as { error?: { code?: unknown; message?: unknown } } | null | undefined)?.error;
+            if (final.some(([status, code, words]) => failure.status === status && error?.code === code && typeof error.message === "string" && error.message.trim() !== "" && (words === undefined || error.message === words))) throw failure;
           }
           throw new CodeError(502, { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara didn't confirm this retry. Check the task before retrying again." } });
         });
@@ -866,7 +921,7 @@ export const ROUTES: Route[] = [
       const choices = reviewChoices(found.task);
       if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to send back right now." } } };
       if (!await ownerOrCoOwner(context, found.record)) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} or a co-owner can send this back to coding.` } } };
-      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("The displayed revision and candidate digest are required.");
+      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("This page is out of date. Reload to continue.");
       const note = typeof input.note === "string" && input.note.trim() !== "" ? input.note.trim() : "Fix the review findings.";
       const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/send-back`, {
         method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, expectedRevision: input.expectedRevision, instructions: note },
@@ -888,7 +943,7 @@ export const ROUTES: Route[] = [
       const choices = reviewChoices(found.task);
       if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to accept right now." } } };
       if (!await ownerOrCoOwner(context, found.record)) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} or a co-owner can accept these findings.` } } };
-      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("The displayed revision and candidate digest are required.");
+      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0 || typeof input.candidateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidateDigest)) return badRequest("This page is out of date. Reload to continue.");
       const accept: FindingsAccept = { requestId: input.requestId, expectedRevision: input.expectedRevision as number, candidateDigest: input.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) };
       let task: CodeTask;
       try {

@@ -410,6 +410,8 @@ export const WorkflowFeedbackDecisionSchema = z.object({
   autonomy: WorkflowFeedbackAutonomySchema.optional(),
   /** The failing checks the card showed when this was decided (they are part of what the decision is bound to). */
   ciFailures: FeedbackCiFailuresSchema.optional(),
+  /** Served in the full task read only, computed by Code for the viewer (never stored): whether the person reading chose this. Absent reads as "not known to be you". */
+  decidedByYou: z.boolean().optional(),
 }).strict().superRefine((decision, context) => {
   const byRovara = decision.actorRole === "ROVARA_AUTONOMY";
   if (byRovara !== (decision.actorId === FEEDBACK_AUTONOMY_ACTOR_ID) || byRovara !== (decision.autonomy !== undefined) || (byRovara && decision.decision !== "APPROVE")) {

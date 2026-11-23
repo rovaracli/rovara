@@ -407,6 +407,9 @@ export interface ActionRefusalContext { route: string; /** Required for Merge CO
 const SESSION_ACTION = /^\/sessions\/ses_[0-9a-z]{20}\/(retry|send-back|accept-findings|answers)$/u;
 const PAID_OWNER_ROUND = /^\/sessions\/ses_[0-9a-z]{20}\/(send-back|accept-findings)$/u;
 const OWNER_ROUND = /^\/sessions\/ses_[0-9a-z]{20}\/(retry|send-back|accept-findings)$/u;
+// PR feedback (CLOUD-HALF): Code refuses these before it writes anything (core/pr-feedback/decide.ts: a refusal writes nothing); Cloud's own body check and
+// unknown session are its fixed answers. A failure after Code committed (its read-back) is any other status, and stays unknown.
+const FEEDBACK_ACTION = /^\/sessions\/ses_[0-9a-z]{20}\/feedback-(decision|retry)$/u;
 const ANSWERS_ACTION = /^(?:\/sessions\/ses_[0-9a-z]{20}|\/tasks\/[0-9a-f-]{36})\/answers$/iu;
 // Only the document gate is audited here. Other card handlers may have provider effects.
 const DOCUMENT_ACTION = /^\/decisions\/(approve_requirements|approve_plan|approve_design)\/[A-Za-z0-9_-]{1,150}\/(approve|request-changes|reject)$/u;
@@ -417,6 +420,16 @@ const documented = (path: string): boolean => ownerOrAnswer(path) || DOCUMENT_AC
 // same status/code with any other words can be Code's post-commit projection.
 const cloudValidation = (path: string, words: string): boolean => {
  if (words === "requestId must be a UUID.") return ownerOrAnswer(path);
+ // Code's workflow/retry uses 400 CONFIG_INVALID for these pre-dispatch refusals.
+ // Keep aligned with Cloud's explicit retry list (Code next 271a60202 developer-tasks.ts:1984-1993,2168-2173,2464-2472).
+ if (/^\/sessions\/ses_[0-9a-z]{20}\/retry$/u.test(path) && [
+  "refresh the task and include its current revision before retrying verification",
+  "choose checks that are approved for this project",
+  "this action can retry blocked planning or coding, or run selected checks for blocked verification or a change ready to publish",
+  "the approved ordered work plan is retained, but this broker is not enabled to retry it",
+ ].includes(words)) return true;
+ // Existing Cloud validation, before either findings route calls Code.
+ if (PAID_OWNER_ROUND.test(path) && ["The displayed revision and candidate digest are required.", "This page is out of date. Reload to continue."].includes(words)) return true;
  if (path.endsWith("/send-back")) return words === "The note is at most 1,000 characters.";
  if (path.endsWith("/accept-findings")) return words === "Give a reason of up to 500 characters for accepting the findings.";
  return ANSWERS_ACTION.test(path) && [
@@ -439,6 +452,7 @@ type FinalRefusal = readonly [(path: string) => boolean, number, string, ((conte
  * Close TASK_NOT_FOUND and People/add CHANGE_STALE can follow effects in Code itself and are deliberately absent.
  */
 const FINAL_ACTION_REFUSALS: readonly FinalRefusal[] = [
+ ...([[400, "CONFIG_INVALID"], [403, "FORBIDDEN"], [404, "NOT_FOUND"], [404, "SESSION_NOT_FOUND"], [409, "IDEMPOTENCY_CONFLICT"], [402, "BUDGET_EXCEEDED"], [402, "ORG_BUDGET_EXCEEDED"], [402, "PROJECT_BUDGET_EXCEEDED"], [402, "AGENT_BUDGET_EXCEEDED"], [402, "MACHINE_TIME_EXCEEDED"], [403, "TRIAL_LOCKED"]] as const).map(([status, code]): FinalRefusal => [path => FEEDBACK_ACTION.test(path), status, code]),
  // Only Cloud's own exact validation sentence: Code may raise other errors after effects.
  [path => /^\/sessions\/ses_[0-9a-z]{20}\/(stop|close|take-over)$/u.test(path), 400, "CONFIG_INVALID", (_context, failure) => failure.message === "requestId must be a UUID."],
  [path => /^\/sessions\/ses_[0-9a-z]{20}\/(stop|close|take-over)$/u.test(path), 404, "SESSION_NOT_FOUND"],
@@ -457,7 +471,8 @@ const FINAL_ACTION_REFUSALS: readonly FinalRefusal[] = [
  [path => SESSION_ACTION.test(path), 404, "SESSION_NOT_FOUND"],
  // Send-back/findings can commit before People reconciliation throws this code.
  // All its messages stay UNKNOWN on those routes (controller option a).
- [path => /^\/sessions\/ses_[0-9a-z]{20}\/retry$/u.test(path) || ANSWERS_ACTION.test(path), 409, "IDEMPOTENCY_CONFLICT"],
+ [path => ANSWERS_ACTION.test(path), 409, "IDEMPOTENCY_CONFLICT"],
+ // Retry 409 IDEMPOTENCY_CONFLICT: NO sentence is final (the list is empty, so there is no entry). "this retry is out of date; refresh the task and try again" is thrown pre-write (parity-task-actions.ts:76, 84) but ALSO via started(...) AFTER admitRound + startImplementation/startPublication (:78, :95), after a PAID round is admitted; "the verification retry is stale; ..." is thrown AFTER commit (:88). Both stay unknown.
  [path => /\/retry$/u.test(path) && OWNER_ROUND.test(path), 403, "SESSION_LEVEL_REQUIRED"],
  [path => /\/retry$/u.test(path) && OWNER_ROUND.test(path), 409, "CONFIG_INVALID"], [path => OWNER_ROUND.test(path), 409, "CONFLICT"],
  [path => PAID_OWNER_ROUND.test(path), 409, "PROJECT_ARCHIVED"],

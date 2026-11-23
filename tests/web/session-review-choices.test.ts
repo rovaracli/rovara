@@ -159,3 +159,57 @@ for (const code of ["IDEMPOTENCY_CONFLICT", "CONFLICT"]) for (const operation of
   expect(s.f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);
  } finally { s.close(); }
 });
+
+for (const refusal of ["The displayed revision and candidate digest are required.", "This page is out of date. Reload to continue."]) for (const operation of ["send", "accept"] as const) it(`N4 ${operation}/${refusal}: missing display pins offer a full Reload and never resend`, async () => {
+ const fixture = workspaceFixture({ status: "needs_person" }, blockedByFindings(FINDINGS));
+ const s = setup(fixture, async () => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message: refusal } } }));
+ try {
+  fireEvent.change(await screen.findByLabelText("Your note"), { target: { value: "Reviewed these findings" } });
+  const button = screen.getByRole<HTMLButtonElement>("button", { name: operation === "send" ? "Send back to coding" : "Accept and open the pull request" });
+  await waitFor(() => expect(button.disabled).toBe(false));fireEvent.click(button);
+  await screen.findByText("This page is out of date. Reload to continue.");
+  expect(screen.getByRole("link", { name: "Reload" }).getAttribute("href")).toBe("/s/" + SESSION_FIXTURE_ID);
+  expect(screen.queryByRole("button", { name: "Send back to coding" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Accept and open the pull request" })).toBeNull();
+  expect(screen.queryByText(/didn't confirm/)).toBeNull();
+  expect(s.f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);
+ } finally { s.close(); }
+});
+
+for (const [status, code, message] of [
+ [500, "CONFIG_INVALID", "The displayed revision and candidate digest are required."],
+ [409, "CONFIG_INVALID", "The displayed revision and candidate digest are required."],
+ [400, "FUTURE_CODE", "The displayed revision and candidate digest are required."],
+ [400, "CONFIG_INVALID", "The candidate changed. Read the task again."],
+] as const) it(`N4 ${status}/${code}/${message}: unrelated errors do not claim the bundle is stale`, async () => {
+ const fixture = workspaceFixture({ status: "needs_person" }, blockedByFindings(FINDINGS));
+ const s = setup(fixture, async () => ({ status, body: { error: { code, message } } }));
+ try {
+  const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Send back to coding" });
+  await waitFor(() => expect(button.disabled).toBe(false));fireEvent.click(button);
+  await screen.findByRole("alert");
+  expect(screen.queryByText("This page is out of date. Reload to continue.")).toBeNull();
+  expect(screen.queryByRole("link", { name: "Reload" })).toBeNull();
+  expect(s.f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);
+ } finally { s.close(); }
+});
+
+// Opus N4 review (5e5c29cf6): Reload must be a full document load of the new bundle, not an in-app re-read or a resend.
+for (const operation of ["send", "accept"] as const) it(`N4 review ${operation}: Reload is a plain full-page link (default not prevented, nothing resent)`, async () => {
+ const fixture = workspaceFixture({ status: "needs_person" }, blockedByFindings(FINDINGS));
+ const s = setup(fixture, async () => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "This page is out of date. Reload to continue." } } }));
+ try {
+  fireEvent.change(await screen.findByLabelText("Your note"), { target: { value: "Reviewed these findings" } });
+  const button = screen.getByRole<HTMLButtonElement>("button", { name: operation === "send" ? "Send back to coding" : "Accept and open the pull request" });
+  await waitFor(() => expect(button.disabled).toBe(false));fireEvent.click(button);
+  const link = await screen.findByRole("link", { name: "Reload" });
+  const event = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+  // Window bubble runs after React's root handlers; read the app's choice, then stop jsdom's navigation.
+  let prevented: boolean | undefined;
+  window.addEventListener("click", seen => { prevented = seen.defaultPrevented;seen.preventDefault(); }, { once: true });
+  link.dispatchEvent(event);
+  expect(prevented).toBe(false);
+  await Promise.resolve();
+  expect(s.f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);
+ } finally { s.close(); }
+});

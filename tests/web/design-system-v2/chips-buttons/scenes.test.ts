@@ -12,10 +12,10 @@ for (const theme of ["light", "dark"] as const) it(`${theme}: gallery exports th
  expect(chipsButtonsGalleryScenes.map(scene => scene.id)).toEqual(["statuses", "buttons"]);
  renderUi(h("main", null, ...chipsButtonsGalleryScenes.map(scene => h("section", { key: scene.id, "aria-label": scene.title }, scene.render()))), { theme });
  const statuses = screen.getByRole("region", { name: "Status chips: the only vocabulary" });
- expect(within(statuses).getAllByRole("img")).toHaveLength(30);
+ expect(within(statuses).getAllByRole("img")).toHaveLength(34);
  expect(within(statuses).getAllByRole("img", { name: "Not run" })).toHaveLength(2);
  expect(within(statuses).getAllByRole("img", { name: "Waiting for Ana" })).toHaveLength(2);
- expect(statuses.querySelector("dl")?.children).toHaveLength(15);
+ expect(statuses.querySelector("dl")?.children).toHaveLength(17);
  const buttons = screen.getByRole("region", { name: "Buttons" });
  expect(within(buttons).getAllByRole("button")).toHaveLength(5);
  expect(buttons.querySelectorAll(".rv-button-primary")).toHaveLength(1);
@@ -46,7 +46,7 @@ it("separates the dark sample card and keeps its title and subtitle together abo
   expect(separation).toBeLessThanOrEqual(32);
   const strip = darkCard.querySelector(".rv-ds-chip-strip")!;
   expect(getComputedStyle(strip).marginBlockStart).toBe("16px");
-  expect(strip.querySelectorAll("[role=img]")).toHaveLength(15);
+  expect(strip.querySelectorAll("[role=img]")).toHaveLength(17);
  } finally { style.remove(); }
 });
 
@@ -61,7 +61,7 @@ it("gives the status sheet its own full-width budget and a tight 12px heading ga
  try {
   renderUi(h("div", { className: "rv-ds-gallery rv-ds-isolated" }, h("section", { "data-gallery-scene": "statuses" }, chipsButtonsGalleryScenes[0].render())));
   const heading = screen.getByRole("heading", { name: "Status chips: the only vocabulary" });
-  const intro = screen.getByText(/^Fifteen states/);
+  const intro = screen.getByText(/^Seventeen states/);
   expect(heading.parentElement).toBe(intro.parentElement);
   expect(getComputedStyle(heading.parentElement!).gap).toBe("12px");
   expect(getComputedStyle(heading).marginBottom).toBe("0px");

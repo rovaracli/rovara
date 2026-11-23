@@ -15,7 +15,7 @@
 .rv-status-chip[data-hue=attention]{color:var(--rv-status-needs-you);background:var(--rv-status-needs-you-bg)}
 .rv-status-chip[data-hue=ok]{color:var(--rv-status-done);background:var(--rv-status-done-bg)}
 .rv-status-chip[data-hue=bad]{color:var(--rv-status-failed);background:var(--rv-status-failed-bg)}
-.rv-status-chip[data-state=could_not_run],.rv-status-chip[data-state=not_run]{border-style:dashed;border-color:var(--rv-border-strong);background:var(--rv-bg-raised)}
+.rv-status-chip[data-state=could_not_run],.rv-status-chip[data-state=not_run],.rv-status-chip[data-state=didnt_finish],.rv-status-chip[data-state=not_confirmed]{border-style:dashed;border-color:var(--rv-border-strong);background:var(--rv-bg-raised)}
 /* Only the status sheet escapes the app's reading column, including on phones. */
 .rv-ds-gallery>[data-gallery-scene=statuses]{--rv-chip-sheet-width:min(calc(100vw - var(--rv-gallery-gutter)*2),calc(var(--rv-table-width) + var(--rv-space-7)*3));width:var(--rv-chip-sheet-width);margin-inline:calc((100% - var(--rv-chip-sheet-width))/2)}
 .rv-ds-chip-heading{display:grid;gap:var(--rv-space-3);margin-bottom:var(--rv-space-4)}

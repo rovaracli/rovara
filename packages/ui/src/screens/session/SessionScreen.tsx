@@ -1,12 +1,12 @@
 import { TaskPageBoundary } from "./task-page-policy.js";
 import { TaskErrorBlock } from "./TaskErrorBlock.js";
-import { TaskSlotsProvider, useTaskChip } from "./task-slots.js";
+import { TaskSlotsProvider, useTaskChip, useTaskFeedbackRefused } from "./task-slots.js";
 import { TaskMark } from "./task-marks.js";
 import { TalkRefFooter } from "./TalkParts.js";
 import { useTaskAction } from "../../api/task-action.js";
 import { createApiClient } from "../../api/client.js";
 import { TaskActionNotice } from "./TaskActionNotice.js";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReadAppNav, type SessionAnchorRef } from "@agentx/contracts/web";
@@ -40,6 +40,9 @@ import { SessionControls } from "./SessionControls.js";
 import { PeoplePanel } from "./PeoplePanel.js";
 import { DecisionsCard } from "./DecisionsCard.js";
 import { MergeSection, hasMergeSection } from "./MergeSection.js";
+import { hasPrFeedback, prFeedbackPageChip, prFeedbackRail, prFeedbackSubject } from "../../api/pr-feedback.js";
+// The PR feedback card loads only on a task that has feedback to show.
+const PrFeedbackCard = lazy(async () => ({ default: (await import("./PrFeedbackCard.js")).PrFeedbackCard }));
 import { Workspace } from "./Workspace.js";
 import { DesignActions, useTaskDesign } from "./DesignActions.js";
 import { usePageVisible } from "./presence.js";
@@ -81,7 +84,7 @@ export function SessionScreen() {
 
 function TaskPageContents() {
  const id = useParams().id ?? "", bySession = SESSION_ID.test(id), byTask = TASK_ID.test(id), host = useAppHost(), query = useQueryClient(), api = useMemo(() => createTaskSessionApi(host), [host]), visible = usePageVisible();
- const identity = useSessionIdentity(host), slotChip = useTaskChip();
+ const identity = useSessionIdentity(host), slotChip = useTaskChip(), feedbackRefused = useTaskFeedbackRefused();
  const tasks = useWorkTasks(byTask && identity.data !== undefined, identity.data), decisions = useDecisions(), listed = byTask && !tasks.isError ? tasks.data?.find(entry => entry.taskId.toLowerCase() === id.toLowerCase()) : undefined;
  const sessionId = bySession ? id : listed?.sessionId;
  const scope = identity.data === undefined || sessionId === undefined ? undefined : talkScope(identity.data.companyId, identity.data.personId, sessionId);
@@ -97,6 +100,8 @@ function TaskPageContents() {
  const currentPart = selected === undefined ? undefined : session?.anchors?.find(part => part.target === selected.target && part.targetId === selected.targetId);
  const anchorKey = selected === undefined ? undefined : selected.target + ":" + selected.targetId, draftKey = identity.data === undefined ? "unread" : sessionScope(identity.data, (sessionId ?? id) + ":talk:" + (anchorKey ?? "all"));
  const talk = useSessionRequest(host, identity.data, (sessionId ?? id) + ":talk:" + (anchorKey ?? "all"));
+ // The PR feedback card's own durable record (same subject, company and person): an unanswered press says so in "Where this task is" too.
+ const feedbackPress = useSessionRequest(host, identity.data, prFeedbackSubject(sessionId ?? id));
  const [commentSeed, setCommentSeed] = useState<number>();
  const [restored, setRestored] = useState<string>(), [draftReturn, setDraftReturn] = useState<{ key: string; text: string; operation: "unsent" | "sending" | "sent" | "unknown" }>(), [messageRefusal, setMessageRefusal] = useState<{ text: string; authority: string }>();
  useEffect(() => {
@@ -232,9 +237,10 @@ function TaskPageContents() {
  }} /> : undefined} autoFocus={selected !== undefined} disabled={!writable} agent={agent} actions={selected === undefined ? session.you.actions : session.you.actions.filter(action => action !== "steer")} onSend={send} sending={sending} compact={selected === undefined && (lifecycle?.lock !== undefined && lifecycle.lock.operation !== "question" || lifecycle?.receipt?.kind === "steer" || timeline.messages.some(message => message.kind === "steer" && message.delivery !== undefined))} collapseQuestion={selected === undefined && lifecycle?.lock?.operation === "question"} collapseAlways={selected === undefined && planChange !== undefined} settleNote={lifecycle?.lock !== undefined && lifecycle.lock.operation !== "question" ? "Wait until this message is settled before writing another. Nothing else is queued." : undefined} drafts={drafts[draftKey] ?? { comment: "", steer: "" }} onDraftChange={changeDraft} /></div></div>}</>;
  })()}</>}</Dialog>;
  // The earlier tabs stay one click away; they open by themselves when the page has nothing else to offer (no decision card for a task that waits on a person, or no readable task).
+ const feedbackOn = row !== undefined && !hasAnswer && hasPrFeedback(session);
  const mergeAtTop = row !== undefined && !hasAnswer && row.decision === undefined && fullTask !== undefined && hasMergeSection(fullTask) && ["WAIT_FOR_MERGE", "MERGED"].includes(fullTask.workflow?.stage ?? "");
  const detailsOpen = row === undefined || (row.group === "you" && row.decision === undefined) || ((row.task.workflow?.stage === "WAIT_FOR_MERGE" || row.step === "pull_request") && row.decision === undefined);
- const mergeChip: "merged" | "needs_you" | "ready_to_merge" | "checking" | undefined = fullTask?.workflow?.stage === "MERGED" ? "merged" : slotChip ?? (row?.decision !== undefined && row.group === "you" ? "needs_you" : undefined);
+ const mergeChip: "merged" | "needs_you" | "ready_to_merge" | "checking" | "running" | "stopped" | "blocked" | "waiting_for_merge" | "waiting_for_owner" | undefined = fullTask?.workflow?.stage === "MERGED" ? "merged" : slotChip ?? (feedbackOn ? prFeedbackPageChip(session, feedbackRefused) : undefined) ?? (row?.decision !== undefined && row.group === "you" ? "needs_you" : undefined);
  const sessionHeld = <TaskHeldStatesView page="session" onCheck={() => { void (sessionId === undefined ? tasks : read).refetch(); }} />;
  const aboutSummary = [session?.you.owner === true ? "You own it" : undefined, row?.project !== undefined ? "Project " + visibleText(row.project) : undefined].filter((part): part is string => part !== undefined).join(" · ");
  return <section ref={root} className="rv-session rv-task-full rv-task-rebuild" data-testid="task-page" data-talk-open={open || undefined}>
@@ -247,7 +253,7 @@ function TaskPageContents() {
   {(row === undefined || hasAnswer) && conversation !== false && <div className="rv-task-bar">{conversation}</div>}
   {designTask !== undefined && <DesignActions task={designTask} sessionKey={designKey} />}
   {session !== undefined && fullTask !== undefined && <AnsweredSection session={session} task={fullTask} />}
-  {row !== undefined && !hasAnswer && <TaskPane wide retryOffered={session?.you.actions.includes("retry") ?? false} pageLocked={planComment.locked} sessionEntry={conversation} aboutSummary={aboutSummary} aboutExtra={<>{session !== undefined && <SessionFacts session={session} />}{sessionHeld}</>} primary={mergeAtTop && session !== undefined && fullTask !== undefined ? <MergeSection sessionId={session.sessionId} task={fullTask} /> : undefined} pageProjection={(byTask && tasks.isError) || (sessionId !== undefined && read.isError) || connection === "reconnecting" ? "stale" : "current"} row={row} decisionsError={decisions.isError ? decisions.error : undefined} onDecided={onDecided} planChange={planChange} steer={steer} onComment={comment} design={design} />}
+  {row !== undefined && !hasAnswer && <TaskPane wide retryOffered={session?.you.actions.includes("retry") ?? false} pageLocked={planComment.locked} sessionEntry={conversation} aboutSummary={aboutSummary} aboutExtra={<>{session !== undefined && <SessionFacts session={session} />}{sessionHeld}</>} primary={feedbackOn && session !== undefined ? <><Suspense fallback={null}><PrFeedbackCard sessionId={session.sessionId} session={session} readFailed={read.isError || read.failureCount > 0} onCheck={() => { void read.refetch(); }} /></Suspense>{mergeAtTop && fullTask !== undefined && <MergeSection sessionId={session.sessionId} task={fullTask} />}</> : mergeAtTop && session !== undefined && fullTask !== undefined ? <MergeSection sessionId={session.sessionId} task={fullTask} /> : undefined} railOverride={feedbackOn ? prFeedbackRail(session, feedbackPress.request !== undefined, feedbackRefused) : undefined} pageProjection={(byTask && tasks.isError) || (sessionId !== undefined && read.isError) || connection === "reconnecting" ? "stale" : "current"} row={row} decisionsError={decisions.isError ? decisions.error : undefined} onDecided={onDecided} planChange={planChange} steer={steer} onComment={comment} design={design} />}
   {(row === undefined || hasAnswer) && <>{sessionHeld}{session !== undefined && <SessionFacts session={session} />}</>}
   <details className="rv-task-section" open={shareRequest > 0 || undefined}><summary><TaskMark kind="chevron" /><strong>People and decisions</strong><span className="rv-task-section-summary">Task access and recorded answers</span></summary>
    <div className="rv-task-section-body">

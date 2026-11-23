@@ -39,6 +39,7 @@ const isoCallExceptions = new Map([
  ["screens/session/MergeSection.tsx:answer:acceptedAt:newDate().toISOString()", "Persisted accepted merge receipt"],
  ["screens/session/MergeSection.tsx:readAt:readiness.dataUpdatedAt>0?newDate(readiness.dataUpdatedAt).toISOString():undefined", "Input to local Clock and relative-time consumers"],
  ["screens/session/PeoplePanel.tsx:PeoplePanel:clockTime(newDate(staleSince).toISOString())", "Input to viewer-local clockTime"],
+ ["screens/session/PrFeedbackCard.tsx:when:clockTime(newDate(request.startedAt).toISOString())", "Input to viewer-local clockTime (the time the person pressed the button)"],
  ["screens/session/talk-lifecycle.ts:actionHost:startedAt:newDate(request.startedAt).toISOString()", "Pending talk request recovery record"],
  ["screens/session/talk-lifecycle.ts:lock:startedAt:newDate().toISOString()", "Pending talk request recovery record"],
  ["screens/work/WorkPreviewScreen.tsx:updated:updatedWords(newDate(tasks.dataUpdatedAt).toISOString(),now)", "Input to updatedWords relative-time formatter"],

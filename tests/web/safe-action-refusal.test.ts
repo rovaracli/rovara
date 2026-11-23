@@ -26,7 +26,7 @@ afterEach(() => { vi.restoreAllMocks();vi.useRealTimers();localStorage.clear(); 
 const finals: Array<[string, number, string, string?]> = [
  [route("retry"), 403, "FORBIDDEN", "Only Ada can retry this session."], [route("retry"), 400, "CONFIG_INVALID", "requestId must be a UUID."],
  [route("send-back"), 404, "NOT_FOUND", "this task does not have a workflow record"], [route("retry"), 404, "SESSION_NOT_FOUND"],
- [route("retry"), 409, "IDEMPOTENCY_CONFLICT"], [route("retry"), 409, "CONFLICT"],
+ [route("retry"), 409, "CONFLICT"],
  [route("retry"), 403, "SESSION_LEVEL_REQUIRED"],
  [route("retry"), 409, "CONFIG_INVALID"],
  ...["BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "MACHINE_TIME_EXCEEDED"].flatMap(code => ["app", "web"].map(alias => [`/v1/${alias}/sessions/${sid}/retry`, 402, code] as [string, number, string])),
@@ -105,6 +105,16 @@ it.each([
  expect(read).not.toHaveBeenCalled(); expect(message).not.toHaveBeenCalled();
 });
 
+// R4: neither Retry 409 IDEMPOTENCY_CONFLICT sentence is final. "this retry is out of date; ..." is thrown pre-write (:76, :84) but ALSO via started(...) AFTER admitRound + startImplementation/startPublication (:78, :95), after a paid round; the verification-stale one is thrown AFTER commit (:88).
+it.each(["/v1/app", "/v1/web"].flatMap(base => ["the verification retry is stale; refresh the task and choose checks again", "this retry is out of date; refresh the task and try again"].map(words => [`${base}/sessions/${sid}/retry`, words] as const)))("%s: 409 IDEMPOTENCY_CONFLICT %s may follow a commit or paid admit (core parity-task-actions.ts:78, 88, 95), so it stays locked with Check only", async (path, words) => {
+ const f = fixture(), before = localStorage.getItem("refusal.pending:" + subject), message = vi.fn(), read = vi.fn(async () => undefined);
+ const failure = new ApiError(409, "IDEMPOTENCY_CONFLICT", words);
+ expect(isFinalActionRefusal(failure, { route: path })).toBe(false);
+ expect(handleActionFailure({ ...f, entry: f.pending, subject, failure, route: path, pullCount: 1, message, read, readIdentity: read })).toBe("unknown");
+ expect(localStorage.getItem("refusal.pending:" + subject)).toBe(before);
+ expect(f.records.claimPending(f.pending, () => undefined, "storage").stop).toBe(true);
+ expect(read).not.toHaveBeenCalled(); expect(message).not.toHaveBeenCalled();
+});
 it("network failure and status/code lookalikes remain unknown; browser API aliases share the exact tuple", () => {
  expect(isFinalActionRefusal(new Error("lost network"), { route: route("retry") })).toBe(false);
  expect(isFinalActionRefusal({ status: 403, code: "FORBIDDEN" }, { route: route("retry") })).toBe(false);

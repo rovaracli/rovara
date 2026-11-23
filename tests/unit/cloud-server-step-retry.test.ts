@@ -60,7 +60,7 @@ for (const code of ["BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EX
 for (const [status, code] of [[402, "FUTURE_BUDGET_CODE"], [500, "BUDGET_EXCEEDED"], [409, "BUDGET_EXCEEDED"], [403, "FORBIDDEN"], [400, "CONFIG_INVALID"], [404, "TASK_NOT_FOUND"]] as const) it(`unproven retry failure ${status}/${code} stays unknown`, async () => {
  const s = await setup({ failure: status, failureCode: code });expect((await s.act()).status).toBe(502);expect(s.posts()).toHaveLength(1);
 });
-for (const rawFailure of [new Error("Connection lost"), Object.assign(new Error("Unproven transport failure"), { status: 402, body: { error: { code: "BUDGET_EXCEEDED" } } }), new CodeError(402, null), new CodeError(402, {})]) it(`untyped or unreadable retry failure stays unknown: ${JSON.stringify(rawFailure)}`, async () => {
+for (const rawFailure of [new Error("Connection lost"), Object.assign(new Error("Unproven transport failure"), { status: 402, body: { error: { code: "BUDGET_EXCEEDED", message: "A forged refusal" } } }), new CodeError(402, null), new CodeError(402, {})]) it(`untyped or unreadable retry failure stays unknown: ${JSON.stringify(rawFailure)}`, async () => {
  const s = await setup({ rawFailure });expect((await s.act()).status).toBe(502);expect(s.posts()).toHaveLength(1);
 });
 it("review Retry keeps its existing candidate-bound route", async () => {
@@ -75,4 +75,41 @@ it("the session read offers the same Retry to a live co-owner, and no Retry to a
   const result = await route.answer(s.context), view = (result.body as { session: { you: { actions: string[] } } }).session;
   expect(view.you.actions.includes("retry")).toBe(coOwner);expect(s.posts()).toHaveLength(0);
  }
+});
+
+for (const [status, code, message] of [
+ [400, "CONFIG_INVALID", "choose checks that are approved for this project"],
+ [400, "CONFIG_INVALID", "refresh the task and include its current revision before retrying verification"],
+ [400, "CONFIG_INVALID", "this action can retry blocked planning or coding, or run selected checks for blocked verification or a change ready to publish"],
+ [400, "CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to retry it"],
+] as const) it(`N3 final step refusal ${status}/${code} preserves Code's complete answer`, async () => {
+ const body = { error: { code, message } }, s = await setup({ rawFailure: new CodeError(status, body) });
+ expect(await s.act()).toEqual({ status, body });expect(s.posts()).toHaveLength(1);
+});
+
+for (const [status, code, message] of [
+ [500, "CONFIG_INVALID", "choose checks that are approved for this project"],
+ [400, "FUTURE_CODE", "choose checks that are approved for this project"],
+ [400, "CONFIG_INVALID", "Post-apply projection refused"],
+ [408, "CONFIG_INVALID", "choose checks that are approved for this project"],
+ [429, "CONFIG_INVALID", "choose checks that are approved for this project"],
+ [402, "BUDGET_EXCEEDED", ""], [402, "BUDGET_EXCEEDED", "   "],
+ [402, "BUDGET_EXCEEDED", 12],
+ // Same final status/code with OTHER words (Code developer-tasks.ts:562, 1962, 1977 are replay/identity conflicts), and status/code swaps.
+ [409, "IDEMPOTENCY_CONFLICT", "this retry request ID was already used for a different check selection"],
+ [409, "IDEMPOTENCY_CONFLICT", "this request ID was already used for another retry"],
+ [409, "IDEMPOTENCY_CONFLICT", "this retry request ID was already used for a different recovery request"],
+ [409, "IDEMPOTENCY_CONFLICT", "this retry is out of date"],
+ // R4: thrown pre-write (parity-task-actions.ts:76, 84) but ALSO via started(...) AFTER a paid round is admitted (:78, :95): never final, stays locked (Check only).
+ [409, "IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again"],
+ [409, "CONFIG_INVALID", "choose checks that are approved for this project"],
+ [400, "IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again"],
+ [409, "CONFIG_INVALID", "this retry is out of date; refresh the task and try again"],
+ [400, "IDEMPOTENCY_CONFLICT", "the verification retry is stale; refresh the task and choose checks again"],
+ [500, "IDEMPOTENCY_CONFLICT", "the verification retry is stale; refresh the task and choose checks again"],
+ // Core route parity-task-actions.ts:88 throws this AFTER the retry committed: never final, stays locked (Check only).
+ [409, "IDEMPOTENCY_CONFLICT", "the verification retry is stale; refresh the task and choose checks again"],
+] as const) it(`N3 unproven or unreadable refusal ${status}/${code}/${String(message)} remains unknown`, async () => {
+ const s = await setup({ rawFailure: new CodeError(status, { error: { code, message } }) });
+ expect((await s.act()).status).toBe(502);expect(s.posts()).toHaveLength(1);
 });
