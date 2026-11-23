@@ -8,7 +8,8 @@ import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
 import { DEFAULT_ORG_MONTHLY_BUDGET_USD } from "../../packages/contracts/src/org-budget.js";
-import { appRoutes } from "../../packages/ui/src/routes.js";
+// LEGACY HARNESS (WIRING-1B): this pinned test drives the screen that used to be mounted at /app/admin/{money/report,ai-spending,product-ai}; see support/legacy-admin-routes.ts.
+import { appRoutes } from "./support/legacy-admin-routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
@@ -123,7 +124,7 @@ describe("the company step, AI and spending", () => {
   const c = company({ cap: 500_000_000, source: null, model: null });
   let connected = false;
   const f = mountRoute("/app/admin/ai-spending", r => {
-   if (r.path === "/v1/app/org/learning-ai/key" && r.method === "PUT") { connected = true; return { status: 200, body: { revision: 1 } }; }
+   if (r.path === "/v1/app/org/learning-ai/key" && r.method === "PUT") { connected = true; return { status: 200, body: { revision: 1, accounts: { anthropic: { connected } }, removed: [], pausedNow: [], pauseReasons: [] } }; }
    if (r.path === "/v1/app/org/learning-ai") return { status: 200, body: { revision: connected ? 1 : 0, accounts: { anthropic: { connected }, openai: { connected: false }, gemini: { connected: false } }, removed: [], pausedNow: [], pauseReasons: [] } };
    if (r.path === "/v1/app/org/agent-ai" && r.method === "GET" && c.state.source === null) return { status: 200, body: { ...agentAi(null, 0), anthropicKeyConnected: connected, bedrockConnected: false, effectiveSource: connected ? "anthropic_key" : "rovara", sourceIsDefault: true } };
    return c.respond(r);

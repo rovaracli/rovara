@@ -4,7 +4,8 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema } from "@agentx/contracts/web";
-import { appRoutes } from "../../packages/ui/src/routes.js";
+// LEGACY HARNESS (WIRING-1B): this pinned test drives the screen that used to be mounted at /app/admin/{money/report,ai-spending,product-ai}; see support/legacy-admin-routes.ts.
+import { appRoutes } from "./support/legacy-admin-routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
@@ -97,5 +98,75 @@ it("responds to a persisted unknown change in another tab without granting anoth
   await within(card).findByText(/Rovara didn't confirm/u);
   expect(within(card).queryByRole("button", { name: "Remove Bedrock connection" })).toBeNull();
   expect(f.request.mock.calls.filter(([r]) => r.method !== "GET")).toHaveLength(0);
+ } finally { f.close(); localStorage.clear(); }
+});
+it("a malformed pending Bedrock body never unlocks on a newer read", async () => {
+ localStorage.clear();
+ localStorage.setItem(`bedrock:${orgId}:${developerId}:connection`, JSON.stringify({ requestId: "pending-fixture", expectedRevision: 0, startedAt: Date.now() }));
+ const f = mount({ overrides: { "/v1/app/org/bedrock": { status: 200, body: connectedBedrock } } });
+ try {
+  const card = await form(); await within(card).findByText("Couldn't read the current Bedrock connection. Check again.");
+  expect(within(card).queryByRole("button", { name: "Remove Bedrock connection" })).toBeNull();
+  expect(f.request.mock.calls.filter(([r]) => r.method !== "GET")).toHaveLength(0);
+ } finally { f.close(); localStorage.clear(); }
+});
+it("Bedrock's extracted identity check refuses a company switch before Remove", async () => {
+ localStorage.clear();
+ const f = mount({ overrides: { "/v1/app/org/bedrock": { status: 200, body: connectedBedrock } } });
+ try {
+  const card = await form(), remove = await within(card).findByRole("button", { name: "Remove Bedrock connection" });
+  f.identity.org.orgId = "org_bbbbbbbbbbbbbbbbbbbb";
+  fireEvent.click(remove); await within(card).findByText("Couldn't verify the current connection. Check again.");
+  expect(f.request.mock.calls.filter(([r]) => r.method !== "GET")).toHaveLength(0);
+ } finally { f.close(); localStorage.clear(); }
+});
+
+for (const method of ['PUT', 'DELETE', 'POST'] as const) it.each([
+ [400, 'CONFIG_INVALID', 'This Bedrock connection is not valid. Check the role ARN, the Region and the models.'],
+ [403, 'FORBIDDEN', "Only a company admin can see or change the company's Bedrock connection."],
+ [404, 'NOT_FOUND', 'No Bedrock connection is saved for this company.'],
+ [409, 'CONFLICT', 'The Bedrock connection changed. Refresh and try again.'],
+ [413, 'CONFIG_INVALID', 'The request is too large.'],
+] as const)(`${method}: a clean %s %s Bedrock refusal releases the hold and preserves the server words`, async (status, code, message) => {
+ localStorage.clear(); let sends = 0;
+ const recovered = { ...emptyBedrock, revision: 1, removedUntil: Date.now() + 86_400_000 };
+ const initial = method === 'PUT' ? emptyBedrock : method === 'POST' ? recovered : connectedBedrock;
+ const f = mount({ respond: r => {
+  if (r.path === '/v1/app/org/bedrock/setup/us-west-2') return { status: 200, body: setupBedrock };
+  if (r.path === '/v1/app/org/bedrock' || r.path === '/v1/app/org/bedrock/recover') {
+   if (r.method === 'GET') return { status: 200, body: initial };
+   sends += 1;
+   return sends === 1 ? { status, body: { error: { code, message } } } : { status: 200, body: { ...connectedBedrock, revision: 2 } };
+  }
+  return undefined;
+ } });
+ try {
+  const card = await form();
+  if (method === 'PUT') {
+   fireEvent.click(await within(card).findByRole('button', { name: 'Load Bedrock models' }));
+   fireEvent.click(await within(card).findByLabelText('claude-haiku-4-5'));
+   fireEvent.change(within(card).getByLabelText('Bedrock role ARN'), { target: { value: 'arn:aws:iam::123456789012:role/RovaraBedrockInvoke-fixture' } });
+  }
+  const name = method === 'PUT' ? 'Check and save Bedrock' : method === 'DELETE' ? 'Remove Bedrock connection' : 'Recover Bedrock connection';
+  fireEvent.click(await within(card).findByRole('button', { name }));
+  await within(card).findByText(message);
+  expect(within(card).queryByText(/Rovara didn't confirm/u)).toBeNull();
+  expect(localStorage.getItem(`bedrock:${orgId}:${developerId}:connection`)).toBe('');
+  expect(sends).toBe(1);
+  const resubmit = within(card).getByRole('button', { name }); fireEvent.click(resubmit); fireEvent.click(resubmit);
+  await waitFor(() => expect(sends).toBe(2));
+  await waitFor(() => expect(within(card).queryByText(/Rovara didn't confirm/u)).toBeNull());
+  expect(sends).toBe(2);
+ } finally { f.close(); localStorage.clear(); }
+});
+
+it("keeps a Bedrock 500 CONFIG_INVALID held even though its code matches a clean refusal", async () => {
+ localStorage.clear();
+ const f = mount({ respond: r => r.path === "/v1/app/org/bedrock" ? r.method === "DELETE" ? { status: 500, body: { error: { code: "CONFIG_INVALID", message: "Unproven refusal." } } } : { status: 200, body: connectedBedrock } : undefined });
+ try {
+  const card = await form(); fireEvent.click(await within(card).findByRole("button", { name: "Remove Bedrock connection" }));
+  await within(card).findByText(/Rovara didn't confirm/u);
+  expect(within(card).queryByRole("button", { name: "Remove Bedrock connection" })).toBeNull();
+  expect(f.request.mock.calls.filter(([r]) => r.method === "DELETE")).toHaveLength(1);
  } finally { f.close(); localStorage.clear(); }
 });

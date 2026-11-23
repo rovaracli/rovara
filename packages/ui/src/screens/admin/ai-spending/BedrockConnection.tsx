@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AppMeResponseReaderSchema } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../../../host.js";
 import type { Reader } from "../../../api/client.js";
 import { ApiError, apiError } from "../../../api/errors.js";
@@ -8,6 +7,7 @@ import { bedrockView, bedrockSetup, bedrockCommand, type BedrockView } from "../
 import { viewerTime } from "../../../design/viewer-time.js";
 import { Button } from "../../../design/Button.js";
 import { useAdminContext } from "../AdminLayout.js";
+import { connectionHoldAt, connectionIdentity, CONNECTION_UNKNOWN, isConnectionRefusal, observeConnectionHold, persistConnectionHold } from "./connection-change.js";
 
 type Lock = { requestId: string; expectedRevision: number; body: Record<string, unknown>; startedAt: number };
 type State = { sequence: number; read?: BedrockView | undefined; error?: string | undefined; busy: boolean; lock?: Lock | undefined };
@@ -21,11 +21,10 @@ function storeFor(key: string) {
   set: (patch: Partial<State>) => { value.state = { ...value.state, ...patch }; value.listeners.forEach(fn => fn()); } };
 }
 const PATH = "/v1/app/org/bedrock";
-const unknown = "Rovara didn't confirm this yet. Check the connection before making another change.";
+const unknown = CONNECTION_UNKNOWN;
 function lockAt(storage: AppHost["storage"], key: string): Lock | undefined {
- const raw = storage.get(key); if (raw === undefined || raw === "") return undefined;
- const value = JSON.parse(raw) as Lock;
- if (typeof value.requestId !== "string" || !Number.isSafeInteger(value.expectedRevision) || !value.body || !Number.isFinite(value.startedAt)) throw new Error("Unreadable pending change");
+ const value = connectionHoldAt(storage, key) as Lock | undefined;
+ if (value && !value.body) throw new Error("Unreadable pending change");
  return value;
 }
 export function BedrockConnection() {
@@ -44,8 +43,7 @@ function BedrockForm() {
  const [command, setCommand] = useState<string>(), [notice, setNotice] = useState<string>();
  const allowed = fresh && !context.checking && (context.role === "owner" || context.role === "admin") && !state.error && state.read?.canChange === true && !state.busy && !state.lock;
  async function identity() {
-  const me = await get("/v1/app/me", AppMeResponseReaderSchema);
-  if (me.org.orgId !== context.orgId || me.developer.id !== context.developerId || !["owner", "admin"].includes(me.developer.orgRole)) throw new Error("Company access changed. Reload to check access.");
+  await connectionIdentity(host, context);
  }
  async function read() {
   const sequence = store.get().sequence + 1; store.set({ sequence, busy: true }); setNotice(undefined);
@@ -54,7 +52,7 @@ function BedrockForm() {
    if (sequence !== store.get().sequence) return;
    const lock = lockAt(host.storage, key);
    // A post-write read of a strictly newer revision is an observed outcome, never attribution to our write.
-   if (lock && value.revision > lock.expectedRevision) { host.storage.set(key, ""); store.set({ lock: undefined }); }
+   if (lock && observeConnectionHold(host.storage, key, lock, value.revision)) { store.set({ lock: undefined }); }
    else store.set({ lock });
    store.set({ read: value, error: undefined, busy: false }); setFresh(true);
   } catch { if (sequence === store.get().sequence) store.set({ error: "Couldn't read the current Bedrock connection. Check again.", busy: false }); }
@@ -97,7 +95,7 @@ function BedrockForm() {
    if (lockAt(host.storage, key)) { store.set({ lock: lockAt(host.storage, key) }); return; }
    const body = { requestId: crypto.randomUUID(), expectedRevision: current.revision, ...(method === "PUT" ? { roleArn, region, models, allowGlobal: false } : {}) };
    const lock = { requestId: body.requestId, expectedRevision: current.revision, body, startedAt: Date.now() };
-   try { const value = JSON.stringify(lock); host.storage.set(key, value); if (host.storage.get(key) !== value) throw new Error("persistence unavailable"); } catch { setNotice("This change can't be made safely in this browser."); return; }
+   try { persistConnectionHold(host.storage, key, lock); } catch { setNotice("This change can't be made safely in this browser."); return; }
    store.set({ lock }); sent = true;
    const response = await host.transport.request({ method, path: method === "POST" ? `${PATH}/recover` : PATH, body, retry: "never" });
    if (response.status !== 200) throw apiError(response.status, response.body, host.origin);
@@ -108,6 +106,7 @@ function BedrockForm() {
    await query.invalidateQueries({ queryKey: ["ai-spend", context.orgId, context.developerId, context.role, "agent-ai"], exact: true });
   } catch (error) {
    if (error instanceof ApiError && ["CSRF_INVALID", "CSRF_STALE"].includes(error.code)) { host.storage.set(key, ""); store.set({ lock: undefined, error: "Couldn't change that. Check your sign-in and try again." }); }
+   else if (sent && isConnectionRefusal(error, method === "POST" ? `${PATH}/recover` : PATH)) { host.storage.set(key, ""); store.set({ lock: undefined }); setNotice(error.message); }
    else if (sent) setNotice(unknown);
    else store.set({ error: "Couldn't verify the current connection. Check again." });
   } finally { if (sequence === store.get().sequence) store.set({ busy: false }); }

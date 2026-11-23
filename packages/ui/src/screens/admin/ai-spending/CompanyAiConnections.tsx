@@ -10,17 +10,23 @@ import { CompanyKeyConnections } from "../learning-ai/LearningAiScreen.js";
 import { modelSourcesSnapshot, sourceLabel } from "../models/source-order.js";
 import { SourceOrderEditor } from "../models/SourceOrderEditor.js";
 import { ReadSection, useAdminRead } from "../models/read.js";
+import { UnfencedHost } from "./UnfencedHost.js";
+
+/** Connect company AI: the Anthropic / provider keys, the own endpoint and Bedrock. One component for setup's card and for G2's "Connect company AI" dialog. */
+export function CompanyAiConnect() {
+ const endpoint = useAdminRead("agent-connection", AGENT_AI_PATH, { parse: readAgentAi });
+ return <UnfencedHost><CompanyKeyConnections />
+   <ReadSection read={endpoint} label="Own endpoint connection">{settings => settings.listed.includes("custom_endpoint") && settings.keysRevision !== null ? <Endpoint key={settings.keysRevision} settings={settings} reload={() => { void endpoint.refetch(); }} /> : <p>Own endpoint connection is not available on this Rovara.</p>}</ReadSection>
+   <BedrockConnection /><p>Own Bedrock uses Claude for agents. <Link to="/app/admin/product-ai">Your app's tests: project AI connections</Link></p>
+ </UnfencedHost>;
+}
 
 export function CompanyAiConnections({ children }: { children?: ReactNode }) {
  const context = useAdminContext();
  const sources = useAdminRead("sources", "/v1/app/org/model-sources", modelSourcesSnapshot.extend({ orgId: z.literal(context.orgId).optional(), developerId: z.literal(context.developerId).optional() }));
- const endpoint = useAdminRead("agent-connection", AGENT_AI_PATH, { parse: readAgentAi });
  return <section id="ai-connections" aria-label="Company AI connections">
   <h2>Company AI connections</h2>
-  <details><summary>Connect company AI</summary><CompanyKeyConnections />
-   <ReadSection read={endpoint} label="Own endpoint connection">{settings => settings.listed.includes("custom_endpoint") && settings.keysRevision !== null ? <Endpoint key={settings.keysRevision} settings={settings} reload={() => { void endpoint.refetch(); }} /> : <p>Own endpoint connection is not available on this Rovara.</p>}</ReadSection>
-   <BedrockConnection /><p>Own Bedrock uses Claude for agents. <Link to="/app/admin/product-ai">Your app's tests: project AI connections</Link></p>
-  </details>
+  <details><summary>Connect company AI</summary><CompanyAiConnect /></details>
   {children}
   <ReadSection read={sources} label="AI source order">{data => <>
    <h3>AI source order</h3>

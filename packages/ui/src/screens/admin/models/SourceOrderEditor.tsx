@@ -9,7 +9,8 @@ import { Dialog } from "../../../design/Dialog.js";
 import { VisibleText, visibleText } from "../../../design/VisibleText.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { sourceLabel, sourceOrderSnapshot, sourceOrderReceipt, sameSourceOrder, type SourceOrderId, type SourceOrderSnapshot } from "./source-order.js";
-type Props = { available: boolean };
+/** `label` is the trigger's words only (G2 draws "Change order" in its section header); the dialog and every handler are the same. */
+type Props = { available: boolean; label?: string };
 type Attempt = { requestId: string; snapshot: SourceOrderSnapshot; order: SourceOrderId[] };
 async function bounded<T>(work: Promise<T>): Promise<T> {
  let timer: ReturnType<typeof setTimeout> | undefined;
@@ -18,7 +19,7 @@ async function bounded<T>(work: Promise<T>): Promise<T> {
 export function SourceOrderEditor(props: Props) {
  const context=useAdminContext();return <OrderEditor key={`${context.orgId}:${context.developerId}:${context.role}`} {...props} />;
 }
-function OrderEditor({available}: Props) {
+function OrderEditor({available,label:triggerText}: Props) {
  const context=useAdminContext(),host=useAppHost(),query=useQueryClient(),api=useMemo(()=>createApiClient(host),[host]),unavailableId=useId();
  const schema=useMemo(()=>sourceOrderSnapshot(context.orgId,context.developerId),[context.orgId,context.developerId]);
  const [open,setOpen]=useState(false),[base,setBase]=useState<SourceOrderSnapshot>(),[draft,setDraft]=useState<SourceOrderId[]>([]),[attempt,setAttempt]=useState<Attempt>(),[busy,setBusy]=useState(false),[sent,setSent]=useState(false),[verified,setVerified]=useState(false),[message,setMessage]=useState<string>(),[checked,setChecked]=useState<SourceOrderSnapshot>();
@@ -85,7 +86,7 @@ function OrderEditor({available}: Props) {
  const label=(id:string)=>sourceLabel(id);
  const addable=base===undefined?[]:base.sources.filter(s=>s.available&&!draft.includes(s.source)).map(s=>s.source);
  const list=(ids:readonly string[])=> <ol>{ids.map(id=><li key={id}><VisibleText text={label(id)} /></li>)}</ol>;
- return <><Dialog title="Change source order" description="The first source is tried first; the others are fallbacks, in order. Cancel discards the proposal." open={open} onOpenChange={changeOpen} trigger={<Button disabled={!allowed} aria-describedby={!available?unavailableId:undefined}>Change source order</Button>}>
+ return <><Dialog title="Change source order" description="The first source is tried first; the others are fallbacks, in order. Cancel discards the proposal." open={open} onOpenChange={changeOpen} trigger={<Button disabled={!allowed} aria-describedby={!available?unavailableId:undefined}>{triggerText??"Change source order"}</Button>}>
  <div aria-busy={busy}><p>Company: <VisibleText text={context.company} /></p><p>Costs can change: a fallback to Rovara's AI is charged to the company per use, inside its monthly limit. Price estimates are unavailable.</p><p>Applies to the next AI call. A call already sent is not moved to another source.</p>
  {!base&&busy&&<p role="status">Loading current source order...</p>}
  {base&&busy&&<p role="status">{sent?"Checking the source-order outcome...":"Checking current source order..."}</p>}

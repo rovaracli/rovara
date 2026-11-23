@@ -8,7 +8,8 @@ import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
-import { appRoutes } from "../../packages/ui/src/routes.js";
+// LEGACY HARNESS (WIRING-1B): this pinned test drives the screen that used to be mounted at /app/admin/{money/report,ai-spending,product-ai}; see support/legacy-admin-routes.ts.
+import { appRoutes } from "./support/legacy-admin-routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
@@ -33,7 +34,7 @@ function mount(path: string, respond: (r: ApiRequest) => ApiResponse | Promise<A
  return { ...f, ...view, close: () => { view.unmount(); router.dispose(); query.clear(); } };
 }
 const reasons = [{ reason: "lessons_off", message: "Lessons are switched off for this company, so no learning call is made." }, { reason: "no_provider", message: "Learning calls need the company's own connected AI provider account, and none is usable." }];
-const view = (connected: boolean) => ({ revision: 2, canChange: true, accounts: { anthropic: connected ? { connected: true, updatedAt: Date.UTC(2026, 10, 15) } : { connected: false }, openai: { connected: false }, gemini: { connected: false } }, removed: [], learningCap: { monthlyUsdMicros: 20_000_000, companyMonthlyUsdMicros: 500_000_000 }, lessonsOn: true, pausedNow: connected ? [] : ["no_provider"], pauseReasons: reasons });
+const view = (connected: boolean) => ({ revision: connected ? 3 : 2, canChange: true, accounts: { anthropic: connected ? { connected: true, updatedAt: Date.UTC(2026, 10, 15) } : { connected: false }, openai: { connected: false }, gemini: { connected: false } }, removed: [], learningCap: { monthlyUsdMicros: 20_000_000, companyMonthlyUsdMicros: 500_000_000 }, lessonsOn: true, pausedNow: connected ? [] : ["no_provider"], pauseReasons: reasons });
 
 describe("learning AI key page", () => {
  it("uses the single AI and spending navigation home", () => {

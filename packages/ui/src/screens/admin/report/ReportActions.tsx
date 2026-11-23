@@ -18,7 +18,7 @@ const FAILED = "That change couldn't be made. Try again.";
 /** Cloud's calls for the five changes, and the way to read the report again after one. */
 function useReportChange() {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createReportActions(host), [host]);
- return { api, reload: () => query.invalidateQueries({ queryKey: ["admin", "report"] }) };
+ return { api, reload: () => Promise.all([query.invalidateQueries({ queryKey: ["admin", "report"] }), query.invalidateQueries({ queryKey: ["company-money-ai-read"] })]) };
 }
 
 /**

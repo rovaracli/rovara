@@ -34,17 +34,18 @@ export const LEARNING_MODEL_CARD_WORDS = Object.freeze({
 const W = LEARNING_MODEL_CARD_WORDS;
 type Notice = { ok: boolean; text: string } | undefined;
 
-export function LearningModelCard({ developerId, role, orgId = "" }: { developerId: string; role: string; orgId?: string }) {
- return <ScopedLearningModel key={modelScopeId(orgId, developerId, role)} {...{ developerId, role, orgId }} />;
+/** `compact` (G2's "Change a model" dialog) drops the card's own title and intro; every handler is the same. */
+export function LearningModelCard({ developerId, role, orgId = "", compact = false }: { developerId: string; role: string; orgId?: string; compact?: boolean }) {
+ return <ScopedLearningModel key={modelScopeId(orgId, developerId, role)} {...{ developerId, role, orgId, compact }} />;
 }
-function ScopedLearningModel({ developerId, role, orgId }: { developerId: string; role: string; orgId: string }) {
+function ScopedLearningModel({ developerId, role, orgId, compact }: { developerId: string; role: string; orgId: string; compact: boolean }) {
  const scope = useModelScope("ai-spend", orgId, developerId, role, "learning-model"), { api } = scope;
  const read = useQuery({ queryKey: scope.key, queryFn: () => api.get(LEARNING_MODEL_PATH, { parse: readLearningModel }), gcTime: 0, refetchOnWindowFocus: false });
  const [notice, setNotice] = useState<Notice>();
  const error = read.error;
  const readFailure = error instanceof ApiError && error.status === 501 ? W.notYet : error instanceof ApiError && error.status === 503 ? W.unavailable : W.failed;
  return <section id="learning-model" className="rv-ai-spend rv-learning-model" aria-label={W.title} data-testid="learning-model-card">
-  <h3>{W.title}</h3><p>{W.intro}</p>
+  {compact ? <h3>{W.title}</h3> : <><h3>{W.title}</h3><p>{W.intro}</p></>}
   {read.isError ? <><p role="alert" data-testid="learning-model-read-error">{readFailure}</p>{!(error instanceof ApiError && error.status === 501) && <Button onClick={() => { void read.refetch(); }}>Try again</Button>}</>
    : read.data === undefined ? <Skeleton label="Loading the lessons learning model" />
    : <Body scope={scope} view={{ ...read.data, canChange: role !== "member" && read.data.canChange }} notice={notice} setNotice={setNotice} reload={() => { void read.refetch(); }} />}

@@ -8,7 +8,7 @@
 // A plain member sees the step read only. Every refusal shown is the server's own fixed sentence.
 //
 // PR 9 (the setup shell) places this step; Company settings shows the same component (screens/admin/ai-spending).
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { COMPANY_MONTHLY_DEFAULT_USD, ENGINE_MODEL_PATH, dollarsOf, readEngineModel, type EngineModelRead } from "../../api/ai-spend.js";
@@ -24,7 +24,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { StepModelsCard } from "./StepModelsCard.js";
 import { sourceLabel } from "../admin/models/source-order.js";
 import { ProjectScopeContext } from "../admin/admin-context.js";
-import { BACK_TO_DEFAULT, DEFAULT_MODEL, defaultModelText, modelScopeId, useModelScope } from "./model-scope.js";
+import { BACK_TO_DEFAULT, DEFAULT_MODEL, ModelNames, defaultModelText, modelScopeId, useModelScope } from "./model-scope.js";
 import { CompanyAiConnections } from "../admin/ai-spending/CompanyAiConnections.js";
 import "./ai-spend.css";
 
@@ -56,10 +56,16 @@ export const AI_SPEND_STEP_WORDS = Object.freeze({
 const W = AI_SPEND_STEP_WORDS;
 const usdText = (usd: number) => (Number.isInteger(usd) ? String(usd) : usd.toFixed(2));
 
-export function AiSpendStep({ role, developerId, orgId = "", company = "", onSaved, onContinue }: { role: CompanyRole; developerId: string; orgId?: string; company?: string; onSaved?: () => void; onContinue?: () => void }) {
- return <AiSpendScope key={modelScopeId(orgId, developerId, role)} {...{ role, developerId, orgId, company, onSaved, onContinue }} />;
+/**
+ * `compact` is G2's "Change a model" dialog: only the model choices (company, each step, learning), each with the same handler and the same refusals.
+ * It draws no source choice and no monthly limit, and its Save writes the company model only.
+ * `spending` is G2's "Change spending" dialog (WIRING-1 restore): the source choice (who pays) and the monthly limit with the setup step's one Save, the same handlers and refusals; no model choices
+ * and no connection forms (those are the other two dialogs). Setup shows the whole step (neither prop).
+ */
+export function AiSpendStep({ role, developerId, orgId = "", company = "", onSaved, onContinue, compact = false, spending = false }: { role: CompanyRole; developerId: string; orgId?: string; company?: string; onSaved?: () => void; onContinue?: () => void; compact?: boolean; spending?: boolean }) {
+ return <AiSpendScope key={modelScopeId(orgId, developerId, role)} {...{ role, developerId, orgId, company, onSaved, onContinue, compact, spending }} />;
 }
-function AiSpendScope({ role, developerId, orgId, company, onSaved, onContinue }: { role: CompanyRole; developerId: string; orgId: string; company: string; onSaved?: (() => void) | undefined; onContinue?: (() => void) | undefined }) {
+function AiSpendScope({ role, developerId, orgId, company, onSaved, onContinue, compact, spending }: { role: CompanyRole; developerId: string; orgId: string; company: string; onSaved?: (() => void) | undefined; onContinue?: (() => void) | undefined; compact: boolean; spending: boolean }) {
  const { api, key: scope, active } = useModelScope("ai-spend", orgId, developerId, role);
  const root = useRef<HTMLElement>(null), location = useLocation();
  const admin = role === "owner" || role === "admin";
@@ -89,8 +95,8 @@ function AiSpendScope({ role, developerId, orgId, company, onSaved, onContinue }
   if (root.current) observer.observe(root.current, { childList: true, subtree: true });
   return () => { clearTimeout(timer); observer.disconnect(); };
  }, [location.hash, admin, model.isPending, source.isPending, settings.isPending, complete]);
- return <ProjectScopeContext.Provider value={{ orgId, company, developerId, role, checking: false }}><section ref={root} className="rv-ai-spend rv-ai-spend-step" aria-label={W.title} data-testid="ai-spend-step">
-  <p>{W.intro}</p>
+ return <ProjectScopeContext.Provider value={{ orgId, company, developerId, role, checking: false }}><section ref={root} className={compact || spending ? "rv-ai-spend rv-ai-spend-step rv-ai-spend-compact" : "rv-ai-spend rv-ai-spend-step"} aria-label={W.title} data-testid="ai-spend-step">
+  {!compact && !spending && <p>{W.intro}</p>}
   {visibleNotice && notice !== undefined && <p role={notice.ok ? "status" : "alert"} data-testid={notice.ok ? "ai-spend-saved" : "ai-spend-error"}><VisibleText text={notice.text} /></p>}
   {notice?.check && <Button disabled={model.isFetching || source.isFetching || settings.isFetching} onClick={() => {
    void reload().then(next => { if (active() && next) setNotice({ ok: true, text: observedSettings(next), reads: next }); });
@@ -101,12 +107,16 @@ function AiSpendScope({ role, developerId, orgId, company, onSaved, onContinue }
     if (active() && !persisted) setNotice({ ok: false, check: true, text: "Rovara didn't confirm this yet. Couldn't re-read AI and spending. Check the current settings before saving again." });
     if (active() && confirmed && persisted?.ready) onSaved?.();
     return persisted;
-   }} ready={ready} onContinue={onContinue} />
+   }} ready={ready} onContinue={onContinue} compact={compact} spending={spending} />
    : <>
-    {!admin && <section id="ai-connections"><h2>AI connections</h2><p>{W.readOnly}</p></section>}
-    {admin && <CompanyAiConnections><section aria-label="Task AI source">{source.isPending ? <Skeleton label="Loading task AI source" /> : source.isError ? <ReadFailure read={source} row="source" retry={!notice?.check} /> : <p>Task source: {sourceLabel((source.data.source ?? source.data.effectiveSource) ?? "unknown")}.</p>}</section></CompanyAiConnections>}
-    <StepModelsCard orgId={orgId} developerId={developerId} role={role} companyModel={model.isPending ? <Skeleton label="Loading company model" /> : model.isError ? <ReadFailure read={model} row="model" retry={!notice?.check} /> : <ReadOnly model={model.data} blocked={admin} />} />
-    {admin && <section aria-label="Company spending">{settings.isPending ? <Skeleton label="Loading company spending" /> : settings.isError ? <ReadFailure read={settings} row="settings" retry={!notice?.check} /> : <p>{W.limit}: {settings.data.monthlyCapUsd ?? "Not saved"}</p>}</section>}
+    {spending && (model.isPending || source.isPending || settings.isPending) && <Skeleton label="Loading AI and spending" />}
+    {spending && model.isError && <ReadFailure read={model} row="model" serverWords retry={!notice?.check} />}
+    {!admin && !compact && !spending && <section id="ai-connections"><h2>AI connections</h2><p>{W.readOnly}</p></section>}
+    {admin && (compact || spending) && source.isError && <ReadFailure read={source} row="source" serverWords={spending} retry={!notice?.check} />}
+    {admin && !compact && !spending && <CompanyAiConnections><section aria-label="Task AI source">{source.isPending ? <Skeleton label="Loading task AI source" /> : source.isError ? <ReadFailure read={source} row="source" retry={!notice?.check} /> : <p>Task source: {sourceLabel((source.data.source ?? source.data.effectiveSource) ?? "unknown")}.</p>}</section></CompanyAiConnections>}
+    {!spending && <StepModelsCard orgId={orgId} developerId={developerId} role={role} compact={compact} companyModel={model.isPending ? <Skeleton label="Loading company model" /> : model.isError ? <ReadFailure read={model} row="model" retry={!notice?.check} /> : <ReadOnly model={model.data} blocked={admin} />} />}
+    {admin && (compact || spending) && settings.isError && <ReadFailure read={settings} row="settings" serverWords={spending} retry={!notice?.check} />}
+    {admin && !compact && !spending && <section aria-label="Company spending">{settings.isPending ? <Skeleton label="Loading company spending" /> : settings.isError ? <ReadFailure read={settings} row="settings" retry={!notice?.check} /> : <p>{W.limit}: {settings.data.monthlyCapUsd ?? "Not saved"}</p>}</section>}
    </>}
   {onContinue && !complete && <Button data-testid="onboard-continue-repos" disabled>Continue to pick repos</Button>}
  </section></ProjectScopeContext.Provider>;
@@ -119,14 +129,15 @@ function persistedReady(model: EngineModelRead, source: AgentAiRead, settings: C
  const taskReady = tasks !== undefined && required.every(stage => tasks.steps.some(step => step.stage === stage && !step.refused && step.effective !== null));
  return taskReady && settings.modelGateway?.ready === true && model.model !== null && model.offered.includes(model.model) && serving !== null && source.available[serving] && typeof settings.monthlyCapUsd === "number" && settings.monthlyCapUsd > 0;
 }
-function ReadFailure({ read, row, retry = true }: { retry?: boolean; read: { error: unknown; refetch: () => unknown }; row: "model" | "source" | "settings" }) {
+function ReadFailure({ read, row, retry = true, serverWords = false }: { retry?: boolean; serverWords?: boolean; read: { error: unknown; refetch: () => unknown }; row: "model" | "source" | "settings" }) {
  const notYet = read.error instanceof ApiError && read.error.status === 501;
  const label = row === "model" ? "AI and spending" : row === "source" ? "Task AI source" : "Company spending";
- return <><p role="alert" data-testid={row === "model" ? "ai-spend-read-error" : `ai-spend-${row}-read-error`}>{notYet ? `${label} isn't available on this Rovara yet.` : `Couldn't load ${label === "AI and spending" ? "AI and spending" : label.toLowerCase()}. Try again.`}</p>{!notYet && retry && <Button onClick={() => { void read.refetch(); }}>Try again</Button>}</>;
+ return <><p role="alert" data-testid={row === "model" ? "ai-spend-read-error" : `ai-spend-${row}-read-error`}>{serverWords && read.error instanceof ApiError ? <VisibleText text={read.error.message} /> : notYet ? `${label} isn't available on this Rovara yet.` : `Couldn't load ${label === "AI and spending" ? "AI and spending" : label.toLowerCase()}. Try again.`}</p>{!notYet && retry && <Button onClick={() => { void read.refetch(); }}>Try again</Button>}</>;
 }
 
 function ReadOnly({ model, blocked }: { model: EngineModelRead; blocked: boolean }) {
- return <div data-testid="ai-spend-read-only"><p>{W.model}: <VisibleText text={model.source === "install" ? defaultModelText(model.model) : `Your choice: ${model.model ?? "unavailable"}`} /></p><p>{blocked ? "Changes are unavailable until the source and spending settings can be checked." : W.readOnly}</p></div>;
+ const names = useContext(ModelNames), shown = model.model === null ? null : names(model.model);
+ return <div data-testid="ai-spend-read-only"><p>{W.model}: <VisibleText text={model.source === "install" ? defaultModelText(shown) : `Your choice: ${shown ?? "unavailable"}`} /></p><p>{blocked ? "Changes are unavailable until the source and spending settings can be checked." : W.readOnly}</p></div>;
 }
 
 type Loaded = { model: EngineModelRead; source: AgentAiRead; settings: CompanySettingsRead };
@@ -137,8 +148,8 @@ function observedSettings(read: Loaded): string {
 }
 type Choice = "rovara" | "own";
 type Notice = { ok: boolean; text: string; reads?: Loaded; check?: boolean } | undefined;
-function Form({ model, source, settings, setNotice, onSaved, developerId, role, orgId, ready, onContinue }: { ready: boolean; onContinue: (() => void) | undefined; orgId: string; developerId: string; role: CompanyRole; model: EngineModelRead; source: AgentAiRead; settings: CompanySettingsRead; setNotice: (notice: Notice) => void; onSaved: (confirmed: boolean) => Promise<(Loaded & { ready: boolean }) | undefined> }) {
- const { api, active } = useModelScope("ai-spend", orgId, developerId, role, "company-draft"), query = useQueryClient();
+function Form({ model, source, settings, setNotice, onSaved, developerId, role, orgId, ready, onContinue, compact, spending }: { compact: boolean; spending: boolean; ready: boolean; onContinue: (() => void) | undefined; orgId: string; developerId: string; role: CompanyRole; model: EngineModelRead; source: AgentAiRead; settings: CompanySettingsRead; setNotice: (notice: Notice) => void; onSaved: (confirmed: boolean) => Promise<(Loaded & { ready: boolean }) | undefined> }) {
+ const { api, active } = useModelScope("ai-spend", orgId, developerId, role, "company-draft"), query = useQueryClient(), names = useContext(ModelNames);
  // DEC 254zzz263: what the company's agents use now (a saved choice, else the default it is on), never a guess.
  const shown = source.source ?? source.effectiveSource;
  const [loaded, setLoaded] = useState({ model, source, settings });
@@ -169,12 +180,12 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
 
  async function save(resetModel = false) {
   if (!active()) return;
-  if (!resetModel && (capUsd === undefined || capUsd === 0)) { setNotice({ ok: false, text: W.badLimit }); return; }
+  if (!resetModel && !compact && (capUsd === undefined || capUsd === 0)) { setNotice({ ok: false, text: W.badLimit }); return; }
   setBusy(true); setNotice(undefined);
   let pending = false, wrote = false;
   try {
    const capMicros = Math.round((capUsd ?? 0) * MICROS);
-   if (!resetModel && (savedCap === undefined || Math.round(savedCap * MICROS) !== capMicros)) {
+   if (!resetModel && !compact && (savedCap === undefined || Math.round(savedCap * MICROS) !== capMicros)) {
     const saved = typeof loaded.settings.raw["budgets"] === "object" && loaded.settings.raw["budgets"] !== null ? loaded.settings.raw["budgets"] as Record<string, unknown> : {};
     // The learning cap is never above the company cap (Cloud refuses it): a lower company cap lowers it too.
     const learning = saved["learningMonthlyUsdMicros"];
@@ -183,7 +194,7 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
     wrote = true;
     pending = typeof answer === "object" && answer !== null && "pending" in answer && !("settings" in answer);
    }
-   if (!resetModel && sourceChanged && savedSource !== chosenSource) await api.sendAnswer("PUT", AGENT_AI_PATH, { expectedVersion: source.version, source: chosenSource }, { parse: body => body }, { retry: "never" }).then(() => { wrote = true; });
+   if (!resetModel && !compact && sourceChanged && savedSource !== chosenSource) await api.sendAnswer("PUT", AGENT_AI_PATH, { expectedVersion: source.version, source: chosenSource }, { parse: body => body }, { retry: "never" }).then(() => { wrote = true; });
    // Default and offered preselects are readouts until the person makes a choice.
    if (resetModel || saveModel) { await api.sendAnswer("PUT", ENGINE_MODEL_PATH, { model: resetModel || picked === DEFAULT_MODEL ? null : picked }, { parse: readEngineModel }, { retry: "never" }); wrote = true; }
    if (!active()) return;
@@ -209,37 +220,43 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
   } finally { if (active()) setBusy(false); }
  }
 
- return <>
-  <CompanyAiConnections>
-  {source.sourceIsDefault && source.effectiveSource === "rovara" && <p data-testid="ai-spend-default">{W.defaultNote}. <Link to="/app/admin/ai-spending#ai-connections">Change</Link></p>}
+ // The who-pays choice: one block, drawn inside the company connections in setup and on its own in G2's "Change spending" dialog.
+ const payer = <>
+  {source.sourceIsDefault && source.effectiveSource === "rovara" && <p data-testid="ai-spend-default">{W.defaultNote}.{!spending && <> <Link to="/app/admin/ai-spending#ai-connections">Change</Link></>}</p>}
   <fieldset disabled={busy} aria-label="Who pays for the AI"><legend>Who pays for the AI</legend>
    <p><label data-testid="ai-spend-rovara"><input type="radio" name="ai-spend-source" value="rovara" checked={displayChoice === "rovara"} disabled={!source.available.rovara} onChange={() => { setSourceInteracted(true); setChoice("rovara"); }} /> <b>{W.rovara}</b>: {W.rovaraText}</label></p>
    <p><label data-testid="ai-spend-own"><input type="radio" name="ai-spend-source" value="own" checked={displayChoice === "own"} onChange={() => { setSourceInteracted(true); setChoice("own"); }} /> <b>{W.own}</b>: {W.ownText}</label></p>
    {displayChoice === "own" && <div className="rv-ai-spend-own" data-testid="ai-spend-own-choices">
-    {displayOwn !== "anthropic_key" && displayOwn !== "bedrock_byo" ? <p data-testid="ai-spend-source-read-only">Saved source: <b>{sourceLabel(displayOwn)}</b>. <Link className="rv-admin-b1-link" to="#ai-connections">{W.manageSource}</Link></p> : <>
+    {displayOwn !== "anthropic_key" && displayOwn !== "bedrock_byo" ? <p data-testid="ai-spend-source-read-only">Saved source: <b>{sourceLabel(displayOwn)}</b>. {spending ? "Change it with Connect company AI or Change order on this page." : <Link className="rv-admin-b1-link" to="#ai-connections">{W.manageSource}</Link>}</p> : <>
      <p><label><input type="radio" name="ai-spend-own" value="anthropic_key" checked={displayOwn === "anthropic_key"} disabled={!source.available.anthropic_key} onChange={() => { setSourceInteracted(true); setChoice("own"); setOwn("anthropic_key"); }} /> {W.anthropic}{source.anthropicKeyConnected === false && <> <span data-testid="ai-spend-no-key">(not connected yet)</span></>}</label></p>
      <p><label><input type="radio" name="ai-spend-own" value="bedrock_byo" checked={displayOwn === "bedrock_byo"} disabled={!source.available.bedrock_byo} onChange={() => { setSourceInteracted(true); setChoice("own"); setOwn("bedrock_byo"); }} /> {W.bedrock}{!source.available.bedrock_byo && " (coming soon)"}</label></p>
-     {displayOwn === "anthropic_key" && source.anthropicKeyConnected !== true && <p><Link className="rv-admin-b1-link" to="#ai-connections" data-testid="ai-spend-connect">{W.connectAnthropic}</Link>, then come back here.</p>}
+     {displayOwn === "anthropic_key" && source.anthropicKeyConnected !== true && <p>{spending ? <span data-testid="ai-spend-connect">{W.connectAnthropic} with Connect company AI on this page</span> : <Link className="rv-admin-b1-link" to="#ai-connections" data-testid="ai-spend-connect">{W.connectAnthropic}</Link>}, then come back here.</p>}
     </>}
    </div>}
   </fieldset>
-  </CompanyAiConnections>
-  <StepModelsCard orgId={orgId} developerId={developerId} role={role} companyModel={<>
-  <p><VisibleText text={model.source === "install" ? defaultModelText(model.model) : `Your choice: ${model.model ?? "unavailable"}`} /></p>
-  {model.model !== null && !model.offered.includes(model.model) && <p role="status">{model.model} is no longer offered for this work. Choose another model.</p>}
-  <p>Task source: {(source.source ?? source.effectiveSource) === null ? "The current source could not be checked." : sourceLabel((source.source ?? source.effectiveSource)!)}. Model access is checked when used. Price unavailable.</p>
-  <Select label={W.model} value={picked} onValueChange={value => { setModelInteracted(true); setPicked(value); }} options={[{ value: DEFAULT_MODEL, label: defaultModelText(model.source === "install" ? model.model : null) }, ...model.offered.map(id => ({ value: id, label: id })), ...(model.model !== null && !model.offered.includes(model.model) ? [{ value: model.model, label: `${model.model} (no longer offered)`, disabled: true }] : [])]} disabled={busy || !model.canChange} />
+ </>;
+ return <>
+  {!compact && !spending && <CompanyAiConnections>{payer}</CompanyAiConnections>}
+  {spending && payer}
+  {!spending && <StepModelsCard orgId={orgId} developerId={developerId} role={role} compact={compact} companyModel={<>
+  {!compact && <p><VisibleText text={model.source === "install" ? defaultModelText(model.model) : `Your choice: ${model.model ?? "unavailable"}`} /></p>}
+  {model.model !== null && !model.offered.includes(model.model) && <p role="status">{names(model.model)} is no longer offered for this work. Choose another model.</p>}
+  {!compact && <p>Task source: {(source.source ?? source.effectiveSource) === null ? "The current source could not be checked." : sourceLabel((source.source ?? source.effectiveSource)!)}. Model access is checked when used. Price unavailable.</p>}
+  <Select label={W.model} value={picked} onValueChange={value => { setModelInteracted(true); setPicked(value); }} options={[{ value: DEFAULT_MODEL, label: defaultModelText(model.source === "install" && model.model !== null ? names(model.model) : null) }, ...model.offered.map(id => ({ value: id, label: names(id) })), ...(model.model !== null && !model.offered.includes(model.model) ? [{ value: model.model, label: `${names(model.model)} (no longer offered)`, disabled: true }] : [])]} disabled={busy || !model.canChange} />
   {picked !== DEFAULT_MODEL && !model.offered.includes(picked) && picked !== model.model && <p role="status">Your unsaved model is no longer offered. Choose another option before saving it.</p>}
   <p className="rv-muted">{W.modelHint}</p>
-  <p>Save below changes this model only after you choose an option.</p>
-  {model.source === "company" && model.canChange && <Button disabled={busy} onClick={() => { void save(true); }}>{BACK_TO_DEFAULT}</Button>}
-  </>} />
-  <section className="rv-ai-spend-limit" aria-label="Monthly limit"><h2>Monthly limit</h2>
+  {!compact && <p>Save below changes this model only after you choose an option.</p>}
+  {compact ? <p className="rv-ai-spend-actions">
+   <Button variant="primary" busy={busy} disabled={!saveModel || !model.canChange || (picked !== DEFAULT_MODEL && !model.offered.includes(picked))} onClick={() => { void save(); }}>Save company model</Button>
+   {model.source === "company" && model.canChange && <Button disabled={busy} onClick={() => { void save(true); }}>{BACK_TO_DEFAULT}</Button>}
+  </p> : model.source === "company" && model.canChange && <Button disabled={busy} onClick={() => { void save(true); }}>{BACK_TO_DEFAULT}</Button>}
+  </>} />}
+  {!compact && <section className="rv-ai-spend-limit" aria-label="Monthly limit"><h2>Monthly limit</h2>
   <TextField label={W.limit} hint={W.limitHint} inputMode="decimal" value={cap} onChange={event => setCap(event.target.value)} disabled={busy} {...(capUsd === undefined || capUsd === 0 ? { error: W.badLimit } : {})} />
-  </section>
-  <div className="rv-ai-spend-actions">
+  </section>}
+  {!compact && <div className="rv-ai-spend-actions">
   <Button variant="primary" busy={busy} disabled={capUsd === undefined || capUsd === 0 || !sourceUsable || (saveModel && (!model.canChange || (picked !== DEFAULT_MODEL && !model.offered.includes(picked))))} onClick={() => { void save(); }}>Save</Button>
   {onContinue && <Button data-testid="onboard-continue-repos" disabled={busy || !ready || sourceChanged || modelChanged || capUsd !== savedCap} onClick={onContinue}>Continue to pick repos</Button>}
-  </div>
+  </div>}
  </>;
 }

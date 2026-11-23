@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -13,6 +13,7 @@ import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { h } from "./support/h.js";
 
+beforeEach(() => localStorage.clear());
 const SONNET = "claude-sonnet-5-5", HAIKU = "claude-haiku-5-5";
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa", developerId = "a".repeat(64);
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
@@ -41,9 +42,22 @@ function mount({ path = "/app/admin/ai-spending", role = "owner", width = 1280, 
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  return { ...f, ...ui, query, router, identity, bodies, close() { ui.unmount(); router.dispose(); query.clear(); } };
 }
-async function ready() { await screen.findByTestId("learning-model-current", {}, { timeout: 5000 }); await screen.findByTestId("step-model-build", {}, { timeout: 5000 }); return screen.getByTestId("step-models"); }
+// LAYOUT-COUPLED (G2 actions layout): an owner/admin's /app/admin/ai-spending is the rebuilt page, where the model choices live in the "Change a model" dialog
+// opened from the section header. Setup (onboarding) and a member's read-only card still show the card in the page, so only the dialog is opened here.
+// LAYOUT-COUPLED: pages that only need the page loaded (menus, redirects) do not open the dialog, which hides the rest of the page from the accessibility tree while open.
+async function loaded() { await waitFor(() => expect(screen.queryByTestId("learning-model-current") ?? screen.queryByRole("button", { name: "Change a model" })).toBeTruthy()); }
+// LAYOUT-COUPLED: a read that fails inside the dialog never shows `learning-model-current`; only the dialog is opened.
+async function openModels() { const open = await screen.findByRole("button", { name: "Change a model" }); fireEvent.click(open); }
+async function ready() {
+ await waitFor(() => expect(screen.queryByTestId("learning-model-current") ?? screen.queryByRole("button", { name: "Change a model" })).toBeTruthy(), { timeout: 5000 });
+ const open = screen.queryByRole("button", { name: "Change a model" });
+ if (open !== null) fireEvent.click(open);
+ await screen.findByTestId("learning-model-current", {}, { timeout: 5000 }); await screen.findByTestId("step-model-build", {}, { timeout: 5000 }); return screen.getByTestId("step-models");
+}
 
 for (const path of ["/app/admin/ai-spending", "/app/onboard?step=ai"]) it(`uses one model card and the same connection controls at ${path}`, async () => {
+ // LAYOUT-COUPLED: at the rebuilt company page the card is the "Change a model" dialog (choices only, "Save company model") and the source-order control is "Change order" in the sources section header.
+ const g2 = path === "/app/admin/ai-spending";
  const f = mount({ path });
  try {
   const card = await ready();
@@ -51,12 +65,21 @@ for (const path of ["/app/admin/ai-spending", "/app/onboard?step=ai"]) it(`uses 
   for (const label of ["Company model", "Understand and plan", "Plan check", "Coding", "Code and security review", "Pull request feedback", "Learning model"]) expect(within(card).getByRole("combobox", { name: label })).toBeTruthy();
   expect(screen.getAllByRole("combobox").every(input => card.contains(input))).toBe(true);
   expect(within(card).getByRole("button", { name: "Save learning model" })).toBeTruthy();
-  expect(within(screen.getByTestId("ai-spend-step")).getByRole("button", { name: "Save" })).toBeTruthy();
+  expect(within(screen.getByTestId("ai-spend-step")).getByRole("button", { name: g2 ? "Save company model" : "Save" })).toBeTruthy();
+  if (g2) {
+   // The dialog holds only choices (display names, never raw ids); the page keeps the one source-order control in its section header, and no second settings stack.
+   expect(within(screen.getByRole("region", { name: "Source inventory", hidden: true })).getByRole("button", { name: "Change order", hidden: true })).toBeTruthy();
+   expect(screen.queryByRole("region", { name: "Company AI connections", hidden: true })).toBeNull();
+   expect(within(card).queryByRole("region", { name: "Design review model" })).toBeNull();
+   expect(within(card).getByRole("combobox", { name: "Company model" }).textContent).toContain("Claude Sonnet 5.5");
+   expect(within(card).getByRole("combobox", { name: "Company model" }).textContent).not.toContain(SONNET);
+  } else {
   const connections = screen.getByRole("region", { name: "Company AI connections" });
   expect(connections.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(within(connections).getByRole("button", { name: "Change source order" })).toBeTruthy();
   expect(card.textContent).toContain("Understand: claude-haiku-5-5");
   expect(within(card).getByRole("region", { name: "Design review model" }).compareDocumentPosition(screen.getByTestId("step-model-code_review")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  }
   // TRIAGE-UAT-0530 item 5b / DEC 254zzz150: Second review stays hidden.
   expect(within(card).queryByRole("region", { name: "Second review" })).toBeNull();
   expect(within(screen.getByTestId("step-model-code_review")).getByRole("alert").textContent).toContain("No offered model");
@@ -66,7 +89,8 @@ for (const path of ["/app/admin/ai-spending", "/app/onboard?step=ai"]) it(`uses 
 });
 
 it("keeps second review, learning and answers truthful, with no second-review or answers picker", async () => {
- const f = mount();
+ // LAYOUT-COUPLED: the read-only notes for answers and learning belong to the full setup card; the company page's dialog is choices only.
+ const f = mount({ path: "/app/onboard?step=ai" });
  try {
   const card = await ready();
   // TRIAGE-UAT-0530 item 5b / DEC 254zzz150.
@@ -87,9 +111,10 @@ for (const [path, hash] of [
  const scroll = vi.fn(); const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView"); HTMLElement.prototype.scrollIntoView = scroll;
  const f = mount({ path: path + "?project=web", role });
  try {
-  await ready(); expect(f.router.state.location).toMatchObject({ pathname: "/app/admin/ai-spending", search: "?project=web", hash: `#${hash}` });
+  // LAYOUT-COUPLED: an owner lands on the rebuilt page, where both anchors are section ids; the card is only in a member's page (the dialog is closed).
+  await loaded(); expect(f.router.state.location).toMatchObject({ pathname: "/app/admin/ai-spending", search: "?project=web", hash: `#${hash}` });
   await waitFor(() => expect(document.activeElement).toBe(document.getElementById(hash)));
-  expect(scroll).toHaveBeenCalled(); expect(screen.getAllByTestId("step-models")).toHaveLength(1);
+  expect(scroll).toHaveBeenCalled(); expect(screen.queryAllByTestId("step-models")).toHaveLength(role === "member" ? 1 : 0);
   expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/models")).toBe(false);
   if (role === "member") expect(screen.queryByRole("combobox")).toBeNull();
  } finally { f.close(); if (original) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", original); else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView"); }
@@ -98,7 +123,7 @@ for (const [path, hash] of [
 for (const role of ["owner", "admin", "member"] as const) it.each(["/app/admin/ai-spending", "/app/admin/models/steps"])(`${role} has the appropriate administration menu at %s`, async path => {
  const f = mount({ path, role });
  try {
-  await ready();
+  await loaded();
   expect(f.router.state.location.pathname).toBe("/app/admin/ai-spending");
   if (path === "/app/admin/models/steps") expect(f.router.state.location.hash).toBe("#ai-models");
   if (role === "member") {
@@ -143,15 +168,16 @@ it("drops an admin's drafts and privileged controls when their live role becomes
 it("keeps supported rows usable when learning is unavailable", async () => {
  const f = mount({ overrides: { "/v1/app/org/learning-model": unavailable } });
  try {
-  await screen.findByTestId("learning-model-read-error");
+  await openModels(); await screen.findByTestId("learning-model-read-error");
   expect(screen.getByLabelText("Company model")).toBeTruthy(); expect(screen.getByLabelText("Coding")).toBeTruthy();
   expect(within(screen.getByTestId("learning-model-card")).queryByRole("button")).toBeNull();
-  expect(screen.getByTestId("answers-model-row")).toBeTruthy();
+  // LAYOUT-COUPLED: the read-only answers row is part of the full setup card, not the company page's dialog.
  } finally { f.close(); }
 });
 
 it("keeps absent task rows unavailable and automatic rows present on an older partial read", async () => {
- const f = mount({ overrides: { "/v1/app/org/agent-models": { status: 200, body: { revision: 1, steps: [], offered: [SONNET], canChange: true } } } });
+ // LAYOUT-COUPLED: the automatic (design review) rows are part of the full setup card; the company page's dialog is choices only.
+ const f = mount({ path: "/app/onboard?step=ai", overrides: { "/v1/app/org/agent-models": { status: 200, body: { revision: 1, steps: [], offered: [SONNET], canChange: true } } } });
  try {
   const card = await ready();
   for (const stage of ["plan", "plan_check", "build", "code_review", "pull_request"]) {
@@ -168,18 +194,22 @@ it("keeps absent task rows unavailable and automatic rows present on an older pa
 for (const [path, row] of [["/v1/app/org/agent-ai", "source"], ["/v1/app/org/settings", "settings"]] as const) for (const status of [501, 403]) it(`keeps the successful company model when only ${row} fails with ${status}`, async () => {
  const f = mount({ overrides: { [path]: { status, body: unavailable.body } } });
  try {
+  // LAYOUT-COUPLED: the choices are in the "Change a model" dialog, where the model reads as its display name.
+  await openModels();
   const error = await screen.findByTestId(`ai-spend-${row}-read-error`);
   const company = screen.getByRole("region", { name: "Company model setting" });
-  expect(company.textContent).toContain(SONNET); expect(company.textContent).toContain("Your choice:");
+  expect(company.textContent).toContain("Claude Sonnet 5.5"); expect(company.textContent).toContain("Your choice:");
   expect(within(company).queryByRole("alert")).toBeNull(); expect(screen.queryByLabelText(/Company monthly limit/u)).toBeNull();
   expect(within(error.parentElement!).queryByRole("button", { name: "Try again" }) !== null).toBe(status !== 501);
-  if (row === "settings") expect(screen.getByText("Task source: Your OpenRouter key.")).toBeTruthy();
+  // LAYOUT-COUPLED: the "Task source" line is part of the setup card's connections block, not the dialog.
  } finally { f.close(); }
 });
 
-it("refreshes source, payer, offered models and effective steps after a verified source-order save without submitting a draft", async () => {
+for (const path of ["/app/admin/ai-spending", "/app/onboard?step=ai"]) it(`refreshes source, payer, offered models and effective steps after a verified source-order save without submitting a draft at ${path}`, async () => {
+ // LAYOUT-COUPLED: the rebuilt company page has no payer radios or draft model; its "Change order" button is in the sources section header and the saved order, offered models and step models re-read in place.
+ const g2 = path === "/app/admin/ai-spending";
  let revision = 1;
- const f = mount({ respond: r => {
+ const f = mount({ path, respond: r => {
   if (r.path === "/v1/app/org/model-sources-order") { revision = 2; return { status: 200, body: { revision, order: ["rovara", "openrouter_key"] } }; }
   if (r.path === "/v1/app/org/model-sources") return { status: 200, body: { orgId, developerId, revision, order: revision === 1 ? ["openrouter_key", "rovara"] : ["rovara", "openrouter_key"], sources: ["openrouter_key", "rovara"].map(source => ({ source, available: true, connected: true, inOrder: true })) } };
   if (r.path === "/v1/app/org/agent-ai") return { status: 200, body: { version: revision, source: revision === 1 ? "openrouter_key" : "rovara", choices: ["openrouter_key", "rovara"].map(source => ({ source, available: true })) } };
@@ -187,18 +217,22 @@ it("refreshes source, payer, offered models and effective steps after a verified
   return undefined;
  } });
  try {
-  await ready(); expect(screen.getByText(/Task source: Your OpenRouter key/)).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Company model"), { target: { value: HAIKU } });
-  fireEvent.click(screen.getByRole("button", { name: "Change source order" }));
+  if (g2) await loaded(); else { await ready(); expect(screen.getByText(/Task source: Your OpenRouter key/)).toBeTruthy(); fireEvent.change(screen.getByLabelText("Company model"), { target: { value: HAIKU } }); }
+  fireEvent.click(await screen.findByRole("button", { name: g2 ? "Change order" : "Change source order" }));
   fireEvent.click(await screen.findByRole("button", { name: "Move up, Rovara's AI" }));
   fireEvent.click(screen.getByRole("button", { name: "Review order" }));
   fireEvent.click(await screen.findByRole("button", { name: "Confirm source order" }));
   await screen.findByText("Source order verified."); fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  if (g2) {
+   const first = () => within(screen.getByRole("list", { name: "Sources in order" })).getAllByRole("listitem")[0]!.textContent;
+   await waitFor(() => expect(first()).toContain("Rovara's AI"));
+  } else {
   await screen.findByText(/Task source: Rovara's AI/);
   expect(screen.getByTestId("ai-spend-rovara").querySelector("input")).toHaveProperty("checked", true);
   expect(screen.getByText("Your unsaved model is no longer offered. Choose another option before saving it.")).toBeTruthy();
   expect(within(screen.getByLabelText("Company model")).queryByRole("option", { name: HAIKU })).toBeNull();
-  expect(f.request.mock.calls.filter(([r]) => r.path === "/v1/app/org/agent-models").length).toBeGreaterThan(1);
+  }
+  await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.path === "/v1/app/org/agent-models").length).toBeGreaterThan(1));
   expect(f.request.mock.calls.filter(([r]) => r.method !== "GET").map(([r]) => r.path)).toEqual(["/v1/app/org/model-sources-order"]);
  } finally { f.close(); }
 });

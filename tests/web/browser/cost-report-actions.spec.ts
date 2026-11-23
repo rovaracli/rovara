@@ -49,8 +49,9 @@ test("New feature: a name, a confirm, and the new feature's page opens", async (
   await dialog(page).getByLabel("Feature name").fill("Billing v3");
   await shot(page, info, "new-feature-dialog-light");
   await dialog(page).getByRole("button", { name: "Make feature" }).click();
-  await expect(admin.heading("Billing v3")).toBeVisible();
-  await expect(page.getByTestId("report-empty")).toBeVisible();
+  // SELECTOR (WIRING-1B): the rebuilt feature page titles the page "Manage features" and names the selected feature in a level-2 heading; an empty feature says so in a line.
+  await expect(admin.featureHeading("Billing v3")).toBeVisible();
+  await expect(page.getByText("No tasks in this range.")).toBeVisible();
   await expect(dialog(page)).toHaveCount(0);
 });
 
@@ -78,7 +79,7 @@ test("Rename changes the name, Mark done and Reopen change the state", async ({ 
   await expect(dialog(page).getByRole("button", { name: "Rename" })).toBeDisabled();
   await dialog(page).getByLabel("Feature name").fill("Checkout v3");
   await dialog(page).getByRole("button", { name: "Rename" }).click();
-  await expect(admin.heading("Checkout v3")).toBeVisible();
+  await expect(admin.featureHeading("Checkout v3")).toBeVisible();
   await page.getByRole("button", { name: "Mark done" }).click();
   await shot(page, info, "mark-done-dialog-light");
   await dialog(page).getByRole("button", { name: "Mark done" }).click();
@@ -100,11 +101,12 @@ test("Merge into moves the tasks to the other feature and opens it", async ({ pa
   await dialog(page).getByLabel("Merge into").selectOption({ label: "Checkout v2" });
   await shot(page, info, "merge-dialog-light");
   await dialog(page).getByRole("button", { name: "Merge" }).click();
-  await expect(admin.heading("Checkout v2")).toBeVisible();
+  await expect(admin.featureHeading("Checkout v2")).toBeVisible();
   await expect(admin.table("Tasks in this feature").getByRole("row")).toHaveCount(4);
   // The merged feature is gone.
   await page.goto(ROUTES.admin.costFeature(F_SEARCH));
-  await expect(admin.heading("Feature not found")).toBeVisible();
+  // SELECTOR (WIRING-1B): a 404 on a feature page is the shared "access ended" state of the rebuilt pages (the 4e block), not the old "Feature not found" title.
+  await expect(page.getByRole("heading", { name: "Rovara can't show this page to you", level: 3 })).toBeVisible();
 });
 
 test("Move to feature files a task from No feature, and No feature takes one back", async ({ page }, info) => {

@@ -47,8 +47,12 @@ const shot = (page: Page, info: TestInfo, name: string) => page.screenshot({ pat
 test("Cost and time says it is not connected yet while Code has no report, and the nav has the link", async ({ page }) => {
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.costReport);
-  await expect(admin.heading("Cost and time")).toBeVisible();
-  await admin.expectNotConnected("The cost report");
+  // SELECTOR (WIRING-1B): the rebuilt page is titled "Money" (its Report tab); the nav link is still "Cost and time".
+  await expect(admin.heading("Money")).toBeVisible();
+  // SELECTOR: Code has no report yet (501): the rebuilt page says so in one quiet held line and draws no number, instead of the old "isn't connected to Rovara Code yet" card.
+  await expect(page.getByText("Rovara can't read this here yet.")).toBeVisible();
+  await expect(admin.loading).toHaveCount(0);
+  await expect(page.getByRole("table")).toHaveCount(0);
   await expect(admin.link("Cost and time")).toHaveAttribute("aria-current", "page");
 });
 
@@ -56,13 +60,12 @@ test("Cost and time draws the four numbers, by feature with No feature last, by 
   await setReport(page, NORMAL_TASKS, FEATURES);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.costReport);
-  const stats = admin.stats("Cost and time in this range");
+  // SELECTOR (WIRING-1B): the rebuilt report draws its totals as the table's last row ("Task work in this report") and the price notes under it, not as four stat tiles.
   // 212.34 + 3.33 + 55.55 + 11.11 = 282.33, and the 3 calls Code could not price make it a floor.
-  await expect(stats).toContainText("$282.33 or more");
-  await expect(stats).toContainText("3 calls not priced");
-  await expect(stats).toContainText("of 2 opened"); // merged pull requests: 2 of the 2 opened
   const table = admin.table("Cost and time by feature");
-  await expect(table.getByRole("row")).toHaveCount(4);
+  await expect(table.getByRole("row").last()).toContainText("$282.33 or more");
+  await expect(page.getByText("3 calls have no price yet, so the cost shown is a minimum.")).toBeVisible();
+  await expect(table.getByRole("row")).toHaveCount(5);
   await expect(table.getByRole("row").nth(1)).toContainText("Checkout v2");
   await expect(table.getByRole("row").nth(1)).toContainText("$215.67 or more");
   await expect(table.getByRole("row").nth(3)).toContainText("No feature");
@@ -72,24 +75,29 @@ test("Cost and time draws the four numbers, by feature with No feature last, by 
   await expect(admin.table("Cost and time by project").getByRole("row").nth(1)).toContainText("web");
   await page.getByRole("tab", { name: "By feature" }).click();
   await page.getByRole("link", { name: "Checkout v2" }).click();
-  await expect(admin.heading("Checkout v2")).toBeVisible();
-  await expect(page.getByText("How tasks got here: 1 chosen by a person, 1 from the tracker.")).toBeVisible();
+  // SELECTOR (WIRING-1B): the feature page is titled "Manage features" with the feature in a level-2 card heading; "Back" is the Report breadcrumb. The rebuilt page draws the Merged chip for
+  // a task's pull request and no "how tasks got here" line (neither is on the approved board), so those two assertions are not carried.
+  await expect(admin.heading("Manage features")).toBeVisible();
+  await expect(admin.featureHeading("Checkout v2")).toBeVisible();
   const tasks = admin.table("Tasks in this feature");
   await expect(tasks.getByRole("row")).toHaveCount(3);
   await expect(tasks).toContainText("Task 1");
-  await expect(tasks.getByRole("link", { name: "1 merged of 1" })).toHaveAttribute("href", "https://github.com/acme/web/pull/1");
+  // The pull-request link and the Back link are restored (WIRING-1).
+  await expect(tasks.getByRole("link", { name: "1 merged of 1" }).first()).toHaveAttribute("href", "https://github.com/acme/web/pull/1");
   await shot(page, info, "feature-light");
   await page.getByRole("link", { name: "Back to Cost and time" }).click();
-  await expect(admin.heading("Cost and time")).toBeVisible();
+  await expect(admin.heading("Money")).toBeVisible();
 });
 
 test("a filter narrows the report and the CSV is what it shows", async ({ page }) => {
   await setReport(page, NORMAL_TASKS, FEATURES);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.costReport);
+  // SELECTOR (WIRING-1B): the filters sit in one closed "Filter" disclosure; the totals are the table's last row.
+  await admin.openFilter();
   await page.getByLabel("Where it started").selectOption("slack");
-  await expect(admin.stats("Cost and time in this range")).toContainText("$3.33 or more");
-  await expect(admin.table("Cost and time by feature").getByRole("row")).toHaveCount(2);
+  await expect(admin.table("Cost and time by feature").getByRole("row").last()).toContainText("$3.33 or more");
+  await expect(admin.table("Cost and time by feature").getByRole("row")).toHaveCount(3);
   const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Download CSV" }).click()]);
   expect(download.suggestedFilename()).toBe("cost-and-time-by-feature.csv");
   const csv = readFileSync((await download.path()), "utf8");
@@ -111,7 +119,8 @@ test("an empty range says so", async ({ page }, info) => {
   await setReport(page, [], []);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.costReport);
-  await expect(page.getByTestId("report-empty")).toBeVisible();
+  // SELECTOR (WIRING-1B): the empty range is one line on the rebuilt page.
+  await expect(page.getByText("No tasks in this range.")).toBeVisible();
   await expect(page.getByRole("table")).toHaveCount(0);
   await shot(page, info, "empty-light");
 });
@@ -122,13 +131,15 @@ test("many features are paged 25 a page, and a made-up feature is not found", as
   await setReport(page, tasks, features);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.costReport);
-  await expect(admin.table("Cost and time by feature").getByRole("row")).toHaveCount(26);
+  // Paging is back (WIRING-1 restore): 25 features a page plus the totals row, as on the live page.
+  await expect(admin.table("Cost and time by feature").getByRole("row")).toHaveCount(27);
   await expect(page.getByText("Showing 1 to 25 of 60")).toBeVisible();
   await shot(page, info, "many-light");
   await page.getByRole("button", { name: "Next page" }).click();
   await expect(page.getByText("Showing 26 to 50 of 60")).toBeVisible();
   await page.goto(ROUTES.admin.costFeature(FT("f")));
-  await expect(admin.heading("Feature not found")).toBeVisible();
+  // SELECTOR: a made-up feature is a 404, which the rebuilt pages draw as the shared "access ended" block.
+  await expect(page.getByRole("heading", { name: "Rovara can't show this page to you", level: 3 })).toBeVisible();
 });
 
 for (const scheme of ["light", "dark"] as const) {
@@ -152,7 +163,7 @@ test("at the narrowest admin width the page does not scroll sideways, and on a p
   const admin = new AdminPage(page);
   await page.setViewportSize({ width: 1024, height: 800 });
   await page.goto(ROUTES.admin.costReport);
-  await expect(admin.heading("Cost and time")).toBeVisible();
+  await expect(admin.heading("Money")).toBeVisible();
   await expect(admin.table("Cost and time by feature")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
   await shot(page, info, "narrow-1024-light");
