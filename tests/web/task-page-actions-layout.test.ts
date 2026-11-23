@@ -57,14 +57,14 @@ async function openMenu() {
  fireEvent.keyDown(trigger, { key: "ArrowDown" });
  return screen.findByRole("menu");
 }
-function expectSafeFirst(dialog: HTMLElement, safeName: string, dangerName: string) {
+function expectSafeFirst(dialog: HTMLElement, safeName: string, dangerName: string, dangerous = true) {
  const safe = within(dialog).getByRole("button", { name: safeName });
  const danger = within(dialog).getByRole("button", { name: dangerName });
  expect(within(dialog).getAllByRole("button")).toEqual([
   within(dialog).getByRole("button", { name: "Close dialog" }), safe, danger,
  ]);
  expect(safe.classList.contains("rv-button-primary")).toBe(true);
- expect(danger.classList.contains("rv-button-danger")).toBe(true);
+ expect(danger.classList.contains("rv-button-danger")).toBe(dangerous);
 }
 const itemNames = (menu: HTMLElement) => within(menu).getAllByRole("menuitem").map(item => item.textContent);
 
@@ -195,23 +195,23 @@ it("the real share route keeps the rebuilt Stop dialog words and safe-first orde
  const s = mount(undefined, "IMPLEMENT", true);try {
   fireEvent.click(within(await openMenu()).getByRole("menuitem", { name: "Stop" }));
   const dialog = await screen.findByRole("dialog", { name: "Stop this session?" });
-  expectSafeFirst(dialog, "Cancel", "Stop and end the machine");
-  expect(dialog.textContent).toContain("Stopping now ends this task's machine. Changes that aren't pushed to GitHub or in a pull request are lost and can't be recovered.");
-  expect(dialog.textContent).not.toContain("Files are kept");
+  expectSafeFirst(dialog, "Cancel", "Stop this task", false);
+  expect(dialog.textContent).toContain("Stop pauses this task. Its files are kept; Retry continues from them.");
+  expect(dialog.textContent).not.toMatch(/ends this task's machine|are lost/u);
  } finally { s.close(); }
 });
 
-it("the Stop dialog says what happens and makes the safe choice the primary button", async () => {
+it("the Stop dialog says what happens and makes the safe choice the primary button and Stop neutral", async () => {
  const s = mount();try {
   const menu = await openMenu();
   fireEvent.click(within(menu).getByRole("menuitem", { name: /^Stop$/u }));
   const dialog = await screen.findByRole("dialog", { name: "Stop this session?" });
   expect(dialog.className).toContain("rv-action-dialog");
-  expect(dialog.textContent).toContain("Stopping now ends this task's machine. Changes that aren't pushed to GitHub or in a pull request are lost and can't be recovered.");
-  expect(dialog.textContent).not.toContain("Files are kept");expect(document.body.textContent).not.toContain("Files are kept");
-  expectSafeFirst(dialog, "Cancel", "Stop and end the machine");
+  expect(dialog.textContent).toContain("Stop pauses this task. Its files are kept; Retry continues from them.");
+  expect(dialog.textContent).not.toMatch(/ends this task's machine|are lost/u);
+  expectSafeFirst(dialog, "Cancel", "Stop this task", false);
   expect(within(dialog).getByRole("button", { name: "Cancel" }).className).toContain("rv-button-primary");
-  expect(within(dialog).getByRole("button", { name: "Stop and end the machine" }).className).toContain("rv-button-danger");
+  expect(within(dialog).getByRole("button", { name: "Stop this task" }).className).not.toContain("rv-button-danger");
   expect(s.writes()).toHaveLength(0);
  } finally { s.close(); }
 });

@@ -109,7 +109,7 @@ it("shows the session entry as an icon row with its delivery subline and the run
  const entry = screen.getByRole("button", { name: /Talk to this session/ });
  expect(entry.querySelector("svg")).toBeTruthy();expect(entry.textContent).toContain("Queued for this build · 14:02");
  expect(entry.closest("details")).toBeNull();expect(screen.getByRole("button", { name: "Stop work" })).toBeTruthy();
- expect(screen.getByText(/Stopping a running step ends this task's machine/)).toBeTruthy();expect(screen.getByText(/Nothing is needed from you. Next/)).toBeTruthy();
+ expect(screen.getByText("Stop pauses this task. Its files are kept; Retry continues from them.", { exact: false })).toBeTruthy();expect(screen.getByText(/Nothing is needed from you. Next/)).toBeTruthy();
  expect(ui.container.querySelectorAll(".rv-ds-plan-items svg")).toHaveLength(4);
  for (const name of ["Plan and changes", "Checks and reviews", "Activity"]) expect(screen.getByText(name).closest("summary")?.querySelector("svg")).toBeTruthy();
 });

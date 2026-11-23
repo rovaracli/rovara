@@ -19,9 +19,9 @@ const unpublished = [{ repository: "acme/payments", reasons: ["worktree_changes"
 const people = { revision: 3, orphaned: false, canManage: true, canTakeOwnership: true, people: [] };
 const failure = (status = 403): ApiResponse => ({ status, body: { error: { code: status === 503 ? "RUNTIME_UNAVAILABLE" : "FORBIDDEN", message: "Current read refused" } } });
 type Action = "Close task" | "Discard it and close" | "Share" | "Take over" | "Remove Dan" | "Continue in my tool" | "Design first" | "Skip design review";
-function mount(live = false, peopleServed = true) {
+function mount(live = false, peopleServed = true, where?: { kind: "mac"; label: string; offline: boolean }) {
  const base = workspaceFixture();
- let session = workspaceFixture({ status: "running", you: { ...base.you, actions: ["watch", "stop", "close", "share", "take_over", "retry", "make_agent", "comment", "steer"] } }, { workflow: { ...workspaceWorkflow(), stage: "IMPLEMENT", state: "RUNNING", revision: 16 }, unpublished, designActions: { designFirst: true, skip: { allowed: true } } });
+ let session = workspaceFixture({ status: "running", ...(where === undefined ? {} : { where }), you: { ...base.you, actions: ["watch", "stop", "close", "share", "take_over", "retry", "make_agent", "comment", "steer"] } }, { workflow: { ...workspaceWorkflow(), stage: "IMPLEMENT", state: "RUNNING", revision: 16 }, unpublished, designActions: { designFirst: true, skip: { allowed: true } } });
  let changed: "none" | "refused" | "stale" | "permission" | "revision-only" | "closed-only" | "offer-only" = "none", closeCount = 0;
  const current = () => changed === "permission" ? { ...session, you: { ...session.you, actions: [] }, body: session.body.kind === "task" ? { kind: "task", task: { ...session.body.task, status: "CLOSED", designActions: { designFirst: false, skip: { allowed: false, because: "skip_off" } } } } : session.body } : changed !== "none" && session.body.kind === "task" ? { ...session, body: { kind: "task", task: { ...session.body.task,
   ...(changed === "revision-only" ? { workflow: { ...session.body.task.workflow!, revision: 17 } } : {}),
@@ -173,6 +173,14 @@ it.each(ACTIONS)("LIVE-ROUTE PARITY %s: both real routes invoke the same guarded
  }
  expect(sent[1]).toEqual(sent[0]);
 });
+it("STOP-KEEPS-FILES-WORDING: a laptop task never shows the hosted Stop sentence on the page", async () => {
+ const s = mount(false, true, { kind: "mac", label: "Priya's MacBook", offline: false });
+ try {
+  await screen.findByTestId("task-page");await enabled("Follow");
+  expect(await screen.findByRole("button", { name: "Stop work" })).toBeTruthy();
+  expect(document.body.textContent).not.toContain("Its files are kept; Retry continues from them.");expect(document.body.textContent).not.toMatch(/ends this task's machine|are lost/u);
+ } finally { s.close(); }
+});
 it("LIVE-ROUTE PARITY enumerates all offered controls from the live components", async () => {
  const inventories: string[][] = [];
  for (const live of [true, false]) {
@@ -185,8 +193,8 @@ it("LIVE-ROUTE PARITY enumerates all offered controls from the live components",
    // the rebuilt 4e trigger uses the approved name.
    expect(await screen.findByRole("button", { name: "Talk to this session" })).toBeTruthy();
    expect(screen.getByRole("button", { name: "Stop work" })).toBeTruthy();
-   // STOP-WARNING-HOTFIX: the page that offers Stop on a running step never claims the files are kept.
-   expect(screen.getByText("Stopping a running step ends this task's machine. Changes that aren't pushed to GitHub or in a pull request are lost.")).toBeTruthy();expect(document.body.textContent).not.toContain("Files are kept");
+   // STOP-KEEPS-FILES-WORDING: hosted Stop pauses the task and keeps its files; the page's Stop note says so and no longer warns of loss.
+   expect(screen.getByText("Stop pauses this task. Its files are kept; Retry continues from them.")).toBeTruthy();expect(document.body.textContent).not.toMatch(/ends this task's machine|are lost/u);
   } finally { s.close(); }
  }
  expect(inventories[0]).toEqual(expect.arrayContaining(["Follow", "Take over", "Retry", "Share", "Stop", "Close task", "Make this an agent", "Continue in my tool", "Design first", "Skip design review", "Remove Dan", "Take ownership"]));

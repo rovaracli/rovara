@@ -56,7 +56,7 @@ it("DEC283: unserved controls stay hidden even when the task advertises them", a
 it("DEC283: Stop remains live, says exactly what stops, and a 409 sends once", async () => {
  const s = mount();try {
   const trigger = await screen.findByRole<HTMLButtonElement>("button", { name: "Stop" });await waitFor(() => expect(trigger.disabled).toBe(false));fireEvent.click(trigger);
-  const dialog = await screen.findByRole("dialog");expect(dialog.textContent).toContain("Stops the task's current work");
+  const dialog = await screen.findByRole("dialog");expect(dialog.textContent).toContain("Stop pauses this task. Its files are kept; Retry continues from them.");
   fireEvent.click(within(dialog).getByRole("button", { name: "Stop session" }));
   await waitFor(() => expect(s.f.request.mock.calls.filter(([r]) => r.method === "POST" && r.path.endsWith("/stop"))).toHaveLength(1));
   const sent = s.f.request.mock.calls.find(([r]) => r.method === "POST" && r.path.endsWith("/stop"))![0];expect(sent.path).toMatch(/\/stop$/);expect(Object.keys(sent.body as object)).toEqual(["requestId"]);
