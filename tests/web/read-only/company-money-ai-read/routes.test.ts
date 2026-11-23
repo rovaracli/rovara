@@ -24,7 +24,7 @@ describe('G2 canonical read leaves', () => {
   const link = await screen.findByRole('link', { name: 'Refunds' }); fireEvent.click(link);
   await screen.findByText('Handle duplicate refunds');
   expect(f.router.state.location.search).toContain('project=web');
-  expect(f.requests.some(r => r.path.endsWith('?project=web&origin=web&state=open&path=quick'))).toBe(true);
+  await waitFor(() => expect(f.requests.some(r => r.path.endsWith('?project=web&origin=web&state=open&path=quick'))).toBe(true));
   expect(screen.getByRole('link', { name: 'Report' }).getAttribute('href')).toBe('/app/admin/money/report?range=all&project=web&origin=web&state=open&path=quick');
  });
  it.each([
