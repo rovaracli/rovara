@@ -438,7 +438,8 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         let forwarded: Buffer;
         try { forwarded = Buffer.from(JSON.stringify(translated)); } catch { return AGENT_CHAT_FEATURE; }
         endpoint.model = model;
-        return { ...checked, model: model.catalog.modelId, maxTokens, bytes: forwarded, headers: { "content-type": "application/json" }, path: endpoint.target.path };
+        // Chat Completions drops the Anthropic cache markers; this outgoing request cannot request cache writes.
+        return { ...checked, usesPromptCache: false, model: model.catalog.modelId, maxTokens, bytes: forwarded, headers: { "content-type": "application/json" }, path: endpoint.target.path };
       }
       if (chat !== undefined && checked.ok) {
         if (!OPENAI_AGENT_MODEL.test(checked.model)) return AGENT_CHAT_FEATURE;
@@ -452,7 +453,8 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         if (chat.provider === "openrouter" && openRouterPolicy(checked.model, (deps.now ?? Date.now)(), deps.openRouterTariffs) === undefined) return AGENT_CHAT_FEATURE;
         let forwarded: Buffer;
         try { forwarded = Buffer.from(JSON.stringify(translated)); } catch { return AGENT_CHAT_FEATURE; }
-        return { ...checked, maxTokens, bytes: forwarded, headers: { "content-type": "application/json" }, path: OPENAI_AGENT_UPSTREAM[chat.provider].path };
+        // Keep admission tied to the translated body, which carries no prompt-cache write controls.
+        return { ...checked, usesPromptCache: false, maxTokens, bytes: forwarded, headers: { "content-type": "application/json" }, path: OPENAI_AGENT_UPSTREAM[chat.provider].path };
       }
       if (byo !== undefined && checked.ok) {
         // Only a model the company picked, sent as the Claude id or profile it picked for it (Claude only in slice 1).

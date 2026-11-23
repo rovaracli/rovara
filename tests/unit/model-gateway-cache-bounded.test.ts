@@ -44,6 +44,21 @@ async function world(missingWrite: false | "all" | "5m" | "1h" | "tier" = false,
   return { ...f, grant, sent };
 }
 
+it("GLM Converse needs no cache-write price because its outgoing request has no cachePoint (F5)", async () => {
+  const f = await world("all", "zai.glm-5");
+  const reserve = vi.spyOn(f.meter, "reserve"); const settle = vi.spyOn(f.meter, "settleV2");
+  f.deps.transport = async () => ({ status: 200, body: (async function* () {
+    yield sse("message_start", { message: { usage: { input_tokens: 2, output_tokens: 0 } } });
+    yield sse("message_delta", { usage: { output_tokens: 5 } }); yield sse("message_stop");
+  })() });
+  const body = { ...structuredClone(pi), model: "zai.glm-5" };
+  expect((await call(f.deps, body, mint({ mdl: [body.model], runPrice: f.grant }))).status).toBe(200);
+  expect(f.sent).toHaveLength(1);
+  expect(f.sent[0]!.toString()).not.toMatch(/cache_control|cachePoint/u);
+  expect(reserve.mock.calls[0]![0].estimateMicros).toBe(f.sent[0]!.length + 4096 + 64 * 2);
+  expect(settle.mock.calls[0]![0].receipt).toMatchObject({ status: "final", reason: "rated_usage", amountMicros: { value: 12 } });
+});
+
 it("admits Pi's exact cached system/message/tool request and settles split usage at actual cache rates", async () => {
   const f = await world();
   const grant = { ...f.grant, cacheWriteUsdPerMillion: 9, cacheReadUsdPerMillion: 0.5 };
