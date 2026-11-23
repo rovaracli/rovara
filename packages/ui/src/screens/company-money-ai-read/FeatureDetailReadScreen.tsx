@@ -12,7 +12,7 @@ import { REPORT_HOME, featurePath, featureReader, freshFacts, useMoneyAiRead, us
 import { RenameButton, MergeButton, StateButton, MoveButton } from '../admin/report/ReportActions.js';
 const plural = (n: number, one: string) => `${String(n)} ${one}${n === 1 ? '' : 's'}`;
 const stateText = (state: 'open' | 'done' | undefined) => state === 'done' ? 'Done' : state === 'open' ? 'Open' : undefined;
-/** The board's "Manage features", read-only: the features list, the selected feature's tasks, and the grouping history (not served: one Unknown). */
+/** The board's "Manage features", read-only: the features list, the selected feature's tasks, and the grouping history (not served: one plain line, no chip). */
 export function FeatureDetailReadScreen() {
  const navigate = useNavigate(), host = useAppHost();
  const id = useParams()['id'] ?? 'none', filters = useReadReportFilters();
@@ -61,7 +61,7 @@ export function FeatureDetailReadScreen() {
      <ReportNotes totals={data.totals} {...(data.unreadableTasks === undefined ? {} : { unreadable: data.unreadableTasks })} />
     </Card>
     <Card title="History · last 30 days">
-     <div className="g2-held-row"><Unknown /><HeldLine role="status">Changes to the grouping are not read on this page.</HeldLine></div>
+     <HeldLine role="status">Version history isn&apos;t shown yet.</HeldLine>
     </Card>
    </>;
   }}</ReadState>

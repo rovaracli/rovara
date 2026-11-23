@@ -1,4 +1,4 @@
-import { TaskPane } from "../../packages/ui/src/screens/work/TaskPane.js";
+import { TaskPane, planNotWritten } from "../../packages/ui/src/screens/work/TaskPane.js";
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
@@ -147,7 +147,7 @@ function pageSetup(options: Setup) {
   const Where = () => { where.current = useLocation().pathname + useLocation().search;return null; };
   const mount = () => renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [options.path], children: h(Announcer, { children: h("div", {}, h(Where, {}), h(Routes, {}, h(Route, { path: "/app/sessions/:id", element: h(SessionScreen, {}) }), h(Route, { path: "/app/live", element: h(WorkScreen, {}) }))) }) }) }) }));
   let ui = mount();
-  return { ...f, ...ui, query, where, failDecisions(response: ApiResponse) { decisionsFailure = response; }, failPlan(response: ApiResponse) { planFailure = response; }, remount() { ui.unmount();query.clear();ui = mount(); }, close() { ui.unmount();query.clear(); } };
+  return { ...f, ...ui, query, where, failDecisions(response: ApiResponse) { decisionsFailure = response; }, failPlan(response: ApiResponse | undefined) { planFailure = response; }, remount() { ui.unmount();query.clear();ui = mount(); }, close() { ui.unmount();query.clear(); } };
 }
 const taskWithSession = { ...TASKS[1]!, sessionId: SESSION };
 
@@ -184,6 +184,79 @@ it("drops cached approval and plan content after their latest reads fail", async
   expect(screen.queryByText("One small change, one new test")).toBeNull();
   expect(screen.getByRole("alert").textContent).toMatch(/latest plan couldn't be read/i);
   f.close();
+});
+
+// ---- TASK-PAGE-PLAN-NOT-YET: a task still being set up has no plan; that is a quiet status, not a failed read ----
+const NOT_YET = { status: 404, body: { error: { code: "NOT_FOUND", message: "this task has no plan document yet" } } } as const;
+it("planNotWritten is true only for 404 + NOT_FOUND + the exact served message", () => {
+  const e = (status: number, code: string, message: string) => new ApiError(status, code, message);
+  expect(planNotWritten(e(404, "NOT_FOUND", "this task has no plan document yet"))).toBe(true);
+  expect(planNotWritten(e(404, "NOT_FOUND", "this task has no plan document v3"))).toBe(false);
+  expect(planNotWritten(e(404, "NOT_FOUND", "the plan document v2 was written before structured plans and has no canonical form"))).toBe(false);
+  expect(planNotWritten(e(404, "NOT_FOUND", "Not found."))).toBe(false);
+  expect(planNotWritten(e(404, "TASK_NOT_FOUND", "this task has no plan document yet"))).toBe(false);
+  expect(planNotWritten(e(500, "NOT_FOUND", "this task has no plan document yet"))).toBe(false);
+  expect(planNotWritten(e(503, "RUNTIME_UNAVAILABLE", "The plan could not be verified."))).toBe(false);
+  expect(planNotWritten(e(403, "FORBIDDEN", "You can no longer read this task."))).toBe(false);
+  expect(planNotWritten(new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response. Reload this page."))).toBe(false);
+  expect(planNotWritten(new Error("this task has no plan document yet"))).toBe(false);
+  expect(planNotWritten(undefined)).toBe(false);
+});
+it("a task with no plan yet shows a quiet line: no error styling, no retry, no approve control", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, cards: decisionsView([]) });
+  f.failPlan(NOT_YET);f.remount();
+  const line = await screen.findByTestId("plan-not-yet");
+  expect(line.textContent).toBe("Rovara will show the plan here when it's ready.");
+  expect(line.getAttribute("role")).toBe("status");
+  expect(screen.queryByText("Plan unavailable")).toBeNull();
+  expect(screen.queryByText(/couldn't be read/u)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Read the plan again" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByTestId("section-error")).toBeNull();
+  expect(screen.queryByRole("button", { name: /^Approve plan/u })).toBeNull();
+  expect(screen.getByRole("heading", { name: "Plan not written yet" })).toBeTruthy();
+  f.close();
+});
+it("never offers an approve control for a plan that is not written, even when a plan card is pending", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}` });
+  await screen.findByRole("button", { name: "Approve plan v1" });
+  f.failPlan(NOT_YET);f.remount();
+  await screen.findByTestId("plan-not-yet");
+  expect(screen.queryByRole("button", { name: /^Approve plan/u })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Your decision" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Read the plan again" })).toBeNull();
+  f.close();
+});
+it.each([
+  ["a plan version that does not exist", { status: 404, body: { error: { code: "NOT_FOUND", message: "this task has no plan document v3" } } }],
+  ["a legacy plan with no canonical form", { status: 404, body: { error: { code: "NOT_FOUND", message: "the plan document v2 was written before structured plans and has no canonical form" } } }],
+  ["a task that is not found", { status: 404, body: { error: { code: "TASK_NOT_FOUND", message: "no such task" } } }],
+  ["a refused read", { status: 403, body: { error: { code: "FORBIDDEN", message: "You can no longer read this task." } } }],
+  ["a route Code does not serve", { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "The plan is not connected yet." } } }],
+  ["an unreadable plan body", { status: 200, body: "not a plan" }],
+] as const)("keeps %s as a failed plan read with its retry", async (_name, response) => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, cards: decisionsView([]) });
+  f.failPlan(response);f.remount();
+  expect((await screen.findByRole("alert")).textContent).toMatch(/latest plan couldn't be read/iu);
+  expect(screen.getByRole("heading", { name: "Plan unavailable" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Read the plan again" })).toBeTruthy();
+  expect(screen.queryByTestId("plan-not-yet")).toBeNull();
+  f.close();
+});
+it("shows the plan once it is written, without a reload, when the task updates", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, cards: decisionsView([]) });
+  f.failPlan(NOT_YET);f.remount();
+  await screen.findByTestId("plan-not-yet");
+  // The plan lands. The page reads again the way it does on every task update: a session.updated notice invalidates ["work"] (the retry:false plan read is not polled by itself).
+  f.failPlan(undefined);
+  const apply = createNoticeInvalidator(f.query);
+  apply.notice({ type: "session.updated", sessionId: SESSION, revision: 2 });
+  try {
+    const spec = await screen.findByRole("region", { name: "Spec" }, { timeout: 4000 });
+    expect(spec.textContent).toContain("One small change, one new test");
+    expect(screen.queryByTestId("plan-not-yet")).toBeNull();
+    expect(screen.queryByText("Plan unavailable")).toBeNull();
+  } finally { apply.stop();f.close(); }
 });
 
 it("drops cached Work decisions after the latest decision read is refused", async () => {

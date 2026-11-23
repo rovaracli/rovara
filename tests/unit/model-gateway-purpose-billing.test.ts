@@ -166,6 +166,22 @@ for (const path of paths) {
       expect(g.counts().sent).toBe(0); expect(g.receipts).toEqual([]);
     }
   });
+  it(`${path}: the hosted-purpose admission refusal logs which check refused, and the answer is unchanged`, async () => {
+    const cases: Array<[string, (g: Awaited<ReturnType<typeof world>>) => void, Record<string, unknown>]> = [
+      ["rovara_signed_price_missing", () => undefined, { runPrice: undefined }],
+      ["receipts_unavailable", (g) => { delete g.deps.chargeReceipts; }, {}],
+      ["settlement_unavailable", (g) => { Reflect.set(g.meter, "settleV2", undefined); }, {}],
+    ];
+    for (const [reason, arrange, changes] of cases) {
+      const g = await world(); const logs: unknown[] = []; g.deps.log = (event) => logs.push(event);
+      arrange(g);
+      const sink = await g.send(path, changes);
+      expect(sink.status).toBe(409);
+      expect(sink.text()).toBe(JSON.stringify({ error: { type: "run_price_authorization_required", message: "AI source or price changed; pause this run for fresh authorization." } }));
+      expect(logs.filter((line) => (line as { event?: unknown }).event === "refused")).toEqual([{ event: "refused", code: "run_price_authorization_required", status: 409, route: path.includes("learning") ? "learning" : "answers", payer: "rovara", reason }]);
+      expect(g.counts().sent).toBe(0);
+    }
+  });
   it(`${path}: unpriced or estimated rows refuse before any reservation or send`, async () => {
     for (const missing of [false, true]) {
       const g = await world();

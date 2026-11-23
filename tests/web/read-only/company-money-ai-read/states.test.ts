@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { mount } from './harness.js';
-import { denied, failed, reply, scope, report, detail, FEATURE } from './fixtures.js';
+import { denied, failed, reply, scope, report, detail, FEATURE, sources } from './fixtures.js';
 import { readFileSync } from 'node:fs';
 const held = JSON.parse(readFileSync('tests/web/read-only/company-money-ai-read/held-states.json', 'utf8')) as Array<{ section: number; missing: string; fallback: string }>;
 describe('G2 R1/R4/R5 read evidence', () => {
@@ -132,14 +132,15 @@ describe('G2 R1/R4/R5 read evidence', () => {
   expect(screen.queryByText('fixture-model')).toBeNull(); expect(screen.queryByText('Your Anthropic key')).toBeNull();
  });
  it('does not infer last-test success or availability from a connected source', async () => {
-  mount('/app/admin/ai-spending'); await screen.findAllByText('fixture-model');
+  // A source served as available with an unanswered connected flag keeps its own Unknown chip: connected is never inferred.
+  mount('/app/admin/ai-spending', async r => r.path.includes('model-sources') ? { status: 200, body: { ...sources, sources: [{ source: 'anthropic_key', available: true, connected: true, inOrder: true }, { source: 'custom_endpoint', available: true, connected: null, inOrder: true }] } } : reply(r)); await screen.findAllByText('fixture-model');
   expect(screen.getAllByRole('img', { name: 'Unknown' }).length).toBeGreaterThan(0);
   expect(screen.queryByText('Working', { exact: true })).toBeNull(); expect(screen.queryByText(/last call succeeded/u)).toBeNull();
  });
  it('shows money floors, coverage, missing time and partial rows as facts', async () => {
   mount(`/app/admin/money/report/features/${FEATURE}?range=all`, async () => ({ status: 200, body: detail }));
   await screen.findByText('Handle duplicate refunds');
-  expect(screen.getByText('Cost unavailable')).toBeTruthy(); expect(screen.getAllByRole('img', { name: 'Unknown' }).length).toBeGreaterThan(0);
+  expect(screen.getByText('Cost unavailable')).toBeTruthy(); expect(screen.getByText("Version history isn't shown yet.")).toBeTruthy(); expect(screen.queryAllByRole('img', { name: 'Unknown' })).toHaveLength(0);
   expect(screen.getByText(/1 task couldn't be read/u)).toBeTruthy(); expect(screen.getByText(/Showing 1 of 2 tasks/u)).toBeTruthy();
   expect(screen.getByText(/1 of 2 tasks has a full USD price/u)).toBeTruthy();
  });

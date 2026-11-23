@@ -8,33 +8,35 @@ export async function setWiki(page: Page, project: string, options: { state?: "r
   expect(answer.status()).toBe(200);
 }
 
-/** The project's Wiki tab (lead 4 W5): page tree and search on the left, one page in the middle, "On this page" and "About this page" on the right. */
+/** The project's Wiki pages (G3, rebuilt on the design system): the index with search, one page of section cards, the corrections and Ask views. They draw their own project frame; the "Wiki" pill of its How we work row marks them. */
 export class WikiPage {
   readonly page: Page;
+  /** The Wiki entry in the project page's own tab list (the way in from the overview). */
   readonly tab: Locator;
-  readonly wiki: Locator;
+  readonly root: Locator;
+  /** Kept for the specs that wait for "the page is shown": the whole rebuilt Wiki / Skills surface. */
   readonly article: Locator;
   readonly empty: Locator;
-  readonly results: Locator;
   readonly search: Locator;
-  readonly nav: Locator;
-  readonly rail: Locator;
+  readonly rows: Locator;
   constructor(page: Page) {
     this.page = page;
     this.tab = page.getByRole("tab", { name: "Wiki" });
-    this.wiki = page.getByTestId("wiki");
-    this.article = page.getByTestId("wiki-page");
-    this.empty = page.getByTestId("wiki-empty");
-    this.results = page.getByTestId("wiki-results");
+    this.root = page.locator(".rv-wiki-skills-read");
+    this.article = this.root;
+    this.empty = this.root.locator(".rv-wsr-line, .rv-wsr-held");
     this.search = page.getByRole("searchbox", { name: "Search the wiki" });
-    this.nav = page.getByRole("navigation", { name: "Wiki pages" });
-    this.rail = page.getByRole("complementary", { name: "About this page" });
+    this.rows = this.root.getByRole("list", { name: "All pages" }).getByRole("listitem");
   }
   async open(project: string, pageId?: string): Promise<void> {
     await this.page.goto(`${ROUTES.project(project)}?tab=wiki${pageId === undefined ? "" : `&page=${pageId}`}`);
   }
-  treeItem(name: RegExp | string): Locator { return this.nav.getByRole("button", { name }); }
-  marker(text: RegExp): Locator { return this.article.getByRole("button", { name: text }); }
+  async openView(project: string, view: "disputed" | "gaps" | "setup" | "ask"): Promise<void> {
+    await this.page.goto(`${ROUTES.project(project)}?tab=wiki&view=${view}`);
+  }
+  heading(name: RegExp | string): Locator { return this.root.getByRole("heading", { name }); }
+  /** The section card with this title (a level-3 heading inside it). */
+  section(title: string): Locator { return this.root.locator(".rv-wsr-card").filter({ has: this.page.getByRole("heading", { level: 3, name: title, exact: true }) }); }
 }
 
 /** Sets a project's pretend wiki build on the pretend Code (W0's file map, W4's controls, the nightly upkeep seam). `status` also writes 24 pages; `aiKey` "missing" is a company with no AI key; `off` and `upkeepOff` make Code answer as one without the route; `consent` is the company's consent to automatic runs (off by default), `ceilingOff` the operator's ceiling being off, `legacyUpkeep` a Code with the project switch only. */

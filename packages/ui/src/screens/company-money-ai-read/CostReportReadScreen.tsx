@@ -39,8 +39,8 @@ function SelectedFeature({ id, name, filters }: { id: string; name: string; filt
   <Facts rows={[
    ['AI cost', dollarsShort(data.totals.costCents, data.totals.costIsFloor)],
    ['End to end', timeText(data.totals.endToEndMs, data.totals.endToEndSoFar) ?? <Unknown />],
-   ['Waiting time', <Unknown />],
   ]} />
+  <p className="g2-note">Waiting time isn&apos;t shown yet.</p>
   {data.tasks.length > 0 && <DataTable caption={`Tasks in ${data.feature.name}`} rows={data.tasks} rowKey={task => task.taskId} columns={[
    { key: 'task', title: 'Task', render: task => <TitleCell title={task.title} sub={`${task.project} · started from ${ORIGIN_WORDS[task.origin]}`} summary={<><TaskResult state={task.state} />{[task.costUnavailable ? 'cost unavailable' : dollarsShort(task.costCents, task.unpricedCalls > 0), timeText(task.wallMs, task.wallSoFar)].filter(Boolean).map(part => ` · ${String(part)}`).join('')} · <PullRequestLink task={task} /></>} /> },
    { key: 'result', title: 'Result', render: task => <TaskResult state={task.state} /> },
@@ -101,7 +101,7 @@ export function CostReportReadScreen() {
       <span className="g2-pager-buttons"><Button disabled={at === 0} onClick={() => setPage(at - 1)}>Previous page</Button><Button disabled={at >= pages - 1} onClick={() => setPage(at + 1)}>Next page</Button></span></div>}
      <ReportNotes totals={data.totals} {...(data.unreadableTasks === undefined ? {} : { unreadable: data.unreadableTasks })} />
     </Section>
-    {data.totals.tasks > 0 && <aside className="g2-info"><Unknown /><p><strong>Spending can show a different total.</strong> This report counts AI use inside tasks only. Setup runs and answers that belong to no task are counted in Spending, not here. Neither number is wrong. <Link to="/app/admin/money/budgets">Open Limits and Spending</Link></p></aside>}
+    {data.totals.tasks > 0 && <aside className="g2-info"><svg className="rv-status-chip-icon" aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="6" /><path d="M8 7v4M8 5h.01" /></svg><p><strong>Spending can show a different total.</strong> This report counts AI use inside tasks only. Setup runs and answers that belong to no task are counted in Spending, not here. Neither number is wrong. <Link to="/app/admin/money/budgets">Open Limits and Spending</Link></p></aside>}
     {selected !== undefined && data.totals.tasks > 0 && <SelectedFeature key={selected.key} id={selected.key} name={selected.name} filters={filters} />}
    </>;
   }}</ReadState>

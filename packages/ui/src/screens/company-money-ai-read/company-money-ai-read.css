@@ -124,7 +124,7 @@
  .rv-company-money-ai-read .g2-filters .rv-input { width: 100%; }
 }
 .rv-company-money-ai-read .g2-info { display: flex; gap: var(--rv-space-3); align-items: flex-start; padding: var(--rv-space-4); border-radius: var(--rv-radius-md); background: var(--rv-bg-sunken); line-height: 1.55; }
-.rv-company-money-ai-read .g2-info .rv-status-chip-wrap { margin-top: 1px; }
+.rv-company-money-ai-read .g2-info > svg { flex: none; margin-top: 3px; color: var(--rv-text-muted); }
 @media (max-width: 639px) { .rv-company-money-ai-read .g2-info { flex-direction: column; } }
 .rv-company-money-ai-read .g2-info p { min-width: 0; }
 

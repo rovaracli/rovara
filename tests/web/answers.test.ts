@@ -10,7 +10,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { ANSWER_WORDS, ANSWERS_WORDS, START_SMALL_TALK_WORDS } from "@agentx/contracts/web";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { WikiTab } from "../../packages/ui/src/screens/project/wiki/WikiTab.js";
+import { WikiTab } from "./support/legacy-wiki-skills/WikiTab.js";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { TaskAnswers } from "../../packages/ui/src/screens/answers/TaskAnswers.js";
 import { ANSWER_FRAME, pieces, taskTextFromAnswer } from "../../packages/ui/src/screens/answers/answer-text.js";

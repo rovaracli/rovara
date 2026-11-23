@@ -41,7 +41,7 @@ import { TaskHeldStatesView } from "../session/TaskHeldStatesView.js";
 import { TaskRunningProgressView } from "../session/TaskRunningProgressView.js";
 import { PlanRevisionView } from "../session/PlanRevisionView.js";
 import { PlanStartReceiptView } from "../session/PlanStartReceiptView.js";
-import { PlanDecisionView } from "../session/PlanDecisionView.js";
+import { PlanDecisionView, PLAN_NOT_YET_LINE } from "../session/PlanDecisionView.js";
 import { useDecisionActions } from "../home/NeedsYou.js";
 import "./work.css";
 import "../session/task-page.css";
@@ -61,6 +61,12 @@ export function SectionError({ error, retry, label }: { error: unknown; retry: (
  * Either means "nothing to show yet", never an error with the route's words. Any other 404 (a task the person can no longer read) stays SectionError's.
  */
 const proofNotServed = (error: unknown): boolean => error instanceof ApiError && (error.status === 501 || (error.status === 404 && error.code === "NOT_FOUND" && error.message === "route not found"));
+
+/**
+ * A task still being set up has no plan document: Code answers 404 NOT_FOUND "this task has no plan document yet" (task-plan-document.ts), which Cloud passes through unchanged.
+ * That is "not written yet", never a failed read. Only that exact status, code and served message count; every other error stays a failed read with its retry.
+ */
+export const planNotWritten = (error: unknown): boolean => error instanceof ApiError && error.status === 404 && error.code === "NOT_FOUND" && error.message === "this task has no plan document yet";
 
 /** The quiet card: a task that asks nothing of the person says why, in fixed words. */
 export function QuietCard({ row, decisionsError, wide = false, retryOffered = false }: { row: WorkRow; decisionsError: unknown; retryOffered?: boolean; /** On the task's own page "the full page" is where the person already is. */ wide?: boolean }) {
@@ -185,14 +191,16 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
   onCheck={() => { void query.invalidateQueries({ queryKey: ["work"] });void query.invalidateQueries({ queryKey: ["session"] }); }}
  />;
  const retryPlan = () => { void plan.refetch(); };
- const planNote = plan.isError ? <SectionError error={plan.error} label="this task's plan" retry={retryPlan} /> : null;
+ const planPending = plan.isError && planNotWritten(plan.error);
+ const planNote = plan.isError ? (planPending ? <p className="rv-muted" role="status" data-testid="plan-not-yet">{PLAN_NOT_YET_LINE}</p> : <SectionError error={plan.error} label="this task's plan" retry={retryPlan} />) : null;
+ const planFailedView = <PlanDecisionView taskTitle={row.title} plan={undefined} state={planPending ? "not-written" : "failed"} onRetry={planPending ? undefined : retryPlan} />;
  const proofBody = proof.isError ? (proofNotServed(proof.error) ? <p className="rv-muted" role="status" data-testid="proof-not-yet">Proof will appear here.</p> : <SectionError error={proof.error} label="the proof" retry={() => { void proof.refetch(); }} />) : null;
  const stageBody = (): ReactNode => {
   const pulls = row.task.pullRequests;
   // Only the spec and the task list need the plan: the proof and the activity are drawn from their own reads, so one failed read does not hide the others.
   // The short peek keeps the last readable plan as read-only context while a refresh fails (DEC 254zzz324); the answers and the plan decisions stay removed. The task page shows the failed state instead.
   const shownPlan = currentPlan ?? keptPlan;
-  if (stage === "spec") return plan.isPending ? <Skeleton label="Loading the task" /> : plan.isError && shownPlan === undefined ? <PlanDecisionView taskTitle={row.title} plan={undefined} state="failed" onRetry={retryPlan} /> : shownPlan === undefined ? planNote : <><fieldset disabled={answerAction.locked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}><SpecStep plan={shownPlan} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} /></fieldset>{shownPlan.tasks.length > 0 && <BuildStep heading="Tasks" tasks={shownPlan.tasks} events={[]} />}
+  if (stage === "spec") return plan.isPending ? <Skeleton label="Loading the task" /> : plan.isError && shownPlan === undefined ? planFailedView : shownPlan === undefined ? planNote : <><fieldset disabled={answerAction.locked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}><SpecStep plan={shownPlan} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} /></fieldset>{shownPlan.tasks.length > 0 && <BuildStep heading="Tasks" tasks={shownPlan.tasks} events={[]} />}
    {!wide && !compact && <details><summary>Plan history</summary>
     {/* The current readers carry no comparison or receipt identity. Never map the workflow revision or a generic decision outcome to either. */}
     <TaskHeldStatesView page="plan" onCheck={retryPlan} />
@@ -200,7 +208,7 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
     <PlanStartReceiptView unavailable />
    </details>}
   </>;
-  if (stage === "request") return plan.isError ? <PlanDecisionView taskTitle={row.title} plan={undefined} state="failed" onRetry={retryPlan} /> : <RequestStep row={row} plan={currentPlan} />;
+  if (stage === "request") return plan.isError ? planFailedView : <RequestStep row={row} plan={currentPlan} />;
   if (stage === "build") return <>{plan.isPending ? <Skeleton label="Loading the task" /> : plan.isError ? planNote : currentPlan === undefined ? planNote : <BuildStep tasks={currentPlan.tasks} events={events.data ?? []} steer={row.group === "run" ? steer : undefined} />}{events.isError && <SectionError error={events.error} label="the build activity" retry={() => { void events.refetch(); }} />}
    <div className="rv-pane-gap">{proofBody ?? <ProofStep heading="Proof so far" rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />}</div></>;
   const proofPart = <>{plan.isError && planNote}{proofBody ?? <ProofStep rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />}</>;
@@ -260,7 +268,7 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
     {primary !== undefined ? <>{primary}<div className="rv-task-session-slot">{sessionEntry}</div></> : !hasDecision && plan.isError && (stage === "spec" || stage === "request") ? <>{guard(stageBody())}<div className="rv-task-session-slot">{sessionEntry}</div>{quiet}</> : hasDecision ? <>{guard(decisionPart)}<div className="rv-task-session-slot">{sessionEntry}</div></> : currentCard ? <>{card}{quiet}</> : <><DecisionFrame as="section" title={row.need ?? run?.currentStep?.name ?? row.line} actions={null} className="rv-task-primary">{guard(stageBody())}</DecisionFrame><div className="rv-task-session-slot">{sessionEntry}</div>{quiet}</>}
     {guard(<>
     {shown !== undefined && stage !== "spec" && stage !== "request" && !currentCard && (hasDecision || primary !== undefined) && <div className="rv-task-selected-section">{stageBody()}</div>}
-    {section("Plan and changes", plan.isError ? "Plan unavailable" : currentPlan === undefined ? "Loading plan" : (planVersion === undefined ? "Plan" : "Plan v" + String(planVersion)) + (tasks.length === 0 ? "" : " · " + String(tasks.length) + (tasks.length === 1 ? " item" : " items")), <>{row.task.advisoryPlanFailure !== undefined && <p className="rv-muted rv-task-step-note"><VisibleText text={"The plan review didn't run: " + row.task.advisoryPlanFailure} /></p>}{(hasDecision || primary !== undefined && shown !== undefined) && (stage === "spec" || stage === "request") && stageBody()}{(stage !== "spec" && stage !== "request" || currentCard) && (planNote ?? (currentPlan === undefined ? null : <SpecStep plan={currentPlan} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} />))}{sections}<TaskHeldStatesView page="plan" onCheck={retryPlan} /></>, hasDecision && !approvalReceipt && (stage === "spec" || stage === "request"))}
+    {section("Plan and changes", plan.isError ? (planPending ? "Plan not written yet" : "Plan unavailable") : currentPlan === undefined ? "Loading plan" : (planVersion === undefined ? "Plan" : "Plan v" + String(planVersion)) + (tasks.length === 0 ? "" : " · " + String(tasks.length) + (tasks.length === 1 ? " item" : " items")), <>{row.task.advisoryPlanFailure !== undefined && <p className="rv-muted rv-task-step-note"><VisibleText text={"The plan review didn't run: " + row.task.advisoryPlanFailure} /></p>}{(hasDecision || primary !== undefined && shown !== undefined) && (stage === "spec" || stage === "request") && stageBody()}{(stage !== "spec" && stage !== "request" || currentCard) && (planNote ?? (currentPlan === undefined ? null : <SpecStep plan={currentPlan} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} />))}{sections}<TaskHeldStatesView page="plan" onCheck={retryPlan} /></>, hasDecision && !approvalReceipt && (stage === "spec" || stage === "request"))}
     {section("Checks and reviews", proof.isError ? "Proof unavailable" : proof.data === undefined ? "Loading proof" : proof.data.items.length === 0 ? "Recorded results appear here" : String(proof.data.items.length) + " recorded results", (primary === undefined || shown !== undefined) && (stage === "proof" || stage === "pull_request") ? <p className="rv-muted">Recorded proof is shown above.</p> : proofBody ?? <ProofStep rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />)}
     {section("Activity", events.isError ? "Activity unavailable" : events.data === undefined ? "Loading activity" : events.data.length === 0 ? "Recorded events appear here" : String(events.data.length) + " recorded events", <>{events.isError && !currentCard && <SectionError error={events.error} label="the activity" retry={() => { void events.refetch(); }} />}<TaskSideCards task={row.task} plan={currentPlan} events={events.data ?? []} /></>)}
     {section("About this task", aboutSummary ?? row.project, <>{aboutExtra}<LessonsUsedCard project={row.project} taskId={row.id} /></>)}

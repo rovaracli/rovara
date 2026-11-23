@@ -1,19 +1,19 @@
 // One wiki page: title, one meta line (who wrote it, as of which commit, one freshness chip), the summary, pinned notes, the "Relevant source files" fold, the text with its
 // numbered sources, and one footer line. The right rail holds "On this page" and "About this page". Read only: Mark wrong and notes are C1's writes (not here until wired).
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fixedWikiWords, useWikiCorrections, useWikiPage, useWikiSources, type WikiIndexEntry, type WikiPageResponse } from "../../../api/wiki.js";
-import { ApiError } from "../../../api/errors.js";
-import { useProject } from "../../../api/projects.js";
-import { Banner } from "../../../design/Banner.js";
-import { Button } from "../../../design/Button.js";
-import { RelativeTime } from "../../../design/RelativeTime.js";
-import { Skeleton } from "../../../design/Skeleton.js";
-import { VisibleText } from "../../../design/VisibleText.js";
+import { fixedWikiWords, useWikiCorrections, useWikiPage, useWikiSources, type WikiIndexEntry, type WikiPageResponse } from "../../../../packages/ui/src/api/wiki.js";
+import { ApiError } from "../../../../packages/ui/src/api/errors.js";
+import { useProject } from "../../../../packages/ui/src/api/projects.js";
+import { Banner } from "../../../../packages/ui/src/design/Banner.js";
+import { Button } from "../../../../packages/ui/src/design/Button.js";
+import { RelativeTime } from "../../../../packages/ui/src/design/RelativeTime.js";
+import { Skeleton } from "../../../../packages/ui/src/design/Skeleton.js";
+import { VisibleText } from "../../../../packages/ui/src/design/VisibleText.js";
 import { Block, type BlockMarking } from "./WikiBlocks.js";
-import { MarkForm, PageMark, PageNotes, viewOf } from "./WikiCorrections.js";
-import { TeamLessons } from "../lessons/TeamLessons.js";
-import { hostLink, modelOf, type PageModel } from "./wiki-model.js";
-import { T, chipOf, crumbOf, linesWords, shortSha } from "./wiki-text.js";
+import { MarkForm, PageMark, PageNotes, viewOf } from "../../../../packages/ui/src/screens/project/wiki/WikiCorrections.js";
+import { TeamLessons } from "../../../../packages/ui/src/screens/project/lessons/TeamLessons.js";
+import { hostLink, modelOf, type PageModel } from "../../../../packages/ui/src/screens/project/wiki/wiki-model.js";
+import { T, chipOf, crumbOf, linesWords, shortSha } from "../../../../packages/ui/src/screens/project/wiki/wiki-text.js";
 
 const headingId = (blockId: string) => `rv-wiki-h-${blockId}`;
 const counts = (res: WikiPageResponse) => ({ found: res.page.claims.filter((c) => c.source === "found").length, changed: res.page.claims.filter((c) => c.source === "changed").length });

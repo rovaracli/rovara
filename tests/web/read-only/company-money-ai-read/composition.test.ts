@@ -40,7 +40,7 @@ describe('G2 screens are composed from the shared design system, in the approved
   expect((filter as HTMLDetailsElement).open).toBe(false);
   expect(filter?.querySelector('summary')?.textContent).toMatch(/^Filter · All time/u);
  });
- it('selected feature card: Merged is the shared chip, an open task is a neutral fact chip, an unserved fact is one Unknown chip', async () => {
+ it('selected feature card: Merged is the shared chip, an open task is a neutral fact chip, a fact that is never served is plain text, not an Unknown chip', async () => {
   mount('/app/admin/money/report?range=all', async request => ({ status: 200, body: request.path.includes('/features/') ? { ...detail, tasks: [...detail.tasks, { ...detail.tasks[0], taskId: 'task-2', title: 'Ship refund receipt', state: 'merged', costUnavailable: false }] } : reply(request).body }));
   const card = await screen.findByRole('region', { name: 'Selected feature' });
   await within(card).findByText('Ship refund receipt');
@@ -48,9 +48,10 @@ describe('G2 screens are composed from the shared design system, in the approved
   expect(merged.querySelector('.rv-status-chip[data-state=merged]')).not.toBeNull();
   const open = within(card).getByRole('row', { name: /Handle duplicate refunds/u });
   expect(open.querySelector('.rv-status-chip.g2-fact')?.textContent).toBe('Open');
-  expect(within(card).getAllByRole('img', { name: 'Unknown' }).length).toBeGreaterThan(0);
+  expect(within(card).getByText("Waiting time isn't shown yet.")).toBeTruthy();
+  expect(within(card).queryByText('Waiting time')).toBeNull(); // not a row with an Unknown value
  });
- it('manage features: the features list, the selected feature\'s task table and a History card with one Unknown', async () => {
+ it('manage features: the features list, the selected feature\'s task table and a History card that says version history is not shown yet, with no chip', async () => {
   mount(`/app/admin/money/report/features/${FEATURE}?range=all`, async request => ({ status: 200, body: request.path.includes('/features/') ? { ...detail, features: [{ id: FEATURE, name: 'Refunds', state: 'open' }, { id: 'ft_bbbbbbbbbbbbbbbbbbbb', name: 'Ledger export', state: 'done' }] } : reply(request).body }));
   expect(await screen.findByRole('heading', { level: 1, name: 'Manage features' })).toBeTruthy();
   const list = await screen.findByRole('region', { name: 'Features' });
@@ -58,7 +59,8 @@ describe('G2 screens are composed from the shared design system, in the approved
   expect(within(list).getByText('Done')).toBeTruthy();
   expect(within(screen.getByRole('region', { name: 'Selected feature' })).getByRole('table', { name: 'Tasks in this feature' })).toBeTruthy();
   const history = screen.getByRole('region', { name: 'History · last 30 days' });
-  expect(within(history).getAllByRole('img', { name: 'Unknown' })).toHaveLength(1);
+  expect(within(history).getByText("Version history isn't shown yet.")).toBeTruthy();
+  expect(within(history).queryByRole('img', { name: 'Unknown' })).toBeNull();
   expect(document.querySelector('form,input,textarea')).toBeNull();
  });
  it('read failure: the shared error block, one GET-only Load again, no stale facts', async () => {
@@ -102,6 +104,9 @@ describe('G2 screens are composed from the shared design system, in the approved
   await screen.findByRole('heading', { name: 'Saved now, version 3' });
   const header = screen.getByRole('heading', { level: 1 }).closest('header');
   expect(header?.textContent).toMatch(/Saved order · version 3 · Read from Rovara /u);
+  const means = screen.getByRole('heading', { name: 'What this order means now' }).closest('section') as HTMLElement;
+  expect(within(means).getByText("Which projects and tasks use this order isn't shown yet.")).toBeTruthy();
+  expect(within(means).queryByRole('img', { name: 'Unknown' })).toBeNull();
   expect(screen.getByRole('heading', { name: 'Saved now, version 3' })).toBeTruthy();
   expect(Array.from(document.querySelectorAll('ol li strong')).map(node => node.textContent)).toEqual(['Your Anthropic key', 'Your own endpoint']);
   expect(screen.getByText(/Only your company.s owners and admins can change the order/u)).toBeTruthy();
@@ -122,7 +127,7 @@ describe('G2 screens are composed from the shared design system, in the approved
 
 it('empty source order has no saved version and uses Connected consistently', async () => {
  mount('/app/admin/ai-spending/order', async r => ({ ...reply(r), body: { ...reply(r).body as object, order: [], sources: [] } }));
- await screen.findByText('No saved order yet.');
+ await screen.findByText('No saved order yet.'); // sources [] lists nothing to say the default from: the shared Unknown, not a claim
  expect(screen.queryByText(/version 3/u)).toBeNull();
  expect(screen.getByText(/Connected/u)).toBeTruthy();
  expect(screen.queryByText(/was served/u)).toBeNull();

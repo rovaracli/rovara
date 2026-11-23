@@ -95,7 +95,7 @@ export function TaskStartReceiptView({ outcome }: TaskStartReceiptViewProps) {
   <div style={{ display: "grid", gap: "var(--rv-space-2)", minWidth: 0 }}>
    <h3>{outcome.request.textKind === "task-title" ? "Recorded task title" : "What you asked for"}</h3>
    <p className="rv-surface rv-markdown" style={{ margin: 0, overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{outcome.request.text}</p>
-   <p className="rv-muted" style={{ fontSize: "var(--rv-font-sm)" }}>{outcome.request.textKind === "task-title" ? "The full start request is not available in this task read." : "This request is fixed after acceptance. Talk to the task or use its plan decision to change the work."}</p>
+   <p className="rv-muted" style={{ fontSize: "var(--rv-font-sm)" }}>{outcome.request.textKind === "task-title" ? "Showing the task title." : "This request is fixed after acceptance. Talk to the task or use its plan decision to change the work."}</p>
   </div>
  </section>;
 }

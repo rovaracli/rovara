@@ -4,7 +4,7 @@ import { chargeValue, type ChargeReceiptV1 } from "./charge-receipt.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { openRouterDecimal, openRouterHold, openRouterPolicy, type OpenRouterTariff } from "./openrouter-policy.js";
-import { runPriceAllows } from "./run-price.js";
+import { runPriceDenial, type RunPriceDenial } from "./run-price.js";
 import { AGENT_AI_SOURCES, agentSourceSwitchedOn, resolveAgentSource, type AgentAiSource, type ResolvedAgentSource, type AgentSourceVia, type AgentAiSourceReader, type ByoBedrock, type CompanyChatAi, type CompanyEndpointAi, type RovaraAi } from "./agent-ai.js";
 import { endpointTarget, ENDPOINT_ADDRESS_REFUSED, type EndpointTarget } from "./endpoint-guard.js";
 import { parseEndpointConnect, type EndpointConnection, type EndpointModel } from "./endpoint-source.js";
@@ -42,7 +42,16 @@ export interface GatewaySink { head(status: number, headers: Readonly<Record<str
  * (task, person, project, upkeep, company), `route` the route that answered and `payer` who pays for the call's AI (the source word, set once the company's choice
  * is read). Fixed words and numbers only: never a token, key, prompt, provider text, company or task id.
  */
-export type RefusedLogReason = "bedrock_401" | "bedrock_403" | "bedrock_other" | "meter_busy";
+export type RefusedLogReason = "bedrock_401" | "bedrock_403" | "bedrock_other" | "meter_busy" | RunPriceRefusedReason;
+/**
+ * Which run-price check refused a `run_price_authorization_required` call. Log only: the client's body, status and code never change. One fixed word per check
+ * (a stable list: add, never rename): `signed_price_missing` the token carries no run price for a source that needs one; the `rovara_*`, `receipts_unavailable`
+ * and `settlement_unavailable` rows are the hosted-purpose admission; `input_unbounded`, `media_unsupported`, `image_unbounded` the request shape;
+ * `price_*` and `rate_above_ceiling` the price; `snapshot_mismatch`, `snapshot_version_mismatch`, `price_basis_missing`, `price_version_changed`,
+ * `tariff_snapshot_changed` the price basis; `company_mismatch`, `model_mismatch`, `token_expired`, `provider_mismatch`, `source_mismatch`, `connection_changed`
+ * the signed authorization against the admitted source; `cache_write_price_unknown` the cached-call rates.
+ */
+export type RunPriceRefusedReason = RunPriceDenial | "signed_price_missing" | "rovara_signed_price_missing" | "price_usage_estimated" | "receipts_unavailable" | "settlement_unavailable" | "input_unbounded" | "media_unsupported" | "image_unbounded" | "price_basis_missing" | "snapshot_mismatch" | "snapshot_version_mismatch" | "cache_write_price_unknown";
 export interface RefusedLog { event: "refused"; code: string; status: number; cap?: MeterItem; route?: "agent" | "product" | "learning" | "answers"; payer?: string; reason?: RefusedLogReason; method?: string; path?: string; query?: boolean }
 const REFUSAL_CODE = /^[a-z0-9_]{1,64}$/u;
 /** A refusal code as it is logged: a fixed lower-case word, or "other" for anything else (a code never carries provider text). */
@@ -121,7 +130,7 @@ export interface RouteCall {
 }
 export interface UsageReader { actualInputTokens?(): number | undefined; push(bytes: Uint8Array): void; whole(value: unknown): void; finish(): TokenUsage | undefined }
 /** A fixed refusal a route answers before any money moves. */
-export interface RouteRefusal { ok: false; status: number; code: string; message: string; headers?: Readonly<Record<string, string>> }
+export interface RouteRefusal { ok: false; status: number; code: string; message: string; headers?: Readonly<Record<string, string>>; /** Logged with the refusal only; never sent. */ reason?: RefusedLogReason }
 /** Everything that differs between the agent route and the product route. The money core (hold, settle, deadline, scan) is shared. */
 export interface GatewayRoute {
   /** Saved source of this admitted call, when its adapter can pin the credential revision. */
@@ -300,7 +309,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     // Reviewer grants never authorize a source reporting its own cost, with or without
     // ordinary run-price authority. Preserve the reviewer refusal before key/price reads.
     if (source === "openrouter_key" && claims.reviewer !== undefined) return hard(REVIEWER_CEILING_REFUSED);
-    if (source === "openrouter_key" && claims.runPrice === undefined) return hard({ ok: false, status: 409, code: "run_price_authorization_required", message: "Authorize the current AI source and price before this run." });
+    if (source === "openrouter_key" && claims.runPrice === undefined) return hard({ ok: false, status: 409, code: "run_price_authorization_required", message: "Authorize the current AI source and price before this run.", reason: "signed_price_missing" });
     if (source === "bedrock_byo") {
       if (choice.byo === undefined) return soft(AGENT_SOURCE_NOT_OFFERED);
       // Only the verified company's own connection (the token's iss and cid), never another company's.
@@ -716,7 +725,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       return;
     }
     if (route === undefined) { await respond(404, "not_found", "not found"); return; }
-    if (route.admit !== undefined) { const refused = await wait(route.admit(claims, controller.signal)); if (refused !== undefined) { await respond(refused.status, refused.code, refused.message, refused.headers); return; } }
+    if (route.admit !== undefined) { const refused = await wait(route.admit(claims, controller.signal)); if (refused !== undefined) { refusedReason = refused.reason; await respond(refused.status, refused.code, refused.message, refused.headers); return; } }
     // Every resolved Rovara purpose, including exempt companies, before holds, reviewer
     // debits or sends. A pause never falls back or retries.
     if (route.chargeSource?.source.kind === "rovara_ai") {
@@ -741,29 +750,32 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
     // DEC 254zzz312: hosted Rovara purpose calls require exact signed pricing and durable per-call receipts, including exempt calls.
     const rovaraPurpose = route.purpose !== undefined && route.payer === "rovara";
-    if (rovaraPurpose && (claims.runPrice === undefined || price.estimated || usageEstimated(price, { input: inputCeiling, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || deps.chargeReceipts === undefined || route.meter.settleV2 === undefined)) {
-      await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
-    }
+    const PRICE_CHANGED = "AI source or price changed; pause this run for fresh authorization.";
+    // The run-price refusal: the client sees the same 409 and words as ever; the log line also names the check that refused.
+    const priceRefused = async (reason: RunPriceRefusedReason, message: string = PRICE_CHANGED) => { refusedReason = reason; await respond(409, "run_price_authorization_required", message); };
+    const rovaraWhy: RunPriceRefusedReason | undefined = !rovaraPurpose ? undefined : claims.runPrice === undefined ? "rovara_signed_price_missing" : price.estimated ? "price_estimated" : usageEstimated(price, { input: inputCeiling, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) ? "price_usage_estimated" : deps.chargeReceipts === undefined ? "receipts_unavailable" : route.meter.settleV2 === undefined ? "settlement_unavailable" : undefined;
+    if (rovaraWhy !== undefined) { await priceRefused(rovaraWhy); return; }
     const customerBedrock = route.payer === "bedrock_byo";
     // Product Bedrock retains its existing media admission; agent compatibility requires a bounded, known-price request.
     const legacyBedrock = customerBedrock && !route.product && claims.runPrice === undefined;
-    if (legacyBedrock && (!guarded.inputBounded || guarded.media !== undefined || providerPrice.estimated || price.estimated || usageEstimated(price, { input: inputCeiling, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || price.operatorReview || route.meter.settleV2 === undefined)) {
+    const legacyWhy: RunPriceRefusedReason | undefined = !legacyBedrock ? undefined : !guarded.inputBounded ? "input_unbounded" : guarded.media !== undefined ? "media_unsupported" : providerPrice.estimated || price.estimated ? "price_estimated" : usageEstimated(price, { input: inputCeiling, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) ? "price_usage_estimated" : price.operatorReview ? "price_operator_review" : route.meter.settleV2 === undefined ? "settlement_unavailable" : undefined;
+    if (legacyWhy !== undefined) {
       if (claims.reviewer !== undefined) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
-      await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
+      await priceRefused(legacyWhy); return;
     }
     // Unsafe reviews get their own refusal even with a signed price; genuine stale authorizations still use the guard below.
     if (customerBedrock && claims.reviewer !== undefined && (!guarded.inputBounded || guarded.media !== undefined || price.estimated || usageEstimated(price, { input: inputBytes, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
-    if (guarded.images !== undefined && !guarded.inputBounded) { await respond(409, "run_price_authorization_required", UNBOUNDED_IMAGE_REFUSED_MESSAGE); return; }
+    if (guarded.images !== undefined && !guarded.inputBounded) { await priceRefused("image_unbounded", UNBOUNDED_IMAGE_REFUSED_MESSAGE); return; }
     const basis = claims.runPrice === undefined ? undefined : deps.prices?.quoteBasis?.(route.provider, guarded.model);
-    if ((claims.runPrice !== undefined && (!guarded.inputBounded || guarded.media !== undefined || (price.estimated && !price.knownTokenPrice) || basis === undefined || basis.hash !== claims.runPrice.snapshotHash || basis.version !== claims.runPrice.snapshotVersion)) || !runPriceAllows(claims, route.provider, guarded.model, route.chargeSource, price, now(), deps.openRouterTariffs)) {
-      await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
-    }
+    const basisWhy: RunPriceRefusedReason | undefined = claims.runPrice === undefined ? undefined : !guarded.inputBounded ? "input_unbounded" : guarded.media !== undefined ? "media_unsupported" : price.estimated && !price.knownTokenPrice ? "price_estimated" : basis === undefined ? "price_basis_missing" : basis.hash !== claims.runPrice.snapshotHash ? "snapshot_mismatch" : basis.version !== claims.runPrice.snapshotVersion ? "snapshot_version_mismatch" : undefined;
+    const allowWhy = basisWhy ?? runPriceDenial(claims, route.provider, guarded.model, route.chargeSource, price, now(), deps.openRouterTariffs);
+    if (allowWhy !== undefined) { await priceRefused(allowWhy); return; }
     if (claims.runPrice !== undefined) {
       if (guarded.usesPromptCache) {
         // Check the base and every reachable band: derived/missing write rates are not evidence of a price.
         const probes = [1, ...(price.longContext ?? []).filter((tier) => tier.aboveTokens < inputCeiling).map((tier) => tier.aboveTokens + 1)];
         if (probes.some((tokens) => usageEstimated(price, { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens }))) {
-          await respond(409, "run_price_authorization_required", "This model has no known cache-write price; pause this run for fresh authorization."); return;
+          await priceRefused("cache_write_price_unknown", "This model has no known cache-write price; pause this run for fresh authorization."); return;
         }
       }
       shortenDeadline(claims.runPrice.expiresAt);

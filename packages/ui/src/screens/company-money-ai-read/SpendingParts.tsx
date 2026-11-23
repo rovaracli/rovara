@@ -9,7 +9,8 @@ import { ReadState } from './ReadState.js';
 import { Facts, Section, Unknown, dollarsShort } from './Parts.js';
 import { useMoneyAiRead } from './read-model.js';
 type Who = { orgId: string; developerId: string; role: 'owner' | 'admin' | 'member'; company: string };
-const agentAiReader = { parse: readAgentAi }, settingsReader = { parse: readCompanySettings };
+export const agentAiReader = { parse: readAgentAi };
+const settingsReader = { parse: readCompanySettings };
 /**
  * The board's "Change spending" (WIRING-1 restore): who pays for the AI and the company's monthly limit, saved with the setup step's one Save (the same component, the same handlers, the same
  * refusals; the page's action host fences the two writes on the latest reads like every other G2 action).

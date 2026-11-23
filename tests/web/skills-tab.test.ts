@@ -11,8 +11,9 @@ import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
 import { NEEDS_TWO, SKILLS_EMPTY_TITLE, SKILLS_READ_ONLY, SKILL_LIMITS, SKILL_LONG_NOTE, SKILL_RETIRE_CONFIRM, SkillReader, SkillsReader, approvalWords, approveHint, approvedWords, estimateSkillBytes, savedWords, skillStatus, skillsOffered, waitingForApproval } from "../../packages/ui/src/api/skills.js";
-import { SkillsTab } from "../../packages/ui/src/screens/project/skills/SkillsTab.js";
+import { SkillsTab } from "./support/legacy-wiki-skills/SkillsTab.js";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
+import { meFixture } from "./support/fixtures.js";
 import { projectFixture } from "./support/project-fixture.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
@@ -330,15 +331,16 @@ it("hidden control characters in a skill's words are shown as visible marks, nev
 
 // ---- The tab on the project page ----
 function project(skillsAnswer: (request: ApiRequest) => ApiResponse, initial = "/app/projects/payments?tab=skills") {
-  const f = fakeHost(async request => request.path === "/v1/app/changes" ? ok({ notices: [], next: "settled" }) : request.path.endsWith("/skills") ? skillsAnswer(request) : request.method === "GET" ? ok(projectFixture()) : { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } });
+  const f = fakeHost(async request => request.path === "/v1/app/changes" ? ok({ notices: [], next: "settled" }) : request.path === "/v1/app/me" ? ok(meFixture()) : request.path.endsWith("/skills") ? skillsAnswer(request) : request.method === "GET" ? ok(projectFixture()) : { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } });
   const query = createQueryClient();
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [initial], children: h(Announcer, { children: h(Routes, {}, h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) })) }) }) }) }));
   return { ...f, ...ui, close() { ui.unmount();query.clear(); } };
 }
 it("the project page offers a Skills tab when Code serves skills, and opens it from ?tab=skills", async () => {
   const f = project(() => ok({ project: "payments", canDecide: true, skills: [row("add-queue")] }));
-  expect(await screen.findByRole("tab", { name: "Skills" })).toBeTruthy();
-  expect(await screen.findByTestId("skills-tab")).toBeTruthy();
+  // The rebuilt Skills page (G3) opens from the address and draws its own project frame (the Skills pill).
+  expect(await screen.findByRole("heading", { name: "Skills in payments" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Skills" }).getAttribute("aria-current")).toBe("page");
   f.close();
 });
 it("the project page shows no Skills tab, and ?tab=skills opens the overview, when Code does not serve skills (501) or lessons are off (404)", async () => {

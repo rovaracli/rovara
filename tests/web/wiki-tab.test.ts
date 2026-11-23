@@ -8,7 +8,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { WikiTab } from "../../packages/ui/src/screens/project/wiki/WikiTab.js";
+import { WikiTab } from "./support/legacy-wiki-skills/WikiTab.js";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
 import { wikiOffered } from "../../packages/ui/src/api/wiki.js";
@@ -17,6 +17,7 @@ import { chipOf, dotOf, treeOf } from "../../packages/ui/src/screens/project/wik
 import { WIKI_WORDS } from "@agentx/contracts/web";
 import { fakeHost } from "./support/fake-host.js";
 import { expectNoAxeViolations } from "./support/axe.js";
+import { meFixture } from "./support/fixtures.js";
 import { projectFixture } from "./support/project-fixture.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
@@ -41,6 +42,7 @@ function mount(options: Options = {}, element: "tab" | "screen" = "tab") {
     const sources = /^\/v1\/app\/projects\/payments\/wiki\/pages\/([^/]+)\/sources$/u.exec(path);
     if (sources !== null) return options.sources?.() ?? (() => { const one = wikiSources("payments", sources[1]!); return one === undefined ? refusal(404, "NOT_FOUND", WORDS.noPage) : json(200, one); })();
     if (path === "/v1/app/projects/payments/overview") return json(200, overview);
+    if (path === "/v1/app/me") return json(200, meFixture());
     return refusal(404, "NOT_FOUND", "route not found");
   });
   const query = createQueryClient();
@@ -394,7 +396,8 @@ describe("review fixes", () => {
     const f = mount({}, "screen");
     await screen.findByRole("heading", { name: "payments" });
     expect(screen.queryByRole("heading", { name: "Running now" })).toBeNull();
-    expect(await screen.findByTestId("wiki")).toBeTruthy();
+    // The rebuilt Wiki page (G3) owns the whole frame at this address.
+    expect(await screen.findByRole("heading", { name: "What Rovara knows about payments" })).toBeTruthy();
     f.close();
   });
 
@@ -410,8 +413,9 @@ describe("review fixes", () => {
 describe("the tab on the project page", () => {
   it("is offered when Code serves a wiki, opens from the address, and is hidden when Code has none or the person has none", async () => {
     const on = mount({}, "screen");
-    expect(await screen.findByRole("tab", { name: "Wiki" })).toBeTruthy();
-    expect(await screen.findByTestId("wiki")).toBeTruthy();
+    // The rebuilt Wiki page (G3) opens from the address and draws its own project frame (the Wiki pill).
+    expect(await screen.findByRole("heading", { name: "What Rovara knows about payments" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Wiki" }).getAttribute("aria-current")).toBe("page");
     on.close();
     for (const answer of [refusal(501, "NOT_ON_CODE_YET", WORDS.notYet), refusal(404, "NOT_FOUND", WORDS.notFound), refusal(403, "FORBIDDEN", WORDS.forbidden)]) {
       const off = mount({ index: () => answer, initial: "/app/projects/payments?tab=wiki" }, "screen");

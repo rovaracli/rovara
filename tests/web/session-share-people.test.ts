@@ -87,12 +87,13 @@ describe("Share and the People panel", () => {
     expect(removal.path).toBe(SHARES + "/MEMBER%23" + DAN);
   });
 
-  it("shows a share removal's refusal in Code's words and keeps the viewer listed", async () => {
+  it("shows a share removal's refusal in plain words (never Code's text) and keeps the viewer listed", async () => {
     const { f } = mount(request => request.method === "DELETE" ? refusal(403, "FORBIDDEN", "only the task's owner can share it")
       : request.path.endsWith("/candidates") ? { status: 200, body: { candidates: [], complete: true } } : { status: 200, body: { people: view, sharedWith: [{ developerId: DAN, name: "Dan", role: "viewer" }] } });
     await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Share" }).disabled).toBe(false));fireEvent.click(screen.getByRole("button", { name: "Share" }));
     fireEvent.click(await screen.findByRole("button", { name: "Remove Dan" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("only the task's owner can share it");
+    expect((await screen.findByRole("alert")).textContent).toBe("Rovara couldn't confirm you can remove this person.");
+    expect(screen.queryByText(/only the task's owner/u)).toBeNull();
     expect(screen.getAllByTestId("people-row")).toHaveLength(2);
     expect(calls(f).filter(call => call.startsWith("DELETE"))).toHaveLength(1);
   });

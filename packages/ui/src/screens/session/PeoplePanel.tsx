@@ -16,13 +16,16 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { TaskMark } from "./task-marks.js";
 import { useTaskPagePolicy } from "./task-page-policy.js";
+import { panelError, peopleFailure, type PeopleFailure } from "./people-failure.js";
+
+/** Plain words for a failed request, and the fixed Ref code beside them (never the server's own text). */
+function FailureRef({ failure }: { failure: PeopleFailure }) { return failure.ref === undefined ? null : <p className="rv-muted" data-testid="people-failure-ref"><code>Ref <VisibleText text={failure.ref} /></code></p>; }
 
 const POLL_MS = 3000;
 const ROLE_WORDS = { owner: "Owner", commenter: "Can comment", viewer: "Can view", denied: "Removed" } as const;
 const ROLE_OPTIONS = [{ value: "owner", label: ROLE_WORDS.owner }, { value: "commenter", label: ROLE_WORDS.commenter }, { value: "viewer", label: ROLE_WORDS.viewer }] as const;
 /** Code answers 404 or 501 for a People route it does not serve on this install: the panel says so in fixed words and nothing else breaks. */
 const notServed = (error: unknown) => error instanceof ApiError && (error.status === 501 || (error.status === 404 && error.code !== "SESSION_NOT_FOUND" && error.code !== "TASK_NOT_FOUND"));
-const failureText = (error: unknown, fallback: string) => (error instanceof ApiError ? error.message : fallback);
 interface Waiting { confirmUrl: string; expiresAt: string; revision: number }
 
 /**
@@ -32,7 +35,7 @@ interface Waiting { confirmUrl: string; expiresAt: string; revision: number }
  */
 export function PeoplePanel({ id, shareRequest = 0 }: { id: string; /** D8: goes up each time Share asks the panel to open to add a viewer. */ shareRequest?: number }) {
  const page = useTaskPagePolicy(), host = useAppHost(), api = useMemo(() => createPeopleApi(host), [host]), shares = useMemo(() => createSessionApi(host), [host]), query = useQueryClient();
- const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState<string>(), [error, setError] = useState<string>();
+ const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState<string>(), [error, setError] = useState<PeopleFailure>();
  const [waiting, setWaitingState] = useState<Waiting>(), [candidateId, setCandidateId] = useState<string>(), [addRole, setAddRole] = useState<"owner" | "commenter" | "viewer">("commenter");
  // Share asked for the panel (D8): it opens, set to add a viewer, and the add form takes focus once its people are in.
  const [seenShare, setSeenShare] = useState(shareRequest), groupRef = useRef<HTMLDivElement>(null), focusedFor = useRef(shareRequest);
@@ -73,7 +76,7 @@ export function PeoplePanel({ id, shareRequest = 0 }: { id: string; /** D8: goes
    return people.some(person => person.personId === body.personId && person.role === body.role);
   });
  }
- function requirePeopleRead(): never { throw new ApiError(403, "FORBIDDEN", "These people or your permissions changed. Check the current list."); }
+ function requirePeopleRead(): never { throw panelError(403, "FORBIDDEN", "These people or your permissions changed. Check the current list."); }
  async function readAuthority(revision: number, ownership = false): Promise<() => void> {
   // Refetch through the shared query: failures drop rendered authority, and a
   // cancelled older response cannot replace a newer refusal after remount.
@@ -96,7 +99,7 @@ export function PeoplePanel({ id, shareRequest = 0 }: { id: string; /** D8: goes
    if (answer.status === "COMMITTED") { query.setQueryData<NonNullable<typeof list.data>>(key, old => ({ ...old, people: answer.people }));setMessage("Done");void query.invalidateQueries({ queryKey: ["session", id], exact: true });void query.invalidateQueries({ queryKey: [...key, "candidates"] }); }
    else if (answer.status === "PENDING") setWaiting({ confirmUrl: answer.confirmUrl, expiresAt: answer.expiresAt, revision: view.revision });
   } catch (failure) {
-   setError(failureText(failure, "Couldn't change who is on this task. Try again."));
+   setError(peopleFailure(failure, "write"));
    // A stale list: read it again so the next try is against what Code shows now.
    if (failure instanceof ApiError && failure.status === 409) void list.refetch();
   } finally { inFlight.current = false;setBusy(false); }
@@ -110,9 +113,9 @@ export function PeoplePanel({ id, shareRequest = 0 }: { id: string; /** D8: goes
    const result = await action.run("unshare", { requestId: crypto.randomUUID(), developerId }, () => {
     checkAuthority();return shares.unshare(id, "MEMBER#" + developerId);
    }, async () => { checkAuthority = await readAuthority(view.revision); });
-   if (result.kind !== "done") throw new ApiError(409, "PENDING", "This change is waiting for confirmation. Reload this page to check it.");
+   if (result.kind !== "done") throw panelError(409, "PENDING", "This change is waiting for confirmation. Reload this page to check it.");
    void query.invalidateQueries({ queryKey: key }).catch(() => undefined);
-  } catch (failure) { setError(failureText(failure, "Couldn't remove this person. Try again.")); }
+  } catch (failure) { setError(peopleFailure(failure, "remove")); }
   finally { inFlight.current = false;setBusy(false); }
  }
  const change = (personId: string, role: SessionPeopleRoleBody["role"]) => { if (view !== undefined) void run("role", { requestId: crypto.randomUUID(), expectedPeopleRevision: view.revision, personId, role }); };
@@ -127,7 +130,7 @@ export function PeoplePanel({ id, shareRequest = 0 }: { id: string; /** D8: goes
   {staleSince !== undefined && <p className="rv-muted" role="status">Updated {clockTime(new Date(staleSince).toISOString())} · Reconnecting</p>}
   {list.isError && staleSince === undefined && (notServed(list.error)
    ? <p role="status" data-testid="people-unavailable">{PEOPLE_NOT_AVAILABLE_TEXT}</p>
-   : <div role="alert"><p><VisibleText text={failureText(list.error, "Couldn't load who is on this task.")} /></p><Button onClick={() => { void list.refetch(); }}>Try again</Button></div>)}
+   : <><div role="alert"><p><VisibleText text={peopleFailure(list.error, "read").text} /></p><Button onClick={() => { void list.refetch(); }}>Try again</Button></div><FailureRef failure={peopleFailure(list.error, "read")} /></>)}
   {view !== undefined && <>
    <ul className="rv-people-list" aria-label="People on this task">{view.people.map(person => {
     const label = person.method !== undefined && Object.hasOwn(SESSION_PEOPLE_METHOD_LABELS, person.method) ? SESSION_PEOPLE_METHOD_LABELS[person.method as keyof typeof SESSION_PEOPLE_METHOD_LABELS] : undefined;
@@ -150,7 +153,7 @@ export function PeoplePanel({ id, shareRequest = 0 }: { id: string; /** D8: goes
     {candidates.isPending && <Skeleton label="Loading people you can add" />}
     {candidates.isError && (notServed(candidates.error)
      ? <p role="status" data-testid="people-add-unavailable">{PEOPLE_NOT_AVAILABLE_TEXT}</p>
-     : <p role="alert"><VisibleText text={failureText(candidates.error, "Couldn't load the people you can add.")} /></p>)}
+     : <><p role="alert"><VisibleText text={peopleFailure(candidates.error, "candidates").text} /></p><FailureRef failure={peopleFailure(candidates.error, "candidates")} /></>)}
     {candidates.data !== undefined && (candidates.data.candidates.length === 0
      ? <p className="rv-muted">There is no one else to add right now.</p>
      : <>
@@ -163,7 +166,7 @@ export function PeoplePanel({ id, shareRequest = 0 }: { id: string; /** D8: goes
   </>}
   {waiting !== undefined && <div role="status" data-testid="people-waiting"><p>Waiting for you to confirm this change in Rovara Code.</p>{safeConfirm !== undefined && <Button onClick={() => { host.openExternal(safeConfirm); }}>Open confirmation</Button>}<Button variant="quiet" onClick={() => { setWaiting(undefined);setMessage("Stopped waiting here. The change is still unconfirmed. Check before making another change."); }}>Cancel</Button></div>}
   {message && <p role="status" data-testid="people-message"><VisibleText text={message} /></p>}
-  {error && <p role="alert"><VisibleText text={error} /></p>}
+  {error && <><p role="alert"><VisibleText text={error.text} /></p><FailureRef failure={error} /></>}
  <TaskActionNotice key={action.pendingKey} pending={action.pending} recovery={action.recovery} taskHref={"/app/sessions/" + encodeURIComponent(id)} check={checkPeople} />
   </div></details>;
 }

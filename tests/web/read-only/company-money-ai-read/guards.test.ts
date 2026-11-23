@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it } from 'vitest';
-import { act, screen } from '@testing-library/react';
+import { act, screen, within } from '@testing-library/react';
 import { mount } from './harness.js';
 import { reply, product, sources, scope, report } from './fixtures.js';
 it('never accepts a 202 body as a confirmed read, even if it parses', async () => {
@@ -19,10 +19,19 @@ it('rejects company and person mismatches in source reads', async () => {
  expect(await screen.findByText(/last read did not answer/u)).toBeTruthy();
  expect(screen.queryByRole('heading', { name: 'AI source order' })).toBeNull();
 });
-it('does not fabricate an order when the server sends none', async () => {
- mount('/app/admin/ai-spending', async r => r.path.includes('model-sources') ? { status: 200, body: { ...sources, order: [] } } : reply(r));
- expect(await screen.findByText('No source order was served.')).toBeTruthy();
+it('does not fabricate an order when the server sends none: an empty order with Rovara listed is the served default, never Unknown', async () => {
+ mount('/app/admin/ai-spending', async r => r.path.includes('model-sources') ? { status: 200, body: { ...sources, order: [], sources: [{ source: 'rovara', available: true, connected: true, inOrder: false }] } } : reply(r));
+ expect(await screen.findByText("Rovara's AI (the default). No company sources connected.")).toBeTruthy();
  expect(document.querySelector('#ai-connections ol')).toBeNull();
+ expect(within(document.querySelector('#ai-connections') as HTMLElement).queryByRole('img', { name: 'Unknown' })).toBeNull();
+ expect(screen.queryByText('No source order was served.')).toBeNull();
+});
+it('a failed or empty model-sources read still shows the shared Unknown, never the served default', async () => {
+ // A read that lists nothing to say the default from (no Rovara row, no company source): the missing fact stays Unknown.
+ mount('/app/admin/ai-spending', async r => r.path.includes('model-sources') ? { status: 200, body: { ...sources, order: [], sources: [] } } : reply(r));
+ expect(await screen.findByText('No source order was served.')).toBeTruthy();
+ expect(within(document.querySelector('#ai-connections') as HTMLElement).getByRole('img', { name: 'Unknown' })).toBeTruthy();
+ expect(screen.queryByText(/the default/u)).toBeNull(); expect(screen.queryByText("Using Rovara's AI")).toBeNull();
 });
 it('shows the 4e block and wipes a refused product row while retaining the authorized project list', async () => {
  let bad = false;
