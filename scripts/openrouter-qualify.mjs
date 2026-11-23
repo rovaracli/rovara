@@ -7,8 +7,8 @@ import { Buffer } from "node:buffer";
 import { setTimeout as sleepFor } from "node:timers/promises";
 const { AbortSignal } = globalThis;
 import { pathToFileURL } from "node:url";
-import { openRouterDecimal, openRouterHold, openRouterPolicy, openRouterRequest, perMillionPrice, OPENROUTER_PRICE_KEYS, OPENROUTER_RELAXED_TARIFF_MODELS, OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION } from "../packages/model-gateway/dist/openrouter-policy.js";
-import { OFFERED_MODEL_NAME } from "../packages/model-gateway/dist/offered-models.js";
+import { openRouterCapOrder, openRouterDecimal, openRouterHold, openRouterPolicy, openRouterRequest, perMillionPrice, OPENROUTER_PRICE_KEYS, OPENROUTER_RELAXED_TARIFF_MODELS, OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION, OPENROUTER_REFERENCE_PROMPT_TOKENS } from "../packages/model-gateway/dist/openrouter-policy.js";
+import { OFFERED_MODEL_NAME, OFFERED_MODELS_MAX } from "../packages/model-gateway/dist/offered-models.js";
 // Ruling (a): the harness proves exactly what the gateway's validator (openRouterPolicy) installs. The row bounds are the runtime's:
 // bounded reasoning needs reasoning.max_tokens >= 1024 and strictly below max_completion_tokens (openrouter-policy.ts:111), and a request
 // must ask for more than the reasoning budget (:149). One rung: every control and probe is sent at the row's OWN ceiling.
@@ -18,7 +18,7 @@ const HARNESS_REASONING_TOKENS = 1024;
 const applyNoWriteBasis = tariff => { tariff.cacheWriteBasis = "never_requested_enforced"; tariff.cacheWriteEnforcementVersion = OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION; };
 const CEILING_FLOOR_REASON = `max_completion_tokens <= ${HARNESS_REASONING_TOKENS}: below the runtime bounded-reasoning floor`;
 /** Reference prompt size of the install tie-break (ruling (c)); a change is a visible diff and a pinned test. */
-export const REFERENCE_PROMPT_TOKENS = 100_000;
+export const REFERENCE_PROMPT_TOKENS = OPENROUTER_REFERENCE_PROMPT_TOKENS;
 // Exceptions use only locally constructed diagnostics; refusal bodies are separately sanitized.
 class EvidenceError extends Error {}
 const evidenceReason = error => error instanceof EvidenceError ? error.message : "HTTP evidence unavailable";
@@ -718,6 +718,8 @@ const failureCause = result => {
  * surviving routes is NEVER refused: the route is chosen DETERMINISTICALLY by the first difference in this ascending key
  *   (1) openRouterHold at REFERENCE_PROMPT_TOKENS and ONE common output size = the smallest ceiling among the surviving routes (price, not ceiling),
  *   (2) the dearer of completion / internal_reasoning price, (3) prompt price, (4) lower max_completion_tokens (stricter), (5) route tag by code-point order.
+ * Then, over OFFERED_MODELS_MAX (64) chosen rows: openRouterCapOrder (family rank openai, anthropic, google, mistralai, meta-llama, deepseek, qwen, then the rest; then the cheapest
+ * hold; then the same keys) keeps the first 64 in that order and refuses the others `over_cap`.
  */
 const installRefusal = row => {
  if (row === null || typeof row !== "object" || typeof row.model !== "string" || typeof row.route !== "string") return "runtime_policy_refused";
@@ -748,6 +750,14 @@ export const selectInstallRows = rows => {
   for (const { row } of keyed.slice(1)) refused.push({ model, route: row.route, reason: "route_not_chosen" });
  }
  installable.sort((a, b) => (a.model < b.model ? -1 : a.model > b.model ? 1 : 0));
+ // DEC 254zzz419: never more than OFFERED_MODELS_MAX rows. Over it: the best-known families first, then the cheapest hold (the gateway's openRouterCapOrder, the
+ // same order the offered list uses); the kept rows stay in that order, the rest are refused `over_cap`. At or under the cap nothing changes.
+ if (installable.length > OFFERED_MODELS_MAX) {
+  const byModel = new Map(installable.map(row => [row.model, row]));
+  const { kept, dropped } = openRouterCapOrder(installable.map(runtimePolicyOf), OFFERED_MODELS_MAX);
+  for (const policy of dropped) refused.push({ model: policy.model, route: policy.route, reason: "over_cap" });
+  return { installable: kept.map(policy => byModel.get(policy.model)), refused };
+ }
  return { installable, refused };
 };
 /** Catalogue-wide orchestration shares the existing checks, holds and debit handling.
