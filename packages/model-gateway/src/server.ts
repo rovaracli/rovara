@@ -19,6 +19,7 @@ import { validCaps, type Caps, type CapsSource } from "./caps.js";
 import type { EndedTasks } from "./ended.js";
 import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS, type MediaEstimate } from "./estimate.js";
 import type { MediaRates } from "./media-price.js";
+import type { InlineImageBound } from "./inline-image.js";
 import { guardRequest, MAX_BODY_BYTES, tooLarge, type GuardFailure, type ModelLimitsSource } from "./guard.js";
 import type { BillLine, Meter, MeterItem, MeterScope, Reservation } from "./meter.js";
 import { LEARNING_PATH_PREFIX, LEARNING_STEP, type LearningKeySource, type LearningRouteFactory } from "./learning-route.js";
@@ -107,6 +108,8 @@ export interface RouteCall {
   ok: true; hasTools: boolean; inputBounded: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>>; path?: string;
   /** Inline cache breakpoints retain a token ceiling but require cache-write pricing. */
   usesPromptCache?: boolean;
+  /** Claude inline image tokens replace encoded data bytes in the hold only. */
+  images?: InlineImageBound;
   /** The model's audio/video prices (product route): attached to the call's price for the estimate and the settle. */
   mediaRates?: MediaRates;
   /** Inline audio/video: estimated prompt tokens, replacing their `dataBytes` encoded bytes in the hold (DEC 228e). */
@@ -197,6 +200,8 @@ const PREFIX: Record<MeterItem, string> = { task: "Budget has been exceeded! Key
 export const PRODUCT_ROUTE_PREFIX = "/v1/product/";
 /** DEC 254zzz41: a review call whose own worst-case cost is above the grant's ceiling. Before any hold; fixed words. */
 export const REVIEWER_CEILING_REFUSED: RouteRefusal = Object.freeze({ ok: false as const, status: 422, code: "budget_exceeded", message: "Budget has been exceeded! Key=reviewer" });
+/** The unbounded-image refusal (a 409 before any hold or send). Its own sentence: the shared "AI source or price changed" wording would mislead here. */
+const UNBOUNDED_IMAGE_REFUSED_MESSAGE = "This image can't be priced (only inline png, jpeg, gif or webp up to the size limit can be sent). Send it inline or leave it out.";
 /** The agent route's refusal in company-key mode when the company has no usable AI key connected (DEC 236). Fixed words. */
 export const AGENT_KEY_MISSING: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect an AI key: this company has no AI provider key connected, so its agents cannot call AI." });
 /** Company-key mode: the provider refused the company's own key (401/403 before any output). Free; fixed words. */
@@ -438,7 +443,8 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         let forwarded: Buffer;
         try { forwarded = Buffer.from(JSON.stringify(translated)); } catch { return AGENT_CHAT_FEATURE; }
         endpoint.model = model;
-        return { ...checked, model: model.catalog.modelId, maxTokens, bytes: forwarded, headers: { "content-type": "application/json" }, path: endpoint.target.path };
+        // Chat Completions drops the Anthropic cache markers; this outgoing request cannot request cache writes.
+        return { ...checked, usesPromptCache: false, model: model.catalog.modelId, maxTokens, bytes: forwarded, headers: { "content-type": "application/json" }, path: endpoint.target.path };
       }
       if (chat !== undefined && checked.ok) {
         if (!OPENAI_AGENT_MODEL.test(checked.model)) return AGENT_CHAT_FEATURE;
@@ -452,7 +458,8 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         if (chat.provider === "openrouter" && openRouterPolicy(checked.model, (deps.now ?? Date.now)(), deps.openRouterTariffs) === undefined) return AGENT_CHAT_FEATURE;
         let forwarded: Buffer;
         try { forwarded = Buffer.from(JSON.stringify(translated)); } catch { return AGENT_CHAT_FEATURE; }
-        return { ...checked, maxTokens, bytes: forwarded, headers: { "content-type": "application/json" }, path: OPENAI_AGENT_UPSTREAM[chat.provider].path };
+        // Keep admission tied to the translated body, which carries no prompt-cache write controls.
+        return { ...checked, usesPromptCache: false, maxTokens, bytes: forwarded, headers: { "content-type": "application/json" }, path: OPENAI_AGENT_UPSTREAM[chat.provider].path };
       }
       if (byo !== undefined && checked.ok) {
         // Only a model the company picked, sent as the Claude id or profile it picked for it (Claude only in slice 1).
@@ -725,6 +732,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const guarded = route.guard(Buffer.concat(parts), request.headers, claims);
     if (!guarded.ok) { await respond(guarded.status, guarded.code, guarded.message); return; }
     shortenDeadline(startedAt + callDurationMs(guarded.maxTokens));
+    const inputBytes = guarded.bytes.length - (guarded.images?.dataBytes ?? 0) + (guarded.images?.tokens ?? 0);
+    const inputCeiling = inputBytes + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0);
     const scope = route.scope(claims);
     let resolved = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, route.provider, guarded.model, deps.cautiousCeiling, controller.signal, guarded.priceKind ?? "chat"));
     const providerPrice = resolved;
@@ -732,25 +741,25 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
     // DEC 254zzz312: hosted Rovara purpose calls require exact signed pricing and durable per-call receipts, including exempt calls.
     const rovaraPurpose = route.purpose !== undefined && route.payer === "rovara";
-    if (rovaraPurpose && (claims.runPrice === undefined || price.estimated || usageEstimated(price, { input: guarded.bytes.length + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0), output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || deps.chargeReceipts === undefined || route.meter.settleV2 === undefined)) {
+    if (rovaraPurpose && (claims.runPrice === undefined || price.estimated || usageEstimated(price, { input: inputCeiling, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || deps.chargeReceipts === undefined || route.meter.settleV2 === undefined)) {
       await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
     }
     const customerBedrock = route.payer === "bedrock_byo";
     // Product Bedrock retains its existing media admission; agent compatibility requires a bounded, known-price request.
     const legacyBedrock = customerBedrock && !route.product && claims.runPrice === undefined;
-    if (legacyBedrock && (!guarded.inputBounded || guarded.media !== undefined || providerPrice.estimated || price.estimated || usageEstimated(price, { input: guarded.bytes.length + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0), output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || price.operatorReview || route.meter.settleV2 === undefined)) {
+    if (legacyBedrock && (!guarded.inputBounded || guarded.media !== undefined || providerPrice.estimated || price.estimated || usageEstimated(price, { input: inputCeiling, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || price.operatorReview || route.meter.settleV2 === undefined)) {
       if (claims.reviewer !== undefined) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
       await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
     }
     // Unsafe reviews get their own refusal even with a signed price; genuine stale authorizations still use the guard below.
-    if (customerBedrock && claims.reviewer !== undefined && (!guarded.inputBounded || guarded.media !== undefined || price.estimated || usageEstimated(price, { input: guarded.bytes.length, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
+    if (customerBedrock && claims.reviewer !== undefined && (!guarded.inputBounded || guarded.media !== undefined || price.estimated || usageEstimated(price, { input: inputBytes, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
+    if (guarded.images !== undefined && !guarded.inputBounded) { await respond(409, "run_price_authorization_required", UNBOUNDED_IMAGE_REFUSED_MESSAGE); return; }
     const basis = claims.runPrice === undefined ? undefined : deps.prices?.quoteBasis?.(route.provider, guarded.model);
     if ((claims.runPrice !== undefined && (!guarded.inputBounded || guarded.media !== undefined || (price.estimated && !price.knownTokenPrice) || basis === undefined || basis.hash !== claims.runPrice.snapshotHash || basis.version !== claims.runPrice.snapshotVersion)) || !runPriceAllows(claims, route.provider, guarded.model, route.chargeSource, price, now(), deps.openRouterTariffs)) {
       await respond(409, "run_price_authorization_required", "AI source or price changed; pause this run for fresh authorization."); return;
     }
     if (claims.runPrice !== undefined) {
       if (guarded.usesPromptCache) {
-        const inputCeiling = guarded.bytes.length + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0);
         // Check the base and every reachable band: derived/missing write rates are not evidence of a price.
         const probes = [1, ...(price.longContext ?? []).filter((tier) => tier.aboveTokens < inputCeiling).map((tier) => tier.aboveTokens + 1)];
         if (probes.some((tokens) => usageEstimated(price, { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens }))) {
@@ -774,14 +783,14 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       caps = withCap;
     }
     let estimate: number;
-    try { estimate = estimateCall(guarded.bytes.length - (guarded.media?.dataBytes ?? 0), guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, guarded.inputBounded && !guarded.usesPromptCache, guarded.media); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
+    try { estimate = estimateCall(inputBytes - (guarded.media?.dataBytes ?? 0), guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, guarded.inputBounded && !guarded.usesPromptCache, guarded.media); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
     if (route.provider === "openrouter") {
       const policy = openRouterPolicy(guarded.model, now(), deps.openRouterTariffs);
       if (policy === undefined) { await respond(409, "invalid_request", "request not allowed"); return; }
       // DEC 254zzz330: admission stays at the dearer rate; actual completion
       // includes reasoning. The money core takes max(this token floor, reported debit).
       settlementPrice = { ...price, outputMicrosPerMTok: Number(openRouterDecimal(policy.pricing.completion) / 1_000_000n) };
-      try { estimate = Math.max(estimate, openRouterHold(policy, guarded.bytes.length + (guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0), guarded.maxTokens)); }
+      try { estimate = Math.max(estimate, openRouterHold(policy, inputCeiling, guarded.maxTokens)); }
       catch { await respond(400, "invalid_request", "request not allowed"); return; }
     }
     if (estimate === Number.MAX_SAFE_INTEGER && !price.operatorReview) log({ event: "price_operator_review" });
@@ -798,7 +807,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     // Bedrock reviews retain session authorization/debits, but meter each call with its own receipt and source slot.
     // REVIEW-1 M1: nothing may settle a review above its hold: no estimated price, no tier the request can reach whose rates are derived or uncertain (usageEstimated, at the most tokens the request's bytes can be), no unbounded input, and no source
     // whose provider reports its own cost (OpenRouter), which is a source Code never lists for reviews (reviewerProviderOf) but could be saved within the grant's 120 s.
-    if (grant !== undefined && (overrunCapable || route.provider === "openrouter" || usageEstimated(price, { input: guarded.bytes.length, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || estimate > Math.floor(grant.ceilingUsd * 1_000_000))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
+    if (grant !== undefined && (overrunCapable || route.provider === "openrouter" || usageEstimated(price, { input: inputBytes, output: guarded.maxTokens, cacheRead: 0, cacheWrite: 0 }) || estimate > Math.floor(grant.ceilingUsd * 1_000_000))) { await respond(REVIEWER_CEILING_REFUSED.status, REVIEWER_CEILING_REFUSED.code, REVIEWER_CEILING_REFUSED.message); return; }
     // The grant's own lifetime and binding, and the model the request names, are pure: checked BEFORE anything is read or held (the claim itself comes later).
     // A ceiling hold can only fund calls on the source and accounting mode that opened it. Old/incompatible sessions
     // take a fresh hold below, then fail the store's atomic binding check; the unused hold is settled once in finally.
@@ -820,7 +829,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (rovaraPurpose && charge === undefined) { await respond(503, "unavailable", "model access unavailable"); return; }
     const reserved = grant !== undefined && !customerReview && session?.bind === bind ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined || customerReview ? estimate : ceilingMicros, appliedMaxOutputTokens,
       routeClass: route.product ? "product" : "agent",
-      ...(route.payer === "bedrock_byo" ? { customerSource: "bedrock_byo" as const } : route.provider === "openrouter" ? { customerSource: "openrouter" as const } : {}), ...(charge === undefined ? {} : { charge: { receipt: charge, kind: guarded.priceKind ?? "chat", requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, ...(claims.runPrice !== undefined || customerBedrock ? {} : { provisional: { requestBytes: guarded.bytes.length, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }) }), ...(line === undefined ? {} : { line }),
+      ...(route.payer === "bedrock_byo" ? { customerSource: "bedrock_byo" as const } : route.provider === "openrouter" ? { customerSource: "openrouter" as const } : {}), ...(charge === undefined ? {} : { charge: { receipt: charge, kind: guarded.priceKind ?? "chat", requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, ...(claims.runPrice !== undefined || customerBedrock ? {} : { provisional: { requestBytes: inputBytes, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }) }), ...(line === undefined ? {} : { line }),
       ...(grant === undefined || customerReview ? {} : { sweepAfter: now() + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS, review: { jti: claims.jti.toLowerCase() } }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });

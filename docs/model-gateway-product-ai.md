@@ -191,6 +191,14 @@ Settings routes (B7, `packages/cloud-server/src/product-ai-routes.ts`; screen: a
 keys): `GET /v1/app/projects/:name/product-ai`, `PUT|DELETE .../key`, `PUT .../eval-budget`, `PUT .../eval-approval`. The
 project's admin or a company admin (Code's access check, made on every request), the signed
 write path (CSRF, body hash), Cloud audit records (`product_ai.*`). The key is write-only: no answer, log or audit carries it.
+Both eval writes compare whole USD micro-dollars with the caller company's saved `budgets.companyMonthlyUsdMicros`:
+`costMicros` for `PUT .../eval-budget`, and `approval.maxCostMicros` for `PUT .../eval-approval`.
+Above a configured monthly cap returns 400 `CONFIG_INVALID` ("The eval budget can't be more than the company's monthly AI budget.")
+before any write; equal or below is allowed. Approval still needs only the existing project/company role, including self-approval.
+A null monthly cap (including no saved settings) keeps the existing ability to save configuration, but the gateway refuses eval calls
+until a monthly cap is set. Unreadable settings or a failed/unconfigured company backend returns fixed 503, with nothing saved.
+Withdrawing an approval (`approval: null`) needs no budget read. Lowering the company cap does not rewrite existing project budgets or
+approvals: new eval holds remain bounded by the current company cap at use time, as does the eval monthly-cap read.
 `PUT|DELETE .../vertex` (PRODUCT-VERTEX-CLOUD-CONNECT) takes a Vertex AI federation setup (Google Cloud project, location,
 workload identity provider, optional service account): the store's `vertexCheck` asks the gateway to run the connection test
 (`POST /v1/service/vertex-check`, `service-call.ts`: a token for THIS company, and a canary company refused), and seals only on

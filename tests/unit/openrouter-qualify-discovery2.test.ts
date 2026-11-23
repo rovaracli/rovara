@@ -4,7 +4,7 @@ const script = new URL("../../scripts/openrouter-qualify.mjs", import.meta.url).
 type Prices = Record<string, unknown>;
 type Call = { holdMicros: number; maxPromptTokens: number; checks: Record<string, string>; reasons: Record<string, string> };
 type Provider = { cause?: string; calls?: Call[]; checks?: Record<string, string> };
-type Report = { errors: string[]; chargedMicros: number; reservedMicros: number; models: { model: string; causes: string[]; reason: string; providers: Provider[] }[]; proposedTariffRows: { pricing: Record<string, string> }[] };
+type Report = { errors: string[]; chargedMicros: number; preCallHoldsMicros: number; models: { model: string; causes: string[]; reason: string; providers: Provider[] }[]; proposedTariffRows: { pricing: Record<string, string> }[] };
 const { qualify, qualificationCostMicros } = await import(script) as {
  qualify: (options: Record<string, unknown>) => Promise<Report>;
  qualificationCostMicros: (components: [number, string][]) => number;
@@ -21,9 +21,9 @@ async function run(pricing: Prices = prices, options: { endpoints?: ReturnType<t
   const body = JSON.parse(init.body) as typeof bodies[number]; bodies.push(body);
   const probe = body.provider.max_price.prompt === 0 || body.provider.max_price.completion === 0;
   if (probe && options.probeCost === undefined) return Response.json({ error: { message: "No endpoints found that satisfy the max price for this request" } }, { status: 404 });
-  const cost = probe ? options.probeCost : options.cost ?? "0.00206";
-  generation = { model: body.model, provider_name: "Provider", native_tokens_prompt: 10, native_tokens_completion: 1025, native_tokens_reasoning: 341, native_tokens_cached: 0, total_cost: cost, is_byok: false };
-  return Response.json({ id: `gen-${bodies.length}`, model: body.model, choices: [{ message: { content: "four" } }], usage: { prompt_tokens: 10, completion_tokens: 1025, completion_tokens_details: { reasoning_tokens: 341 }, cost, cost_details: { upstream_inference_cost: cost } } });
+  const cost = probe ? options.probeCost : options.cost ?? "0.001036";
+  generation = { model: body.model, provider_name: "Provider", native_tokens_prompt: 10, native_tokens_completion: 513, native_tokens_reasoning: 171, native_tokens_cached: 0, total_cost: cost, is_byok: false };
+  return Response.json({ id: `gen-${bodies.length}`, model: body.model, choices: [{ message: { content: "four" } }], usage: { prompt_tokens: 10, completion_tokens: 513, completion_tokens_details: { reasoning_tokens: 171 }, cost, cost_details: { upstream_inference_cost: cost } } });
  });
  const report = await qualify({ allModels: true, catalogue: { models: { data: (options.ids ?? ["vendor/model"]).map(id => entry(id)) }, endpoints: Object.fromEntries((options.ids ?? ["vendor/model"]).map(id => [id, { data: { endpoints: options.endpoints ?? [endpoint(pricing)] } }])) }, spendCap: "15", perModelCap: "1", env: { OPENROUTER_API_KEY: "discovery2-fixture" }, now: () => 1000, sleep: async () => {}, fetch: fetcher });
  return { report, bodies, fetcher };
@@ -70,9 +70,9 @@ it("ceilings exact finite decimal products for random token counts including the
 });
 it("ceilings the combined hold once without rounding token rates or components first", async () => {
  const rate = "0.0000003333333333333333";
- const { report } = await run({ prompt: rate, completion: rate }, { cost: "0.0004" });
+ const { report } = await run({ prompt: rate, completion: rate }, { cost: "0.0002" });
  const call = report.models[0]!.providers[0]!.calls![0]!;
- const exact = BigInt(call.maxPromptTokens + 4096 + 1024) * 3333333333333333n * 1_000_000n;
+ const exact = BigInt(call.maxPromptTokens + 1024 + 256) * 3333333333333333n * 1_000_000n;
  const denominator = 10n ** 22n;
  expect(BigInt(call.holdMicros) * denominator).toBeGreaterThanOrEqual(exact);
  expect(BigInt(call.holdMicros) * denominator).toBeLessThan(exact + denominator);
@@ -80,21 +80,21 @@ it("ceilings the combined hold once without rounding token rates or components f
 });
 it("uses rounded-up fractional maximum, rejects one micro above it, and retains the hold", async () => {
  const p = { prompt: "0.0000010000000000000001", completion: "0.0000020000000000000001" };
- const accepted = await run(p, { cost: "0.002743" }); // exact max 2742.0000000000001376 micros -> 2743.
+ const accepted = await run(p, { cost: "0.001379" }); // exact max 1378.0000000000000694 micros -> 1379.
  expect(accepted.report.models[0]!.providers[0]!.calls![0]!.checks.bounded_inference_cost).toBe("PASS");
  expect(accepted.report.proposedTariffRows).toHaveLength(1);
  for (const probe of [false, true]) {
-  const rejected = await run(p, probe ? { cost: "0.002743", probeCost: "0.002744" } : { cost: "0.002744" });
+  const rejected = await run(p, probe ? { cost: "0.001379", probeCost: "0.001380" } : { cost: "0.001380" });
   expect(rejected.report.models[0]!.providers[0]!.checks!.hidden_charge).toBe("FAIL");
-  expect(rejected.report.proposedTariffRows).toEqual([]); expect(rejected.report.reservedMicros).toBeGreaterThan(0);
+  expect(rejected.report.proposedTariffRows).toEqual([]); expect(rejected.report.preCallHoldsMicros).toBeGreaterThan(0);
  }
 });
 it("pins exact tags with fallbacks disabled and holds maximum prices across duplicate routed endpoints", async () => {
- const { report, bodies } = await run(prices, { endpoints: [endpoint(), endpoint({ prompt: "0.000003", completion: "0.000006" })], cost: "0.008226" });
+ const { report, bodies } = await run(prices, { endpoints: [endpoint(), endpoint({ prompt: "0.000003", completion: "0.000006" })], cost: "0.004134" });
  expect(report.proposedTariffRows).toHaveLength(1);
  for (const body of bodies) expect(body.provider).toMatchObject({ order: ["provider/fp4"], only: ["provider/fp4"], allow_fallbacks: false });
  const call = report.models[0]!.providers[0]!.calls![0]!;
- expect(call.holdMicros).toBe(call.maxPromptTokens * 3 + (4096 + 1024) * 6);
+ expect(call.holdMicros).toBe(call.maxPromptTokens * 3 + (1024 + 256) * 6);
  expect(report.proposedTariffRows[0]!.pricing).toMatchObject({ prompt: "0.000003", completion: "0.000006", internal_reasoning: "0.000006" });
 });
 it.each(["unpriced", "no-tools", "identity"])("refuses an entire tag if a routable duplicate is %s", async problem => {
@@ -120,7 +120,7 @@ it("replays real models AND endpoints offline and gives exactly one cause per ex
  for (const item of catalogue.models.data) {
   const report = await qualify({ allModels: true, catalogue: { ...catalogue, models: { data: [item] } }, spendCap: "0.000001", perModelCap: "1", env: { OPENROUTER_API_KEY: "discovery2-offline-fixture" }, fetch: fetcher, now: () => 1000 });
   expect(report.errors, item.id).toEqual([]);
-  expect(report.chargedMicros).toBe(0); expect(report.reservedMicros).toBe(0);
+  expect(report.chargedMicros).toBe(0); expect(report.preCallHoldsMicros).toBe(0);
   const model = report.models[0]!;
   // A route admitted to the reservation guard is eligible; it is never sent.
   const cause = model.causes.includes("overall_cap") || model.causes.includes("per_model_cap") ? "eligible" : model.causes[0]!;
@@ -132,5 +132,5 @@ it("replays real models AND endpoints offline and gives exactly one cause per ex
  expect(classified).toHaveLength(441);
  expect(new Set(classified.map(m => m.model)).size).toBe(441);
  expect(Object.values(counts).reduce((a, b) => a + b, 0)).toBe(441);
- expect(counts).toEqual({ eligible: 256, unpriced_component: 17, no_tools_support: 58, provider_routing: 12, batch_variant: 61, free_variant: 11, router_alias: 26 });
+ expect(counts).toEqual({ eligible: 256, unpriced_component: 13, no_tools_support: 58, provider_routing: 16, batch_variant: 61, free_variant: 11, router_alias: 26 });
 });

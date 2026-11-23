@@ -122,8 +122,12 @@ export function toChatCompletions(body: Json, model: string, maxTokens: number, 
     for (const t of tools) {
       const tool = record(t);
       // Client tools only: a server tool (a `type` other than "custom") or a strict tool has no faithful form here.
+      // `eager_input_streaming` (Pi 1.5.2 sends it on every tool) is Anthropic's hint to stream tool arguments early: it changes neither the
+      // answer, the token counts nor the price, and Chat Completions has no such field, so it is dropped (only when a boolean; the converted
+      // tool below is built field by field, so nothing else can ride along with it).
       if (tool === undefined || !text(tool.name) || record(tool.input_schema) === undefined || (tool.description !== undefined && !text(tool.description)) || tool.strict === true
-        || (tool.type !== undefined && tool.type !== null && tool.type !== "custom") || Object.keys(tool).some((k) => !["name", "description", "input_schema", "type", "cache_control", "strict"].includes(k))) return undefined;
+        || (tool.type !== undefined && tool.type !== null && tool.type !== "custom") || (tool.eager_input_streaming !== undefined && typeof tool.eager_input_streaming !== "boolean")
+        || Object.keys(tool).some((k) => !["name", "description", "input_schema", "type", "cache_control", "strict", "eager_input_streaming"].includes(k))) return undefined;
       converted.push({ type: "function", function: { name: tool.name, ...(tool.description === undefined ? {} : { description: tool.description }), parameters: tool.input_schema } });
     }
     if (converted.length > 0) out.tools = converted;

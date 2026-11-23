@@ -6,7 +6,7 @@ type Row = { model: string; route: string; status: string; pricing: Record<strin
 type Call = { holdMicros: number; checks: Record<string, string> };
 type Provider = { route: string; status: string; reasons: Record<string, string>; calls: Call[]; candidateTariff?: Row; priceCapProbes?: { holdMicros: number; status: string; reason: string }[] };
 type Result = { model: string; status: string; reason: string; resumed?: boolean; providers: Provider[] };
-type Report = { status: string; harnessVersion: string; models: Result[]; chargedMicros: number; reservedMicros: number; exposureMicros: number; notReached: string[]; failuresByCause: Record<string, number>; proposedTariffRows: Row[]; errors: string[] };
+type Report = { status: string; harnessVersion: string; models: Result[]; chargedMicros: number; preCallHoldsMicros: number; exposureMicros: number; notReached: string[]; failuresByCause: Record<string, number>; proposedTariffRows: Row[]; errors: string[] };
 const { qualify } = await import(script) as { qualify: (options: Record<string, unknown>) => Promise<Report>; main: (argv: string[], env?: Record<string, string>) => Promise<number> };
 const key = "all-models-fixture-key-never-print";
 const pricing = { prompt: "0.000000001", completion: "0.000000002", internal_reasoning: "0.000000003", request: "0.000001", input_cache_read: "0", input_cache_write: "0" };
@@ -28,9 +28,9 @@ function server(entries = [entry("vendor/a"), entry("vendor/b")], endpoints = [e
    if (Object.values(caps).some(v => v === 0)) return Response.json({ error: { code: "404", message: mode === "refusal" ? "No endpoints found" : "No endpoints found that satisfy the max price for this request." } }, { status: 404 });
    if (mode === "auth") return Response.json({ error: {} }, { status: 401 });
    if (mode === "unknown") return new Response("invalid");
-   const cost = mode === "overage" ? "1" : mode === "overage-small" ? "0.06" : "0.00000306";
-   generation = { model: mode === "identity" ? "vendor/wrong" : body.model, provider_name: mode === "first-provider-fails" && body.provider.only[0] === "fixture-provider" ? "wrong" : body.provider.only[0], native_tokens_prompt: 10, native_tokens_completion: 1025, native_tokens_reasoning: 341, native_tokens_cached: 0, total_cost: cost, is_byok: false };
-   return Response.json({ id: `gen-${paid.length}`, model: body.model, choices: [{ message: { content: "Four" } }], usage: { prompt_tokens: 10, completion_tokens: 1025, completion_tokens_details: { reasoning_tokens: 341 }, cost, cost_details: { upstream_inference_cost: cost } } });
+   const cost = mode === "overage" ? "1" : mode === "overage-small" ? "0.06" : "0.000002036";
+   generation = { model: mode === "identity" ? "vendor/wrong" : body.model, provider_name: mode === "first-provider-fails" && body.provider.only[0] === "fixture-provider" ? "wrong" : body.provider.only[0], native_tokens_prompt: 10, native_tokens_completion: 513, native_tokens_reasoning: 171, native_tokens_cached: 0, total_cost: cost, is_byok: false };
+   return Response.json({ id: `gen-${paid.length}`, model: body.model, choices: [{ message: { content: "Four" } }], usage: { prompt_tokens: 10, completion_tokens: 513, completion_tokens_details: { reasoning_tokens: 171 }, cost, cost_details: { upstream_inference_cost: cost } } });
   }
   if (mode === "generation") return new Response("", { status: 503 });
   return Response.json({ data: generation });
@@ -69,8 +69,8 @@ it("excludes explicitly estimated endpoint tariffs without paid calls", async ()
  expect(r.paid).toHaveLength(0); expect(r.report.failuresByCause.unpriced_component).toBe(1);
 });
 it("retains an unknown call hold across providers before hitting the model cap", async () => {
- const r = await run({ perModelCap: "0.00002" }, server(undefined, [endpoint(), endpoint("second-provider")], "unknown"));
- expect(r.paid).toHaveLength(2); expect(r.report.reservedMicros).toBeGreaterThan(20);
+ const r = await run({ perModelCap: "0.000006" }, server(undefined, [endpoint(), endpoint("second-provider")], "unknown"));
+ expect(r.paid).toHaveLength(2); expect(r.report.preCallHoldsMicros).toBeGreaterThan(6);
  expect(r.report.failuresByCause.per_model_cap).toBe(2);
 });
 it("preserves run-8 identity and refusal details in each failed model reason", async () => {
@@ -79,7 +79,7 @@ it("preserves run-8 identity and refusal details in each failed model reason", a
 });
 
 it("groups a debit above the model cap while continuing under the overall cap", async () => {
- const r = await run({}, server(undefined, undefined, "overage-small"));
+ const r = await run({ perModelCap: "0.05" }, server(undefined, undefined, "overage-small"));
  expect(r.paid).toHaveLength(2); expect(r.report.chargedMicros).toBe(120000);
  expect(r.report.failuresByCause.per_model_cap).toBe(2);
 });
@@ -91,13 +91,13 @@ it("lists the current model as unreached when provider discovery hits shared aut
 });
 
 it("retains a generation-lookup failure hold before another provider can spend", async () => {
- const r = await run({ perModelCap: "0.00002" }, server([entry("vendor/a")], [endpoint(), endpoint("second-provider")], "generation"));
+ const r = await run({ perModelCap: "0.000006" }, server([entry("vendor/a")], [endpoint(), endpoint("second-provider")], "generation"));
  expect(r.paid).toHaveLength(1);
  expect(r.paid[0]?.provider.only).toEqual(["fixture-provider"]);
  const first = r.report.models[0]!.providers[0]!;
  expect(first.calls[0]?.checks.generation).toBe("FAIL");
  expect(r.report.exposureMicros).toBe(first.calls[0]!.holdMicros);
- expect(r.report.exposureMicros).toBe(r.report.reservedMicros);
+ expect(r.report.exposureMicros).toBe(r.report.preCallHoldsMicros);
  expect(r.report.models[0]!.providers[1]!.calls).toEqual([]);
  expect(r.report.failuresByCause.per_model_cap).toBe(1);
 });
@@ -110,7 +110,7 @@ it("retains every unreadable price-cap probe hold in exposure", async () => {
  expect(provider.priceCapProbes!.every(probe => probe.status === "FAIL" && probe.reason === "HTTP evidence unavailable")).toBe(true);
  expect(r.paid).toHaveLength(7);
  const holds = [...provider.calls, ...provider.priceCapProbes!].reduce((sum, call) => sum + call.holdMicros, 0);
- expect(r.report.reservedMicros).toBe(holds);
+ expect(r.report.preCallHoldsMicros).toBe(holds);
  expect(r.report.exposureMicros).toBe(holds);
  expect(r.report.proposedTariffRows).toEqual([]);
 });

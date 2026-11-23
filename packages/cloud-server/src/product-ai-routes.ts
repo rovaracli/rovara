@@ -27,7 +27,7 @@
 // one transaction with its own receipt and audit row, and Cloud records its own audit record after the change is saved.
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
-import { COMPANY_ID } from "./company-store.js";
+import { COMPANY_ID, companySettings } from "./company-store.js";
 import { BEDROCK_ANSWERS, BEDROCK_ROLE_ARN, BEDROCK_WORDS, choiceKeys, choiceOf, connectionKey, type BedrockBackend } from "./bedrock-byo-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
@@ -241,6 +241,19 @@ async function removeKey(context: RouteContext): Promise<RouteAnswer> {
   return ok(view(v, w));
 }
 
+/** Configuration uses whole USD micros. Actual eval holds also reread the company cap, including after it is lowered. */
+async function evalBudgetRefusal(context: RouteContext, companyId: string, amount: number): Promise<RouteAnswer | undefined> {
+  if (context.company === undefined) return WORDS.unavailable;
+  try {
+    const current = await companySettings(context.company.store, companyId);
+    if (current === undefined) return WORDS.unavailable;
+    const cap = current.settings.budgets.companyMonthlyUsdMicros;
+    // null retains settings' "no cap of this kind" configuration meaning; the gateway refuses calls until a monthly cap is set.
+    if (cap !== null && amount > cap) return refusal(400, "CONFIG_INVALID", "The eval budget can't be more than the company's monthly AI budget.");
+    return undefined;
+  } catch { return WORDS.unavailable; }
+}
+
 async function putEvalBudget(context: RouteContext): Promise<RouteAnswer> {
   const w = await who(context);
   if ("status" in w) return w;
@@ -248,6 +261,8 @@ async function putEvalBudget(context: RouteContext): Promise<RouteAnswer> {
   if ("status" in e) return e;
   const { calls, costMicros } = e.body;
   if (!whole(calls) || !whole(costMicros) || calls < 1 || costMicros < 1) return WORDS.invalid;
+  const budgetRefusal = await evalBudgetRefusal(context, w.companyId, costMicros);
+  if (budgetRefusal !== undefined) return budgetRefusal;
   const v = await guarded(w, () => w.backend.store.setEvalBudget({ ...changeOf(w, e), budget: { calls, costMicros } }));
   if ("status" in v) return v;
   await audited(context, w, "product_ai.eval_budget.changed");
@@ -267,6 +282,8 @@ async function putEvalApproval(context: RouteContext): Promise<RouteAnswer> {
     if (a === undefined || !["selection", "inputsDigest", "maxCalls", "maxCostMicros"].every((k) => keys.includes(k)) || !keys.every((k) => ["selection", "inputsDigest", "maxCalls", "maxCostMicros", "model"].includes(k))) return WORDS.invalid;
     if (typeof a.selection !== "string" || typeof a.inputsDigest !== "string" || !whole(a.maxCalls) || !whole(a.maxCostMicros) || (a.model !== undefined && typeof a.model !== "string")) return WORDS.invalid;
     approval = { selection: a.selection, inputsDigest: a.inputsDigest, maxCalls: a.maxCalls, maxCostMicros: a.maxCostMicros, ...(typeof a.model === "string" ? { model: a.model } : {}) };
+    const budgetRefusal = await evalBudgetRefusal(context, w.companyId, approval.maxCostMicros);
+    if (budgetRefusal !== undefined) return budgetRefusal;
   }
   // The store checks every field again (lengths, digest, model id) and records the approver as this person.
   const v = await guarded(w, () => w.backend.store.setEvalApproval({ ...changeOf(w, e), approval, provider: PRODUCT_AI_APPROVER_PROVIDER, ...(approval === null ? {} : { roleCheckedAt: w.checkedAt }) }));

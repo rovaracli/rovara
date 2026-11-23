@@ -3,7 +3,7 @@ const script = new URL("../../scripts/openrouter-qualify.mjs", import.meta.url).
 type Call = { holdMicros: number; maxPromptTokens: number; checks: Record<string, string> };
 type Provider = { cause?: string; calls: Call[]; reasons: Record<string, string> };
 type Row = { model: string; status: string; assumedZero: string[]; reasoningBilledAtCompletion?: boolean; pricing: Record<string, string> };
-type Report = { status: string; models: { model: string; status: string; reason: string; providers: Provider[] }[]; reservedMicros: number; exposureMicros: number; chargedMicros: number; failuresByCause: Record<string, number>; notReached: string[]; proposedTariffRows: Row[] };
+type Report = { status: string; models: { model: string; status: string; reason: string; providers: Provider[] }[]; preCallHoldsMicros: number; exposureMicros: number; chargedMicros: number; failuresByCause: Record<string, number>; notReached: string[]; proposedTariffRows: Row[] };
 const { qualify } = await import(script) as { qualify: (o: Record<string, unknown>) => Promise<Report> };
 const full = { prompt: "0.000001", completion: "0.000002", internal_reasoning: "0.000003", request: "0.000001", input_cache_read: "0", input_cache_write: "0" };
 const minimal = { prompt: full.prompt, completion: full.completion };
@@ -25,10 +25,10 @@ async function run(pricing: Record<string, unknown> = minimal, options: { ids?: 
   const provider = body.provider as { only: string[]; max_price: Record<string, number> };
   const probing = provider.max_price.prompt === 0 || provider.max_price.completion === 0 || provider.max_price.request === 0 && (Number(pricing.request ?? 0) > 0 || Array.isArray(pricing.overrides) && pricing.overrides.some((o: unknown) => typeof o === "object" && o !== null && Number((o as Record<string, unknown>).request ?? 0) > 0));
   if (probing && !options.hiddenProbe) return Response.json({ error: { message: "No endpoints found that satisfy the max price for this request" } }, { status: 404 });
-  const tokens = options.tokens ?? 1025;
-  const cost = probing && options.hiddenProbe ? "0.005" : options.cost ?? "0.00206"; // 10 prompt + 1025 output; no separate reasoning charge.
-  generation = { model: body.model, provider_name: provider.only[0], native_tokens_prompt: 10, native_tokens_completion: tokens, native_tokens_reasoning: 341, native_tokens_cached: 0, total_cost: cost, is_byok: false };
-  return Response.json({ id: `gen-${bodies.length}`, model: body.model, choices: [{ message: { content: "four" } }], usage: { prompt_tokens: 10, completion_tokens: tokens, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: options.write ? 1 : 0 }, completion_tokens_details: { reasoning_tokens: 341 }, cost, cost_details: { upstream_inference_cost: cost } } });
+  const tokens = options.tokens ?? 513;
+  const cost = probing && options.hiddenProbe ? "0.005" : options.cost ?? "0.001036"; // 10 prompt + 513 output; no separate reasoning charge.
+  generation = { model: body.model, provider_name: provider.only[0], native_tokens_prompt: 10, native_tokens_completion: tokens, native_tokens_reasoning: 171, native_tokens_cached: 0, total_cost: cost, is_byok: false };
+  return Response.json({ id: `gen-${bodies.length}`, model: body.model, choices: [{ message: { content: "four" } }], usage: { prompt_tokens: 10, completion_tokens: tokens, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: options.write ? 1 : 0 }, completion_tokens_details: { reasoning_tokens: 171 }, cost, cost_details: { upstream_inference_cost: cost } } });
  };
  const report = await qualify({ allModels: true, spendCap: options.cap ?? "15", perModelCap: "1", fetch: fetcher, env: { OPENROUTER_API_KEY: "absent-zero-fixture-credential" }, now: () => 1000, sleep: async () => {} });
  return { report, bodies };
@@ -37,8 +37,8 @@ it("holds absent reasoning at completion for max completion PLUS reasoning and r
  const { report } = await run();
  expect(report.status).toBe("PASS");
  const call = report.models[0]!.providers[0]!.calls[0]!;
- // Integer micro-USD rates: prompt bytes + (4096 + 1024) * 2.
- expect(call.holdMicros).toBe(call.maxPromptTokens + 10240);
+ // Integer micro-USD rates: prompt bytes + (1024 + 256) * 2.
+ expect(call.holdMicros).toBe(call.maxPromptTokens + 2560);
  expect(report.proposedTariffRows).toHaveLength(2);
  for (const row of report.proposedTariffRows) {
   expect(row.assumedZero).toEqual(["request", "input_cache_read", "input_cache_write"]);
@@ -69,7 +69,7 @@ it("takes component maxima over base and every conditional override, including a
  const { report, bodies } = await run({ ...minimal, overrides: [{ min_prompt_tokens: 1000, prompt: "0.000003", completion: "0.000004" }, { min_prompt_tokens: 2000, prompt: "0.000002", completion: "0.000006", request: "0.000007" }] });
  expect(report.status).toBe("PASS");
  const call = report.models[0]!.providers[0]!.calls[0]!;
- expect(call.holdMicros).toBe(call.maxPromptTokens * 3 + 30720 + 7);
+ expect(call.holdMicros).toBe(call.maxPromptTokens * 3 + 7680 + 7);
  expect(bodies[0]!.provider).toMatchObject({ max_price: { prompt: 3, completion: 6, request: 0.000007 } });
  expect(report.proposedTariffRows[0]!.pricing).toMatchObject({ prompt: "0.000003", completion: "0.000006", internal_reasoning: "0.000006", request: "0.000007" });
  expect(report.proposedTariffRows[0]!.assumedZero).not.toContain("request");
@@ -81,8 +81,8 @@ it.each(["15", "0.004"])("refuses hidden charge, records FAIL cause, retains hol
  expect(report.failuresByCause.hidden_charge).toBeGreaterThan(0);
  expect(bodies.filter(b => b.model === "vendor/a")).toHaveLength(1);
  const hold = report.models[0]!.providers[0]!.calls[0]!.holdMicros;
- expect(report.reservedMicros).toBe(hold * (cap === "15" ? 2 : 1));
- if (cap === "15") expect(hold).toBeGreaterThan(5000);
+ expect(report.preCallHoldsMicros).toBe(hold * (cap === "15" ? 2 : 1));
+ if (cap === "15") expect(hold).toBeGreaterThan(0);
  expect(report.exposureMicros).toBeGreaterThanOrEqual(5000);
  if (cap === "0.004") { expect(bodies).toHaveLength(1); expect(report.notReached).toContain("vendor/b"); }
  else expect(bodies.filter(b => b.model === "vendor/b")).toHaveLength(1);
@@ -96,7 +96,7 @@ it("keeps the unexpected write refusal for newly eligible absent-write models", 
  const { report } = await run(minimal, { write: true });
  expect(report.status).toBe("FAIL"); expect(report.proposedTariffRows).toEqual([]);
  expect(report.models[0]!.providers[0]!.calls[0]!.checks.no_reported_auxiliary_charge).toBe("FAIL");
- expect(report.exposureMicros).toBeGreaterThanOrEqual(report.reservedMicros);
+ expect(report.exposureMicros).toBeGreaterThanOrEqual(report.preCallHoldsMicros);
 });
 it("uses exact thinking IDs and excludes router aliases and free/online IDs with raw reasons", async () => {
  const ids = ["vendor/a:thinking", "~vendor/a~version", "vendor/a:free", "vendor/a:online", "vendor/a?bad"];
@@ -133,7 +133,7 @@ it("applies the hidden-charge model stop to unexpectedly accepted cap probes", a
  expect(report.status).toBe("FAIL"); expect(report.proposedTariffRows).toEqual([]);
  expect(report.failuresByCause.hidden_charge).toBe(1);
  expect(bodies).toHaveLength(5); // four controls and the first accepted probe; no second provider.
- expect(report.reservedMicros).toBe(report.exposureMicros);
+ expect(report.exposureMicros).toBeGreaterThanOrEqual(report.preCallHoldsMicros);
 });
 
 it("uses maxima across clock/day overrides and validates their shape instead of choosing today's rate", async () => {

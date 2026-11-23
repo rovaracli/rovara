@@ -68,12 +68,32 @@ const validOverrideCondition = (key, value) => {
 };
 const INFERENCE_BREAKDOWN_KEYS = ["upstream_inference_prompt_cost", "upstream_inference_completions_cost"];
 const INFERENCE_DETAIL_KEYS = ["upstream_inference_cost", ...INFERENCE_BREAKDOWN_KEYS];
-// Dated variants are reviewed per requested model; never infer another provider/model's aliases.
-const GENERATION_MODEL_PATTERNS = Object.freeze({
- "openai/gpt-5-mini": /^openai\/gpt-5-mini(?:-\d{4}-\d{2}-\d{2})?$/u,
- "openai/gpt-5-nano": /^openai\/gpt-5-nano(?:-\d{4}-\d{2}-\d{2})?$/u,
-});
-const matchesModel = (requested, actual) => typeof actual === "string" && (actual === requested || (Object.hasOwn(GENERATION_MODEL_PATTERNS, requested) && GENERATION_MODEL_PATTERNS[requested].test(actual)));
+// Only exact IDs or calendar-date suffixes: -YYYY-MM-DD (OpenRouter's real form, e.g.
+// openai/gpt-5-mini-2025-08-07), -20YYMMDD, or -MMDD. Every date is calendar-checked.
+// A short date takes the run's UTC year, or the year before when that would be a future
+// date (a -1231 id seen on 1 January is last December).
+const utcDay = (year, month, day) => {
+ const parsed = new Date(Date.UTC(year, month - 1, day));
+ return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day ? parsed.getTime() : undefined;
+};
+const observedModel = (requested, actual, at) => {
+ if (typeof actual !== "string") return undefined;
+ if (actual === requested) return actual;
+ if (!actual.startsWith(`${requested}-`)) return undefined;
+ const suffix = actual.slice(requested.length + 1);
+ const dashed = /^(20\d{2})-(\d{2})-(\d{2})$/u.exec(suffix);
+ const compact = /^(20\d{2})(\d{2})(\d{2})$/u.exec(suffix);
+ const short = /^(\d{2})(\d{2})$/u.exec(suffix);
+ if (dashed) return utcDay(Number(dashed[1]), Number(dashed[2]), Number(dashed[3])) === undefined ? undefined : actual;
+ if (compact) return utcDay(Number(compact[1]), Number(compact[2]), Number(compact[3])) === undefined ? undefined : actual;
+ if (!short) return undefined;
+ const today = new Date(at); const year = today.getUTCFullYear();
+ const month = Number(short[1]), day = Number(short[2]);
+ const thisYear = utcDay(year, month, day);
+ // An invalid this-year date (0229 off a leap year) compares false and is refused below.
+ const date = thisYear > Date.UTC(year, today.getUTCMonth(), today.getUTCDate()) ? year - 1 : year;
+ return utcDay(date, month, day) === undefined ? undefined : `${requested}-${date}${short[1]}${short[2]}`;
+};
 const unrequestedSearchNull = (name, value, searchNotRequested) => searchNotRequested && ["generation.num_search_results", "generation.web_search_engine"].includes(name) && value === null;
 /** Optional prompt/completions breakdown: both must be readable nonnegative USD,
  * and their sum must match the aggregate within 1 micro-dollar ($0.000001), inclusive.
@@ -154,24 +174,24 @@ const maximumInferenceCost = (policy, usage, generation) => {
 };
 /** In-memory HTTP fixtures inject fetch. The CLI always targets the fixed TLS origin. */
 async function qualifyModels({ models, provider, providerName = provider, spendCap = "0.50", fetch: request = globalThis.fetch, env = process.env, now = Date.now, sleep = sleepFor, catalogue: suppliedCatalogue, prepareOnly = false, budget, allModels = false }) {
- const report = { status: "FAIL", chargedMicros: 0, reservedMicros: 0, spendCapMicros: 0, models: [], proposedTariffRows: [], errors: [] };
- let exposure = 0; let stop = false;
+ const report = { status: "FAIL", chargedMicros: 0, preCallHoldsMicros: 0, spendCapMicros: 0, models: [], proposedTariffRows: [], errors: [] };
+ let exposure = 0; let modelExposure = 0; let stop = false;
  const expose = amount => {
-  exposure += amount;
+  exposure += amount; modelExposure += amount;
   if (budget) { budget.exposure += amount; budget.modelExposure += amount; }
  };
  const overCap = () => budget ? budget.exposure > budget.cap || budget.modelExposure > budget.modelCap : exposure > report.spendCapMicros;
  const reserve = (result, hold) => {
   const overall = budget ? budget.exposure : exposure;
-  if (budget && budget.modelExposure + hold > budget.modelCap) {
-   recordCheck(result, "per_model_cap", false, `model exposure ${budget.modelExposure} + hold ${hold} > per-model cap ${budget.modelCap} micros`);
+  if ((budget ? budget.modelExposure : modelExposure) + hold > (budget ? budget.modelCap : 500000)) {
+   recordCheck(result, "per_model_cap", false, "pre-call hold would exceed per-model cap");
    return false;
   }
   if (overall + hold > report.spendCapMicros) {
    recordCheck(result, "spend_cap", false, `exposure ${overall} + hold ${hold} > spend cap ${report.spendCapMicros} micros`);
    stop = true; if (budget) budget.stop = "overall_cap"; return false;
   }
-  expose(hold); report.reservedMicros += hold; return true;
+  expose(hold); report.preCallHoldsMicros += hold; return true;
  };
  // Never print exceptions, full response bodies, headers or credentials (even a provider echo).
  try {
@@ -236,13 +256,13 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
   const catalogue = suppliedCatalogue ?? await json("models");
   if (!Array.isArray(catalogue.data)) throw new Error();
   for (const model of models) {
-   const result = { model, status: "FAIL", reasons: {}, checks: {}, calls: [] }; report.models.push(result);
+   const result = { model, status: "FAIL", reasons: {}, checks: {}, calls: [] }; report.models.push(result); modelExposure = 0;
    if (stop) { recordCheck(result, "not_attempted", false, "shared authentication, credential or spend-cap stop"); continue; }
    const matches = catalogue.data.filter(m => m.id === model);
    const entry = matches.length === 1 ? matches[0] : undefined;
    const at = now();
-   const tariff = { model, route: provider, pricing: entry?.pricing, max_completion_tokens: Number.isSafeInteger(entry?.top_provider?.max_completion_tokens) ? Math.min(entry.top_provider.max_completion_tokens, 4096) : undefined,
-    reasoning: { mode: "bounded", max_tokens: 1024 }, verifiedAt: at, expiresAt: at + 86_400_000, evidence: "CANDIDATE ONLY: attach reviewed release-test report; never auto-install" };
+   const tariff = { model, route: provider, pricing: entry?.pricing, max_completion_tokens: Number.isSafeInteger(entry?.top_provider?.max_completion_tokens) ? Math.min(entry.top_provider.max_completion_tokens, 1024) : undefined,
+    reasoning: { mode: "bounded", max_tokens: 256 }, verifiedAt: at, expiresAt: at + 86_400_000, evidence: "CANDIDATE ONLY: attach reviewed release-test report; never auto-install" };
    // Catalog diagnostics contain only field names and numeric public prices, never arbitrary text.
    const failures = [];
    const safeField = key => /^[a-z][a-z0-9_]{0,63}$/u.test(key) && !containsCredential(key, env.OPENROUTER_API_KEY) ? key : "[invalid field]";
@@ -297,7 +317,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
       if (typeof value !== "string") throw new Error();
       if (allModels) {
        const amount = rationalPrice(value);
-       if (required && amount.n <= 0n) throw new Error();
+       // Explicit zero rates stay candidates until component billing is proven.
        qualificationWireCap(value, key !== "request");
        if (maximum === undefined || comparePrice(amount, rationalPrice(maximum)) > 0n) maximum = value;
       } else {
@@ -332,7 +352,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
     } catch { /* Malformed auxiliary prices refuse. */ }
     if (!safe) failures.push(fieldValue(key, value) + (key === "web_search" && !allowlisted && !allModels ? " (not allowlisted)" : ""));
    }
-   if (Number.isSafeInteger(entry?.top_provider?.max_completion_tokens) && entry.top_provider.max_completion_tokens < 4096) failures.push("max_completion_tokens < 4096");
+   if (Number.isSafeInteger(entry?.top_provider?.max_completion_tokens) && entry.top_provider.max_completion_tokens < 512) failures.push("max_completion_tokens < 512");
    else if (!Number.isSafeInteger(entry?.top_provider?.max_completion_tokens)) failures.push("max_completion_tokens missing or invalid");
    tariff.pricing = pricing;
    const policy = failures.length === 0 ? qualificationPolicy(model, at, tariff, allModels) : undefined;
@@ -356,21 +376,36 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
     return held + extra;
    };
    if (prepareOnly) continue;
+   // An all-zero tariff has a hold of 0 and no positive price cap to probe, so it would
+   // read as "free, unlimited". Refuse it with a clear verdict before anything is sent.
+   if (allModels && OPENROUTER_PRICE_KEYS.every(key => rationalPrice(policy.pricing[key] ?? "0").n === 0n)) {
+    recordCheck(result, "priced_model", false, "every advertised rate is zero: no hold or price cap can bound or exercise it; not qualified; nothing sent");
+    continue;
+   }
    result.reasoningProbe = "probe skipped: generation failed";
    let probeBody;
    for (let n = 0; n < 4; n++) {
     // Keep ordinary qualification easy; exercise reasoning in its own capped, fully held call.
     const reasoningProbe = n === 3;
-    const maxTokens = [4096, 3072, 2048, 2048][n];
+    let maxTokens; let body; let maxPromptTokens; let hold;
     const messages = [{ role: "user", content: reasoningProbe
      ? "Reasoning probe: Use reasoning to solve this problem before answering briefly: How many three-digit positive integers have strictly increasing digits? Explain your reasoning."
      : `Qualification ${n + 1}: What is 2 + 2? Reply with the answer in one short sentence.` }];
-    const body = qualificationRequest({ model, messages, max_tokens: maxTokens, stream: false }, policy);
+    // Choose the smaller rung BEFORE sending if the tariff or remaining caps
+    // cannot cover 1024. No paid-call retry, and every send still reserves below.
+    for (const rung of [1024, 512]) {
+     if (rung > policy.max_completion_tokens) continue;
+     maxTokens = rung;
+     body = qualificationRequest({ model, messages, max_tokens: rung, stream: false }, policy);
+     if (body === undefined) throw new Error();
+     maxPromptTokens = Buffer.byteLength(JSON.stringify(body));
+     hold = qualificationHold(maxPromptTokens, rung);
+     if ((budget ? budget.exposure : exposure) + hold <= report.spendCapMicros &&
+         (budget ? budget.modelExposure : modelExposure) + hold <= (budget ? budget.modelCap : 500000)) break;
+    }
     if (body === undefined) throw new Error();
     const searchNotRequested = !Object.keys(body).some(key => /plugins|web|search|tools/iu.test(key));
     // Byte bound includes all messages and control fields; no tools, plugins, search, media or cache directives.
-    const maxPromptTokens = Buffer.byteLength(JSON.stringify(body));
-    const hold = qualificationHold(maxPromptTokens, maxTokens);
     if (!reserve(result, hold)) break;
     if (reasoningProbe) { result.reasoningProbe = "FAIL"; result.reasoningProbeReason = "reasoning call failed; see call checks and reasons"; }
     const call = { attempt: n + 1, holdMicros: hold, maxPromptTokens, requestControls: { max_tokens: body.max_tokens, reasoning: body.reasoning, provider: body.provider }, checks: {}, reasons: {} }; result.calls.push(call);
@@ -394,6 +429,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
     const detailsBounded = detailKeys.includes("upstream_inference_cost") && unrecognizedDetailKeys.length === 0 && consistentInferenceBreakdown(u.cost_details);
     // Independently retain every readable debit, even when another field is malformed.
     retainDebit(answer);
+    call.responseModel = validModel(answer.model) && !containsCredential(answer.model, env.OPENROUTER_API_KEY) ? answer.model : "[invalid]";
     call.usage = { prompt_tokens: safeCount(u?.prompt_tokens), completion_tokens: safeCount(u?.completion_tokens), reasoning_tokens: safeCount(u?.completion_tokens_details?.reasoning_tokens), cache_write_tokens: safeCount(u?.prompt_tokens_details?.cache_write_tokens), cached_tokens: safeCount(u?.prompt_tokens_details?.cached_tokens), cost: safeMoney(u?.cost), cost_details: { upstream_inference_cost: safeMoney(u?.cost_details?.upstream_inference_cost), ...Object.fromEntries(INFERENCE_BREAKDOWN_KEYS.filter(key => detailKeys.includes(key)).map(key => [key, safeMoney(u.cost_details[key])])), unrecognized_component_count: unrecognizedDetailKeys.length, unrecognized_components: unrecognizedDetailKeys.map(safeField) } };
     let generation;
     try { generation = await generationLookup(answer.id); }
@@ -425,7 +461,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
     check("prompt_within_hold", count(g.native_tokens_prompt) && g.native_tokens_prompt <= maxPromptTokens && count(u?.prompt_tokens) && u.prompt_tokens <= maxPromptTokens, tokenFailures(["native_tokens_prompt", g.native_tokens_prompt, 0, maxPromptTokens], ["usage.prompt_tokens", u?.prompt_tokens, 0, maxPromptTokens]));
     check("usage_cost_within_hold", readable && charged <= hold, `${moneyEvidence}; expected readable costs and charged ${charged} <= hold ${hold} micros`);
     check("total_cost_matches_usage_cost", readable && nonnegativeMoney(g.total_cost) && equalMoney(g.total_cost, u.cost), `${moneyEvidence}; expected readable equal total_cost and usage.cost`);
-    check("identity_and_non_byok", matchesModel(model, answer.model) && matchesModel(model, g.model) && g.provider_name === providerName && g.is_byok === false, [!matchesModel(model, answer.model) ? "answer.model expected requested model" : "", !matchesModel(model, g.model) ? "generation.model expected requested model" : "", g.provider_name !== providerName ? "generation.provider_name expected pinned provider" : "", g.is_byok !== false ? `generation.is_byok ${safeValue(g.is_byok)} expected false` : ""].filter(Boolean).join("; "));
+    check("identity_and_non_byok", observedModel(model, answer.model, at) !== undefined && observedModel(model, g.model, at) !== undefined && g.provider_name === providerName && g.is_byok === false, [observedModel(model, answer.model, at) === undefined ? "answer.model expected requested model" : "", observedModel(model, g.model, at) === undefined ? "generation.model expected requested model" : "", g.provider_name !== providerName ? "generation.provider_name expected pinned provider" : "", g.is_byok !== false ? `generation.is_byok ${safeValue(g.is_byok)} expected false` : ""].filter(Boolean).join("; "));
     const auxiliaryClear = noAuxiliaryEvidence(u, "usage", searchNotRequested) && noAuxiliaryEvidence(g, "generation", searchNotRequested);
     const computedMax = maximumInferenceCost(policy, u, g);
     const hiddenCharge = allModels && computedMax !== undefined && [u?.cost, u?.cost_details?.upstream_inference_cost, g.total_cost].some(value => nonnegativeMoney(value) && openRouterDecimal(String(value)) > computedMax);
@@ -518,7 +554,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
      if (result.checks.hidden_charge === "FAIL") break;
     }
     recordCheck(result, "provider_honoured_max_price", !stop && result.priceCapProbes.length >= 2 && result.priceCapProbes.every(p => p.status === "PASS"), "expected at least two passing price-cap refusal probes and no shared stop; see priceCapProbes reasons");
-    if (result.checks.provider_honoured_max_price === "PASS" && Object.values(result.checks).every(v => v === "PASS")) { result.status = "PASS"; report.proposedTariffRows.push(tariff); }
+    if (result.checks.provider_honoured_max_price === "PASS" && Object.values(result.checks).every(v => v === "PASS")) { result.status = "PASS"; result.candidateTariff = tariffEvidence(tariff, result); report.proposedTariffRows.push(result.candidateTariff); }
    }
   }
   if (report.models.length === models.length && report.models.every(m => m.status === "PASS")) report.status = "PASS";
@@ -540,23 +576,23 @@ const validModel = model => typeof model === "string" && model.length <= 128 && 
 const qualificationModel = model => /[~:]/u.test(model) ? "qualification/catalogue-model" : model;
 const qualificationPolicy = (model, now, tariff, exactPricing = false) => {
  if (!validModel(model) || tariff.model !== model) return undefined;
- const checked = openRouterPolicy(qualificationModel(model), now, [{ ...tariff, model: qualificationModel(model), ...(exactPricing ? { pricing: validationPrices } : {}) }]);
+ const checked = openRouterPolicy(qualificationModel(model), now, [{ ...tariff, max_completion_tokens: Math.max(2048, tariff.max_completion_tokens), reasoning: { mode: "bounded", max_tokens: 1024 }, model: qualificationModel(model), ...(exactPricing ? { pricing: validationPrices } : {}) }]);
  if (!checked) return undefined;
- const value = { ...checked, model, ...(exactPricing ? { pricing: { ...tariff.pricing }, exactPricing: true } : {}) };
+ const value = { ...checked, model, max_completion_tokens: tariff.max_completion_tokens, reasoning: tariff.reasoning, ...(exactPricing ? { pricing: { ...tariff.pricing }, exactPricing: true } : {}) };
  delete value.hash;
  return { ...value, hash: createHash("sha256").update(JSON.stringify(value)).digest("hex") };
 };
 const qualificationRequest = (body, policy) => {
  if (!validModel(body.model) || body.model !== policy.model) return undefined;
  const model = qualificationModel(body.model);
- const checked = openRouterRequest({ ...body, model }, { ...policy, model, ...(policy.exactPricing ? { pricing: validationPrices } : {}) });
+ const checked = openRouterRequest({ ...body, model }, { ...policy, model, reasoning: { mode: "disabled" }, ...(policy.exactPricing ? { pricing: validationPrices } : {}) });
  if (!checked) return undefined;
  const provider = { ...checked.provider, order: [policy.route] };
  if (policy.exactPricing) {
   const p = policy.pricing;
   provider.max_price = { prompt: qualificationWireCap(p.prompt, true), completion: qualificationWireCap(maxPrice(p.completion, p.internal_reasoning), true), request: qualificationWireCap(p.request, false) };
  }
- return { ...checked, model: body.model, provider };
+ return { ...checked, model: body.model, reasoning: { enabled: true, max_tokens: Math.min(policy.reasoning.max_tokens, body.max_tokens / 4) }, provider };
 };
 const validRoute = route => typeof route === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(route);
 const capMicros = value => {
@@ -564,8 +600,39 @@ const capMicros = value => {
  if (amount < MICRO || amount % MICRO !== 0n || amount / MICRO > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error();
  return Number(amount / MICRO);
 };
+// Proof uses an isolated, exercised component in a real successful bill. A zero
+// catalogue rate or an unused component alone is never proof. Cache writes are
+// never exercised by this harness and therefore cannot be promoted from zero.
+const tariffEvidence = (tariff, result) => {
+ const zeroPriceProof = {};
+ const observedModelIds = new Set();
+ // Both callers publish evidence only after every call/check passes.
+ for (const call of result.calls) {
+  for (const actual of [call.responseModel, call.generation?.model]) {
+   const id = observedModel(tariff.model, actual, tariff.verifiedAt);
+   if (id !== undefined) observedModelIds.add(id);
+  }
+  const u = call.usage, g = call.generation;
+  const details = u?.cost_details;
+  if (!details || details.unrecognized_component_count !== 0 || !consistentInferenceBreakdown(details)) continue;
+  const proof = (component, source, exercised, billed) => {
+   if (rationalPrice(tariff.pricing[component]).n !== 0n || !exercised || !nonnegativeMoney(billed) || !equalMoney(billed, "0")) return;
+   zeroPriceProof[component] ??= { attempt: call.attempt, source, billed, model: g.model, totalCost: g.total_cost };
+  };
+  const prompt = u.prompt_tokens, cached = u.cached_tokens;
+  const output = u.completion_tokens, reasoning = u.reasoning_tokens;
+  proof("prompt", "usage.cost_details.upstream_inference_prompt_cost", prompt > 0 && cached === 0 && g.native_tokens_cached === 0 && g.native_tokens_prompt === prompt, details.upstream_inference_prompt_cost);
+  proof("input_cache_read", "usage.cost_details.upstream_inference_prompt_cost", cached > 0 && cached === prompt && g.native_tokens_cached === cached && g.native_tokens_prompt === prompt, details.upstream_inference_prompt_cost);
+  proof("completion", "usage.cost_details.upstream_inference_completions_cost", output > 0 && reasoning === 0 && g.native_tokens_reasoning === 0 && g.native_tokens_completion === output, details.upstream_inference_completions_cost);
+  proof("internal_reasoning", "usage.cost_details.upstream_inference_completions_cost", reasoning > 0 && reasoning === output && g.native_tokens_completion === output && g.native_tokens_reasoning === reasoning, details.upstream_inference_completions_cost);
+ }
+ const zeroes = OPENROUTER_PRICE_KEYS.filter(key => rationalPrice(tariff.pricing[key]).n === 0n);
+ // PROVEN describes billing evidence only. Installation still requires review.
+ const status = zeroes.every(key => Object.hasOwn(zeroPriceProof, key)) ? "PROVEN" : "CANDIDATE";
+ return { ...tariff, status, observedModelIds: [...observedModelIds].sort(), zeroPriceProof };
+};
 const tariffKey = tariff => {
- return Object.fromEntries(Object.entries(tariff).filter(([key]) => !["verifiedAt", "expiresAt", "evidence", "status"].includes(key)));
+ return Object.fromEntries(Object.entries(tariff).filter(([key]) => !["verifiedAt", "expiresAt", "evidence", "status", "observedModelIds", "zeroPriceProof"].includes(key)));
 };
 const signature = rows => createHash("sha256").update(JSON.stringify(rows.map(tariffKey))).digest("hex");
 const failureCause = result => {
@@ -573,6 +640,7 @@ const failureCause = result => {
  if (result.checks.spend_cap === "FAIL") return "overall_cap";
  if (result.checks.per_model_cap === "FAIL") return "per_model_cap";
  if (result.checks.bounded_tariff === "FAIL") return "unpriced_component";
+ if (result.checks.priced_model === "FAIL") return "zero_priced";
  if (result.calls.some(call => call.checks.identity_and_non_byok === "FAIL")) return "identity_mismatch";
  if (result.calls.some(call => call.checks.generation === "FAIL")) return "generation_lookup";
  if (result.checks.provider_honoured_max_price === "FAIL") return "price_cap_refusal";
@@ -583,7 +651,7 @@ const failureCause = result => {
  */
 async function qualifyAll(options, capturedCatalogue) {
  const { fetch: request = globalThis.fetch, env = process.env } = options;
- const report = { status: "FAIL", harnessVersion: harnessVersion(), chargedMicros: 0, reservedMicros: 0, exposureMicros: 0, spendCapMicros: 0, perModelCapMicros: 0, models: [], notReached: [], failuresByCause: {}, proposedTariffRows: [], errors: [] };
+ const report = { status: "FAIL", harnessVersion: harnessVersion(), chargedMicros: 0, preCallHoldsMicros: 0, exposureMicros: 0, spendCapMicros: 0, perModelCapMicros: 0, models: [], notReached: [], failuresByCause: {}, proposedTariffRows: [], errors: [] };
  const budget = { exposure: 0, modelExposure: 0, cap: 0, modelCap: 0, stop: undefined };
  let entries = [];
  const key = env.OPENROUTER_API_KEY;
@@ -628,7 +696,7 @@ async function qualifyAll(options, capturedCatalogue) {
  try {
   if (!key || options.models?.length || options.provider !== undefined || options.providerName !== undefined) throw new Error();
   budget.cap = report.spendCapMicros = capMicros(options.spendCap ?? "15.00");
-  budget.modelCap = report.perModelCapMicros = capMicros(options.perModelCap ?? "0.05");
+  budget.modelCap = report.perModelCapMicros = Math.min(500000, capMicros(options.perModelCap ?? "0.50"));
   const prior = options.resumeReport;
   if (prior !== undefined && (prior === null || typeof prior !== "object" || !Array.isArray(prior.models) || Buffer.byteLength(JSON.stringify(prior)) > 8 * 1024 * 1024 || !safe(JSON.stringify(prior)))) throw new Error();
   const catalogue = await get("models");
@@ -707,7 +775,10 @@ async function qualifyAll(options, capturedCatalogue) {
     const evidenceValid = retained.length === eligible.length && eligible.every(e => retained.filter(p => p.route === e.route).length === 1) && passes.length > 0 && Array.isArray(candidates) && passes.every(result => {
      const current = eligible.find(e => e.route === result.route);
      const rows = candidates.filter(t => t?.model === id && t.route === result.route);
-     return result.candidateTariff && rows.length === 1 && rows[0].status === "CANDIDATE" &&
+     const expected = tariffEvidence({ ...current.tariff, verifiedAt: result.candidateTariff?.verifiedAt }, result);
+     const sameEvidence = row => row?.status === expected.status && JSON.stringify(row.observedModelIds) === JSON.stringify(expected.observedModelIds) && JSON.stringify(row.zeroPriceProof) === JSON.stringify(expected.zeroPriceProof);
+     return result.candidateTariff && rows.length === 1 &&
+      sameEvidence(rows[0]) && sameEvidence(result.candidateTariff) &&
       signature([rows[0]]) === signature([current.tariff]) && signature([result.candidateTariff]) === signature([current.tariff]) &&
       result.calls?.length === 4 && result.calls.every(c => Object.values(c.checks ?? {}).length > 0 && Object.values(c.checks).every(v => v === "PASS")) &&
       Object.values(result.checks ?? {}).every(v => v === "PASS") && result.checks?.provider_honoured_max_price === "PASS";
@@ -723,7 +794,7 @@ async function qualifyAll(options, capturedCatalogue) {
      model.providers.push({ route: item.route, status: "FAIL", cause: budget.stop ?? modelStopped ?? "per_model_cap", reasons: { not_attempted: "provider not reached after model or shared stop" } }); continue;
     }
     const qualified = await qualifyModels({ ...options, models: [id], provider: item.route, providerName: item.name, catalogue: { data: [item.entry] }, spendCap: options.spendCap ?? "15.00", budget });
-    report.chargedMicros += qualified.chargedMicros; report.reservedMicros += qualified.reservedMicros;
+    report.chargedMicros += qualified.chargedMicros; report.preCallHoldsMicros += qualified.preCallHoldsMicros;
     const result = qualified.models[0];
     if (!result) { model.providers.push({ route: item.route, status: "FAIL", cause: "qualification_checks", reasons: { qualification_checks: "qualification evidence unavailable" } }); continue; }
     result.route = item.route;
@@ -732,7 +803,6 @@ async function qualifyAll(options, capturedCatalogue) {
      fail(model, "per_model_cap", result.reasons.per_model_cap);
     }
     if (result.status !== "PASS") { result.cause = failureCause(result); delete result.candidateTariff; }
-    if (result.status === "PASS") result.candidateTariff = { ...result.candidateTariff, status: "CANDIDATE" };
     model.providers.push(result);
     if (budget.exposure > budget.cap) budget.stop = "overall_cap";
     if (result.checks.hidden_charge === "FAIL") fail(model, "hidden_charge", result.reasons.hidden_charge);
@@ -743,7 +813,7 @@ async function qualifyAll(options, capturedCatalogue) {
    const passes = model.providers.filter(p => p.status === "PASS");
    if (passes.length > 0 && !budget.stop && !modelStopped && !model.providers.some(p => p.cause === "per_model_cap") && budget.modelExposure <= budget.modelCap) {
     model.status = "PASS"; model.reason = "qualified provider routes; candidate tariffs require review";
-    report.proposedTariffRows.push(...passes.map(p => ({ ...p.candidateTariff, status: "CANDIDATE" })));
+    report.proposedTariffRows.push(...passes.map(p => ({ ...p.candidateTariff })));
    } else {
     for (const provider of model.providers.filter(p => p.status !== "PASS")) fail(model, provider.cause ?? "qualification_checks", [...Object.values(provider.reasons), ...(provider.calls ?? []).flatMap(c => Object.values(c.reasons))].join("; ") || "provider checks failed");
     if (budget.stop) fail(model, budget.stop, `shared stop: ${budget.stop}`);

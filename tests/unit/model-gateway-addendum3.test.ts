@@ -130,10 +130,25 @@ it("ADDENDUM-3 known-price media with no byte ceiling still takes the company ma
   const pause = new Promise<void>((r) => { release = r; }); const started = new Promise<void>((r) => { opened = r; });
   let entered = 0;
   f.deps.transport = async () => ({ status: 200, body: (async function* () { opened(); if (++entered === 1) await pause; yield* answer(); })() });
-  const media = { ...requestBody, messages: [{ role: "user", content: [{ type: "image", source: { type: "url", url: "https://example.invalid/private" } }] }] };
-  const running = call(f.deps, media); await started;
+  // A document block stays unbounded and admitted; a remote image is now refused before any hold (see the next test).
+  const media = { ...requestBody, messages: [{ role: "user", content: [{ type: "document", source: { type: "url", url: "https://example.invalid/private" } }] }] };
+  const running = call(f.deps, media);
+  // Never wait on the provider alone: a refused first call must fail this test at once instead of hanging it.
+  await Promise.race([started, running.then((r) => { throw new Error(`first call settled without reaching the provider: ${r.status}`); })]);
   try { expect((await call(f.deps, media, mint({ tid: "second" }))).status).toBe(429); }
   finally { release(); await running; }
+});
+it("ADDENDUM-3 a remote image is refused before any hold, send or company marker", async () => {
+  const f = setup(); let sent = 0;
+  f.deps.transport = async () => { sent++; return { status: 200, body: answer() }; };
+  const media = { ...requestBody, messages: [{ role: "user", content: [{ type: "image", source: { type: "url", url: "https://example.invalid/private" } }] }] };
+  const first = await call(f.deps, media);
+  expect(first.status).toBe(409); expect(first.text()).toMatch(/run_price_authorization_required/u);
+  expect(first.text()).toContain("This image can't be priced (only inline png, jpeg, gif or webp up to the size limit can be sent). Send it inline or leave it out."); expect(first.text()).not.toMatch(/AI source or price changed/u);
+  expect(sent).toBe(0);
+  expect((await f.meter.read(scope)).find((r) => r.item === "company")?.reservedMicros ?? 0).toBe(0);
+  // No marker was left behind, so a different task is not told the company is busy.
+  expect((await call(f.deps, media, mint({ tid: "second" }))).status).toBe(409);
 });
 
 it("ADDENDUM-3 stops the provider when the admission-bounded marker expires", async () => {

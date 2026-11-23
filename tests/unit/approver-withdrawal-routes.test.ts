@@ -22,7 +22,7 @@ async function approved(w: ReturnType<typeof world>, who = "pam") {
 
 describe("withdrawn before a membership change", () => {
   it("removing the approver from a project withdraws their approvals before Code is asked", async () => {
-    const w = world();
+    const w = world({ company: true });
     await approved(w);
     const source = storedEvalApprovals(w.store, () => w.clock.at);
     expect(await source.current(ISS, A, "web")).toMatchObject({ approver: { personId: pamId } });
@@ -39,7 +39,7 @@ describe("withdrawn before a membership change", () => {
   });
 
   it("adding (re-granting) a person to a project withdraws their approvals too", async () => {
-    const w = world();
+    const w = world({ company: true });
     await approved(w);
     w.advance(1000);
     const r = await w.call(await w.signIn("ada", 30), "PUT", `/projects/web/members/${pamId}`, { role: "contributor" });
@@ -74,7 +74,7 @@ describe("withdrawn before a membership change", () => {
 
   it("fails closed: when the withdrawal can't be saved, Code is never asked and nothing changes", async () => {
     let failing = false;
-    const w = world({ beforeCommit: () => (failing ? false : undefined) });
+    const w = world({ company: true, beforeCommit: () => (failing ? false : undefined) });
     await approved(w);
     failing = true;
     const r = await w.call(await w.signIn("ada", 30), "DELETE", `/projects/web/members/${pamId}`);
@@ -89,7 +89,7 @@ describe("withdrawn before a membership change", () => {
   });
 
   it("two companies: a change in company B never withdraws the same person's approvals in company A", async () => {
-    const w = world();
+    const w = world({ company: true });
     await approved(w);
     w.advance(1000);
     // Bea (company B) removes a member with Pam's id from B's project "web".
@@ -100,7 +100,7 @@ describe("withdrawn before a membership change", () => {
   });
 
   it("only someone who may change the project's members withdraws anything: a contributor's attempt changes nothing", async () => {
-    const w = world();
+    const w = world({ company: true });
     await approved(w);
     w.advance(1000);
     const r = await w.call(await w.signIn("cal", 30), "DELETE", `/projects/web/members/${pamId}`);
@@ -111,7 +111,7 @@ describe("withdrawn before a membership change", () => {
   });
 
   it("audits only a change Code made", async () => {
-    const w = world({ memberStatus: 403 });
+    const w = world({ company: true, memberStatus: 403 });
     await approved(w);
     w.advance(1000);
     expect((await w.call(await w.signIn("ada", 30), "DELETE", `/projects/web/members/${pamId}`)).status).toBeGreaterThanOrEqual(400);
@@ -120,7 +120,7 @@ describe("withdrawn before a membership change", () => {
 
   it("an approval whose role check raced Code's change is withdrawn too (withdrawn again after the change)", async () => {
     const hook: { raced?: () => Promise<unknown> } = {};
-    const w = world({ duringMemberChange: async () => { await hook.raced?.(); } });
+    const w = world({ company: true, duringMemberChange: async () => { await hook.raced?.(); } });
     hook.raced = async () => {
       // Pam's role check began after the first withdrawal and before Code removed her.
       w.advance(10);
@@ -133,19 +133,19 @@ describe("withdrawn before a membership change", () => {
 
   it("without product AI settings, member changes work as before (nothing to withdraw)", async () => {
     // product-ai-routes.test.ts covers the handler without productAi; here the route still answers when the store is healthy.
-    const w = world();
+    const w = world({ company: true });
     expect((await w.call(await w.signIn("ada", 30), "DELETE", `/projects/web/members/${pamId}`)).status).toBe(200);
   });
 });
 
 describe("the approval as the app sees it", () => {
   it("is dated from when the role check with Code began, not from the save after it", async () => {
-    const w = world({ accessMs: 2000 });
+    const w = world({ company: true, accessMs: 2000 });
     const pam = await w.signIn("pam", 30);
     expect((await w.call(pam, "PUT", APPROVAL, write(0, { approval }))).status).toBe(200);
     expect((await w.store.evalFor(ISS, A, "web")).approval?.approvedAt).toBe(START);
     // A withdrawal that landed while that check was in flight still catches it.
-    const v = world({ accessMs: 2000 });
+    const v = world({ company: true, accessMs: 2000 });
     const cookie = await v.signIn("pam", 30);
     const saving = v.call(cookie, "PUT", APPROVAL, write(0, { approval }));
     await v.store.withdrawApprovals(ISS, A, pamId);
@@ -154,7 +154,7 @@ describe("the approval as the app sees it", () => {
   });
 
   it("counts for 15 minutes from the role check: current, then stale (approve again)", async () => {
-    const w = world();
+    const w = world({ company: true });
     const pam = await approved(w);
     expect((await w.call(pam, "GET", "/projects/web/product-ai")).body).toMatchObject({ evalApproval: { state: "current", approvedAt: START } });
     w.advance(EVAL_APPROVAL_FRESH_MS);
@@ -173,7 +173,7 @@ describe("company member removal", () => {
   };
 
   it("withdraws the removed person's approvals after Code removed them", async () => {
-    const w = world({ code: removal(200) });
+    const w = world({ company: true, code: removal(200) });
     await approved(w);
     w.advance(1000);
     const r = await w.call(await w.signIn("ada", 30), "POST", `/org/members/${pamId}/removal`, { requestId: "00000000-0000-4000-8000-0000000000aa", expectedRole: "member" });
@@ -182,7 +182,7 @@ describe("company member removal", () => {
   });
 
   it("a removal Code refuses withdraws nothing", async () => {
-    const w = world({ code: removal(409) });
+    const w = world({ company: true, code: removal(409) });
     await approved(w);
     w.advance(1000);
     const r = await w.call(await w.signIn("ada", 30), "POST", `/org/members/${pamId}/removal`, { requestId: "00000000-0000-4000-8000-0000000000ab", expectedRole: "member" });
