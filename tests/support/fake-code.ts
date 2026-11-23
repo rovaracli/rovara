@@ -341,6 +341,26 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     one.confirmed = { name: found.name, ...(found.source === undefined ? {} : { source: found.source }) };
     return view();
   };
+  // DEC 417/420/421: Code's browser testing page (`/v1/app/projects/{p}/browser-testing`): each project's pretend read and the read after the next change, set by the specs through /__fake/browser-testing. `off` makes Code answer its unknown-route 404;
+  // `failRead` and `failWrite` make the next answers fail in Code's words; every change that arrives is kept in `writes` for the spec to read back. The view is whatever the spec sets (Cloud's route reads it with the strict contract schema).
+  interface FakeFailure { status: number; code: string; message: string }
+  interface FakeBrowserTesting { off?: boolean; view?: Record<string, unknown>; next?: Record<string, unknown>; failRead?: FakeFailure; failWrite?: FakeFailure; writes: Array<{ method: string; path: string; body: unknown }> }
+  const browserTestings = new Map<string, FakeBrowserTesting>();
+  const browserTestingOf = (name: string): FakeBrowserTesting => { let one = browserTestings.get(name); if (one === undefined) { one = { writes: [] }; browserTestings.set(name, one); } return one; };
+  const browserTestingAnswer = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/browser-testing(?:\/(refresh|draft|check|decision|discard|pause|resume))?$/u.exec(path);
+    if (match === null) return undefined;
+    const name = decodeURIComponent(match[1]!), one = browserTestingOf(name), grant = roleIn(person, name);
+    if (one.off === true) return failure(404, "NOT_FOUND", "route not found");
+    if (project(name) === undefined || companyless.has(person.developerId) || (!person.administrator && grant === undefined)) return failure(404, "NOT_FOUND", "That project doesn't exist, or you don't have access to it.");
+    const view = { project: name, canManage: person.administrator, viewerRole: person.administrator ? "owner" : "member", state: "not-set-up", paused: false, sandboxAvailable: true, faults: [], setupWaiting: false, draft: null, candidate: null, approved: null, newerChange: null, accounts: [], ...(one.view ?? {}), };
+    if (method === "GET") return one.failRead === undefined ? { status: 200, body: view } : failure(one.failRead.status, one.failRead.code, one.failRead.message);
+    one.writes.push({ method, path, body });
+    if (one.failWrite !== undefined) return failure(one.failWrite.status, one.failWrite.code, one.failWrite.message);
+    const after = { ...(one.next ?? view), project: name };
+    one.view = after;
+    return { status: 200, body: match[2] === "decision" ? { project: name, decision: "approved", revision: 5, replayed: false, view: after } : after };
+  };
   const wikiSetupAnswer = (method: string, path: string, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
     const match = /^\/v1\/app\/projects\/([^/]+)\/(wiki-map|wiki-build(?:\/(?:continue|stop|refresh|agents|delete))?|upkeep|setup-check)$/u.exec(path);
     if (match === null) return undefined;
@@ -1981,6 +2001,19 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           wikis.set(given.project, { ...(given.state === undefined ? {} : { state: given.state as "ready" }), ...(given.off === true ? { off: true } : {}), ...(given.broken === true ? { broken: true } : {}) });
           return send(200, { project: given.project });
         }
+        if (method === "POST" && url.pathname === "/__fake/browser-testing") {
+          const given = JSON.parse(await readBody(request)) as Record<string, unknown>;
+          if (typeof given["project"] !== "string" || project(given["project"]) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project" } });
+          if (given["read"] === true) { const seen = browserTestingOf(given["project"]); return send(200, { writes: seen.writes }); }
+          // `failReadOnly` fails the next reads and keeps everything else the project serves.
+          if (typeof given["failReadOnly"] === "object" && given["failReadOnly"] !== null) { browserTestingOf(given["project"]).failRead = given["failReadOnly"] as FakeFailure; return send(200, { project: given["project"] }); }
+          const one: FakeBrowserTesting = { writes: [] };
+          for (const key of ["view", "next"] as const) if (typeof given[key] === "object" && given[key] !== null) one[key] = given[key] as Record<string, unknown>;
+          for (const key of ["failRead", "failWrite"] as const) if (typeof given[key] === "object" && given[key] !== null) one[key] = given[key] as FakeFailure;
+          if (given["off"] === true) one.off = true;
+          browserTestings.set(given["project"], one);
+          return send(200, { project: given["project"] });
+        }
         if (method === "POST" && url.pathname === "/__fake/eval-check") {
           // L4-EVCI2: sets the pretend card of one project (verdict, items, the confirmed check, `off`), and reads back what it saw (`puts`, `lastBody`).
           const given = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -2216,7 +2249,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? savedEnvAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? evalCheckAnswer(method, url.pathname, who, parsed) ?? answersAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who, parsed, url.searchParams) ?? howWeWorkAnswer(method, url.pathname, who) ?? savedEnvAnswer(method, url.pathname, who) ?? wikiSetupAnswer(method, url.pathname, who, parsed) ?? evalCheckAnswer(method, url.pathname, who, parsed) ?? browserTestingAnswer(method, url.pathname, who, parsed) ?? answersAnswer(method, url.pathname, who, parsed) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
           if (who === undefined && /\/(?:answers|code\/suggest)$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/how-we-work$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/(?:wiki(?:[-/]|$)|upkeep$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });

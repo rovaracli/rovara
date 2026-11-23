@@ -47,6 +47,7 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  // The unlinked preview addresses redirect to the real pages and keep the query and the fragment (a saved ?task= or ?item= link still opens the same item).
  { path: "previews/work", element: <PreviewRedirect to="/app/live" /> },
  { path: "previews/inbox", element: <PreviewRedirect to="/app/inbox" /> },
+ { path: "projects/:name/browser-testing", lazy: async () => ({ Component: (await import("./screens/setup/browser-testing/BrowserTestingScreen.js")).BrowserTestingScreen }) },
  { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/project/ProjectScreen.js")).ProjectScreen }) },
  // A website ask's card ("Open the setup", from Code) opens `/app/projects/<p>/setup`: the project's checklist is where the setup run, its journal and its website asks are decided.
  { path: "projects/:name/setup", element: <ProjectSetupRedirect /> }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },

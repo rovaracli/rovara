@@ -44,6 +44,8 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  "screens/setup/setup-repair.css",
  // W6: the wiki row on the setup checklist.
  "screens/setup/wiki/wiki-setup.css",
+ // DEC 417/420/421: Browser testing in a project's setup (its page and its checklist row).
+ "screens/setup/browser-testing/browser-testing.css",
  // Feature A3: the Cost and time pages.
  "screens/admin/report/report.css",
  // WIRING-1B: the rebuilt company money / AI pages (the report, features, AI and sources, Product AI).

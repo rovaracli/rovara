@@ -52,6 +52,11 @@ export function ProjectSettingsTab({ project, canEdit }: { project: string; canE
    <SetupRunControls project={project} againLabel="Re-run setup" onChanged={() => { void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); }} />
    <RecheckSetupRow project={project} />
   </section>
+  <section className="rv-project-section" aria-label="Browser testing" data-testid="project-settings-browser-testing">
+   <h2>Browser testing</h2>
+   <p>Rovara starts your app in a test sandbox and tries each change in a real browser before it reaches review. An owner or admin approves what it uses.</p>
+   <p><Link className="rv-button" to={`/app/projects/${encodeURIComponent(project)}/browser-testing`}>Open browser testing</Link></p>
+  </section>
   <ProjectPeople key={`people:${scope.orgId}:${scope.developerId}:${project}`} name={project} />
   <Lifecycle project={project} scope={scope} />
   <ProjectIntegrations project={project} canEdit={canEdit} />

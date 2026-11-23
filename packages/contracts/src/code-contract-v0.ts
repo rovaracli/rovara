@@ -1271,6 +1271,14 @@ GET /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 PUT /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 GET /v1/app/projects/{p}/ci-eval-check | k | later | | eval-check | T
 PUT /v1/app/projects/{p}/ci-eval-check | k | later | | eval-check | T
+GET /v1/app/projects/{p}/browser-testing | k | later | | browser-testing | T
+POST /v1/app/projects/{p}/browser-testing/refresh | k | later | | browser-testing | T
+PUT /v1/app/projects/{p}/browser-testing/draft | k | later | | browser-testing | T
+POST /v1/app/projects/{p}/browser-testing/check | k | later | | browser-testing | T
+POST /v1/app/projects/{p}/browser-testing/decision | k | later | | browser-testing | T
+POST /v1/app/projects/{p}/browser-testing/discard | k | later | | browser-testing | T
+POST /v1/app/projects/{p}/browser-testing/pause | k | later | | browser-testing | T
+POST /v1/app/projects/{p}/browser-testing/resume | k | later | | browser-testing | T
 GET /v1/app/projects/{p}/tasks/{t}/answers | k | later | | answers | T
 POST /v1/app/projects/{p}/answers | k | later | | answers | T
 POST /v1/app/projects/{p}/answers/{a}/not-right | k | later | | answers | T
