@@ -88,4 +88,4 @@ export function useTeamLessons(project: string, pageId: string) {
 
 /** Cloud or Code does not serve a read yet (an older Code, or lessons off for the company): the part is left out, never shown as a failure to retry. */
 export const areasAbsent = (error: unknown) => error instanceof ApiError && (error.status === 501 || error.code === "NOT_ON_CODE_YET" || error.code === "LESSONS_SWITCHED_OFF" || (error.status === 404 && error.code !== "INVALID_RESPONSE"));
-export const SOURCE_FAILED = "Couldn't change that. Nothing was changed.";
+export const SOURCE_FAILED = "Couldn't change that. Reload to check where it stands.";

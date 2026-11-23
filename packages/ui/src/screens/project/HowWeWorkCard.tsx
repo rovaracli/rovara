@@ -6,7 +6,8 @@ import { cardTitle } from "../../api/stage-cards.js";
 import { HowWeWorkMarker } from "./HowWeWorkMarker.js";
 import { StageRecord, wordedRecords } from "./StageRecord.js";
 import { EDITABLE_KINDS, stageRows, visibleRows, type Filter, type RowId, type StageRead, type ViewRead } from "./how-we-work-rows.js";
-export const stageDomId = (id: string) => "hww-stage-" + id.replace(/[^A-Za-z0-9_-]/g, "_");
+import { stageDomId } from "./stage-dom-id.js";
+export { stageDomId };
 /** Shown where the stage models would be when the resolver's read is not there: the page names no model it did not get from it. */
 export const MODEL_NOTE = "The models of this stage can't be shown right now. Reload to try again.";
 /** One stage: its six rows, each value marked. A row shows when it has a changed or locked value (or the reader asked for more); the editor and the reviewing note always show under "All". `action` sits under the title, whatever the filter. */

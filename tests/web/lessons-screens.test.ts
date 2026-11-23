@@ -36,7 +36,7 @@ function mount(element: ReturnType<typeof h>, answer: (request: ApiRequest) => A
   const f = fakeHost(async request => request.path === "/v1/app/me" ? { status: 200, body: meFixture() } : answer(request) ?? { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } });
   const query = createQueryClient();
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [path], children: h(Announcer, { children: h(Routes, {}, h(Route, { path: path.split("?")[0]!, element })) }) }) }) }));
-  return { ...f, ...ui, close() { ui.unmount();query.clear(); } };
+  return { ...f, ...ui, query, close() { ui.unmount();query.clear(); } };
 }
 const workAnswers = (inbox: ApiResponse, send?: (request: ApiRequest) => ApiResponse) => (request: ApiRequest): ApiResponse | undefined => {
   if (request.method !== "GET") return send?.(request);
@@ -193,6 +193,24 @@ it("shows the mode, the approved lessons with Code's counts, retire with a reaso
   expect(sent[1]).toMatchObject({ method: "POST", path: "/v1/app/projects/web/lessons/les_logs0001/retire", body: { reason: "outdated" } });
   expect(await within(approved).findByText("Retired. Rovara no longer gives it to tasks.")).toBeTruthy();
   await expectNoAxeViolations(f.container);
+  f.close();
+});
+it("F4: the Asked-to-retire list hides Retire on its own failed re-read, shows the Reconnecting line, and sends nothing [mutant: RetireRequests ignores its stale state]", async () => {
+  const sent: ApiRequest[] = [];
+  let down = false;
+  const answers = learnedAnswers({ send: request => { sent.push(request);return ok({ project: "web", lessonId: "les_logs0001" }); } });
+  const f = mount(h(LearnedSection, { project: "web" }), request => down && request.path.endsWith("/lessons/retire-requests") ? { status: 503, body: { error: { code: "UNAVAILABLE", message: "Try later." } } } : answers(request));
+  const section = await screen.findByTestId("learned");
+  const requests = await within(section).findByTestId("retire-requests");
+  expect(within(requests).getByRole("button", { name: "Retire lesson" })).toBeTruthy();
+  down = true;
+  await act(async () => { await f.query.refetchQueries({ predicate: q => q.queryKey.includes("retire-requests") }); });
+  await waitFor(() => expect(within(screen.getByTestId("retire-requests")).queryByText(/Reconnecting/u)).not.toBeNull());
+  const stale = screen.getByTestId("retire-requests");
+  expect(within(stale).queryByRole("button", { name: "Retire lesson" })).toBeNull();
+  expect(within(stale).queryByRole("combobox")).toBeNull();
+  expect(stale.textContent).toContain("Log request ids");
+  expect(sent.filter(request => request.path.endsWith("/retire"))).toHaveLength(0);
   f.close();
 });
 it("shows proposed lessons with the expiry warning and a link to the inbox, and retired ones only in fixed words", async () => {

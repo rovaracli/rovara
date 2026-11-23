@@ -21,7 +21,7 @@ function Draft({ project, draft }: { project: string; draft: CheckDraft }) {
   async function run(write: () => Promise<unknown>, text: string) {
     setState({ kind: "busy" });
     try { await write();setState({ kind: "done", text });announce(`${draft.title}: ${text}`);refreshLessons(query, project); }
-    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project, announce); }
+    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Reload to check where it stands.") });refreshIfStale(failure, query, project, announce); }
   }
   async function copy() {
     // What is copied is what is shown: hidden control and format characters are left out.

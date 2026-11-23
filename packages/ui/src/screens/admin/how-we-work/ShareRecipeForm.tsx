@@ -13,8 +13,8 @@ const split = (text: string): string[] => text.split(",").map(part => part.trim(
  * Share a project's setup as a company recipe. On the company screen the project is chosen (`projects`); on a project's own page it is fixed (`project`), and its repositories are a list (`repositories`). Every name that
  * comes from the server is shown through `visibleText`, so a hidden character in a project or repository name is visible in the label and in what a screen reader says.
  */
-export function ShareRecipeForm({ project, projects, repositories, markerFiles, busy, onShare }: {
-  project?: string; projects?: readonly string[]; repositories?: readonly string[]; markerFiles: readonly string[]; busy: boolean; onShare: (input: ShareInput) => Promise<boolean>;
+export function ShareRecipeForm({ project, projects, repositories, markerFiles, busy, frozen = false, onShare }: {
+  project?: string; projects?: readonly string[]; repositories?: readonly string[]; markerFiles: readonly string[]; busy: boolean; frozen?: boolean; onShare: (input: ShareInput) => Promise<boolean>;
 }) {
  const [chosen, setChosen] = useState(project ?? ""), [repositoryId, setRepositoryId] = useState(""), [label, setLabel] = useState(""), [systems, setSystems] = useState(""), [tools, setTools] = useState(""), [markers, setMarkers] = useState<string[]>([]), [registries, setRegistries] = useState(""), [hosts, setHosts] = useState("");
  const ready = chosen !== "" && repositoryId.trim() !== "" && label.trim() !== "" && split(systems).length > 0 && markers.length > 0;
@@ -23,7 +23,7 @@ export function ShareRecipeForm({ project, projects, repositories, markerFiles, 
   const shared = await onShare({ project: chosen, repositoryId: repositoryId.trim(), label: label.trim(), buildSystems: split(systems), toolchains, markerFiles: markers, registryHosts: split(registries), approvedHosts: split(hosts) });
   if (shared) { setLabel("");setSystems("");setTools("");setMarkers([]);setRegistries("");setHosts(""); }
  }
- return <form aria-label={RECIPES_TEXT.SHARE_HEADING} className="rv-hww-company-card" onSubmit={event => { event.preventDefault();if (ready) void submit(); }}>
+ return <form aria-label={RECIPES_TEXT.SHARE_HEADING} className="rv-hww-company-card" onSubmit={event => { event.preventDefault();if (ready && !frozen) void submit(); }}>
   <h2>{RECIPES_TEXT.SHARE_HEADING}</h2><p className="rv-muted">{RECIPES_TEXT.SHARE_NOTE}</p>
   {project === undefined && <Select label="Project" value={chosen} options={(projects ?? []).map(name => ({ value: name, label: visibleText(name) }))} onValueChange={setChosen} />}
   {repositories === undefined
@@ -35,6 +35,7 @@ export function ShareRecipeForm({ project, projects, repositories, markerFiles, 
   <fieldset><legend>Files that mark a matching project</legend>{markerFiles.map(name => <Checkbox key={name} label={visibleText(name)} checked={markers.includes(name)} onCheckedChange={checked => { setMarkers(checked === true ? [...markers, name] : markers.filter(item => item !== name)); }} />)}</fieldset>
   <TextField label="Package registries" hint="Comma separated hosts the project installs from." value={registries} onChange={event => { setRegistries(event.target.value); }} autoComplete="off" />
   <TextField label="Websites to share" hint="Comma separated. Only websites the project already allows are kept." value={hosts} onChange={event => { setHosts(event.target.value); }} autoComplete="off" />
-  <div className="rv-hww-company-actions"><Button type="submit" variant="primary" busy={busy} disabled={!ready}>{RECIPES_TEXT.SHARE_BUTTON}</Button></div>
+  <div className="rv-hww-company-actions"><Button type="submit" variant="primary" busy={busy} disabled={!ready || frozen}>{RECIPES_TEXT.SHARE_BUTTON}</Button></div>
+  {frozen && <p className="rv-muted" role="status">{RECIPES_TEXT.RECONNECTING}</p>}
  </form>;
 }

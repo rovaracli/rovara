@@ -9,6 +9,7 @@ import { Button } from "../../../design/Button.js";
 import { Skeleton } from "../../../design/Skeleton.js";
 import { Switch } from "../../../design/Switch.js";
 import { VisibleText } from "../../../design/VisibleText.js";
+import { useIdentityFrozen } from "../write-freeze.js";
 import "./areas.css";
 
 type Row = LearningSourcesAnswer["sources"][number];
@@ -23,6 +24,7 @@ export const PAUSED_WORDS = "Paused. Rovara is not reading this source. Lessons 
 export const PAUSE_HELP = "Rovara stops reading this source while paused. Nothing from the paused time is kept.";
 
 function SourceRow({ project, row, canPause, onExample }: { project: string; row: Row; canPause: boolean; onExample: (lessonId: string) => void }) {
+ const frozen = useIdentityFrozen();
  const api = useLearnedAreasApi(), query = useQueryClient(), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
  async function set(paused: boolean) {
   if (busy) return;
@@ -36,7 +38,7 @@ function SourceRow({ project, row, canPause, onExample }: { project: string; row
   <p className="rv-source-counts" data-testid={"source-counts-" + row.key}>{countWords(row)}</p>
   {row.example !== undefined && <p className="rv-source-example">Last suggestion: <a href={"#learned-" + row.example.lessonId} onClick={() => { onExample(row.example!.lessonId); }}><VisibleText text={row.example.title} /></a></p>}
   {row.paused && <p className="rv-source-paused" role="status">{PAUSED_WORDS}</p>}
-  {canPause && <Switch label={row.paused ? `Resume ${row.label}` : `Pause ${row.label}`} checked={row.paused} disabled={busy} onCheckedChange={paused => { void set(paused); }} help={PAUSE_HELP} />}
+  {canPause && <Switch label={row.paused ? `Resume ${row.label}` : `Pause ${row.label}`} checked={row.paused} disabled={busy || frozen} onCheckedChange={paused => { void set(paused); }} help={PAUSE_HELP} />}
   {error !== undefined && <p role="alert" className="rv-lesson-failed"><VisibleText text={error} /></p>}
  </li>;
 }

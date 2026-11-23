@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { screen, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
+import { LegacyHowWeWorkTab } from "./support/legacy-how-we-work-tab.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -19,7 +19,7 @@ const REVERTS = "Reverts after merge aren't tracked yet";
 const raw = (change: (stages: Array<Record<string, unknown>>) => void = () => undefined) => { const view = structuredClone(howWeWorkView()) as { stages: Array<Record<string, unknown>> };for (const entry of view.stages) if (stageRecords[entry.id as string] !== undefined) entry.trackRecord = structuredClone(stageRecords[entry.id as string]);change(view.stages);return view; };
 function setup(options: { view?: unknown; handle?: Handler } = {}) {
  const cell = howWeWorkHost({ view: raw(), ...options }), query = createQueryClient();
- const ui = renderUi(h(AppHostProvider, { host: cell.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments?tab=how-we-work"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: "light" });
+ const ui = renderUi(h(AppHostProvider, { host: cell.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments?tab=how-we-work"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(LegacyHowWeWorkTab, {}) }) }) }) }) }) }), { theme: "light" });
  return { ...cell, ...ui };
 }
 const card = (name: string) => screen.getByRole("region", { name });

@@ -15,6 +15,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { lessonsOff, notServed, useLessonInbox } from "../../api/learned.js";
 import { AgentsRow } from "./AgentsRow.js";
 import { LessonBatchCard } from "./LessonBatchCard.js";
+import { servedReadState } from "../../api/served-read.js";
 import { TaskPane } from "./TaskPane.js";
 import { WorkList, batchId } from "./WorkList.js";
 import "./work.css";
@@ -62,7 +63,7 @@ export function WorkScreen() {
    {listBody}
   </section>
   <section className="rv-work-pane" aria-label="Selected task">
-   {shownBatch !== undefined ? <LessonBatchCard key={"lessons:" + shownBatch.project} batch={shownBatch} onDone={() => { const next = new URLSearchParams(params);next.delete("task");setParams(next, { replace: true });void query.invalidateQueries({ queryKey: ["learned", "inbox"] }); }} />
+   {shownBatch !== undefined ? <LessonBatchCard key={"lessons:" + shownBatch.project} batch={shownBatch} frozen={servedReadState(inbox).staleSince !== undefined} onDone={() => { const next = new URLSearchParams(params);next.delete("task");setParams(next, { replace: true });void query.invalidateQueries({ queryKey: ["learned", "inbox"] }); }} />
     : selected !== undefined ? <TaskPane key={selected.id} row={selected} fullPage={fullPage(selected)} decisionsError={decisions.isError ? decisions.error : undefined} onDecided={onDecided} />
     : <div className="rv-empty">{tasks.isPending || decisions.isPending ? "Loading…" : "Select a task once your work has loaded."}</div>}
   </section>

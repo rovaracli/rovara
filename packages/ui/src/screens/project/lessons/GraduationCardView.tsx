@@ -33,13 +33,13 @@ export function GraduationCardView({ project, card }: { project: string; card: G
       const answer = await api.graduate(project, card.lessonId, { target, ...(target === "rule" && paths.length > 0 ? { paths } : {}), ...(target === "skill" && name.trim() !== "" ? { name: name.trim() } : {}) });
       const text = graduatedWords(answer);
       setState(answer.state === "waiting" ? { kind: "waiting", text } : { kind: "done", text });announce(`${card.title}: ${text}`);refreshLessons(query, project);
-    } catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project, announce); }
+    } catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Reload to check where it stands.") });refreshIfStale(failure, query, project, announce); }
   }
   async function later() {
     if (busy || closed) return;
     setState({ kind: "busy" });
     try { await api.graduateLater(project, card.lessonId);const text = "Okay. Rovara won't ask about this lesson again for 60 days.";setState({ kind: "done", text });announce(text);refreshLessons(query, project); }
-    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Nothing was changed.") });refreshIfStale(failure, query, project, announce); }
+    catch (failure) { setState({ kind: "error", text: failureWords(failure, "That didn't go through. Reload to check where it stands.") });refreshIfStale(failure, query, project, announce); }
   }
   return <article className="rv-permanent" aria-labelledby="permanent-title" data-testid="permanent-card">
     <h3 id="permanent-title">{GRADUATION_TITLE}</h3>

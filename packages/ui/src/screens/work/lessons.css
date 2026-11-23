@@ -74,3 +74,19 @@
 .rv-permanent-targets .rv-choices{display:flex;flex-wrap:wrap;gap:var(--rv-space-2)}
 
 .rv-qp-action-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
+
+/* G4 lesson batch (board 22a): each lesson is one card, "Lesson N of M", labelled rows, then its decision. */
+.rv-lesson-batch .rv-lesson{padding:var(--rv-space-5);gap:var(--rv-space-3);border-radius:var(--rv-radius-lg)}
+.rv-lesson-top{display:flex;justify-content:space-between;align-items:center;gap:var(--rv-space-2)}
+.rv-lesson-eyebrow{margin:0;font:600 var(--rv-font-xs)/1 var(--rv-font-ui);letter-spacing:.06em;text-transform:uppercase;color:var(--rv-text-muted)}
+.rv-lesson-waiting{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:var(--rv-status-needs-you-bg);color:var(--rv-status-needs-you);font:600 var(--rv-font-xs)/1.2 var(--rv-font-ui)}
+.rv-lesson-waiting svg{width:14px;height:14px}
+.rv-lesson-batch .rv-lesson-head h3{font:400 var(--rv-font-lg)/1.4 var(--rv-font-ui)}
+.rv-lesson-row{display:grid;grid-template-columns:minmax(0,9rem) minmax(0,1fr);gap:var(--rv-space-3);align-items:baseline}
+.rv-lesson-label{color:var(--rv-text-muted);font-size:var(--rv-font-md)}
+.rv-lesson-row p{margin:0;color:var(--rv-text);font-size:var(--rv-font-md)}
+.rv-lesson-row .rv-lesson-from{margin-left:var(--rv-space-2)}
+@media(max-width:520px){.rv-lesson-row{grid-template-columns:minmax(0,1fr);gap:2px}}
+/* G4 ship vision round 2: the list does not end in a hard mid-row cut above the sticky footer; the source chip gets its own line */
+.rv-qp-peek .rv-lesson-send{box-shadow:0 -8px 8px -8px rgb(0 0 0 / .25)}
+.rv-lesson-batch .rv-lesson-description .rv-lesson-from{display:block;width:max-content;margin-top:var(--rv-space-1)}

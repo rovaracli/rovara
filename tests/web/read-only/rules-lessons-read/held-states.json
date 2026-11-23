@@ -1,0 +1,76 @@
+[
+ {
+  "section": 13,
+  "held": [
+   "First scan",
+   "No instruction files found",
+   "Settings saved",
+   "Repo instruction file and skill inventory",
+   "Plan self-check setting",
+   "project-how-member-view"
+  ],
+  "signal": "How-we-work GET has no repo instruction inventory, plan self-check setting, scan/write receipt; existing playbook GET supplies design-review setting only; member-scene capture has no distinguishing role assertion and is not accepted member evidence",
+  "fallback": "Approved read regions retained; unsupported repo and plan self-check facts explicitly can't tell yet; design review reads current playbook, unavailable or missing setting can't tell yet"
+ },
+ {
+  "section": 14,
+  "held": [
+   "Rollback",
+   "Editor"
+  ],
+  "signal": "Read-only allocation",
+  "fallback": "Version metadata only"
+ },
+ {
+  "section": 15,
+  "held": [
+   "Paused lesson",
+   "Pause",
+   "Approve",
+   "Dismiss"
+  ],
+  "signal": "No served paused state in current lesson list",
+  "fallback": "Unknown status can't tell yet; writes hidden"
+ },
+ {
+  "section": 16,
+  "held": [
+   "Project editor",
+   "Company write shortcut"
+  ],
+  "signal": "Read-only allocation",
+  "fallback": "Effective choices only"
+ },
+ {
+  "section": 25,
+  "held": [
+   "Company locks",
+   "Editor",
+   "Loading",
+   "Empty",
+   "Partly read",
+   "Offline"
+  ],
+  "signal": "Current known-failing policy is fixed product copy, not a settings read",
+  "fallback": "Fixed policy after identity; other policy state can't tell yet"
+ },
+ {
+  "section": 27,
+  "held": [
+   "Share recipe review",
+   "Share",
+   "Access change"
+  ],
+  "signal": "Read-only allocation",
+  "fallback": "Authorized metadata and command text only"
+ },
+ {
+  "section": 35,
+  "held": [
+   "Per-lesson decisions",
+   "Paused"
+  ],
+  "signal": "Read-only inbox GET has no paused state",
+  "fallback": "Authorized batch and local lesson selection only"
+ }
+]
