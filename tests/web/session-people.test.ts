@@ -155,13 +155,14 @@ describe("People panel", () => {
     expect(f.request).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps an unaudited People conflict locked, shows Code's words and refreshes the list", async () => {
+  it("keeps an unaudited People conflict locked, says in plain words that the list changed and refreshes the list", async () => {
     let reads = 0;
     const { open, sent, f } = setup(request => request.method === "POST" ? refusal(409, "IDEMPOTENCY_CONFLICT", "Task access changed before the role could be saved")
       : request.path.endsWith("/candidates") ? { status: 200, body: { candidates: [], complete: true } } : (reads += 1, { status: 200, body: { people: viewOf({ revision: reads >= 3 ? 4 : 3 }) } }));
     await open();
     fireEvent.click(await screen.findByRole("button", { name: "Remove Cal" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("Task access changed before the role could be saved");
+    expect((await screen.findByRole("alert")).textContent).toBe("Who is on this task changed. Check the list, then try again.");
+    expect(screen.queryByText(/before the role could be saved/u)).toBeNull();
     // Initial authority, send-time authority, then the refusal recovery read.
     await waitFor(() => expect(reads).toBe(3));
     await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Remove Cal" }).disabled).toBe(true));
@@ -177,7 +178,9 @@ describe("People panel", () => {
       : request.path.endsWith("/candidates") ? { status: 200, body: { candidates: [], complete: true } } : { status: 200, body: { people: viewOf() } });
     await open();
     fireEvent.click(await screen.findByRole("button", { name: "Remove Cal" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("Only a task owner can change who is on this task");
+    expect((await screen.findByRole("alert")).textContent).toBe("Rovara couldn't confirm you can change who is on this task.");
+    expect(screen.getByTestId("people-failure-ref").textContent).toBe("Ref TASK_ACCESS_DENIED");
+    expect(screen.queryByText(/Only a task owner/u)).toBeNull();
     expect((screen.getByRole<HTMLButtonElement>("button", { name: "Remove Cal" })).disabled).toBe(true);
   });
 
@@ -191,10 +194,11 @@ describe("People panel", () => {
     expect(screen.getByTestId("people-panel").textContent).not.toMatch(/slack|channel|invite/iu);
   });
 
-  it("shows Code's own words when the session or task is not found, not the not-available line", async () => {
+  it("says in plain words that the task was not found, not the not-available line and not Code's text", async () => {
     const { open } = setup(() => refusal(404, "SESSION_NOT_FOUND", "That session doesn't exist, or you can't see it."));
     await open();
-    expect((await screen.findByRole("alert")).textContent).toContain("That session doesn't exist, or you can't see it.");
+    expect((await screen.findByRole("alert")).textContent).toContain("This task wasn't found, or you no longer have access.");
+    expect(screen.queryByText(/That session doesn't exist/u)).toBeNull();
     expect(screen.queryByTestId("people-unavailable")).toBeNull();
   });
 });

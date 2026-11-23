@@ -59,7 +59,8 @@ it.each(accessFailures)("F4/R1: access refusal $status/$code wipes People and se
  await act(async () => { await query.refetchQueries({ queryKey: KEY, exact: true }); });
  await waitFor(() => expect(query.getQueryState(KEY)?.status).toBe("error"));
  if (status === 404) expect(screen.getByTestId("people-unavailable")).toBeTruthy();
- else expect((await screen.findByRole("alert")).textContent).toContain("People read refused");
+ else expect((await screen.findByRole("alert")).textContent).toContain(status === 401 ? "Sign in again to see who is on this task." : "Rovara couldn't confirm your access to this task's people.");
+ if (status !== 404) expect(screen.queryByText(/People read refused/u)).toBeNull();
  expect(query.getQueryState(KEY)?.status).toBe("error");
  expectPeopleWiped();expect(query.getQueryData(KEY)).toBeUndefined();
  fireEvent.click(remove);await settled();expect(writes()).toEqual([]);
