@@ -19,7 +19,7 @@
 // source row's own companyId is checked again by CompanyAgentAiSource.
 //
 // Every failure is a fixed answer: nothing from the request, a token or the store is echoed or logged.
-import { openRouterRates, openRouterPolicy, REVIEWED_OPENROUTER_POLICIES, type OpenRouterTariff } from "./openrouter-policy.js";
+import { openRouterCapOrder, openRouterRates, openRouterPolicy, REVIEWED_OPENROUTER_POLICIES, type OpenRouterPolicy, type OpenRouterTariff } from "./openrouter-policy.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { agentSourceSwitchedOn, resolveAgentSource, type AgentAiSource, type AgentAiSourceReader, type ByoBedrock } from "./agent-ai.js";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
@@ -325,12 +325,19 @@ async function ownKeyConnected(options: OfferedModelsHandlerOptions, source: Age
   return keys !== undefined && (await keys.connected(iss, cid, provider)) === true;
 }
 
+/** The OpenRouter models offered now: the rows the gateway's validator accepts now, never more than OFFERED_MODELS_MAX. Over it (DEC 254zzz419) the best-known families
+ * first, then the cheapest hold (openRouterCapOrder, the order the harness' install selection uses); at or under it the tariff's own order, unchanged. */
+export function offeredOpenRouterModels(rows: readonly OpenRouterTariff[], now: number, tariffs?: readonly OpenRouterTariff[]): string[] {
+  const policies = rows.map((row) => openRouterPolicy(row.model, now, tariffs)).filter((policy): policy is OpenRouterPolicy => policy !== undefined);
+  return openRouterCapOrder(policies, OFFERED_MODELS_MAX).kept.map((policy) => policy.model);
+}
+
 /** What one source offers the company now (the agent route's order of checks: the switch first, then whether this gateway serves the source at all). Throws on a failed read. */
 async function offeredForSource(options: OfferedModelsHandlerOptions, source: AgentAiSource | undefined, iss: string, cid: string): Promise<OfferedModelsOutcome> {
   if (source !== undefined && !agentSourceSwitchedOn(source, options.switchedOn ?? new Set())) return OFFERED_SWITCHED_OFF;
   if ((source === "openai_key" && options.chat?.openai !== true) || (source === "openrouter_key" && options.chat?.openrouter !== true)) return OFFERED_CHAT_OFF;
   if (source === "openrouter_key") {
-    const models = (options.openRouterTariffs ?? REVIEWED_OPENROUTER_POLICIES).filter(row => openRouterPolicy(row.model, (options.now ?? Date.now)(), options.openRouterTariffs) !== undefined).map(row => row.model);
+    const models = offeredOpenRouterModels(options.openRouterTariffs ?? REVIEWED_OPENROUTER_POLICIES, (options.now ?? Date.now)(), options.openRouterTariffs);
     return models.length === 0 ? OFFERED_EMPTY : { ok: true, models };
   }
   if (source === "custom_endpoint") return offeredEndpointModels(options.endpointModels, iss, cid);
