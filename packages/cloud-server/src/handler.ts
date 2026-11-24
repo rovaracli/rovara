@@ -287,6 +287,12 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         throw error;
       }
     }
+    // Rovara-cloud#314: after the sign-out POST, the browser comes here and goes on through Code's end-session, which ends the sign-in provider's own
+    // session, and back to the signed-out page. Without it, the next Sign in found Cognito's session and signed the same person straight back in.
+    // It reads no session and takes no input: the address it sends the browser to is fixed.
+    if (path === "/v1/auth/browser/end-session" && method === "GET") {
+      return text(302, "", { location: options.client.endSessionUrl(`${appOrigin}/app/signed-out?reason=ended`), "cache-control": "no-store", "referrer-policy": "no-referrer" });
+    }
     if (path === "/v1/auth/browser/sign-out" && method === "POST") {
       const id = sessionId(request);
       const session = id === undefined ? undefined : await options.store.get(id);

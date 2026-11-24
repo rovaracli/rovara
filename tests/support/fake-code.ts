@@ -1077,6 +1077,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: {} };
     },
     "auth.jwks": () => ({ body: { keys: [] } }),
+    // Rovara-cloud#314: there is no provider session to end here; back to the client's signed-out address, as Code does when the provider has no sign-out.
+    "auth.endSession": ({ query }) => {
+      const back = query.get("post_logout_redirect_uri") ?? "";
+      if (query.get("client_id") !== clientId || !/^https?:\/\//u.test(back)) return failure(400, "invalid_request", "bad end-session request");
+      return { status: 302, headers: { location: back } };
+    },
     "access.check": ({ person, token }) => {
       const body: AccessResponse = {
         developerId: person.developerId, displayName: person.name, nameChosen: true, administrator: person.administrator,
