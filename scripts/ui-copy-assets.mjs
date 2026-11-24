@@ -69,7 +69,9 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  // G4 (Rules, Lessons and How we work): the rebuilt project views, company Rules, Setup recipes and the lesson batch.
  "screens/rules-lessons-read/rules-lessons-read.css",
  // G5 (account setup): the rebuilt account-setup read screens.
- "screens/account-setup-read/account-setup-read.css"]) {
+ "screens/account-setup-read/account-setup-read.css",
+ // Sign-in and standalone entry pages.
+ "screens/signed-out/signed-out.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });
