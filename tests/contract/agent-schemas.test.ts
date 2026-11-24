@@ -412,6 +412,19 @@ describe("error codes", () => {
     }
     expect(errorStatus("TEST_ALLOWANCE_USED")).toBe(402);
   });
+
+  it("accepts the outside-account link codes Code sends, with their statuses", () => {
+    const expected: Record<string, number> = {
+      LINK_START_AGAIN: 403,
+      EXTERNAL_ACCOUNT_TAKEN: 409,
+      EXTERNAL_ACCOUNT_OTHER_WORKSPACE: 409,
+      EXTERNAL_ACCOUNT_LINK_EXISTS: 409,
+    };
+    for (const [code, status] of Object.entries(expected)) {
+      expect(AgentXErrorCodeSchema.safeParse(code).success, code).toBe(true);
+      expect(errorStatus(AgentXErrorCodeSchema.parse(code)), code).toBe(status);
+    }
+  });
 });
 
 describe("agent keys", () => {
