@@ -129,10 +129,11 @@ export function statusCardOf(input: CardInput): StatusCardModel {
   if (input.repair?.repair !== undefined) {
     const repair = input.repair.repair, actor = input.repair.canManage;
     const title = CARD.repair.title;
+    // DEC 254zzz447: a broken setup warns, it does not block work, so the chip is "Needs you" (not "Blocked") and the words say work continues.
     // On this tab the card says it in Fable's words (the failing step, then why it matters); Code's own sentence (SETUP_REPAIR_SENTENCES.body, a byte mirror) is the banner above the tabs.
     const bodyWords = CARD.repair.body(repair.step, project);
-    if (repair.fixReady) return finish(gate(base("repair_fix_ready", CHIP["blocked"]!, HEADLINE.repair, title, { body: bodyWords, ...(actor ? { primary: A("review_newer", SETUP_REPAIR_SENTENCES.approveNewSetup) } : {}) })));
-    return finish(gate(base("repair", CHIP["blocked"]!, HEADLINE.repair, title, {
+    if (repair.fixReady) return finish(gate(base("repair_fix_ready", CHIP["needs_you"]!, HEADLINE.repair, title, { body: bodyWords, ...(actor ? { primary: A("review_newer", SETUP_REPAIR_SENTENCES.approveNewSetup) } : {}) })));
+    return finish(gate(base("repair", CHIP["needs_you"]!, HEADLINE.repair, title, {
       body: bodyWords,
       ...(actor ? { primary: A("fix", ACTIONS.fix, { hints: [TAB.usesFix(spend)] }), secondary: [A("recheck", ACTIONS.recheck, { hints: [TAB.recheckHint] })] } : {}),
     })));

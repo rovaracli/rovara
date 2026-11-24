@@ -150,7 +150,7 @@ it("Project frame: the sections row and How we work pills sit under the header w
  try {
   await screen.findAllByRole("button", { name: "Open safe-retries" });
   const tabs = within(screen.getByRole("navigation", { name: "Project sections" }));
-  expect(tabs.getAllByRole("link").map(link => link.textContent)).toEqual(["Tasks", "Setup", "How we work", "People", "Settings"]);
+  expect(tabs.getAllByRole("link").map(link => link.textContent)).toEqual(["Tasks", "How we work", "People", "Setup", "Settings"]);
   expect(tabs.getByRole("link", { name: "How we work" }).getAttribute("aria-current")).toBe("page");
   const pills = within(screen.getByRole("navigation", { name: "How we work" }));
   expect(pills.getByRole("link", { name: "Skills" }).getAttribute("aria-current")).toBe("page");

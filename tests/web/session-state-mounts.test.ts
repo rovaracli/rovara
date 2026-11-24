@@ -53,7 +53,7 @@ it("F1/R4: a served budget pause uses the pause view without claiming a monthly 
  await screen.findByRole("region", { name: "Task pause" });expect(screen.getByText("Task paused")).toBeTruthy();expect(screen.queryByText(/monthly limit was reached/)).toBeNull();f.close();
 });
 it("F1/R1: failed project-site evidence mounts the unavailable view and hides blocked-host facts", async () => {
- const f = mount(workspaceFixture({}, { testingNotice: { state: "needs_repair", text: "Setup needs repair" } }));
+ const f = mount(workspaceFixture({}, { testingNotice: { state: "needs_repair", text: "Setup needs repair: work continues; results may be less reliable until setup is fixed." } }));
  await screen.findByRole("tab", { name: "Evidence" });fireEvent.mouseDown(screen.getByRole("tab", { name: "Evidence" }), { button: 0, ctrlKey: false });
  await screen.findByText("Approved-address details unavailable");expect(screen.queryByText("A setup run recorded a blocked address")).toBeNull();f.close();
 });

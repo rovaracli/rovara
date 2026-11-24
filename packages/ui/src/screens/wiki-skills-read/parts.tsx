@@ -75,7 +75,7 @@ export function dayTime(iso: string) {
 export type Crumb = { label: string; href?: string };
 /** The project frame of every board: the project sections row and the How we work pills. Targets follow the host's `?tab=` convention; WIRING owns the host tabs. */
 // Every target is a real tab of the project page: the setup checklist is on the overview, and the project's people are in its Settings.
-const SECTIONS = ([["Tasks", ""], ["Setup", ""], ["How we work", "how-we-work"], ["Sources", "sources"], ["People", "settings"], ["Settings", "settings"]] as const).filter(([label]) => label !== "Sources" || SOURCES_TAB_OFFERED);
+const SECTIONS = ([["Tasks", ""], ["How we work", "how-we-work"], ["Sources", "sources"], ["People", "settings"], ["Setup", ""], ["Settings", "settings"]] as const).filter(([label]) => label !== "Sources" || SOURCES_TAB_OFFERED);
 const PILLS = [["Rules", "how-we-work"], ["Learned", "how-we-work"], ["Models by stage", "how-we-work"], ["History", "how-we-work"], ["Wiki", "wiki"], ["Skills", "skills"]] as const;
 export function ProjectTabs({ project, pill }: { project: string; pill: "Wiki" | "Skills" }) {
  const base = "/app/projects/" + encodeURIComponent(project), to = (tab: string) => tab === "" ? base : base + "?tab=" + tab;

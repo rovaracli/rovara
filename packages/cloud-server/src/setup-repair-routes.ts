@@ -40,7 +40,8 @@ const A = SETUP_REPAIR_ANSWERS;
 
 /** Code's card sentence (`setupRepairCardOf` body): the template Cloud matches, with the step in the middle. */
 /** Code cuts the check's failing step at a fixed length, so it can end inside a bracket or hold a lone one: the step is whatever sits between the template's fixed words (one line, no control characters, at most 300 characters). */
-const BODY_STEP = /^The project's setup stopped working after recent code changes \(([^\p{Cc}\p{Cf}]{1,300})\)\. Rovara cannot build on this project until it is fixed\.$/u;
+// DEC 254zzz447: the tail is the OLD sentence ("Rovara cannot build on this project until it is fixed."; a Code from before "don't block work"), or the NEW one ("Work continues; ..."). Cloud shows its own words either way (`SETUP_REPAIR_SENTENCES`).
+const BODY_STEP = /^The project's setup stopped working after recent code changes \(([^\p{Cc}\p{Cf}]{1,300})\)\.(?: Rovara cannot build on this project until it is fixed\.| Work continues; results may be less reliable until setup is fixed\.)$/u;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const PROJECT_FOR_PATH = /^[a-z][a-z0-9-]{0,62}$/u;
 const STATES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;

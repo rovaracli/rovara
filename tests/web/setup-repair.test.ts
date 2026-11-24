@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { SETUP_REPAIR_SENTENCES, UPKEEP_PAUSE_SENTENCES } from "@agentx/contracts/web";
+import { SETUP_REPAIR_OLD_TAIL, SETUP_REPAIR_SENTENCES, UPKEEP_PAUSE_SENTENCES } from "@agentx/contracts/web";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -18,6 +18,7 @@ import { NightlyUpkeep } from "../../packages/ui/src/screens/setup/wiki/NightlyU
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
+import { expectNoAxeViolations } from "./support/axe.js";
 
 const STEP = "setup: npm ci - setup step 0 (npm ci) failed: exit 1";
 const ROOT = "/v1/app/projects/web";
@@ -52,13 +53,40 @@ describe("the banner above the tabs is silent unless the setup is broken", () =>
       f.close(); cleanup();
     }
   });
-  it("when broken it says Code's own words and points at the Setup tab with one link, Open Setup; the work is done there", async () => {
+  it("when broken it says the banner and what broke, and points at the Setup tab with one link, Open Setup; the work is done there", async () => {
     const f = mount(h(SetupRepairCard, { project: "web" }), { read: () => ({ status: 200, body: { state: "failed", canManage: true, repair: { step: "npm test", at: "2026-11-17T09:05:00.000Z", fixReady: false, actions: [{ id: "fix_setup", label: "Fix setup" }] } } }) });
     const card = await screen.findByTestId("setup-repair-card");
-    expect(within(card).getByRole("heading").textContent).toBe(SETUP_REPAIR_SENTENCES.title);
-    expect(within(card).getByTestId("setup-repair-body").textContent).toBe(SETUP_REPAIR_SENTENCES.body("npm test"));
+    expect(within(card).getByRole("heading").textContent).toBe(SETUP_REPAIR_SENTENCES.banner);
+    expect(within(card).getByTestId("setup-repair-body").textContent).toBe(SETUP_REPAIR_SENTENCES.what("npm test"));
     expect(within(card).getByRole("link", { name: "Open Setup" }).getAttribute("href")).toBe("/app/projects/web?tab=setup");
     expect(within(card).queryAllByRole("button")).toHaveLength(0);
+    f.close();
+  });
+  // DEC 254zzz447: a broken setup warns and work continues. Not an alert, not the danger style, no "cannot build" and no pause words. Only the text is a live region (not the link).
+  it("the banner says work continues, in warning styling (a status on the text only, never an alert or the danger style), and never says work is paused or refused", async () => {
+    const f = mount(h(SetupRepairCard, { project: "web" }));
+    const box = await screen.findByTestId("setup-repair-card");
+    expect(within(box).getByTestId("setup-repair-banner").textContent).toBe("Setup needs repair: work continues; results may be less reliable until setup is fixed.");
+    expect(box.getAttribute("data-tone")).toBe("warning");
+    expect(box.className).not.toMatch(/danger|error|blocked/iu);
+    expect(box.querySelector("[role=alert]")).toBeNull();
+    // The live region wraps the words only; the link (and any button) sit outside it.
+    expect(box.getAttribute("role")).toBeNull();
+    const status = within(box).getByRole("status");
+    expect(status.contains(within(box).getByTestId("setup-repair-banner"))).toBe(true);
+    expect(status.querySelector("a, button")).toBeNull();
+    expect(box.textContent ?? "").not.toMatch(/cannot build|can't build|paused|refus|blocked|waiting for setup|can't start/iu);
+    expect(within(box).getByRole("link", { name: "Open Setup" })).toBeTruthy();
+    await expectNoAxeViolations(document.body);
+    f.close();
+  });
+  it("a card read from a Code that still says 'cannot build' shows the same warning (the card is Cloud's words over Code's step)", async () => {
+    // Cloud's server rebuilds Code's card to the step; the old sentence never reaches the app, so an old Code looks exactly like a new one.
+    const f = mount(h(SetupRepairCard, { project: "web" }), { read: () => view({ repair: card() }) });
+    const box = await screen.findByTestId("setup-repair-card");
+    expect(within(box).getByTestId("setup-repair-banner").textContent).toBe(SETUP_REPAIR_SENTENCES.banner);
+    expect(box.getAttribute("data-tone")).toBe("warning");
+    expect(box.textContent ?? "").not.toContain(SETUP_REPAIR_OLD_TAIL);
     f.close();
   });
   it("draws the step as text, never as markup", async () => {

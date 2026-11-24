@@ -45,7 +45,7 @@ function fakeCode() {
   const notices: Record<string, unknown[]> = {
     [ADA]: [{ id: `setup_broken.${String(AT)}.payments`, kind: "setup_broken", project: "payments", status: "Setup needs repair. The project's setup stopped working after recent code changes (setup: npm ci - exit 1). Fix setup on the setup page.", at: new Date(AT).toISOString(), link: "https://evil.example.test/steal" },
       { id: `upkeep_paused.${String(AT - 1000)}.payments`, kind: "upkeep_paused", project: "payments", status: "Nightly upkeep is paused: this month's upkeep limit is used up.", at: new Date(AT - 1000).toISOString() }],
-    [BEA]: [{ id: `setup_broken.${String(AT)}.billing`, kind: "setup_broken", project: "billing", status: "Setup needs repair.", at: new Date(AT).toISOString() }],
+    [BEA]: [{ id: `setup_broken.${String(AT)}.billing`, kind: "setup_broken", project: "billing", status: "Setup needs repair. The project's setup stopped working after recent code changes (setup: npm ci - exit 1). Rovara cannot build on this project until it is fixed. Fix setup on the setup page.", at: new Date(AT).toISOString() }],
   };
   const flags = { notice: "ok" as "ok" | "404" | "501" | "403" | "garbage" | "bad-item" | "foreign-id" | "bad-kind" | "new-kind" | "long-status" | "huge" | "bad-project", mode: "ok" as Mode, sessionRead: "ok" as "ok" | "404" | "wrong-task" | "garbage" | "not-task" | "403" | "429" | "503", marked: 1 as unknown };
   const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -412,6 +412,13 @@ describe("Inbox: marking rows read", () => {
 });
 
 describe("Inbox: project notices (L4-U5b)", () => {
+  // DEC 254zzz447 skew: prod Code's admins' notice still says "cannot build"; the person reads "work continues" until Code ships the change.
+  it("shows a setup-repair notice in the new words: Code's old 'cannot build' sentence becomes 'work continues', the rest is untouched", async () => {
+    const { call, bea } = await base();
+    const page = ProjectNoticesSchema.parse(json(await call("GET", "/v1/web/inbox/project-notices", bea)));
+    expect(page.items[0]!.status).toBe("Setup needs repair. The project's setup stopped working after recent code changes (setup: npm ci - exit 1). Work continues; results may be less reliable until setup is fixed. Fix setup on the setup page.");
+    expect(page.items[0]!.status).not.toMatch(/cannot build|paus|refus/iu);
+  });
   it("answers the person's own notices from Code as the person, newest first, with only the named fields (Code's link is never passed on)", async () => {
     const { call, ada, code } = await base();
     const answer = await call("GET", "/v1/web/inbox/project-notices", ada);
