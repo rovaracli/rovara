@@ -11,6 +11,7 @@ import {
 import {
   SETUP_FIX_UP_TO_USD, SETUP_REPAIR_NEW_TAIL, SETUP_REPAIR_OLD_TAIL, SETUP_REPAIR_PATHS, SETUP_REPAIR_REFUSALS, SETUP_REPAIR_SENTENCES, SetupRecheckAnswerSchema, SetupRecheckBodySchema, SetupRepairViewSchema, softenSetupRepairWords, UPKEEP_PAUSE_SENTENCES,
 } from "../../packages/contracts/src/app-setup-repair.js";
+import { setupRepairBodyStep } from "../../packages/cloud-server/src/setup-repair-routes.js";
 import { WikiSetupUpkeepSchema } from "../../packages/contracts/src/app-wiki-setup.js";
 
 const CODE = "https://code.example.test";
@@ -190,6 +191,28 @@ describe("reading the card", () => {
       expect(answer.status, name).toBe(503);
       expect(answer.body.error, name).toEqual({ code: "RUNTIME_UNAVAILABLE", message: SETUP_REPAIR_WORDS.unavailable });
     }
+  });
+
+  // REPAIR-SENTENCE-DRIFT: the card sentence parser takes exactly the two Code sentences and nothing near them (a Code that changes the tail again must be taken by a Cloud release first).
+  it("takes exactly Code's OLD and NEW card sentences and refuses every variant of them", () => {
+    expect(setupRepairBodyStep(CODE_BODY)).toBe(STEP);
+    expect(setupRepairBodyStep(CODE_BODY_NEW)).toBe(STEP);
+    const variants = [
+      CODE_BODY_NEW.replace("Work continues", "Work goes on"),
+      CODE_BODY_NEW.replace("less reliable", "unreliable"),
+      CODE_BODY_NEW.replace(/\.$/u, ""),
+      `${CODE_BODY_NEW} More.`,
+      ` ${CODE_BODY_NEW}`,
+      `${CODE_BODY_NEW}\n`,
+      CODE_BODY.replace("cannot build", "can build"),
+      `${CODE_BODY} ${SETUP_REPAIR_NEW_TAIL}`,
+      CODE_BODY_NEW.replace("The project's setup", "This project's setup"),
+      CODE_BODY_NEW.replace(`(${STEP})`, "()"),
+      CODE_BODY_NEW.replace(`(${STEP})`, `(${"x".repeat(301)})`),
+      CODE_BODY_NEW.replace(`(${STEP})`, "(a\nb)"),
+      "", 7, undefined,
+    ];
+    for (const variant of variants) expect(setupRepairBodyStep(variant), String(variant)).toBeUndefined();
   });
 
   // DEC 254zzz447 skew: prod Code still says "cannot build"; the Code lane changes it to "work continues". Cloud reads both and only ever says the new words.

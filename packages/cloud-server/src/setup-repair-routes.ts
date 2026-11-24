@@ -41,11 +41,19 @@ const A = SETUP_REPAIR_ANSWERS;
 /** Code's card sentence (`setupRepairCardOf` body): the template Cloud matches, with the step in the middle. */
 /** Code cuts the check's failing step at a fixed length, so it can end inside a bracket or hold a lone one: the step is whatever sits between the template's fixed words (one line, no control characters, at most 300 characters). */
 // DEC 254zzz447: the tail is the OLD sentence ("Rovara cannot build on this project until it is fixed."; a Code from before "don't block work"), or the NEW one ("Work continues; ..."). Cloud shows its own words either way (`SETUP_REPAIR_SENTENCES`).
+const OLD_TAIL = "Rovara cannot build on this project until it is fixed.";
+const NEW_TAIL = "Work continues; results may be less reliable until setup is fixed.";
 const BODY_STEP = /^The project's setup stopped working after recent code changes \(([^\p{Cc}\p{Cf}]{1,300})\)\.(?: Rovara cannot build on this project until it is fixed\.| Work continues; results may be less reliable until setup is fixed\.)$/u;
+/** The check's failing step out of Code's card sentence, or `undefined` when the sentence is not exactly one of the two Code templates (the contract-drift text rules call this with Code's current sentence). */
+export const setupRepairBodyStep = (body: unknown): string | undefined => (typeof body === "string" ? BODY_STEP.exec(body)?.[1] : undefined);
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const PROJECT_FOR_PATH = /^[a-z][a-z0-9-]{0,62}$/u;
 const STATES = ["unchecked", "outdated", "checking", "failed", "ready"] as const;
-const ACTIONS: Readonly<Record<string, string>> = Object.freeze({ fix_setup: "Fix setup", approve_new_setup: "Approve new setup" });
+/** Code's `setup-check` card actions (core/setup-agent/repair-view.ts) with Cloud's own labels (Code says the same words: `SETUP_REPAIR_WORDS.fixSetup` / `.approveNewSetup`). The ONLY ids this read carries. */
+export const SETUP_REPAIR_ACTIONS: Readonly<Record<string, string>> = Object.freeze({ fix_setup: "Fix setup", approve_new_setup: "Approve new setup" });
+const ACTIONS = SETUP_REPAIR_ACTIONS;
+/** What changed, in Code's fixed words (`setupDriftWords`): up to ten class words joined, so at most 212 characters (8 classes at once pass the old 160). Mirrored in contracts app-setup-repair.ts. */
+export const SETUP_REPAIR_CHANGED_MAX = 240;
 
 const flag = (value: unknown): boolean => need(typeof value === "boolean", value) as boolean;
 
@@ -55,9 +63,9 @@ function repairAnswer(value: unknown): Record<string, unknown> {
   need(Object.keys(r).every((key) => ["title", "body", "changed", "at", "fixReady", "actions"].includes(key)), r);
   need(r["title"] === "Setup needs repair", r["title"]);
   const body = r["body"];
-  const step = typeof body === "string" ? BODY_STEP.exec(body)?.[1] : undefined;
+  const step = setupRepairBodyStep(body);
   need(step !== undefined && text(step, 300), body);
-  need(r["changed"] === undefined || text(r["changed"], 160), r["changed"]);
+  need(r["changed"] === undefined || text(r["changed"], SETUP_REPAIR_CHANGED_MAX), r["changed"]);
   need(when(r["at"]), r["at"]);
   const fixReady = flag(r["fixReady"]);
   need(Array.isArray(r["actions"]) && r["actions"].length <= 1, r["actions"]);
@@ -69,6 +77,78 @@ function repairAnswer(value: unknown): Record<string, unknown> {
     return { id: a["id"], label: ACTIONS[a["id"] as string] };
   });
   return { step, ...(r["changed"] === undefined ? {} : { changed: r["changed"] }), at: new Date(Date.parse(r["at"] as string)).toISOString(), fixReady, actions };
+}
+
+// ---- the `repair` card of Code's `GET setup-agent` read (core/setup-agent/repair-draft.ts `readRepairView`): the admin card WITH the automatic draft's part in it
+// Code sends it to people who manage the project's setup. The Setup tab does not read it (it works from the `setup-repair` card above and the run's `apply`), so it is checked here only so Cloud never passes on
+// Code text it has not matched: a card that reads is forwarded rebuilt from its known fields with Cloud's own labels (no dollar figure); anything else is DROPPED from that answer (never a refusal of the read).
+// States (a unit test pins each against the answers Code's own `readRepairView` gives, per Code version):
+//   no_fix     the card's sentence [+ why the last draft failed]; actions fix_setup ("Fix setup (uses your AI, up to $N)") and edit_commands ("Edit commands myself")
+//   drafting   the card's sentence + "Rovara is drafting a fix ..."; action edit_commands
+//   fix_ready  "... Rovara drafted a fix and checked it on a fresh machine: it passes. N change(s)."; actions approve_setup ("Approve new setup") and see_changes ("See changes")
+/** Code's fixed words after the card's sentence (`REPAIR_WORDS` in repair-draft.ts). */
+export const SETUP_AGENT_REPAIR_WORDS = Object.freeze({
+  drafting: "Rovara is drafting a fix for the setup. It will ask you to approve it. Nothing changes until you do.",
+  failed: Object.freeze({
+    run_failed: "Rovara tried to draft a fix but could not finish. Nothing was changed.",
+    no_usable_fix: "Rovara drafted a fix but none of it could be used. Nothing was changed.",
+    check_failed: "Rovara drafted a fix but it did not pass its check on a fresh machine. Nothing was changed.",
+    upkeep_paused: "Rovara stopped drafting a fix because nightly upkeep reached its limit. Nothing was changed.",
+  } as const),
+  withdrawn: "Rovara stopped drafting a fix because automatic runs were switched off. Nothing was changed.",
+});
+/** The ids Code's `readRepairView` sends and the words Cloud shows for them. `approve_setup` is the same step as the `setup-check` card's `approve_new_setup` (approve the checked fix). */
+export const SETUP_AGENT_REPAIR_ACTIONS: Readonly<Record<string, string>> = Object.freeze({ fix_setup: "Fix setup", edit_commands: "Edit commands myself", approve_setup: "Approve new setup", see_changes: "See changes" });
+/** Code's closed list of change classes (`SETUP_WATCH_CLASSES` and `websites`, contracts setup-snapshot.ts). */
+export const SETUP_AGENT_REPAIR_CLASSES = ["marker", "lockfile", "compose", "dockerfile", "devcontainer", "env_example", "version", "test_config", "ci", "websites"] as const;
+/** The "Fix setup" label Code builds with its budget (`fixSetupLabel`): the figure is Code's and is never shown. */
+export const SETUP_AGENT_FIX_LABEL = /^Fix setup \(uses your AI, up to \$\d{1,5}(?:\.\d{2})?\)$/u;
+const WHAT = "The project's setup stopped working after recent code changes \\(([^\\p{Cc}\\p{Cf}]{1,300})\\)\\.";
+const escaped = (words: string): string => words.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+const READY_BODY = new RegExp(`^${WHAT} Rovara drafted a fix and checked it on a fresh machine: it passes\\. ([0-9]{1,4}) changes?\\.$`, "u");
+const OTHER_SENTENCES = [...Object.values(SETUP_AGENT_REPAIR_WORDS.failed), SETUP_AGENT_REPAIR_WORDS.withdrawn, SETUP_AGENT_REPAIR_WORDS.drafting];
+const OTHER_BODY = new RegExp(`^${WHAT} (?:${escaped(OLD_TAIL)}|${escaped(NEW_TAIL)})(?: (${OTHER_SENTENCES.map(escaped).join("|")}))?$`, "u");
+
+/** Code's `repair` of the setup-agent read, rebuilt; throws `Unreadable` for anything that does not read. */
+export function setupAgentRepairView(value: unknown): Record<string, unknown> {
+  const r = rec(value);
+  need(Object.keys(r).every((key) => ["title", "state", "body", "actions", "classes", "at", "candidateRevision", "changes", "failure"].includes(key)), r);
+  need(r["title"] === "Setup needs repair", r["title"]);
+  const state = r["state"];
+  need(state === "fix_ready" || state === "drafting" || state === "no_fix", state);
+  need(when(r["at"]), r["at"]);
+  const classes = r["classes"];
+  need(Array.isArray(classes) && classes.length <= SETUP_AGENT_REPAIR_CLASSES.length && classes.every((one) => (SETUP_AGENT_REPAIR_CLASSES as readonly unknown[]).includes(one)), classes);
+  const body = r["body"];
+  need(typeof body === "string" && body.length <= 900, body);
+  const expected = state === "fix_ready" ? ["approve_setup", "see_changes"] : state === "drafting" ? ["edit_commands"] : ["fix_setup", "edit_commands"];
+  const given = r["actions"];
+  need(Array.isArray(given) && given.length === expected.length, given);
+  const actions = (given as unknown[]).map((one, at) => {
+    const a = rec(one);
+    const id = expected[at] as string;
+    need(Object.keys(a).length === 2 && a["id"] === id && typeof a["label"] === "string" && (id === "fix_setup" ? SETUP_AGENT_FIX_LABEL.test(a["label"]) : a["label"] === SETUP_AGENT_REPAIR_ACTIONS[id]), a);
+    return { id, label: SETUP_AGENT_REPAIR_ACTIONS[id] };
+  });
+  const common = { title: "Setup needs repair", state, classes: [...(classes as string[])], at: new Date(Date.parse(r["at"] as string)).toISOString(), actions };
+  if (state === "fix_ready") {
+    const match = READY_BODY.exec(body as string);
+    const count = Number(match?.[2]);
+    const revision = r["candidateRevision"];
+    need(match !== null && typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 1 && r["changes"] === count && r["failure"] === undefined
+      && (body as string).endsWith(` ${String(count)} change${count === 1 ? "" : "s"}.`), body);
+    return { ...common, step: match?.[1], candidateRevision: revision, changes: count };
+  }
+  need(r["candidateRevision"] === undefined && r["changes"] === undefined, r);
+  const match = OTHER_BODY.exec(body as string);
+  need(match !== null, body);
+  const suffix = match?.[2];
+  const step = match?.[1];
+  const failure = r["failure"];
+  if (state === "drafting") { need(suffix === SETUP_AGENT_REPAIR_WORDS.drafting && failure === undefined, body); return { ...common, step }; }
+  const words = failure === undefined ? undefined : failure === "withdrawn" ? SETUP_AGENT_REPAIR_WORDS.withdrawn : (SETUP_AGENT_REPAIR_WORDS.failed as Record<string, string>)[failure as string];
+  need(suffix === words && (failure === undefined || words !== undefined), body);
+  return { ...common, step, ...(failure === undefined ? {} : { failure }) };
 }
 
 /** Code's `GET setup-check` answer rebuilt into the app's view. The rest of Code's setup state (commit, failing step of a person's own check) is not passed on. */

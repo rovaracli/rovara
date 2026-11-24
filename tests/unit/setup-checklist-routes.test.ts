@@ -3,7 +3,7 @@
 // reads the checklist; a company owner/admin or the project's admin sets rows aside and manages the run; a project user reads the run; anyone else,
 // another company included, "project not found"). Cloud must: pass the person's own token, put the project only into Code's path, forward only checked
 // bodies and queries, rebuild Code's checklist from known fields, and answer refusals in its fixed words.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CodeClient, LocalSessionStore, LocalWorkSessionStore, SETUP_CHECKLIST_ANSWERS, SETUP_CHECKLIST_WORDS, checklistAnswer, createCloudHandler, type CloudRequest, type CodeSession,
 } from "../../packages/cloud-server/src/index.js";
@@ -279,6 +279,33 @@ describe("Set up later", () => {
       const w = setUp((call) => call.path.endsWith("/skips") ? json(200, answer) : undefined);
       expect(asRefusal(await w.send("PUT", "/v1/web/projects/payments/setup-status/skips", await w.as("ada-token"), { row: "linear", skipped: true }))).toEqual(refusal("unavailable"));
     }
+  });
+});
+
+describe("the hosted setup run: Code's admin repair card on the read (REPAIR-CARD-SKEW2)", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  const BODY = "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.";
+  const card = (over: Record<string, unknown> = {}) => ({ title: "Setup needs repair", state: "no_fix", classes: ["lockfile"], at: "2026-11-17T09:05:00.000Z", body: BODY, actions: [{ id: "fix_setup", label: "Fix setup (uses your AI, up to $4)" }, { id: "edit_commands", label: "Edit commands myself" }], ...over });
+  const run = (repair: unknown): Override => (call) => (call.path === "/v1/app/projects/payments/setup-agent" && call.method === "GET"
+    ? json(200, { status: "none", basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, canManage: true, setupWarning: "Setup needs repair: work continues; results may be less reliable until setup is fixed.", repair })
+    : undefined);
+  it("forwards a card Code really sends, rebuilt (Cloud's labels, no dollar figure, no raw body)", async () => {
+    const w = setUp(run(card()));
+    const answered = await w.send("GET", "/v1/web/projects/payments/setup-agent", await w.as("ada-token"));
+    expect(answered.status).toBe(200);
+    expect(answered.body).toMatchObject({ status: "none", canManage: true, repair: { state: "no_fix", classes: ["lockfile"], step: "setup: npm ci - setup step 0 (npm ci) failed: exit 1", actions: [{ id: "fix_setup", label: "Fix setup" }, { id: "edit_commands", label: "Edit commands myself" }] } });
+    expect(answered.text).not.toContain("$4");
+    expect((answered.body as { repair: Record<string, unknown> }).repair["body"]).toBeUndefined();
+  });
+  it("drops a card it cannot match and still answers the read (never a refusal), logging only the project", async () => {
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((line: unknown) => { logs.push(String(line)); });
+    const w = setUp(run(card({ actions: [{ id: "wipe_setup", label: "Wipe it" }] })));
+    const answered = await w.send("GET", "/v1/web/projects/payments/setup-agent", await w.as("ada-token"));
+    expect(answered.status).toBe(200);
+    expect(answered.body).toMatchObject({ status: "none", canManage: true });
+    expect(answered.body).not.toHaveProperty("repair");
+    expect(logs.some((line) => line.includes("cloud.setup_agent_repair_dropped") && line.includes("payments") && !line.includes("wipe"))).toBe(true);
   });
 });
 

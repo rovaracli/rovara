@@ -1,0 +1,85 @@
+// HOW TO REGENERATE (not run by Cloud CI): extract a Code ref (git archive <ref> packages/broker/src packages/contracts package.json tsconfig.base.json) into an empty folder, symlink Code's node_modules into it, replace
+// packages/broker/tsconfig.json and packages/contracts/tsconfig.json with {"extends":"../../tsconfig.base.json"}, put this file at tests/gen.test.ts and run: GEN_OUT=out.json npx vitest run tests/gen.test.ts --root .
+// It calls Code's REAL setupRepairViewOf / readRepairView on an in-memory document store (only readSetupApply / setupCandidateRisk are replaced, as Code's own setup-repair-view test does).
+// Generates the REAL answers of Code's hosted `GET setup-check` (setupRepairViewOf) and of the `repair` field of `GET setup-agent` (readRepairView) from Code's own functions.
+import { describe, expect, it, vi } from "vitest";
+import { writeFileSync } from "node:fs";
+import { MemoryDocumentStore } from "../packages/broker/src/ports/memory-document-store.js";
+
+const apply = vi.hoisted(() => ({ read: vi.fn(), risk: vi.fn() }));
+vi.mock("../packages/broker/src/core/setup-agent/apply.js", () => ({ readSetupApply: apply.read, setupCandidateRisk: apply.risk }));
+
+const { setupRepairViewOf } = await import("../packages/broker/src/core/setup-agent/repair-view.js");
+const { readRepairView } = await import("../packages/broker/src/core/setup-agent/repair-draft.js");
+const { recheckRowKey, repairNoticeKey } = await import("../packages/broker/src/core/setup-agent/recheck-rows.js");
+const { repairRowKey } = await import("../packages/broker/src/core/setup-agent/repair-rows.js");
+const { projectMetaKey } = await import("@agentx/contracts");
+
+const COMPANY = "org_aaaaaaaaaaaaaaaaaaaa";
+const KEY = "a".repeat(48);
+const check = { workspaceId: "ws-1", revision: 1, startedAt: "2026-11-17T09:00:00.000Z", startedBy: "system" };
+const AT = "2026-11-17T09:05:00.000Z";
+
+async function world(step: string, classes: string[], repair?: Record<string, unknown>) {
+  const store = new MemoryDocumentStore();
+  const orgId = COMPANY;
+  await store.put({ item: { ...projectMetaKey(orgId as never, "payments"), entityType: "PROJECT_META", setupCheck: check } });
+  await store.put({ item: { ...recheckRowKey(orgId as never, "payments", KEY), entityType: "SETUP_RECHECK", orgId, project: "payments", key: KEY, setupRevision: 1, commits: {}, classes, state: "broken", attempt: 2, check, startedAt: check.startedAt, failedStep: step } });
+  await store.put({ item: { ...repairNoticeKey(orgId as never, "payments"), entityType: "SETUP_REPAIR_NOTICE", orgId, project: "payments", key: KEY, failedStep: step, classes, at: AT } });
+  if (repair !== undefined) await store.put({ item: { ...repairRowKey(orgId as never, "payments", KEY), entityType: "SETUP_REPAIR", orgId, project: "payments", key: KEY, setupRevision: 1, runRequestId: "r", confirmRequestId: "c", budgetCents: 400, claimedAt: AT, ...repair } });
+  const flow = { store, companyId: COMPANY, projects: { latest: async () => ({ definition: { revision: 1 } }) } };
+  return { store, flow: flow as never };
+}
+const ready = (over: Record<string, unknown> = {}) => ({ state: "checking", requestId: "c", baseRevision: 1, candidateRevision: 2, checkState: { status: "ready" }, ...over });
+
+describe("generate", () => {
+  it("writes", async () => {
+    const out: Record<string, unknown>[] = [];
+    const STEPS = [
+      "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+      "setup: npm ci [with *flags*] #1 @me <x> https://host/path!",
+      "setup: " + "x".repeat(300),
+      "setup did not finish",
+      "setup",
+      "setup: (((",
+      "setup: ***",
+    ];
+    const ALL = ["marker", "lockfile", "compose", "dockerfile", "devcontainer", "env_example", "version", "test_config", "ci", "websites"];
+    const scenarios: Array<[string, string[]]> = [];
+    for (const step of STEPS) for (const classes of [[], ["lockfile"]]) scenarios.push([step, classes]);
+    for (const classes of [["lockfile", "compose", "websites"], ALL.slice(0, 6), ALL.slice(0, 7), ALL.slice(0, 7).concat(["websites"]), ALL]) scenarios.push([STEPS[0]!, classes]);
+    for (const [step, classes] of scenarios) for (const canManage of [true, false]) for (const fix of [false, true]) {
+      const w = await world(step, classes);
+      apply.read.mockResolvedValue(fix ? ready() : undefined);
+      const view = await setupRepairViewOf({ flow: w.flow, store: w.store, companyId: COMPANY as never, now: () => 0 }, "payments", { canManage });
+      out.push({ route: "setup-check", failedStep: step, classes, canManage, fixReadyScenario: fix, status: "failed", repair: view });
+    }
+    // the setup-agent read's `repair` (readRepairView)
+    const deps = (w: Awaited<ReturnType<typeof world>>, cents = 400) => ({ flow: w.flow, store: w.store, companyId: COMPANY as never, now: () => 0, limitSetting: async () => ({ budgetCents: cents }) as never });
+    const STEP = STEPS[0]!;
+    const agent: Array<[string, Record<string, unknown> | undefined, () => void]> = [
+      ["no_fix (no repair row)", undefined, () => apply.read.mockResolvedValue(undefined)],
+      ["drafting", { state: "drafting" }, () => apply.read.mockResolvedValue(undefined)],
+      ["starting", { state: "starting" }, () => apply.read.mockResolvedValue(undefined)],
+      ["checking", { state: "checking" }, () => apply.read.mockResolvedValue(undefined)],
+      ["fix_ready (3 changes)", { state: "ready" }, () => { apply.read.mockResolvedValue(ready()); apply.risk.mockResolvedValue({ changes: [1, 2, 3] }); }],
+      ["fix_ready (1 change)", { state: "ready" }, () => { apply.read.mockResolvedValue(ready()); apply.risk.mockResolvedValue({ changes: [1] }); }],
+      ["failed run_failed", { state: "failed", reason: "run_failed" }, () => apply.read.mockResolvedValue(undefined)],
+      ["failed no_usable_fix", { state: "failed", reason: "no_usable_fix" }, () => apply.read.mockResolvedValue(undefined)],
+      ["failed check_failed", { state: "failed", reason: "check_failed" }, () => apply.read.mockResolvedValue(undefined)],
+      ["failed upkeep_paused", { state: "failed", reason: "upkeep_paused" }, () => apply.read.mockResolvedValue(undefined)],
+      ["ended withdrawn", { state: "ended", reason: "withdrawn" }, () => apply.read.mockResolvedValue(undefined)],
+      ["ended decided", { state: "ended", reason: "decided" }, () => apply.read.mockResolvedValue(undefined)],
+    ];
+    for (const [name, row, arrange] of agent) {
+      const w = await world(STEP, ["lockfile"], row);
+      arrange();
+      out.push({ route: "setup-agent", scenario: name, repair: await readRepairView(deps(w) as never, "payments") });
+    }
+    const w = await world(STEP, [], { state: "failed", reason: "run_failed" });
+    apply.read.mockResolvedValue(undefined);
+    out.push({ route: "setup-agent", scenario: "failed run_failed, 150 cent budget", repair: await readRepairView(deps(w, 150) as never, "payments") });
+    writeFileSync(process.env["GEN_OUT"]!, JSON.stringify(out, null, 1));
+    expect(out.length).toBeGreaterThan(10);
+  });
+});

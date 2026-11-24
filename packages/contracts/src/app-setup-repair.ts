@@ -58,7 +58,7 @@ export const SetupRepairCardSchema = z.object({
   /** The check's own failing step (redacted, one line, cut). The only repository text on the card; the app shows it as plain text. */
   step: line(300),
   /** What changed since the setup was approved, in Code's fixed words ("dependency files"); absent when it could not be told. */
-  changed: line(160).optional(),
+  changed: line(240).optional(),
   at: z.string().datetime({ offset: false }),
   /** A fix was drafted and its check passed: it waits for a person's approval. */
   fixReady: z.boolean(),

@@ -1,0 +1,1893 @@
+{
+ "format": 1,
+ "generatedBy": "tests/fixtures/code-setup-repair/generator.test.ts.txt, run in a Code checkout of the named ref (Code real functions: setupRepairViewOf, readRepairView)",
+ "codeRef": "7f334a6ef",
+ "serves": "code/next 7f334a6ef (Code train 22 merged)",
+ "answers": [
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci [with *flags*] #1 @me <x> https://host/path!",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci with flags 1 me x https: host/path). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci [with *flags*] #1 @me <x> https://host/path!",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci with flags 1 me x https: host/path). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci [with *flags*] #1 @me <x> https://host/path!",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci with flags 1 me x https: host/path). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci [with *flags*] #1 @me <x> https://host/path!",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci with flags 1 me x https: host/path). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci [with *flags*] #1 @me <x> https://host/path!",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci with flags 1 me x https: host/path). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci [with *flags*] #1 @me <x> https://host/path!",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci with flags 1 me x https: host/path). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci [with *flags*] #1 @me <x> https://host/path!",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci with flags 1 me x https: host/path). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci [with *flags*] #1 @me <x> https://host/path!",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci with flags 1 me x https: host/path). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup did not finish",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup did not finish). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup did not finish",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup did not finish). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup did not finish",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup did not finish). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup did not finish",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup did not finish). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup did not finish",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup did not finish). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup did not finish",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup did not finish). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup did not finish",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup did not finish). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup did not finish",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup did not finish). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: (((",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: (((). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: (((",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: (((). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: (((",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: (((). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: (((",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: (((). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: (((",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: (((). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: (((",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: (((). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: (((",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: (((). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: (((",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: (((). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: ***",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup:). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: ***",
+   "classes": [],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup:). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: ***",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup:). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: ***",
+   "classes": [],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup:). Work continues; results may be less reliable until setup is fixed.",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: ***",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup:). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: ***",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup:). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: ***",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup:). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: ***",
+   "classes": [
+    "lockfile"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup:). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "lockfile",
+    "compose",
+    "websites"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files, a compose file and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "lockfile",
+    "compose",
+    "websites"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files, a compose file and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "lockfile",
+    "compose",
+    "websites"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files, a compose file and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "lockfile",
+    "compose",
+    "websites"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "dependency files, a compose file and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container and the example environment file",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container and the example environment file",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container and the example environment file",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container and the example environment file",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file and a language version file",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file and a language version file",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file and a language version file",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file and a language version file",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version",
+    "websites"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file, a language version file and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version",
+    "websites"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file, a language version file and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version",
+    "websites"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file, a language version file and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version",
+    "websites"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file, a language version file and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version",
+    "test_config",
+    "ci",
+    "websites"
+   ],
+   "canManage": true,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file, a language version file, a test configuration, a CI workflow and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version",
+    "test_config",
+    "ci",
+    "websites"
+   ],
+   "canManage": true,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file, a language version file, a test configuration, a CI workflow and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": [
+     {
+      "id": "approve_new_setup",
+      "label": "Approve new setup"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version",
+    "test_config",
+    "ci",
+    "websites"
+   ],
+   "canManage": false,
+   "fixReadyScenario": false,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file, a language version file, a test configuration, a CI workflow and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": false,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-check",
+   "failedStep": "setup: npm ci - setup step 0 (npm ci) failed: exit 1",
+   "classes": [
+    "marker",
+    "lockfile",
+    "compose",
+    "dockerfile",
+    "devcontainer",
+    "env_example",
+    "version",
+    "test_config",
+    "ci",
+    "websites"
+   ],
+   "canManage": false,
+   "fixReadyScenario": true,
+   "status": "failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed.",
+    "changed": "the project's package files, dependency files, a compose file, a Dockerfile, the dev container, the example environment file, a language version file, a test configuration, a CI workflow and the allowed addresses",
+    "at": "2026-11-17T09:05:00.000Z",
+    "fixReady": true,
+    "actions": []
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "no_fix (no repair row)",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "no_fix",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup (uses your AI, up to $4)"
+     },
+     {
+      "id": "edit_commands",
+      "label": "Edit commands myself"
+     }
+    ],
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed."
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "drafting",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "drafting",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed. Rovara is drafting a fix for the setup. It will ask you to approve it. Nothing changes until you do.",
+    "actions": [
+     {
+      "id": "edit_commands",
+      "label": "Edit commands myself"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "starting",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "drafting",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed. Rovara is drafting a fix for the setup. It will ask you to approve it. Nothing changes until you do.",
+    "actions": [
+     {
+      "id": "edit_commands",
+      "label": "Edit commands myself"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "checking",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "drafting",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed. Rovara is drafting a fix for the setup. It will ask you to approve it. Nothing changes until you do.",
+    "actions": [
+     {
+      "id": "edit_commands",
+      "label": "Edit commands myself"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "fix_ready (3 changes)",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "fix_ready",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "candidateRevision": 2,
+    "changes": 3,
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Rovara drafted a fix and checked it on a fresh machine: it passes. 3 changes.",
+    "actions": [
+     {
+      "id": "approve_setup",
+      "label": "Approve new setup"
+     },
+     {
+      "id": "see_changes",
+      "label": "See changes"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "fix_ready (1 change)",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "fix_ready",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "candidateRevision": 2,
+    "changes": 1,
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Rovara drafted a fix and checked it on a fresh machine: it passes. 1 change.",
+    "actions": [
+     {
+      "id": "approve_setup",
+      "label": "Approve new setup"
+     },
+     {
+      "id": "see_changes",
+      "label": "See changes"
+     }
+    ]
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "failed run_failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "no_fix",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup (uses your AI, up to $4)"
+     },
+     {
+      "id": "edit_commands",
+      "label": "Edit commands myself"
+     }
+    ],
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed. Rovara tried to draft a fix but could not finish. Nothing was changed.",
+    "failure": "run_failed"
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "failed no_usable_fix",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "no_fix",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup (uses your AI, up to $4)"
+     },
+     {
+      "id": "edit_commands",
+      "label": "Edit commands myself"
+     }
+    ],
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed. Rovara drafted a fix but none of it could be used. Nothing was changed.",
+    "failure": "no_usable_fix"
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "failed check_failed",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "no_fix",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup (uses your AI, up to $4)"
+     },
+     {
+      "id": "edit_commands",
+      "label": "Edit commands myself"
+     }
+    ],
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed. Rovara drafted a fix but it did not pass its check on a fresh machine. Nothing was changed.",
+    "failure": "check_failed"
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "failed upkeep_paused",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "no_fix",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup (uses your AI, up to $4)"
+     },
+     {
+      "id": "edit_commands",
+      "label": "Edit commands myself"
+     }
+    ],
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed. Rovara stopped drafting a fix because nightly upkeep reached its limit. Nothing was changed.",
+    "failure": "upkeep_paused"
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "ended withdrawn",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "no_fix",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup (uses your AI, up to $4)"
+     },
+     {
+      "id": "edit_commands",
+      "label": "Edit commands myself"
+     }
+    ],
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed. Rovara stopped drafting a fix because automatic runs were switched off. Nothing was changed.",
+    "failure": "withdrawn"
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "ended decided",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "no_fix",
+    "classes": [
+     "lockfile"
+    ],
+    "at": "2026-11-17T09:05:00.000Z",
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup (uses your AI, up to $4)"
+     },
+     {
+      "id": "edit_commands",
+      "label": "Edit commands myself"
+     }
+    ],
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed."
+   }
+  },
+  {
+   "route": "setup-agent",
+   "scenario": "failed run_failed, 150 cent budget",
+   "repair": {
+    "title": "Setup needs repair",
+    "state": "no_fix",
+    "classes": [],
+    "at": "2026-11-17T09:05:00.000Z",
+    "actions": [
+     {
+      "id": "fix_setup",
+      "label": "Fix setup (uses your AI, up to $1.50)"
+     },
+     {
+      "id": "edit_commands",
+      "label": "Edit commands myself"
+     }
+    ],
+    "body": "The project's setup stopped working after recent code changes (setup: npm ci - setup step 0 (npm ci) failed: exit 1). Work continues; results may be less reliable until setup is fixed. Rovara tried to draft a fix but could not finish. Nothing was changed.",
+    "failure": "run_failed"
+   }
+  }
+ ]
+}
