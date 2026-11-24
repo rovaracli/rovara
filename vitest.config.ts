@@ -7,7 +7,7 @@ export default defineConfig({
   oxc: { jsx: { runtime: "automatic" } },
   test: {
     ...sharedVitestSettings,
-    include: ["tests/**/*.test.ts", "packages/**/*.test.ts"],
+    include: ["tests/**/*.test.ts", "packages/**/*.test.ts", "ops/**/*.test.ts"],
     // `--shard=N/M` (CI's six test shards) takes a share balanced by each file's recorded run time, not an even number of files (tests/.timings/vitest-durations.json).
     sequence: { sequencer: DurationSequencer },
   },

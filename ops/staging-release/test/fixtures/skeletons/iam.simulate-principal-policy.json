@@ -1,0 +1,66 @@
+{
+ "EvaluationResults": [
+  {
+   "EvalActionName": "string",
+   "EvalDecision": "string",
+   "EvalDecisionDetails": {
+    "KeyName": "string"
+   },
+   "EvalResourceName": "string",
+   "MatchedStatements": [
+    {
+     "EndPosition": {
+      "Column": 0,
+      "Line": 0
+     },
+     "SourcePolicyId": "string",
+     "SourcePolicyType": "string",
+     "StartPosition": {
+      "Column": 0,
+      "Line": 0
+     }
+    }
+   ],
+   "MissingContextValues": [
+    "string"
+   ],
+   "OrganizationsDecisionDetail": {
+    "AllowedByOrganizations": true
+   },
+   "PermissionsBoundaryDecisionDetail": {
+    "AllowedByPermissionsBoundary": true
+   },
+   "ResourceSpecificResults": [
+    {
+     "EvalDecisionDetails": {
+      "KeyName": "string"
+     },
+     "EvalResourceDecision": "string",
+     "EvalResourceName": "string",
+     "MatchedStatements": [
+      {
+       "EndPosition": {
+        "Column": 0,
+        "Line": 0
+       },
+       "SourcePolicyId": "string",
+       "SourcePolicyType": "string",
+       "StartPosition": {
+        "Column": 0,
+        "Line": 0
+       }
+      }
+     ],
+     "MissingContextValues": [
+      "string"
+     ],
+     "PermissionsBoundaryDecisionDetail": {
+      "AllowedByPermissionsBoundary": true
+     }
+    }
+   ]
+  }
+ ],
+ "IsTruncated": true,
+ "Marker": "string"
+}

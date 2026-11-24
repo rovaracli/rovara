@@ -1,0 +1,122 @@
+{
+ "Architectures": [
+  "string"
+ ],
+ "CapacityProviderConfig": {
+  "LambdaManagedInstancesCapacityProviderConfig": {
+   "CapacityProviderArn": "string",
+   "ExecutionEnvironmentMemoryGiBPerVCpu": 0.0,
+   "PerExecutionEnvironmentMaxConcurrency": 0
+  }
+ },
+ "CodeSha256": "string",
+ "CodeSize": 0,
+ "ConfigSha256": "string",
+ "DeadLetterConfig": {
+  "TargetArn": "string"
+ },
+ "Description": "string",
+ "DurableConfig": {
+  "ExecutionTimeout": 0,
+  "KMSKeyArn": "string",
+  "RetentionPeriodInDays": 0
+ },
+ "Environment": {
+  "Error": {
+   "ErrorCode": "string",
+   "Message": "string"
+  },
+  "Variables": {
+   "KeyName": "string"
+  }
+ },
+ "EphemeralStorage": {
+  "Size": 0
+ },
+ "FileSystemConfigs": [
+  {
+   "Arn": "string",
+   "LocalMountPath": "string",
+   "S3FilesConfig": {
+    "DirectS3Read": "string"
+   }
+  }
+ ],
+ "FunctionArn": "string",
+ "FunctionName": "string",
+ "Handler": "string",
+ "ImageConfigResponse": {
+  "Error": {
+   "ErrorCode": "string",
+   "Message": "string"
+  },
+  "ImageConfig": {
+   "Command": [
+    "string"
+   ],
+   "EntryPoint": [
+    "string"
+   ],
+   "WorkingDirectory": "string"
+  }
+ },
+ "KMSKeyArn": "string",
+ "LastModified": "string",
+ "LastUpdateStatus": "string",
+ "LastUpdateStatusReason": "string",
+ "LastUpdateStatusReasonCode": "string",
+ "Layers": [
+  {
+   "Arn": "string",
+   "CodeSize": 0,
+   "SigningJobArn": "string",
+   "SigningProfileVersionArn": "string"
+  }
+ ],
+ "LoggingConfig": {
+  "ApplicationLogLevel": "string",
+  "LogFormat": "string",
+  "LogGroup": "string",
+  "SystemLogLevel": "string"
+ },
+ "MasterArn": "string",
+ "MemorySize": 0,
+ "PackageType": "string",
+ "RevisionId": "string",
+ "Role": "string",
+ "Runtime": "string",
+ "RuntimeVersionConfig": {
+  "Error": {
+   "ErrorCode": "string",
+   "Message": "string"
+  },
+  "RuntimeVersionArn": "string"
+ },
+ "SigningJobArn": "string",
+ "SigningProfileVersionArn": "string",
+ "SnapStart": {
+  "ApplyOn": "string",
+  "OptimizationStatus": "string"
+ },
+ "State": "string",
+ "StateReason": "string",
+ "StateReasonCode": "string",
+ "TenancyConfig": {
+  "TenantIsolationMode": "string"
+ },
+ "Timeout": 0,
+ "TracingConfig": {
+  "Mode": "string"
+ },
+ "Version": "string",
+ "VpcConfig": {
+  "Ipv6AllowedForDualStack": true,
+  "SecurityGroupIds": [
+   "string"
+  ],
+  "SubnetIds": [
+   "string"
+  ],
+  "VpcId": "string"
+ }
+}

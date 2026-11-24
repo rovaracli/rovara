@@ -1,0 +1,17 @@
+{
+ "FirewallRuleGroupAssociation": {
+  "Arn": "string",
+  "CreationTime": "string",
+  "CreatorRequestId": "string",
+  "FirewallRuleGroupId": "string",
+  "Id": "string",
+  "ManagedOwnerName": "string",
+  "ModificationTime": "string",
+  "MutationProtection": "string",
+  "Name": "string",
+  "Priority": 0,
+  "Status": "string",
+  "StatusMessage": "string",
+  "VpcId": "string"
+ }
+}

@@ -1,0 +1,34 @@
+{
+ "pipelineExecution": {
+  "artifactRevisions": [
+   {
+    "created": "string",
+    "name": "string",
+    "revisionChangeIdentifier": "string",
+    "revisionId": "string",
+    "revisionSummary": "string",
+    "revisionUrl": "string"
+   }
+  ],
+  "executionMode": "string",
+  "executionType": "string",
+  "pipelineExecutionId": "string",
+  "pipelineName": "string",
+  "pipelineVersion": 0,
+  "rollbackMetadata": {
+   "rollbackTargetPipelineExecutionId": "string"
+  },
+  "status": "string",
+  "statusSummary": "string",
+  "trigger": {
+   "triggerDetail": "string",
+   "triggerType": "string"
+  },
+  "variables": [
+   {
+    "name": "string",
+    "resolvedValue": "string"
+   }
+  ]
+ }
+}

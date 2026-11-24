@@ -1,0 +1,26 @@
+{
+  "control-plane": [
+    "State1C20CC9A",
+    "Artifacts82DD59A1",
+    "SlackThreads36E14C1E",
+    "TurnRecords69ECFCD9",
+    "SlackThreadSessions6FD21617",
+    "SlackSecretEA96F13F",
+    "DeveloperSignInTable26CE739E",
+    "HttpApi",
+    "DefaultStage"
+  ],
+  "access": [
+    "ArtifactBucket7410C9EF"
+  ],
+  "identity": [
+    "UserPool6BA7E5F2",
+    "UserPoolHostedUi3A76E499"
+  ],
+  "foundation": [
+    "Vpc",
+    "WorkspaceKey21BC864D"
+  ],
+  "runtime": [],
+  "slack": []
+}

@@ -1,0 +1,5 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "allowImportingTsExtensions": true, "composite": false, "noEmit": true, "rootDir": "..", "declaration": false, "declarationMap": false },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "../evaluator/src/**/*.ts", "../evaluator/test/fixtures*.ts", "../evaluator/test/clone.ts"]
+}

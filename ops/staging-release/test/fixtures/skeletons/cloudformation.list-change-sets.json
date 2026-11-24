@@ -1,0 +1,20 @@
+{
+ "NextToken": "string",
+ "Summaries": [
+  {
+   "ChangeSetId": "string",
+   "ChangeSetName": "string",
+   "CreationTime": "string",
+   "Description": "string",
+   "ExecutionStatus": "string",
+   "ImportExistingResources": true,
+   "IncludeNestedStacks": true,
+   "ParentChangeSetId": "string",
+   "RootChangeSetId": "string",
+   "StackId": "string",
+   "StackName": "string",
+   "Status": "string",
+   "StatusReason": "string"
+  }
+ ]
+}

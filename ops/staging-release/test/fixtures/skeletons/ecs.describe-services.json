@@ -1,0 +1,379 @@
+{
+ "failures": [
+  {
+   "arn": "string",
+   "detail": "string",
+   "reason": "string"
+  }
+ ],
+ "services": [
+  {
+   "availabilityZoneRebalancing": "string",
+   "capacityProviderStrategy": [
+    {
+     "base": 0,
+     "capacityProvider": "string",
+     "weight": 0
+    }
+   ],
+   "clusterArn": "string",
+   "createdAt": "string",
+   "createdBy": "string",
+   "currentServiceDeployment": "string",
+   "currentServiceRevisions": [
+    {
+     "arn": "string",
+     "pendingTaskCount": 0,
+     "requestedTaskCount": 0,
+     "runningTaskCount": 0
+    }
+   ],
+   "deploymentConfiguration": {
+    "alarms": {
+     "alarmNames": [
+      "string"
+     ],
+     "enable": true,
+     "rollback": true
+    },
+    "bakeTimeInMinutes": 0,
+    "canaryConfiguration": {
+     "canaryBakeTimeInMinutes": 0,
+     "canaryPercent": 0.0
+    },
+    "deploymentCircuitBreaker": {
+     "enable": true,
+     "resetOnHealthyTask": true,
+     "rollback": true,
+     "thresholdConfiguration": {
+      "type": "string",
+      "value": 0
+     }
+    },
+    "earlySuccessCriteria": {
+     "enable": true,
+     "healthyPercent": 0,
+     "sourceServiceRevisionCleanup": "string"
+    },
+    "lifecycleHooks": [
+     {
+      "hookDetails": {},
+      "hookTargetArn": "string",
+      "lifecycleStages": [
+       "string"
+      ],
+      "roleArn": "string",
+      "targetType": "string",
+      "timeoutConfiguration": {
+       "action": "string",
+       "timeoutInMinutes": 0
+      }
+     }
+    ],
+    "linearConfiguration": {
+     "stepBakeTimeInMinutes": 0,
+     "stepPercent": 0.0
+    },
+    "maximumPercent": 0,
+    "minimumHealthyPercent": 0,
+    "strategy": "string"
+   },
+   "deploymentController": {
+    "type": "string"
+   },
+   "deployments": [
+    {
+     "capacityProviderStrategy": [
+      {
+       "base": 0,
+       "capacityProvider": "string",
+       "weight": 0
+      }
+     ],
+     "createdAt": "string",
+     "desiredCount": 0,
+     "failedTasks": 0,
+     "fargateEphemeralStorage": {
+      "kmsKeyId": "string"
+     },
+     "id": "string",
+     "launchType": "string",
+     "networkConfiguration": {
+      "awsvpcConfiguration": {
+       "assignPublicIp": "string",
+       "securityGroups": [
+        "string"
+       ],
+       "subnets": [
+        "string"
+       ]
+      }
+     },
+     "pendingCount": 0,
+     "platformFamily": "string",
+     "platformVersion": "string",
+     "rolloutState": "string",
+     "rolloutStateReason": "string",
+     "runningCount": 0,
+     "serviceConnectConfiguration": {
+      "accessLogConfiguration": {
+       "format": "string",
+       "includeQueryParameters": "string"
+      },
+      "containerConfigurations": [
+       {
+        "logLevel": "string"
+       }
+      ],
+      "enabled": true,
+      "logConfiguration": {
+       "logDriver": "string",
+       "options": {
+        "KeyName": "string"
+       },
+       "secretOptions": [
+        {
+         "name": "string",
+         "valueFrom": "string"
+        }
+       ]
+      },
+      "namespace": "string",
+      "services": [
+       {
+        "clientAliases": [
+         {
+          "dnsName": "string",
+          "port": 0,
+          "testTrafficRules": {
+           "header": {
+            "name": "string",
+            "value": {
+             "exact": "string"
+            }
+           }
+          }
+         }
+        ],
+        "discoveryName": "string",
+        "ingressPortOverride": 0,
+        "portName": "string",
+        "timeout": {
+         "idleTimeoutSeconds": 0,
+         "perRequestTimeoutSeconds": 0
+        },
+        "tls": {
+         "issuerCertificateAuthority": {
+          "awsPcaAuthorityArn": "string"
+         },
+         "kmsKey": "string",
+         "roleArn": "string"
+        }
+       }
+      ]
+     },
+     "serviceConnectResources": [
+      {
+       "discoveryArn": "string",
+       "discoveryName": "string"
+      }
+     ],
+     "status": "string",
+     "taskDefinition": "string",
+     "updatedAt": "string",
+     "volumeConfigurations": [
+      {
+       "managedEBSVolume": {
+        "encrypted": true,
+        "filesystemType": "string",
+        "iops": 0,
+        "kmsKeyId": "string",
+        "roleArn": "string",
+        "sizeInGiB": 0,
+        "snapshotId": "string",
+        "tagSpecifications": [
+         {
+          "propagateTags": "string",
+          "resourceType": "string",
+          "tags": [
+           {
+            "key": "string",
+            "value": "string"
+           }
+          ]
+         }
+        ],
+        "throughput": 0,
+        "volumeInitializationRate": 0,
+        "volumeType": "string"
+       },
+       "name": "string"
+      }
+     ],
+     "vpcLatticeConfigurations": [
+      {
+       "advancedConfiguration": {
+        "alternateTargetGroupArn": "string",
+        "productionListenerRule": "string",
+        "testListenerRule": "string"
+       },
+       "portName": "string",
+       "roleArn": "string",
+       "targetGroupArn": "string"
+      }
+     ]
+    }
+   ],
+   "desiredCount": 0,
+   "enableECSManagedTags": true,
+   "enableExecuteCommand": true,
+   "events": [
+    {
+     "createdAt": "string",
+     "id": "string",
+     "message": "string"
+    }
+   ],
+   "healthCheckGracePeriodSeconds": 0,
+   "launchType": "string",
+   "loadBalancers": [
+    {
+     "advancedConfiguration": {
+      "alternateTargetGroupArn": "string",
+      "productionListenerRule": "string",
+      "roleArn": "string",
+      "testListenerRule": "string"
+     },
+     "containerName": "string",
+     "containerPort": 0,
+     "loadBalancerName": "string",
+     "targetGroupArn": "string"
+    }
+   ],
+   "networkConfiguration": {
+    "awsvpcConfiguration": {
+     "assignPublicIp": "string",
+     "securityGroups": [
+      "string"
+     ],
+     "subnets": [
+      "string"
+     ]
+    }
+   },
+   "pendingCount": 0,
+   "placementConstraints": [
+    {
+     "expression": "string",
+     "type": "string"
+    }
+   ],
+   "placementStrategy": [
+    {
+     "field": "string",
+     "type": "string"
+    }
+   ],
+   "platformFamily": "string",
+   "platformVersion": "string",
+   "propagateTags": "string",
+   "resourceManagementType": "string",
+   "roleArn": "string",
+   "runningCount": 0,
+   "schedulingStrategy": "string",
+   "serviceArn": "string",
+   "serviceName": "string",
+   "serviceRegistries": [
+    {
+     "containerName": "string",
+     "containerPort": 0,
+     "port": 0,
+     "registryArn": "string"
+    }
+   ],
+   "status": "string",
+   "tags": [
+    {
+     "key": "string",
+     "value": "string"
+    }
+   ],
+   "taskDefinition": "string",
+   "taskSets": [
+    {
+     "capacityProviderStrategy": [
+      {
+       "base": 0,
+       "capacityProvider": "string",
+       "weight": 0
+      }
+     ],
+     "clusterArn": "string",
+     "computedDesiredCount": 0,
+     "createdAt": "string",
+     "externalId": "string",
+     "fargateEphemeralStorage": {
+      "kmsKeyId": "string"
+     },
+     "id": "string",
+     "launchType": "string",
+     "loadBalancers": [
+      {
+       "advancedConfiguration": {
+        "alternateTargetGroupArn": "string",
+        "productionListenerRule": "string",
+        "roleArn": "string",
+        "testListenerRule": "string"
+       },
+       "containerName": "string",
+       "containerPort": 0,
+       "loadBalancerName": "string",
+       "targetGroupArn": "string"
+      }
+     ],
+     "networkConfiguration": {
+      "awsvpcConfiguration": {
+       "assignPublicIp": "string",
+       "securityGroups": [
+        "string"
+       ],
+       "subnets": [
+        "string"
+       ]
+      }
+     },
+     "pendingCount": 0,
+     "platformFamily": "string",
+     "platformVersion": "string",
+     "runningCount": 0,
+     "scale": {
+      "unit": "string",
+      "value": 0.0
+     },
+     "serviceArn": "string",
+     "serviceRegistries": [
+      {
+       "containerName": "string",
+       "containerPort": 0,
+       "port": 0,
+       "registryArn": "string"
+      }
+     ],
+     "stabilityStatus": "string",
+     "stabilityStatusAt": "string",
+     "startedBy": "string",
+     "status": "string",
+     "tags": [
+      {
+       "key": "string",
+       "value": "string"
+      }
+     ],
+     "taskDefinition": "string",
+     "taskSetArn": "string",
+     "updatedAt": "string"
+    }
+   ]
+  }
+ ]
+}

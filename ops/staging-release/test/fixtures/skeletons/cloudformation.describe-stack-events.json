@@ -1,0 +1,26 @@
+{
+ "NextToken": "string",
+ "StackEvents": [
+  {
+   "ClientRequestToken": "string",
+   "DetailedStatus": "string",
+   "EventId": "string",
+   "HookFailureMode": "string",
+   "HookInvocationId": "string",
+   "HookInvocationPoint": "string",
+   "HookStatus": "string",
+   "HookStatusReason": "string",
+   "HookType": "string",
+   "LogicalResourceId": "string",
+   "OperationId": "string",
+   "PhysicalResourceId": "string",
+   "ResourceProperties": "string",
+   "ResourceStatus": "string",
+   "ResourceStatusReason": "string",
+   "ResourceType": "string",
+   "StackId": "string",
+   "StackName": "string",
+   "Timestamp": "string"
+  }
+ ]
+}

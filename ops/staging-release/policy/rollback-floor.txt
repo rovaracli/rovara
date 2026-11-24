@@ -1,0 +1,3 @@
+# Rollback floors (plan v3 P-RB): a rollback target must be a descendant of, or equal to, every sha listed for its pipeline.
+# One line per floor: <pipeline> <40-hex sha>   # comment
+# Empty until P0 and the controller record the real floors (for example the MODEL-QUOTA-AWARE point for the gateway no_quota rows, PROD-FACTS 9).

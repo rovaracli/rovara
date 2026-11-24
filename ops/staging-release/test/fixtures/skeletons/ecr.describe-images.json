@@ -1,0 +1,33 @@
+{
+ "imageDetails": [
+  {
+   "artifactMediaType": "string",
+   "imageDigest": "string",
+   "imageManifestMediaType": "string",
+   "imagePushedAt": "string",
+   "imageScanFindingsSummary": {
+    "findingSeverityCounts": {
+     "KeyName": 0
+    },
+    "imageScanCompletedAt": "string",
+    "vulnerabilitySourceUpdatedAt": "string"
+   },
+   "imageScanStatus": {
+    "description": "string",
+    "status": "string"
+   },
+   "imageSizeInBytes": 0,
+   "imageStatus": "string",
+   "imageTags": [
+    "string"
+   ],
+   "lastActivatedAt": "string",
+   "lastArchivedAt": "string",
+   "lastRecordedPullTime": "string",
+   "registryId": "string",
+   "repositoryName": "string",
+   "subjectManifestDigest": "string"
+  }
+ ],
+ "nextToken": "string"
+}

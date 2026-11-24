@@ -1,0 +1,10 @@
+export * from "./fixtures.ts";
+export { ciRun as ciRunFix } from "./fixtures.ts";
+import { codeInput as c, cloudInput as d } from "./fixtures.ts";
+import { cloneDeep } from "./clone.ts";
+import type { Obj } from "./fixtures.ts";
+export { auto, manual, attack } from "./helpers.ts";
+void cloneDeep;
+export type { Obj };
+void c;
+void d;

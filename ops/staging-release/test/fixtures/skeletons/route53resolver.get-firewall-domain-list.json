@@ -1,0 +1,16 @@
+{
+ "FirewallDomainList": {
+  "Arn": "string",
+  "Category": "string",
+  "CreationTime": "string",
+  "CreatorRequestId": "string",
+  "DomainCount": 0,
+  "Id": "string",
+  "ManagedListType": "string",
+  "ManagedOwnerName": "string",
+  "ModificationTime": "string",
+  "Name": "string",
+  "Status": "string",
+  "StatusMessage": "string"
+ }
+}

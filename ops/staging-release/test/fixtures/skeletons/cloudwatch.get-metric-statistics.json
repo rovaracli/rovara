@@ -1,0 +1,17 @@
+{
+ "Datapoints": [
+  {
+   "Average": 0.0,
+   "ExtendedStatistics": {
+    "KeyName": 0.0
+   },
+   "Maximum": 0.0,
+   "Minimum": 0.0,
+   "SampleCount": 0.0,
+   "Sum": 0.0,
+   "Timestamp": "string",
+   "Unit": "string"
+  }
+ ],
+ "Label": "string"
+}
