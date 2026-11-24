@@ -220,6 +220,16 @@ describe("the projection", () => {
     expect(modelNameOf({ provider: "anthropic", modelId: "zai.glm-5" })).toBeUndefined();
     expect(modelNameOf({ provider: "anthropic", modelId: "claude-opus-5-5", extra: 1 })).toBeUndefined();
   });
+  it("Rovara#1389: names an OpenAI model under openai, as Code does, so a company on its own OpenAI key reads its models", () => {
+    expect(modelNameOf({ provider: "openai", modelId: "gpt-5" })).toBe("gpt-5");
+    expect(modelNameOf({ provider: "openai", modelId: "gpt-5.4-mini" })).toBe("gpt-5.4-mini");
+    expect(modelNameOf({ provider: "amazon-bedrock", modelId: "gpt-5" })).toBeUndefined();
+    // A Bedrock id names its vendor first and stays a Bedrock id.
+    expect(modelNameOf({ provider: "amazon-bedrock", modelId: "openai.gpt-oss-120b-1:0" })).toBe("openai.gpt-oss-120b-1:0");
+    const openai = { provider: "openai", modelId: "gpt-5" };
+    const page = { state: { revision: 2, steps: [{ stage: "build", setting: null, effective: { model: openai, reason: "INSTALL_MODEL" } }] }, offered: { version: 1, models: [{ model: "gpt-5" }, { model: "gpt-5-mini" }] } };
+    expect(agentModelsView(page)).toMatchObject({ revision: 2, offered: ["gpt-5", "gpt-5-mini"], steps: [{ stage: "build", effective: { model: "gpt-5" } }] });
+  });
   it("keeps a step's price when Code knows it, and refuses a price that is not an amount", () => {
     const page = (price: unknown) => ({ state: { revision: 3, steps: [{ stage: "build", setting: null, effective: { model: id("zai.glm-5"), reason: "INSTALL_MODEL", priceUsdPerMillion: price } }] }, offered: { version: 1, models: [{ model: "zai.glm-5" }] } });
     expect(agentModelsView(page({ input: 1, output: 3.2, source: "catalog" }))?.steps[0]?.effective).toEqual({ model: "zai.glm-5", companyDefault: true, priceUsdPerMillion: { input: 1, output: 3.2 } });
