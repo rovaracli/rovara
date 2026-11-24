@@ -38,29 +38,6 @@ import {
   SESSION_REVISION_CONFLICT_MESSAGE,
 } from "../../packages/contracts/src/agent-sessions-node.js";
 import { AgentXErrorCodeSchema, agentXError, errorStatus } from "../../packages/contracts/src/errors.js";
-import {
-  SESSION_SWEEP_CURSOR_KEY,
-  agentSessionKey,
-  changesKey,
-  deviceCommandKey,
-  deviceKey,
-  endedSessionWorkKey,
-  liveSessionKey,
-  memberDevicesKey,
-  mySessionsKey,
-  openAgentSessionKey,
-  sessionQueuedSteersKey,
-  orgSettingsKey,
-  projectMonthStatsKey,
-  projectSessionsKey,
-  sessionEventSk,
-  sessionRateKey,
-  sessionRequestKey,
-  sessionBindingKey,
-  sessionSurfaceKey,
-  sharedSessionsKey,
-  taskSpendKey,
-} from "../../packages/contracts/src/org-scoped-keys.js";
 import { HomeCardReaderSchema, HomeCardSchema, HomeResponseReaderSchema, HomeResponseSchema } from "../../packages/contracts/src/home.js";
 import { OrgIdSchema } from "../../packages/contracts/src/org-node.js";
 import {
@@ -75,10 +52,8 @@ import {
   SessionViewReaderSchema,
   SessionViewSchema,
 } from "../../packages/contracts/src/session-views.js";
-import * as contracts from "../../packages/contracts/src/index.js";
 
 const ORG_A = OrgIdSchema.parse("org_aaaaaaaaaaaaaaaaaaaa");
-const ORG_B = OrgIdSchema.parse("org_bbbbbbbbbbbbbbbbbbbb");
 const DEV = "a".repeat(64);
 const SESSION = "ses_0123456789abcdefghij";
 const CHAIN_RUN = "crn_0123456789abcdefghij";
@@ -575,113 +550,6 @@ describe("the view schemas", () => {
     expect(NeedsConfirmationSchema.safeParse({ ...confirmation, status: "OK" }).success).toBe(false);
     expect(NeedsConfirmationSchema.safeParse({ ...confirmation, confirmUrl: "javascript:alert(1)" }).success).toBe(false);
     expect(NeedsConfirmationSchema.safeParse({ ...confirmation, extra: 1 }).success).toBe(false);
-  });
-
-  it("is exported from the contracts barrel", () => {
-    expect(contracts.AgentSessionRecordSchema).toBe(AgentSessionRecordSchema);
-    expect(contracts.SessionViewSchema).toBe(SessionViewSchema);
-    expect(contracts.agentSessionKey).toBe(agentSessionKey);
-  });
-});
-
-describe("session keys", () => {
-  const orgKeyBuilders: Array<[string, (orgId: typeof ORG_A) => { pk: string; sk: string }]> = [
-    ["agentSessionKey META", (org) => agentSessionKey(org, SESSION, "META")],
-    ["agentSessionKey SHARE", (org) => agentSessionKey(org, SESSION, `SHARE#MEMBER#${DEV}`)],
-    ["agentSessionKey FOLLOWER", (org) => agentSessionKey(org, SESSION, `FOLLOWER#${DEV}`)],
-    ["agentSessionKey PRESENCE", (org) => agentSessionKey(org, SESSION, `PRESENCE#${DEV}`)],
-    ["agentSessionKey MESSAGE", (org) => agentSessionKey(org, SESSION, `MESSAGE#${MESSAGE}`)],
-    ["agentSessionKey TURN", (org) => agentSessionKey(org, SESSION, `TURN#${NOW}#1`)],
-    ["agentSessionKey EVENT", (org) => agentSessionKey(org, SESSION, sessionEventSk(NOW, event.eventId))],
-    ["sessionBindingKey", (org) => sessionBindingKey(org, SESSION, "slack_thread")],
-    ["agentSessionKey LEG", (org) => agentSessionKey(org, SESSION, "LEG#1")],
-    ["liveSessionKey", (org) => liveSessionKey(org, SESSION)],
-    ["mySessionsKey", (org) => mySessionsKey(org, DEV, NOW, SESSION)],
-    ["projectSessionsKey", (org) => projectSessionsKey(org, "web", NOW, SESSION)],
-    ["sharedSessionsKey member", (org) => sharedSessionsKey(org, { kind: "member", developerId: DEV }, SESSION)],
-    ["sharedSessionsKey project", (org) => sharedSessionsKey(org, { kind: "project", project: "web" }, SESSION)],
-    ["sharedSessionsKey org", (org) => sharedSessionsKey(org, { kind: "org" }, SESSION)],
-    ["sessionRequestKey", (org) => sessionRequestKey(org, DEV, "req-1")],
-    ["sessionRateKey", (org) => sessionRateKey(org, SESSION, DEV, "comment")],
-    ["taskSpendKey", (org) => taskSpendKey(org, TASK)],
-    ["sessionSurfaceKey slack", (org) => sessionSurfaceKey(org, { kind: "slack_thread", teamId: "T0123ABC", channelId: "C0123ABC", threadTs: "1760000000.123456" })],
-    ["sessionSurfaceKey linear", (org) => sessionSurfaceKey(org, { kind: "linear_issue", issueId: "abc", url: "https://linear.app/acme/issue/ENG-1" })],
-    ["changesKey", (org) => changesKey(org, DEV, NOW, 3)],
-    ["projectMonthStatsKey", (org) => projectMonthStatsKey(org, "web", "2026-10")],
-    ["deviceKey", (org) => deviceKey(org, DEVICE)],
-    ["memberDevicesKey", (org) => memberDevicesKey(org, DEV, DEVICE)],
-    ["deviceCommandKey", (org) => deviceCommandKey(org, DEVICE, 7)],
-  ];
-
-  it.each(orgKeyBuilders)("%s puts the org in the partition key and differs by org", (_name, build) => {
-    const a = build(ORG_A);
-    const b = build(ORG_B);
-    expect(a.pk.startsWith(`ORG#${ORG_A}#`)).toBe(true);
-    expect(b.pk.startsWith(`ORG#${ORG_B}#`)).toBe(true);
-    expect(a.pk).not.toBe(b.pk);
-    expect(a.pk).not.toContain(ORG_B);
-  });
-
-  it("names each key's partition and sort key", () => {
-    expect(agentSessionKey(ORG_A, SESSION, "META")).toEqual({ pk: `ORG#${ORG_A}#AGENT_SESSION#${SESSION}`, sk: "META" });
-    expect(liveSessionKey(ORG_A, SESSION)).toEqual({ pk: `ORG#${ORG_A}#LIVE_SESSIONS`, sk: SESSION });
-    expect(mySessionsKey(ORG_A, DEV, NOW, SESSION)).toEqual({ pk: `ORG#${ORG_A}#MY_SESSIONS#${DEV}`, sk: `${NOW}#${SESSION}` });
-    expect(projectSessionsKey(ORG_A, "web", NOW, SESSION)).toEqual({ pk: `ORG#${ORG_A}#PROJECT_SESSIONS#web`, sk: `${NOW}#${SESSION}` });
-    expect(sharedSessionsKey(ORG_A, { kind: "member", developerId: DEV }, SESSION)).toEqual({ pk: `ORG#${ORG_A}#SHARED_SESSIONS#MEMBER#${DEV}`, sk: SESSION });
-    expect(sessionRequestKey(ORG_A, DEV, "req-1")).toEqual({ pk: `ORG#${ORG_A}#SESSION_REQUEST#${DEV}`, sk: "req-1" });
-    expect(sessionRateKey(ORG_A, SESSION, DEV, "change")).toEqual({ pk: `ORG#${ORG_A}#SESSION_RATE#${SESSION}`, sk: `change#${DEV}` });
-    expect(sessionBindingKey(ORG_A, SESSION, "linear_issue")).toEqual({ pk: `ORG#${ORG_A}#SESSION_BINDING#${SESSION}`, sk: "BINDING#linear_issue" });
-    expect(taskSpendKey(ORG_A, TASK).pk).toBe(`ORG#${ORG_A}#TASK_SPENT#${TASK}`);
-    expect(deviceKey(ORG_A, DEVICE).pk).toBe(`ORG#${ORG_A}#DEVICE#${DEVICE}`);
-    expect(memberDevicesKey(ORG_A, DEV, DEVICE)).toEqual({ pk: `ORG#${ORG_A}#MEMBER_DEVICES#${DEV}`, sk: DEVICE });
-    expect(orgSettingsKey(ORG_A, "LOCAL_AGENTS")).toEqual({ pk: `ORG#${ORG_A}#SETTINGS`, sk: "LOCAL_AGENTS" });
-  });
-
-  it("canonicalises times and pads counters so keys sort in order", () => {
-    expect(mySessionsKey(ORG_A, DEV, "2026-10-22T09:30:00Z", SESSION).sk).toBe(`2026-10-22T09:30:00.000Z#${SESSION}`);
-    expect(() => mySessionsKey(ORG_A, DEV, "yesterday", SESSION)).toThrow();
-    expect(sessionEventSk("2026-10-22T09:30:00Z", event.eventId)).toBe(`EVENT#2026-10-22T09:30:00.000Z#${event.eventId}`);
-    const ordered = [changesKey(ORG_A, DEV, NOW, 2).sk, changesKey(ORG_A, DEV, NOW, 10).sk, changesKey(ORG_A, DEV, LATER, 0).sk];
-    expect([...ordered].sort()).toEqual(ordered);
-    const commands = [deviceCommandKey(ORG_A, DEVICE, 9).sk, deviceCommandKey(ORG_A, DEVICE, 10).sk];
-    expect([...commands].sort()).toEqual(commands);
-    expect(() => changesKey(ORG_A, DEV, NOW, -1)).toThrow();
-    expect(() => deviceCommandKey(ORG_A, DEVICE, 1.5)).toThrow();
-    expect(() => projectMonthStatsKey(ORG_A, "web", "2026-13")).toThrow();
-    expect(() => projectMonthStatsKey(ORG_A, "web", "October")).toThrow();
-  });
-
-  it("keeps the three global partitions out of the org prefix, with the org in the sort key", () => {
-    expect(openAgentSessionKey(ORG_A, SESSION)).toEqual({ pk: "OPEN_AGENT_SESSIONS", sk: `${ORG_A}#${SESSION}` });
-    expect(openAgentSessionKey(ORG_B, SESSION).sk).not.toBe(openAgentSessionKey(ORG_A, SESSION).sk);
-    expect(endedSessionWorkKey("2026-10-22", ORG_A, SESSION)).toEqual({ pk: "ENDED_AGENT_SESSIONS#2026-10-22", sk: `${ORG_A}#${SESSION}` });
-    expect(endedSessionWorkKey("2026-10-22", ORG_B, SESSION).sk.startsWith(`${ORG_B}#`)).toBe(true);
-    expect(() => endedSessionWorkKey("22 Oct", ORG_A, SESSION)).toThrow();
-    expect(SESSION_SWEEP_CURSOR_KEY.pk).toBe("SESSION_SWEEP_CURSOR");
-    // A session's count of messages to the agent that are still queued sits in its own partition, among the messages (so retention reaches it), and never reads as a message.
-    expect(sessionQueuedSteersKey(ORG_A, SESSION)).toEqual({ pk: agentSessionKey(ORG_A, SESSION, "META").pk, sk: "MESSAGE#QUEUED" });
-    expect(sessionQueuedSteersKey(ORG_A, SESSION).sk.startsWith("MESSAGE#msg_")).toBe(false);
-    expect(sessionQueuedSteersKey(ORG_B, SESSION).pk).not.toBe(sessionQueuedSteersKey(ORG_A, SESSION).pk);
-    expect(JSON.stringify(SESSION_SWEEP_CURSOR_KEY)).not.toContain("org_");
-  });
-
-  it("keys a Slack thread and a Linear issue differently, and one binding to one key", () => {
-    const slack = { kind: "slack_thread", teamId: "T0123ABC", channelId: "C0123ABC", threadTs: "1760000000.123456" } as const;
-    const other = { ...slack, threadTs: "1760000000.123457" } as const;
-    const linear = { kind: "linear_issue", issueId: "abc", url: "https://linear.app/acme/issue/ENG-1" } as const;
-    expect(sessionSurfaceKey(ORG_A, slack)).toEqual(sessionSurfaceKey(ORG_A, slack));
-    expect(sessionSurfaceKey(ORG_A, slack)).not.toEqual(sessionSurfaceKey(ORG_A, other));
-    expect(sessionSurfaceKey(ORG_A, slack)).not.toEqual(sessionSurfaceKey(ORG_A, linear));
-    // The linear url is not part of the key: the same issue is the same surface.
-    expect(sessionSurfaceKey(ORG_A, linear)).toEqual(sessionSurfaceKey(ORG_A, { ...linear, url: "https://linear.app/acme/issue/ENG-1/renamed" }));
-  });
-
-  it("refuses a segment that holds the key separator", () => {
-    expect(() => mySessionsKey(ORG_A, "a#b", NOW, SESSION)).toThrow();
-    expect(() => mySessionsKey(ORG_A, "", NOW, SESSION)).toThrow();
-    expect(() => liveSessionKey(ORG_A, "")).toThrow();
-    expect(() => mySessionsKey(ORG_A, "a\u0000b", NOW, SESSION)).toThrow();
-    expect(() => agentSessionKey(ORG_A, "ses_x#y", "META")).toThrow();
   });
 });
 

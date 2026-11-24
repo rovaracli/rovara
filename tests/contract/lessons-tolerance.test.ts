@@ -8,7 +8,6 @@ import {
   LessonApproveBodySchema, LessonFeedbackBodySchema, LessonSourcesReaderSchema, LessonsDigestReaderSchema, LessonsViewReaderSchema, LessonHistoryReaderSchema,
   LoadedLessonsReaderSchema, ModelSelectionPolicyResponseReaderSchema, SourceWriteBodySchema, SourcesAdminViewReaderSchema, forwardReader,
 } from "@agentx/contracts/web";
-import { LessonProvenanceSchema } from "@agentx/contracts";
 import { readsAsUnknown } from "../../packages/contracts/src/forward-reader-unknown.js";
 import { z } from "zod";
 
@@ -145,11 +144,6 @@ describe("what Cloud sends to Code stays strict", () => {
     expect(ok(LessonApproveBodySchema, { expectedVersion: 1, tier: 0 })).toBe(false);
     expect(ok(LessonFeedbackBodySchema, { kind: "helpful" })).toBe(true);
     expect(ok(LessonFeedbackBodySchema, { kind: "plan_comment" })).toBe(false);
-  });
-  it("keeps the stored-lesson contract strict: the provenance takes no field the reflector contract does not name", () => {
-    const provenance = { sourceEvents: ["rec-1"], minTrust: "member", audience: { kind: "project" }, reflectorRun: "run-1", model: "m" };
-    expect(ok(LessonProvenanceSchema, provenance)).toBe(true);
-    expect(ok(LessonProvenanceSchema, { ...provenance, sourceKinds: SOURCE_KINDS })).toBe(false);
   });
 });
 

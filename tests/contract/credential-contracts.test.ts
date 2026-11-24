@@ -1,44 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  CredentialRegistrationSchema, OAuthClientCredentialsSecretSchema, StaticSecretSchema,
-} from "../../packages/contracts/src/credentials.js";
-import {
   IN_HOUSE_TOOL_COUNT, approvedToolCount, presentedNameProblems, toolBudget,
 } from "../../packages/contracts/src/connectors-node.js";
-
-describe("credential registration input", () => {
-  it("accepts the two registrable types with a connector secret name", () => {
-    expect(CredentialRegistrationSchema.parse({ ref: "linear-payments", type: "oauth-client-credentials", secretName: "agentx/connectors/linear-payments" }))
-      .toEqual({ ref: "linear-payments", type: "oauth-client-credentials", secretName: "agentx/connectors/linear-payments" });
-    expect(CredentialRegistrationSchema.safeParse({ ref: "jira-sa", type: "static-secret", secretName: "agentx/connectors/jira-sa" }).success).toBe(true);
-  });
-
-  it("refuses reserved and built-in types, other secret prefixes and extra fields", () => {
-    for (const type of ["github-app", "per-user", "basic"]) {
-      expect(CredentialRegistrationSchema.safeParse({ ref: "x", type, secretName: "agentx/connectors/x" }).success).toBe(false);
-    }
-    expect(CredentialRegistrationSchema.safeParse({ ref: "x", type: "static-secret", secretName: "prod/db-password" }).success).toBe(false);
-    expect(CredentialRegistrationSchema.safeParse({ ref: "x", type: "static-secret", secretName: "agentx/connectors/../x" }).success).toBe(false);
-    expect(CredentialRegistrationSchema.safeParse({ ref: "x", type: "static-secret", secretName: "agentx/connectors/.." }).success).toBe(false);
-    expect(CredentialRegistrationSchema.safeParse({ ref: "x", type: "static-secret", secretName: "agentx/connectors/." }).success).toBe(false);
-    expect(CredentialRegistrationSchema.safeParse({ ref: "Bad Ref", type: "static-secret", secretName: "agentx/connectors/x" }).success).toBe(false);
-    expect(CredentialRegistrationSchema.safeParse({ ref: "x", type: "static-secret", secretName: "agentx/connectors/x", tokenEndpoint: "https://evil.test" }).success).toBe(false);
-  });
-});
-
-describe("secret payloads", () => {
-  it("parses a static key and client credentials with a fixed scope set", () => {
-    expect(StaticSecretSchema.parse({ apiKey: "k" })).toEqual({ apiKey: "k" });
-    expect(OAuthClientCredentialsSecretSchema.parse({ clientId: "id", clientSecret: "s", scopes: ["read", "write"] }))
-      .toEqual({ clientId: "id", clientSecret: "s", scopes: ["read", "write"] });
-  });
-
-  it("refuses a secret that could redirect the broker or is missing fields", () => {
-    expect(StaticSecretSchema.safeParse({ apiKey: "" }).success).toBe(false);
-    expect(OAuthClientCredentialsSecretSchema.safeParse({ clientId: "id", clientSecret: "s", scopes: [] }).success).toBe(false);
-    expect(OAuthClientCredentialsSecretSchema.safeParse({ clientId: "id", clientSecret: "s", scopes: ["read"], tokenEndpoint: "https://evil.test" }).success).toBe(false);
-  });
-});
 
 describe("tool budget at registration", () => {
   it("counts in-house tools plus every approved connector tool", () => {
@@ -65,22 +28,4 @@ describe("tool budget at registration", () => {
     const definition = { repositories: [], integrations: { githubMcp: { tools: [{ name: long, access: "read" }] } } };
     expect(presentedNameProblems(definition as never)).toEqual([`connector github tool ${long}: presented name github__${long} exceeds 64 characters`]);
   });
-});
-
-describe("connector secret names per environment", () => {
-  const registration = (secretName: string) => CredentialRegistrationSchema.safeParse({ ref: "linear", type: "static-secret", secretName });
-
-  it("accepts the legacy and the environment forms", () => {
-    expect(registration("agentx/connectors/linear").success).toBe(true);
-    expect(registration("rovara-cloud/staging/connectors/linear").success).toBe(true);
-    // Environments named under the old agentx prefix are not supported (2026-11-14 rename).
-    expect(registration("agentx/staging/connectors/linear").success).toBe(false);
-  });
-
-  it.each(["rovara-cloud/Staging/connectors/linear", "rovara-cloud/staging/linear", "rovara-cloud/staging/connectors/", "rovara-cloud/a--b/connectors/x", "rovara-cloud/staging/connectors/a/b", "rovara-cloud/connectors/connectors/x", "agentx/connectors/connectors/x"])(
-    "refuses %s",
-    (secretName) => {
-      expect(registration(secretName).success).toBe(false);
-    },
-  );
 });

@@ -2,28 +2,7 @@
 // Spec 025 phase 25c, Task 1: the shapes sharing adds. Every addition is optional, so a record or
 // answer written before 25c still parses.
 import { describe, expect, it } from "vitest";
-import {
-  AdminShareModeRequestSchema,
-  AgentXErrorCodeSchema,
-  AiToolTurnRecordSchema,
-  ChannelTurnSchema,
-  CLOSED_SHARED_NOTICE,
-  DEVELOPER_API_VERSION,
-  DeveloperTaskViewSchema,
-  SHARED_BY_POLICY,
-  ShareDeveloperTaskRequestSchema,
-  SharedTaskRecordSchema,
-  SlackThreadPrepareResultSchema,
-  SlackThreadWorkspaceResultSchema,
-  SlackWorkspaceCloseStartResultSchema,
-  TurnRecordSchema,
-  VIEW_ONLY_BY_POLICY,
-  VIEW_ONLY_NOTICE,
-  agentXError,
-  sharedNoticeClaim,
-  sharedNoticeKey,
-  sharedTaskKey,
-} from "../../packages/contracts/src/index.js";
+import { AdminShareModeRequestSchema, ChannelTurnSchema, CLOSED_SHARED_NOTICE, DeveloperTaskViewSchema, SHARED_BY_POLICY, ShareDeveloperTaskRequestSchema, SharedTaskRecordSchema, SlackThreadPrepareResultSchema, SlackThreadWorkspaceResultSchema, SlackWorkspaceCloseStartResultSchema, VIEW_ONLY_BY_POLICY, VIEW_ONLY_NOTICE, sharedNoticeClaim, sharedNoticeKey, sharedTaskKey } from "../../packages/contracts/src/index.js";
 
 const TASK = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE = "22222222-2222-4222-8222-222222222222";
@@ -128,32 +107,10 @@ describe("the Slack service's shapes (C11, C16)", () => {
 });
 
 describe("records and codes", () => {
-  it("lets a Slack turn record carry the task and the teammate's name, and still reads one without", () => {
-    const base = {
-      offeredTools: [], calls: [], emptyResponse: false, workerOperations: [], eventId: "Ev0000000001", subject: "T0BSHLLUGBD/C0123456789/1695500000.000001",
-      receivedAt: "2026-09-29T10:00:00.000Z", requestedBy: { teamId: "T0BSHLLUGBD", userId: "U0PRIYA001" }, disposition: "answered",
-      startedAt: "2026-09-29T10:00:00.000Z", finishedAt: "2026-09-29T10:00:01.000Z", durationMs: 1000, requestText: "run the linter", responseText: "done",
-    };
-    expect(TurnRecordSchema.parse({ ...base, taskId: TASK, requesterName: "Priya" })).toMatchObject({ taskId: TASK, requesterName: "Priya" });
-    expect(TurnRecordSchema.parse(base)).not.toHaveProperty("taskId");
-  });
-
-  it("adds the share action to AI-tool records (Q9), and names an admin who made the change (C25)", () => {
-    expect(AiToolTurnRecordSchema.shape.action.options).toEqual(["start", "continue", "pull_request", "cancel", "close", "share"]);
-    expect(AiToolTurnRecordSchema.shape.admin.parse({ issuer: "https://identity.example.test", subject: "admin-subject", displayName: "Ada" })).toMatchObject({ subject: "admin-subject" });
-    expect(AiToolTurnRecordSchema.shape.admin.safeParse(undefined).success).toBe(true);
-  });
 
   it("takes an admin's mode switch with only a request ID and a mode (C25)", () => {
     expect(AdminShareModeRequestSchema.parse({ requestId: TASK, shareMode: "view" })).toEqual({ requestId: TASK, shareMode: "view" });
     expect(AdminShareModeRequestSchema.safeParse({ requestId: TASK, shareMode: "view", channel: "C0123456789" }).success).toBe(false);
     expect(AdminShareModeRequestSchema.safeParse({ requestId: TASK }).success).toBe(false);
-  });
-
-  it("adds CHANNEL_AMBIGUOUS as a 409, and moves the API to 1.2 (Q7)", () => {
-    // errorStatus answers 409 for any code it does not list, so pin the code's membership too.
-    expect(AgentXErrorCodeSchema.options).toContain("CHANNEL_AMBIGUOUS");
-    expect(agentXError("CHANNEL_AMBIGUOUS", "name one").statusCode).toBe(409);
-    expect(DEVELOPER_API_VERSION).toBe("1.2");
   });
 });

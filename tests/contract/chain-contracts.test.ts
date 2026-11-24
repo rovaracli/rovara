@@ -7,24 +7,7 @@ import { ApproverRuleSchema, BranchIdSchema, CHAIN_MAX_BRANCHES, CHAIN_MAX_STEPS
 import { AgentXErrorCodeSchema, agentXError, errorStatus } from "../../packages/contracts/src/errors.js";
 import { CHAIN_REVISION_CONFLICT_MESSAGE, CHAIN_RUN_CLOSED_MESSAGE, chainArchivedMessage, chainBudgetExceededMessage, chainBudgetRequiredMessage, chainStepUnavailableMessage } from "../../packages/contracts/src/errors.js";
 import * as contracts from "../../packages/contracts/src/index.js";
-import { type OrgId } from "../../packages/contracts/src/org.js";
-import { orgScoped } from "../../packages/contracts/src/org-node.js";
-import {
-  chainDirectoryKey,
-  chainKey,
-  chainNameKey,
-  chainRunKey,
-  chainRunsByChainKey,
-  chainRunsByProjectKey,
-  chainVersionSk,
-  openChainRunKey,
-  runEventSk,
-  stepSk,
-} from "../../packages/contracts/src/org-scoped-keys.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
-
-const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
-const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
 const DEV = "a".repeat(64);
 const DEV_2 = "b".repeat(64);
 const RUN_ID = `crn_${"a".repeat(20)}`;
@@ -444,13 +427,6 @@ describe("ids and limits", () => {
     expect(contracts.CHAIN_MAX_CONCURRENT_RUNS).toBe(5);
     expect(contracts.DEFAULT_PERSON_CHAIN_RUN_LIMIT_USD).toBe(20);
   });
-
-  it("is exported from the contracts package", () => {
-    expect(contracts.ChainDefinitionSchema).toBe(ChainDefinitionSchema);
-    expect(contracts.ChainRunIdSchema).toBe(ChainRunIdSchema);
-    expect(contracts.chainRunKey).toBe(chainRunKey);
-    expect(contracts.stepSk).toBe(stepSk);
-  });
 });
 
 describe("chain error codes", () => {
@@ -482,66 +458,5 @@ describe("chain error codes", () => {
     expect(errorStatus("AGENT_BUDGET_EXCEEDED")).toBe(402);
     expect(errorStatus("APPROVAL_CLOSED")).toBe(409);
     expect(errorStatus("NOT_FOUND")).toBe(404);
-  });
-});
-
-describe("chain keys", () => {
-  it("puts a chain and its versions, shares and events in one org-scoped partition", () => {
-    expect(chainKey(ORG_A, CHAIN_ID, "META")).toEqual({ pk: orgScoped(ORG_A, `CHAIN#${CHAIN_ID}`), sk: "META" });
-    expect(chainKey(ORG_A, CHAIN_ID, "DRAFT").sk).toBe("DRAFT");
-    expect(chainKey(ORG_A, CHAIN_ID, "SHARE#MEMBER#x").sk).toBe("SHARE#MEMBER#x");
-    expect(chainKey(ORG_A, CHAIN_ID, "EVENT#000001").sk).toBe("EVENT#000001");
-    expect(chainKey(ORG_A, CHAIN_ID, chainVersionSk(3))).toEqual({ pk: `ORG#${ORG_A}#CHAIN#${CHAIN_ID}`, sk: "VERSION#000003" });
-    expect(chainKey(ORG_B, CHAIN_ID, "META").pk).not.toBe(chainKey(ORG_A, CHAIN_ID, "META").pk);
-  });
-
-  it("pads a version to six digits and refuses one it cannot hold", () => {
-    expect(chainVersionSk(1)).toBe("VERSION#000001");
-    expect(chainVersionSk(999999)).toBe("VERSION#999999");
-    expect(chainVersionSk(12) < chainVersionSk(100)).toBe(true);
-    for (const bad of [0, -1, 1.5, 1_000_000, Number.NaN]) expect(() => chainVersionSk(bad), String(bad)).toThrow();
-  });
-
-  it("lists chains by directory and makes a name unique ignoring case and surrounding spaces", () => {
-    expect(chainDirectoryKey(ORG_A, CHAIN_ID)).toEqual({ pk: orgScoped(ORG_A, "CHAINS"), sk: CHAIN_ID });
-    expect(chainNameKey(ORG_A, "  Investigate Then FIX ")).toEqual(chainNameKey(ORG_A, "investigate then fix"));
-    expect(chainNameKey(ORG_A, "Investigate")).toEqual({ pk: orgScoped(ORG_A, "CHAIN_NAME#investigate"), sk: "META" });
-    expect(chainNameKey(ORG_A, "x").pk).not.toBe(chainNameKey(ORG_B, "x").pk);
-  });
-
-  it("keeps a run's steps and events in the run's partition, in order", () => {
-    expect(chainRunKey(ORG_A, RUN_ID, "META")).toEqual({ pk: `ORG#${ORG_A}#CHAIN_RUN#${RUN_ID}`, sk: "META" });
-    expect(chainRunKey(ORG_A, RUN_ID, "META").pk.startsWith(orgScoped(ORG_A, ""))).toBe(true);
-    expect(chainRunKey(ORG_A, RUN_ID, stepSk(2)).sk).toBe("STEP#0002");
-    expect(chainRunKey(ORG_A, RUN_ID, runEventSk(2)).sk).toBe("EVENT#000002");
-    expect(chainRunKey(ORG_B, RUN_ID, "META").pk).not.toBe(chainRunKey(ORG_A, RUN_ID, "META").pk);
-    expect(stepSk(7)).toBe("STEP#0007");
-    expect(stepSk(9999)).toBe("STEP#9999");
-    expect(stepSk(9) < stepSk(10)).toBe(true);
-    expect(runEventSk(999999)).toBe("EVENT#999999");
-    expect(runEventSk(9) < runEventSk(10)).toBe(true);
-    for (const bad of [-1, 1.5, 10_000, Number.NaN]) expect(() => stepSk(bad), String(bad)).toThrow();
-    for (const bad of [-1, 1.5, 1_000_000, Number.NaN]) expect(() => runEventSk(bad), String(bad)).toThrow();
-  });
-
-  it("lists runs by chain and by project, newest last, with the instant in one form", () => {
-    expect(chainRunsByChainKey(ORG_A, CHAIN_ID, "2026-10-22T09:00:00Z", RUN_ID)).toEqual({
-      pk: orgScoped(ORG_A, `CHAIN_RUNS#${CHAIN_ID}`),
-      sk: `2026-10-22T09:00:00.000Z#${RUN_ID}`,
-    });
-    expect(chainRunsByProjectKey(ORG_A, "web", "2026-10-22T09:00:00.5Z", RUN_ID)).toEqual({
-      pk: orgScoped(ORG_A, "CHAIN_RUNS_P#web"),
-      sk: `2026-10-22T09:00:00.500Z#${RUN_ID}`,
-    });
-    expect(chainRunsByProjectKey(ORG_A, "web", "2026-10-22T09:00:00Z", RUN_ID).pk).not.toBe(chainRunsByProjectKey(ORG_B, "web", "2026-10-22T09:00:00Z", RUN_ID).pk);
-    expect(() => chainRunsByChainKey(ORG_A, CHAIN_ID, "yesterday", RUN_ID)).toThrow();
-  });
-
-  it("keeps the open-runs index global, with ids only", () => {
-    const key = openChainRunKey("2026-10-22T09:00:00Z", ORG_A, RUN_ID);
-    expect(key).toEqual({ pk: "OPEN_CHAIN_RUNS", sk: `2026-10-22T09:00:00.000Z#${ORG_A}#${RUN_ID}` });
-    expect(Object.keys(key).sort()).toEqual(["pk", "sk"]);
-    expect(openChainRunKey("2026-10-22T09:00:00Z", ORG_B, RUN_ID).sk).not.toBe(key.sk);
-    expect(() => openChainRunKey("soon", ORG_A, RUN_ID)).toThrow();
   });
 });

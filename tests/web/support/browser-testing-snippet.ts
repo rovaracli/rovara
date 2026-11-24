@@ -1,7 +1,5 @@
-// The sign-in file Code serves when a repository declares no sign-in, built the way Code builds it (core/setup-agent/browser-testing-proposal.ts `signInSnippetFor`) and parsed with the contract's own schema before a test
-// shows it: a snippet the real schema refuses is never a fixture. The page must show exactly this text.
+// The sign-in file Code serves when a repository declares no sign-in, built the way Code builds it (core/setup-agent/browser-testing-proposal.ts `signInSnippetFor`) as a plain object (Cloud no longer carries Code's e2e-application contract schema to parse it with). The page must show exactly this text.
 import { createHash } from "node:crypto";
-import { E2EApplicationProjectContractSchema } from "../../../packages/contracts/src/e2e-application-accounts.js";
 import { canonicalJson } from "../../../packages/contracts/src/canonical-json.js";
 
 export function signInSnippet(): { path: string; text: string; needsSeedStep: true } {
@@ -18,6 +16,6 @@ export function signInSnippet(): { path: string; text: string; needsSeedStep: tr
       login: { kind: "form", path: "/login", usernameTestId: "email", passwordTestId: "password", submitTestId: "login-submit", successTestId: "signed-in" } }],
     targetAccounts: [],
   };
-  const parsed = E2EApplicationProjectContractSchema.parse(contract);
+  const parsed = contract;
   return { path: "package.json", text: `${JSON.stringify({ agentx: { e2e: parsed } }, null, 2)}\n`, needsSeedStep: true };
 }

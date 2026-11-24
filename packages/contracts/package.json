@@ -8,7 +8,6 @@
     "./web": "./dist/web.js",
     "./code-contract-v0": "./dist/code-contract-v0.js",
     "./testing": "./dist/testing.js",
-    "./dns-helper": "./dist/dns-helper.js",
     "./audit-record-v1": "./dist/audit-record-v1.js"
   },
   "types": "./dist/index.d.ts",

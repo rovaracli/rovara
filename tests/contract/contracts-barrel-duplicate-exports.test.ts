@@ -91,8 +91,8 @@ describe("the contracts barrel", () => {
 
   it("exports no name from two different modules", () => {
     const result = findBarrelDuplicates(CONTRACTS_ENTRY, options);
-    // A scan that read nothing cannot pass: the barrel and its plugins sub-barrel are known, and it names well over a thousand things.
-    expect(result.barrels).toEqual(expect.arrayContaining(["packages/contracts/src/index.ts", "packages/contracts/src/plugins/index.ts"]));
+    // A scan that read nothing cannot pass: the barrel is known, and it names well over a thousand things.
+    expect(result.barrels).toEqual(expect.arrayContaining(["packages/contracts/src/index.ts"]));
     expect(result.names).toBeGreaterThan(1000);
     expect(result.unresolved).toEqual([]);
     expect(result.duplicates.map((entry) => `${entry.name} (${entry.barrel}): ${entry.definedIn.join(" | ")}`)).toEqual([]);

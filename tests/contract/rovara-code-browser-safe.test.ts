@@ -43,8 +43,8 @@ describe("rovara-code.ts is browser-safe", () => {
     expect(files.has("packages/contracts/src/rovara-code.ts")).toBe(true);
   });
 
-  it("would notice a Node import (positive control: the Node sibling reaches node:crypto)", async () => {
-    const { nodeImports } = await importGraph("packages/contracts/src/rovara-code-node.ts");
+  it("would notice a Node import (positive control: the sessions Node module reaches node:crypto)", async () => {
+    const { nodeImports } = await importGraph("packages/contracts/src/agent-sessions-node.ts");
     expect(nodeImports.some((entry) => entry.endsWith("node:crypto"))).toBe(true);
   });
 

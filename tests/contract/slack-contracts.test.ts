@@ -1,20 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  OperationSchema,
-  SlackChannelBindingSchema,
-  SlackRequesterSchema,
-  SlackTaskAnswerRequestSchema,
-  SlackThreadNoteAnsweredRequestSchema,
-  SlackThreadSchema,
-  SlackThreadWorkspaceResultSchema,
-  SlackWorkspaceCloseCompleteResultSchema,
-  SlackWorkspaceCloseStartResultSchema,
-  WorkspaceClosePreflightResultSchema,
-  WorkspaceInstanceSchema,
-  WorkerInvocationSchema,
-  parseSlackThreadSubject,
-  slackThreadSubject,
-} from "../../packages/contracts/src/index.js";
+import { OperationSchema, SlackChannelBindingSchema, SlackRequesterSchema, SlackTaskAnswerRequestSchema, SlackThreadNoteAnsweredRequestSchema, SlackThreadSchema, SlackThreadWorkspaceResultSchema, SlackWorkspaceCloseCompleteResultSchema, SlackWorkspaceCloseStartResultSchema, WorkspaceClosePreflightResultSchema, parseSlackThreadSubject, slackThreadSubject } from "../../packages/contracts/src/index.js";
 
 const thread = { teamId: "T0BSHLLUGBD", channelId: "C0123456789", threadTs: "1695500000.123456" };
 
@@ -118,34 +103,6 @@ describe("Slack contracts", () => {
     }).safeToClose).toBe(false);
     expect(() => WorkspaceClosePreflightResultSchema.parse({ safeToClose: true, repositories: [{ name: "demo", reasons: ["untracked_files"] }] })).toThrow();
     expect(() => WorkspaceClosePreflightResultSchema.parse({ safeToClose: false, repositories: [{ name: "demo", reasons: ["untracked_files", "untracked_files"] }] })).toThrow();
-  });
-
-  it("accepts close worker invocations and requires closedAt on closed workspaces", () => {
-    expect(WorkerInvocationSchema.parse({
-      protocolVersion: 1,
-      kind: "close",
-      operationId: "22222222-2222-4222-8222-222222222222",
-      workspaceId: "11111111-1111-4111-8111-111111111111",
-      fence: 2,
-      projectRevision: 1,
-      callbackCapability: "c".repeat(32),
-      payload: {},
-    }).kind).toBe("close");
-    const workspace = {
-      deploymentMode: "ec2-ebs" as const,
-      id: "11111111-1111-4111-8111-111111111111",
-      ownerKey: "o".repeat(32),
-      projectName: "payments",
-      projectRevision: 1,
-      rootPath: "/mnt/workspace",
-      status: "CLOSED",
-      fence: 2,
-      createdAt: "2026-09-24T07:00:00.000Z",
-      updatedAt: "2026-09-24T08:00:00.000Z",
-    };
-    expect(() => WorkspaceInstanceSchema.parse(workspace)).toThrow(/closedAt/);
-    expect(WorkspaceInstanceSchema.parse({ ...workspace, closedAt: "2026-09-24T08:00:00.000Z" }).status).toBe("CLOSED");
-    expect(WorkspaceInstanceSchema.parse({ ...workspace, status: "READY", environmentDigest: `sha256:${"a".repeat(64)}` })).not.toHaveProperty("environmentDigest");
   });
 
   it("records the requesting Slack user on operations", () => {

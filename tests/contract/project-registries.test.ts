@@ -1,26 +1,6 @@
 // N9 (INTG2): a project's private package registries, the contract half. A fake token is built at run time (never a literal that looks like a key).
 import { describe, expect, it } from "vitest";
-import {
-  PREPARE_REGISTRIES_FEATURE,
-  PrepareRegistriesSchema,
-  ProjectDefinitionSchema,
-  ProjectRegistriesSchema,
-  REGISTRY_TOKEN_SECONDS,
-  RegistryCredentialSchema,
-  StoredProjectDefinitionSchema,
-  WORKER_INVOCATION_FEATURES,
-  WorkerInvocationSchema,
-  formatBoundRegistryDomains,
-  hostMatchesDomain,
-  parseBoundRegistryDomains,
-  prepareRegistriesOf,
-  registryHostOf,
-  registryProblems,
-  registryUrlOf,
-  scrubRegistrySecrets,
-  workerProjectDefinition,
-  type ProjectRegistry,
-} from "../../packages/contracts/src/index.js";
+import { ProjectDefinitionSchema, ProjectRegistriesSchema, REGISTRY_TOKEN_SECONDS, RegistryCredentialSchema, StoredProjectDefinitionSchema, formatBoundRegistryDomains, hostMatchesDomain, parseBoundRegistryDomains, registryHostOf, registryProblems, registryUrlOf, scrubRegistrySecrets, workerProjectDefinition, type ProjectRegistry } from "../../packages/contracts/src/index.js";
 
 const fakeToken = (seed = "a"): string => `eyJ${Buffer.from(`${seed}-token-material-${seed.repeat(24)}`).toString("base64url")}.${Buffer.from(seed.repeat(30)).toString("base64url")}`;
 const CA: ProjectRegistry = { kind: "codeartifact", name: "internal-npm", format: "npm", domain: "acme", domainOwner: "123456789012", repository: "shared", region: "us-west-2" };
@@ -75,21 +55,6 @@ describe("the project record", () => {
     const registered = ProjectDefinitionSchema.parse({ ...PROJECT, registries: [CA, GENERIC] });
     expect(registered.registries).toHaveLength(2);
     expect(Object.hasOwn(workerProjectDefinition(registered), "registries")).toBe(false);
-  });
-});
-
-describe("the prepare payload", () => {
-  const base = { protocolVersion: 1, operationId: "22222222-2222-4222-8222-222222222222", workspaceId: "11111111-1111-4111-8111-111111111111", fence: 1, projectRevision: 1, callbackCapability: "c".repeat(40), kind: "prepare" };
-  it("carries where a registry is, never a credential, and lists its feature", () => {
-    const registries = prepareRegistriesOf([CA, GENERIC]);
-    expect(registries).toStrictEqual([
-      { name: "internal-npm", kind: "codeartifact", format: "npm", url: "https://acme-123456789012.d.codeartifact.us-west-2.amazonaws.com/npm/shared/" },
-      { name: "corp-pypi", kind: "pypi", format: "pypi", url: "https://pypi.corp.acme.dev/simple/" },
-    ]);
-    expect(JSON.stringify(registries)).not.toContain("corp-pypi-reader");
-    expect(WorkerInvocationSchema.safeParse({ ...base, payload: { project: PROJECT, repositoryGrant: "g", registries } }).success).toBe(true);
-    expect(PrepareRegistriesSchema.safeParse([{ ...registries[0], credentialRef: "x" }]).success).toBe(false);
-    expect(WORKER_INVOCATION_FEATURES).toContain(PREPARE_REGISTRIES_FEATURE);
   });
 });
 
