@@ -132,7 +132,7 @@ export class InMemoryMeter implements Meter {
     if (row?.stopped !== true || row.stopId !== input.expectedStopId || row.inFlight !== undefined || this.#stops.get(this.#sourceKey(input.iss, input.cid, input.source))?.inFlight !== undefined) return false;
     this.#stops.set(key, { ...row, stopped: false, clearedBy: input.actor, clearedAt: this.now(), clearReason: input.reason }); return true;
   }
-  #latch(receipt: ChargeReceiptV1 | undefined, routeClass?: RouteClass): void { const stop = stoppedBy(receipt, this.now(), routeClass); if (stop !== undefined) { const key = this.#sourceKey(receipt!.issuer, receipt!.companyId, stop.source, routeClass); this.#stops.set(key, { ...this.#stops.get(key), ...stop }); } }
+  #latch(receipt: ChargeReceiptV1 | undefined, routeClass?: RouteClass, noWriteRoute = false): void { const stop = stoppedBy(receipt, this.now(), routeClass, noWriteRoute); if (stop !== undefined) { const key = this.#sourceKey(receipt!.issuer, receipt!.companyId, stop.source, routeClass); this.#stops.set(key, { ...this.#stops.get(key), ...stop }); } }
   readonly #rows = new Map<string, MeterRow>();
   readonly #open = new Map<string, Open>();
   readonly #ledger = new Map<string, { call: EstimatedCall; targets: Target[] }>();
@@ -218,7 +218,7 @@ export class InMemoryMeter implements Meter {
     }
     return { ok: false, reason: "busy" };
   }
-  async settle(reservation: Reservation, actualMicros: number, estimated?: EstimatedSettlement, receipt?: ChargeReceiptV1, provisional?: ProvisionalEstimate): Promise<void> {
+  async settle(reservation: Reservation, actualMicros: number, estimated?: EstimatedSettlement, receipt?: ChargeReceiptV1, provisional?: ProvisionalEstimate, noWriteRoute = false): Promise<void> {
     if (record(reservation) === undefined || typeof reservation.id !== "string") throw new Error("settlement unavailable");
     await this.beforeWrite("settle");
     const open = this.#open.get(reservation.id);
@@ -255,7 +255,7 @@ export class InMemoryMeter implements Meter {
       this.#receipts.set(callKey, { ...(open.routeClass === undefined ? {} : { routeClass: open.routeClass }), receipt: structuredClone(receipt), kind: open.charge?.kind ?? estimated?.kind ?? "chat", targets: open.targets, amount: actualMicros, held, ...(provisional === undefined ? {} : { provisional, cutoffAt: this.now() }) });
       this.#adjustments.set(`${callKey}:${receipt.revision}`, { receipt: structuredClone(receipt), deltaMicros: actualMicros });
     }
-    this.#latch(receipt, open.routeClass);
+    this.#latch(receipt, open.routeClass, noWriteRoute);
     if (open.customerSource !== undefined) { const key = this.#sourceKey(open.scope.iss, open.scope.cid, open.customerSource), row = this.#stops.get(key); if (row?.inFlight === reservation.id) { const next = { ...row }; delete next.inFlight; this.#stops.set(key, next); } }
     this.#open.delete(reservation.id);
     const companyKey = JSON.stringify([open.scope.iss, open.scope.cid]);
@@ -271,7 +271,7 @@ export class InMemoryMeter implements Meter {
     const outputs = [...this.#receipts.values()].flatMap(({ receipt }) => receipt.issuer === r.issuer && receipt.companyId === r.companyId && receipt.model.provider === r.model.provider && receipt.model.modelId === r.model.modelId && historyOutput(receipt) !== undefined ? [historyOutput(receipt)!] : []);
     for (const { call } of this.#ledger.values()) if (!this.#receipts.has(call.callKey) && call.iss === r.issuer && call.cid === r.companyId && call.provider === r.model.provider && call.model === r.model.modelId && call.chargeStatus !== "awaiting_usage" && hasUsage(call.usage)) outputs.push(call.usage.output);
     const provisional = r.status === "awaiting_usage" && open.provisional !== undefined ? provisionalEstimate(open.estimate, open.provisional, outputs, input.actualInputTokens) : undefined;
-    await this.settle({ id: input.reservationId }, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r, open.charge?.kind), r, provisional);
+    await this.settle({ id: input.reservationId }, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r, open.charge?.kind), r, provisional, input.noWriteRoute === true);
   }
   async applyChargeReceipt(input: ChargeReceiptV1): Promise<ApplyChargeResult> {
     const r = readSettlementReceipt(input);

@@ -165,6 +165,7 @@ it.each([0, 1])("lists all unreached models when broken resume provider evidence
  expect(r.report.errors).toHaveLength(1);
  expect(r.paid).toHaveLength(0);
  expect(r.report.notReached).toEqual(entries.slice(index).map(model => model.id));
- expect(r.lookups).toHaveLength(index + 1);
+ // Phase 1 (free endpoint lookups for EVERY model, so the paid phase can run cheapest first) precedes any resume check: one lookup per model.
+ expect(r.lookups).toHaveLength(entries.length);
  expect(r.report.proposedTariffRows.map(row => row.model)).toEqual(entries.slice(0, index).map(model => model.id));
 });

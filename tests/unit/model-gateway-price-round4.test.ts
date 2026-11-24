@@ -137,10 +137,19 @@ it("validates unknown-kind floors and unbounded confirmations while rejecting ma
 
   }
 });
-it("processes the full 20,000-row mixed source within one bounded real refresh", async () => {
-  const f = fixture(); const rows = Object.fromEntries(Array.from({ length: 20_000 }, (_, i) => [i === 0 ? model : `model-${i}`, row(15, i % 2 ? { mode: "future-chat" } : skipped)]));
-  const start = performance.now(); await f.fetch(rows); await money(f, 22.5);
-  expect((await f.store.load())?.sources.litellm?.floors).toHaveLength(20_000); expect(performance.now() - start).toBeLessThan(5000);
+it("scales the 20,000-row mixed source linearly (within 15x of 2,000 rows) and never hangs", async () => {
+  // Relative bound, not a wall-clock one: a slow CI runner slows both runs alike. Linear is about 10x; a quadratic pass would be about 100x.
+  const run = async (count: number) => {
+    const f = fixture(); const rows = Object.fromEntries(Array.from({ length: count }, (_, i) => [i === 0 ? model : `model-${i}`, row(15, i % 2 ? { mode: "future-chat" } : skipped)]));
+    const start = performance.now(); await f.fetch(rows); await money(f, 22.5);
+    const elapsed = performance.now() - start;
+    expect((await f.store.load())?.sources.litellm?.floors).toHaveLength(count);
+    return elapsed;
+  };
+  await run(2_000); // warm-up so the timed 2,000-row run is not dominated by first-call compilation
+  const t2k = await run(2_000); const t20k = await run(20_000);
+  expect(t20k / Math.max(t2k, 50)).toBeLessThanOrEqual(15);
+  expect(t20k).toBeLessThan(15_000);
 });
 it("unknown-kind Bedrock alias floors raise both kinds even when a later alias is classified", async () => {
   const f = fixture(); await f.fetch({

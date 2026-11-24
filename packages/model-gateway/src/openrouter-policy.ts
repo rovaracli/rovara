@@ -213,7 +213,10 @@ export function openRouterPolicy(model: string, now: number, rows: readonly Open
      !whole(r.max_completion_tokens) || r.max_completion_tokens < 1 || r.max_completion_tokens > 1_000_000 || !r.evidence ||
      record(r.reasoning) === undefined || (r.reasoning.mode !== "disabled" && r.reasoning.mode !== "bounded") ||
      (r.reasoning.mode === "bounded" && (!whole(r.reasoning.max_tokens) || r.reasoning.max_tokens < 1024 || r.reasoning.max_tokens >= r.max_completion_tokens))) return undefined;
- const noWrite = Object.hasOwn(OPENROUTER_RELAXED_TARIFF_MODELS, model) && r.cacheWriteBasis === "never_requested_enforced" && r.cacheWriteEnforcementVersion === OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION;
+ // Owner rule (2026-11-23): an ABSENT cache-write price is allowed for ANY reviewed route, as a row with the versioned basis and an explicit "0" write price.
+ // The basis is a RUNTIME promise, not a price: the gateway never sends cache hints, and a reported write stops the call and settles safely (server.ts cacheWritesForbidden,
+ // openRouterRates' write rate, source-stop.ts). An EXPLICIT zero write price carries no basis and the harness never proves it (it stays refused there).
+ const noWrite = r.cacheWriteBasis === "never_requested_enforced" && r.cacheWriteEnforcementVersion === OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION;
  if ((r.cacheWriteBasis !== undefined || r.cacheWriteEnforcementVersion !== undefined) && !noWrite) return undefined;
  const pricing = {} as OpenRouterPrices;
  try {
@@ -298,7 +301,12 @@ export function openRouterCapOrder<T extends OpenRouterPolicy>(policies: readonl
 }
 export function openRouterRates(policy: OpenRouterPolicy) {
  const rate = (s: string) => Number(openRouterDecimal(s) / 1_000_000n);
+ // A row with the no-write basis lists NO write price. If a write is ever reported anyway, its tokens are rated at the HIGHEST listed per-token price
+ // (never the zero the row stores), so the settle floor max(hold, reported cost, token cost) cannot undercut the true bill.
+ const noWrite = policy.cacheWriteBasis === "never_requested_enforced";
+ const write = noWrite ? Math.max(rate(policy.pricing.prompt), rate(policy.pricing.completion), rate(policy.pricing.internal_reasoning), rate(policy.pricing.input_cache_read))
+  : Math.max(rate(policy.pricing.prompt), rate(policy.pricing.input_cache_write));
  return { inputMicrosPerMTok: rate(policy.pricing.prompt), outputMicrosPerMTok: Math.max(rate(policy.pricing.completion), rate(policy.pricing.internal_reasoning)),
-  cacheReadMicrosPerMTok: rate(policy.pricing.input_cache_read), cacheWrite5mMicrosPerMTok: Math.max(rate(policy.pricing.prompt), rate(policy.pricing.input_cache_write)), cacheWrite1hMicrosPerMTok: Math.max(rate(policy.pricing.prompt), rate(policy.pricing.input_cache_write)),
+  cacheReadMicrosPerMTok: rate(policy.pricing.input_cache_read), cacheWrite5mMicrosPerMTok: write, cacheWrite1hMicrosPerMTok: write,
   estimated: false, priceVersion: 1 };
 }

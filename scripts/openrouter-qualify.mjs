@@ -14,7 +14,7 @@ import { OFFERED_MODEL_NAME, OFFERED_MODELS_MAX } from "../packages/model-gatewa
 // must ask for more than the reasoning budget (:149). One rung: every control and probe is sent at the row's OWN ceiling.
 const HARNESS_MAX_COMPLETION_TOKENS = 2048;
 const HARNESS_REASONING_TOKENS = 1024;
-/** The gateway's versioned no-cache-write enforcement basis (openrouter-policy.ts:112-113), recorded on a relaxed-list row whose catalogue write price is ABSENT. */
+/** The gateway's versioned no-cache-write enforcement basis (openrouter-policy.ts noWrite), recorded on ANY row whose catalogue write price is ABSENT (owner rule 2026-11-23). */
 const applyNoWriteBasis = tariff => { tariff.cacheWriteBasis = "never_requested_enforced"; tariff.cacheWriteEnforcementVersion = OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION; };
 const CEILING_FLOOR_REASON = `max_completion_tokens <= ${HARNESS_REASONING_TOKENS}: below the runtime bounded-reasoning floor`;
 /** Reference prompt size of the install tie-break (ruling (c)); a change is a visible diff and a pinned test. */
@@ -310,10 +310,10 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
      } else priceSets = [prices, ...overrides.map(o => ({ ...prices, ...o }))];
     }
    }
-   // The no-write basis exists only for the relaxed list and only when the catalogue stated NO write price. In all-models mode the per-route entry
+   // The no-write basis exists only when the catalogue stated NO write price (an explicit zero never gets it). In all-models mode the per-route entry
    // carries the already-normalized six prices, so the absence is read from its recorded assumedZero (the routes' intersection), not from the prices.
    const writeAbsent = allModels && Array.isArray(entry?.assumedZero) ? entry.assumedZero.includes("input_cache_write") : !Object.hasOwn(prices, "input_cache_write") && (!allModels || priceSets.every(p => !Object.hasOwn(p, "input_cache_write")));
-   if (allowlisted && writeAbsent) applyNoWriteBasis(tariff);
+   if (writeAbsent) applyNoWriteBasis(tariff);
    for (const key of OPENROUTER_PRICE_KEYS) {
     const required = key === "prompt" || key === "completion";
     let maximum;
@@ -402,7 +402,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
     continue;
    }
    result.reasoningProbe = "probe skipped: generation failed";
-   let probeBody;
+   let probeBody; let reasoningOffRefused = false; // once a route refuses `enabled: false`, its remaining controls use the gateway reasoning directly
    for (let n = 0; n < 4; n++) {
     // Keep ordinary qualification easy; exercise reasoning in its own capped, fully held call.
     const reasoningProbe = n === 3;
@@ -413,8 +413,12 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
     // ONE rung: the row's own ceiling, so every proof is at the size the gateway will hold. If the hold does not fit the caps,
     // reserve() below refuses and nothing is sent. No paid-call retry.
     maxTokens = policy.max_completion_tokens;
-    body = qualificationRequest({ model, messages, max_tokens: maxTokens, stream: false }, policy);
-    if (body === undefined) throw new Error();
+    const gatewayBody = qualificationRequest({ model, messages, max_tokens: maxTokens, stream: false }, policy);
+    if (gatewayBody === undefined) throw new Error();
+    // Owner rule (2026-11-23): the CONTROL probes (the "2 + 2" checks) send reasoning OFF, so they bill a few tokens instead of up to 1024 reasoning tokens; the reasoning
+    // probe (n = 3) keeps the gateway's exact bounded-reasoning request. Only the `reasoning` field differs: provider pin, max_price, ceiling and prompt shape are the gateway's.
+    // A route that refuses `enabled: false` (HTTP 400, $0) is retried ONCE at the lowest the gateway allows (its own bounded request): see the catch below.
+    body = reasoningProbe || reasoningOffRefused ? gatewayBody : { ...gatewayBody, reasoning: { enabled: false } };
     maxPromptTokens = Buffer.byteLength(JSON.stringify(body));
     hold = qualificationHold(maxPromptTokens, maxTokens);
     const searchNotRequested = !Object.keys(body).some(key => /plugins|web|search|tools/iu.test(key));
@@ -432,7 +436,15 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
     };
     let answer;
     try { answer = await json("chat/completions", body, retainDebit); }
-    catch (error) { recordCheck(call, "response", false, evidenceReason(error)); break; }
+    catch (error) {
+     // A refused `enabled: false` is a $0 HTTP 400 (reasoning mandatory on this route): fall back ONCE to the gateway's own request, the lowest reasoning it allows.
+     if (body === gatewayBody || stop || !(error instanceof EvidenceError) || error.message !== "http 400") { recordCheck(call, "response", false, evidenceReason(error)); break; }
+     reasoningOffRefused = true; body = gatewayBody; maxPromptTokens = Buffer.byteLength(JSON.stringify(body)); hold = qualificationHold(maxPromptTokens, maxTokens);
+     if (!reserve(result, hold)) { recordCheck(call, "response", false, "reasoning off refused (HTTP 400); the gateway-reasoning retry hold does not fit the caps"); break; }
+     call.holdMicros = hold; call.maxPromptTokens = maxPromptTokens; call.requestControls = { max_tokens: body.max_tokens, reasoning: body.reasoning, provider: body.provider }; call.reasoningOffRefused = true;
+     try { answer = await json("chat/completions", body, retainDebit); }
+     catch (retryError) { recordCheck(call, "response", false, evidenceReason(retryError)); break; }
+    }
     const content = answer.choices?.length === 1 ? answer.choices[0]?.message?.content : undefined;
     recordCheck(call, "visible_text", typeof content === "string" && content.trim().length > 0, "choices[0].message.content expected nonempty text from exactly one choice");
     const u = answer.usage;
@@ -465,7 +477,7 @@ async function qualifyModels({ models, provider, providerName = provider, spendC
     check("completion_plus_reasoning_within_limit", count(totalOutput) && totalOutput <= maxTokens && count(u?.completion_tokens) && u.completion_tokens <= maxTokens, tokenFailures(["native_tokens_completion", totalOutput, 0, maxTokens], ["usage.completion_tokens", u?.completion_tokens, 0, maxTokens]));
     const usageReasoning = u?.completion_tokens_details?.reasoning_tokens;
     check("reasoning_readable", count(g.native_tokens_reasoning) && count(usageReasoning), tokenFailures(["native_tokens_reasoning", g.native_tokens_reasoning, 0, Number.MAX_SAFE_INTEGER], ["usage.completion_tokens_details.reasoning_tokens", usageReasoning, 0, Number.MAX_SAFE_INTEGER]));
-    const requestedReasoningCap = body.reasoning.max_tokens;
+    const requestedReasoningCap = body.reasoning.max_tokens ?? policy.reasoning.max_tokens;
     if (count(g.native_tokens_reasoning) && count(usageReasoning) && (g.native_tokens_reasoning > requestedReasoningCap || usageReasoning > requestedReasoningCap)) {
      call.reasoningOverCap = { requestedMaxTokens: requestedReasoningCap, usageTokens: usageReasoning, generationTokens: g.native_tokens_reasoning };
      process.stderr.write(`OpenRouter reasoning above requested cap ${requestedReasoningCap}: usage ${safeValue(usageReasoning)}, generation ${safeValue(g.native_tokens_reasoning)}\n`);
@@ -629,6 +641,9 @@ const capMicros = value => {
 // component alone is never proof, and a component the catalogue left ABSENT (assumedZero) is never an explicit
 // price, so it is never proven here (ruling (e)). Prompt/completion zero is unreachable: the gateway's validator
 // refuses a zero prompt or completion rate, so such a row never passes the runtime_policy check.
+/** A cost part named for a cache write (the gateway's cacheWriteCostReported uses the same pattern): recorded per call as an unrecognized cost component. */
+const CACHE_WRITE_NAME = /cache[_-]?(write|creat)/iu;
+const cacheWriteCostParts = usage => Array.isArray(usage?.cost_details?.unrecognized_components) ? usage.cost_details.unrecognized_components.filter(name => typeof name === "string" && CACHE_WRITE_NAME.test(name)).length : 0;
 /** THE ONE PLACE the zero-proof exceptions live (widen the rule here, nowhere else). */
 export const ZERO_PROOF_RULES = {
  // Absent-from-the-catalogue components that the billed-bill proof below may still prove. ONLY `request` (controller ruling Q-B): an absent
@@ -636,12 +651,13 @@ export const ZERO_PROOF_RULES = {
  // false (openRouterRequest), so an endpoint with a request fee cannot be used; the proof below also requires that pin on every recorded call.
  // Never widen this to a component the gateway does not cap on the wire.
  assumedMayBeProven: ["request"],
- // Runtime no-cache-write enforcement counts as the input_cache_write proof ONLY for the gateway's relaxed-list models, with the current
- // enforcement version, an ABSENT catalogue write price (the only case the harness sets the basis) and ZERO reported writes on every call.
- // The gateway never sends cache hints (hasCachingHint) and stops the source on any reported write (cacheWritesForbidden, source-stop.ts).
- cacheWriteRuntimeEnforced: (tariff, calls) => Object.hasOwn(OPENROUTER_RELAXED_TARIFF_MODELS, tariff.model) &&
-  tariff.cacheWriteBasis === "never_requested_enforced" && tariff.cacheWriteEnforcementVersion === OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION &&
-  (tariff.assumedZero ?? []).includes("input_cache_write") && calls.length > 0 && calls.every(call => call.usage?.cache_write_tokens === 0),
+ // Runtime no-cache-write enforcement counts as the input_cache_write proof for ANY model (owner rule 2026-11-23), with the current
+ // enforcement version, an ABSENT catalogue write price (the only case the harness sets the basis) and ZERO reported writes on every call:
+ // no cache-write tokens AND no cost part named for a write. The gateway never sends cache hints (hasCachingHint); on any reported write it stops the
+ // call, settles at max(hold, reported cost, token cost with the write rated at the highest listed price) and latches the source stop (cacheWritesForbidden,
+ // openRouterRates, source-stop.ts). An EXPLICIT zero write price has no basis and no assumedZero entry, so it is never proven. A missing READ price stays refused.
+ cacheWriteRuntimeEnforced: (tariff, calls) => tariff.cacheWriteBasis === "never_requested_enforced" && tariff.cacheWriteEnforcementVersion === OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION &&
+  (tariff.assumedZero ?? []).includes("input_cache_write") && calls.length > 0 && calls.every(call => call.usage?.cache_write_tokens === 0 && cacheWriteCostParts(call.usage) === 0),
 };
 /** The request the harness sent (the gateway's own) pinned the proven endpoint with no fallback and capped the request fee at zero on the wire. */
 const requestWirePinned = call => {
@@ -768,6 +784,8 @@ async function qualifyAll(options, capturedCatalogue) {
  const report = { status: "FAIL", harnessVersion: harnessVersion(), chargedMicros: 0, preCallHoldsMicros: 0, exposureMicros: 0, spendCapMicros: 0, perModelCapMicros: 0, models: [], notReached: [], failuresByCause: {}, proposedTariffRows: [], installSelection: { installable: [], refused: [] }, errors: [] };
  const budget = { exposure: 0, modelExposure: 0, cap: 0, modelCap: 0, stop: undefined };
  let entries = [];
+ const plans = []; // models that can reach a paid call, spent on cheapest first
+ let inFlight; // the plan being spent on in phase 2 (an unexpected error marks it and every later plan not reached)
  const key = env.OPENROUTER_API_KEY;
  const safe = value => typeof value === "string" && !containsCredential(value, key);
  const fail = (model, cause, reason) => {
@@ -816,10 +834,11 @@ async function qualifyAll(options, capturedCatalogue) {
   const catalogue = await get("models");
   if (!Array.isArray(catalogue?.data)) throw new Error();
   entries = catalogue.data;
+  // Phase 1 (free GETs and local checks only, catalogue order): every model that can reach a paid call becomes a plan. Phase 2 (below) spends, CHEAPEST FIRST.
   for (const entry of entries) {
    const id = entry?.id;
    const model = { model: safe(id) ? id : "[invalid model]", status: "FAIL", reason: "", causes: [], providers: [] };
-   report.models.push(model); budget.modelExposure = 0;
+   report.models.push(model);
    if (!safe(id) || entries.filter(e => e?.id === id).length !== 1) { fail(model, "invalid_id", "invalid or duplicate model identifier"); continue; }
    if (id.startsWith("openrouter/") && validModel(id.replace(/^openrouter\//u, "router/"))) { fail(model, "router_alias", "router_alias excluded"); continue; }
    if (!validModel(id.replace(/:(?:batch|free|online)$/u, ""))) { fail(model, "invalid_id", "invalid model identifier"); continue; }
@@ -875,10 +894,26 @@ async function qualifyAll(options, capturedCatalogue) {
     const prepared = await prepare(routedEntry, route, name);
     const tariff = prepared.candidateTariff;
     tariff.assumedZero = OPENROUTER_PRICE_KEYS.filter(key => tariffs.every(t => t.assumedZero.includes(key)));
-    if (Object.hasOwn(OPENROUTER_RELAXED_TARIFF_MODELS, id) && tariff.assumedZero.includes("input_cache_write")) applyNoWriteBasis(tariff);
+    if (tariff.assumedZero.includes("input_cache_write")) applyNoWriteBasis(tariff);
     eligible.push({ route, name, entry: { ...routedEntry, assumedZero: tariff.assumedZero }, tariff });
    }
    model.tariffSignature = signature(eligible.map(e => ({ ...e.tariff, providerName: e.name })).sort((a, b) => a.route.localeCompare(b.route)));
+   plans.push({ id, model, eligible });
+  }
+  // Owner rule (2026-11-23): CHEAPEST FIRST, so the shared hold cap reaches more models. A model's key is its cheapest route's MAX LISTED PRICE (the highest of that route's
+  // listed per-token prices: prompt, completion, reasoning, cache read, cache write; override tiers already folded in by the worst-case maxima). Models with no eligible route
+  // (they spend nothing) go last; ties by model id in code-point order. Report rows stay in catalogue order; only the spending order changes.
+  const routeMaxPrice = item => OPENROUTER_PRICE_KEYS.filter(k => k !== "request").map(k => item.tariff.pricing[k]).reduce(maxPrice);
+  const planKey = plan => plan.eligible.length === 0 ? undefined : plan.eligible.map(routeMaxPrice).reduce((a, b) => comparePrice(rationalPrice(a), rationalPrice(b)) <= 0n ? a : b);
+  plans.sort((a, b) => {
+   const [ka, kb] = [planKey(a), planKey(b)];
+   if (ka !== undefined && kb !== undefined) { const c = comparePrice(rationalPrice(ka), rationalPrice(kb)); if (c !== 0n) return c < 0n ? -1 : 1; }
+   else if (ka !== kb) return ka === undefined ? 1 : -1;
+   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  for (const plan of plans) {
+   const { id, model, eligible } = plan; inFlight = plan; budget.modelExposure = 0;
+   if (budget.stop) { fail(model, budget.stop, `not reached: ${budget.stop}`); report.notReached.push(id); continue; }
    const matches = prior?.harnessVersion === report.harnessVersion ? prior.models.filter(m => m?.model === id) : [];
    const old = matches.length === 1 ? matches[0] : undefined;
    // Carry only a complete prior PASS matching ALL currently eligible route tariffs.
@@ -943,7 +978,9 @@ async function qualifyAll(options, capturedCatalogue) {
   report.errors.push("Catalogue qualification refused or HTTP evidence unavailable; no automatic tariff installation.");
   const current = report.models.at(-1);
   const remaining = entries.slice(report.models.length).map(entry => entry?.id);
-  if (current && !current.providers.some(provider => provider.calls?.length > 0)) remaining.unshift(current.model);
+  if (inFlight === undefined && current && !current.providers.some(provider => provider.calls?.length > 0)) remaining.unshift(current.model);
+  // Phase 2 not reached yet (or interrupted): every plan from the in-flight one on (all of them if phase 1 itself failed) spent nothing yet.
+  for (const plan of plans.slice(inFlight === undefined ? 0 : plans.indexOf(inFlight))) if (!plan.model.providers.some(provider => provider.calls?.length > 0)) remaining.push(plan.id);
   for (const id of remaining) if (validModel(id) && safe(id) && !report.notReached.includes(id)) report.notReached.push(id);
  }
  report.exposureMicros = budget.exposure;

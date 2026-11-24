@@ -8,6 +8,8 @@ const savedCatalogue = JSON.parse(readFileSync(new URL("../fixtures/model-gatewa
 const run8Refusal = JSON.parse(readFileSync(new URL("../fixtures/model-gateway-prices/openrouter-run8-refusal.json", import.meta.url), "utf8")) as { httpStatus: number; body: { error: { code: string; message: string } } };
 const refusalMessage = run8Refusal.body.error.message;
 const pricing = { prompt: "0.000000001", completion: "0.000000002", internal_reasoning: "0.000000003", request: "0.000001", input_cache_read: "0", input_cache_write: "0" };
+/** The request body's reasoning object as a typed read: anything that is not an object reads as empty. */
+const reasoningOf = (body: Record<string, unknown>): { enabled?: unknown; max_tokens?: unknown } => { const reasoning = body.reasoning; return typeof reasoning === "object" && reasoning !== null ? reasoning : {}; };
 type LookupFixture = { lookup?: (generation: Record<string, unknown>, attempt: number) => Response; id?: unknown; answerModel?: unknown; probe?: (body: Record<string, unknown>, attempt: number) => Response };
 async function fake(mode = "pass", cap = "0.50", entries?: { id: string; pricing: Record<string, unknown>; top_provider: { max_completion_tokens: number } }[], modelIds = models, evidence?: (usage: Record<string, unknown>, generation: Record<string, unknown>, body: Record<string, unknown>) => void, lookup: LookupFixture = {}) {
  const waits: number[] = []; let clock = 0;
@@ -55,8 +57,11 @@ async function fake(mode = "pass", cap = "0.50", entries?: { id: string; pricing
 }
 it("qualifies three plain HTTP calls plus a separate reasoning probe per model using exact caps, pinned route and bounded reasoning and room for visible text", async () => {
  const r = await fake(); expect(r.report?.status).toBe("PASS"); expect(r.requests).toHaveLength(8); expect(r.generations).toBe(8);
- expect(r.requests[0]).toMatchObject({ max_tokens: 2048, reasoning: { enabled: true, max_tokens: 1024 }, provider: { order: ["fixture-provider"], only: ["fixture-provider"], allow_fallbacks: false, max_price: { prompt: 0.001, completion: 0.003 } } });
+ // Owner rule 2026-11-23: the three CONTROL probes send reasoning OFF; the 4th (the reasoning probe) keeps the bounded 1024.
+ expect(r.requests[0]).toMatchObject({ max_tokens: 2048, reasoning: { enabled: false }, provider: { order: ["fixture-provider"], only: ["fixture-provider"], allow_fallbacks: false, max_price: { prompt: 0.001, completion: 0.003 } } });
  expect(r.requests[0]).not.toHaveProperty("plugins");
+ expect(r.requests.slice(0, 3).every(b => { const reasoning = reasoningOf(b); return reasoning.enabled === false && reasoning.max_tokens === undefined; })).toBe(true);
+ expect(r.requests[3]).toMatchObject({ reasoning: { enabled: true, max_tokens: 1024 } });
 });
 it.each(["reasoning", "route", "mismatch", "overage", "fees", "details"])("fails each model independently on %s", async mode => {
  const r = await fake(mode); expect(r.report?.status).toBe("FAIL"); expect(r.requests).toHaveLength(mode === "fees" ? 0 : mode === "overage" ? 1 : 2);

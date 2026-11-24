@@ -697,7 +697,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
           log({ event: "customer_source_over_reservation", source: route.payer === "bedrock_byo" ? "bedrock_byo" : "openrouter", company: callClaims.cid, costMicros: observed, heldMicros: reservedMicros, overageMicros: observed - reservedMicros });
         }
         const actualInputTokens = usage?.actualInputTokens?.();
-        await route.meter.settleV2({ reservationId: reservation.id, receipt, ...(actualInputTokens === undefined ? {} : { actualInputTokens }) });
+        await route.meter.settleV2({ reservationId: reservation.id, receipt, ...(actualInputTokens === undefined ? {} : { actualInputTokens }), ...(cacheWritesForbidden ? { noWriteRoute: true } : {}) });
         cost = chargeValue(receipt.amountMicros)!; estimated = receipt.status !== "final";
         if (route.provider === "openrouter" && cost > reservedMicros) log({ event: "openrouter_over_reservation", costMicros: cost, holdMicros: reservedMicros, sourceId: receipt.source.id });
         if (customerReview && sessionCall !== undefined) await deps.reviewerGrants?.giveBack(sessionCall.claims.iss, sessionCall.claims.cid, sessionCall.claims.jti, Math.max(0, sessionCall.debited - cost));

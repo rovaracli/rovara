@@ -46,14 +46,17 @@ it("A2: every body the harness sends EQUALS the gateway's own request for the in
  const policy = openRouterPolicy(row.model, row.verifiedAt + 1, [bare(row) as never])!;
  expect(bodies.length).toBeGreaterThan(0);
  for (const body of bodies.filter(b => b.max_tokens === 2048)) {
-  const runtime = openRouterRequest({ model: body.model, messages: body.messages, max_tokens: body.max_tokens, stream: false }, policy)!;
+  const gateway = openRouterRequest({ model: body.model, messages: body.messages, max_tokens: body.max_tokens, stream: false }, policy)!;
+  // Owner rule 2026-11-23: the CONTROL probes send reasoning OFF; EVERYTHING else (pin, caps, ceiling, prompt shape) is the gateway's request. The reasoning probe is exact.
+  const runtime = (body.reasoning as { enabled: boolean }).enabled === false ? { ...gateway, reasoning: { enabled: false } } : gateway;
   // Price-cap refusal probes differ ONLY in one max_price component being 0; every control is byte-for-byte the gateway's request.
   if (Object.values(body.provider.max_price).includes(0)) { expect({ ...body, provider: { ...body.provider, max_price: runtime.provider && (runtime.provider as { max_price: unknown }).max_price } }).toEqual(runtime); continue; }
   expect(body).toEqual(runtime);
  }
  const control = bodies[0]!;
  expect(control.provider).toEqual({ order: [row.route], only: [row.route], allow_fallbacks: false, require_parameters: true, max_price: { prompt: 1.5, completion: 7.5, request: 0 } });
- expect(control.reasoning).toEqual({ enabled: true, max_tokens: 1024 });
+ expect(bodies.slice(0, 3).map(b => b.reasoning)).toEqual([{ enabled: false }, { enabled: false }, { enabled: false }]);
+ expect(bodies[3]!.reasoning).toEqual({ enabled: true, max_tokens: 1024 });
 });
 
 it.each([
@@ -105,24 +108,25 @@ it("E-R1: a relaxed-list id with an ABSENT write price, explicit zero request an
  expect(report.installSelection.installable).toHaveLength(1);
  expect(openRouterPolicy(row.model, row.verifiedAt + 1, [bare(row) as never])).toBeDefined();
 });
-it("E-R2: the same shape for a NON-relaxed id stays CANDIDATE (no basis, no write proof, not installable)", async () => {
+it("E-R2 (owner rule 2026-11-23): the same shape for a NON-relaxed id is PROVEN with the same basis, installable by the gateway's validator", async () => {
  const { report } = await run({ id: "vendor/not-relaxed", pricing: RELAXED });
  const row = report.proposedTariffRows[0]!;
- expect(row).not.toHaveProperty("cacheWriteBasis");
- expect(row.status).toBe("CANDIDATE"); expect(row.zeroPriceProof).not.toHaveProperty("input_cache_write");
- expect(report.installSelection.installable).toEqual([]);
+ expect(row).toMatchObject({ cacheWriteBasis: "never_requested_enforced", cacheWriteEnforcementVersion: OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION, status: "PROVEN" });
+ expect(row.zeroPriceProof.input_cache_write!.source).toBe(`runtime_enforced:${OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION}`);
+ expect(report.installSelection.installable).toHaveLength(1);
+ expect(openRouterPolicy(row.model, row.verifiedAt + 1, [bare(row) as never])).toMatchObject({ cacheWriteBasis: "never_requested_enforced", pricing: { input_cache_write: "0" } });
 });
 it("E-R3: a relaxed-list id whose catalogue states an EXPLICIT zero write price gets no basis and stays CANDIDATE", async () => {
  const { report } = await run({ id: "openai/gpt-5-mini", pricing: { ...RELAXED, input_cache_write: "0" } });
  const row = report.proposedTariffRows[0]!;
  expect(row).not.toHaveProperty("cacheWriteBasis"); expect(row.status).toBe("CANDIDATE");
 });
-it("E-R4: the rule itself: every condition is required (relaxed id, basis, CURRENT version, absent catalogue write price, zero reported writes on every call)", () => {
+it("E-R4: the rule itself: every condition is required (basis, CURRENT version, absent catalogue write price, zero reported writes on every call; ANY model)", () => {
  const call = { usage: { cache_write_tokens: 0 } };
  const good = { model: "openai/gpt-5-mini", cacheWriteBasis: "never_requested_enforced", cacheWriteEnforcementVersion: OPENROUTER_CACHE_WRITE_ENFORCEMENT_VERSION, assumedZero: ["input_cache_write"] };
  const rule = ZERO_PROOF_RULES.cacheWriteRuntimeEnforced;
  expect(rule(good, [call, call])).toBe(true);
- expect(rule({ ...good, model: "vendor/other-model" }, [call])).toBe(false);
+ expect(rule({ ...good, model: "vendor/other-model" }, [call])).toBe(true); // any model (owner rule 2026-11-23)
  expect(rule({ ...good, cacheWriteEnforcementVersion: "openrouter-no-cache-write-v0" }, [call])).toBe(false);
  expect(rule({ ...good, cacheWriteEnforcementVersion: undefined }, [call])).toBe(false);
  expect(rule({ ...good, cacheWriteBasis: "assumed" }, [call])).toBe(false);
