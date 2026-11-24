@@ -34,6 +34,17 @@ describe("original start Cloud reader through the real client and browser mount"
     const w = await httpWorld({ error: { code, message } }, Number(status)); const r = await w.call(path);
     expect(r.status).toBe(want); expect(JSON.stringify(r.body)).not.toContain("private backend text"); expect(w.calls).toHaveLength(1);
   });
+  it.each([
+    ["extra envelope fields on a known code", 404, { error: { code: "TASK_NOT_FOUND", message: "That task is unavailable.", reason: "gone", writes: "none", future: { a: 1 } }, extra: true }, 404, "TASK_NOT_FOUND"],
+    ["extra envelope fields on a known 400", 400, { error: { code: "CONFIG_INVALID", message: "That start request is invalid.", reason: "x" } }, 400, "CONFIG_INVALID"],
+    ["unknown code on 404 falls back", 404, { error: { code: "SOME_FUTURE_CODE", message: "That task is unavailable.", reason: "r" } }, 503, "RUNTIME_UNAVAILABLE"],
+    ["unknown code on 403 keeps the status mapping", 403, { error: { code: "SOME_FUTURE_CODE", message: "private backend text", writes: "done" } }, 403, "FORBIDDEN"],
+    ["unknown code on 429 keeps the status mapping", 429, { error: { code: "SOME_FUTURE_CODE", message: "private backend text" } }, 429, "RATE_LIMITED"],
+  ])("tolerates a newer Code envelope: %s", async (_name, status, body, wantStatus, wantCode) => {
+    const w = await httpWorld(body, status); const r = await w.call(path);
+    expect(r.status).toBe(wantStatus); expect(r.body).toMatchObject({ error: { code: wantCode } });
+    expect(JSON.stringify(r.body)).not.toContain("private backend text"); expect(JSON.stringify(r.body)).not.toContain("future"); expect(w.calls).toHaveLength(1);
+  });
   it("refreshes only the GET, with the same original ID", async () => {
     const w = await httpWorld(confirmed, 200, async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : input);

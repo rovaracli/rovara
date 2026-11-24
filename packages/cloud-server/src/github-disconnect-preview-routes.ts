@@ -12,7 +12,8 @@ const Blockers = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("unknown"), reason: z.enum(["read_bound", "read_unavailable"]) }).strict(),
 ]);
 const Reply = Input.extend({ checkedAt: z.iso.datetime(), snapshot: z.literal("non_atomic"), disconnectBlockers: Blockers, repositories: Unknown, runningTasks: Unknown, queuedTasks: Unknown }).strict();
-const ErrorBody = z.object({ error: z.object({ code: z.string(), message: z.string() }).strict() }).strict();
+// Loose on purpose (F3-A0): a newer Code may add envelope fields (reason, writes) or error codes. Only code and message are read; anything else passes through unread.
+const ErrorBody = z.looseObject({ error: z.looseObject({ code: z.string(), message: z.string() }) });
 const failure = (status: number, code: string, message = "GitHub disconnect preview is unavailable."): RouteAnswer => ({ status, body: { error: { code, message } } });
 function refused(error: unknown): RouteAnswer {
   if (error instanceof SignInEnded) throw error;
