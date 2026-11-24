@@ -4,7 +4,7 @@ import { useRead, useScope } from "./read-model.js";
 import { ReadState } from "./ReadState.js";
 import { Card, Chip, Fact, Facts, Header, Notice, Row, Rows, dayTime } from "./parts.js";
 
-const ENDED: Record<string, string> = { built: "Built", budget_used: "The budget was used", pages_used: "The page limit was reached", time_used: "The time limit was reached", stopped_by_person: "Stopped by a person", needs_ai_key: "Needs a connected AI key", repo_unreadable: "A repository could not be read", access_lost: "Access to a repository was lost", infrastructure: "Stopped on Rovara's side", upkeep_paused: "Upkeep is paused" };
+const ENDED: Record<string, string> = { built: "Built", budget_used: "The budget was used", pages_used: "The page limit was reached", time_used: "The time limit was reached", stopped_by_person: "Stopped by a person", needs_ai_key: "Needs a connected AI key", repo_unreadable: "A repository could not be read", access_lost: "Access to a repository was lost", infrastructure: "Stopped on Rovara's side", code_moved: "The code changed while it started", upkeep_paused: "Upkeep is paused" };
 /** The viewer's own local date and time (no fixed zone). */
 const when = dayTime;
 export function WikiSetupReadPanel() {

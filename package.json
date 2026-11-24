@@ -26,6 +26,7 @@
     "cloud:local": "tsx scripts/cloud-server.ts",
     "fake-code": "tsx scripts/fake-code.ts",
     "contract:table": "tsx scripts/code-contract-table.ts",
+    "contract:drift": "tsx scripts/contract-drift.ts",
     "build:web": "npm run build --workspace @agentx/web && node --import tsx scripts/web-precompress.ts"
   },
   "devDependencies": {

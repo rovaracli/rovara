@@ -4,7 +4,7 @@ import { WIKI_SETUP_CODE_WORDS } from "../../packages/contracts/src/app-wiki-set
 
 export interface FakeWikiSetup {
   status: "none" | "running" | "built" | "stopped";
-  stop?: "built" | "budget_used" | "pages_used" | "time_used" | "stopped_by_person" | "needs_ai_key" | "repo_unreadable" | "access_lost" | "infrastructure" | "upkeep_paused";
+  stop?: "built" | "budget_used" | "pages_used" | "time_used" | "stopped_by_person" | "needs_ai_key" | "repo_unreadable" | "access_lost" | "infrastructure" | "code_moved" | "upkeep_paused";
   pages: number; refreshPages: number; agentsOn: boolean; aiKey: "connected" | "missing" | "unknown"; mapMade: boolean; planned: number; written: number; upkeepOn: boolean; off?: boolean; upkeepOff?: boolean;
   /** L4-P2: the operator ceiling is off (Code answers `available: false`). */ ceilingOff?: boolean;
   /** The cap Code states (it has no read today, so the default is `null`). */ capUsd?: number;

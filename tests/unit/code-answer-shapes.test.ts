@@ -347,6 +347,12 @@ describe("lessons measure, wiki build, spend limits (audit items 12a, 12b, 12d)"
     expect(buildAnswer(view)).toMatchObject({ status: "stopped", stop: "upkeep_paused", message: WIKI_UPKEEP_PAUSED.message });
   });
 
+  it("the wiki-build panel reads a build that ended code_moved (Code 0.5.49), with Code's fixed sentence", () => {
+    const message = "The code changed while the wiki build was starting, so Rovara could not read the commit it planned from. Nothing was lost. Start the build again and it will plan from the latest code.";
+    const view = { ...wikiSetupBuildView({ status: "stopped", stop: "code_moved", pages: 10, refreshPages: 2, agentsOn: true, aiKey: "connected", mapMade: true, planned: 12, written: 10, upkeepOn: true }, true), stop: "code_moved", message };
+    expect(buildAnswer(view)).toMatchObject({ status: "stopped", stop: "code_moved", message });
+  });
+
   it("a company owner or admin who is not the project's admin is offered the per-task limit change Code accepts from them; a plain member is not", async () => {
     const settings = { preset: null, overrides: {}, revision: 2, updatedAt: null, updatedBy: null, resolved: {}, values: { model_budget_usd: { value: 50, origin: "company limit" } }, clamped: [] };
     const code: Code = (call) => call.path === "/v1/dev/projects/payments/settings" ? json(200, devAnswer(settings)) : undefined;

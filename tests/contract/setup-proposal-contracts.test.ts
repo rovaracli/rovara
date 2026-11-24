@@ -1,9 +1,10 @@
 // Meta repo lane B, task B1: the setup agent's proposal contract and the reader that turns a model's answer into one (the worker and the broker both run it).
 import { describe, expect, it } from "vitest";
 import {
-  REMOTE_CODE_REASON, SETUP_ITEM_KINDS, SETUP_PROPOSAL_INFO_STRING, SetupApplyBodySchema, SetupDraftResponseSchema, SetupDraftSchema, SetupProposalSchema, sanitizeSetupProposal,
+  MALFORMED_RUN_REASON, REMOTE_CODE_REASON, SETUP_COMMAND_MAX_TIMEOUT_SECONDS, SETUP_COMMAND_MIN_TIMEOUT_SECONDS, SETUP_ITEM_KINDS, SETUP_PROPOSAL_INFO_STRING, SetupApplyBodySchema, SetupDraftResponseSchema, SetupDraftSchema, SetupProposalSchema, sanitizeSetupProposal,
   setupItemHandling, setupItemRisk, setupItemsOf, setupProposalAnswerOf, type SetupProposal, type SetupProposalContext,
 } from "../../packages/contracts/src/index.js";
+import { SetupAgentViewSchema } from "../../packages/contracts/src/setup-agent-web.js";
 
 const COMMIT_WEB = "a".repeat(40);
 const COMMIT_API = "b".repeat(40);
@@ -307,5 +308,46 @@ describe("intake suggestions carry what a source needs (wire lane D, MF-2)", () 
     const reading = read([{ channel: "jira", hint: "tickets", system: "Not A System", connection: "https://evil.example/hook", label: "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB", from: [cited] }]);
     if (!reading.ok) throw new Error(JSON.stringify(reading));
     expect(reading.proposal.intake[0]!.value).toEqual({ channel: "jira", hint: "tickets" });
+  });
+});
+
+describe("the per-command time limit (Code 0.5.49 timeoutSeconds), optional and bounded as Code bounds it", () => {
+  const base = read({ setup: [{ repo: "web", commands: ["npm ci"], from: [file("web", "package.json")] }], tests: [{ repo: "web", commands: ["npm test"], from: [file("web", "package.json")] }] });
+  const withLimit = (timeoutSeconds: unknown): unknown => ({ ...base, tests: [{ ...base.tests[0]!, value: { ...base.tests[0]!.value, timeoutSeconds } }] });
+
+  it("parses a 0.5.48-shaped proposal (no field) and a 0.5.49-shaped one (the field on a setup and a tests item), strictly otherwise", () => {
+    expect(SetupProposalSchema.safeParse(base).success).toBe(true);
+    expect(SetupProposalSchema.safeParse(withLimit(900)).success).toBe(true);
+    expect(SetupProposalSchema.safeParse({ ...base, setup: [{ ...base.setup[0]!, value: { ...base.setup[0]!.value, timeoutSeconds: SETUP_COMMAND_MAX_TIMEOUT_SECONDS } }] }).success).toBe(true);
+    expect(SetupProposalSchema.safeParse(withLimit(SETUP_COMMAND_MIN_TIMEOUT_SECONDS)).success).toBe(true);
+    expect(SetupProposalSchema.safeParse({ ...base, tests: [{ ...base.tests[0]!, value: { ...base.tests[0]!.value, surprise: 1 } }] }).success).toBe(false);
+  });
+
+  it("refuses a limit Code refuses: below 600, above 3,600, not whole, not a number", () => {
+    for (const bad of [599, 3_601, 900.5, "900", null, Number.NaN, 0, -1]) expect(SetupProposalSchema.safeParse(withLimit(bad)).success, String(bad)).toBe(false);
+  });
+
+  it("the reader clamps a model's number into the bounds and drops anything else, as Code's reader does", () => {
+    const limited = (value: unknown) => read({ tests: [{ repo: "web", commands: ["npm test"], timeoutSeconds: value, from: [file("web", "package.json")] }] }).tests[0]!.value;
+    expect(limited(185)).toEqual({ repo: "web", commands: ["npm test"], timeoutSeconds: 600 });
+    expect(limited(99_999)).toMatchObject({ timeoutSeconds: 3_600 });
+    expect(limited(1_200)).toMatchObject({ timeoutSeconds: 1_200 });
+    expect(limited("1200")).toEqual({ repo: "web", commands: ["npm test"] });
+  });
+
+  it("the Setup screen's run view (read by the page) carries the field", () => {
+    const view = (proposal: unknown) => SetupAgentViewSchema.safeParse({ status: "ready", basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 30, budgetCents: 500, hostAsks: 3 }, proposal });
+    expect(view(base).success).toBe(true);
+    expect(view(withLimit(1_800)).success).toBe(true);
+    expect(view(withLimit(30)).success).toBe(false);
+  });
+});
+
+describe("the other 0.5.49 words the page reads strictly", () => {
+  it("a glued package-manager run is flagged with Code's fixed words, never kept as a command", () => {
+    const flagged = sanitizeSetupProposal({ setup: [{ repo: "web", commands: ["npm run lint npm test", "npm ci"], from: [file("web", "package.json")] }] }, context);
+    if (!flagged.ok) throw new Error(flagged.errors.join("; "));
+    expect(flagged.proposal.setup[0]!.value.commands).toEqual(["npm ci"]);
+    expect(flagged.proposal.flaggedCommands.map((item) => item.reason)).toEqual([MALFORMED_RUN_REASON]);
   });
 });
