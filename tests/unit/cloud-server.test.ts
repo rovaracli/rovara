@@ -551,6 +551,17 @@ describe("the app's API, answered from Code as the person", () => {
     expect(logged.at(-1)).toEqual({ event: "cloud.signed_out", developerId: ADA });
   });
 
+  it("sends a signed-out browser on through Code's end-session, back to the signed-out page (Rovara-cloud#314)", async () => {
+    const { call } = setUp();
+    const out = await call("GET", "/v1/auth/browser/end-session");
+    expect(out!.status).toBe(302);
+    const location = new URL(out!.headers.location!);
+    expect(location.pathname).toBe("/v1/auth/end-session");
+    expect(Object.fromEntries(location.searchParams)).toEqual({ client_id: "rovara-cloud", post_logout_redirect_uri: "https://cloud.example.test/app/signed-out?reason=ended" });
+    expect(out!.headers["cache-control"]).toBe("no-store");
+    expect(out!.headers["set-cookie"]).toBeUndefined();
+  });
+
   it("signs out on Cloud even when Code's revoke fails, and says so in the log", async () => {
     const { call, signIn, code, store, logged } = setUp();
     const { cookie, csrf } = await signIn();

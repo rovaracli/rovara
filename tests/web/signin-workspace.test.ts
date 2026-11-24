@@ -45,7 +45,7 @@ describe("the browser host's sign-in", () => {
   const host = createBrowserHost(b.win);
   await host.signOut();
   expect(b.local.get(LAST_WORKSPACE_KEY)).toBe(HINT);
-  expect(b.assign.mock.lastCall?.[0]).toBe("/app/signed-out?reason=ended");
+  expect(b.assign.mock.lastCall?.[0]).toBe("/v1/auth/browser/end-session");
   host.signIn("/app");
   expect(target(b.assign).searchParams.get("slack_team")).toBe(HINT);
  });
@@ -122,7 +122,7 @@ describe("the browser host's sign-in", () => {
   const bob = createBrowserHost(b.win);
   await bob.rememberSignInWorkspace?.();
   await bob.signOut();
-  expect(b.assign.mock.lastCall?.[0]).toBe("/app/signed-out?reason=ended");
+  expect(b.assign.mock.lastCall?.[0]).toBe("/v1/auth/browser/end-session");
   createBrowserHost(b.win).signIn("/app");
   expect(target(b.assign).searchParams.has("slack_team")).toBe(false);
  });

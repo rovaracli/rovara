@@ -691,6 +691,7 @@ export interface CodeRouteTypes {
   "auth.authorize": { request: void; response: void };
   "auth.token": { request: TokenRequestCode | TokenRequestRefresh; response: TokenResponse };
   "auth.revoke": { request: { token: string }; response: JsonObject };
+  "auth.endSession": { request: void; response: void };
   "auth.jwks": { request: void; response: { keys: JsonObject[] } };
   "access.check": { request: JsonObject; response: AccessResponse };
   "me.setName": { request: SetNameRequest; response: SetNameResponse };
@@ -892,6 +893,8 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("auth.authorize", "GET", "/v1/auth/authorize", "Start sign-in; Code sends the browser back with a code", "none", ["shell"], "yes", true, `${AUTH}:577`, true),
   spec("auth.token", "POST", "/v1/auth/token", "Exchange a code or a refresh token for the person's tokens", "none", ["shell"], "yes", true, `${AUTH}:587`, true),
   spec("auth.revoke", "POST", "/v1/auth/revoke", "End the person's sign-in", "none", ["shell"], "yes", true, `${AUTH}:588`),
+  // Rovara-cloud#314: the browser goes here after signing out (Cloud's server only builds the address): Code ends the sign-in provider's session too.
+  spec("auth.endSession", "GET", "/v1/auth/end-session", "End the sign-in provider's own session after a sign-out; Code sends the browser back", "none", ["shell"], "yes", true, `${AUTH}:1098`),
   spec("auth.jwks", "GET", "/v1/auth/.well-known/jwks.json", "Code's public signing keys", "none", ["later"], "yes", true, `${AUTH}:573`),
   // The person
   spec("access.check", "POST", "/v1/dev/access", "Who the person is, administrator or not, the projects they may use", "none", ["shell"], "yes", true, `${DEV}:1053`, true),

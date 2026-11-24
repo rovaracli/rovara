@@ -229,6 +229,17 @@ export class CodeClient {
     return `Basic ${Buffer.from(`${this.options.clientId}:${secret}`).toString("base64")}`;
   }
 
+  /**
+   * Rovara-cloud#314: Code's end-session address (OpenID Connect RP-Initiated Logout) for a browser that has just signed out of Cloud. Code ends the
+   * sign-in provider's own session (Cognito's), so the next sign-in shows its login form, then sends the browser to `postLogoutRedirectUri`, which
+   * must be on the origin of one of this client's registered redirect URLs.
+   */
+  endSessionUrl(postLogoutRedirectUri: string): string {
+    const url = new URL(`${this.base}/v1/auth/end-session`);
+    url.search = new URLSearchParams({ client_id: this.options.clientId, post_logout_redirect_uri: postLogoutRedirectUri }).toString();
+    return url.toString();
+  }
+
   /** The registered redirect URL Code sends the browser back to (a sign-in's, and a connected sign-in's `returnTo`). */
   get redirectUri(): string {
     return this.options.redirectUri;

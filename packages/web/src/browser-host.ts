@@ -50,6 +50,8 @@ function noCompanyCsrf(response: ApiResponse): string | undefined {
  */
 export const LAST_WORKSPACE_KEY = "rovara.last-slack-workspace";
 const WORKSPACE_ID = /^T[A-Z0-9]{6,15}$/u;
+/** Rovara-cloud#314: where a sign-out ends: Cloud's server sends the browser on through Code's end-session (ending the sign-in provider's own session) to the signed-out page. */
+export const END_SESSION_PATH = "/v1/auth/browser/end-session";
 export function createBrowserHost(win: BrowserWindow): AppHost {
  let csrf: string | undefined, refreshing: Promise<void> | undefined;
  // A hint that cannot be replaced or cleared could belong to the previous person.
@@ -166,12 +168,12 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
    if (csrf === undefined) {
     try { await refresh(); } catch (error) {
      if (!(error instanceof ApiError) || error.status !== 401) throw error;
-     csrf = undefined;win.location.assign("/app/signed-out?reason=ended");return;
+     csrf = undefined;win.location.assign(END_SESSION_PATH);return;
     }
    }
    const response = await fetchJson("/v1/auth/browser/sign-out", { method: "POST", headers: { "x-rovara-csrf": csrf! } });
    if (response.status !== 204) throw new ApiError(response.status, "SIGN_OUT_FAILED", "Couldn't sign out. Try again.");
-   csrf = undefined;win.location.assign("/app/signed-out?reason=ended");
+   csrf = undefined;win.location.assign(END_SESSION_PATH);
   },
   viewport: { width: () => win.innerWidth ?? 0, subscribe(listener) { win.addEventListener?.("resize", listener);return () => win.removeEventListener?.("resize", listener); } },
   storage: { get(key) { try { return win.localStorage.getItem(key) ?? undefined; } catch { return undefined; } }, set(key, value) { try { win.localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } } }, features: { admin: true },
