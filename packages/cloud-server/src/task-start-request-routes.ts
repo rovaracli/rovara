@@ -9,7 +9,8 @@ const Reply = z.discriminatedUnion("outcome", [
   z.object({ ...base, outcome: z.literal("confirmed"), task: z.object({ taskId: z.uuid(), project: AgentXNameSchema, createdAt: z.iso.datetime() }).strict() }).strict(),
   z.object({ ...base, outcome: z.literal("unknown") }).strict(),
 ]);
-const ErrorBody = z.object({ error: z.object({ code: z.string(), message: z.string() }).strict() }).strict();
+// Loose on purpose (F3-A0): a newer Code may add envelope fields (reason, writes) or error codes. Only code and message are read; anything else passes through unread.
+const ErrorBody = z.looseObject({ error: z.looseObject({ code: z.string(), message: z.string() }) });
 const failure = (status: number, code: string, message = "Start status is unavailable."): RouteAnswer => ({ status, body: { error: { code, message } } });
 const unavailable = () => failure(503, "RUNTIME_UNAVAILABLE");
 function refused(error: unknown): RouteAnswer {
