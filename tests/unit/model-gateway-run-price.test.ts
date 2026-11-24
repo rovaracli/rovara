@@ -55,7 +55,8 @@ describe("gateway run price selection and bounds", () => {
   it("reports readiness only with a fresh versioned snapshot", async () => {
     const w = await world();
     expect(w.prices.runPriceSnapshotVersion()).toBe(9);
-    const empty = new SnapshotPriceSource({ load: async () => undefined, save: async () => false }); await empty.reload();
+    // Isolate from the installed OpenRouter release rows (fresh for 24 h each): no snapshot AND no tariff means not ready.
+    const empty = new SnapshotPriceSource({ load: async () => undefined, save: async () => false }, { openRouterTariffs: [] }); await empty.reload();
     expect(empty.runPriceSnapshotVersion()).toBeUndefined();
   });
 });
