@@ -69,8 +69,14 @@ const whole = (value: unknown, max = Number.MAX_SAFE_INTEGER): value is number =
 const money = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1_000_000;
 const isStage = (value: unknown): value is AgentModelStage => typeof value === "string" && (AGENT_MODEL_STAGES as readonly string[]).includes(value);
 
-/** A Claude model is named by Anthropic's engine name; every other model is a Bedrock id (Code's agentModelIdentity). */
-export const modelIdentityOf = (name: string) => (name.startsWith("claude-") ? { provider: "anthropic", modelId: name } : { provider: "amazon-bedrock", modelId: name });
+/**
+ * Code's `isOpenAiAgentModel` (Rovara#1389): an OpenAI model by OpenAI's own name (`gpt-5`, `gpt-5.4-mini`, `o4-mini`), served on a company's own OpenAI key. A Bedrock id is
+ * never one: Bedrock names a vendor first (`openai.gpt-oss-120b-1:0`).
+ */
+const OPENAI_AGENT_MODEL = /^(?:gpt-[0-9]|o[1-9])[a-z0-9.-]*$/u;
+/** A Claude model is named by Anthropic's engine name, an OpenAI model by OpenAI's own name, and every other model by its Bedrock id (Code's agentModelIdentity). */
+export const modelIdentityOf = (name: string) => name.startsWith("claude-") ? { provider: "anthropic", modelId: name }
+  : OPENAI_AGENT_MODEL.test(name) ? { provider: "openai", modelId: name } : { provider: "amazon-bedrock", modelId: name };
 /** The gateway name of Code's model identity, or undefined when it is not one the gateway names (Code's agentModelName). */
 export function modelNameOf(value: unknown): string | undefined {
   if (!plain(value) || !exactly(value, ["provider", "modelId"]) || typeof value["modelId"] !== "string" || !MODEL_NAME.test(value["modelId"])) return undefined;
