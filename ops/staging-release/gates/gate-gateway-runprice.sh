@@ -7,12 +7,12 @@ source "$(dirname "$0")/../lib/common.sh"
 pack_init
 require_account
 MIN="${GATEWAY_MIN_SNAPSHOT:-8}"
-printf '%s' "$MIN" | grep -Eq '^[0-9]+$' || refuse "GATEWAY_MIN_SNAPSHOT is not a number"
+[[ "$MIN" =~ ^[0-9]+$ ]] || refuse "GATEWAY_MIN_SNAPSHOT is not a number"
 URL="${GATEWAY_HEALTHZ_URL:-}"
 if [ -z "$URL" ]; then
   doc="$(ro cloudformation describe-stacks --stack-name "$(stack_name control-plane)")" || refuse "cannot read the control-plane stack"
   host="$(printf '%s' "$doc" | jq -r '[.Stacks[0].Parameters[]? | select(.ParameterKey == "CoreModelGatewayHost") | .ParameterValue][0] // ""')"
-  printf '%s' "$host" | grep -Eq '^[a-z0-9][a-z0-9.-]*$' || { echo "  [FAIL] the control plane names no gateway host"; exit 1; }
+  [[ "$host" =~ ^[a-z0-9][a-z0-9.-]*$ ]] || { echo "  [FAIL] the control plane names no gateway host"; exit 1; }
   URL="https://${host}/healthz"
 fi
 body="$(mktemp)"

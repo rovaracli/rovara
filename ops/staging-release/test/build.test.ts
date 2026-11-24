@@ -135,6 +135,30 @@ exec python3 -I "${w.bin}/fake-aws.py" "$@"`);
     expect(readFileSync(join(out(), "image-args.txt"), "utf8")).toContain(`--worker-image ${WORKER_URI}`);
     expect(readFileSync(join(out(), "image-args.txt"), "utf8")).toContain(`--slack-image ${SLACK_URI}`);
   });
+  it("survives a docker that exits without reading the ECR login password (a pipe would SIGPIPE the writer: exit 141 under pipefail)", () => {
+    // regression for the flaky CI exit 141: the fake `docker` never reads stdin, and `aws ecr get-login-password` writes far more than a pipe buffer (256 KiB), so a
+    // `aws ... | docker login --password-stdin` pipe kills the writer deterministically. The token is captured first and handed over without a pipe.
+    script("aws", `case "$*" in
+  *"ecr describe-images"*"imageTag="*) echo "An error occurred (ImageNotFoundException)" >&2; exit 254;;
+  *"ecr describe-images"*"imageDigest="*) echo '{"imageDetails":[{"imageTags":["tree-${tree12()}","pipe-${EXEC8}-${sha.slice(0, 9)}"]}]}'; exit 0;;
+  *"ecr get-login-password"*) head -c 262144 /dev/zero | tr '\\0' 'x'; echo; exit 0;;
+esac
+exec python3 -I "${w.bin}/fake-aws.py" "$@"`);
+    for (let i = 0; i < 3; i++) {
+      const r = run("build-images.sh");
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+    }
+  });
+  it("refuses (exit 3) when the ECR login password cannot be read", () => {
+    script("aws", `case "$*" in
+  *"ecr describe-images"*"imageTag="*) echo "An error occurred (ImageNotFoundException)" >&2; exit 254;;
+  *"ecr get-login-password"*) echo "denied" >&2; exit 255;;
+esac
+exec python3 -I "${w.bin}/fake-aws.py" "$@"`);
+    const r = run("build-images.sh");
+    expect(r.status).toBe(3);
+    expect(r.stderr).toContain("ECR login password");
+  });
   it("refuses when HEAD is not the released commit", () => {
     expect(run("build-images.sh", { RELEASE_SHA: "c".repeat(40) }).status).toBe(3);
   });

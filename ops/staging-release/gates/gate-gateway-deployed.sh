@@ -19,7 +19,7 @@ ndep="$(printf '%s' "$d" | jq -r '.services[0].deployments | length')"; rollout=
 td="$(printf '%s' "$d" | jq -r '.services[0].deployments[0].taskDefinition')"
 img="$(ro ecs describe-task-definition --task-definition "$td" | jq -r '.taskDefinition.containerDefinitions[0].image')"
 echo "$(now_utc) ECS: running=$running desired=$desired deployments=$ndep rollout=$rollout image=...@${img##*@}"
-if [ "$running" = "$desired" ] && [ "$ndep" = 1 ] && [ "$rollout" = COMPLETED ] && printf '%s' "$img" | grep -Eq '@sha256:[0-9a-f]{64}$'; then
+if [ "$running" = "$desired" ] && [ "$ndep" = 1 ] && [ "$rollout" = COMPLETED ] && [[ "$img" =~ @sha256:[0-9a-f]{64}$ ]]; then
   if [ -n "${EXPECTED_GATEWAY_DIGEST:-}" ] && [ "${img##*@}" != "$EXPECTED_GATEWAY_DIGEST" ]; then echo "  [FAIL] the gateway serves another digest than expected"; rc=1; else echo "ECS GATE PASS"; fi
 else echo "  [FAIL] the gateway is not settled on a digest-pinned image"; rc=1; fi
 exit "$rc"

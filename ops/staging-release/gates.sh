@@ -29,7 +29,7 @@ run_gate() {
   cat "$log"
   if [ "$rc" -eq 0 ]; then gate_marker "$name" pass; else
     local fails
-    fails="$(grep -E '\[FAIL\]' "$log" | sed 's/^[[:space:]]*//' | cut -c1-200 | head -20 || true)"
+    fails="$(grep -E '\[FAIL\]' "$log" | sed 's/^[[:space:]]*//' | cut -c1-200 | awk 'NR <= 20' || true)"
     [ -n "$fails" ] || fails="exit code $rc"
     # one array element per line
     local args=()

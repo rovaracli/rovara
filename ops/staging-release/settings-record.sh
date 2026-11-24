@@ -13,7 +13,7 @@ source "$(dirname "$0")/lib/common.sh"
 pack_init
 need_env RELEASE_VERSION SETTINGS_PARAMETER
 require_account
-printf '%s' "$RELEASE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || refuse "RELEASE_VERSION is not x.y.z"
+[[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || refuse "RELEASE_VERSION is not x.y.z"
 [ "$SETTINGS_PARAMETER" = "/agentx/${ENVIRONMENT}/settings" ] || refuse "SETTINGS_PARAMETER must be /agentx/${ENVIRONMENT}/settings"
 PKG_DIR="${SYNTH_DIR:-$PWD/work/release}"
 

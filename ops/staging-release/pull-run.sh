@@ -7,7 +7,8 @@ set -euo pipefail
 EXEC="${1:-}"
 DEST="${2:-./run-$EXEC}"
 [ -n "${RUNS_BUCKET:-}" ] || { echo "REFUSED: RUNS_BUCKET is not set" >&2; exit 3; }
-printf '%s' "$EXEC" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || { echo "REFUSED: usage: pull-run.sh <execution id> [dest dir]" >&2; exit 3; }
+uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+[[ "$EXEC" =~ $uuid_re ]] || { echo "REFUSED: usage: pull-run.sh <execution id> [dest dir]" >&2; exit 3; }
 mkdir -p "$DEST"
 [ -z "$(ls -A "$DEST" 2>/dev/null)" ] || { echo "REFUSED: $DEST is not empty" >&2; exit 3; }
 for stage in check build preview gates decide guard release canary 89; do

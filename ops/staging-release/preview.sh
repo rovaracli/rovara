@@ -18,7 +18,7 @@ require_account
 PKG_HASH_FILE="$RUN_DIR/release.sha256"
 [ -f "$PKG_HASH_FILE" ] || refuse "the stage did not record the release package hash ($PKG_HASH_FILE)"
 PKG_HASH="$(tr -d '[:space:]' < "$PKG_HASH_FILE")"
-printf '%s' "$PKG_HASH" | grep -Eq '^[0-9a-f]{64}$' || refuse "the recorded release package hash is not a sha256"
+[[ "$PKG_HASH" =~ ^[0-9a-f]{64}$ ]] || refuse "the recorded release package hash is not a sha256"
 for f in synth/manifest.json asset-index.json answers.json overrides.json images.json; do [ -f "$SYNTH_DIR/$f" ] || refuse "the release package has no $f"; done
 # The run's overrides are the package's own file: a run artifact. Nothing outside the package can name an image or a parameter.
 export OVERRIDES_FILE="$SYNTH_DIR/overrides.json"
@@ -59,7 +59,8 @@ for part in $PARTS; do
     UPDATE_ROLLBACK_COMPLETE) [ "$part" = control-plane ] || refuse "$stack is $st" ;;
     *) refuse "$stack is '$st', expected UPDATE_COMPLETE" ;;
   esac
-  if change_set_names "$stack" | grep -Fxq "$CS_NAME"; then refuse "$stack already has a change set named $CS_NAME"; fi
+  cs_list="$(change_set_names "$stack")"
+  case $'\n'"$cs_list"$'\n' in *$'\n'"$CS_NAME"$'\n'*) refuse "$stack already has a change set named $CS_NAME" ;; esac
 done
 
 # ---- outputs of the deployed stacks (what the CLI fills new parameters from) ----
@@ -126,7 +127,7 @@ for part in $PARTS; do
   status="$(jq -r '.Status' "$RUN_DIR/$stack.changeset.json")"
   reason="$(jq -r '.StatusReason // ""' "$RUN_DIR/$stack.changeset.json")"
   no_changes=false
-  if [ "$status" = FAILED ] && printf '%s' "$reason" | grep -Eiq "didn't contain changes|did not contain changes"; then no_changes=true; fi
+  if [ "$status" = FAILED ] && grep -Ei "didn't contain changes|did not contain changes" >/dev/null <<<"$reason"; then no_changes=true; fi
   if [ "$status" != CREATE_COMPLETE ] && [ "$no_changes" != true ]; then refuse "the change set on $stack is $status: $reason"; fi
   jq -nc --arg stack "$stack" --arg part "$part" --arg name "$CS_NAME" --arg id "$cs_id" --arg status "$status" --arg reason "$reason" --argjson noChanges "$no_changes" \
     --argjson rows "$(jq '.Changes | length' "$RUN_DIR/$stack.changeset.json")" \
