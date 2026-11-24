@@ -54,7 +54,9 @@ export interface CloudPipelineSwitches { productAi?: true; aiSourceKinds?: strin
 /** app.ts AI_SOURCE_KINDS_CONTEXT_KEY (app.ts imports this file, so the name is repeated here; a contract test holds the two equal). */
 export const PIPELINE_AI_SOURCE_KINDS_CONTEXT_KEY = "rovaraAiSourceKinds";
 export const CLOUD_PIPELINE_SWITCHES: Readonly<Record<string, Readonly<CloudPipelineSwitches>>> = Object.freeze({
-  staging: Object.freeze({ productAi: true as const }),
+  // DEC 254zzz448: staging carries a company's own OpenAI key as an AI source, as production and beta do (the company pastes its own key and
+  // chooses it; Rovara charges nothing for it). The staging web stack and staging gateway are redeployed by hand with the same -c rovaraAiSourceKinds=openai,openrouter (DEC 254zzz449: OpenRouter on staging only).
+  staging: Object.freeze({ productAi: true as const, aiSourceKinds: "openai,openrouter" }),
   // Rovara-cloud#247: production's gateway is deployed, and its web stack was switched on by hand with the gateway's ProductKeys* parameters.
   // Rovara-cloud#308: a company's own OpenAI key for its agents. Production's and beta's gateways were deployed by hand with the same
   // -c rovaraAiSourceKinds=openai on 2026-11-24 (the two must match).

@@ -167,8 +167,8 @@ function build() {
         key,
         handle: createCloudHandler({
           client, store, work, presence, audit, origin, callbackPath: "/callback", secureCookies: true, ...(company === undefined ? {} : { company }), ...(productAi === undefined ? {} : { productAi }),
-          // Lead 4 J3: the smart Just answer's Ask boxes. Off unless this is exactly "1": set it only after the gateway's answers purpose (L4-E) is merged AND deployed, and Code's answers are set up.
-          ...(process.env.ROVARA_ANSWERS_ENABLED === "1" ? { answersEnabled: true } : {}),
+          // Lead 4 J3: the smart Just answer's Ask boxes. On unless this is exactly "0" (DEC 254zzz448: ship ON; the AnswersEnabled stack parameter "0" is the operator's override).
+          ...(process.env.ROVARA_ANSWERS_ENABLED !== "0" ? { answersEnabled: true } : {}),
           org: { orgId: "rovara", name: process.env.CLOUD_ORG_NAME ?? "Rovara", plan: "cloud" },
         }),
       };

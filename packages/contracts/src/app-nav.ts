@@ -14,7 +14,7 @@ export const AppNavSchema = z.object({
  homeCount: CountSchema,
  projects: z.array(z.object({ name: z.string().regex(AGENTX_NAME_PATTERN), agents: z.array(NavAgentSchema.extend({ running: CountSchema, needsYou: CountSchema })) }).strict()).max(50),
  shared: z.object({ agents: z.array(NavAgentSchema).max(20), sessions: z.array(NavSessionSchema).max(10) }).strict(),
- // `answers` (lead 4 J3): this Cloud's deployment setting for the smart Just answer (ROVARA_ANSWERS_ENABLED, off until the gateway's answers purpose is deployed). Absent or false: the Ask boxes are not drawn.
+ // `answers` (lead 4 J3): this Cloud's deployment setting for the smart Just answer (ROVARA_ANSWERS_ENABLED, on unless the operator sets it to "0", DEC 254zzz448). Absent or false: the Ask boxes are not drawn.
  features: z.object({ localAgents: z.boolean(), usage: z.boolean(), admin: z.boolean(), chains: z.boolean(), notices: z.boolean(), describe: z.boolean(), answers: z.boolean().optional() }).strict(),
 }).strict();
 export type AppNav = z.infer<typeof AppNavSchema>;
