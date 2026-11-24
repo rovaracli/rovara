@@ -54,7 +54,11 @@ export type RefusedLogReason = "bedrock_401" | "bedrock_403" | "bedrock_429" | "
  * the signed authorization against the admitted source; `cache_write_price_unknown` the cached-call rates.
  */
 export type RunPriceRefusedReason = RunPriceDenial | "signed_price_missing" | "rovara_signed_price_missing" | "price_usage_estimated" | "receipts_unavailable" | "settlement_unavailable" | "input_unbounded" | "media_unsupported" | "image_unbounded" | "price_basis_missing" | "snapshot_mismatch" | "snapshot_version_mismatch" | "cache_write_price_unknown";
-export interface RefusedLog { event: "refused"; code: string; status: number; cap?: MeterItem; route?: "agent" | "product" | "learning" | "answers"; payer?: string; reason?: RefusedLogReason; method?: string; path?: string; query?: boolean }
+/**
+ * `upstreamStatus` (Rovara-cloud#319): the provider's own HTTP status when the refusal is a provider's error answer (401, 404, 429, 400...),
+ * so the log says why a call failed. Only the number is logged; the provider's body never is.
+ */
+export interface RefusedLog { event: "refused"; code: string; status: number; cap?: MeterItem; route?: "agent" | "product" | "learning" | "answers"; payer?: string; reason?: RefusedLogReason; upstreamStatus?: number; method?: string; path?: string; query?: boolean }
 const REFUSAL_CODE = /^[a-z0-9_]{1,64}$/u;
 /** A refusal code as it is logged: a fixed lower-case word, or "other" for anything else (a code never carries provider text). */
 export const logCode = (code: string): string => REFUSAL_CODE.test(code) ? code : "other";
@@ -715,9 +719,11 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   // The cap row a cap refusal is about, set just before it is answered (the reason code alone says "budget_exceeded" for every row).
   let refusedCap: MeterItem | undefined;
   let refusedReason: RefusedLogReason | undefined;
+  // The provider's HTTP status, set only when the provider itself answered with an error (never its body).
+  let refusedUpstream: number | undefined;
   const refusedLine = (type: string, status: number): RefusedLog => {
     const payer = route?.payer;
-    return { event: "refused", code: logCode(type), status, ...(refusedCap === undefined ? {} : { cap: refusedCap }), ...(route === undefined ? {} : { route: route.purpose ?? (route.product ? "product" as const : "agent" as const) }), ...(payer !== undefined && PAYER.test(payer) ? { payer } : {}), ...(refusedReason === undefined ? {} : { reason: refusedReason }) };
+    return { event: "refused", code: logCode(type), status, ...(refusedUpstream === undefined ? {} : { upstreamStatus: refusedUpstream }), ...(refusedCap === undefined ? {} : { cap: refusedCap }), ...(route === undefined ? {} : { route: route.purpose ?? (route.product ? "product" as const : "agent" as const) }), ...(payer !== undefined && PAYER.test(payer) ? { payer } : {}), ...(refusedReason === undefined ? {} : { reason: refusedReason }) };
   };
   let notFoundAt: Pick<RefusedLog, "method" | "path" | "query"> | undefined;
   const respond = async (status: number, type: string, message: string, extra: Readonly<Record<string, string>> = {}) => {
@@ -972,6 +978,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       }
       const failure = route.providerFailure(provider.status, failureBytes);
       refusedReason = failure.reason;
+      if (Number.isInteger(provider.status) && provider.status >= 100 && provider.status <= 599) refusedUpstream = provider.status;
       if (!failure.charged) { cost = 0; estimated = false; }
       if (route.product && (provider.status === 401 || provider.status === 403)) log({ event: "product_key_refused" });
       await respond(failure.refusal.status, failure.refusal.code, failure.refusal.message, failure.refusal.headers); return; }

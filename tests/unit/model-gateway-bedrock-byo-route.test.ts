@@ -240,7 +240,7 @@ describe("agent route: the company's own Bedrock (DEC 238)", () => {
     g.choices.saved.set(cidA, "bedrock_byo");
     expect((await call(g.deps)).status).toBe(429);
     expect(logs.filter((line) => (line as { event?: unknown }).event === "refused")).toEqual([
-      { event: "refused", code: "rate_limit_error", status: 429, route: "agent", payer: "bedrock_byo", reason: "bedrock_429" },
+      { event: "refused", code: "rate_limit_error", status: 429, upstreamStatus: 429, route: "agent", payer: "bedrock_byo", reason: "bedrock_429" },
     ]);
     expect(JSON.stringify(logs)).not.toContain("BYO-CANARY");
   });
