@@ -35,6 +35,8 @@ export const CLOUD_PIPELINE_BRANCH = "cloud/next";
 /** The CDK build needs more than Node's default 2 GB heap; the LARGE build machine has 16 GB. */
 export const CLOUD_PIPELINE_NODE_OPTIONS = "--max-old-space-size=8192";
 /** The CDK bootstrap qualifier the account was bootstrapped with (the default). */
+/** Rovara-cloud#313: where the operator records the own-key backfill's verified result for an environment (`$ROVARA_ENV` in the deploy job). */
+export const C1_BACKFILL_MARKER = "/rovara-cloud/$ROVARA_ENV/release-checks/agent-own-key-backfill";
 export const CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER = "hnb659fds";
 
 /**
@@ -137,7 +139,8 @@ export const RELEASE_CHECK_PATHS = ["/app", "/v1/web/me"] as const;
 const releaseCheckedDeploy = (context: readonly string[], deployAccount?: string) => [
   // DEC 254zzz279: never release the new default before existing own-key choices are saved.
   // Only reads through the already allowed CDK lookup role; the pipeline never applies the migration.
-  'node scripts/agent-own-key-backfill.mjs --check --release-stack "${STACK_PREFIX}-web" --lookup-role "$C1_LOOKUP_ROLE" --region "$AWS_REGION" || exit 1',
+  // Rovara-cloud#313: it reads the operator's recorded result (`--record`, docs/rovara-cloud-install.md), since the lookup role may not decrypt the tables.
+  `node scripts/agent-own-key-backfill.mjs --check --release-stack "\${STACK_PREFIX}-web" --lookup-role "$C1_LOOKUP_ROLE" --marker "${C1_BACKFILL_MARKER}" --region "$AWS_REGION" || exit 1`,
   ...(deployAccount === undefined
     ? ['base="$(aws cloudformation describe-stacks --stack-name "${STACK_PREFIX}-web" --query "Stacks[0].Outputs[?OutputKey==\'CloudUrl\'].OutputValue" --output text 2>/dev/null | sed "s#/app\\$##")"']
     // The web stack is in the deploy account: read its address through that account's lookup role (read only).

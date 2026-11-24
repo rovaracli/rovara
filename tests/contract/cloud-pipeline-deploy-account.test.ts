@@ -39,7 +39,7 @@ describe("Cloud release pipeline: the account it deploys into", () => {
     const { script, variables } = buildCommands(environment);
     expect(variables.C1_LOOKUP_ROLE).toBe(`arn:<token>:iam::${account}:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-lookup-role-${account}-us-east-1`);
     const preflight = script.split("\n")[0]!;
-    expect(preflight).toContain('agent-own-key-backfill.mjs --check --release-stack "${STACK_PREFIX}-web" --lookup-role "$C1_LOOKUP_ROLE"');
+    expect(preflight).toContain('agent-own-key-backfill.mjs --check --release-stack "${STACK_PREFIX}-web" --lookup-role "$C1_LOOKUP_ROLE" --marker "/rovara-cloud/$ROVARA_ENV/release-checks/agent-own-key-backfill"');
     expect(preflight).toContain("|| exit 1");
     expect(script).not.toContain("--apply");
   });
