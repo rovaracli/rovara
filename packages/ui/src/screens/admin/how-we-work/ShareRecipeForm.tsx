@@ -34,7 +34,7 @@ export function ShareRecipeForm({ project, projects, repositories, markerFiles, 
   <TextField label="Tool versions" hint="Comma separated, for example python 3.12." value={tools} onChange={event => { setTools(event.target.value); }} autoComplete="off" />
   <fieldset><legend>Files that mark a matching project</legend>{markerFiles.map(name => <Checkbox key={name} label={visibleText(name)} checked={markers.includes(name)} onCheckedChange={checked => { setMarkers(checked === true ? [...markers, name] : markers.filter(item => item !== name)); }} />)}</fieldset>
   <TextField label="Package registries" hint="Comma separated hosts the project installs from." value={registries} onChange={event => { setRegistries(event.target.value); }} autoComplete="off" />
-  <TextField label="Websites to share" hint="Comma separated. Only websites the project already allows are kept." value={hosts} onChange={event => { setHosts(event.target.value); }} autoComplete="off" />
+  <TextField label="Addresses to share" hint="Comma separated. Only addresses the project already allows are kept." value={hosts} onChange={event => { setHosts(event.target.value); }} autoComplete="off" />
   <div className="rv-hww-company-actions"><Button type="submit" variant="primary" busy={busy} disabled={!ready || frozen}>{RECIPES_TEXT.SHARE_BUTTON}</Button></div>
   {frozen && <p className="rv-muted" role="status">{RECIPES_TEXT.RECONNECTING}</p>}
  </form>;

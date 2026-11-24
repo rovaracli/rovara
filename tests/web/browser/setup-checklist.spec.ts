@@ -1,59 +1,69 @@
 // Guided onboarding PR 9 in the browser, on the pretend Code (Code #841's checklist and #844's hosted setup run): Priya, the company owner, sees the project's
 // checklist on its page (a failed setup run with its failing command and last lines), runs setup again and stops it, sets Invite teammates aside, opens
-// Project settings (Re-run setup, Archive, Slack and Linear, spend), and sees "Finish setting up" on Home. Screenshots go to the test output folder.
+// Project settings (a line to the Setup tab, Archive, Slack and Linear, spend), and sees "Finish setting up" on Home. Screenshots go to the test output folder.
 import { expect, test } from "@playwright/test";
-import { HomePage, PROJECT, ROUTES, SetupChecklistPage, setEvalCard, setSetupRun } from "./pages/index.js";
+import { HomePage, PROJECT, ROUTES, SetupChecklistPage, SetupTabPage, setEvalCard, setSetupRun } from "./pages/index.js";
 
 // The setup run and the eval card both go back to the pretend Code's defaults, so no spec depends on the order they run in (batch 12 review L3).
 test.afterEach(async ({ page }) => { await setSetupRun(page, PROJECT, "none");await setEvalCard(page, PROJECT, "default"); });
 
-test("the owner works through the project checklist: a failed run, Run again, Stop, Set up later", async ({ page }, testInfo) => {
+test("the owner works through the project: a failed run on the Setup tab, Run setup again, Stop; the checklist row is one line and Set up later sets Invite teammates aside", async ({ page }, testInfo) => {
   await setSetupRun(page, PROJECT, "failed");
-  const screen = new SetupChecklistPage(page);
-  await screen.open(PROJECT);
-  await expect(screen.row("setupRun")).toHaveAttribute("data-state", "failed");
-  await expect(screen.runRow).toContainText("A test command failed.");
-  await expect(screen.runRow).toContainText("npm test");
-  // The old Setup step (its commands, check and draft routes are not on Code) is no longer linked from the row.
-  await expect(screen.runRow.getByRole("link", { name: "Edit commands" })).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath("checklist-failed-run.png"), fullPage: true });
-  await screen.runAgain.click();
-  await expect(screen.row("setupRun")).toHaveAttribute("data-state", "running");
-  await expect(screen.stop).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("checklist-running.png"), fullPage: true });
-  await screen.stop.click();
-  await expect(screen.row("setupRun")).toHaveAttribute("data-state", "failed");
-  await screen.skip("invites").click();
-  await expect(screen.row("invites")).toHaveAttribute("data-state", "skipped");
-  await expect(screen.row("invites")).toContainText("Skipped (optional)");
+  const checklist = new SetupChecklistPage(page);
+  await checklist.open(PROJECT);
+  await expect(checklist.row("setupRun")).toHaveAttribute("data-state", "failed");
+  await expect(checklist.runRow.getByTestId("setup-run-line")).toHaveText("Setup failed.");
+  await checklist.runRow.getByRole("link", { name: "Open Setup" }).click();
+  const tab = new SetupTabPage(page);
+  await expect(tab.card).toBeVisible();
+  await expect(tab.card).toHaveAttribute("data-state", "failed");
+  await expect(tab.card).toContainText("Setup failed at:");
+  await expect(tab.card).toContainText("npm test");
+  await expect(tab.card).toContainText("A test command failed.");
+  await expect(page.getByTestId("project-checklist")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("setup-tab-failed-run.png"), fullPage: true });
+  await tab.start.click();
+  await expect(tab.card).toHaveAttribute("data-state", "running");
+  await expect(tab.stop).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("setup-tab-running.png"), fullPage: true });
+  await tab.stop.click();
+  await expect(tab.card).toHaveAttribute("data-state", "stopped_person");
+  await checklist.open(PROJECT);
+  await checklist.skip("invites").click();
+  await expect(checklist.row("invites")).toHaveAttribute("data-state", "skipped");
+  await expect(checklist.row("invites")).toContainText("Skipped (optional)");
 });
 
-test("a finished run, Project settings with Re-run setup, and Home's Finish setting up card", async ({ page }, testInfo) => {
+test("a finished run, the verified Setup tab that stays after the checklist is gone, Project settings' one line, and Home's Finish setting up card", async ({ page }, testInfo) => {
   await setSetupRun(page, PROJECT, "ready");
-  const screen = new SetupChecklistPage(page);
-  await screen.open(PROJECT);
+  const checklist = new SetupChecklistPage(page);
+  await checklist.open(PROJECT);
   // L4-T2: a run that ended with a proposal nobody approved is not Done.
-  await expect(screen.row("setupRun")).toHaveAttribute("data-state", "needs_you");
+  await expect(checklist.row("setupRun")).toHaveAttribute("data-state", "needs_you");
   await setSetupRun(page, PROJECT, "ready", true);
-  await screen.open(PROJECT);
-  await expect(screen.row("setupRun")).toHaveAttribute("data-state", "done");
+  await checklist.open(PROJECT);
+  await expect(checklist.row("setupRun")).toHaveAttribute("data-state", "done");
   // L4-EVC: a finished run brings the eval card; with no card, the row keeps the checks the run reported.
-  await expect(screen.row("evalConfirm")).toContainText("Approve the cost of running your evals");
+  await expect(checklist.row("evalConfirm")).toContainText("Approve the cost of running your evals");
   await setEvalCard(page, PROJECT, "none");
-  await screen.open(PROJECT);
-  await expect(screen.row("evalConfirm")).toContainText("npm test");
+  await checklist.open(PROJECT);
+  await expect(checklist.row("evalConfirm")).toContainText("npm test");
   await page.screenshot({ path: testInfo.outputPath("checklist-ready.png"), fullPage: true });
-  await screen.openSettings(PROJECT);
-  await expect(screen.rerun).toBeVisible();
+  const tab = new SetupTabPage(page);
+  await tab.open(PROJECT);
+  await expect(tab.card).toHaveAttribute("data-state", "verified");
+  await expect(tab.card).toContainText("Setup is done.");
+  await expect(tab.start).toHaveAttribute("class", /rv-button-secondary/u);
+  await page.screenshot({ path: testInfo.outputPath("setup-tab-verified.png"), fullPage: true });
+  await checklist.openSettings(PROJECT);
+  await expect(checklist.settingsSetupLink).toHaveAttribute("href", `/app/projects/${PROJECT}?tab=setup`);
   await expect(page.getByRole("button", { name: "Review archive" })).toBeVisible();
   await expect(page.getByTestId("project-integrations")).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("project-settings.png"), fullPage: true });
-  await screen.rerun.click();
-  await expect(screen.settings.getByTestId("setup-run-stop")).toBeVisible();
   const home = new HomePage(page);
   await page.goto(ROUTES.home);
   await home.expectLoaded();
-  await expect(screen.homeCard.first()).toContainText("Finish setting up");
+  await expect(checklist.homeCard.first()).toContainText("Finish setting up");
   await page.screenshot({ path: testInfo.outputPath("home-finish-setup.png"), fullPage: true });
 });
 

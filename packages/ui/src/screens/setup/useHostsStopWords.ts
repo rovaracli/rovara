@@ -4,7 +4,7 @@ import { journalKey } from "./RunJournal.js";
 import { hostsStopWords } from "./words.js";
 
 /**
- * The sentence for a setup run that stopped on websites, chosen by cause (see `hostsStopWords`). The cause is read from the run's website requests: the journal read the screen already makes (same key, so one
+ * The sentence for a setup run that stopped on addresses, chosen by cause (see `hostsStopWords`). The cause is read from the run's address requests: the journal read the screen already makes (same key, so one
  * request). While `active` is false nothing is read. A read that is pending or failed gives the words true of every cause, never a guess.
  */
 export function useHostsStopWords(project: string, active: boolean): string {

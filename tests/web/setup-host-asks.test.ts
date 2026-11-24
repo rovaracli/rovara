@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// SETUP-WIKI-CLOUD-FIXES (a): a website a setup run asked for is allowed or refused on the setup run's journal, by the person Code says may decide it (`canDecide` on the journal read). Rule #14: Allow and Refuse
+// SETUP-WIKI-CLOUD-FIXES (a): a address a setup run asked for is allowed or refused on the setup run's journal, by the person Code says may decide it (`canDecide` on the journal read). Rule #14: Allow and Refuse
 // are drawn only from a current successful read of the journal, never for a person who may not decide, never for a closed ask; a failed re-read takes them away (the last facts stay with one reconnecting line);
 // the press is refused again at send time; one press is one send (double click safe); a send whose outcome nobody can tell is CHECKED through a read, never sent again blind.
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,12 +8,15 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { RunJournal, HOST_WORDS as W, journalKey } from "../../packages/ui/src/screens/setup/RunJournal.js";
+import { RunJournal, journalKey } from "../../packages/ui/src/screens/setup/RunJournal.js";
+import { ADDRESSES } from "../../packages/ui/src/screens/setup-tab/setup-tab-text.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 
 afterEach(cleanup);
+// The words about an address ask (ADDRESS-WORDING, 2026-11-24: the owner chose "address").
+const W = { ...ADDRESSES, waiting: ADDRESSES.waitingAdmin, unknown: ADDRESSES.noReply, notConfirmed: ADDRESSES.checkFailed, readRefused: ADDRESSES.stale } as const;
 const HOST = "registry.example-build.io";
 const DIGEST = "ab12".repeat(16);
 const REQUEST_ID = `host-${"c".repeat(40)}`;
@@ -36,7 +39,7 @@ function mount(options: Options = {}) {
 const decides = (f: ReturnType<typeof mount>) => f.request.mock.calls.map(([r]) => r).filter(r => r.method === "POST" && r.path.endsWith("/host-decide"));
 const item = async () => within(await screen.findByTestId("host-ask"));
 
-describe("website asks on the setup run's journal", () => {
+describe("address asks on the setup run's journal", () => {
   it("a person Code says may decide sees Allow and Refuse on an open ask; Allow sends once, bound to the id, host and the revision and digest the read offered", async () => {
     const f = mount();
     const row = await item();
@@ -49,7 +52,7 @@ describe("website asks on the setup run's journal", () => {
     f.close();
   });
 
-  it("Allow and Refuse name the website for a screen reader; the journal's own heading can be left out where a summary says it", async () => {
+  it("Allow and Refuse name the address for a screen reader; the journal's own heading can be left out where a summary says it", async () => {
     const f = mount({ asks: [ask(), ask({ host: "cdn.example-files.net", approval: { requestId: `host-${"d".repeat(40)}`, revision: 1, artifactDigest: DIGEST, kind: "setup_host", risk: "high" } })] });
     await screen.findAllByTestId("host-ask");
     expect(screen.getAllByRole("button", { name: /^Allow / }).map(one => one.getAttribute("aria-label"))).toEqual([`Allow ${HOST}`, "Allow cdn.example-files.net"]);
@@ -157,7 +160,7 @@ describe("website asks on the setup run's journal", () => {
     fireEvent.click(await (await item()).findByRole("button", { name: `${W.allow} ${HOST}` }));
     const line = await screen.findByTestId("host-asks-went-through");
     expect(line.textContent).toContain("Your change went through.");
-    expect(line.textContent).toContain("Couldn't load what the run did.");
+    expect(line.textContent).toContain("Rovara couldn't read what this run did.");
     expect(screen.queryByTestId("host-ask")).toBeNull();
     expect(screen.queryByRole("button", { name: `${W.allow} ${HOST}` })).toBeNull();
     expect(decides(f)).toHaveLength(1);
@@ -169,18 +172,18 @@ describe("website asks on the setup run's journal", () => {
     await item();
     f.setJournalFailure(403, "FORBIDDEN");
     await f.query.invalidateQueries({ queryKey: journalKey("web") });
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Couldn't load what the run did."));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Rovara couldn't read what this run did."));
     f.close();
   });
 
   it("Code's refusal (403) says so and sends nothing more; a moved ask says it moved; neither is an unknown outcome", async () => {
-    const refused = mount({ decide: () => ERROR(403, "FORBIDDEN", "A website for a setup run changes what the project's code can reach, so only a company owner or admin can allow or refuse it.") });
+    const refused = mount({ decide: () => ERROR(403, "FORBIDDEN", "A address for a setup run changes what the project's code can reach, so only a company owner or admin can allow or refuse it.") });
     fireEvent.click(await (await item()).findByRole("button", { name: `${W.allow} ${HOST}` }));
     expect((await screen.findByTestId("host-ask-problem")).textContent).toContain("only a company owner or admin");
     expect(screen.queryByTestId("host-ask-unknown")).toBeNull();
     expect(decides(refused)).toHaveLength(1);
     refused.close(); cleanup();
-    const moved = mount({ decide: () => ERROR(409, "CHANGE_STALE", "That website is not waiting for a decision any more. Open the project's setup again.") });
+    const moved = mount({ decide: () => ERROR(409, "CHANGE_STALE", "That address is not waiting for a decision any more. Open the project's setup again.") });
     fireEvent.click(await (await item()).findByRole("button", { name: `${W.allow} ${HOST}` }));
     expect((await screen.findByTestId("host-ask-problem")).textContent).toContain(W.moved);
     expect(screen.queryByTestId("host-ask-unknown")).toBeNull();
@@ -194,7 +197,7 @@ describe("website asks on the setup run's journal", () => {
     expect(screen.queryByRole("button", { name: `${W.allow} ${HOST}` })).toBeNull();
     expect(screen.queryByRole("button", { name: `${W.refuse} ${HOST}` })).toBeNull();
     // The hold names what happened (the answer may not be saved) and does not also say the ask is waiting for a decision.
-    expect(screen.getByTestId("host-ask-unknown").textContent).toContain("We couldn't confirm your answer was saved. Press Check to see.");
+    expect(screen.getByTestId("host-ask-unknown").textContent).toContain("Rovara didn't hear back, so it doesn't know if your answer was saved.");
     expect(screen.queryByTestId("host-ask-state")).toBeNull();
     expect(decides(f)).toHaveLength(1);
     // A check that cannot read changes nothing.

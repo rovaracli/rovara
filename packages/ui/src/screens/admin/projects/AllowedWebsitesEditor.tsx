@@ -34,7 +34,7 @@ function ScopedWebsiteEditor(props: Props) {
     setAttempt(saved);setPhase(saved ? "unknown" : "editing");
     if (saved) setMessage("A saved request is available. Check its status; nothing was resent.");
    } catch { setPhase("refused");setMessage("Saved requests could not be verified. Sending is unavailable."); }
-  }).catch(() => { if (alive.current) { setPhase("refused");setMessage("Website settings could not be checked. Refresh your project access."); } });
+  }).catch(() => { if (alive.current) { setPhase("refused");setMessage("Address settings could not be checked. Refresh your project access."); } });
   return () => { alive.current = false;api.setScopeActive(false); };
  }, [api, enabled, host.storage, scope]);
  async function refresh() {
@@ -44,8 +44,8 @@ function ScopedWebsiteEditor(props: Props) {
    const value = await api.review();
    if (!alive.current) return;
    focusCanonical.current = review !== undefined && (value.baseRevision !== review.baseRevision || value.contextDigest !== review.contextDigest);
-   setReview(value);setDraft(value.allowedDomains.join("\n"));setAttempt(undefined);setPhase("editing");setMessage("Canonical website settings refreshed. Review a fresh request before sending.");
-  } catch { if (alive.current) { setPhase("refused");setMessage("Website settings could not be checked. Refresh your project access."); } }
+   setReview(value);setDraft(value.allowedDomains.join("\n"));setAttempt(undefined);setPhase("editing");setMessage("Canonical address settings refreshed. Review a fresh request before sending.");
+  } catch { if (alive.current) { setPhase("refused");setMessage("Address settings could not be checked. Refresh your project access."); } }
   finally { busy.current = false; }
  }
  function prepare() {
@@ -53,7 +53,7 @@ function ScopedWebsiteEditor(props: Props) {
   try {
    const body = ProjectAllowedWebsitesMutationBodySchema.parse({ expectedOrgId: orgId, requestId: crypto.randomUUID(), expectedRevision: review.baseRevision, expectedContextDigest: review.contextDigest, allowedDomains: draft.split(/\r?\n/).map(value => value.trim()).filter(Boolean) });
    const request: WebsiteRequest = { operation: body.allowedDomains.some(domain => !review.allowedDomains.includes(domain)) ? "propose" : "save", body };
-   retainWebsiteRequest(host.storage, scope, request);setHistory(readWebsiteRequests(host.storage, scope));setAttempt(request);setPhase("ready");setMessage("Review the exact website change before sending.");
+   retainWebsiteRequest(host.storage, scope, request);setHistory(readWebsiteRequests(host.storage, scope));setAttempt(request);setPhase("ready");setMessage("Review the exact address change before sending.");
   } catch { setMessage("Enter up to 50 valid hostnames. Request storage must also be available before sending."); }
  }
  function prepareApproval() {
@@ -74,12 +74,12 @@ function ScopedWebsiteEditor(props: Props) {
  }
  function confirmed(result: ProjectAllowedWebsitesResult) {
   if (!alive.current) return;
-  if (result.kind === "receipt") setReceiptSummary(result.receipt.state === "applied" ? `Earlier request applied at revision ${result.receipt.resultRevision}. This is a receipt, independent of current website settings.` : `Earlier request ${result.receipt.state}. This is a receipt, independent of current website settings.`);
-  setPhase("done");setMessage(result.kind === "proposal" ? result.status === "pending" ? "Proposal retained. A different eligible person must review additions; company approval is separate from staff approval." : `Proposal status: ${result.status}. Refresh canonical website settings to see the current list.` : result.kind === "unchanged" ? "No website settings changed." : "Receipt confirmed. Refresh canonical website settings to see the current list; this receipt describes the earlier request.");
+  if (result.kind === "receipt") setReceiptSummary(result.receipt.state === "applied" ? `Earlier request applied at revision ${result.receipt.resultRevision}. This is a receipt, independent of current address settings.` : `Earlier request ${result.receipt.state}. This is a receipt, independent of current address settings.`);
+  setPhase("done");setMessage(result.kind === "proposal" ? result.status === "pending" ? "Proposal retained. A different eligible person must review additions; company approval is separate from staff approval." : `Proposal status: ${result.status}. Refresh canonical address settings to see the current list.` : result.kind === "unchanged" ? "No address settings changed." : "Receipt confirmed. Refresh canonical address settings to see the current list; this receipt describes the earlier request.");
  }
  async function send() {
   if (!attempt || busy.current || !enabled || !alive.current) return;
-  busy.current = true;setPhase("sending");setMessage("Sending website request.");
+  busy.current = true;setPhase("sending");setMessage("Sending address request.");
   try {
    retainWebsiteRequest(host.storage, scope, attempt);
    const result = "proposalId" in attempt ? await api.decide(attempt.proposalId, attempt.operation, attempt.body) : attempt.operation === "save" ? await api.save(attempt.body) : await api.propose(attempt.body);
@@ -100,15 +100,15 @@ function ScopedWebsiteEditor(props: Props) {
  if (!enabled) return null;
  const mutation = attempt && (attempt.operation === "save" || attempt.operation === "propose") ? attempt : undefined;
  const locked = phase !== "editing";
- return <section className="rv-websites-editor" aria-label="Allowed websites editor">
+ return <section className="rv-websites-editor" aria-label="Allowed addresses editor">
   <p>Company approval and staff approval are separate. DNS enforcement is cell-wide, trusts CNAMEs, and updates eventually.</p>
-  {review && <><details className="rv-websites-defaults"><summary>Always-allowed websites ({review.defaultDomains.length})</summary><p>These deployment defaults are read-only here.</p><ul>{review.defaultDomains.map(domain => <li key={domain}>{domain}</li>)}</ul></details>
-   <h3 ref={canonicalHeading} tabIndex={-1}>Current project websites</h3><ul>{review.staffDomains.map(entry => <li key={entry.domain}>{entry.domain} · staff {entry.status}</li>)}</ul>
-   <TextArea label="Allowed websites, one hostname per line" hint="Use hostnames, including raw xn-- names. Mandatory defaults stay separate." value={draft} disabled={locked} onChange={event => setDraft(event.target.value)} />
-   {phase === "editing" && <button className="rv-button rv-button-secondary" type="button" onClick={prepare}>Review website change</button>}
+  {review && <><details className="rv-websites-defaults"><summary>Always-allowed addresses ({review.defaultDomains.length})</summary><p>These deployment defaults are read-only here.</p><ul>{review.defaultDomains.map(domain => <li key={domain}>{domain}</li>)}</ul></details>
+   <h3 ref={canonicalHeading} tabIndex={-1}>Current project addresses</h3><ul>{review.staffDomains.map(entry => <li key={entry.domain}>{entry.domain} · staff {entry.status}</li>)}</ul>
+   <TextArea label="Allowed addresses, one hostname per line" hint="Use hostnames, including raw xn-- names. Mandatory defaults stay separate." value={draft} disabled={locked} onChange={event => setDraft(event.target.value)} />
+   {phase === "editing" && <button className="rv-button rv-button-secondary" type="button" onClick={prepare}>Review address change</button>}
   </>}
-  {review?.liveProposal?.status === "pending" && <section aria-label="Pending website proposal">
-   <h3>Pending website proposal</h3>
+  {review?.liveProposal?.status === "pending" && <section aria-label="Pending address proposal">
+   <h3>Pending address proposal</h3>
    <p>{review.liveProposal.proposedBy === developerId ? "You proposed this change." : "Another eligible person proposed this change."}</p>
    <p>Reviewed revision {review.liveProposal.baseRevision}. Expires {review.liveProposal.expiresAt}.</p>
    {review.liveProposal.beforeDomains.filter(domain => !review.liveProposal!.afterDomains.includes(domain)).map(domain => <p key={domain}>Proposal removes: {domain}</p>)}
@@ -119,16 +119,16 @@ function ScopedWebsiteEditor(props: Props) {
    </> : <button className="rv-button rv-button-secondary" type="button" onClick={prepareApproval}>Review proposal approval</button>)}
    {phase === "editing" && <button className="rv-button rv-button-secondary" type="button" onClick={() => prepareDecision(review.liveProposal!.proposedBy === developerId ? "cancel" : "reject")}>{review.liveProposal.proposedBy === developerId ? "Review proposal cancellation" : "Review proposal rejection"}</button>}
   </section>}
-  {mutation && phase === "ready" && review && <div aria-label="Reviewed website change">
+  {mutation && phase === "ready" && review && <div aria-label="Reviewed address change">
    <p>Reviewed project revision {mutation.body.expectedRevision}.</p>
    {review.allowedDomains.filter(domain => !mutation.body.allowedDomains.includes(domain)).map(domain => <p key={domain}>Remove: {domain}</p>)}
    {mutation.body.allowedDomains.filter(domain => !review.allowedDomains.includes(domain)).map(domain => <p key={domain}>Add: {domain}</p>)}
   </div>}
-  {attempt && phase !== "editing" && <button className="rv-button rv-button-secondary" type="button" disabled={phase !== "ready"} aria-busy={phase === "sending"} onClick={() => void send()}>{attempt?.operation === "cancel" ? "Cancel reviewed proposal" : attempt?.operation === "reject" ? "Reject reviewed proposal" : attempt?.operation === "approve" ? "Approve reviewed proposal" : attempt?.operation === "propose" ? "Propose website additions" : "Save website removal"}</button>}
+  {attempt && phase !== "editing" && <button className="rv-button rv-button-secondary" type="button" disabled={phase !== "ready"} aria-busy={phase === "sending"} onClick={() => void send()}>{attempt?.operation === "cancel" ? "Cancel reviewed proposal" : attempt?.operation === "reject" ? "Reject reviewed proposal" : attempt?.operation === "approve" ? "Approve reviewed proposal" : attempt?.operation === "propose" ? "Propose address additions" : "Save address removal"}</button>}
   {["unknown", "absent", "checking"].includes(phase) && <button className="rv-button rv-button-secondary" type="button" disabled={phase === "checking"} onClick={() => void status()}>Check request status</button>}
   {phase === "absent" && <button className="rv-button rv-button-secondary" type="button" onClick={() => void send()}>Resend same request</button>}
-  {["done", "refused"].includes(phase) && <button className="rv-button rv-button-secondary" type="button" onClick={() => void refresh()}>Refresh canonical website settings</button>}
-  {history.requests.length > 1 && <label>Earlier website request<select aria-label="Earlier website request" value={history.selectedIndex} disabled={["loading", "sending", "checking"].includes(phase)} onChange={event => {
+  {["done", "refused"].includes(phase) && <button className="rv-button rv-button-secondary" type="button" onClick={() => void refresh()}>Refresh canonical address settings</button>}
+  {history.requests.length > 1 && <label>Earlier address request<select aria-label="Earlier address request" value={history.selectedIndex} disabled={["loading", "sending", "checking"].includes(phase)} onChange={event => {
    if (busy.current) return;
    try {
     const saved = selectWebsiteRequest(host.storage, scope, Number(event.target.value));setHistory(readWebsiteRequests(host.storage, scope));setAttempt(saved);setPhase("unknown");setMessage("Earlier request selected. Check its status; nothing was resent.");

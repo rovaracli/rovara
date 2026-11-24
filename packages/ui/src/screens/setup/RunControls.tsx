@@ -7,6 +7,7 @@ import { Button } from "../../design/Button.js";
 import { TextArea } from "../../design/TextArea.js";
 import { TextField } from "../../design/TextField.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { RUN } from "../setup-tab/setup-tab-text.js";
 
 const problem = (error: unknown, fallback: string): { message: string } => (error instanceof ApiError ? { message: error.message } : { message: fallback });
 
@@ -19,9 +20,9 @@ export function SteerBox({ sessionId }: { sessionId: string }) {
     try { await createSessionApi(host).sendMessage(sessionId, { kind: "steer", text: text.trim() }); setText(""); setSent(true); } catch (caught) { setError(problem(caught, "Couldn't send that. Try again.").message); } finally { setBusy(false); }
   }
   return <section aria-label="Steer the run">
-    <TextArea label="Tell Rovara how to set it up" hint="For example, which command builds the project. It changes how Rovara works, not its limits or the websites it may reach." value={text} onChange={event => { setText(event.target.value); setSent(false); }} maxLength={2000} />
-    <Button busy={busy} disabled={text.trim() === ""} onClick={() => { void send(); }}>Send to Rovara</Button>
-    {sent && <p role="status">Sent. Rovara reads it before its next step.</p>}
+    <TextArea label={RUN.steerLabel} hint={RUN.steerHint} value={text} onChange={event => { setText(event.target.value); setSent(false); }} maxLength={2000} />
+    <Button busy={busy} disabled={text.trim() === ""} onClick={() => { void send(); }}>{RUN.steerSend}</Button>
+    {sent && <p role="status">{RUN.steerSent}</p>}
     {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
   </section>;
 }
@@ -35,9 +36,9 @@ export function CommandBox({ project, onRan }: { project: string; onRan: () => v
     try { await api.command(project, requestId, command.trim()); setCommand(""); setRequestId(crypto.randomUUID()); setQueued(true); onRan(); } catch (caught) { setError(problem(caught, "Couldn't run that. Try again.")); } finally { setBusy(false); }
   }
   return <section aria-label="Run a command">
-    <TextField label="Run a command in the sandbox" hint="One line, no secrets. It runs in the same throw-away sandbox as Rovara's, and Rovara is told what it printed." value={command} onChange={event => { setCommand(event.target.value); setRequestId(crypto.randomUUID()); }} maxLength={1000} />
-    <Button busy={busy} disabled={command.trim() === ""} onClick={() => { void run(); }}>Run</Button>
-    {queued && <p role="status">Queued. It appears in the list below when it has run.</p>}
+    <TextField label={RUN.commandLabel} hint={RUN.commandHint} value={command} onChange={event => { setCommand(event.target.value); setRequestId(crypto.randomUUID()); }} maxLength={1000} />
+    <Button busy={busy} disabled={command.trim() === ""} onClick={() => { void run(); }}>{RUN.commandRun}</Button>
+    {queued && <p role="status">{RUN.commandQueued}</p>}
     {error !== undefined && <p role="alert"><VisibleText text={error.message} /></p>}
   </section>;
 }

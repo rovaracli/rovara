@@ -99,7 +99,7 @@ describe("the screen", () => {
   const card = within(await screen.findByRole("region", { name: "Python services" }));
   expect(card.getByText("{repo}: uv sync --frozen")).toBeTruthy();
   expect(card.getByText("{repo}: pytest -q")).toBeTruthy();
-  expect(card.getByText("Requested websites")).toBeTruthy();
+  expect(card.getByText("Requested addresses")).toBeTruthy();
   expect(card.getByText("pypi.internal.example.com")).toBeTruthy();
   fireEvent.click(card.getByRole("button", { name: "Approve this recipe" }));
   await screen.findByText("Approved.");
@@ -203,7 +203,7 @@ describe("the screen", () => {
   fireEvent.change(form.getByLabelText("Tool versions"), { target: { value: "python 3.12" } });
   fireEvent.click(form.getByRole("checkbox", { name: "pyproject.toml" }));
   fireEvent.change(form.getByLabelText("Package registries"), { target: { value: "pypi.internal.example.com" } });
-  fireEvent.change(form.getByLabelText("Websites to share"), { target: { value: "pypi.internal.example.com, files.example.com" } });
+  fireEvent.change(form.getByLabelText("Addresses to share"), { target: { value: "pypi.internal.example.com, files.example.com" } });
   await waitFor(() => expect(button).toHaveProperty("disabled", false));
   fireEvent.click(button);
   await screen.findByText("Shared. It is waiting for approval above.");

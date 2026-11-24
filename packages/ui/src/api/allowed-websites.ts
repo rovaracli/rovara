@@ -4,20 +4,20 @@ import { OrgIdSchema, ProjectAllowedWebsitesMutationBodySchema, ProjectAllowedWe
  type ProjectAllowedWebsitesMutationBody, type ProjectAllowedWebsitesApprovalBody, type ProjectAllowedWebsitesDecisionBody } from "@agentx/contracts/web";
 import type { AppHost, ApiRequest, ApiResponse } from "../host.js";
 import { ApiError } from "./errors.js";
-const message = "Website request could not be confirmed. Check its status before resending.";
+const message = "Address request could not be confirmed. Check its status before resending.";
 const knownCodes = new Set(["AUTH_REQUIRED", "FORBIDDEN", "CSRF_STALE", "CHANGE_STALE", "PROJECT_REVISION_MISMATCH", "IDEMPOTENCY_CONFLICT", "CONFIG_INVALID", "NOT_FOUND", "TOO_MANY_REQUESTS", "RUNTIME_UNAVAILABLE", "AUDIT_UNAVAILABLE"]);
 /** One transport request per explicit call. This bypasses retrying API helpers;
  * retry:never also disables the browser host's automatic CSRF replay. */
 export function createAllowedWebsitesApi(host: AppHost, orgId: string, project: string) {
  let active = true, epoch = 0, redirected = false;
  const valid = (version: number) => active && epoch === version;
- const invalid = () => new ApiError(502, "INVALID_RESPONSE", "The website response did not match this reviewed request.");
- const input = <T>(schema: { parse(value: unknown): T }, value: unknown): T => { try { return schema.parse(value); } catch { throw new ApiError(400, "CONFIG_INVALID", "Review a valid website request."); } };
+ const invalid = () => new ApiError(502, "INVALID_RESPONSE", "The address response did not match this reviewed request.");
+ const input = <T>(schema: { parse(value: unknown): T }, value: unknown): T => { try { return schema.parse(value); } catch { throw new ApiError(400, "CONFIG_INVALID", "Review a valid address request."); } };
  async function call<T>(request: ApiRequest, reader: { parse(value: unknown): T }): Promise<T> {
   const version = epoch;if (!valid(version)) throw new ApiError(0, "SCOPE_ENDED", message);
   if (!OrgIdSchema.safeParse(orgId).success || !ProjectAllowedWebsitesReviewReaderSchema.shape.project.safeParse(project).success) throw new ApiError(400, "CONFIG_INVALID", "Choose a valid company and project.");
   let timer: ReturnType<typeof setTimeout> | undefined, response: ApiResponse;
-  try { response = await Promise.race([host.transport.request({ ...request, retry: "never" }), new Promise<ApiResponse>((_, reject) => { timer = setTimeout(() => reject(new Error("Website request deadline")), 30000); })]); }
+  try { response = await Promise.race([host.transport.request({ ...request, retry: "never" }), new Promise<ApiResponse>((_, reject) => { timer = setTimeout(() => reject(new Error("Address request deadline")), 30000); })]); }
   catch { if (!valid(version)) throw new ApiError(0, "SCOPE_ENDED", message);throw new ApiError(0, "RUNTIME_UNAVAILABLE", message); }
   finally { clearTimeout(timer); }
   if (!valid(version)) throw new ApiError(0, "SCOPE_ENDED", message);

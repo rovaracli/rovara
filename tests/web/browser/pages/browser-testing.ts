@@ -15,7 +15,7 @@ export async function browserTestingWrites(page: Page, project = PROJECT): Promi
   return ((await answer.json()) as { writes: Array<{ method: string; path: string; body: unknown }> }).writes;
 }
 
-/** Browser testing's page and its row of the project's setup checklist. */
+/** Browser testing's page and its row on the project's Setup tab ("Also for this project"). */
 export class BrowserTestingPage {
   readonly page: Page;
   readonly root: Locator;
@@ -25,7 +25,7 @@ export class BrowserTestingPage {
     this.page = page;
     this.root = page.getByTestId("bt-page");
     this.chip = page.getByTestId("bt-chip");
-    this.row = page.getByTestId("checklist-row-browserTesting");
+    this.row = page.getByTestId("also-browser");
   }
   async open(project = PROJECT): Promise<void> {
     await this.page.goto(BROWSER_TESTING_ROUTE(project));

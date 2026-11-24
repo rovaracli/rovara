@@ -9,8 +9,7 @@ import { MemoryRouter } from "react-router";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { ProjectChecklist } from "../../packages/ui/src/screens/setup/ProjectChecklist.js";
-import { EVAL_CHECK_ROW_WORDS as W } from "../../packages/ui/src/screens/setup/EvalCheckRow.js";
+import { EvalCheckRow, EVAL_CHECK_ROW_WORDS as W } from "../../packages/ui/src/screens/setup/EvalCheckRow.js";
 import { EvalCheckViewSchema } from "../../packages/contracts/src/eval-check-web.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -42,7 +41,7 @@ function mount(options: Options = {}) {
   });
   const query = createQueryClient();
   query.setQueryData(["nav"], { me: { developerId: ME, name: "Maya", orgRole: "owner" } });
-  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/web"], children: h(ProjectChecklist, { project: "web" }) }) }) }), { theme: "light" });
+  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/web"], children: h("ol", { className: "rv-checklist-rows", "data-testid": "rows" }, h(EvalCheckRow, { project: "web", ...(options.percent === 100 ? { alone: true } : {}) })) }) }) }), { theme: "light" });
   return { ...f, close() { ui.unmount(); query.clear(); } };
 }
 const puts = (f: ReturnType<typeof mount>) => f.request.mock.calls.map(([r]) => r).filter((r) => r.method === "PUT" && r.path.endsWith("/ci-eval-check"));
@@ -182,7 +181,7 @@ describe("who and what Code said", () => {
   it("Code (or Cloud) not serving the card yet leaves no row at all; any other read failure says so with Try again", async () => {
     for (const read of [() => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "x" } } }), () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "x" } } })]) {
       const f = mount({ read });
-      await screen.findByTestId("project-checklist");
+      await screen.findByTestId("rows");
       await waitFor(() => expect(screen.queryByTestId("checklist-row-evalCheck")).toBeNull());
       expect(f.request.mock.calls.some(([r]) => r.path.endsWith("/ci-eval-check"))).toBe(true);
       f.close(); cleanup();
@@ -201,15 +200,10 @@ describe("who and what Code said", () => {
     f.close();
   });
 
-  it("a finished checklist still shows the row for a person who can change the project, and nothing for one who cannot", async () => {
+  it("brings its own list when it stands on its own", async () => {
     const f = mount({ percent: 100 });
     expect(await screen.findByTestId("project-eval-check-only")).toBeTruthy();
     expect(await row()).toBeTruthy();
-    f.close(); cleanup();
-    const g = mount({ percent: 100, canSkip: false });
-    await waitFor(() => expect(g.request.mock.calls.some(([r]) => r.path.endsWith("/setup-status"))).toBe(true));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(screen.queryByTestId("checklist-row-evalCheck")).toBeNull();
-    g.close();
+    f.close();
   });
 });

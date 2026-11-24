@@ -22,7 +22,7 @@ describe("TaskSiteNoticeView", () => {
  it("shows the exact host and command from blocked-run evidence", () => {
   render(createElement(TaskSiteNoticeView, { project: "payments", state: { kind: "blocked", journal, entryN: 4 } }));
 
-  expect(screen.getByRole("heading", { name: "A setup run recorded a blocked host" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "A setup run recorded a blocked address" })).toBeTruthy();
   expect(screen.getByText("api.paymock.example")).toBeTruthy();
   expect(screen.getByText("pytest tests/refunds -q")).toBeTruthy();
  });
@@ -30,10 +30,10 @@ describe("TaskSiteNoticeView", () => {
  it("reports only the project request state returned by the server", () => {
   render(createElement(TaskSiteNoticeView, { project: "payments", state: { kind: "request-result", result: pendingRequest } }));
 
-  expect(screen.getByRole("heading", { name: "Project website proposal" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Project address proposal" })).toBeTruthy();
   expect(screen.getByText("Waiting for review")).toBeTruthy();
   expect(screen.getByText("f1de14f9-f00e-4e48-9147-d0d97fb224c0")).toBeTruthy();
-  expect(screen.getByText("This response does not show that the host is approved on every machine or that the task continued.")).toBeTruthy();
+  expect(screen.getByText("This response does not show that the address is approved on every machine or that the task continued.")).toBeTruthy();
  });
 
  it("drops cached blocked evidence when the latest read fails", () => {

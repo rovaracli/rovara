@@ -59,7 +59,7 @@ function Forecast({ map, canManage, mayBuild, keyMissing, chipsOn, onChip, notes
   </>;
 }
 
-export function WikiChecklistRow({ project, companyAdmin, alone = false, startOpen = false }: { project: string; companyAdmin: boolean; /** On its own (a finished checklist leaves the project page): the row brings its own list. */ alone?: boolean; /** Open before any build (the Wiki tab's empty state shows the row to build from). */ startOpen?: boolean }) {
+export function WikiChecklistRow({ project, companyAdmin, alone = false, startOpen = false, bare = false }: { project: string; companyAdmin: boolean; /** Only the body: the Setup tab's "Also for this project" row names it and opens it. */ bare?: boolean; /** On its own (a finished checklist leaves the project page): the row brings its own list. */ alone?: boolean; /** Open before any build (the Wiki tab's empty state shows the row to build from). */ startOpen?: boolean }) {
   const api = useWikiSetupApi(), query = useQueryClient();
   const build = useQuery({ queryKey: wikiSetupKey(project, "build"), queryFn: () => api.build(project), retry: false, refetchInterval: (current) => (current.state.data?.status === "running" ? 4_000 : false) });
   const map = useQuery({ queryKey: wikiSetupKey(project, "map"), queryFn: () => api.map(project), retry: false, staleTime: 60_000 });
@@ -70,6 +70,7 @@ export function WikiChecklistRow({ project, companyAdmin, alone = false, startOp
   if (build.isError && wikiSetupAbsent(build.error)) return null;
   const title = <span className="rv-checklist-title">{T.TITLE}</span>;
   const wrap = (state: RowState, body: ReactNode, open = false) => {
+    if (bare) return <div className="rv-checklist-body rv-wikis" data-testid="project-wiki-bare" data-state={state}>{body}</div>;
     const pill = PILL[state];
     const row = <li className="rv-checklist-row" data-testid="checklist-row-wiki" data-state={state}>
       <details open={open}><summary>{title} <StatusPill tone={pill.tone} label={pill.label} /></summary><div className="rv-checklist-body rv-wikis">{body}</div></details>

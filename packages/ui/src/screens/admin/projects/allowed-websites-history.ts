@@ -13,7 +13,7 @@ const historySchema = scopeSchema.extend({ version: z.literal(1), requests: z.ar
 type Scope = z.infer<typeof scopeSchema>;
 export type WebsiteRequest = z.infer<typeof requestSchema>;
 interface Storage { get(key: string): string | undefined; set(key: string, value: string): void }
-const failure = () => new Error("Saved website requests could not be verified. No request was sent.");
+const failure = () => new Error("Saved address requests could not be verified. No request was sent.");
 export function websiteRequestStorageKey(scope: Scope): string {
  const parsed = scopeSchema.parse(scope);
  return `allowed-websites:v1:${parsed.orgId}:${parsed.developerId}:${encodeURIComponent(parsed.project)}`;

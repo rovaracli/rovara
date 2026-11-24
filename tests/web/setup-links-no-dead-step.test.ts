@@ -53,20 +53,20 @@ describe("setup status in the project header", () => {
     expect(screen.queryByTestId("setup-attention-link")).toBeNull();
     f.close();
   });
-  it("says Setup needs attention otherwise, as a link to the project checklist and never to the old Setup step", async () => {
+  it("says Setup needs attention otherwise, as a link to the project's Setup tab and never to the old Setup step", async () => {
     const f = mount("/app/projects/payments", "unchecked");
     const link = await screen.findByRole("link", { name: "Setup needs attention" });
-    expect(link.getAttribute("href")).toBe("/app/projects/payments#setup-checklist");
+    expect(link.getAttribute("href")).toBe("/app/projects/payments?tab=setup");
     expect(document.body.innerHTML).not.toContain("step=setup");
     f.close();
   });
 });
 
 describe("the address Code's website-ask card opens", () => {
-  it("/app/projects/<p>/setup lands on the project's checklist, not a missing page", async () => {
+  it("/app/projects/<p>/setup lands on the project's Setup tab, not a missing page", async () => {
     const f = mount("/app/projects/payments/setup", "unchecked");
     await waitFor(() => expect(f.router.state.location.pathname).toBe("/app/projects/payments"));
-    expect(f.router.state.location.hash).toBe("#setup-checklist");
+    expect(f.router.state.location.search).toBe("?tab=setup");
     f.close();
   });
   it("a name that is not a project name is not found (never a redirect with its text)", async () => {

@@ -16,26 +16,28 @@ export async function setEvalCard(page: Page, project: string, state: "default" 
   expect(answer.status()).toBe(200);
 }
 
-/** The project setup checklist on the project's page, Project settings, and Home's "Finish setting up" card (guided onboarding PR 9). */
+/** Sets a project's setup scenario on the pretend Code (SETUP-TAB): fields merged over the run read and the checklist's Setup run row (`null` removes one), the run's commands, and the company's cap on the limits. `reset` forgets all of it. */
+export async function setSetupScenario(page: Page, project: string, body: { status?: "none" | "running" | "ready" | "failed"; run?: Record<string, unknown>; row?: Record<string, unknown>; entries?: unknown[]; companyLock?: Record<string, number>; reset?: boolean }): Promise<void> {
+  const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/setup-scenario`, { data: { project, ...body } });
+  expect(answer.status()).toBe(200);
+}
+
+/** The project setup checklist on the project's page (a one-line Setup run row), Project settings, and Home's "Finish setting up" card (guided onboarding PR 9). */
 export class SetupChecklistPage {
   readonly page: Page;
   readonly checklist: Locator;
   readonly progress: Locator;
   readonly runRow: Locator;
-  readonly runAgain: Locator;
-  readonly stop: Locator;
   readonly settings: Locator;
-  readonly rerun: Locator;
+  readonly settingsSetupLink: Locator;
   readonly homeCard: Locator;
   constructor(page: Page) {
     this.page = page;
     this.checklist = page.getByTestId("project-checklist");
     this.progress = page.getByTestId("checklist-progress");
     this.runRow = page.getByTestId("setup-run-row");
-    this.runAgain = this.runRow.getByTestId("setup-run-start");
-    this.stop = this.runRow.getByTestId("setup-run-stop");
     this.settings = page.getByTestId("project-settings");
-    this.rerun = this.settings.getByRole("button", { name: "Re-run setup" });
+    this.settingsSetupLink = page.getByTestId("project-settings-setup-link");
     this.homeCard = page.getByTestId("home-finish-setup");
   }
   row(name: string): Locator { return this.page.getByTestId(`checklist-row-${name}`); }
@@ -48,6 +50,43 @@ export class SetupChecklistPage {
     await this.page.goto(`${ROUTES.project(project)}?tab=settings`);
     await expect(this.settings).toBeVisible();
   }
+}
+
+/** The project's Setup tab (FABLE-REVIEW): the status card with its one primary action, the addresses to decide, this run, the extras and the limits for a setup run. */
+export class SetupTabPage {
+  readonly page: Page;
+  readonly tab: Locator;
+  readonly card: Locator;
+  readonly actions: Locator;
+  readonly start: Locator;
+  readonly stop: Locator;
+  readonly addresses: Locator;
+  readonly hostAsks: Locator;
+  readonly run: Locator;
+  readonly log: Locator;
+  readonly also: Locator;
+  readonly limits: Locator;
+  readonly changeLimits: Locator;
+  constructor(page: Page) {
+    this.page = page;
+    this.tab = page.getByTestId("setup-tab");
+    this.card = page.getByTestId("setup-status-card");
+    this.actions = page.getByTestId("setup-card-actions");
+    this.start = this.card.getByTestId("setup-run-start");
+    this.stop = this.card.getByTestId("setup-run-stop");
+    this.addresses = page.getByTestId("setup-addresses");
+    this.hostAsks = page.getByTestId("host-ask");
+    this.run = page.getByTestId("setup-run");
+    this.log = page.getByTestId("run-log");
+    this.also = page.getByTestId("setup-also");
+    this.limits = page.getByTestId("setup-limits");
+    this.changeLimits = page.getByTestId("limits-change");
+  }
+  async open(project: string): Promise<void> {
+    await this.page.goto(`${ROUTES.project(project)}?tab=setup`);
+    await expect(this.card).toBeVisible();
+  }
+  hostAsk(host: string): Locator { return this.page.locator(`[data-testid="host-ask"][data-host="${host}"]`); }
 }
 
 /** Sets the candidate setup waiting for a decision on a project of the pretend Code (L4-D2): null clears it. */

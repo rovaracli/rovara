@@ -115,40 +115,17 @@ describe("the project checklist", () => {
     older.close();
   });
 
-  it("a failed setup run shows the failing command, its last lines and Run again (no link to the old Setup step) (Code says canManage)", async () => {
+  it("the Setup run row is one line with the state and a link to the Setup tab; the work is done there, not here", async () => {
     const f = mount(h(ProjectChecklist, { project: "web" }));
     const row = await screen.findByTestId("setup-run-row");
-    expect(within(row).getByTestId("setup-run-failure").textContent).toBe("A test command failed.");
-    expect(within(row).getByTestId("setup-run-failed-command").textContent).toContain("npm test");
-    expect(within(row).getByTestId("setup-run-failed-command").textContent).toContain("FAIL src/app.test.ts");
-    expect(within(row).getByTestId("setup-run-facts").textContent).toBe("Commands found: 1 to set up, 1 to test. Tests failed. Took 5 minutes, cost $0.31.");
-    expect(within(row).queryByTestId("setup-run-edit")).toBeNull();
+    expect(within(row).getByTestId("setup-run-line").textContent).toBe("Setup failed.");
+    expect(within(row).getByRole("link", { name: "Open Setup" }).getAttribute("href")).toBe("/app/projects/web?tab=setup");
+    expect(within(row).queryAllByRole("button")).toHaveLength(0);
     expect(row.innerHTML).not.toContain("step=setup");
-    fireEvent.click(await within(row).findByRole("button", { name: "Run again" }));
-    await waitFor(() => expect(calls(f, "POST", "/v1/app/projects/web/setup-agent")).toHaveLength(1));
-    expect(Object.keys(calls(f, "POST", "/v1/app/projects/web/setup-agent")[0]!.body as object)).toEqual(["requestId"]);
+    expect(screen.queryByTestId("checklist-row-wiki")).toBeNull();
+    expect(screen.queryByTestId("checklist-row-evalCheck")).toBeNull();
+    expect(screen.queryByTestId("checklist-row-browserTesting")).toBeNull();
     f.close();
-  });
-
-  it("offers no Run or Stop when Code says the person may not manage the run", async () => {
-    const f = mount(h(ProjectChecklist, { project: "web" }), { run: () => ({ status: 200, body: runView("failed", false) }) });
-    await screen.findByTestId("setup-run-row");
-    await waitFor(() => expect(calls(f, "GET", "/v1/app/projects/web/setup-agent")).toHaveLength(1));
-    expect(screen.queryByTestId("setup-run-controls")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Run again" })).toBeNull();
-    f.close();
-  });
-
-  it("shows only Cloud's fixed words when a start is refused", async () => {
-    const f = mount(h(ProjectChecklist, { project: "web" }), { post: () => ({ status: 409, body: { error: { code: "WORKSPACE_BUSY", message: SETUP_CHECKLIST_WORDS.busy } } }) });
-    fireEvent.click(await screen.findByRole("button", { name: "Run again" }));
-    expect((await screen.findByTestId("setup-run-error")).textContent).toBe(SETUP_CHECKLIST_WORDS.busy);
-    f.close();
-    const g = mount(h(ProjectChecklist, { project: "web" }), { post: () => ({ status: 409, body: { error: { code: "WORKSPACE_BUSY", message: LEAK } } }) });
-    fireEvent.click(await screen.findByRole("button", { name: "Run again" }));
-    expect((await screen.findByTestId("setup-run-error")).textContent).toBe("Couldn't do that just now. Try again.");
-    expect(document.body.textContent).not.toContain(LEAK);
-    g.close();
   });
 
   it("Set up later on Invite teammates sends exactly {row, skipped:true}; a refusal shows only fixed words", async () => {
@@ -200,11 +177,11 @@ describe("the project checklist", () => {
 });
 
 describe("Project settings", () => {
-  it("a manager gets Re-run setup and Archive; Re-run sends exactly {requestId}", async () => {
+  it("a manager gets Archive and one line that points at the Setup tab; no Re-run setup and no Re-check", async () => {
     const f = mount(h(ProjectSettingsTab, { project: "web", canEdit: true }), { run: () => ({ status: 200, body: runView("ready", true) }) });
-    fireEvent.click(await screen.findByRole("button", { name: "Re-run setup" }));
-    await waitFor(() => expect(calls(f, "POST", "/v1/app/projects/web/setup-agent")).toHaveLength(1));
     expect(await screen.findByRole("button", { name: "Review archive" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open Setup" }).getAttribute("href")).toBe("/app/projects/web?tab=setup");
+    expect(screen.queryByRole("button", { name: /Re-run setup|Re-check setup/u })).toBeNull();
     expect(screen.getByRole("link", { name: "AI models for each step" }).getAttribute("href")).toBe("/app/admin/ai-spending#ai-models");
     f.close();
   });
@@ -218,7 +195,7 @@ describe("Project settings", () => {
     } finally { f.close(); }
   });
 
-  it("a project user gets no Re-run setup and no Archive", async () => {
+  it("a project user gets no Archive", async () => {
     const f = mount(h(ProjectSettingsTab, { project: "web", canEdit: false }), { role: "member", run: () => ({ status: 200, body: runView("ready", false) }) });
     await screen.findByTestId("project-settings-lifecycle-none");
     expect(screen.getByRole("link", { name: "AI models for each step" }).getAttribute("href")).toBe("/app/admin/ai-spending#ai-models");

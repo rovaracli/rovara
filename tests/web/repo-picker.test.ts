@@ -256,6 +256,6 @@ it("the choices are plain functions: above 8 is separate, an answer wins, the wo
   expect(answeredTogether("one", 20)).toBe("one"); expect(answeredTogether("separate", 2)).toBe("separate"); expect(answeredTogether(undefined, 9)).toBe("separate");
   expect(retryable("unavailable") && retryable("not_started") && !retryable("name_taken") && !retryable("not_available")).toBe(true);
   expect(refusalWords("something new")).toBe("This one couldn't be created.");
-  expect(checklistHref("my-app")).toBe("/app/projects/my-app#setup-checklist");
+  expect(checklistHref("my-app")).toBe("/app/projects/my-app?tab=setup");
 });
 void vi;

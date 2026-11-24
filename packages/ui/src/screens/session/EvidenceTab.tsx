@@ -131,10 +131,10 @@ function EvidenceSections({ evidence, taskId }: { evidence: Evidence; taskId: st
 /** Project setup evidence is explicitly labelled as such; it is never attributed to this task's test run. */
 function TaskSiteEvidence({ task }: { task: ReadTask }) {
  const api = useSetupAgentApi(), read = useQuery({ queryKey: ["onboard", "setup-journal", task.project], queryFn: () => api.journal(task.project, { retry: "never" }), retry: false });
- if (read.isPending) return <p>Loading project setup-site evidence…</p>;
+ if (read.isPending) return <p>Loading project setup address evidence…</p>;
  if (read.isError) return <TaskSiteNoticeView project={task.project} state={{ kind: "read-failed" }} />;
  const entry = read.data.entries.find(item => (item.blockedHosts?.length ?? 0) > 0);
- return <TaskSiteNoticeView project={task.project} state={entry === undefined ? { kind: "unresolved", detail: "The current project setup journal does not name a blocked host for this task." } : { kind: "blocked", journal: read.data, entryN: entry.n }} />;
+ return <TaskSiteNoticeView project={task.project} state={entry === undefined ? { kind: "unresolved", detail: "The current project setup journal does not name a blocked address for this task." } : { kind: "blocked", journal: read.data, entryN: entry.n }} />;
 }
 
 export function EvidenceTab({ task, sessionId }: { task: ReadTask; sessionId?: string }) {

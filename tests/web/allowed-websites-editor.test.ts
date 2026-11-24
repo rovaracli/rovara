@@ -16,23 +16,23 @@ it("reviews the canonical diff and durably retains a UUID before one explicit na
   return { status: 200, body: { kind: "receipt", status: "applied", receipt: { requestId: body.requestId, state: "applied", mode: "direct_narrowing", resultRevision: 2, createdAt: "2026-10-29T21:00:00.000Z" } } };
  });
  renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: true }) }));
- await screen.findByLabelText("Allowed websites, one hostname per line");
+ await screen.findByLabelText("Allowed addresses, one hostname per line");
  expect(screen.getByText("github.com")).toBeTruthy();expect(screen.getAllByText(/xn--bcher-kva/).length).toBeGreaterThan(0);
- fireEvent.change(screen.getByLabelText("Allowed websites, one hostname per line"), { target: { value: "" } });
- fireEvent.click(screen.getByRole("button", { name: "Review website change" }));
+ fireEvent.change(screen.getByLabelText("Allowed addresses, one hostname per line"), { target: { value: "" } });
+ fireEvent.click(screen.getByRole("button", { name: "Review address change" }));
  await screen.findByText(/Remove: xn--bcher-kva/);
  expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);
- fireEvent.click(screen.getByRole("button", { name: "Save website removal" }));
+ fireEvent.click(screen.getByRole("button", { name: "Save address removal" }));
  await screen.findByText(/Receipt confirmed/);
  expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(1);
 });
 it("keeps an ambiguous request status-only until explicit same-request resend", async () => {
  const f = fakeHost(async input => input.method === "POST" ? { status: 503, body: {} } : input.path.includes("/requests/") ? { status: 404, body: {} } : { status: 200, body: review });
  renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: true }) }));
- await screen.findByLabelText("Allowed websites, one hostname per line");
- fireEvent.change(screen.getByLabelText("Allowed websites, one hostname per line"), { target: { value: "" } });
- fireEvent.click(screen.getByRole("button", { name: "Review website change" }));
- fireEvent.click(await screen.findByRole("button", { name: "Save website removal" }));
+ await screen.findByLabelText("Allowed addresses, one hostname per line");
+ fireEvent.change(screen.getByLabelText("Allowed addresses, one hostname per line"), { target: { value: "" } });
+ fireEvent.click(screen.getByRole("button", { name: "Review address change" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Save address removal" }));
  await screen.findByText(/outcome is unconfirmed/);
  fireEvent.click(screen.getByRole("button", { name: "Check request status" }));
  await screen.findByRole("button", { name: "Resend same request" });
@@ -45,30 +45,30 @@ it("a live disabled scope removes the editor and ignores a delayed mutation", as
  let finish!: (value: { status: number; body: unknown }) => void;
  const f = fakeHost(async input => input.method === "GET" ? { status: 200, body: review } : new Promise(resolve => { finish = resolve; }));
  const mounted = renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: true }) }));
- await screen.findByLabelText("Allowed websites, one hostname per line");
- fireEvent.change(screen.getByLabelText("Allowed websites, one hostname per line"), { target: { value: "" } });
- fireEvent.click(screen.getByRole("button", { name: "Review website change" }));
- fireEvent.click(await screen.findByRole("button", { name: "Save website removal" }));
- expect(screen.getByRole("button", { name: "Save website removal" })).toHaveProperty("disabled", true);
+ await screen.findByLabelText("Allowed addresses, one hostname per line");
+ fireEvent.change(screen.getByLabelText("Allowed addresses, one hostname per line"), { target: { value: "" } });
+ fireEvent.click(screen.getByRole("button", { name: "Review address change" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Save address removal" }));
+ expect(screen.getByRole("button", { name: "Save address removal" })).toHaveProperty("disabled", true);
  mounted.rerender(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: false }) }));
  finish({ status: 401, body: {} });await Promise.resolve();
- expect(screen.queryByRole("region", { name: "Allowed websites editor" })).toBeNull();expect(f.host.signIn).not.toHaveBeenCalled();
+ expect(screen.queryByRole("region", { name: "Allowed addresses editor" })).toBeNull();expect(f.host.signIn).not.toHaveBeenCalled();
 });
 it("a refused addition requires a fresh server review and UUID", async () => {
  const f = fakeHost(async input => input.method === "GET" ? { status: 200, body: review } : { status: 409, body: { error: { code: "CHANGE_STALE" } } });
  renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: true }) }));
- await screen.findByLabelText("Allowed websites, one hostname per line");
- fireEvent.change(screen.getByLabelText("Allowed websites, one hostname per line"), { target: { value: "new.acme.dev" } });
- fireEvent.click(screen.getByRole("button", { name: "Review website change" }));
- fireEvent.click(await screen.findByRole("button", { name: "Propose website additions" }));
+ await screen.findByLabelText("Allowed addresses, one hostname per line");
+ fireEvent.change(screen.getByLabelText("Allowed addresses, one hostname per line"), { target: { value: "new.acme.dev" } });
+ fireEvent.click(screen.getByRole("button", { name: "Review address change" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Propose address additions" }));
  await screen.findByText(/request was refused/);
  const before = f.request.mock.calls.filter(([r]) => r.method === "GET").length;
- fireEvent.click(screen.getByRole("button", { name: "Refresh canonical website settings" }));
- await screen.findByRole("button", { name: "Review website change" });
+ fireEvent.click(screen.getByRole("button", { name: "Refresh canonical address settings" }));
+ await screen.findByRole("button", { name: "Review address change" });
  expect(f.request.mock.calls.filter(([r]) => r.method === "GET").length).toBe(before + 1);
- fireEvent.change(screen.getByLabelText("Allowed websites, one hostname per line"), { target: { value: "new.acme.dev" } });
- fireEvent.click(screen.getByRole("button", { name: "Review website change" }));
- fireEvent.click(await screen.findByRole("button", { name: "Propose website additions" }));
+ fireEvent.change(screen.getByLabelText("Allowed addresses, one hostname per line"), { target: { value: "new.acme.dev" } });
+ fireEvent.click(screen.getByRole("button", { name: "Review address change" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Propose address additions" }));
  await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(2));
  const ids = f.request.mock.calls.filter(([r]) => r.method === "POST").map(([r]) => (r.body as { requestId: string }).requestId);expect(ids[0]).not.toBe(ids[1]);
 });
@@ -111,7 +111,7 @@ it("historical request selection checks status only and never sends a stored bod
  const ids = ["11111111-1111-4111-8111-111111111111", "22222222-1111-4111-8111-111111111111"];
  for (const requestId of ids) retainWebsiteRequest(f.host.storage, scope, { operation: "save", body: { expectedOrgId: scope.orgId, requestId, expectedRevision: 1, expectedContextDigest: review.contextDigest, allowedDomains: [] } });
  renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: true }) }));
- const selection = await screen.findByRole("combobox", { name: "Earlier website request" });
+ const selection = await screen.findByRole("combobox", { name: "Earlier address request" });
  fireEvent.change(selection, { target: { value: "0" } });
  expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);
  fireEvent.click(screen.getByRole("button", { name: "Check request status" }));
@@ -126,21 +126,21 @@ it("an old read cannot replace a new editor after scope reactivation", async () 
  await waitFor(() => expect(reads).toBe(1));
  mounted.rerender(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: false }) }));
  mounted.rerender(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: true }) }));
- await screen.findByRole("button", { name: "Review website change" });
+ await screen.findByRole("button", { name: "Review address change" });
  const { act } = await import("@testing-library/react");await act(async () => { finish({ status: 401, body: {} });await new Promise(resolve => setTimeout(resolve, 0)); });
- expect(screen.getByRole("button", { name: "Review website change" })).toBeTruthy();expect(screen.queryByText(/could not be checked/)).toBeNull();expect(f.host.signIn).not.toHaveBeenCalled();
+ expect(screen.getByRole("button", { name: "Review address change" })).toBeTruthy();expect(screen.queryByText(/could not be checked/)).toBeNull();expect(f.host.signIn).not.toHaveBeenCalled();
 });
 it("retains the POST button focus through ambiguity", async () => {
  const f = fakeHost(async input => input.method === "GET" ? { status: 200, body: review } : { status: 503, body: {} });
  renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: true }) }));
- await screen.findByLabelText("Allowed websites, one hostname per line");fireEvent.change(screen.getByLabelText("Allowed websites, one hostname per line"), { target: { value: "" } });fireEvent.click(screen.getByRole("button", { name: "Review website change" }));
- const send = await screen.findByRole("button", { name: "Save website removal" });send.focus();fireEvent.click(send);await screen.findByText(/outcome is unconfirmed/);
+ await screen.findByLabelText("Allowed addresses, one hostname per line");fireEvent.change(screen.getByLabelText("Allowed addresses, one hostname per line"), { target: { value: "" } });fireEvent.click(screen.getByRole("button", { name: "Review address change" }));
+ const send = await screen.findByRole("button", { name: "Save address removal" });send.focus();fireEvent.click(send);await screen.findByText(/outcome is unconfirmed/);
  expect(document.activeElement).toBe(send);expect(send).toHaveProperty("disabled", true);
 });
 it("the canonical editor has accessible controls and one live announcement", async () => {
  const { expectNoAxeViolations } = await import("./support/axe.js");const f = fakeHost(async () => ({ status: 200, body: review }));
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: true }) }));
- await screen.findByRole("button", { name: "Review website change" });expect(screen.getAllByRole("status")).toHaveLength(1);await expectNoAxeViolations(view.container);
+ await screen.findByRole("button", { name: "Review address change" });expect(screen.getAllByRole("status")).toHaveLength(1);await expectNoAxeViolations(view.container);
 });
 it("focuses a changed canonical summary after refresh and preserves the earlier receipt separately", async () => {
  let saved = false;
@@ -149,18 +149,18 @@ it("focuses a changed canonical summary after refresh and preserves the earlier 
   saved = true;return { status: 200, body: { kind: "receipt", status: "applied", receipt: { requestId: (input.body as { requestId: string }).requestId, state: "applied", mode: "direct_narrowing", resultRevision: 2, createdAt: proposal.createdAt } } };
  });
  renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: true }) }));
- await screen.findByLabelText("Allowed websites, one hostname per line");fireEvent.change(screen.getByLabelText("Allowed websites, one hostname per line"), { target: { value: "" } });fireEvent.click(screen.getByRole("button", { name: "Review website change" }));fireEvent.click(await screen.findByRole("button", { name: "Save website removal" }));
- await screen.findByText(/Receipt confirmed/);fireEvent.click(screen.getByRole("button", { name: "Refresh canonical website settings" }));
- const summary = await screen.findByRole("heading", { name: "Current project websites" });await screen.findByText(/later.acme.dev · staff approved/);
+ await screen.findByLabelText("Allowed addresses, one hostname per line");fireEvent.change(screen.getByLabelText("Allowed addresses, one hostname per line"), { target: { value: "" } });fireEvent.click(screen.getByRole("button", { name: "Review address change" }));fireEvent.click(await screen.findByRole("button", { name: "Save address removal" }));
+ await screen.findByText(/Receipt confirmed/);fireEvent.click(screen.getByRole("button", { name: "Refresh canonical address settings" }));
+ const summary = await screen.findByRole("heading", { name: "Current project addresses" });await screen.findByText(/later.acme.dev · staff approved/);
  expect(document.activeElement).toBe(summary);expect(screen.getByText(/Earlier request applied at revision 2/)).toBeTruthy();expect(screen.getAllByRole("status")).toHaveLength(1);
 });
-it("keeps mandatory websites in a collapsed read-only disclosure beside the editable list", async () => {
+it("keeps mandatory addresses in a collapsed read-only disclosure beside the editable list", async () => {
  const f = fakeHost(async () => ({ status: 200, body: review }));renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: true }) }));
- await screen.findByRole("button", { name: "Review website change" });
- const summary = screen.getByText("Always-allowed websites (1)", { exact: true }), disclosure = summary.closest("details");
+ await screen.findByRole("button", { name: "Review address change" });
+ const summary = screen.getByText("Always-allowed addresses (1)", { exact: true }), disclosure = summary.closest("details");
  expect(disclosure).not.toBeNull();expect(disclosure?.open).toBe(false);fireEvent.click(summary);
  expect(disclosure?.querySelector("li")?.textContent).toBe("github.com");expect(disclosure?.querySelector("input,textarea,button")).toBeNull();
- expect(screen.getByRole("textbox", { name: "Allowed websites, one hostname per line" })).toHaveProperty("value", "xn--bcher-kva.acme.dev");
+ expect(screen.getByRole("textbox", { name: "Allowed addresses, one hostname per line" })).toHaveProperty("value", "xn--bcher-kva.acme.dev");
 });
 
 for (const status of ["applied", "rejected", "cancelled", "expired", "stale"] as const) it(`reports a retained ${status} proposal without pending approval instructions or a POST`, async () => {
@@ -169,7 +169,7 @@ for (const status of ["applied", "rejected", "cancelled", "expired", "stale"] as
  retainWebsiteRequest(f.host.storage, scope, { operation: "propose", body: { expectedOrgId: scope.orgId, requestId: proposal.proposalId, expectedRevision: 1, expectedContextDigest: review.contextDigest, allowedDomains: proposal.afterDomains } });
  renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsitesEditor, { ...scope, enabled: true }) }));
  fireEvent.click(await screen.findByRole("button", { name: "Check request status" }));
- await screen.findByText(`Proposal status: ${status}. Refresh canonical website settings to see the current list.`);
+ await screen.findByText(`Proposal status: ${status}. Refresh canonical address settings to see the current list.`);
  expect(screen.queryByText(/different eligible person must review/)).toBeNull();
  expect(screen.queryByRole("button", { name: "Resend same request" })).toBeNull();
  expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);

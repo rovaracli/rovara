@@ -22,7 +22,7 @@ export const RECIPES_TEXT = {
  CANCEL: "Cancel",
  ALL_BLANK: "Leave every box empty to offer it to every project.",
  SHARE_HEADING: "Share a project's setup",
- SHARE_NOTE: "Builds a recipe from the project's approved test environment. It is offered to nobody until an admin approves it. Only websites the project already allows can be shared.",
+ SHARE_NOTE: "Builds a recipe from the project's approved test environment. It is offered to nobody until an admin approves it. Only addresses the project already allows can be shared.",
  SHARE_BUTTON: "Share as company recipe",
  SHARED: "Shared. It is waiting for approval above.",
  SHARED_FROM_PROJECT: "Shared. A company admin approves it before any project is offered it.",

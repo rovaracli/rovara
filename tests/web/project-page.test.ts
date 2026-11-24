@@ -42,8 +42,8 @@ it("starts the selected shared agent once and opens the actual returned session"
 it("does not offer New session, settings or spend without their server capabilities", async () => {
  const f = setup(projectFixture({ you: { role: "viewer", canStartWork: false, canEditSettings: false, canViewSpend: false }, project: { ...projectFixture().project, setup: { status: "failed", failedStep: "bootstrap" } } }));await screen.findByRole("heading", { name: "payments" });expect(screen.queryByRole("button", { name: "New session" })).toBeNull();expect(screen.queryByRole("link", { name: "Setup needs attention" })).toBeNull();expect(screen.getByText("Setup needs attention")).toBeTruthy();expect(screen.queryByText("$812.00")).toBeNull();f.close();
 });
-it("links Setup needs attention to the project checklist, never the old Setup step", async () => {
- const value = projectFixture();value.project.setup.status = "failed";const f = setup(value);expect((await screen.findByRole("link", { name: "Setup needs attention" })).getAttribute("href")).toBe("/app/projects/payments#setup-checklist");f.close();
+it("links Setup needs attention to the project's Setup tab, never the old Setup step", async () => {
+ const value = projectFixture();value.project.setup.status = "failed";const f = setup(value);expect((await screen.findByRole("link", { name: "Setup needs attention" })).getAttribute("href")).toBe("/app/projects/payments?tab=setup");f.close();
 });
 it("shows a budget refusal in the start dialog without claiming work started", async () => {
  const f = setup(undefined, { send: async () => ({ status: 403, body: { error: { code: "BUDGET_EXHAUSTED", message: "The project has reached its monthly budget." } } }) });fireEvent.click(await screen.findByRole("button", { name: "New session" }));fireEvent.click(screen.getByRole("button", { name: "Payments expert" }));fireEvent.change(await screen.findByRole("textbox", { name: "What should Payments expert do?" }), { target: { value: "Investigate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start session" }));expect(await screen.findByText("The project has reached its monthly budget.")).toBeTruthy();expect(screen.getByRole("dialog")).toBeTruthy();f.close();
@@ -90,14 +90,14 @@ it("focuses the loaded project heading once and leaves an active form alone duri
  const f = setup();const heading = await screen.findByRole("heading", { name: "payments" });await waitFor(() => expect(document.activeElement).toBe(heading));const focus = vi.spyOn(heading, "focus");fireEvent.click(screen.getByRole("button", { name: "New session" }));fireEvent.click(screen.getByRole("button", { name: "Payments expert" }));const input = await screen.findByRole("textbox", { name: "What should Payments expert do?" });await waitFor(() => expect(document.activeElement).toBe(input));f.answer(projectFixture({ project: { ...projectFixture().project, description: "Updated project purpose" } }));await f.query.invalidateQueries({ queryKey: ["project", "payments", "overview"] });await screen.findByText("Updated project purpose");expect(document.activeElement).toBe(input);expect(focus).not.toHaveBeenCalled();f.close();
 });
 
-it("offers company-pinned website settings to an own-project maintainer without admin navigation", async () => {
+it("offers company-pinned address settings to an own-project maintainer without admin navigation", async () => {
  const f = setup({ ...projectFixture(), orgId: "org_aaaaaaaaaaaaaaaaaaaa" });
  await screen.findByRole("heading", { name: "payments" });
- expect(screen.getByRole("button", { name: "Edit allowed websites" })).toBeTruthy();
+ expect(screen.getByRole("button", { name: "Edit allowed addresses" })).toBeTruthy();
  expect(screen.queryByRole("navigation", { name: "Administration" })).toBeNull();f.close();
 });
-it("holds website editing when an older overview has no company pin", async () => {
- const f = setup();await screen.findByRole("heading", { name: "payments" });expect(screen.queryByRole("button", { name: "Edit allowed websites" })).toBeNull();f.close();
+it("holds address editing when an older overview has no company pin", async () => {
+ const f = setup();await screen.findByRole("heading", { name: "payments" });expect(screen.queryByRole("button", { name: "Edit allowed addresses" })).toBeNull();f.close();
 });
 it("does not offer the Sources tab (no route anywhere), and ?tab=sources opens the Overview", async () => {
  const f = setup(undefined, { path: "/app/projects/payments?tab=sources" });

@@ -15,7 +15,7 @@ const SECTIONS: ReadonlyArray<{ title: string; kinds: readonly SetupItem["kind"]
   { title: "Setup and test commands", kinds: ["setup", "tests"] },
   { title: "Dev container", kinds: ["devcontainer"] },
   { title: "Repositories to add", kinds: ["repository"] },
-  { title: "Websites the setup needs", kinds: ["allowed_domain"] },
+  { title: "Addresses the setup needs", kinds: ["allowed_domain"] },
   { title: "Secrets it needs (names only)", kinds: ["secret"] },
   { title: "Context sources found", kinds: ["source"] },
   { title: "Where work requests come from", kinds: ["intake"] },
@@ -62,7 +62,7 @@ export function resultWords(result: SetupApplyResultItem): string {
     case "already_set": return "The project already has this.";
     case "kept_yours": return "Kept your value. Tick \"Use Rovara's\" to replace it.";
     case "approval_needed": return "Waiting for an administrator to approve it.";
-    case "website_proposal": return "Carry this to website access: websites are widened only through a proposal.";
+    case "website_proposal": return "Carry this to address access: addresses are widened only through a proposal.";
     case "managed_by_file": return "The meta repo's config file manages this. Change it there.";
     case "unknown_item": return "This proposal has no such item.";
     case "failed": return "Rovara couldn't apply this item.";
@@ -103,7 +103,7 @@ export function ProposalReview({ project, response, busy, results, onApply }: {
       {differs && <div role="note" className="rv-proposal-conflict"><p>{entry?.current?.setBy === "agent" ? "Rovara suggested this earlier: " : "You have: "}<VisibleText text={(entry?.current?.yours ?? []).join(" and ")} /></p><p>Rovara suggests: <VisibleText text={valueLines(item).slice(item.kind === "setup" || item.kind === "tests" ? 1 : 0).join(" and ")} /></p>
         {entry?.current?.setBy !== "agent" && <label className="rv-onboarding-choice"><input type="checkbox" checked={replace[item.id] === true} onChange={(event) => { setReplace({ ...replace, [item.id]: event.target.checked }); if (event.target.checked) setTicked({ ...ticked, [item.id]: true }); }} aria-label={`Use Rovara's for ${label}`} /><span>Use Rovara's</span></label>}</div>}
       {entry?.unavailable !== undefined && <p className="rv-proposal-unavailable"><VisibleText text={entry.unavailable} /></p>}
-      {handling === "website_proposal" && <p>Websites are widened only through a proposal. <Link to={`${paths.admin.home}/projects/${encodeURIComponent(project)}`}>Open website access</Link> and add <VisibleText text={String(item.proposed.value)} />.</p>}
+      {handling === "website_proposal" && <p>Addresses are widened only through a proposal. <Link to={`${paths.admin.home}/projects/${encodeURIComponent(project)}`}>Open address access</Link> and add <VisibleText text={String(item.proposed.value)} />.</p>}
       {handling === "approval" && entry?.unavailable === undefined && <div className="rv-proposal-card" role="group" aria-label={`Approval for ${label}`}>
         <p>This needs an administrator's approval before it changes anything.</p>
         {(card === undefined || card.state === "declined" || card.state === "expired") && <Button busy={busy} onClick={() => onApply([{ id: item.id }])}>{card === undefined ? "Ask for approval" : "Ask again"}</Button>}

@@ -32,9 +32,9 @@ function ScopedAllowedWebsites({ orgId, project }: Props) {
  }, [host, open, orgId]);
  if (host.kind !== "web") return null;
  return <div>
-  <button ref={trigger} className="rv-button rv-button-secondary" type="button" onClick={() => setOpen(value => !value)}>{open ? "Close website editor" : "Edit allowed websites"}</button>
-  {open && phase === "checking" && <p role="status">Checking current website editing access.</p>}
-  {open && phase === "failed" && <p role="alert">Website editing access could not be verified. Close the editor and check your project access before opening it again.</p>}
+  <button ref={trigger} className="rv-button rv-button-secondary" type="button" onClick={() => setOpen(value => !value)}>{open ? "Close address editor" : "Edit allowed addresses"}</button>
+  {open && phase === "checking" && <p role="status">Checking current address editing access.</p>}
+  {open && phase === "failed" && <p role="alert">Address editing access could not be verified. Close the editor and check your project access before opening it again.</p>}
   {open && phase === "ready" && identity && <AllowedWebsitesEditor key={`${orgId}:${identity}:${project}`} orgId={orgId} developerId={identity} project={project} enabled />}
  </div>;
 }
