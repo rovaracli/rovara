@@ -6,9 +6,9 @@ import { openRouterPolicy, openRouterRequest, openRouterHold, perMillionPrice, R
 beforeAll(denyNetwork);
 const now = Date.UTC(2026, 10, 20);
 const row = { model: "openai/gpt-5-mini", route: "fixture-provider", pricing: { prompt: "0.000001", completion: "0.000002", internal_reasoning: "0.000003", request: "0.000004", input_cache_read: "0.0000005", input_cache_write: "0.000001" }, max_completion_tokens: 2048, reasoning: { mode: "bounded" as const, max_tokens: 1024 }, verifiedAt: now - 1, expiresAt: now + 60_000, evidence: "fixture only; not a vendor tariff" };
-it("has only the 5 reviewed v3 production rows (see model-gateway-openrouter-reviewed-v3.test.ts); exact reviewed routes expire and hash all restrictions", () => {
- expect(REVIEWED_OPENROUTER_POLICIES).toHaveLength(5);
- expect(REVIEWED_OPENROUTER_POLICIES.every(r => r.evidence.includes("TARIFFS PASS 5"))).toBe(true);
+it("has only the reviewed v3 run 2 production rows (see model-gateway-openrouter-reviewed-v3r2.test.ts); exact reviewed routes expire and hash all restrictions", () => {
+ expect(REVIEWED_OPENROUTER_POLICIES.length).toBeGreaterThan(0);
+ expect(REVIEWED_OPENROUTER_POLICIES.every(r => r.evidence.includes(`TARIFFS PASS ${REVIEWED_OPENROUTER_POLICIES.length} (OpenRouter v3 owner paid run 2`))).toBe(true);
  expect(openRouterPolicy(row.model, now, [row])?.model).toBe(row.model);
  expect(openRouterPolicy(row.model, now, [row])?.hash).toMatch(/^[a-f0-9]{64}$/u);
  for (const patch of [{ expiresAt: now }, { verifiedAt: now + 1 }, { pricing: { ...row.pricing, prompt: "-1" } }, { route: "" }]) expect(openRouterPolicy(row.model, now, [{ ...row, ...patch }])).toBeUndefined();

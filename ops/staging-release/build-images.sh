@@ -37,7 +37,10 @@ while read -r repo dockerfile key; do
     source=built
     [ -f "$dockerfile" ] || refuse "no $dockerfile in the checkout"
     if [ "$logged_in" = 0 ]; then
-      a ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
+      # capture the token first, then feed it through a here-string: a pipe would kill `a` with SIGPIPE (exit 141 under pipefail) whenever docker exits before reading it all
+      ecr_password="$(a ecr get-login-password)" || refuse "could not get an ECR login password"
+      docker login --username AWS --password-stdin "$REGISTRY" >/dev/null <<<"$ecr_password" || refuse "docker login to $REGISTRY failed"
+      unset ecr_password
       logged_in=1
     fi
     meta="$RUN_DIR/push-${key}.meta.json"
@@ -45,7 +48,8 @@ while read -r repo dockerfile key; do
       --tag "$REGISTRY/$repo:$UNIQUE_TAG" --tag "$REGISTRY/$repo:$TREE_TAG" --push --metadata-file "$meta" . > "$RUN_DIR/push-${key}.log" 2>&1 || refuse "the $key image build failed (see push-${key}.log)"
     digest="$(jq -r '."containerimage.digest" // empty' "$meta")"
   fi
-  printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || refuse "no usable digest for $repo"
+  digest_re='^sha256:[0-9a-f]{64}$'
+  [[ "$digest" =~ $digest_re ]] || refuse "no usable digest for $repo"
   # Read the image back from ECR: its tags must include this tree's tag (the evaluator's rule I checks the same thing from ECR again).
   tags="$(ro ecr describe-images --repository-name "$repo" --image-ids "imageDigest=$digest" | jq -c '.imageDetails[0].imageTags // []')"
   printf '%s' "$tags" | jq -e --arg t "$TREE_TAG" 'index($t) != null' >/dev/null || refuse "$repo@$digest does not carry the tag $TREE_TAG"

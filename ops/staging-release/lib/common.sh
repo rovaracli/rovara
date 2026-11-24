@@ -42,12 +42,13 @@ pack_init() {
   PIPELINE_KIND="${PIPELINE_KIND:-code}"
   case "$PIPELINE_KIND" in code|cloud) ;; *) refuse "PIPELINE_KIND must be code or cloud" ;; esac
   if [ -n "${EXEC_ID:-}" ]; then
-    printf '%s' "$EXEC_ID" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || refuse "EXEC_ID is not a pipeline execution id"
+    uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    [[ "$EXEC_ID" =~ $uuid_re ]] || refuse "EXEC_ID is not a pipeline execution id"
     EXEC8="${EXEC_ID:0:8}"
     CS_NAME="rovara-pipeline-${EXEC8}"
   fi
   if [ -n "${RELEASE_SHA:-}" ]; then
-    printf '%s' "$RELEASE_SHA" | grep -Eq '^[0-9a-f]{40}$' || refuse "RELEASE_SHA is not a full 40-hex sha"
+    [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || refuse "RELEASE_SHA is not a full 40-hex sha"
   fi
   PARAM_PREFIX="${PARAM_PREFIX:-/rovara-release/${ENVIRONMENT}}"
 }
@@ -60,7 +61,7 @@ require_account() {
   local doc
   doc="$(aws sts get-caller-identity --output json --region "$REGION")" || refuse "could not read the signed-in account"
   ACCOUNT="$(printf '%s' "$doc" | jq -r '.Account // empty')"
-  printf '%s' "$ACCOUNT" | grep -Eq '^[0-9]{12}$' || refuse "STS returned no account id"
+  [[ "$ACCOUNT" =~ ^[0-9]{12}$ ]] || refuse "STS returned no account id"
   BOUNDARY_ARN="arn:aws:iam::${ACCOUNT}:policy/agentx/${ENVIRONMENT}/agentx-${ENVIRONMENT}-boundary"
   DEPLOY_ROLE_NAME="agentx-${ENVIRONMENT}-cloudformation"
   BOOTSTRAP_BUCKET="cdk-hnb659fds-assets-${ACCOUNT}-${REGION}"
@@ -141,7 +142,7 @@ order_parts() {
   local parts
   parts="$(grep -Ev '^[[:space:]]*(#|$)' "$f" | tr -d '\r')"
   [ -n "$parts" ] || refuse "$(basename "$f") lists no stack"
-  if printf '%s\n' "$parts" | grep -Eqx 'access'; then refuse "$(basename "$f") names the access stack: the pipeline never deploys it"; fi
+  case $'\n'"$parts"$'\n' in *$'\naccess\n'*) refuse "$(basename "$f") names the access stack: the pipeline never deploys it" ;; esac
   printf '%s\n' "$parts"
 }
 
@@ -173,7 +174,7 @@ ssm_value() {
   if [ "$rc" -ne 0 ]; then
     # only a plain "not found" means absent: throttling, AccessDenied or a network error must not read as "no value" (a pointer check would pass as none == none)
     case "$err" in *ParameterNotFound*) return 0 ;; esac
-    echo "ssm_value: cannot read $1 (not a plain not-found): $(printf '%s' "$err" | head -c 200)" >&2
+    echo "ssm_value: cannot read $1 (not a plain not-found): ${err:0:200}" >&2
     return 1
   fi
   printf '%s' "$doc" | jq -r '.Parameter.Value // empty'

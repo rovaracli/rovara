@@ -25,7 +25,11 @@ node packages/cli/dist/bin.js --env "$ENVIRONMENT" upgrade --answers-from-deploy
 jq -e --arg env "$ENVIRONMENT" --arg region "$REGION" --arg account "$ACCOUNT" '.env == $env and .region == $region and .account == $account' "$RUN_DIR/answers.json" >/dev/null \
   || refuse "answers.json does not name this environment, region and account"
 # names only: no key, token, secret or password VALUE may sit in the answers (a key named *secret* may hold a name or ARN: it must not look like a credential).
-if jq -r '.. | strings' "$RUN_DIR/answers.json" | grep -Eq '(AKIA[0-9A-Z]{16}|-----BEGIN|ghp_[A-Za-z0-9]{20,}|xox[abp]-[A-Za-z0-9-]{10,})'; then refuse "answers.json holds something that looks like a credential"; fi
+# BEGIN credential scan (one jq process, no pipe: GNU grep with stdout on /dev/null stops at the first match like -q, which would SIGPIPE a piped jq and read as "no credential"; every error refuses)
+cred_rc=0
+jq -e '[.. | strings | test("(AKIA[0-9A-Z]{16}|-----BEGIN|ghp_[A-Za-z0-9]{20,}|xox[abp]-[A-Za-z0-9-]{10,})")] | any | not' "$RUN_DIR/answers.json" >/dev/null || cred_rc=$?
+case "$cred_rc" in 0) ;; 1) refuse "answers.json holds something that looks like a credential" ;; *) refuse "cannot scan answers.json for credentials (jq exit $cred_rc)" ;; esac
+# END credential scan
 
 jq -n --arg w "$WORKER_URI" --arg s "$SLACK_URI" '{runtime: {WorkerImageUri: $w}, slack: {OrchestratorImageUri: $s}}' > "$RUN_DIR/overrides.json"
 

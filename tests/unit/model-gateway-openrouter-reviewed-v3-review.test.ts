@@ -1,4 +1,4 @@
-// Opus money review (lead 4) of the 5 reviewed OpenRouter v3 rows: settlement floors for every reported-cost shape,
+// Opus money review (lead 4) of the reviewed OpenRouter v3 rows: settlement floors for every reported-cost shape,
 // and a row that expires DURING a call still settles at the admitted row price (never at 0, never refused after sending).
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { denyNetwork } from "./model-gateway-no-network.js";
@@ -38,8 +38,8 @@ it("parses no negative / NaN / Infinity / non-number / unbounded OpenRouter cost
  expect(parseReportedCost("openrouter", { cost: 0.0000132375 })).toBe(14);
  expect(parseReportedCost("openrouter", { cost: 0.00001, cost_details: { upstream_inference_cost: 0.00002 } })).toBe(20);
 });
-it.each(["mid_stream", "after_stream", "never"] as const)("a reviewed row (haiku prices) that expires DURING the call (%s) never settles below the token cost at the row price", async (when) => {
- const reviewed = REVIEWED_OPENROUTER_POLICIES.find(r => r.model === "anthropic/claude-haiku-5.5")!;
+it.each(["mid_stream", "after_stream", "never"] as const)("a reviewed row (haiku prices, else the first explicit-write row) that expires DURING the call (%s) never settles below the token cost at the row price", async (when) => {
+ const reviewed = REVIEWED_OPENROUTER_POLICIES.find(r => r.model === "anthropic/claude-haiku-5.5") ?? REVIEWED_OPENROUTER_POLICIES.find(r => r.cacheWriteBasis === undefined)!;
  // Same prices/route/bounds; the fixture clock is later than the real expiry, so only the window moves.
  const tariff = { ...reviewed, verifiedAt: now - 1, expiresAt: now + 60_000 };
  const model = tariff.model; let clock = now;

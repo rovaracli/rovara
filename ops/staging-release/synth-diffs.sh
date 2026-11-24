@@ -13,7 +13,7 @@ require_account
 # The live gateway host the control plane already uses (empty when none).
 cp_doc="$(ro cloudformation describe-stacks --stack-name "$(stack_name control-plane)")"
 HOST="$(printf '%s' "$cp_doc" | jq -r '[.Stacks[0].Parameters[]? | select(.ParameterKey == "CoreModelGatewayHost") | .ParameterValue][0] // ""')"
-printf '%s' "$HOST" | grep -Eq '^[a-z0-9.-]*$' || refuse "the live CoreModelGatewayHost is not a plain host name"
+[ -n "$HOST" ] && [[ "$HOST" =~ ^[a-z0-9.-]*$ ]] || refuse "the live CoreModelGatewayHost is not a plain host name"
 CONTEXT="$(jq -nc --arg env "$ENVIRONMENT" --arg region "$REGION" --arg host "$HOST" '{agentxEnv: $env, agentxRegion: $region} + (if $host == "" then {} else {CoreModelGatewayHost: $host} end)')"
 
 OUTDIR="$RUN_DIR/synth"

@@ -42,8 +42,9 @@ done
 for part in $ALL_PARTS; do
   stack="$(stack_name "$part")"
   names="$(change_set_names "$stack")"
-  if printf '%s\n' "$names" | grep -Fxq '?unreadable'; then fail "cannot read the change sets of $stack"; else
-    left="$(printf '%s\n' "$names" | grep -c '^rovara-pipeline-' || true)"
+  # (a case match on the newline-wrapped list: no pipe and no grep to fail)
+  if case $'\n'"$names"$'\n' in *$'\n?unreadable\n'*) true ;; *) false ;; esac; then fail "cannot read the change sets of $stack"; else
+    left="$(grep -c '^rovara-pipeline-' <<<"$names" || true)"
     [ "$left" = 0 ] && pass "$stack has no pipeline change set left" || fail "$stack still has $left pipeline change set(s)"
   fi
   ev="$(ro cloudformation describe-stack-events --stack-name "$stack" 2>/dev/null)" || { fail "cannot read the events of $stack"; continue; }
@@ -95,14 +96,14 @@ done
 note "health"
 api="$(jq -r '[.[] | select(.OutputKey == "ApiEndpoint") | .OutputValue][0] // ""' "$WORK/before-outputs.json")"
 url="${JWKS_URL:-${api}/v1/auth/.well-known/jwks.json}"
-if [ -n "${JWKS_URL:-}" ] || printf '%s' "$api" | grep -Eq '^https://'; then
+if [ -n "${JWKS_URL:-}" ] || [[ "$api" =~ ^https:// ]]; then
   code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$url" || echo 000)"
   [ "$code" = 200 ] && pass "public JWKS answers 200" || fail "public JWKS answered $code"
 else fail "no https ApiEndpoint output to probe"; fi
 
 note "Lambda errors for ${POSTCHECK_WATCH_MINUTES:-15} minutes after the deploy"
 watch_min="${POSTCHECK_WATCH_MINUTES:-15}"; sleep_s="${POSTCHECK_SLEEP_SECONDS:-60}"
-printf '%s' "$watch_min" | grep -Eq '^[0-9]+$' || refuse "POSTCHECK_WATCH_MINUTES is not a number"
+[[ "$watch_min" =~ ^[0-9]+$ ]] || refuse "POSTCHECK_WATCH_MINUTES is not a number"
 end_epoch=$(( $(date -u -d "$FINISHED" +%s 2>/dev/null || date -u -j -f %Y-%m-%dT%H:%M:%SZ "$FINISHED" +%s) + watch_min * 60 ))
 errors_total() {
   local total=0 fn doc sum
