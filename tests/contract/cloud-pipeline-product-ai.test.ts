@@ -28,15 +28,16 @@ describe("Cloud release pipeline: per-environment deploy switches", () => {
   });
 
   it("beta's deploy carries it too, now that beta's gateway is deployed (Rovara-cloud#273)", () => {
-    expect(CLOUD_PIPELINE_SWITCHES.beta).toEqual({ productAi: true });
-    expect(pipelineDeployContext("beta")).toEqual([SWITCH]);
+    expect(CLOUD_PIPELINE_SWITCHES.beta).toEqual({ productAi: true, aiSourceKinds: "openai" });
+    expect(pipelineDeployContext("beta")).toEqual([SWITCH, `-c ${AI_SOURCE_KINDS_CONTEXT_KEY}=openai`]);
     expect(deployCommand("beta")).toContain(SWITCH);
   });
 
   it("production's deploy carries it too, now that production's gateway is deployed (Rovara-cloud#247)", () => {
-    expect(CLOUD_PIPELINE_SWITCHES.production).toEqual({ productAi: true });
+    expect(CLOUD_PIPELINE_SWITCHES.production).toEqual({ productAi: true, aiSourceKinds: "openai" });
     expect(deployCommand("production")).toContain(SWITCH);
-    expect(pipelineDeployContext("production")).toEqual([SWITCH]);
+    expect(deployCommand("production")).toContain(`-c ${AI_SOURCE_KINDS_CONTEXT_KEY}=openai`);
+    expect(pipelineDeployContext("production")).toEqual([SWITCH, `-c ${AI_SOURCE_KINDS_CONTEXT_KEY}=openai`]);
     expect(pipelineDeployContext("production", { production: { productAi: true } })).toEqual([`-c ${MODEL_GATEWAY_PRODUCT_CONTEXT_KEY}=on`]);
     expect(pipelineDeployContext("staging", {})).toEqual([]);
   });

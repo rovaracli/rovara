@@ -54,10 +54,12 @@ export const PIPELINE_AI_SOURCE_KINDS_CONTEXT_KEY = "rovaraAiSourceKinds";
 export const CLOUD_PIPELINE_SWITCHES: Readonly<Record<string, Readonly<CloudPipelineSwitches>>> = Object.freeze({
   staging: Object.freeze({ productAi: true as const }),
   // Rovara-cloud#247: production's gateway is deployed, and its web stack was switched on by hand with the gateway's ProductKeys* parameters.
-  production: Object.freeze({ productAi: true as const }),
+  // Rovara-cloud#308: a company's own OpenAI key for its agents. Production's and beta's gateways were deployed by hand with the same
+  // -c rovaraAiSourceKinds=openai on 2026-11-24 (the two must match).
+  production: Object.freeze({ productAi: true as const, aiSourceKinds: "openai" }),
   // Rovara-cloud#269, #273: beta, on beta Code (account 233082642592). Its gateway is gateway.beta.rovara.dev, and its web stack was
   // switched on by hand with that gateway's ProductKeys* parameters, ModelGatewayUrl and GatewayMeterTableName, as production's was.
-  beta: Object.freeze({ productAi: true as const }),
+  beta: Object.freeze({ productAi: true as const, aiSourceKinds: "openai" }),
 });
 /**
  * Rovara-cloud#269: an environment whose Cloud lives in another account. Its pipeline runs in the account that holds the GitHub
