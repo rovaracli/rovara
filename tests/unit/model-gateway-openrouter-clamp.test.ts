@@ -112,6 +112,28 @@ it("Q4: the outgoing provider object pins the proven endpoint in order AND only,
  expect(w.sent[0]!.reasoning).toEqual({ enabled: true, max_tokens: 1024 });
 });
 
+it("T1: Pi's enabled thinking (OpenRouter reasoning models) is DROPPED, not refused: no client thinking upstream, reasoning only the row's bound, hold and size unchanged", async () => {
+ const thinking = { type: "enabled", budget_tokens: 60_000, display: "summarized" };
+ const plain = await world(); expect((await run(plain, piBody(2048))).status).toBe(200);
+ for (const t of [thinking, { type: "adaptive" }]) {
+  const w = await world(); const sink = await run(w, piBody(2048, { thinking: t }));
+  expect(sink.status).toBe(200);
+  expect(w.sent).toHaveLength(1);
+  expect(w.sent[0]).not.toHaveProperty("thinking");
+  expect(JSON.stringify(w.sent[0])).not.toContain("budget_tokens");
+  expect(w.sent[0]!.reasoning).toEqual({ enabled: true, max_tokens: 1024 });
+  expect(w.sent[0]).toMatchObject({ max_tokens: CEILING });
+  // The hold and the applied output limit are exactly those of the same request without thinking.
+  expect(estimateOf(w)).toBe(estimateOf(plain)); expect(appliedOf(w)).toBe(appliedOf(plain));
+ }
+ // A client budget far above the row never raises max_tokens: still clamped to the ceiling.
+ const big = await world(); expect((await run(big, piBody(32_000, { thinking }))).status).toBe(200);
+ expect(big.sent[0]).toMatchObject({ max_tokens: CEILING }); expect(appliedOf(big)).toBe(CEILING);
+ // Disabled thinking is as before: accepted, no client thinking upstream.
+ const off = await world(); expect((await run(off, piBody(2048, { thinking: { type: "disabled" } }))).status).toBe(200);
+ expect(off.sent[0]).not.toHaveProperty("thinking"); expect(estimateOf(off)).toBe(estimateOf(plain));
+});
+
 it("N4: a cache_control anywhere (system, message, tool_use, tool_result, tool, tool schema) never reaches OpenRouter", async () => {
  const nested = { name: "read", input_schema: { type: "object", properties: { cache_control: { type: "string" } } } };
  const variants: Record<string, unknown> = {

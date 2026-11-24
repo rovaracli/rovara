@@ -130,6 +130,22 @@ describe("Anthropic Messages to Chat Completions", () => {
     expect(toChatCompletions(JSON.parse(JSON.stringify(input)) as Json, MODEL, 10, "openai")).toBeUndefined();
   });
 
+  it("thinking: enabled (or adaptive) is refused for openai and endpoint as today, dropped for openrouter, disabled is accepted everywhere", () => {
+    const enabled = { type: "enabled", budget_tokens: 1024, display: "summarized" };
+    for (const provider of ["openai", "endpoint"] as const) {
+      for (const thinking of [enabled, { type: "adaptive" }, {}, "enabled"]) expect(toChatCompletions({ ...body, thinking }, MODEL, 10, provider), `${provider} ${JSON.stringify(thinking)}`).toBeUndefined();
+      expect(toChatCompletions({ ...body, thinking: { type: "disabled" } }, MODEL, 10, provider)).toBeDefined();
+    }
+    for (const thinking of [enabled, { type: "adaptive" }, {}, "enabled", null, { type: "enabled", budget_tokens: 10_000_000 }]) {
+      const out = toChatCompletions({ ...body, thinking }, ROUTER_MODEL, 400, "openrouter")!;
+      expect(out).toBeDefined();
+      expect(out).not.toHaveProperty("thinking");
+      expect(JSON.stringify(out)).not.toContain("budget_tokens");
+      expect(out).toEqual(toChatCompletions(body, ROUTER_MODEL, 400, "openrouter"));
+    }
+    expect(toChatCompletions({ ...body, thinking: { type: "disabled" } }, ROUTER_MODEL, 400, "openrouter")).toEqual(toChatCompletions(body, ROUTER_MODEL, 400, "openrouter"));
+  });
+
   it("drops Anthropic's eager_input_streaming tool hint (Pi 1.5.2 sends it on every tool) and nothing else", () => {
     const tools = [{ name: "read", description: "Read a file.", eager_input_streaming: true, input_schema: { type: "object" }, cache_control: { type: "ephemeral" } }, { name: "ls", eager_input_streaming: false, input_schema: { type: "object" } }];
     for (const provider of ["openai", "endpoint"] as const) {
