@@ -1,0 +1,5 @@
+# The Cloud pipeline (P4) deploys these stacks in this order: gateway first, then web, then app and the image stacks only when they have rows.
+gateway
+web
+app
+gateway-images

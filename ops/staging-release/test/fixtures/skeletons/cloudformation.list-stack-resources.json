@@ -1,0 +1,21 @@
+{
+ "NextToken": "string",
+ "StackResourceSummaries": [
+  {
+   "DriftInformation": {
+    "LastCheckTimestamp": "string",
+    "StackResourceDriftStatus": "string"
+   },
+   "LastUpdatedTimestamp": "string",
+   "LogicalResourceId": "string",
+   "ModuleInfo": {
+    "LogicalIdHierarchy": "string",
+    "TypeHierarchy": "string"
+   },
+   "PhysicalResourceId": "string",
+   "ResourceStatus": "string",
+   "ResourceStatusReason": "string",
+   "ResourceType": "string"
+  }
+ ]
+}

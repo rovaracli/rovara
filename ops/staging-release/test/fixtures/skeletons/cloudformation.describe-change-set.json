@@ -1,0 +1,107 @@
+{
+ "Capabilities": [
+  "string"
+ ],
+ "ChangeSetId": "string",
+ "ChangeSetName": "string",
+ "Changes": [
+  {
+   "HookInvocationCount": 0,
+   "ResourceChange": {
+    "Action": "string",
+    "AfterContext": "string",
+    "BeforeContext": "string",
+    "ChangeSetId": "string",
+    "Details": [
+     {
+      "CausingEntity": "string",
+      "ChangeSource": "string",
+      "Evaluation": "string",
+      "Target": {
+       "AfterValue": "string",
+       "AfterValueFrom": "string",
+       "Attribute": "string",
+       "AttributeChangeType": "string",
+       "BeforeValue": "string",
+       "BeforeValueFrom": "string",
+       "Drift": {
+        "ActualValue": "string",
+        "DriftDetectionTimestamp": "string",
+        "PreviousValue": "string"
+       },
+       "Name": "string",
+       "Path": "string",
+       "RequiresRecreation": "string"
+      }
+     }
+    ],
+    "LogicalResourceId": "string",
+    "ModuleInfo": {
+     "LogicalIdHierarchy": "string",
+     "TypeHierarchy": "string"
+    },
+    "PhysicalResourceId": "string",
+    "PolicyAction": "string",
+    "PreviousDeploymentContext": "string",
+    "Replacement": "string",
+    "ResourceDriftIgnoredAttributes": [
+     {
+      "Path": "string",
+      "Reason": "string"
+     }
+    ],
+    "ResourceDriftStatus": "string",
+    "ResourceType": "string",
+    "Scope": [
+     "string"
+    ]
+   },
+   "Type": "string"
+  }
+ ],
+ "CreationTime": "string",
+ "DeploymentConfig": {
+  "DisableRollback": true,
+  "Mode": "string"
+ },
+ "DeploymentMode": "string",
+ "Description": "string",
+ "ExecutionStatus": "string",
+ "ImportExistingResources": true,
+ "IncludeNestedStacks": true,
+ "NextToken": "string",
+ "NotificationARNs": [
+  "string"
+ ],
+ "OnStackFailure": "string",
+ "Parameters": [
+  {
+   "ParameterKey": "string",
+   "ParameterValue": "string",
+   "ResolvedValue": "string",
+   "UsePreviousValue": true
+  }
+ ],
+ "ParentChangeSetId": "string",
+ "RollbackConfiguration": {
+  "MonitoringTimeInMinutes": 0,
+  "RollbackTriggers": [
+   {
+    "Arn": "string",
+    "Type": "string"
+   }
+  ]
+ },
+ "RootChangeSetId": "string",
+ "StackDriftStatus": "string",
+ "StackId": "string",
+ "StackName": "string",
+ "Status": "string",
+ "StatusReason": "string",
+ "Tags": [
+  {
+   "Key": "string",
+   "Value": "string"
+  }
+ ]
+}

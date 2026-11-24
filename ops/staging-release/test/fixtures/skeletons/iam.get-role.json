@@ -1,0 +1,30 @@
+{
+ "Role": {
+  "Arn": "string",
+  "AssumeRolePolicyDocument": "string",
+  "CreateDate": "string",
+  "Description": "string",
+  "MaxSessionDuration": 0,
+  "Path": "string",
+  "PermissionsBoundary": {
+   "PermissionsBoundaryArn": "string",
+   "PermissionsBoundaryType": "string"
+  },
+  "RoleId": "string",
+  "RoleLastUsed": {
+   "LastUsedDate": "string",
+   "Region": "string"
+  },
+  "RoleName": "string",
+  "SourceRoleTemplate": {
+   "TemplateArn": "string",
+   "TemplateMinorVersion": 0
+  },
+  "Tags": [
+   {
+    "Key": "string",
+    "Value": "string"
+   }
+  ]
+ }
+}

@@ -11,6 +11,7 @@
     "tests/**/*.ts",
     "packages/**/*.ts",
     "infra/**/*.ts",
+    "ops/**/*.ts",
     "vitest.config.ts"
   ],
   "exclude": [

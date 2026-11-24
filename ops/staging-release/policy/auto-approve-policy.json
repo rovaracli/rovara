@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "notes": "Staging auto-approve policy (plan v3 section 3 with P0 FACTS 3.3 amendments and DEC 254zzz441). ECR repo names, stack names and logical ids are calibrated from the saved Code previews and P0 golden cases; gate marker names, the Cloud CI job names and the 50- failure names are still PLACEHOLDERS (a wrong one only ever sends a run to MANUAL). Account ids never appear here: they come in as an evaluator input.",
+  "maxUnauditedAutoRuns": 3,
+  "gateMaxAgeMinutes": 120,
+  "gateClockSkewMinutes": 5,
+  "skippedGateReasons": ["DEC 254zzz397"],
+  "dryRunIgnorableFailures": ["ready-guard"],
+  "requiredImageTagPrefix": "tree-",
+  "releaseNotesGlobs": ["docs/release-notes/**"],
+  "allowedCapabilities": ["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"],
+  "allowedPathGlobs": [
+    "packages/**",
+    "infra/**",
+    "tests/**",
+    "docs/**",
+    "scripts/**",
+    "contracts/**",
+    "environments/**",
+    "tsconfig.lint/**",
+    "tsconfig*.json",
+    "vitest.config.ts",
+    "eslint.config.js",
+    "*.md",
+    "LICENSE*",
+    "package-lock.json"
+  ],
+  "lockfile": {
+    "path": "package-lock.json",
+    "lockfileVersion": 3,
+    "registryHost": "registry.npmjs.org",
+    "integrityPattern": "^sha512-[A-Za-z0-9+/]{86}==$",
+    "blockingGlobs": [
+      "**/package.json",
+      ".npmrc",
+      "**/.npmrc",
+      ".yarnrc*",
+      "**/.yarnrc*",
+      "**/Dockerfile",
+      "**/Dockerfile.*",
+      "scripts/release/**",
+      "scripts/release-*.ts",
+      ".node-version",
+      "*/**/package-lock.json",
+      "**/npm-shrinkwrap.json",
+      "**/yarn.lock",
+      "**/pnpm-lock.yaml"
+    ]
+  },
+  "lambdaCodeKeyPattern": "^[0-9a-f]{64}\\.zip$",
+  "forbiddenResourceTypes": [
+    "AWS::IAM::*",
+    "AWS::DynamoDB::*",
+    "AWS::RDS::*",
+    "AWS::S3::Bucket",
+    "AWS::SecretsManager::*",
+    "AWS::KMS::*",
+    "AWS::EFS::*",
+    "AWS::SQS::*",
+    "AWS::SNS::*",
+    "AWS::Logs::LogGroup",
+    "AWS::Cognito::*",
+    "AWS::Route53::*",
+    "AWS::Route53Resolver::*",
+    "AWS::EC2::*",
+    "AWS::CloudFront::*",
+    "AWS::ElasticLoadBalancingV2::*"
+  ],
+  "pipelines": {
+    "code": {
+      "branch": "code/next",
+      "ci": { "repo": "rovaracli/rovara", "workflowFile": "ci.yml", "requiredJobs": ["local", "ci-mode (full)"] },
+      "requiredGates": [
+        { "name": "25-gate", "mayBeSkipped": false },
+        { "name": "15-gate", "mayBeSkipped": false },
+        { "name": "45-gate", "mayBeSkipped": false },
+        { "name": "46-gate", "mayBeSkipped": true },
+        { "name": "gate-gateway-deployed", "mayBeSkipped": false },
+        { "name": "gate-gateway-runprice", "mayBeSkipped": false }
+      ],
+      "dryRunGate": "50-dry-run",
+      "answers": { "allowedDiffPaths": ["images.*"] },
+      "overrides": { "allowedDiffPaths": ["images.*"] },
+      "noEchoParameters": ["CallbackSigningKey"],
+      "stacks": {
+        "agentx-staging-control-plane": {
+          "rowMode": "rules",
+          "rules": [
+            { "rule": "R1", "logicalIdPattern": "^[A-Za-z0-9]+$" },
+            { "rule": "R-SIGNKEY", "logicalIdPattern": "^CallbackSigningKeySecret28D4CB19$", "parameter": "CallbackSigningKey" }
+          ],
+          "imageParameters": []
+        },
+        "agentx-staging-runtime": {
+          "rowMode": "rules",
+          "rules": [
+            { "rule": "R1", "logicalIdPattern": "^[A-Za-z0-9]+$" },
+            { "rule": "R2", "logicalIdPattern": "^WorkerImageParameter[0-9A-F]{8}$", "imageParameter": "WorkerImageUri" }
+          ],
+          "imageParameters": [{ "key": "WorkerImageUri", "repo": "agentx-staging/worker", "format": "uri" }]
+        },
+        "agentx-staging-slack": {
+          "rowMode": "rules",
+          "rules": [
+            { "rule": "R3", "id": "slackOrchestrator", "logicalIdPattern": "^TaskDefinition$", "repo": "agentx-staging/slack" },
+            { "rule": "R4", "logicalIdPattern": "^Service$", "causedBy": "slackOrchestrator" }
+          ],
+          "imageParameters": [
+            { "key": "OrchestratorImageUri", "repo": "agentx-staging/slack", "format": "uri" },
+            { "key": "ExecutorImageUri", "repo": "agentx-staging/slack-executor", "format": "uri", "noneOnly": true }
+          ]
+        },
+        "agentx-staging-foundation": { "rowMode": "metadata-only", "rules": [], "imageParameters": [] },
+        "agentx-staging-identity": { "rowMode": "metadata-only", "rules": [], "imageParameters": [] },
+        "agentx-staging-access": { "rowMode": "metadata-only", "access": true, "rules": [], "imageParameters": [] }
+      }
+    },
+    "cloud": {
+      "branch": "cloud/next",
+      "ci": { "repo": "rovaracli/rovara", "workflowFile": "ci.yml", "requiredJobs": ["local"] },
+      "requiredGates": [
+        { "name": "16-gate", "mayBeSkipped": false },
+        { "name": "16b-gate", "mayBeSkipped": false },
+        { "name": "16c-gate", "mayBeSkipped": false },
+        { "name": "gate-gateway-runprice", "mayBeSkipped": false }
+      ],
+      "dryRunGate": null,
+      "answers": { "allowedDiffPaths": ["images.*"] },
+      "overrides": { "allowedDiffPaths": ["images.*"] },
+      "noEchoParameters": [],
+      "stacks": {
+        "rovara-cloud-staging-gateway": {
+          "rowMode": "rules",
+          "rules": [
+            { "rule": "R3", "id": "gatewayServe", "logicalIdPattern": "^ServeTask[0-9A-F]{8}$", "repo": "rovara-cloud-staging-gateway-images-images2d38c313-pkjfxof4rizc", "imageParameter": "ImageDigest", "truncatedImage": true },
+            { "rule": "R3", "id": "priceFetchTask", "logicalIdPattern": "^PriceFetchTask[0-9A-F]{8}$", "repo": "rovara-cloud-staging-gateway-images-images2d38c313-pkjfxof4rizc" },
+            { "rule": "R4", "logicalIdPattern": "^Service[0-9A-F]{8}$", "causedBy": "gatewayServe" },
+            { "rule": "R4b", "logicalIdPattern": "^PriceFetchSchedule[0-9A-F]{8}$", "causedBy": "priceFetchTask" },
+            { "rule": "E1", "logicalIdPattern": "^PriceFetchTaskEventsRoleDefaultPolicy[0-9A-F]{8}$", "causedBy": "priceFetchTask" }
+          ],
+          "imageParameters": [{ "key": "ImageDigest", "repo": "rovara-cloud-staging-gateway-images-images2d38c313-pkjfxof4rizc", "format": "digest" }]
+        },
+        "rovara-cloud-staging-web": {
+          "rowMode": "rules",
+          "rules": [
+            { "rule": "R6", "logicalIdPattern": "^[A-Za-z0-9]+$" },
+            { "rule": "R5", "logicalIdPattern": "^AppFilesCustomResource[A-Za-z0-9]*$" }
+          ],
+          "imageParameters": []
+        },
+        "rovara-cloud-staging-gateway-images": { "rowMode": "none", "rules": [], "imageParameters": [] },
+        "rovara-cloud-staging-app": { "rowMode": "none", "rules": [], "imageParameters": [] }
+      }
+    }
+  }
+}

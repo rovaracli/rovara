@@ -1,0 +1,299 @@
+{
+ "tags": [
+  {
+   "key": "string",
+   "value": "string"
+  }
+ ],
+ "taskDefinition": {
+  "compatibilities": [
+   "string"
+  ],
+  "containerDefinitions": [
+   {
+    "command": [
+     "string"
+    ],
+    "cpu": 0,
+    "credentialSpecs": [
+     "string"
+    ],
+    "dependsOn": [
+     {
+      "condition": "string",
+      "containerName": "string"
+     }
+    ],
+    "disableNetworking": true,
+    "dnsSearchDomains": [
+     "string"
+    ],
+    "dnsServers": [
+     "string"
+    ],
+    "dockerLabels": {
+     "KeyName": "string"
+    },
+    "dockerSecurityOptions": [
+     "string"
+    ],
+    "entryPoint": [
+     "string"
+    ],
+    "environment": [
+     {
+      "name": "string",
+      "value": "string"
+     }
+    ],
+    "environmentFiles": [
+     {
+      "type": "string",
+      "value": "string"
+     }
+    ],
+    "essential": true,
+    "extraHosts": [
+     {
+      "hostname": "string",
+      "ipAddress": "string"
+     }
+    ],
+    "firelensConfiguration": {
+     "options": {
+      "KeyName": "string"
+     },
+     "type": "string"
+    },
+    "healthCheck": {
+     "command": [
+      "string"
+     ],
+     "interval": 0,
+     "retries": 0,
+     "startPeriod": 0,
+     "timeout": 0
+    },
+    "hostname": "string",
+    "image": "string",
+    "interactive": true,
+    "links": [
+     "string"
+    ],
+    "linuxParameters": {
+     "capabilities": {
+      "add": [
+       "string"
+      ],
+      "drop": [
+       "string"
+      ]
+     },
+     "devices": [
+      {
+       "containerPath": "string",
+       "hostPath": "string",
+       "permissions": [
+        "string"
+       ]
+      }
+     ],
+     "initProcessEnabled": true,
+     "maxSwap": 0,
+     "sharedMemorySize": 0,
+     "swappiness": 0,
+     "tmpfs": [
+      {
+       "containerPath": "string",
+       "mountOptions": [
+        "string"
+       ],
+       "size": 0
+      }
+     ]
+    },
+    "logConfiguration": {
+     "logDriver": "string",
+     "options": {
+      "KeyName": "string"
+     },
+     "secretOptions": [
+      {
+       "name": "string",
+       "valueFrom": "string"
+      }
+     ]
+    },
+    "memory": 0,
+    "memoryReservation": 0,
+    "mountPoints": [
+     {
+      "containerPath": "string",
+      "readOnly": true,
+      "sourceVolume": "string"
+     }
+    ],
+    "name": "string",
+    "portMappings": [
+     {
+      "appProtocol": "string",
+      "containerPort": 0,
+      "containerPortRange": "string",
+      "hostPort": 0,
+      "name": "string",
+      "protocol": "string"
+     }
+    ],
+    "privileged": true,
+    "pseudoTerminal": true,
+    "readonlyRootFilesystem": true,
+    "repositoryCredentials": {
+     "credentialsParameter": "string"
+    },
+    "resourceRequirements": [
+     {
+      "type": "string",
+      "value": "string"
+     }
+    ],
+    "restartPolicy": {
+     "enabled": true,
+     "ignoredExitCodes": [
+      0
+     ],
+     "restartAttemptPeriod": 0
+    },
+    "secrets": [
+     {
+      "name": "string",
+      "valueFrom": "string"
+     }
+    ],
+    "startTimeout": 0,
+    "stopTimeout": 0,
+    "systemControls": [
+     {
+      "namespace": "string",
+      "value": "string"
+     }
+    ],
+    "ulimits": [
+     {
+      "hardLimit": 0,
+      "name": "string",
+      "softLimit": 0
+     }
+    ],
+    "user": "string",
+    "versionConsistency": "string",
+    "volumesFrom": [
+     {
+      "readOnly": true,
+      "sourceContainer": "string"
+     }
+    ],
+    "workingDirectory": "string"
+   }
+  ],
+  "cpu": "string",
+  "deleteRequestedAt": "string",
+  "deregisteredAt": "string",
+  "enableFaultInjection": true,
+  "ephemeralStorage": {
+   "sizeInGiB": 0
+  },
+  "executionRoleArn": "string",
+  "family": "string",
+  "inferenceAccelerators": [
+   {
+    "deviceName": "string",
+    "deviceType": "string"
+   }
+  ],
+  "ipcMode": "string",
+  "memory": "string",
+  "networkMode": "string",
+  "pidMode": "string",
+  "placementConstraints": [
+   {
+    "expression": "string",
+    "type": "string"
+   }
+  ],
+  "proxyConfiguration": {
+   "containerName": "string",
+   "properties": [
+    {
+     "name": "string",
+     "value": "string"
+    }
+   ],
+   "type": "string"
+  },
+  "registeredAt": "string",
+  "registeredBy": "string",
+  "requiresAttributes": [
+   {
+    "name": "string",
+    "targetId": "string",
+    "targetType": "string",
+    "value": "string"
+   }
+  ],
+  "requiresCompatibilities": [
+   "string"
+  ],
+  "revision": 0,
+  "runtimePlatform": {
+   "cpuArchitecture": "string",
+   "operatingSystemFamily": "string"
+  },
+  "status": "string",
+  "taskDefinitionArn": "string",
+  "taskRoleArn": "string",
+  "volumes": [
+   {
+    "configuredAtLaunch": true,
+    "dockerVolumeConfiguration": {
+     "autoprovision": true,
+     "driver": "string",
+     "driverOpts": {
+      "KeyName": "string"
+     },
+     "labels": {
+      "KeyName": "string"
+     },
+     "scope": "string"
+    },
+    "efsVolumeConfiguration": {
+     "authorizationConfig": {
+      "accessPointId": "string",
+      "iam": "string"
+     },
+     "fileSystemId": "string",
+     "rootDirectory": "string",
+     "transitEncryption": "string",
+     "transitEncryptionPort": 0
+    },
+    "fsxWindowsFileServerVolumeConfiguration": {
+     "authorizationConfig": {
+      "credentialsParameter": "string",
+      "domain": "string"
+     },
+     "fileSystemId": "string",
+     "rootDirectory": "string"
+    },
+    "host": {
+     "sourcePath": "string"
+    },
+    "name": "string",
+    "s3filesVolumeConfiguration": {
+     "accessPointArn": "string",
+     "fileSystemArn": "string",
+     "rootDirectory": "string",
+     "transitEncryptionPort": 0
+    }
+   }
+  ]
+ }
+}

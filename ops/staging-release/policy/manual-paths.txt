@@ -1,0 +1,33 @@
+# Paths that always send a run to MANUAL (plan v3 section 3, rule D). One glob per line; ** crosses directories; matching ignores case.
+# package-lock.json (the root one) is not listed: it is AUTO-eligible only under rule J, which the evaluator applies itself.
+# Placeholders marked (P0) are calibrated by P0 (g) and (c).
+.github/**
+ops/staging-release/**
+infra/lib/*release-pipeline*.ts
+infra/lib/access*.ts
+infra/lib/permissions-boundary.ts
+infra/lib/iam-roles.ts
+packages/contracts/src/access-policies.ts
+infra/lib/cloud-boundary*.ts
+scripts/release/**
+scripts/release-*.ts
+**/package.json
+.npmrc
+**/.npmrc
+.yarnrc*
+**/.yarnrc*
+*/**/package-lock.json
+**/npm-shrinkwrap.json
+**/yarn.lock
+**/pnpm-lock.yaml
+.node-version
+environments/base/Dockerfile
+**/Dockerfile
+**/Dockerfile.*
+# Required release steps (P0 (g) confirms the repo's convention): backfills and migrations a person must run.
+**/*backfill*
+docs/release-steps/**
+packages/broker/src/aws/core-backfill-runner.ts
+scripts/backfill-*.ts
+docs/*runbook*.md
+**/migrations/**

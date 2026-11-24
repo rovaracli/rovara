@@ -1,0 +1,16 @@
+{
+ "NextToken": "string",
+ "Parameters": [
+  {
+   "ARN": "string",
+   "DataType": "string",
+   "LastModifiedDate": "string",
+   "Name": "string",
+   "Selector": "string",
+   "SourceResult": "string",
+   "Type": "string",
+   "Value": "string",
+   "Version": 0
+  }
+ ]
+}

@@ -1,0 +1,6 @@
+# The Code pipeline deploys these stack parts in this order (never access: it is deployed by hand).
+control-plane
+runtime
+slack
+foundation
+identity

@@ -1,0 +1,76 @@
+{
+ "NextToken": "string",
+ "Stacks": [
+  {
+   "Capabilities": [
+    "string"
+   ],
+   "ChangeSetId": "string",
+   "CreationTime": "string",
+   "DeletionMode": "string",
+   "DeletionTime": "string",
+   "DeploymentConfig": {
+    "DisableRollback": true,
+    "Mode": "string"
+   },
+   "Description": "string",
+   "DetailedStatus": "string",
+   "DisableRollback": true,
+   "DriftInformation": {
+    "LastCheckTimestamp": "string",
+    "StackDriftStatus": "string"
+   },
+   "EnableTerminationProtection": true,
+   "LastOperations": [
+    {
+     "OperationId": "string",
+     "OperationType": "string"
+    }
+   ],
+   "LastUpdatedTime": "string",
+   "NotificationARNs": [
+    "string"
+   ],
+   "Outputs": [
+    {
+     "Description": "string",
+     "ExportName": "string",
+     "OutputKey": "string",
+     "OutputValue": "string"
+    }
+   ],
+   "Parameters": [
+    {
+     "ParameterKey": "string",
+     "ParameterValue": "string",
+     "ResolvedValue": "string",
+     "UsePreviousValue": true
+    }
+   ],
+   "ParentId": "string",
+   "RetainExceptOnCreate": true,
+   "RoleARN": "string",
+   "RollbackConfiguration": {
+    "MonitoringTimeInMinutes": 0,
+    "RollbackTriggers": [
+     {
+      "Arn": "string",
+      "Type": "string"
+     }
+    ]
+   },
+   "RootId": "string",
+   "StackId": "string",
+   "StackName": "string",
+   "StackStatus": "string",
+   "StackStatusReason": "string",
+   "Tags": [
+    {
+     "Key": "string",
+     "Value": "string"
+    }
+   ],
+   "TimeoutInMinutes": 0
+  }
+ ]
+}

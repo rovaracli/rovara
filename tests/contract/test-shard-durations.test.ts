@@ -12,7 +12,7 @@ import { MIN_WEIGHT_SECONDS, TIMINGS_PATH, loadTimings, parseTimings, planShards
 
 const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "cypress", ".git", ".test-build"]);
 
-/** Every file the root vitest config includes: tests/**\/*.test.ts and packages/**\/*.test.ts, minus node_modules and dist. */
+/** Every file the root vitest config includes: tests/**\/*.test.ts, packages/**\/*.test.ts and ops/**\/*.test.ts (the staging release evaluator), minus node_modules and dist. */
 function testFiles(): string[] {
   const found: string[] = [];
   const walk = (directory: string): void => {
@@ -25,6 +25,7 @@ function testFiles(): string[] {
   };
   walk("tests");
   walk("packages");
+  walk("ops");
   return found.sort();
 }
 

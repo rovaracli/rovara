@@ -1,0 +1,66 @@
+{
+ "actionExecutionDetails": [
+  {
+   "actionExecutionId": "string",
+   "actionName": "string",
+   "input": {
+    "actionTypeId": {
+     "category": "string",
+     "owner": "string",
+     "provider": "string",
+     "version": "string"
+    },
+    "configuration": {
+     "KeyName": "string"
+    },
+    "inputArtifacts": [
+     {
+      "name": "string",
+      "s3location": {
+       "bucket": "string",
+       "key": "string"
+      }
+     }
+    ],
+    "namespace": "string",
+    "region": "string",
+    "resolvedConfiguration": {
+     "KeyName": "string"
+    },
+    "roleArn": "string"
+   },
+   "lastUpdateTime": "string",
+   "output": {
+    "executionResult": {
+     "errorDetails": {
+      "code": "string",
+      "message": "string"
+     },
+     "externalExecutionId": "string",
+     "externalExecutionSummary": "string",
+     "externalExecutionUrl": "string",
+     "logStreamARN": "string"
+    },
+    "outputArtifacts": [
+     {
+      "name": "string",
+      "s3location": {
+       "bucket": "string",
+       "key": "string"
+      }
+     }
+    ],
+    "outputVariables": {
+     "KeyName": "string"
+    }
+   },
+   "pipelineExecutionId": "string",
+   "pipelineVersion": 0,
+   "stageName": "string",
+   "startTime": "string",
+   "status": "string",
+   "updatedBy": "string"
+  }
+ ],
+ "nextToken": "string"
+}

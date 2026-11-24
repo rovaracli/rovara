@@ -1,0 +1,39 @@
+{
+ "CommonPrefixes": [
+  {
+   "Prefix": "string"
+  }
+ ],
+ "Contents": [
+  {
+   "ChecksumAlgorithm": [
+    "string"
+   ],
+   "ChecksumType": "string",
+   "ETag": "string",
+   "Key": "string",
+   "LastModified": "string",
+   "Owner": {
+    "DisplayName": "string",
+    "ID": "string"
+   },
+   "RestoreStatus": {
+    "IsRestoreInProgress": true,
+    "RestoreExpiryDate": "string"
+   },
+   "Size": 0,
+   "StorageClass": "string"
+  }
+ ],
+ "ContinuationToken": "string",
+ "Delimiter": "string",
+ "EncodingType": "string",
+ "IsTruncated": true,
+ "KeyCount": 0,
+ "MaxKeys": 0,
+ "Name": "string",
+ "NextContinuationToken": "string",
+ "Prefix": "string",
+ "RequestCharged": "string",
+ "StartAfter": "string"
+}
