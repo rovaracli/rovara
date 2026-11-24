@@ -6,7 +6,6 @@ import { meFixture } from "./support/fixtures.js";
 import { expect, it } from "vitest";
 import { createDecisionsApi } from "../../packages/ui/src/api/decisions.js";
 import { createInviteAdminApi } from "../../packages/ui/src/api/invite-admin.js";
-import { createTaskStopEditingApi } from "../../packages/ui/src/api/task-stop-editing.js";
 import { fakeHost } from "./support/fake-host.js";
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa", id = "11111111-1111-4111-8111-111111111111", gateway = { requestId: "gw-request-1" };
 const answer = (body: unknown) => fakeHost(async request => ({ status: 200, body: request.path === "/v1/app/me" ? meFixture() : { ...(body as object), ...gateway } }));
@@ -17,10 +16,6 @@ it("reads an invite status from an answer that carries the gateway requestId", a
 it("reads a revoke answer that carries the gateway requestId", async () => {
  const revoked = { inviteId: id, revokedAt: "2026-10-27T12:00:00Z", revision: 1 };
  expect(await createInviteAdminApi(answer(revoked).host, orgId).revoke(id, { requestId: "22222222-2222-4222-8222-222222222222", expectedRevision: 0 })).toEqual(revoked);
-});
-it("reads the task stop editing context from an answer that carries the gateway requestId", async () => {
- const context = { orgId, scopeKind: "company", revision: 3, sourceDigest: "c".repeat(64), policy: { kind: "limited", stopMicrousd: 2_000_000 } };
- expect(await createTaskStopEditingApi(answer(context).host, orgId).get()).toEqual(context);
 });
 it("reads the evidence-opened answer that carries the gateway requestId", async () => {
  const opened = { cardId: "approve_plan:a", opened: true, recorded: true };

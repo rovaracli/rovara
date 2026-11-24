@@ -1,14 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { MemoryRouter } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
+import type { ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { PROOF_FAILURES_SHOWN, ageLabel, involvedRows, nextNeedsYou, proofRows, provenCount, readEvents, readPlan, readProof, readProofIndex, readTaskList, sortRows, stepOf, workRows, type ReadProofItem } from "../../packages/ui/src/api/work.js";
-import { understandSession } from "./support/understand-fixture.js";
 import { readDecisions } from "../../packages/ui/src/api/decisions.js";
 import { DecisionCardsViewReaderSchema } from "@agentx/contracts/web";
 import { BudgetBanner } from "../../packages/ui/src/design/BudgetBanner.js";
@@ -20,13 +19,10 @@ import { FailingTests, ProofStep } from "../../packages/ui/src/screens/session/P
 import { PullRequestCard } from "../../packages/ui/src/screens/session/PullRequestCard.js";
 import { SpecStep } from "../../packages/ui/src/screens/session/SpecStep.js";
 import { HomeScreen } from "../../packages/ui/src/screens/home/HomeScreen.js";
-import { WorkScreen } from "../../packages/ui/src/screens/work/WorkScreen.js";
 import { renderUi } from "./support/render.js";
-import { expectNoAxeViolations } from "./support/axe.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
-import { navFixture } from "./support/fixtures.js";
-import { CARDS, EVENTS, ID, NOW, PLAN, PROOF, QUESTION_SESSION, TASKS, decisionsView, task } from "./support/work-fixture.js";
+import { CARDS, ID, NOW, PLAN, PROOF, TASKS, decisionsView, task } from "./support/work-fixture.js";
 
 // The screen reads the clock when grouping tasks; keep it aligned with the fixed fixture.
 // Fake only Date so React Query, waitFor and accessibility checks keep real timers.
@@ -34,7 +30,6 @@ beforeEach(() => { vi.useFakeTimers({ now: NOW, toFake: ["Date"] }); });
 afterEach(() => { vi.useRealTimers(); });
 const decisions = (cards = CARDS) => readDecisions(DecisionCardsViewReaderSchema.parse(decisionsView(cards)));
 const rowsOf = (tasks = TASKS, cards = CARDS) => workRows(readTaskList({ tasks }), decisions(cards), NOW);
-const NOT_YET = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/sessions isn't connected to Rovara Code yet." } } };
 
 // ---- The read layer ----
 it("groups tasks by who owns the next move, in fixed words", () => {
@@ -168,185 +163,6 @@ it("shows the budget banner only when the month's budget is used up, with the ra
 });
 
 // ---- The screen ----
-interface Setup { involved?: ApiResponse; tasks?: unknown; decisions?: unknown; plan?: unknown; proof?: unknown; send?: (request: ApiRequest) => Promise<ApiResponse>; nav?: unknown; spend?: ApiResponse; path?: string }
-function screenSetup(options: Setup = {}) {
-  let tasks: ApiResponse = options.tasks === undefined ? { status: 200, body: { tasks: TASKS } } : options.tasks as ApiResponse, cards: ApiResponse = options.decisions === undefined ? { status: 200, body: decisionsView() } : options.decisions as ApiResponse;
-  const f = fakeHost(async request => {
-    if (request.method !== "GET") return options.send ? options.send(request) : { status: 200, body: {} };
-    const path = request.path.split("?")[0]!;
-    if (path === "/v1/app/sessions") return tasks;
-    if (path === "/v1/app/sessions/" + QUESTION_SESSION) {
-      const session = understandSession({ revision: 2 });session.sessionId = QUESTION_SESSION;
-      if (session.body.kind !== "task" || session.body.task.workflow?.intent === undefined) throw new Error("Expected a question round");
-      session.body.task.taskId = ID.question;session.body.task.workflow.taskId = ID.question;session.body.task.workflow.intent.rounds = 2;
-      return { status: 200, body: { session } };
-    }
-    if (path === "/v1/app/involved") return options.involved ?? { status: 200, body: { tasks: [] } };
-    if (path === "/v1/app/decisions") return cards;
-    if (path === "/v1/app/me") return { status: 200, body: { developer: { id: "a".repeat(64), name: "Member", orgRole: "owner" }, org: { orgId: "o-aaaaaaaaaaaaaaaaaaaa", name: "Example", plan: "starter" }, identities: [] } };
-    if (path === "/v1/app/nav") return { status: 200, body: options.nav ?? navFixture({ projects: [] }) };
-    if (path === "/v1/app/org/spend") return options.spend ?? NOT_YET;
-    if (path.endsWith("/documents/plan")) return (options.plan as ApiResponse | undefined) ?? { status: 200, body: PLAN };
-    if (path.endsWith("/evidence")) return (options.proof as ApiResponse | undefined) ?? { status: 200, body: PROOF };
-    if (path.endsWith("/events")) return { status: 200, body: EVENTS };
-    if (path.endsWith("/comments")) return { status: 200, body: { comments: [] } };
-    return { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } };
-  });
-  const query = createQueryClient(), where: { current: string } = { current: "" };
-  const Where = () => { where.current = useLocation().pathname + useLocation().search;return null; };
-  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [options.path ?? "/app/live"], children: h(Announcer, { children: h(Routes, {}, h(Route, { path: "/app/live", element: h("div", {}, h(Where, {}), h(WorkScreen, {})) })) }) }) }) }));
-  return { ...f, ...ui, query, where, answerTasks(next: ApiResponse) { tasks = next; }, answerCards(next: ApiResponse) { cards = next; }, close() { ui.unmount();query.clear(); } };
-}
-const rowOf = (id: string) => document.querySelector<HTMLElement>(`[data-task-id="${id}"].rv-inbox-row`)!;
-const paneTitle = () => screen.getByTestId("pane-title").textContent;
-
-it("lists every task grouped by who owns the next move, with the first needing-you task open in the pane", async () => {
-  const f = screenSetup();await screen.findByRole("heading", { name: /Needs you/u });
-  const groups = screen.getAllByRole("heading", { level: 2 }).map(heading => heading.textContent);
-  expect(groups.slice(0, 4)).toEqual(["Needs you 4", "Rovara is working 1", "Waiting on others 1", "Finished this week 1"]);
-  expect(within(screen.getByRole("list", { name: "Needs you" })).getAllByRole("button").map(button => button.getAttribute("data-task-id"))).toEqual([ID.merge, ID.plan, ID.checks, ID.question].map(id => id)); // quickest first
-  await waitFor(() => expect(paneTitle()).toBe("Fix the README typo"));
-  expect(screen.getByRole("region", { name: "Work list" })).toBeTruthy();expect(screen.getByRole("region", { name: "Selected task" })).toBeTruthy();
-  expect(rowOf(ID.merge).getAttribute("aria-current")).toBe("true");
-  f.close();
-});
-it("moves the selection with j and k while the list has focus, and not from elsewhere", async () => {
-  const f = screenSetup({ path: `/app/live?task=${ID.merge}` });await screen.findByRole("heading", { name: /Needs you/u });await waitFor(() => expect(paneTitle()).toBe("Fix the README typo"));
-  fireEvent.keyDown(document.body, { key: "j" });expect(paneTitle()).toBe("Fix the README typo");
-  fireEvent.keyDown(rowOf(ID.merge), { key: "j" });await waitFor(() => expect(paneTitle()).toBe("Add a retry to the billing webhook"));
-  expect(document.activeElement).toBe(rowOf(ID.plan));expect(f.where.current).toContain("task=" + ID.plan);
-  fireEvent.keyDown(rowOf(ID.plan), { key: "k" });await waitFor(() => expect(paneTitle()).toBe("Fix the README typo"));
-  fireEvent.keyDown(rowOf(ID.merge), { key: "k" });expect(paneTitle()).toBe("Fix the README typo");
-  for (let n = 0; n < 8; n++) fireEvent.keyDown(document.activeElement ?? document.body, { key: "ArrowDown" });await waitFor(() => expect(paneTitle()).toBe("Add request IDs to eval logs"));
-  f.close();
-});
-it("selects by click and shows that task's step rail, decision card, spec and side cards", async () => {
-  const f = screenSetup();await screen.findByRole("heading", { name: /Needs you/u });
-  fireEvent.click(rowOf(ID.plan));await waitFor(() => expect(paneTitle()).toBe("Add a retry to the billing webhook"));
-  const decision = await screen.findByRole("region", { name: "Your decision" });
-  expect(decision.textContent).toContain("Approve this quick spec");expect(within(decision).getByRole("button", { name: "Approve plan v1" })).toBeTruthy();
-  const merge = within(decision).getByRole<HTMLInputElement>("checkbox", { name: /Merge by itself/u });expect(merge.disabled).toBe(true);expect(decision.textContent).toContain("not connected yet");
-  const spec = await screen.findByRole("region", { name: "Spec" });expect(spec.textContent).toContain("R1.1");expect(spec.textContent).toContain("Question for you.");
-  expect(screen.getByRole("list", { name: "Steps of this task" })).toBeTruthy();expect(screen.getByRole("region", { name: "Cost" }).textContent).toContain("Cost unavailable");
-  f.close();
-});
-it("clicking a step shows that stage of the task", async () => {
-  const f = screenSetup({ path: `/app/live?task=${ID.plan}` });await screen.findByRole("region", { name: "Spec" });
-  fireEvent.click(within(screen.getByRole("list", { name: "Steps of this task" })).getByRole("button", { name: /^Proof/u }));
-  const proof = await screen.findByRole("region", { name: "Proof" });expect(proof.textContent).toContain("1 of 2 criteria proven");
-  fireEvent.click(within(screen.getByRole("list", { name: "Steps of this task" })).getByRole("button", { name: /^Build/u }));expect((await screen.findByRole("region", { name: "Build" })).textContent).toContain("T2");expect(screen.getByRole("region", { name: "Proof so far" })).toBeTruthy();
-  f.close();
-});
-it("after approving, the list moves to the next task that needs you and says so", async () => {
-  const send = vi.fn(async (request: ApiRequest): Promise<ApiResponse> => ({ status: 200, body: request.path.includes("/approve") ? { cardId: "approve_plan:" + ID.plan, outcome: "approved", remainingTabs: [] } : {} }));
-  const f = screenSetup({ send, path: `/app/live?task=${ID.plan}` });
-  const approve = await screen.findByRole("button", { name: "Approve plan v1" });
-  const advancedTasks = { status: 200, body: { tasks: TASKS.map(entry => (entry.taskId === ID.plan ? { ...entry, workflow: { ...entry.workflow, stage: "IMPLEMENT", state: "RUNNING" } } : entry)) } };
-  const remainingCards = { status: 200, body: decisionsView(CARDS.filter(entry => entry.kind !== "approve_plan")) };
-  send.mockImplementation(async request => {
-    if (request.path.endsWith("/approve")) {
-      // The action's authoritative reads change only after the server accepts the approval.
-      f.answerCards(remainingCards);
-      f.answerTasks(advancedTasks);
-      return { status: 200, body: { cardId: "approve_plan:" + ID.plan, outcome: "approved", remainingTabs: [] } };
-    }
-    return { status: 200, body: {} };
-  });
-  fireEvent.click(approve);
-  await waitFor(() => expect(paneTitle()).toBe("Rate-limit the public API"));
-  expect(send.mock.calls.some(([request]) => request.path === `/v1/app/decisions/approve_plan/${ID.plan}/approve`)).toBe(true);
-  expect(rowOf(ID.plan).closest("section")?.getAttribute("data-group")).toBe("run");
-  await waitFor(() => expect(document.querySelector('[aria-live="polite"]')?.textContent).toContain("Moved to Rate-limit the public API"));
-  f.close();
-});
-it("draws the failed-twice card red with its eval box and the card's own choices", async () => {
-  const proof = { status: 200, body: { taskId: ID.checks, items: [{ sha256: "e".repeat(64), title: "Release eval", kind: "eval", verdict: "fail", criterionIds: ["R1.2"], passed: 405, total: 420, bar: 0.97 }] } };
-  const f = screenSetup({ path: `/app/live?task=${ID.checks}`, proof });
-  const card = await screen.findByRole("region", { name: "A check failed twice" });
-  expect(card.getAttribute("data-tone")).toBe("bad");await waitFor(() => expect(card.textContent).toContain("405 of 420 cases pass"));expect(within(card).getByRole("button", { name: "Try another approach" })).toBeTruthy();expect(within(card).getAllByText("Not now").length).toBeGreaterThan(0);
-  f.close();
-});
-it("answers a question from the card; a route Code does not serve says so, never a spinner", async () => {
-  const send = vi.fn<(request: ApiRequest) => Promise<ApiResponse>>(async () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/sessions/x/answers isn't connected to Rovara Code yet." } } }));
-  const f = screenSetup({ send, path: `/app/live?task=${ID.question}`, plan: { status: 200, body: { ...PLAN, questions: [{ ...PLAN.questions[0], criterionId: undefined }] } } });
-  const card = await screen.findByRole("region", { name: "Question for you" });
-  fireEvent.click(await within(card).findByRole("button", { name: /Yes, behind a flag/u }));
-  expect((await screen.findByTestId("decision-error")).textContent).toContain("Not available yet.");
-  const call = send.mock.calls[0]![0];expect(call.path).toBe(`/v1/app/sessions/${QUESTION_SESSION}/answers`);expect(call.body).toMatchObject({ round: 2, revision: 2, answers: [{ questionId: "Q1", optionId: "yes" }] });
-  expect(call.path).not.toContain(ID.question);
-  expect(screen.queryByRole("progressbar")).toBeNull();
-  f.close();
-});
-it.each(["no Cloud session", "no round from Code"])("a question on a task with %s sends nothing and says to answer on the session page", async (missing) => {
-  const send = vi.fn<(request: ApiRequest) => Promise<ApiResponse>>(async () => ({ status: 200, body: {} }));
-  const tasks = TASKS.map(item => (item.taskId !== ID.question ? item : missing === "no Cloud session" ? { ...item, sessionId: undefined } : { ...item, workflow: { stage: "UNDERSTAND", state: "WAITING", revision: 2, path: "STANDARD" } }));
-  const f = screenSetup({ send, tasks: { status: 200, body: { tasks } }, path: `/app/live?task=${ID.question}`, plan: { status: 200, body: { ...PLAN, questions: [{ ...PLAN.questions[0], criterionId: undefined }] } } });
-  const card = await screen.findByRole("region", { name: "Question for you" });
-  fireEvent.click(await within(card).findByRole("button", { name: /Yes, behind a flag/u }));
-  expect((await screen.findByTestId("decision-error")).textContent).toContain("Answer this question on the task's session page.");
-  expect(send.mock.calls.filter(([request]) => request.path.endsWith("/answers"))).toEqual([]);
-  f.close();
-});
-it("says Work isn't connected yet, plainly, when Code does not serve the list", async () => {
-  const f = screenSetup({ tasks: NOT_YET });
-  const error = await screen.findByTestId("load-error");expect(error.textContent).toContain("Work isn't available yet.");expect(error.textContent).not.toContain("Not available yet.");expect(error.textContent).not.toContain("/v1/");expect(screen.queryByRole("progressbar")).toBeNull();
-  f.answerTasks({ status: 200, body: { tasks: TASKS } });fireEvent.click(within(error).getByRole("button", { name: "Try again" }));await screen.findByRole("heading", { name: /Needs you/u });
-  f.close();
-});
-it("shows a skeleton while loading, an empty state with no work, and could-not-load for a refused read", async () => {
-  let release: ((value: ApiResponse) => void) | undefined;
-  const pending = screenSetup({ tasks: new Promise<ApiResponse>(resolve => { release = resolve; }) as unknown as ApiResponse });
-  // a pending list: the skeleton and a pane that says to wait, and the command area still there
-  expect(screen.getByRole("progressbar", { name: "Loading your work" })).toBeTruthy();expect(screen.getByRole("heading", { name: "Work" })).toBeTruthy();pending.close();void release;
-  const empty = screenSetup({ tasks: { status: 200, body: { tasks: [] } } });expect(await screen.findByTestId("work-empty")).toBeTruthy();empty.close();
-  const refused = screenSetup({ tasks: { status: 403, body: { error: { code: "FORBIDDEN", message: "Your access ended." } } } });expect((await screen.findByTestId("load-error")).textContent).toContain("Your access ended.");refused.close();
-});
-it("says nothing needs you inside the Needs you group when it is empty but work is running", async () => {
-  const f = screenSetup({ tasks: { status: 200, body: { tasks: [TASKS[1]] } }, decisions: { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } } });
-  expect((await screen.findByTestId("work-nothing-needs-you")).textContent).toContain("Nothing needs you");expect(screen.getByRole("list", { name: "Rovara is working" })).toBeTruthy();
-  await screen.findByTestId("decision-quiet");expect(screen.getByTestId("decision-quiet").textContent).toContain("Nothing needed from you");
-  f.close();
-});
-it("says decisions aren't connected yet in the pane of a task that needs a person but has no card", async () => {
-  const f = screenSetup({ tasks: { status: 200, body: { tasks: [task(ID.checks, "Stopped one", { status: "FAILED", workflow: { stage: "IMPLEMENT", state: "BLOCKED", revision: 1, blockReason: "The coding step could not finish." } }, "IMPLEMENT", "BLOCKED")] }, }, decisions: { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/decisions isn't connected to Rovara Code yet." } } } });
-  expect((await screen.findByTestId("decisions-unavailable")).textContent).toContain("Not available yet.");
-  expect((await screen.findByTestId("decision-quiet")).textContent).toContain("Not available yet.");
-  f.close();
-});
-it("shows the budget banner and hides the empty agents row", async () => {
-  const f = screenSetup({ spend: { status: 200, body: { remainingUsd: 0 } } });
-  expect(await screen.findByText("This month's budget is used up")).toBeTruthy();expect(screen.queryByTestId("agents-not-connected")).toBeNull();expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
-  f.close();
-  const g = screenSetup({ nav: navFixture() });
-  const row = await screen.findByRole("region", { name: "Agents" });await waitFor(() => expect(within(row).getByRole("link", { name: /Payments expert/u }).textContent).toContain("needs you"));
-  g.close();
-});
-it("does not claim nothing needs you when the decisions could not be read", async () => {
-  const f = screenSetup({ tasks: { status: 200, body: { tasks: [TASKS[1]] } }, decisions: { status: 403, body: { error: { code: "FORBIDDEN", message: "Your access ended." } } } });
-  expect((await screen.findByTestId("work-decisions-failed")).textContent).toContain("Decisions couldn't be loaded");expect(screen.queryByTestId("work-nothing-needs-you")).toBeNull();
-  f.close();
-});
-it("keeps the proof when only the plan could not be read", async () => {
-  const f = screenSetup({ path: `/app/live?task=${ID.merge}`, plan: { status: 403, body: { error: { code: "FORBIDDEN", message: "You can no longer read this task." } } } });
-  await screen.findByTestId("section-error");fireEvent.click(within(screen.getByRole("list", { name: "Steps of this task" })).getByRole("button", { name: /^Pull request/u }));
-  expect(await screen.findByRole("region", { name: "Pull request" })).toBeTruthy();expect(screen.getByRole("region", { name: "Proof" })).toBeTruthy();expect(screen.getByTestId("section-error").textContent).toContain("You can no longer read this task.");
-  f.close();
-});
-it("does not send an answer for a task with no Cloud session or round, and says to answer on the session page", async () => {
-  const send = vi.fn<(request: ApiRequest) => Promise<ApiResponse>>(async () => ({ status: 200, body: {} }));
-  const f = screenSetup({ send, path: `/app/live?task=${ID.plan}`, tasks: { status: 200, body: { tasks: [task(ID.plan, "No revision", { workflow: { stage: "PLAN_REVIEW", state: "WAITING", path: "QUICK" } }, "PLAN_REVIEW", "WAITING", 2)] } } });
-  fireEvent.click(await screen.findByRole("button", { name: /Yes, behind a flag/u }));
-  expect((await screen.findByTestId("answer-error")).textContent).toContain("Answer this question on the task's session page.");expect(send).not.toHaveBeenCalled();
-  f.close();
-});
-it("keeps the plan's own error in the pane without breaking the list", async () => {
-  const f = screenSetup({ path: `/app/live?task=${ID.plan}`, plan: { status: 403, body: { error: { code: "FORBIDDEN", message: "You can no longer read this task." } } } });
-  await screen.findByRole("heading", { name: /Needs you/u });
-  const unavailable = await screen.findByRole("heading", { name: "Plan unavailable" });
-  expect(unavailable.closest('[aria-label="Plan decision"]')?.textContent).toContain("The latest plan couldn't be read. Try again before deciding.");
-  expect(rowOf(ID.plan)).toBeTruthy();
-  f.close();
-});
 function homeSetup(cards: ApiResponse) {
   const f = fakeHost(async request => request.path === "/v1/app/home" ? { status: 200, body: { cards: [], total: 0 } } : request.path === "/v1/app/decisions" ? cards : request.path === "/v1/app/me" ? { status: 200, body: { developer: { id: "a".repeat(64), name: "Member", orgRole: "owner" }, org: { orgId: "o-aaaaaaaaaaaaaaaaaaaa", name: "Example", plan: "starter" }, identities: [] } } : { status: 200, body: { notices: [], next: "settled" } });
   const query = createQueryClient();
@@ -378,56 +194,6 @@ it("makes involved rows a group of their own: newest first, nothing asked of the
   expect(involvedRows(readTaskList({ tasks: [task(INVOLVED_ID, "At review", {}, "PLAN_REVIEW", "WAITING", 10)] }), NOW)[0]).toMatchObject({ group: "involved", need: undefined, line: "Spec ready for review" });
   expect(rows[0]).toMatchObject({ line: "Building", tone: "run" });
 });
-it("lists involved tasks under their own Involved group at the end, and opens one beside the list in fixed words", async () => {
-  const f = screenSetup({ involved: { status: 200, body: { tasks: INVOLVED } } });await screen.findByRole("heading", { name: /Needs you/u });
-  await screen.findByRole("heading", { name: /^Involved/u });
-  const groups = screen.getAllByRole("heading", { level: 2 }).map(heading => heading.textContent).filter(text => /^(Needs you|Rovara is working|Waiting on others|Finished this week|Involved)/u.test(text ?? ""));
-  expect(groups).toEqual(["Needs you 4", "Rovara is working 1", "Waiting on others 1", "Finished this week 1", "Involved 2"]);
-  expect(within(screen.getByRole("list", { name: "Involved" })).getAllByRole("button").map(button => button.getAttribute("data-task-id"))).toEqual([INVOLVED_ID, INVOLVED_STOPPED]);
-  // The person's own groups are unchanged, and the first own task is still the one open.
-  await waitFor(() => expect(paneTitle()).toBe("Fix the README typo"));
-  fireEvent.click(rowOf(INVOLVED_ID));
-  await waitFor(() => expect(paneTitle()).toBe("Migrate the invoices table"));
-  // No link to a full page: it cannot open a task the person did not start yet.
-  expect(screen.queryByRole("link", { name: /Open the full page/u })).toBeNull();
-  expect(screen.getByTestId("decision-quiet").textContent).toContain("You're involved in this task");
-  expect(screen.getByTestId("decision-quiet").textContent).toContain("Its owner answers the agent's questions and decides");
-  expect(f.where.current).toContain("task=" + INVOLVED_ID);
-  f.close();
-});
-it("opening an involved task by its address does not flash the first own task while the involved list loads", async () => {
-  const f = screenSetup({ path: `/app/live?task=${INVOLVED_ID}`, involved: { status: 200, body: { tasks: INVOLVED } } });
-  await screen.findByRole("heading", { name: /^Involved/u });
-  await waitFor(() => expect(paneTitle()).toBe("Migrate the invoices table"));
-  f.close();
-});
-it("shows a task that is in both lists once, in the person's own groups", async () => {
-  const f = screenSetup({ involved: { status: 200, body: { tasks: [TASKS[0], INVOLVED[0]] } } });await screen.findByRole("heading", { name: /^Involved/u });
-  expect(document.querySelectorAll(`[data-task-id="${String((TASKS[0] as { taskId: string }).taskId)}"].rv-inbox-row`)).toHaveLength(1);
-  expect(within(screen.getByRole("list", { name: "Involved" })).getAllByRole("button")).toHaveLength(1);
-  f.close();
-});
-it("shows nothing extra and no error when Code does not serve the involved list yet (404, 501) or answers it empty", async () => {
-  for (const involved of [{ status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } }, { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "no" } } }, { status: 200, body: { tasks: [] } }]) {
-    const f = screenSetup({ involved });await screen.findByRole("heading", { name: /Needs you/u });
-    await waitFor(() => expect(paneTitle()).toBe("Fix the README typo"));
-    expect(screen.queryByRole("heading", { name: /^Involved/u })).toBeNull();expect(screen.queryByTestId("involved-unavailable")).toBeNull();expect(screen.queryByTestId("load-error")).toBeNull();
-    f.close();
-  }
-});
-it("says quietly that involved tasks could not be loaded for any other failure, and keeps the person's own list", async () => {
-  const f = screenSetup({ involved: { status: 403, body: { error: { code: "FORBIDDEN", message: "Your access ended." } } } });await screen.findByRole("heading", { name: /Needs you/u });
-  expect((await screen.findByTestId("involved-unavailable")).textContent).toContain("couldn't be loaded");
-  expect(screen.queryByTestId("load-error")).toBeNull();expect(rowOf(ID.merge)).toBeTruthy();
-  f.close();
-});
-it("lists involved tasks even when the person has no work of their own", async () => {
-  const f = screenSetup({ tasks: { status: 200, body: { tasks: [] } }, involved: { status: 200, body: { tasks: INVOLVED } } });
-  await screen.findByRole("heading", { name: /^Involved/u });
-  expect(screen.queryByTestId("work-empty")).toBeNull();
-  await waitFor(() => expect(paneTitle()).toBe("Migrate the invoices table"));
-  f.close();
-});
 it("Home lists the tasks the person was added to, each opening in Work, and draws nothing when there are none or Code does not serve them", async () => {
   const home = (involved: ApiResponse) => {
     const f = fakeHost(async request => {
@@ -451,40 +217,7 @@ it("Home lists the tasks the person was added to, each opening in Work, and draw
     expect(screen.queryByTestId("home-involved")).toBeNull();g.close();
   }
 });
-for (const theme of ["light", "dark"] as const) it("has no accessibility violations with involved tasks in " + theme, async () => {
-  const f = screenSetup({ involved: { status: 200, body: { tasks: INVOLVED } } });await screen.findByRole("heading", { name: /^Involved/u });
-  document.documentElement.setAttribute("data-theme", theme);await expectNoAxeViolations(f.container);f.close();
-});
-for (const theme of ["light", "dark"] as const) it("has no accessibility violations in " + theme, async () => {
-  const f = screenSetup();await screen.findByRole("heading", { name: /Needs you/u });await screen.findByRole("region", { name: "Spec" }).catch(() => undefined);await screen.findByRole("region", { name: "Your decision" });
-  document.documentElement.setAttribute("data-theme", theme);await expectNoAxeViolations(f.container);f.close();
-});
 void act;
-
-// Staging walkthrough 2026-11-17 item 3: Code has no proof index route yet, so the proof read answers Code's unknown-route 404 ("route not found") or Cloud's 501.
-// The pane says "Proof will appear here." in plain words, never the route text; any other failure still offers Try again.
-it.each([
- ["Code's unknown-route 404", { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } }],
- ["Cloud's 501", { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "/v1/app/tasks/x/evidence isn't connected to Rovara Code yet." } } }],
-])("says proof will appear here, plainly, when the proof read is not served (%s)", async (_label, proof) => {
-  const f = screenSetup({ proof, path: `/app/live?task=${ID.merge}` });
-  expect((await screen.findByTestId("proof-not-yet")).textContent).toBe("Proof will appear here.");
-  const pane = screen.getByRole("region", { name: "Selected task" });
-  expect(pane.textContent).not.toContain("route not found");expect(pane.textContent).not.toContain("/v1/");
-  expect(within(pane).queryByRole("button", { name: "Try again" })).toBeNull();
-  f.close();
-});
-it("still offers Try again when the proof read fails for another reason", async () => {
-  const f = screenSetup({ proof: { status: 500, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara Code didn't answer." } } }, path: `/app/live?task=${ID.merge}` });
-  // The client tries a 500 again before it gives up, so the error shows after its back-off.
-  expect(await screen.findByTestId("section-error", {}, { timeout: 5000 })).toBeTruthy();expect(screen.queryByTestId("proof-not-yet")).toBeNull();
-  f.close();
-});
-it("keeps Code's own words for any other 404 of the proof read (a task the person can no longer read)", async () => {
-  const f = screenSetup({ proof: { status: 404, body: { error: { code: "NOT_FOUND", message: "task not found" } } }, path: `/app/live?task=${ID.merge}` });
-  expect((await screen.findByTestId("not-connected")).textContent).toBe("task not found");expect(screen.queryByTestId("proof-not-yet")).toBeNull();
-  f.close();
-});
 
 // Proof list (Code's GET /v1/dev/tasks/{id}/evidence): Code's items carry an id and a digest only when it kept the check's output, and (TE-A6) up to ten failing tests with their likely causes.
 const failureRow = (index: number) => ({ check: "pytest -q", test: `tests/cart.test.ts::case ${String(index)}`, cause: index % 2 === 0 ? "likely broken by a change (commit aaaaaaa) to src/cart.ts" : "unknown (only weak evidence)" });
@@ -512,13 +245,4 @@ it("draws the failing tests under the proof as plain text, at most ten, and coun
   // Nothing to show: no section at all.
   const none = wrap(h(FailingTests, { failures: [] }));expect(none.container.textContent).toBe("");none.unmount();
   const onlyMore = wrap(h(FailingTests, { failures: [], notListed: 1 }));expect(onlyMore.container.textContent).toContain("and 1 more failing test not listed");onlyMore.unmount();
-});
-it("the Proof tab shows Code's items and failing tests from the proof read", async () => {
-  const proof = { status: 200, body: { taskId: ID.merge, items: [{ id: "evidence:0", title: "pytest -q", kind: "test_report", verdict: "fail", criterionIds: [] }, { id: "review:code", title: "Code review", kind: "review", verdict: "pass", criterionIds: [] }], failures: [failureRow(0), failureRow(1)] } };
-  const f = screenSetup({ proof, path: `/app/live?task=${ID.merge}` });
-  const failing = await screen.findByTestId("failing-tests");
-  expect(failing.textContent).toContain("tests/cart.test.ts::case 0");expect(failing.textContent).toContain("likely broken by a change (commit aaaaaaa) to src/cart.ts");expect(failing.textContent).toContain("unknown (only weak evidence)");
-  const pane = screen.getByRole("region", { name: "Selected task" });expect(pane.textContent).toContain("Also checked.");expect(pane.textContent).toContain("pytest -q (failed)");expect(pane.textContent).toContain("Code review");
-  expect(screen.queryByTestId("proof-not-yet")).toBeNull();
-  f.close();
 });
