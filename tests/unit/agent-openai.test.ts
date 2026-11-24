@@ -425,6 +425,20 @@ describe("the agent route on the company's own OpenAI or OpenRouter key", () => 
     }
   });
 
+  it("Rovara-cloud#319: the log line of a provider's error answer carries its HTTP status, never its body", async () => {
+    for (const status of [400, 404, 429, 500]) {
+      const r = route({ transport: () => async () => ({ status, body: (async function* () { yield Buffer.from("PROVIDER-CANARY your organization must be verified"); })() }) });
+      await call(r.deps, anthropicBody, token());
+      const refused = r.logs.filter((line) => (line as { event?: unknown }).event === "refused");
+      expect(refused, String(status)).toEqual([expect.objectContaining({ event: "refused", code: "provider_error", status: 502, upstreamStatus: status, route: "agent", payer: "openai_key" })]);
+      expect(JSON.stringify(r.logs)).not.toContain("PROVIDER-CANARY");
+    }
+    // A refusal the gateway makes itself (nothing sent) has no provider status.
+    const r = route();
+    await call(r.deps, { ...anthropicBody, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } }] }] }, token());
+    expect(r.logs.filter((line) => (line as { event?: unknown }).event === "refused").every((line) => !Object.hasOwn(line as object, "upstreamStatus"))).toBe(true);
+  });
+
   it("a request with something it cannot translate: refused before any hold, in fixed words", async () => {
     const r = route();
     const sink = await call(r.deps, { ...anthropicBody, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } }] }] }, token());

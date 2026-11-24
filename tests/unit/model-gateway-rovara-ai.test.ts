@@ -248,7 +248,7 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     expect(await committed(g.meter)).toBe(0);
     expect(g.meter.billedCalls(claims.iss, cidA)).toMatchObject([{ settledMicros: 0 }]);
     expect(g.logs.filter((line) => (line as { event?: unknown }).event === "refused")).toEqual([
-      { event: "refused", code: "rate_limit_error", status: 429, route: "agent", payer: "rovara", reason: "bedrock_429" },
+      { event: "refused", code: "rate_limit_error", status: 429, upstreamStatus: 429, route: "agent", payer: "rovara", reason: "bedrock_429" },
     ]);
     expect(JSON.stringify(g.logs)).not.toContain("BEDROCK-CANARY");
     // The same throttle as a first stream frame (an exception before any output) is the same answer.
@@ -266,7 +266,7 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
       g.choices.saved.set(cidA, "rovara");
       await call(g.deps);
       expect(g.logs.filter((line) => (line as { event?: unknown }).event === "refused")).toEqual([
-        { event: "refused", code: status === 500 ? "provider_error" : "unavailable", status: status === 500 ? 502 : 503, route: "agent", payer: "rovara", reason },
+        { event: "refused", code: status === 500 ? "provider_error" : "unavailable", status: status === 500 ? 502 : 503, upstreamStatus: status, route: "agent", payer: "rovara", reason },
       ]);
       expect(JSON.stringify(g.logs)).not.toContain("BEDROCK-CANARY");
     }
