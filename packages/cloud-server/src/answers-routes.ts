@@ -6,7 +6,7 @@
 //   POST /v1/app/projects/{p}/code/suggest    -> Code POST /v1/app/projects/{p}/code/suggest    { requestId, text }                                             (StartSuggestResponse)
 //
 // Rules:
-//   - OFF unless the deployment says so (`answersEnabled`, from ROVARA_ANSWERS_ENABLED): both routes then answer "not available on this Rovara yet" without asking Code, and the nav tells the app to draw no
+//   - ON unless the deployment says "0" (`answersEnabled`, from ROVARA_ANSWERS_ENABLED; DEC 254zzz448): when off, both routes answer "not available on this Rovara yet" without asking Code, and the nav tells the app to draw no
 //     Ask box (DEC 254z-amend2: hidden until the gateway's answers purpose is merged AND deployed; a setting, not the presence of this code).
 //   - Code decides who may ask: its live company and project role, on every call (any project role asks; anyone else, another company's project, a missing project and a malformed name all get Code's one 404).
 //     Cloud adds no rule that could widen that. It only refuses earlier: a person Code names no company for gets NOT_IN_COMPANY; a malformed project name or body is refused without asking Code.

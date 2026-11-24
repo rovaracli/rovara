@@ -21,10 +21,10 @@ const deployCommand = (environmentName: string) => {
 const SWITCH = `-c ${MODEL_GATEWAY_PRODUCT_CONTEXT_KEY}=on`;
 
 describe("Cloud release pipeline: per-environment deploy switches", () => {
-  it("the staging pipeline's deploy carries the product AI switch, from config", () => {
-    expect(CLOUD_PIPELINE_SWITCHES.staging).toEqual({ productAi: true });
+  it("the staging pipeline's deploy carries the product AI switch and the openai + openrouter source kinds, from config", () => {
+    expect(CLOUD_PIPELINE_SWITCHES.staging).toEqual({ productAi: true, aiSourceKinds: "openai,openrouter" });
     const command = deployCommand("staging");
-    expect(command).toBe(`npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" ${SWITCH} --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`);
+    expect(command).toBe(`npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" ${SWITCH} -c ${AI_SOURCE_KINDS_CONTEXT_KEY}=openai,openrouter --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`);
   });
 
   it("beta's deploy carries it too, now that beta's gateway is deployed (Rovara-cloud#273)", () => {

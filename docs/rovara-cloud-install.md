@@ -114,7 +114,7 @@ curl -fsS https://raw.githubusercontent.com/PrepLabsAI/Rovara/<merge sha>/docs/b
 Like `ModelGatewayUrl`, it is a parameter of the web stack, set by hand on the first deploy and kept by later deploys.
 
 A named test environment's web stack (not `production`) also has **`AnswersEnabled`** (`1`, the default, or `0`): the server's
-`ROVARA_ANSWERS_ENABLED`, which turns on the smart Just answer's Ask boxes (lead 4 J3, DEC 254z-amend2). On needs the model gateway's
+`ROVARA_ANSWERS_ENABLED`, which turns on the smart Just answer's Ask boxes (lead 4 J3, DEC 254z-amend2; on unless set to `0`, also for the local server, DEC 254zzz448). On needs the model gateway's
 answers purpose deployed; Code still decides who may ask. Like the other parameters, a later deploy keeps the value the operator set.
 To turn it off: deploy the web stack with `--parameters AnswersEnabled=0`.
 

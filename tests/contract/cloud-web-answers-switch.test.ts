@@ -40,13 +40,16 @@ describe("Cloud web: the Ask boxes' switch (ROVARA_ANSWERS_ENABLED)", () => {
     expect(ANSWERS_ROUTES).toContain(matches[0]);
   });
 
-  it("reaches the reader: the variable is the one scripts/cloud-lambda.ts reads, and the default is the one value it reads as on", () => {
+  it("reaches the reader: the variable is the one both server scripts read, on unless it is exactly the override value (DEC 254zzz448)", () => {
     expect(CLOUD_ANSWERS_ENABLED_ENV).toBe("ROVARA_ANSWERS_ENABLED");
-    const source = readFileSync(join(process.cwd(), "scripts/cloud-lambda.ts"), "utf8");
-    const reads = [...source.matchAll(/process\.env\.ROVARA_ANSWERS_ENABLED === "([^"]*)" \? \{ answersEnabled: true \}/gu)].map((m) => m[1]);
-    expect(reads).toEqual([CLOUD_ANSWERS_ENABLED_DEFAULT]);
+    // "0" is the only other stack value, and both readers (the Lambda and the local server) read exactly that as off; anything else, including unset, is on.
+    const override = CLOUD_ANSWERS_ENABLED_VALUES.filter((v) => v !== CLOUD_ANSWERS_ENABLED_DEFAULT);
+    expect(override).toEqual(["0"]);
+    for (const script of ["scripts/cloud-lambda.ts", "scripts/cloud-server.ts"]) {
+      const source = readFileSync(join(process.cwd(), script), "utf8");
+      const reads = [...source.matchAll(/process\.env\.ROVARA_ANSWERS_ENABLED (===|!==) "([^"]*)" \? \{ answersEnabled: true \}/gu)].map((m) => `${m[1]} ${m[2]}`);
+      expect(reads, script).toEqual(["!== 0"]);
+    }
     expect(CLOUD_ANSWERS_ENABLED_VALUES[0]).toBe(CLOUD_ANSWERS_ENABLED_DEFAULT);
-    // "0" is the only other value, and the reader reads it as off.
-    expect(CLOUD_ANSWERS_ENABLED_VALUES.filter((v) => v !== CLOUD_ANSWERS_ENABLED_DEFAULT)).toEqual(["0"]);
   });
 });

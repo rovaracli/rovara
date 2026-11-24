@@ -10,7 +10,7 @@
  *  - tests/contract/derived-names.test.ts synthesizes the named templates and checks that each role and queue in the table is the resource CDK created.
  *
  * Adding a Lambda setting: if the function can derive it, add an entry here (and name the resource with the function); do not add an environment variable. Only a true input
- * (a feature flag, a parameter, a generated name or id) is passed: see AGENTX_NAMES and AGENTX_SETTINGS in broker-names.ts. tests/contract/lambda-environment-size.test.ts
+ * (a feature flag, a parameter, a generated name or id) is passed (Rovara Code's packages/contracts/src/broker-environment.ts holds the AGENTX_NAMES and AGENTX_SETTINGS tables; Cloud keeps no copy). tests/contract/lambda-environment-size.test.ts
  * holds the broker to 400 bytes of room under its ceiling, so a variable that is added anyway fails there.
  */
 import { RESOURCE_PREFIX } from "./resource-prefix.js";
