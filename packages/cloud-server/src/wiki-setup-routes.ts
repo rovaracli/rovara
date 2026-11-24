@@ -47,6 +47,7 @@ export const WIKI_SETUP_CODE_WORDS = Object.freeze({
   repo_unreadable: "Rovara could not read a repository at the commit it started from. It kept the pages it finished.",
   access_lost: "The person who started the wiki build can no longer build it. It kept the pages it finished.",
   infrastructure: "The wiki build could not go on. Try again; finished pages are kept.",
+  code_moved: "The code changed while the wiki build was starting, so Rovara could not read the commit it planned from. Nothing was lost. Start the build again and it will plan from the latest code.",
   upkeep_paused: "Nightly upkeep reached its spending limit, so the wiki refresh paused. It kept the pages it finished.",
   projectNotFound: "project not found",
   unreadable: "The project's wiki could not be read just now. Try again.",
@@ -184,7 +185,7 @@ const emptyBody = (body: unknown): Record<string, unknown> | undefined => (body 
 // ---- Answers: rebuilt, no dollar figure (but the upkeep cap and spend below) ----------------------------------------------------------------------------------------------------------------------------------------
 
 const KNOWN_SENTENCES: ReadonlySet<string> = new Set(Object.values(C));
-const END_WORDS = ["built", "budget_used", "pages_used", "time_used", "stopped_by_person", "needs_ai_key", "repo_unreadable", "access_lost", "infrastructure", "upkeep_paused"] as const;
+const END_WORDS = ["built", "budget_used", "pages_used", "time_used", "stopped_by_person", "needs_ai_key", "repo_unreadable", "access_lost", "infrastructure", "code_moved", "upkeep_paused"] as const;
 const AI_KEYS = ["connected", "missing", "unknown"] as const;
 const REPO_STATUSES = ["ok", "partial", "unavailable"] as const;
 const CHIP_KINDS = ["write_first", "skip_old", "skip_generated"] as const;

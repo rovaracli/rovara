@@ -87,6 +87,7 @@ export const WIKI_SETUP_CODE_WORDS = Object.freeze({
   repo_unreadable: "Rovara could not read a repository at the commit it started from. It kept the pages it finished.",
   access_lost: "The person who started the wiki build can no longer build it. It kept the pages it finished.",
   infrastructure: "The wiki build could not go on. Try again; finished pages are kept.",
+  code_moved: "The code changed while the wiki build was starting, so Rovara could not read the commit it planned from. Nothing was lost. Start the build again and it will plan from the latest code.",
   upkeep_paused: "Nightly upkeep reached its spending limit, so the wiki refresh paused. It kept the pages it finished.",
   projectNotFound: "project not found",
   unreadable: "The project's wiki could not be read just now. Try again.",
@@ -163,7 +164,7 @@ export type WikiSetupMapView = z.infer<typeof WikiSetupMapViewSchema>;
 
 // ---- The build controls (W4) -----------------------------------------------------------------------------------------------------------------------------------------------
 
-export const WIKI_SETUP_END_WORDS = ["built", "budget_used", "pages_used", "time_used", "stopped_by_person", "needs_ai_key", "repo_unreadable", "access_lost", "infrastructure", "upkeep_paused"] as const;
+export const WIKI_SETUP_END_WORDS = ["built", "budget_used", "pages_used", "time_used", "stopped_by_person", "needs_ai_key", "repo_unreadable", "access_lost", "infrastructure", "code_moved", "upkeep_paused"] as const;
 export const WIKI_SETUP_AI_KEY_STATES = ["connected", "missing", "unknown"] as const;
 const pages = z.number().int().min(0).max(10_000);
 
