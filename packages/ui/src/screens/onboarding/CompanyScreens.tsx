@@ -11,6 +11,7 @@ import { TextField } from "../../design/TextField.js";
 import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { AuthStage } from "../signed-out/AuthStage.js";
 import "./onboarding.css";
 
 export const JOIN_UNUSABLE = "This invite can't be used. Ask your company admin for a new one.";
@@ -18,7 +19,18 @@ const CreatedSchema = z.object({ companyId: z.string().regex(/^org_[0-9a-z]{20}$
 
 export function NoCompanyScreen() {
   const host = useAppHost();
-  return <main className="rv-entry rv-onboarding-entry" data-testid="no-company"><p className="rv-eyebrow">Rovara</p><PageHeader title="You're not in a company yet" description="Rovara works inside a company: its people, projects and rules." focusOnMount /><Button variant="primary" data-testid="no-company-create" onClick={() => host.navigate("/app/create-company")}>Create your company</Button><p className="rv-muted" data-testid="no-company-invite">Have an invite? Open the link you were sent.</p></main>;
+  return (
+    <AuthStage
+      testId="no-company"
+      eyebrow="Rovara"
+      footer={<p data-testid="no-company-invite">Have an invite? Open the link you were sent.</p>}
+    >
+      <PageHeader title="You're not in a company yet" description="Rovara works inside a company: its people, projects and rules." focusOnMount />
+      <div className="rv-auth-actions">
+        <Button variant="primary" data-testid="no-company-create" onClick={() => host.navigate("/app/create-company")}>Create your company</Button>
+      </div>
+    </AuthStage>
+  );
 }
 
 export function CreateCompanyScreen() {
@@ -33,7 +45,19 @@ export function CreateCompanyScreen() {
     } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Your company couldn't be created right now. Try again in a moment."); }
     finally { setBusy(false); }
   }
-  return <main className="rv-entry rv-onboarding-entry" data-testid="create-company"><p className="rv-eyebrow">Rovara</p><PageHeader title="Create your company" description="Name your company and enter the invite code the Rovara team gave you." focusOnMount /><form onSubmit={event => { event.preventDefault(); void create(); }}><TextField label="Company name" data-testid="create-company-name" value={name} maxLength={80} autoComplete="organization" onChange={event => setName(event.target.value)} /><TextField label="Invite code" data-testid="create-company-code" value={code} maxLength={128} autoComplete="off" spellCheck={false} onChange={event => setCode(event.target.value)} /><Button type="submit" variant="primary" data-testid="create-company-submit" busy={busy} disabled={!name.trim() || !code.trim()}>Create</Button></form>{error !== undefined && <p role="alert" data-testid="create-company-error"><VisibleText text={error} /></p>}</main>;
+  return (
+    <AuthStage testId="create-company" eyebrow="Rovara">
+      <PageHeader title="Create your company" description="Name your company and enter the invite code the Rovara team gave you." focusOnMount />
+      <form onSubmit={event => { event.preventDefault(); void create(); }}>
+        <TextField label="Company name" data-testid="create-company-name" value={name} maxLength={80} autoComplete="organization" onChange={event => setName(event.target.value)} />
+        <TextField label="Invite code" data-testid="create-company-code" value={code} maxLength={128} autoComplete="off" spellCheck={false} onChange={event => setCode(event.target.value)} />
+        <div className="rv-auth-actions">
+          <Button type="submit" variant="primary" data-testid="create-company-submit" busy={busy} disabled={!name.trim() || !code.trim()}>Create</Button>
+        </div>
+      </form>
+      {error !== undefined && <p className="rv-auth-notice" data-tone="danger" role="alert" data-testid="create-company-error"><VisibleText text={error} /></p>}
+    </AuthStage>
+  );
 }
 
 export function JoinScreen() {
@@ -48,8 +72,8 @@ export function JoinScreen() {
     host.lookUpInvite().then(found => { if (live) setState(found === undefined ? { kind: "unusable" } : { kind: "ready", company: found.companyName }); }, () => { if (live) setState({ kind: "unusable" }); });
     return () => { live = false; };
   }, [host, state.kind]);
-  if (state.kind === "loading") return <main className="rv-entry rv-onboarding-entry"><Skeleton label="Opening your invite" /></main>;
-  if (state.kind === "unusable") return <main className="rv-entry rv-onboarding-entry" data-testid="join"><p className="rv-eyebrow">Rovara</p><PageHeader title="This invite can't be used" focusOnMount /><p data-testid="join-unusable">{JOIN_UNUSABLE}</p></main>;
-  if (state.kind === "email-refused") return <main className="rv-entry rv-onboarding-entry" data-testid="join"><p className="rv-eyebrow">Rovara</p><PageHeader title={state.reason === "mismatch" ? "This invite is for another email" : "This sign-in has no verified email"} focusOnMount /><p data-testid="join-email-refused">Reopen the original invite link and sign in with the invited email.</p><p>Slack and GitHub may need you to choose the account that carries that email.</p></main>;
-  return <main className="rv-entry rv-onboarding-entry" data-testid="join"><p className="rv-eyebrow">Rovara</p><PageHeader title={`Join ${state.company} on Rovara`} focusOnMount /><Button variant="primary" data-testid="join-sign-in" onClick={() => host.signIn("/app", { join: true })}>Sign in to join</Button></main>;
+  if (state.kind === "loading") return <AuthStage eyebrow="Rovara"><Skeleton label="Opening your invite" /></AuthStage>;
+  if (state.kind === "unusable") return <AuthStage testId="join" eyebrow="Rovara"><PageHeader title="This invite can't be used" focusOnMount /><p className="rv-auth-notice" data-tone="danger" data-testid="join-unusable">{JOIN_UNUSABLE}</p></AuthStage>;
+  if (state.kind === "email-refused") return <AuthStage testId="join" eyebrow="Rovara"><PageHeader title={state.reason === "mismatch" ? "This invite is for another email" : "This sign-in has no verified email"} focusOnMount /><p className="rv-auth-notice" data-tone="warn" data-testid="join-email-refused">Reopen the original invite link and sign in with the invited email.</p><p className="rv-auth-message">Slack and GitHub may need you to choose the account that carries that email.</p></AuthStage>;
+  return <AuthStage testId="join" eyebrow="Rovara" footer={<p>Sign in with the email address your admin invited.</p>}><PageHeader title={`Join ${state.company} on Rovara`} focusOnMount /><div className="rv-auth-actions"><Button variant="primary" data-testid="join-sign-in" onClick={() => host.signIn("/app", { join: true })}>Sign in to join</Button></div></AuthStage>;
 }

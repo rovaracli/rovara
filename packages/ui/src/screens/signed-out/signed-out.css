@@ -1,0 +1,570 @@
+/* Sign-in and entry stage, inspired by rovara.dev's indigo night, warm sun accent and soft lavender paper. */
+.rv-auth-stage {
+  --rv-auth-night: #20265f;
+  --rv-auth-night-deep: #151945;
+  --rv-auth-night-border: rgb(213 216 247 / 0.16);
+  --rv-auth-night-surface: rgb(255 255 255 / 0.06);
+  --rv-auth-sun: #f3ea83;
+  --rv-auth-sun-hover: #fff494;
+  --rv-auth-sun-ink: #16192e;
+  --rv-auth-paper: #f4f3fb;
+  --rv-auth-card: #ffffff;
+  --rv-auth-card-border: #d9d7ed;
+  --rv-auth-card-shadow: 0 20px 50px rgb(18 28 72 / 0.09), 0 2px 8px rgb(18 28 72 / 0.04);
+  --rv-auth-ink: #171735;
+  --rv-auth-body: #474a6e;
+  --rv-auth-muted: #585b7d;
+  --rv-auth-divider: #e4e2f2;
+  --rv-auth-primary-bg: #20265f;
+  --rv-auth-primary-hover: #2d3580;
+  --rv-auth-primary-ink: #ffffff;
+  --rv-auth-secondary-bg: #ffffff;
+  --rv-auth-secondary-hover: #f4f3fb;
+  --rv-auth-secondary-border: #c5c2df;
+  --rv-auth-secondary-ink: #171735;
+  --rv-auth-info-bg: #eeecfa;
+  --rv-auth-info-border: #cfcbe8;
+  --rv-auth-info-ink: #20265f;
+  --rv-auth-warn-bg: #fdf5da;
+  --rv-auth-warn-border: #e5d28f;
+  --rv-auth-warn-ink: #664200;
+  --rv-auth-danger-bg: #fcebef;
+  --rv-auth-danger-border: #e8b5c0;
+  --rv-auth-danger-ink: #991f32;
+  --rv-auth-focus: #303b8b;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-columns: minmax(340px, 0.96fr) minmax(0, 1.04fr);
+  background: var(--rv-auth-paper);
+  color: var(--rv-auth-ink);
+  font-family: var(--rv-font-ui);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .rv-auth-stage {
+    --rv-auth-paper: #0e1021;
+    --rv-auth-card: #161932;
+    --rv-auth-card-border: #2a2f57;
+    --rv-auth-card-shadow: 0 24px 60px rgb(0 0 0 / 0.45);
+    --rv-auth-ink: #f4f4fc;
+    --rv-auth-body: #c4c7e4;
+    --rv-auth-muted: #a9add0;
+    --rv-auth-divider: #292e54;
+    --rv-auth-primary-bg: #f3ea83;
+    --rv-auth-primary-hover: #fff494;
+    --rv-auth-primary-ink: #16192e;
+    --rv-auth-secondary-bg: #1c2040;
+    --rv-auth-secondary-hover: #252b54;
+    --rv-auth-secondary-border: #3d4478;
+    --rv-auth-secondary-ink: #f4f4fc;
+    --rv-auth-info-bg: #202552;
+    --rv-auth-info-border: #38407a;
+    --rv-auth-info-ink: #e2e4fb;
+    --rv-auth-warn-bg: #352910;
+    --rv-auth-warn-border: #6b5420;
+    --rv-auth-warn-ink: #f5d887;
+    --rv-auth-danger-bg: #3d1822;
+    --rv-auth-danger-border: #7a3144;
+    --rv-auth-danger-ink: #ffb6c0;
+    --rv-auth-focus: #9bb9ff;
+  }
+}
+
+:root[data-theme="dark"] .rv-auth-stage {
+  --rv-auth-paper: #0e1021;
+  --rv-auth-card: #161932;
+  --rv-auth-card-border: #2a2f57;
+  --rv-auth-card-shadow: 0 24px 60px rgb(0 0 0 / 0.45);
+  --rv-auth-ink: #f4f4fc;
+  --rv-auth-body: #c4c7e4;
+  --rv-auth-muted: #a9add0;
+  --rv-auth-divider: #292e54;
+  --rv-auth-primary-bg: #f3ea83;
+  --rv-auth-primary-hover: #fff494;
+  --rv-auth-primary-ink: #16192e;
+  --rv-auth-secondary-bg: #1c2040;
+  --rv-auth-secondary-hover: #252b54;
+  --rv-auth-secondary-border: #3d4478;
+  --rv-auth-secondary-ink: #f4f4fc;
+  --rv-auth-info-bg: #202552;
+  --rv-auth-info-border: #38407a;
+  --rv-auth-info-ink: #e2e4fb;
+  --rv-auth-warn-bg: #352910;
+  --rv-auth-warn-border: #6b5420;
+  --rv-auth-warn-ink: #f5d887;
+  --rv-auth-danger-bg: #3d1822;
+  --rv-auth-danger-border: #7a3144;
+  --rv-auth-danger-ink: #ffb6c0;
+  --rv-auth-focus: #9bb9ff;
+}
+
+.rv-auth-brand {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 36px;
+  padding: clamp(28px, 4vw, 52px) clamp(28px, 4.5vw, 56px);
+  background:
+    radial-gradient(circle at 16% 10%, rgb(73 88 194 / 0.42), transparent 52%),
+    radial-gradient(circle at 86% 88%, rgb(243 234 131 / 0.11), transparent 46%),
+    linear-gradient(165deg, var(--rv-auth-night) 0%, var(--rv-auth-night-deep) 100%);
+  color: #f7f6fc;
+  overflow: hidden;
+}
+
+.rv-auth-brand-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.rv-auth-wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.045em;
+  line-height: 1;
+  color: #ffffff;
+}
+
+.rv-auth-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--rv-auth-sun);
+  color: var(--rv-auth-sun-ink);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.22);
+}
+
+.rv-auth-mark svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.rv-auth-env-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--rv-auth-night-border);
+  background: var(--rv-auth-night-surface);
+  color: #dfe2fc;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
+.rv-auth-env-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--rv-auth-sun);
+}
+
+.rv-auth-brand-body {
+  display: grid;
+  gap: 20px;
+  max-width: 470px;
+}
+
+.rv-auth-brand-eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #d5d8f7;
+}
+
+.rv-auth-brand-headline {
+  font-size: clamp(28px, 3vw, 42px);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.045em;
+  color: #ffffff;
+  text-wrap: balance;
+}
+
+.rv-auth-brand-headline span {
+  color: var(--rv-auth-sun);
+}
+
+.rv-auth-brand-copy {
+  font-size: 15px;
+  line-height: 1.6;
+  color: #d8dbf7;
+  max-width: 44ch;
+}
+
+/* Mini workflow preview echoing rovara.dev's task walkthrough stage. */
+.rv-auth-preview {
+  margin-top: 8px;
+  padding: 20px;
+  border-radius: 12px;
+  border: 1px solid var(--rv-auth-night-border);
+  background: rgb(255 255 255 / 0.065);
+  box-shadow: 0 14px 32px rgb(9 12 36 / 0.28);
+  display: grid;
+  gap: 14px;
+}
+
+.rv-auth-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgb(213 216 247 / 0.14);
+}
+
+.rv-auth-preview-task {
+  display: grid;
+  gap: 2px;
+}
+
+.rv-auth-preview-task strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.rv-auth-preview-task span {
+  font-size: 12px;
+  color: #c6c9eb;
+}
+
+.rv-auth-preview-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgb(243 234 131 / 0.16);
+  border: 1px solid rgb(243 234 131 / 0.34);
+  color: var(--rv-auth-sun);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rv-auth-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 11px;
+}
+
+.rv-auth-step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.rv-auth-step-num {
+  font-family: var(--rv-font-mono);
+  font-size: 12px;
+  color: #b7bce8;
+  padding-top: 2px;
+}
+
+.rv-auth-step-text {
+  display: grid;
+  gap: 2px;
+}
+
+.rv-auth-step-text strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f7f6fc;
+}
+
+.rv-auth-step-text span {
+  font-size: 12px;
+  color: #c9ccee;
+  line-height: 1.45;
+}
+
+.rv-auth-step-state {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  margin-top: 1px;
+}
+
+.rv-auth-step-state[data-state="done"] {
+  background: rgb(126 214 156 / 0.18);
+  color: #8ee0aa;
+}
+
+.rv-auth-step-state[data-state="ready"] {
+  background: rgb(243 234 131 / 0.18);
+  color: var(--rv-auth-sun);
+}
+
+.rv-auth-step-state svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+
+.rv-auth-brand-foot {
+  font-size: 12px;
+  color: #c2c6e8;
+  letter-spacing: 0.01em;
+}
+
+/* Right authentication card panel */
+.rv-auth-panel {
+  display: grid;
+  place-items: center;
+  padding: clamp(24px, 4vw, 56px) clamp(16px, 4vw, 48px);
+}
+
+.rv-auth-card {
+  width: min(440px, 100%);
+  padding: clamp(28px, 3.6vw, 40px);
+  border-radius: 14px;
+  border: 1px solid var(--rv-auth-card-border);
+  background: var(--rv-auth-card);
+  box-shadow: var(--rv-auth-card-shadow);
+  display: grid;
+  gap: 20px;
+}
+
+.rv-auth-card-head {
+  display: grid;
+  gap: 10px;
+}
+
+.rv-auth-card-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rv-auth-muted);
+}
+
+.rv-auth-card h1 {
+  font-size: 28px;
+  line-height: 1.18;
+  letter-spacing: -0.035em;
+  font-weight: 600;
+  color: var(--rv-auth-ink);
+  margin: 0;
+  outline: none;
+}
+
+.rv-auth-card .rv-page-header {
+  margin-bottom: 0;
+}
+
+.rv-auth-card .rv-page-header h1 {
+  font-size: 28px;
+  line-height: 1.18;
+  letter-spacing: -0.035em;
+  color: var(--rv-auth-ink);
+}
+
+.rv-auth-card .rv-page-header p {
+  margin-top: 8px;
+  color: var(--rv-auth-body);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.rv-auth-message {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--rv-auth-body);
+}
+
+.rv-auth-notice {
+  padding: 12px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--rv-auth-info-border);
+  background: var(--rv-auth-info-bg);
+  color: var(--rv-auth-info-ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.rv-auth-notice[data-tone="warn"] {
+  border-color: var(--rv-auth-warn-border);
+  background: var(--rv-auth-warn-bg);
+  color: var(--rv-auth-warn-ink);
+}
+
+.rv-auth-notice[data-tone="danger"] {
+  border-color: var(--rv-auth-danger-border);
+  background: var(--rv-auth-danger-bg);
+  color: var(--rv-auth-danger-ink);
+}
+
+/* Sign-in button stack */
+.rv-auth-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.rv-auth-actions .rv-button-with-reason {
+  display: block;
+  width: 100%;
+}
+
+.rv-auth-actions .rv-button {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 18px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  gap: 10px;
+  transition: background 150ms ease, border-color 150ms ease, transform 120ms ease;
+}
+
+.rv-auth-actions .rv-button:active:enabled {
+  transform: translateY(1px);
+}
+
+.rv-auth-actions .rv-button.rv-button-primary {
+  background: var(--rv-auth-primary-bg);
+  border-color: var(--rv-auth-primary-bg);
+  color: var(--rv-auth-primary-ink);
+}
+
+.rv-auth-actions .rv-button.rv-button-primary:hover:enabled {
+  background: var(--rv-auth-primary-hover);
+  border-color: var(--rv-auth-primary-hover);
+}
+
+.rv-auth-actions .rv-button.rv-button-secondary {
+  background: var(--rv-auth-secondary-bg);
+  border-color: var(--rv-auth-secondary-border);
+  color: var(--rv-auth-secondary-ink);
+}
+
+.rv-auth-actions .rv-button.rv-button-secondary:hover:enabled {
+  background: var(--rv-auth-secondary-hover);
+}
+
+.rv-auth-actions .rv-button:focus-visible {
+  outline: 2px solid var(--rv-auth-focus);
+  outline-offset: 2px;
+}
+
+.rv-signin-choices {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.rv-signin-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: block;
+}
+
+.rv-signin-alt {
+  margin: 2px 0 0;
+  text-align: center;
+}
+
+.rv-signin-alt .rv-button-with-reason {
+  display: inline-flex;
+  width: auto;
+}
+
+.rv-signin-alt .rv-button.rv-button-quiet {
+  width: auto;
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--rv-auth-muted);
+  font-size: 13px;
+}
+
+.rv-signin-alt .rv-button.rv-button-quiet:hover:enabled {
+  color: var(--rv-auth-ink);
+  background: var(--rv-auth-secondary-hover);
+}
+
+.rv-auth-meta {
+  display: grid;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rv-auth-divider);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--rv-auth-muted);
+}
+
+.rv-auth-meta p {
+  margin: 0;
+}
+
+.rv-auth-card form {
+  display: grid;
+  gap: 4px;
+}
+
+.rv-auth-card .rv-field label {
+  color: var(--rv-auth-ink);
+}
+
+.rv-auth-card .rv-input {
+  height: 42px;
+  border-radius: 8px;
+}
+
+/* Tablet and mobile: indigo header band above centered card (echoing rovara.dev's top band). */
+@media (max-width: 900px) {
+  .rv-auth-stage {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+  }
+
+  .rv-auth-brand {
+    padding: 20px 24px 24px;
+    gap: 14px;
+  }
+
+  .rv-auth-brand-headline {
+    font-size: 24px;
+  }
+
+  .rv-auth-brand-eyebrow,
+  .rv-auth-brand-copy,
+  .rv-auth-preview,
+  .rv-auth-brand-foot {
+    display: none;
+  }
+
+  .rv-auth-panel {
+    align-items: start;
+    padding: 28px 16px 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rv-auth-actions .rv-button {
+    transition: none;
+  }
+  .rv-auth-actions .rv-button:active:enabled {
+    transform: none;
+  }
+}

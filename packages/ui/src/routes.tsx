@@ -1,7 +1,7 @@
 import { HomeScreen } from "./screens/home/HomeScreen.js";
-import { Navigate, useLocation, useParams, useSearchParams, type RouteObject } from "react-router";
+import { Navigate, useLocation, useParams, type RouteObject } from "react-router";
 import { type AppNav } from "@agentx/contracts/web";
-import { SignInChoices } from "./screens/signed-out/SignInChoices.js";
+import { SignedOutRoute } from "./screens/signed-out/SignedOutRoute.js";
 import { AppShell } from "./shell/AppShell.js";
 import { NotFound } from "./shell/NotFound.js";
 import { RouteError } from "./shell/ErrorBoundary.js";
@@ -9,11 +9,6 @@ import { companyAdminReadRoute, type CompanyAdminReadPath } from "./routes/compa
 import { accountSetupReadRoutes } from "./routes/account-setup-read-routes.js";
 import { companyMoneyAiReadRoute, type CompanyMoneyAiReadPath } from "./routes/company-money-ai-read-routes.js";
 function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>{title}</h1></section>; }
-function SignedOut() {
- const [params] = useSearchParams();
- const reason = params.get("reason"), message = reason === "removed" ? "Your access to this organization ended." : reason === "failed" ? "We couldn't finish signing you in. Try again." : reason === "cancelled" ? "Sign-in was cancelled." : "You've signed out.";
- return <main className="rv-entry" data-testid="signed-out"><h1 tabIndex={-1}>Sign in to Rovara</h1><p data-testid="signed-out-message">{message}</p><SignInChoices returnPath="/app" /></main>;
-}
 // Preserve supported URL context while retiring the competing editors.
 function ModelSettingsRedirect({ section }: { section?: string }) {
  const { section: oldSection } = useParams(), location = useLocation();
@@ -83,5 +78,5 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  if (features.chains) children.push({ path: "chains/*", element: <Page title="Chains" /> });
  if (features.describe) children.push({ path: "describe", element: <Page title="Describe an agent" /> });
  children.push({ path: "*", element: <NotFound /> });
- return [{ path: "/t/:taskId", element: <AppShell />, errorElement: <RouteError />, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/session/OpenTaskScreen.js")).OpenTaskScreen }) }] }, { path: "/s/:id", element: <AppShell />, errorElement: <RouteError />, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) }] }, { path: "/app/signup", lazy: async () => ({ Component: (await import("./screens/onboarding/SignupScreen.js")).SignupScreen }), errorElement: <RouteError /> }, { path: "/app/welcome", lazy: async () => ({ Component: (await import("./screens/onboarding/WelcomeScreen.js")).WelcomeScreen }), errorElement: <RouteError /> }, { path: "/app/signed-out", element: <SignedOut />, errorElement: <RouteError /> }, { path: "/app/no-company", lazy: async () => ({ Component: (await import("./screens/onboarding/CompanyScreens.js")).NoCompanyScreen }), errorElement: <RouteError /> }, { path: "/app/create-company", lazy: async () => ({ Component: (await import("./screens/onboarding/CompanyScreens.js")).CreateCompanyScreen }), errorElement: <RouteError /> }, { path: "/app/join", lazy: async () => ({ Component: (await import("./screens/onboarding/CompanyScreens.js")).JoinScreen }), errorElement: <RouteError /> }, { path: "/app", element: <AppShell />, errorElement: <RouteError />, children }, { path: "*", element: <NotFound /> }];
+ return [{ path: "/t/:taskId", element: <AppShell />, errorElement: <RouteError />, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/session/OpenTaskScreen.js")).OpenTaskScreen }) }] }, { path: "/s/:id", element: <AppShell />, errorElement: <RouteError />, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) }] }, { path: "/app/signup", lazy: async () => ({ Component: (await import("./screens/onboarding/SignupScreen.js")).SignupScreen }), errorElement: <RouteError /> }, { path: "/app/welcome", lazy: async () => ({ Component: (await import("./screens/onboarding/WelcomeScreen.js")).WelcomeScreen }), errorElement: <RouteError /> }, { path: "/app/signed-out", element: <SignedOutRoute />, errorElement: <RouteError /> }, { path: "/app/no-company", lazy: async () => ({ Component: (await import("./screens/onboarding/CompanyScreens.js")).NoCompanyScreen }), errorElement: <RouteError /> }, { path: "/app/create-company", lazy: async () => ({ Component: (await import("./screens/onboarding/CompanyScreens.js")).CreateCompanyScreen }), errorElement: <RouteError /> }, { path: "/app/join", lazy: async () => ({ Component: (await import("./screens/onboarding/CompanyScreens.js")).JoinScreen }), errorElement: <RouteError /> }, { path: "/app", element: <AppShell />, errorElement: <RouteError />, children }, { path: "*", element: <NotFound /> }];
 }
