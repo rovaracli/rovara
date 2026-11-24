@@ -8,6 +8,10 @@ import { applyAgentOwnKeyBackfill, planAgentOwnKeyBackfill } from "../packages/m
 const { values } = parseArgs({ options: {
   region: { type: "string" }, issuer: { type: "string" }, "company-table": { type: "string" }, "product-table": { type: "string" },
   "release-stack": { type: "string" }, "lookup-role": { type: "string" }, apply: { type: "boolean", default: false }, "dry-run": { type: "boolean", default: false }, check: { type: "boolean", default: false },
+  // Rovara-cloud#313: the operator's verified result, kept where the release pipeline's read-only lookup role can read it (an SSM String
+  // parameter). --record writes it after a run with zero candidates; the release check (--marker) reads it instead of scanning tables
+  // the lookup role may not decrypt.
+  record: { type: "string" }, marker: { type: "string" },
 } });
 const aws = (args, env = process.env) => JSON.parse(execFileSync("aws", [...args, "--region", values.region, "--output", "json", "--no-cli-pager"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env, maxBuffer: 16 * 1024 * 1024 }));
 // Match Cloud and the gateway exactly, without normalizing the stored partition's issuer.
@@ -15,11 +19,24 @@ function installedIssuer(codeUrl) {
   if (typeof codeUrl !== "string" || !/^https:\/\/[^/\s?#@]+$/u.test(codeUrl) || !new URL(codeUrl).hostname) throw new Error("unreadable installed issuer");
   return `${codeUrl}/v1/auth`;
 }
+const DECISION = "DEC254zzz279";
+/** An SSM parameter under the environment's own /rovara-cloud/<env>/ path. */
+const MARKER = /^\/rovara-cloud\/[a-z][a-z0-9-]{0,30}\/release-checks\/[a-z0-9-]{1,60}$/u;
+/** The recorded result names exactly this install's issuer and tables, zero pending companies, and a real time. */
+function recordMatches(recorded, scope) {
+  return recorded !== null && typeof recorded === "object" && !Array.isArray(recorded) && recorded.decision === DECISION && recorded.count === 0
+    && recorded.issuer === scope.issuer && recorded.companyTable === scope.companyTable && recorded.productTable === scope.productTable
+    && Number.isSafeInteger(recorded.scannedCompanies) && recorded.scannedCompanies >= 0
+    && typeof recorded.checkedAt === "string" && Number.isFinite(Date.parse(recorded.checkedAt)) && new Date(recorded.checkedAt).toISOString() === recorded.checkedAt;
+}
 try {
   if (!values.region || (values.apply && (values.check || values["dry-run"] || values["release-stack"]))) throw new Error("invalid arguments");
+  for (const name of [values.record, values.marker]) if (name !== undefined && !MARKER.test(name)) throw new Error("invalid marker name");
+  if (values.marker !== undefined && !values["release-stack"]) throw new Error("invalid marker scope");
+  if (values.record !== undefined && values["release-stack"]) throw new Error("invalid record scope");
   let issuer = values.issuer, companyTable = values["company-table"], productTable = values["product-table"], env = process.env;
   if (values["release-stack"]) {
-    if (!values.check || !values["lookup-role"] || issuer || companyTable || productTable) throw new Error("invalid release scope");
+    if (!values.check || !values["lookup-role"] || !values.marker || issuer || companyTable || productTable) throw new Error("invalid release scope");
     const credentials = aws(["sts", "assume-role", "--role-arn", values["lookup-role"], "--role-session-name", "c1-required-backfill"]).Credentials;
     if (!credentials?.AccessKeyId || !credentials.SecretAccessKey || !credentials.SessionToken) throw new Error("lookup role unavailable");
     env = { ...process.env, AWS_ACCESS_KEY_ID: credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: credentials.SecretAccessKey, AWS_SESSION_TOKEN: credentials.SessionToken };
@@ -28,6 +45,13 @@ try {
     issuer = installedIssuer(stack?.Parameters?.find(p => p.ParameterKey === "CodeUrl")?.ParameterValue);
     productTable = stack?.Parameters?.find(p => p.ParameterKey === "ProductKeysTableName")?.ParameterValue;
     companyTable = stack?.Outputs?.find(o => o.OutputKey === "CompanyTableName")?.OutputValue;
+    // Rovara-cloud#313: the lookup role is denied kms:Decrypt, so it can't scan these tables. The release reads the operator's recorded
+    // result instead (--record), which must name this stack's own issuer and tables and zero pending companies.
+    if (!issuer || !companyTable || !productTable) throw new Error("missing backfill scope");
+    const recorded = JSON.parse(aws(["ssm", "get-parameter", "--name", values.marker], env).Parameter?.Value ?? "null");
+    if (!recordMatches(recorded, { issuer, companyTable, productTable })) throw new Error("required own-key backfill is not recorded for this install");
+    console.log(`C-1 REQUIRED RELEASE STEP PASS (recorded ${recorded.checkedAt}, ${String(recorded.scannedCompanies)} companies checked)`);
+    process.exit(0);
   } else if (values["lookup-role"]) throw new Error("invalid role scope");
   if (!issuer || !companyTable || !productTable || companyTable === productTable) throw new Error("missing backfill scope");
   if (!issuer.endsWith("/v1/auth") || installedIssuer(issuer.slice(0, -"/v1/auth".length)) !== issuer) throw new Error("invalid issuer scope");
@@ -62,7 +86,7 @@ try {
   const input = { db, companyTable, productTable, issuer, companies: [...companies] };
   const plan = await planAgentOwnKeyBackfill(input);
   // Only company ids and source names, never credential metadata or secret material.
-  console.log(JSON.stringify({ decision: "DEC254zzz279", mode: "dry-run", issuer, companyTable, productTable, scannedCompanies: companies.size, count: plan.candidates.length, companies: plan.candidates.map(({ companyId, source }) => ({ companyId, source })) }));
+  console.log(JSON.stringify({ decision: DECISION, mode: "dry-run", issuer, companyTable, productTable, scannedCompanies: companies.size, count: plan.candidates.length, companies: plan.candidates.map(({ companyId, source }) => ({ companyId, source })) }));
   if (values.check && plan.candidates.length !== 0) throw new Error("required own-key backfill is pending");
   if (values.apply) {
     const result = await applyAgentOwnKeyBackfill(input, plan);
@@ -72,6 +96,13 @@ try {
     if (remaining.candidates.length !== 0) throw new Error("required own-key backfill is pending");
     console.log("C-1 BACKFILL PASS: re-run has zero candidates");
   } else if (values.check) console.log("C-1 REQUIRED RELEASE STEP PASS");
+  if (values.record !== undefined) {
+    // Only reached with zero candidates (a pending plan without --apply is recorded as nothing). Identifiers and counts only.
+    if (!values.apply && plan.candidates.length !== 0) throw new Error("required own-key backfill is pending");
+    const value = JSON.stringify({ decision: DECISION, issuer, companyTable, productTable, scannedCompanies: companies.size, count: 0, checkedAt: new Date().toISOString() });
+    aws(["ssm", "put-parameter", "--name", values.record, "--type", "String", "--overwrite", "--value", value]);
+    console.log(`C-1 RESULT RECORDED in ${values.record}`);
+  }
 } catch {
   // AWS/metadata errors may contain customer details. Never echo their causes.
   console.error("C-1 backfill refused or incomplete. Check scope, permissions and the dry-run; release is blocked.");

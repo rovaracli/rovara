@@ -47,7 +47,8 @@ process.on("exit", () => writeFileSync(${JSON.stringify(state)}, JSON.stringify(
 const issuer = "https://code.example.test/v1/auth";
 const A = `org_${"a".repeat(20)}`, B = `org_${"b".repeat(20)}`;
 const scope = ["--region", "us-east-1", "--issuer", issuer, "--company-table", "companies", "--product-table", "product-keys"];
-const release = ["--region", "us-east-1", "--check", "--release-stack", "cloud-web", "--lookup-role", "arn:aws:iam::123456789012:role/lookup"];
+const MARKER = "/rovara-cloud/test/release-checks/agent-own-key-backfill";
+const release = ["--region", "us-east-1", "--check", "--release-stack", "cloud-web", "--lookup-role", "arn:aws:iam::123456789012:role/lookup", "--marker", MARKER];
 const stack = (codeUrl: unknown = "https://code.example.test") => ({ value: { Stacks: [{ Parameters: [{ ParameterKey: "CodeUrl", ParameterValue: codeUrl }, { ParameterKey: "ProductKeysTableName", ParameterValue: "product-keys" }], Outputs: [{ OutputKey: "CompanyTableName", OutputValue: "companies" }] }] } });
 const role = { value: { Credentials: { AccessKeyId: "LOOKUP", SecretAccessKey: "not-real", SessionToken: "not-real" } } };
 const empty = { value: { Items: [] } };
@@ -86,39 +87,72 @@ describe("C-1 operator command and required release preflight", () => {
       expect(result.status).toBe(1); expect(result.stdout).not.toContain("PASS");
     }
   });
-  it("the installed release checks the stack's own tables and issuer through its read-only lookup role", () => {
-    const result = run(release, [role, stack(), empty, empty]);
-    expect(result.status).toBe(0); expect(result.stdout).toContain("C-1 REQUIRED RELEASE STEP PASS");
-    expect(result.calls.map((call) => call.slice(0, 2))).toEqual([["sts", "assume-role"], ["cloudformation", "describe-stacks"], ["dynamodb", "scan"], ["dynamodb", "scan"]]);
-    expect(result.stdout).toContain(issuer);
+  // Rovara-cloud#313: the release pipeline's lookup role is denied kms:Decrypt, so the release reads the operator's recorded result.
+  const recorded = (over: Record<string, unknown> = {}) => ({ value: { Parameter: { Name: MARKER, Type: "String", Value: JSON.stringify({ decision: "DEC254zzz279", issuer, companyTable: "companies", productTable: "product-keys", scannedCompanies: 3, count: 0, checkedAt: "2026-11-24T12:30:00.000Z", ...over }) } } });
+  it("the installed release reads the recorded result through its read-only lookup role, scanning no table", () => {
+    const result = run(release, [role, stack(), recorded()]);
+    expect(result.status).toBe(0); expect(result.stdout).toContain("C-1 REQUIRED RELEASE STEP PASS (recorded 2026-11-24T12:30:00.000Z, 3 companies checked)");
+    expect(result.calls.map((call) => call.slice(0, 2))).toEqual([["sts", "assume-role"], ["cloudformation", "describe-stacks"], ["ssm", "get-parameter"]]);
+    expect(result.calls[2]).toContain(MARKER);
+    expect(result.offline.calls).toEqual([]);
     expect(result.stdout).not.toContain("LOOKUP");
   });
-  it("M-1: cross-account stack discovery and both table scans use the deploy lookup credentials", () => {
-    const result = run(release, [{ ...role, accessKey: "TEST" }, { ...stack(), accessKey: "LOOKUP" }, { ...empty, accessKey: "LOOKUP" }, { ...empty, accessKey: "LOOKUP" }]);
+  it("M-1: cross-account stack discovery and the recorded result use the deploy lookup credentials", () => {
+    const result = run(release, [{ ...role, accessKey: "TEST" }, { ...stack(), accessKey: "LOOKUP" }, { ...recorded(), accessKey: "LOOKUP" }]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("C-1 REQUIRED RELEASE STEP PASS");
     expect(result.calls[0]).toContain("arn:aws:iam::123456789012:role/lookup");
   });
-  it("the populated release check reads CodeUrl + /v1/auth and blocks every pending company", () => {
-    const row = connected(A);
-    const result = run(release, [role, stack(), { value: { Items: [{ pk: { S: `COMPANY#${A}` } }] } }, identifiers([row])], [row]);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('"count":1');
-    expect(result.stdout).toContain(`"companyId":"${A}"`);
-    expect(result.stdout).not.toContain("PASS");
-    expect(result.offline.calls.flatMap(call => call.keys).filter(key => key.sk.startsWith("doc#")).every(key => key.pk === `CO#["https://code.example.test/v1/auth","${A}"]`)).toBe(true);
+  it("blocks release when nothing is recorded, or the record is for another install, is pending, or is malformed", () => {
+    const bad = [
+      { error: "(ParameterNotFound) private-response-never-echo" },
+      recorded({ issuer: "https://other.example.test/v1/auth" }), recorded({ companyTable: "other-companies" }), recorded({ productTable: "other-keys" }),
+      recorded({ count: 1 }), recorded({ decision: "other" }), recorded({ checkedAt: "yesterday" }), recorded({ scannedCompanies: -1 }),
+      { value: { Parameter: { Value: "not json" } } }, { value: { Parameter: { Value: "[]" } } }, { value: {} },
+    ];
+    for (const reply of bad) {
+      const result = run(release, [role, stack(), reply]);
+      expect(result.status, JSON.stringify(reply)).toBe(1);
+      expect(result.stdout).not.toContain("PASS");
+      expect(result.stderr).not.toContain("private-response-never-echo");
+    }
   });
   it("refuses missing or malformed installed issuers instead of checking an empty partition", () => {
     for (const codeUrl of [undefined, "", "http://code.example.test", "https://code.example.test/wrong", "https://code.example.test?wrong", "not-a-url"]) {
-      const result = run(release, [role, stack(codeUrl === undefined ? null : codeUrl), empty, empty]);
+      const result = run(release, [role, stack(codeUrl === undefined ? null : codeUrl), recorded()]);
       expect(result.status, String(codeUrl)).toBe(1);
       expect(result.stdout).not.toContain("PASS");
     }
   });
-  it("blocks release on unreadable installed metadata without leaking the error", () => {
-    const result = run(release, [role, stack(), { value: { Items: [{ pk: { S: `COMPANY#${A}` } }] } }, empty], [], true);
-    expect(result.status).toBe(1); expect(result.stdout).not.toContain("PASS");
-    expect(result.stderr).not.toContain("private-response-never-echo");
+  it("a release check needs the marker, and the marker and record each belong to their own scope", () => {
+    const refused = [
+      ["--region", "us-east-1", "--check", "--release-stack", "cloud-web", "--lookup-role", "arn:aws:iam::123456789012:role/lookup"],
+      [...scope, "--marker", MARKER],
+      [...release, "--record", MARKER],
+      [...scope, "--record", "/somewhere/else"],
+      [...scope, "--record", "/rovara-cloud/test/web/origin"],
+    ];
+    for (const args of refused) {
+      const result = run(args);
+      expect(result.status, args.join(" ")).toBe(1);
+      expect(result.calls, args.join(" ")).toEqual([]);
+    }
+  });
+  it("the operator records a zero-candidate result (identifiers and counts only), and never a pending one", () => {
+    const rows = [connected(A)];
+    const done = run([...scope, "--dry-run", "--record", MARKER], [empty, empty, { value: { Version: 1 } }]);
+    expect(done.status).toBe(0);
+    expect(done.stdout).toContain(`C-1 RESULT RECORDED in ${MARKER}`);
+    const put = done.calls.find(call => call[0] === "ssm")!;
+    expect(put.slice(0, 2)).toEqual(["ssm", "put-parameter"]);
+    expect(put).toEqual(expect.arrayContaining(["--name", MARKER, "--type", "String", "--overwrite"]));
+    const value = JSON.parse(put[put.indexOf("--value") + 1]!) as Record<string, unknown>;
+    expect(value).toMatchObject({ decision: "DEC254zzz279", issuer, companyTable: "companies", productTable: "product-keys", scannedCompanies: 0, count: 0 });
+    expect(Object.keys(value).sort()).toEqual(["checkedAt", "companyTable", "count", "decision", "issuer", "productTable", "scannedCompanies"]);
+    const pending = run([...scope, "--dry-run", "--record", MARKER], [{ value: { Items: [{ pk: { S: `COMPANY#${A}` } }] } }, identifiers(rows)], rows);
+    expect(pending.status).toBe(1);
+    expect(pending.calls.some(call => call[0] === "ssm")).toBe(false);
+    expect(pending.stdout).not.toContain("RECORDED");
   });
   it("discovers metadata-only Anthropic and Bedrock companies on every page for preview, apply and the zero-candidate check", () => {
     const rows = [connected(A), connected(B, "bedrock")];
