@@ -3,15 +3,19 @@
 import { createElement as h } from "react";
 import { expect, it } from "vitest";
 import { screen } from "@testing-library/react";
-import { sanitizeSetupProposal } from "@agentx/contracts";
 import type { SetupAgentView } from "@agentx/contracts/web";
 import { PartialProposal } from "../../packages/ui/src/screens/setup/PartialProposal.js";
 import { renderUi } from "./support/render.js";
 
-const read = sanitizeSetupProposal({ setup: [{ repo: "web", commands: ["npm ci"], confidence: "medium", from: [{ kind: "inferred", repo: "web", note: "worked when run" }] }], tests: [{ repo: "web", commands: ["npm test"], from: [{ kind: "inferred", repo: "web", note: "worked when run" }] }], notes: "" }, { basedOnRevision: 1, repositories: [{ name: "web" }] });
-if (!read.ok) throw new Error("fixture");
+// The proposal as Code stores it after its reader ran (written out here: Cloud no longer carries Code's reader).
+const proposal = {
+  version: 2, basedOnRevision: 1, repositories: [],
+  setup: [{ id: "setup-web", value: { repo: "web", commands: ["npm ci"] }, from: [{ kind: "inferred", repo: "web", note: "worked when run" }], confidence: "medium", risk: "safe" }],
+  tests: [{ id: "tests-web", value: { repo: "web", commands: ["npm test"] }, from: [{ kind: "inferred", repo: "web", note: "worked when run" }], confidence: "low", risk: "safe" }],
+  checks: [], testEnvironment: [], knowledge: [], sources: [], intake: [], allowedDomains: [], secretsNeeded: [], flaggedCommands: [], foundNotUsed: [], notes: "",
+};
 const view = (over: Partial<SetupAgentView> = {}): SetupAgentView & { proposal: NonNullable<SetupAgentView["proposal"]>; stoppedBy: NonNullable<SetupAgentView["stoppedBy"]> } => ({
-  status: "failed", basedOnRevision: 1, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, stop: "stopped_by_person", proposal: read.proposal,
+  status: "failed", basedOnRevision: 1, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, stop: "stopped_by_person", proposal,
   stoppedBy: { name: "Maya Chen", at: "2026-11-02T10:00:00.000Z" }, verification: { "setup-web": "verified" }, verified: true, ...over,
 } as never);
 

@@ -25,7 +25,6 @@ import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ProjectScopeContext } from "../../packages/ui/src/screens/admin/admin-context.js";
 import { SignInClientsScreen } from "../../packages/ui/src/screens/admin/access/SignInClientsScreen.js";
-import { TaskStopEnforcement } from "../../packages/ui/src/screens/admin/TaskStopEnforcement.js";
 import { ReadSection, checkedTime } from "../../packages/ui/src/screens/admin/models/read.js";
 import { ReadState } from "../../packages/ui/src/screens/admin/projects/read.js";
 import { localWhenWords, whenWords } from "../../packages/ui/src/screens/session/DecisionsCard.js";
@@ -47,12 +46,6 @@ it("renders sign-in-client dates in both viewer zones", async () => {
  await inViewerZones(async expected => {
   const f = mountScreen(h(SignInClientsScreen), () => ({ status: 200, body: { clients: [{ clientId: "test", name: "Test client", kind: "web", createdAt: VIEWER_INSTANT, lastUsedAt: VIEWER_INSTANT }] } }));
   try { await screen.findByText("Test client");expect(f.container.textContent?.split(expected.date)).toHaveLength(3); } finally { f.close(); }
- });
-});
-it("renders enforcement preview time in both viewer zones", async () => {
- await inViewerZones(async expected => {
-  const f = mountScreen(h(TaskStopEnforcement, { orgId: scope.orgId, checking: false }), request => ({ status: 200, body: request.method === "GET" ? { orgId: scope.orgId, revision: 1, state: "disabled" } : { orgId: scope.orgId, revision: 1, reviewId: "11111111-1111-4111-8111-111111111111", digest: "a".repeat(64), complete: true, capturedAt: VIEWER_INSTANT, expiresAt: "2026-11-23T01:30:00.000Z", tasks: [], truncated: false, counts: { refuse_next_admission: 0, new_window_at_stop: 0, retain_current_window: 0, exempt: 0 } } }));
-  try { expect(await screen.findByText(`As of ${expected.timestamp}. Work can start or finish after this preview.`)).toBeTruthy(); } finally { f.close(); }
  });
 });
 it("renders decision and setup-expiry words in both viewer zones", async () => {
@@ -171,7 +164,6 @@ it("keeps an unreadable request instant visible rather than inventing a local da
 it("keeps an unreadable task-page decision instant visible", () => {
  expect(localWhenWords("not-a-recorded-instant")).toBe("not-a-recorded-instant");
 });
-
 
 import { BedrockConnection } from "../../packages/ui/src/screens/admin/ai-spending/BedrockConnection.js";
 import { Clock } from "../../packages/ui/src/screens/session/merge-parts.js";

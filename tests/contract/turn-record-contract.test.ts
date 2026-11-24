@@ -7,59 +7,6 @@ const redactText = (text: string): string => {
   expect(redactOnce(once), `redacting the output again: ${text}`).toBe(once);
   return once;
 };
-import {
-  EMPTY_TURN_OBSERVATION,
-  TURN_TEXT_LIMIT,
-  TurnRecordSchema,
-  capText,
-  redactAndCap,
-  turnRecordKeys,
-  type TurnRecord,
-} from "../../packages/contracts/src/turns.js";
-import { TURN_ARGUMENT_LIMIT, redactArguments } from "../../packages/contracts/src/turns.js";
-import { AiToolTurnRecordSchema, aiToolTurnRecordKeys, isSlackTurnRecord, type AiToolTurnRecord } from "../../packages/contracts/src/turns.js";
-
-const record: TurnRecord = {
-  ...EMPTY_TURN_OBSERVATION,
-  eventId: "EvTURN00001",
-  subject: "T0123456789/C0123456789/1695500000.000001",
-  receivedAt: "2026-09-24T10:00:00.000Z",
-  requestedBy: { teamId: "T0123456789", userId: "U0123456789" },
-  disposition: "answered",
-  startedAt: "2026-09-24T10:00:01.000Z",
-  finishedAt: "2026-09-24T10:00:03.500Z",
-  durationMs: 2_500,
-  requestText: "list open issues",
-  responseText: "There are no open issues.",
-};
-
-describe("turn record contract", () => {
-  it("accepts a minimal record and refuses unknown fields", () => {
-    expect(TurnRecordSchema.parse(record)).toEqual(record);
-    expect(TurnRecordSchema.safeParse({ ...record, secret: "x" }).success).toBe(false);
-  });
-
-  it("refuses text over the limit and more than 50 calls", () => {
-    expect(TurnRecordSchema.safeParse({ ...record, requestText: "a".repeat(TURN_TEXT_LIMIT + 1) }).success).toBe(false);
-    const call = { name: "agentx_submit_task", arguments: "{}", argumentsFingerprint: "a".repeat(32), validation: "ok", outcome: "SUCCEEDED", durationMs: 1 };
-    expect(TurnRecordSchema.safeParse({ ...record, calls: Array.from({ length: 51 }, () => call) }).success).toBe(false);
-  });
-
-  it("caps text and says so", () => {
-    expect(capText("abc", 2)).toEqual({ text: "ab", truncated: true });
-    expect(capText("abc", 3)).toEqual({ text: "abc", truncated: false });
-  });
-
-  it("keys a record by thread and Slack receive time, expiring 30 days later", () => {
-    expect(turnRecordKeys(record)).toEqual({
-      pk: "THREAD#T0123456789/C0123456789/1695500000.000001",
-      sk: "TURN#2026-09-24T10:00:00.000Z#EvTURN00001",
-      exportPk: "TURNS",
-      exportSk: "2026-09-24T10:00:00.000Z#EvTURN00001",
-      expiresAt: Date.parse("2026-09-24T10:00:00.000Z") / 1000 + 30 * 86_400,
-    });
-  });
-});
 
 describe("secret redaction", () => {
   it.each([
@@ -220,25 +167,6 @@ describe("secret redaction", () => {
   });
 });
 
-describe("capText and redactAndCap", () => {
-  it("does not split a surrogate pair when capping", () => {
-    const text = "hi\u{1F600}!";
-    expect(capText(text, 3)).toEqual({ text: "hi", truncated: true });
-  });
-
-  it("redacts before capping so a truncated secret cannot leak", () => {
-    const secret = `ghp_${"a".repeat(40)}`;
-    const text = `please use ${secret} now`;
-    const limit = 20;
-
-    const capThenRedact = redactText(capText(text, limit).text);
-    expect(capThenRedact).toBe("please use ghp_aaaaa");
-
-    const result = redactAndCap(text, limit);
-    expect(result.text).not.toContain("aaaaa");
-  });
-});
-
 describe("secret redaction, fix round 2", () => {
   const expectRedacted = (input: string, secret: string) => {
     const out = redactText(input);
@@ -266,33 +194,6 @@ describe("secret redaction, fix round 2", () => {
     const elapsed = performance.now() - started;
     console.log(`redactText ${_name} (${input.length} chars): ${elapsed.toFixed(1)} ms`);
     expect(elapsed).toBeLessThan(500);
-  });
-
-  it("bounds the work redactAndCap does on a very long input", () => {
-    const input = "a".repeat(1_000_000);
-    const started = performance.now();
-    const result = redactAndCap(input, TURN_TEXT_LIMIT);
-    const elapsed = performance.now() - started;
-    console.log(`redactAndCap 1,000,000 chars: ${elapsed.toFixed(1)} ms`);
-    expect(elapsed).toBeLessThan(500);
-    expect(result.truncated).toBe(true);
-    expect(result.text.length).toBeLessThanOrEqual(TURN_TEXT_LIMIT);
-  });
-
-  it("drops a partial token at the redaction ceiling so a straddling secret cannot leak a prefix", () => {
-    const limit = 100;
-    // The long password value shrinks to a marker, so text near the 4x ceiling survives the cap.
-    const lead = `password=${"v".repeat(300)} `;
-    for (let pad = 0; pad < 60; pad += 1) {
-      const head = lead + "x".repeat(pad) + " ";
-      const token = `ghp_${"0123456789".repeat(4)}`;
-      const dsn = "postgres://user:hunter2secretpw@db/app";
-      for (const secret of [token, dsn]) {
-        const result = redactAndCap(`${head}${secret} tail`, limit);
-        expect(result.text).not.toMatch(/ghp_|hunter2|01234/);
-        expect(result.text.length).toBeLessThanOrEqual(limit);
-      }
-    }
   });
 
   it("redacts any value under a credential key, not only strings", () => {
@@ -377,18 +278,6 @@ describe("secret redaction, fix round 2", () => {
   it("does not redact look-alike object keys", () => {
     const value = { author: "Jane", authors: ["A"], authority: "court", tokenizer: "cl100k", tokenUsage: "high", secretary: "Bob", cookieConsent: "yes", keyboard: "qwerty" };
     expect(redactSecrets(value)).toEqual(value);
-  });
-
-  it("redactArguments redacts the parsed object and returns capped JSON", () => {
-    const args = { query: "x", headers: { Authorization: 'Basic "quoted" dXNlcjpwYXNz' }, cfg: 'password="abc def"', password: 42 };
-    const json = redactArguments(args);
-    expect(JSON.parse(json)).toEqual({ query: "x", headers: { Authorization: "[REDACTED]" }, cfg: 'password="[REDACTED]"', password: "[REDACTED]" });
-    for (const secret of ["dXNlcjpwYXNz", "abc def", "42"]) expect(json).not.toContain(secret);
-
-    const long = redactArguments({ body: "b".repeat(5_000) });
-    expect(long.length).toBeLessThanOrEqual(TURN_ARGUMENT_LIMIT);
-    expect(long.startsWith('{"body":"bbb')).toBe(true);
-    expect(redactArguments({ a: "abcdef" }, 5)).toBe('{"a":');
   });
 });
 
@@ -503,75 +392,6 @@ describe("secret redaction, fix round 3", () => {
     "docker run -p 8080:80 nginx", "psql -h db -p 5432 app", "cat password | grep x", "tokenExpiry: 3600", "password_policy: strict",
   ])("leaves %s alone", (text) => expect(redactText(text)).toBe(text));
 
-  it("redactArguments redacts name/value pairs, header tuples and argv arrays", () => {
-    const cases: Array<[unknown, string]> = [
-      [{ env: [{ name: "DB_PASSWORD", value: "hunter2abc" }] }, "hunter2abc"],
-      [{ headers: [{ name: "Authorization", value: "Basic dXNlcjpwYXNz" }] }, "dXNlcjpwYXNz"],
-      [{ headers: [["Authorization", "Bearer abcdefghijk123"]] }, "abcdefghijk123"],
-      [{ args: ["--password", "hunter2abc"] }, "hunter2abc"],
-      [{ args: ["mysql", "-p", "hunter2abc"] }, "hunter2abc"],
-      [{ "password ": "hunter2abc" }, "hunter2abc"],
-      [{ tokens: { ghp_abcdefghijklmnopqrstuvwxyz0123: 1 } }, "abcdefghijklmnop"],
-      [{ AccountKey: "abc123+/==" }, "abc123"],
-    ];
-    for (const [value, secret] of cases) expect(redactArguments(value), JSON.stringify(value)).not.toContain(secret);
-    expect(JSON.parse(redactArguments({ env: [{ name: "REGION", value: "us-east-1" }], args: ["docker", "run", "-p", "8080:80"] }))).toEqual({
-      env: [{ name: "REGION", value: "us-east-1" }],
-      args: ["docker", "run", "-p", "8080:80"],
-    });
-  });
-
-  it("redactArguments returns a fixed marker instead of throwing on unserializable values", () => {
-    const circular: Record<string, unknown> = { a: 1 };
-    circular.self = circular;
-    expect(redactArguments(circular)).toBe("[unrecordable arguments]");
-    let deep: unknown = "x";
-    for (let i = 0; i < 100_000; i += 1) deep = [deep];
-    expect(redactArguments(deep)).toBe("[unrecordable arguments]");
-  });
-
-  it("redactArguments scales linearly for a long argv array and many keys", () => {
-    const inputs = (scale: number) => [
-      Array.from({ length: 25_000 * scale }, () => "-p"),
-      Object.fromEntries(Array.from({ length: 10_000 * scale }, (_, i) => [`key${i}`, `password=x${i}`])),
-    ] as const;
-    const small = inputs(1);
-    const large = inputs(2);
-    const duration = (input: ReturnType<typeof inputs>) => {
-      const started = performance.now();
-      for (const value of input) redactArguments(value);
-      return performance.now() - started;
-    };
-
-    // Warm JIT paths before measuring, then alternate order so either input can encounter a pause.
-    duration(small);
-    duration(large);
-    const ratios = Array.from({ length: 5 }, (_, index) => {
-      let smallDuration: number;
-      let largeDuration: number;
-      if (index % 2 === 0) {
-        smallDuration = duration(small);
-        largeDuration = duration(large);
-      } else {
-        largeDuration = duration(large);
-        smallDuration = duration(small);
-      }
-      return largeDuration / Math.max(smallDuration, 0.1);
-    }).sort((left, right) => left - right);
-    const medianRatio = ratios[Math.floor(ratios.length / 2)]!;
-    console.log(`redactArguments median 2N/N ratio: ${medianRatio.toFixed(2)} (${ratios.map((ratio) => ratio.toFixed(2)).join(", ")})`);
-    expect(medianRatio).toBeLessThan(3.25);
-  });
-
-  it("redactAndCap keeps content when the text past the ceiling has no whitespace", () => {
-    const cjk = "秘密のない普通の文章です。".repeat(2_000);
-    const result = redactAndCap(cjk, 1_000);
-    expect(result.truncated).toBe(true);
-    expect(result.text.length).toBe(1_000);
-    const b64 = `${"QUJD".repeat(50)},${"QUJD".repeat(300)}`;
-    expect(redactAndCap(b64, 100).text.length).toBe(100);
-  });
-
   it.each([
     ["password: newline run", "password:\n".repeat(16_000)],
     ["indented block", `password: |\n${"  x\n".repeat(40_000)}`],
@@ -589,78 +409,6 @@ describe("secret redaction, fix round 3", () => {
     const elapsed = performance.now() - started;
     console.log(`redactText ${name} (${input.length} chars): ${elapsed.toFixed(1)} ms`);
     expect(elapsed).toBeLessThan(500);
-  });
-});
-
-describe("AI-tool turn records (spec 025 FR-037)", () => {
-  const aiRecord: AiToolTurnRecord = {
-    origin: "ai_tool",
-    taskId: "44444444-4444-4444-8444-444444444444",
-    turnId: "55555555-5555-4555-8555-555555555555",
-    action: "start",
-    phase: "accepted",
-    developer: { developerId: "d".repeat(64), provider: "slack", displayName: "Maya Chen", slackUserId: "U0MAYA001" },
-    client: "Claude Code",
-    receivedAt: "2026-09-27T12:00:00.000Z",
-    project: "payments",
-    workspaceId: "22222222-2222-4222-8222-222222222222",
-    outcome: "accepted",
-    startedAt: "2026-09-27T12:00:00.000Z",
-    finishedAt: "2026-09-27T12:00:00.200Z",
-    durationMs: 200,
-    requestText: "Fix the flaky retry test",
-    responseText: "STARTING",
-  };
-
-  it("round-trips, with no Slack event ID or Slack requester", () => {
-    expect(AiToolTurnRecordSchema.parse(aiRecord)).toEqual(aiRecord);
-    expect(AiToolTurnRecordSchema.safeParse({ ...aiRecord, eventId: "EvX1234" }).success).toBe(false);
-  });
-
-  it("is keyed by task and exported on the same time index, kept 30 days", () => {
-    expect(aiToolTurnRecordKeys(aiRecord)).toEqual({
-      pk: "TASK#44444444-4444-4444-8444-444444444444",
-      sk: "TURN#2026-09-27T12:00:00.000Z#55555555-5555-4555-8555-555555555555",
-      exportPk: "TURNS",
-      exportSk: "2026-09-27T12:00:00.000Z#55555555-5555-4555-8555-555555555555",
-      expiresAt: Math.floor(Date.parse(aiRecord.receivedAt) / 1000) + 30 * 86_400,
-    });
-  });
-
-  it("still parses Slack records written before origin existed, and with origin slack", () => {
-    const slack = TurnRecordSchema.parse(record);
-    expect(slack).not.toHaveProperty("origin");
-    expect(TurnRecordSchema.parse({ ...slack, origin: "slack" }).origin).toBe("slack");
-    expect(TurnRecordSchema.safeParse({ ...slack, origin: "ai_tool" }).success).toBe(false);
-  });
-
-  it("round-trips a completed record carrying the result summary as response text (owner decision 3)", () => {
-    const completed: AiToolTurnRecord = {
-      ...aiRecord,
-      phase: "completed",
-      outcome: "succeeded",
-      responseText: "Fixed the flaky retry test and opened a pull request.",
-    };
-    expect(AiToolTurnRecordSchema.parse(completed)).toEqual(completed);
-  });
-
-  it("round-trips a refused record with an error code (owner decision 3)", () => {
-    const refused: AiToolTurnRecord = {
-      ...aiRecord,
-      phase: "refused",
-      outcome: "refused",
-      responseText: "The project's developer task limit is reached.",
-      error: { code: "WORKSPACE_LIMIT" },
-    };
-    expect(AiToolTurnRecordSchema.parse(refused)).toEqual(refused);
-  });
-
-  it("isSlackTurnRecord is false for an AI-tool record and true for a Slack record with or without origin", () => {
-    expect(isSlackTurnRecord(aiRecord)).toBe(false);
-    const slack = TurnRecordSchema.parse(record);
-    expect(slack).not.toHaveProperty("origin");
-    expect(isSlackTurnRecord(slack)).toBe(true);
-    expect(isSlackTurnRecord({ ...slack, origin: "slack" })).toBe(true);
   });
 });
 

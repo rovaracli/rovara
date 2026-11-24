@@ -37,8 +37,8 @@ it("the rebuilt Work page reuses the exact live action components", () => {
  const graph = [...runtimeGraph("packages/ui/src/screens/work/WorkPreviewScreen.tsx").keys()];
  for (const file of ["TaskPane.tsx", "InlineQuestions.tsx", "LessonBatchCard.tsx", "LessonsUsedCard.tsx", "queue-action-host.ts"]) expect(graph.some(path => path.endsWith("/" + file))).toBe(true);
 });
-it("both Inbox routes reuse one mark-read handler", () => {
- for (const entry of ["InboxScreen", "InboxPreviewScreen"]) expect([...runtimeGraph("packages/ui/src/screens/inbox/" + entry + ".tsx").keys()].some(path => path.endsWith("/useInboxReadActions.ts"))).toBe(true);
+it("the Inbox route reuses the shared mark-read handler (the old InboxScreen was deleted in arch D3)", () => {
+ for (const entry of ["InboxPreviewScreen"]) expect([...runtimeGraph("packages/ui/src/screens/inbox/" + entry + ".tsx").keys()].some(path => path.endsWith("/useInboxReadActions.ts"))).toBe(true);
 });
 
 it("the current task page cannot import the Work/Inbox send adapter", () => {

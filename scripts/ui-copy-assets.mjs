@@ -1,6 +1,6 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-latin-600.woff2", "design/fonts/jetbrains-mono-latin-400.woff2", "design/fonts/Inter-OFL.txt", "design/fonts/JetBrainsMono-OFL.txt", "design/design.css", "shell/shell.css", "screens/home/home.css", "screens/inbox/inbox.css", "screens/live/live.css", "screens/work/work.css", "screens/project/project.css", "screens/session/session.css", "screens/session/task-capture-view.css", "screens/session/task-page.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
+for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-latin-600.woff2", "design/fonts/jetbrains-mono-latin-400.woff2", "design/fonts/Inter-OFL.txt", "design/fonts/JetBrainsMono-OFL.txt", "design/design.css", "shell/shell.css", "screens/home/home.css", "screens/live/live.css", "screens/work/work.css", "screens/project/project.css", "screens/session/session.css", "screens/session/task-capture-view.css", "screens/session/task-page.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
  // Rebuilt Work/Inbox styles (WIRING-3: mounted on the real /app/work and /app/inbox routes).
  "screens/work/work-preview.css",
  "screens/session/pr-feedback-card.css",
@@ -50,7 +50,6 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  // DEC 417/420/421: Browser testing in a project's setup (its page and its checklist row).
  "screens/setup/browser-testing/browser-testing.css",
  // Feature A3: the Cost and time pages.
- "screens/admin/report/report.css",
  // WIRING-1B: the rebuilt company money / AI pages (the report, features, AI and sources, Product AI).
  "screens/company-money-ai-read/company-money-ai-read.css",
  // Lead 4 J3: the Ask box and its answer.

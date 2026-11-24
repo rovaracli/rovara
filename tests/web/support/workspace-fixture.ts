@@ -1,4 +1,5 @@
-import { createWorkflowSnapshot, E2ESharedViewSchema } from "@agentx/contracts";
+import { createWorkflowSnapshot } from "@agentx/contracts";
+import { E2ESharedViewSchema } from "../../../packages/contracts/src/e2e-view.js";
 import { type SessionView } from "@agentx/contracts/web";
 import { sessionFixture, taskFixture, sessionPerson } from "./session-fixture.js";
 const now = "2026-10-23T12:00:00.000Z", taskId = "11111111-1111-4111-8111-111111111111";

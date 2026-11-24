@@ -1,8 +1,6 @@
 // Spec 055: the generic `mcp` connector's configuration, and the credential host it is pinned to.
 import { describe, expect, it } from "vitest";
-import {
-  ConnectorsSchema, CredentialRegistrationSchema, McpAuthSchema, ProjectDefinitionSchema, mcpEndpointProblem,
-} from "../../packages/contracts/src/index.js";
+import { ConnectorsSchema, McpAuthSchema, ProjectDefinitionSchema, mcpEndpointProblem } from "../../packages/contracts/src/index.js";
 
 const ownership = {
   mode: "ownership", itemNoun: "issue",
@@ -101,16 +99,5 @@ describe("mcp endpoints", () => {
       expect(McpAuthSchema.safeParse({ header }).success).toBe(false);
     }
     expect(McpAuthSchema.safeParse({ prefix: "Bearer\r\nX-Evil: 1 " }).success).toBe(false);
-  });
-});
-
-describe("credential host", () => {
-  const registration = { ref: "sentry-bot", type: "static-secret", secretName: "agentx/connectors/sentry" };
-  it("is optional, and when given is a lowercase DNS name", () => {
-    expect(CredentialRegistrationSchema.safeParse(registration).success).toBe(true);
-    expect(CredentialRegistrationSchema.safeParse({ ...registration, host: "mcp.sentry.dev" }).success).toBe(true);
-    for (const host of ["MCP.sentry.dev", "https://mcp.sentry.dev", "mcp.sentry.dev/mcp", "localhost", "10.0.0.1"]) {
-      expect(CredentialRegistrationSchema.safeParse({ ...registration, host }).success).toBe(false);
-    }
   });
 });

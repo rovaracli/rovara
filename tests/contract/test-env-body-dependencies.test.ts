@@ -1,21 +1,7 @@
 // Test services, slice 1 T1 (contracts): the environment body, the draft, the task plan, the Prove steps and the usage record carry test-services dependencies.
 // The golden digest below was computed on the base BEFORE the `dependencies` field existed: a body without it must keep it, byte for byte (design test-services.md 2.3, "no data migration").
 import { describe, expect, it } from "vitest";
-import {
-  TEST_ENV_BASE_PROVE_STEPS,
-  TEST_ENV_DEPENDENCY_PROVE_STEPS,
-  TEST_ENV_PROVE_FAILURES,
-  TEST_ENV_PROVE_STEPS,
-  TEST_SERVICES_PLAN_FEATURE,
-  TaskDependencyPlanSchema,
-  TestEnvDependencyCandidateSchema,
-  TestEnvDraftSchema,
-  TestEnvTaskPlanSchema,
-  TestEnvironmentBodySchema,
-  TestEnvProveReportSchema,
-  WORKER_INVOCATION_FEATURES,
-  testEnvDigest,
-} from "../../packages/contracts/src/index.js";
+import { TEST_ENV_BASE_PROVE_STEPS, TEST_ENV_DEPENDENCY_PROVE_STEPS, TEST_ENV_PROVE_FAILURES, TEST_ENV_PROVE_STEPS, TaskDependencyPlanSchema, TestEnvDependencyCandidateSchema, TestEnvDraftSchema, TestEnvTaskPlanSchema, TestEnvironmentBodySchema, TestEnvProveReportSchema, testEnvDigest } from "../../packages/contracts/src/index.js";
 
 const cmd = (executable: string, args: string[] = [], cwd = "service") => ({ cwd, executable, args, timeoutSeconds: 600 });
 const baseBody = (over: Record<string, unknown> = {}) => ({
@@ -169,10 +155,6 @@ describe("the task plan carries pinned dependencies", () => {
 });
 
 describe("the feature string and the Prove steps", () => {
-  it("names the feature and lists it as an invocation feature", () => {
-    expect(TEST_SERVICES_PLAN_FEATURE).toBe("task.testServices.v1");
-    expect(WORKER_INVOCATION_FEATURES).toContain(TEST_SERVICES_PLAN_FEATURE);
-  });
 
   it("adds the two dependency steps after the seven that were there", () => {
     expect(TEST_ENV_BASE_PROVE_STEPS).toEqual(["setup", "build", "boot", "smoke", "full_suite", "mocks", "preprod_probe"]);
