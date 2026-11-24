@@ -58,7 +58,7 @@ function Account({ provider, settings, busy, send }: { provider: LearningProvide
  return <AdminSection title={label} note={a.connected ? (a.refusedAt === undefined ? "Connected" : "Refused") : "Not connected"}>
   {a.connected ? <p>A key is connected{a.updatedAt === undefined ? "" : `, last changed ${when(a.updatedAt)}`}. It is never shown here.{a.refusedAt === undefined ? "" : ` ${label} refused it at ${when(a.refusedAt)}: replace it.`}</p>
    : <p>No {label} key is connected.{removed === undefined ? "" : ` The last key was removed; it can be recovered until ${when(removed.recoverUntil)}.`}</p>}
-  <SecretField label={a.connected ? `Replace the ${label} key` : `Paste the ${label} key`} submitLabel={a.connected ? "Replace key" : "Connect key"} onSubmit={value => send("PUT", { provider, key: value.trim() }, a.connected ? "Key replaced." : "Key connected.")} />
+  <SecretField label={a.connected ? `Replace the ${label} key` : `Paste the ${label} key`} submitLabel={a.connected ? "Replace key" : "Connect key"} allowFile onSubmit={value => send("PUT", { provider, key: value.trim() }, a.connected ? "Key replaced." : "Key connected.")} />
   {a.connected && <p><Button busy={busy} variant="danger" onClick={() => { void send("DELETE", { provider }, `${label} key removed.`); }}>Remove {label} key</Button></p>}
  </AdminSection>;
 }

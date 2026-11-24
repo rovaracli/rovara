@@ -12,7 +12,7 @@ import { App, type Stack } from "aws-cdk-lib";
 import { Code } from "aws-cdk-lib/aws-lambda";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
-import { SOURCE_KINDS_AT_LAUNCH, parseSourceKindsSwitch } from "../../packages/contracts/src/model-sources.js";
+import { PRODUCTION_SOURCE_KINDS, PRODUCTION_SOURCE_KINDS_REFUSAL, SOURCE_KINDS_AT_LAUNCH, parseSourceKindsSwitch, productionSourceKindsAllowed } from "../../packages/contracts/src/model-sources.js";
 import {
   AGENT_SOURCE_OF_KIND as CLOUD_SOURCE_OF_KIND, AI_SOURCE_KINDS as CLOUD_KINDS, PRE_SWITCH_AGENT_SOURCES as CLOUD_PRE_SWITCH,
   agentSourceSwitchedOn as cloudSwitchedOn, parseAiSourceKinds as parseCloudKinds,
@@ -290,7 +290,21 @@ describe(`-c ${AI_SOURCE_KINDS_CONTEXT_KEY}`, () => {
     for (const bad of BAD) expect(() => aiSourceKindsContext(bad)).toThrow(`${AI_SOURCE_KINDS_CONTEXT_KEY} must be AI source kinds`);
     expect(() => aiSourceKindsContext(1)).toThrow(AI_SOURCE_KINDS_CONTEXT_KEY);
     expect(() => gatewayEnv({ [AI_SOURCE_KINDS_CONTEXT_KEY]: "openai" })).toThrow("company AI source kinds need the product AI additions");
-    expect(() => cloudEnv({ [AI_SOURCE_KINDS_CONTEXT_KEY]: "openai" }, "production")).toThrow("company AI sources are for named test environments");
+    for (const kinds of ["openrouter", "openai,openrouter", "bedrock", "endpoint", "anthropic"]) {
+      expect(() => cloudEnv({ [AI_SOURCE_KINDS_CONTEXT_KEY]: kinds }, "production"), kinds).toThrow(PRODUCTION_SOURCE_KINDS_REFUSAL);
+      expect(() => gatewayEnv({ ...productOn, [AI_SOURCE_KINDS_CONTEXT_KEY]: kinds }, "production"), kinds).toThrow(PRODUCTION_SOURCE_KINDS_REFUSAL);
+    }
+  });
+
+  it("Rovara-cloud#308: production may switch on OpenAI, and the same value reaches both stacks", () => {
+    expect(PRODUCTION_SOURCE_KINDS).toEqual(["openai"]);
+    expect(productionSourceKindsAllowed(undefined)).toBe(true);
+    expect(productionSourceKindsAllowed("")).toBe(true);
+    expect(productionSourceKindsAllowed("openai")).toBe(true);
+    expect(productionSourceKindsAllowed("openai,openrouter")).toBe(false);
+    const context = { [AI_SOURCE_KINDS_CONTEXT_KEY]: "openai" };
+    expect(cloudEnv(context, "production")[CLOUD_AI_SOURCE_KINDS_ENV]).toBe("openai");
+    expect(gatewayEnv({ ...productOn, ...context }, "production")[GATEWAY_ENV.aiSourceKinds]).toBe("openai");
   });
 });
 

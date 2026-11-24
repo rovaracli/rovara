@@ -25,6 +25,7 @@ import { Dynamo } from "../packages/model-gateway/src/dynamo.js";
 import { DynamoProductKeyTable } from "../packages/model-gateway/src/dynamo-product-keys.js";
 import { ProductKeyStore } from "../packages/model-gateway/src/product-keys.js";
 import { gatewayBedrockCheck, gatewayBedrockSetup, gatewayVertexCheck } from "../packages/model-gateway/src/service-call.js";
+import { openAiKeyCheck } from "../packages/model-gateway/src/openai-key-check.js";
 import { bedrockModelPresets, bedrockSetupCommand, validTemplateUrl } from "../packages/model-gateway/src/bedrock-byo.js";
 import { ROVARA_AI_US_MODELS } from "../packages/model-gateway/src/agent-ai.js";
 import type { BedrockBackend } from "../packages/cloud-server/src/index.js";
@@ -50,6 +51,8 @@ export function productAiStore(env: Readonly<Record<string, string | undefined>>
   return new ProductKeyStore({
     table: new DynamoProductKeyTable(new Dynamo({ region, credentials }), table!),
     sealer: new ProductKeySealer(kmsProductKeyService(kms, key!)), fingerprint: kmsFingerprinter(kms, macKey!), providers: ["gemini", "vertex", "anthropic", "openai", "bedrock", "openrouter", "endpoint"],
+    // Rovara-cloud#308: an OpenAI key is tested with one free call to OpenAI before it is sealed (this function reaches the internet).
+    openaiCheck: openAiKeyCheck(),
     ...(gateway === undefined ? {} : {
       vertexCheck: gatewayVertexCheck({ address: gateway, issuer: `${env.ROVARA_CODE_URL ?? ""}/v1/auth`, kms, macKeyId: macKey! }),
       // DEC 238: the gateway tests a company's Bedrock role (only it may assume the broker); without it a connect answers unavailable.

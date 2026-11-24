@@ -12,7 +12,7 @@ import {
   aws_s3 as s3,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
+import { PRODUCTION_SOURCE_KINDS_REFUSAL, RESOURCE_PREFIX, environmentSettingsPrefix, parseSourceKindsSwitch, productionSourceKindsAllowed } from "@agentx/contracts";
 import { CLOUD_APP_CONTEXT_KEY } from "./cloud-app.js";
 import { CDK_BOOTSTRAP_ASSUMED_ROLES, applyCloudBoundary, keepRoleAtRoot } from "./cloud-boundary.js";
 import { MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "./model-gateway.js";
@@ -44,7 +44,14 @@ export const CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER = "hnb659fds";
  * Production carries it (Rovara-cloud#247): its web stack was switched on by hand first, with the gateway's ProductKeys* parameters.
  * A change here reaches a pipeline only when its stack is redeployed by hand.
  */
-export const CLOUD_PIPELINE_SWITCHES: Readonly<Record<string, Readonly<{ productAi?: true }>>> = Object.freeze({
+/**
+ * Rovara-cloud#308: `aiSourceKinds` is the environment's `-c rovaraAiSourceKinds` (app.ts), carried so a release keeps the company AI source
+ * kinds its web stack was deployed with by hand. The gateway is deployed by hand only, with the same value.
+ */
+export interface CloudPipelineSwitches { productAi?: true; aiSourceKinds?: string }
+/** app.ts AI_SOURCE_KINDS_CONTEXT_KEY (app.ts imports this file, so the name is repeated here; a contract test holds the two equal). */
+export const PIPELINE_AI_SOURCE_KINDS_CONTEXT_KEY = "rovaraAiSourceKinds";
+export const CLOUD_PIPELINE_SWITCHES: Readonly<Record<string, Readonly<CloudPipelineSwitches>>> = Object.freeze({
   staging: Object.freeze({ productAi: true as const }),
   // Rovara-cloud#247: production's gateway is deployed, and its web stack was switched on by hand with the gateway's ProductKeys* parameters.
   production: Object.freeze({ productAi: true as const }),
@@ -70,9 +77,16 @@ export function pipelineDeployAccount(env: string, accounts: Readonly<Record<str
 export const DEPLOY_ACCOUNT_CONTEXT_KEY = "agentxAccount";
 
 /** The `-c` arguments the environment's deploy carries (cdk context), from CLOUD_PIPELINE_SWITCHES. */
-export function pipelineDeployContext(env: string, config: Readonly<Record<string, Readonly<{ productAi?: true }>>> = CLOUD_PIPELINE_SWITCHES): string[] {
-  const switches = Object.hasOwn(config, env) ? config[env]! : {};
-  return switches.productAi === true ? [`-c ${MODEL_GATEWAY_PRODUCT_CONTEXT_KEY}=on`] : [];
+export function pipelineDeployContext(env: string, config: Readonly<Record<string, Readonly<CloudPipelineSwitches>>> = CLOUD_PIPELINE_SWITCHES): string[] {
+  const switches: Readonly<CloudPipelineSwitches> = Object.hasOwn(config, env) ? config[env]! : {};
+  const context = switches.productAi === true ? [`-c ${MODEL_GATEWAY_PRODUCT_CONTEXT_KEY}=on`] : [];
+  if (switches.aiSourceKinds !== undefined) {
+    // Checked as the app checks it (a bad value would stop the synth) and as production allows it, so a release never carries what a hand deploy refuses.
+    parseSourceKindsSwitch(switches.aiSourceKinds);
+    if (env === "production" && !productionSourceKindsAllowed(switches.aiSourceKinds)) throw new Error(PRODUCTION_SOURCE_KINDS_REFUSAL);
+    if (switches.aiSourceKinds !== "") context.push(`-c ${PIPELINE_AI_SOURCE_KINDS_CONTEXT_KEY}=${switches.aiSourceKinds}`);
+  }
+  return context;
 }
 
 export interface CloudReleasePipelineProps extends StackProps {
