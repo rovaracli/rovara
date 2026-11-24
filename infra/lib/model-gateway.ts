@@ -22,7 +22,7 @@ import {
   aws_sns as sns,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix, parseSourceKindsSwitch } from "@agentx/contracts";
+import { METRICS_NAMESPACE_ROOT, PRODUCTION_SOURCE_KINDS_REFUSAL, RESOURCE_PREFIX, environmentSettingsPrefix, parseSourceKindsSwitch, productionSourceKindsAllowed } from "@agentx/contracts";
 import { applyCloudBoundary, byoCustomerAssumeConditions } from "./cloud-boundary.js";
 
 /**
@@ -547,9 +547,9 @@ export class ModelGatewayStack extends Stack {
     const rovaraAi = props.rovaraAi === undefined ? undefined : this.rovaraAi(props.rovaraAi, product !== undefined, serveRole);
     if (props.bedrockByo === true && env === "production") throw new Error("bring your own Bedrock is for named test environments until a Cloud release carries it");
     const bedrockByo = props.bedrockByo === true ? this.bedrockByo(env, product !== undefined, serveRole) : undefined;
-    // DEC 254t: company-key mode only (product AI), never for production.
+    // DEC 254t: company-key mode only (product AI). Rovara-cloud#308: production may switch on only PRODUCTION_SOURCE_KINDS (OpenAI).
     if (props.aiSourceKinds !== undefined && product === undefined) throw new Error("company AI source kinds need the product AI additions (rovaraModelGatewayProductAi=on)");
-    if (props.aiSourceKinds !== undefined && props.aiSourceKinds !== "" && env === "production") throw new Error("company AI sources are for named test environments until a Cloud release carries them");
+    if (env === "production" && !productionSourceKindsAllowed(props.aiSourceKinds)) throw new Error(PRODUCTION_SOURCE_KINDS_REFUSAL);
     const openRouterEnabled = parseSourceKindsSwitch(props.aiSourceKinds).includes("openrouter");
 
     // Network: two zones, public subnets and no NAT gateway. Tasks take only the load balancer's traffic; DynamoDB through a

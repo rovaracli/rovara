@@ -180,12 +180,19 @@ switch the template is byte for byte what it was; `tests/contract/model-gateway-
   the production approvals and budget (`eval-approvals.ts`), DynamoDB overrun marks, Gemini, Vertex (`VertexTokens`) and media
   prices (`media: prices`), and the learning route (`learning-keys.ts`).
 
-Cloud's side (`-c rovaraCloudApp=<env> -c rovaraModelGatewayProductAi=on`, refused for `production`): parameters
+Cloud's side (`-c rovaraCloudApp=<env> -c rovaraModelGatewayProductAi=on`; production too since Rovara-cloud#247): parameters
 `ProductKeysTableName`, `ProductKeysKeyArn`, `ProductKeysMacKeyArn`; the server role gets `GetItem`/`PutItem`/`UpdateItem`/
 `ConditionCheckItem` on that table by company keys, `kms:GenerateDataKey` (same purpose and install condition) and
 `kms:GenerateMac`; output `ServerRoleArn`; optional parameter `ModelGatewayUrl` (default empty: no Vertex connect from Cloud).
 The release pipeline carries each environment's switches from `CLOUD_PIPELINE_SWITCHES` (`infra/lib/cloud-release-pipeline.ts`):
 staging and production deploy with `-c rovaraModelGatewayProductAi=on` (production since Rovara-cloud#247); a contract test pins both.
+Company AI source kinds (`-c rovaraAiSourceKinds=<kinds>`, DEC 254t) go to both Cloud's server (`CLOUD_AI_SOURCE_KINDS`) and the
+gateway (`GATEWAY_AI_SOURCE_KINDS`), with the same value. Production may name only `openai` (Rovara-cloud#308,
+`PRODUCTION_SOURCE_KINDS` in `packages/contracts/src/model-sources.ts`); every other kind is refused there at synth. An
+environment's `CLOUD_PIPELINE_SWITCHES` entry may carry `aiSourceKinds`, so a release keeps the value its web stack was deployed
+with by hand; the gateway is deployed by hand with the same `-c`. An OpenAI key is tested with one free call to OpenAI
+(`GET /v1/models`, `openai-key-check.ts`) before it is sealed, on connect and on rotate: a key OpenAI does not know is refused
+with "The provider refused this key." and nothing is saved.
 
 Settings routes (B7, `packages/cloud-server/src/product-ai-routes.ts`; screen: admin area, AI and connections, Product AI
 keys): `GET /v1/app/projects/:name/product-ai`, `PUT|DELETE .../key`, `PUT .../eval-budget`, `PUT .../eval-approval`. The

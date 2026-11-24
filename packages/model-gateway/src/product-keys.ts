@@ -14,6 +14,7 @@ import { COMPANY, PERSON, PROJECT, record, whole } from "./model-gateway-token.j
 import type { ProductKeyFingerprinter, ProductKeySealer } from "./product-seal.js";
 import { parseVertexConnect, serializeVertexCredential, validVertexSummary, vertexSummary, type VertexCredential, type VertexSummary } from "./product-vertex-credential.js";
 import { bedrockConnectionIds, bedrockRoleClaim, bedrockSummary, parseBedrockConnect, serializeBedrockConnection, validBedrockSummary, type BedrockConnection, type BedrockModelCheck, type BedrockSummary } from "./bedrock-byo.js";
+import type { OpenAiKeyCheck } from "./openai-key-check.js";
 
 export const PRODUCT_COMPANY_OWNER = "_company";
 /**
@@ -265,7 +266,11 @@ export type VertexCheck = (cid: string, credential: VertexCredential) => Promise
  * Rovara company), "refused" or "unavailable" saves nothing. Without it, Bedrock can't be connected (fail closed).
  */
 export type BedrockCheck = (cid: string, connection: BedrockConnection) => Promise<{ result: "ok" | "too_open" | "refused" | "unavailable"; models?: Record<string, BedrockModelCheck> }>;
-export interface ProductKeyStoreOptions { table: ProductKeyTable; sealer: ProductKeySealer; fingerprint: ProductKeyFingerprinter; now?: () => number; providers?: readonly ProductProvider[]; vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck }
+/**
+ * Rovara-cloud#308: the OpenAI key test (openai-key-check.ts), run before an OpenAI key is sealed on connect and on rotate. "ok" saves;
+ * "refused" or "unavailable" saves nothing. Absent: an OpenAI key is saved untested, as before.
+ */
+export interface ProductKeyStoreOptions { table: ProductKeyTable; sealer: ProductKeySealer; fingerprint: ProductKeyFingerprinter; now?: () => number; providers?: readonly ProductProvider[]; vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck; openaiCheck?: OpenAiKeyCheck }
 interface Change { iss: string; cid: string; owner: string; requestId: string; expectedRevision: number; actor: ProductActor }
 
 export class ProductKeyStore {
@@ -393,6 +398,7 @@ export class ProductKeyStore {
       const claim = secret.bedrock === undefined ? [] : await this.#claimRole(change, secret.bedrock.roleArn, now);
       // The connection test runs only for a change that would apply (a replay or a stale revision never reaches Google or AWS).
       if (secret.vertex !== undefined) await this.#vertexCheck(change.cid, secret.vertex);
+      if (change.provider === "openai") await this.#openaiCheck(secret.text);
       const checks = secret.bedrock === undefined ? undefined : await this.#bedrockCheck(change.cid, secret.bedrock);
       const sealed = await this.options.sealer.seal(secret.text, { iss: change.iss, cid: change.cid, owner: change.owner, sourceId: change.sourceId, versionId });
       doc.sources.push({ sourceId: change.sourceId, provider: change.provider, connectedBy: change.actor.id, connectedAt: now, updatedAt: now, currentVersion: versionId, ...(secret.vertex === undefined ? {} : { vertex: vertexSummary(secret.vertex) }), ...(secret.bedrock === undefined || checks === undefined ? {} : { bedrock: bedrockSummary(secret.bedrock, checks, now) }) });
@@ -431,6 +437,7 @@ export class ProductKeyStore {
       const claim = secret.bedrock === undefined ? [] : await this.#claimRole(change, secret.bedrock.roleArn, now);
       const release = secret.bedrock === undefined || source.bedrock === undefined || bedrockRoleClaim(source.bedrock.roleArn) === bedrockRoleClaim(secret.bedrock.roleArn) ? [] : await this.#releaseRole(change, source.bedrock.roleArn, now);
       if (secret.vertex !== undefined) await this.#vertexCheck(change.cid, secret.vertex);
+      if (source.provider === "openai") await this.#openaiCheck(secret.text);
       const checks = secret.bedrock === undefined ? undefined : await this.#bedrockCheck(change.cid, secret.bedrock);
       const old = source.currentVersion;
       const sealed = await this.options.sealer.seal(secret.text, { iss: change.iss, cid: change.cid, owner: change.owner, sourceId: change.sourceId, versionId });
@@ -536,6 +543,14 @@ export class ProductKeyStore {
     const vertex = typeof key === "string" ? parseVertexConnect(key) : undefined;
     if (vertex === undefined) throw new ProductKeyError("invalid");
     return { text: serializeVertexCredential(vertex), vertex };
+  }
+  /** An OpenAI key is tested only when a test is configured (it was saved untested before Rovara-cloud#308). */
+  async #openaiCheck(key: string): Promise<void> {
+    if (this.options.openaiCheck === undefined) return;
+    let result: Awaited<ReturnType<OpenAiKeyCheck>>;
+    try { result = await this.options.openaiCheck(key); } catch { throw new ProductKeyError("unavailable"); }
+    if (result === "ok") return;
+    throw new ProductKeyError(result === "refused" ? "refused" : "unavailable");
   }
   async #vertexCheck(cid: string, credential: VertexCredential): Promise<void> {
     if (this.options.vertexCheck === undefined) throw new ProductKeyError("unavailable");

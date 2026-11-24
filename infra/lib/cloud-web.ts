@@ -24,7 +24,7 @@ import {
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { join, resolve } from "node:path";
-import { RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
+import { PRODUCTION_SOURCE_KINDS_REFUSAL, RESOURCE_PREFIX, environmentSettingsPrefix, productionSourceKindsAllowed } from "@agentx/contracts";
 import { applyCloudBoundary } from "./cloud-boundary.js";
 import { CLOUD_APP_CALLBACK_PATH, CLOUD_APP_CLIENT_ID, CLOUD_APP_SCOPES, signInKey } from "./cloud-app.js";
 
@@ -298,7 +298,7 @@ export class CloudWebStack extends Stack {
     server.addEnvironment("CLOUD_SESSIONS_KEY_ID", sessionKey.keyArn);
     if (props.productAi === true) this.productAi(env, server, codeUrl.valueAsString);
     if (props.aiSourceKinds !== undefined) {
-      if (env === "production" && props.aiSourceKinds !== "") throw new Error("company AI sources are for named test environments until a Cloud release carries them");
+      if (env === "production" && !productionSourceKindsAllowed(props.aiSourceKinds)) throw new Error(PRODUCTION_SOURCE_KINDS_REFUSAL);
       server.addEnvironment(CLOUD_AI_SOURCE_KINDS_ENV, props.aiSourceKinds);
     }
     if (props.rovaraAiExempt !== undefined) {

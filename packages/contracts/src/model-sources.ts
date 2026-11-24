@@ -40,6 +40,18 @@ export function parseSourceKindsSwitch(value: string | undefined): CustomSourceK
   return kinds as CustomSourceKind[];
 }
 
+/**
+ * Rovara-cloud#308: the company AI source kinds production may switch on, each only after its real-key check passed. Every other kind
+ * stays for named test environments. A production deploy naming any other kind is refused before anything is made.
+ */
+export const PRODUCTION_SOURCE_KINDS: readonly CustomSourceKind[] = ["openai"];
+/** Whether production may carry this setting: every kind it names is one of PRODUCTION_SOURCE_KINDS (absent or empty: nothing named, allowed). */
+export function productionSourceKindsAllowed(value: string | undefined): boolean {
+  return parseSourceKindsSwitch(value).every((kind) => PRODUCTION_SOURCE_KINDS.includes(kind));
+}
+/** The fixed refusal for a production deploy naming a kind production may not switch on. */
+export const PRODUCTION_SOURCE_KINDS_REFUSAL = `production may switch on only these company AI sources: ${PRODUCTION_SOURCE_KINDS.join(", ")}; the others are for named test environments until a Cloud release carries them`;
+
 /** The wire formats the model proxy serves (docs/learnings/model-sources-spike.md, question 4). */
 export const TRANSPORTS_AT_LAUNCH = ["anthropic-messages", "openai-responses", "openai-completions"] as const;
 export type Transport = (typeof TRANSPORTS_AT_LAUNCH)[number];

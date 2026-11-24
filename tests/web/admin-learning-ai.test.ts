@@ -78,6 +78,38 @@ describe("learning AI key page", () => {
    expect(document.body.innerHTML).not.toContain(secret);
   } finally { f.close(); }
  });
+ it("Rovara-cloud#308: reads an OpenAI key from an uploaded file and sends it trimmed, only when the button is pressed, never shown", async () => {
+  const sent: ApiRequest[] = [];
+  const f = mount("/app/admin/learning-ai", (r) => { if (r.method === "PUT") sent.push(r); return { status: 200, body: view(false) }; });
+  try {
+   fireEvent.click(await screen.findByText("Connect company AI", { selector: "summary" }));
+   await screen.findByLabelText("Paste the OpenAI key");
+   const secret = `sk-proj-${"Q7w".repeat(16)}`;
+   const uploads = screen.getAllByLabelText("Or upload a file that holds the key");
+   expect(uploads).toHaveLength(3);
+   fireEvent.change(uploads[1]!, { target: { files: [new File([`  ${secret}\n`], "openai.key", { type: "text/plain" })] } });
+   await screen.findByText(/The key was read from the file/u);
+   expect(sent).toHaveLength(0);
+   expect(screen.getByLabelText("Paste the OpenAI key").getAttribute("type")).toBe("password");
+   fireEvent.click(screen.getAllByRole("button", { name: "Connect key" })[1]!);
+   await waitFor(() => { expect(sent).toHaveLength(1); });
+   expect(sent[0]!.body).toMatchObject({ provider: "openai", key: secret });
+   expect(document.body.textContent).not.toContain(secret);
+  } finally { f.close(); }
+ });
+ it("Rovara-cloud#308: refuses an empty or oversized key file without sending anything", async () => {
+  const sent: ApiRequest[] = [];
+  const f = mount("/app/admin/learning-ai", (r) => { if (r.method === "PUT") sent.push(r); return { status: 200, body: view(false) }; });
+  try {
+   fireEvent.click(await screen.findByText("Connect company AI", { selector: "summary" }));
+   await screen.findByLabelText("Paste the OpenAI key");
+   fireEvent.change(screen.getAllByLabelText("Or upload a file that holds the key")[1]!, { target: { files: [new File(["   \n"], "empty.txt", { type: "text/plain" })] } });
+   expect(await screen.findByText(/That file is empty/u)).toBeTruthy();
+   fireEvent.change(screen.getAllByLabelText("Or upload a file that holds the key")[1]!, { target: { files: [new File(["x".repeat(5_000)], "big.txt", { type: "text/plain" })] } });
+   expect(await screen.findByText(/too large to be a key file/u)).toBeTruthy();
+   expect(sent).toHaveLength(0);
+  } finally { f.close(); }
+ });
  it("says not connected yet when Cloud has no learning AI settings", async () => {
   const f = mount("/app/admin/learning-ai", () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } }));
   try { expect(await screen.findByTestId("not-connected")).toBeTruthy(); } finally { f.close(); }

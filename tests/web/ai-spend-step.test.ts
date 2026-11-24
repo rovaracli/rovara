@@ -428,6 +428,32 @@ describe("the company step, AI and spending", () => {
   } finally { f.close(); }
  });
 
+ it("Rovara-cloud#308: where the server lists the company's own OpenAI key, setup offers it and saves it as the source", async () => {
+  for (const connected of [false, true]) {
+   const c = company({ cap: 800_000_000, source: "rovara", model: null });
+   const listed = (r: ApiRequest): ApiResponse | Promise<ApiResponse> => {
+    if (r.path !== "/v1/app/org/agent-ai") return c.respond(r);
+    const answer = c.respond(r) as ApiResponse;
+    const body = answer.body as ReturnType<typeof agentAi>;
+    return { status: 200, body: { ...body, openaiKeyConnected: connected, choices: [...body.choices, { source: "openai_key", available: connected }] } };
+   };
+   const f = mountRoute("/app/admin/ai-spending", listed);
+   try {
+    await screen.findByLabelText("Company model");
+    fireEvent.click(screen.getByTestId("ai-spend-own").querySelector("input")!);
+    const radio = screen.getByTestId("ai-spend-openai").querySelector("input") as HTMLInputElement;
+    expect(radio.disabled).toBe(!connected);
+    expect(screen.queryByTestId("ai-spend-no-openai-key") !== null).toBe(!connected);
+    if (connected) {
+     fireEvent.click(radio);
+     fireEvent.click(screen.getByRole("button", { name: "Save" }));
+     await screen.findByTestId("ai-spend-saved");
+     expect(c.writes.find(w => w.path === "/v1/app/org/agent-ai")?.body).toMatchObject({ source: "openai_key" });
+    }
+   } finally { f.close(); }
+  }
+ });
+
  it("changing a saved read-only source to Rovara writes only the selected source", async () => {
   const c = company({ cap: 800_000_000, source: "openai_key", model: null });
   const f = mountRoute("/app/admin/ai-spending", c.respond);

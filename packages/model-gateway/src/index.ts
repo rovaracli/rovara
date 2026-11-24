@@ -20,6 +20,7 @@ export * from "./correction.js";
 export type { PendingPage } from "./pending-page.js";
 export * from "./product-seal.js";
 export * from "./product-keys.js";
+export * from "./openai-key-check.js";
 export * from "./product-gemini.js";
 export * from "./product-vertex.js";
 export * from "./product-vertex-credential.js";

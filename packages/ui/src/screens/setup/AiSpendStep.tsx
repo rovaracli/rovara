@@ -43,6 +43,8 @@ export const AI_SPEND_STEP_WORDS = Object.freeze({
  anthropic: "Your own Anthropic key",
  bedrock: "Your own Bedrock",
  connectAnthropic: "Connect your Anthropic key",
+ openai: "Your own OpenAI key",
+ connectOpenAi: "Connect your OpenAI key",
  manageSource: "Manage this AI connection",
  model: "Company model",
  modelHint: "From the models your company can use now.",
@@ -227,9 +229,11 @@ function Form({ model, source, settings, setNotice, onSaved, developerId, role, 
    <p><label data-testid="ai-spend-rovara"><input type="radio" name="ai-spend-source" value="rovara" checked={displayChoice === "rovara"} disabled={!source.available.rovara} onChange={() => { setSourceInteracted(true); setChoice("rovara"); }} /> <b>{W.rovara}</b>: {W.rovaraText}</label></p>
    <p><label data-testid="ai-spend-own"><input type="radio" name="ai-spend-source" value="own" checked={displayChoice === "own"} onChange={() => { setSourceInteracted(true); setChoice("own"); }} /> <b>{W.own}</b>: {W.ownText}</label></p>
    {displayChoice === "own" && <div className="rv-ai-spend-own" data-testid="ai-spend-own-choices">
-    {displayOwn !== "anthropic_key" && displayOwn !== "bedrock_byo" ? <p data-testid="ai-spend-source-read-only">Saved source: <b>{sourceLabel(displayOwn)}</b>. {spending ? "Change it with Connect company AI or Change order on this page." : <Link className="rv-admin-b1-link" to="#ai-connections">{W.manageSource}</Link>}</p> : <>
+    {displayOwn !== "anthropic_key" && displayOwn !== "bedrock_byo" && !(displayOwn === "openai_key" && source.listed.includes("openai_key")) ? <p data-testid="ai-spend-source-read-only">Saved source: <b>{sourceLabel(displayOwn)}</b>. {spending ? "Change it with Connect company AI or Change order on this page." : <Link className="rv-admin-b1-link" to="#ai-connections">{W.manageSource}</Link>}</p> : <>
      <p><label><input type="radio" name="ai-spend-own" value="anthropic_key" checked={displayOwn === "anthropic_key"} disabled={!source.available.anthropic_key} onChange={() => { setSourceInteracted(true); setChoice("own"); setOwn("anthropic_key"); }} /> {W.anthropic}{source.anthropicKeyConnected === false && <> <span data-testid="ai-spend-no-key">(not connected yet)</span></>}</label></p>
+     {source.listed.includes("openai_key") && <p><label data-testid="ai-spend-openai"><input type="radio" name="ai-spend-own" value="openai_key" checked={displayOwn === "openai_key"} disabled={!source.available.openai_key} onChange={() => { setSourceInteracted(true); setChoice("own"); setOwn("openai_key"); }} /> {W.openai}{source.openaiKeyConnected === false && <> <span data-testid="ai-spend-no-openai-key">(not connected yet)</span></>}</label></p>}
      <p><label><input type="radio" name="ai-spend-own" value="bedrock_byo" checked={displayOwn === "bedrock_byo"} disabled={!source.available.bedrock_byo} onChange={() => { setSourceInteracted(true); setChoice("own"); setOwn("bedrock_byo"); }} /> {W.bedrock}{!source.available.bedrock_byo && " (coming soon)"}</label></p>
+     {displayOwn === "openai_key" && source.openaiKeyConnected !== true && <p>{spending ? <span data-testid="ai-spend-connect-openai">{W.connectOpenAi} with Connect company AI on this page</span> : <Link className="rv-admin-b1-link" to="#ai-connections" data-testid="ai-spend-connect-openai">{W.connectOpenAi}</Link>}, then come back here.</p>}
      {displayOwn === "anthropic_key" && source.anthropicKeyConnected !== true && <p>{spending ? <span data-testid="ai-spend-connect">{W.connectAnthropic} with Connect company AI on this page</span> : <Link className="rv-admin-b1-link" to="#ai-connections" data-testid="ai-spend-connect">{W.connectAnthropic}</Link>}, then come back here.</p>}
     </>}
    </div>}

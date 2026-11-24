@@ -25,12 +25,12 @@ export const geminiAnswer = (usage: Record<string, unknown> = { promptTokenCount
   { candidates: [{ content: { parts: [{ text: "hi" }], role: "model" } }] },
   { candidates: [{ content: { parts: [{ text: "!" }], role: "model" }, finishReason: "STOP" }], usageMetadata: usage },
 ]);
-export function storeKit(options: { beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; keyService?: ProductKeyService; clock?: () => number; vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck } = {}) {
+export function storeKit(options: { beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; keyService?: ProductKeyService; clock?: () => number; vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck; openaiCheck?: OpenAiKeyCheck } = {}) {
   const table = new InMemoryProductKeyTable(options.beforeCommit);
   const keyService = options.keyService ?? localProductKeyService(randomBytes(32));
   const fingerprintSecret = randomBytes(32);
   let clock = now;
-  const store = new ProductKeyStore({ table, sealer: new ProductKeySealer(keyService), fingerprint: hmacFingerprinter(fingerprintSecret), now: options.clock ?? (() => clock), ...(options.vertexCheck === undefined ? {} : { vertexCheck: options.vertexCheck }), ...(options.bedrockCheck === undefined ? {} : { bedrockCheck: options.bedrockCheck }) });
+  const store = new ProductKeyStore({ table, sealer: new ProductKeySealer(keyService), fingerprint: hmacFingerprinter(fingerprintSecret), now: options.clock ?? (() => clock), ...(options.vertexCheck === undefined ? {} : { vertexCheck: options.vertexCheck }), ...(options.bedrockCheck === undefined ? {} : { bedrockCheck: options.bedrockCheck }), ...(options.openaiCheck === undefined ? {} : { openaiCheck: options.openaiCheck }) });
   return { table, store, keyService, fingerprintSecret, advance: (ms: number) => { clock += ms; }, setClock: (ms: number) => { clock = ms; } };
 }
 export const change = (owner: string, expectedRevision: number, actor: ProductActor = admin) => ({ iss, cid, owner, requestId: randomUUID(), expectedRevision, actor });
@@ -61,6 +61,7 @@ export const wholePath = "/v1/product/gemini/v1beta/models/gemini-2.5-flash:gene
 export { PRODUCT_COMPANY_OWNER as COMPANY };
 import { handleGateway } from "../../packages/model-gateway/src/server.js";
 import { MemorySink, mint } from "./model-gateway-fixture.js";
+import type { OpenAiKeyCheck } from "../../packages/model-gateway/src/openai-key-check.js";
 export async function productCall(deps: GatewayDependencies, path = streamPath, body: unknown = geminiBody, token = mint(), headers: Record<string, string> = {}) {
   const sink = new MemorySink();
   const bytes = Buffer.isBuffer(body) ? body : Buffer.from(JSON.stringify(body));

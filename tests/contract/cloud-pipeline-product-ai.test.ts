@@ -5,7 +5,9 @@ import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { CLOUD_APP_CONTEXT_KEY } from "../../infra/lib/cloud-app.js";
-import { CLOUD_PIPELINE_SWITCHES, CloudReleasePipelineStack, pipelineDeployContext } from "../../infra/lib/cloud-release-pipeline.js";
+import { CLOUD_PIPELINE_SWITCHES, CloudReleasePipelineStack, PIPELINE_AI_SOURCE_KINDS_CONTEXT_KEY, pipelineDeployContext } from "../../infra/lib/cloud-release-pipeline.js";
+import { AI_SOURCE_KINDS_CONTEXT_KEY } from "../../infra/lib/app.js";
+import { PRODUCTION_SOURCE_KINDS_REFUSAL } from "../../packages/contracts/src/model-sources.js";
 import { MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
 
 const deployCommand = (environmentName: string) => {
@@ -42,6 +44,16 @@ describe("Cloud release pipeline: per-environment deploy switches", () => {
   it("an environment the config does not name deploys exactly as before", () => {
     expect(pipelineDeployContext("dev1")).toEqual([]);
     expect(deployCommand("dev1")).not.toContain(MODEL_GATEWAY_PRODUCT_CONTEXT_KEY);
+  });
+
+  it("Rovara-cloud#308: an environment's company AI source kinds are carried as the app's own context key", () => {
+    expect(PIPELINE_AI_SOURCE_KINDS_CONTEXT_KEY).toBe(AI_SOURCE_KINDS_CONTEXT_KEY);
+    expect(pipelineDeployContext("staging", { staging: { productAi: true, aiSourceKinds: "openai,openrouter" } })).toEqual([SWITCH, `-c ${AI_SOURCE_KINDS_CONTEXT_KEY}=openai,openrouter`]);
+    expect(pipelineDeployContext("production", { production: { productAi: true, aiSourceKinds: "openai" } })).toEqual([SWITCH, `-c ${AI_SOURCE_KINDS_CONTEXT_KEY}=openai`]);
+    expect(pipelineDeployContext("staging", { staging: { productAi: true, aiSourceKinds: "" } })).toEqual([SWITCH]);
+    // A release never carries what a hand deploy would refuse: a malformed value, or a kind production may not switch on.
+    expect(() => pipelineDeployContext("staging", { staging: { aiSourceKinds: "openai,openai" } })).toThrow("invalid AI source kinds");
+    expect(() => pipelineDeployContext("production", { production: { productAi: true, aiSourceKinds: "openrouter" } })).toThrow(PRODUCTION_SOURCE_KINDS_REFUSAL);
   });
 
   it("the config is frozen: a run can't add a switch", () => {
