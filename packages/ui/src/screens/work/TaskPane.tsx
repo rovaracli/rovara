@@ -41,7 +41,7 @@ import { TaskHeldStatesView } from "../session/TaskHeldStatesView.js";
 import { TaskRunningProgressView } from "../session/TaskRunningProgressView.js";
 import { PlanRevisionView } from "../session/PlanRevisionView.js";
 import { PlanStartReceiptView } from "../session/PlanStartReceiptView.js";
-import { PlanDecisionView, PLAN_NOT_YET_LINE, PLAN_WRITING_LINE } from "../session/PlanDecisionView.js";
+import { PlanDecisionView, PLAN_NONE_WRITTEN_LINE, PLAN_NOT_YET_LINE, PLAN_WRITING_LINE } from "../session/PlanDecisionView.js";
 import { useDecisionActions } from "../home/NeedsYou.js";
 import { STOP_KEEPS_FILES_NOTE } from "../session/stop-note.js";
 import "./work.css";
@@ -96,11 +96,23 @@ export function planNotExpectedYet(task: ReadTask, decision: ReadDecision | unde
  const stage = task.workflow?.stage;
  return stage === "UNDERSTAND" || (stage === undefined && task.status === "STARTING");
 }
+const ENDED_STATUSES: ReadonlySet<string> = new Set(["CLOSED", "CANCELLED", "FAILED", "INTERRUPTED"]);
+const ENDED_OUTCOMES: ReadonlySet<string> = new Set(["ANSWERED", "REJECTED", "CLOSED", "CANCELLED"]);
 /**
- * The words for "no plan yet" (rule #14): "Rovara is writing the plan" only when Rovara is actually at it (the planning step is running on a machine that is up and no plan is written);
+ * A task that has ended (cancelled, closed, answered, rejected, failed, or complete) and holds no plan document: no plan is coming, so "will show the plan here when it's ready" would promise what never happens.
+ * Only where the served facts do not say a plan exists (`planWritten === true` never counts), and a plan-check failure on a task that is still going (`advisoryPlanFailure`) is not an end. Pure.
+ */
+export function taskEndedWithoutPlan(task: ReadTask): boolean {
+ if (task.workflow?.planWritten === true) return false;
+ if (task.status === "FAILED" && task.advisoryPlanFailure !== undefined) return false;
+ if (task.status === "SUCCEEDED" && task.workflow === undefined) return true;
+ return (task.status !== undefined && ENDED_STATUSES.has(task.status)) || task.workflow?.state === "COMPLETE" || (task.workflow?.outcome !== undefined && ENDED_OUTCOMES.has(task.workflow.outcome));
+}
+/**
+ * The words for "no plan yet" (rule #14): an ended task with no plan says so in the past tense; "Rovara is writing the plan" only when Rovara is actually at it (the planning step is running on a machine that is up and no plan is written);
  * otherwise (a machine still starting, Understand, waiting) nothing is writing yet, so the quiet "will show the plan here when it's ready".
  */
-export const planAbsentLine = (task: ReadTask): string => task.status !== "STARTING" && task.workflow?.planWritten !== true && task.workflow?.stage === "PLAN" && task.workflow.state === "RUNNING" ? PLAN_WRITING_LINE : PLAN_NOT_YET_LINE;
+export const planAbsentLine = (task: ReadTask): string => taskEndedWithoutPlan(task) ? PLAN_NONE_WRITTEN_LINE : task.status !== "STARTING" && task.workflow?.planWritten !== true && task.workflow?.stage === "PLAN" && task.workflow.state === "RUNNING" ? PLAN_WRITING_LINE : PLAN_NOT_YET_LINE;
 const PLAN_NOT_WRITTEN_ERROR = new ApiError(404, "NOT_FOUND", "this task has no plan document yet");
 
 /** The quiet card: a task that asks nothing of the person says why, in fixed words. */
@@ -236,7 +248,7 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
  const retryPlan = () => { void plan.refetch(); };
  const planPending = plan.isError && planNotWritten(plan.error);
  const planNote = plan.isError ? (planPending ? <p className="rv-muted" role="status" data-testid="plan-not-yet">{planAbsentLine(row.task)}</p> : <SectionError error={plan.error} label="this task's plan" retry={retryPlan} />) : null;
- const planFailedView = <PlanDecisionView taskTitle={row.title} plan={undefined} state={planPending ? "not-written" : "failed"} notWrittenLine={planAbsentLine(row.task)} onRetry={planPending ? undefined : retryPlan} />;
+ const planFailedView = <PlanDecisionView taskTitle={row.title} plan={undefined} state={planPending ? "not-written" : "failed"} notWrittenLine={planAbsentLine(row.task)} ended={taskEndedWithoutPlan(row.task)} onRetry={planPending ? undefined : retryPlan} />;
  const proofBody = proof.isError ? (proofNotServed(proof.error) ? <p className="rv-muted" role="status" data-testid="proof-not-yet">Proof will appear here.</p> : <SectionError error={proof.error} label="the proof" retry={() => { void proof.refetch(); }} />) : null;
  const stageBody = (): ReactNode => {
   const pulls = row.task.pullRequests;
@@ -311,7 +323,7 @@ export function TaskPane({ compact = false, readOnly = false, row, decisionsErro
     {primary !== undefined ? <>{primary}<div className="rv-task-session-slot">{sessionEntry}</div></> : !hasDecision && plan.isError && (stage === "spec" || stage === "request") ? <>{guard(stageBody())}<div className="rv-task-session-slot">{sessionEntry}</div>{quiet}</> : hasDecision ? <>{guard(decisionPart)}<div className="rv-task-session-slot">{sessionEntry}</div></> : currentCard ? <>{card}{quiet}</> : <><DecisionFrame as="section" title={row.need ?? run?.currentStep?.name ?? row.line} actions={null} className="rv-task-primary">{guard(stageBody())}</DecisionFrame><div className="rv-task-session-slot">{sessionEntry}</div>{quiet}</>}
     {guard(<>
     {shown !== undefined && stage !== "spec" && stage !== "request" && !currentCard && (hasDecision || primary !== undefined) && <div className="rv-task-selected-section">{stageBody()}</div>}
-    {section("Plan and changes", plan.isError ? (planPending ? "Plan not written yet" : "Plan unavailable") : currentPlan === undefined ? "Loading plan" : (planVersion === undefined ? "Plan" : "Plan v" + String(planVersion)) + (tasks.length === 0 ? "" : " · " + String(tasks.length) + (tasks.length === 1 ? " item" : " items")), <>{row.task.advisoryPlanFailure !== undefined && <p className="rv-muted rv-task-step-note"><VisibleText text={"The plan review didn't run: " + row.task.advisoryPlanFailure} /></p>}{(hasDecision || primary !== undefined && shown !== undefined) && (stage === "spec" || stage === "request") && stageBody()}{(stage !== "spec" && stage !== "request" || currentCard) && (planNote ?? (currentPlan === undefined ? null : <SpecStep plan={currentPlan} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} />))}{sections}<TaskHeldStatesView page="plan" onCheck={retryPlan} /></>, hasDecision && !approvalReceipt && (stage === "spec" || stage === "request"))}
+    {section("Plan and changes", plan.isError ? (planPending ? (taskEndedWithoutPlan(row.task) ? "No plan" : "Plan not written yet") : "Plan unavailable") : currentPlan === undefined ? "Loading plan" : (planVersion === undefined ? "Plan" : "Plan v" + String(planVersion)) + (tasks.length === 0 ? "" : " · " + String(tasks.length) + (tasks.length === 1 ? " item" : " items")), <>{row.task.advisoryPlanFailure !== undefined && <p className="rv-muted rv-task-step-note"><VisibleText text={"The plan review didn't run: " + row.task.advisoryPlanFailure} /></p>}{(hasDecision || primary !== undefined && shown !== undefined) && (stage === "spec" || stage === "request") && stageBody()}{(stage !== "spec" && stage !== "request" || currentCard) && (planNote ?? (currentPlan === undefined ? null : <SpecStep plan={currentPlan} comments={comments.data ?? []} onAnswer={openAnswers} onComment={onComment} />))}{sections}<TaskHeldStatesView page="plan" onCheck={retryPlan} /></>, hasDecision && !approvalReceipt && (stage === "spec" || stage === "request"))}
     {section("Checks and reviews", proof.isError ? "Proof unavailable" : proof.data === undefined ? "Loading proof" : proof.data.items.length === 0 ? "Recorded results appear here" : String(proof.data.items.length) + " recorded results", (primary === undefined || shown !== undefined) && (stage === "proof" || stage === "pull_request") ? <p className="rv-muted">Recorded proof is shown above.</p> : proofBody ?? <ProofStep rows={rows} items={proof.data?.items ?? []} failures={proof.data?.failures} failuresNotListed={proof.data?.failuresNotListed} />)}
     {section("Activity", events.isError ? "Activity unavailable" : events.data === undefined ? "Loading activity" : events.data.length === 0 ? "Recorded events appear here" : String(events.data.length) + " recorded events", <>{events.isError && !currentCard && <SectionError error={events.error} label="the activity" retry={() => { void events.refetch(); }} />}<TaskSideCards task={row.task} plan={currentPlan} events={events.data ?? []} /></>)}
     {section("About this task", aboutSummary ?? row.project, <>{aboutExtra}<LessonsUsedCard project={row.project} taskId={row.id} /></>)}

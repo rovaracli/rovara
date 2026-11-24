@@ -9,7 +9,7 @@ export function SetupJournalReadPanel({ project, withRun = true }: { project: st
   <div className="g5-main g5-stack">
    {withRun
     ? <ReadState query={run} label="the setup run" shell={node => <section className="g5-card g5-run">{node}</section>}>{data => <section className="g5-card g5-run" aria-label="Setup run result">
-     <RunSummary data={data} project={project} />
+     <RunSummary data={data} project={project} hostAsks={journal.isSuccess ? journal.data.hostAsks : undefined} />
      <div className="g5-frows"><LogFold query={journal} open /><HostsFold query={journal} /></div>
     </section>}</ReadState>
     : <section className="g5-card g5-run" aria-label="Run log, read back"><h2>Run log, read back</h2><div className="g5-frows"><LogFold query={journal} open /><HostsFold query={journal} /></div></section>}

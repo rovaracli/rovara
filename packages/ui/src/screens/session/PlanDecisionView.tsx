@@ -12,12 +12,17 @@ export type PlanDecisionState = "read-required" | "ready" | "outdated" | "failed
 /** The quiet line for a task whose plan Rovara has not written yet. */
 export const PLAN_NOT_YET_LINE = "Rovara will show the plan here when it's ready.";
 
+/** The line for a task that has ended (cancelled, answered, rejected, failed) with no plan document: past tense, because no plan is coming (rule #14: never promise what will not happen). */
+export const PLAN_NONE_WRITTEN_LINE = "No plan was written for this task.";
+
 /** The line while Rovara is actually writing the plan (the planning step is running and no plan exists yet). */
 export const PLAN_WRITING_LINE = "Rovara is writing the plan.";
 
 export interface PlanDecisionViewProps {
  /** The words for state "not-written"; the quiet default unless the task is at the planning step. */
  notWrittenLine?: string | undefined;
+ /** The task has ended with no plan: the card's title says so in the past tense instead of "not written yet". */
+ ended?: boolean | undefined;
  taskTitle: string;
  plan: ReadPlan | undefined;
  state: PlanDecisionState;
@@ -28,7 +33,7 @@ export interface PlanDecisionViewProps {
 }
 
 /** Cloud's plan approval view. Decision handlers and evidence digest policy remain in the caller-owned action slot. */
-export function PlanDecisionView({ taskTitle, plan, state, decisionSlot, onRetry, slackReturnTo, notWrittenLine = PLAN_NOT_YET_LINE }: PlanDecisionViewProps) {
+export function PlanDecisionView({ taskTitle, plan, state, decisionSlot, onRetry, slackReturnTo, ended = false, notWrittenLine = PLAN_NOT_YET_LINE }: PlanDecisionViewProps) {
  const mayShowDecision = state === "read-required" || state === "ready";
  return <article className="rv-task-plan-view" aria-label="Plan decision">
   <header className="rv-pane-head">
@@ -36,7 +41,7 @@ export function PlanDecisionView({ taskTitle, plan, state, decisionSlot, onRetry
    <h2><VisibleText text={taskTitle} /></h2>
    <div className="rv-section-head"><h3>{state === "failed" || state === "not-written" ? "Plan" : "Plan v" + String(plan?.version ?? "?")}</h3>{state !== "failed" && state !== "not-written" && <span>Current revision</span>}</div>
   </header>
-  <DecisionFrame title={state === "failed" ? "Plan unavailable" : state === "not-written" ? "Plan not written yet" : "Review this plan"} actions={null} className="rv-task-primary">
+  <DecisionFrame title={state === "failed" ? "Plan unavailable" : state === "not-written" ? (ended ? "No plan" : "Plan not written yet") : "Review this plan"} actions={null} className="rv-task-primary">
    <section className="rv-pane-main" aria-label="Current plan">
   {state === "failed" && <div className="rv-plan-decision-state" role="alert">
       <p>The latest plan couldn't be read. Try again before deciding.</p>

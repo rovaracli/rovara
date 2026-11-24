@@ -1,4 +1,4 @@
-import { TaskPane, planAbsentLine, planNotExpectedYet, planNotWritten } from "../../packages/ui/src/screens/work/TaskPane.js";
+import { TaskPane, planAbsentLine, planNotExpectedYet, planNotWritten, taskEndedWithoutPlan } from "../../packages/ui/src/screens/work/TaskPane.js";
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
@@ -955,4 +955,47 @@ it("REVIEW: a test_plan, answer or review_report artifact is not a plan document
   const read = (workflow: Record<string, unknown>) => readTaskList({ tasks: [task(ID.plan, "T", { workflow })] })[0]!.workflow?.planWritten;
   for (const type of ["test_plan", "answer", "review_report", "Plan", "plan "]) expect(read({ stage: "PLAN", state: "RUNNING", artifacts: [{ ...ART, type }] })).toBe(false);
   expect(read({ stage: "PLAN", state: "RUNNING", artifacts: [{ ...ART, type: "test_plan" }, ART] })).toBe(true);
+});
+
+// ---- an ENDED task with no plan: past tense, never a promise of a plan that will not come ----
+const NONE_WRITTEN = "No plan was written for this task.";
+it("an ended task with no plan document says so in the past tense; a task still going keeps its words", () => {
+  const read = (artifacts: unknown[] | undefined, workflow: Record<string, unknown>, status: string) => readTaskList({ tasks: withArtifacts(artifacts, workflow, status) })[0]!;
+  for (const status of ["CANCELLED", "CLOSED", "FAILED", "INTERRUPTED"]) expect(planAbsentLine(read([], { stage: "UNDERSTAND", state: "BLOCKED" }, status)), status).toBe(NONE_WRITTEN);
+  expect(planAbsentLine(read([], { stage: "UNDERSTAND", state: "COMPLETE", outcome: "ANSWERED" }, "SUCCEEDED"))).toBe(NONE_WRITTEN);
+  expect(planAbsentLine(read([], { stage: "PLAN_REVIEW", state: "COMPLETE", outcome: "REJECTED" }, "SUCCEEDED"))).toBe(NONE_WRITTEN);
+  expect(planAbsentLine(read([], { stage: "PLAN", state: "RUNNING" }, "FAILED"))).toBe(NONE_WRITTEN);
+  // Unchanged while the task is going.
+  expect(planAbsentLine(read([], { stage: "PLAN", state: "RUNNING" }, "RUNNING"))).toBe("Rovara is writing the plan.");
+  expect(planAbsentLine(read([], { stage: "UNDERSTAND", state: "RUNNING" }, "RUNNING"))).toBe("Rovara will show the plan here when it's ready.");
+  expect(planAbsentLine(read([], { stage: "PLAN", state: "RUNNING" }, "STARTING"))).toBe("Rovara will show the plan here when it's ready.");
+  expect(planAbsentLine(read([], { stage: "PLAN", state: "WAITING" }, "SUCCEEDED"))).toBe("Rovara will show the plan here when it's ready.");
+  // A plan that exists is never "no plan was written", whatever the status; an advisory plan-check failure on a task still going is not an end.
+  expect(taskEndedWithoutPlan(read([ART], { stage: "IMPLEMENT", state: "BLOCKED" }, "FAILED"))).toBe(false);
+  expect(taskEndedWithoutPlan({ ...read([], { stage: "PLAN", state: "RUNNING" }, "FAILED"), advisoryPlanFailure: "The plan review didn't run" })).toBe(false);
+});
+it.each([
+  ["cancelled", { stage: "PLAN", state: "BLOCKED" }, "CANCELLED"],
+  ["answered", { stage: "UNDERSTAND", state: "COMPLETE", outcome: "ANSWERED" }, "CLOSED"],
+  ["failed before a plan", { stage: "UNDERSTAND", state: "BLOCKED" }, "FAILED"],
+] as const)("the plan card of a task that %s with no plan says it in the past tense, never 'will show the plan here'", async (_name, workflow, status) => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: withArtifacts([], { ...workflow }, status), cards: decisionsView([]) });
+  const text = recordPageText();
+  f.failPlan(NOT_YET);f.remount();
+  const line = await screen.findByTestId("plan-not-yet");
+  expect(line.textContent).toBe(NONE_WRITTEN);
+  expect(screen.getByRole("heading", { name: "No plan" })).toBeTruthy();
+  text.stop();
+  expect(text.everShowed("will show the plan here")).toBe(false);
+  expect(text.everShowed("Plan not written yet")).toBe(false);
+  expect(screen.queryByRole("button", { name: "Read the plan again" })).toBeNull();
+  f.close();
+});
+it("a running task with no plan keeps the unchanged quiet line and heading", async () => {
+  const f = pageSetup({ path: `/app/sessions/${ID.plan}`, tasks: withArtifacts([], { stage: "UNDERSTAND", state: "RUNNING" }, "RUNNING"), cards: decisionsView([]) });
+  f.failPlan(NOT_YET);f.remount();
+  expect((await screen.findByTestId("plan-not-yet")).textContent).toBe("Rovara will show the plan here when it's ready.");
+  expect(screen.getByRole("heading", { name: "Plan not written yet" })).toBeTruthy();
+  expect(screen.queryByText(NONE_WRITTEN)).toBeNull();
+  f.close();
 });

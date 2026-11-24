@@ -3,6 +3,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { Fact, Facts } from "./parts.js";
 import { ReadState } from "./ReadState.js";
 import { useScopedRead } from "./read-model.js";
+import { hostsStopWords } from "../setup/words.js";
 
 export const runPath = (project: string) => `/v1/app/projects/${encodeURIComponent(project)}/setup-agent`;
 export const useRunRead = (project: string) => useScopedRead(runPath(project), SetupAgentViewSchema);
@@ -20,14 +21,14 @@ export function runHeading(data: SetupAgentView): string {
  return "No setup run yet";
 }
 /** The heading, one muted line and one plain line of the run card. */
-export function RunSummary({ data, project }: { data: SetupAgentView; project: string }) {
+export function RunSummary({ data, project, hostAsks }: { data: SetupAgentView; project: string; /** The run's website requests, when the journal was read: they tell why a run that stopped on websites stopped (unknown when absent). */ hostAsks?: SetupJournalReply["hostAsks"] | undefined }) {
  return <>
   <h2>{runHeading(data)}</h2>
   {(data.summary !== undefined || data.verified !== undefined) && <p className="g5-muted">{data.summary !== undefined && minutes(data.summary.elapsedMs)}{data.verified !== undefined && <>{data.summary !== undefined ? " · " : ""}{data.verified ? "Verified on a fresh machine" : "Not verified"}</>}</p>}
   {data.status === "running" && <p>Nothing is needed from you, and nothing in <VisibleText text={project} /> is changed.</p>}
   {data.status === "ready" && data.verified !== true && <p>A ready run does not establish that its proposed setup was approved.</p>}
   {data.status === "none" && <p>No setup run has started.</p>}
-  {data.failure !== undefined && <p>What failed: <VisibleText text={data.failure} /></p>}
+  {data.stop === "hosts_waiting" && data.status !== "running" ? <p data-testid="hosts-stop">{hostsStopWords(hostAsks)}</p> : data.failure !== undefined && <p>What failed: <VisibleText text={data.failure} /></p>}
   {data.apply !== undefined && <Facts><Fact label="Candidate check">{data.apply.check.status}</Fact></Facts>}
  </>;
 }
