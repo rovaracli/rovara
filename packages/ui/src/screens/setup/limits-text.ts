@@ -38,7 +38,7 @@ export const SETUP_LOCKS = {
  PENDING: "A change is waiting for a different admin", PENDING_WOULD: "It would set",
  PENDING_MINE: "You proposed this. A different admin has to approve it.", PENDING_OTHER: "Another admin proposed this. You can approve it.",
  APPROVE: "Approve this change", APPROVE_HELP: "You need to have signed in within the last 10 minutes.", APPROVED: "Approved. The change is on.",
- UNREADABLE_RUNS: "The company's setup locks can't be read, so setup runs are held until a company admin repairs them (company How we work page).",
+ UNREADABLE_RUNS: "The company's setup locks can't be read, so setup runs are held. Contact Rovara support to get them running again.",
  UNREADABLE_HEADING: "The setup locks can't be read", REPAIR: "Repair the locks", REPAIR_HELP: "Repair puts safe default values in place of the unreadable ones. Setup runs stay held until then. You need to have signed in within the last 10 minutes.", REPAIRED: "Repaired. Setup runs can start again.",
  EDIT: "Change the locks", TURN_OFF: "Turn off setup runs for the company", SAVE: "Save locks", SAVED: "Saved. The change is on.", WAITING: "Saved. Part of this loosens a lock, so a different admin has to approve it.",
  SIGN_IN_AGAIN: "Sign in again", CHANGED: "The locks changed since you looked. They were read again.", FAILED: "Couldn't change the locks. Try again.", NOTHING: "Nothing was changed.",
