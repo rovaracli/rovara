@@ -21,7 +21,6 @@ const marker = 'fixture-private-marker';
 type Form = 'key' | 'endpoint';
 type Entry = 'setup' | 'admin';
 const PATHS = { key: '/v1/app/org/learning-ai/key', endpoint: '/v1/app/org/agent-ai/endpoint' };
-const heldWords = /Rovara didn't confirm this yet/u;
 beforeEach(() => localStorage.clear());
 const learning = (revision: number) => ({ revision, accounts: { anthropic: { connected: false }, openai: { connected: false }, gemini: { connected: false } }, removed: [], pausedNow: [], pauseReasons: [] });
 const agent = (revision: number) => ({ version: 1, source: 'anthropic_key', choices: [{ source: 'anthropic_key', available: true }, { source: 'custom_endpoint', available: true }], endpointConnected: false, keysRevision: revision });
@@ -84,7 +83,7 @@ describe.each(['setup', 'admin'] as const)('%s company AI', entry => {
     expect(f.requests.slice(before, before + 2).map(r => r.path)).toEqual(['/v1/app/me', PATHS[form]]);
     expect(writes(f)[0]).toMatchObject({ method: 'PUT', path: PATHS[form], retry: 'never', body: { expectedRevision: 1, key: marker, ...(form === 'key' ? { provider: 'anthropic' } : { baseUrl: 'https://llm.example.com/v1', models: [{ name: 'coder', catalog: { provider: 'openai', modelId: 'gpt-5-mini' } }] }) } });
     await waitFor(() => expect(fields.field.value).toBe(''));
-    await waitFor(() => expect(screen.queryByText(heldWords)).toBeNull());
+    await waitFor(() => expect(screen.queryAllByTestId('held-connection')).toHaveLength(0));
     expect(JSON.stringify(localStorage)).not.toContain(marker);
    } finally { f.close(); }
   });
@@ -101,7 +100,7 @@ describe.each(['setup', 'admin'] as const)('%s company AI', entry => {
    try {
     const fields = await open(entry, form); fields.submit();
     await screen.findByText(words);
-    expect(screen.queryByText(heldWords)).toBeNull();
+    expect(screen.queryAllByTestId('held-connection')).toHaveLength(0);
     expect(connectionHoldAt(f.host.storage, `connection:${scope.orgId}:${scope.developerId}:${PATHS[form]}`)).toBeUndefined();
     expect(writes(f)).toHaveLength(1);
     fireEvent.change(fields.field, { target: { value: 'corrected-fixture-key' } }); fields.submit(); fields.submit();
@@ -117,7 +116,7 @@ describe.each(['setup', 'admin'] as const)('%s company AI', entry => {
   ] as const)('an unproven %s %s refusal stays held with no resend', async (status, code) => {
    const f = mount(entry, async () => ({ status, body: code === undefined ? {} : { error: { code, message: 'Unproven refusal.' } } }));
    try {
-    const fields = await open(entry, form); fields.submit(); await screen.findByText(heldWords);
+    const fields = await open(entry, form); fields.submit(); await screen.findAllByTestId('held-connection');
     fireEvent.change(fields.field, { target: { value: 'corrected-fixture-key' } }); fields.submit();
     await act(async () => { await Promise.resolve(); }); expect(writes(f)).toHaveLength(1);
    } finally { f.close(); }
@@ -127,28 +126,28 @@ describe.each(['setup', 'admin'] as const)('%s company AI', entry => {
    try {
     const fields = await open(entry, form);
     fields.submit();
-    await screen.findByText(heldWords);
+    await screen.findAllByTestId('held-connection');
     const beforeResend = f.requests.length;
     fireEvent.change(fields.field, { target: { value: marker } }); fields.submit();
     await act(async () => { await Promise.resolve(); });
     expect(f.requests).toHaveLength(beforeResend);
     expect(writes(f)).toHaveLength(1);
     expect(JSON.stringify(localStorage)).not.toContain(marker);
-    const check = screen.getByRole('button', { name: form === 'key' ? 'Check company AI keys' : 'Check own endpoint' });
+    const check = screen.getByRole('button', { name: form === 'key' ? 'Check Anthropic key' : 'Check own endpoint' });
     fireEvent.click(check);
     await waitFor(() => expect(check).toHaveProperty('disabled', false));
-    expect(screen.getByText(heldWords)).toBeTruthy();
+    expect(screen.getAllByTestId('held-connection').length).toBeGreaterThan(0);
     fields.submit(); await act(async () => { await Promise.resolve(); }); expect(writes(f)).toHaveLength(1);
     f.revision(2); fireEvent.click(check);
-    await waitFor(() => expect(screen.queryByText(heldWords)).toBeNull());
+    await waitFor(() => expect(screen.queryAllByTestId('held-connection')).toHaveLength(0));
     expect(writes(f)).toHaveLength(1);
    } finally { f.close(); }
   });
   it('a hold survives closing and reopening the entry', async () => {
    const f = mount(entry, async () => ({ status: 503, body: {} }));
-   const fields = await open(entry, form); fields.submit(); await screen.findByText(heldWords); f.close();
+   const fields = await open(entry, form); fields.submit(); await screen.findAllByTestId('held-connection'); f.close();
    const g = mount(entry);
-   try { const reopened = await open(entry, form); await screen.findByText(heldWords); reopened.submit(); await act(async () => { await Promise.resolve(); }); expect(writes(g)).toHaveLength(0); }
+   try { const reopened = await open(entry, form); await screen.findAllByTestId('held-connection'); reopened.submit(); await act(async () => { await Promise.resolve(); }); expect(writes(g)).toHaveLength(0); }
    finally { g.close(); }
   });
   it('a failed persistence verification sends nothing', async () => {
@@ -164,7 +163,7 @@ describe.each(['setup', 'admin'] as const)('%s company AI', entry => {
    try {
     const fields = await open(entry, form);
     persistConnectionHold(f.host.storage, `connection:${scope.orgId}:${scope.developerId}:${PATHS[form]}`, { requestId: 'other-tab', expectedRevision: 1, startedAt: Date.now() });
-    fields.submit(); await screen.findByText(heldWords); expect(writes(f)).toHaveLength(0);
+    fields.submit(); await screen.findAllByTestId('held-connection'); expect(writes(f)).toHaveLength(0);
    } finally { f.close(); }
   });
   it.each(['CSRF_INVALID', 'CSRF_STALE'])('the documented pre-send %s refusal allows a new deliberate press', async code => {
@@ -173,7 +172,7 @@ describe.each(['setup', 'admin'] as const)('%s company AI', entry => {
    try {
     const fields = await open(entry, form); fields.submit();
     await screen.findByText('Check your sign-in and try again.');
-    expect(screen.queryByText(heldWords)).toBeNull();
+    expect(screen.queryAllByTestId('held-connection')).toHaveLength(0);
     fireEvent.change(fields.field, { target: { value: marker } }); fields.submit();
     await waitFor(() => expect(writes(f)).toHaveLength(2));
    } finally { f.close(); }
@@ -181,24 +180,24 @@ describe.each(['setup', 'admin'] as const)('%s company AI', entry => {
   it('a company switch during Check cannot clear the hold', async () => {
    const f = mount(entry, async () => ({ status: 503, body: {} }));
    try {
-    const fields = await open(entry, form); fields.submit(); await screen.findByText(heldWords); f.revision(2);
+    const fields = await open(entry, form); fields.submit(); await screen.findAllByTestId('held-connection'); f.revision(2);
     const request = f.host.transport.request.bind(f.host.transport);
     f.host.transport.request = async r => { const answer = await request(r); if (r.path === (form === 'key' ? '/v1/app/org/learning-ai' : '/v1/app/org/agent-ai')) f.switchTo({ ...original, org: { ...original.org, orgId: 'org_bbbbbbbbbbbbbbbbbbbb' } }); return answer; };
-    fireEvent.click(screen.getByRole('button', { name: form === 'key' ? 'Check company AI keys' : 'Check own endpoint' }));
+    fireEvent.click(screen.getByRole('button', { name: form === 'key' ? 'Check Anthropic key' : 'Check own endpoint' }));
     await screen.findByText('Company access changed. Reload to check access.');
-    expect(screen.getByText(heldWords)).toBeTruthy(); expect(writes(f)).toHaveLength(1);
+    expect(screen.getAllByTestId('held-connection').length).toBeGreaterThan(0); expect(writes(f)).toHaveLength(1);
    } finally { f.close(); }
   });
   it('a changed identity refuses Check before reading another company', async () => {
    const f = mount(entry, async () => ({ status: 503, body: {} }));
    try {
-    const fields = await open(entry, form); fields.submit(); await screen.findByText(heldWords);
+    const fields = await open(entry, form); fields.submit(); await screen.findAllByTestId('held-connection');
     f.switchTo({ ...original, org: { ...original.org, orgId: 'org_bbbbbbbbbbbbbbbbbbbb' } });
     const before = f.requests.length;
-    fireEvent.click(screen.getByRole('button', { name: form === 'key' ? 'Check company AI keys' : 'Check own endpoint' }));
+    fireEvent.click(screen.getByRole('button', { name: form === 'key' ? 'Check Anthropic key' : 'Check own endpoint' }));
     await screen.findByText('Company access changed. Reload to check access.');
     expect(f.requests.slice(before).map(r => r.path)).toEqual(['/v1/app/me']);
-    expect(screen.getByText(heldWords)).toBeTruthy();
+    expect(screen.getAllByTestId('held-connection').length).toBeGreaterThan(0);
    } finally { f.close(); }
   });
   it('a real send timeout remains held when the transport never settles', async () => {
@@ -207,7 +206,7 @@ describe.each(['setup', 'admin'] as const)('%s company AI', entry => {
     const fields = await open(entry, form); vi.useFakeTimers();
     await act(async () => { fields.submit(); await Promise.resolve(); });
     await act(async () => { await vi.advanceTimersByTimeAsync(30_001); });
-    expect(screen.getByText(heldWords)).toBeTruthy(); expect(writes(f)).toHaveLength(1);
+    expect(screen.getAllByTestId('held-connection').length).toBeGreaterThan(0); expect(writes(f)).toHaveLength(1);
    } finally { vi.useRealTimers(); f.close(); }
   });
  });
@@ -259,11 +258,17 @@ describe('shared connection hook gates', () => {
   act(() => { fireEvent(window, new StorageEvent('storage', { key })); }); expect(f.result.current.held).toBe(true);
   await act(async () => { await f.result.current.send('PUT', {}, 'Done'); }); expect(f.requests).toHaveLength(0); f.unmount();
  });
- it('an unreadable stored marker starts held and cannot be manually cleared by Check', async () => {
-  localStorage.setItem(`connection:${scope.orgId}:${scope.developerId}:${PATHS.key}`, 'unreadable');
+ it('an unreadable stored marker starts held; Check reads the current settings, never clears it by itself, and offers an explicit release', async () => {
+  const markerKey = `connection:${scope.orgId}:${scope.developerId}:${PATHS.key}`;
+  localStorage.setItem(markerKey, 'unreadable');
   const f = hook(); expect(f.result.current.held).toBe(true);
-  await act(async () => { await f.result.current.check(); });
-  expect(f.result.current.held).toBe(true); expect(f.requests).toHaveLength(0); f.unmount();
+  // The once-per-load automatic Check covers an unreadable marker too.
+  await waitFor(() => expect(f.result.current.unconfirmed).toBe(true));
+  expect(f.result.current.held).toBe(true);
+  expect(f.requests.map(r => r.path)).toEqual(['/v1/app/me', '/v1/app/org/learning-ai', '/v1/app/me']);
+  expect(localStorage.getItem(markerKey)).toBe('unreadable');
+  act(() => { f.result.current.release(); });
+  expect(f.result.current.held).toBe(false); expect(localStorage.getItem(markerKey)).toBe(''); f.unmount();
  });
 });
 

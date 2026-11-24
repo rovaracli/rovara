@@ -39,6 +39,8 @@ export type LearningPauseReason = keyof typeof LEARNING_PAUSE_WORDS;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const KEY = /^[\x21-\x7e]{8,512}$/u;
+/** The words for a key with spaces or line breaks in it (a pasted console command); the page says the same before sending (admin-learning-ai.ts KEY_WHITESPACE_WORDS). */
+export const KEY_WHITESPACE_WORDS = "A key can't contain spaces or line breaks. Copy just the key.";
 const BODY_BYTES_MAX = 4_096;
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
@@ -66,6 +68,23 @@ const providersOn = (context: RouteContext): readonly LearningAiProvider[] => co
 /** What the page shows: the providers switched on, plus OpenRouter whenever the company document still holds it (on or off), so it can always be removed. */
 const providersShown = (context: RouteContext, v: ProductAiView): readonly LearningAiProvider[] =>
   providersOn(context).includes("openrouter") || !(v.sources.some((s) => s.provider === "openrouter") || v.removed.some((r) => r.provider === "openrouter")) ? providersOn(context) : COMPANY_KEY_PROVIDERS;
+
+const SHORT_NAMES: Readonly<Record<LearningAiProvider, string>> = Object.freeze({ anthropic: "Anthropic", openai: "OpenAI", gemini: "Google AI Studio", openrouter: "OpenRouter" });
+/** The provider a key's own prefix names (OpenRouter "sk-or-", Anthropic "sk-ant-", Google "AIza", any other "sk-" is OpenAI's); undefined when the shape says nothing. */
+function shapeOf(key: string): LearningAiProvider | undefined {
+  if (key.startsWith("sk-or-")) return "openrouter";
+  if (key.startsWith("sk-ant-")) return "anthropic";
+  if (key.startsWith("AIza")) return "gemini";
+  return key.startsWith("sk-") ? "openai" : undefined;
+}
+/** A clean refusal (nothing is sent to the provider or saved) when a key plainly belongs to another provider than the slot. The page shows the same words before sending. */
+export function wrongProviderKey(provider: LearningAiProvider, key: string, listed: readonly LearningAiProvider[] = COMPANY_KEY_PROVIDERS): RouteAnswer | undefined {
+  const shape = shapeOf(key);
+  if (shape === undefined || shape === provider) return undefined;
+  const looks = `This looks like ${shape === "gemini" ? "a" : "an"} ${SHORT_NAMES[shape]} key.`;
+  // Where that provider's slot is switched off (OpenRouter), there is nowhere to paste it: say no more.
+  return refusal(400, "CONFIG_INVALID", listed.includes(shape) ? `${looks} Paste it under ${SHORT_NAMES[shape]}.` : looks);
+}
 
 interface Admin { companyId: string; developerId: string; name: string }
 
@@ -152,7 +171,11 @@ async function putKey(context: RouteContext): Promise<RouteAnswer> {
   const e = envelope(context, ["key"]);
   if (("status" in e)) return e;
   const key = e.body.key;
+  // The saved key is exactly what was sent (never trimmed here), so any whitespace is refused, and says why.
+  if (typeof key === "string" && /\s/u.test(key)) return refusal(400, "CONFIG_INVALID", KEY_WHITESPACE_WORDS);
   if (typeof key !== "string" || !KEY.test(key)) return WORDS.invalid;
+  const wrong = wrongProviderKey(e.provider, key, providersOn(context));
+  if (wrong !== undefined) return wrong;
   const backend = context.productAi!;
   const current = await guarded(() => backend.store.view(backend.issuer, who.companyId, LEARNING_AI_OWNER));
   if (("status" in current)) return current;

@@ -9,6 +9,8 @@ import { storedLearningKeys } from "../../packages/model-gateway/src/learning-ke
 import { LEARNING_PAUSE_MESSAGES, LEARNING_PAUSE_REASONS } from "../../packages/model-gateway/src/learning-route.js";
 import { LEARNING_OWNER } from "../../packages/model-gateway/src/product-keys.js";
 import { A, B, ISS, world, write } from "./product-ai-world.js";
+import { KEY_WHITESPACE_WORDS, wrongProviderKey } from "../../packages/cloud-server/src/learning-ai-routes.js";
+import { KEY_WHITESPACE_WORDS as PAGE_WHITESPACE_WORDS, keyWhitespaceHint, wrongProviderKeyHint } from "../../packages/ui/src/api/admin-learning-ai.js";
 
 const PATH = "/org/learning-ai";
 const anthropicKey = () => ["sk", "ant", randomBytes(16).toString("hex")].join("-");
@@ -123,5 +125,114 @@ describe("Learning AI key: the learning cap and why lessons are paused", () => {
 
   it("Cloud's pause words are the gateway's", () => {
     expect(LEARNING_PAUSE_WORDS).toEqual(LEARNING_PAUSE_MESSAGES);
+  });
+});
+
+describe("Learning AI key: a key PUT is observable, and a wrong-provider key is refused before anything is saved", () => {
+  it("a connect and a replace each answer a revision above the one sent, and a later read reports that same revision", async () => {
+    const w = world();
+    const ada = await w.signIn("ada", 30);
+    let seen = (await w.call(ada, "GET", PATH)).body.revision as number;
+    for (const provider of ["openai", "openai", "anthropic"] as const) {
+      const put = await w.call(ada, "PUT", `${PATH}/key`, write(seen, { provider, key: provider === "openai" ? openaiKey() : anthropicKey() }));
+      expect(put.status).toBe(200);
+      expect(put.body.revision as number).toBeGreaterThan(seen);
+      const read = await w.call(ada, "GET", PATH);
+      expect(read.body.revision).toBe(put.body.revision);
+      seen = read.body.revision as number;
+    }
+  });
+
+  it("a key the provider check could not test saves nothing and leaves the revision where it was (the case a held page must be able to release)", async () => {
+    const w = world({ openaiCheck: async () => "unavailable" });
+    const ada = await w.signIn("ada", 30);
+    const put = await w.call(ada, "PUT", `${PATH}/key`, write(0, { provider: "openai", key: openaiKey() }));
+    expect(put.status).toBe(503);
+    const read = await w.call(ada, "GET", PATH);
+    expect(read.body).toMatchObject({ revision: 0, accounts: { openai: { connected: false } } });
+  });
+
+  it.each([
+    ["openai", "sk-or-", "This looks like an OpenRouter key. Paste it under OpenRouter."],
+    ["gemini", "sk-ant-", "This looks like an Anthropic key. Paste it under Anthropic."],
+    ["anthropic", "sk-or-", "This looks like an OpenRouter key. Paste it under OpenRouter."],
+    ["openai", "sk-ant-", "This looks like an Anthropic key. Paste it under Anthropic."],
+  ] as const)("a %s slot refuses a key that starts %s with a clean 400, saving and checking nothing", async (provider, prefix, words) => {
+    let checked = 0;
+    const w = world({ company: true, aiSourceKinds: new Set(["openrouter"]), openaiCheck: async () => { checked += 1; return "ok"; } });
+    const ada = await w.signIn("ada", 30);
+    const put = await w.call(ada, "PUT", `${PATH}/key`, write(0, { provider, key: `${prefix}${"x".repeat(40)}` }));
+    expect(put.status).toBe(400);
+    expect(put.body.error).toEqual({ code: "CONFIG_INVALID", message: words });
+    expect(checked).toBe(0);
+    expect((await w.call(ada, "GET", PATH)).body.revision).toBe(0);
+    expect(wrongProviderKeyHint(provider, `${prefix}${"x".repeat(40)}`)).toBe(words);
+  });
+
+  it("an OpenAI-looking key in the OpenRouter slot is refused, while each provider's own shape is accepted", async () => {
+    const w = world({ company: true, aiSourceKinds: new Set(["openrouter"]) });
+    const ada = await w.signIn("ada", 30);
+    const refused = await w.call(ada, "PUT", `${PATH}/key`, write(0, { provider: "openrouter", key: "sk-" + "proj-" + "x".repeat(40) }));
+    expect(refused.status).toBe(400);
+    expect(refused.body.error?.message).toBe("This looks like an OpenAI key. Paste it under OpenAI.");
+    const accepted = await w.call(ada, "PUT", `${PATH}/key`, write(0, { provider: "openrouter", key: "sk-" + "or-" + "x".repeat(40) }));
+    expect(accepted.status).toBe(200);
+  });
+
+  it("where the OpenRouter slot is switched off, an OpenRouter key is named but nobody is told to paste it there", async () => {
+    const w = world({ company: true });
+    const ada = await w.signIn("ada", 30);
+    const put = await w.call(ada, "PUT", `${PATH}/key`, write(0, { provider: "openai", key: "sk-" + "or-" + "x".repeat(40) }));
+    expect(put.status).toBe(400);
+    expect(put.body.error?.message).toBe("This looks like an OpenRouter key.");
+    expect(wrongProviderKeyHint("openai", "sk-" + "or-" + "x".repeat(40), ["anthropic", "openai", "gemini"])).toBe("This looks like an OpenRouter key.");
+  });
+
+  it.each([
+    ["a console command", () => `export OPENAI_API_KEY=${openaiKey()}`],
+    ["a line break inside", () => `${openaiKey()}\n${openaiKey()}`],
+    ["a trailing line break (never trimmed or saved by the server)", () => `${openaiKey()}\n`],
+    ["a tab", () => `sk-proj-\t${"x".repeat(30)}`],
+  ] as const)("a key with %s is refused with the whitespace words and nothing saved", async (_name, make) => {
+    const w = world();
+    const ada = await w.signIn("ada", 30);
+    const put = await w.call(ada, "PUT", `${PATH}/key`, write(0, { provider: "openai", key: make() }));
+    expect(put.status).toBe(400);
+    expect(put.body.error).toEqual({ code: "CONFIG_INVALID", message: "A key can't contain spaces or line breaks. Copy just the key." });
+    expect(KEY_WHITESPACE_WORDS).toBe(PAGE_WHITESPACE_WORDS);
+    expect((await w.call(ada, "GET", PATH)).body.revision).toBe(0);
+    // The page trims the ends before sending, so only whitespace inside the trimmed value is hinted there.
+    expect(keyWhitespaceHint(make())).toBe(_name.startsWith("a trailing") ? undefined : KEY_WHITESPACE_WORDS);
+  });
+
+  it("an OpenRouter key saved on the company AI keys page is the key the agent route reads (one company key store), and never makes lessons usable", async () => {
+    const w = world({ company: true, aiSourceKinds: new Set(["openrouter"]) });
+    const ada = await w.signIn("ada", 30);
+    const key = "sk-" + "or-" + randomBytes(24).toString("hex");
+    const before = await w.call(ada, "GET", "/org/agent-ai");
+    expect(before.body.openrouterKeyConnected).toBe(false);
+    expect((before.body.choices as Array<{ source: string; available: boolean }>).find((c) => c.source === "openrouter_key")?.available).toBe(false);
+    const put = await w.call(ada, "PUT", `${PATH}/key`, write(0, { provider: "openrouter", key }));
+    expect(put.status).toBe(200);
+    // The gateway's agent route (company-key mode) resolves the agents' key through storedLearningKeys on this same store.
+    const agents = storedLearningKeys(w.store);
+    expect(await agents.keyFor(ISS, A, "openrouter")).toBe(key);
+    expect(await agents.connected(ISS, A, "openrouter")).toBe(true);
+    // The agents' source screen sees it too: connected, and choosable.
+    const after = await w.call(ada, "GET", "/org/agent-ai");
+    expect(after.body.openrouterKeyConnected).toBe(true);
+    expect((after.body.choices as Array<{ source: string; available: boolean }>).find((c) => c.source === "openrouter_key")?.available).toBe(true);
+    // Lessons do not use it.
+    expect(put.body).toMatchObject({ accounts: { openrouter: { connected: true } }, pausedNow: expect.arrayContaining(["no_provider"]) as unknown });
+  });
+
+  it("the page's hint and the server's refusal agree on every provider and prefix", () => {
+    for (const provider of ["anthropic", "openai", "gemini", "openrouter"] as const) {
+      for (const prefix of ["sk-or-", "sk-ant-", "sk-proj-", "AIza", "other"]) {
+        const key = `${prefix}${"x".repeat(40)}`;
+        const server = wrongProviderKey(provider, key);
+        expect(wrongProviderKeyHint(provider, key)).toBe(server === undefined ? undefined : (server.body as { error: { message: string } }).error.message);
+      }
+    }
   });
 });

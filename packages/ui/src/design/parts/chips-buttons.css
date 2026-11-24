@@ -3,6 +3,9 @@
 .rv-button.rv-button-quiet{border-color:transparent;background:transparent;color:var(--rv-text);text-decoration-line:underline;text-underline-offset:var(--rv-space-1);font-weight:400}
 .rv-button.rv-button-danger{border-color:var(--rv-status-failed);background:var(--rv-bg-raised);color:var(--rv-status-failed)}
 .rv-button.rv-button-secondary:hover:enabled,.rv-button.rv-button-quiet:hover:enabled,.rv-button.rv-button-danger:hover:enabled{background:var(--rv-bg-sunken)}
+/* A disabled button of any variant (including a fieldset-disabled one) must look disabled, not just refuse clicks: the danger and primary fills otherwise read as live. */
+.rv-button.rv-button-primary:disabled,.rv-button.rv-button-secondary:disabled,.rv-button.rv-button-danger:disabled,.rv-button[aria-disabled=true]{background:var(--rv-bg-sunken);border-color:var(--rv-border);color:var(--rv-text-muted);opacity:1;cursor:not-allowed}
+.rv-button.rv-button-quiet:disabled{background:transparent;border-color:transparent;color:var(--rv-text-muted);opacity:1;cursor:not-allowed}
 .rv-button-with-reason{display:inline-flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-3);max-width:100%;vertical-align:middle}
 .rv-button.rv-button-primary,.rv-button.rv-button-secondary,.rv-button.rv-button-quiet,.rv-button.rv-button-danger{min-height:var(--rv-control-size);font-size:var(--rv-font-md)}
 .rv-button[data-locked=true]{background:var(--rv-bg-sunken);border-color:var(--rv-border);color:var(--rv-text-muted);opacity:1}
