@@ -19,6 +19,8 @@ export interface ProviderResponse {
   reportedCostMicros?: () => number | undefined;
   /** Internal transport provenance: false means money is only a known floor; retain max(hold, floor) provisionally. */
   reportedCostComplete?: () => boolean;
+  /** The complete cost arrived at or after the answer's end with no answer after it (agent-openai.ts): a stream that broke afterwards may settle at it. Absent: false. */
+  reportedCostFinal?: () => boolean;
   /** How far the answer got, counted where it is read (before anything is dropped or held back): whole stream events, and bytes of answer content including reasoning (failed-call.ts). */
   progress?: () => { events: number; outputBytes: number };
 }

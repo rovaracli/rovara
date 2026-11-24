@@ -63,7 +63,7 @@ const REFUSAL_CODE = /^[a-z0-9_]{1,64}$/u;
 /** A refusal code as it is logged: a fixed lower-case word, or "other" for anything else (a code never carries provider text). */
 export const logCode = (code: string): string => REFUSAL_CODE.test(code) ? code : "other";
 const PAYER = /^[a-z0-9_]{1,32}$/u;
-export type GatewayLogEvent = { event: "customer_source_over_reservation"; source: "bedrock_byo" | "openrouter"; company: string; costMicros: number; heldMicros: number; overageMicros: number } | { event: "openrouter_over_reservation"; costMicros: number; holdMicros: number; sourceId: string } | { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "provider_error"; reason?: ProviderErrorReason } | { event: "settle_failed" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
+export type GatewayLogEvent = { event: "customer_source_over_reservation"; source: "bedrock_byo" | "openrouter"; company: string; costMicros: number; heldMicros: number; overageMicros: number } | { event: "openrouter_over_reservation"; costMicros: number; holdMicros: number; sourceId: string; failed?: true } | { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" | "answers" } | { event: "overrun_busy"; company: string } | { event: "agent_source"; company: string; source: string; via: string } | RefusedLog | { event: "provider_error"; reason?: ProviderErrorReason } | { event: "settle_failed" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
 export interface GatewayDependencies {
   /** DEC 328: production always supplies the live install setting. Own sources never read it. */
   rovaraAiSetting?: { enabled(): Promise<boolean> };
@@ -676,6 +676,14 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         try { complete = provider?.reportedCostComplete?.() !== false; } catch { /* An unreadable provenance keeps the hold. */ }
         if (settlementReported === undefined || !complete || unexpectedRouterWrite(settlementUsage)) retainMissingUsage = true;
       }
+      // A failed OpenRouter call that RECEIVED its complete, final reported cost (the usage chunk arrived after the answer ended, then the stream broke) settles at that cost
+      // when it is within the hold; above the hold it keeps the known-debit rule (estimated, above the hold, alarm and source stop) as before, logged `failed: true`.
+      // Only when the PROVIDER's stream broke and no token usage was read (a stream the gateway cut for its own reasons, e.g. a price that expired mid-call, keeps the hold),
+      // and not for a cache write the route forbids (it keeps the debit rule above). A call with no / incomplete reported cost keeps the hold.
+      let failedWithReportedCost = false;
+      if (route.provider === "openrouter" && failure?.cause === "provider" && !completed && (settlementUsage === undefined || !hasUsage(settlementUsage)) && charge?.billing === "external_provider" && settlementReported !== undefined && !unexpectedRouterWrite(settlementUsage)) {
+        try { failedWithReportedCost = provider?.reportedCostComplete?.() === true && provider.reportedCostFinal?.() === true; } catch { failedWithReportedCost = false; }
+      }
       let estimateRecord: EstimatedSettlement | undefined;
       // A call that failed after it was sent and reported no usage: what was used, not the hold (a free call is the not-sent receipt below).
       let failedMicros: number | undefined;
@@ -687,14 +695,14 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         cost = failedMicros; estimated = failedMicros > 0;
         if (failedMicros > 0 && settlementPrice !== undefined && settlementModel !== undefined) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0 };
       } else if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
-        const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: reservedMicros, retainMissingUsage });
+        const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: reservedMicros, retainMissingUsage, failedWithReportedCost });
         cost = amount.actualMicros; estimated = amount.estimated;
         // Customer Bedrock reviews record the true bill like every customer call; other review sources retain their ceiling clamp.
         if (callClaims?.reviewer !== undefined && route.payer !== "bedrock_byo" && cost > reservedMicros) cost = reservedMicros;
         if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
       }
       if (charge !== undefined && reservation !== undefined && route.meter.settleV2 !== undefined && settlementPrice !== undefined) {
-        const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, retainMissingUsage, customerPriceAuthorized: callClaims?.runPrice !== undefined, notSent: cost === 0, now: now(), ...(failedMicros === undefined ? {} : { failedMicros }) });
+        const receipt = finishCharge(charge, { ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, retainMissingUsage, failedWithReportedCost, customerPriceAuthorized: callClaims?.runPrice !== undefined, notSent: cost === 0, now: now(), ...(failedMicros === undefined ? {} : { failedMicros }) });
         // Record the customer's true bill, even above the hold. The meter atomically latches overrun.
         const observed = chargeValue(receipt.amountMicros)!;
         if (receipt.billing === "external_provider" && (route.payer === "bedrock_byo" || route.provider === "openrouter") && callClaims !== undefined && observed > reservedMicros) {
@@ -703,7 +711,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         const actualInputTokens = usage?.actualInputTokens?.();
         await route.meter.settleV2({ reservationId: reservation.id, receipt, ...(actualInputTokens === undefined ? {} : { actualInputTokens }), ...(cacheWritesForbidden ? { noWriteRoute: true } : {}) });
         cost = chargeValue(receipt.amountMicros)!; estimated = receipt.status !== "final";
-        if (route.provider === "openrouter" && cost > reservedMicros) log({ event: "openrouter_over_reservation", costMicros: cost, holdMicros: reservedMicros, sourceId: receipt.source.id });
+        if (route.provider === "openrouter" && cost > reservedMicros) log({ event: "openrouter_over_reservation", costMicros: cost, holdMicros: reservedMicros, sourceId: receipt.source.id, ...(failedWithReportedCost ? { failed: true as const } : {}) });
         if (customerReview && sessionCall !== undefined) await deps.reviewerGrants?.giveBack(sessionCall.claims.iss, sessionCall.claims.cid, sessionCall.claims.jti, Math.max(0, sessionCall.debited - cost));
       } else if (sessionCall !== undefined) await deps.reviewerGrants?.giveBack(sessionCall.claims.iss, sessionCall.claims.cid, sessionCall.claims.jti, Math.max(0, sessionCall.debited - cost)); else await route.meter.settle(reservation!, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === undefined ? {} : { route: route.purpose }) });
       settled = { ok: true, micros: cost, estimated };

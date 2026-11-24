@@ -44,7 +44,13 @@ export function validUsage(value: unknown): value is TokenUsage {
   return whole(u.cacheWrite5m) && whole(u.cacheWrite1h) && u.cacheWrite5m + u.cacheWrite1h === u.cacheWrite;
 }
 export function hasUsage(usage: TokenUsage): boolean { return usage.input + usage.output + usage.cacheRead + usage.cacheWrite > 0; }
-export function settleChargeAmount(input: { reportedCostMicros?: number; retainMissingUsage?: boolean; usage?: TokenUsage; price: ResolvedPrice; reservationMicros: number }): { actualMicros: number; estimated: boolean; status: "final" | "estimated" | "awaiting_usage"; reason: "rated_usage" | "reported_cost" | "derived_rate" | "missing_usage"; usage?: TokenUsage } {
+export function settleChargeAmount(input: { reportedCostMicros?: number; retainMissingUsage?: boolean; failedWithReportedCost?: boolean; usage?: TokenUsage; price: ResolvedPrice; reservationMicros: number }): { actualMicros: number; estimated: boolean; status: "final" | "estimated" | "awaiting_usage"; reason: "rated_usage" | "reported_cost" | "derived_rate" | "missing_usage"; usage?: TokenUsage } {
+  // A FAILED call (a broken stream) that RECEIVED the provider's complete, final reported cost (OpenRouter's usage chunk) AT OR BELOW the hold settles at that cost;
+  // nothing reconciles a failed call later, so the hold must not be kept when the money is known. Above the hold it falls through to the rule below (the known
+  // debit, estimated, above the hold), so the customer's caps count the whole known spend and the over-reservation alarm and source stop still fire.
+  if (input.failedWithReportedCost === true && whole(input.reportedCostMicros) && input.reportedCostMicros > 0 && input.reportedCostMicros <= input.reservationMicros) {
+    return { actualMicros: input.reportedCostMicros, estimated: false, status: "final", reason: "reported_cost" };
+  }
   if (input.retainMissingUsage) {
     // Incomplete billing evidence keeps the fee-inclusive hold AND every known debit.
     // Valid tokens remain a lower bound even when the provider omits its total cost.
