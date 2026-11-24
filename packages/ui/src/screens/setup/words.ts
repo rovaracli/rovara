@@ -6,7 +6,8 @@ export const STOP_WORDS: Record<NonNullable<SetupAgentView["stop"]>, string> = {
   attempts_used: "Rovara used up the commands it was allowed. What it learned is below.",
   time_used: "Rovara ran out of time. What it learned is below.",
   budget_used: "Rovara used up its budget for this run. What it learned is below.",
-  hosts_waiting: "Rovara was waiting for websites that an administrator has not decided yet.",
+  // The fallback when the cause is not known (no website list was read, or an older Code): true for every cause. The cause-specific words are `hostsStopWords`.
+  hosts_waiting: "Rovara ended the run because of the websites it needed: it reached a limit on website requests or on waiting, or a website decision was still open.",
   stopped_by_person: "The run was stopped.",
   needs_code_change: "The project needs a change in its code before it can be set up.",
   changed_repository_files: "A command changed the project's files, so the run ended.",
@@ -65,3 +66,26 @@ export const REVIEW_WORDS = {
   confirmNext: "Saved as a proposal. Rovara is checking it on a fresh machine. When the check passes, approve it here.",
   readOnly: "Rovara has a setup waiting. A project admin, or a company owner or admin, reviews and approves it.",
 } as const;
+
+/**
+ * Why a run that stopped on websites (`stop: "hosts_waiting"`) stopped, in words that are true for THAT cause (rule #14). Code's one stop word covers two causes: a website decision still open (nobody answered
+ * the ask), and a limit reached (too many website requests for one run, or the longest wait on a decision). The cause is read from the run's website requests (the journal reply's `hostAsks`, the same list Code's
+ * own page uses): one still `open` is a decision waiting; none open means the run ended on a limit and nothing is waiting now. When the list was not read (an older Code, or a read that failed) the cause is
+ * unknown and the words say only what is true of both.
+ */
+export const HOSTS_STOP_WORDS = {
+  /** Code's own setup page note, word for word (SETUP_OPEN_HOST_NOTE). */
+  decisionOpen: "A website decision is still open: allow it, then run the setup again to include it.",
+  limitReached: "Rovara stopped because it reached its limit on website requests or on waiting for a decision. No website decision is open now. Run the setup again to go on.",
+  unknown: STOP_WORDS.hosts_waiting,
+} as const;
+export type HostsStopCause = "decision_open" | "limit_reached" | "unknown";
+export function hostsStopCause(asks: readonly { status: string }[] | undefined): HostsStopCause {
+  // No list, or an empty one (a run that stopped on websites asked for at least one): nothing to tell the cause from.
+  if (asks === undefined || asks.length === 0) return "unknown";
+  return asks.some(ask => ask.status === "open") ? "decision_open" : "limit_reached";
+}
+export function hostsStopWords(asks: readonly { status: string }[] | undefined): string {
+  const cause = hostsStopCause(asks);
+  return cause === "decision_open" ? HOSTS_STOP_WORDS.decisionOpen : cause === "limit_reached" ? HOSTS_STOP_WORDS.limitReached : HOSTS_STOP_WORDS.unknown;
+}

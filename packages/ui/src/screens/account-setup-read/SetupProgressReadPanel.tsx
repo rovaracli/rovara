@@ -10,7 +10,7 @@ export function SetupProgressReadPanel({ project, withLog = true }: { project: s
    <ReadState refresh query={query} label="setup run progress">{data => <>
     <div className="g5-banner"><b>Setup run</b>{data.startedAt !== undefined && <span>Started {localClock(data.startedAt)}</span>}<p>Your first task starts only after setup is verified.</p></div>
     <section className="g5-card g5-run" aria-label="Setup run status">
-     <RunSummary data={data} project={project} />
+     <RunSummary data={data} project={project} hostAsks={journal.isSuccess ? journal.data.hostAsks : undefined} />
      {withLog && <div className="g5-frows"><LogFold query={journal} open={false} /></div>}
     </section>
     <div className="g5-steps"><p className="g5-unknown-line"><Unknown />Rovara can&apos;t tell yet which stage the run is in.</p></div>

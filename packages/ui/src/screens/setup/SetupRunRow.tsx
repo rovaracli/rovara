@@ -11,6 +11,7 @@ import { checklistAbsent, fixedSetupWords, setupChecklistKey } from "../../api/s
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { RunJournal } from "./RunJournal.js";
+import { useHostsStopWords } from "./useHostsStopWords.js";
 import { REVIEW_TEXT, SetupReview, type SetupReviewState } from "./SetupReview.js";
 
 type RunRow = ProjectSetupChecklist["setupRun"];
@@ -63,6 +64,9 @@ function ApprovedLine({ row }: { row: RunRow }) {
 }
 
 export function SetupRunRow({ project, row, onChanged, review }: { project: string; row: RunRow; onChanged: () => void; /** L4-T1: where a setup of Rovara's waits for a person; its cards are mounted here, so no page change is needed to approve. */ review?: SetupReviewState }) {
+ // A run that stopped on websites says why in words true for its cause (rule #14), read from the run's website requests; any other stop keeps Code's sentence.
+ const onHosts = row.stop === "hosts_waiting" && (row.status === "ready" || row.status === "failed");
+ const hostWords = useHostsStopWords(project, onHosts);
  const facts = [
   row.commandsFound === undefined ? undefined : `Commands found: ${String(row.commandsFound.setup)} to set up, ${String(row.commandsFound.tests)} to test.`,
   row.testOutcome === "passed" ? "Tests passed." : row.testOutcome === "failed" ? "Tests failed." : undefined,
@@ -80,7 +84,8 @@ export function SetupRunRow({ project, row, onChanged, review }: { project: stri
   {review !== undefined && <SetupReview project={project} review={review} />}
   {/* L4-T2: what the row says once a person approved a setup: done only with a passing check; otherwise what is wrong with the check. Never while the review cards say what waits. */}
   {row.approval === "approved" && (newer !== undefined || review === undefined || review.stage === "none") && <ApprovedLine row={row} />}
-  {row.status === "failed" && row.failure !== undefined && <p role="alert" data-testid="setup-run-failure"><VisibleText text={row.failure} /></p>}
+  {onHosts && <p role="status" data-testid="setup-run-hosts-stop">{hostWords}</p>}
+  {row.status === "failed" && row.failure !== undefined && !onHosts && <p role="alert" data-testid="setup-run-failure"><VisibleText text={row.failure} /></p>}
   {facts.length > 0 && <p className="rv-muted" data-testid="setup-run-facts">{facts.join(" ")}</p>}
   {row.failedCommand !== undefined && <div className="rv-checklist-failed" data-testid="setup-run-failed-command">
    <p>Failed: <code><VisibleText text={row.failedCommand.command} /></code> {row.failedCommand.timedOut ? "(timed out)" : row.failedCommand.exitCode === null ? "" : `(exit ${String(row.failedCommand.exitCode)})`}</p>

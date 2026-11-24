@@ -12,6 +12,7 @@ import { RunJournal } from "./RunJournal.js";
 import { APPROVAL_WORDS, STOP_WORDS } from "./words.js";
 import { SETUP_LOCKS } from "./limits-text.js";
 import { setupAgentKey, setupAgentRefetch } from "./SetupReview.js";
+import { useHostsStopWords } from "./useHostsStopWords.js";
 
 /**
  * Setup with a run (SH15, behind the `su` switch): Rovara runs the project's own commands in a throw-away sandbox, the page shows what it ran and which websites it asked for, a maintainer can steer it or run a
@@ -25,6 +26,8 @@ export default function SetupRunSection({ project, settingsRevision, onDecided }
   const [decided, setDecided] = useState<"approved" | "rejected" | "discarded">();
   const [busy, setBusy] = useState<"start" | "stop">(), [error, setError] = useState<string>(), [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const view = query.data;
+  // The cause of a stop on websites is read from the run's website requests; a failed or missing read is "unknown".
+  const hostWords = useHostsStopWords(project, view?.stop === "hosts_waiting" && view.status !== "running");
   if (query.isError && query.error instanceof ApiError && (query.error.status === 404 || query.error.code === "INVALID_RESPONSE")) return null;
   if (query.isPending) return null;
   if (query.isError || view === undefined) return <section aria-label="Set up with Rovara"><h3>Set up with Rovara</h3><p role="alert">Couldn't load the setup run.</p><Button onClick={() => { void query.refetch(); }}>Try again</Button></section>;
@@ -50,8 +53,8 @@ export default function SetupRunSection({ project, settingsRevision, onDecided }
     {view.status !== "running" && <p>Rovara can run your project's own setup and test commands in a throw-away sandbox with no secrets, see what fails, and propose commands that worked. It uses the model budget of this project.</p>}
     {view.status !== "running" && !off && view.standInWriter !== undefined && <p data-testid="stand-in-writer"><VisibleText text={view.standInWriter.words} /></p>}
     {running && <p role="status">Rovara is setting the project up. You can leave and come back.</p>}
-    {view.status === "failed" && view.failure !== undefined && <p role="alert"><VisibleText text={view.failure} /></p>}
-    {view.status === "ready" && view.stop !== undefined && <p role="status">{STOP_WORDS[view.stop]}</p>}
+    {view.status === "failed" && view.failure !== undefined && (view.stop === "hosts_waiting" ? <p role="alert" data-testid="hosts-stop">{hostWords}</p> : <p role="alert"><VisibleText text={view.failure} /></p>)}
+    {view.status === "ready" && view.stop !== undefined && <p role="status" {...(view.stop === "hosts_waiting" ? { "data-testid": "hosts-stop" } : {})}>{view.stop === "hosts_waiting" ? hostWords : STOP_WORDS[view.stop]}</p>}
     {!running && !off && <Button busy={busy === "start"} onClick={() => { void act("start"); }}>{view.status === "none" ? "Let Rovara run the setup" : "Run it again"}</Button>}
     {running && <Button variant="danger" busy={busy === "stop"} onClick={() => { void act("stop"); }}>Stop</Button>}
     {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}

@@ -28,7 +28,9 @@ export const SETUP_AGENT_LIMITS_DEFAULT = { commands: 40, sameStepTries: 3, wall
 export const SETUP_AGENT_LIMITS_MAX = { commands: 120, sameStepTries: 5, wallClockMin: 120, budgetCents: 2_000, hostAsks: 10 } as const satisfies Record<SetupAgentLimitName, number>;
 /** Setup runs at once per project. Not a setting: it is 1. */
 export const SETUP_AGENT_CONCURRENT_RUNS = 1 as const;
-/** How long a run parks in all, waiting for an admin to answer a host ask, before it ends `hosts_waiting` (Code 0.5.49: 2 hours, was 24). The worker's own timer ends it. */
+/** The PARK LIMIT: how long a run parks, waiting for an admin to answer a host ask, before the worker ends it `hosts_waiting` (a recorded end). It mirrors
+ * Code's SETUP_HOST_WAIT_MAX_HOURS (2 since the park-limit lane). It is NOT the stale / run-gone backstop: Code keeps that as its own
+ * RUN_GONE_BACKSTOP_WAIT_HOURS = 24, so one constant never serves both meanings. Cloud shows no hours to people. */
 export const SETUP_HOST_WAIT_MAX_HOURS = 2 as const;
 /** Blocked host names one run remembers (the DNS watch's bound). */
 export const SETUP_BLOCKED_HOSTS_MAX = 50 as const;
